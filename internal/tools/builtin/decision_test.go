@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -384,23 +385,26 @@ func TestDecision_ModelVisibleTextNamesNoDesignDocument(t *testing.T) {
 }
 
 // TestDecisionPolicy_IsSetWhereverTheMemoryPolicyIs — every place a run's
-// context is built sets the agent's decision block, the empty one included: a
-// sub-agent's context derives from its parent's, so a site that skipped it
-// would run the child under the parent's narrowing. Counted against the memory
-// policy, which every such site sets.
+// policy is built sets the agent's decision block, the empty one included: a
+// site that skipped it would run a child under its parent's narrowing. Counted
+// against the memory policy, which every such site sets — as a setter call or
+// as the RunPolicy field.
 func TestDecisionPolicy_IsSetWhereverTheMemoryPolicyIs(t *testing.T) {
-	for _, f := range []string{"../../api/http/server.go", "../../api/http/resume.go"} {
+	field := regexp.MustCompile(`(?m)^\s+Decision:\s+\w+\.Decision,`)
+	total := 0
+	for _, f := range runPolicyBuilderFiles(t) {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		src := string(b)
 		sibling := strings.Count(src, "RecallIncludeTurns: ")
-		if sibling == 0 {
-			t.Fatalf("%s builds no run memory policy — this guard would assert nothing", f)
-		}
-		if mine := strings.Count(src, "tools.WithDecisionPolicy("); mine != sibling {
+		total += sibling
+		if mine := strings.Count(src, "tools.WithDecisionPolicy(") + len(field.FindAllString(src, -1)); mine != sibling {
 			t.Errorf("%s builds a run's memory policy %d times but sets its decision policy %d times", f, sibling, mine)
 		}
+	}
+	if total == 0 {
+		t.Fatal("the run entry points build no memory policy — this guard would assert nothing")
 	}
 }

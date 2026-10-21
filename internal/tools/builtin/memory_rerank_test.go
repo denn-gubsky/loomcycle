@@ -159,19 +159,21 @@ func TestMemoryRerank_HasNoToolParameter(t *testing.T) {
 // rerank silently off on exactly the path nobody tested.
 func TestMemoryRerank_IsCarriedByEveryPolicyConstructionSite(t *testing.T) {
 	rerankField := regexp.MustCompile(`(?m)^\s+Rerank:\s`)
-	for _, f := range []string{"../../api/http/server.go", "../../api/http/resume.go"} {
+	total := 0
+	for _, f := range runPolicyBuilderFiles(t) {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		src := string(b)
 		sibling := strings.Count(src, "RecallIncludeTurns: ")
-		if sibling == 0 {
-			t.Fatalf("%s carries no RecallIncludeTurns — this guard would assert nothing", f)
-		}
+		total += sibling
 		if mine := len(rerankField.FindAllString(src, -1)); mine != sibling {
 			t.Errorf("%s builds MemoryPolicyValue %d times carrying RecallIncludeTurns but %d carrying Rerank", f, sibling, mine)
 		}
+	}
+	if total == 0 {
+		t.Fatal("the run entry points carry no RecallIncludeTurns — this guard would assert nothing")
 	}
 }
 

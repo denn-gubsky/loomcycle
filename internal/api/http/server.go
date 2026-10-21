@@ -3698,10 +3698,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// The run's own turn calls lend its global slot while they wait for a
 	// provider lane (concurrency.RunSlot).
-	loopCtx := concurrency.WithRunSlot(tools.WithAgentTools(runCtx, toolNames(allowedTools)), runSlot)
-	// Raw (glob-preserving) patterns for the Skill tool's subset check — the
-	// resolved names above have the agent's globs already expanded.
-	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools)
+	loopCtx := concurrency.WithRunSlot(runCtx, runSlot)
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
@@ -3709,60 +3706,38 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// driver backstop (drivers import providers, not auth/tools).
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !operatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
-	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
-	// Memory tool policy: agent name + per-agent scope allowlist +
-	// per-agent quota override. The Memory tool reads these from ctx
-	// at call time to refuse out-of-policy operations and resolve
-	// scope_id (yaml agent name for `agent` scope, user_id for
-	// `user` scope).
+	// The Memory tool resolves `agent` scope to this name.
 	loopCtx = tools.WithAgentName(loopCtx, effectiveAgentName)
-	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:         agentDef.MemoryQuotaBytes,
-		Backend:            agentDef.MemoryBackend,
-		Consolidation:      agentDef.MemoryConsolidation,
-		RecallIncludeTurns: agentDef.RecallIncludeTurns,
-		RecallAttachTraces: agentDef.RecallAttachTraces,
-		Rerank:             agentDef.MemoryRerank,
-		Units:              agentDef.MemoryUnits,
-	})
-	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
-	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
-	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
-	// sub-agent off this ctx key.
-	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
-	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
-	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
-		QuotaBytes:    agentDef.SqlQuotaBytes,
-	})
-	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
-	// inherits the parent's effective policy (its def fills any gaps the parent
-	// left unset), overridable per-spawn by the Agent tool.
-	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
-	// RFC DC P2: the run's own fan-out width. It is otherwise resolved from the
-	// calling agent's NAME at spawn time, which a per-run value cannot reach.
-	// Inheriting it down the tree is safe because it can only have been LOWERED.
-	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
-	// RFC DC P5: offer this run's overrides to its children. Only a child of the
-	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
-	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
-		Record: runCfg.marshal(),
-		// A top-level run pins no def_id (RunInput does not carry one), so
-		// identity here is the agent NAME. See SameDefinitionAs.
-		DefID: "", AgentName: effectiveAgentName, RunID: runID,
-	})
-
-	// RFC CR: the resolved layered-context policy flows down the spawn tree the
-	// same way — a sub-agent inherits the parent's effective mode; its def fills
-	// gaps the parent left unset.
+	// The run's whole policy, after its identity: its memory, SQL and history
+	// defaults resolve from the user, tenant and isolation on ctx.
 	mergedContext := runCfg.Context // per-run > per-agent (RFC CR); resolved once, above
-	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext)
-	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
-	// empty policy (the file tools fall back to the legacy jail Root);
-	// sub-agents inherit + narrow this via runSubAgent.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
-	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
+	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, effectiveAgentName, runPolicySource{
+		Tools: allowedTools,
+		Hosts: hostPolicy,
+		// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
+		// inactive policy (every file tool refuses); sub-agents inherit and
+		// narrow this.
+		Volumes:    s.volumePolicyForAgent(loopCtx, agentDef),
+		CoreBlocks: coreBlocks,
+		Crypto:     cryptoPolicyForAgent(agentDef),
+		// Resolved compaction and layered-context settings flow down the spawn
+		// tree: a sub-agent inherits the parent's effective policy (its def
+		// fills any gaps the parent left unset), compaction overridable
+		// per-spawn by the Agent tool.
+		Compaction: runCfg.Compaction,
+		Context:    mergedContext,
+		// RFC DC P2: the run's own fan-out width. It is otherwise resolved from
+		// the calling agent's NAME at spawn time, which a per-run value cannot
+		// reach.
+		FanoutCap: agentDef.MaxConcurrentChildren,
+		// RFC DC P5: offer this run's overrides to its children. Only a child of
+		// the SAME definition will take them (RunOverridesValue.SameDefinitionAs).
+		// A top-level run pins no def_id (RunInput does not carry one), so
+		// identity here is the agent NAME.
+		Overrides:    tools.RunOverridesValue{Record: runCfg.marshal(), AgentName: effectiveAgentName, RunID: runID},
+		Interruption: in.Interruption,
+	})
+	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
 	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
@@ -3773,19 +3748,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
 	loopCtx = s.withEphemeralRecord(loopCtx, runID)
-	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
-	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
-	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
-	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
-	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithCryptoPolicy(loopCtx, cryptoPolicyForAgent(agentDef))
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, in.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, runID)
 	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef, hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)

@@ -109,10 +109,8 @@ func TestRecallTraces_ParsesTheStoredRowRatherThanHandingOverJSON(t *testing.T) 
 // Driven off the sibling's own count rather than a hand-written list of sites,
 // because a hand-written list is the second copy that drifts.
 func TestRecallTraces_GrantIsCarriedByEveryPolicyConstructionSite(t *testing.T) {
-	for _, f := range []string{
-		"../../api/http/server.go",
-		"../../api/http/resume.go",
-	} {
+	total := 0
+	for _, f := range runPolicyBuilderFiles(t) {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
@@ -120,15 +118,16 @@ func TestRecallTraces_GrantIsCarriedByEveryPolicyConstructionSite(t *testing.T) 
 		src := string(b)
 		sibling := strings.Count(src, "RecallIncludeTurns: ")
 		mine := strings.Count(src, "RecallAttachTraces: ")
-		if sibling == 0 {
-			t.Fatalf("%s carries no RecallIncludeTurns at all — this guard derives its "+
-				"expectation from that count and would assert nothing", f)
-		}
+		total += sibling
 		if sibling != mine {
 			t.Errorf("%s builds MemoryPolicyValue %d times carrying RecallIncludeTurns but "+
 				"only %d carrying RecallAttachTraces — a missed site resolves to false, "+
 				"which for a grant means DENIED on that path alone", f, sibling, mine)
 		}
+	}
+	if total == 0 {
+		t.Fatal("the run entry points carry no RecallIncludeTurns at all — this guard derives its " +
+			"expectation from that count and would assert nothing")
 	}
 }
 
