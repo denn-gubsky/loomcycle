@@ -87,3 +87,50 @@ func configAuthenticates(c *config.Config) bool {
 func configAdmin(c *config.Config) bool {
 	return c.Env.AuthToken != "" || c.AdminPrincipalResolved()
 }
+
+// AuthPostureWarnings names, for the boot log, a server whose config turns
+// authentication on with principals but where no request can get in, or
+// nobody can administer it. Both are legal configs and both fail closed, so
+// boot carries on; the operator just has to be told, because the symptom is
+// "every request is 401" or "no one can mint a token", far from the cause.
+// "Can get in" counts any non-retired token row; an expired one would still
+// read as a way in, which only errs towards saying less.
+func (s *Server) AuthPostureWarnings(ctx context.Context) []string {
+	cfg := s.cfg()
+	if cfg.Env.AuthToken != "" || !cfg.DeclaresPrincipals() {
+		// The legacy secret is a login and an admin; with no principals the
+		// server is open or rests on admin tokens, both handled elsewhere.
+		return nil
+	}
+	if s.store == nil {
+		return nil
+	}
+	var out []string
+	if len(cfg.ResolvedPrincipals) == 0 {
+		names, err := s.store.OperatorTokenDefListNames(ctx)
+		if err != nil {
+			return []string{fmt.Sprintf("could not list operator tokens to check that anyone can log in: %v", err)}
+		}
+		anyToken := false
+		for _, n := range names {
+			anyToken = anyToken || n.HasCurrent
+		}
+		if !anyToken {
+			out = append(out, "no credential can authenticate: every declared principal is inert (its token_env "+
+				"is empty), LOOMCYCLE_AUTH_TOKEN is not set and the store holds no operator token, so every "+
+				"request will get 401. Set a principal's token_env, or set LOOMCYCLE_AUTH_TOKEN")
+		}
+	}
+	if !cfg.AdminPrincipalResolved() {
+		n, err := s.store.OperatorTokenDefCountActiveAdmin(ctx)
+		if err != nil {
+			return append(out, fmt.Sprintf("could not count admin operator tokens: %v", err))
+		}
+		if n == 0 {
+			out = append(out, "no admin credential: no principal that can log in holds substrate:admin, "+
+				"LOOMCYCLE_AUTH_TOKEN is not set and the store holds no admin operator token, so nobody can "+
+				"mint tokens or use the admin routes. Add a substrate:admin principal or set LOOMCYCLE_AUTH_TOKEN")
+		}
+	}
+	return out
+}

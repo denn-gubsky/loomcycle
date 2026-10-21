@@ -154,6 +154,10 @@ func TestBoot_DeclaredPrincipalsWithoutLegacySecretIsNotOpenMode(t *testing.T) {
 			t.Errorf("a principals-only deployment logged %q as if it were open\n%s", phrase, res.log)
 		}
 	}
+	// alice is a tenant principal and the store is empty: nobody can administer.
+	if !strings.Contains(res.log, "no admin credential") {
+		t.Errorf("a principals-only deployment with no admin principal should say nobody can administer it\n%s", res.log)
+	}
 }
 
 // The boot tests share one build of the binary: each build links the whole

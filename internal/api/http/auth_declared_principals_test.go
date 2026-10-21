@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -82,5 +84,32 @@ func TestAuthConfigured_InertDeclaredPrincipalStillTurnsAuthOn(t *testing.T) {
 	s.authMiddleware(passthroughHandler(&reached)).ServeHTTP(rec, httptest.NewRequest("GET", "/v1/agents/x", nil))
 	if rec.Code != http.StatusUnauthorized || reached {
 		t.Errorf("no bearer with an inert principal: status = %d, reached = %v; want 401", rec.Code, reached)
+	}
+}
+
+// A principals-only server whose principals are all inert, with no token in the
+// store, turns auth on but lets nobody in; one whose principals lack admin has
+// nobody to administer it. Boot names both, with the fix.
+func TestAuthPostureWarnings_NamesNoLoginAndNoAdmin(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	s.cfg().Principals = map[string]config.PrincipalDef{
+		"ops": {Subject: "ops", Scopes: []string{auth.ScopeAdmin}, TokenEnv: "LOOMCYCLE_OPS_TOKEN"},
+	}
+	got := strings.Join(s.AuthPostureWarnings(context.Background()), "\n")
+	if !strings.Contains(got, "401") || !strings.Contains(got, "substrate:admin principal or set LOOMCYCLE_AUTH_TOKEN") {
+		t.Fatalf("inert principals, empty store: warnings = %q, want both the 401 and the no-admin warning", got)
+	}
+
+	// A token row lets someone in, but it is not an admin: only the admin warning.
+	seedToken(t, st, "lct_member", "acme", "member", []string{auth.ScopeRunsRead}, time.Time{})
+	got = strings.Join(s.AuthPostureWarnings(context.Background()), "\n")
+	if strings.Contains(got, "401") || !strings.Contains(got, "substrate:admin") {
+		t.Fatalf("a member token in the store: warnings = %q, want only the no-admin warning", got)
+	}
+
+	// A resolved admin principal: nothing to say.
+	s.cfg().ResolvedPrincipals = []auth.DeclaredPrincipal{{Secret: "lct_ops", Principal: auth.Principal{Subject: "ops", Scopes: []string{auth.ScopeAdmin}}}}
+	if w := s.AuthPostureWarnings(context.Background()); len(w) != 0 {
+		t.Fatalf("a live admin principal: warnings = %q, want none", w)
 	}
 }
