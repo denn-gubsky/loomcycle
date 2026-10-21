@@ -34,6 +34,17 @@ const maxRunTreeMemo = 4096
 // A RunTree remembers each run it reads, so a listing walks shared ancestors
 // once. It is for one request or one stream, and is not safe for concurrent
 // use.
+//
+// Two known costs of the rule, both accepted:
+//   - Timing. A refusal of an EXISTING run or session costs the walk's reads
+//     (a session: every run in it, and each sub-run's parents), where a
+//     missing id costs one failed lookup. The body is the same opaque
+//     not-found, but the time to produce it can tell the two apart. Run and
+//     session ids are not secrets here, so this discloses existence only,
+//     which the ids already do wherever they are shown.
+//   - A pruned root. A sub-run whose ancestor row was deleted (retention,
+//     erasure) cannot be walked to its root, so it — and a session it opened
+//     — fails closed even for the token that started the tree.
 type RunTree struct {
 	p    Principal
 	ok   bool
