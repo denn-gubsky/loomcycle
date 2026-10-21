@@ -237,6 +237,18 @@ says is delivered to the caller and stored nowhere.
 - See `loomcycle help no-trace-runs` for what a no-trace run keeps and
   what it cannot do.
 
+## Open mode, and what turns authentication on
+
+With no `LOOMCYCLE_AUTH_TOKEN`, no `principals:` in the config and no
+admin-scoped OperatorTokenDef, the server runs in **open mode**: every
+route is served with no bearer, and it refuses to start on an address
+beyond loopback unless `LOOMCYCLE_ALLOW_OPEN_MODE=1`. Any one of the
+three turns authentication on. A declared principal counts even when its
+`token_env` is empty at boot: it authenticates nobody, but the server
+still requires a bearer. Only a principal with `substrate:admin` can mint
+tokens; if none of the declared principals has it, add one or set
+`LOOMCYCLE_AUTH_TOKEN` when you need an admin.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**
