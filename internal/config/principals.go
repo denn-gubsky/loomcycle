@@ -145,10 +145,9 @@ func resolvePrincipals(c *Config) error {
 		// header/url/env referencing ${LOOMCYCLE_ALICE_TOKEN} would exfiltrate
 		// the bearer to the server host (the same S1 exfil class the denylist
 		// closes for the built-in infra secrets, never extended to the newer
-		// per-principal tokens). Written once at config-load, before any runtime
-		// ExpandEnv reader (the MCPServerDef path); denied even for an inert
-		// (empty-at-boot) principal so the name is permanently non-interpolatable.
-		expandDenyNames[def.TokenEnv] = true
+		// per-principal tokens). Denied even for an inert (empty-at-boot)
+		// principal so the name is permanently non-interpolatable.
+		principalBearerEnvs.add(def.TokenEnv)
 		if bad := auth.UnknownScopes(def.Scopes); len(bad) > 0 {
 			return fmt.Errorf("principals.%s: unknown scope(s) %v (not in the closed catalog)", name, bad)
 		}

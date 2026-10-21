@@ -26,8 +26,8 @@ func TestIsSecretEnvName_DSN(t *testing.T) {
 func TestResolvePrincipals_DeniesTokenEnvInterpolation(t *testing.T) {
 	const envName = "LOOMCYCLE_TESTPRIN_TOKEN"
 	t.Setenv(envName, "prin_secret_value")
-	// The fix mutates the process-global expand denylist; keep the test isolated.
-	defer delete(expandDenyNames, envName)
+	// The fix adds to the process-wide principal-bearer set; keep the test isolated.
+	defer principalBearerEnvs.remove(envName)
 
 	// Sanity: before resolution the name IS interpolatable (LOOMCYCLE_* allowed).
 	if got := expandEnv("${" + envName + "}"); got != "prin_secret_value" {

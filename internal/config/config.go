@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -6557,7 +6558,7 @@ var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 func expandEnv(s string) string {
 	return envVarRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := m[2 : len(m)-1]
-		if !ExpandEnvAllowed(name) || expandDenyNames[name] {
+		if !ExpandEnvAllowed(name) || envNameDenied(name) {
 			return m // leave verbatim — caller sees the literal ${...}
 		}
 		v := os.Getenv(name)
@@ -6684,15 +6685,53 @@ func ExpandEnvAllowed(name string) bool {
 // token. The inline pair at expandYAMLEnv already spells this out; exported here
 // so substrate validators enforce the same rule instead of re-deriving half of it.
 func EnvNameCredentialSafe(name string) bool {
-	return ExpandEnvAllowed(name) && !expandDenyNames[name]
+	return ExpandEnvAllowed(name) && !envNameDenied(name)
 }
 
 // IsInfraSecretEnv reports whether name is one of loomcycle's own
-// infrastructure secrets (expandDenyNames), which no definition may name as
-// the source of a secret — not even one only ever compared, such as a
-// webhook's verification secret.
+// infrastructure secrets (expandDenyNames) or a declared principal's bearer
+// (principalBearerEnvs), which no definition may name as the source of a
+// secret — not even one only ever compared, such as a webhook's verification
+// secret.
 func IsInfraSecretEnv(name string) bool {
-	return expandDenyNames[name]
+	return envNameDenied(name)
+}
+
+// envNameDenied reports whether name may never be interpolated or named as a
+// credential source: a built-in infra secret, or a principal's token_env.
+func envNameDenied(name string) bool {
+	return expandDenyNames[name] || principalBearerEnvs.has(name)
+}
+
+// principalBearerEnvs holds the token_env of every principal a config load in
+// this process has declared, so ${...} interpolation can never send a
+// principal's bearer to a definition's server (the same exfil the infra set
+// closes). It is its own set because expandDenyNames is what resolvePrincipals
+// checks token_env against: written there, a principal's own name read as an
+// infra secret on the next load, so every config reload with principals failed.
+//
+// Process-wide and add-only, not per-load, on purpose: its readers
+// (ExpandEnv at MCP dial time, the credential-name checks) run without a
+// config, and a load that is never served — a reload dry run, a refused reload,
+// `loomcycle validate` — must not be able to take a name off the set. Guarded,
+// because a reload resolves principals while those readers run.
+var principalBearerEnvs = &envNameSet{m: map[string]bool{}}
+
+type envNameSet struct {
+	mu sync.RWMutex
+	m  map[string]bool
+}
+
+func (s *envNameSet) add(name string) {
+	s.mu.Lock()
+	s.m[name] = true
+	s.mu.Unlock()
+}
+
+func (s *envNameSet) has(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.m[name]
 }
 
 // expandDenyNames is the authoritative set of loomcycle's OWN infrastructure /
@@ -6715,6 +6754,9 @@ func IsInfraSecretEnv(name string) bool {
 // — is enforced by TestExpandDenyNames_CoversInfraSecretReads, which scans this
 // package's own os.Getenv("LOOMCYCLE_…") secret-bearing reads and fails CI if a
 // new one isn't listed here (closing the "incomplete blocklist" gap S1 named).
+//
+// Never written after init: declared principals' bearers live in
+// principalBearerEnvs.
 var expandDenyNames = map[string]bool{
 	"PG_DSN":                               true,
 	"LOOMCYCLE_PG_DSN":                     true,
