@@ -4117,6 +4117,12 @@ type Env struct {
 	// review TTL) have their own bounds. Env: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
 	// (a Go duration).
 	InteractiveIdleTimeout time.Duration
+	// BatchJoinTimeout bounds how long a batch in mode "join" (POST
+	// /v1/runs:batch, MCP spawn_runs, gRPC SpawnRunBatch) waits for its
+	// children when the request gives no timeout_ms of its own. 0 = no server
+	// bound: the join then ends only when its children do or its caller
+	// leaves. Env: LOOMCYCLE_BATCH_JOIN_TIMEOUT (a Go duration).
+	BatchJoinTimeout time.Duration
 	// AgentChildMaxTimeoutMs is the ceiling on the timeout_ms an agent may give
 	// a child it starts with Agent spawn / parallel_spawn. 0 = no ceiling. It is
 	// a ceiling, not a default: a spawn without timeout_ms still waits for its
@@ -5966,6 +5972,17 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 			return nil, fmt.Errorf("LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT: %q is not a duration such as 1h or 30m (0 waits forever)", v)
 		}
 		cfg.Env.InteractiveIdleTimeout = d
+	}
+	// An hour, as for a parked interactive run: a join that has waited that
+	// long is waiting on a run nobody is driving to an end. Refused rather
+	// than defaulted when it does not parse, for the same reason as above.
+	cfg.Env.BatchJoinTimeout = time.Hour
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_BATCH_JOIN_TIMEOUT")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("LOOMCYCLE_BATCH_JOIN_TIMEOUT: %q is not a duration such as 1h or 30m (0 = no server bound)", v)
+		}
+		cfg.Env.BatchJoinTimeout = d
 	}
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {

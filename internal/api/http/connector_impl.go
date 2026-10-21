@@ -258,13 +258,22 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: mode %q not supported (want %q or %q)", mode, "join", "detach")
 	}
 
-	// Optional batch-level join deadline. A child still running when it fires
-	// has its RunOnce ctx cancelled (derived from this ctx) and is reported
-	// with a cancelled status in-envelope — the batch still returns the
-	// finished children's results.
-	if req.TimeoutMS > 0 {
+	// The join's deadline: the request's timeout_ms, else the server's
+	// LOOMCYCLE_BATCH_JOIN_TIMEOUT. Without one, a gRPC call with no deadline
+	// whose child is keyed to someone else's run that never ends waited for
+	// ever. A fresh child still running when it fires is this batch's own run:
+	// its RunOnce ctx (derived from this one) is cancelled, as timeout_ms has
+	// always meant. A child joined to an existing run by idempotency_key stops
+	// being waited on and nothing else — that run belongs to another request.
+	// Either way the batch still returns, the finished children as before.
+	// A detached batch does not wait, so it has no join to bound.
+	var bound time.Duration
+	if mode == "join" {
+		bound = joinBound(req.TimeoutMS, s.cfg())
+	}
+	if bound > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutMS)*time.Millisecond)
+		ctx, cancel = context.WithTimeoutCause(ctx, bound, errBatchJoinTimedOut)
 		defer cancel()
 	}
 
@@ -303,12 +312,59 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 					}
 				}
 			}
+			markJoinTimedOut(ctx, bound, &res)
 			results[i] = res
 		}(i)
 	}
 	wg.Wait()
 
 	return connector.BatchSpawnResult{Results: results, Spawned: n}, nil
+}
+
+// errBatchJoinTimedOut is the cause a batch join's own deadline carries, so a
+// child can tell it from its caller's deadline or departure.
+var errBatchJoinTimedOut = errors.New("batch join timed out")
+
+// joinBound is how long a batch in mode "join" waits for its children: the
+// request's timeout_ms when it gives one, else the server's default. 0 = no
+// bound of the server's; the caller's ctx still ends the join.
+func joinBound(timeoutMS int, cfg *config.Config) time.Duration {
+	if timeoutMS > 0 {
+		return time.Duration(timeoutMS) * time.Millisecond
+	}
+	if cfg == nil {
+		return 0
+	}
+	return cfg.Env.BatchJoinTimeout
+}
+
+// markJoinTimedOut says, in a child's own slot, that the join's deadline came
+// before the child's end. A run another request started keeps the status its
+// row has — running, as a rule — and its ids, so the caller can read or
+// stream it by run_id. This batch's own run was cut off by the deadline, so it
+// reads cancelled whatever the cut left behind: the loop takes a stream closed
+// by a cancelled ctx for a finished turn, and the run comes back "completed"
+// with whatever partial text it had. Only the join's own deadline is reported:
+// a caller that left is not there to read the envelope.
+//
+// It is called as the child's call returns, so a child marked here was still
+// going when the deadline fired, short of one that ended in the instant before.
+func markJoinTimedOut(joinCtx context.Context, bound time.Duration, res *connector.SpawnRunResult) {
+	if !errors.Is(context.Cause(joinCtx), errBatchJoinTimedOut) {
+		return
+	}
+	switch {
+	case res.Deduplicated:
+		if !store.IsTerminalRunStatus(store.RunStatus(res.Status)) {
+			res.Error = fmt.Sprintf("join timed out after %s; the run goes on (another request with this idempotency_key started it): read it by run_id", bound)
+		}
+	case res.RunID == "":
+		res.Status = string(store.RunCancelled)
+		res.Error = fmt.Sprintf("join timed out after %s before the run was admitted; it was not started", bound)
+	default:
+		res.Status = string(store.RunCancelled)
+		res.Error = fmt.Sprintf("join timed out after %s; the run was cancelled", bound)
+	}
 }
 
 // CancelRun looks up the run by agent_id and triggers cancellation
