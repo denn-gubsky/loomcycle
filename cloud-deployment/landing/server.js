@@ -201,7 +201,13 @@ app.get("/v1/config", (req, res) => proxyGet(req, res, "/v1/config"));
 // The static marketing site last (index at /, assets, range-served videos).
 app.use(express.static(WEB_ROOT, { index: "index.html", extensions: ["html"] }));
 
-app.listen(PORT, () => {
+// Express 5 hands a listen error (EADDRINUSE, EACCES) to this callback instead
+// of throwing it, so without the check the process logs "listening" and exits 0.
+app.listen(PORT, (err) => {
+  if (err) {
+    console.error(`FATAL: cannot listen on :${PORT}: ${err.message}`);
+    process.exit(1);
+  }
   console.log(`landing listening on :${PORT} → runtime ${RUNTIME_URL}` +
     (DEV_ALLOW_UNVERIFIED ? " [DEV: Access verification DISABLED]" : ` [CF Access aud=${ACCESS_AUD ? "set" : "unset"}]`));
 });

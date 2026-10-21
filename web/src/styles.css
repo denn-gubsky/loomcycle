@@ -858,6 +858,12 @@ textarea::placeholder {
   border-bottom: 1px solid var(--border);
   font-size: var(--lc-text-sm);
 }
+.open-mode-banner {
+  padding: 8px 16px;
+  background: rgba(255, 93, 104, 0.12);
+  border-bottom: 1px solid var(--failed);
+  font-size: var(--lc-text-sm);
+}
 .no-trace-transcript {
   margin: 12px 0;
   padding: 10px 12px;

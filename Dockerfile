@@ -15,9 +15,13 @@
 # Run with the config auto-discovery from v0.11.1:
 #   docker run --rm -v ~/.config/loomcycle:/home/nonroot/.config/loomcycle \
 #     -p 8787:8787 \
+#     -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
 #     -e LOOMCYCLE_AUTH_TOKEN=... \
 #     -e ANTHROPIC_API_KEY=... \
 #     loomcycle:dev
+#
+# LOOMCYCLE_AUTH_TOKEN is required here: with no auth configured the server
+# refuses to listen on 0.0.0.0 (open mode), unless LOOMCYCLE_ALLOW_OPEN_MODE=1.
 #
 # First-run flow (write the default config into the mount):
 #   docker run --rm -v ~/.config/loomcycle:/home/nonroot/.config/loomcycle \

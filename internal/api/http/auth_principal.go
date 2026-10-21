@@ -267,6 +267,12 @@ func (s *Server) AuthConfigured(ctx context.Context) bool {
 	return s.authConfigured(ctx)
 }
 
+// AuthConfiguredErr is the same decision with the store error returned rather
+// than read as "configured", for the boot check, which must not guess.
+func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
+	return s.authConfiguredErr(ctx)
+}
+
 // extractBearer returns the raw token (sans "Bearer ") from the
 // Authorization header, or the Web-UI session cookie value as a
 // fallback. A present-but-malformed Authorization header is a miss.
@@ -284,7 +290,12 @@ func extractBearer(r *http.Request) (string, bool) {
 	// WebSocket clients (browsers can't set an Authorization header on a
 	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
 	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
-	// the /v1/client-tools handler; this entry is never echoed back.
+	// the /v1/client-tools handler; this entry is never echoed back. Read only on
+	// a WebSocket upgrade to that route (RFC ES #5): elsewhere the header would be
+	// a second credential channel that proxies and logs do not treat as one.
+	if !isClientToolsUpgrade(r) {
+		return "", false
+	}
 	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {
 		for _, p := range strings.Split(protos, ",") {
 			if tok, ok := strings.CutPrefix(strings.TrimSpace(p), "bearer."); ok && tok != "" {
