@@ -92,7 +92,7 @@ jobs:
     # the FULL-build gate — a patch tag skips the sandbox images.
     if: vars.DOCKER_PUBLISH_ENABLED == 'true' && needs.classify.outputs.full == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve the version tag
         id: ver
