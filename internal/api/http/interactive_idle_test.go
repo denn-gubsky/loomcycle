@@ -3,12 +3,16 @@ package http
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // A top-level interactive run parked for its operator longer than the idle
@@ -103,5 +107,72 @@ func TestResume_ARestoredParkedRunEndsAfterItsIdleTimeout(t *testing.T) {
 	}
 	if n := len(prov.requests()); n != 0 {
 		t.Errorf("the provider was called %d time(s) for a run that never had a turn to answer", n)
+	}
+}
+
+// slowIdleFinishStore holds the write that finishes a run ended for being
+// idle until released: the run has closed its input and is finishing, but its
+// row is still running and it still holds what it holds.
+type slowIdleFinishStore struct {
+	store.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *slowIdleFinishStore) FinishRun(ctx context.Context, runID string, status store.RunStatus, stopReason string, usage store.Usage, errMsg string) error {
+	if stopReason == loop.StopReasonIdleTimeout {
+		close(s.entered)
+		<-s.release
+	}
+	return s.Store.FinishRun(ctx, runID, status, stopReason, usage, errMsg)
+}
+
+// A message that just missed a run's idle end is refused (404), and the
+// client — a bridge does this at once — continues the session. The run is
+// still finishing then: its row reads running, and a continuation run still
+// holds its session's lock. The continuation waits out that finish rather
+// than being refused session_busy.
+func TestContinuation_RightAfterAnIdleEndWaitsForTheFinishingRun(t *testing.T) {
+	for _, kind := range []string{"fresh run", "continuation"} {
+		t.Run(kind, func(t *testing.T) {
+			g := newGoldenServer(t, goldenOpts{})
+			slow := &slowIdleFinishStore{Store: g.st, entered: make(chan struct{}), release: make(chan struct{})}
+			srv := New(g.srv.cfg(), &stubResolver{p: g.prov}, []tools.Tool{}, concurrency.New(4, 8, 0), slow)
+			srv.SetSteerRegistry(steer.NewRegistry(0))
+			ts := httptest.NewServer(srv.Mux())
+			t.Cleanup(ts.Close)
+			g = &goldenServer{t: t, srv: srv, ts: ts, st: slow, gate: g.gate, prov: g.prov}
+			g.srv.cfg().Env.InteractiveIdleTimeout = 200 * time.Millisecond
+
+			var r *goldenResp
+			var sid string
+			if kind == "fresh run" {
+				r = g.post("/v1/runs", goldenRunBody("term", "first turn", `"interactive":true`))
+				_, _, sid = r.ids(t)
+			} else {
+				sid = g.completedSession("term")
+				r = g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("first turn", `"interactive":true`))
+			}
+			_, runID, _ := r.ids(t)
+			r.until(t, "awaiting_input", 1)
+			select {
+			case <-slow.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the run did not end on its idle timeout")
+			}
+
+			late := g.post("/v1/runs/"+runID+"/input", `{"text":"are you there?"}`)
+			late.drain(t)
+			if late.status != http.StatusNotFound {
+				t.Fatalf("input to the finishing run: %d %s, want 404", late.status, late.body)
+			}
+			time.AfterFunc(300*time.Millisecond, func() { close(slow.release) })
+			next := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("are you there?", ""))
+			next.drain(t)
+			if next.status != http.StatusOK {
+				t.Errorf("the continuation right after the idle end: %d %s, want it to wait and run", next.status, next.body)
+			}
+			r.drain(t)
+		})
 	}
 }

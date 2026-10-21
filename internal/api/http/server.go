@@ -3618,7 +3618,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 	// Known to this replica as one of its session's runs until it has ended
 	// and let the session go: a continuation that finds the session busy
-	// waits out its end only while it is being cancelled (takeSession).
+	// waits out its end only while it is being cancelled or finishing with
+	// its input closed (takeSession).
 	untrackRun := s.sessionRuns.track(sessionID, agentID, runID)
 	if sessHold != nil {
 		sessHold.onRelease = untrackRun // after the session is let go
@@ -3706,6 +3707,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(runParent, runID, agentID, sessionID, effectiveUserID, emit)
+	closeSteer = s.sessionRuns.finishingWhenClosed(sessionID, runID, closeSteer)
 	defer func() {
 		if !handOff {
 			deregSteer()

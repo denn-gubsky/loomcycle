@@ -425,6 +425,9 @@ func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, l
 type sessionRunSet struct {
 	mu   sync.Mutex
 	runs map[string]map[string]string // session id -> run id -> agent id
+	// finishing: the tracked runs that have closed their input (see
+	// finishingWhenClosed), by run id.
+	finishing map[string]bool
 }
 
 // track adds a run of sessionID; the returned func removes it. A run with no
@@ -451,14 +454,42 @@ func (rs *sessionRunSet) track(sessionID, agentID, runID string) (untrack func()
 			if len(rs.runs[sessionID]) == 0 {
 				delete(rs.runs, sessionID)
 			}
+			delete(rs.finishing, runID)
 		})
 	}
 }
 
-// ending reports whether the session's runs on this replica are all being
-// cancelled — each tracked, none still in the cancel registry (a cancel takes
-// a run out of it at once, and the run lets its session go when it has
-// finished) — and there is at least one.
+// finishingWhenClosed wraps a run's CloseSteerIfEmpty so that once it has
+// closed the run's input the run counts as finishing. A run closes its input
+// only at its end (an interactive run's idle timeout, a run settling its last
+// message), so from then on a message to it is refused — and a client told so
+// continues the session at once, while the run is still writing its end and
+// still holds the session. ending lets that continuation wait.
+func (rs *sessionRunSet) finishingWhenClosed(sessionID, runID string, closeSteer func() bool) func() bool {
+	if closeSteer == nil || sessionID == "" {
+		return closeSteer
+	}
+	return func() bool {
+		if !closeSteer() {
+			return false
+		}
+		rs.mu.Lock()
+		defer rs.mu.Unlock()
+		if _, tracked := rs.runs[sessionID][runID]; tracked {
+			if rs.finishing == nil {
+				rs.finishing = map[string]bool{}
+			}
+			rs.finishing[runID] = true
+		}
+		return true
+	}
+}
+
+// ending reports whether the session's runs on this replica are all ending —
+// each tracked, and each either being cancelled (out of the cancel registry:
+// a cancel takes a run out of it at once) or finishing with its input closed
+// (finishingWhenClosed); either lets its session go once it has finished —
+// and there is at least one.
 func (rs *sessionRunSet) ending(sessionID string, reg *cancel.Registry) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -467,6 +498,9 @@ func (rs *sessionRunSet) ending(sessionID string, reg *cancel.Registry) bool {
 		return false
 	}
 	for runID, agentID := range runs {
+		if rs.finishing[runID] {
+			continue
+		}
 		if e, ok := reg.Get(agentID); ok && e.RunID == runID {
 			return false
 		}
@@ -475,16 +509,17 @@ func (rs *sessionRunSet) ending(sessionID string, reg *cancel.Registry) bool {
 }
 
 // cancelledRunGrace is how long a continuation waits for a session whose run
-// on this replica is being cancelled. The bridges end a parked run and
-// continue the session at once; the cancelled run lets the session go only
-// once it has finished, a moment later.
+// on this replica is being cancelled, or is finishing with its input closed.
+// The bridges end a parked run (or are told it has ended) and continue the
+// session at once; the run lets the session go only once it has finished, a
+// moment later.
 const cancelledRunGrace = 5 * time.Second
 
 // takeSession takes a continuation's session: its lock (holdSession) and,
 // across replicas, the session free of another live run (sessionHasLiveRun).
-// A session busy only because its run on this replica is being cancelled is
-// waited for, up to cancelledRunGrace; any other busy session is refused at
-// once. except is a run of the session not to count (a restarted queued
+// A session busy only because its run on this replica is ending (cancelled,
+// or finishing with its input closed) is waited for, up to
+// cancelledRunGrace; any other busy session is refused at once. except is a run of the session not to count (a restarted queued
 // run's own).
 func (s *Server) takeSession(ctx context.Context, sessionID string, acrossReplicas bool, except string) (*sessionHold, error) {
 	busy := fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, sessionID)
