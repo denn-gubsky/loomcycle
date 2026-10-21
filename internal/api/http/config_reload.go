@@ -120,6 +120,11 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 
+	// Validation too, so a dry run reports it: no reload turns auth off.
+	if err := s.refuseReloadIntoOpenMode(ctx, candidate); err != nil {
+		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
+	}
+
 	// The candidate was loaded from disk; the runtime-wired fields of the
 	// running config carry over (an auth provider rebuilt below must still
 	// hand its secrets to the redactor).

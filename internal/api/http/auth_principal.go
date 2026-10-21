@@ -37,14 +37,15 @@ func isNotFound(err error) bool {
 // authMiddleware authenticates the request, stamps the resolved
 // principal into ctx, and enforces the route's required scope.
 //
-//   - open mode (no auth configured at all) → pass through (dev only)
+//   - open mode (no legacy secret, no config principal, no admin token) →
+//     pass through (dev only)
 //   - unknown/expired/invalid bearer → 401 opaque (no oracle)
 //   - valid bearer but insufficient scope → 403 insufficient_scope JSON naming
 //     the scope + the RFC 6750 hint
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.authConfigured(r.Context()) {
-			// No shared secret AND no tokens → open mode (dev). Startup
+			// No shared secret, principal or admin token → open mode (dev). Startup
 			// logged a warning. No principal is stamped; run-creation
 			// sites fall back to the wire user_id/tenant_id unchanged.
 			next.ServeHTTP(w, r)
@@ -261,8 +262,9 @@ func (s *Server) ResolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 }
 
 // AuthConfigured is the exported wrapper for the gRPC adapter's and the A2A
-// frontier's open-mode decision (RFC L) — true when a legacy secret is set or
-// an admin token exists, and true when the store cannot say (fails closed).
+// frontier's open-mode decision (RFC L) — true when a legacy secret is set,
+// config principals are declared or an admin token exists, and true when the
+// store cannot say (fails closed).
 func (s *Server) AuthConfigured(ctx context.Context) bool {
 	return s.authConfigured(ctx)
 }
@@ -307,25 +309,16 @@ func extractBearer(r *http.Request) (string, bool) {
 }
 
 // authConfiguredErr reports whether authentication is active: true when a
-// legacy shared secret is set, or any admin-scoped OperatorTokenDef exists.
-// When neither holds, the server is in dev open-mode. The error is set when
-// the store could not be asked, and the answer is then unknown.
+// legacy shared secret is set, the config declares any principal (RFC ES F2),
+// or any admin-scoped OperatorTokenDef exists. When none holds, the server is
+// in dev open-mode. The error is set when the store could not be asked, and
+// the answer is then unknown.
 //
 // (A deployment with ONLY narrow tokens and no legacy secret + no admin
 // token can't be bootstrapped — the admin endpoints that create tokens
 // require auth — so the admin-count check is sufficient in practice.)
 func (s *Server) authConfiguredErr(ctx context.Context) (bool, error) {
-	if s.cfg().Env.AuthToken != "" {
-		return true, nil
-	}
-	if s.store == nil {
-		return false, nil
-	}
-	n, err := s.store.OperatorTokenDefCountActiveAdmin(ctx)
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return s.authConfiguredUnder(ctx, s.cfg())
 }
 
 // authConfigured is the request-path form of authConfiguredErr, and it fails
