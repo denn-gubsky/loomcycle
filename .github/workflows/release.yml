@@ -128,7 +128,7 @@ jobs:
           # pre-create step below, which force-refetches and verifies.
           fetch-tags: true
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -318,7 +318,7 @@ jobs:
       # goreleaser docker stage. A patch's only artifact IS the image, so with
       # docker publishing off there is nothing more to do (the release page
       # above is still created).
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         with:
           go-version: "1.26"
