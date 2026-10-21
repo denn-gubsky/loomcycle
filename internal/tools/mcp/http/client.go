@@ -49,10 +49,11 @@ type Config struct {
 	HTTPClient *http.Client
 	// BlockPrivateIPs, when true, makes the default client refuse to dial
 	// private / loopback / metadata IPs at connect time (DNS-rebinding
-	// protection). DEFAULT false: MCP servers are commonly operator-run on
-	// localhost / a private network — including loomcycle's own jobs-search-agent
-	// /api/mcp consumer — so blocking by default would break them. Operators opt
-	// in via LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. Ignored when HTTPClient is set.
+	// protection). The caller decides: the MCP pool sets it for every server a
+	// tenant registered at runtime, and for the operator's own servers (yaml,
+	// or an operator-authored version, commonly on localhost or a private
+	// network) only when LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=0. Ignored when
+	// HTTPClient is set.
 	BlockPrivateIPs bool
 	// PrivateHostAllowlist exempts specific hosts from BlockPrivateIPs (the
 	// operator's vouch list, reusing LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST).
