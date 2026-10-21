@@ -132,6 +132,10 @@ type Manager struct {
 	// resume nor an operator's resume lifts it.
 	shutdown atomic.Bool
 
+	// replicaID is this replica's id ("" in single-replica mode), set by
+	// SetReplicaID. Guarded by mu.
+	replicaID string
+
 	// toolsInterrupted is set at a shutdown pause's interrupt point. A run
 	// registering after it starts with its tool calls interrupted.
 	toolsInterrupted atomic.Bool
@@ -882,6 +886,7 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	since, until, rec, ids := m.pausedAt, time.Now(), m.recorder, m.recorded
 	m.pausedAt, m.recorded = time.Time{}, nil
 	bp := m.bp
+	replicaID := m.replicaID
 	m.mu.Unlock()
 	rss := m.rss.Load()
 	m.invalidateStateCache()
@@ -919,6 +924,14 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	resumed := 0
 	var warnings []string
 	for _, r := range paused {
+		// Only this replica's rows (RFC ES F1). ListPausedRuns is cluster-wide:
+		// another live replica's parked runs are flipped by their own gates as
+		// the resume reaches it, and a row a stopped replica parked has no loop
+		// anywhere — flipped to running it would never be resumed, so it stays
+		// paused for the resume pass.
+		if !m.HoldsRun(r.ID) && r.ReplicaID != replicaID {
+			continue
+		}
 		if err := m.store.SetRunPauseState(ctx, r.ID, store.PauseStateRunning); err != nil {
 			warnings = append(warnings, fmt.Sprintf("set %s pause_state=running: %v", r.ID, err))
 			continue
@@ -953,4 +966,12 @@ func (m *Manager) Snapshot(ctx context.Context) (StateSnapshot, error) {
 		return StateSnapshot{State: state.String()}, err
 	}
 	return StateSnapshot{State: state.String(), PausedRunsCount: len(paused)}, nil
+}
+
+// SetReplicaID names the replica this manager runs on (cluster mode). Resume
+// flips only the paused rows that carry it, or that this process holds.
+func (m *Manager) SetReplicaID(id string) {
+	m.mu.Lock()
+	m.replicaID = id
+	m.mu.Unlock()
 }

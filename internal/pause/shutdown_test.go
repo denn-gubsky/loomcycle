@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
 
 // parkWhenPaused simulates a run's pause gate: once a pause is declared it
@@ -209,5 +210,65 @@ func TestManager_ToolInterruptUnregisteredIsNil(t *testing.T) {
 	var nilM *Manager
 	if nilM.ToolInterrupt("x") != nil {
 		t.Error("ToolInterrupt on a nil manager is not nil")
+	}
+}
+
+// replicaStampedStore reports each paused row with the replica stamped on it
+// in owners: the sqlite store has no replica column (cluster mode requires
+// Postgres), so the test supplies what the Postgres store reads.
+type replicaStampedStore struct {
+	store.Store
+	owners map[string]string // run id -> replica id
+}
+
+func (s replicaStampedStore) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
+	runs, err := s.Store.ListPausedRuns(ctx)
+	for i := range runs {
+		runs[i].ReplicaID = s.owners[runs[i].ID]
+	}
+	return runs, err
+}
+
+// An operator's resume wakes this replica's runs. A paused row another replica
+// parked — at its shutdown, with nobody holding it now — is not this
+// replica's to flip: flipped to running with no loop behind it, it would never
+// be resumed. It stays paused for the resume pass.
+func TestManager_ResumeFlipsOnlyThisReplicasPausedRows(t *testing.T) {
+	base, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	ctx := context.Background()
+	sess, _ := base.CreateSession(ctx, "t", "a", "u")
+	own, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "own"})
+	held, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "held"})
+	other, _ := base.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "other"})
+	for _, r := range []store.Run{own, held, other} {
+		_ = base.SetRunPauseState(ctx, r.ID, store.PauseStatePaused)
+	}
+	s := replicaStampedStore{Store: base, owners: map[string]string{
+		own.ID: "replica-a", held.ID: "replica-b", other.ID: "replica-b",
+	}}
+	m := NewManager(s, 100*time.Millisecond)
+	m.SetReplicaID("replica-a")
+	// held's loop lives here: a run resumed onto this replica, its row not
+	// yet re-stamped.
+	m.RegisterRun(held.ID)
+	defer m.DeregisterRun(held.ID)
+	_, _ = m.Pause(ctx, 50*time.Millisecond)
+
+	res, err := m.Resume(ctx)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if res.ResumedRunsCount != 2 {
+		t.Errorf("ResumedRunsCount = %d, want 2", res.ResumedRunsCount)
+	}
+	for id, want := range map[string]string{"own": store.PauseStateRunning, "held": store.PauseStateRunning, "other": store.PauseStatePaused} {
+		got, _ := base.GetRunByAgentID(ctx, id)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
+		}
 	}
 }
