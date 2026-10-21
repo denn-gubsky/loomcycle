@@ -18,9 +18,9 @@ const openModeWarnInterval = 10 * time.Minute
 //
 // Open mode — no legacy LOOMCYCLE_AUTH_TOKEN, no config `principals:` and no
 // admin operator token — serves every route, token minting included, to
-// whoever reaches the port. That
-// is a convenience on 127.0.0.1 and an open door on 0.0.0.0, so the second
-// needs the operator to say so with LOOMCYCLE_ALLOW_OPEN_MODE=1.
+// whoever reaches the port. That is a convenience on 127.0.0.1 and an open door
+// on 0.0.0.0, so the second needs the operator to say so with
+// LOOMCYCLE_ALLOW_OPEN_MODE=1.
 //
 // authConfigured and authErr must be the server's own predicate, evaluated
 // after the store opens: an admin token in the store turns auth on with no

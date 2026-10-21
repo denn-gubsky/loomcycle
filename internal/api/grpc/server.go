@@ -143,9 +143,9 @@ type Config struct {
 	// AuthToken compare with no principal.
 	PrincipalResolver func(context.Context, string) (auth.Principal, bool)
 	// AuthConfigured reports whether auth is active (legacy secret set,
-	// config principals declared, or an admin token exists). Wired alongside PrincipalResolver so gRPC
-	// shares HTTP's open-mode decision: when it returns false the
-	// interceptors pass through (dev). Nil → fall back to AuthToken != "".
+	// config principals declared, or an admin token exists). Wired alongside
+	// PrincipalResolver so gRPC shares HTTP's open-mode decision: when it
+	// returns false the interceptors pass through (dev). Nil → fall back to AuthToken != "".
 	AuthConfigured func(context.Context) bool
 	BuildCommit    string
 	BuildTime      string
