@@ -1,7 +1,8 @@
 # Dependency version updates (RFC ES #11, P5c).
 #
-# Version updates run weekly, with minor and patch updates grouped into one PR
-# per ecosystem and directory; majors arrive one PR each. Security updates are
+# Version updates run weekly. npm is one entry over every package directory,
+# grouped by dependency name (one PR per dependency across all packages); the
+# other ecosystems group minor and patch updates per entry, majors one PR each. Security updates are
 # not configured here: they are a repository setting (Settings → Code security
 # → Dependabot security updates), open as soon as an alert fires, and are never
 # folded into these groups (`applies-to: version-updates`).
@@ -53,186 +54,52 @@ updates:
         applies-to: version-updates
         update-types: [minor, patch]
 
-  # --- npm: one entry per tracked package-lock.json ------------------------
+  # --- npm: every tracked package-lock.json, one entry --------------------
+  # One entry over all 13 directories (each keeps its own lockfile; there is no
+  # workspace), grouped by dependency name: a bump of one package arrives as ONE
+  # pull request touching every directory that uses it, not one per directory.
+  # Majors of the dev toolchain are ignored here and taken by hand: they need
+  # code changes across packages and rarely apply as a bare version bump.
+  # @loomcycle/* is this repo's own (see the header).
   - package-ecosystem: npm
-    directory: /adapters/ts
+    directories:
+      - /adapters/ts
+      - /web
+      - /packages/bridge-core
+      - /packages/bridge-discord
+      - /packages/bridge-slack
+      - /packages/bridge-teams
+      - /packages/bridge-telegram
+      - /packages/def-fields
+      - /packages/explorer
+      - /packages/library
+      - /packages/loomboard
+      - /packages/memory-view
+      - /cloud-deployment/landing
     schedule:
       interval: weekly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
     ignore:
       - dependency-name: "@loomcycle/*"
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitest/*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@vitejs/*"
+        update-types: ["version-update:semver-major"]
     groups:
-      npm-minor-patch:
+      npm-by-dependency:
         applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /web
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/bridge-core
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/bridge-discord
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/bridge-slack
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/bridge-teams
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/bridge-telegram
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/def-fields
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/explorer
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/library
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/loomboard
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /packages/memory-view
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    ignore:
-      - dependency-name: "@loomcycle/*"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
-
-  - package-ecosystem: npm
-    directory: /cloud-deployment/landing
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "chore(deps)"
-    groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types: [minor, patch]
+        group-by: dependency-name
+        patterns: ["*"]
 
   # --- Python adapter (pyproject.toml) -------------------------------------
   - package-ecosystem: pip
