@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -413,15 +413,15 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	// Models that reason adaptively reject non-default sampling outright,
 	// thinking or not, so there the knobs never reach the wire.
 	if rules.adaptiveOnly && (w.Temperature != nil || w.TopP != nil || w.TopK != nil) {
-		log.Printf("anthropic: dropped temperature/top_p/top_k — model %q rejects non-default sampling; "+
-			"tune it with effort instead", req.Model)
+		slog.Warn("anthropic: dropped temperature/top_p/top_k — the model rejects non-default sampling; "+
+			"tune it with effort instead", "model", req.Model)
 		w.Temperature = nil
 		w.TopP = nil
 		w.TopK = nil
 	}
 	if w.Thinking != nil && (w.Temperature != nil || w.TopP != nil) {
-		log.Printf("anthropic: dropped temperature/top_p — incompatible with extended thinking (effort) on model %q; "+
-			"set effort OR temperature, not both", req.Model)
+		slog.Warn("anthropic: dropped temperature/top_p — incompatible with extended thinking (effort); "+
+			"set effort OR temperature, not both", "model", req.Model)
 		w.Temperature = nil
 		w.TopP = nil
 	}
@@ -452,8 +452,8 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	// Only MANUAL (budgeted) thinking conflicts: adaptive thinking accepts a
 	// forced choice on the Claude API.
 	if w.Thinking != nil && w.Thinking.Type == "enabled" && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
-		log.Printf("anthropic: dropped tool_choice %q — incompatible with extended thinking (effort) on model %q; "+
-			"the model is asked for the tool in the prompt instead", w.ToolChoice.Type, req.Model)
+		slog.Warn("anthropic: dropped tool_choice — incompatible with extended thinking (effort); "+
+			"the model is asked for the tool in the prompt instead", "tool_choice", w.ToolChoice.Type, "model", req.Model)
 		w.ToolChoice = nil
 	}
 	// Some models refuse a forced choice under any configuration. Same
@@ -461,8 +461,8 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 	// that forces a tool (the stateful loop's emit_state) keeps working on
 	// them instead of failing every call with a 400.
 	if rules.noForcedChoice && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
-		log.Printf("anthropic: dropped tool_choice %q — model %q does not accept a forced tool choice; "+
-			"the model is asked for the tool in the prompt instead", w.ToolChoice.Type, req.Model)
+		slog.Warn("anthropic: dropped tool_choice — the model does not accept a forced tool choice; "+
+			"the model is asked for the tool in the prompt instead", "tool_choice", w.ToolChoice.Type, "model", req.Model)
 		w.ToolChoice = nil
 	}
 

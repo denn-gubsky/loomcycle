@@ -1,0 +1,45 @@
+== unknown session: POST /v1/sessions/<id:1>/messages
+status: 404
+content-type: text/plain; charset=utf-8
+body: session not found: <id:1>
+== bad json: POST /v1/sessions/<id:2>/messages
+status: 400
+content-type: text/plain; charset=utf-8
+body: bad json: unexpected EOF
+== bad block type: POST /v1/sessions/<id:2>/messages
+status: 400
+content-type: text/plain; charset=utf-8
+body: segments[0].content[0]: unknown type "trusted-txt" (allowed: trusted-text, untrusted-block, image)
+== bad agent_id: POST /v1/sessions/<id:2>/messages
+status: 400
+content-type: text/plain; charset=utf-8
+body: agent_id must match [A-Za-z0-9_-]{1,128}
+== bad user_tier: POST /v1/sessions/<id:2>/messages
+status: 400
+content-type: text/plain; charset=utf-8
+body: unknown user_tier "gold"
+== bad user_bearer: POST /v1/sessions/<id:2>/messages
+status: 400
+content-type: text/plain; charset=utf-8
+body: user_bearer must match [A-Za-z0-9._\-+/=]{16,512}
+== bad tool_choice: POST /v1/sessions/<id:2>/messages
+status: 400
+content-type: text/plain; charset=utf-8
+body: tool_choice.mode "sometimes" is not one of auto, none, required, tool
+== empty segments: POST /v1/sessions/<id:2>/messages
+status: 200
+content-type: text/event-stream
+event: session {"text":"<id:2>","type":"session"}
+event: agent {"agent_id":"<id:3>","parent_agent_id":null,"parent_context":null,"run_id":"<id:4>","session_id":"<id:2>"}
+event: started {"type":"started"}
+event: text {"text":"hello","type":"text"}
+event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}
+stored row: {"agent":"plain","agent_id":"<id:3>","credential_source":"operator","id":"<id:4>","input_tokens":3,"output_tokens":2,"pause_state":"running","provider":"stub","result":{"final_text":"hello"},"run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:2>","status":"completed","stop_reason":"end_turn"}
+stored event: user_input []
+stored event: system_prompt {"system_prompt":"be brief"}
+stored event: started {"type":"started"}
+stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"first turn","type":"text"}],"system":[{"text":"be brief","type":"text"}]},"type":"prompt_snapshot"}
+stored event: text {"text":"hello","type":"text"}
+stored event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+stored event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}

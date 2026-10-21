@@ -1,7 +1,7 @@
 package sqlmem
 
 import (
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -49,7 +49,7 @@ func (m *Manager) touch(key ScopeKey) {
 	m.lastTouch[id] = now
 	m.touchMu.Unlock()
 	if err := m.backend.touchScope(key); err != nil {
-		log.Printf("sqlmem: touch durable scope: %v", err)
+		slog.Warn("sqlmem: touch durable scope failed", "err", err)
 	}
 }
 
@@ -102,20 +102,20 @@ func (m *Manager) runGC(ttl time.Duration) {
 	if m.cfg.ScopeTTLMS > 0 {
 		n, err := m.backend.sweepStale(time.Now().Add(-ttl))
 		if err != nil {
-			log.Printf("sqlmem: durable-scope TTL GC sweep: %v", err)
+			slog.Warn("sqlmem: durable-scope TTL GC sweep failed", "err", err)
 		}
 		if n > 0 {
-			log.Printf("sqlmem: durable-scope TTL GC dropped %d idle scope(s)", n)
+			slog.Info("sqlmem: durable-scope TTL GC dropped idle scopes", "scopes", n)
 		}
 		dropped += n
 	}
 	if m.cfg.TotalMaxBytes > 0 {
 		n, err := m.backend.sweepBudget(m.cfg.TotalMaxBytes)
 		if err != nil {
-			log.Printf("sqlmem: durable-scope size GC sweep: %v", err)
+			slog.Warn("sqlmem: durable-scope size GC sweep failed", "err", err)
 		}
 		if n > 0 {
-			log.Printf("sqlmem: durable-scope size GC dropped %d scope(s) over the %d-byte budget", n, m.cfg.TotalMaxBytes)
+			slog.Info("sqlmem: durable-scope size GC dropped scopes over the byte budget", "scopes", n, "budget_bytes", m.cfg.TotalMaxBytes)
 		}
 		dropped += n
 	}

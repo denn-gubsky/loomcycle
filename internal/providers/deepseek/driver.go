@@ -26,7 +26,7 @@ package deepseek
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -216,8 +216,8 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 	// and asked for in the prompt, and EnforcesToolChoice tells the loop the
 	// choice is not held here so a failure says so.
 	if req.ToolChoice.Forces() && !d.EnforcesToolChoice(req.Model, req.Effort, req.ToolChoice) {
-		log.Printf("deepseek: dropped tool_choice %q — model %q runs in thinking mode, which refuses a forced tool choice; "+
-			"the model is asked for the tool in the prompt instead", req.ToolChoice.Mode, req.Model)
+		slog.WarnContext(ctx, "deepseek: dropped tool_choice — the model runs in thinking mode, which refuses a forced tool choice; "+
+			"the model is asked for the tool in the prompt instead", "tool_choice", req.ToolChoice.Mode, "model", req.Model)
 		req.ToolChoice = providers.ToolChoice{}
 	}
 	return d.inner.Call(lcotel.WithProviderOverride(ctx, d.ID()), req)
