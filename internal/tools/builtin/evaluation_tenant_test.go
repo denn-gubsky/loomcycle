@@ -94,7 +94,7 @@ func newEvalTenantFixture(t *testing.T) *evalTenantFixture {
 // scopes, with an optional principal on ctx.
 func callerCtx(tenant, agentID string, p *auth.Principal, scopes ...string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: agentID, UserID: "u", TenantID: tenant})
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Evaluation = tools.EvaluationPolicyValue{Scopes: scopes} })
 	if p != nil {
 		ctx = auth.WithPrincipal(ctx, *p)
 	}
@@ -292,7 +292,7 @@ func (f *evalTenantFixture) addUserRun(t *testing.T, user, agentID, rationale st
 // its principal.
 func isolatedCtx(agentID string, p auth.Principal, scopes ...string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: agentID, UserID: "bob", TenantID: "acme", Isolated: true})
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Evaluation = tools.EvaluationPolicyValue{Scopes: scopes} })
 	return auth.WithPrincipal(ctx, p)
 }
 

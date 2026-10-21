@@ -295,7 +295,7 @@ func (b *boot) buildTools() {
 
 	// RFC EP — the Crypto tool: encrypt / sign / MAC / TOTP with keys the
 	// runtime holds. Engine late-bound with CredentialDef's; an agent uses keys
-	// only from the scopes its crypto_scopes grants (tools.CryptoPolicy).
+	// only from the scopes its crypto_scopes grants (RunPolicy.Crypto).
 	cryptoTool := &builtin.Crypto{
 		MaxBytes:     cfg.Env.CryptoMaxBytes,
 		MaxOpsPerRun: cfg.Env.CryptoMaxOpsPerRun,

@@ -157,7 +157,7 @@ func (s *SkillDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
-	policy := tools.SkillPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Skill
 
 	switch in.Op {
 	case "create":

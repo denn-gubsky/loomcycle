@@ -37,7 +37,7 @@ func skillDefFixture(t *testing.T) (*SkillDef, context.Context, func()) {
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "WebFetch", "SkillDef"} })
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true}) // empty = allow all
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} }) // empty = allow all
 	return tool, ctx, func() { _ = s.Close() }
 }
 
@@ -150,7 +150,9 @@ func TestSkillDefTool_WhitelistGrant(t *testing.T) {
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "WebFetch"} })
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"karpathy-guidelines"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"karpathy-guidelines"}}
+	})
 
 	// In-allowlist: fork the whitelisted skill.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"karpathy-guidelines","overlay":{"body":"forked"}}`))
@@ -175,7 +177,9 @@ func TestSkillDefTool_WhitelistGlobGrant(t *testing.T) {
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}}
+	})
 
 	// Matching group → create allowed.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"doc/summarizer","overlay":{"body":"x"}}`))
@@ -217,7 +221,7 @@ func TestSkillDefTool_DenyAllRefusesCreate(t *testing.T) {
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"any-skill","overlay":{"body":"x"}}`))
 	if !res.IsError {

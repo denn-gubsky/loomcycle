@@ -32,7 +32,7 @@ import (
 // audit record.
 //
 // A key comes from one of three places, and every one is gated by the run's
-// crypto_scopes (tools.CryptoPolicy):
+// crypto_scopes (RunPolicy.Crypto):
 //   - a crypto-key credential, named by string: versioned, its type sealed in;
 //   - an ordinary stored credential used as key material ({"cred": name});
 //   - a credential the run's caller passed on the run ({"run": name}).
@@ -631,7 +631,7 @@ func pinScopes(ref keyRef, scopes credential.Scopes) (credential.Scopes, bool) {
 
 // resolveKey opens the key for this run, within its crypto scopes.
 func (c *Crypto) resolveKey(ctx context.Context, ref keyRef, env *cryptoops.Envelope) (*cryptoKey, tools.Result, bool) {
-	policy := tools.CryptoPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Crypto
 	ident := tools.RunIdentity(ctx)
 	scopes := credential.Scopes{
 		Agent:  policy.Allows("agent"),

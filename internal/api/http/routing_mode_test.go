@@ -98,8 +98,8 @@ func TestResolveAgent_TierAgentForkedToPinRunsOnThePin(t *testing.T) {
 	s := pinTierServer(t)
 	tool := &builtin.AgentDef{Store: s.store, Cfg: s.cfg()}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"any"}})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"any"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 	for _, call := range []string{
 		`{"op":"create","name":"walker","overlay":{"tier":"middle","system_prompt":"walk"}}`,
 		`{"op":"fork","name":"walker","promote":true,"overlay":{"provider":"ollama-local","model":"qwen3:32b"}}`,

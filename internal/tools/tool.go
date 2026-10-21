@@ -1603,23 +1603,6 @@ func RunUntrusted(ctx context.Context) []UntrustedInput {
 type ctxKeyResolvedProvider struct{}
 type ctxKeyResolvedModel struct{}
 
-// WithOperatorAuthored records whether the agent this run resolved was written
-// by an OPERATOR rather than by an agent at runtime.
-//
-// Stamped from the RESOLVED definition at loop-ctx assembly, beside the other
-// per-agent policies, so a tool can ask without re-reading the definition
-// plane. Absent means false — a run whose ctx was never stamped has not proved
-// operator authorship, which is the safe direction.
-func WithOperatorAuthored(ctx context.Context, v bool) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.OperatorAuthored = v })
-}
-
-// OperatorAuthored reports whether this run's agent definition was
-// operator-authored. False for an unstamped ctx.
-func OperatorAuthored(ctx context.Context) bool {
-	return PolicyOf(ctx).OperatorAuthored
-}
-
 // WithResolvedProvider attaches the resolved provider id to ctx.
 func WithResolvedProvider(ctx context.Context, providerID string) context.Context {
 	if providerID == "" {
@@ -1893,18 +1876,6 @@ type AgentDefPolicyValue struct {
 	SelfName string
 }
 
-// WithAgentDefPolicy attaches the policy to ctx.
-func WithAgentDefPolicy(ctx context.Context, p AgentDefPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.AgentDef = p })
-}
-
-// AgentDefPolicy returns the policy from ctx. Zero value = no
-// access (default-deny — the tool refuses every mutation op until
-// scopes are explicitly granted via yaml).
-func AgentDefPolicy(ctx context.Context) AgentDefPolicyValue {
-	return PolicyOf(ctx).AgentDef
-}
-
 type ctxKeyScheduleDefPolicy struct{}
 
 // ScheduleDefPolicyValue is the per-agent ScheduleDef-tool access
@@ -2091,16 +2062,6 @@ func (p SkillPolicyValue) Effective() []string {
 	return p.Patterns
 }
 
-// WithSkillPolicy attaches the policy to ctx.
-func WithSkillPolicy(ctx context.Context, p SkillPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Skill = p })
-}
-
-// SkillPolicy returns the policy from ctx. Zero value (not Granted) = deny all.
-func SkillPolicy(ctx context.Context) SkillPolicyValue {
-	return PolicyOf(ctx).Skill
-}
-
 // VolumeDefPolicyValue is the per-agent VolumeDef-tool access policy.
 //
 //   - Scopes is the operator-yaml volume_def_scopes list. Closed set:
@@ -2118,17 +2079,6 @@ type VolumeDefPolicyValue struct {
 // config.AgentDef.EvaluationScopes docstring for the closed set.
 type EvaluationPolicyValue struct {
 	Scopes []string
-}
-
-// WithEvaluationPolicy attaches the policy to ctx.
-func WithEvaluationPolicy(ctx context.Context, p EvaluationPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Evaluation = p })
-}
-
-// EvaluationPolicy returns the policy from ctx. Zero value =
-// no access.
-func EvaluationPolicy(ctx context.Context) EvaluationPolicyValue {
-	return PolicyOf(ctx).Evaluation
 }
 
 // HistoryPolicyValue is the per-agent gate for the History tool (RFC BE).

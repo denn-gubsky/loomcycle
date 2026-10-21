@@ -136,7 +136,7 @@ func (s *SkillTool) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	if op == "" {
 		op = "invoke" // back-compat: {"name": ...} with no op invokes.
 	}
-	policy := tools.SkillPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Skill
 	switch op {
 	case "list":
 		return s.execList(ctx, policy, strings.TrimSpace(in.Pattern))

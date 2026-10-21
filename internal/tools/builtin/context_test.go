@@ -647,18 +647,24 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 			Subscribe: []string{"findings"},
 		}
 	})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"self"},
-		SelfName: "researcher",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"self"},
+			SelfName: "researcher",
+		}
 	})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{
-		Granted:  true,
-		Patterns: []string{"doc/*"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{
+			Granted:  true,
+			Patterns: []string{"doc/*"},
+		}
 	})
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
-		Scopes: []string{"submit_self", "read_any"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Evaluation = tools.EvaluationPolicyValue{
+			Scopes: []string{"submit_self", "read_any"},
+		}
 	})
-	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"user"}} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"permissions"}`))
 	if res.IsError {

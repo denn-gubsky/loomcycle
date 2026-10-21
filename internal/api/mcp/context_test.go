@@ -72,7 +72,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// AgentDefPolicy: empty Scopes ⇒ every mutation op fails.
-	ap := tools.AgentDefPolicy(ctx)
+	ap := tools.PolicyOf(ctx).AgentDef
 	if len(ap.Scopes) == 0 {
 		t.Errorf("AgentDefPolicy.Scopes empty; all AgentDef ops would fail")
 	}
@@ -81,7 +81,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// EvaluationPolicy: needs submit_any + read_any for full operator access.
-	ep := tools.EvaluationPolicy(ctx)
+	ep := tools.PolicyOf(ctx).Evaluation
 	wantEvalScopes := map[string]bool{"submit_any": false, "read_any": false}
 	for _, s := range ep.Scopes {
 		if _, ok := wantEvalScopes[s]; ok {
@@ -104,7 +104,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	// which is now an EMPTY pattern allowlist (empty = allow all). The old
 	// semantics were inverted — empty used to mean default-deny. Assert the
 	// stamped policy allows an arbitrary name (i.e. it is not a deny-all).
-	skp := tools.SkillPolicy(ctx)
+	skp := tools.PolicyOf(ctx).Skill
 	if skillmatch.DeniesAll(skp.Patterns) || !skillmatch.Allowed(skp.Patterns, "any-skill") {
 		t.Errorf("operator SkillPolicy must allow all skills; got patterns %v", skp.Patterns)
 	}
@@ -222,14 +222,14 @@ func TestMcpPrincipalCtx_NonAdminPrincipal_DeniesOperatorPlane(t *testing.T) {
 	}
 	// Evaluation is not part of the operator plane: a tenant operator gets
 	// every op, as on HTTP and gRPC, and the tool confines it to its tenant.
-	if !historyHasScope(tools.EvaluationPolicy(tenant).Scopes, "read_any") {
-		t.Errorf("a tenant operator's Evaluation grant must include read_any; got %v", tools.EvaluationPolicy(tenant).Scopes)
+	if !historyHasScope(tools.PolicyOf(tenant).Evaluation.Scopes, "read_any") {
+		t.Errorf("a tenant operator's Evaluation grant must include read_any; got %v", tools.PolicyOf(tenant).Evaluation.Scopes)
 	}
 
 	// Def families: both admin and tenant get "any" within their stamped
 	// tenant (confinement is the TenantID stamp + lookup filter, not a scope
 	// narrowing — RFC AG §3.1).
-	if len(tools.AgentDefPolicy(tenant).Scopes) == 0 {
+	if len(tools.PolicyOf(tenant).AgentDef.Scopes) == 0 {
 		t.Errorf("non-admin principal must still get def-family scopes (tenant-confined)")
 	}
 }

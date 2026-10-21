@@ -39,9 +39,9 @@ func localTeamFixture(t *testing.T) (*TeamDef, context.Context) {
 func localAuthorCtx(tenantID string, scopes, callerTools []string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_author", TenantID: tenantID})
 	ctx = tools.WithAgentName(ctx, "author")
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: scopes, SelfName: "author"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: scopes, SelfName: "author"} })
 	// Every skill, as an author declaring no `skills:` holds.
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = callerTools })
 }
 

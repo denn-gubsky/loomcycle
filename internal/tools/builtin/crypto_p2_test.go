@@ -44,7 +44,7 @@ func TestCrypto_X25519KeyEncryptsToItselfAndToAnyoneHoldingItsPublicKey(t *testi
 	jb, _ := json.Marshal(jwk)
 	pub, _ := json.Marshal(string(jb))
 	// A caller with no crypto scope at all can still encrypt to a public key.
-	noScope := tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{})
+	noScope := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{} })
 	out, res = cryptoExec(t, c, noScope, `{"op":"encrypt","public_key":`+string(pub)+`,"plaintext":"from a stranger"}`)
 	mustOK(t, "encrypt to a public key", res)
 	out, res = cryptoExec(t, c, ctx, `{"op":"decrypt","key":"inbox","ciphertext":"`+out["ciphertext"].(string)+`"}`)
@@ -252,7 +252,7 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true, ReadOnly: true}}}
 	})
 	operator := tools.WithSubstrateOperator(context.Background())
-	operator = tools.WithCryptoPolicy(tools.WithRunIdentity(operator, tools.RunIdentityValue{TenantID: "tnt"}), tools.CryptoPolicyValue{Scopes: []string{"tenant"}})
+	operator = tools.UpdateRunPolicy(tools.WithRunIdentity(operator, tools.RunIdentityValue{TenantID: "tnt"}), func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"tenant"}} })
 
 	for name, c2 := range map[string]struct {
 		ctx  context.Context
@@ -405,7 +405,7 @@ func TestCrypto_DocumentReferencesGoThroughTheDocumentTool(t *testing.T) {
 	c := &Crypto{Docs: d}
 	ctx := tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt",
 		UserCredentials: map[string]string{"doc-key": "0123456789abcdef0123456789abcdef-a-secret"}})
-	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"run"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"run"}} })
 	ctx = refCtx(ctx, t.TempDir(), "Document")
 	ref := "document:user/" + chunkID
 

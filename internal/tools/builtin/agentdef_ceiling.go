@@ -406,7 +406,7 @@ func ceilEvaluation(ctx context.Context, def mergedDef, base *mergedDef, held st
 	}
 	// The run's policy is already effective (submit_self when its definition
 	// declared none).
-	ceiling := tools.EvaluationPolicy(ctx).Scopes
+	ceiling := tools.PolicyOf(ctx).Evaluation.Scopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveEvaluationScopes(base.EvaluationScopes))
 	}
@@ -430,7 +430,7 @@ func ceilCrypto(ctx context.Context, def mergedDef, base *mergedDef, held string
 	}
 	// The run's policy is already effective (and, for a sub-agent, already
 	// narrowed by its parent's).
-	ceiling := tools.CryptoPolicy(ctx).Scopes
+	ceiling := tools.PolicyOf(ctx).Crypto.Scopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveCryptoScopes(base.CryptoScopes))
 	}
@@ -554,7 +554,7 @@ func skillsWithin(child, ceiling []string) bool {
 }
 
 func ceilSkills(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	author := tools.SkillPolicy(ctx).Effective()
+	author := tools.PolicyOf(ctx).Skill.Effective()
 	if skillsWithin(def.Skills, author) || (base != nil && skillsWithin(def.Skills, base.Skills)) {
 		return nil
 	}
@@ -617,7 +617,7 @@ func defScopeCovered(c, childName string, ceiling []string, ceilingSelf string) 
 }
 
 func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *mergedDef, held string) error {
-	ad, sd := tools.AgentDefPolicy(ctx), tools.ScheduleDefPolicy(ctx)
+	ad, sd := tools.PolicyOf(ctx).AgentDef, tools.ScheduleDefPolicy(ctx)
 	sc, aa := tools.A2AServerCardDefPolicy(ctx), tools.A2AAgentDefPolicy(ctx)
 	var b mergedDef
 	if base != nil {

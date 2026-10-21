@@ -48,11 +48,13 @@ func codeAgentFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "memory/consolidator")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: "memory/consolidator",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"any"},
+			SelfName: "memory/consolidator",
+		}
 	})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 	return tool, ctx, func() { _ = s.Close() }
 }
 

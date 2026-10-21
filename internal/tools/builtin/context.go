@@ -284,7 +284,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// also the bit that decides which prompt-expansion families this
 		// agent's definition may use, so an agent seeing an expansion refused
 		// can tell WHY rather than guessing.
-		"operator_authored": tools.OperatorAuthored(ctx),
+		"operator_authored": tools.PolicyOf(ctx).OperatorAuthored,
 	}
 	// scopes: for each scoped tool this run holds, which values of its `scope`
 	// argument this run may use, and for the rest the refusal a call would get.
@@ -836,9 +836,9 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	hostPol := tools.PolicyOf(ctx).Hosts
 	memPol := tools.PolicyOf(ctx).Memory
 	chPol := tools.PolicyOf(ctx).Channel
-	adPol := tools.AgentDefPolicy(ctx)
-	sdPol := tools.SkillPolicy(ctx)
-	evPol := tools.EvaluationPolicy(ctx)
+	adPol := tools.PolicyOf(ctx).AgentDef
+	sdPol := tools.PolicyOf(ctx).Skill
+	evPol := tools.PolicyOf(ctx).Evaluation
 
 	out := map[string]any{
 		"tools": tools.PolicyOf(ctx).Tools,
@@ -864,7 +864,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		"evaluation_scopes": evPol.Scopes,
 		// The key scopes the Crypto tool's key-backed ops may use; empty
 		// means keyless ops only.
-		"crypto_scopes": tools.CryptoPolicy(ctx).Scopes,
+		"crypto_scopes": tools.PolicyOf(ctx).Crypto.Scopes,
 	}
 	return okJSON(out)
 }

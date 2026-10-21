@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -20,16 +18,6 @@ const CryptoToolName = config.CryptoToolName
 // Scopes is always effective: de-duplicated and holding only known values.
 type CryptoPolicyValue struct {
 	Scopes []string
-}
-
-// WithCryptoPolicy attaches the policy to ctx.
-func WithCryptoPolicy(ctx context.Context, p CryptoPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Crypto = p })
-}
-
-// CryptoPolicy returns the policy from ctx. Zero value = no key scope.
-func CryptoPolicy(ctx context.Context) CryptoPolicyValue {
-	return PolicyOf(ctx).Crypto
 }
 
 // Allows reports whether the policy grants key scope.

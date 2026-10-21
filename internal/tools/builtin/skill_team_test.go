@@ -29,7 +29,7 @@ func teamSkillTool(t *testing.T, inTeam bool) *SkillTool {
 func teamSkillCtx(skills ...string) context.Context {
 	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Read", "Skill"}})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.ToolPatterns = []string{"Read", "Skill"} })
-	return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: skills})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: skills} })
 }
 
 func TestSkillTool_TeamAgentLoadsAndListsItsGrantedTeamSkill(t *testing.T) {
@@ -94,7 +94,9 @@ func TestSkillTool_TeamSkillCannotWidenTheAgentsTools(t *testing.T) {
 	tool := teamSkillTool(t, true)
 	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Skill"}})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.ToolPatterns = []string{"Skill"} })
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"./style"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"./style"}}
+	})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"./style"}`))
 	if !res.IsError || !strings.Contains(res.Text, "Read") || strings.Contains(res.Text, "TEAM STYLE") {
 		t.Errorf("invoke ./style without Read = %q, want refused naming Read", res.Text)

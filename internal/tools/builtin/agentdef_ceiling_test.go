@@ -56,7 +56,9 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	ctx := tools.WithRunID(context.Background(), "run_author")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_author", UserID: "u1", TenantID: "t1"})
 	ctx = tools.WithAgentName(ctx, "sdlc/meta")
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"}
+	})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 	// Memory and SQL below their ordinary default (user, tenant), so an unset
 	// one passing is that default at work and not the author holding it. The
@@ -70,7 +72,7 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}}
 	})
 	// Every skill, as an agent declaring no `skills:` holds.
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 	return tool, ctx
 }
 
@@ -162,13 +164,13 @@ func ceilingCases() []ceilingCase {
 			wider: `{"interruption":{"enabled":true,"kinds":["question","approval"]}}`, refusedAs: "interruption.kinds:", within: `{"interruption":{"enabled":true,"max_pending":2}}`},
 		{field: "evaluation_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: []string{"submit_any"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Evaluation = tools.EvaluationPolicyValue{Scopes: []string{"submit_any"}} })
 			},
 			// submit_any covers every submit; it does not cover reading.
 			wider: `{"evaluation_scopes":["submit_self","read_any"]}`, within: `{"evaluation_scopes":["submit_self","submit_descendants"]}`},
 		{field: "crypto_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"agent", "user"}} })
 			},
 			wider: `{"crypto_scopes":["user","tenant"]}`, within: `{"crypto_scopes":["user"]}`},
 		{field: "agent_def_scopes",
@@ -199,7 +201,9 @@ func ceilingCases() []ceilingCase {
 			wider: `{"volume_def_scopes":["any"]}`, within: `{"volume_def_scopes":["named:scratch"]}`},
 		{field: "skills",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*", "-doc/secret"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*", "-doc/secret"}}
+				})
 			},
 			// Unset is "every skill"; dropping the author's deny widens too.
 			wider: `{"system_prompt":"x"}`, within: `{"skills":["doc/redactor","-doc/secret","-doc/old"]}`},
@@ -225,7 +229,7 @@ func TestAgentDefCreate_InRunAuthorIsRefusedEveryCapabilityItDoesNotHold(t *test
 			}
 
 			op := operatorPlane(context.Background())
-			op = tools.WithAgentDefPolicy(op, tools.AgentDefPolicyValue{Scopes: []string{"any"}})
+			op = tools.UpdateRunPolicy(op, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"any"}} })
 			if res := agentDefOp(t, tool, op, "create", "sdlc/op-"+strings.ReplaceAll(c.field, ".", "-"), c.wider); res.IsError {
 				t.Fatalf("operator plane, wider %s: refused: %s", c.field, res.Text)
 			}
@@ -247,7 +251,7 @@ func TestAgentDefCreate_MissingAuthorPolicyFailsClosed(t *testing.T) {
 				// The fixture's author holds every skill; this one holds none
 				// stamped at all. A skill policy nobody granted allows no
 				// skill, as every other missing policy allows nothing.
-				ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{})
+				ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{} })
 			}
 			wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", c.within), "no policy, "+c.field, c.field+":")
 		})
@@ -279,7 +283,7 @@ func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"sql_scopes":["tenant"]}`), "wildcard in a run", "sql_scopes:")
 
 	off := operatorPlane(context.Background())
-	off = tools.WithAgentDefPolicy(off, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}})
+	off = tools.UpdateRunPolicy(off, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}} })
 	if res := agentDefOp(t, tool, off, "create", "sdlc/new", `{"sql_scopes":["tenant"],"volumes":["secrets"]}`); res.IsError {
 		t.Fatalf("operator plane refused: %s", res.Text)
 	}
@@ -326,7 +330,9 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`,"interruption":{"enabled":true,"kinds":["question"]}}`),
 		"explicit kinds", "interruption.kinds:")
 
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}}
+	})
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`}`), "unset skills", "skills: left unset")
 }
 
@@ -454,7 +460,9 @@ func TestTeamDefCreate_LocalAgentGrantsOfTheTeamsOwnChannelsAndSkillsAreNotJudge
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 	// The team's skill is authored as "<team>/style", which this allows; it
 	// does not allow "./style" as a pattern.
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"sdlc/*", "sdlc2/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"sdlc/*", "sdlc2/*"}}
+	})
 	team := func(publish string) string {
 		return `{"entry":"review","local":{"channels":{"events":{"scope":"tenant"}},
 		  "agents":{"reviewer":{"tier":"middle","tools":["Read","Skill"],"skills":["./style"],
@@ -501,7 +509,9 @@ func TestAgentDefCreate_MalformedLocalChannelRefIsJudged(t *testing.T) {
 // passing the ceiling on such a list hands out nothing beyond the team.
 func TestAgentDefCreate_OnlyLocalSkillRefsGrantNoGlobalSkill(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}}
+	})
 	res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"skills":["./x"]}`)
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
@@ -519,6 +529,6 @@ func TestAgentDefCreate_OnlyLocalSkillRefsGrantNoGlobalSkill(t *testing.T) {
 			t.Errorf("an agent granted %v may invoke the global skill %q", def.Skills, global)
 		}
 	}
-	denyAll := tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}})
+	denyAll := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}} })
 	wantRefused(t, agentDefOp(t, tool, denyAll, "create", "sdlc/new2", `{"skills":["./x"]}`), "deny-all author", "skills:")
 }

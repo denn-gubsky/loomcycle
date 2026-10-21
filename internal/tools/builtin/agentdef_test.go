@@ -42,11 +42,13 @@ func agentDefFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: "researcher",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"any"},
+			SelfName: "researcher",
+		}
 	})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 	return tool, ctx, func() { _ = s.Close() }
 }
 
@@ -538,9 +540,11 @@ func TestAgentDefTool_ForkToolsCanNarrow(t *testing.T) {
 func TestAgentDefTool_NoScopesIsDefaultDeny(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   nil,
-		SelfName: "researcher",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   nil,
+			SelfName: "researcher",
+		}
 	})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"newbot"}`))
 	if !res.IsError {
@@ -554,9 +558,11 @@ func TestAgentDefTool_NoScopesIsDefaultDeny(t *testing.T) {
 func TestAgentDefTool_SelfScopeOnlyOwnName(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"self"},
-		SelfName: "researcher",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"self"},
+			SelfName: "researcher",
+		}
 	})
 	// Own name → ok.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher"}`))
@@ -576,9 +582,11 @@ func TestAgentDefTool_SelfScopeOnlyOwnName(t *testing.T) {
 func TestAgentDefTool_NamedScope(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"named:reviewer"},
-		SelfName: "orchestrator",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"named:reviewer"},
+			SelfName: "orchestrator",
+		}
 	})
 	// "reviewer" → ok.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"reviewer"}`))
@@ -912,12 +920,14 @@ func TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
 	// Build a ctx with ONLY `descendants` scope (no `any`, no `named:foo`).
 	ctx := tools.WithAgentName(context.Background(), "alpha")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"descendants"},
-		SelfName: "alpha",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"descendants"},
+			SelfName: "alpha",
+		}
 	})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 
 	// Mutate a totally unrelated name (would-be cross-tree).
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"completely-unrelated"}`))

@@ -44,7 +44,7 @@ func evaluationFixture(t *testing.T) (*Evaluation, store.Store, string, func()) 
 // AgentID + an EvaluationPolicy scope list.
 func ctxWithEmitter(agentID string, scopes ...string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: agentID})
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Evaluation = tools.EvaluationPolicyValue{Scopes: scopes} })
 	return ctx
 }
 

@@ -72,12 +72,12 @@ func TestAgentDefCreate_CryptoCeilingUnsetAndForkedBase(t *testing.T) {
 	// An operator mints a tenant-key signer; the in-run author holding only
 	// [user] may fork it keeping [tenant], but may not add [run].
 	op := operatorPlane(context.Background())
-	op = tools.WithAgentDefPolicy(op, tools.AgentDefPolicyValue{Scopes: []string{"any"}})
+	op = tools.UpdateRunPolicy(op, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"any"}} })
 	if res, _ := tool.Execute(op, json.RawMessage(`{"op":"create","name":"sdlc/signer","promote":true,
 		"overlay":{"history_scope":["user"],"crypto_scopes":["tenant"]}}`)); res.IsError {
 		t.Fatalf("operator create: %s", res.Text)
 	}
-	author := tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"user"}})
+	author := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"user"}} })
 	if res := agentDefOp(t, tool, author, "fork", "sdlc/signer", `{"crypto_scopes":["tenant","user"]}`); res.IsError {
 		t.Fatalf("fork keeping the base's scope: %s", res.Text)
 	}

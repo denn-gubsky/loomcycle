@@ -31,7 +31,7 @@ func (p *cryptoProbe) Description() string          { return "" }
 func (p *cryptoProbe) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
 func (p *cryptoProbe) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
 	p.mu.Lock()
-	p.seen = append(p.seen, tools.CryptoPolicy(ctx).Scopes)
+	p.seen = append(p.seen, tools.PolicyOf(ctx).Crypto.Scopes)
 	p.mu.Unlock()
 	return tools.Result{Text: "ok"}, nil
 }

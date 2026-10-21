@@ -74,7 +74,7 @@ func (t *TeamDef) localAgentIssues(ctx context.Context, op, team string, def tea
 			"local: this server cannot check a team's own agents (no agent-definition tool is wired), so a definition declaring them is refused"))
 	}
 	issues = append(issues, graphIssues(teamgraph.CheckLocalRunNamesAll(def, team))...)
-	policy := tools.AgentDefPolicy(ctx)
+	policy := tools.PolicyOf(ctx).AgentDef
 	tenantID := tools.RunIdentity(ctx).TenantID
 	for _, name := range names {
 		full := teamgraph.QualifiedLocalName(team, name)
@@ -177,7 +177,7 @@ func (t *TeamDef) localSkillIssues(ctx context.Context, op, team string, def tea
 			"local: this server cannot check a team's own skills (no skill-definition tool is wired), so a definition declaring them is refused")}
 	}
 	var issues []teamIssue
-	policy := tools.SkillPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Skill
 	for _, name := range names {
 		sk, _ := def.LocalSkill(name)
 		if _, err := t.Skills.gateNewSkill(ctx, policy, op, teamgraph.QualifiedLocalName(team, name), localSkillDefinition(sk)); err != nil {
@@ -214,7 +214,7 @@ func (t *TeamDef) checkLocalNamesFree(ctx context.Context, row store.TeamDefRow)
 	if t.Agents == nil || t.Agents.Cfg == nil {
 		return fmt.Errorf("this version declares its own agents, and this server cannot check them (no agent-definition tool is wired)")
 	}
-	policy := tools.AgentDefPolicy(ctx)
+	policy := tools.PolicyOf(ctx).AgentDef
 	for _, name := range names {
 		full := teamgraph.QualifiedLocalName(row.Name, name)
 		if t.Agents.checkScopeForName(policy, full, "") != nil {
