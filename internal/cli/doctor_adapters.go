@@ -69,6 +69,7 @@ func (r *realConfig) NonLoopbackListeners() []string {
 }
 func (r *realConfig) AllowOpenMode() bool     { return r.cfg.Env.AllowOpenMode }
 func (r *realConfig) DeclaredPrincipals() int { return len(r.cfg.Principals) }
+func (r *realConfig) LoginPrincipals() int    { return len(r.cfg.ResolvedPrincipals) }
 
 // loadConfigRealAdapter is the production seam for loadConfigForDoctor.
 // Tests override the package-level var to plug in a stub.

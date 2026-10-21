@@ -97,6 +97,8 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	principals := cfg.DeclaredPrincipals()
 	legacySet := os.Getenv("LOOMCYCLE_AUTH_TOKEN") != ""
 	switch {
+	case !legacySet && principals > 0 && cfg.LoginPrincipals() == 0:
+		r.warn("Authentication", fmt.Sprintf("on, but all %d config principal(s) are inert (token_env unset): no principal can log in, so every request gets 401 unless the store holds an operator token. Set the token_env values or LOOMCYCLE_AUTH_TOKEN", principals))
 	case !legacySet && principals > 0:
 		r.pass("Authentication", fmt.Sprintf("on — %d config principal(s) declared; LOOMCYCLE_AUTH_TOKEN not set", principals))
 	case !legacySet:
@@ -114,10 +116,10 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 			on := strings.Join(public, ", ")
 			if cfg.AllowOpenMode() {
 				r.warn("Open mode", fmt.Sprintf(
-					"LOOMCYCLE_ALLOW_OPEN_MODE=1: unless the store holds an admin operator token, every route on %s is served unauthenticated", on))
+					"LOOMCYCLE_ALLOW_OPEN_MODE=1: unless the store holds an admin operator token, every route on %s is served unauthenticated. Set LOOMCYCLE_AUTH_TOKEN or declare a principal to require a bearer", on))
 			} else {
 				r.warn("Open mode", fmt.Sprintf(
-					"%s binds beyond loopback with no LOOMCYCLE_AUTH_TOKEN: the server refuses to start unless the store holds an admin operator token. Set LOOMCYCLE_AUTH_TOKEN, bind to 127.0.0.1, or set LOOMCYCLE_ALLOW_OPEN_MODE=1", on))
+					"%s binds beyond loopback with no LOOMCYCLE_AUTH_TOKEN and no config principal: the server refuses to start unless the store holds an admin operator token. Set LOOMCYCLE_AUTH_TOKEN, declare a principal, bind to 127.0.0.1, or set LOOMCYCLE_ALLOW_OPEN_MODE=1", on))
 			}
 		}
 	}
@@ -343,6 +345,9 @@ type configForDoctor interface {
 	// DeclaredPrincipals counts the config `principals:`, inert ones included;
 	// any at all turns authentication on.
 	DeclaredPrincipals() int
+	// LoginPrincipals counts the declared principals that can log in (their
+	// token_env set in this environment).
+	LoginPrincipals() int
 	// ConfigWarnings returns the non-fatal advisories config-load already
 	// produces — an agent holding a tool whose capability gate is empty, a
 	// principal whose token env is unset, a layered override.
