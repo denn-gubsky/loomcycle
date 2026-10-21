@@ -100,16 +100,13 @@ func (s *Server) streamRunEvents(ctx context.Context, runID string, fromSeq int6
 		return nil
 	}
 	cursor := fromSeq
-	ticker := time.NewTicker(runStreamPollInterval)
-	defer ticker.Stop()
-	for {
-		// Drain everything past the cursor before deciding whether to stop.
-		drainErr := false
+	// drain relays everything past the cursor. storeErr: a read failed, so
+	// the run's status says nothing about what is left to relay.
+	drain := func() (storeErr bool, visitErr error) {
 		for {
 			evs, more, err := s.runEventsSince(ctx, runID, cursor)
 			if err != nil {
-				drainErr = true
-				break
+				return true, nil
 			}
 			for _, ev := range evs {
 				cursor = ev.Seq
@@ -118,19 +115,32 @@ func (s *Server) streamRunEvents(ctx context.Context, runID string, fromSeq int6
 					continue
 				}
 				if err := visit(pe); err != nil {
-					return err
+					return false, err
 				}
 			}
 			if !more {
-				break
+				return false, nil
 			}
 		}
-		// If the run is terminal and we've drained it, we're done. A parked
-		// interactive run never reaches terminal until cancelled, so this loop
+	}
+	ticker := time.NewTicker(runStreamPollInterval)
+	defer ticker.Stop()
+	for {
+		storeErr, err := drain()
+		if err != nil {
+			return err
+		}
+		// If the run is terminal, we're done once it is drained. A parked
+		// interactive run never reaches terminal until it ends, so this loop
 		// stays live until the client disconnects (ctx) — exactly what we want.
-		if !drainErr {
+		//
+		// The run's last events are written before its terminal status, but
+		// they can land between the drain above and this read: drained once
+		// more, they are relayed rather than dropped with the run's done.
+		if !storeErr {
 			if run, err := s.store.GetRun(ctx, runID); err == nil && isTerminalRunStatus(run.Status) {
-				return nil
+				_, err := drain()
+				return err
 			}
 		}
 		select {
