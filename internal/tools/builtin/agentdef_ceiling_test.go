@@ -66,7 +66,9 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
 	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}})
 	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user"}})
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}}
+	})
 	// Every skill, as an agent declaring no `skills:` holds.
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 	return tool, ctx
@@ -96,7 +98,9 @@ func ceilingCases() []ceilingCase {
 	return []ceilingCase{
 		{field: "volumes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}}
+				})
 			},
 			wider: `{"volumes":["work","secrets"]}`, within: `{"volumes":["work"]}`},
 		{field: "memory_scopes",
@@ -176,7 +180,9 @@ func ceilingCases() []ceilingCase {
 			wider: `{"a2a_agent_def_scopes":["named:peers/**"]}`, within: `{"a2a_agent_def_scopes":["named:peers/one"]}`},
 		{field: "volume_def_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"named:scratch"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"named:scratch"}}
+				})
 			},
 			wider: `{"volume_def_scopes":["any"]}`, within: `{"volume_def_scopes":["named:scratch"]}`},
 		{field: "skills",
@@ -278,7 +284,9 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 	// Below every default: memory and SQL [agent] (the fixture), history
 	// [self], bound to the volume "work" only, interruptions of kind approval.
 	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}}
+	})
 	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
 	const rest = `"history_scope":["self"],"volumes":["work"]`
 
@@ -296,7 +304,7 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 		"unset volumes", "volumes: left unset", `"default"`, "set volumes explicitly")
 	// The escalation the default would hand out: an author with no volume at
 	// all minting an agent bound to the operator's default host directory.
-	noVolumes := tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{})
+	noVolumes := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Volumes = tools.VolumePolicyValue{} })
 	wantRefused(t, agentDefOp(t, tool, noVolumes, "create", "sdlc/x", `{"history_scope":["self"]}`),
 		"unset volumes, author holds none", "volumes: left unset", `"default"`)
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`,"interruption":{"enabled":true}}`),
@@ -312,7 +320,9 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 // declared read-write, so a new agent naming it could write: refused.
 func TestAgentDefCreate_ReadOnlyHeldVolumeIsNotGrantedReadWrite(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", ReadOnly: true}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", ReadOnly: true}}}
+	})
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"volumes":["work"]}`), "ro volume", "read-only")
 }
 

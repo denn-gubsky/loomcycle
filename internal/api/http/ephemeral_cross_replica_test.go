@@ -28,7 +28,7 @@ type replica struct {
 // built as the server builds one: the tree's set and the tree's record.
 func (r *replica) runCtx(root string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a", RootRunID: root})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	ctx = tools.WithEphemeralVolumes(ctx, r.set)
 	return r.srv.withEphemeralRecord(ctx, root)
 }

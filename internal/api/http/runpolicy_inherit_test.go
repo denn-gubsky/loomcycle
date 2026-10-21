@@ -131,14 +131,15 @@ func TestPrepareSubRun_LockedChildKeepsTheHostListNarrowOnly(t *testing.T) {
 	h := newReviewHarness(t)
 	locked := false
 	h.srv.cfg().Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}, AllowOverrides: &locked}
-	parent := tools.WithHostPolicy(tools.WithRunID(context.Background(), "r_parent"),
-		tools.HostPolicyValue{AllowedHosts: []string{"api.example.com"}, HasList: true})
+	parent := tools.UpdateRunPolicy(tools.WithRunID(context.Background(), "r_parent"), func(rp *tools.RunPolicy) {
+		rp.Hosts = tools.HostPolicyValue{AllowedHosts: []string{"api.example.com"}, HasList: true}
+	})
 	prep, err := h.srv.prepareSubRunValues(parent, "child", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer prep.cleanup()
-	if hp := tools.HostPolicy(prep.LoopCtx); !hp.NarrowOnly {
+	if hp := tools.PolicyOf(prep.LoopCtx).Hosts; !hp.NarrowOnly {
 		t.Errorf("the locked child's ctx carries its parent's host list as a replacing one (%+v); its own children would widen past it", hp)
 	}
 }

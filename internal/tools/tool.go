@@ -238,23 +238,9 @@ type HostPolicyValue struct {
 	NarrowOnly bool
 }
 
-// WithHostPolicy attaches the caller's host narrowing policy to ctx.
-// runRequest sets this once for top-level runs; sub-agents inherit it
-// via the ctx chain (Agent tool's Execute → runSubAgent passes the
-// parent's ctx through).
-func WithHostPolicy(ctx context.Context, p HostPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Hosts = p })
-}
-
-// HostPolicy returns the caller's host narrowing policy from ctx, or
-// the zero value (HasList=false, no narrowing) if not attached.
-func HostPolicy(ctx context.Context) HostPolicyValue {
-	return PolicyOf(ctx).Hosts
-}
-
 // ctxKeyExtraAllowedHosts is the context key for v0.8.17 per-call
 // host-widening grants from permitted Pre-hooks. Distinct from
-// HostPolicy: HostPolicy carries the caller-authoritative narrowing
+// RunPolicy.Hosts: Hosts carries the caller-authoritative narrowing
 // that applies for the entire run and is inherited by sub-agents.
 // ExtraAllowedHosts is per-tool-call only — set by loop.dispatchOneTool
 // for the SINGLE Execute() call after a permitted Pre-hook returned
@@ -335,23 +321,6 @@ type VolumeBinding struct {
 type VolumePolicyValue struct {
 	Active   bool
 	Bindings []VolumeBinding
-}
-
-// WithVolumePolicy attaches the run's volume policy to ctx. It ALWAYS sets
-// the value — even an inactive/empty policy must OVERWRITE any policy a child
-// ctx inherited from its parent. (A sub-agent narrowed to an empty binding
-// set would otherwise keep the parent's policy via ctx-value inheritance, a
-// confinement-widening bug.)
-func WithVolumePolicy(ctx context.Context, p VolumePolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Volumes = p })
-}
-
-// VolumePolicy returns the run's volume policy from ctx, or the zero value
-// (Active=false) when none was attached. Active=false is the "no volume
-// bound" signal — the file/exec tools refuse (RFC AH Phase 3: no legacy
-// fallback root survives).
-func VolumePolicy(ctx context.Context) VolumePolicyValue {
-	return PolicyOf(ctx).Volumes
 }
 
 // ctxKeyEphemeralVolumes carries the run-tree's EphemeralVolumeSet (RFC AH
@@ -460,25 +429,6 @@ func (s *EphemeralVolumeSet) Names() []string {
 func (s *EphemeralVolumeSet) Has(name string) bool {
 	_, ok := s.Get(name)
 	return ok
-}
-
-// WithEphemeralReadOnly marks ctx so every ephemeral volume resolves
-// read-only for this run, whatever the volume's own mode. It is set for an
-// agent whose definition says `ephemeral_volumes: ro`, and reaches the agents
-// it spawns through the ctx chain.
-//
-// There is no call that clears it, which is what makes inheriting it correct:
-// a descendant of a run that gave up write access cannot get it back.
-func WithEphemeralReadOnly(ctx context.Context) context.Context {
-	if EphemeralReadOnly(ctx) {
-		return ctx
-	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.EphemeralWritable = false })
-}
-
-// EphemeralReadOnly reports whether this run gets ephemeral volumes read-only.
-func EphemeralReadOnly(ctx context.Context) bool {
-	return !PolicyOf(ctx).EphemeralWritable
 }
 
 // EphemeralModeCheck reads a tree's ephemeral volume from where it is
@@ -2246,17 +2196,6 @@ func SkillPolicy(ctx context.Context) SkillPolicyValue {
 // families' read posture).
 type VolumeDefPolicyValue struct {
 	Scopes []string
-}
-
-// WithVolumeDefPolicy attaches the policy to ctx.
-func WithVolumeDefPolicy(ctx context.Context, p VolumeDefPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.VolumeDef = p })
-}
-
-// VolumeDefPolicy returns the policy from ctx. Zero value = default-deny
-// (the tool refuses create/delete/purge until scopes are granted via yaml).
-func VolumeDefPolicy(ctx context.Context) VolumeDefPolicyValue {
-	return PolicyOf(ctx).VolumeDef
 }
 
 // EvaluationPolicyValue is the per-agent Evaluation policy.

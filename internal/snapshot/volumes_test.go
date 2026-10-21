@@ -177,7 +177,7 @@ func TestVolumeDefs_ToolCreateAndRestoreDeriveTheSamePath(t *testing.T) {
 		"pool": {Path: root, Mode: "rw", DynamicRoot: true},
 	}}, MaxNameLen: 64}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a", TenantID: "acme"})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	if res, err := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"data","mode":"ro"}`)); err != nil || res.IsError {
 		t.Fatalf("tool create: %v %s", err, res.Text)
 	}

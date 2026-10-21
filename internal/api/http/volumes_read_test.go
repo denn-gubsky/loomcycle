@@ -45,10 +45,7 @@ func reqWithAdmin(path, tenant string) *http.Request {
 func mkDynamicVolume(t *testing.T, st store.Store, cfg *config.Config, tenant, name, mode string) {
 	t.Helper()
 	tool := &builtin.VolumeDef{Store: st, Cfg: cfg, MaxNameLen: 64}
-	ctx := tools.WithVolumeDefPolicy(
-		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: tenant}),
-		tools.VolumeDefPolicyValue{Scopes: []string{"any"}},
-	)
+	ctx := tools.UpdateRunPolicy(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: tenant}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	body, _ := json.Marshal(map[string]string{"op": "create", "name": name, "mode": mode})
 	if res, _ := tool.Execute(ctx, body); res.IsError {
 		t.Fatalf("create dynamic volume %s/%s: %s", tenant, name, res.Text)

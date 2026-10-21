@@ -449,7 +449,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// Inactive (no policy) → the agent has NO filesystem access (RFC AH
 	// Phase 3 sandbox-by-default; the legacy jail is gone), reported so the
 	// model knows file/exec tools will refuse rather than guessing host paths.
-	if vp := tools.VolumePolicy(ctx); vp.Active {
+	if vp := tools.PolicyOf(ctx).Volumes; vp.Active {
 		vols := make([]map[string]any, 0, len(vp.Bindings))
 		for _, b := range vp.Bindings {
 			mode := "rw"
@@ -533,7 +533,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// the operator's static allowlist is the floor. allowed_hosts is suffix-
 	// matched; an empty list means no web egress (deny-all). Omitted only when
 	// there's no policy to report (no caller list and Cfg is nil).
-	hp := tools.HostPolicy(ctx)
+	hp := tools.PolicyOf(ctx).Hosts
 	if hp.HasList {
 		out["network"] = map[string]any{
 			"allowed_hosts": nonNilStrings(hp.AllowedHosts),
@@ -833,7 +833,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	// Surface the per-run policy bundles that gate the agent's
 	// behaviour. The model can compare its intended actions to these
 	// gates before attempting them (avoids "tool refused" surprises).
-	hostPol := tools.HostPolicy(ctx)
+	hostPol := tools.PolicyOf(ctx).Hosts
 	memPol := tools.MemoryPolicy(ctx)
 	chPol := tools.ChannelPolicy(ctx)
 	adPol := tools.AgentDefPolicy(ctx)

@@ -15,7 +15,7 @@ import (
 // ctx. (Active=true is what puts the file tools on the volume path; an inactive
 // policy would fall back to the construction-time Root — the legacy jail.)
 func ctxWith(bindings ...tools.VolumeBinding) context.Context {
-	return tools.WithVolumePolicy(context.Background(), tools.VolumePolicyValue{Active: true, Bindings: bindings})
+	return tools.WithRunPolicy(context.Background(), tools.RunPolicy{Volumes: tools.VolumePolicyValue{Active: true, Bindings: bindings}})
 }
 
 // realDir EvalSymlinks's a fresh temp dir so a /var→/private/var (macOS) root
@@ -286,10 +286,12 @@ func TestRead_UnboundVolumeErrorsListsBound(t *testing.T) {
 // volumes it may touch and which verb each allows.
 func TestContextSelf_ReportsBoundVolumes(t *testing.T) {
 	tool, ctx := contextFixture(t)
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
-		{Name: "work", Root: "/work/a", Default: true},
-		{Name: "ref", Root: "/work/ref", ReadOnly: true},
-	}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
+			{Name: "work", Root: "/work/a", Default: true},
+			{Name: "ref", Root: "/work/ref", ReadOnly: true},
+		}}
+	})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	if res.IsError {
 		t.Fatalf("self: %s", res.Text)
@@ -351,7 +353,7 @@ func TestRead_ActiveEmptyPolicyRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Active, zero bindings → deny.
-	ctx := tools.WithVolumePolicy(context.Background(), tools.VolumePolicyValue{Active: true})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Volumes: tools.VolumePolicyValue{Active: true}})
 	r := &Read{}
 	body, _ := json.Marshal(map[string]string{"path": filepath.Join(root, "f.txt")})
 	res, err := r.Execute(ctx, body)

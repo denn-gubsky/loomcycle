@@ -242,7 +242,7 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 	if cfg == nil || len(cfg.Hosts) == 0 || cfg.Transport == nil {
 		return gitSourceRefusal("git_source_disabled", "the operator has not enabled git sources (LOOMCYCLE_GIT_SOURCE_HOSTS)"), nil
 	}
-	if !volumeScopeGranted(tools.VolumeDefPolicy(ctx).Scopes, GitSourceScope) {
+	if !volumeScopeGranted(tools.PolicyOf(ctx).VolumeDef.Scopes, GitSourceScope) {
 		return errResult(fmt.Sprintf("VolumeDef tool: creating a volume from a git source needs %q in this agent's volume_def_scopes", GitSourceScope)), nil
 	}
 	if !in.Ephemeral {

@@ -193,7 +193,7 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 	if len(child) == 0 {
 		return nil
 	}
-	pol := tools.VolumePolicy(ctx)
+	pol := tools.PolicyOf(ctx).Volumes
 	bound := map[string]tools.VolumeBinding{}
 	var ceiling []string
 	if pol.Active {
@@ -633,7 +633,7 @@ func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *merged
 		{field: "a2a_server_card_def_scopes", child: def.A2AServerCardDefScopes, ceil: sc.Scopes, selfName: sc.SelfName, baseVal: b.A2AServerCardDefScopes},
 		{field: "a2a_agent_def_scopes", child: def.A2AAgentDefScopes, ceil: aa.Scopes, selfName: aa.SelfName, baseVal: b.A2AAgentDefScopes},
 		// Volume grants have no "self": a volume has no agent identity.
-		{field: "volume_def_scopes", child: def.VolumeDefScopes, ceil: tools.VolumeDefPolicy(ctx).Scopes, baseVal: b.VolumeDefScopes},
+		{field: "volume_def_scopes", child: def.VolumeDefScopes, ceil: tools.PolicyOf(ctx).VolumeDef.Scopes, baseVal: b.VolumeDefScopes},
 	} {
 		childName := name
 		if g.field == "volume_def_scopes" {

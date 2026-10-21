@@ -44,7 +44,7 @@ func volumeDefFixture(t *testing.T, scopes ...string) (*VolumeDef, context.Conte
 		scopes = []string{"any"}
 	}
 	ctx := tools.WithRunIdentity(ephemeralWritable(context.Background()), tools.RunIdentityValue{AgentID: "a_admin"})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: scopes} })
 	return tool, ctx, root, func() { _ = s.Close() }
 }
 
@@ -90,7 +90,7 @@ func TestVolumeDefTool_CreateTenantSegment(t *testing.T) {
 	tool, baseCtx, root, cleanup := volumeDefFixture(t)
 	defer cleanup()
 	ctx := tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{AgentID: "a", TenantID: "acme"})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 
 	out, res := vdExec(t, tool, ctx, `{"op":"create","name":"work"}`)
 	if res.IsError {
@@ -194,7 +194,7 @@ func TestVolumeDefTool_PurgeRefusesTenantWithPathComponents(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x", TenantID: "x/.."})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	def, _ := json.Marshal(dynvol.Body{Path: filepath.Join(root, "acme"), Mode: "rw"})
 	if _, err := tool.Store.VolumeDefCreate(ctx, store.VolumeDefRow{TenantID: "x/..", Name: "acme", Definition: def}); err != nil {
 		t.Fatal(err)
@@ -231,7 +231,7 @@ func TestVolumeDefTool_CreateRefusesNoDynamicRoot(t *testing.T) {
 		"plain": {Path: root, Mode: "rw"}, // no dynamic_root
 	}}
 	tool := &VolumeDef{Store: s, Cfg: cfg}
-	ctx := tools.WithVolumeDefPolicy(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{}), tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx := tools.UpdateRunPolicy(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	_, res := vdExec(t, tool, ctx, `{"op":"create","name":"x"}`)
 	if !res.IsError || !strings.Contains(res.Text, "no dynamic volume root configured") {
 		t.Errorf("expected no-dynamic-root refusal, got: %s", res.Text)
@@ -369,8 +369,8 @@ func TestVolumeDefTool_PurgeReDerivesIgnoringTamperedPath(t *testing.T) {
 func TestVolumeDefTool_TenantIsolationOpaque404(t *testing.T) {
 	tool, baseCtx, _, cleanup := volumeDefFixture(t)
 	defer cleanup()
-	ctxA := tools.WithVolumeDefPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "a"}), tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
-	ctxB := tools.WithVolumeDefPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "b"}), tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctxA := tools.UpdateRunPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "a"}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
+	ctxB := tools.UpdateRunPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "b"}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 
 	vdExec(t, tool, ctxA, `{"op":"create","name":"secret","mode":"rw"}`)
 
@@ -392,7 +392,7 @@ func TestVolumeDefTool_CapabilityGate(t *testing.T) {
 	// Empty scopes → default-deny on create/delete/purge.
 	tool, baseCtx, _, cleanup := volumeDefFixture(t)
 	defer cleanup()
-	denyCtx := tools.WithVolumeDefPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{}), tools.VolumeDefPolicyValue{})
+	denyCtx := tools.UpdateRunPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{} })
 	for _, op := range []string{`{"op":"create","name":"x"}`, `{"op":"delete","name":"x"}`, `{"op":"purge","name":"x"}`} {
 		_, res := vdExec(t, tool, denyCtx, op)
 		if !res.IsError || !strings.Contains(res.Text, "default-deny") {
@@ -401,7 +401,9 @@ func TestVolumeDefTool_CapabilityGate(t *testing.T) {
 	}
 
 	// named:allowed permits "allowed" but refuses "other".
-	namedCtx := tools.WithVolumeDefPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{}), tools.VolumeDefPolicyValue{Scopes: []string{"named:allowed"}})
+	namedCtx := tools.UpdateRunPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{}), func(rp *tools.RunPolicy) {
+		rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"named:allowed"}}
+	})
 	if _, res := vdExec(t, tool, namedCtx, `{"op":"create","name":"allowed"}`); res.IsError {
 		t.Errorf("named:allowed should permit create allowed: %s", res.Text)
 	}
@@ -422,9 +424,7 @@ func TestVolumeDefTool_CapabilityGate(t *testing.T) {
 func TestVolumeDefTool_ReservedTenantRefused(t *testing.T) {
 	tool, baseCtx, _, cleanup := volumeDefFixture(t)
 	defer cleanup()
-	ctx := tools.WithVolumeDefPolicy(
-		tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "_shared"}),
-		tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx := tools.UpdateRunPolicy(tools.WithRunIdentity(baseCtx, tools.RunIdentityValue{TenantID: "_shared"}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	for _, op := range []string{`{"op":"create","name":"x"}`, `{"op":"purge","name":"x"}`, `{"op":"list"}`} {
 		if _, res := vdExec(t, tool, ctx, op); !res.IsError || !strings.Contains(res.Text, "reserved") {
 			t.Errorf("reserved tenant must be refused on %s; got %s", op, res.Text)
@@ -444,7 +444,7 @@ func mustJSON(s string) string {
 func ephemeralCtx(base context.Context, rootRunID string) (context.Context, *tools.EphemeralVolumeSet) {
 	set := tools.NewEphemeralVolumeSet()
 	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a", RootRunID: rootRunID})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	ctx = tools.WithEphemeralVolumes(ctx, set)
 	return ctx, set
 }
@@ -483,7 +483,7 @@ func TestVolumeDefTool_CreateEphemeralRefusesWithoutRootRun(t *testing.T) {
 	defer cleanup()
 	// RootRunID="" but a set IS attached — the missing run id is the refusal.
 	ctx := tools.WithRunIdentity(base, tools.RunIdentityValue{AgentID: "a"})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	ctx = tools.WithEphemeralVolumes(ctx, tools.NewEphemeralVolumeSet())
 	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"work","ephemeral":true}`); !res.IsError || !strings.Contains(res.Text, "active run") {
 		t.Errorf("ephemeral create without root run id must refuse; got %s", res.Text)
@@ -754,9 +754,7 @@ func TestVolumeDefTool_CreatePersistentFaultAfterCommitKeepsTheDirectory(t *test
 func TestVolumeDefTool_ReservedEphemeralTenantRefused(t *testing.T) {
 	tool, base, _, cleanup := volumeDefFixture(t)
 	defer cleanup()
-	ctx := tools.WithVolumeDefPolicy(
-		tools.WithRunIdentity(base, tools.RunIdentityValue{TenantID: "_ephemeral"}),
-		tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	ctx := tools.UpdateRunPolicy(tools.WithRunIdentity(base, tools.RunIdentityValue{TenantID: "_ephemeral"}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	if _, res := vdExec(t, tool, ctx, `{"op":"create","name":"x"}`); !res.IsError || !strings.Contains(res.Text, "reserved") {
 		t.Errorf("_ephemeral tenant must be refused; got %s", res.Text)
 	}

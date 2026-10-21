@@ -123,7 +123,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 
 	// VolumeDefPolicy: empty Scopes ⇒ MCP `volumedef` meta-tool refuses
 	// create/delete/purge with default-deny. RFC AH Phase 5 regression guard.
-	vdp := tools.VolumeDefPolicy(ctx)
+	vdp := tools.PolicyOf(ctx).VolumeDef
 	if len(vdp.Scopes) == 0 {
 		t.Errorf("VolumeDefPolicy.Scopes empty; VolumeDef create/delete/purge via MCP would fail")
 	}

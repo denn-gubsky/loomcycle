@@ -173,7 +173,9 @@ func TestCrypto_PasswordsHashAndVerifyWithoutAKey(t *testing.T) {
 // refCtx is a run's ctx for references: a bound default volume and the tools
 // a reference needs.
 func refCtx(ctx context.Context, dir string, toolNames ...string) context.Context {
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true}}}
+	})
 	ctx = tools.WithRunID(ctx, "run_ref")
 	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = append([]string{"Crypto"}, toolNames...) })
 }
@@ -246,7 +248,9 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	full := refCtx(ctx, dir, "Read", "Write")
-	readOnly := tools.WithVolumePolicy(full, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true, ReadOnly: true}}})
+	readOnly := tools.UpdateRunPolicy(full, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true, ReadOnly: true}}}
+	})
 	operator := tools.WithSubstrateOperator(context.Background())
 	operator = tools.WithCryptoPolicy(tools.WithRunIdentity(operator, tools.RunIdentityValue{TenantID: "tnt"}), tools.CryptoPolicyValue{Scopes: []string{"tenant"}})
 

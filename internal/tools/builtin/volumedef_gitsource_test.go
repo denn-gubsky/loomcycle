@@ -86,7 +86,9 @@ func newGitSourceFixtureFor(t *testing.T, user string) *gitSourceFixture {
 	ctx, set := ephemeralCtx(base, "run-1")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", RootRunID: "run-1", TenantID: "tnt"})
 	ctx = tools.WithAgentName(ctx, "reviewer")
-	f.ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any", GitSourceScope}})
+	f.ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any", GitSourceScope}}
+	})
 	f.set = set
 	return f
 }
@@ -241,7 +243,7 @@ func TestVolumeDefGitSource_RefusedWithNoNetworkCall(t *testing.T) {
 		}
 		return m
 	}
-	noGrant := tools.WithVolumeDefPolicy(f.ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
+	noGrant := tools.UpdateRunPolicy(f.ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 
 	for _, c := range []struct {
 		name  string

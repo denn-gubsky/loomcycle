@@ -621,7 +621,7 @@ func TestGrpcSubstrate_ScheduleDefCtxSynthesis(t *testing.T) {
 // VolumeDef. Unlike the SkillDef/ScheduleDef tests above (which use `list`),
 // this MUST use `create`: the VolumeDef policy gates create/delete/purge ONLY
 // — get/list are ungated reads — so a list op would pass even if
-// substrateGRPCCtx forgot WithVolumeDefPolicy. A real builtin.VolumeDef tool
+// substrateGRPCCtx forgot the VolumeDef grant. A real builtin.VolumeDef tool
 // is wired so the in-process scope gate fires if-and-only-if the gRPC handler
 // fails to stamp the "any" volume_def policy.
 func TestGrpcSubstrate_VolumeDefCtxSynthesis(t *testing.T) {

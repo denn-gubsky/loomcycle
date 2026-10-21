@@ -46,7 +46,7 @@ import (
 //   - volumeName != "" → that binding; the agent isn't bound to it → error
 //     listing the volumes it IS bound to.
 func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name, fence string, err error) {
-	pol := tools.VolumePolicy(ctx)
+	pol := tools.PolicyOf(ctx).Volumes
 	if volumeName != "" {
 		ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName)
 		if !ok && !boundTo(pol, volumeName) {

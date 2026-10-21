@@ -131,7 +131,7 @@ func TestResolveVolume_EphemeralReadOnlyRunCannotWriteAnEphemeralVolume(t *testi
 	if res := write(ctx, "scratch"); res.IsError {
 		t.Fatalf("without the setting the write must work (otherwise this test proves nothing): %s", res.Text)
 	}
-	ro := tools.WithEphemeralReadOnly(ctx)
+	ro := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.EphemeralWritable = false })
 	if res := write(ro, "scratch"); !res.IsError || !strings.Contains(res.Text, "read-only") {
 		t.Errorf("a read-only run wrote to the ephemeral volume: error=%v %q", res.IsError, res.Text)
 	}

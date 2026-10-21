@@ -711,7 +711,7 @@ func realOrClean(p string) string {
 // checkScopeForName enforces the agent's volume_def_scopes against the
 // proposed name. Default-deny when empty (gates create/delete/purge only).
 func (v *VolumeDef) checkScopeForName(ctx context.Context, name string) error {
-	policy := tools.VolumeDefPolicy(ctx)
+	policy := tools.PolicyOf(ctx).VolumeDef
 	if len(policy.Scopes) == 0 {
 		return fmt.Errorf("VolumeDef tool: agent has no volume_def_scopes (default-deny); add `volume_def_scopes: [...]` to the agent yaml")
 	}

@@ -224,9 +224,11 @@ func TestContextTool_SelfReportsNoFilesystemAndNetwork(t *testing.T) {
 func TestContextTool_SelfNetworkCallerList(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	tool.Cfg = &config.Config{Env: config.Env{HTTPHostAllowlist: []string{"operator-floor.example.com"}}}
-	ctx = tools.WithHostPolicy(ctx, tools.HostPolicyValue{
-		AllowedHosts: []string{"caller.example.com"},
-		HasList:      true,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Hosts = tools.HostPolicyValue{
+			AllowedHosts: []string{"caller.example.com"},
+			HasList:      true,
+		}
 	})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	if res.IsError {
@@ -627,9 +629,11 @@ func TestContextTool_DocOutsideAllowlist(t *testing.T) {
 func TestContextTool_PermissionsBundle(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	// Attach a host policy + memory policy so they appear in the output.
-	ctx = tools.WithHostPolicy(ctx, tools.HostPolicyValue{
-		AllowedHosts: []string{"api.example.com"},
-		HasList:      true,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Hosts = tools.HostPolicyValue{
+			AllowedHosts: []string{"api.example.com"},
+			HasList:      true,
+		}
 	})
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
 		AllowedScopes: []string{"agent", "user"},

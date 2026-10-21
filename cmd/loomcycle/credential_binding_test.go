@@ -200,7 +200,9 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := tools.WithVolumePolicy(runCtx(), tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: root, Default: true}}})
+	ctx := tools.UpdateRunPolicy(runCtx(), func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: root, Default: true}}}
+	})
 	cmd, _ := json.Marshal(map[string]any{"command": "env"})
 
 	for _, tc := range []struct {
