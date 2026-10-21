@@ -15,3 +15,7 @@ stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"again","type
 stored event: text {"text":"hello","type":"text"}
 stored event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
 stored event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}
+== another agent in the session: POST /v1/runs
+status: 400
+content-type: text/plain; charset=utf-8
+body: session "<id:1>" belongs to agent "plain", not "other": a session continues with its own agent

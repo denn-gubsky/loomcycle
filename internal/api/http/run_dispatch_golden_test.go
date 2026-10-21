@@ -709,6 +709,7 @@ func TestRunDispatchGolden(t *testing.T) {
 			tr.st = g.st
 			sid := g.completedSession("plain")
 			tr.add(t, "run in session", g.post("/v1/runs", goldenRunBody("plain", "again", `"session_id":"`+sid+`"`)))
+			tr.add(t, "another agent in the session", g.post("/v1/runs", goldenRunBody("other", "again", `"session_id":"`+sid+`"`)))
 		},
 		"runs_refusals": func(t *testing.T, tr *goldenTranscript) {
 			g := newGoldenServer(t, goldenOpts{})

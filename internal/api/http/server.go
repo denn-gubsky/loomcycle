@@ -2953,9 +2953,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if startingDraft && in.SessionID != "" {
 		return fmt.Errorf("%w: a configured run starts in its own session; session_id must be empty", runner.ErrInvalidArgument)
 	}
-	if in.AppendToSessionID != "" && (in.SessionID != "" || startingDraft) {
-		return fmt.Errorf("%w: a run appended to a session is neither a continuation nor a draft", runner.ErrInvalidArgument)
-	}
 	// Every RunOnce caller hands in a CALLER's parent_context (gRPC Run and
 	// Continue, the spawn_run(s) tools, runs:batch, a started draft) — the walk
 	// spawns its runs through the sub-run path, never here — so this is the one
@@ -2998,7 +2995,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if msg, ok := connector.ValidateIdempotencyKey(in.ClientIdempotencyKey); !ok {
 			return fmt.Errorf("%w: %s", runner.ErrInvalidArgument, msg)
 		}
-		if isContinuation || startingDraft || in.AppendToSessionID != "" || in.IdempotencyKey != "" || s.store == nil {
+		if isContinuation || startingDraft || in.IdempotencyKey != "" || s.store == nil {
 			return fmt.Errorf("%w: idempotency_key applies to a fresh run on a runtime with a store", runner.ErrInvalidArgument)
 		}
 		in.IdempotencyKey = clientRunKey(effectiveTenantID, effectiveUserID, in.ClientIdempotencyKey)
@@ -3069,40 +3066,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		sessHold = hold
 		defer sessHold.release()
 	}
-	if id := in.AppendToSessionID; id != "" {
-		if s.store == nil {
-			return runner.ErrSessionRequired
-		}
-		// Read and checked BEFORE the lock: a session the caller may not use
-		// is the same opaque not-found as a missing one, rather than a
-		// session_busy that would say it exists.
-		sess, err := s.store.GetSession(ctx, id)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, id)
-			}
-			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
-		}
-		if !sessionOwnershipOK(ctx, sess) {
-			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, id)
-		}
-		// Nothing joins a no-trace session.
-		if sess.Retention == store.RetentionNone {
-			return errNoTraceSession
-		}
-		hold, ok := s.holdSession(id, in.SessionLockAcrossReplicas)
-		if !ok {
-			return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, id)
-		}
-		sessHold = hold
-		defer sessHold.release()
-	}
-	// The session the run's rows go into: the one it continues or joins.
-	rowSessionID := in.SessionID
-	if rowSessionID == "" {
-		rowSessionID = in.AppendToSessionID
-	}
 
 	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
 	// else fall back to the bit CAPTURED on the trigger def and supplied via
@@ -3144,7 +3107,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		return err
 	}
 	retention := s.resolveRetention(ctx, effectiveTenantID, effectiveAgentName, agentDef, in.Retention)
-	if err := admitNoTraceStart(retention, in.Interactive, in.Review, rowSessionID); err != nil {
+	if err := admitNoTraceStart(retention, in.Interactive, in.Review, in.SessionID); err != nil {
 		return err
 	}
 	if retention == store.RetentionNone && startingDraft {
@@ -3326,7 +3289,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				s.recordQueuedInput(ctx, r.ID, effectiveTenantID, retention, queuedRecordOf(in, effectiveAgentName, effectiveTenantID, effectiveUserID))
 				return r.SessionID, r.ID, nil
 			}
-			sid, rid, err := s.openOrCreateSessionAndQueuedRun(ctx, rowSessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, queuedIdentity)
+			sid, rid, err := s.openOrCreateSessionAndQueuedRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, queuedIdentity)
 			if err != nil {
 				rowErr = err
 				return sid, rid, err
@@ -3377,7 +3340,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// can take the lock back, and then reads the session's history again.
 		var startErr error
 		if !sessHold.reacquire() {
-			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, rowSessionID)
+			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
 		} else if isContinuation && in.SessionLockAcrossReplicas {
 			if transcript, terr := s.store.GetTranscript(ctx, in.SessionID); terr != nil {
 				startErr = fmt.Errorf("%w: %v", runner.ErrInternal, terr)
@@ -3545,7 +3508,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		in.CredentialsNoUserScope = in.CredentialsNoUserScope || started.CredentialsNoUserScope
 	default:
 		var sessErr error
-		sessionID, runID, sessErr = s.openOrCreateSessionAndRun(ctx, rowSessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
+		sessionID, runID, sessErr = s.openOrCreateSessionAndRun(ctx, in.SessionID, effectiveAgentName, effectiveTenantID, effectiveUserID, identity)
 		if sessErr != nil {
 			return runRowErr(sessErr)
 		}
@@ -4944,11 +4907,12 @@ type runRequest struct {
 	//     what Brave found before narrowing.
 	// Ignored when AllowedHosts is nil.
 	WebSearchFilter string `json:"web_search_filter,omitempty"`
-	// SessionID is optional. When set, the new run is appended to that
-	// session (the prior transcript is NOT replayed by /v1/runs — use
-	// /v1/sessions/{id}/messages for continuation). When empty, a fresh
-	// session is created. The new session ID is announced as the first
-	// SSE event so the caller can address subsequent calls to it.
+	// SessionID is optional. When set, the run CONTINUES that session, as
+	// POST /v1/sessions/{id}/messages does: its transcript is replayed, and the
+	// run is the session's agent's (a request naming another agent is
+	// refused) under the session's identity. When empty, a fresh session is
+	// created. The session ID is announced as the first SSE event so the
+	// caller can address subsequent calls to it.
 	SessionID string `json:"session_id,omitempty"`
 	TenantID  string `json:"tenant_id,omitempty"`
 	// UserID binds the run to a user (v0.4+). Optional. Charset:
@@ -5268,10 +5232,18 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// ET-P1 decision: A18 — session_id on POST /v1/runs puts a FRESH run in
-	// the session (no replay; the request's agent and identity), which is not
-	// what a RunInput.SessionID continuation is.
-	in.AppendToSessionID, in.SessionID = in.SessionID, ""
+	// session_id continues the session (RFC ET P1 decision A18, owner
+	// 2026-10-21): the session's history is replayed and it runs the session's
+	// agent and identity. RunOnce takes the session's agent and ignores the
+	// request's, so a request naming another agent is refused here, by name,
+	// rather than silently run as the session's. A session the caller cannot
+	// see reads as missing, and RunOnce answers that with its opaque 404.
+	if req.SessionID != "" {
+		if sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), req.SessionID); err == nil && sess.Agent != req.Agent {
+			http.Error(w, fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", req.SessionID, sess.Agent, req.Agent), http.StatusBadRequest)
+			return
+		}
+	}
 	in.RateAdmitted = true
 	// ET-P1 decision: A20 — this route holds a session across replicas.
 	in.SessionLockAcrossReplicas = true

@@ -492,14 +492,6 @@ type RunInput struct {
 	// routes; without a cluster lock configured it changes nothing.
 	SessionLockAcrossReplicas bool
 
-	// AppendToSessionID puts a FRESH run in an existing session: its rows
-	// join that session, nothing of the session is replayed to it, and its
-	// agent and identity are this input's, not the session's (a continuation
-	// is SessionID). POST /v1/runs with session_id; the session is held for
-	// the run like a continuation's. A run that is not a draft or a
-	// continuation, with no idempotency key.
-	AppendToSessionID string
-
 	// HoldUntilEnd keeps a Detached run's caller waiting for the run's end
 	// even after the caller has left: RunOnce returns only when the run ends,
 	// so what it holds for the run — the session lock, the run slot — is held

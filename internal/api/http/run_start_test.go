@@ -148,34 +148,33 @@ func TestHandleMessages_QueuedContinuationSeesATurnTakenWhileItWaited(t *testing
 	}
 }
 
-// POST /v1/runs with session_id puts a FRESH run in the session: nothing of the
-// session is replayed to it, and it runs the agent the request names, not the
-// session's. (A continuation is POST /v1/sessions/{id}/messages.)
-func TestHandleRuns_SessionIDAppendsAFreshRunWithoutReplay(t *testing.T) {
+// POST /v1/runs with session_id continues the session, as
+// POST /v1/sessions/{id}/messages does: the session's history is replayed to
+// the run, and it runs the session's agent. Naming another agent is refused
+// with both names rather than ignored.
+func TestHandleRuns_SessionIDContinuesTheSession(t *testing.T) {
 	g := newGoldenServer(t, goldenOpts{})
 	sid := g.completedSession("plain")
-	r := g.post("/v1/runs", goldenRunBody("other", "APPENDED turn", `"session_id":"`+sid+`"`))
+
+	mismatch := g.post("/v1/runs", goldenRunBody("other", "wrong agent", `"session_id":"`+sid+`"`))
+	mismatch.drain(t)
+	if mismatch.status != http.StatusBadRequest || !strings.Contains(mismatch.body, `"plain"`) || !strings.Contains(mismatch.body, `"other"`) {
+		t.Errorf("a session_id with another agent: %d %q, want 400 naming both agents", mismatch.status, mismatch.body)
+	}
+
+	r := g.post("/v1/runs", goldenRunBody("plain", "CONTINUED turn", `"session_id":"`+sid+`"`))
 	_, runID, gotSession := r.ids(t)
 	r.drain(t)
 	if gotSession != sid {
 		t.Fatalf("the run went into session %q, want %q", gotSession, sid)
 	}
 	waitRunStatus(t, g.st, runID, store.RunCompleted)
-	msgs, ok := g.prov.sawCall("APPENDED turn")
+	msgs, ok := g.prov.sawCall("CONTINUED turn")
 	if !ok {
-		t.Fatal("the appended run never reached the model")
+		t.Fatal("the continuation never reached the model")
 	}
-	if strings.Contains(msgs, "first turn") {
-		t.Errorf("the appended run was given the session's history:\n%s", msgs)
-	}
-	ev, err := g.st.GetRunEventsSince(context.Background(), runID, 0, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range ev {
-		if e.Type == "system_prompt" && !strings.Contains(string(e.Payload), `"other"`) {
-			t.Errorf("the appended run ran with system prompt %s, want agent other's", e.Payload)
-		}
+	if !strings.Contains(msgs, "first turn") {
+		t.Errorf("the continuation was not given the session's history:\n%s", msgs)
 	}
 }
 
