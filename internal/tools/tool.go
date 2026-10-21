@@ -944,32 +944,6 @@ type MemoryPolicyValue struct {
 	Units *bool
 }
 
-// WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.
-func WithMemoryPolicy(ctx context.Context, p MemoryPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Memory = p })
-}
-
-// MemoryPolicy returns the agent's Memory policy from ctx. Zero value
-// (empty AllowedScopes, QuotaBytes=0) means "no Memory access".
-func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
-	return PolicyOf(ctx).Memory
-}
-
-// WithDecisionPolicy attaches the agent's `decision` block: the narrowing of
-// the operator's decision models the Decision tool applies to this run's
-// calls. It is set for EVERY run, nil included: a sub-agent's context derives
-// from its parent's, so a child that set nothing would otherwise run under the
-// parent's narrowing rather than its own definition's.
-func WithDecisionPolicy(ctx context.Context, d *config.AgentDecision) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.Decision = d })
-}
-
-// DecisionPolicy returns the agent's decision narrowing, or nil for none: an
-// agent that declares no block, and a call made outside a run.
-func DecisionPolicy(ctx context.Context) *config.AgentDecision {
-	return PolicyOf(ctx).Decision
-}
-
 // SqlMemPolicyValue is the per-agent SQL Memory access policy.
 //
 //   - AllowedScopes is the yaml `sql_scopes` allowlist {agent,user,run}. An
@@ -987,33 +961,11 @@ type SqlMemPolicyValue struct {
 	QuotaBytes    int
 }
 
-// WithSqlMemPolicy attaches the agent's resolved SQL Memory policy to ctx.
-func WithSqlMemPolicy(ctx context.Context, p SqlMemPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.SqlMem = p })
-}
-
-// SqlMemPolicy returns the agent's SQL Memory policy from ctx. Zero value
-// (empty AllowedScopes, QuotaBytes=0) means "no SQL access".
-func SqlMemPolicy(ctx context.Context) SqlMemPolicyValue {
-	return PolicyOf(ctx).SqlMem
-}
-
 // CoreBlocksPolicyValue carries the resolved core memory blocks that apply to
 // the current run. Blocks is operator-resolved from agent config (own +
 // inherited) — never model-supplied, same trust posture as MemoryPolicyValue.
 type CoreBlocksPolicyValue struct {
 	Blocks []config.CoreBlock
-}
-
-// WithCoreBlocksPolicy attaches the run's resolved core-block set to ctx.
-func WithCoreBlocksPolicy(ctx context.Context, p CoreBlocksPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.CoreBlocks = p })
-}
-
-// CoreBlocksPolicy returns the run's core-block set from ctx. Zero value (nil
-// Blocks) means the run has no core blocks configured.
-func CoreBlocksPolicy(ctx context.Context) CoreBlocksPolicyValue {
-	return PolicyOf(ctx).CoreBlocks
 }
 
 // ChannelPolicyValue is the per-agent Channel access policy.
@@ -2232,16 +2184,6 @@ func EvaluationPolicy(ctx context.Context) EvaluationPolicyValue {
 // AgentName(ctx); this policy only says which scope SELECTORS are permitted.
 type HistoryPolicyValue struct {
 	Scopes []string
-}
-
-// WithHistoryPolicy attaches the policy to ctx.
-func WithHistoryPolicy(ctx context.Context, p HistoryPolicyValue) context.Context {
-	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.History = p })
-}
-
-// HistoryPolicy returns the policy from ctx. Zero value = no access.
-func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
-	return PolicyOf(ctx).History
 }
 
 // Execute looks up the named tool and runs it. Unknown tool names consult

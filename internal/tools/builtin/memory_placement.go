@@ -41,7 +41,7 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 			len(in.Items), placementBatchMax), ""), nil
 	}
 
-	policy := tools.MemoryPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Memory
 	ident := tools.RunIdentity(ctx)
 
 	// FAILS CLOSED, unlike the retrieval-side ontology reads. Those fail open because an
@@ -109,7 +109,7 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 			GrantedScopes: policy.AllowedScopes,
 			// sql_scopes too: a tenant placement also writes the chunk mirror, which is a
 			// Document write and gated on both planes.
-			GrantedSqlScopes: tools.SqlMemPolicy(ctx).AllowedScopes,
+			GrantedSqlScopes: tools.PolicyOf(ctx).SqlMem.AllowedScopes,
 			// The curator gate's two inputs (RFC CV decision 6).
 			SubjectKnownToTenant: knownToTenant[subj],
 			CuratorWrite:         curator,
@@ -129,7 +129,7 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 		"moved":              moved,
 		"caller_scope":       string(callerScope),
 		"granted_scopes":     policy.AllowedScopes,
-		"granted_sql_scopes": tools.SqlMemPolicy(ctx).AllowedScopes,
+		"granted_sql_scopes": tools.PolicyOf(ctx).SqlMem.AllowedScopes,
 	})
 }
 

@@ -271,8 +271,12 @@ func TestDocument_TenantScopeRoundTrips(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	// The tenant scope is GATED on BOTH planes — structure in SQL Memory, chunk
 	// bodies in Memory — so the round trip needs both grants.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
 
 	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant handbook"}`)
 	if r.IsError {
@@ -1517,8 +1521,8 @@ func TestDocument_TenantScopeRequiresBothGrants(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			d, ctx, _ := documentFixture(t)
-			ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: c.mem})
-			ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: c.sql})
+			ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: c.mem} })
+			ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: c.sql} })
 
 			_, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"x"}`)
 			if c.wantAllow {

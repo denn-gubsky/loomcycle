@@ -44,7 +44,7 @@ func sqlMemoryFixture(t *testing.T) (*Memory, *sqlmem.Manager, context.Context, 
 
 // withSqlScopes attaches an sql_scopes ACL to ctx.
 func withSqlScopes(ctx context.Context, scopes ...string) context.Context {
-	return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: scopes})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: scopes} })
 }
 
 // TestMemorySQL_DefaultDenyWithoutScopes is the default-deny regression: a
@@ -52,7 +52,7 @@ func withSqlScopes(ctx context.Context, scopes ...string) context.Context {
 func TestMemorySQL_DefaultDenyWithoutScopes(t *testing.T) {
 	tool, _, ctx, cleanup := sqlMemoryFixture(t)
 	defer cleanup()
-	// No WithSqlMemPolicy → empty AllowedScopes → default-deny.
+	// No SQL Memory policy → empty AllowedScopes → default-deny.
 	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"sql_exec","scope":"agent","statement":"CREATE TABLE t (x INT)"}`))
 	if err != nil {
 		t.Fatal(err)

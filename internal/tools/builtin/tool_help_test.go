@@ -293,7 +293,7 @@ func TestScopedTools_EveryScopeEnumReportsGrants(t *testing.T) {
 func TestScopeGrants_AgreeWithTheToolsOwnRefusal(t *testing.T) {
 	ctx := tools.WithAgentName(context.Background(), "helper")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t1", UserID: "u1"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 
 	m := &Memory{}
 	fields := m.ScopeGrants(ctx)
@@ -317,7 +317,9 @@ func TestScopeGrants_AgreeWithTheToolsOwnRefusal(t *testing.T) {
 	}
 	// Document's tenant scope needs BOTH grants; with only memory_scopes it is
 	// refused, and the reason names the missing one.
-	ctx2 := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}})
+	ctx2 := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+	})
 	for _, g := range (&Document{}).ScopeGrants(ctx2)[0].Grants {
 		if g.Scope == "tenant" && (g.Granted || !strings.Contains(g.Reason, "sql_scopes: [tenant]")) {
 			t.Errorf("Document tenant with only memory_scopes: %+v, want refused naming sql_scopes", g)

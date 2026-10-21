@@ -21,8 +21,10 @@ func TestMemory_DefaultedScopeIsAcceptedByTheTool(t *testing.T) {
 	runStartCtx := func(id tools.RunIdentityValue, declared []string) context.Context {
 		ctx := tools.WithRunIdentity(context.Background(), id)
 		// Exactly what a run-start site does now.
-		return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-			AllowedScopes: tools.EffectiveMemoryScopes(ctx, declared),
+		return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+			rp.Memory = tools.MemoryPolicyValue{
+				AllowedScopes: tools.EffectiveMemoryScopes(ctx, declared),
+			}
 		})
 	}
 

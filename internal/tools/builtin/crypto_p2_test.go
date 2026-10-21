@@ -366,7 +366,7 @@ func TestCrypto_MemoryReferencesUseMemorysOwnChecks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	c.Memory = &Memory{Store: s, MaxValueBytes: 65536, DefaultQuotaBytes: 1 << 20}
-	mctx := tools.WithMemoryPolicy(refCtx(ctx, t.TempDir(), "Memory"), tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	mctx := tools.UpdateRunPolicy(refCtx(ctx, t.TempDir(), "Memory"), func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 
 	out, res := cryptoExec(t, c, mctx, `{"op":"encrypt","key":"m","plaintext":"note","to":"memory:user/secret-note"}`)
 	mustOK(t, "encrypt to memory", res)

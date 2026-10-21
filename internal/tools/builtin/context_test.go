@@ -635,9 +635,11 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 			HasList:      true,
 		}
 	})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		QuotaBytes:    1024,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			QuotaBytes:    1024,
+		}
 	})
 	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
 		Publish:   []string{"findings"},

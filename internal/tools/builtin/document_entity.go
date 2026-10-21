@@ -801,7 +801,7 @@ func originForEntityWrite(ctx context.Context) string {
 	// the operator planes hand out Consolidation alongside wildcard memory scopes
 	// and carry no run id, so keying on the grant alone would let any authenticated
 	// operator session mint facts that claim a machine distilled them.
-	if tools.MemoryPolicy(ctx).Consolidation {
+	if tools.PolicyOf(ctx).Memory.Consolidation {
 		return memoryOriginConsolidator
 	}
 	return "agent_explicit"

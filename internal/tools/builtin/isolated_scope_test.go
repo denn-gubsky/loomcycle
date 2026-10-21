@@ -30,7 +30,7 @@ func TestMemory_IsolatedConfinesScope(t *testing.T) {
 	// not the memory_scopes ACL.
 	policy := tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
 
-	iso := tools.WithMemoryPolicy(isoScopeCtx(true), policy)
+	iso := tools.UpdateRunPolicy(isoScopeCtx(true), func(rp *tools.RunPolicy) { rp.Memory = policy })
 	if _, _, err := m.resolveScope(iso, "tenant"); err == nil || !strings.Contains(err.Error(), "isolated") {
 		t.Errorf("isolated resolveScope(tenant) err=%v, want isolated-confinement refusal", err)
 	}
@@ -41,7 +41,7 @@ func TestMemory_IsolatedConfinesScope(t *testing.T) {
 	}
 
 	// Non-isolated: tenant resolves fine (regression — unchanged behaviour).
-	non := tools.WithMemoryPolicy(isoScopeCtx(false), policy)
+	non := tools.UpdateRunPolicy(isoScopeCtx(false), func(rp *tools.RunPolicy) { rp.Memory = policy })
 	if _, _, err := m.resolveScope(non, "tenant"); err != nil {
 		t.Errorf("non-isolated resolveScope(tenant) err=%v, want ok", err)
 	}
@@ -71,8 +71,12 @@ func TestDocument_IsolatedConfinesScope(t *testing.T) {
 	// Grant tenant on BOTH planes so the isolated refusal proves ConfineIsolatedScope
 	// fires BEFORE (and regardless of) the tenant grant check.
 	grant := func(ctx context.Context) context.Context {
-		ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
-		return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
+		ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
+		})
+		return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+			rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
+		})
 	}
 
 	iso := grant(isoScopeCtx(true))

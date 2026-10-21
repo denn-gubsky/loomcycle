@@ -184,7 +184,9 @@ func TestDecision_ReturnsEveryAnswerFieldUnchanged(t *testing.T) {
 func TestDecision_PicksTheModel(t *testing.T) {
 	d := newDecisionDouble(t)
 	tool := decisionTool(t, d)
-	narrowed := tools.WithDecisionPolicy(inRun(), &config.AgentDecision{Default: "lit", Models: []string{"deep", "lit"}})
+	narrowed := tools.UpdateRunPolicy(inRun(), func(rp *tools.RunPolicy) {
+		rp.Decision = &config.AgentDecision{Default: "lit", Models: []string{"deep", "lit"}}
+	})
 
 	for _, c := range []struct {
 		name      string
@@ -387,8 +389,7 @@ func TestDecision_ModelVisibleTextNamesNoDesignDocument(t *testing.T) {
 // TestDecisionPolicy_IsSetWhereverTheMemoryPolicyIs — every place a run's
 // policy is built sets the agent's decision block, the empty one included: a
 // site that skipped it would run a child under its parent's narrowing. Counted
-// against the memory policy, which every such site sets — as a setter call or
-// as the RunPolicy field.
+// against the memory policy, which every such site sets.
 func TestDecisionPolicy_IsSetWhereverTheMemoryPolicyIs(t *testing.T) {
 	field := regexp.MustCompile(`(?m)^\s+Decision:\s+\w+\.Decision,`)
 	total := 0
@@ -400,7 +401,7 @@ func TestDecisionPolicy_IsSetWhereverTheMemoryPolicyIs(t *testing.T) {
 		src := string(b)
 		sibling := strings.Count(src, "RecallIncludeTurns: ")
 		total += sibling
-		if mine := strings.Count(src, "tools.WithDecisionPolicy(") + len(field.FindAllString(src, -1)); mine != sibling {
+		if mine := len(field.FindAllString(src, -1)); mine != sibling {
 			t.Errorf("%s builds a run's memory policy %d times but sets its decision policy %d times", f, sibling, mine)
 		}
 	}

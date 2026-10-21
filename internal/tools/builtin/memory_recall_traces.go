@@ -98,7 +98,7 @@ func (m *Memory) attachQuestionTurns(ctx context.Context, scope store.MemoryScop
 	// fact-anchored turns. A turn is chat transcript however the runtime reached it,
 	// and letting the memory path serve one an agent's History grant forbids would
 	// make the grant decorative.
-	histScopes := tools.EffectiveHistoryScopes(ctx, tools.HistoryPolicy(ctx).Scopes)
+	histScopes := tools.EffectiveHistoryScopes(ctx, tools.PolicyOf(ctx).History.Scopes)
 	if !historyScopeAllowsOwnChats(histScopes) {
 		return nil, 0
 	}

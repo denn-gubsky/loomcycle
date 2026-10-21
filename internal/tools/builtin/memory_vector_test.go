@@ -273,8 +273,10 @@ func vectorMemoryFixture(t *testing.T) (*Memory, *fakeEmbedder, context.Context,
 	}
 	ctx := tools.WithAgentName(context.Background(), "qa-agent")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+		}
 	})
 	return tool, emb, ctx, func() { _ = s.Close() }
 }
@@ -551,7 +553,7 @@ func TestMemoryVector_SearchDimensionMismatch(t *testing.T) {
 	tool := &Memory{Store: vs, Embedder: emb4, MaxValueBytes: 65536, DefaultQuotaBytes: 1 << 20}
 	ctx := tools.WithAgentName(context.Background(), "qa")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}} })
 
 	// Set under the 4-dim embedder.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"set","scope":"agent","key":"k","value":1,"embed":true,"embed_text":"alice"}`))

@@ -80,7 +80,9 @@ func remoteMemoryFixture(t *testing.T, cfg *config.Config, baseURL string) (*Mem
 	}
 	m := &Memory{Store: defTool.Store, Cfg: cfg}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1", UserID: "u1", TenantID: "tnt"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"}
+	})
 	return m, ctx
 }
 
@@ -125,7 +127,9 @@ func TestRemoteMemoryBackend_YAMLDeclaredDefStillReachesItsPrivateHost(t *testin
 	}}
 	m := &Memory{Cfg: cfg}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1", UserID: "u1"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"}
+	})
 
 	_, _ = m.backend(ctx).Get(ctx, store.MemoryScopeUser, "u1", "k")
 	if n := peer.hits.Load(); n != 1 {
@@ -173,7 +177,9 @@ func TestRemoteMemoryBackend_RedirectToAPrivateHostIsBlocked(t *testing.T) {
 		}}
 		m := &Memory{Cfg: cfg}
 		ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1", UserID: "u1"})
-		ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"})
+		ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"}
+		})
 		if _, err := m.backend(ctx).Get(ctx, store.MemoryScopeUser, "u1", "k"); err == nil {
 			t.Errorf("Get followed a redirect to a private host; want it refused")
 		}

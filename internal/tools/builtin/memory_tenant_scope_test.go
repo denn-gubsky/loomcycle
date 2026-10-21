@@ -25,7 +25,7 @@ func tenantMemFixture(t *testing.T, tenant, user string, scopes ...string) (*Mem
 	}
 	ctx := tools.WithAgentName(context.Background(), "curator")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: user, TenantID: tenant})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: scopes} })
 	return &Memory{Store: s}, ctx, s
 }
 
@@ -49,7 +49,7 @@ func TestMemoryTenantScope_SharedAcrossUsers(t *testing.T) {
 	// A second user in the same tenant, same store.
 	ctxB := tools.WithAgentName(context.Background(), "curator")
 	ctxB = tools.WithRunIdentity(ctxB, tools.RunIdentityValue{AgentID: "b", UserID: "bob", TenantID: "acme"})
-	ctxB = tools.WithMemoryPolicy(ctxB, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
+	ctxB = tools.UpdateRunPolicy(ctxB, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
 	m2 := &Memory{Store: s}
 
 	r := memExecJSON(t, m2, ctxB, `{"op":"get","scope":"tenant","key":"house/style"}`)
@@ -72,7 +72,7 @@ func TestMemoryTenantScope_IsolatedAcrossTenants(t *testing.T) {
 
 	ctxOther := tools.WithAgentName(context.Background(), "curator")
 	ctxOther = tools.WithRunIdentity(ctxOther, tools.RunIdentityValue{AgentID: "c", UserID: "carol", TenantID: "globex"})
-	ctxOther = tools.WithMemoryPolicy(ctxOther, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
+	ctxOther = tools.UpdateRunPolicy(ctxOther, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
 
 	r := memExecJSON(t, &Memory{Store: s}, ctxOther, `{"op":"get","scope":"tenant","key":"house/style"}`)
 	if !r.IsError && strings.Contains(r.Text, "acme-only") {

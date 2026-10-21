@@ -47,8 +47,10 @@ func rerankMemoryFixture(t *testing.T, rr memrank.RerankModel, policy *config.Me
 			t.Fatalf("set %s: %s", row.key, res.Text)
 		}
 	}
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"}, Rerank: policy, Backend: backend,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"}, Rerank: policy, Backend: backend,
+		}
 	})
 	return tool, ctx, cleanup
 }

@@ -23,13 +23,13 @@ import (
 func TestSubstratePlane_GrantsTenantScopeLikeTheMCPPlane(t *testing.T) {
 	ctx := substrateAdminCtx(context.Background())
 
-	mem := tools.MemoryPolicy(ctx).AllowedScopes
+	mem := tools.PolicyOf(ctx).Memory.AllowedScopes
 	for _, want := range []string{"agent", "user", "tenant", "global"} {
 		if !containsStr(mem, want) {
 			t.Errorf("memory scope %q missing from the operator plane: %v", want, mem)
 		}
 	}
-	sql := tools.SqlMemPolicy(ctx).AllowedScopes
+	sql := tools.PolicyOf(ctx).SqlMem.AllowedScopes
 	for _, want := range []string{"agent", "user", "tenant"} {
 		if !containsStr(sql, want) {
 			t.Errorf("sql scope %q missing from the operator plane: %v", want, sql)

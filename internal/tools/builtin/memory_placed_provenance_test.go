@@ -19,9 +19,11 @@ func placedProvenanceFixture(t *testing.T) (*Memory, context.Context) {
 	// The tenant grant is what an operator adds to enable placement, so the fixture has
 	// to carry it — grantedConsolidationCtx alone grants agent+user.
 	ctx = tools.WithRunID(ctx, "run_consolidation_pass")
-	return m, tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"},
-		Consolidation: true,
+	return m, tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"},
+			Consolidation: true,
+		}
 	})
 }
 

@@ -683,10 +683,10 @@ func (d *Document) resolveScope(ctx context.Context, requested string) (sqlmem.S
 		// it. A single-grant gate here would mean Document needed less authority than
 		// the Memory tool does for the same data.
 		missing := make([]string, 0, 2)
-		if !contains(tools.MemoryPolicy(ctx).AllowedScopes, "tenant") {
+		if !contains(tools.PolicyOf(ctx).Memory.AllowedScopes, "tenant") {
 			missing = append(missing, "memory_scopes: [tenant]")
 		}
-		if !contains(tools.SqlMemPolicy(ctx).AllowedScopes, "tenant") {
+		if !contains(tools.PolicyOf(ctx).SqlMem.AllowedScopes, "tenant") {
 			missing = append(missing, "sql_scopes: [tenant]")
 		}
 		if len(missing) > 0 {

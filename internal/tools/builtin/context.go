@@ -834,7 +834,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	// behaviour. The model can compare its intended actions to these
 	// gates before attempting them (avoids "tool refused" surprises).
 	hostPol := tools.PolicyOf(ctx).Hosts
-	memPol := tools.MemoryPolicy(ctx)
+	memPol := tools.PolicyOf(ctx).Memory
 	chPol := tools.ChannelPolicy(ctx)
 	adPol := tools.AgentDefPolicy(ctx)
 	sdPol := tools.SkillPolicy(ctx)
@@ -852,9 +852,9 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			"quota_bytes":    memPol.QuotaBytes,
 			// The sql_* ops and Document's tenant scope check this grant, not
 			// allowed_scopes; without it the model sees half its memory policy.
-			"sql_scopes": tools.SqlMemPolicy(ctx).AllowedScopes,
+			"sql_scopes": tools.PolicyOf(ctx).SqlMem.AllowedScopes,
 		},
-		"history_scopes": tools.HistoryPolicy(ctx).Scopes,
+		"history_scopes": tools.PolicyOf(ctx).History.Scopes,
 		"channels": map[string]any{
 			"publish":   chPol.Publish,
 			"subscribe": chPol.Subscribe,

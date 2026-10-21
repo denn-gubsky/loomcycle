@@ -251,7 +251,9 @@ func TestRemoteMemoryBackend_StoredDynamicDefAtUnlistedHostSendsNothing(t *testi
 	// The operator lists some other host; localhost is on neither list.
 	m := &Memory{Store: defTool.Store, Cfg: listingOnly("peer.example")}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1", UserID: "u1", TenantID: "tnt"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"}
+	})
 
 	b := m.backend(ctx)
 	if _, isRemote := b.(*remote.Backend); isRemote {
@@ -320,7 +322,9 @@ func TestRemoteMemoryBackend_YAMLDeclaredDefAtUnlistedHostStillSendsItsKey(t *te
 	}}
 	m := &Memory{Cfg: cfg}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1", UserID: "u1"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"}
+	})
 
 	_, _ = m.backend(ctx).Get(ctx, store.MemoryScopeUser, "u1", "k")
 	if n := peer.hits.Load(); n != 1 {

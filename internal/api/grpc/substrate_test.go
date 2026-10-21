@@ -362,7 +362,7 @@ func TestSubstrateGRPCCtx_HistoryScopesAdminGatesGlobal(t *testing.T) {
 		TenantID: "acme",
 		Scopes:   []string{auth.ScopeTenant},
 	})
-	got := tools.HistoryPolicy(substrateGRPCCtx(tenantCtx)).Scopes
+	got := tools.PolicyOf(substrateGRPCCtx(tenantCtx)).History.Scopes
 	for _, want := range []string{"self", "user", "tenant"} {
 		if !has(got, want) {
 			t.Errorf("tenant operator: scope %q not granted (got %v)", want, got)
@@ -381,7 +381,7 @@ func TestSubstrateGRPCCtx_HistoryScopesAdminGatesGlobal(t *testing.T) {
 		TenantID: "acme",
 		Scopes:   []string{auth.ScopeAdmin},
 	})
-	gotAdmin := tools.HistoryPolicy(substrateGRPCCtx(adminCtx)).Scopes
+	gotAdmin := tools.PolicyOf(substrateGRPCCtx(adminCtx)).History.Scopes
 	if !has(gotAdmin, "global") {
 		t.Errorf("admin principal must get the global scope (got %v)", gotAdmin)
 	}

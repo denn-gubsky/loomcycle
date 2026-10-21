@@ -17,8 +17,8 @@ import (
 func gateFixture(t *testing.T) (*Document, context.Context) {
 	t.Helper()
 	d, base, _ := documentFixture(t)
-	base = tools.WithMemoryPolicy(base, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	base = tools.WithSqlMemPolicy(base, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	op := tools.WithSubstrateOperator(base)
 
 	md := "# Tenant Ontology\n\n## project\n- `status`\n\n### research\n- `question`\n"

@@ -73,7 +73,9 @@ func TestContextSelf_ReportsScopeGrantsOfHeldTools(t *testing.T) {
 	c := &Context{Tools: []tools.Tool{&Memory{}, &Path{}, &History{}}}
 	ctx := tools.WithAgentName(context.Background(), "helper")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t1", UserID: "u1"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}}
+	})
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Memory", "Path", "Context"} })
 
 	out, _ := callContext(t, c, ctx, `{"op":"self"}`)
@@ -103,8 +105,8 @@ func TestContextSelf_ReportsScopeGrantsOfHeldTools(t *testing.T) {
 
 // op=permissions reports the two grants it used to leave out.
 func TestContextPermissions_IncludesSqlAndHistoryScopes(t *testing.T) {
-	ctx := tools.WithSqlMemPolicy(context.Background(), tools.SqlMemPolicyValue{AllowedScopes: []string{"run"}})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"user"}})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"run"}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: []string{"user"}} })
 	out, _ := callContext(t, &Context{}, ctx, `{"op":"permissions"}`)
 	if got := joinAny(out["memory"].(map[string]any)["sql_scopes"]); got != "run" {
 		t.Errorf("memory.sql_scopes = %s, want run", got)

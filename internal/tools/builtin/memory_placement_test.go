@@ -19,8 +19,8 @@ func placementFixture(t *testing.T, confirmed bool, scopes ...string) (*Memory, 
 	// Authoring the ontology is an OPERATOR act and needs tenant grants on both planes.
 	// The agent ctx built below is separate and deliberately narrower — the point of the
 	// op is what an agent gets to know, not what an operator can write.
-	base = tools.WithMemoryPolicy(base, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	base = tools.WithSqlMemPolicy(base, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	dctx := tools.WithSubstrateOperator(base)
 
 	// The ontology lives in the TENANT scope at a fixed path, which is where the reader
@@ -81,10 +81,10 @@ func placementFixture(t *testing.T, confirmed bool, scopes ...string) (*Memory, 
 	// so each test reports the guard it is about rather than the curator gate.
 	// TestMemoryPlacement_AnUnadoptedSubjectStaysHome covers the gate itself.
 	adoptTenantSubjects(t, d, dctx, "checkout-api", "Cluj-Napoca", "Maria", "Ada Lovelace", "ada", "user", "u_alice", "s")
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: scopes} })
 	// sql_scopes mirrors memory_scopes here: a tenant placement needs both, because the
 	// fact's chunk mirror is a Document write. The both-grants case has its own test.
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: scopes} })
 	return &Memory{Store: d.Store, SqlMem: d.SqlMem}, ctx
 }
 
@@ -317,7 +317,9 @@ func TestMemoryPlacement_ReadingNamesDoesNotProvisionTheProfile(t *testing.T) {
 func TestMemoryPlacement_TenantNeedsSqlScopesToo(t *testing.T) {
 	m, ctx := placementFixture(t, true) // grants both
 	// Re-stamp the SQL policy WITHOUT tenant, leaving memory_scopes as they are.
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}}
+	})
 
 	got := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[{"type":"service","subject":"checkout-api"}]}`)
 	if got[0]["moved"] == true {
@@ -375,10 +377,12 @@ func TestMemoryPlacement_ACuratorMintsWhatAPassMayNot(t *testing.T) {
 	m, ctx := placementFixture(t, true)
 
 	// The same unadopted subject, asked by an OPERATOR — same grants, no run.
-	operator := tools.WithMemoryPolicy(context.Background(), tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"}})
-	operator = tools.WithSqlMemPolicy(operator, tools.SqlMemPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"}})
+	operator := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Memory: tools.MemoryPolicyValue{
+		AllowedScopes: []string{"agent", "user", "tenant"}}})
+	operator = tools.UpdateRunPolicy(operator, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
 	operator = tools.WithRunIdentity(operator, tools.RunIdentityValue{UserID: "u_alice", TenantID: "tnt"})
 
 	got := placements(t, m, operator, `{"op":"placement","scope":"user","items":[

@@ -123,7 +123,7 @@ func TestMemorySearch_ReportsTheUnitThatFoundAChunk(t *testing.T) {
 	search := func(policy tools.MemoryPolicyValue) string {
 		t.Helper()
 		policy.AllowedScopes = []string{"user"}
-		res, _ := m.Execute(tools.WithMemoryPolicy(ctx, policy), json.RawMessage(`{"op":"search","scope":"user","query":"reboot","top_k":3}`))
+		res, _ := m.Execute(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = policy }), json.RawMessage(`{"op":"search","scope":"user","query":"reboot","top_k":3}`))
 		if res.IsError {
 			t.Fatalf("search: %s", res.Text)
 		}

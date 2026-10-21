@@ -233,7 +233,7 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 // ---- memory / SQL / history ----
 
 func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	pol := tools.MemoryPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Memory
 	ceiling := pol.AllowedScopes
 	consolidation, includeTurns, attachTraces := pol.Consolidation, pol.RecallIncludeTurns, pol.RecallAttachTraces
 	if base != nil {
@@ -283,7 +283,7 @@ func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string
 }
 
 func ceilSQL(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	ceiling := tools.SqlMemPolicy(ctx).AllowedScopes
+	ceiling := tools.PolicyOf(ctx).SqlMem.AllowedScopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveSqlScopes(ctx, base.SqlScopes))
 	}
@@ -310,7 +310,7 @@ func historyScopes(ctx context.Context, declared []string) []string {
 }
 
 func ceilHistory(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	ceiling := tools.HistoryPolicy(ctx).Scopes
+	ceiling := tools.PolicyOf(ctx).History.Scopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, historyScopes(ctx, base.HistoryScope))
 	}

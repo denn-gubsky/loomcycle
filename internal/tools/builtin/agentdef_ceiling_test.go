@@ -63,9 +63,9 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	// author does hold what an unset history_scope and volumes resolve to
 	// ([user], the default volume), so a case leaving those out judges only
 	// the field it is about.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: []string{"self", "user"}} })
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}}
 	})
@@ -105,12 +105,16 @@ func ceilingCases() []ceilingCase {
 			wider: `{"volumes":["work","secrets"]}`, within: `{"volumes":["work"]}`},
 		{field: "memory_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}}
+				})
 			},
 			wider: `{"memory_scopes":["user","tenant"]}`, within: `{"memory_scopes":["user"]}`},
 		{field: "memory_consolidation",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}, Consolidation: true})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}, Consolidation: true}
+				})
 			},
 			// The memory grants are judged one by one: holding consolidation
 			// is not holding the recall grants.
@@ -118,18 +122,24 @@ func ceilingCases() []ceilingCase {
 			within: `{"memory_consolidation":true}`},
 		{field: "core_blocks",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}}
+				})
 			},
 			wider:  `{"core_blocks":[{"label":"brief","scope":"tenant"}]}`,
 			within: `{"core_blocks":[{"label":"brief","scope":"user"}]}`},
 		{field: "sql_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}}
+				})
 			},
 			wider: `{"sql_scopes":["user","tenant"]}`, within: `{"sql_scopes":["user"]}`},
 		{field: "history_scope",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.History = tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}}
+				})
 			},
 			// The legacy "any" is the cross-tenant "global" it stands for.
 			wider: `{"history_scope":["tenant","any"]}`, within: `{"history_scope":["tenant"]}`},
@@ -283,7 +293,7 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 	tool, ctx := ceilingFixture(t)
 	// Below every default: memory and SQL [agent] (the fixture), history
 	// [self], bound to the volume "work" only, interruptions of kind approval.
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: []string{"self"}} })
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}}
 	})
@@ -331,7 +341,7 @@ func TestAgentDefCreate_ReadOnlyHeldVolumeIsNotGrantedReadWrite(t *testing.T) {
 // neither the forker nor that version holds.
 func TestAgentDefFork_CapabilityCeilingKeepsTheLineageButCannotWiden(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 
 	if res := agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"system_prompt":"rewritten"}`); res.IsError {
 		t.Fatalf("prompt-only fork refused: %s", res.Text)
@@ -358,7 +368,7 @@ func TestTeamDefCreate_LocalAgentIsHeldToTheCapabilityCeiling(t *testing.T) {
 	ctx = tools.WithRunID(ctx, "run_author")
 	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle","tools":["Read"],"sql_scopes":["tenant"]}`)),
 		"team-local agent with sql_scopes", "local.agents", "sql_scopes:")
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	if res := teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle","tools":["Read"],"sql_scopes":["tenant"]}`)); res.IsError {
 		t.Fatalf("team-local agent within the author's sql_scopes refused: %s", res.Text)
 	}

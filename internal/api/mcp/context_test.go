@@ -38,7 +38,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// MemoryPolicy: empty AllowedScopes ⇒ every memory op fails.
-	mp := tools.MemoryPolicy(ctx)
+	mp := tools.PolicyOf(ctx).Memory
 	if len(mp.AllowedScopes) == 0 {
 		t.Errorf("MemoryPolicy.AllowedScopes empty; all Memory ops would fail")
 	}
@@ -95,7 +95,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// HistoryPolicy: empty Scopes ⇒ Context.history refuses.
-	hp := tools.HistoryPolicy(ctx)
+	hp := tools.PolicyOf(ctx).History
 	if len(hp.Scopes) == 0 {
 		t.Errorf("HistoryPolicy.Scopes empty; Context.history would refuse")
 	}
@@ -211,13 +211,13 @@ func TestMcpPrincipalCtx_NonAdminPrincipal_DeniesOperatorPlane(t *testing.T) {
 	}
 	// History (RFC BE): admin gets the cross-tenant `global` scope; a tenant
 	// principal gets the own-tenant scopes (self/user/tenant) but NOT `global`.
-	if !historyHasScope(tools.HistoryPolicy(admin).Scopes, "global") {
-		t.Errorf("admin principal must grant cross-tenant History (global); got %v", tools.HistoryPolicy(admin).Scopes)
+	if !historyHasScope(tools.PolicyOf(admin).History.Scopes, "global") {
+		t.Errorf("admin principal must grant cross-tenant History (global); got %v", tools.PolicyOf(admin).History.Scopes)
 	}
-	if historyHasScope(tools.HistoryPolicy(tenant).Scopes, "global") {
-		t.Errorf("non-admin principal must NOT grant cross-tenant History (global); got %v", tools.HistoryPolicy(tenant).Scopes)
+	if historyHasScope(tools.PolicyOf(tenant).History.Scopes, "global") {
+		t.Errorf("non-admin principal must NOT grant cross-tenant History (global); got %v", tools.PolicyOf(tenant).History.Scopes)
 	}
-	if len(tools.HistoryPolicy(tenant).Scopes) == 0 {
+	if len(tools.PolicyOf(tenant).History.Scopes) == 0 {
 		t.Errorf("non-admin principal should still get own-tenant History scopes; got none")
 	}
 	// Evaluation is not part of the operator plane: a tenant operator gets
@@ -274,11 +274,11 @@ func TestMCPPolicies_TenantTokenMayWriteMemorySqlAndDocuments(t *testing.T) {
 			p := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: tc.scopes}
 			ctx := mcpPrincipalCtx(auth.WithPrincipal(context.Background(), p))
 
-			mem := tools.MemoryPolicy(ctx).AllowedScopes
+			mem := tools.PolicyOf(ctx).Memory.AllowedScopes
 			if !containsStr(mem, "tenant") {
 				t.Errorf("memory_scopes = %v, missing `tenant` — the tenant keyspace is unreachable", mem)
 			}
-			sql := tools.SqlMemPolicy(ctx).AllowedScopes
+			sql := tools.PolicyOf(ctx).SqlMem.AllowedScopes
 			if len(sql) == 0 {
 				t.Fatalf("sql_scopes is EMPTY — every sql_* op over MCP fails default-deny")
 			}
@@ -305,7 +305,7 @@ func TestMCPPolicies_TenantTokenMayWriteMemorySqlAndDocuments(t *testing.T) {
 // active run" one.
 func TestMCPPolicies_SqlScopesOmitsRun(t *testing.T) {
 	ctx := operatorCtx(context.Background())
-	if containsStr(tools.SqlMemPolicy(ctx).AllowedScopes, "run") {
+	if containsStr(tools.PolicyOf(ctx).SqlMem.AllowedScopes, "run") {
 		t.Error("sql_scopes should not include `run` on a plane that has no run")
 	}
 }
