@@ -3053,7 +3053,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// and before the session's team, whose refusal names the agent and
 		// the team. Any other answer confirms the session exists, or lets a
 		// caller enumerate names until it learns the session's agent.
-		reachable, err := s.allowlistReachesSession(ctx, sess)
+		reachable, err := s.continuationReachesSession(ctx, sess)
 		if err != nil {
 			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 		}

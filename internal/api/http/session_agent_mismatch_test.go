@@ -9,6 +9,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 func spawnSegs(text string) []loop.PromptSegment {
@@ -204,5 +205,60 @@ func TestContinuation_ARestrictedTokenCannotTellAnUnreachableSessionFromAMissing
 	}
 	if _, ran := g.prov.sawCall("PROBE turn"); ran {
 		t.Error("a probe reached the model")
+	}
+}
+
+// A sub-agent's session under a root outside the token's list is not reached,
+// though the sub-agent itself is on the list: continuing it would replay the
+// session's whole history to the model, turning the continuation into a read
+// of the foreign tree. It answers as a missing session does.
+func TestContinuation_ASubAgentSessionUnderAForeignRootIsUnreachable(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{authed: true})
+	ctx := context.Background()
+	rootSess, err := g.st.CreateSession(ctx, "acme", "other", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := g.st.CreateRun(ctx, rootSess.ID, store.RunIdentity{AgentID: "a_root", TenantID: "acme", UserID: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subSess, err := g.st.CreateSession(ctx, "acme", "plain", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.st.CreateRun(ctx, subSess.ID, store.RunIdentity{
+		AgentID: "a_sub", ParentAgentID: root.AgentID, ParentRunID: root.ID, TenantID: "acme", UserID: "dev",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const missing = "s_0123456789abcdef"
+	mask := func(s, id string) string { return strings.ReplaceAll(s, id, "<session>") }
+
+	for name, post := range map[string]func(id string) *goldenResp{
+		"messages": func(id string) *goldenResp {
+			return g.postAs(goldenRestrictedBearer, "/v1/sessions/"+id+"/messages", goldenMsgBody("PROBE turn", ""))
+		},
+		"runs + session_id": func(id string) *goldenResp {
+			return g.postAs(goldenRestrictedBearer, "/v1/runs", goldenRunBody("plain", "PROBE turn", `"session_id":"`+id+`"`))
+		},
+	} {
+		sub, absent := post(subSess.ID), post(missing)
+		sub.drain(t)
+		absent.drain(t)
+		if sub.status != http.StatusNotFound || mask(sub.body, subSess.ID) != mask(absent.body, missing) {
+			t.Errorf("%s: sub-agent session = %d %q, missing one = %d %q; want the same 404",
+				name, sub.status, sub.body, absent.status, absent.body)
+		}
+	}
+	if _, ran := g.prov.sawCall("PROBE turn"); ran {
+		t.Error("a continuation of the foreign tree's session reached the model")
+	}
+
+	// The unrestricted member continues it.
+	free := g.postAs(goldenMemberBearer, "/v1/sessions/"+subSess.ID+"/messages", goldenMsgBody("member turn", ""))
+	free.drain(t)
+	if free.status != http.StatusOK {
+		t.Errorf("an unrestricted member continuing the sub-agent session: %d %s", free.status, free.body)
 	}
 }
