@@ -25,12 +25,24 @@ type InertToolGrant struct {
 // crypto_scopes does leave out.
 var inertGateForTool = []struct {
 	tool, gate, fix string
+	// operatorOnly marks a tool that is never given to an agent's run: it is
+	// reached only through the operator surfaces, and no run path grants its
+	// gate. Listing it is inert whatever the gate says, so the advice is to
+	// drop it, not to set the gate.
+	operatorOnly bool
 }{
-	{"AgentDef", "agent_def_scopes", "e.g. [self] or [any]"},
-	{"ScheduleDef", "schedule_def_scopes", "e.g. [any]"},
-	{"VolumeDef", "volume_def_scopes", "e.g. [any] or [named:<volume>]"},
-	{"A2AServerCardDef", "a2a_server_card_def_scopes", "e.g. [any]"},
-	{"A2AAgentDef", "a2a_agent_def_scopes", "e.g. [any]"},
+	{"AgentDef", "agent_def_scopes", "e.g. [self] or [any]", false},
+	{"ScheduleDef", "schedule_def_scopes", "", true},
+	{"VolumeDef", "volume_def_scopes", "e.g. [any] or [named:<volume>]", false},
+	{"A2AServerCardDef", "a2a_server_card_def_scopes", "", true},
+	{"A2AAgentDef", "a2a_agent_def_scopes", "", true},
+}
+
+// OperatorOnlyToolMessage is the advisory for an agent that lists a tool only
+// the operator surfaces reach.
+func OperatorOnlyToolMessage(tool, gate string) string {
+	return fmt.Sprintf("`%s` is in this agent's tools, but %s is not available to agents: it is reached only through the operator surfaces (HTTP, gRPC, MCP, the Web UI), and `%s:` does not change that. Drop the tool.",
+		tool, tool, gate)
 }
 
 // InertToolGrants returns the tools this agent holds whose gate is empty, in a
@@ -65,6 +77,10 @@ func InertToolGrants(a AgentDef) []InertToolGrant {
 
 	var out []InertToolGrant
 	for _, g := range inertGateForTool {
+		if g.operatorOnly && has(g.tool) {
+			out = append(out, InertToolGrant{Tool: g.tool, Gate: g.gate, Message: OperatorOnlyToolMessage(g.tool, g.gate)})
+			continue
+		}
 		if !has(g.tool) || len(gate(g.gate)) > 0 {
 			continue
 		}

@@ -7841,14 +7841,17 @@ func agentGateWarnings(name string, a AgentDef) []string {
 	if has("AgentDef") && len(a.AgentDefScopes) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes AgentDef but agent_def_scopes is empty — every AgentDef op will default-deny; add agent_def_scopes (e.g. [any] or [self])", name))
 	}
-	if has("ScheduleDef") && len(a.ScheduleDefScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: tools includes ScheduleDef but schedule_def_scopes is empty — every ScheduleDef op will default-deny; add schedule_def_scopes", name))
-	}
-	if has("A2AServerCardDef") && len(a.A2AServerCardDefScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: tools includes A2AServerCardDef but a2a_server_card_def_scopes is empty — every A2AServerCardDef op will default-deny; add a2a_server_card_def_scopes", name))
-	}
-	if has("A2AAgentDef") && len(a.A2AAgentDefScopes) == 0 {
-		w = append(w, fmt.Sprintf("agent %q: tools includes A2AAgentDef but a2a_agent_def_scopes is empty — every A2AAgentDef op will default-deny; add a2a_agent_def_scopes", name))
+	// ScheduleDef and the A2A def tools are operator-surface tools: no run is
+	// given them, whatever their *_def_scopes say, so the advice is to drop
+	// them rather than to set the scope.
+	for _, op := range []struct{ tool, gate string }{
+		{"ScheduleDef", "schedule_def_scopes"},
+		{"A2AServerCardDef", "a2a_server_card_def_scopes"},
+		{"A2AAgentDef", "a2a_agent_def_scopes"},
+	} {
+		if has(op.tool) {
+			w = append(w, fmt.Sprintf("agent %q: %s", name, OperatorOnlyToolMessage(op.tool, op.gate)))
+		}
 	}
 	if has("VolumeDef") && len(a.VolumeDefScopes) == 0 {
 		w = append(w, fmt.Sprintf("agent %q: tools includes VolumeDef but volume_def_scopes is empty — every VolumeDef op will default-deny; add volume_def_scopes (e.g. [any] or [named:<vol>])", name))
