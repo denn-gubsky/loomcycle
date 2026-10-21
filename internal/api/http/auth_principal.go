@@ -650,6 +650,42 @@ func (s *Server) allowlistReachesRun(ctx context.Context, runID string) bool {
 	return s.runTree(ctx).Reaches(runID)
 }
 
+// allowlistReachesRow is allowlistReachesRun for a run row the caller has
+// already read: the walk starts from the row instead of reading it again.
+// Every read that returns a run's content or metadata applies it on top of
+// its ownership rule and answers a false with its own opaque not-found.
+func (s *Server) allowlistReachesRow(ctx context.Context, run store.Run) bool {
+	return s.runTree(ctx).ReachesKnown(runLink(run))
+}
+
+// allowlistReachesSession reports whether the caller's agent allowlist
+// reaches a session: whether it reaches every run in it (auth.RunTree's
+// ReachesSession). A session read hands over the history of those runs, so a
+// token limited to certain agents must not read a session of another agent,
+// nor one a sub-run opened inside another agent's tree. Same posture as
+// allowlistReachesRun: true with no read for an unrestricted caller, fails
+// closed, and every gate folds a false into its opaque not-found.
+func (s *Server) allowlistReachesSession(ctx context.Context, sess store.Session) bool {
+	tree := s.runTree(ctx)
+	if !tree.Restricted() {
+		return true
+	}
+	if s.store == nil {
+		return false
+	}
+	return tree.ReachesSession(sess.Agent, func() ([]auth.RunLink, error) {
+		runs, err := s.store.RunsForSession(ctx, sess.ID)
+		if err != nil {
+			return nil, err
+		}
+		links := make([]auth.RunLink, 0, len(runs))
+		for _, r := range runs {
+			links = append(links, runLink(r))
+		}
+		return links, nil
+	})
+}
+
 // runTree is the allowlist walker for the principal on ctx, reading runs from
 // the store. Without a store it reads nothing, so a restricted caller is
 // refused (fail closed) and every other caller is unaffected.

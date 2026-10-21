@@ -42,7 +42,11 @@ func (s *Server) walkRuns(ctx context.Context, walkID string, limit int, cursor 
 	if err != nil {
 		return nil, "", err
 	}
-	if !runOwnershipOK(ctx, walk) {
+	// A token limited to certain agents reads only walks in trees it could
+	// have started. Members are in the walk's own tree, so each passes the
+	// per-row check below from what the tree has already read.
+	tree := s.runTree(ctx)
+	if !runOwnershipOK(ctx, walk) || !tree.ReachesKnown(runLink(walk)) {
 		return nil, "", &store.ErrNotFound{Kind: "run", ID: walkID}
 	}
 	queryTenant := ts.tenantID
@@ -55,7 +59,7 @@ func (s *Server) walkRuns(ctx context.Context, walkID string, limit int, cursor 
 	}
 	out := rows[:0]
 	for _, r := range rows {
-		if runOwnershipOK(ctx, r) {
+		if runOwnershipOK(ctx, r) && tree.ReachesKnown(runLink(r)) {
 			out = append(out, r)
 		}
 	}
@@ -86,7 +90,9 @@ func (s *Server) childRuns(ctx context.Context, parentRunID string, limit int, c
 	if err != nil {
 		return nil, "", err
 	}
-	if !runOwnershipOK(ctx, parent) {
+	// The allowlist gate as walkRuns': a run's children are in its tree.
+	tree := s.runTree(ctx)
+	if !runOwnershipOK(ctx, parent) || !tree.ReachesKnown(runLink(parent)) {
 		return nil, "", &store.ErrNotFound{Kind: "run", ID: parentRunID}
 	}
 	queryTenant := ts.tenantID
@@ -99,7 +105,7 @@ func (s *Server) childRuns(ctx context.Context, parentRunID string, limit int, c
 	}
 	out := rows[:0]
 	for _, r := range rows {
-		if runOwnershipOK(ctx, r) {
+		if runOwnershipOK(ctx, r) && tree.ReachesKnown(runLink(r)) {
 			out = append(out, r)
 		}
 	}

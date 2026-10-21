@@ -171,6 +171,11 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 
 	sub := s.runStateBus.Subscribe(req.UserID)
 	defer sub.Close()
+	// A token limited to certain agents is passed only the transitions of runs
+	// in trees it could have started. The run's row decides, not the event's
+	// own fields; the tree remembers each run, so a run's later transitions
+	// cost no read.
+	tree := s.runTree(ctx)
 
 	for {
 		select {
@@ -203,6 +208,9 @@ func (s *Server) StreamUserRunStates(ctx context.Context, req connector.StreamUs
 				continue
 			}
 			if len(statusSet) > 0 && !statusSet[evt.Status] {
+				continue
+			}
+			if !tree.Reaches(evt.RunID) {
 				continue
 			}
 			if err := visit(runStateEventToConnector(evt)); err != nil {

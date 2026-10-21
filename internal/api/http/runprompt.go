@@ -57,7 +57,7 @@ func (s *Server) handleGetRunPrompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if !runOwnershipOK(r.Context(), run) {
+	if !runOwnershipOK(r.Context(), run) || !s.allowlistReachesRow(r.Context(), run) {
 		writeJSONError(w, http.StatusNotFound, "unknown_run", "no run found for that run_id")
 		return
 	}

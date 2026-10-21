@@ -381,7 +381,7 @@ func (s *Server) GetRun(ctx context.Context, agentID string) (connector.Run, err
 	if err != nil {
 		return connector.Run{}, err
 	}
-	if !runOwnershipOK(ctx, r) {
+	if !runOwnershipOK(ctx, r) || !s.allowlistReachesRow(ctx, r) {
 		return connector.Run{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
 	return s.singleRunToConnector(ctx, r), nil
@@ -400,7 +400,7 @@ func (s *Server) GetRunByRunID(ctx context.Context, runID string) (connector.Run
 	if err != nil {
 		return connector.Run{}, err
 	}
-	if !runOwnershipOK(ctx, r) {
+	if !runOwnershipOK(ctx, r) || !s.allowlistReachesRow(ctx, r) {
 		return connector.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
 	}
 	return s.singleRunToConnector(ctx, r), nil
@@ -457,13 +457,25 @@ func (s *Server) ListRuns(ctx context.Context, filter connector.ListRunsFilter) 
 		queryTenant = ""
 	}
 	var rows []store.Run
-	if filter.UserID != "" {
+	tree := s.runTree(ctx)
+	switch {
+	case filter.UserID != "" && tree.Restricted():
+		// A token limited to certain agents lists only the runs in trees it
+		// could have started, and its page is filled past the rows it may not
+		// see rather than cut short by them.
+		keep := func(r store.Run) bool { return ts.visible(r.TenantID) && tree.ReachesKnown(runLink(r)) }
+		rs, _, err := store.CollectRunsByUser(ctx, s.store, queryTenant, filter.UserID, []store.RunStatus{store.RunStatus(filter.Status)}, keep, 0, limit)
+		if err != nil {
+			return nil, err
+		}
+		rows = rs
+	case filter.UserID != "":
 		rs, err := s.store.ListActiveRunsByUser(ctx, queryTenant, filter.UserID, store.RunStatus(filter.Status))
 		if err != nil {
 			return nil, err
 		}
 		rows = rs
-	} else {
+	default:
 		// No optimised non-user query exists today; fall through to a
 		// scan via storetest semantics. For v0.8.15 we require a UserID
 		// filter; callers omitting it get an explicit error so they

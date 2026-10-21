@@ -5927,6 +5927,11 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	// same tenant ownership as continuation. The accessor folds a cross-tenant
 	// session into the same opaque *store.ErrNotFound a missing one returns.
 	sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), id)
+	if err == nil && !s.allowlistReachesSession(r.Context(), sess) {
+		// A token limited to certain agents reads only sessions in the trees
+		// it could have started; another agent's is the same opaque not-found.
+		err = &store.ErrNotFound{Kind: "session", ID: id}
+	}
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -8052,7 +8057,9 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		// Deregister between a check and a read doesn't return a
 		// half-populated entry.
 		entry, ok := s.cancelReg.Get(agentID)
-		if !ok {
+		// Without a store no run tree can be walked: a token limited to
+		// certain agents is refused (allowlistReachesRun fails closed).
+		if !ok || !s.allowlistReachesRun(r.Context(), entry.RunID) {
 			writeJSONError(w, http.StatusNotFound, "unknown_agent_id",
 				fmt.Sprintf("no live run for %q (no store configured)", agentID))
 			return
@@ -8077,9 +8084,10 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	// covers both — a cross-tenant probe gets the identical opaque 404 (no
 	// existence oracle). Super-admin / legacy / open mode see all.
 	run, err := s.tenantStore(r.Context()).GetRunByAgentID(r.Context(), agentID)
-	if err == nil && !runOwnershipOK(r.Context(), run) {
+	if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRow(r.Context(), run)) {
 		// The row carries another user's prompt, result and draft: an
-		// isolated member gets the same opaque 404 a missing run does.
+		// isolated member gets the same opaque 404 a missing run does, and so
+		// does a token limited to agents whose trees the run is outside.
 		err = &store.ErrNotFound{Kind: "run", ID: agentID}
 	}
 	if err != nil {
@@ -8121,7 +8129,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	// into ErrNotFound, and an isolated member reading another user's run
 	// gets that same opaque 404 — run ids are not secret.
 	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
-	if err == nil && !runOwnershipOK(r.Context(), run) {
+	if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRow(r.Context(), run)) {
 		err = &store.ErrNotFound{Kind: "run", ID: runID}
 	}
 	if err != nil {
@@ -8336,7 +8344,13 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	// Still needed: the store reads tenant "" as "all tenants", so a
 	// non-admin principal whose tenant is "" (a config-declared principal
 	// may omit it) gets every tenant's rows back and must be narrowed here.
-	visible := func(run store.Run) bool { return allTenants || run.TenantID == scopeTenant }
+	// A token limited to certain agents sees only the runs in trees it could
+	// have started; the rest are left out, not refused (tree.ReachesKnown is
+	// true for every other caller, without a read).
+	tree := s.runTree(r.Context())
+	visible := func(run store.Run) bool {
+		return (allTenants || run.TenantID == scopeTenant) && tree.ReachesKnown(runLink(run))
+	}
 	var (
 		out       []agentResponse
 		truncated bool
@@ -8356,7 +8370,18 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		truncated = cut
 	} else {
-		runs, err := s.store.ListActiveRunsByUser(r.Context(), queryTenant, userID, statuses...)
+		var (
+			runs []store.Run
+			err  error
+		)
+		if tree.Restricted() {
+			// The allowlist is a filter the query cannot express, so the
+			// first page alone could be every other agent's runs: read on
+			// until the page is full, as the awaited_state scan does.
+			runs, truncated, err = store.CollectRunsByUser(r.Context(), s.store, queryTenant, userID, statuses, visible, s.awaitedScanCap, userAgentsListMax)
+		} else {
+			runs, err = s.store.ListActiveRunsByUser(r.Context(), queryTenant, userID, statuses...)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -9217,6 +9242,20 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// A token limited to certain agents sees only the questions of runs in
+	// trees it could have started. The store's row bound applies first, so a
+	// user with that many pending questions from other agents can show such a
+	// token fewer of its own than exist: the inbox has no cursor to page with,
+	// and a short inbox is the safe side of that trade.
+	if tree := s.runTree(r.Context()); tree.Restricted() {
+		kept := rows[:0]
+		for _, row := range rows {
+			if tree.Reaches(row.RunID) {
+				kept = append(kept, row)
+			}
+		}
+		rows = kept
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"interrupts": rows, "total": len(rows)})
 }
