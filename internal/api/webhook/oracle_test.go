@@ -258,3 +258,48 @@ func TestWebhook_UnknownNameDoesNotBufferTheBody(t *testing.T) {
 		t.Errorf("an unknown name allocated %d bytes for an %d-byte body; want it discarded, not buffered", got, size)
 	}
 }
+
+// slowSenderStatus sends a request that declares a body and then stalls, and
+// returns the status line the server answers with within wait (or "" if it
+// is still waiting for the body).
+func slowSenderStatus(t *testing.T, srvURL, path string, wait time.Duration) string {
+	t.Helper()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srvURL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\nX-Hub-Signature-256: sha256=00\r\n\r\n{\"a\":", path)
+	_ = conn.SetReadDeadline(time.Now().Add(wait))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		return ""
+	}
+	_ = resp.Body.Close()
+	return resp.Status
+}
+
+// TestWebhook_StalledBodyIsCutOffForEveryName: the body of an unauthenticated
+// delivery is read under a deadline, so a sender that declares a body and
+// stalls cannot hold a connection open indefinitely, and the deadline is the
+// same whether or not the name exists.
+func TestWebhook_StalledBodyIsCutOffForEveryName(t *testing.T) {
+	defs := map[string]config.Webhook{
+		"gh": {Enabled: true, Delivery: "spawn", Agent: "x", Auth: config.WebhookAuth{Kind: "hmac", Header: "X-Hub-Signature-256", SigningSecretEnv: "WH_SECRET"}},
+	}
+	rec := newTestReceiver(t, defs, &fakeRunner{runID: "r", agentID: "a"}, nil, map[string]string{"WH_SECRET": "shhh"}, []string{"WH_SECRET"}, time.Unix(1_700_000_000, 0))
+	rec.bodyReadTimeout = 200 * time.Millisecond
+	mux := http.NewServeMux()
+	rec.Mount(mux)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	unknown := slowSenderStatus(t, srv.URL, "/v1/_webhooks/nope", 3*time.Second)
+	live := slowSenderStatus(t, srv.URL, "/v1/_webhooks/gh", 3*time.Second)
+	if unknown == "" || live == "" {
+		t.Fatalf("a stalled body held the connection past the read deadline (unknown %q, live %q)", unknown, live)
+	}
+	if unknown != live {
+		t.Errorf("stalled body: unknown name %q, live name %q", unknown, live)
+	}
+}

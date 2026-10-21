@@ -27,6 +27,16 @@ import (
 
 const defaultBodySizeLimitBytes = 1 << 20 // 1 MiB
 
+// defaultBodyReadTimeout bounds how long a delivery's body may take to arrive,
+// from the moment the receiver starts reading it. The server sets no
+// ReadTimeout (SSE and long run requests share it), so without this a sender
+// that declares a body and stalls would hold a goroutine and a connection for
+// as long as it likes. 30 s is generous for real senders: GitHub gives up on
+// a delivery after 10 s, and the request limit (16 MiB by default) arrives in
+// well under 30 s on any link a webhook sender uses. The same for every name,
+// so it tells nothing about which exist.
+const defaultBodyReadTimeout = 30 * time.Second
+
 // defaultRequestCapBytes is the server's request limit when
 // LOOMCYCLE_MAX_REQUEST_BYTES is unset; the HTTP server uses the same default.
 const defaultRequestCapBytes = 16 << 20
@@ -58,13 +68,18 @@ func (rec *Receiver) bodyLimit(wd config.Webhook) int64 {
 // readDelivery reads a delivery's body the same way for every name, so how it
 // is read (the interim 100 Continue of an Expect: 100-continue request, the
 // connection closing on a body over the request limit) does not tell an
-// unauthenticated caller whether the name exists (RFC ES #4). keep is how
+// unauthenticated caller whether the name exists (RFC ES #4), under the same
+// read deadline (defaultBodyReadTimeout). keep is how
 // much the resolved webhook accepts; 0 for a name that is unknown or inert.
 // At most keep bytes are buffered: the rest of the body, or all of it when
 // nothing is kept, is read into io.Discard, bounded by requestCap, so a large
 // body to an unknown name costs no memory. ok is false when the body was not
 // kept: unknown, unreadable, or over keep.
 func (rec *Receiver) readDelivery(w http.ResponseWriter, r *http.Request, keep int64) (body []byte, ok bool) {
+	// A deadline on the body, the same for every name. A transport that
+	// cannot set one (a test recorder) reports ErrNotSupported; nothing to
+	// bound there.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(rec.bodyReadTimeout))
 	rd := http.MaxBytesReader(w, r.Body, rec.requestCap())
 	if keep > 0 {
 		b, err := io.ReadAll(io.LimitReader(rd, keep+1))
@@ -108,6 +123,9 @@ type Receiver struct {
 
 	dedup   *dedupCache
 	limiter *rateLimiter
+	// bodyReadTimeout bounds how long a delivery's body may take to arrive
+	// (defaultBodyReadTimeout; a test seam).
+	bodyReadTimeout time.Duration
 
 	// recent is the per-webhook-def triage ring buffer (WH-5b), keyed by
 	// webhookKey like the rate-limit buckets. Holds the last recentBufferCap
@@ -197,6 +215,7 @@ func New(d Deps) *Receiver {
 		logf:                 logf,
 		dedup:                newDedupCache(now),
 		limiter:              newRateLimiter(now),
+		bodyReadTimeout:      defaultBodyReadTimeout,
 		counts:               d.Counts,
 		pending:              map[countKey]int64{},
 		now:                  now,
