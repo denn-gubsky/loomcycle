@@ -1016,3 +1016,22 @@ func TestOntologyTree_ReadsTheScopeDirectiveFromTheChunkBody(t *testing.T) {
 		}
 	}
 }
+
+// The operator marker counts only off-run: a ctx that carries it into a run
+// (the marker is stripped at every spawn, so this is defense in depth) is an
+// agent's, and may not decide the ontology.
+func TestOntologyGuard_TheOperatorMarkerInsideARunIsAnAgent(t *testing.T) {
+	d, opCtx, _ := ontologyAgentFixture(t)
+	read, err := d.OntologyTermsFromTree(opCtx, "tenant", memrank.OntologyPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	req := fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":"%s","parent_id":"%s","title":"decided","body":""}`,
+		read.DocumentID, read.RootChunkID)
+	if _, r := docExec(t, d, tools.WithRunID(opCtx, "r_injected"), req); !r.IsError {
+		t.Error("an in-run ctx carrying the operator marker created a live ontology entity")
+	}
+	if _, r := docExec(t, d, opCtx, req); r.IsError {
+		t.Errorf("the off-run operator was refused: %s", r.Text)
+	}
+}

@@ -56,7 +56,9 @@ const proposalBodyMax = 4000
 // ontology document only exists at tenant scope, so a call on any other scope returns
 // immediately without touching the store.
 func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, op string, in docInput) *tools.Result {
-	if tools.IsSubstrateOperator(ctx) || key.Scope != "tenant" {
+	// The operator marker counts only off-run, as in crypto.go: the spawn
+	// boundary strips it, and a run id here means an agent reached the call.
+	if (tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "") || key.Scope != "tenant" {
 		return nil
 	}
 	docID := d.ontologyDocumentID(ctx, key)
