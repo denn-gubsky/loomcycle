@@ -1,4 +1,4 @@
 == continue other: POST /v1/sessions/<id:1>/messages
-status: 403
-content-type: application/json
-body: {"code":"agent_not_allowed","error":"agent not allowed for this token: \"other\""}
+status: 404
+content-type: text/plain; charset=utf-8
+body: session not found: <id:1>

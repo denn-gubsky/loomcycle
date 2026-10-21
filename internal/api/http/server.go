@@ -3047,6 +3047,25 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if !sessionOwnershipOK(ctx, sess) {
 			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
 		}
+		// A token limited to some agents does not reach a session outside its
+		// list, and is answered as for a session that does not exist —
+		// whatever the request names (no agent, the session's, another one),
+		// and before the session's team, whose refusal names the agent and
+		// the team. Any other answer confirms the session exists, or lets a
+		// caller enumerate names until it learns the session's agent.
+		reachable, err := s.continuationReachesSession(ctx, sess)
+		if err != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		if !reachable {
+			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
+		}
+		// A continuation runs its session's agent (RFC ET P1 decision A18).
+		// A caller naming another agent is refused rather than silently run
+		// as the session's.
+		if in.Agent != "" && in.Agent != sess.Agent {
+			return s.sessionAgentMismatch(ctx, in.SessionID, sess.Agent, in.Agent)
+		}
 		// A no-trace session has no transcript to continue from. Refused here,
 		// before any slot or lock, with its own answer; it used to reach the row
 		// creation and come back as an internal error.
@@ -3114,6 +3133,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// the ctx tenant is wrong here.
 	// The agent is final here (a continuation has taken its session's, a
 	// started draft its row's), so this covers all three.
+	// (A continuation's agent was checked with its session, above.)
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}
@@ -3603,7 +3623,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 	// Known to this replica as one of its session's runs until it has ended
 	// and let the session go: a continuation that finds the session busy
-	// waits out its end only while it is being cancelled (takeSession).
+	// waits out its end only while it is being cancelled or finishing with
+	// its input closed (takeSession).
 	untrackRun := s.sessionRuns.track(sessionID, agentID, runID)
 	if sessHold != nil {
 		sessHold.onRelease = untrackRun // after the session is let go
@@ -3691,6 +3712,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(runParent, runID, agentID, sessionID, effectiveUserID, emit)
+	closeSteer = s.sessionRuns.finishingWhenClosed(sessionID, runID, closeSteer)
 	defer func() {
 		if !handOff {
 			deregSteer()
@@ -3830,6 +3852,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		CloseSteerIfEmpty:   closeSteer,
+		IdleTimeout:         s.cfg().Env.InteractiveIdleTimeout, // top-level only: sub-agents start elsewhere, with their own lifecycle
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(runID),
@@ -5285,26 +5308,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	// session_id continues the session (RFC ET P1 decision A18, owner
 	// 2026-10-21): the session's history is replayed and it runs the session's
-	// agent and identity. RunOnce takes the session's agent and ignores the
-	// request's, so a request naming another agent is refused here rather than
-	// silently run as the session's — and refused without telling the caller
-	// anything it may not see: a session it may not use (another tenant's,
-	// another user's for an isolated member) is left to RunOnce's opaque 404,
-	// and the session's agent is named only when the token may run it.
-	if req.SessionID != "" {
-		if sess, err := s.store.GetSession(r.Context(), req.SessionID); err == nil && sessionOwnershipOK(r.Context(), sess) && sess.Agent != req.Agent {
-			if err := s.admitPrincipalAgent(r.Context(), req.Agent); err != nil {
-				writeAgentNotAllowed(w, err)
-				return
-			}
-			msg := fmt.Sprintf("session %q does not continue with agent %q: a session continues with its own agent", req.SessionID, req.Agent)
-			if s.admitPrincipalAgent(r.Context(), sess.Agent) == nil {
-				msg = fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", req.SessionID, sess.Agent, req.Agent)
-			}
-			http.Error(w, msg, http.StatusBadRequest)
-			return
-		}
-	}
+	// agent and identity. A request naming another agent is refused by RunOnce
+	// (sessionAgentMismatch), as on every transport.
 	in.RateAdmitted = true
 	// A continued session is held in every replica (as gRPC Continue holds it).
 	in.SessionLockAcrossReplicas = true
@@ -8582,7 +8587,10 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
 		return
 	case errors.Is(err, connector.ErrRunNotInFlight):
-		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		// Also the answer to a message that just missed a run ending (an
+		// interactive run's idle timeout closes its queue first): the run is
+		// gone, its session is not.
+		http.Error(w, "no in-flight run for that run_id; to go on, continue its session with POST /v1/sessions/{session_id}/messages", http.StatusNotFound)
 		return
 	case errors.Is(err, connector.ErrSteeringUnavailable):
 		http.Error(w, "steering is not enabled on this server", http.StatusServiceUnavailable)

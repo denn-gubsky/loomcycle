@@ -158,6 +158,23 @@ describe("bridge conversation", () => {
     expect(lc.runs[1].opts).toMatchObject({ sessionId: "sess-1", interactive: true });
   });
 
+  it("continues the session when its run ended just before the message reached it", async () => {
+    // loomcycle ends a run parked too long (stop reason idle_timeout) and
+    // refuses a message sent to it after that with 404. The bridge may not
+    // have read the run's end yet; the message must still be delivered.
+    await say("first");
+    lc.runs[0].events.push({ type: "awaiting_input" });
+    await settle();
+    lc.failNext.sendRunInput = httpError(404);
+    await say("are you still there?");
+
+    expect(lc.callsTo("sendRunInput").map((c) => c.args)).toEqual([["run-1", "are you still there?"]]);
+    expect(lc.runs).toHaveLength(2);
+    expect(lc.runs[1].kind).toBe("continue");
+    expect(lc.runs[1].opts).toMatchObject({ sessionId: "sess-1", interactive: true });
+    expect(lc.runs[1].opts.segments).toEqual([{ role: "user", content: [{ type: "trusted-text", text: "are you still there?" }] }]);
+  });
+
   it("after a restart, ends the old run and continues its session rather than replaying it", async () => {
     await store.put({
       conversationId: "conv-1",

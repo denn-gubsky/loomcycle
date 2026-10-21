@@ -158,14 +158,15 @@ func TestRestrictedToken_EveryOtherIntakeIsHeldToTheList(t *testing.T) {
 	ctx := context.Background()
 
 	// A session of the other agent, owned by the same user: continuing it is
-	// a new run of that agent.
+	// a new run of that agent. The token does not reach that session, and is
+	// answered as for a session that does not exist.
 	sess, err := st.CreateSession(ctx, "acme", "other", "dev")
 	if err != nil {
 		t.Fatal(err)
 	}
 	msg := `{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"more"}]}]}`
-	if code, body := bearerCall(t, ts, restrictedBearer, "POST", "/v1/sessions/"+sess.ID+"/messages", msg); code != 403 || !strings.Contains(body, "agent_not_allowed") {
-		t.Errorf("continuing a session of another agent: status %d, want 403 agent_not_allowed: %s", code, body)
+	if code, body := bearerCall(t, ts, restrictedBearer, "POST", "/v1/sessions/"+sess.ID+"/messages", msg); code != 404 || strings.Contains(body, "other") {
+		t.Errorf("continuing a session of another agent: status %d, want 404 naming nothing: %s", code, body)
 	}
 	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/sessions/"+sess.ID+"/messages", msg); code != 200 {
 		t.Errorf("the unrestricted token continuing it: status %d: %s", code, body)

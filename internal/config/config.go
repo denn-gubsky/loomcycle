@@ -4109,6 +4109,14 @@ type Env struct {
 	// running turn is never idle. 0 = the code default (2h); there is no
 	// unlimited setting. Env: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS.
 	ResidentMaxTurnSeconds int
+	// InteractiveIdleTimeout ends a top-level interactive run (or a detached
+	// interactive continuation) that has waited parked for its operator this
+	// long: it finishes with stop reason idle_timeout and releases what it
+	// holds, and its session can be continued. Default 1h; 0 waits forever.
+	// Resident sub-agents (InteractiveChildIdleTTLMs) and review holds (their
+	// review TTL) have their own bounds. Env: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
+	// (a Go duration).
+	InteractiveIdleTimeout time.Duration
 	// AgentChildMaxTimeoutMs is the ceiling on the timeout_ms an agent may give
 	// a child it starts with Agent spawn / parallel_spawn. 0 = no ceiling. It is
 	// a ceiling, not a default: a spawn without timeout_ms still waits for its
@@ -5948,6 +5956,16 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	cfg.Env.ChannelHooksMaxWait = 15 * time.Minute
 	if d, err := time.ParseDuration(os.Getenv("LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT")); err == nil && d > 0 {
 		cfg.Env.ChannelHooksMaxWait = d
+	}
+	// Refused rather than defaulted when it does not parse: "60" meant as
+	// minutes, read as the hour default, would end chats nobody expected to.
+	cfg.Env.InteractiveIdleTimeout = time.Hour
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT")); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT: %q is not a duration such as 1h or 30m (0 waits forever)", v)
+		}
+		cfg.Env.InteractiveIdleTimeout = d
 	}
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {

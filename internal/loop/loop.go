@@ -178,6 +178,21 @@ type RunOptions struct {
 	// held. Called on the run's goroutine; it must not block.
 	OnReviewHold func(held bool)
 
+	// IdleTimeout, when positive, ends a parked interactive run that gets no
+	// operator turn within it. The run finishes on the turn it had already
+	// completed, with stop reason StopReasonIdleTimeout: not a failure and
+	// not a cancel. Each park gets the full window; a compaction while parked
+	// is not a turn and does not restart it. A deadline that passes while the
+	// runtime is paused waits for the pause to lift. A message that races the
+	// deadline is taken, never acknowledged and then dropped: the queue is
+	// closed through CloseSteerIfEmpty only when nothing is waiting in it.
+	// 0 waits forever. A review hold has its own deadline (ReviewTTL) and
+	// ignores this one.
+	IdleTimeout time.Duration
+	// idledOut is set by the park that IdleTimeout ended, and read when the
+	// run names its stop reason. Both on the run's goroutine.
+	idledOut bool
+
 	// ReResolveOnOperatorTurn, when non-nil, is consulted each time a PARKED run
 	// receives its operator's next message — and only then.
 	//
@@ -1250,33 +1265,108 @@ var parkHeartbeatInterval = 30 * time.Second
 // pulses at the same rate, so the stale-run sweeper judges both alike.
 func HeartbeatInterval() time.Duration { return parkHeartbeatInterval }
 
+// StopReasonIdleTimeout is the stop reason of an interactive run that waited
+// parked for its operator longer than RunOptions.IdleTimeout. The run ended on
+// the answer it had given; its session can be continued.
+const StopReasonIdleTimeout = "idle_timeout"
+
+// parkEnd is how a park's wait for input ended.
+type parkEnd int
+
+const (
+	parkInput parkEnd = iota // a message arrived
+	parkGone                 // ctx cancelled, or the queue closed
+	parkIdle                 // the idle deadline passed with nothing waiting
+)
+
+// idleDeadline is when a park that begins now ends for want of input
+// (RunOptions.IdleTimeout); the zero time when it never does.
+func (o *RunOptions) idleDeadline() time.Time {
+	if o.IdleTimeout <= 0 {
+		return time.Time{}
+	}
+	return time.Now().Add(o.IdleTimeout)
+}
+
+// endTurnOrIdle is the stop reason of a run that finishes on the turn it had
+// already completed: end_turn, or idle_timeout when its park's idle deadline
+// ended it.
+func (o *RunOptions) endTurnOrIdle() string {
+	if o.idledOut {
+		return StopReasonIdleTimeout
+	}
+	return "end_turn"
+}
+
 // parkForInput blocks a persistent interactive run until an operator steering
-// message arrives or ctx is cancelled, ticking OnHeartbeat meanwhile so the
-// idle run isn't reaped, and recording itself paused while a runtime pause is
-// in effect (pp, owned by the caller so the record survives the caller's
-// re-parks). Returns (msg, true) on input; (zero, false) on cancel or a closed
-// queue.
+// message arrives, ctx is cancelled or the idle deadline passes (never, when
+// zero), ticking OnHeartbeat meanwhile so the idle run isn't reaped, and
+// recording itself paused while a runtime pause is in effect (pp, owned by
+// the caller so the record survives the caller's re-parks). A deadline that
+// passes while paused waits for the lift: a paused runtime does not end runs.
 //
 // For a code agent the park is a wait: a person's answer does not spend its
 // budget. It still counts against the run's lifetime, like every wait.
-func parkForInput(ctx context.Context, q <-chan steer.Message, heartbeat func(), pp *parkPause) (steer.Message, bool) {
+func parkForInput(ctx context.Context, opts *RunOptions, deadline time.Time, pp *parkPause) (steer.Message, parkEnd) {
 	defer providers.BeginWait(ctx)()
 	t := time.NewTicker(parkHeartbeatInterval)
 	defer t.Stop()
+	var idle <-chan time.Time
+	if !deadline.IsZero() {
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		idle = timer.C
+	}
+	idleWhilePaused := false
 	for {
 		select {
-		case m, ok := <-q:
-			return m, ok
+		case m, ok := <-opts.SteerQueue:
+			if !ok {
+				return steer.Message{}, parkGone
+			}
+			return m, parkInput
 		case <-t.C:
-			if heartbeat != nil {
-				heartbeat()
+			if opts.OnHeartbeat != nil {
+				opts.OnHeartbeat()
 			}
 		case <-pp.declared():
 			pp.onDeclared()
 		case <-pp.lifted():
 			pp.onLifted()
+			if idleWhilePaused {
+				return endIdlePark(opts)
+			}
+		case <-idle:
+			if pp.recording() {
+				idleWhilePaused = true
+				continue
+			}
+			return endIdlePark(opts)
 		case <-ctx.Done():
-			return steer.Message{}, false
+			return steer.Message{}, parkGone
+		}
+	}
+}
+
+// endIdlePark ends a park whose idle deadline passed, unless a message raced
+// the deadline in. The queue is closed only when nothing is waiting in it,
+// atomically with a push (CloseSteerIfEmpty), so a message sent before the
+// close is taken and the run goes on, and one sent after it is refused as to
+// a run that has ended: never acknowledged and then dropped. Without
+// CloseSteerIfEmpty the queue stays open until the run deregisters, as for a
+// run that finishes.
+func endIdlePark(opts *RunOptions) (steer.Message, parkEnd) {
+	for {
+		select {
+		case m, ok := <-opts.SteerQueue:
+			if !ok {
+				return steer.Message{}, parkGone
+			}
+			return m, parkInput
+		default:
+		}
+		if opts.CloseSteerIfEmpty == nil || opts.CloseSteerIfEmpty() {
+			return steer.Message{}, parkIdle
 		}
 	}
 }
@@ -1359,17 +1449,24 @@ func childIDs(cs []tools.ChildView) string {
 // with the summary pair + re-park; compaction is not itself new input) exactly
 // like the terminal park it was extracted from. Returns the updated messages,
 // the refreshed context footprint (changed only when a compaction ran), and
-// whether a real operator turn arrived — false ⇒ ctx cancelled / queue closed ⇒
-// the caller terminates the run.
+// whether a real operator turn arrived — false ⇒ ctx cancelled / queue closed /
+// the idle deadline passed (opts.idledOut set) ⇒ the caller terminates the run.
 func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []providers.Message, sinceTurn, lastCtxTokens, preambleTokens int, emit func(providers.Event)) ([]providers.Message, int, bool) {
 	emit(providers.Event{Type: providers.EventAwaitingInput,
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
 	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
+	// One deadline for the park: a compaction re-parks below, and is not the
+	// operator's turn.
+	deadline := opts.idleDeadline()
 	for {
-		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat, pp)
-		if !resumed {
+		m, end := parkForInput(ctx, opts, deadline, pp)
+		switch end {
+		case parkGone:
 			return messages, lastCtxTokens, false // ctx cancelled (or queue closed) → terminate
+		case parkIdle:
+			opts.idledOut = true
+			return messages, lastCtxTokens, false // no operator turn in time → end on this answer
 		}
 		if m.Kind == steer.KindCompact {
 			messages = applyCompactSummary(messages, m.Text, m.KeepN, m.KeepFirst, emit)
@@ -3490,13 +3587,19 @@ func (s *runState) finish() (RunResult, error) {
 		}
 	}
 
+	// A park whose idle deadline passed ended the run, on the answer it had
+	// given.
+	if s.opts.idledOut {
+		s.stopReason = StopReasonIdleTimeout
+	}
+
 	// Parsed before EventDone so an unparseable answer's report precedes it.
 	// A rejected answer is parsed too: it is still the answer, and what reads
 	// it — a team's sink message, the run row — decides what the rejection
 	// means. An answer that does not parse only leaves Structured empty; the
 	// run stays rejected.
 	var structured map[string]any
-	if s.stopReason == "end_turn" || EndsRejected(s.stopReason) {
+	if s.stopReason == "end_turn" || s.stopReason == StopReasonIdleTimeout || EndsRejected(s.stopReason) {
 		structured = s.outputFormat.structured(s.finalText, s.emit)
 	}
 	s.emit(providers.Event{Type: providers.EventDone, StopReason: s.stopReason, Usage: &s.totalUsage})

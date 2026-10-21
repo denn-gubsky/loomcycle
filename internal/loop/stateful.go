@@ -94,8 +94,8 @@ const statefulOperatorPrefix = "operator: "
 
 // parkForStatefulTurn is parkForOperatorTurn's Σ-shaped twin: it parks a
 // completed stateful turn and returns the operator's next message as the next
-// OBSERVATION. Returns false when the ctx was cancelled or the queue closed —
-// the run is then over.
+// OBSERVATION. Returns false when the ctx was cancelled, the queue closed or
+// the idle deadline passed (opts.idledOut set) — the run is then over.
 //
 // ⚠️ THIS IS A NEW CALL SITE OF reResolveForOperatorTurn, and
 // parkForOperatorTurn's own comment says why that matters: the retune lives at
@@ -107,9 +107,14 @@ func parkForStatefulTurn(ctx context.Context, opts *RunOptions, sinceTurn int, e
 		AwaitingInput: &providers.AwaitingInputEventInfo{SinceTurn: sinceTurn}})
 	pp := newParkPause(ctx, opts.PauseGate)
 	defer pp.done()
+	deadline := opts.idleDeadline()
 	for {
-		m, resumed := parkForInput(ctx, opts.SteerQueue, opts.OnHeartbeat, pp)
-		if !resumed {
+		m, end := parkForInput(ctx, opts, deadline, pp)
+		switch end {
+		case parkGone:
+			return "", false
+		case parkIdle:
+			opts.idledOut = true
 			return "", false
 		}
 		if m.Kind == steer.KindCompact {
@@ -848,8 +853,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 	if opts.StartParked && interactive {
 		next, resumed := parkForStatefulTurn(ctx, &opts, 0, emit)
 		if !resumed {
-			finish("end_turn")
-			return RunResult{StopReason: "end_turn", State: sigma}, nil
+			stop := opts.endTurnOrIdle()
+			finish(stop)
+			return RunResult{StopReason: stop, State: sigma}, nil
 		}
 		obs, task = next, next
 	}
@@ -1273,8 +1279,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 					continue
 				}
 			}
-			finish("end_turn")
-			return RunResult{StopReason: "end_turn", FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
+			stop := opts.endTurnOrIdle()
+			finish(stop)
+			return RunResult{StopReason: stop, FinalText: final, Iterations: iter + 1, Usage: total, State: sigma, ProposedSchema: lastProposed}, nil
 		}
 
 		// Execute the named action → next observation.

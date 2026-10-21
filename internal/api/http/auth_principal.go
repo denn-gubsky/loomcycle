@@ -681,6 +681,45 @@ func (s *Server) allowlistReachesRun(ctx context.Context, runID string) bool {
 	return false
 }
 
+// continuationReachesSession reports whether the caller's agent allowlist
+// reaches session sess, for a continuation: its agent is on the list, and so
+// is every run of it — a top-level run's own agent, and for a run another run
+// spawned, the root of its tree (allowlistReachesRun). A sub-agent's session
+// under a root outside the list is not reached, though the sub-agent itself
+// is on it: continuing replays the session's whole history to the model, so
+// the continuation would read what the token may not. A caller with no
+// allowlist reaches every session, with no read. Fails closed: a run whose
+// tree cannot be read does not reach. The session read routes apply the same
+// rule through their own, more general check.
+func (s *Server) continuationReachesSession(ctx context.Context, sess store.Session) (bool, error) {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || !p.Restrictions.RunPlaneOnly() {
+		return true, nil
+	}
+	if !p.Restrictions.AgentAllowed(sess.Agent) {
+		return false, nil
+	}
+	if s.store == nil {
+		return false, nil
+	}
+	runs, err := s.store.RunsForSession(ctx, sess.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, run := range runs {
+		if run.ParentRunID == "" && run.ParentAgentID == "" {
+			if !p.Restrictions.AgentAllowed(run.Agent) {
+				return false, nil
+			}
+			continue
+		}
+		if !s.allowlistReachesRun(ctx, run.ID) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // handleWhoami serves GET /v1/_me — the Web UI's role source (multi-tenant
 // UI authz). Returns the resolved principal so the SPA renders the
 // super-admin (all-tenants) vs tenant (own-workspace) experience. Any

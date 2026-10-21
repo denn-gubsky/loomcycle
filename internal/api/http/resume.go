@@ -1016,6 +1016,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		CloseSteerIfEmpty:   closeSteer,
+		IdleTimeout:         s.resumedIdleTimeout(run), // a restored chat waits for its operator as a live one does
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(run.ID),
@@ -1346,6 +1347,17 @@ func resumedRootRunID(ctx context.Context, getRun func(context.Context, string) 
 		cur = parent
 	}
 	return cur.ID, nil
+}
+
+// resumedIdleTimeout is how long a resumed run waits parked for its operator
+// before it ends (InteractiveIdleTimeout): as long as a live top-level run
+// does, counted from its resume. A sub-run, a resident child among them,
+// keeps its own lifecycle and waits as it always has.
+func (s *Server) resumedIdleTimeout(run store.Run) time.Duration {
+	if isSubRun(run) {
+		return 0
+	}
+	return s.cfg().Env.InteractiveIdleTimeout
 }
 
 // isSubRun reports whether a row is a spawned child. Every sub-run row carries
