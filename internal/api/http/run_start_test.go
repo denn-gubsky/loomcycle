@@ -781,3 +781,38 @@ func TestHandleMessages_AContinuationPromotedToInteractiveRetakesItsLockAfterAPa
 	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
 	r.drain(t)
 }
+
+// A re-take that meets the lock held briefly — another replica refusing a
+// request on the session, which holds it for one query — waits it out: the
+// operator's turn runs, and is not cancelled as busy.
+func TestHandleMessages_AParkedContinuationWaitsOutABriefHoldOnItsLock(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true`))
+	agentID, runID, _ := r.ids(t)
+	r.until(t, "awaiting_input", 1)
+	if !eventually(func() bool { return locker.holding() == 0 }) {
+		t.Fatal("the cluster lock was not let go at the park")
+	}
+	release, ok := locker.TryLock(context.Background(), sid)
+	if !ok {
+		t.Fatal("could not take the parked session's cluster lock")
+	}
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		release()
+	}()
+
+	g.post("/v1/runs/"+runID+"/input", `{"text":"keep going"}`).drain(t)
+	r.until(t, "awaiting_input", 2)
+	for _, ev := range r.events() {
+		if ev == "turn_cancelled" {
+			t.Errorf("the turn was cancelled as busy over a lock held for 300ms; frames: %v", r.events())
+		}
+	}
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
+}

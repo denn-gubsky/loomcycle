@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -243,17 +244,38 @@ func (p *parkLock) park() {
 	p.released = true
 }
 
-// resume takes the cluster lock back for the run's next turn. false: another
-// replica holds it, and the turn must not run.
-func (p *parkLock) resume() bool {
+// resumeBackoff is how long resume waits between tries, about 1.6 s in all.
+// A failed re-take is a contender that is about to be refused: while this
+// run's row is live, every other request on the session is refused by
+// sessionHasLiveRun, and holds the lock only for that one query. Waiting it
+// out keeps a retrying or polling client on another replica from cancelling a
+// legitimate turn.
+var resumeBackoff = []time.Duration{25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond,
+	200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
+
+// resume takes the cluster lock back for the run's next turn, trying again
+// through resumeBackoff. false: another replica held it throughout (or ctx
+// ended), and the turn must not run.
+func (p *parkLock) resume(ctx context.Context) bool {
 	if !p.released {
 		return true
 	}
-	if !p.hold.reacquire() {
-		return false
+	for i := 0; ; i++ {
+		if p.hold.reacquire() {
+			p.released = false
+			return true
+		}
+		if i == len(resumeBackoff) {
+			return false
+		}
+		t := time.NewTimer(resumeBackoff[i])
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return false
+		}
 	}
-	p.released = false
-	return true
 }
 
 func (p *parkLock) busy() string {
@@ -328,7 +350,7 @@ func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, l
 		if onSteer != nil {
 			onSteer(m)
 		}
-		if p.resume() {
+		if p.resume(loopCtx) {
 			return
 		}
 		if stateful || !interactiveNow() {
