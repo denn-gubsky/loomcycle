@@ -75,8 +75,10 @@ type AdvisoryLocker interface {
 }
 
 const (
-	defaultInterval   = 60 * time.Second
-	defaultStaleAfter = 10 * time.Minute
+	defaultInterval = 60 * time.Second
+	// DefaultStaleAfter is StaleAfter when unset. Exported so a reader of
+	// run liveness elsewhere presumes a run dead at the same age as the sweeper.
+	DefaultStaleAfter = 10 * time.Minute
 )
 
 // Sweeper periodically marks stale running rows as failed. Construct
@@ -99,7 +101,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		cfg.Interval = defaultInterval
 	}
 	if cfg.StaleAfter <= 0 {
-		cfg.StaleAfter = defaultStaleAfter
+		cfg.StaleAfter = DefaultStaleAfter
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = log.Printf

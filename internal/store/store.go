@@ -1889,6 +1889,16 @@ type RunStore interface {
 	// calling on an already-finished run is a no-op.
 	FinishRun(ctx context.Context, runID string, status RunStatus, stopReason string, usage Usage, errMsg string) error
 
+	// SessionHasLiveRun reports whether the session has a live run other than
+	// excludeRunID ("" excludes none): queued, or running with a heartbeat —
+	// or, for a run that never beat, a start — at or after staleBefore, or
+	// running under a runtime pause (pause_state paused / pausing), which
+	// beats no heartbeat on purpose. staleBefore is the heartbeat sweeper's
+	// cutoff (SweepStaleRuns), so a row it would sweep is not live: a crashed
+	// process's row stops blocking its session once its heartbeat is stale.
+	// Reads at most one row.
+	SessionHasLiveRun(ctx context.Context, sessionID, excludeRunID string, staleBefore time.Time) (bool, error)
+
 	// RunsForSession returns every run in the session (any status), oldest first.
 	// The archiver uses it to export a session's runs before cascade-deleting it.
 	RunsForSession(ctx context.Context, sessionID string) ([]Run, error)
@@ -4319,6 +4329,14 @@ type OperatorTokenStore interface {
 	// OperatorTokenDefSetRetiredAt sets retired_at. Used by both retire
 	// (now → immediate) and rotate (now+grace on the prior row).
 	OperatorTokenDefSetRetiredAt(ctx context.Context, defID string, retiredAt time.Time) error
+	// OperatorTokenRehash rewrites one row's token_hash from oldHash to
+	// newHash, only if the row still carries oldHash (a compare-and-set:
+	// UPDATE … WHERE def_id = ? AND token_hash = ?). Reports whether it
+	// changed the row; (false, nil) when the row is gone or no longer
+	// carries oldHash — another replica already rehashed it, or it was
+	// edited. Used to move a token minted under a legacy pepper onto the
+	// current one at its first login (RFC ES D2).
+	OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash string) (bool, error)
 	// OperatorTokenDefCountActiveAdmin counts tokens that still authenticate
 	// (not retired, not expired) whose allowed_scopes include
 	// "substrate:admin" (the no-lockout guard).

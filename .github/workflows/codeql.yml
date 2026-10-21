@@ -42,12 +42,14 @@ jobs:
           - language: javascript-typescript
             build-mode: none
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - if: matrix.language == 'go'
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
           cache: true
 
       # paths-ignore applies to the JavaScript extractor only; Go extraction

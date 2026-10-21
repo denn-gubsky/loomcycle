@@ -36,10 +36,12 @@ type OperatorTokenDef struct {
 	// Store is the persistence backend. Required.
 	Store store.Store
 
-	// Pepper is prepended to the token before SHA-256 (auth.HashToken).
-	// Sourced from the env-allowlisted LOOMCYCLE_OPERATOR_TOKEN_PEPPER.
-	// May be empty in single-binary dev.
-	Pepper string
+	// Hasher turns a minted token into its stored token_hash — the same
+	// hasher the auth lookup uses (config.Env.TokenHasher: the explicit
+	// LOOMCYCLE_OPERATOR_TOKEN_PEPPER, else one derived from
+	// LOOMCYCLE_SECRET_KEY). The zero value hashes with no pepper
+	// (single-binary dev).
+	Hasher auth.TokenHasher
 
 	// Audit records create/rotate/retire. Never nil at runtime (main.go
 	// wires audit.NopSink when no path is configured).
@@ -347,7 +349,7 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 		Name:             in.Name,
 		TenantID:         in.TenantID,
 		Subject:          subject,
-		TokenHash:        auth.HashToken(s.Pepper, hashInput),
+		TokenHash:        s.Hasher.Hash(hashInput),
 		AllowedScopes:    scopes,
 		CreatedByAgentID: ident.AgentID,
 		ExpiresAt:        expiresAt,
@@ -473,7 +475,7 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		Name:             prior.Name,
 		TenantID:         prior.TenantID,
 		Subject:          prior.Subject,
-		TokenHash:        auth.HashToken(s.Pepper, plaintext),
+		TokenHash:        s.Hasher.Hash(plaintext),
 		AllowedScopes:    prior.AllowedScopes,
 		CreatedByAgentID: ident.AgentID,
 		RotatedFrom:      prior.DefID,

@@ -39,7 +39,7 @@ jobs:
     name: Publish ${{ github.ref_name }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Resolve the package from the tag
         id: pkg
@@ -62,7 +62,7 @@ jobs:
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"

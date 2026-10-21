@@ -20,9 +20,8 @@ import (
 
 // RFC EI P3: a run that cannot start at once is accepted as a queued run —
 // a row in status "queued", a `queued` event — and starts when a run slot
-// frees. Three paths admit a new run (RunOnce, handleRuns, handleMessages);
-// they share admitRun for the wait and differ in how they create the row
-// and tell their caller.
+// frees. Every new run is admitted by RunOnce, through admitRun; its caller
+// learns of the wait through RunCallbacks.
 
 // queuedRow is the row of a run that had to wait for its slot.
 type queuedRow struct {
@@ -224,13 +223,15 @@ func (s *Server) emitAdmissionEvent(ctx context.Context, runID string, forward f
 }
 
 // admissionError maps a refused or abandoned admission to the runner
-// sentinels, as RunOnce has always returned them.
+// sentinels, as RunOnce has always returned them. The concurrency error stays
+// wrapped too (same text), so an HTTP caller answers with its details — the
+// user and the cap of a per-user refusal.
 func admissionError(err error) error {
 	switch {
 	case concurrency.IsPerUserQuotaExhausted(err):
-		return fmt.Errorf("%w: %v", runner.ErrPerUserQuotaExhausted, err)
+		return fmt.Errorf("%w: %w", runner.ErrPerUserQuotaExhausted, err)
 	case concurrency.IsBackpressure(err):
-		return fmt.Errorf("%w: %v", runner.ErrBackpressure, err)
+		return fmt.Errorf("%w: %w", runner.ErrBackpressure, err)
 	}
 	return fmt.Errorf("%w: %v", runner.ErrInternal, err)
 }
@@ -368,6 +369,16 @@ func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retenti
 	if err := s.store.SetQueuedInput(context.WithoutCancel(ctx), runID, b); err != nil && !errors.Is(err, store.ErrRunNotQueued) {
 		log.Printf("queue: run %s: could not store its request: %v", runID, err)
 	}
+}
+
+// queuedRecordOf is the input a queued run is recorded with for a restart: the
+// one it was started with, naming the agent and identity it resolved to — a
+// continuation's are its session's, and the input that started it left them
+// empty. A restart takes the identity from the row and a continuation's agent
+// from its session again; the record says what the run was.
+func queuedRecordOf(in runner.RunInput, agent, tenant, user string) runner.RunInput {
+	in.Agent, in.TenantID, in.UserID = agent, tenant, user
+	return in
 }
 
 // requestRunInput is the RunInput a POST /v1/runs request starts as after a

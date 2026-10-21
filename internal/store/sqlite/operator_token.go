@@ -248,6 +248,27 @@ func (s *Store) OperatorTokenDefSetRetiredAt(ctx context.Context, defID string, 
 	return nil
 }
 
+func (s *Store) OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash string) (bool, error) {
+	if defID == "" || oldHash == "" || newHash == "" {
+		return false, fmt.Errorf("operator_token_def rehash: def_id + old and new hash required")
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+	res, err := conn.ExecContext(ctx,
+		`UPDATE operator_token_defs SET token_hash = ? WHERE def_id = ? AND token_hash = ?`, newHash, defID, oldHash)
+	if err != nil {
+		return false, fmt.Errorf("operator_token_def rehash: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func (s *Store) OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, error) {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
