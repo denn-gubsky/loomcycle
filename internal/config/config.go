@@ -4181,7 +4181,9 @@ type Env struct {
 	// counterpart to BashboxFallbackAllowedEnv: each is resolved for the run's own
 	// (tenant, user, agent) identity via the credential engine, so a tenant's own
 	// GITHUB_TOKEN reaches git/gh instead of one shared operator host token. A
-	// resolved cred overrides a same-named host env var. Sourced from
+	// resolved cred overrides a same-named host env var. An entry is a bare NAME
+	// (every fallback command) or "cmd:NAME" (only that allowlisted command; see
+	// ParseBashboxFallbackCred). Sourced from
 	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS (comma-separated). Requires a KEK
 	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve.
 	BashboxFallbackAllowedCreds []string
@@ -8261,6 +8263,9 @@ func validate(c *Config) error {
 	if err := validateAWSSecretAllowlists(c); err != nil {
 		return err
 	}
+	if err := validateBashboxFallbackCreds(c); err != nil {
+		return err
+	}
 	// Model aliases (top-level models:) — a non-empty provider on an alias must be a
 	// known provider (RFC BF P2a; an empty provider defers to the pin/candidate that
 	// names the alias, so it is left unvalidated here). Built-ins always pass via the
@@ -9200,6 +9205,49 @@ func ValidateEphemeralVolumes(v string) error {
 		return nil
 	}
 	return fmt.Errorf("ephemeral_volumes: unknown value %q (the only value is %q; leave it unset for a volume's own mode)", v, EphemeralVolumesReadOnly)
+}
+
+// bashboxFallbackCredNameRe is the CredentialDef name grammar (the name a
+// $cred: reference takes), so a name outside it could never resolve.
+var bashboxFallbackCredNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// ParseBashboxFallbackCred splits one LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
+// entry. A bare "NAME" is injected into every fallback command; "cmd:NAME"
+// only into the host command the operator allowlisted as cmd (RFC ES #9), so
+// a token one tool needs is not handed to every other allowlisted tool.
+func ParseBashboxFallbackCred(entry string) (command, name string, err error) {
+	command, name, bound := strings.Cut(entry, ":")
+	if !bound {
+		command, name = "", command
+	} else if command == "" {
+		return "", "", fmt.Errorf("%q: the command before ':' is empty", entry)
+	}
+	if !bashboxFallbackCredNameRe.MatchString(name) {
+		return "", "", fmt.Errorf("%q: the credential name must match ^[A-Za-z0-9_-]{1,128}$", entry)
+	}
+	return command, name, nil
+}
+
+// validateBashboxFallbackCreds refuses an entry that could never be injected:
+// a malformed one, or one bound to a command that has no fallback proxy. The
+// host-variable list has no per-command form, so a "cmd:NAME" there named no
+// variable and was dropped without a word; it is refused too.
+func validateBashboxFallbackCreds(c *Config) error {
+	for _, e := range c.Env.BashboxFallbackAllowedEnv {
+		if strings.Contains(e, ":") {
+			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV: %q is not a variable name; binding to one command (cmd:NAME) is only for stored credentials in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS", e)
+		}
+	}
+	for _, e := range c.Env.BashboxFallbackAllowedCreds {
+		cmd, _, err := ParseBashboxFallbackCred(e)
+		if err != nil {
+			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS: %w", err)
+		}
+		if cmd != "" && !slices.Contains(c.Env.BashboxFallbackCommands, cmd) {
+			return fmt.Errorf("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS: %q binds a credential to %q, which is not in LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS", e, cmd)
+		}
+	}
+	return nil
 }
 
 // validateAWSSecretAllowlists refuses, while any provider authenticates with

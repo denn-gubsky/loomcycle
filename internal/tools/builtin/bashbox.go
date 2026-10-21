@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/ewhauser/gbash"
 	"github.com/ewhauser/gbash/commands"
@@ -79,9 +80,12 @@ type Bashbox struct {
 	// volume refuses.
 	FallbackCommands []string
 	// FallbackAllowedEnv names env vars passed into fallback commands (e.g.
-	// GH_TOKEN, HOME, SSH_AUTH_SOCK). Injected ONLY into the host child, never
-	// into the sandbox env — the model can't read them via `env`. PATH always
-	// passes. Empty (default) = only PATH.
+	// GH_TOKEN, HOME, SSH_AUTH_SOCK). Injected only into the host child, never
+	// into the sandbox env, so the sandbox's own `env` does not show them. That
+	// does NOT keep them from the model: an allowlisted command can be told to
+	// print its environment (`git -c alias.x='!env' x`), so treat every value
+	// here, and every credential below, as one the model can read (RFC ES #9).
+	// PATH always passes. Empty (default) = only PATH.
 	FallbackAllowedEnv []string
 
 	// FallbackAllowedCreds names RFC AR credentials (by CredentialDef name)
@@ -89,7 +93,8 @@ type Bashbox struct {
 	// FallbackAllowedEnv. Each is resolved for the run's own (tenant, user, agent)
 	// identity via CredResolve, so a tenant's own GITHUB_TOKEN reaches git/gh
 	// instead of one shared operator host token. A resolved cred OVERRIDES a
-	// same-named host env var. Empty (default) = none.
+	// same-named host env var. An entry is a bare NAME (every fallback command)
+	// or "cmd:NAME" (only the fallback command cmd). Empty (default) = none.
 	FallbackAllowedCreds []string
 	// CredResolve resolves an RFC AR credential by NAME for the run on ctx (the
 	// tenant/user/agent come from the run identity on ctx, so resolution is
@@ -203,7 +208,7 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
 		bindProcessGroup(cmd)
-		env, envNotes := b.fallbackEnv(ctx)
+		env, envNotes := b.fallbackEnv(ctx, name)
 		for _, n := range envNotes {
 			fmt.Fprintf(inv.Stderr, "%s: %s\n", name, n)
 		}
@@ -233,16 +238,37 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 	})
 }
 
-// fallbackEnv builds the env for a host-command fallback: the operator's host
-// allowlist (FallbackAllowedEnv, read from os.Environ — operator-global) plus any
-// RFC AR credentials in FallbackAllowedCreds resolved for THIS run's identity via
-// CredResolve (per-tenant). A resolved cred overrides a same-named host var
-// (tenant-specific wins). Nothing else leaks into the child (PATH + these only).
-// Deterministic order: host names first (in declared order), then creds that were
-// not already contributed by a host var. The notes say which credentials were
-// left unset and why (mergeCredEnv).
-func (b *Bashbox) fallbackEnv(ctx context.Context) (env, notes []string) {
-	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), b.FallbackAllowedCreds, b.CredResolve)
+// fallbackEnv builds the env for the host command `command`: the operator's
+// host allowlist (FallbackAllowedEnv, read from os.Environ — operator-global)
+// plus the RFC AR credentials in FallbackAllowedCreds that reach this command,
+// resolved for THIS run's identity via CredResolve (per-tenant). A resolved cred
+// overrides a same-named host var (tenant-specific wins). Nothing else leaks into
+// the child (PATH + these only). Deterministic order: host names first (in
+// declared order), then creds that were not already contributed by a host var.
+// The notes say which credentials were left unset and why (mergeCredEnv).
+func (b *Bashbox) fallbackEnv(ctx context.Context, command string) (env, notes []string) {
+	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), b.fallbackCredsFor(command), b.CredResolve)
+}
+
+// fallbackCredsFor names the credentials injected into the host command
+// `command`: every bare entry, plus the entries bound to it ("git:NAME").
+// `command` is the operator's allowlisted name the proxy execs — gbash maps a
+// path-form spelling to the same proxy — so each proxy invocation in a
+// pipeline or compound script gets only its own bindings. The binding limits
+// which host binary is handed the value, not what that binary does with it: a
+// child it starts (a git alias, hook or credential helper) inherits it.
+// An entry that does not parse is skipped; config validation refuses it at
+// boot, so that only happens to a Bashbox built without validation.
+func (b *Bashbox) fallbackCredsFor(command string) []string {
+	var names []string
+	for _, e := range b.FallbackAllowedCreds {
+		bound, name, err := config.ParseBashboxFallbackCred(e)
+		if err != nil || (bound != "" && bound != command) {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // fallbackHostCwd maps the sandbox working directory to a real host path. In rw
