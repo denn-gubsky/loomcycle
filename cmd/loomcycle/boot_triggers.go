@@ -38,6 +38,8 @@ func (b *boot) startPauseAndResume() {
 		pauseDefault := time.Duration(cfg.Env.PauseDefaultTimeoutMs) * time.Millisecond
 		pauseMgr := pause.NewManager(storeIface, pauseDefault)
 		pauseMgrRef = pauseMgr
+		// Its resume flips only this replica's paused rows (RFC ES F1).
+		pauseMgr.SetReplicaID(cfg.Env.ReplicaID)
 		srv.SetPauseManager(pauseMgr)
 		if pauseDefault > 0 {
 			log.Printf("pause: manager wired (default timeout=%s)", pauseDefault)
@@ -127,6 +129,30 @@ func (b *boot) startPauseAndResume() {
 				_ = resume(bgCtx)
 			}
 		}()
+
+		// RFC ES F1: in a cluster, a replica that stops parks its runs and
+		// leaves; nothing else would resume them until some replica boots. A
+		// rolling update that starts the new replica before it stops the old
+		// one boots nothing afterwards, so the parked runs would wait for the
+		// next deploy. Every replica therefore also runs the resume pass
+		// periodically, one at a time under the same lock. The pass leaves alone
+		// a row this process holds or whose replica is still alive, so it picks
+		// up only the runs a stopped or dead replica parked. Not while this
+		// runtime is paused — an operator's cluster pause, or this replica's
+		// own shutdown — when a resumed run would only park again. Without a
+		// replicas table (single instance) there is no other replica, and the
+		// boot pass is the only one.
+		if advisoryLock != nil && cfg.Env.ReplicaID != "" && pauseMgrRef != nil {
+			interval := cfg.Env.ReplicasSweepInterval
+			if interval <= 0 {
+				interval = time.Minute // the replicas sweeper's own default
+			}
+			mgr := pauseMgrRef
+			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyResumePausedRuns, "resume_paused",
+				func(ctx context.Context) {
+					resumeOrphanedPausedRuns(ctx, func() bool { return mgr.State() != pause.StateRunning }, srv.ResumePausedRuns)
+				})
+		}
 	}
 
 	b.pauseMgrRef = pauseMgrRef
@@ -528,5 +554,14 @@ func (b *boot) startVolumeAndAgentSweepers() {
 				}
 			})
 		log.Printf("ephemeral_volumes: sweeper enabled (interval=%s, dynamic_root=%s)", cfg.Env.EphemeralVolumeSweepInterval, dynRoot)
+	}
+}
+
+// resumeOrphanedPausedRuns is one tick of the cluster resume sweep: unless the
+// runtime is paused, it re-dispatches the paused rows no live replica holds.
+// The pass logs what it did.
+func resumeOrphanedPausedRuns(ctx context.Context, paused func() bool, resume func(context.Context) (int, []string)) {
+	if !paused() {
+		resume(ctx)
 	}
 }

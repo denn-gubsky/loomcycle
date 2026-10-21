@@ -111,17 +111,22 @@ func (rb *runningBoot) wait(d time.Duration) (bool, error) {
 // start boots the binary and waits for /healthz. The environment is explicit:
 // nothing is inherited, so no real config or credentials are read.
 func (b *shutdownPauseBoot) start(t *testing.T) *runningBoot {
+	return b.startOn(t, b.port)
+}
+
+// startOn is start on port, with extra environment (KEY=value).
+func (b *shutdownPauseBoot) startOn(t *testing.T, port int, extra ...string) *runningBoot {
 	t.Helper()
-	env := []string{
+	env := append([]string{
 		"HOME=" + filepath.Join(b.dir, "home"),
 		"PATH=/usr/bin:/bin",
 		"LOOMCYCLE_DATA_DIR=" + b.dataDir,
-		"LOOMCYCLE_LISTEN_ADDR=" + net.JoinHostPort("127.0.0.1", fmt.Sprint(b.port)),
+		"LOOMCYCLE_LISTEN_ADDR=" + net.JoinHostPort("127.0.0.1", fmt.Sprint(port)),
 		"LOOMCYCLE_MOCK_ENABLED=1",
 		"LOOMCYCLE_CODE_AGENTS_ENABLED=1",
 		"LOOMCYCLE_BASH_ENABLED=1",
-		"LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=3000",
-	}
+		"LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=6000",
+	}, extra...)
 	cmd := exec.Command(b.bin, "--config", b.cfgPath)
 	cmd.Dir = b.dir
 	cmd.Env = env
@@ -130,7 +135,7 @@ func (b *shutdownPauseBoot) start(t *testing.T) *runningBoot {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	rb := &runningBoot{cmd: cmd, out: out, done: make(chan struct{}), base: fmt.Sprintf("http://127.0.0.1:%d", b.port)}
+	rb := &runningBoot{cmd: cmd, out: out, done: make(chan struct{}), base: fmt.Sprintf("http://127.0.0.1:%d", port)}
 	go func() { rb.waitErr = cmd.Wait(); close(rb.done) }()
 	t.Cleanup(func() {
 		if exited, _ := rb.wait(0); !exited {
@@ -188,55 +193,8 @@ func TestBoot_ShutdownPausesRunAndRestartResumesIt(t *testing.T) {
 	first := b.start(t)
 	first.startRun(t, "shutdown-pause-1")
 
-	// Wait for the Bash call to be running: its shell has written its pid.
-	pidFile := filepath.Join(b.volume, "sleeper.pid")
-	var pgid int
-	for deadline := time.Now().Add(30 * time.Second); ; {
-		if raw, err := os.ReadFile(pidFile); err == nil {
-			if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && n > 0 {
-				pgid = n
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the Bash call never started\n%s", first.out.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err := syscall.Kill(-pgid, 0); err != nil {
-		t.Fatalf("the sleep's process group %d is not alive before shutdown: %v", pgid, err)
-	}
-
-	sent := time.Now()
-	if err := first.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	// The shutdown is bounded: a 3 s pause, the listeners' 5 s drains
-	// alongside it, then the flushes. Well under the sleep's 30 s.
-	exited, err := first.wait(15 * time.Second)
-	if !exited {
-		t.Fatalf("shutdown did not finish within 15s\n%s", first.out.String())
-	}
-	if err != nil {
-		t.Fatalf("shutdown exited with %v\n%s", err, first.out.String())
-	}
-	t.Logf("shutdown took %s", time.Since(sent).Round(time.Millisecond))
-	if log := first.out.String(); !strings.Contains(log, "1 run(s) paused") || !strings.Contains(log, "1 had their tool calls interrupted") {
-		t.Errorf("shutdown log does not report the run paused and its tool call interrupted\n%s", log)
-	}
-
-	// The interrupted Bash call took its whole process group with it.
-	gone := false
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
-			gone = true
-			break
-		}
-	}
-	if !gone {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		t.Fatalf("the sleep's process group %d outlived the shutdown\n%s", pgid, first.out.String())
-	}
+	pgid := waitForSleeper(t, b.volume, first)
+	shutDownParked(t, first, pgid)
 
 	run := readRun(t, b.dataDir, "shutdown-pause-1")
 	if run.PauseState != store.PauseStatePaused || run.Status != store.RunRunning {
@@ -325,4 +283,55 @@ func runStatus(t *testing.T, base, runID string) string {
 		return s[:j]
 	}
 	return ""
+}
+
+// waitForSleeper waits for the run's Bash call to be running — its shell has
+// written its pid, which is its process group id — and returns that group.
+func waitForSleeper(t *testing.T, volume string, rb *runningBoot) int {
+	t.Helper()
+	pidFile := filepath.Join(volume, "sleeper.pid")
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			if n, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && n > 0 {
+				if err := syscall.Kill(-n, 0); err != nil {
+					t.Fatalf("the sleep's process group %d is not alive before shutdown: %v", n, err)
+				}
+				return n
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the Bash call never started\n%s", rb.out.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// shutDownParked sends SIGTERM and asserts a bounded clean exit that paused the
+// run, interrupted its Bash call, and took the call's process group with it.
+func shutDownParked(t *testing.T, rb *runningBoot, pgid int) {
+	t.Helper()
+	sent := time.Now()
+	if err := rb.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	// The shutdown is bounded: a 6 s pause, the listeners' 5 s drains
+	// alongside it, then the flushes. Well under the sleep's 30 s.
+	exited, err := rb.wait(15 * time.Second)
+	if !exited {
+		t.Fatalf("shutdown did not finish within 15s\n%s", rb.out.String())
+	}
+	if err != nil {
+		t.Fatalf("shutdown exited with %v\n%s", err, rb.out.String())
+	}
+	t.Logf("shutdown took %s", time.Since(sent).Round(time.Millisecond))
+	if log := rb.out.String(); !strings.Contains(log, "1 run(s) paused") || !strings.Contains(log, "1 had their tool calls interrupted") {
+		t.Errorf("shutdown log does not report the run paused and its tool call interrupted\n%s", log)
+	}
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if err := syscall.Kill(-pgid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	t.Fatalf("the sleep's process group %d outlived the shutdown\n%s", pgid, rb.out.String())
 }
