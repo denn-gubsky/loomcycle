@@ -173,7 +173,7 @@ func TestDefPromote_AnotherTenantsDefIsRefusedAsNotFound(t *testing.T) {
 		{"SkillDef", func(t *testing.T) (tools.Tool, context.Context, func()) { return skillDefFixture(t) },
 			`{"body":"b"}`,
 			func(ctx context.Context) context.Context {
-				return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"acme-own"}})
+				return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"acme-own"}})
 			}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {

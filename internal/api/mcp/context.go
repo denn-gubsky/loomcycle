@@ -166,7 +166,7 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 	// Def families: "any" name within the stamped tenant (same for admin +
 	// tenant; the tenant filter at the lookup confines a tenant principal).
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true}) // every skill
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})

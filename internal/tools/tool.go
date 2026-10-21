@@ -502,12 +502,12 @@ func WithEphemeralReadOnly(ctx context.Context) context.Context {
 	if EphemeralReadOnly(ctx) {
 		return ctx
 	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.EphemeralReadOnly = true })
+	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.EphemeralWritable = false })
 }
 
 // EphemeralReadOnly reports whether this run gets ephemeral volumes read-only.
 func EphemeralReadOnly(ctx context.Context) bool {
-	return PolicyOf(ctx).EphemeralReadOnly
+	return !PolicyOf(ctx).EphemeralWritable
 }
 
 // EphemeralModeCheck reads a tree's ephemeral volume from where it is
@@ -2235,9 +2235,24 @@ func OperatorTokenDefPolicy(ctx context.Context) OperatorTokenDefPolicyValue {
 //
 //   - Patterns is the operator-yaml `skills:` pattern allowlist evaluated by
 //     internal/skillmatch (`doc/*`/`+doc/*` allow, `-doc/*`/`-*` deny). Empty =
-//     allow ALL (the RFC BA default); `-*` = deny all.
+//     allow ALL (the RFC BA default); `-*` = deny all. Read it through
+//     Effective, which denies all when the policy was never granted.
 type SkillPolicyValue struct {
 	Patterns []string
+	// Granted marks a policy an entry point built. The zero value — a run
+	// whose entry point built none — allows no skill, whatever Patterns says;
+	// a granted policy with empty Patterns allows every skill (the RFC BA
+	// default for an agent that declares no `skills:`).
+	Granted bool
+}
+
+// Effective is the allowlist to evaluate: the policy's patterns when it was
+// granted, and a deny-all ("-*") when it was not.
+func (p SkillPolicyValue) Effective() []string {
+	if !p.Granted {
+		return []string{"-*"}
+	}
+	return p.Patterns
 }
 
 // WithSkillPolicy attaches the policy to ctx.
@@ -2245,8 +2260,7 @@ func WithSkillPolicy(ctx context.Context, p SkillPolicyValue) context.Context {
 	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Skill = p })
 }
 
-// SkillPolicy returns the policy from ctx. Zero value (nil Patterns) = allow
-// all — the RFC BA default when nothing was stamped (open mode / admin paths).
+// SkillPolicy returns the policy from ctx. Zero value (not Granted) = deny all.
 func SkillPolicy(ctx context.Context) SkillPolicyValue {
 	return PolicyOf(ctx).Skill
 }

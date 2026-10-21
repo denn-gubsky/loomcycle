@@ -554,7 +554,7 @@ func skillsWithin(child, ceiling []string) bool {
 }
 
 func ceilSkills(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	author := tools.SkillPolicy(ctx).Patterns
+	author := tools.SkillPolicy(ctx).Effective()
 	if skillsWithin(def.Skills, author) || (base != nil && skillsWithin(def.Skills, base.Skills)) {
 		return nil
 	}

@@ -64,7 +64,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		ToolPatterns:      def.Tools, // raw globs for the Skill subset check
 		Hosts:             src.Hosts,
 		Volumes:           src.Volumes,
-		EphemeralReadOnly: src.EphemeralReadOnly || def.EphemeralVolumes == config.EphemeralVolumesReadOnly,
+		EphemeralWritable: !src.EphemeralReadOnly && def.EphemeralVolumes != config.EphemeralVolumesReadOnly,
 		VolumeDef:         s.volumeDefPolicyForAgent(def),
 		Memory: tools.MemoryPolicyValue{
 			AllowedScopes:      tools.EffectiveMemoryScopes(ctx, def.MemoryScopes),

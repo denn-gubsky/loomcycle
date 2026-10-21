@@ -46,6 +46,7 @@ func agentDefFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 		Scopes:   []string{"any"},
 		SelfName: "researcher",
 	})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 	return tool, ctx, func() { _ = s.Close() }
 }
 
@@ -916,6 +917,7 @@ func TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
 		SelfName: "alpha",
 	})
 	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 
 	// Mutate a totally unrelated name (would-be cross-tree).
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"completely-unrelated"}`))

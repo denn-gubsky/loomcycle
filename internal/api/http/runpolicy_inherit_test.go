@@ -168,7 +168,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		Hosts:             tools.HostPolicyValue{AllowedHosts: []string{"api.example.com"}, HasList: true},
 		FanoutCap:         8,
 		Crypto:            tools.CryptoPolicyValue{Scopes: []string{"run"}},
-		EphemeralReadOnly: true,
+		EphemeralWritable: false, // read-only, which the child keeps
 		Compaction:        &config.Compaction{KeepLastN: &keep},
 		// The parent is the same definition, so its interruption narrowing
 		// reaches the child, locked or not.
@@ -204,7 +204,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	// The values the fixture is built to exercise, so a fixture that stops
 	// exercising them fails rather than comparing two zeros.
 	if !live.Hosts.NarrowOnly || live.FanoutCap != 2 || live.Interruption.Load().MaxPending != 1 ||
-		!slices.Equal(live.Crypto.Scopes, []string{"run"}) || !live.EphemeralReadOnly ||
+		!slices.Equal(live.Crypto.Scopes, []string{"run"}) || live.EphemeralWritable ||
 		live.Compaction == nil || live.Compaction.KeepLastN != nil {
 		t.Fatalf("fixture: the live child's policy is not the one this test is built around: %+v", live)
 	}

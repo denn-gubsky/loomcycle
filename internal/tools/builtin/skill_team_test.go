@@ -29,7 +29,7 @@ func teamSkillTool(t *testing.T, inTeam bool) *SkillTool {
 func teamSkillCtx(skills ...string) context.Context {
 	ctx := tools.WithAgentTools(context.Background(), []string{"Read", "Skill"})
 	ctx = tools.WithAgentToolPatterns(ctx, []string{"Read", "Skill"})
-	return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: skills})
+	return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: skills})
 }
 
 func TestSkillTool_TeamAgentLoadsAndListsItsGrantedTeamSkill(t *testing.T) {
@@ -94,7 +94,7 @@ func TestSkillTool_TeamSkillCannotWidenTheAgentsTools(t *testing.T) {
 	tool := teamSkillTool(t, true)
 	ctx := tools.WithAgentTools(context.Background(), []string{"Skill"})
 	ctx = tools.WithAgentToolPatterns(ctx, []string{"Skill"})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"./style"}})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"./style"}})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"./style"}`))
 	if !res.IsError || !strings.Contains(res.Text, "Read") || strings.Contains(res.Text, "TEAM STYLE") {
 		t.Errorf("invoke ./style without Read = %q, want refused naming Read", res.Text)

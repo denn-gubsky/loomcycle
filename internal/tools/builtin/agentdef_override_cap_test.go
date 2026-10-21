@@ -52,6 +52,7 @@ func codeAgentFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 		Scopes:   []string{"any"},
 		SelfName: "memory/consolidator",
 	})
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 	return tool, ctx, func() { _ = s.Close() }
 }
 

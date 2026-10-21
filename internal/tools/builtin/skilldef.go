@@ -604,10 +604,10 @@ func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillPolicyValue
 // Authoring additionally requires the agent to hold the SkillDef tool + the
 // tools ⊆ subset check (assertToolsSubset).
 func (s *SkillDef) checkScopeForName(policy tools.SkillPolicyValue, name, _ string) error {
-	if skillmatch.Allowed(policy.Patterns, name) {
+	if skillmatch.Allowed(policy.Effective(), name) {
 		return nil
 	}
-	return fmt.Errorf("SkillDef tool: skill %q is not permitted by this agent's `skills:` allowlist (%v)", name, policy.Patterns)
+	return fmt.Errorf("SkillDef tool: skill %q is not permitted by this agent's `skills:` allowlist (%v)", name, policy.Effective())
 }
 
 // buildDefinition takes the base definition (parent's JSON for

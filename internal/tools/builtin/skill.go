@@ -157,7 +157,7 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 		return s.execInvokeTeamSkill(ctx, policy, name, local)
 	}
 	// RFC BA: the agent's `skills:` allowlist gates WHICH skills it may load.
-	if !skillmatch.Allowed(policy.Patterns, name) {
+	if !skillmatch.Allowed(policy.Effective(), name) {
 		return errPermission(fmt.Sprintf("skill %q is not permitted by this agent's `skills:` allowlist", name),
 			"Use a skill from op=list, or ask an operator to add this one to the agent's skills."), nil
 	}
@@ -185,7 +185,7 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 // agent's `skills` — the allowlist's patterns govern global skills and never
 // reach one — and holds to skill.tools ⊆ agent.tools like any skill.
 func (s *SkillTool) execInvokeTeamSkill(ctx context.Context, policy tools.SkillPolicyValue, name, local string) (tools.Result, error) {
-	if !teamgraph.LocalSkillGranted(policy.Patterns, local) {
+	if !teamgraph.LocalSkillGranted(policy.Effective(), local) {
 		return errPermission(fmt.Sprintf("skill %q is not granted to this agent: a team's own skill is granted by naming it exactly, as %q, in the skills of one of the team's own agents", name, name),
 			"Use a skill from op=list."), nil
 	}
@@ -254,7 +254,7 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 	}
 	out := make([]skillEntry, 0, len(catalog))
 	for n, d := range catalog {
-		if !skillmatch.Allowed(policy.Patterns, n) {
+		if !skillmatch.Allowed(policy.Effective(), n) {
 			continue
 		}
 		if pattern != "" && !skillmatch.Allowed([]string{pattern}, n) {
@@ -272,7 +272,7 @@ func (s *SkillTool) execList(ctx context.Context, policy tools.SkillPolicyValue,
 		}
 		for local, sk := range skills {
 			n := teamgraph.LocalRefPrefix + local
-			if !teamgraph.LocalSkillGranted(policy.Patterns, local) {
+			if !teamgraph.LocalSkillGranted(policy.Effective(), local) {
 				continue
 			}
 			if pattern != "" && !skillmatch.Allowed([]string{pattern}, n) {

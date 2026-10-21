@@ -117,12 +117,16 @@ func TestRunPolicy_InheritNarrows(t *testing.T) {
 			}
 		}
 	})
-	t.Run("EphemeralReadOnly", func(t *testing.T) {
-		if !(RunPolicy{EphemeralReadOnly: true}).Inherit(ChildGrant{}).EphemeralReadOnly {
+	t.Run("EphemeralWritable", func(t *testing.T) {
+		writable := RunPolicy{EphemeralWritable: true}
+		if !writable.Inherit(ChildGrant{Own: writable}).EphemeralWritable {
+			t.Error("a writable child of a writable parent lost write access")
+		}
+		if (RunPolicy{}).Inherit(ChildGrant{Own: writable}).EphemeralWritable {
 			t.Error("a child of a read-only parent got write access back")
 		}
-		if !(RunPolicy{}).Inherit(ChildGrant{Own: RunPolicy{EphemeralReadOnly: true}}).EphemeralReadOnly {
-			t.Error("a child's own read-only setting was dropped")
+		if writable.Inherit(ChildGrant{}).EphemeralWritable {
+			t.Error("a child whose own definition is read-only was given write access")
 		}
 	})
 	t.Run("Crypto", func(t *testing.T) {

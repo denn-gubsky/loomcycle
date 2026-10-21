@@ -644,6 +644,7 @@ func TestContextTool_PermissionsBundle(t *testing.T) {
 		SelfName: "researcher",
 	})
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{
+		Granted:  true,
 		Patterns: []string{"doc/*"},
 	})
 	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{

@@ -499,7 +499,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			mode := "rw"
 			// Read-only in the record wins, as it does for a write
 			// (confirmEphemeralWritable); the mode only ever narrows.
-			if ref.ReadOnly || recordedRO[name] || tools.EphemeralReadOnly(ctx) {
+			if ref.ReadOnly || recordedRO[name] || !tools.PolicyOf(ctx).EphemeralWritable {
 				mode = "ro"
 			}
 			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
@@ -509,7 +509,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 				continue
 			}
 			mode := "rw"
-			if r.ReadOnly || tools.EphemeralReadOnly(ctx) {
+			if r.ReadOnly || !tools.PolicyOf(ctx).EphemeralWritable {
 				mode = "ro"
 			}
 			entry := map[string]any{"name": r.Name, "mode": mode}
@@ -860,7 +860,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			"subscribe": chPol.Subscribe,
 		},
 		"agent_def_scopes":  adPol.Scopes,
-		"skills":            sdPol.Patterns,
+		"skills":            sdPol.Effective(),
 		"evaluation_scopes": evPol.Scopes,
 		// The key scopes the Crypto tool's key-backed ops may use; empty
 		// means keyless ops only.

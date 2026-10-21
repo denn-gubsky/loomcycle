@@ -144,7 +144,7 @@ func TestContextTool_SelfListsEphemeralVolumesWithTheirMode(t *testing.T) {
 	set.Add("repo", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/r/repo"})
 	set.Add("notes", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/r/notes"})
 	set.SetReadOnly("repo")
-	ctx = tools.WithEphemeralVolumes(ctx, set)
+	ctx = tools.WithEphemeralVolumes(ephemeralWritable(ctx), set)
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	if res.IsError {

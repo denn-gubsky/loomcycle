@@ -43,7 +43,7 @@ func volumeDefFixture(t *testing.T, scopes ...string) (*VolumeDef, context.Conte
 	if len(scopes) == 0 {
 		scopes = []string{"any"}
 	}
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_admin"})
+	ctx := tools.WithRunIdentity(ephemeralWritable(context.Background()), tools.RunIdentityValue{AgentID: "a_admin"})
 	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: scopes})
 	return tool, ctx, root, func() { _ = s.Close() }
 }
@@ -845,7 +845,7 @@ func TestEffectiveRoot_EphemeralTier(t *testing.T) {
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("work", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/run-1/work", ReadOnly: false})
 	set.Add("ref", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/run-1/ref", ReadOnly: true})
-	ctx := tools.WithEphemeralVolumes(context.Background(), set)
+	ctx := tools.WithEphemeralVolumes(ephemeralWritable(context.Background()), set)
 
 	// rw ephemeral resolves for both read + write.
 	if got, _, err := effectiveRoot(ctx, "work", false); err != nil || got != "/pool/_ephemeral/run-1/work" {

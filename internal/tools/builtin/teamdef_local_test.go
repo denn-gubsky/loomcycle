@@ -40,6 +40,8 @@ func localAuthorCtx(tenantID string, scopes, callerTools []string) context.Conte
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_author", TenantID: tenantID})
 	ctx = tools.WithAgentName(ctx, "author")
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: scopes, SelfName: "author"})
+	// Every skill, as an author declaring no `skills:` holds.
+	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 	return tools.WithAgentTools(ctx, callerTools)
 }
 

@@ -123,7 +123,7 @@ func TestResolveVolume_EphemeralReadOnlyRunCannotWriteAnEphemeralVolume(t *testi
 	eph := realDir(t)
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("scratch", tools.EphemeralVolumeRef{Root: eph}) // created read-write
-	ctx := tools.WithEphemeralVolumes(ctxWith(tools.VolumeBinding{Name: "default", Root: bound, Default: true}), set)
+	ctx := tools.WithEphemeralVolumes(ephemeralWritable(ctxWith(tools.VolumeBinding{Name: "default", Root: bound, Default: true})), set)
 
 	write := func(ctx context.Context, volume string) tools.Result {
 		return fileCall(t, ctx, &Write{}, map[string]any{"volume": volume, "path": "a.txt", "content": "x"})

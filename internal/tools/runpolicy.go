@@ -11,6 +11,16 @@ import (
 // PolicyOf), built once per run entry point and, for a spawned child, derived
 // from its parent's by Inherit, which decides every field explicitly.
 //
+// ZERO MEANS DENY. A run whose entry point built no policy reads the zero
+// RunPolicy, and every grant in it is withheld: no tools ceiling, no volume,
+// no memory, SQL, history, channel, interruption, def-family, skill,
+// evaluation or key scope, no ephemeral write, not operator-authored. The
+// fields that NARROW something the operator configured rather than grant it
+// — Hosts, Decision, CoreBlocks, FanoutCap, Overrides, Compaction, Context —
+// fall back to that floor when zero: the operator's host list and decision
+// models, no core blocks to guard, the definition's fan-out width, no
+// inherited override, no compaction or context setting.
+//
 // Before RunPolicy each of these rode its own ctx key with its own setter, and
 // a child inherited whatever its spawn path forgot to restamp: a per-spawn
 // override, a ledger index, a fan-out cap wider than the child's own. With one
@@ -37,8 +47,11 @@ type RunPolicy struct {
 	// Volumes is the run's filesystem-volume confinement (see
 	// VolumePolicyValue). Zero = bound to no volume, every file tool refuses.
 	Volumes VolumePolicyValue
-	// EphemeralReadOnly makes every ephemeral volume read-only for this run.
-	EphemeralReadOnly bool
+	// EphemeralWritable lets the run write to its tree's ephemeral volumes
+	// (each still subject to the volume's own mode). False — the zero value,
+	// or an agent whose definition says `ephemeral_volumes: ro` — resolves
+	// every ephemeral volume read-only.
+	EphemeralWritable bool
 	// VolumeDef gates VolumeDef create/delete/purge.
 	VolumeDef VolumeDefPolicyValue
 
@@ -171,7 +184,7 @@ var inheritRules = map[string]inheritRule{
 	"ToolPatterns":       ruleOwn,     //
 	"Hosts":              ruleInherit, // the caller's narrowing holds for the whole tree; narrow-only is sticky
 	"Volumes":            ruleNarrow,  // child-declared ∩ parent; undeclared works within the parent's
-	"EphemeralReadOnly":  ruleNarrow,  // read-only if either is
+	"EphemeralWritable":  ruleNarrow,  // writable only if both are
 	"VolumeDef":          ruleOwn,     //
 	"Memory":             ruleOwn,     // a child's surface is its own definition's
 	"SqlMem":             ruleOwn,     //
@@ -213,7 +226,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		ToolPatterns:      own.ToolPatterns,
 		Hosts:             hosts,
 		Volumes:           ChildVolumes(p.Volumes, own.Volumes, c.DeclaresVolumes),
-		EphemeralReadOnly: p.EphemeralReadOnly || own.EphemeralReadOnly,
+		EphemeralWritable: p.EphemeralWritable && own.EphemeralWritable,
 		VolumeDef:         own.VolumeDef,
 		Memory:            own.Memory,
 		SqlMem:            own.SqlMem,

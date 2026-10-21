@@ -22,17 +22,17 @@ func TestEphemeralReadOnly_DefinitionMarksAndChildNeverUnmarks(t *testing.T) {
 	h := newReviewHarness(t)
 	ctx := context.Background()
 	unmarked, _ := h.srv.agentRunPolicy(ctx, config.AgentDef{}, "a", runPolicySource{})
-	if unmarked.EphemeralReadOnly {
+	if !unmarked.EphemeralWritable {
 		t.Error("an agent without the setting was marked")
 	}
 	marked, _ := h.srv.agentRunPolicy(ctx, config.AgentDef{EphemeralVolumes: "ro"}, "a", runPolicySource{})
-	if !marked.EphemeralReadOnly {
+	if marked.EphemeralWritable {
 		t.Fatal("ephemeral_volumes: ro did not mark the run")
 	}
-	if !marked.Inherit(tools.ChildGrant{Own: unmarked}).EphemeralReadOnly {
+	if marked.Inherit(tools.ChildGrant{Own: unmarked}).EphemeralWritable {
 		t.Error("a child's definition without the setting cleared its parent's")
 	}
-	if !unmarked.Inherit(tools.ChildGrant{Own: marked}).EphemeralReadOnly {
+	if unmarked.Inherit(tools.ChildGrant{Own: marked}).EphemeralWritable {
 		t.Error("a child's own ephemeral_volumes: ro did not mark it under an unmarked parent")
 	}
 }

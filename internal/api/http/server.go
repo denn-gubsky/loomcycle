@@ -2119,7 +2119,7 @@ func subAgentCryptoPolicy(parent tools.CryptoPolicyValue, def config.AgentDef) t
 // and authoring (SkillDef create/fork). Empty patterns = allow all (the RFC BA
 // default); `-*` = deny all.
 func (s *Server) skillPolicyForAgent(agentDef config.AgentDef) tools.SkillPolicyValue {
-	return tools.SkillPolicyValue{Patterns: agentDef.Skills}
+	return tools.SkillPolicyValue{Patterns: agentDef.Skills, Granted: true}
 }
 
 // volumeDefPolicyForAgent returns the RFC AH Phase 2a VolumeDef policy
@@ -7248,7 +7248,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subRunCfg.Hosts = hostRecordOf(childPolicy.Hosts)
 	subRunCfg.Compaction = childPolicy.Compaction
 	subRunCfg.Context = childPolicy.Context
-	subRunCfg.EphemeralReadOnly = childPolicy.EphemeralReadOnly
+	subRunCfg.EphemeralReadOnly = !childPolicy.EphemeralWritable
 	// The parent's volume confinement and key scopes are the ceilings the
 	// child was narrowed against, and its fan-out width the one it runs with:
 	// a resume narrows against the first two again and restores the third.
