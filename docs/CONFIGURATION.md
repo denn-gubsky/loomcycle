@@ -1669,6 +1669,20 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
 | `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Lines from code not yet converted to levelled logging are never hidden by the level (they are recorded at the configured level, `info` at minimum), so fatal and startup errors always show. An unknown value warns and uses `info`. |
 
+**Shutdown.** On SIGTERM or SIGINT, loomcycle pauses this replica's runs in flight before it exits, so the next boot resumes them instead of the stale-run sweeper failing them. It is the [pause](ARCHITECTURE.md#pause--resume--snapshot-v0817) the operator can request, made local and bounded:
+
+1. New runs are refused (503) and each run in flight parks at its next iteration boundary, its row `pause_state='paused'`. The HTTP and gRPC listeners drain alongside, each for at most 5 s.
+2. At three quarters of the bound, the runs not yet parked have their tool calls interrupted: a `Bash` (or Bashbox fallback) command's process group is killed, the call fails with a note that the runtime shut down while it ran, and the run parks at the boundary after it. A run already parked is left alone, so a fan-out parent parked mid-spawn keeps its children.
+3. Then the background work stops, the counters and traces flush, and the process exits.
+
+The next boot re-dispatches every paused row (in a cluster, under an advisory lock, on whichever replica boots next). A resumed run reads the interrupted call's failure in its transcript and decides whether to run it again — the call may have done part of its work. The pause is this replica's alone: nothing is written to the cluster's runtime state and nothing is sent to the other replicas, which keep serving, and the restarted process comes up running.
+
+| Env var | Default | Values |
+|---|---|---|
+| `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS` | 8000 | Longest the shutdown waits for runs to park, interrupt included; capped at 5 min. `0` skips the pause: runs are abandoned to the stale-run sweeper and their commands keep running, as before. |
+
+The default keeps the whole shutdown inside Docker's default 10 s stop grace, so a container is not killed partway through it. A run still waiting on its model call when the bound runs out is not paused — its partial answer is already in the transcript — and is ended by the stale-run sweeper as before; neither is a no-trace run, which has nothing stored to resume from. On slow models, raise the bound **together with** the platform's grace period, leaving a few seconds over it: `stop_grace_period: 40s` in Docker Compose, `terminationGracePeriodSeconds: 40` in Kubernetes, `TimeoutStopSec=40` in systemd, with `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=30000`.
+
 ---
 
 ## 9d. Filesystem Volumes — per-agent ro/rw scopes (RFC AH)
