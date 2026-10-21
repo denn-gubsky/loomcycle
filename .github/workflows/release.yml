@@ -156,7 +156,7 @@ jobs:
       # failing on the missing registry credentials.
       - name: Set up QEMU for multi-arch Docker builds
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         uses: docker/setup-buildx-action@v4
