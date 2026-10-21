@@ -248,6 +248,30 @@ credentialdef  op=create  scope=tenant  name=ANTHROPIC_API_KEY  value=sk-ant-…
 > is an operator concern), and `ollama-local` is unauthenticated so it never takes
 > an override.
 
+## Into a shell — `Bash` and Bashbox host commands
+
+`LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`
+name credentials injected, by name, into the environment of a `Bash` command or
+of a Bashbox host command (the `git` / `gh` an operator allowlisted with
+`LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`), resolved for each run like the key
+override above.
+
+**Unlike every other use on this page, the model can read these.** A `Bash`
+command prints them with `env`; an allowlisted host command can be told to
+(`git -c alias.x='!env' x` runs a host shell that does). The value is masked
+in the stored transcript (unless `LOOMCYCLE_REDACT_SECRETS=0`), but the live
+tool result carries it, and so does the conversation sent to the LLM provider
+on the next call. Give a shell
+only credentials you would hand the model, and prefer the ones that keep the
+token out of reach: a git-source volume (`VolumeDef create source:{git:…}`)
+for a clone, an MCP server with a `$cred:` header for an API.
+
+For the Bashbox fallback, bind each credential to the one command that needs
+it: `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=git:GITHUB_TOKEN,gh:GH_TOKEN`
+hands `GITHUB_TOKEN` to `git` only. A bare name still reaches every
+allowlisted command. A binding does not stop the command from passing the
+value on: whatever it starts inherits it.
+
 ## Crypto keys and the `Crypto` tool
 
 A credential can also be a **crypto key** (`usage: crypto`): a key the `Crypto` tool uses to encrypt, decrypt, sign, verify, MAC or make one-time codes. Its material is never shown — not when it is generated, not to the agent that uses it, not in `get` or `list`. A crypto key is never sent anywhere either: `$cred:<name>` refuses it on every path (MCP headers, provider keys, Bash variables), and does not fall back to a same-named credential in a wider scope.
