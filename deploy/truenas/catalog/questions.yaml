@@ -437,6 +437,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES
+            label: LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES
+            description: 'Bytes one Bashbox call may write into memory: a read-only volume''s writes and the shadowed dynamic root. Past it, writes fail with "no space left on device". Default 64 MiB; under 1 MiB is raised to 1 MiB. (example: 67108864)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_CRYPTO_MAX_BYTES
             label: LOOMCYCLE_CRYPTO_MAX_BYTES
             description: 'The Crypto tool encrypts, signs, MACs and makes one-time codes with keys the runtime holds (crypto keys stored with CredentialDef, which need LOOMCYCLE_SECRET_KEY). An agent uses keys only from the scopes its crypto_scopes grants. These cap each data argument (bytes) and the calls one run may make. Defaults: 1048576 and 100. (example: 1048576)'

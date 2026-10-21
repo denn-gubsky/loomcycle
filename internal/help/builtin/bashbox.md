@@ -23,7 +23,13 @@ That changes what the runtime can honestly promise:
   Bashbox mounts a `ro` volume under an **in-RAM write overlay**: writes
   succeed *inside the run* (so a script can use scratch files) but **never
   touch the host tree** — they are discarded when the call returns. The ro
-  guarantee is real.
+  guarantee is real. Those writes are held in memory: a call may write at
+  most 64 MiB in total to in-memory files (unless the operator changed it),
+  and deleting a file does not give it back. Every file or directory created
+  counts too. Past the limit a write fails with `no space left on device`, so
+  keep scratch files on a read-only volume small. Changing a file of the
+  volume (chmod, touch, mv, ln, appending) copies it into that memory, at its
+  full size; reading it unchanged does not.
 
 ## When to use it
 
