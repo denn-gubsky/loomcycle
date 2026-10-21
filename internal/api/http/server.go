@@ -3075,6 +3075,16 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				sessHold.release()
 			}
 		}()
+		// A run parked on another replica has let the cluster lock go
+		// (parkLock): the session's live run is what refuses a second turn
+		// there.
+		if in.SessionLockAcrossReplicas {
+			if live, err := s.sessionHasLiveRun(ctx, in.SessionID, in.QueuedRunID); err != nil {
+				return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+			} else if live {
+				return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
+			}
+		}
 	}
 
 	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
@@ -3348,7 +3358,15 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// replica may have taken the session meanwhile: it starts only if it
 		// can take the lock back, and then reads the session's history again.
 		var startErr error
+		rowID := in.QueuedRunID
+		if queued != nil {
+			rowID = queued.runID
+		}
 		if !sessHold.reacquire() {
+			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
+		} else if live, lerr := s.sessionLiveAfterWait(ctx, in, isContinuation, rowID); lerr != nil {
+			startErr = fmt.Errorf("%w: %v", runner.ErrInternal, lerr)
+		} else if live {
 			startErr = fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
 		} else if isContinuation && in.SessionLockAcrossReplicas {
 			if transcript, terr := s.store.GetTranscript(ctx, in.SessionID); terr != nil {
@@ -3360,10 +3378,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		}
 		if startErr != nil {
 			release()
-			rowID := in.QueuedRunID
-			if queued != nil {
-				rowID = queued.runID
-			}
 			s.endQueuedRun(rowID, startErr)
 			return startErr
 		}
@@ -3845,6 +3859,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// A parked run adopts a retuned tool_choice / output_format at the same
 		// boundary; the baseline is what the run starts with.
 		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
+	}
+	if sessHold != nil {
+		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, cancelFn)
 	}
 	if detached {
 		handOff = true

@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // A start the caller already counted against its rate is not counted again:
@@ -132,6 +133,11 @@ func TestHandleMessages_QueuedContinuationSeesATurnTakenWhileItWaited(t *testing
 	}
 	seg, _ := json.Marshal(oneUserSeg("INJECTED turn from another replica"))
 	if err := g.st.AppendEvent(ctx, other.ID, "user_input", seg); err != nil {
+		t.Fatal(err)
+	}
+	// Finished before this one is admitted: a turn still running there would
+	// make the session busy, not part of its history.
+	if err := g.st.FinishRun(ctx, other.ID, store.RunCompleted, "end_turn", store.Usage{}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -384,4 +390,161 @@ func (g *goldenServer) parkedThenClientGone(t *testing.T, r *goldenResp) (agentI
 	r.drain(t)
 	time.Sleep(300 * time.Millisecond)
 	return agentID, runID
+}
+
+// A parked continuation holds no database connection: the cluster half of its
+// session lock (a Postgres advisory lock, which pins a pool connection) is let
+// go while it waits for its operator and taken back for its next turn. A
+// parked run holds no run slot either, so a lock kept through the park would
+// let a user pin one connection per parked session, outside every cap.
+func TestHandleMessages_AParkedContinuationHoldsNoClusterLock(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true`))
+	agentID, runID, _ := r.ids(t)
+	r.until(t, "awaiting_input", 1)
+	waitFor(t, "the cluster lock to be let go at the park", func() bool { return locker.holding() == 0 })
+
+	// The next turn takes it back, for as long as it runs.
+	g.post("/v1/runs/"+runID+"/input", `{"text":"HOLD this turn"}`).drain(t)
+	r.until(t, "text", 2)
+	if n := locker.holding(); n != 1 {
+		t.Errorf("during the turn after the park, %d cluster locks are held, want 1", n)
+	}
+	g.gate <- struct{}{}
+	r.until(t, "awaiting_input", 2)
+	waitFor(t, "the cluster lock to be let go at the second park", func() bool { return locker.holding() == 0 })
+
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
+}
+
+// One live turn per session holds across replicas without a lock held: with
+// the continuation parked (its cluster lock let go), another replica can take
+// the lock, and must still refuse a second turn on the session.
+func TestHandleMessages_AParkedContinuationsSessionIsBusyOnAnotherReplica(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true`))
+	agentID, _, _ := r.ids(t)
+	r.until(t, "awaiting_input", 1)
+	waitFor(t, "the cluster lock to be let go at the park", func() bool { return locker.holding() == 0 })
+	if release, ok := locker.TryLock(context.Background(), sid); !ok {
+		t.Fatal("another replica could not take the parked session's cluster lock: it is still held")
+	} else {
+		release()
+	}
+
+	other := g.otherReplica(locker)
+	second := other.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("me too", ""))
+	second.drain(t)
+	if second.status != http.StatusConflict || !strings.Contains(second.body, "session_busy") {
+		t.Errorf("a second turn on another replica while the continuation is parked: %d %s, want 409 session_busy", second.status, second.body)
+	}
+
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
+}
+
+// A parked continuation that cannot take its session's cluster lock back —
+// another replica holds it — does not run its turn unguarded: the turn ends
+// with the busy reason and the run parks again for its operator.
+func TestHandleMessages_AParkedContinuationThatCannotRetakeItsLockEndsTheTurn(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true`))
+	agentID, runID, _ := r.ids(t)
+	r.until(t, "awaiting_input", 1)
+	waitFor(t, "the cluster lock to be let go at the park", func() bool { return locker.holding() == 0 })
+	release, ok := locker.TryLock(context.Background(), sid) // another replica, mid-request
+	if !ok {
+		t.Fatal("could not take the parked session's cluster lock")
+	}
+
+	g.post("/v1/runs/"+runID+"/input", `{"text":"keep going"}`).drain(t)
+	cancelled := r.until(t, "turn_cancelled", 1)
+	if !strings.Contains(cancelled, "another request is in flight") {
+		t.Errorf("turn_cancelled = %s, want the busy reason", cancelled)
+	}
+	r.until(t, "awaiting_input", 2)
+	release()
+
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	r.drain(t)
+}
+
+// otherReplica is a second server on the same store and the same cluster
+// locker: another replica of this one.
+func (g *goldenServer) otherReplica(locker clusterLocker) *goldenServer {
+	g.t.Helper()
+	srv := New(g.srv.cfg(), &stubResolver{p: g.prov}, []tools.Tool{}, concurrency.New(4, 8, 0), g.st)
+	srv.sessionLockPG = locker
+	ts := httptest.NewServer(srv.Mux())
+	g.t.Cleanup(ts.Close)
+	return &goldenServer{t: g.t, srv: srv, ts: ts, st: g.st, gate: g.gate, prov: g.prov, bearer: g.bearer}
+}
+
+// A continuation held for review is parked too: it holds no cluster lock
+// while it waits for the verdict.
+func TestHandleMessages_AHeldContinuationHoldsNoClusterLockWhileHeld(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("plain")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("revise it", `"review":true`))
+	_, runID, _ := r.ids(t)
+	r.until(t, "awaiting_review", 1)
+	// Not fatal: the held run keeps its request — and the test server — open
+	// until it gets a verdict, so the verdict must be given whatever this finds.
+	if !eventually(func() bool { return locker.holding() == 0 }) {
+		t.Errorf("while the continuation is held for review, %d cluster locks are held, want 0", locker.holding())
+	}
+	g.approve(t, runID)
+	r.drain(t)
+}
+
+// eventually polls cond for up to five seconds.
+func eventually(cond func() bool) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return cond()
+}
+
+// A continuation that waited for its slot is refused as busy if, while it
+// waited, another replica started a turn on the session that is still live:
+// that turn is parked or running there with its cluster lock let go, and the
+// session takes one live turn at a time.
+func TestHandleMessages_QueuedContinuationIsBusyIfAnotherReplicasTurnIsLive(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{maxRuns: 1})
+	sid := g.completedSession("plain")
+	holder := g.holdSlot()
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("queued turn", ""))
+	r.until(t, "queued", 1)
+
+	// Another replica's turn on the session, live while this one waits.
+	if _, err := g.st.CreateRun(context.Background(), sid, store.RunIdentity{AgentID: "a_other_replica_live"}); err != nil {
+		t.Fatal(err)
+	}
+	g.gate <- struct{}{}
+	holder.drain(t)
+	frame := r.until(t, "error", 1)
+	r.drain(t)
+	if !strings.Contains(frame, "another request is in flight") {
+		t.Errorf("the queued continuation's end = %s, want the busy reason", frame)
+	}
 }

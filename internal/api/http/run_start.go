@@ -7,12 +7,14 @@ package http
 // each refusal has always been answered with on these routes.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -209,4 +211,107 @@ func continuationRefusal(err error) error {
 		}
 	}
 	return err
+}
+
+// parkLock lets the cluster half of a continuation's session lock go while
+// the run is parked — waiting for its operator's next message, or for a
+// review's verdict — and takes it back for the run's next turn. The cluster
+// lock is a Postgres advisory lock, which pins a pool connection, and a
+// parked run holds no run slot: kept through the park, it would let a user
+// pin a connection per parked session, outside every cap. While the lock is
+// let go, a second turn on the session is still refused on every replica by
+// the session's live run (sessionHasLiveRun), and on this one by the
+// in-process lock, which the run keeps until it ends.
+//
+// Used only on the run's goroutine (the loop's park, turn and hold hooks).
+type parkLock struct {
+	hold      *sessionHold
+	sessionID string
+	released  bool
+}
+
+// park lets the cluster lock go, once per park.
+func (p *parkLock) park() {
+	if p.released {
+		return
+	}
+	p.hold.releaseCluster()
+	p.released = true
+}
+
+// resume takes the cluster lock back for the run's next turn. false: another
+// replica holds it, and the turn must not run.
+func (p *parkLock) resume() bool {
+	if !p.released {
+		return true
+	}
+	if !p.hold.reacquire() {
+		return false
+	}
+	p.released = false
+	return true
+}
+
+func (p *parkLock) busy() string {
+	return fmt.Sprintf("another request is in flight on session %q", p.sessionID)
+}
+
+// sessionHasLiveRun reports whether a run of the session other than except is
+// queued or running — a parked run is running. It is the one-live-turn rule
+// for a replica that does not hold the session's in-process lock, at a moment
+// the cluster lock may be let go (parkLock).
+func (s *Server) sessionHasLiveRun(ctx context.Context, sessionID, except string) (bool, error) {
+	runs, err := s.store.RunsForSession(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range runs {
+		if r.ID != except && (r.Status == store.RunRunning || r.Status == store.RunQueued) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sessionLiveAfterWait is sessionHasLiveRun for a continuation that waited for
+// its slot with its cluster lock let go: another replica may have started a
+// run on the session meanwhile, and parked it. row is the waiting run's own.
+func (s *Server) sessionLiveAfterWait(ctx context.Context, in runner.RunInput, isContinuation bool, row string) (bool, error) {
+	if !isContinuation || !in.SessionLockAcrossReplicas {
+		return false, nil
+	}
+	return s.sessionHasLiveRun(ctx, in.SessionID, row)
+}
+
+// releaseSessionWhileParked wires p into the loop's park, turn and hold
+// hooks: the cluster lock is let go when the run parks for its operator
+// (awaiting_input) or is held for a verdict, and taken back before its next
+// turn. A turn that cannot take it back does not run: an interactive run's
+// turn is cancelled with the busy reason and the run parks again; a run held
+// for review — which has no per-turn cancel — is cancelled.
+func (s *Server) releaseSessionWhileParked(opts *loop.RunOptions, p *parkLock, cancelRun context.CancelCauseFunc) {
+	onEvent := opts.OnEvent
+	opts.OnEvent = func(ev providers.Event) {
+		onEvent(ev)
+		if ev.Type == providers.EventAwaitingInput {
+			p.park()
+		}
+	}
+	if arm := opts.ArmTurnCancel; arm != nil {
+		opts.ArmTurnCancel = func(turnCancel context.CancelCauseFunc) func() {
+			if !p.resume() {
+				turnCancel(loop.TurnCancelCause(p.busy()))
+			}
+			return arm(turnCancel)
+		}
+	}
+	opts.OnReviewHold = func(held bool) {
+		if held {
+			p.park()
+			return
+		}
+		if !p.resume() {
+			cancelRun(fmt.Errorf("%w: %s", runner.ErrSessionBusy, p.busy()))
+		}
+	}
 }
