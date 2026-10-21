@@ -142,9 +142,26 @@ func schedulerFixture(t *testing.T, def scheduleDef, nextRunAt time.Time) (*Sche
 	fm := &fakeMCP{}
 	cfg := Config{TickInterval: 10 * time.Millisecond}
 	sched := New(cfg, st, fr, nil, fm, t.Logf)
+	waitFiresOnCleanup(t, sched)
 	// The channel writer main.go wires, with no channel held.
 	sched.SetChannelWriter(&channels.StorePublisher{Store: st})
 	return sched, fr, fm, defID, st
+}
+
+// waitFiresOnCleanup makes the test wait, when it ends, for every run and
+// consolidation sweep s started. Stop does not wait for runs (a real one may
+// last hours), and a test that never calls Stop waits for nothing; either way
+// a run finishing on its own goroutine outlives the test, reads the closed
+// store and logs through t.Logf after the test has returned. Call it AFTER the
+// store's cleanup is registered: cleanups run last-in first-out, so the wait
+// then comes before the close. A test that holds a run on a gate registers its
+// release later still, so the release runs before this wait.
+func waitFiresOnCleanup(t *testing.T, s *Scheduler) {
+	t.Helper()
+	t.Cleanup(func() {
+		s.sweeps.Wait()
+		s.runs.Wait()
+	})
 }
 
 // fireOneWait fires one row and waits for what it started — a consolidation
@@ -668,6 +685,7 @@ func TestScheduler_TickFiresInParallel(t *testing.T) {
 	const perFireDelay = 100 * time.Millisecond
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
 	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+	waitFiresOnCleanup(t, sched)
 
 	start := time.Now()
 	sched.tick(ctx)
@@ -709,6 +727,7 @@ func TestScheduler_TickRespectsMaxConcurrentFires(t *testing.T) {
 	}
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
 	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: cap}, st, fr, nil, nil, t.Logf)
+	waitFiresOnCleanup(t, sched)
 
 	start := time.Now()
 	sched.tick(ctx)
@@ -751,6 +770,7 @@ func TestScheduler_PanicInFireOneIsRecovered(t *testing.T) {
 		}
 	}}
 	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+	waitFiresOnCleanup(t, sched)
 
 	// The tick should return without panicking even though one
 	// goroutine panicked. Survivors must still record results.
@@ -791,6 +811,13 @@ func TestScheduler_SlotClaimSuppressesDoubleFire(t *testing.T) {
 	_ = st.ScheduleDefSetActive(ctx, "", "sched-double-fire", defID, "test")
 	_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 
+	// The claim moves next_run_at to the next top of the hour, so a test
+	// that crosses one sees a NEW slot come due and fire — a correct second
+	// call. Start clear of the boundary, as backlogFixture does.
+	if left := time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)); left < 5*time.Second {
+		time.Sleep(left + time.Second)
+	}
+
 	const perFireDelay = 300 * time.Millisecond
 	var calls atomic.Int32
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) {
@@ -798,18 +825,25 @@ func TestScheduler_SlotClaimSuppressesDoubleFire(t *testing.T) {
 		time.Sleep(perFireDelay)
 	}}
 	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+	waitFiresOnCleanup(t, sched)
 
 	// First tick fires the schedule asynchronously (via the goroutine
 	// pool). The fire takes 300ms; meanwhile we issue more ticks at
 	// 50ms intervals. Were next_run_at still in the past during the
 	// run, each of these ticks would re-fire the same schedule.
-	go sched.tick(ctx)
+	firstTick := make(chan struct{})
+	go func() {
+		defer close(firstTick)
+		sched.tick(ctx)
+	}()
 	for i := 0; i < 4; i++ {
 		time.Sleep(50 * time.Millisecond)
 		sched.tick(ctx)
 	}
-	// Wait for the in-flight fire to finish.
+	// Wait for the in-flight fire to finish. Joining the first tick also
+	// orders its runs.Add before the cleanup's runs.Wait.
 	time.Sleep(perFireDelay + 100*time.Millisecond)
+	<-firstTick
 
 	if got := calls.Load(); got != 1 {
 		t.Errorf("calls = %d, want 1 (the slot claim should have suppressed re-fires while the first fire was running)", got)
