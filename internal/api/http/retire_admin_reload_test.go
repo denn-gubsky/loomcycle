@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -77,21 +78,62 @@ func reloadTo(t *testing.T, s *Server, principals map[string]config.PrincipalDef
 }
 
 // Reload first: the admin token keeps an admin credential, so dropping the admin
-// principal is allowed; the retire after it must then be refused.
+// principal (keeping a tenant one) is allowed; the retire after it must then be
+// refused, or nobody could administer.
 func TestRetireLastAdminToken_RefusedAfterReloadDropsAdminPrincipal(t *testing.T) {
-	for name, keep := range map[string]map[string]config.PrincipalDef{
-		"tenant principal kept": {"alice": raAli}, // retire would leave no admin
-		"no principal kept":     nil,              // retire would leave open mode
-	} {
-		t.Run(name, func(t *testing.T) {
-			s, exec := retireReloadServer(t)
-			if err := reloadTo(t, s, keep); err != nil {
-				t.Fatalf("reload dropping the admin principal while an admin token exists: %v", err)
-			}
-			if res := exec(`{"op":"retire","name":"root"}`); !res.IsError {
-				t.Fatal("retired the last admin token after a reload dropped the admin principal; want refused")
-			}
-		})
+	s, exec := retireReloadServer(t)
+	if err := reloadTo(t, s, map[string]config.PrincipalDef{"alice": raAli}); err != nil {
+		t.Fatalf("reload dropping the admin principal while an admin token exists: %v", err)
+	}
+	if res := exec(`{"op":"retire","name":"root"}`); !res.IsError {
+		t.Fatal("retired the last admin token after a reload dropped the admin principal; want refused")
+	}
+}
+
+// Whether a config authenticates is decided by the config alone. An admin token
+// in the store does not let a reload drop every principal: the token can be
+// retired a moment later — from another replica whose config still has an admin
+// principal, or inside this reload's own check-to-swap window — and nothing
+// would notice this replica had gone open.
+func TestReloadDroppingEveryPrincipal_RefusedEvenWithAnAdminToken(t *testing.T) {
+	s, _ := retireReloadServer(t)
+	err := reloadTo(t, s, nil)
+	if !errors.Is(err, config.ErrReloadInvalid) || !strings.Contains(err.Error(), "LOOMCYCLE_AUTH_TOKEN") {
+		t.Fatalf("reload dropping every principal with an admin token present: err = %v, want ErrReloadInvalid naming the way out", err)
+	}
+}
+
+// A retire landing between the reload's checks and its swap cannot open the
+// server: the reload is refused on the config alone, before that window.
+func TestReload_RetireInsideTheReloadWindowCannotOpenServer(t *testing.T) {
+	s, exec := retireReloadServer(t)
+	candidate := &config.Config{}
+	candidate.Env = s.cfg().Env
+	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil },
+		SectionReloader{Sections: []string{"principals"}, Reload: func(*config.Config) error {
+			exec(`{"op":"retire","name":"root"}`)
+			return nil
+		}})
+	_, _ = s.ReloadConfig(context.Background(), false)
+	if on, err := s.AuthConfiguredErr(context.Background()); err != nil || !on {
+		t.Fatalf("after a retire inside a reload dropping every principal: authConfigured = (%v, %v), want on", on, err)
+	}
+}
+
+// Two replicas sharing one store, nothing concurrent: A reloads its principals
+// away while an admin token exists, then B — whose config keeps its admin
+// principal — retires that token. A must not be left open.
+func TestReload_CrossReplicaRetireCannotOpenServer(t *testing.T) {
+	b, exec := retireReloadServer(t)
+	cfgA := &config.Config{Principals: b.cfg().Principals, ResolvedPrincipals: b.cfg().ResolvedPrincipals}
+	cfgA.Env = b.cfg().Env
+	a := &Server{cfgHolder: config.NewHolder(cfgA), store: b.store}
+	_ = reloadTo(t, a, nil)
+	if res := exec(`{"op":"retire","name":"root"}`); res.IsError {
+		t.Fatalf("replica B retire (its admin principal is live): %s", res.Text)
+	}
+	if on, err := a.AuthConfiguredErr(context.Background()); err != nil || !on {
+		t.Fatalf("replica A after B retired the last admin token: authConfigured = (%v, %v), want on", on, err)
 	}
 }
 
