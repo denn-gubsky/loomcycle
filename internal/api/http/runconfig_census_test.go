@@ -80,7 +80,8 @@ func TestRunConfigCensus_EveryLoopRunningPathPersistsIt(t *testing.T) {
 
 	// Non-vacuity: this guard is worthless if it matches nothing, which is how
 	// it would rot the first time a path is renamed or restructured.
-	if len(runStarters) < 4 {
+	// Three since the HTTP routes start their runs through RunOnce (RFC ET).
+	if len(runStarters) < 3 {
 		t.Fatalf("census found only %d run-starting identity literals; it has stopped "+
 			"matching the code it is supposed to guard", len(runStarters))
 	}

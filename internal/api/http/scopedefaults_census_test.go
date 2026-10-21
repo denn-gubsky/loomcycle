@@ -121,8 +121,8 @@ func TestScopeDefaultCensus_TheCensusSeesTheSites(t *testing.T) {
 			seen += strings.Count(string(src), "MemoryPolicyValue{") + strings.Count(string(src), "SqlMemPolicyValue{")
 		}
 	}
-	if seen < 20 {
+	if seen < 19 {
 		t.Fatalf("the census found only %d MemoryPolicyValue construction sites; it is meant "+
-			"to cover every one of them (12 memory + 13 sql at the time of writing) and has stopped doing so", seen)
+			"to cover every one of them (10 memory + 9 sql at the time of writing) and has stopped doing so", seen)
 	}
 }
