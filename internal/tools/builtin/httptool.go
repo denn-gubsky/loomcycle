@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,7 +78,8 @@ func (h *HTTP) Name() string { return "HTTP" }
 func (h *HTTP) Description() string {
 	return "Make ONE outbound HTTP request with any method, to a host on the operator's allowlist. " +
 		"Takes `method` (GET/POST/PUT/PATCH/DELETE/HEAD), `url` (absolute http(s)), optional `headers` and `body`. " +
-		"Returns the status line, response headers and body as text, truncated at 256 KiB, with a 30s timeout. " +
+		"Returns the status line, response headers and body as text, truncated at 256 KiB, with a 30s timeout; " +
+		"the values of credential-bearing response headers (cookies, tokens, API keys) read [redacted]. " +
 		"Use this to CALL an API — post a payload, authenticate, PATCH a record. " +
 		"Do NOT use it merely to read a web page: WebFetch does the same GET and strips HTML to readable text. " +
 		"The host allowlist is enforced on every redirect hop, so a redirect off-list is refused mid-chain; " +
@@ -232,8 +236,12 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "HTTP %s %s -> %d\n", method, rawURL, resp.StatusCode)
-	for k, v := range resp.Header {
-		fmt.Fprintf(&b, "%s: %s\n", k, strings.Join(v, ", "))
+	for _, k := range slices.Sorted(maps.Keys(resp.Header)) {
+		v := strings.Join(resp.Header[k], ", ")
+		if credentialHeader(k) {
+			v = "[redacted]"
+		}
+		fmt.Fprintf(&b, "%s: %s\n", k, v)
 	}
 	b.WriteString("\n")
 	b.Write(respBody)
@@ -241,6 +249,50 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 		b.WriteString(responseTruncatedMarker(maxResp))
 	}
 	return tools.Result{Text: b.String()}, nil
+}
+
+// credentialWords are the parts of a response header name that mark a value
+// that may be a credential, besides "token": a minted secret, an API key or
+// any name ending in "key" (Ocp-Apim-Subscription-Key, X-Access-Key), a
+// session id, a cookie, a JWT or bearer, an Authorization-style value
+// (matched anywhere in the name, so X-Authorization and X-AuthToken count).
+const credentialWords = `secret|api[-_]?key|key$|session|cookie|credential|password|jwt|bearer|auth`
+
+var (
+	// credentialHeaderName matches a name whose value is redacted, unless an
+	// exception below applies. Its values are kept from the model, which
+	// could repeat them into a transcript, a memory or a request to another
+	// host; the name stays so the model still sees the header was set.
+	credentialHeaderName = regexp.MustCompile(`(?i)(token|` + credentialWords + `)`)
+	// otherCredentialWord is credentialHeaderName without "token": a
+	// pagination name is readable only when "token" is its sole match.
+	otherCredentialWord = regexp.MustCompile(`(?i)(` + credentialWords + `)`)
+	// paginationTokenName is a whole header name that is a cursor an agent
+	// paging an API needs: x-ms-continuationtoken, Next-Page-Token,
+	// X-Next-Page-Token. Anchored at both ends, so a credential name with a
+	// pagination word in it (X-Access-Page-Token) is not lifted. A cursor
+	// whose name holds no credential word is never redacted to begin with.
+	paginationTokenName = regexp.MustCompile(`(?i)^(x[-_])?(ms[-_])?(next[-_]?)?(page|continuation)[-_]?token$`)
+)
+
+// readableHeaders match the pattern but carry no credential, by exact
+// (canonical) name: the authentication challenges an agent needs to learn the
+// auth scheme, the OAuth scope listings, CORS, and an author.
+var readableHeaders = map[string]bool{
+	"Www-Authenticate":                 true,
+	"Proxy-Authenticate":               true,
+	"X-Oauth-Scopes":                   true,
+	"X-Accepted-Oauth-Scopes":          true,
+	"Access-Control-Allow-Credentials": true,
+	"X-Author":                         true,
+}
+
+// credentialHeader reports whether a response header's value is redacted.
+func credentialHeader(name string) bool {
+	if readableHeaders[http.CanonicalHeaderKey(name)] || !credentialHeaderName.MatchString(name) {
+		return false
+	}
+	return !paginationTokenName.MatchString(name) || otherCredentialWord.MatchString(name)
 }
 
 // responseTruncatedMarker is the line do appends when it cut the response body.

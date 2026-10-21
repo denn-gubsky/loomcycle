@@ -22,7 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -285,8 +285,8 @@ func (d *Driver) warnIfContextMismatch(req providers.Request) {
 	if _, seen := d.ctxMismatchWarned.LoadOrStore(key, struct{}{}); seen {
 		return
 	}
-	log.Printf("ollama: model %q on %s is requested with a %d-token context (an agent's max_context_tokens) while the provider is pinned to %d (%s) — Ollama reloads the model and drops its prompt cache on every switch between the two sizes (about 10 s per switch measured); set them to the same value",
-		req.Model, d.providerID, req.MaxContextTokens, d.numCtx, d.numCtxSetting())
+	slog.Warn("ollama: a model is requested with a context size (an agent's max_context_tokens) other than the provider's pinned num_ctx — Ollama reloads the model and drops its prompt cache on every switch between the two sizes (about 10 s per switch measured); set them to the same value",
+		"model", req.Model, "provider", d.providerID, "max_context_tokens", req.MaxContextTokens, "num_ctx", d.numCtx, "setting", d.numCtxSetting())
 }
 
 // loadedContext returns the window the model is currently loaded with, read
@@ -392,8 +392,11 @@ func (d *Driver) warnIfPromptOverWindow(req providers.Request, w ctxWindow) {
 	if est <= w.advertise {
 		return
 	}
-	log.Printf("ollama: prompt ~%d tokens exceeds the %d-token context window (%s) for model %q on %s — Ollama silently truncates the overflow; raise the window with %s",
-		est, w.advertise, w.source, req.Model, d.providerID, d.numCtxSetting())
+	// The message is quoted verbatim in docs/CONFIGURATION.md, so it keeps its
+	// formatted text; the attrs carry the same values for a JSON pipeline.
+	slog.Warn(fmt.Sprintf("ollama: prompt ~%d tokens exceeds the %d-token context window (%s) for model %q on %s — Ollama silently truncates the overflow; raise the window with %s",
+		est, w.advertise, w.source, req.Model, d.providerID, d.numCtxSetting()),
+		"provider", d.providerID, "model", req.Model, "prompt_tokens", est, "window", w.advertise, "window_source", w.source)
 }
 
 // numCtxSetting names the knob that pins this registration's num_ctx, for the
@@ -717,8 +720,8 @@ func (d *Driver) buildRequestBody(req providers.Request, numCtx int) ([]byte, er
 	// the wire. Off by default (a per-request log line would otherwise be
 	// noise). Non-secret — model name + effort only.
 	if os.Getenv("LOOMCYCLE_OLLAMA_DEBUG_THINK") == "1" {
-		log.Printf("ollama think-diag: provider=%s model=%q effort=%q think_set=%v",
-			d.providerID, req.Model, req.Effort, w.Think != nil)
+		slog.Info("ollama think-diag",
+			"provider", d.providerID, "model", req.Model, "effort", req.Effort, "think_set", w.Think != nil)
 	}
 
 	if req.OutputFormat != nil && d.EnforcesStructuredOutput(req.Model, len(req.Tools) > 0) {

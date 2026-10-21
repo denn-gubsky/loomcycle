@@ -1,0 +1,17 @@
+== continuation: POST /v1/sessions/<id:1>/messages
+status: 200
+content-type: text/event-stream
+event: session {"text":"<id:1>","type":"session"}
+event: agent {"agent_id":"a_golden_cont","parent_agent_id":null,"parent_context":null,"run_id":"<id:2>","session_id":"<id:1>"}
+event: started {"type":"started"}
+event: text {"text":"hello","type":"text"}
+event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}
+stored row: {"agent":"plain","agent_id":"a_golden_cont","credential_source":"operator","id":"<id:2>","input_tokens":3,"output_tokens":2,"pause_state":"running","provider":"stub","result":{"final_text":"hello"},"run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:1>","status":"completed","stop_reason":"end_turn"}
+stored event: user_input [{"content":[{"text":"second turn","type":"trusted-text"}],"role":"user"}]
+stored event: system_prompt {"system_prompt":"be brief"}
+stored event: started {"type":"started"}
+stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"second turn","type":"text"}],"system":[{"text":"be brief","type":"text"}]},"type":"prompt_snapshot"}
+stored event: text {"text":"hello","type":"text"}
+stored event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+stored event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}

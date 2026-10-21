@@ -731,13 +731,13 @@ questions:
               default: ""
           - variable: LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST
             label: LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST
-            description: 'Secret resolution: a webhook''s signing_secret_env / bearer_token_env / user_credentials_from_env env-var NAMES must be authorized, or every delivery 503s `secret_unresolvable`. (The NAMES are config and live here; the secret VALUES live in .env.local.) A name is authorized when ANY of: 1. it is LOOMCYCLE_*-prefixed (or a known third-party name) — auto- allowed for the VERIFY secret only (consum…'
+            description: 'Secret resolution: a webhook''s signing_secret_env / bearer_token_env / user_credentials_from_env env-var NAMES must be authorized, or every delivery 503s `unavailable` (the log names the env var). (The NAMES are config and live here; the secret VALUES live in .env.local.) A name is authorized when ANY of: 1. it is LOOMCYCLE_*-prefixed (or a known third-party name) — auto- allowed for the VERIFY…'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED
             label: LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED
-            description: 'Trusted-network ingress: honor `auth.kind: none` (skip HMAC) for a receiver only reachable over an already-authenticated transport (WireGuard/tailnet, mTLS). Default OFF — a none-auth webhook 503s `unauthenticated_mode_disabled` until this is set. (example: 1)'
+            description: 'Trusted-network ingress: honor `auth.kind: none` (skip HMAC) for a receiver only reachable over an already-authenticated transport (WireGuard/tailnet, mTLS). Default OFF — a none-auth webhook 503s `unavailable` (the log says why) until this is set. (example: 1)'
             schema:
               type: string
               default: ""

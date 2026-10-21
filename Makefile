@@ -20,7 +20,7 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live bashbox-escape
+.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live bashbox-escape js-install js-build js-test js-typecheck js-audit
 
 help:
 	@echo "loomcycle dev targets:"
@@ -37,6 +37,10 @@ help:
 	@echo "  pg-logs     — tail the test fixture container's logs"
 	@echo "  proto       — regenerate Go gRPC stubs from proto/loomcycle.proto"
 	@echo "  proto-deps  — install the Go protoc plugins (one-time)"
+	@echo "  js-install  — npm ci in every JS package (web/, packages/*, adapters/ts, ...)"
+	@echo "  js-build / js-test / js-typecheck — that npm script in every JS package that has it"
+	@echo "  js-audit    — npm audit --omit=dev --audit-level=high in every JS package"
+	@echo "              (JS_ARGS='--keep-going -p bridge' to filter/continue; see scripts/README.md)"
 	@echo ""
 	@echo "Local DSN: $(PG_DSN)"
 
@@ -83,6 +87,28 @@ build-ui:
 	touch internal/webui/dist/.gitkeep
 
 build-all: build-ui build
+
+# js-*: one npm task across every JS package, via scripts/js-packages.sh. The
+# package list is derived from the tracked package-lock.json files, so a new
+# package is covered once its lockfile is committed. Separate lockfiles, no
+# workspace — see scripts/README.md for why. Pass options through JS_ARGS:
+#   make js-test JS_ARGS="--keep-going -p packages/bridge"
+JS_ARGS ?=
+
+js-install:
+	scripts/js-packages.sh install $(JS_ARGS)
+
+js-build:
+	scripts/js-packages.sh build $(JS_ARGS)
+
+js-test:
+	scripts/js-packages.sh test $(JS_ARGS)
+
+js-typecheck:
+	scripts/js-packages.sh typecheck $(JS_ARGS)
+
+js-audit:
+	scripts/js-packages.sh audit $(JS_ARGS)
 
 test:
 	go test ./...

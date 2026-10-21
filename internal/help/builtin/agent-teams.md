@@ -482,7 +482,7 @@ the message — and so wakes whatever in the walk reads that channel:
   **name**, resolved by the receiver under the same allowlist as a runtime
   webhook definition's (a `LOOMCYCLE_*` name, or one listed in
   `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST`). The signature is checked before the
-  body is read as JSON; a bad one is `401`, a redelivery an idempotent
+  body is read as JSON; a bad one is the same `404` as an unknown webhook, a redelivery an idempotent
   `200`. A delivery accepted answers `202` with
   `{"webhook_name", "delivery_id", "channel"}`.
 - **One message per delivery.** However many walks of the team are running,

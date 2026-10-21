@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -134,7 +134,7 @@ func (c *TurnCancelCoordinator) CancelRemote(ctx context.Context, runID, reason 
 	if alive, err := c.replicas.IsReplicaAlive(ctx, run.ReplicaID, StaleReplicaThreshold); err != nil {
 		// Probe failure: proceed with the broadcast — a real cancel may still
 		// land if the owner responds.
-		log.Printf("coord: turncancel IsReplicaAlive probe for %s failed: %v (proceeding)", run.ReplicaID, err)
+		slog.Warn("coord: turncancel IsReplicaAlive probe failed (proceeding)", "replica", run.ReplicaID, "err", err)
 	} else if !alive {
 		return false, nil
 	}
@@ -196,13 +196,13 @@ func (c *TurnCancelCoordinator) CancelRemote(ctx context.Context, runID, reason 
 func (c *TurnCancelCoordinator) RunTurnCancelSubscriber(ctx context.Context, reg *turncancel.Registry) {
 	ch, err := c.bp.Subscribe(ctx, topicTurnCancel)
 	if err != nil {
-		log.Printf("coord: RunTurnCancelSubscriber subscribe failed: %v", err)
+		slog.Error("coord: RunTurnCancelSubscriber subscribe failed", "err", err)
 		return
 	}
 	for evt := range ch {
 		var p turnCancelEventPayload
 		if err := json.Unmarshal(evt.Payload, &p); err != nil {
-			log.Printf("coord: malformed turncancel event: %v", err)
+			slog.Warn("coord: malformed turncancel event", "err", err)
 			continue
 		}
 		if !reg.CancelLocal(p.RunID, p.Reason) {
@@ -210,7 +210,7 @@ func (c *TurnCancelCoordinator) RunTurnCancelSubscriber(ctx context.Context, reg
 		}
 		ack, _ := json.Marshal(turnCancelAckPayload{RunID: p.RunID, ByReplica: c.replicaID, Fired: true})
 		if err := c.bp.Publish(ctx, topicTurnCancelAck, ack); err != nil {
-			log.Printf("coord: publish turncancel ack for %s: %v", p.RunID, err)
+			slog.Warn("coord: publish turncancel ack failed", "run_id", p.RunID, "err", err)
 		}
 	}
 }
@@ -220,13 +220,13 @@ func (c *TurnCancelCoordinator) RunTurnCancelSubscriber(ctx context.Context, reg
 func (c *TurnCancelCoordinator) RunTurnCancelAckSubscriber(ctx context.Context) {
 	ch, err := c.bp.Subscribe(ctx, topicTurnCancelAck)
 	if err != nil {
-		log.Printf("coord: RunTurnCancelAckSubscriber subscribe failed: %v", err)
+		slog.Error("coord: RunTurnCancelAckSubscriber subscribe failed", "err", err)
 		return
 	}
 	for evt := range ch {
 		var ack turnCancelAckPayload
 		if err := json.Unmarshal(evt.Payload, &ack); err != nil {
-			log.Printf("coord: malformed turncancel ack: %v", err)
+			slog.Warn("coord: malformed turncancel ack", "err", err)
 			continue
 		}
 		c.mu.Lock()

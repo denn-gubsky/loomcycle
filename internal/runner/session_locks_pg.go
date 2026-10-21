@@ -3,7 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,7 +62,7 @@ func NewPgSessionLocker(pool *pgxpool.Pool) *PgSessionLocker {
 func (l *PgSessionLocker) TryLock(ctx context.Context, id string) (release func(), ok bool) {
 	conn, err := l.pool.Acquire(ctx)
 	if err != nil {
-		log.Printf("session_lock: pool acquire: %v", err)
+		slog.Warn("session_lock: pool acquire failed", "err", err)
 		return nil, false
 	}
 
@@ -75,7 +75,7 @@ func (l *PgSessionLocker) TryLock(ctx context.Context, id string) (release func(
 		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`, id,
 	).Scan(&acquired); err != nil {
 		conn.Release()
-		log.Printf("session_lock: pg_try_advisory_lock(%s): %v", id, err)
+		slog.Warn("session_lock: pg_try_advisory_lock failed", "session_id", id, "err", err)
 		return nil, false
 	}
 	if !acquired {
@@ -95,13 +95,13 @@ func (l *PgSessionLocker) TryLock(ctx context.Context, id string) (release func(
 		).Scan(&unlocked); err != nil {
 			// Connection close will auto-release the lock; log and
 			// continue.
-			log.Printf("session_lock: pg_advisory_unlock(%s): %v", id, err)
+			slog.Warn("session_lock: pg_advisory_unlock failed", "session_id", id, "err", err)
 		}
 		if !unlocked && err == nil {
 			// pg_advisory_unlock returns false if THIS session never
 			// held the lock — should never happen because we hold the
 			// pinned conn from acquire to release. Log defensively.
-			log.Printf("session_lock: pg_advisory_unlock(%s) returned false (session did not hold lock)", id)
+			slog.Warn("session_lock: pg_advisory_unlock returned false (session did not hold lock)", "session_id", id)
 		}
 		conn.Release()
 	}, true

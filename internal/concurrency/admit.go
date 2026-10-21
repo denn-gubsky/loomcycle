@@ -2,7 +2,7 @@ package concurrency
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -258,7 +258,7 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 			// A database hiccup must not end a wait that has no timeout; the
 			// next tick asks again.
 			if !logged {
-				log.Printf("concurrency: per-user quota check while queued: %v", err)
+				slog.Warn("concurrency: per-user quota check while queued failed", "err", err)
 				logged = true
 			}
 			continue

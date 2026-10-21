@@ -8,7 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -198,7 +198,7 @@ func validateSharedSchemas(ctx context.Context, admin *sql.DB, names []string) [
 	var out []string
 	for _, name := range names {
 		if !pgSharedSchemaRe.MatchString(name) {
-			log.Printf("sqlmem: shared schema %q skipped — not a valid lowercase identifier", name)
+			slog.Warn("sqlmem: shared schema skipped — not a valid lowercase identifier", "schema", name)
 			continue
 		}
 		if strings.HasPrefix(name, "sqlmem_") || strings.HasPrefix(name, "pg_") || name == "information_schema" || name == "public" {
@@ -206,17 +206,17 @@ func validateSharedSchemas(ctx context.Context, admin *sql.DB, names []string) [
 			// default, so exposing it could turn the shared schema into a WRITABLE
 			// cross-tenant surface — the opposite of read-only. Operators use a
 			// dedicated schema (the recipe's `refdata`).
-			log.Printf("sqlmem: shared schema %q skipped — reserved namespace", name)
+			slog.Warn("sqlmem: shared schema skipped — reserved namespace", "schema", name)
 			continue
 		}
 		var exists bool
 		if err := admin.QueryRowContext(ctx,
 			`SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)`, name).Scan(&exists); err != nil || !exists {
-			log.Printf("sqlmem: shared schema %q skipped — not found in the aux DB (create + GRANT SELECT first; see docs/SQL_MEMORY.md)", name)
+			slog.Warn("sqlmem: shared schema skipped — not found in the aux DB (create + GRANT SELECT first; see docs/SQL_MEMORY.md)", "schema", name)
 			continue
 		}
 		out = append(out, name)
-		log.Printf("sqlmem: read-only shared schema %q exposed to all scopes (Phase 3g — global, cross-tenant)", name)
+		slog.Info("sqlmem: read-only shared schema exposed to all scopes (global, cross-tenant)", "schema", name)
 	}
 	return out
 }
@@ -470,7 +470,7 @@ func (b *postgresBackend) releaseScope(sc *scopeConn) {
 // config. Only ever called at inUse==0, so db.Close() returns promptly.
 func (b *postgresBackend) finalizeScope(sc *scopeConn) {
 	if err := sc.db.Close(); err != nil {
-		log.Printf("sqlmem: close scope pool: %v", err)
+		slog.Warn("sqlmem: close scope pool failed", "err", err)
 	}
 	stdlib.UnregisterConnConfig(sc.connStr)
 }
@@ -729,7 +729,7 @@ func (b *postgresBackend) dropScopePG(ctx context.Context, schema, role string) 
 		lit(role), q(role),
 	)
 	if _, err := b.admin.ExecContext(ctx, dropRole); err != nil {
-		log.Printf("sqlmem: drop scope role (schema already dropped): %v", err)
+		slog.Warn("sqlmem: drop scope role failed (schema already dropped)", "err", err)
 	}
 	if b.cfg.ScopeTTLMS > 0 {
 		// A late, deferred touch from a just-finished op could re-INSERT this row
@@ -798,7 +798,7 @@ func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
 			continue
 		}
 		if _, err := b.dropScopePG(ctx, schema, role); err != nil {
-			log.Printf("sqlmem: GC drop scope %s: %v", schema, err)
+			slog.Warn("sqlmem: GC drop scope failed", "schema", schema, "err", err)
 			continue
 		}
 		dropped++
@@ -867,7 +867,7 @@ func (b *postgresBackend) sweepBudget(budget int64) (int, error) {
 		}
 		removed, err := b.dropScopePG(ctx, s.schema, role)
 		if err != nil {
-			log.Printf("sqlmem: size GC drop scope %s: %v", s.schema, err)
+			slog.Warn("sqlmem: size GC drop scope failed", "schema", s.schema, "err", err)
 			continue // real failure — the schema's bytes are still on disk
 		}
 		// On a nil error the schema is gone (whether we dropped it or a concurrent

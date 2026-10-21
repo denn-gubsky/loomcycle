@@ -195,8 +195,8 @@ func TestReceiver_RecentDeliveries_ReturnsVerdictsNewestFirstCapped(t *testing.T
 	bad := []byte(`{"goal":"b"}`)
 	hBad := http.Header{}
 	hBad.Set("X-Hub-Signature-256", githubSig(secret, good)) // sig over `good`, body is `bad`
-	if w := doPost(rec, "gh", bad, hBad); w.Code != http.StatusUnauthorized {
-		t.Fatalf("bad delivery status = %d, want 401", w.Code)
+	if w := doPost(rec, "gh", bad, hBad); w.Code != http.StatusNotFound {
+		t.Fatalf("bad delivery status = %d, want 404", w.Code)
 	}
 
 	w := triageDo(triageServer(t, rec, triageTokens), http.MethodGet, "/v1/_webhooks/gh/recent-deliveries?limit=10", triageAdminBearer, nil, nil)
