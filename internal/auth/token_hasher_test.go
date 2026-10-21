@@ -5,75 +5,86 @@ import (
 	"testing"
 )
 
-func TestTokenHasher_ExplicitPepperKeepsTheUntaggedFormAndHasNoLegacy(t *testing.T) {
-	h := NewTokenHasher("pep", "derived", "prev", true)
+func TestTokenHasher_ExplicitPepperKeepsTheUntaggedFormAndHasNoOlderForms(t *testing.T) {
+	h := NewTokenHasher("pep", "derived", "prev")
 	if h.Source() != PepperExplicit {
 		t.Fatalf("source = %q, want explicit", h.Source())
 	}
 	if got := h.Hash("lct_x"); got != HashToken("pep", "lct_x") {
 		t.Errorf("explicit-pepper hash changed form: %q", got)
 	}
-	if h.HasLegacyCandidates() || h.LegacyHashes("lct_x") != nil {
-		t.Error("an explicit pepper must not accept legacy hashes")
+	if h.HasPrevious() || h.PreviousHashes("lct_x") != nil || h.WrappedHash("lct_x") != "" || h.Wrap("x") != "" {
+		t.Error("an explicit pepper must have no older forms")
 	}
-	if !h.IsCurrent("anything") {
+	if h.Form(HashToken("", "lct_x")) != FormCurrent {
 		t.Error("under an explicit pepper every stored hash is current")
 	}
 }
 
-func TestTokenHasher_DerivedPepperTagsTheHashAndOrdersLegacyCandidates(t *testing.T) {
-	h := NewTokenHasher("", "derived", "prev", true)
+func TestTokenHasher_DerivedPepperTagsBothForms(t *testing.T) {
+	h := NewTokenHasher("", "derived", "")
 	if h.Source() != PepperDerived {
 		t.Fatalf("source = %q, want derived", h.Source())
 	}
-	got := h.Hash("lct_x")
-	// Computed outside Go: "p1:" + hex(SHA-256(pepper)[:8]) + ":" +
-	// hex(HMAC-SHA256(key=pepper, msg=token)).
-	const known = "p1:08f0be883564cbf2:6cdbeead4825a28fdf0eade839cac55e57188ae9c848ff099b3d8102eddba34b"
-	if got != known {
-		t.Fatalf("derived hash = %q, want %q", got, known)
+	// Both computed outside Go: tag + ":" + hex(SHA-256(pepper)[:8]) + ":" +
+	// hex(HMAC-SHA256(key=pepper, msg)), msg = the token for p1 and the
+	// hex text of SHA-256(token) for w1.
+	const (
+		knownCurrent = "p1:08f0be883564cbf2:6cdbeead4825a28fdf0eade839cac55e57188ae9c848ff099b3d8102eddba34b"
+		knownWrapped = "w1:08f0be883564cbf2:939be6b7e5d7d92d717bb5b694384e9435a6389efb3383636d294ab3c3f82e85"
+	)
+	if got := h.Hash("lct_x"); got != knownCurrent {
+		t.Fatalf("current hash = %q, want %q", got, knownCurrent)
 	}
-	if !IsTagged(got) || IsTagged(HashToken("derived", "lct_x")) {
-		t.Error("IsTagged must tell the derived form from an untagged one")
+	if got := h.Wrap(HashToken("", "lct_x")); got != knownWrapped {
+		t.Fatalf("wrapped hash = %q, want %q", got, knownWrapped)
 	}
-	if strings.Contains(got, "derived") {
-		t.Error("the stored form must not contain the pepper")
+	if got := h.WrappedHash("lct_x"); got != knownWrapped {
+		t.Errorf("WrappedHash = %q, want the wrap of the unpeppered hash %q", got, knownWrapped)
 	}
-	if !h.IsCurrent(got) {
-		t.Error("the current hash must read as current")
+	if strings.Contains(knownCurrent+knownWrapped, "derived") {
+		t.Error("the stored forms must not contain the pepper")
 	}
-	legacy := h.LegacyHashes("lct_x")
-	want := []string{NewTokenHasher("", "prev", "", false).Hash("lct_x"), HashToken("", "lct_x")}
-	if len(legacy) != len(want) || legacy[0] != want[0] || legacy[1] != want[1] {
-		t.Fatalf("legacy candidates = %q, want %q", legacy, want)
-	}
-	for _, l := range legacy {
-		if h.IsCurrent(l) {
-			t.Errorf("legacy hash %q reads as current", l)
+	for stored, want := range map[string]TokenHashForm{
+		knownCurrent:              FormCurrent,
+		knownWrapped:              FormWrapped,
+		HashToken("", "lct_x"):    FormUntagged,
+		HashToken("pep", "lct_x"): FormUntagged,
+		NewTokenHasher("", "other", "").Hash("lct_x"):        FormOtherKey,
+		NewTokenHasher("", "other", "").WrappedHash("lct_x"): FormOtherKey,
+	} {
+		if got := h.Form(stored); got != want {
+			t.Errorf("Form(%q) = %d, want %d", stored, got, want)
 		}
 	}
-}
-
-// Turning the unpeppered form off keeps the previous-key form: dropping it
-// would make a later key rotation log every token out.
-func TestTokenHasher_UnpepperedOffKeepsThePreviousKeyCandidate(t *testing.T) {
-	h := NewTokenHasher("", "derived", "prev", false)
-	got := h.LegacyHashes("lct_x")
-	if len(got) != 1 || got[0] != NewTokenHasher("", "prev", "", false).Hash("lct_x") || h.AcceptsUnpeppered() {
-		t.Errorf("legacy = %q, want only the previous-key hash", got)
-	}
-	if h := NewTokenHasher("", "derived", "", false); h.HasLegacyCandidates() {
-		t.Error("no previous key and the unpeppered form off: no candidates")
-	}
-	if h.IsCurrent(HashToken("", "lct_x")) {
-		t.Error("an unpeppered row is still not current with the fallback off")
+	if h.HasPrevious() || h.PreviousHashes("lct_x") != nil {
+		t.Error("no previous key: no previous forms")
 	}
 }
 
-func TestTokenHasher_PreviousKeyEqualToCurrentIsNotACandidate(t *testing.T) {
-	h := NewTokenHasher("", "same", "same", true)
-	if got := h.LegacyHashes("lct_x"); len(got) != 1 || got[0] != HashToken("", "lct_x") {
-		t.Errorf("legacy = %q, want only the unpeppered hash", got)
+// A key rotation keeps both forms under the previous key's pepper verifiable,
+// and recognisable as previous.
+func TestTokenHasher_PreviousKeyFormsAreBothTriedAndRecognised(t *testing.T) {
+	h := NewTokenHasher("", "derived", "prev")
+	old := NewTokenHasher("", "prev", "")
+	want := []string{old.Hash("lct_x"), old.WrappedHash("lct_x")}
+	got := h.PreviousHashes("lct_x")
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("previous forms = %q, want %q", got, want)
+	}
+	for _, p := range got {
+		if f := h.Form(p); f != FormPrevious {
+			t.Errorf("Form(%q) = %d, want previous", p, f)
+		}
+	}
+	if h.Form(h.Hash("lct_x")) != FormCurrent {
+		t.Error("the current form read as something else with a previous key set")
+	}
+}
+
+func TestTokenHasher_PreviousKeyEqualToCurrentIsNotPrevious(t *testing.T) {
+	if h := NewTokenHasher("", "same", "same"); h.HasPrevious() {
+		t.Error("a previous key equal to the current one is not a previous key")
 	}
 }
 
@@ -82,8 +93,8 @@ func TestTokenHasher_ZeroValueIsUnpeppered(t *testing.T) {
 	if h.Source() != PepperNone || h.Hash("lct_x") != HashToken("", "lct_x") {
 		t.Error("the zero hasher must hash with no pepper")
 	}
-	none := NewTokenHasher("", "", "prev", true)
-	if none.Source() != PepperNone || none.HasLegacyCandidates() {
-		t.Error("no pepper and no secret key → none, without a fallback")
+	none := NewTokenHasher("", "", "prev")
+	if none.Source() != PepperNone || none.HasPrevious() || none.WrappedHash("lct_x") != "" {
+		t.Error("no pepper and no secret key → none, with no older forms")
 	}
 }
