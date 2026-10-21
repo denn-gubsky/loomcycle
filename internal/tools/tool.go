@@ -200,35 +200,6 @@ func (d *Dispatcher) Specs(order []Tool) []providers.ToolSpec {
 	return out
 }
 
-// WithAgentTools attaches the agent's effective tool names to ctx. The
-// HTTP server calls this once per run before invoking the loop so any
-// tool that resolves dynamic permissions has the same view of "what
-// the agent can use."
-func WithAgentTools(ctx context.Context, names []string) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.Tools = names })
-}
-
-// AgentTools returns the agent's effective tool names from ctx, or
-// nil if not attached. Returning nil from a tool that requires this
-// list should cause the tool to refuse with a clear "misconfigured
-// runtime" message.
-func AgentTools(ctx context.Context) []string {
-	return PolicyOf(ctx).Tools
-}
-
-// WithAgentToolPatterns attaches the agent's raw tool patterns. Set at run start
-// alongside WithAgentTools; both describe "what the agent can use" — this one
-// before glob resolution, that one after.
-func WithAgentToolPatterns(ctx context.Context, patterns []string) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.ToolPatterns = patterns })
-}
-
-// AgentToolPatterns returns the agent's raw tool patterns from ctx, or nil if
-// not attached (callers then fall back to the resolved AgentTools list).
-func AgentToolPatterns(ctx context.Context) []string {
-	return PolicyOf(ctx).ToolPatterns
-}
-
 type ctxKeySearchProviders struct{}
 
 // WithSearchProviders attaches the agent's per-agent web-search fallback list

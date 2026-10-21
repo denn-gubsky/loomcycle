@@ -9817,7 +9817,7 @@ func newAgentID() string {
 }
 
 // toolNames returns the names of a slice of tools — used to populate
-// the per-run AgentTools context value for tools that need a runtime
+// the per-run RunPolicy.Tools value for tools that need a runtime
 // view of "what this agent can use" (e.g. the Skill tool's subset
 // check on each call).
 func toolNames(ts []tools.Tool) []string {

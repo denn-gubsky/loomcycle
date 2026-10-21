@@ -670,7 +670,7 @@ func (c *Context) execTime(ctx context.Context) (tools.Result, error) {
 
 func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 	// The agent's effective tool name list is attached to ctx by the server at
-	// run start (tools.WithAgentTools). c.Tools is the runtime-wide CATALOG, so
+	// run start (RunPolicy.Tools). c.Tools is the runtime-wide CATALOG, so
 	// this filter is what keeps an agent's introspection to its own grant.
 	allowSet, ok := agentToolSet(ctx)
 	if !ok {
@@ -737,7 +737,7 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 // mean a tool literally named "*" and hid every tool from the operator surfaces
 // that pass it.
 func agentToolSet(ctx context.Context) (map[string]bool, bool) {
-	allowed := tools.AgentTools(ctx)
+	allowed := tools.PolicyOf(ctx).Tools
 	if allowed == nil {
 		return nil, false
 	}
@@ -841,7 +841,7 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	evPol := tools.EvaluationPolicy(ctx)
 
 	out := map[string]any{
-		"tools": tools.AgentTools(ctx),
+		"tools": tools.PolicyOf(ctx).Tools,
 		"host_policy": map[string]any{
 			"has_list":          hostPol.HasList,
 			"allowed_hosts":     hostPol.AllowedHosts,

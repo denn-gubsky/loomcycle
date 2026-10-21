@@ -283,7 +283,7 @@ func TestSubstrateAdmin_AgentDef_MaxIterationsThreadsThrough(t *testing.T) {
 // HTTP-admin AgentDef.create with a non-empty tools list
 // MUST succeed. Before the substrateAdminCtx wildcard fix, the
 // in-process tool refused with "caller's effective tools
-// not on ctx" because the admin context didn't set WithAgentTools,
+// not on ctx" because the admin context didn't set RunPolicy.Tools,
 // blocking containerised callers (JobEmber) from registering their
 // agents at boot. Pin the contract so the regression has teeth.
 func TestSubstrateAdmin_AgentDef_CreateWithToolsSucceeds(t *testing.T) {

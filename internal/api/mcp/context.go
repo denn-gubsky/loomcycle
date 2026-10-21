@@ -135,7 +135,7 @@ func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) 
 		ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	}
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
-		// AgentTools wildcard ceiling (F11): without it, agentdef/skilldef create
+		// tools-ceiling wildcard ceiling (F11): without it, agentdef/skilldef create
 		// with a non-empty tools overlay refuses ("caller's effective
 		// tools not on ctx"). Operator-trust → the same wildcard the HTTP
 		// /v1/_agentdef admin path uses (substrateAdminCtx).

@@ -34,7 +34,7 @@ func TestContextTool_GuideParsesOpsRequiredAndHint(t *testing.T) {
 		// fields rather than inventing them.
 		&fakeTool{NameVal: "Read", DescVal: "Read a file.", SchemaVal: `{"type":"object"}`},
 	}}
-	ctx := tools.WithAgentTools(context.Background(), []string{"Widget", "Read"})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Widget", "Read"}})
 
 	res, err := ct.Execute(ctx, json.RawMessage(`{"op":"guide"}`))
 	if err != nil || res.IsError {
@@ -84,7 +84,7 @@ func TestContextTool_GuideFiltersToAgentTools(t *testing.T) {
 		&fakeTool{NameVal: "Read", DescVal: "Read", SchemaVal: `{"type":"object"}`},
 		&fakeTool{NameVal: "Bash", DescVal: "Run shell", SchemaVal: `{"type":"object"}`},
 	}}
-	ctx := tools.WithAgentTools(context.Background(), []string{"Read"}) // Bash withheld
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Read"}}) // Bash withheld
 
 	res, err := ct.Execute(ctx, json.RawMessage(`{"op":"guide"}`))
 	if err != nil || res.IsError {

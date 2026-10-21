@@ -127,7 +127,7 @@ func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, 
 		return errPermission("from and to are not available outside a run", "Pass the data inline."), false
 	}
 	need := r.refTool(write)
-	if !slices.Contains(tools.AgentTools(ctx), need) {
+	if !slices.Contains(tools.PolicyOf(ctx).Tools, need) {
 		return errPermission(fmt.Sprintf("%s needs the %s tool, which this run does not have", r.raw, need),
 			"Pass the data inline, or ask an operator to grant the tool."), false
 	}

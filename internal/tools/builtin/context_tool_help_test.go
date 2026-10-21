@@ -74,7 +74,7 @@ func TestContextSelf_ReportsScopeGrantsOfHeldTools(t *testing.T) {
 	ctx := tools.WithAgentName(context.Background(), "helper")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t1", UserID: "u1"})
 	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}})
-	ctx = tools.WithAgentTools(ctx, []string{"Memory", "Path", "Context"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Memory", "Path", "Context"} })
 
 	out, _ := callContext(t, c, ctx, `{"op":"self"}`)
 	scopes, ok := out["scopes"].(map[string]any)
@@ -122,7 +122,7 @@ func TestContextDoc_ReturnsTheToolsArticle(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &Context{Help: set, Tools: []tools.Tool{&Path{}}}
-	ctx := tools.WithAgentTools(context.Background(), []string{"Path", "Context"})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Path", "Context"}})
 	out, res := callContext(t, c, ctx, `{"op":"doc","name":"Path"}`)
 	if res.IsError {
 		t.Fatalf("op=doc failed: %s", res.Text)

@@ -519,7 +519,7 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		histScopes = []string{"self", "user", "tenant"}
 	}
 	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
-		// AgentTools wildcard: substrate admin = operator trust. Without
+		// tools-ceiling wildcard: substrate admin = operator trust. Without
 		// this, AgentDef.create / SkillDef.create with a non-empty
 		// tools overlay refuse with "caller's effective
 		// tools not on ctx (runtime misconfiguration)" because
@@ -528,7 +528,7 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		// refuse". For operator-trust paths the operator is the security
 		// boundary (bearer-authed /v1/_*), so attach a wildcard ceiling
 		// the subset check recognises. Regular per-run contexts continue
-		// to set WithAgentTools to the agent's actual tools list,
+		// to set RunPolicy.Tools to the agent's actual tools list,
 		// so the capability-escalation guard for in-loop AgentDef calls
 		// is unchanged.
 		p.Tools = []string{"*"}

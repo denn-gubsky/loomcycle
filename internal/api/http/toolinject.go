@@ -99,7 +99,7 @@ func (s *Server) renderToolResult(ctx context.Context, mi memInject, ref meminje
 // list and renders the result as a compact one-line-per-tool inventory.
 //
 // mi.Tools is the run's ALREADY-RESOLVED allowedTools — the same slice the
-// dispatcher and WithAgentTools get — so the rendered inventory is what the agent
+// dispatcher and RunPolicy.Tools get — so the rendered inventory is what the agent
 // can actually call, not the server's whole registry. It is passed as both the
 // candidate set and the ctx allowlist, which makes op=tools' intersection a no-op
 // on an already-filtered list.

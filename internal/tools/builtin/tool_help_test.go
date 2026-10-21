@@ -492,7 +492,7 @@ func TestBuiltinSchemas_HaveNoTopLevelCombinator(t *testing.T) {
 // The digest an agent reads to learn its tools lists every Agent operation.
 func TestContextGuide_ListsEveryAgentOperation(t *testing.T) {
 	c := &Context{Tools: []tools.Tool{&AgentTool{}}}
-	ctx := tools.WithAgentTools(context.Background(), []string{"Agent"})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Agent"}})
 	res, _ := c.Execute(ctx, json.RawMessage(`{"op":"guide"}`))
 	var out struct {
 		Tools []struct {

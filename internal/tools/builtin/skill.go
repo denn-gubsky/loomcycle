@@ -48,8 +48,8 @@ import (
 //	}
 //
 // SECURITY: subset enforcement happens HERE, at tool-call time, against
-// the agent's effective tools (which the tool receives via the
-// AgentTools field at construction). A skill that demands a tool the
+// the agent's effective tools (which it reads from the run's policy,
+// RunPolicy.Tools). A skill that demands a tool the
 // current agent doesn't have is refused with an IsError tool_result —
 // matching the config-load behaviour for static bundling.
 type SkillTool struct {
@@ -59,7 +59,7 @@ type SkillTool struct {
 	// paths after a SIGHUP/restart.
 	//
 	// The calling agent's effective tools is NOT a field —
-	// it varies per request and is read from ctx via tools.AgentTools.
+	// it varies per request and is read from ctx via RunPolicy.Tools.
 	// The HTTP server attaches it before invoking the loop.
 	Set *skills.Set
 
@@ -169,8 +169,8 @@ func (s *SkillTool) execInvoke(ctx context.Context, policy tools.SkillPolicyValu
 	// tools are read from ctx so the SkillTool struct stays per-server. Prefer
 	// the raw patterns (globs intact) over the resolved effective list so a
 	// glob-scoped skill matches a glob-scoped agent (see skillToolsExceedingAgent).
-	agentTools := tools.AgentTools(ctx)
-	agentPatterns := tools.AgentToolPatterns(ctx)
+	agentTools := tools.PolicyOf(ctx).Tools
+	agentPatterns := tools.PolicyOf(ctx).ToolPatterns
 	if widening := skillToolsExceedingAgent(allowedTools, agentTools, agentPatterns); len(widening) > 0 {
 		return errPermission(fmt.Sprintf(
 			"skill %q (%s) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
@@ -209,7 +209,7 @@ func (s *SkillTool) execInvokeTeamSkill(ctx context.Context, policy tools.SkillP
 		return errNotFound(fmt.Sprintf("unknown skill %q: this agent's team declares no skill of its own named %q", name, local),
 			"Use a skill name from op=list."), nil
 	}
-	if widening := skillToolsExceedingAgent(sk.Tools, tools.AgentTools(ctx), tools.AgentToolPatterns(ctx)); len(widening) > 0 {
+	if widening := skillToolsExceedingAgent(sk.Tools, tools.PolicyOf(ctx).Tools, tools.PolicyOf(ctx).ToolPatterns); len(widening) > 0 {
 		return errPermission(fmt.Sprintf(
 			"skill %q (team) requires tools %v not granted by this agent's tools — skills cannot widen the agent's tool set",
 			name, widening,

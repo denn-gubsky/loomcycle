@@ -273,7 +273,7 @@ func (s *SkillDef) gateNewSkill(ctx context.Context, policy tools.SkillPolicyVal
 		return nil, fmt.Errorf("%s: %s", op, err)
 	}
 	// Tools ceiling: the caller's effective tools.
-	callerTools := tools.AgentTools(ctx)
+	callerTools := tools.PolicyOf(ctx).Tools
 	if len(def.Tools) > 0 {
 		if callerTools == nil {
 			return nil, fmt.Errorf("%s: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening", op)

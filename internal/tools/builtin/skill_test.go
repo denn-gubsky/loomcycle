@@ -57,7 +57,7 @@ func TestSkillTool_HappyPath(t *testing.T) {
 		{Name: "voice-applier", Tools: []string{"Read", "Skill"}, Body: "VOICE BODY"},
 	})
 	tool := &SkillTool{Set: set}
-	ctx := tools.WithAgentTools(allSkills(), []string{"Read", "Skill", "HTTP"})
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "Skill", "HTTP"} })
 
 	res, err := tool.Execute(ctx, json.RawMessage(`{"name":"voice-applier"}`))
 	if err != nil {
@@ -84,7 +84,7 @@ func TestSkillTool_RefusesWideningSkill(t *testing.T) {
 	})
 	tool := &SkillTool{Set: set}
 	// Agent only has Read.
-	ctx := tools.WithAgentTools(allSkills(), []string{"Read"})
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"writer-skill"}`))
 	if !res.IsError {
@@ -110,7 +110,7 @@ func TestSkillTool_GlobCoversSkillLiteral(t *testing.T) {
 		{Name: "search-skill", Tools: []string{"mcp__brave__search"}, Body: "OK"},
 	})
 	tool := &SkillTool{Set: set}
-	ctx := tools.WithAgentTools(allSkills(), []string{"mcp__brave__*"})
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"mcp__brave__*"} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"search-skill"}`))
 	if res.IsError {
@@ -129,7 +129,7 @@ func TestSkillTool_RefusesBroaderGlob(t *testing.T) {
 		{Name: "broad-skill", Tools: []string{"mcp__brave__*"}, Body: "X"},
 	})
 	tool := &SkillTool{Set: set}
-	ctx := tools.WithAgentTools(allSkills(), []string{"mcp__brave__search"})
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"mcp__brave__search"} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"broad-skill"}`))
 	if !res.IsError {
@@ -138,9 +138,9 @@ func TestSkillTool_RefusesBroaderGlob(t *testing.T) {
 }
 
 // Regression (v1.25.2): a GLOB-scoped skill loads for a GLOB-scoped agent.
-// At invoke time AgentTools carries the agent's "mcp__sandbox__*" already
+// At invoke time RunPolicy.Tools carries the agent's "mcp__sandbox__*" already
 // RESOLVED to concrete pool tools, so the subset check must consult the RAW
-// patterns (WithAgentToolPatterns) — else the skill glob can't match the
+// patterns (RunPolicy.ToolPatterns) — else the skill glob can't match the
 // concrete list and the agent falsely reports "requires [mcp__sandbox__*] not
 // granted". Reproduces the bundled dev/sandbox agent+skill config.
 func TestSkillTool_GlobSkillCoveredByAgentGlobPattern(t *testing.T) {
@@ -152,10 +152,11 @@ func TestSkillTool_GlobSkillCoveredByAgentGlobPattern(t *testing.T) {
 		{Name: "sbx", Tools: []string{"mcp__sandbox__*"}, Body: "OK"},
 	})
 	tool := &SkillTool{Set: set}
-	// AgentTools = the resolved concrete expansion; patterns = the raw glob.
-	ctx := tools.WithAgentTools(allSkills(),
-		[]string{"mcp__sandbox__open", "mcp__sandbox__exec", "mcp__sandbox__close", "Interruption"})
-	ctx = tools.WithAgentToolPatterns(ctx, []string{"mcp__sandbox__*", "Interruption"})
+	// Tools = the resolved concrete expansion; patterns = the raw glob.
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) {
+		rp.Tools = []string{"mcp__sandbox__open", "mcp__sandbox__exec", "mcp__sandbox__close", "Interruption"}
+	})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.ToolPatterns = []string{"mcp__sandbox__*", "Interruption"} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"sbx"}`))
 	if res.IsError {
@@ -174,8 +175,8 @@ func TestSkillTool_GlobSkillRefusedByNarrowerAgentPattern(t *testing.T) {
 		{Name: "sbx", Tools: []string{"mcp__sandbox__*"}, Body: "OK"},
 	})
 	tool := &SkillTool{Set: set}
-	ctx := tools.WithAgentTools(allSkills(), []string{"mcp__sandbox__exec"})
-	ctx = tools.WithAgentToolPatterns(ctx, []string{"mcp__sandbox__exec"}) // literal, not the glob
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"mcp__sandbox__exec"} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.ToolPatterns = []string{"mcp__sandbox__exec"} }) // literal, not the glob
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"sbx"}`))
 	if !res.IsError {
@@ -195,7 +196,7 @@ func TestSkillTool_EmptyToolsAlwaysAllowed(t *testing.T) {
 	})
 	tool := &SkillTool{Set: set}
 	// Even an agent with NO tools at all should see this skill.
-	ctx := tools.WithAgentTools(allSkills(), nil)
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = nil })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"guidance"}`))
 	if res.IsError {
@@ -217,7 +218,7 @@ func TestSkillTool_UnknownSkillHints(t *testing.T) {
 		{Name: "beta", Tools: nil, Body: "y"},
 	})
 	tool := &SkillTool{Set: set}
-	ctx := tools.WithAgentTools(allSkills(), nil)
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = nil })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"does-not-exist"}`))
 	if !res.IsError {
@@ -262,7 +263,7 @@ func TestSkillTool_MissingName(t *testing.T) {
 		Tools []string
 		Body  string
 	}{{Name: "x", Body: "y"}})}
-	ctx := tools.WithAgentTools(allSkills(), nil)
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = nil })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{}`))
 	if !res.IsError || !strings.Contains(res.Text, "name") {
@@ -312,7 +313,7 @@ func TestSkillTool_ResolvesDBActiveOverStatic(t *testing.T) {
 	}
 	defer s.Close()
 
-	ctx := tools.WithAgentTools(allSkills(), []string{"Read"})
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 
 	skillDefTool := &SkillDef{Store: s, Set: set}
 	// RFC BA: an empty allowlist = allow all (create-anywhere), the old ["any"].
@@ -364,7 +365,7 @@ func TestSkillTool_SubstrateOnlyHintsAtAvailable(t *testing.T) {
 
 	// Seed two skills via SkillDef create + promote. Mirrors the
 	// substrate write path JobEmber uses on first boot.
-	ctx := tools.WithAgentTools(allSkills(), []string{"Read"})
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 	// RFC BA: an empty allowlist = allow all (create-anywhere), the old ["any"].
 	dctx := tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 	dctx = tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a_seed"})
@@ -415,7 +416,7 @@ func TestSkillTool_UnknownSkillHintIsTenantConfined(t *testing.T) {
 
 	seed := func(tenant, name string) {
 		t.Helper()
-		ctx := tools.WithSkillPolicy(tools.WithAgentTools(allSkills(), []string{"Read"}), tools.SkillPolicyValue{Granted: true})
+		ctx := tools.WithSkillPolicy(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }), tools.SkillPolicyValue{Granted: true})
 		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_seed", TenantID: tenant})
 		body := `{"op":"create","name":"` + name + `","overlay":{"body":"b"},"promote":true}`
 		if res, _ := (&SkillDef{Store: st, Set: emptySet}).Execute(ctx, json.RawMessage(body)); res.IsError {
@@ -425,7 +426,7 @@ func TestSkillTool_UnknownSkillHintIsTenantConfined(t *testing.T) {
 	seed("tenant-a", "acme-pricing-playbook")
 	seed("tenant-b", "own-skill")
 
-	ctx := tools.WithRunIdentity(tools.WithAgentTools(allSkills(), []string{"Read"}),
+	ctx := tools.WithRunIdentity(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }),
 		tools.RunIdentityValue{AgentID: "a_caller", TenantID: "tenant-b"})
 	res, _ := (&SkillTool{Set: emptySet, Store: st}).Execute(ctx, json.RawMessage(`{"name":"does-not-exist"}`))
 	if !res.IsError {
@@ -547,7 +548,7 @@ func TestSkillTool_ListPatternFilter(t *testing.T) {
 // through.
 func TestSkillTool_InvokeRefusesNonAllowedName(t *testing.T) {
 	tool := &SkillTool{Set: groupedSet(t)}
-	ctx := tools.WithAgentTools(allSkills(), nil)
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = nil })
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}})
 
 	// doc/redactor is permitted → loads.
@@ -570,7 +571,7 @@ func TestSkillTool_InvokeRefusesNonAllowedName(t *testing.T) {
 // any name — so a pre-RFC-BA caller with no skills: field keeps working.
 func TestSkillTool_InvokeBackCompatEmptyAllowlist(t *testing.T) {
 	tool := &SkillTool{Set: groupedSet(t)}
-	ctx := tools.WithAgentTools(allSkills(), nil)
+	ctx := tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = nil })
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true}) // empty = allow all
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"name":"marketing/seo"}`))
@@ -599,7 +600,7 @@ func TestSkillTool_RetiredActiveSkillDefIsNotServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	ctx := tools.WithRunIdentity(tools.WithAgentTools(allSkills(), []string{"Read"}),
+	ctx := tools.WithRunIdentity(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }),
 		tools.RunIdentityValue{AgentID: "a_seed", TenantID: "acme"})
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 	authoring := &SkillDef{Store: st, Set: set}
@@ -684,7 +685,7 @@ func TestSkillTool_EveryListedSkillCanBeInvoked(t *testing.T) {
 	authoring := &SkillDef{Store: st, Set: set}
 	seed := func(tenant, op string) {
 		t.Helper()
-		ctx := tools.WithSkillPolicy(tools.WithAgentTools(allSkills(), []string{"Read"}), tools.SkillPolicyValue{Granted: true})
+		ctx := tools.WithSkillPolicy(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }), tools.SkillPolicyValue{Granted: true})
 		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_seed", TenantID: tenant})
 		res, _ := authoring.Execute(ctx, json.RawMessage(op))
 		if res.IsError {
@@ -708,7 +709,7 @@ func TestSkillTool_EveryListedSkillCanBeInvoked(t *testing.T) {
 	seed("acme", `{"op":"create","name":"own-draft","overlay":{"body":"DRAFT"},"promote":false}`)
 	seed("globex", `{"op":"create","name":"theirs","overlay":{"body":"THEIRS"}}`)
 
-	ctx := tools.WithRunIdentity(tools.WithAgentTools(allSkills(), []string{"Read"}),
+	ctx := tools.WithRunIdentity(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }),
 		tools.RunIdentityValue{AgentID: "a_caller", TenantID: "acme"})
 	tool := &SkillTool{Set: set, Store: st}
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"list"}`))
@@ -746,7 +747,7 @@ func TestSkillTool_UnknownSkillHintNamesOnlyLoadableSkills(t *testing.T) {
 	defer st.Close()
 	seed := func(tenant, op string) {
 		t.Helper()
-		ctx := tools.WithSkillPolicy(tools.WithAgentTools(allSkills(), []string{"Read"}), tools.SkillPolicyValue{Granted: true})
+		ctx := tools.WithSkillPolicy(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }), tools.SkillPolicyValue{Granted: true})
 		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_seed", TenantID: tenant})
 		if res, _ := (&SkillDef{Store: st, Set: emptySet}).Execute(ctx, json.RawMessage(op)); res.IsError {
 			t.Fatalf("seed %q %s: %s", tenant, op, res.Text)
@@ -757,7 +758,7 @@ func TestSkillTool_UnknownSkillHintNamesOnlyLoadableSkills(t *testing.T) {
 	seed("acme", `{"op":"create","name":"own-skill","overlay":{"body":"b"}}`)
 	seed("globex", `{"op":"create","name":"their-skill","overlay":{"body":"b"}}`)
 
-	ctx := tools.WithRunIdentity(tools.WithAgentTools(allSkills(), []string{"Read"}),
+	ctx := tools.WithRunIdentity(tools.UpdateRunPolicy(allSkills(), func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} }),
 		tools.RunIdentityValue{AgentID: "a_caller", TenantID: "acme"})
 	res, _ := (&SkillTool{Set: emptySet, Store: st}).Execute(ctx, json.RawMessage(`{"name":"does-not-exist"}`))
 	if !res.IsError {

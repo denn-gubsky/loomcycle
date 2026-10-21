@@ -63,7 +63,7 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 	ctx = tools.WithResolvedModel(ctx, "claude-opus-4-test")
 	temp := 0.7
 	ctx = tools.WithResolvedSampling(ctx, &config.Sampling{Temperature: &temp})
-	ctx = tools.WithAgentTools(ctx, []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"} })
 	return tool, ctx
 }
 
@@ -491,7 +491,7 @@ func TestContextTool_ToolsFiltersByAgentToolsList(t *testing.T) {
 		t.Fatalf("tools: %s", res.Text)
 	}
 	out := decodeResult(t, res.Text)
-	// 4 of the 5 fake tools are in AgentTools (Bash is excluded).
+	// 4 of the 5 fake tools are in the run policy's Tools (Bash is excluded).
 	if out["count"].(float64) != 4 {
 		t.Errorf("count = %v, want 4 (Bash excluded by ctx allowlist)", out["count"])
 	}
@@ -501,7 +501,7 @@ func TestContextTool_ToolsFiltersByAgentToolsList(t *testing.T) {
 		gotNames[e.(map[string]any)["name"].(string)] = true
 	}
 	if gotNames["Bash"] {
-		t.Error("Bash should be filtered out (not in AgentTools ctx)")
+		t.Error("Bash should be filtered out (not in the run policy's Tools)")
 	}
 	if !gotNames["Read"] || !gotNames["Memory"] || !gotNames["Context"] || !gotNames["mcp__jobs__patchApp"] {
 		t.Errorf("missing expected tool in catalog: %v", gotNames)
@@ -795,7 +795,7 @@ func substrateFixture(t *testing.T) (*Context, store.Store, context.Context, str
 	}
 	runCtx := tools.WithAgentName(context.Background(), agentName)
 	runCtx = tools.WithRunIdentity(runCtx, tools.RunIdentityValue{AgentID: "a_test", UserID: "alice"})
-	runCtx = tools.WithAgentTools(runCtx, []string{"Read", "Context"})
+	runCtx = tools.UpdateRunPolicy(runCtx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "Context"} })
 	return tool, s, runCtx, agentName, v1.DefID, v2.DefID
 }
 

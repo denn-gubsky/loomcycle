@@ -96,7 +96,7 @@ func (t *TeamDef) decisionAuthorityIssues(ctx context.Context, def teamgraph.Def
 		return nil
 	}
 	holdsTool := false
-	for _, name := range tools.AgentTools(ctx) {
+	for _, name := range tools.PolicyOf(ctx).Tools {
 		if name == "Decision" {
 			holdsTool = true
 		}

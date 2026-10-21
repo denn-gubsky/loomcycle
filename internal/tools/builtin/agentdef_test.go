@@ -832,14 +832,14 @@ func TestAgentDefTool_ForkFromSharedBaseAllowed(t *testing.T) {
 
 // Capability-escalation guard on `create`: an agent with narrow
 // tools cannot mint a new agent with a wider tool surface
-// than its own. The caller's effective AgentTools(ctx) is the
+// than its own. The caller's effective PolicyOf(ctx).Tools is the
 // ceiling. Mirror of the subset check in `fork`.
 func TestAgentDefTool_CreateRefusedOnToolsWidening(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
 	// Caller's effective tools is [Read, AgentDef] only.
-	narrowCtx := tools.WithAgentTools(ctx, []string{"Read", "AgentDef"})
+	narrowCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "AgentDef"} })
 
 	// Overlay tries to add Write — wider than the caller's surface.
 	res, _ := tool.Execute(narrowCtx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"tools":["Read","Write"]}}`))
@@ -867,7 +867,7 @@ func TestAgentDefTool_CreateWithWildcardCallerToolsAllowsAnyOverlay(t *testing.T
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
-	wildCtx := tools.WithAgentTools(ctx, []string{"*"})
+	wildCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 
 	// Operator picks a broad tools list — every entry should
 	// pass even though "*" alone is the caller's ceiling.
@@ -877,17 +877,17 @@ func TestAgentDefTool_CreateWithWildcardCallerToolsAllowsAnyOverlay(t *testing.T
 	}
 }
 
-// Missing AgentTools(ctx) — runtime misconfiguration. With a
+// Missing PolicyOf(ctx).Tools — runtime misconfiguration. With a
 // non-empty overlay Tools, refuse rather than silently
 // allow the wider value.
 func TestAgentDefTool_CreateRefusedWhenCallerToolsMissing(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
 
-	// ctx does NOT have AgentTools attached. Overlay sets tools.
+	// ctx does NOT have a tools ceiling attached. Overlay sets tools.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"newagent","overlay":{"tools":["Read"]}}`))
 	if !res.IsError {
-		t.Fatalf("create with no AgentTools(ctx) + Tools overlay should refuse; got %s", res.Text)
+		t.Fatalf("create with no PolicyOf(ctx).Tools + Tools overlay should refuse; got %s", res.Text)
 	}
 	if !strings.Contains(res.Text, "not on ctx") {
 		t.Errorf("error should mention missing ctx tools; got %s", res.Text)
@@ -916,7 +916,7 @@ func TestAgentDefTool_DescendantsScopeIsCurrentlyEquivalentToAny(t *testing.T) {
 		Scopes:   []string{"descendants"},
 		SelfName: "alpha",
 	})
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
 
 	// Mutate a totally unrelated name (would-be cross-tree).
@@ -1065,7 +1065,7 @@ func jsonTagsOfFields(t reflect.Type) map[string]bool {
 func TestAgentDefTool_ListIncludesDefinition(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"with-body","overlay":{"system_prompt":"hello world","tools":["Read"]},"promote":true}`))
 	if res.IsError {

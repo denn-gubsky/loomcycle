@@ -17,7 +17,7 @@ import (
 // tools ceiling, outside any run — so an authoring call is not narrowed by an
 // agent's policies.
 func operatorPlane(ctx context.Context) context.Context {
-	return tools.WithAgentTools(ctx, []string{"*"})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 }
 
 // ceilingFixture is an AgentDef tool with two static volumes and one static
@@ -57,7 +57,7 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_author", UserID: "u1", TenantID: "t1"})
 	ctx = tools.WithAgentName(ctx, "sdlc/meta")
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 	// Memory and SQL below their ordinary default (user, tenant), so an unset
 	// one passing is that default at work and not the author holding it. The
 	// author does hold what an unset history_scope and volumes resolve to
@@ -257,7 +257,7 @@ func TestAgentDefCreate_ReviewerEscalationCaseIsRefused(t *testing.T) {
 // The same wildcard on a run's ctx grants nothing: a run is always narrowed.
 func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithAgentTools(ctx, []string{"*"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"sql_scopes":["tenant"]}`), "wildcard in a run", "sql_scopes:")
 
 	off := operatorPlane(context.Background())

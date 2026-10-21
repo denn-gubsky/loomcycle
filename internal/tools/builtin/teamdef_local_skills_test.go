@@ -78,7 +78,9 @@ func TestTeamDefCreate_LocalSkillPassesEverySkillDefCreateGate(t *testing.T) {
 			},
 			`{"body":"b"}`, "allowlist"},
 		{"tools ceiling unknown",
-			func(c context.Context) context.Context { return tools.WithAgentTools(c, nil) },
+			func(c context.Context) context.Context {
+				return tools.UpdateRunPolicy(c, func(rp *tools.RunPolicy) { rp.Tools = nil })
+			},
 			`{"body":"b","tools":["Read"]}`, "effective tools not on ctx"},
 	} {
 		t.Run(tc.gate, func(t *testing.T) {

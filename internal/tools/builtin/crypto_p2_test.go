@@ -175,7 +175,7 @@ func TestCrypto_PasswordsHashAndVerifyWithoutAKey(t *testing.T) {
 func refCtx(ctx context.Context, dir string, toolNames ...string) context.Context {
 	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true}}})
 	ctx = tools.WithRunID(ctx, "run_ref")
-	return tools.WithAgentTools(ctx, append([]string{"Crypto"}, toolNames...))
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = append([]string{"Crypto"}, toolNames...) })
 }
 
 // A file is encrypted to another file and back, byte for byte, and neither
@@ -257,7 +257,7 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 	}{
 		"no Read tool":        {refCtx(ctx, dir, "Write"), `{"op":"encrypt","key":"files","from":"volume:a.txt"}`, tools.CategoryPermission},
 		"no Write tool":       {refCtx(ctx, dir, "Read"), `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:b.txt"}`, tools.CategoryPermission},
-		"no tool list":        {tools.WithAgentTools(full, nil), `{"op":"encrypt","key":"files","from":"volume:a.txt"}`, tools.CategoryPermission},
+		"no tool list":        {tools.UpdateRunPolicy(full, func(rp *tools.RunPolicy) { rp.Tools = nil }), `{"op":"encrypt","key":"files","from":"volume:a.txt"}`, tools.CategoryPermission},
 		"dot-dot escape":      {full, `{"op":"encrypt","key":"files","from":"volume:../` + filepath.Base(outside) + `/secret.txt"}`, tools.CategoryPermission},
 		"symlink escape":      {full, `{"op":"encrypt","key":"files","from":"volume:link.txt"}`, tools.CategoryPermission},
 		"read-only volume":    {readOnly, `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:b.txt"}`, tools.CategoryPermission},
@@ -291,7 +291,7 @@ func TestCrypto_ANarrowedRunCannotReachAToolItWasNarrowedOutOf(t *testing.T) {
 	mustOK(t, "generate", res)
 	dir := t.TempDir()
 	narrowed := refCtx(ctx, dir) // effective tools: [Crypto]
-	narrowed = tools.WithAgentToolPatterns(narrowed, []string{"Crypto", "Read", "Write"})
+	narrowed = tools.UpdateRunPolicy(narrowed, func(rp *tools.RunPolicy) { rp.ToolPatterns = []string{"Crypto", "Read", "Write"} })
 	if _, res := cryptoExec(t, c, narrowed, `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:out.txt"}`); !res.IsError || res.Error.Category != tools.CategoryPermission {
 		t.Errorf("narrowed run = %+v, want a permission refusal", res)
 	}

@@ -42,7 +42,7 @@ func localAuthorCtx(tenantID string, scopes, callerTools []string) context.Conte
 	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: scopes, SelfName: "author"})
 	// Every skill, as an author declaring no `skills:` holds.
 	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true})
-	return tools.WithAgentTools(ctx, callerTools)
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = callerTools })
 }
 
 // localTeam is a one-state team running its own agent "reviewer", whose body

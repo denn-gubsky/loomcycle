@@ -15,7 +15,7 @@ import (
 func TestAgentDefTool_CryptoScopesRoundTrip(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.WithAgentTools(ctx, []string{"*"}) // operator plane
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }) // operator plane
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"signer","promote":true,"overlay":{
 		"system_prompt":"sign things","tools":["Crypto"],"crypto_scopes":["user","run"]}}`))
@@ -46,7 +46,7 @@ func TestAgentDefTool_CryptoScopesRoundTrip(t *testing.T) {
 func TestAgentDefTool_RefusesAnUnknownCryptoScope(t *testing.T) {
 	tool, ctx, cleanup := agentDefFixture(t)
 	defer cleanup()
-	ctx = tools.WithAgentTools(ctx, []string{"*"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 
 	for _, overlay := range []string{`{"crypto_scopes":["global"]}`, `{"crypto_scopes":["user","-*"]}`} {
 		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"signer","overlay":`+overlay+`}`))

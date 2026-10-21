@@ -74,7 +74,7 @@ func authorIsOperatorPlane(ctx context.Context) bool {
 	if tools.RunID(ctx) != "" {
 		return false
 	}
-	for _, t := range tools.AgentTools(ctx) {
+	for _, t := range tools.PolicyOf(ctx).Tools {
 		if t == "*" {
 			return true
 		}

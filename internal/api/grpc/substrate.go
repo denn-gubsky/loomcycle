@@ -121,7 +121,7 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		histScopes = []string{"self", "user", "tenant"}
 	}
 	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
-		// AgentTools wildcard ceiling (F11): operator-trust path → mirror HTTP
+		// tools-ceiling wildcard ceiling (F11): operator-trust path → mirror HTTP
 		// substrateAdminCtx + MCP operatorCtx so a gRPC `agentdef`/`skilldef`
 		// create with a tool-bearing tools overlay validates instead of
 		// refusing "caller's effective tools not on ctx". Per-run contexts
