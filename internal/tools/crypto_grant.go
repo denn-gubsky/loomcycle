@@ -11,9 +11,6 @@ import (
 // this package agree on it without importing the tool.
 const CryptoToolName = config.CryptoToolName
 
-// ctxKeyCryptoPolicy carries the Crypto tool's key-scope gate.
-type ctxKeyCryptoPolicy struct{}
-
 // CryptoPolicyValue is the per-run Crypto grant: which key scopes ("agent",
 // "user", "tenant", "run") the run's key-backed crypto operations may use.
 //
@@ -27,13 +24,12 @@ type CryptoPolicyValue struct {
 
 // WithCryptoPolicy attaches the policy to ctx.
 func WithCryptoPolicy(ctx context.Context, p CryptoPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyCryptoPolicy{}, p)
+	return UpdateRunPolicy(ctx, func(rp *RunPolicy) { rp.Crypto = p })
 }
 
 // CryptoPolicy returns the policy from ctx. Zero value = no key scope.
 func CryptoPolicy(ctx context.Context) CryptoPolicyValue {
-	v, _ := ctx.Value(ctxKeyCryptoPolicy{}).(CryptoPolicyValue)
-	return v
+	return PolicyOf(ctx).Crypto
 }
 
 // Allows reports whether the policy grants key scope.
