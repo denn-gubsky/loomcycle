@@ -38,6 +38,9 @@ docker run -d --name loomcycle \
   -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
   denngubsky/loomcycle:latest
 
+# LOOMCYCLE_AUTH_TOKEN is required with LOOMCYCLE_LISTEN_ADDR=0.0.0.0: with no
+# auth configured the server refuses to start on a non-loopback address.
+
 # Verify
 docker exec loomcycle /usr/local/bin/loomcycle doctor || true
 curl http://127.0.0.1:8787/healthz
@@ -65,7 +68,8 @@ No `vX` or `vX.Y` floating tags during the v0.11.x line — too early for major-
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LOOMCYCLE_LISTEN_ADDR` | `127.0.0.1:8787` | Set to `0.0.0.0:8787` inside the container so port-mapping works |
+| `LOOMCYCLE_LISTEN_ADDR` | `127.0.0.1:8787` | Set to `0.0.0.0:8787` inside the container so port-mapping works. This needs `LOOMCYCLE_AUTH_TOKEN` (or an admin operator token): in open mode the server refuses a non-loopback address |
+| `LOOMCYCLE_ALLOW_OPEN_MODE` | (unset) | `1` starts in open mode (no auth, every route open) on a non-loopback address anyway. Throwaway test harnesses only |
 | `LOOMCYCLE_STORAGE_BACKEND` | `sqlite` | Set to `postgres` to use the Postgres backend |
 | `LOOMCYCLE_PG_DSN` | (unset) | Postgres DSN — required when backend is postgres |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | OTLP endpoint for distributed traces; unset = tracing off |
@@ -144,7 +148,7 @@ loomcycle            # start the server (default behaviour with no args)
 - **gRPC surface:** https://github.com/denn-gubsky/loomcycle/blob/main/docs/GRPC.md
 - **Release notes:** https://github.com/denn-gubsky/loomcycle/blob/main/REVISIONS.md
 
-In-binary docs (bundled help topics) are accessible via `GET /v1/_help/<topic>` against a running instance. Topic list: `installation`, `getting-started`, `llm-gateway`, `fairness`, `observability`, `vector-memory`, `voyage-embedder`, `sqlite-vec`, `dynamic-mcp`, `bash-security`, and more.
+In-binary docs (bundled help topics) are accessible via `GET /v1/_help/<topic>` against a running instance. Topic list: `installation`, `getting-started`, `llm-gateway`, `fairness`, `observability`, `vector-memory`, `voyage-embedder`, `sqlite-vec`, `dynamic-mcp`, `bashbox`, and more.
 
 ## Adapters
 

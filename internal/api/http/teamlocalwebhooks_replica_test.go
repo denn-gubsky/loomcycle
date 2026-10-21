@@ -390,7 +390,7 @@ func TestTeamLocalWebhook_AStaleSignatureIsRefusedOnEveryReplica(t *testing.T) {
 	_, otherMux := h.replica()
 
 	for what, mux := range map[string]*http.ServeMux{"the walk's replica": h.mux, "another replica": otherMux} {
-		if w := deliverStripe(mux, hookPath, `{"stale":"`+what+`"}`, "", time.Now().Add(-10*time.Minute)); w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+		if w := deliverStripe(mux, hookPath, `{"stale":"`+what+`"}`, "", time.Now().Add(-10*time.Minute)); w.Code != http.StatusNotFound || w.Body.String() != "{\"error\":\"unknown_webhook\"}\n" {
 			t.Errorf("%s, a signature 10 minutes old: %d %s", what, w.Code, w.Body.String())
 		}
 		if w := deliverStripe(mux, hookPath, `{"fresh":"`+what+`"}`, "", time.Now()); w.Code != http.StatusAccepted {
@@ -445,7 +445,7 @@ func TestTeamLocalWebhook_ARefusedRequestHoldsNoKey(t *testing.T) {
 	req.Header.Set("X-Delivery", "d-1")
 	w := httptest.NewRecorder()
 	otherMux.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
+	if w.Code != http.StatusNotFound {
 		t.Fatalf("badly signed, carrying the genuine id: %d %s", w.Code, w.Body.String())
 	}
 	if w := deliverStripe(otherMux, hookPath, `{"sender":{}}`, "d-2", time.Now()); w.Code != http.StatusBadRequest {

@@ -1021,6 +1021,9 @@ concurrency:
 #
 # Env knobs (no YAML block — runtime tuning only):
 #   LOOMCYCLE_GRPC_ADDR=:8788          (empty = disabled)
+# `:8788` binds every interface, so it needs auth configured: in open mode
+# (no token) the server refuses a non-loopback listener unless
+# LOOMCYCLE_ALLOW_OPEN_MODE=1.
 
 # ─── Heartbeat sweeper + session-lock GC (v0.5.0) ─────────────────────
 # Two background goroutines that keep state from accumulating:

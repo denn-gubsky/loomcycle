@@ -21,7 +21,8 @@ We welcome these contributions right now:
   these actively.
 - **Security disclosures** — please report privately through GitHub
   Security Advisories rather than filing a public issue; see
-  [`SECURITY.md`](SECURITY.md).
+  [`SECURITY.md`](SECURITY.md). If the "Report a vulnerability" button
+  is not available, use the email on the maintainer's GitHub profile.
 - **Downstream consumers** — building against the wire surface
   (`/v1/*` HTTP, gRPC, the embedded Web UI) is exactly what we want.
   Production integrations inform v1.0 design. Open an issue describing

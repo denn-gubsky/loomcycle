@@ -21,6 +21,8 @@ Report it privately through GitHub Security Advisories: the **Report a vulnerabi
 
 The report and the discussion stay private between you and the maintainers until a fix is published.
 
+If the **Report a vulnerability** button is not available, contact the maintainer privately through the email address on their GitHub profile. Never through a public issue.
+
 Please include:
 
 - the affected version (`loomcycle --version`) or commit, and how it was installed (Homebrew, Docker, binary, source);

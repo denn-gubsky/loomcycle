@@ -68,7 +68,8 @@ not source `.env.local` in a container — only real env + the mounted overlay.
 ### Route A — custom app (paste compose)
 
 1. Edit [`deploy/truenas/docker-compose.yaml`](../deploy/truenas/docker-compose.yaml):
-   put your **secrets** (`LOOMCYCLE_AUTH_TOKEN`, the Postgres DSNs, provider keys) in
+   put your **secrets** (`LOOMCYCLE_AUTH_TOKEN` — required: with none, the server
+   refuses to start on the container's `0.0.0.0` listener — the Postgres DSNs, provider keys) in
    the root-only `loomcycle.secrets.env` the compose's `env_file:` points at — never
    inline (TrueNAS's paste-YAML can't resolve `${VAR}`); set the non-secret env
    (`LOOMCYCLE_PRESETS`, `LOOMCYCLE_PUBLIC_URL`, the pool/host placeholders) inline;

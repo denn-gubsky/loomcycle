@@ -38,15 +38,9 @@ type authError struct {
 	// verdict is the internal-only classification (e.g. "rejected_sig",
 	// "unresolvable_secret"). Used for logging + the server's status map.
 	verdict string
-	// secretEnv is populated only for the secret_unresolvable case, so the
-	// 503 body can name WHICH env var is missing (the env-var NAME is not a
-	// secret; its value is). Never holds a secret value.
-	secretEnv string
-	// secretRef is secretEnv for a secret stored as a credential: the
-	// "$cred:<name>" reference that did not resolve. A name, never a value.
-	secretRef string
-	// msg is an operator-facing description for the log line only. Never
-	// returned in an HTTP body for the signature-mismatch verdicts.
+	// msg is an operator-facing description for the log line only (it may
+	// name the env var or "$cred:" reference that did not resolve). Never
+	// returned in an HTTP body.
 	msg string
 }
 
@@ -69,12 +63,12 @@ const (
 // errSignatureMismatch is the catch-all for every "the request did not
 // authenticate" case: bad MAC, tampered body, missing/garbled header,
 // out-of-window timestamp, wrong bearer. They all collapse to one verdict
-// so the client cannot distinguish them (no oracle). The server maps it
-// to 401 with NO body detail.
+// so the client cannot distinguish them (no oracle). The server answers it
+// with the same 404 as an unknown webhook name.
 var errSignatureMismatch = errors.New("signature_mismatch")
 
 // resolveSecret reads a VERIFICATION secret (HMAC signing key / bearer token)
-// through the allowlist gate. Returns the secret_unresolvable authError when the
+// through the allowlist gate. Returns the unresolvable-secret authError when the
 // var is not allowlisted, unset, or empty. The returned value is a secret —
 // callers must never log it.
 //
@@ -93,21 +87,21 @@ var errSignatureMismatch = errors.New("signature_mismatch")
 // mutating process environment.
 func resolveSecret(envName string, allowlist map[string]bool, getenv func(string) string) (string, error) {
 	if envName == "" {
-		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: "auth: no secret env var configured"}
+		return "", &authError{verdict: verdictUnresolved, msg: "auth: no secret env var configured"}
 	}
 	// loomcycle's own secrets (the operator bearer, the database DSN, the
 	// credential key, ...) verify nothing: a definition naming one would make
 	// whoever can sign or send it a webhook sender. The value is only ever
 	// compared, but it must not be nameable. No allowlist entry admits one.
 	if config.IsInfraSecretEnv(envName) {
-		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q is one of loomcycle's own secrets and cannot verify a webhook", envName)}
+		return "", &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: env var %q is one of loomcycle's own secrets and cannot verify a webhook", envName)}
 	}
 	if !allowlist[envName] && !config.ExpandEnvAllowed(envName) {
-		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q not allowlisted (add it to LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST, or use a LOOMCYCLE_*-prefixed name)", envName)}
+		return "", &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: env var %q not allowlisted (add it to LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST, or use a LOOMCYCLE_*-prefixed name)", envName)}
 	}
 	v := getenv(envName)
 	if v == "" {
-		return "", &authError{verdict: verdictUnresolved, secretEnv: envName, msg: fmt.Sprintf("auth: env var %q unset or empty", envName)}
+		return "", &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: env var %q unset or empty", envName)}
 	}
 	return v, nil
 }
@@ -172,7 +166,7 @@ func verificationSecrets(ctx context.Context, a config.WebhookAuth, tenant strin
 // storedSecret resolves one "$cred:<name>" reference for verification.
 func storedSecret(ctx context.Context, ref, tenant string, creds CredentialResolver) (string, error) {
 	unresolved := func(why string) error {
-		return &authError{verdict: verdictUnresolved, secretRef: ref, msg: fmt.Sprintf("auth: secret %s: %s", ref, why)}
+		return &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: secret %s: %s", ref, why)}
 	}
 	name, ok := credential.ParseRef(ref)
 	if !ok {
@@ -263,7 +257,7 @@ func verifySignature(a config.WebhookAuth, secrets []string, body []byte, header
 		// Unknown auth kind is a config error, not a request error. Treat
 		// as unresolvable so the operator sees a 503 rather than silently
 		// accepting or returning a misleading 401.
-		return &authError{verdict: verdictUnresolved, secretEnv: "", msg: fmt.Sprintf("auth: unknown kind %q", a.Kind)}
+		return &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: unknown kind %q", a.Kind)}
 	}
 }
 

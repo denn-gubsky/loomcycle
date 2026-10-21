@@ -64,6 +64,10 @@ func (r *realConfig) StorageBackend() string  { return r.cfg.Storage.Backend }
 func (r *realConfig) StoragePgDSN() string    { return r.cfg.Storage.PgDSN }
 func (r *realConfig) StorageDataDir() string  { return r.cfg.Env.DataDir }
 func (r *realConfig) ListenAddrValue() string { return r.cfg.Env.ListenAddr }
+func (r *realConfig) NonLoopbackListeners() []string {
+	return r.cfg.Env.NonLoopbackListeners()
+}
+func (r *realConfig) AllowOpenMode() bool { return r.cfg.Env.AllowOpenMode }
 
 // loadConfigRealAdapter is the production seam for loadConfigForDoctor.
 // Tests override the package-level var to plug in a stub.

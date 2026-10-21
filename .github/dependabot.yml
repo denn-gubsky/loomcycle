@@ -8,9 +8,12 @@
 #
 # Deliberate exclusions:
 # - gbash (the Bashbox sandbox) is alpha and pinned; a bump must quote the
-#   upstream changelog and pass the escape suite, so it comes on its own.
-# - @loomcycle/* packages are this repo's own; a consumer moves to a new sibling
-#   release by hand, in step with the release, not weekly.
+#   upstream changelog and pass the escape suite, so it comes in its own group.
+# - @loomcycle/* packages and denngubsky/* images are this repo's own; a
+#   consumer or compose file moves to a new release by hand, in step with the
+#   release, not weekly.
+# - deploy/truenas/catalog/templates holds a Jinja template, not plain YAML,
+#   and examples/ compose files are illustrations; neither is scanned.
 # - The golang base images track the Go line CI builds with (ci.yml,
 #   release.yml, go.mod); moving to a new Go minor is a toolchain decision.
 
@@ -26,6 +29,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
+      # gbash and its contrib/awk and contrib/jq modules release in lockstep;
+      # one PR moves all three, apart from every other Go update.
+      gbash:
+        applies-to: version-updates
+        patterns:
+          - "github.com/ewhauser/gbash*"
       go-minor-patch:
         applies-to: version-updates
         update-types: [minor, patch]
@@ -225,6 +234,19 @@ updates:
         applies-to: version-updates
         update-types: [minor, patch]
 
+  # --- Python adapter (pyproject.toml) -------------------------------------
+  - package-ecosystem: pip
+    directory: /adapters/python
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      pip-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
   # --- GitHub Actions -----------------------------------------------------
   - package-ecosystem: github-actions
     directory: /
@@ -257,5 +279,23 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       docker-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
+  # --- Docker Compose images (exclusions in the header) -------------------
+  - package-ecosystem: docker-compose
+    directories:
+      - /
+      - /cloud-deployment
+      - /deploy/truenas
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      - dependency-name: "denngubsky/*"
+    groups:
+      compose-minor-patch:
         applies-to: version-updates
         update-types: [minor, patch]

@@ -249,7 +249,7 @@ func remotePeerPrivateHosts(cfg *config.Config, baseURL string, origin lookup.Or
 		return cfg.Env.HTTPPrivateHostAllowlist
 	}
 	if u, err := url.Parse(baseURL); err == nil && u.Hostname() != "" {
-		return []string{u.Hostname()}
+		return []string{netguard.VouchEntryForHost(u.Hostname())}
 	}
 	return nil
 }

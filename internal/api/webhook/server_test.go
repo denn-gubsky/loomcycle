@@ -187,7 +187,7 @@ func TestReceiver_SpawnMode_ValidGitHubSig_Builds202AndRunInput(t *testing.T) {
 	}
 }
 
-func TestReceiver_TamperedBody_401(t *testing.T) {
+func TestReceiver_TamperedBody_404(t *testing.T) {
 	secret := "shhh"
 	now := time.Unix(1_700_000_000, 0)
 	signed := []byte(`{"goal":"a"}`)
@@ -201,8 +201,8 @@ func TestReceiver_TamperedBody_401(t *testing.T) {
 	h.Set("X-Hub-Signature-256", githubSig(secret, signed))
 	w := doPost(rec, "gh", tampered, h)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 	if fr.called {
 		t.Fatal("runner invoked on bad signature")
@@ -265,8 +265,8 @@ func TestReceiver_UnresolvableSecret_503(t *testing.T) {
 	}
 	var got map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
-	if got["error"] != "secret_unresolvable" || got["secret_env"] != "WH_SECRET" {
-		t.Errorf("body = %v, want secret_unresolvable + secret_env=WH_SECRET", got)
+	if len(got) != 1 || got["error"] != "unavailable" {
+		t.Errorf("body = %v, want only error=unavailable", got)
 	}
 }
 
