@@ -61,7 +61,7 @@ const webhookDefDescription = `Author, fork, retire, and inspect inbound webhook
 	`produces the DERIVED layer of orchestrator-authored forks. ` +
 	`Operations: create, fork, get, list, retire. ` +
 	`The definition's tenant_id is the tenant its spawned runs execute in: it defaults to your own tenant, ` +
-	`and only an admin may set it to another tenant (a fork that would inherit another tenant's is refused too). ` +
+	`and only an admin, outside a run, may set it to another tenant (a fork that would inherit another tenant's is refused too). ` +
 	`A definition carrying capture_disabled was restored from a snapshot without its literal user_credentials: ` +
 	`it answers every delivery with 404 until a fork, or a create on the same name, re-supplies EVERY key listed ` +
 	`there and sets enabled: true. A key counts as a non-blank user_credentials value, or a ` +

@@ -187,9 +187,18 @@ func defCallerIsAdmin(ctx context.Context) bool {
 }
 
 // callerHasOperatorAuthority reports whether the caller may do what only the
-// operator may: a substrate:admin principal, or an off-run call on a surface
-// with no authentication at all (open-mode HTTP/gRPC, the stdio `loomcycle
-// mcp`), which the transport marks with tools.WithUnauthenticatedOperator.
+// operator may: an off-run call by a substrate:admin principal, or an off-run
+// call on a surface with no authentication at all (open-mode HTTP/gRPC, the
+// stdio `loomcycle mcp`), which the transport marks with
+// tools.WithUnauthenticatedOperator.
+//
+// Never inside a run (RFC ES #15). A run started with an admin bearer carries
+// that principal into every tool call its model makes, but the model is not
+// the operator, and a prompt-injected one would otherwise free a def's
+// credentials, point a trigger at another tenant or sweep every tenant. The
+// gate is here rather than at each caller so a new caller cannot forget it.
+// It is not tools.IsSubstrateOperator: that marker is on every off-run HTTP
+// call, a tenant operator's included, and absent on the gRPC and MCP planes.
 //
 // It is narrower than "no principal": a run, a sub-agent and a trigger-fired
 // context carry no principal either — in open mode, or for a yaml schedule or
@@ -197,6 +206,9 @@ func defCallerIsAdmin(ctx context.Context) bool {
 // principal with no tenant is not the operator either: a config `principals:`
 // entry may omit its tenant, and admin is still explicit (substrate:admin).
 func callerHasOperatorAuthority(ctx context.Context) bool {
+	if tools.RunID(ctx) != "" {
+		return false
+	}
 	if defCallerIsAdmin(ctx) {
 		return true
 	}

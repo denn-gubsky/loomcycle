@@ -542,8 +542,7 @@ func TestCheckTokenPepper_ReportsTheSourceAndWarnsOnNoneWithAuth(t *testing.T) {
 		wantLine string
 	}{
 		{"explicit", config.Env{OperatorTokenPepper: "p"}, true, "PASS"},
-		{"derived", config.Env{SecretKey: key}, true, "move to it at their next login"},
-		{"derived, fallback off", config.Env{SecretKey: key, TokenLegacyHashOff: true}, true, "unpeppered token hashes refused"},
+		{"derived", config.Env{SecretKey: key}, true, "rewrapped under it when the server starts"},
 		{"none with auth", config.Env{}, true, "WARN"},
 		{"none without auth", config.Env{}, false, "no auth configured"},
 		{"malformed key", config.Env{SecretKey: "short"}, true, "FAIL"},

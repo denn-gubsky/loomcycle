@@ -94,8 +94,8 @@ persisted shape can never hold a state a backend would act on unsafely:
 - A definition authored at runtime may not name a literal private, loopback,
   link-local or metadata IP (`127.0.0.1`, `10.x`, `169.254.169.254`, `::1`,
   `fd00::/8`, `0.0.0.0`, …) as `config.base_url`. A `kind: remote` one also
-  needs a host the operator lists, and only an admin may set its
-  `api_key_env` to an env var name (see `kind: remote` below).
+  needs a host the operator lists, and only an admin, outside a run, may
+  set its `api_key_env` to an env var name (see `kind: remote` below).
 
 `api_key_env` is an env-var **name**, or a `$cred:<name>` reference to a stored
 credential, never a plaintext key.
@@ -159,8 +159,8 @@ memory_backends:
 
   Sent as `Authorization: Bearer`; never logged.
 
-  In a definition authored at runtime, **only a `substrate:admin` may set
-  `api_key_env` to an env var name**: it can name any credential this server
+  In a definition authored at runtime, **only a `substrate:admin` calling
+  from outside a run may set `api_key_env` to an env var name**: it can name any credential this server
   holds (another tenant's `LOOMCYCLE_PEER_KEY_<tenant>`, a `GITHUB_TOKEN`),
   and the definition's author chooses where it is sent. Anyone else leaves
   the credential unset, or uses one of:

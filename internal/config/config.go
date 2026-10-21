@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -3992,13 +3993,6 @@ type Env struct {
 	// a rotation grace window: rows sealed under it still decrypt while new
 	// writes use SecretKey. Optional. Secret.
 	SecretKeyPrevious string
-	// TokenLegacyHashOff (LOOMCYCLE_TOKEN_LEGACY_HASH=off) stops a token lookup
-	// from trying the UNPEPPERED hash a row minted before the derived pepper
-	// may carry. Default: tried, for rows on it at boot, and rehashed on a hit
-	// (RFC ES D2). The hash under the pepper SecretKeyPrevious derives is
-	// tried whenever that key is set, whatever this says — dropping it would
-	// log every token out at the next key rotation.
-	TokenLegacyHashOff bool
 	// AuditLogPath is the JSONL sink for OperatorTokenDef mutations
 	// (RFC L). Empty = no file audit (a NopSink is wired).
 	AuditLogPath string
@@ -4608,6 +4602,15 @@ type Env struct {
 	// LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS.
 	PauseDefaultTimeoutMs int64
 
+	// ShutdownPauseTimeoutMs bounds how long a SIGTERM/SIGINT shutdown waits
+	// for this replica's in-flight runs to park before it exits, so the next
+	// boot resumes them (pause.Manager.PauseForShutdown). At three quarters of
+	// it, the tool calls of the runs not yet parked are interrupted. Default
+	// DefaultShutdownPauseTimeoutMs; 0 skips the pause (runs are abandoned to
+	// the stale-run sweeper, as before). Capped at pause.MaxPauseTimeout. Env:
+	// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS.
+	ShutdownPauseTimeoutMs int64
+
 	// PauseCacheTTLMs is the v0.12.3 Phase 4 TTL for the cluster-
 	// mode DB-backed pause-state cache in pause.Manager.State().
 	// Default 1000 (1s). Lower values reduce the maximum latency
@@ -5136,6 +5139,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 		src = append(src, l)
 	}
+	// Before any layer's text is ${...}-expanded.
+	denyDeclaredPrincipalBearers(src)
+
 	// primaryPath is the LAST disk-file layer — used for configDir + relative
 	// system_prompt_file resolution. Embedded layers (Data != nil) have no
 	// directory and never set it; a presets-only stack leaves it "" (relative
@@ -5236,7 +5242,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		OperatorTokenPepper:         os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),
 		SecretKeyPrevious:           os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
-		TokenLegacyHashOff:          strings.EqualFold(strings.TrimSpace(os.Getenv("LOOMCYCLE_TOKEN_LEGACY_HASH")), "off"),
 		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
@@ -6103,6 +6108,15 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 	}
 
+	// RFC ES F1: the shutdown pause's bound. Unset ⇒ the default; an explicit
+	// 0 turns the pause off, so it is told apart from unset.
+	cfg.Env.ShutdownPauseTimeoutMs = DefaultShutdownPauseTimeoutMs
+	if v := os.Getenv("LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			cfg.Env.ShutdownPauseTimeoutMs = n
+		}
+	}
+
 	// v0.8.17 pause manager default timeout. 0 ⇒ pause package
 	// default (30s). The manager itself clamps at pause.MaxPauseTimeout
 	// regardless of what we set here.
@@ -6557,7 +6571,7 @@ var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 func expandEnv(s string) string {
 	return envVarRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := m[2 : len(m)-1]
-		if !ExpandEnvAllowed(name) || expandDenyNames[name] {
+		if !ExpandEnvAllowed(name) || envNameDenied(name) {
 			return m // leave verbatim — caller sees the literal ${...}
 		}
 		v := os.Getenv(name)
@@ -6666,7 +6680,8 @@ func ExpandEnvAllowed(name string) bool {
 		// The `sandbox` bundle forwards it in the sidecar's MCP Authorization header,
 		// and the sidecar authenticates against the same name — so both services use
 		// ONE env var instead of a LOOMCYCLE_-prefixed alias. Not a loomcycle infra
-		// secret (those are in expandDenyNames), so allowlisting it here is safe.
+		// secret (expandDenyNames) nor a principal's bearer (principalBearerEnvs),
+		// so allowlisting it here is safe.
 		"SANDBOX_AUTH_TOKEN":
 		return true
 	}
@@ -6684,15 +6699,53 @@ func ExpandEnvAllowed(name string) bool {
 // token. The inline pair at expandYAMLEnv already spells this out; exported here
 // so substrate validators enforce the same rule instead of re-deriving half of it.
 func EnvNameCredentialSafe(name string) bool {
-	return ExpandEnvAllowed(name) && !expandDenyNames[name]
+	return ExpandEnvAllowed(name) && !envNameDenied(name)
 }
 
 // IsInfraSecretEnv reports whether name is one of loomcycle's own
-// infrastructure secrets (expandDenyNames), which no definition may name as
-// the source of a secret — not even one only ever compared, such as a
-// webhook's verification secret.
+// infrastructure secrets (expandDenyNames) or a declared principal's bearer
+// (principalBearerEnvs), which no definition may name as the source of a
+// secret — not even one only ever compared, such as a webhook's verification
+// secret.
 func IsInfraSecretEnv(name string) bool {
-	return expandDenyNames[name]
+	return envNameDenied(name)
+}
+
+// envNameDenied reports whether name may never be interpolated or named as a
+// credential source: a built-in infra secret, or a principal's token_env.
+func envNameDenied(name string) bool {
+	return expandDenyNames[name] || principalBearerEnvs.has(name)
+}
+
+// principalBearerEnvs holds the token_env of every principal a config load in
+// this process has declared, so ${...} interpolation can never send a
+// principal's bearer to a definition's server (the same exfil the infra set
+// closes). It is its own set because expandDenyNames is what resolvePrincipals
+// checks token_env against: written there, a principal's own name read as an
+// infra secret on the next load, so every config reload with principals failed.
+//
+// Process-wide and add-only, not per-load, on purpose: its readers
+// (ExpandEnv at MCP dial time, the credential-name checks) run without a
+// config, and a load that is never served — a reload dry run, a refused reload,
+// `loomcycle validate` — must not be able to take a name off the set. Guarded,
+// because a reload resolves principals while those readers run.
+var principalBearerEnvs = &envNameSet{m: map[string]bool{}}
+
+type envNameSet struct {
+	mu sync.RWMutex
+	m  map[string]bool
+}
+
+func (s *envNameSet) add(name string) {
+	s.mu.Lock()
+	s.m[name] = true
+	s.mu.Unlock()
+}
+
+func (s *envNameSet) has(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.m[name]
 }
 
 // expandDenyNames is the authoritative set of loomcycle's OWN infrastructure /
@@ -6715,6 +6768,9 @@ func IsInfraSecretEnv(name string) bool {
 // — is enforced by TestExpandDenyNames_CoversInfraSecretReads, which scans this
 // package's own os.Getenv("LOOMCYCLE_…") secret-bearing reads and fails CI if a
 // new one isn't listed here (closing the "incomplete blocklist" gap S1 named).
+//
+// Never written after init: declared principals' bearers live in
+// principalBearerEnvs.
 var expandDenyNames = map[string]bool{
 	"PG_DSN":                               true,
 	"LOOMCYCLE_PG_DSN":                     true,
@@ -7219,6 +7275,16 @@ func addSkillToolDefaults(cfg *Config) {
 		cfg.Agents[name] = def
 	}
 }
+
+// DefaultShutdownPauseTimeoutMs is the shutdown pause's bound when
+// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS is unset. 8 s keeps the whole shutdown —
+// the pause, with the listeners draining alongside it (5 s each), then the
+// final flushes — inside Docker's default 10 s stop grace, so a default
+// container is never SIGKILLed mid-shutdown. Runs get 6 s to park on their own,
+// then 2 s to park after their tool calls are interrupted. A deployment that
+// grants a longer grace period (stop_grace_period, terminationGracePeriodSeconds)
+// can raise it to let longer model calls finish.
+const DefaultShutdownPauseTimeoutMs = 8000
 
 // BashboxOverlayMaxBytesDefault is the per-call cap on Bashbox's in-memory
 // writes when LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES is unset. 64 MiB holds any

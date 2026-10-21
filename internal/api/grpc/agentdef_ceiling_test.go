@@ -45,3 +45,13 @@ func TestSubstrateGRPCCtx_IsNotNarrowedByTheCapabilityCeiling(t *testing.T) {
 		}
 	}
 }
+
+// The gRPC operator plane is off-run: an admin's own substrate call carries no
+// run id, so the def tools keep its operator authority (they refuse it to any
+// call made inside a run).
+func TestSubstrateGRPCCtx_AnAdminsOwnCallCarriesNoRunID(t *testing.T) {
+	admin := auth.WithPrincipal(context.Background(), auth.Principal{Subject: "ops", Scopes: []string{auth.ScopeAdmin}})
+	if id := tools.RunID(substrateGRPCCtx(admin)); id != "" {
+		t.Errorf("the gRPC operator plane's ctx carries run id %q", id)
+	}
+}
