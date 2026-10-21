@@ -726,6 +726,12 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 		h.Set("X-Session-Page", secret)
 		h.Set("Page-Api-Key", secret)
 		h.Set("Cursor-Secret", secret)
+		h.Set("X-Access-Token-Cursor", secret)
+		h.Set("X-Access-Page-Token", secret)
+		h.Set("Ocp-Apim-Subscription-Key", secret)
+		h.Set("X-Access-Key", secret)
+		h.Set("X-Jwt-Assertion", secret)
+		h.Set("X-Bearer", secret)
 		h.Set("x-ms-continuationtoken", "ct-1")
 		h.Set("Next-Page-Token", "np-1")
 		h.Set("X-Next-Page-Token", "np-2")
@@ -761,7 +767,11 @@ func TestHTTPTool_RedactsCredentialBearingResponseHeaders(t *testing.T) {
 		"X-Auth-Token", "X-Api-Key", "X-Api_key", "X-Session-Id", "X-Client-Secret", "X-Credential", "X-Password-Hint",
 		"X-Upstream-Session", "X-Authorization", "X-Authtoken", "X-Authentication-Info",
 		// A pagination word does not lift a credential word beside it.
-		"X-Session-Page", "Page-Api-Key", "Cursor-Secret"} {
+		"X-Session-Page", "Page-Api-Key", "Cursor-Secret",
+		// Only a whole pagination-token name is lifted, never a credential
+		// with a pagination word in it.
+		"X-Access-Token-Cursor", "X-Access-Page-Token",
+		"Ocp-Apim-Subscription-Key", "X-Access-Key", "X-Jwt-Assertion", "X-Bearer"} {
 		if !strings.Contains(res.Text, "\n"+name+": [redacted]\n") {
 			t.Errorf("header %s: want its name kept with a [redacted] value; got:\n%s", name, res.Text)
 		}

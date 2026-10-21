@@ -252,10 +252,11 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 }
 
 // credentialWords are the parts of a response header name that mark a value
-// that may be a credential, besides "token": a minted secret, an API key, a
-// session id, a cookie, an Authorization-style value (matched anywhere in the
-// name, so X-Authorization and X-AuthToken count).
-const credentialWords = `secret|api[-_]?key|session|cookie|credential|password|auth`
+// that may be a credential, besides "token": a minted secret, an API key or
+// any name ending in "key" (Ocp-Apim-Subscription-Key, X-Access-Key), a
+// session id, a cookie, a JWT or bearer, an Authorization-style value
+// (matched anywhere in the name, so X-Authorization and X-AuthToken count).
+const credentialWords = `secret|api[-_]?key|key$|session|cookie|credential|password|jwt|bearer|auth`
 
 var (
 	// credentialHeaderName matches a name whose value is redacted, unless an
@@ -266,9 +267,12 @@ var (
 	// otherCredentialWord is credentialHeaderName without "token": a
 	// pagination name is readable only when "token" is its sole match.
 	otherCredentialWord = regexp.MustCompile(`(?i)(` + credentialWords + `)`)
-	// paginationTokenName is a cursor an agent paging an API needs:
-	// x-ms-continuationtoken, Next-Page-Token, X-Page-Cursor.
-	paginationTokenName = regexp.MustCompile(`(?i)(next[-_]?page[-_]?token|continuation[-_]?token|page[-_]?token|cursor)$`)
+	// paginationTokenName is a whole header name that is a cursor an agent
+	// paging an API needs: x-ms-continuationtoken, Next-Page-Token,
+	// X-Next-Page-Token. Anchored at both ends, so a credential name with a
+	// pagination word in it (X-Access-Page-Token) is not lifted. A cursor
+	// whose name holds no credential word is never redacted to begin with.
+	paginationTokenName = regexp.MustCompile(`(?i)^(x[-_])?(ms[-_])?(next[-_]?)?(page|continuation)[-_]?token$`)
 )
 
 // readableHeaders match the pattern but carry no credential, by exact
