@@ -3046,6 +3046,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if !sessionOwnershipOK(ctx, sess) {
 			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
 		}
+		// A continuation runs its session's agent (RFC ET P1 decision A18).
+		// A caller naming another agent is refused rather than silently run
+		// as the session's — after the ownership check, so the refusal says
+		// nothing about a session the caller may not use.
+		if in.Agent != "" && in.Agent != sess.Agent {
+			return s.sessionAgentMismatch(ctx, in.SessionID, sess.Agent, in.Agent)
+		}
 		// A no-trace session has no transcript to continue from. Refused here,
 		// before any slot or lock, with its own answer; it used to reach the row
 		// creation and come back as an internal error.
@@ -5284,26 +5291,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	// session_id continues the session (RFC ET P1 decision A18, owner
 	// 2026-10-21): the session's history is replayed and it runs the session's
-	// agent and identity. RunOnce takes the session's agent and ignores the
-	// request's, so a request naming another agent is refused here rather than
-	// silently run as the session's — and refused without telling the caller
-	// anything it may not see: a session it may not use (another tenant's,
-	// another user's for an isolated member) is left to RunOnce's opaque 404,
-	// and the session's agent is named only when the token may run it.
-	if req.SessionID != "" {
-		if sess, err := s.store.GetSession(r.Context(), req.SessionID); err == nil && sessionOwnershipOK(r.Context(), sess) && sess.Agent != req.Agent {
-			if err := s.admitPrincipalAgent(r.Context(), req.Agent); err != nil {
-				writeAgentNotAllowed(w, err)
-				return
-			}
-			msg := fmt.Sprintf("session %q does not continue with agent %q: a session continues with its own agent", req.SessionID, req.Agent)
-			if s.admitPrincipalAgent(r.Context(), sess.Agent) == nil {
-				msg = fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", req.SessionID, sess.Agent, req.Agent)
-			}
-			http.Error(w, msg, http.StatusBadRequest)
-			return
-		}
-	}
+	// agent and identity. A request naming another agent is refused by RunOnce
+	// (sessionAgentMismatch), as on every transport.
 	in.RateAdmitted = true
 	// A continued session is held in every replica (as gRPC Continue holds it).
 	in.SessionLockAcrossReplicas = true

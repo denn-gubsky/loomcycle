@@ -140,6 +140,7 @@ func (s *Server) writeRunStartError(w http.ResponseWriter, r *http.Request, err 
 		nt  *noTraceRefusal
 		tl  *tokenLimitError
 		ua  *unknownAgentError
+		sam *sessionAgentMismatchError
 	)
 	switch {
 	case errors.As(err, &dup):
@@ -148,6 +149,8 @@ func (s *Server) writeRunStartError(w http.ResponseWriter, r *http.Request, err 
 		writeNoTraceRefusal(w, nt)
 	case errors.As(err, &tl):
 		writeTokenLimitError(w, tl.info)
+	case errors.As(err, &sam):
+		http.Error(w, sam.msg, http.StatusBadRequest)
 	case errors.Is(err, errContinuationRefused):
 		http.Error(w, "session cannot be continued: "+continuationRefusal(err).Error(), http.StatusBadRequest)
 	case errors.As(err, &ua) && continuation:
@@ -173,6 +176,29 @@ func (s *Server) writeRunStartError(w http.ResponseWriter, r *http.Request, err 
 		// per-run overrides' refusals: what both routes answered them with.
 		writeResolveError(w, err)
 	}
+}
+
+// sessionAgentMismatchError refuses a continuation that names an agent other
+// than its session's. Its text is the refusal, as POST /v1/runs words it; it
+// is an invalid argument to every other transport.
+type sessionAgentMismatchError struct{ msg string }
+
+func (e *sessionAgentMismatchError) Error() string { return e.msg }
+func (e *sessionAgentMismatchError) Unwrap() error { return runner.ErrInvalidArgument }
+
+// sessionAgentMismatch is the refusal of a continuation of session sessionID
+// (whose agent is sessionAgent) that names requested instead. It tells the
+// caller nothing it may not see: an agent its token may not run is refused as
+// any start of it is, and the session's agent is named only when the token
+// may run it.
+func (s *Server) sessionAgentMismatch(ctx context.Context, sessionID, sessionAgent, requested string) error {
+	if err := s.admitPrincipalAgent(ctx, requested); err != nil {
+		return err
+	}
+	if s.admitPrincipalAgent(ctx, sessionAgent) != nil {
+		return &sessionAgentMismatchError{msg: fmt.Sprintf("session %q does not continue with agent %q: a session continues with its own agent", sessionID, requested)}
+	}
+	return &sessionAgentMismatchError{msg: fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", sessionID, sessionAgent, requested)}
 }
 
 // detail is err's text without the sentinel's own leading "<sentinel>: ",
