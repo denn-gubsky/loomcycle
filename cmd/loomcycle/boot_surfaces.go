@@ -62,7 +62,13 @@ func (b *boot) startMCPSurfaces() {
 			// can't drift — the hardcoded "20" went stale once the registry
 			// grew past 40. Same rationale as the CLI help count.
 			log.Printf("mcp: stdio server starting (%d tools registered)", lcmcp.MetaToolCount())
-			if err := mcpSrv.Serve(bgCtx, os.Stdin, os.Stdout); err != nil {
+			// Not cancelled with the background work (RFC ES F1): a run a
+			// tools/call started here runs under the call's ctx, and the
+			// shutdown cancels the background ctx right after it parks the
+			// runs in flight — which would end a parked run cancelled
+			// instead of resumed. The loop ends on stdin's EOF, or with the
+			// process.
+			if err := mcpSrv.Serve(context.WithoutCancel(bgCtx), os.Stdin, os.Stdout); err != nil {
 				log.Printf("mcp: serve ended: %v", err)
 			} else {
 				log.Printf("mcp: stdio closed; HTTP listener continues")

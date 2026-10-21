@@ -367,7 +367,13 @@ func (s *Server) runSubscribedTeam(ctx context.Context, sub teamSubscription) er
 	if err != nil {
 		return err
 	}
-	res, err := s.TeamDef(s.subscriptionCtx(ctx, sub), input)
+	// The walk is not cancelled with the sweep (RFC ES F1): ctx is the
+	// process's background one, which a shutdown cancels right after it parks
+	// the runs in flight, and cancelling the walk then ends its parked members
+	// cancelled after the shutdown counted them paused. The process exit ends
+	// the walk, and the next boot ends its members as it ends any walk's a
+	// restart interrupted.
+	res, err := s.TeamDef(s.subscriptionCtx(context.WithoutCancel(ctx), sub), input)
 	if err != nil {
 		s.subBackoff.record(sub.DefID, err)
 		return err

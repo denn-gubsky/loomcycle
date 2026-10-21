@@ -1327,7 +1327,13 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 			}
 		},
 	}
-	runErr := s.runner.RunOnce(ctx, in, cb)
+	// The run outlives the scheduler's stop, as fireRun's does: a shutdown
+	// parks it for the next boot to resume, and the scheduler's ctx is the
+	// process's background one, cancelled right after that pause — which
+	// would end a parked run cancelled. The pass's budget still ends it.
+	runCtx, endRun := detachFromStop(ctx)
+	defer endRun()
+	runErr := s.runner.RunOnce(runCtx, in, cb)
 	usageMu.Lock()
 	refused := keyRefused
 	usageMu.Unlock()
@@ -1550,5 +1556,22 @@ func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDu
 				s.logf("scheduler: %q reached max_fires=%d — retired def %s", row.Name, def.MaxFires, row.DefID)
 			}
 		}
+	}
+}
+
+// detachFromStop is ctx without the scheduler's stop: it ends when ctx ends
+// for any other reason — a budget running out, with that budget's cause, which
+// the pass reads off its own ctx once the run returns — but not when ctx is
+// cancelled plainly, as the scheduler's is when it stops.
+func detachFromStop(ctx context.Context) (context.Context, context.CancelFunc) {
+	out, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(ctx, func() {
+		if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
+			cancel(cause)
+		}
+	})
+	return out, func() {
+		stop()
+		cancel(nil)
 	}
 }
