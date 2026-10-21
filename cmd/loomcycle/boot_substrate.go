@@ -229,7 +229,7 @@ func (b *boot) wireAuth() {
 		Audit:                  tokenAudit,
 		RotationGraceSeconds:   graceSecs,
 		LegacyTokenSet:         cfg.Env.AuthToken != "",
-		AdminPrincipalDeclared: cfg.AdminPrincipalResolved(),
+		AdminPrincipalDeclared: srv.AdminPrincipalResolved,
 		ConfigTenants:          cfg.PrincipalTenants(),
 	})
 	// RFC L Decision 11: per-replica auth-token resolution cache. Default

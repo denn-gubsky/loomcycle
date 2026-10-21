@@ -65,12 +65,15 @@ type OperatorTokenDef struct {
 	LegacyTokenSet bool
 
 	// AdminPrincipalDeclared reports whether a config principal that can log in
-	// holds substrate:admin (config.AdminPrincipalResolved, captured at boot).
-	// Then retiring the last admin token leaves an admin credential and, since
-	// declared principals keep auth on, no open mode, so execRetire allows it.
-	// A declared principal WITHOUT admin keeps auth on too, but the retire
-	// would leave nobody able to manage tokens, so it stays refused.
-	AdminPrincipalDeclared bool
+	// holds substrate:admin. Then retiring the last admin token leaves an admin
+	// credential and, since declared principals keep auth on, no open mode, so
+	// execRetire allows it. A declared principal WITHOUT admin keeps auth on
+	// too, but the retire would leave nobody able to manage tokens, so it stays
+	// refused. A func read at retire time, not a boot value: a config reload
+	// can drop the admin principal, and a stale "yes" would then let the last
+	// admin token go — leaving no admin, or with no principal left, open mode.
+	// Nil means no admin principal.
+	AdminPrincipalDeclared func() bool
 
 	// ConfigTenants are the tenant ids the config `principals:` block declares
 	// (config.PrincipalTenants, captured at boot like the principals themselves).
@@ -577,7 +580,8 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 	// construction: it mints a replacement admin token for the same principal
 	// before retiring the prior, so the count never reaches zero. An admin
 	// config principal is a standing admin credential, so it lifts the guard.
-	if !s.LegacyTokenSet && !s.AdminPrincipalDeclared && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
+	adminPrincipal := s.AdminPrincipalDeclared != nil && s.AdminPrincipalDeclared()
+	if !s.LegacyTokenSet && !adminPrincipal && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
 		n, cErr := s.Store.OperatorTokenDefCountActiveAdmin(ctx)
 		if cErr != nil {
 			return errResult(fmt.Sprintf("retire: admin-count check: %s", cErr)), nil

@@ -99,7 +99,7 @@ func TestOperatorTokenDef_RetireLastAdmin_AllowedWithLegacyOrNonAdmin(t *testing
 func TestOperatorTokenDef_RetireLastAdmin_AllowedOnlyWithAnAdminPrincipal(t *testing.T) {
 	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	tool.AdminPrincipalDeclared = true
+	tool.AdminPrincipalDeclared = func() bool { return true }
 	mustOp(t, tool, ctx, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
 	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
 		t.Fatalf("with an admin config principal, retiring the last admin token should be allowed; got %s", res.Text)

@@ -28,24 +28,55 @@ func (s *Server) authConfiguredUnder(ctx context.Context, cfg *config.Config) (b
 	return n > 0, nil
 }
 
-// refuseReloadIntoOpenMode refuses a config reload that would move a running
-// server into open mode. Declared principals are part of the open-mode decision
-// (RFC ES F2), so a reload dropping the last one, with no legacy secret and no
-// admin token, would serve every route unauthenticated — on an address the
-// boot check refused to open, and which nothing checks again.
-func (s *Server) refuseReloadIntoOpenMode(ctx context.Context, candidate *config.Config) error {
+// AdminPrincipalResolved reports whether the CURRENT config declares a
+// substrate:admin principal that can log in. The token tool's last-admin retire
+// guard reads it at retire time, so a reload that dropped the principal is seen.
+func (s *Server) AdminPrincipalResolved() bool {
+	return s.cfg().AdminPrincipalResolved()
+}
+
+// refuseReloadLosingAuth refuses a config reload that would take away what the
+// running server authenticates with:
+//
+//   - open mode. Declared principals are part of the open-mode decision (RFC
+//     ES F2), so a reload dropping the last one, with no legacy secret and no
+//     admin token, would serve every route unauthenticated — on an address
+//     the boot check refused to open, and which nothing checks again.
+//   - the last admin credential. An admin principal lets the last admin token
+//     be retired, so a reload dropping that principal afterwards would leave
+//     nobody able to manage tokens.
+func (s *Server) refuseReloadLosingAuth(ctx context.Context, candidate *config.Config) error {
 	cur := s.cfg()
-	if cur.Env.AuthToken == "" && !cur.DeclaresPrincipals() {
-		return nil // the config was not what kept auth on
+	if cur.Env.AuthToken != "" || cur.DeclaresPrincipals() {
+		on, err := s.authConfiguredUnder(ctx, candidate)
+		if err != nil {
+			return fmt.Errorf("cannot tell whether the new config leaves authentication on: %w", err)
+		}
+		if !on {
+			return errors.New("the new config would put the server in open mode: it declares no principals " +
+				"and sets no LOOMCYCLE_AUTH_TOKEN, and the store holds no admin operator token; keep a principal, " +
+				"or restart to change how the server authenticates")
+		}
 	}
-	on, err := s.authConfiguredUnder(ctx, candidate)
-	if err != nil {
-		return fmt.Errorf("cannot tell whether the new config leaves authentication on: %w", err)
-	}
-	if !on {
-		return errors.New("the new config would put the server in open mode: it declares no principals " +
-			"and sets no LOOMCYCLE_AUTH_TOKEN, and the store holds no admin operator token; keep a principal, " +
-			"or restart to change how the server authenticates")
+	if configAdmin(cur) && !configAdmin(candidate) {
+		n := 0
+		if s.store != nil {
+			var err error
+			if n, err = s.store.OperatorTokenDefCountActiveAdmin(ctx); err != nil {
+				return fmt.Errorf("cannot tell whether the new config leaves an admin credential: %w", err)
+			}
+		}
+		if n == 0 {
+			return errors.New("the new config would leave no admin credential: it drops the last substrate:admin " +
+				"principal, sets no LOOMCYCLE_AUTH_TOKEN, and the store holds no admin operator token; keep the admin " +
+				"principal, or mint an admin token first")
+		}
 	}
 	return nil
+}
+
+// configAdmin reports whether the config itself gives the server an admin
+// credential: the legacy secret, or an admin principal that can log in.
+func configAdmin(c *config.Config) bool {
+	return c.Env.AuthToken != "" || c.AdminPrincipalResolved()
 }
