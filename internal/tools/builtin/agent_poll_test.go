@@ -508,6 +508,11 @@ func TestAgentPoll_EachChildHoldsItsRunTreeUntilItHasEnded(t *testing.T) {
 		held[root]++
 		mu.Unlock()
 		return func() {
+			// Count and record under one lock: two children release
+			// concurrently, and a count taken before the lock could be
+			// appended after a later one, reading as an out-of-order release.
+			mu.Lock()
+			defer mu.Unlock()
 			views, _ := bg.Select(nil, "")
 			ended := 0
 			for _, v := range views {
@@ -515,10 +520,8 @@ func TestAgentPoll_EachChildHoldsItsRunTreeUntilItHasEnded(t *testing.T) {
 					ended++
 				}
 			}
-			mu.Lock()
 			held[root]--
 			releasedAfterEnds = append(releasedAfterEnds, ended)
-			mu.Unlock()
 		}
 	}
 	heldOn := func(root string) int {
