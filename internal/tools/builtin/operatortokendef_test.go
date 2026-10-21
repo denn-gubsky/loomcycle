@@ -70,6 +70,30 @@ func TestOperatorTokenDef_RetireLastAdmin_RefusedWhenNoLegacyFallback(t *testing
 	}
 }
 
+// An admin-scoped row that cannot authenticate under the configured pepper
+// (here a derived-pepper form while an explicit pepper is set) is not an admin
+// token the operator still has: it must not let the last usable one be
+// retired.
+func TestOperatorTokenDef_RetireLastAdmin_UnusableAdminRowDoesNotCount(t *testing.T) {
+	tool, ctx, s, cleanup := operatorTokenDefFixture(t) // explicit pepper, LegacyTokenSet=false
+	defer cleanup()
+	mustOp(t, tool, ctx, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+	if _, err := s.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_tagged", Name: "tagged", TenantID: "acme", Subject: "tagged",
+		TokenHash:     auth.NewTokenHasher("", "some-derived-pepper", "").Hash("lct_x"),
+		AllowedScopes: []string{auth.ScopeAdmin},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"ops"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "last admin-scoped token") {
+		t.Fatalf("retiring the last usable admin token was allowed: is_error=%v text=%q", res.IsError, res.Text)
+	}
+}
+
 // A non-admin token is never the fail-open concern, so it can always be
 // retired even as the only token; and with a legacy fallback the last-admin
 // retire is permitted (it merely re-enables the legacy secret).

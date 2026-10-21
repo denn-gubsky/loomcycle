@@ -518,6 +518,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
 		{"OperatorTokenRehashIsACompareAndSet", testOperatorTokenRehashIsACompareAndSet},
 		{"OperatorTokenRehashAllIsAllOrNothing", testOperatorTokenRehashAllIsAllOrNothing},
+		{"OperatorTokenDefCountActiveAdminMatching", testOperatorTokenDefCountActiveAdminMatching},
 		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
 		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
 		{"OperatorTokenDefDeleteExpiredKeepsEachTenant", testOperatorTokenDefDeleteExpiredKeepsEachTenant},
@@ -13968,6 +13969,48 @@ func testOperatorTokenRehashAllIsAllOrNothing(t *testing.T, s store.Store) {
 	}
 	if n, err := s.OperatorTokenRehashAll(ctx, nil); err != nil || n != 0 {
 		t.Errorf("empty batch = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+// The admin count can be narrowed to the hash forms that still authenticate
+// (RFC ES F3): an include list of prefixes, an exclude list, matched
+// literally (a prefix holding a LIKE wildcard must not widen the match).
+func testOperatorTokenDefCountActiveAdminMatching(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, r := range []store.OperatorTokenDefRow{
+		mkOperatorTokenDef("ot-m-p1", "m1", "acme", "m1", "p1:aaaa:111", []string{"substrate:admin"}),
+		mkOperatorTokenDef("ot-m-w1", "m2", "acme", "m2", "w1:aaaa:222", []string{"substrate:admin"}),
+		mkOperatorTokenDef("ot-m-other", "m3", "acme", "m3", "p1:bbbb:333", []string{"substrate:admin"}),
+		mkOperatorTokenDef("ot-m-bare", "m4", "acme", "m4", "c0ffee", []string{"substrate:admin"}),
+		mkOperatorTokenDef("ot-m-pct", "m5", "acme", "m5", "p1Xaaaa:444", []string{"substrate:admin"}),
+		mkOperatorTokenDef("ot-m-narrow", "m6", "acme", "m6", "p1:aaaa:555", []string{"runs:create"}),
+	} {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	if err := s.OperatorTokenDefSetRetiredAt(ctx, "ot-m-w1", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		m    store.TokenHashMatch
+		want int
+	}{
+		{"everything", store.TokenHashMatch{}, 5},
+		{"current key's forms", store.TokenHashMatch{Prefixes: []string{"p1:aaaa:", "w1:aaaa:"}}, 2},
+		{"untagged only", store.TokenHashMatch{ExcludePrefixes: []string{"p1:", "w1:"}}, 2},
+		{"literal, not a pattern", store.TokenHashMatch{Prefixes: []string{"p1_aaaa:"}}, 0},
+	} {
+		if n, err := s.OperatorTokenDefCountActiveAdminMatching(ctx, tc.m); err != nil || n != tc.want {
+			t.Errorf("%s: count = (%d, %v), want %d", tc.name, n, err, tc.want)
+		}
+	}
+	if err := s.OperatorTokenDefSetRetiredAt(ctx, "ot-m-p1", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.OperatorTokenDefCountActiveAdminMatching(ctx, store.TokenHashMatch{Prefixes: []string{"p1:aaaa:"}}); n != 0 {
+		t.Errorf("a retired admin row counted: %d", n)
 	}
 }
 

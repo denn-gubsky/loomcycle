@@ -302,3 +302,53 @@ func TestTokenBoot_RowWrittenIntoAnEmptyTableAfterTheFirstBootIsNotRewrapped(t *
 		t.Errorf("a row written after the first boot authenticated as %+v", p)
 	}
 }
+
+func seedAdminTokenHash(t *testing.T, st store.Store, defID, hash string) {
+	t.Helper()
+	if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+		DefID: defID, Name: defID, TenantID: "default", Subject: defID,
+		TokenHash: hash, AllowedScopes: []string{auth.ScopeAdmin},
+	}); err != nil {
+		t.Fatalf("seed %s: %v", defID, err)
+	}
+}
+
+// An admin-scoped row that cannot authenticate — refused as unpeppered, or
+// under a key neither configured key derives — must not switch the shared
+// secret off: that would lock a deployment whose only admin token it was out
+// of admin altogether, and let a database writer do the same on purpose.
+func TestLegacyFallback_UnusableAdminRowsLeaveTheSharedSecretWorking(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1), AuthToken: "legacy-shared-secret"}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_cur", hasherFor(t, env).Hash("lct_cur"))
+	seedAdminTokenHash(t, st, "def_bare_admin", auth.HashToken("", "lct_bare"))
+	seedAdminTokenHash(t, st, "def_gone_admin", hasherFor(t, config.Env{SecretKey: pepperKey(3)}).Hash("lct_gone"))
+	bootTokenHashes(t, s)
+
+	if p, ok := s.resolvePrincipal(context.Background(), "legacy-shared-secret"); !ok || !p.Legacy {
+		t.Fatalf("an admin row that cannot authenticate disabled LOOMCYCLE_AUTH_TOKEN: ok=%v", ok)
+	}
+}
+
+// The other side: an admin row that CAN authenticate — wrapped, or under the
+// previous key — still switches the shared secret off.
+func TestLegacyFallback_UsableAdminRowsDisableTheSharedSecret(t *testing.T) {
+	for name, seed := range map[string]func(*testing.T, store.Store){
+		"wrapped": func(t *testing.T, st store.Store) {
+			seedAdminTokenHash(t, st, "def_admin", auth.HashToken("", "lct_admin"))
+		},
+		"previous key": func(t *testing.T, st store.Store) {
+			seedAdminTokenHash(t, st, "def_admin", hasherFor(t, config.Env{SecretKey: pepperKey(1)}).Hash("lct_admin"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := config.Env{SecretKey: pepperKey(2), SecretKeyPrevious: pepperKey(1), AuthToken: "legacy-shared-secret"}
+			s, st := derivedPepperServer(t, env)
+			seed(t, st)
+			bootTokenHashes(t, s)
+			if _, ok := s.resolvePrincipal(context.Background(), "legacy-shared-secret"); ok {
+				t.Error("a usable admin token left LOOMCYCLE_AUTH_TOKEN enabled")
+			}
+		})
+	}
+}

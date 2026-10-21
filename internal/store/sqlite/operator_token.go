@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -318,6 +319,36 @@ func (s *Store) OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, erro
 		WHERE (retired_at IS NULL OR retired_at > ?)
 		  AND (expires_at IS NULL OR expires_at > ?)
 		  AND allowed_scopes LIKE '%"substrate:admin"%'`, now, now).Scan(&n)
+	return n, err
+}
+
+func (s *Store) OperatorTokenDefCountActiveAdminMatching(ctx context.Context, m store.TokenHashMatch) (int, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	now := time.Now().UnixNano()
+	q := `SELECT COUNT(*) FROM operator_token_defs
+		WHERE (retired_at IS NULL OR retired_at > ?)
+		  AND (expires_at IS NULL OR expires_at > ?)
+		  AND allowed_scopes LIKE '%"substrate:admin"%'`
+	args := []any{now, now}
+	// substr, not LIKE: a prefix is matched literally, whatever it contains.
+	if len(m.Prefixes) > 0 {
+		var ors []string
+		for _, p := range m.Prefixes {
+			ors = append(ors, `substr(token_hash, 1, ?) = ?`)
+			args = append(args, len(p), p)
+		}
+		q += ` AND (` + strings.Join(ors, ` OR `) + `)`
+	}
+	for _, p := range m.ExcludePrefixes {
+		q += ` AND substr(token_hash, 1, ?) <> ?`
+		args = append(args, len(p), p)
+	}
+	var n int
+	err = conn.QueryRowContext(ctx, q, args...).Scan(&n)
 	return n, err
 }
 

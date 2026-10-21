@@ -183,6 +183,26 @@ func (h TokenHasher) PreviousHashes(token string) []string {
 	return []string{h.prev.hash(token), h.prev.wrap(HashToken("", token))}
 }
 
+// UsablePrefixes describes, as prefixes, the stored hashes a lookup through
+// this hasher can match: under a derived pepper, either tagged form under the
+// current or previous key (include); otherwise any untagged hash (exclude
+// the tagged forms). A stored hash outside them cannot authenticate.
+func (h TokenHasher) UsablePrefixes() (include, exclude []string) {
+	if !h.derived() {
+		return nil, []string{currentTagVersion + ":", wrappedTagVersion + ":"}
+	}
+	keys := []derivedKey{h.cur}
+	if h.HasPrevious() {
+		keys = append(keys, h.prev)
+	}
+	for _, k := range keys {
+		for _, v := range []string{currentTagVersion, wrappedTagVersion} {
+			include = append(include, v+":"+k.fp+":")
+		}
+	}
+	return include, nil
+}
+
 // Form reports what a stored hash is, read against this hasher.
 func (h TokenHasher) Form(stored string) TokenHashForm {
 	switch {

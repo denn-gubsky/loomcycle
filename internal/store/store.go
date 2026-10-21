@@ -4348,6 +4348,14 @@ type OperatorTokenStore interface {
 	// (not retired, not expired) whose allowed_scopes include
 	// "substrate:admin" (the no-lockout guard).
 	OperatorTokenDefCountActiveAdmin(ctx context.Context) (int, error)
+	// OperatorTokenDefCountActiveAdminMatching is OperatorTokenDefCountActiveAdmin
+	// restricted to rows whose token_hash m matches: the admin tokens that can
+	// still authenticate under the configured pepper. The shared-secret
+	// fallback and the last-admin retire guard use it, so a row no lookup can
+	// reach (a refused unpeppered hash, a hash under a key no longer
+	// configured) neither switches LOOMCYCLE_AUTH_TOKEN off nor stands in for
+	// a usable admin token (RFC ES F3).
+	OperatorTokenDefCountActiveAdminMatching(ctx context.Context, m TokenHashMatch) (int, error)
 	// OperatorTokenDefDeleteExpired removes rows whose expires_at is before
 	// `before`, and returns how many went. A row that never had an expiry is
 	// never touched, however long ago it was retired, and the last row naming
@@ -6484,6 +6492,14 @@ type OperatorTokenDefNameSummary struct {
 	TokenCount  int       `json:"token_count"`  // including rotated/retired history
 	HasCurrent  bool      `json:"has_current"`  // a non-retired token exists
 	LastUpdated time.Time `json:"last_updated"` // newest created_at for the name
+}
+
+// TokenHashMatch selects stored token_hash values by prefix: a hash matches
+// when it starts with one of Prefixes (any hash, when Prefixes is empty) and
+// with none of ExcludePrefixes.
+type TokenHashMatch struct {
+	Prefixes        []string
+	ExcludePrefixes []string
 }
 
 // OperatorTokenRehashOp is one compare-and-set of OperatorTokenRehashAll:
