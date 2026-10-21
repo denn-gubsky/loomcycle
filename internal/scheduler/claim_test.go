@@ -52,6 +52,8 @@ func TestScheduler_TwoReplicasFireEachSlotOnce(t *testing.T) {
 	fr := &fakeRunner{onRun: func(runner.RunInput) { time.Sleep(50 * time.Millisecond) }}
 	a := New(Config{TickInterval: time.Hour, MaxConcurrentFires: slots, ReplicaID: "replica-a"}, st, fr, nil, nil, t.Logf)
 	b := New(Config{TickInterval: time.Hour, MaxConcurrentFires: slots, ReplicaID: "replica-b"}, st, fr, nil, nil, t.Logf)
+	waitFiresOnCleanup(t, a)
+	waitFiresOnCleanup(t, b)
 
 	var wg sync.WaitGroup
 	for _, s := range []*Scheduler{a, b} {
