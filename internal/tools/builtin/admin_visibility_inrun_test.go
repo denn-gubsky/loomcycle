@@ -231,3 +231,26 @@ func TestTeamDefRenderDiagram_ARunReadsItsOwnAndTheSharedTierByDefID(t *testing.
 		t.Errorf("render of another tenant's team = %s, want not found", res.Text)
 	}
 }
+
+// Context op=self reports the token's admin scope, but inside a run that scope
+// is not the agent's to use; admin_in_run:false says so, so a meta-agent does
+// not plan cross-tenant work it will be refused. Off-run it is absent.
+func TestContextSelf_AnAdminPrincipalInARunReportsAdminInRunFalse(t *testing.T) {
+	tool := &Context{}
+	admin := adminOf(asTenant(context.Background(), "acme"), "acme")
+	principalOf := func(ctx context.Context) map[string]any {
+		t.Helper()
+		res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+		if res.IsError {
+			t.Fatalf("self: %s", res.Text)
+		}
+		p, _ := decodeResult(t, res.Text)["principal"].(map[string]any)
+		return p
+	}
+	if p := principalOf(inAdminRun(admin)); p["is_admin"] != true || p["admin_in_run"] != false {
+		t.Errorf("in-run admin principal = %v, want is_admin:true and admin_in_run:false", p)
+	}
+	if _, present := principalOf(admin)["admin_in_run"]; present {
+		t.Error("an off-run call reports admin_in_run")
+	}
+}

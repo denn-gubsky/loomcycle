@@ -581,6 +581,12 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		if !p.Restrictions.IsZero() {
 			principal["restrictions"] = p.Restrictions
 		}
+		// The token may be an admin's, but inside a run its admin reach is
+		// not the agent's (defCallerIsAdmin, callerHasOperatorAuthority): say
+		// so, or a meta-agent plans cross-tenant work it will be refused.
+		if principal["is_admin"] == true && tools.RunID(ctx) != "" {
+			principal["admin_in_run"] = false
+		}
 		out["principal"] = principal
 	}
 	// loomcycle: which BUILD is running. An agent (or an MCP client deciding
