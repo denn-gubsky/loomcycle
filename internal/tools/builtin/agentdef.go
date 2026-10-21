@@ -181,7 +181,16 @@ func (a *AgentDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 // sees only its own tenant. Without this, an admin viewing the library got
 // empty bodies for every def outside its own principal tenant (notably the
 // shared "" tenant where bootstrapped/legacy defs live).
+//
+// Off-run only (RFC ES #15). A run started with an admin token carries that
+// principal into its model's tool calls, and AgentDef, SkillDef, TeamDef,
+// Evaluation and Context are agent tools: without this a prompt-injected run
+// could read, retire, promote or fork any tenant's definitions. Inside a run
+// an admin principal sees and acts on its own tenant only, like any caller.
 func defCallerIsAdmin(ctx context.Context) bool {
+	if tools.RunID(ctx) != "" {
+		return false
+	}
 	p, ok := auth.PrincipalFromContext(ctx)
 	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
 }
