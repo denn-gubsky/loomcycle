@@ -327,6 +327,17 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 	return nil
 }
 
+// defRowReadable reports whether the caller may READ a definition owned by
+// rowTenant — get / list, and a TeamDef's run or render by def_id: its own
+// tenant's, the shared ("") tier, or any tenant's for an off-run admin. The
+// shared tier is what lookup already resolves for every tenant's runs and what
+// fork accepts as a parent, so reading it shows nothing a run could not use.
+// Writing it (retire, promote) stays the owner's: those guards compare the
+// tenant strictly.
+func defRowReadable(ctx context.Context, rowTenant string) bool {
+	return rowTenant == "" || rowTenant == tools.RunIdentity(ctx).TenantID || defCallerIsAdmin(ctx)
+}
+
 // forkParentVisible reports whether a caller in callerTenant may fork a
 // parent_def_id owned by rowTenant: its own tenant's, the shared ("") base, or
 // any tenant's for a substrate:admin. A def_id is a global handle, so a fork
@@ -737,7 +748,7 @@ func (a *AgentDef) execGet(ctx context.Context, policy tools.AgentDefPolicyValue
 	// in tenant T cannot read another tenant's def. Return the SAME opaque
 	// not-found a missing def returns — never leak existence/body of a
 	// cross-tenant row.
-	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defRowReadable(ctx, row.TenantID) {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
@@ -758,12 +769,11 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
 	// RFC N: AgentDefListByName returns rows across ALL tenants for a
-	// name (names are per-tenant now). Filter to the caller's own tenant
-	// so a tenant lists only its own versions.
-	tenantID := tools.RunIdentity(ctx).TenantID
+	// name (names are per-tenant now). Filter to what the caller may read:
+	// its own tenant's versions and the shared tier's (defRowReadable).
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
 		out = append(out, rowResponseMap(r))

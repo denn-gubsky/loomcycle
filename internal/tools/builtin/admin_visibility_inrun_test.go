@@ -161,3 +161,73 @@ func TestContextTool_InRunAdminLineageOfAnotherTenantsDefIsNotFound(t *testing.T
 		t.Errorf("off-run admin lineage: %s", res.Text)
 	}
 }
+
+// Inside a run an admin principal is a tenant caller, and every tenant caller
+// gets the same two tiers: read and write on its own tenant's definitions, and
+// READ-ONLY access to the shared "" tier — the tier lookup already serves to
+// every tenant's runs, and the one fork already accepts as a parent. Retire and
+// promote of a shared row stay refused (as not found).
+func TestDefTools_ARunActsOnItsOwnTenantAndReadsTheSharedTier(t *testing.T) {
+	callers := map[string]func(base context.Context) context.Context{
+		"admin run": func(base context.Context) context.Context {
+			return inAdminRun(adminOf(asTenant(base, "acme"), "acme"))
+		},
+		"tenant run": func(base context.Context) context.Context {
+			ctx := auth.WithPrincipal(asTenant(base, "acme"), auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant}})
+			return tools.WithRunID(ctx, "r_tenant")
+		},
+	}
+	for _, k := range forkKinds()[:3] { // AgentDef, SkillDef, TeamDef
+		for who, caller := range callers {
+			t.Run(k.kind+" "+who, func(t *testing.T) {
+				tool, base, done := k.fixture(t)
+				defer done()
+				sharedID := createDefFor(t, tool, asTenant(base, ""), "shared-one", k.create)
+				ownID := createDefFor(t, tool, asTenant(base, "acme"), "own-one", k.create)
+				run := caller(base)
+
+				ok := func(label, in, mustContain string) {
+					t.Helper()
+					res := execDef(t, tool, run, in)
+					if res.IsError || !strings.Contains(res.Text, mustContain) {
+						t.Errorf("%s = %s, want success naming %s", label, res.Text, mustContain)
+					}
+				}
+				refused := func(label, in string) {
+					t.Helper()
+					if res := execDef(t, tool, run, in); !res.IsError || !strings.Contains(res.Text, "not found") {
+						t.Errorf("%s = %s, want not found", label, res.Text)
+					}
+				}
+				ok("own get", `{"op":"get","def_id":"`+ownID+`"}`, ownID)
+				ok("own list", `{"op":"list","name":"own-one"}`, ownID)
+				ok("own retire", `{"op":"retire","def_id":"`+ownID+`","retired":false}`, ownID)
+				ok("own promote", `{"op":"promote","def_id":"`+ownID+`"}`, ownID)
+				ok("shared get", `{"op":"get","def_id":"`+sharedID+`"}`, sharedID)
+				ok("shared list", `{"op":"list","name":"shared-one"}`, sharedID)
+				ok("shared fork", forkInput("shared-one", sharedID, k.fork), "shared-one")
+				refused("shared retire", `{"op":"retire","def_id":"`+sharedID+`","retired":true}`)
+				refused("shared promote", `{"op":"promote","def_id":"`+sharedID+`"}`)
+				if defRetired(t, tool, sharedID) {
+					t.Error("a run retired a shared definition")
+				}
+			})
+		}
+	}
+}
+
+// TeamDef render_diagram by def_id reads like get: the caller's own tenant and
+// the shared tier, never another tenant's.
+func TestTeamDefRenderDiagram_ARunReadsItsOwnAndTheSharedTierByDefID(t *testing.T) {
+	tool, base, done := teamDefFixture(t)
+	defer done()
+	sharedID := createDefFor(t, tool, asTenant(base, ""), "shared-team", validTeamGraph)
+	globexID := createDefFor(t, tool, asTenant(base, "globex"), "globex-team", validTeamGraph)
+	run := inAdminRun(adminOf(asTenant(base, "acme"), "acme"))
+	if res := execDef(t, tool, run, `{"op":"render_diagram","def_id":"`+sharedID+`"}`); res.IsError {
+		t.Errorf("render of a shared team = %s", res.Text)
+	}
+	if res := execDef(t, tool, run, `{"op":"render_diagram","def_id":"`+globexID+`"}`); !res.IsError || !strings.Contains(res.Text, "not found") {
+		t.Errorf("render of another tenant's team = %s, want not found", res.Text)
+	}
+}
