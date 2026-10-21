@@ -71,6 +71,14 @@ func (b *boot) buildServer() {
 	// Context tool to the COMPLETE post-append catalog, so don't set it here.
 	b.srv = lchttp.New(cfg, pr, b.allTools, sem, storeIface)
 	srv := b.srv
+	// RFC ES #8: open mode on a listener beyond loopback serves every route to
+	// the network. Decided here — the store is open, so an admin token counts —
+	// with the server's own predicate, before the listeners start.
+	bootAuthConfigured, bootAuthErr := srv.AuthConfiguredErr(context.Background())
+	if err := openModeRefusal(bootAuthConfigured, bootAuthErr, &cfg.Env); err != nil {
+		log.Fatalf("auth: %v", err)
+	}
+	b.bootAuthConfigured = bootAuthConfigured
 	// The providers' call lanes (providers.<id>.max_concurrent / lanes). The
 	// registry already gates every provider with this scheduler; the server
 	// gets the same instance to report it and to reload it.
@@ -479,10 +487,6 @@ func (b *boot) buildHTTPServer() {
 		// only fires between requests on a keep-alive connection, so it's
 		// SSE-safe.
 		IdleTimeout: 120 * time.Second,
-	}
-
-	if cfg.Env.AuthToken == "" {
-		log.Printf("WARNING: LOOMCYCLE_AUTH_TOKEN is not set; /v1 routes are unauthenticated (dev mode)")
 	}
 
 	b.httpServer = httpServer
