@@ -536,12 +536,6 @@ type RunCallbacks struct {
 	// a run that is not detached, before the run is recorded finished. The
 	// error is not recorded; an SSE caller sends it as its stream's last frame.
 	OnRunError func(error)
-	// Attach, when set, streams a Detached run to its caller in the caller's
-	// own way once it is running: RunOnce calls it in place of forwarding
-	// the run's events until it ends, and returns when Attach does. Events
-	// still reach OnEvent (the caller filters them). POST /v1/runs tails the
-	// run's stored events.
-	Attach func(runID string)
 }
 
 // DuplicateRunError is what RunOnce returns when RunInput.ClientIdempotencyKey

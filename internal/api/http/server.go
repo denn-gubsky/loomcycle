@@ -3850,9 +3850,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			},
 		})
 		switch {
-		case cb.Attach != nil:
-			// The caller streams the run its own way.
-			cb.Attach(runID)
 		case in.HoldUntilEnd:
 			// Wait for the end even if the caller leaves: the session lock and
 			// the slot this call holds are the run's until then.
@@ -5252,23 +5249,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// its connection, so neither stops when the caller leaves.
 	in.Detached = req.Interactive || req.Review
 
+	// A detached run is forwarded live while its caller stays (RFC ET P1
+	// decision D1, owner 2026-10-21); a caller that comes back re-attaches
+	// through GET /v1/runs/{run_id}/stream, which replays the stored events.
 	rs := &runStartStream{s: s, w: w, r: r, parent: connector.StripRuntimeParentContext(req.ParentContext)}
-	if in.Detached && s.store != nil {
-		// ET-P1 decision: D1 — a detached run is streamed by tailing its stored
-		// events from the first (a re-attach reads the same), not forwarded
-		// live; only its queue events, sent while it waits, go out live.
-		rs.liveQueueOnly = true
-		rs.attach = func(runID string) {
-			// The SSE writer never errors, so the visitor always returns nil.
-			_ = s.streamRunEvents(r.Context(), runID, 0, func(pe providers.Event) error {
-				if rs.queued && (pe.Type == providers.EventQueued || pe.Type == providers.EventAdmitted) {
-					return nil
-				}
-				rs.stream.send(pe)
-				return nil
-			})
-		}
-	}
 	rs.run(in, func(err error) { s.writeRunStartError(w, r, err, false) })
 }
 

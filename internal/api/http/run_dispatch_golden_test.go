@@ -375,16 +375,6 @@ func newGoldenTranscript() *goldenTranscript {
 // add records a finished response under a label naming its role in the case.
 func (tr *goldenTranscript) add(t *testing.T, label string, r *goldenResp) {
 	t.Helper()
-	tr.addCut(t, label, r, "")
-}
-
-// addCut is add for a stream whose frames after the last one named cutAfter
-// are not recorded. A run that outlives its request is streamed by tailing
-// the store, and the tail can stop on the run's terminal status before it
-// relays the events written just before it (streamRunEvents reads the events,
-// then the status), so whether the last frames arrive is a race.
-func (tr *goldenTranscript) addCut(t *testing.T, label string, r *goldenResp, cutAfter string) {
-	t.Helper()
 	r.drain(t)
 	fmt.Fprintf(&tr.b, "== %s: %s %s\n", label, r.method, tr.m.text(r.path))
 	fmt.Fprintf(&tr.b, "status: %d\n", r.status)
@@ -400,18 +390,6 @@ func (tr *goldenTranscript) addCut(t *testing.T, label string, r *goldenResp, cu
 	r.mu.Lock()
 	frames := append([]goldenFrame(nil), r.frames...)
 	r.mu.Unlock()
-	if cutAfter != "" {
-		last := -1
-		for i, f := range frames {
-			if f.event == cutAfter {
-				last = i
-			}
-		}
-		if last < 0 {
-			t.Fatalf("%s: no %q frame to cut after", label, cutAfter)
-		}
-		frames = frames[:last+1]
-	}
 	runID, dedup := "", false
 	for _, f := range frames {
 		fmt.Fprintf(&tr.b, "event: %s %s\n", f.event, tr.m.data(f.data))
@@ -423,9 +401,6 @@ func (tr *goldenTranscript) addCut(t *testing.T, label string, r *goldenResp, cu
 			_ = json.Unmarshal([]byte(f.data), &a)
 			runID, dedup = a.RunID, a.Deduplicated
 		}
-	}
-	if cutAfter != "" {
-		fmt.Fprintf(&tr.b, "(frames after the last %s not recorded)\n", cutAfter)
 	}
 	if runID != "" && !dedup && tr.st != nil {
 		tr.addStored(t, runID)
@@ -659,8 +634,7 @@ func TestRunDispatchGolden(t *testing.T) {
 			in := g.post("/v1/runs/"+runID+"/input", `{"text":"keep going"}`)
 			r.until(t, "awaiting_input", 2)
 			cancel := g.post("/v1/agents/"+agentID+"/cancel", "")
-			// A store tail: what follows the last park races the run's end.
-			tr.addCut(t, "run", r, "awaiting_input")
+			tr.add(t, "run", r)
 			tr.add(t, "input", in)
 			tr.add(t, "cancel", cancel)
 		},
@@ -671,7 +645,7 @@ func TestRunDispatchGolden(t *testing.T) {
 			_, runID, _ := r.ids(t)
 			r.until(t, "awaiting_review", 1)
 			v := g.post("/v1/runs/"+runID+"/review", `{"decision":"approve"}`)
-			tr.addCut(t, "run", r, "awaiting_review")
+			tr.add(t, "run", r)
 			tr.add(t, "verdict", v)
 		},
 		"runs_queued": func(t *testing.T, tr *goldenTranscript) {

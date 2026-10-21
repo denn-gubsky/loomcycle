@@ -58,13 +58,6 @@ type runStartStream struct {
 	r      *http.Request
 	parent *store.ParentContext // echoed on the agent frame
 	stream *sse
-	queued bool
-	// liveQueueOnly: the run is streamed by tailing the store (POST /v1/runs,
-	// detached), so only the queue's own events — sent while it waits, before
-	// it runs — go out live; the tail carries the rest.
-	liveQueueOnly bool
-	// attach, when set, is how a detached run is streamed (RunCallbacks.Attach).
-	attach func(runID string)
 }
 
 // run starts in through RunOnce and answers the request: with the run's
@@ -77,7 +70,6 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 		}
 	}()
 	cb := runner.RunCallbacks{
-		OnQueued: func() { rs.queued = true },
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
 			st, ok := newSSE(rs.w)
 			if !ok {
@@ -101,13 +93,9 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 			})
 		},
 		OnEvent: func(ev providers.Event) {
-			if rs.stream == nil {
-				return
+			if rs.stream != nil {
+				rs.stream.send(ev)
 			}
-			if rs.liveQueueOnly && ev.Type != providers.EventQueued && ev.Type != providers.EventAdmitted {
-				return
-			}
-			rs.stream.send(ev)
 		},
 		// The loop's failure, as the stream's last frame. Not recorded: the
 		// loop recorded its own error event.
@@ -116,9 +104,6 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 				rs.stream.send(runErrorEvent(err))
 			}
 		},
-	}
-	if rs.attach != nil {
-		cb.Attach = rs.attach
 	}
 	err := rs.s.RunOnce(rs.r.Context(), in, cb)
 	switch {

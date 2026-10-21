@@ -3,12 +3,11 @@ status: 200
 content-type: text/event-stream
 event: session {"text":"<id:1>","type":"session"}
 event: agent {"agent_id":"<id:2>","parent_agent_id":null,"parent_context":null,"run_id":"<id:3>","session_id":"<id:1>"}
-event: steer {"type":"steer","user_input":{"source":"replay","text":"write it"}}
 event: started {"type":"started"}
 event: text {"text":"hello","type":"text"}
 event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
 event: awaiting_review {"awaiting_review":{"round":1,"since_turn":0},"type":"awaiting_review"}
-(frames after the last awaiting_review not recorded)
+event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub"}}
 stored row: {"agent":"plain","agent_id":"<id:2>","credential_source":"operator","id":"<id:3>","input_tokens":3,"output_tokens":2,"pause_state":"running","provider":"stub","result":{"final_text":"hello"},"run_config":{"agent_version":{"static":true},"iteration_limit":16,"review":true},"session_id":"<id:1>","status":"completed","stop_reason":"end_turn"}
 stored event: user_input [{"content":[{"text":"write it","type":"trusted-text"}],"role":"user"}]
 stored event: system_prompt {"system_prompt":"be brief"}

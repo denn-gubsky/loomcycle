@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { dropEchoedSteer } from "../lib/operatorEcho";
 import {
   cancelAgent,
   compactRun,
@@ -108,10 +109,10 @@ export function useRunStream(): UseRunStream {
   // stale-closure race (the click happens after the `agent` frame set it).
   const runIdRef = useRef("");
   // echoedRef holds operator-turn texts this client already rendered
-  // optimistically (the opening prompt + each steer/continue). RFC AI made the
-  // re-attach stream self-sufficient — the server now replays operator turns as
-  // `steer` frames (source="replay") — so a same-session client must de-dupe
-  // those replays against its own echoes to avoid double-rendering. A COLD
+  // optimistically (the opening prompt + each steer/continue). The server sends
+  // its own copy of each — a live `steer` frame (source="api") as a running run
+  // drains it, or a replay (source="replay") on a re-attach — which is dropped
+  // against these echoes so nothing renders twice (dropEchoedSteer). A COLD
   // re-attach (another device) has an empty echoedRef, so every replay renders.
   const echoedRef = useRef<string[]>([]);
 
@@ -143,19 +144,10 @@ export function useRunStream(): UseRunStream {
       return;
     }
     const ev = parsed as unknown as EventPayload;
-    // De-dupe a replayed operator turn against our own optimistic echo: a
-    // `steer` frame with source="replay" that matches a text we already
-    // rendered is dropped (and consumed from the queue, so a genuine repeat
-    // later still shows). A cold re-attach never echoed, so its queue is empty
-    // and replays render normally. (RFC AI self-sufficient re-attach.)
-    if (ev.type === "steer" && ev.user_input?.source === "replay") {
-      const text = ev.user_input.text ?? "";
-      const idx = echoedRef.current.indexOf(text);
-      if (idx !== -1) {
-        echoedRef.current.splice(idx, 1);
-        return;
-      }
-    }
+    // The server's copy of an operator message we already echoed — a live
+    // steer as the run drains it, or a re-attach replay — is dropped, so each
+    // message shows once. A cold re-attach echoed nothing and drops nothing.
+    if (dropEchoedSteer(echoedRef.current, ev)) return;
     if (ev.type === "done") {
       setStatus("completed");
       setPendingInterrupt(null);
