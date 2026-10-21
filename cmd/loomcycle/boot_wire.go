@@ -313,6 +313,16 @@ func (b *boot) loadMCPRegistry() {
 			log.Printf("mcp_server_defs: WARNING: %s", warn)
 		}
 	}
+	// Read-only: name every active server a tenant registered at runtime
+	// whose host is localhost or a private IP the operator has not vouched
+	// for. Those dial through the egress guard and are refused at each call.
+	if warns, err := mcpServerDefTool.PrivateHostWarnings(context.Background()); err != nil {
+		log.Printf("mcp_server_defs: private-host audit: %v (continuing)", err)
+	} else {
+		for _, warn := range warns {
+			log.Printf("mcp_server_defs: WARNING: %s", warn)
+		}
+	}
 }
 
 // addA2ATools registers the outbound A2A peer tools when A2A is enabled.

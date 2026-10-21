@@ -159,8 +159,11 @@ func TestOverrideLock_EveryRequestFieldIsClassified(t *testing.T) {
 		"OperatorKeyRestricted": "server-derived", "Isolated": "server-derived",
 		"CredentialsNoUserScope": "set by a trigger, never by a request; it only narrows",
 		"ConfiguredRunID":        "which draft to start", "ConfiguredDraft": "the stored draft", "Detached": "delivery",
-		"QueuedRunID": "which queued run a restart starts; set by the boot, never by a request",
-		"Admission":   "delivery: wait for a run slot or be refused at once; it takes no capacity the caps do not already bound",
+		"QueuedRunID":               "which queued run a restart starts; set by the boot, never by a request",
+		"Admission":                 "delivery: wait for a run slot or be refused at once; it takes no capacity the caps do not already bound",
+		"RateAdmitted":              "server-set: the HTTP route already counted the start; never a wire field",
+		"SessionLockAcrossReplicas": "server-set: how the session lock is taken; never a wire field",
+		"HoldUntilEnd":              "server-set: how long the call holds the run's session and slot; never a wire field",
 	}
 	lockable := map[string]string{} // Go field → wire name
 	for wire, field := range lockableOverrideFields {

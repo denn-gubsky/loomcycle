@@ -476,6 +476,30 @@ type RunInput struct {
 	// events (GET /v1/runs/{run_id}/stream). Set for a started draft that is
 	// interactive or held for review.
 	Detached bool
+
+	// RateAdmitted: the caller has already counted this start against its
+	// principal's run rate, so RunOnce does not count it again. The HTTP
+	// routes count a start before they read its body, so that a caller over
+	// its rate costs nothing to refuse.
+	RateAdmitted bool
+
+	// SessionLockAcrossReplicas takes a continuation's session lock in every
+	// replica (the cluster's advisory lock, as well as this process's), lets
+	// the cluster half go while the run waits for a slot — a queue of
+	// continuations would otherwise hold a pool connection each — and takes it
+	// back when the run is admitted, reading the session's history again
+	// since another replica may have taken a turn meanwhile. Set by every
+	// transport that continues a session (the HTTP routes, gRPC Continue);
+	// without a cluster lock configured it changes nothing.
+	SessionLockAcrossReplicas bool
+
+	// HoldUntilEnd keeps a Detached run's caller waiting for the run's end
+	// even after the caller has left: RunOnce returns only when the run ends,
+	// so what it holds for the run — the session lock, the run slot — is held
+	// for the run's whole life. A session continuation held for review uses
+	// it: its session must take no other turn until the verdict, and the
+	// held run keeps the slot it runs in.
+	HoldUntilEnd bool
 }
 
 // RunCallbacks is how the wire surfaces observe the run.
@@ -508,6 +532,10 @@ type RunCallbacks struct {
 	// it. A webhook delivery's run uses it to refuse to start once another
 	// delivery of its event has taken its claim over.
 	Admit func(runID string) error
+	// OnRunError, when set, is called with the error the loop ended with, for
+	// a run that is not detached, before the run is recorded finished. The
+	// error is not recorded; an SSE caller sends it as its stream's last frame.
+	OnRunError func(error)
 }
 
 // DuplicateRunError is what RunOnce returns when RunInput.ClientIdempotencyKey

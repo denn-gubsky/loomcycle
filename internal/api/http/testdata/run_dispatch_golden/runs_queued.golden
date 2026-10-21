@@ -12,7 +12,7 @@ event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":3,"o
 stored row: {"agent":"plain","agent_id":"<id:2>","credential_source":"operator","id":"<id:3>","input_tokens":3,"output_tokens":2,"pause_state":"running","provider":"stub","result":{"final_text":"hello"},"run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:1>","status":"completed","stop_reason":"end_turn"}
 stored event: queued {"admission":{"position":1,"reason":"global_cap"},"type":"queued"}
 stored event: admitted {"admission":{},"type":"admitted"}
-stored event: user_input [{"content":[{"cacheable":true,"text":"be brief","type":"trusted-text"}],"role":"system"},{"content":[{"text":"queued run","type":"trusted-text"}],"role":"user"}]
+stored event: user_input [{"content":[{"text":"queued run","type":"trusted-text"}],"role":"user"}]
 stored event: system_prompt {"system_prompt":"be brief"}
 stored event: started {"type":"started"}
 stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"queued run","type":"text"}],"system":[{"text":"be brief","type":"text"}]},"type":"prompt_snapshot"}

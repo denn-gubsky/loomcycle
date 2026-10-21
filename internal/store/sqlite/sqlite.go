@@ -2738,6 +2738,32 @@ func (s *Store) SessionSettledAt(ctx context.Context, tenantID, sessionID string
 }
 
 // RunsForSession returns every run in the session (any status), oldest first.
+// SessionHasLiveRun implements store.Store. The running clause mirrors
+// SweepStaleRuns, read the other way round.
+func (s *Store) SessionHasLiveRun(ctx context.Context, sessionID, excludeRunID string, staleBefore time.Time) (bool, error) {
+	cutoffNs := staleBefore.UnixNano()
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM runs
+		  WHERE session_id = ? AND id <> ?
+		    AND (
+		      (status = ? AND started_at >= ?)
+		      OR (status = ? AND (
+		            COALESCE(pause_state, 'running') IN ('paused', 'pausing')
+		            OR (last_heartbeat_at IS NOT NULL AND last_heartbeat_at >= ?)
+		            OR (last_heartbeat_at IS NULL AND started_at >= ?)))
+		    )
+		  LIMIT 1`,
+		sessionID, excludeRunID,
+		string(store.RunQueued), cutoffNs,
+		string(store.RunRunning), cutoffNs, cutoffNs,
+	).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (s *Store) RunsForSession(ctx context.Context, sessionID string) ([]store.Run, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+runColumns+` FROM `+runFromTable+` WHERE r.session_id = ? ORDER BY r.started_at ASC`,

@@ -86,10 +86,10 @@ jobs:
       # The build recipe (deploy/bridges/) from the commit this workflow runs
       # at; the package source from the tag. On a tag push the two are the
       # same commit.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           path: recipe
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.resolve.outputs.tag }}
           path: src
