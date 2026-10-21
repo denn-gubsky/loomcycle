@@ -854,12 +854,12 @@ func (m *MCPServerDef) execVerify(ctx context.Context, in mcpServerDefInput) (to
 // re-derives it from its own author. Not applied by snapshot restore, an
 // admin-only action that writes the source's bit as it was.
 //
-// Operator authority counts only off-run: a run started with an admin bearer
-// carries that principal into its tool calls, but the model inside the run is
-// not the operator, and the bit both expands the server environment and skips
-// the MCP egress guard at dial.
+// Operator authority counts only off-run (callerHasOperatorAuthority): a run
+// started with an admin bearer carries that principal into its tool calls, but
+// the model inside the run is not the operator, and the bit both expands the
+// server environment and skips the MCP egress guard at dial.
 func (m *MCPServerDef) bindOperatorEnv(ctx context.Context, name string, def, parent *mcpServerOverlay) error {
-	def.OperatorAuthored = (callerHasOperatorAuthority(ctx) && tools.RunID(ctx) == "") || m.keepsOperatorConnection(name, *def, parent)
+	def.OperatorAuthored = callerHasOperatorAuthority(ctx) || m.keepsOperatorConnection(name, *def, parent)
 	if def.OperatorAuthored {
 		return nil
 	}
