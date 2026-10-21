@@ -196,7 +196,7 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	// The replay carries the run's prompt and answer, so an isolated member is
 	// confined to its own runs here as on every run-content read.
 	run, err := s.tenantStore(r.Context()).GetRun(r.Context(), runID)
-	if err != nil || !runOwnershipOK(r.Context(), run) {
+	if err != nil || !runOwnershipOK(r.Context(), run) || !s.allowlistReachesRow(r.Context(), run) {
 		http.Error(w, "no such run", http.StatusNotFound)
 		return
 	}

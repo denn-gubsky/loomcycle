@@ -66,7 +66,13 @@ func (s *Server) runHoldingClientKey(ctx context.Context, storedKey, tenant, use
 		// match above already implies it for a key this code wrote; the gate
 		// is applied anyway, so this read can never be the one path that
 		// answers a principal the others would refuse.
-		if !runOwnershipOK(ctx, run) {
+		//
+		// The allowlist is the one gate the identity match does NOT imply: a
+		// token limited to certain agents shares its tenant and user — and so
+		// its keys — with that user's other tokens, and this lookup runs
+		// before the agent is admitted. Without it such a token, naming any
+		// agent, was answered with another agent's run and its whole stream.
+		if !runOwnershipOK(ctx, run) || !s.allowlistReachesRow(ctx, run) {
 			return nil, fmt.Errorf("%w: idempotency_key is not available", runner.ErrInvalidArgument)
 		}
 		return &runner.DuplicateRunError{RunID: run.ID, AgentID: run.AgentID, SessionID: run.SessionID}, nil

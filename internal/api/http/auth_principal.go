@@ -635,50 +635,72 @@ func runOwnershipOK(ctx context.Context, run store.Run) bool {
 	return auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID)
 }
 
-// maxAllowlistTreeHops bounds the walk from a run to the root of its spawn
-// tree. Parent pointers are rows, so a corrupt chain must not loop forever; a
-// tree deeper than this is refused rather than half-checked.
-const maxAllowlistTreeHops = 64
-
 // allowlistReachesRun reports whether the caller's agent allowlist reaches the
-// run: whether its spawn tree was started as a run of an allowed agent. A
-// token limited to certain agents may only START those, so steering,
-// reviewing, retuning, compacting, cancelling or answering a run of any other
-// agent in its tenant would hand it the control of runs it could never have
-// started. Every run-control gate applies this on top of its ownership rule
-// and folds a false into the same opaque not-found.
-//
-// The tree's ROOT decides, not the run's own agent: an agent the allowed one
-// spawns is part of the run the token started — its questions and its held
-// answers are that run's to settle — as the start gate already lets it be.
-//
-// True without a read when there is no principal or no allowlist. Fails
-// closed: a run or parent that cannot be read, a loop, or a chain past
-// maxAllowlistTreeHops is outside the list.
+// run (auth.RunTree says how). A token limited to certain agents may only
+// START those, so steering, reviewing, retuning, compacting, cancelling or
+// answering a run of any other agent in its tenant would hand it the control
+// of runs it could never have started. Every run-control gate applies this on
+// top of its ownership rule and folds a false into the same opaque not-found.
 func (s *Server) allowlistReachesRun(ctx context.Context, runID string) bool {
-	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || !p.Restrictions.RunPlaneOnly() {
+	return s.runTree(ctx).Reaches(runID)
+}
+
+// allowlistReachesRow is allowlistReachesRun for a run row the caller has
+// already read: the walk starts from the row instead of reading it again.
+// Every read that returns a run's content or metadata applies it on top of
+// its ownership rule and answers a false with its own opaque not-found.
+func (s *Server) allowlistReachesRow(ctx context.Context, run store.Run) bool {
+	return s.runTree(ctx).ReachesKnown(runLink(run))
+}
+
+// allowlistReachesSession reports whether the caller's agent allowlist
+// reaches a session: whether it reaches every run in it (auth.RunTree's
+// ReachesSession). A session read hands over the history of those runs, so a
+// token limited to certain agents must not read a session of another agent,
+// nor one a sub-run opened inside another agent's tree. Same posture as
+// allowlistReachesRun: true with no read for an unrestricted caller, fails
+// closed, and every gate folds a false into its opaque not-found.
+func (s *Server) allowlistReachesSession(ctx context.Context, sess store.Session) bool {
+	tree := s.runTree(ctx)
+	if !tree.Restricted() {
 		return true
 	}
 	if s.store == nil {
 		return false
 	}
-	seen := map[string]bool{}
-	for hop := 0; hop <= maxAllowlistTreeHops; hop++ {
-		if seen[runID] {
-			return false
+	return tree.ReachesSession(sess.Agent, func() ([]auth.RunLink, error) {
+		runs, err := s.store.RunsForSession(ctx, sess.ID)
+		if err != nil {
+			return nil, err
 		}
-		seen[runID] = true
+		links := make([]auth.RunLink, 0, len(runs))
+		for _, r := range runs {
+			links = append(links, runLink(r))
+		}
+		return links, nil
+	})
+}
+
+// runTree is the allowlist walker for the principal on ctx, reading runs from
+// the store. Without a store it reads nothing, so a restricted caller is
+// refused (fail closed) and every other caller is unaffected.
+func (s *Server) runTree(ctx context.Context) *auth.RunTree {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if s.store == nil {
+		return auth.NewRunTree(p, ok, nil)
+	}
+	return auth.NewRunTree(p, ok, func(runID string) (auth.RunLink, error) {
 		run, err := s.store.GetRun(ctx, runID)
 		if err != nil {
-			return false
+			return auth.RunLink{}, err
 		}
-		if run.ParentRunID == "" {
-			return p.Restrictions.AgentAllowed(run.Agent)
-		}
-		runID = run.ParentRunID
-	}
-	return false
+		return runLink(run), nil
+	})
+}
+
+// runLink is what an allowlist walk reads of a run row.
+func runLink(run store.Run) auth.RunLink {
+	return auth.RunLink{ID: run.ID, Agent: run.Agent, ParentRunID: run.ParentRunID}
 }
 
 // continuationReachesSession reports whether the caller's agent allowlist

@@ -72,8 +72,11 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	// Source session — tenant-gated read; a cross-tenant or missing id both fold
 	// into the same opaque not-found (session ids are returned/logged/shown, so
 	// the gate must not become an existence oracle).
+	// A replay copies the source's whole transcript into a session the caller
+	// can then read, so a token limited to certain agents may replay only a
+	// session it could read directly (allowlistReachesSession).
 	src, serr := s.tenantStore(ctx).GetSession(ctx, req.SourceSessionID)
-	if serr != nil || !sessionOwnershipOK(ctx, src) {
+	if serr != nil || !sessionOwnershipOK(ctx, src) || !s.allowlistReachesSession(ctx, src) {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusNotFound, msg: "no session for that id"}
 	}
 	// A no-trace session holds markers, not a conversation; and a replay
