@@ -115,17 +115,17 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "::notice::Publishing sandbox images at :$V + :latest"
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
       # GHCR mirror — no new secret (GITHUB_TOKEN + packages:write above).
       # Rationale in .goreleaser.yaml's dockers: comment.
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -133,7 +133,7 @@ jobs:
 
       # ── Builder sidecar — rootless podman base (deploy/builder/Dockerfile) ──
       - name: Build + push loomcycle-builder (rootless)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: deploy/builder
           file: deploy/builder/Dockerfile
@@ -151,7 +151,7 @@ jobs:
 
       # ── Builder sidecar — host-Docker-socket base (deploy/builder/Dockerfile.docker) ──
       - name: Build + push loomcycle-builder-docker (docker socket)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: deploy/builder
           file: deploy/builder/Dockerfile.docker
@@ -174,7 +174,7 @@ jobs:
       # drop `linux/arm64` from `platforms` below until a native arm64 runner is
       # available (the sidecar images above are trivial Go builds — keep them multi-arch).
       - name: Build + push loomcycle-sandbox-session
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: deploy/builder/session
           file: deploy/builder/session/Dockerfile

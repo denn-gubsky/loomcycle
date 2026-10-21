@@ -57,7 +57,7 @@ classifiers = [
 # older grpcio.
 dependencies = [
     "grpcio >= 1.80.0",
-    "protobuf >= 5.0.0, < 7.0.0",
+    "protobuf >= 5.0.0, < 8.0.0",
 ]
 
 [project.optional-dependencies]

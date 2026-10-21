@@ -379,7 +379,7 @@ jobs:
         working-directory: adapters/ts
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -408,7 +408,7 @@ jobs:
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
           cache: true
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -428,7 +428,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
@@ -483,7 +483,7 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
