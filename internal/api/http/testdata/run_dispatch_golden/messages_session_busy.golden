@@ -1,0 +1,4 @@
+== second turn: POST /v1/sessions/<id:1>/messages
+status: 409
+content-type: application/json
+body: {"code":"session_busy","error":"another request is in flight on session \"<id:1>\""}

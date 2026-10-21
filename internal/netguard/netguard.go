@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -120,18 +121,75 @@ func inAnyPrefix(a netip.Addr, prefixes []netip.Prefix) bool {
 	return false
 }
 
+// metadataAddrs are cloud credential and metadata endpoints that sit outside
+// link-local space: EC2 metadata and the EKS Pod Identity agent over IPv6
+// (ULA), and Alibaba Cloud metadata (CGNAT).
+var metadataAddrs = []netip.Addr{
+	netip.MustParseAddr("fd00:ec2::254"),
+	netip.MustParseAddr("fd00:ec2::23"),
+	netip.MustParseAddr("100.100.100.200"),
+}
+
+// reachableOnlyByCIDR reports whether ip is a link-local or metadata address:
+// one a vouched host name does not cover. Vouching a name trusts the
+// operator's private network, but whoever controls the name's DNS (or any
+// subdomain, as name entries are suffix-matched) decides where it resolves,
+// so the name alone must not reach the metadata service. An operator who
+// means such an address lists a CIDR entry covering it.
+func reachableOnlyByCIDR(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	return isLinkLocalOrMetadata(addr.Unmap())
+}
+
+// opaqueEmbeddingV6 are IPv6 ranges that may carry an IPv4 address to a
+// gateway at a position this guard cannot read (see nonPublicV6): local-use
+// NAT64 (operator-chosen prefix length) and Teredo (obfuscated client
+// address). A vouched name never reaches them, since the carried address could
+// be link-local; a CIDR entry covering one does.
+var opaqueEmbeddingV6 = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("2001::/32"),
+}
+
+func isLinkLocalOrMetadata(a netip.Addr) bool {
+	if a.IsLinkLocalUnicast() || slices.Contains(metadataAddrs, a) {
+		return true
+	}
+	if a.Is4() {
+		return false
+	}
+	if inAnyPrefix(a, opaqueEmbeddingV6) {
+		return true
+	}
+	b := a.As16()
+	for _, e := range embeddingV6 {
+		if e.prefix.Contains(a) {
+			return isLinkLocalOrMetadata(netip.AddrFrom4([4]byte(b[e.offset : e.offset+4])))
+		}
+	}
+	return false
+}
+
 // isCIDREntry reports whether a private-host allowlist entry is a CIDR range
 // rather than a host name. A host name never contains '/'.
 func isCIDREntry(entry string) bool { return strings.Contains(entry, "/") }
 
 // ValidatePrivateHostAllowlist checks the CIDR entries of a private-host
 // allowlist, so a typo fails at config load instead of silently never matching
-// (the dial guard skips a malformed range: fail-closed, but invisible). Host-name
-// entries are not checked; any string is a valid suffix to match.
+// (the dial guard skips a malformed range: fail-closed, but invisible). A
+// host-name entry may be any string (a suffix to match), except an IP literal
+// in link-local or metadata space: a host entry never admits one, so it would
+// silently do nothing, and the error names the CIDR form that does.
 func ValidatePrivateHostAllowlist(entries []string) error {
 	for _, e := range entries {
 		e = strings.TrimSpace(e)
 		if !isCIDREntry(e) {
+			if a, ok := ipLiteral(e); ok && isLinkLocalOrMetadata(a) {
+				return fmt.Errorf("entry %q is a link-local or cloud metadata address, which a host entry never admits; list it as a CIDR range (%s) if this host must reach it", e, SingleAddressCIDR(a))
+			}
 			continue
 		}
 		if _, err := netip.ParsePrefix(e); err != nil {
@@ -139,6 +197,35 @@ func ValidatePrivateHostAllowlist(entries []string) error {
 		}
 	}
 	return nil
+}
+
+// ipLiteral parses host as an IP address, in brackets or with a zone or not,
+// unmapped to IPv4 where it is one.
+func ipLiteral(host string) (netip.Addr, bool) {
+	a, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return a.WithZone("").Unmap(), true
+}
+
+// SingleAddressCIDR is the allowlist entry that admits exactly a: a.b.c.d/32
+// or an IPv6 /128.
+func SingleAddressCIDR(a netip.Addr) string {
+	a = a.WithZone("").Unmap()
+	return netip.PrefixFrom(a, a.BitLen()).String()
+}
+
+// VouchEntryForHost is the private-host allowlist entry that vouches for the
+// host of a URL an operator configured: the host name itself, or, for an IP
+// literal, that exact address as a CIDR entry. The operator named the address,
+// not a name whose DNS someone else controls, so even a link-local or
+// metadata address stays reachable.
+func VouchEntryForHost(host string) string {
+	if a, ok := ipLiteral(host); ok {
+		return SingleAddressCIDR(a)
+	}
+	return host
 }
 
 // splitAllowlist separates an operator vouch list into host-name entries
@@ -211,48 +298,47 @@ func hostAllowed(host string, allowlist []string) bool {
 // the address. allowPrivate lifts the block entirely (tests / an operator
 // opt-out); privateHostAllowlist exempts what an operator has vouched is safe on
 // a private network: a host-name entry (suffix-matched) exempts that host
-// whatever it resolves to, and a CIDR entry ("100.64.0.0/10") exempts only the
+// wherever it resolves except link-local and metadata addresses
+// (reachableOnlyByCIDR), and a CIDR entry ("100.64.0.0/10") exempts only the
 // resolved addresses inside the range, so a vouched range cannot be used to
 // reach a private address outside it.
 func GuardedDialContext(allowPrivate bool, privateHostAllowlist []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return guardedDialContext(net.DefaultResolver, allowPrivate, privateHostAllowlist)
+}
+
+// ipResolver is the slice of *net.Resolver the guard uses; tests stub it to
+// make a name resolve wherever the case needs.
+type ipResolver interface {
+	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
+}
+
+func guardedDialContext(resolver ipResolver, allowPrivate bool, privateHostAllowlist []string) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	exemptHosts, exemptCIDRs := splitAllowlist(privateHostAllowlist)
-	blocked := func(ip net.IP) bool { return IsPrivateIP(ip) && !ipAllowed(ip, exemptCIDRs) }
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
 		hostExempt := hostAllowed(host, exemptHosts)
+		blocked := blockedFor(allowPrivate, hostExempt, exemptCIDRs)
 
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ips, err := resolver.LookupIPAddr(ctx, host)
 		if err != nil {
 			return nil, err
 		}
-		candidates := ips
-		if !allowPrivate && !hostExempt {
-			candidates = candidates[:0]
-			for _, ip := range ips {
-				if !blocked(ip.IP) {
-					candidates = append(candidates, ip)
-				}
-			}
-			if len(candidates) == 0 {
-				return nil, fmt.Errorf("blocked: %s has no public addresses (got %d private)", host, len(ips))
+		var candidates []net.IPAddr
+		for _, ip := range ips {
+			if !blocked(ip.IP) {
+				candidates = append(candidates, ip)
 			}
 		}
-		d := net.Dialer{
-			Timeout: 10 * time.Second,
-			Control: func(_, address string, _ syscall.RawConn) error {
-				if allowPrivate || hostExempt {
-					return nil
-				}
-				ip, _, _ := net.SplitHostPort(address)
-				if parsed := net.ParseIP(ip); parsed != nil && blocked(parsed) {
-					return fmt.Errorf("blocked: socket-level address %s is private", ip)
-				}
-				return nil
-			},
+		if len(candidates) == 0 {
+			if hostExempt && !allowPrivate {
+				return nil, fmt.Errorf("blocked: %s resolves only to link-local or metadata addresses, which a vouched host name does not cover (an operator CIDR entry can allow one)", host)
+			}
+			return nil, fmt.Errorf("blocked: %s has no public addresses (got %d private)", host, len(ips))
 		}
+		d := net.Dialer{Timeout: 10 * time.Second, Control: socketControl(blocked)}
 		var lastErr error
 		for _, ip := range candidates {
 			conn, derr := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
@@ -262,6 +348,43 @@ func GuardedDialContext(allowPrivate bool, privateHostAllowlist []string) func(c
 			lastErr = derr
 		}
 		return nil, lastErr
+	}
+}
+
+// blockedFor returns the verdict for one dial: whether the guard refuses a
+// resolved address. hostExempt is whether the dialed host matched a host-name
+// entry of the operator's vouch list.
+func blockedFor(allowPrivate, hostExempt bool, exemptCIDRs []netip.Prefix) func(net.IP) bool {
+	return func(ip net.IP) bool {
+		switch {
+		case allowPrivate, ipAllowed(ip, exemptCIDRs):
+			return false
+		case hostExempt:
+			return reachableOnlyByCIDR(ip)
+		default:
+			return IsPrivateIP(ip)
+		}
+	}
+}
+
+// socketControl is the net.Dialer Control hook: it re-checks the address the
+// socket is actually connecting to, with the same verdict as the pre-dial
+// filter. A zoned IPv6 address (fe80::1%en0) is judged by its address; one
+// that does not parse is refused, never let through.
+func socketControl(blocked func(net.IP) bool) func(network, address string, c syscall.RawConn) error {
+	return func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("blocked: socket-level address %q is not host:port", address)
+		}
+		a, ok := ipLiteral(host)
+		if !ok {
+			return fmt.Errorf("blocked: socket-level address %q is not an IP address", host)
+		}
+		if blocked(net.IP(a.AsSlice())) {
+			return fmt.Errorf("blocked: socket-level address %s is private", host)
+		}
+		return nil
 	}
 }
 

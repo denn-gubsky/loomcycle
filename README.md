@@ -136,7 +136,7 @@ loomcycle                    # open mode: /v1/* + /ui pass through unauthenticat
 open http://127.0.0.1:8787/ui
 ```
 
-With no `LOOMCYCLE_AUTH_TOKEN` and no minted tokens, the runtime runs **open** on localhost. Every request is allowed, whoami returns a synthetic admin. Good for a 10-second smoke test. **Never** expose this off localhost.
+With no `LOOMCYCLE_AUTH_TOKEN` and no minted tokens, the runtime runs **open** on localhost. Every request is allowed, whoami returns a synthetic admin. Good for a 10-second smoke test. **Never** expose this off localhost: the server refuses to start in open mode on a non-loopback address (`0.0.0.0`, `:8787`, a LAN IP) unless `LOOMCYCLE_ALLOW_OPEN_MODE=1` is set.
 
 ### Tier 2: single shared token (the recommended default)
 
@@ -637,7 +637,7 @@ In-binary docs (bundled `Context.help` topics; agents read these directly, opera
 - `observability`. OTEL trace export setup.
 - `vector-memory`, `voyage-embedder`, `sqlite-vec`. Vector Memory backends.
 - `dynamic-mcp`. Register MCP servers at runtime.
-- `bash-security`. The Bash tool's restricted-not-isolated security posture.
+- `bashbox`. The in-process Bashbox sandbox, and how it differs from the restricted-not-isolated Bash tool.
 
 Full list via `GET /v1/_help` against a running instance.
 

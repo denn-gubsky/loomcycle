@@ -15,7 +15,7 @@
 package embedders
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -101,7 +101,7 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 		// Voyage. Auth is the separate VOYAGE_API_KEY.
 		apiKey = cfg.Env.VoyageAPIKey
 		if apiKey == "" {
-			log.Printf("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
+			slog.Warn("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
 		}
 	} else {
 		// Every other embedder hits the same account and endpoint as its chat
@@ -150,8 +150,8 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 	if cfg.Memory.Embedder.APIKeyEnv != "" {
 		apiKey = os.Getenv(cfg.Memory.Embedder.APIKeyEnv)
 		if apiKey == "" {
-			log.Printf("memory.embedder: api_key_env=%s is set but empty — the embedder will call %s unauthenticated",
-				cfg.Memory.Embedder.APIKeyEnv, provider)
+			slog.Warn("memory.embedder: api_key_env is set but empty — the embedder will call unauthenticated",
+				"api_key_env", cfg.Memory.Embedder.APIKeyEnv, "provider", provider)
 		}
 	}
 

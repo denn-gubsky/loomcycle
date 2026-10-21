@@ -238,10 +238,10 @@ func TestReceiver_ChannelDeliveryRefusedBeforeThePublish_HoldsNoKey(t *testing.T
 	}{
 		{"unauthenticated bearer", bearerChannel, false, func(a *Receiver, m channelMode) *httptest.ResponseRecorder {
 			return deliverSigned(a, "gh", m.header, "Bearer wrong", genuine, "d-1")
-		}, http.StatusUnauthorized},
+		}, http.StatusNotFound},
 		{"unauthenticated stripe", stripeChannel, false, func(a *Receiver, m channelMode) *httptest.ResponseRecorder {
 			return deliverSigned(a, "gh", m.header, "t=1700000000, v1=00", genuine, "d-1")
-		}, http.StatusUnauthorized},
+		}, http.StatusNotFound},
 		{"unparseable", bearerChannel, false, func(a *Receiver, m channelMode) *httptest.ResponseRecorder {
 			return deliver(a, "gh", m, []byte(`not json`), "d-1")
 		}, http.StatusBadRequest},

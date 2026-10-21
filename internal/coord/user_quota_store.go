@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -117,11 +117,11 @@ func (s *UserQuotaStore) Release(ctx context.Context, tenantID, userID string) {
 		 WHERE tenant_id = $1 AND user_id = $2 AND active_count > 0
 	`, tenantID, userID)
 	if err != nil {
-		log.Printf("coord: user_quotas release %s/%s: %v", tenantID, userID, err)
+		slog.Error("coord: user_quotas release failed", "tenant", tenantID, "user", userID, "err", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		log.Printf("coord: user_quotas release %s/%s: no-op (already at 0 — double-release or Phase 5 reap)", tenantID, userID)
+		slog.Warn("coord: user_quotas release: no-op (already at 0 — double-release or Phase 5 reap)", "tenant", tenantID, "user", userID)
 	}
 }
 

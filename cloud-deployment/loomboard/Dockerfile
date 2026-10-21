@@ -12,7 +12,7 @@
 ARG LOOMBOARD_REF=v0.3.1
 ARG CONNECT_ORIGINS=https://loomcycle.cloud
 
-FROM node:22 AS build
+FROM node:26 AS build
 ARG LOOMBOARD_REF
 ARG CONNECT_ORIGINS
 WORKDIR /app
@@ -21,7 +21,7 @@ RUN git clone --depth 1 --branch "${LOOMBOARD_REF}" \
 RUN npm ci
 RUN VITE_LOOMBOARD_CONNECT_ORIGINS="${CONNECT_ORIGINS}" npm run build:standalone
 
-FROM node:22-alpine
+FROM node:26-alpine
 COPY --from=build /app/cli/public /srv
 COPY serve.mjs /serve.mjs
 ENV PORT=8080 SRV_ROOT=/srv LOOMCYCLE_UPSTREAM=http://tailscale:8787

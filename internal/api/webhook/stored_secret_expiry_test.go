@@ -38,8 +38,8 @@ func TestReceiver_AnExpiredStoredSecretRefusesTheDelivery(t *testing.T) {
 	// once the receiver's copy of the secrets has (storedSecretTTL).
 	credentialtest.Expire(t, st, credential.Identity{TenantID: "acme", Scope: "tenant", Name: "hook-old"}, time.Now().Add(-time.Minute))
 	clk.pastSecretTTL()
-	if code, _ := deliver("old-secret"); code != http.StatusUnauthorized {
-		t.Errorf("signed with an expired previous secret: %d, want 401", code)
+	if code, _ := deliver("old-secret"); code != http.StatusNotFound {
+		t.Errorf("signed with an expired previous secret: %d, want 404", code)
 	}
 	if code, _ := deliver("current-secret"); code != http.StatusAccepted {
 		t.Errorf("signed with the current secret while the previous one is expired: %d, want 202", code)
@@ -53,9 +53,9 @@ func TestReceiver_AnExpiredStoredSecretRefusesTheDelivery(t *testing.T) {
 		t.Fatalf("a delivery signed with an expired secret was accepted: %s", body)
 	}
 	// The same answer a missing secret gets: the sender is unauthenticated,
-	// so it learns which reference failed, not why.
-	if code != http.StatusServiceUnavailable || !strings.Contains(body, `"secret":"$cred:hook"`) {
-		t.Errorf("refusal %d %s: want 503 naming the reference", code, body)
+	// so it learns nothing about which reference failed, or why.
+	if code != http.StatusServiceUnavailable || body != `{"error":"unavailable"}`+"\n" {
+		t.Errorf("refusal %d %s: want the opaque 503", code, body)
 	}
 	if strings.Contains(body, "current-secret") {
 		t.Fatalf("the refusal carries a secret value: %s", body)

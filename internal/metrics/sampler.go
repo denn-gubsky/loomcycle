@@ -14,6 +14,7 @@ package metrics
 import (
 	"context"
 	"log"
+	"log/slog"
 	"runtime"
 	"time"
 
@@ -126,7 +127,7 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	//    row with the cheap fields, leaving RSS/CPU as zero. We log
 	//    ONCE per program lifetime on the first failure
 	//    (hardened-container /proc shapes fail every tick; logging
-	//    each one would flood). Goes through log.Printf directly,
+	//    each one would flood). Goes through slog directly,
 	//    NOT cfg.Logf, so this environmental warning is decoupled
 	//    from the actionable store-write backoff signal that tests
 	//    drive via cfg.Logf.
@@ -134,7 +135,7 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 		pm, nextSnap, err := readProcMetrics(s.cfg.CollectSystem, s.prevCPU)
 		if err != nil {
 			if !s.procReadFailureLogged {
-				log.Printf("metrics: /proc read failed: %v (continuing with zero RSS/CPU; further proc errors suppressed)", err)
+				slog.Warn("metrics: /proc read failed (continuing with zero RSS/CPU; further proc errors suppressed)", "err", err)
 				s.procReadFailureLogged = true
 			}
 		} else {

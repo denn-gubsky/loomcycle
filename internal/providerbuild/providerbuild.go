@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -170,7 +171,7 @@ func awsRequestAuth(id string, pc config.ProviderConfig, baseURL string, sink fu
 		Chain: awsauth.ChainOptions{RoleARN: a.RoleARN, ExternalID: ext, SessionName: a.SessionName},
 	})
 	if err != nil {
-		log.Printf("provider %s: aws auth: %v", id, err)
+		slog.Error("provider: aws auth failed; the provider is unavailable", "provider", id, "err", err)
 		return unavailableAuth{err: err}
 	}
 	// Every construction path (the provider set, service blocks such as the
@@ -353,7 +354,7 @@ func ServiceDriverOptions(cfg *config.Config, field string, ep ServiceEndpoint, 
 		opts.KeyEnvName = ep.APIKeyEnv
 		opts.RequestAuth = nil // the block named its own key; it is the one sent
 		if opts.APIKey == "" {
-			log.Printf("%s: api_key_env=%s is set but empty — it will call %s unauthenticated", field, ep.APIKeyEnv, provider)
+			slog.Warn(field+": api_key_env is set but empty — it will call unauthenticated", "api_key_env", ep.APIKeyEnv, "provider", provider)
 		}
 	} else if ep.BaseURL != "" {
 		opts.KeyEnvName = ownKeyName

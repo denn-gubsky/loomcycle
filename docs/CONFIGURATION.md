@@ -1248,6 +1248,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
 | `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
+| `LOOMCYCLE_ALLOW_OPEN_MODE` | `1` lets the server start in **open mode** on a listener beyond loopback. Open mode is no `LOOMCYCLE_AUTH_TOKEN` and no admin operator token, so every route, token minting included, is unauthenticated. Without this, such a boot **exits with an error** when `LOOMCYCLE_LISTEN_ADDR` or `LOOMCYCLE_GRPC_ADDR` binds anything but `127.0.0.0/8`, `::1` or `localhost` (`:8787`, `0.0.0.0` and `::` bind every interface; any other hostname counts as public too). Open mode on loopback needs no opt-in. While open, the server logs a warning every 10 minutes and the Web UI shows an "unauthenticated" banner. Use it only for a throwaway test harness on a private network; anything reachable should set `LOOMCYCLE_AUTH_TOKEN`. |
 
 Routes enforce a scope from a closed catalog; an under-scoped token gets `403` with the JSON body `{"code":"insufficient_scope","error":"insufficient scope","required_scope":"…"}` and the same scope in `WWW-Authenticate: Bearer scope="…"`. The legacy `LOOMCYCLE_AUTH_TOKEN` is disabled only once an admin-scoped token exists (the no-lockout gate). The catalog:
 
@@ -1645,6 +1646,13 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | `LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS` | 7200 (2 h) | A resident child whose current turn runs longer is reaped. No unlimited setting. |
 | `LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS` | 0 (no ceiling) | Ceiling on a spawn's `timeout_ms`; a larger value is refused, not clamped. |
 | `LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS` | 60000 (60 s) | Longest one `Agent` poll with `wait` `any`/`all` blocks; a larger `wait_ms` is cut to it. |
+
+**Logging.** Log lines go to stderr. Exact values of secret-named env vars are masked in them, as in the transcript plane above.
+
+| Env var | Default | Values |
+|---|---|---|
+| `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
+| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Lines from code not yet converted to levelled logging are never hidden by the level (they are recorded at the configured level, `info` at minimum), so fatal and startup errors always show. An unknown value warns and uses `info`. |
 
 ---
 

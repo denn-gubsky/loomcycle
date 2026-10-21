@@ -192,8 +192,8 @@ func TestReceiver_TeamDelivery_AnUnsignedOrBadlySignedDeliveryStartsNothing(t *t
 				h.Set("X-Hub-Signature-256", sig)
 			}
 			w := doPost(rec, "pr", body, h)
-			if w.Code != http.StatusUnauthorized {
-				t.Fatalf("status = %d, want 401", w.Code)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", w.Code)
 			}
 			if len(teams.started()) != 0 || fr.wasCalled() {
 				t.Fatal("an unverified delivery started something")

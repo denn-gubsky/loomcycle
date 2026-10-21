@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -185,8 +187,9 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 }
 
 // grepWalk does the file iteration. Pulled out so tests can drive
-// it with a synthetic root. `root` is the sandbox volume root; every
-// walked entry is re-checked against it (symlink-resolved) before being
+// it with a synthetic root. `root` is the sandbox volume root; the walk and
+// every file open go through an os.Root opened at it (RFC ES #1), and a
+// symlinked entry is re-checked against it (symlink-resolved) before being
 // opened, so an in-volume symlink pointing outside the volume can't leak
 // out-of-volume file contents.
 // grepWalk renders the matches and reports HOW MANY result items it wrote, in
@@ -194,12 +197,21 @@ func (g *Grep) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // matching lines for content. The caller surfaces it so a reader never has to
 // infer "zero" by noticing the absence of output.
 func grepWalk(root, fence, searchRoot string, re *regexp.Regexp, glob, mode string, headLimit, maxBytes, before, after int) (string, int, error) {
-	// Resolve the sandbox root ONCE; each walked file is checked against it
+	// Open the sandbox root ONCE; each walked file is checked against it
 	// below. A root that can't be resolved is a misconfiguration, not a
 	// per-file skip, so fail the walk.
-	rootResolved, err := filepath.EvalSymlinks(root)
+	vfs, err := openVolumeFS(root, fence)
 	if err != nil {
-		return "", 0, fmt.Errorf("sandbox root: %w", err)
+		return "", 0, err
+	}
+	defer vfs.Close()
+	start, err := filepath.EvalSymlinks(searchRoot)
+	if err != nil {
+		return "", 0, fmt.Errorf("walk: %w", err)
+	}
+	startRel, err := vfs.rel(start)
+	if err != nil {
+		return "", 0, err
 	}
 
 	var (
@@ -209,62 +221,65 @@ func grepWalk(root, fence, searchRoot string, re *regexp.Regexp, glob, mode stri
 	)
 
 	// Collect candidate files first so the iteration order is
-	// deterministic (lexicographic). filepath.WalkDir already visits
-	// in sorted order so we just track paths as they come.
+	// deterministic (lexicographic). The walk visits in sorted order so we
+	// just track paths as they come.
 	type fileMatch struct {
 		path    string
 		matches []grepMatch
 	}
 	var perFile []fileMatch
 
-	err = filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			// Skip dirs we can't enter; don't fail the whole walk.
-			return nil
-		}
-		if d.IsDir() {
-			if isFenceDir(fence, path, d) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	vfs.walk(startRel, func(dir *os.Root, path string, d fs.DirEntry) {
 		if glob != "" {
 			matched, gerr := filepath.Match(glob, d.Name())
 			if gerr != nil || !matched {
-				return nil
+				return
 			}
 		}
-		// Symlink containment: WalkDir does NOT descend symlinked DIRS, but it
-		// still yields a symlinked FILE entry (IsDir()==false) whose target
-		// grepFile's os.Open would FOLLOW — so an in-volume symlink to
-		// /etc/passwd (plantable via a rw Bash/Bashbox, or pre-existing in a
-		// mounted dir) leaks out-of-volume file CONTENTS. Read/Edit gate every
-		// open on resolveInsideRoot; Grep did not. Resolve the entry and
-		// re-assert it is inside the volume: an in-volume symlink resolves to
-		// its real in-volume path (still grepped); one that escapes is skipped,
-		// never opened.
-		resolved, rerr := filepath.EvalSymlinks(path)
-		if rerr != nil {
-			return nil // dangling / unreadable symlink → skip
+		var (
+			f    *os.File
+			oerr error
+		)
+		if d.Type()&fs.ModeSymlink != 0 {
+			// Symlink containment: the walk never descends a symlinked DIR,
+			// but it still yields a symlinked FILE entry. An in-volume
+			// symlink to /etc/passwd (plantable via a rw Bash/Bashbox, or
+			// pre-existing in a mounted dir) must not leak out-of-volume file
+			// CONTENTS. Resolve the entry and re-assert it is inside the
+			// volume: an in-volume symlink resolves to its real in-volume path
+			// (still grepped, opened through the root); one that escapes is
+			// skipped, never opened.
+			abs := filepath.Join(start, path)
+			resolved, rerr := filepath.EvalSymlinks(abs)
+			if rerr != nil {
+				return // dangling / unreadable symlink → skip
+			}
+			if relInsideRoot(vfs.dir, abs, resolved) != nil {
+				return // escapes the volume → skip, never open
+			}
+			if outsideFence(fence, resolved) != nil {
+				return // a symlink into the dynamic root → skip, never open
+			}
+			rel, rerr := vfs.rel(resolved)
+			if rerr != nil {
+				return
+			}
+			f, oerr = vfs.open(rel)
+		} else {
+			f, oerr = vfs.openIn(dir, d.Name())
 		}
-		if relInsideRoot(rootResolved, path, resolved) != nil {
-			return nil // escapes the volume → skip, never open
+		if oerr != nil {
+			return // skip silently — permission / disappeared / swapped
 		}
-		if outsideFence(fence, resolved) != nil {
-			return nil // a symlink into the dynamic root → skip, never open
-		}
-		matches, perr := grepFile(resolved, re, mode == "content", before, after)
-		if perr != nil || len(matches) == 0 {
-			return nil
+		matches := grepFile(f, re, mode == "content", before, after)
+		f.Close()
+		if len(matches) == 0 {
+			return
 		}
 		perFile = append(perFile, fileMatch{path: path, matches: matches})
-		return nil
 	})
-	if err != nil {
-		return "", 0, fmt.Errorf("walk: %w", err)
-	}
 
-	// Deterministic ordering on path. WalkDir already sorts but be
+	// Deterministic ordering on path. The walk already sorts but be
 	// explicit so the contract is testable.
 	sort.Slice(perFile, func(i, j int) bool { return perFile[i].path < perFile[j].path })
 
@@ -272,10 +287,7 @@ func grepWalk(root, fence, searchRoot string, re *regexp.Regexp, glob, mode stri
 	// writing each entry so a result set that exactly fills the cap
 	// doesn't get a spurious truncation marker.
 	for _, fm := range perFile {
-		rel, _ := filepath.Rel(searchRoot, fm.path)
-		if rel == "" {
-			rel = fm.path
-		}
+		rel := fm.path
 		switch mode {
 		case "files_with_matches":
 			if results >= headLimit {
@@ -345,25 +357,20 @@ type grepContextLine struct {
 	text string
 }
 
-// grepFile matches one file. wantContent=true → return full match
+// grepFile matches one opened file. wantContent=true → return full match
 // objects with optional before/after context. wantContent=false →
-// return at least one match (we only need to know "any match").
-func grepFile(path string, re *regexp.Regexp, wantContent bool, before, after int) ([]grepMatch, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil // skip silently — permission / disappeared
-	}
-	defer f.Close()
-
+// return at least one match (we only need to know "any match"). A file it
+// cannot read is skipped silently (no matches).
+func grepFile(f io.ReadSeeker, re *regexp.Regexp, wantContent bool, before, after int) []grepMatch {
 	// Binary detection: peek the first 8 KiB; refuse if NUL byte
 	// present. Mirrors ripgrep's heuristic.
 	peek := make([]byte, 8*1024)
 	n, _ := f.Read(peek)
 	if bytes.IndexByte(peek[:n], 0) >= 0 {
-		return nil, nil
+		return nil
 	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return nil, nil
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil
 	}
 
 	// Read all lines into a slice so we can render -A/-B context.
@@ -378,7 +385,7 @@ func grepFile(path string, re *regexp.Regexp, wantContent bool, before, after in
 		lines = append(lines, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, nil
+		return nil
 	}
 
 	var out []grepMatch
@@ -409,5 +416,5 @@ func grepFile(path string, re *regexp.Regexp, wantContent bool, before, after in
 		}
 		out = append(out, m)
 	}
-	return out, nil
+	return out
 }
