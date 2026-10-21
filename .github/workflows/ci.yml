@@ -530,7 +530,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # PINNED, and the pin is the whole reason this gate is usable. The Python
@@ -588,7 +588,7 @@ jobs:
         working-directory: adapters/python
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install (with dev extras)
