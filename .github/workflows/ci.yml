@@ -27,9 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
           cache: true
 
       - name: Tidy check
@@ -142,9 +144,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
           cache: true
 
       # The pgvector ROUND-TRIP contract (set + search + ordering + dimension
@@ -334,9 +338,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
           cache: true
 
       # The FUNCTIONAL code-js runtime suite is deterministic (synthetic
@@ -385,9 +391,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
           cache: true
       - uses: actions/setup-node@v5
         with:
@@ -439,7 +447,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build every platform bridge image
         run: |
           set -euo pipefail
@@ -527,9 +535,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"

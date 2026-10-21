@@ -55,8 +55,8 @@ func TestReceiver_StoredSecretIsReadOncePerTTL(t *testing.T) {
 	rec := New(Deps{Cfg: &config.Config{}, Store: st, Runner: &fakeRunner{runID: "r"}, Credentials: creds, Now: now})
 
 	for i := 0; i < 20; i++ {
-		if code, _ := postWith(rec, "/v1/_webhooks/acme/gh", "forged", []byte(fmt.Sprintf(`{"n":%d}`, i))); code != http.StatusUnauthorized {
-			t.Fatalf("an unsigned post: %d, want 401", code)
+		if code, _ := postWith(rec, "/v1/_webhooks/acme/gh", "forged", []byte(fmt.Sprintf(`{"n":%d}`, i))); code != http.StatusNotFound {
+			t.Fatalf("an unsigned post: %d, want 404", code)
 		}
 	}
 	if n := creds.count(); n != 1 {
@@ -75,8 +75,8 @@ func TestReceiver_StoredSecretIsReadOncePerTTL(t *testing.T) {
 	if code, _ := postWith(rec, "/v1/_webhooks/acme/gh", "rotated", []byte(`{"ok":2}`)); code != http.StatusAccepted {
 		t.Errorf("signed with the rotated secret after the cache lapsed: %d, want 202", code)
 	}
-	if code, _ := postWith(rec, "/v1/_webhooks/acme/gh", "the-secret", []byte(`{"ok":3}`)); code != http.StatusUnauthorized {
-		t.Errorf("signed with the old secret after the cache lapsed: %d, want 401", code)
+	if code, _ := postWith(rec, "/v1/_webhooks/acme/gh", "the-secret", []byte(`{"ok":3}`)); code != http.StatusNotFound {
+		t.Errorf("signed with the old secret after the cache lapsed: %d, want 404", code)
 	}
 	if n := creds.count(); n != 2 {
 		t.Errorf("the credential was read %d times, want 2", n)

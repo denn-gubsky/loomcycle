@@ -54,7 +54,7 @@
   },
   "devDependencies": {
     "@loomcycle/client": "^1.115.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.6.5",
     "typescript": "^7.0.2",
     "vitest": "^3.0.0"
   }
