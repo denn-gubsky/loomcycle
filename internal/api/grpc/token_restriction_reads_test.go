@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -148,5 +149,25 @@ func TestGrpcSpawnRunBatch_RestrictedTokenIsNotAnsweredWithAnotherAgentsKeyedRun
 	}
 	if got := spawn(scopedCtx("acme", "dev", auth.ScopeRunsCreate, auth.ScopeRunsRead)); !got.GetDeduplicated() || got.GetRunId() != held.ID {
 		t.Errorf("unrestricted keyed spawn = %+v, want the run holding the key", got)
+	}
+}
+
+// ListUserAgents' truncated must not tell a restricted token that runs it
+// cannot see lie beyond its page: here the page fills with its own runs and
+// the only row left is another agent's.
+func TestGrpcListUserAgents_RestrictedTruncatedDoesNotRevealHiddenRuns(t *testing.T) {
+	adapter, _, st, _ := ownershipGRPC(t)
+	seedAgentRun(t, st, "default", "a_hidden", "")
+	for i := 0; i < userAgentsListMax; i++ {
+		seedAgentRun(t, st, "agentx", fmt.Sprintf("a_own_%d", i), "")
+	}
+	restricted := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+		Restrictions: auth.Restrictions{Agents: []string{"agentx"}},
+	})
+	resp, err := adapter.ListUserAgents(restricted, &loomcyclepb.ListUserAgentsRequest{UserId: "dev"})
+	if err != nil || len(resp.GetAgents()) != userAgentsListMax || resp.GetTruncated() {
+		t.Errorf("restricted ListUserAgents = %d runs, truncated %v, err %v; want its %d runs and no truncated",
+			len(resp.GetAgents()), resp.GetTruncated(), err, userAgentsListMax)
 	}
 }

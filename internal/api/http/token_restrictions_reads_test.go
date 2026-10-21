@@ -343,3 +343,34 @@ func TestStreamUserRunStates_RestrictedTokenSeesOnlyReachableRuns(t *testing.T) 
 		t.Errorf("unrestricted stream carried %v, want all three runs", got)
 	}
 }
+
+// A listing that leaves out the runs a restricted token may not see must not
+// say it did: `truncated` there would tell the token that runs it cannot see
+// exist. A restricted listing with nothing visible reads exactly as the
+// listing of a user with no runs at all, however many hidden rows it read.
+func TestRestrictedToken_ListingDoesNotRevealHiddenRunsThroughTruncated(t *testing.T) {
+	srv, ts, st := restrictedFixtureServer(t)
+	srv.awaitedScanCap = 5
+	for i := 0; i < 7; i++ {
+		seedFinishedRun(t, st, "other", fmt.Sprintf("a_hidden_%d", i), "")
+		// And running ones, waiting on a channel, for the awaited_state scan.
+		sess, err := st.CreateSession(context.Background(), "acme", "other", "dev")
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := st.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: fmt.Sprintf("a_waiting_%d", i), UserID: "dev", TenantID: "acme"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.AppendEvent(context.Background(), run.ID, "tool_call",
+			[]byte(`{"type":"tool_call","tool_use":{"id":"tu_1","name":"Channel","input":{"op":"subscribe","channel":"findings"}}}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, empty := bearerCall(t, ts, restrictedBearer, "GET", "/v1/users/nobody/agents?status=all", "")
+	for _, path := range []string{"/v1/users/dev/agents?status=all", "/v1/users/dev/agents?awaited_state=channel"} {
+		if code, body := bearerCall(t, ts, restrictedBearer, "GET", path, ""); code != 200 || body != empty {
+			t.Errorf("restricted %s = %d %s, want exactly a user with no runs: %s", path, code, body, empty)
+		}
+	}
+}

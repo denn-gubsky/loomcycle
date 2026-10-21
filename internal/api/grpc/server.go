@@ -416,7 +416,7 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "store: %v", err)
 		}
-		out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(held)), Truncated: truncated}
+		out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(held)), Truncated: truncated && !tree.Restricted()}
 		for _, h := range held {
 			_, live := s.cancelReg.Get(h.Run.AgentID)
 			a := runToProto(h.Run, live)
@@ -439,7 +439,11 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), Truncated: truncated}
+	// Truncated is never reported to a restricted token: its scan reads rows
+	// it may not see, and the flag would say they exist. Such a token whose
+	// own runs lie past the scan bound does not see them, and is not told so
+	// (the safe side; HTTP makes the same trade).
+	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), Truncated: truncated && !tree.Restricted()}
 	for _, r := range runs {
 		// Drop cross-tenant rows, and for an isolated member another user's rows,
 		// mirroring HTTP handleListUserAgents (its isolatedCrossUser short-circuit

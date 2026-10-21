@@ -21,7 +21,8 @@ const collectRunsPage = 100
 //
 // truncated reports that the scan stopped with rows it never judged: max was
 // reached with more left, or the scan cap was. A scan that judged every row
-// is not truncated.
+// is not truncated. It counts rows keep would have dropped, so a caller that
+// must not learn those rows exist must not pass it on.
 func CollectRunsByUser(ctx context.Context, st RunsByUserPager, tenantID, userID string, statuses []RunStatus, keep func(Run) bool, scanCap, max int) (runs []Run, truncated bool, err error) {
 	if scanCap <= 0 {
 		scanCap = CollectRunsScanCap

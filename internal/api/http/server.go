@@ -8400,7 +8400,13 @@ func (s *Server) handleListUserAgents(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"agents": out}
 	// Only when it is true: a listing that read every matching run looks
 	// exactly as it always has.
-	if truncated {
+	//
+	// Never to a token limited to certain agents: its scan reads rows it may
+	// not see, so `truncated` would say that such rows exist (a listing with
+	// nothing visible would read differently from a user with no runs). The
+	// cost is that a restricted token whose own runs lie past the scan bound
+	// does not see them and is not told so — the safe side of the trade.
+	if truncated && !tree.Restricted() {
 		resp["truncated"] = true
 	}
 	writeJSON(w, http.StatusOK, resp)
