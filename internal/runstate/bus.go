@@ -25,7 +25,7 @@ package runstate
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -187,7 +187,7 @@ func (b *Bus) Publish(evt RunStateEvent) {
 	if bp != nil {
 		if payload, err := json.Marshal(evt); err == nil {
 			if pubErr := bp.Publish(context.Background(), "loomcycle.runstate", payload); pubErr != nil {
-				log.Printf("runstate: backplane publish failed: %v", pubErr)
+				slog.Warn("runstate: backplane publish failed", "err", pubErr)
 			}
 		}
 	}
@@ -255,7 +255,7 @@ func (b *Bus) SubscribeBackplane(ctx context.Context, bp coord.Backplane) error 
 		for evt := range ch {
 			var rs RunStateEvent
 			if err := json.Unmarshal(evt.Payload, &rs); err != nil {
-				log.Printf("runstate: malformed backplane event: %v", err)
+				slog.Warn("runstate: malformed backplane event", "err", err)
 				continue
 			}
 			b.publishLocal(rs)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -93,7 +93,7 @@ func (h *HeartbeatRunner) Start(parent context.Context) {
 	runnable := make([]HeartbeatSpec, 0, len(h.specs))
 	for _, spec := range h.specs {
 		if spec.Period <= 0 {
-			log.Printf("heartbeat: skip %q (non-positive period)", spec.Name)
+			slog.Warn("heartbeat: skip (non-positive period)", "heartbeat", spec.Name)
 			continue
 		}
 		runnable = append(runnable, spec)
@@ -142,7 +142,7 @@ func (h *HeartbeatRunner) run(ctx context.Context, spec HeartbeatSpec) {
 			}
 			body, err := json.Marshal(payload)
 			if err != nil {
-				log.Printf("heartbeat %s: marshal: %v", spec.Name, err)
+				slog.Error("heartbeat: marshal failed", "heartbeat", spec.Name, "err", err)
 				continue
 			}
 			// Heartbeats are operator-global infrastructure (MemoryScopeGlobal,
@@ -155,7 +155,7 @@ func (h *HeartbeatRunner) run(ctx context.Context, spec HeartbeatSpec) {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("heartbeat %s: publish: %v", spec.Name, err)
+				slog.Warn("heartbeat: publish failed", "heartbeat", spec.Name, "err", err)
 			}
 		}
 	}

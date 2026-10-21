@@ -382,6 +382,7 @@ func selectPresetNames(flags []string, env string) []string {
 var processStartedAt = time.Now()
 
 func main() {
+	setupLogging()
 	resolveBuildIdentity()
 
 	mcpMode, done := dispatchSubcommand()

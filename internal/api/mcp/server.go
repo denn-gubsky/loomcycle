@@ -30,7 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -53,7 +53,7 @@ type Config struct {
 	// the caller via main.go's worker block). The MCP server itself
 	// doesn't write to Store directly — Connector handles that.
 	Store store.Store
-	// Logf is the log sink. nil → standard library log.Printf.
+	// Logf is the log sink. nil → slog, at INFO.
 	Logf func(format string, v ...any)
 	// ServerName / ServerVersion are surfaced in the initialize
 	// response so adapters can log which loomcycle they're talking
@@ -530,5 +530,5 @@ type handlerEnv struct {
 }
 
 func defaultLogf(format string, v ...any) {
-	log.Printf("mcp: "+format, v...)
+	slog.Info(fmt.Sprintf("mcp: "+format, v...))
 }

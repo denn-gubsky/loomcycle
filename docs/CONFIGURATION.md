@@ -1646,6 +1646,13 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | `LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS` | 0 (no ceiling) | Ceiling on a spawn's `timeout_ms`; a larger value is refused, not clamped. |
 | `LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS` | 60000 (60 s) | Longest one `Agent` poll with `wait` `any`/`all` blocks; a larger `wait_ms` is cut to it. |
 
+**Logging.** Log lines go to stderr. Exact values of secret-named env vars are masked in them, as in the transcript plane above.
+
+| Env var | Default | Values |
+|---|---|---|
+| `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
+| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Lines from code not yet converted to levelled logging are never hidden by the level (they are recorded at the configured level, `info` at minimum), so fatal and startup errors always show. An unknown value warns and uses `info`. |
+
 ---
 
 ## 9d. Filesystem Volumes — per-agent ro/rw scopes (RFC AH)

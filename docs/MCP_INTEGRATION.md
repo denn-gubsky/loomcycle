@@ -164,8 +164,8 @@ refuseUnresolved := tools.HasRunIdentity(ctx) && !tools.IsMCPDiscovery(ctx)
 for k, v := range c.headers {
     subV, drop := substituteRunVars(v, runIdent.UserBearer)
     if drop {
-        log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); %s",
-            k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer), unresolvedAction(ctx))
+        slog.WarnContext(ctx, "mcp http: ${run.user_bearer} unresolved for header; "+unresolvedAction(ctx),
+            "header", k, "url", c.url, "agent_id", runIdent.AgentID, "bearer", tokenPrefix(runIdent.UserBearer))
         if refuseUnresolved {
             return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
         }
@@ -498,7 +498,7 @@ POST /v1/runs
 | Symptom | Cause | What to do |
 |---|---|---|
 | Model sees tool error "authentication failed" or HTTP 401 | bearer is stale/invalid | refresh on the caller side; pass a fresh `user_bearer` |
-| Loomcycle log: `mcp http: ${run.user_bearer} unresolved for header...` | the header uses the strict form and no bearer was available. A line ending `refusing the call` is a run that carried no `user_bearer`: nothing was sent, and the model saw a `business` / not-retryable tool error. A line ending `dropping header (no run on this request)` is the boot-time enumeration handshake, which has no run and sends its request without that header. A line ending `dropping header (run-start discovery handshake)` is the run-start re-probe that fetches a server's tool list, which sends without it too | for a refused call, either pass the bearer or switch yaml to the `:-FALLBACK` form; the dropped-header lines are expected at boot and at run start for a server whose headers use a per-run credential |
+| Loomcycle log: `mcp http: ${run.user_bearer} unresolved for header...` | the header uses the strict form and no bearer was available. A line whose message ends `refusing the call` is a run that carried no `user_bearer`: nothing was sent, and the model saw a `business` / not-retryable tool error. A line whose message ends `dropping header (no run on this request)` is the boot-time enumeration handshake, which has no run and sends its request without that header. A line whose message ends `dropping header (run-start discovery handshake)` is the run-start re-probe that fetches a server's tool list, which sends without it too | for a refused call, either pass the bearer or switch yaml to the `:-FALLBACK` form; the dropped-header lines are expected at boot and at run start for a server whose headers use a per-run credential |
 | MCP server tool not in registry at boot | server unreachable at startup; loomcycle logged "skipped" | each run that names the server's tools (`mcp__<server>__…` in its `tools`) re-probes it at run start and advertises its tools once it answers (`StaticToolsForRun` in `internal/tools/mcp/enumerate.go`); the lazy retry (`(*LazyResolver).Resolve` in `internal/tools/mcp/lazy.go`) backs up a call to a tool the model already knows. A peer that starts after loomcycle needs no loomcycle restart |
 | All MCP calls error mid-session with 404 | server invalidated the session; loomcycle marks the client dead | next call triggers a fresh handshake automatically — no action needed |
 | Operator yaml `tools` filter excludes a tool | name mismatch | tool names are case-sensitive; check the server's `tools/list` output |
