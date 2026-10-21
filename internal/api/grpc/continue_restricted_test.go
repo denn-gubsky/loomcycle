@@ -45,9 +45,9 @@ const grpcOneStateTeam = `{"entry":"work","states":[` +
 	`"transitions":[{"from":"work","to":"done","on":"success"}]}`
 
 // Continue on a session of a retired team version, by a token limited to
-// agents other than the session's, says neither the session's agent nor its
-// team. gRPC answers with the runner error's text, which used to be the
-// retirement refusal: "unknown agent: secretagent: … team "squad" …".
+// agents other than the session's, is NotFound and says neither the session's
+// agent nor its team. gRPC answers with the runner error's text, which used to
+// be the retirement refusal: "unknown agent: secretagent: … team "squad" …".
 func TestGrpcContinue_ARetiredTeamSessionTellsARestrictedTokenNothing(t *testing.T) {
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "grpc-retired.db"))
 	if err != nil {
@@ -113,7 +113,55 @@ func TestGrpcContinue_ARetiredTeamSessionTellsARestrictedTokenNothing(t *testing
 		}}},
 	}, stream)
 	msg := status.Convert(err).Message()
-	if status.Code(err) != codes.PermissionDenied || strings.Contains(msg, "secretagent") || strings.Contains(msg, "squad") {
-		t.Errorf("Continue = %v, want PermissionDenied naming neither the agent nor the team", err)
+	if status.Code(err) != codes.NotFound || strings.Contains(msg, "secretagent") || strings.Contains(msg, "squad") {
+		t.Errorf("Continue = %v, want NotFound naming neither the agent nor the team", err)
+	}
+}
+
+// gRPC Continue and Run with a session_id answer a token limited to other
+// agents the same for a session it cannot reach as for one that does not
+// exist: NotFound, with the same message.
+func TestGrpcContinuation_ARestrictedTokenCannotTellAnUnreachableSessionFromAMissingOne(t *testing.T) {
+	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "grpc-unreachable.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := &config.Config{
+		Defaults: config.Defaults{Provider: "stub", Model: "stub-model"},
+		Agents: map[string]config.AgentDef{
+			"secretagent": {Model: "stub-model", SystemPrompt: "hi"},
+			"helper":      {Model: "stub-model", SystemPrompt: "hi"},
+		},
+		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
+	}
+	httpSrv := lchttp.New(cfg, oneProvider{&answerProvider{}}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
+	adapter := New(Config{Store: st, CancelReg: cancel.NewRegistry(), Connector: httpSrv, Runner: httpSrv})
+	sess, err := st.CreateSession(context.Background(), "acme", "secretagent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const missing = "s_0123456789abcdef"
+	restricted := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "alice", TokenDefID: "def_restricted",
+		Scopes:       []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+		Restrictions: auth.Restrictions{Agents: []string{"helper"}},
+	})
+	segs := []*loomcyclepb.PromptSegment{{Role: "user", Content: []*loomcyclepb.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}}
+	answer := func(err error, id string) string {
+		return status.Code(err).String() + " " + strings.ReplaceAll(status.Convert(err).Message(), id, "<session>")
+	}
+
+	cont := func(id string) string {
+		return answer(adapter.Continue(&loomcyclepb.ContinueRequest{SessionId: id, Segments: segs}, &principalContinueStream{ctx: restricted}), id)
+	}
+	run := func(id string) string {
+		return answer(adapter.Run(&loomcyclepb.RunRequest{Agent: "helper", SessionId: id, Segments: segs}, &principalContinueStream{ctx: restricted}), id)
+	}
+	for name, call := range map[string]func(string) string{"Continue": cont, "Run": run} {
+		u, m := call(sess.ID), call(missing)
+		if u != m || !strings.HasPrefix(m, codes.NotFound.String()) {
+			t.Errorf("%s: unreachable session = %q, missing one = %q; want the same NotFound", name, u, m)
+		}
 	}
 }

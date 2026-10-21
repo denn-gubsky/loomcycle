@@ -3047,14 +3047,18 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if !sessionOwnershipOK(ctx, sess) {
 			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
 		}
-		// A token limited to some agents may continue only a session whose
-		// agent is on its list. Checked first, and answered the same whatever
-		// the request names — no agent, the session's, another one: an answer
-		// that changed with the name would let a caller enumerate names until
-		// it learned the session's agent. And before the session's team, whose
-		// refusal names the agent and the team.
-		if s.admitPrincipalAgent(ctx, sess.Agent) != nil {
-			return errContinuationAgentNotAllowed(in.SessionID)
+		// A token limited to some agents does not reach a session outside its
+		// list, and is answered as for a session that does not exist —
+		// whatever the request names (no agent, the session's, another one),
+		// and before the session's team, whose refusal names the agent and
+		// the team. Any other answer confirms the session exists, or lets a
+		// caller enumerate names until it learns the session's agent.
+		reachable, err := s.allowlistReachesSession(ctx, sess)
+		if err != nil {
+			return fmt.Errorf("%w: %v", runner.ErrInternal, err)
+		}
+		if !reachable {
+			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
 		}
 		// A continuation runs its session's agent (RFC ET P1 decision A18).
 		// A caller naming another agent is refused rather than silently run
@@ -3129,7 +3133,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// the ctx tenant is wrong here.
 	// The agent is final here (a continuation has taken its session's, a
 	// started draft its row's), so this covers all three.
-	// (A continuation's agent was admitted with its session, above.)
+	// (A continuation's agent was checked with its session, above.)
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}

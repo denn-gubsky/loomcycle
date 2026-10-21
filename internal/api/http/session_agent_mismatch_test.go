@@ -77,7 +77,8 @@ func TestSpawnRun_SessionAgentMismatchDoesNotNameAnAgentTheTokenMayNotRun(t *tes
 // Continuing a session through POST /v1/sessions/{id}/messages with a token
 // limited to some agents, when the session's agent is not one of them, is
 // refused without naming that agent: the caller named none, and the refusal
-// must not tell it one outside its list.
+// must not tell it one outside its list. (It is the not-found a missing
+// session gets: TestContinuation_ARestrictedTokenCannotTellAnUnreachableSessionFromAMissingOne.)
 func TestHandleMessages_AContinuationRefusalDoesNotNameAnAgentTheTokenMayNotRun(t *testing.T) {
 	g := newGoldenServer(t, goldenOpts{authed: true})
 	r := g.postAs(goldenMemberBearer, "/v1/runs", goldenRunBody("other", "first turn", ""))
@@ -86,8 +87,8 @@ func TestHandleMessages_AContinuationRefusalDoesNotNameAnAgentTheTokenMayNotRun(
 
 	limited := g.postAs(goldenRestrictedBearer, "/v1/sessions/"+sid+"/messages", goldenMsgBody("LIMITED turn", ""))
 	limited.drain(t)
-	if limited.status != http.StatusForbidden || !strings.Contains(limited.body, "agent_not_allowed") {
-		t.Errorf("restricted token: %d %q, want 403 agent_not_allowed", limited.status, limited.body)
+	if limited.status != http.StatusNotFound {
+		t.Errorf("restricted token: %d %q, want 404", limited.status, limited.body)
 	}
 	if strings.Contains(limited.body, "other") {
 		t.Errorf("restricted token learned the session's agent: %q", limited.body)
@@ -122,8 +123,8 @@ func TestContinuation_ARestrictedTokenGetsOneAnswerWhateverAgentItNames(t *testi
 		answers["runs, agent "+name] = answer{resp.status, resp.body}
 	}
 	want := answers["messages, no agent"]
-	if want.status != http.StatusForbidden || strings.Contains(want.body, "other") {
-		t.Errorf("messages: %d %q, want a 403 that does not name the session's agent", want.status, want.body)
+	if want.status != http.StatusNotFound || strings.Contains(want.body, "other") {
+		t.Errorf("messages: %d %q, want a 404 that does not name the session's agent", want.status, want.body)
 	}
 	for k, a := range answers {
 		if a != want {
@@ -149,6 +150,57 @@ func TestContinuation_ARestrictedTokenGetsOneAnswerWhateverAgentItNames(t *testi
 		if e != errs[""] {
 			t.Errorf("spawn naming %q: %q; want the same as naming none: %q", name, e, errs[""])
 		}
+	}
+	if _, ran := g.prov.sawCall("PROBE turn"); ran {
+		t.Error("a probe reached the model")
+	}
+}
+
+// A token limited to some agents cannot tell a session it cannot reach — one
+// whose agent is outside its list — from a session that does not exist: a
+// continuation of either is the same not-found, on every continuation route.
+// A 403 for the one and a 404 for the other confirmed that the session exists.
+func TestContinuation_ARestrictedTokenCannotTellAnUnreachableSessionFromAMissingOne(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{authed: true})
+	r := g.postAs(goldenMemberBearer, "/v1/runs", goldenRunBody("other", "first turn", ""))
+	_, _, sid := r.ids(t)
+	r.drain(t)
+	const missing = "s_0123456789abcdef"
+	mask := func(s, id string) string { return strings.ReplaceAll(s, id, "<session>") }
+
+	routes := map[string]func(id string) *goldenResp{
+		"messages": func(id string) *goldenResp {
+			return g.postAs(goldenRestrictedBearer, "/v1/sessions/"+id+"/messages", goldenMsgBody("PROBE turn", ""))
+		},
+		"runs + session_id": func(id string) *goldenResp {
+			return g.postAs(goldenRestrictedBearer, "/v1/runs", goldenRunBody("plain", "PROBE turn", `"session_id":"`+id+`"`))
+		},
+	}
+	for name, post := range routes {
+		unreachable, absent := post(sid), post(missing)
+		unreachable.drain(t)
+		absent.drain(t)
+		if unreachable.status != http.StatusNotFound || unreachable.status != absent.status ||
+			mask(unreachable.body, sid) != mask(absent.body, missing) {
+			t.Errorf("%s: unreachable session = %d %q, missing one = %d %q; want the same 404",
+				name, unreachable.status, unreachable.body, absent.status, absent.body)
+		}
+	}
+
+	restricted := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "dev", TokenDefID: "def_golden_restricted",
+		Scopes:       []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+		Restrictions: auth.Restrictions{Agents: []string{"plain"}},
+	})
+	spawn := func(id string) string {
+		res, err := g.srv.SpawnRun(restricted, connector.SpawnRunRequest{SessionID: id, Segments: spawnSegs("PROBE turn")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mask(res.Status+" "+res.Error, id)
+	}
+	if u, m := spawn(sid), spawn(missing); u != m {
+		t.Errorf("spawn: unreachable session = %q, missing one = %q; want the same", u, m)
 	}
 	if _, ran := g.prov.sawCall("PROBE turn"); ran {
 		t.Error("a probe reached the model")

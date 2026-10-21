@@ -1178,9 +1178,9 @@ func (b ctxBlindStore) AgentDefGetActive(_ context.Context, tenantID, name strin
 }
 
 // A token limited to other agents, continuing a session of a retired team
-// version whose agent is not on its list, is refused as any continuation of an
-// agent outside its list is: the refusal names neither the agent nor the
-// team. It used to be the retirement refusal, which carried both.
+// version whose agent is not on its list, is answered as for a session that
+// does not exist: the answer names neither the agent nor the team. It used to
+// be the retirement refusal, which carried both.
 func TestContinuation_ARetiredTeamSessionTellsARestrictedTokenNothing(t *testing.T) {
 	h := newLocalHarness(t)
 	defID := h.seedTeamVersion("tdf_sdlc_1", "sdlc", teamWith("scout", nil), true)
@@ -1200,8 +1200,8 @@ func TestContinuation_ARetiredTeamSessionTellsARestrictedTokenNothing(t *testing
 		SessionID: sessionID,
 		Segments:  []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "go"}}}},
 	}, runner.RunCallbacks{})
-	if !errors.Is(err, runner.ErrAgentNotAllowed) || strings.Contains(err.Error(), "scout") || strings.Contains(err.Error(), "sdlc") {
-		t.Errorf("RunOnce = %v, want agent_not_allowed naming neither the agent nor the team", err)
+	if !errors.Is(err, runner.ErrSessionNotFound) || strings.Contains(err.Error(), "scout") || strings.Contains(err.Error(), "sdlc") {
+		t.Errorf("RunOnce = %v, want session not found, naming neither the agent nor the team", err)
 	}
 
 	body := `{"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`
@@ -1210,8 +1210,8 @@ func TestContinuation_ARetiredTeamSessionTellsARestrictedTokenNothing(t *testing
 	r = r.WithContext(restricted(r.Context()))
 	rr := httptest.NewRecorder()
 	h.srv.handleMessages(rr, r)
-	if rr.Code != http.StatusForbidden || strings.Contains(rr.Body.String(), "scout") || strings.Contains(rr.Body.String(), "sdlc") {
-		t.Errorf("POST messages = %d %s, want 403 naming neither the agent nor the team", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound || strings.Contains(rr.Body.String(), "scout") || strings.Contains(rr.Body.String(), "sdlc") {
+		t.Errorf("POST messages = %d %s, want 404 naming neither the agent nor the team", rr.Code, rr.Body.String())
 	}
 	if n := len(h.prov.reqs); n != 0 {
 		t.Errorf("%d model call(s) were made", n)
