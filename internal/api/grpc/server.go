@@ -235,7 +235,9 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 	if s.store == nil {
 		// No persistence — only live-in-registry answers are possible.
 		entry, ok := s.cancelReg.Get(agentID)
-		if !ok {
+		// No store, no run tree to walk: a token limited to certain agents is
+		// refused (runTree fails closed).
+		if !ok || !s.runTree(ctx).Reaches(entry.RunID) {
 			return nil, status.Errorf(codes.NotFound, "no live run for %q (no store configured)", agentID)
 		}
 		return &loomcyclepb.Agent{
@@ -261,7 +263,9 @@ func (s *Server) GetAgent(ctx context.Context, req *loomcyclepb.GetAgentRequest)
 	// member, another user's — into the same opaque NotFound the HTTP
 	// handleGetAgent returns. Agent ids are not secret, so the gate must not be
 	// an existence oracle, and the reply carries the run's prompt and result.
-	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) {
+	// A token limited to certain agents reads only runs in trees it could have
+	// started; any other is the same NotFound.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) || !s.runTree(ctx).ReachesKnown(runLink(run)) {
 		return nil, status.Errorf(codes.NotFound, "no run found for agent_id %q", agentID)
 	}
 	_, live := s.cancelReg.Get(agentID)
@@ -291,7 +295,7 @@ func (s *Server) GetRun(ctx context.Context, req *loomcyclepb.GetRunRequest) (*l
 	}
 	// The same fold as GetAgent: another tenant's run, or for an isolated
 	// member another user's, is the NotFound a missing run gets.
-	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) {
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, run.TenantID, run.UserID) || !s.runTree(ctx).ReachesKnown(runLink(run)) {
 		return nil, status.Errorf(codes.NotFound, "no run found for run_id %q", runID)
 	}
 	return s.singleRunProto(ctx, run, s.runLive(run)), nil
@@ -400,8 +404,14 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		queryTenant = ""
 	}
 	p, ok := auth.PrincipalFromContext(ctx)
+	// A token limited to certain agents lists only runs in trees it could have
+	// started; the rest are left out (ReachesKnown is true, with no read, for
+	// every other caller).
+	tree := s.runTree(ctx)
+	visible := func(r store.Run) bool {
+		return auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) && tree.ReachesKnown(runLink(r))
+	}
 	if len(awaitedStates) > 0 {
-		visible := func(r store.Run) bool { return auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) }
 		held, truncated, err := awaited.RunningInStates(ctx, s.store, queryTenant, req.GetUserId(), awaitedStates, visible, 0, userAgentsListMax)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "store: %v", err)
@@ -415,11 +425,21 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		}
 		return out, nil
 	}
-	runs, err := s.store.ListActiveRunsByUser(ctx, queryTenant, req.GetUserId(), statuses...)
+	var (
+		runs      []store.Run
+		truncated bool
+	)
+	if tree.Restricted() {
+		// The allowlist is a filter the query cannot express: read on past
+		// the rows it drops until the answer is full, as HTTP does.
+		runs, truncated, err = store.CollectRunsByUser(ctx, s.store, queryTenant, req.GetUserId(), statuses, visible, 0, userAgentsListMax)
+	} else {
+		runs, err = s.store.ListActiveRunsByUser(ctx, queryTenant, req.GetUserId(), statuses...)
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs))}
+	out := &loomcyclepb.ListUserAgentsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), Truncated: truncated}
 	for _, r := range runs {
 		// Drop cross-tenant rows, and for an isolated member another user's rows,
 		// mirroring HTTP handleListUserAgents (its isolatedCrossUser short-circuit
@@ -429,7 +449,7 @@ func (s *Server) ListUserAgents(ctx context.Context, req *loomcyclepb.ListUserAg
 		// own tenant filter: the store reads tenant "" as "all tenants", so a
 		// non-admin principal whose tenant is "" gets every tenant's rows back
 		// and must be narrowed here.
-		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) {
+		if !visible(r) {
 			continue
 		}
 		_, live := s.cancelReg.Get(r.AgentID)
@@ -516,7 +536,11 @@ func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRuns
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	if !auth.OwnedRowVisible(p, ok, walk.TenantID, walk.UserID) {
+	// A token limited to certain agents reads only walks in trees it could have
+	// started; members are in the walk's tree, so the per-row check below
+	// passes them from what the tree has already read.
+	tree := s.runTree(ctx)
+	if !auth.OwnedRowVisible(p, ok, walk.TenantID, walk.UserID) || !tree.ReachesKnown(runLink(walk)) {
 		return nil, status.Errorf(codes.NotFound, "no walk found for walk_id %q", walkID)
 	}
 	queryTenant, allTenants := grpcTenantScope(ctx)
@@ -529,7 +553,7 @@ func (s *Server) ListWalkRuns(ctx context.Context, req *loomcyclepb.ListWalkRuns
 	}
 	out := &loomcyclepb.ListWalkRunsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), NextCursor: next}
 	for _, r := range runs {
-		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) {
+		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) || !tree.ReachesKnown(runLink(r)) {
 			continue
 		}
 		a := runToProto(r, s.runLive(r))
@@ -573,7 +597,9 @@ func (s *Server) ListChildRuns(ctx context.Context, req *loomcyclepb.ListChildRu
 		}
 		return nil, status.Errorf(codes.Internal, "store: %v", err)
 	}
-	if !auth.OwnedRowVisible(p, ok, parent.TenantID, parent.UserID) {
+	// The allowlist gate as ListWalkRuns': a run's children are in its tree.
+	tree := s.runTree(ctx)
+	if !auth.OwnedRowVisible(p, ok, parent.TenantID, parent.UserID) || !tree.ReachesKnown(runLink(parent)) {
 		return nil, status.Errorf(codes.NotFound, "no run found for parent_run_id %q", parentRunID)
 	}
 	queryTenant, allTenants := grpcTenantScope(ctx)
@@ -586,7 +612,7 @@ func (s *Server) ListChildRuns(ctx context.Context, req *loomcyclepb.ListChildRu
 	}
 	out := &loomcyclepb.ListChildRunsResponse{Agents: make([]*loomcyclepb.Agent, 0, len(runs)), NextCursor: next}
 	for _, r := range runs {
-		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) {
+		if !auth.OwnedRowVisible(p, ok, r.TenantID, r.UserID) || !tree.ReachesKnown(runLink(r)) {
 			continue
 		}
 		a := runToProto(r, s.runLive(r))
@@ -690,7 +716,10 @@ func (s *Server) GetTranscript(ctx context.Context, req *loomcyclepb.GetTranscri
 	// folds into the same opaque NotFound (session ids are not secret). An
 	// isolated member reads only its own sessions, as tenantStore.GetSession
 	// confines it on HTTP.
-	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, sess.TenantID, sess.UserID) {
+	// A token limited to certain agents reads only sessions whose runs are all
+	// in trees it could have started (sessionReachable); any other is the same
+	// NotFound.
+	if p, ok := auth.PrincipalFromContext(ctx); !auth.OwnedRowVisible(p, ok, sess.TenantID, sess.UserID) || !s.sessionReachable(ctx, sess) {
 		return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
 	}
 	events, err := s.store.GetTranscript(ctx, sessionID)
