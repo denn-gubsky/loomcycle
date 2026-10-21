@@ -173,6 +173,7 @@ func runPolicySetters(t *testing.T) map[string]bool {
 		t.Fatal(err)
 	}
 	out := map[string]bool{"WithRunPolicy": true, "UpdateRunPolicy": true}
+	declared := false
 	fset := token.NewFileSet()
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -187,6 +188,9 @@ func runPolicySetters(t *testing.T) map[string]bool {
 			if !ok || fd.Recv != nil || fd.Body == nil || !strings.HasPrefix(fd.Name.Name, "With") {
 				continue
 			}
+			if fd.Name.Name == "WithRunPolicy" {
+				declared = true
+			}
 			ast.Inspect(fd.Body, func(n ast.Node) bool {
 				if id, ok := n.(*ast.Ident); ok && (id.Name == "UpdateRunPolicy" || id.Name == "WithRunPolicy") {
 					out[fd.Name.Name] = true
@@ -195,8 +199,8 @@ func runPolicySetters(t *testing.T) map[string]bool {
 			})
 		}
 	}
-	if len(out) < 3 {
-		t.Fatalf("found no RunPolicy setters in internal/tools (%v); the scan is not reading the package", out)
+	if !declared {
+		t.Fatal("WithRunPolicy is not declared in internal/tools; the scan is not reading the package")
 	}
 	return out
 }

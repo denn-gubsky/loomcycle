@@ -21,9 +21,9 @@ import (
 func TestOverrideInheritance_TheRunsRoutingBlockIsInherited(t *testing.T) {
 	srv := routingServer(t)
 	parentRec := runConfigRecord{QueueRouting: &config.AgentRouting{QueueAware: true, SwitchAfterMS: 15000}}
-	ctx := tools.WithRunOverrides(context.Background(), tools.RunOverridesValue{
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Overrides: tools.RunOverridesValue{
 		Record: parentRec.marshal(), AgentName: "router",
-	})
+	}})
 
 	got, cfg := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle"}, runConfigRecord{}, "", "router")
 	if got.Routing == nil || !got.Routing.QueueAware || got.Routing.SwitchAfterMS != 15000 {

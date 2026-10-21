@@ -391,7 +391,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// (inherited from the parent + per-run/per-spawn overrides). An agent can read
 	// this to decide whether to self-compact (Context op=compact). Omitted when
 	// no compaction is configured.
-	if cp := tools.CompactionPolicy(ctx); !cp.IsZero() {
+	if cp := tools.PolicyOf(ctx).Compaction; !cp.IsZero() {
 		out["compaction"] = cp
 	}
 	// context_policy: the resolved layered-context / retention settings in effect
@@ -400,7 +400,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// is: this reports HOW the history is distilled. In recap mode an agent's older
 	// reasoning is folded into a running recap; op=compact triggers a recap rather
 	// than a compaction. Omitted when no context block is configured (append).
-	if cx := tools.ContextPolicy(ctx); !cx.IsZero() {
+	if cx := tools.PolicyOf(ctx).Context; !cx.IsZero() {
 		out["context_policy"] = cx
 	}
 	// context: how full the window is as of the last completed turn (used =

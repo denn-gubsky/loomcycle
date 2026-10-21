@@ -82,8 +82,10 @@ func TestOverrideInheritance_RevalidatesAgainstTheChildsDefinition(t *testing.T)
 
 	// A parent that chose model-b, which its own definition allowed.
 	parentRec := runConfigRecord{Routing: &routingOverride{Model: "model-b"}}
-	ctx = tools.WithRunOverrides(ctx, tools.RunOverridesValue{
-		Record: parentRec.marshal(), AgentName: "router",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Overrides = tools.RunOverridesValue{
+			Record: parentRec.marshal(), AgentName: "router",
+		}
 	})
 
 	// The child's definition declares ONLY model-a — the shape of a definition
@@ -112,8 +114,10 @@ func TestOverrideInheritance_InheritedValueIsAlsoRecorded(t *testing.T) {
 	ctx := context.Background()
 
 	parentRec := runConfigRecord{Routing: &routingOverride{Model: "model-b"}}
-	ctx = tools.WithRunOverrides(ctx, tools.RunOverridesValue{
-		Record: parentRec.marshal(), AgentName: "router",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Overrides = tools.RunOverridesValue{
+			Record: parentRec.marshal(), AgentName: "router",
+		}
 	})
 
 	got, cfg := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle"}, runConfigRecord{}, "", "router")

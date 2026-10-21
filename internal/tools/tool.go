@@ -711,36 +711,17 @@ func RunIdentity(ctx context.Context) RunIdentityValue {
 	return v
 }
 
-// WithFanoutCap stamps the run's fan-out width onto ctx.
-//
-// The cap is normally resolved from the calling agent's DEFINITION, by name, at
-// spawn time. A per-run value has no path through a name lookup, so it travels
-// on ctx like every other per-run policy — and, like them, it reaches sub-agents
-// through the ctx chain.
-//
-// Inheriting it is correct BECAUSE the value can only ever have been lowered: a
-// descendant of a run narrowed to 1 is narrowed too, and no spawn anywhere in
-// the tree can widen what an ancestor gave up.
-func WithFanoutCap(ctx context.Context, n int) context.Context {
-	if n <= 0 {
-		return ctx
-	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.FanoutCap = n })
-}
-
-// FanoutCap returns the run's own fan-out cap, or 0 when the run set none and
-// the caller should fall back to the definition.
-func FanoutCap(ctx context.Context) int {
-	return PolicyOf(ctx).FanoutCap
-}
-
 // RunOverridesValue carries a run's own override record DOWN the spawn tree,
 // together with the identity of the definition it was authored against.
 //
 // The identity travels with the record because the record alone is not enough
 // to know whether a child may use it: an override names a model valid for ONE
-// definition's declared set, and a different agent has a different set. See
-// WithRunOverrides.
+// definition's declared set, and a different agent has a different set. So only
+// a child of the SAME definition takes it (RFC DC D9) — across definitions it
+// could name a model that agent may not use, and a cheap summariser child
+// silently inheriting a frontier model is a cost decision nobody made. This
+// keeps the overrides coherent with sampling, compaction and context, which
+// also flow WITHIN a definition and stop at its boundary.
 type RunOverridesValue struct {
 	// Record is the parent's configuration record, opaque here — internal/tools
 	// cannot name the shape without importing the HTTP layer.
@@ -788,33 +769,6 @@ func (v RunOverridesValue) SameDefinitionAs(defID, name string) bool {
 		return v.DefID == defID
 	}
 	return v.AgentName != "" && v.AgentName == name
-}
-
-// WithRunOverrides stamps the run's override record onto ctx so its children
-// can inherit it — but only children of the SAME definition (RFC DC D9).
-//
-// Why not blanket inheritance: an override names a model or provider valid for
-// the definition it was authored against, because that definition's declared
-// set bounds what it may name. A different agent has a different set, so
-// inheriting across definitions can produce a value that agent may not use — a
-// refusal the caller never asked for and cannot easily explain. It is also
-// surprising in the other direction: a cheap summariser child silently
-// inheriting a frontier model is a cost decision nobody made.
-//
-// This keeps the spawn-tree behaviour coherent with sampling / compaction /
-// context, which already flow down: they flow WITHIN a definition and stop at
-// its boundary.
-func WithRunOverrides(ctx context.Context, v RunOverridesValue) context.Context {
-	if len(v.Record) == 0 {
-		return ctx
-	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.Overrides = v })
-}
-
-// RunOverrides returns the parent's override record, or the zero value when
-// there is none to inherit.
-func RunOverrides(ctx context.Context) RunOverridesValue {
-	return PolicyOf(ctx).Overrides
 }
 
 // HasRunIdentity reports whether ctx belongs to a RUN at all.
@@ -1329,28 +1283,6 @@ func ChildRunID(ctx context.Context) string {
 	return v
 }
 
-// WithSpawnIndex attaches a child's parallel_spawn index to ctx.
-func WithSpawnIndex(ctx context.Context, index int) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.SpawnIndex = index + 1 })
-}
-
-// SpawnIndex returns the child's parallel_spawn index and whether it was set.
-func SpawnIndex(ctx context.Context) (int, bool) {
-	return PolicyOf(ctx).SpawnChildIndex()
-}
-
-// WithSpawnTimeoutMs attaches a parallel_spawn child's timeout_ms (0 = none).
-// Set wherever the index is, so a nested fan-out never inherits an
-// ancestor's bound.
-func WithSpawnTimeoutMs(ctx context.Context, ms int) context.Context {
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.SpawnTimeoutMs = ms })
-}
-
-// SpawnTimeoutMs is the child's parallel_spawn timeout_ms, or 0.
-func SpawnTimeoutMs(ctx context.Context) int {
-	return PolicyOf(ctx).SpawnTimeoutMs
-}
-
 // PauseGate is the minimal pause-park surface a tool needs (RFC X Phase 3).
 // The Agent tool's parallel_spawn uses it to PARK the fan-out parent run while
 // it's blocked awaiting children (the loop's own top-of-iteration park is
@@ -1410,34 +1342,6 @@ func CompactRequest(ctx context.Context) *atomic.Bool {
 	return v
 }
 
-// WithCompactionPolicy attaches the run's RESOLVED-but-sparse compaction settings
-// to ctx (per-run/per-spawn > parent-inherited > child def, defaults applied at
-// use-time). A sub-agent inherits this; the spawn path blends a child def +
-// per-spawn override over it. nil/IsZero is a no-op.
-func WithCompactionPolicy(ctx context.Context, c *config.Compaction) context.Context {
-	if c.IsZero() {
-		return ctx
-	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.Compaction = c })
-}
-
-// CompactionPolicy returns the inherited compaction settings (sparse), or nil.
-func CompactionPolicy(ctx context.Context) *config.Compaction {
-	return PolicyOf(ctx).Compaction
-}
-
-// WithContextPolicy attaches the run's RESOLVED-but-sparse layered-context
-// settings to ctx (per-run > parent-inherited > child def, defaults applied at
-// use-time; RFC CR). A sub-agent inherits this; the spawn path blends the child
-// def over it (parent-set fields win). Read by Context op=self to report the
-// active mode. nil/IsZero is a no-op.
-func WithContextPolicy(ctx context.Context, c *config.Context) context.Context {
-	if c.IsZero() {
-		return ctx
-	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.Context = c })
-}
-
 type ctxKeyExecState struct{}
 
 // ExecStateHolder holds the live structured execution state Σ of an L2 stateful
@@ -1459,26 +1363,6 @@ func WithExecutionState(ctx context.Context, h *ExecStateHolder) context.Context
 func ExecutionState(ctx context.Context) *ExecStateHolder {
 	h, _ := ctx.Value(ctxKeyExecState{}).(*ExecStateHolder)
 	return h
-}
-
-// ContextPolicy returns the inherited layered-context settings (sparse), or nil.
-func ContextPolicy(ctx context.Context) *config.Context {
-	return PolicyOf(ctx).Context
-}
-
-// WithCompactionOverride carries a per-spawn compaction override (the Agent
-// tool's `compaction` field on a spawn entry) from the tool to runSubAgent,
-// which blends it on top of the child's effective policy. nil/IsZero is a no-op.
-func WithCompactionOverride(ctx context.Context, c *config.Compaction) context.Context {
-	if c.IsZero() {
-		return ctx
-	}
-	return UpdateRunPolicy(ctx, func(p *RunPolicy) { p.CompactionOverride = c })
-}
-
-// CompactionOverride returns the per-spawn compaction override, or nil.
-func CompactionOverride(ctx context.Context) *config.Compaction {
-	return PolicyOf(ctx).CompactionOverride
 }
 
 // UntrustedInput is one piece of text a parent hands its child as DATA: the

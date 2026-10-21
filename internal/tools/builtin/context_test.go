@@ -345,7 +345,7 @@ func TestContextTool_SelfReportsCompaction(t *testing.T) {
 	tool := &Context{}
 	enabled := true
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
-	ctx = tools.WithCompactionPolicy(ctx, &config.Compaction{Enabled: &enabled})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Compaction = &config.Compaction{Enabled: &enabled} })
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	out := decodeResult(t, res.Text)
 	if _, present := out["compaction"]; !present {

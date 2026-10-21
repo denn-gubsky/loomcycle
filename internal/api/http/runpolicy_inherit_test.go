@@ -36,7 +36,7 @@ func serverAgentTool(t *testing.T, s *Server) *builtin.AgentTool {
 func TestPrepareSubRun_ChildFansOutNoWiderThanItsOwnDefinition(t *testing.T) {
 	h := newReviewHarness(t)
 	h.srv.cfg().Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}, MaxConcurrentChildren: 2}
-	parent := tools.WithFanoutCap(tools.WithRunID(context.Background(), "r_parent"), 8)
+	parent := tools.UpdateRunPolicy(tools.WithRunID(context.Background(), "r_parent"), func(rp *tools.RunPolicy) { rp.FanoutCap = 8 })
 	prep, err := h.srv.prepareSubRunValues(parent, "child", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
@@ -58,14 +58,13 @@ func TestPrepareSubRun_SpawnCompactionOverrideIsConsumedByTheChild(t *testing.T)
 	cfg.Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}}
 	cfg.Agents["locked"] = config.AgentDef{Model: "stub-model", SystemPrompt: "l", AllowOverrides: &locked}
 	keep := 3
-	parent := tools.WithCompactionOverride(tools.WithRunID(context.Background(), "r_parent"),
-		&config.Compaction{KeepLastN: &keep})
+	parent := tools.UpdateRunPolicy(tools.WithRunID(context.Background(), "r_parent"), func(rp *tools.RunPolicy) { rp.CompactionOverride = &config.Compaction{KeepLastN: &keep} })
 	prep, err := h.srv.prepareSubRunValues(parent, "child", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer prep.cleanup()
-	if c := tools.CompactionOverride(prep.LoopCtx); c != nil {
+	if c := tools.PolicyOf(prep.LoopCtx).CompactionOverride; c != nil {
 		t.Errorf("the child's ctx still carries its own spawn's compaction override %+v; its spawns would pass it on", *c)
 	}
 	// The override is the child's: it runs with it.
@@ -88,16 +87,16 @@ func TestPrepareSubRun_ParallelSpawnIndexStopsAtTheChild(t *testing.T) {
 	h := newReviewHarness(t)
 	h.srv.cfg().Env.ResumeFanout = true
 	h.srv.cfg().Agents["child"] = config.AgentDef{Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent"}}
-	parent := tools.WithSpawnTimeoutMs(tools.WithSpawnIndex(tools.WithRunID(context.Background(), "r_parent"), 3), 500)
+	parent := tools.UpdateRunPolicy(tools.UpdateRunPolicy(tools.WithRunID(context.Background(), "r_parent"), func(rp *tools.RunPolicy) { rp.SpawnIndex = 3 + 1 }), func(rp *tools.RunPolicy) { rp.SpawnTimeoutMs = 500 })
 	prep, err := h.srv.prepareSubRunValues(parent, "child", nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer prep.cleanup()
-	if idx, ok := tools.SpawnIndex(prep.LoopCtx); ok {
+	if idx, ok := tools.PolicyOf(prep.LoopCtx).SpawnChildIndex(); ok {
 		t.Errorf("the child's ctx carries its own parallel_spawn index %d", idx)
 	}
-	if ms := tools.SpawnTimeoutMs(prep.LoopCtx); ms != 0 {
+	if ms := tools.PolicyOf(prep.LoopCtx).SpawnTimeoutMs; ms != 0 {
 		t.Errorf("the child's ctx carries its own spawn timeout %dms", ms)
 	}
 	// The consequence: the child makes a plain (sequential) Agent call.

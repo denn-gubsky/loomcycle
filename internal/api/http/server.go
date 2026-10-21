@@ -751,7 +751,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			// than the definition's — applyResourceOverride refuses to raise it.
 			// The lookup below resolves by agent NAME, which a per-run value has
 			// no path through, so it rides ctx instead.
-			if n := tools.FanoutCap(ctx); n > 0 {
+			if n := tools.PolicyOf(ctx).FanoutCap; n > 0 {
 				return n
 			}
 			// RFC N: resolve within the calling run's tenant (carried via
@@ -7373,7 +7373,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// sub-run's own emitter is swapped in below). Gives a restored fan-out
 	// parent the (index → run_id) mapping to await + re-collect this child.
 	if s.cfg().Env.ResumeFanout {
-		if idx, ok := tools.SpawnIndex(ctx); ok {
+		if idx, ok := parentPolicy.SpawnChildIndex(); ok {
 			if tuID := tools.ToolUseID(ctx); tuID != "" {
 				if emit := tools.EventEmitter(ctx); emit != nil {
 					emit(providers.Event{
@@ -7383,7 +7383,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 							Index:     idx,
 							RunID:     subRunID,
 							Agent:     name,
-							TimeoutMs: tools.SpawnTimeoutMs(ctx),
+							TimeoutMs: parentPolicy.SpawnTimeoutMs,
 						},
 					})
 				}
