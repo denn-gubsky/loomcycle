@@ -637,7 +637,7 @@ In-binary docs (bundled `Context.help` topics; agents read these directly, opera
 - `observability`. OTEL trace export setup.
 - `vector-memory`, `voyage-embedder`, `sqlite-vec`. Vector Memory backends.
 - `dynamic-mcp`. Register MCP servers at runtime.
-- `bash-security`. The Bash tool's restricted-not-isolated security posture.
+- `bashbox`. The in-process Bashbox sandbox, and how it differs from the restricted-not-isolated Bash tool.
 
 Full list via `GET /v1/_help` against a running instance.
 
