@@ -336,6 +336,17 @@ func WithExtraAllowedHosts(ctx context.Context, extras []string) context.Context
 	return context.WithValue(ctx, ctxKeyExtraAllowedHosts{}, extras)
 }
 
+// WithoutExtraAllowedHosts takes any per-call host grant off ctx, which
+// WithExtraAllowedHosts cannot do (an empty list leaves ctx unchanged). A run
+// spawned from inside a granted call — the Agent tool, a TeamDef walk — derives
+// its ctx from that call's, so the spawn boundary clears the grant with this.
+func WithoutExtraAllowedHosts(ctx context.Context) context.Context {
+	if ExtraAllowedHosts(ctx) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyExtraAllowedHosts{}, []string(nil))
+}
+
 // ExtraAllowedHosts returns the per-call host-widening grants from
 // ctx, or nil when nothing was attached. Tools that enforce a host
 // allowlist consult this AFTER their operator-floor + caller-narrowed
@@ -1377,6 +1388,13 @@ func WithSubstrateOperator(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeySubstrateOperator{}, true)
 }
 
+// WithoutSubstrateOperator takes the marker off ctx, whatever an ancestor
+// stamped. A run started from an operator plane's ctx (a TeamDef op=run walk)
+// derives its children from it, and they are agents, not the operator.
+func WithoutSubstrateOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeySubstrateOperator{}, false)
+}
+
 // IsSubstrateOperator reports whether ctx is an operator's own off-run call.
 func IsSubstrateOperator(ctx context.Context) bool {
 	v, _ := ctx.Value(ctxKeySubstrateOperator{}).(bool)
@@ -1400,6 +1418,12 @@ type ctxKeyUnauthenticatedOperator struct{}
 // call grants nothing.
 func WithUnauthenticatedOperator(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, true)
+}
+
+// WithoutUnauthenticatedOperator takes the marker off ctx, for the same reason
+// as WithoutSubstrateOperator.
+func WithoutUnauthenticatedOperator(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyUnauthenticatedOperator{}, false)
 }
 
 // IsUnauthenticatedOperator reports whether ctx carries the marker above.

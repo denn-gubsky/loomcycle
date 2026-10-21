@@ -271,8 +271,8 @@ func TestWebhookDef_ATeamDeliveryThatCannotStartAnswers400AndStartsNothing(t *te
 		{"the team is missing in the webhook's tenant", false, declared, `{"repository":{"full_name":"x"}}`, teamHookSecret, http.StatusBadRequest, "invalid_run"},
 		{"a variable the team does not declare", true, `{"branch":"$.ref"}`, `{"ref":"main"}`, teamHookSecret, http.StatusBadRequest, "invalid_run"},
 		{"a projected value carrying a placeholder", true, declared, `{"repository":{"full_name":"x {{thread.output}}"}}`, teamHookSecret, http.StatusBadRequest, "invalid_run"},
-		{"an unsigned delivery", true, declared, `{"repository":{"full_name":"x"}}`, "", http.StatusUnauthorized, "unauthorized"},
-		{"a delivery signed with another secret", true, declared, `{"repository":{"full_name":"x"}}`, "not-the-secret", http.StatusUnauthorized, "unauthorized"},
+		{"an unsigned delivery", true, declared, `{"repository":{"full_name":"x"}}`, "", http.StatusNotFound, "unknown_webhook"},
+		{"a delivery signed with another secret", true, declared, `{"repository":{"full_name":"x"}}`, "not-the-secret", http.StatusNotFound, "unknown_webhook"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

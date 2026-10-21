@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -301,8 +301,8 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		if drop {
 			// The log carries the operator's triage detail (which server, which
 			// run); the returned error does not — that one is model-visible.
-			log.Printf("mcp http: ${run.user_bearer} unresolved for header %q on %q (agent_id=%s, bearer=%s); %s",
-				k, c.url, runIdent.AgentID, tokenPrefix(runIdent.UserBearer), unresolvedAction(ctx))
+			slog.WarnContext(ctx, "mcp http: ${run.user_bearer} unresolved for header; "+unresolvedAction(ctx),
+				"header", k, "url", c.url, "agent_id", runIdent.AgentID, "bearer", tokenPrefix(runIdent.UserBearer))
 			if refuseUnresolved {
 				return nil, fmt.Errorf("header %q needs ${run.user_bearer}, which this run does not carry: %w", k, tools.ErrRunCredentialUnavailable)
 			}
@@ -310,8 +310,8 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		}
 		subV, credDrop, missingCreds := substituteCredentialRefs(subV, runCreds)
 		if credDrop {
-			log.Printf("mcp http: ${run.credentials.<name>} unresolved for header %q on %q (agent_id=%s, missing=%v); %s",
-				k, c.url, runIdent.AgentID, missingCreds, unresolvedAction(ctx))
+			slog.WarnContext(ctx, "mcp http: ${run.credentials.<name>} unresolved for header; "+unresolvedAction(ctx),
+				"header", k, "url", c.url, "agent_id", runIdent.AgentID, "missing", missingCreds)
 			if refuseUnresolved {
 				return nil, fmt.Errorf("header %q needs credential(s) %v, which this run does not carry: %w", k, missingCreds, tools.ErrRunCredentialUnavailable)
 			}
@@ -325,8 +325,8 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 		if c.credSubstitute != nil {
 			resolvedV, unresolved, cerr := c.credSubstitute(ctx, subV, c.url)
 			if cerr != nil {
-				log.Printf("mcp http: $cred resolve failed for header %q on %q (agent_id=%s): %v; %s",
-					k, c.url, runIdent.AgentID, cerr, unresolvedAction(ctx))
+				slog.WarnContext(ctx, "mcp http: $cred resolve failed for header; "+unresolvedAction(ctx),
+					"header", k, "url", c.url, "agent_id", runIdent.AgentID, "err", cerr)
 				if refuseUnresolved {
 					// The resolve error text is operator-side (it can name a
 					// store or a scope), so the model sees only that it did not
@@ -336,8 +336,8 @@ func (c *Client) do(ctx context.Context, body []byte) (*http.Response, error) {
 				continue
 			}
 			if len(unresolved) > 0 {
-				log.Printf("mcp http: $cred:%v unresolved for header %q on %q (agent_id=%s); %s",
-					unresolved, k, c.url, runIdent.AgentID, unresolvedAction(ctx))
+				slog.WarnContext(ctx, "mcp http: $cred unresolved for header; "+unresolvedAction(ctx),
+					"header", k, "url", c.url, "agent_id", runIdent.AgentID, "credentials", unresolved)
 				if refuseUnresolved {
 					return nil, fmt.Errorf("header %q needs stored credential(s) %v, which are not available to this run: %w", k, unresolved, tools.ErrRunCredentialUnavailable)
 				}
@@ -381,7 +381,7 @@ func (c *Client) runBearer(ctx context.Context, ident tools.RunIdentityValue) (s
 		return bearer, creds, nil
 	}
 	if c.credSubstitute == nil {
-		log.Printf("mcp http: the run's bearer is a stored credential and %q resolves none (agent_id=%s); refusing", c.url, ident.AgentID)
+		slog.WarnContext(ctx, "mcp http: the run's bearer is a stored credential and this server resolves none; refusing", "url", c.url, "agent_id", ident.AgentID)
 		return "", nil, fmt.Errorf("this run's bearer is a stored credential, which this server cannot resolve: %w", tools.ErrRunCredentialUnavailable)
 	}
 	tenantOnly := ident
@@ -389,7 +389,7 @@ func (c *Client) runBearer(ctx context.Context, ident tools.RunIdentityValue) (s
 	tctx := tools.WithAgentName(tools.WithRunIdentity(ctx, tenantOnly), "")
 	v, unresolved, err := c.credSubstitute(tctx, bearer, c.url)
 	if err != nil || len(unresolved) > 0 {
-		log.Printf("mcp http: the run's stored bearer did not resolve for %q (agent_id=%s): err=%v unresolved=%v", c.url, ident.AgentID, err, unresolved)
+		slog.WarnContext(ctx, "mcp http: the run's stored bearer did not resolve", "url", c.url, "agent_id", ident.AgentID, "err", err, "unresolved", unresolved)
 		return "", nil, fmt.Errorf("this run's bearer is a stored credential that could not be resolved: %w", tools.ErrRunCredentialUnavailable)
 	}
 	// The header is resolved again for the operator's own $cred: tokens; a

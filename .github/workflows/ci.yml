@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -142,7 +142,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           cache: true
@@ -334,7 +334,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           cache: true
@@ -385,7 +385,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           cache: true
@@ -439,7 +439,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build every platform bridge image
         run: |
           set -euo pipefail
@@ -527,10 +527,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       # PINNED, and the pin is the whole reason this gate is usable. The Python
@@ -588,7 +588,7 @@ jobs:
         working-directory: adapters/python
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install (with dev extras)

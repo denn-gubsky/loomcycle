@@ -6,8 +6,8 @@
 #   1. WebhookDef create (POST /v1/_webhookdef) — spawn delivery, hmac auth
 #   2. a correctly-signed delivery (GitHub sha256= envelope) → 202 + run_id,
 #      and the spawned run completes
-#   3. a WRONG signature → 401, no run spawned
-#   4. an oversized body (> body_size_limit_bytes) → 400
+#   3. a WRONG signature → 404 (same as an unknown name), no run spawned
+#   4. an oversized body (> body_size_limit_bytes) → 404 (same as an unknown name)
 #   5. a rate-limited burst → 429
 #   6. a replay (same delivery id) → deduped, not a second run
 #
@@ -98,18 +98,18 @@ OK=0; for i in $(seq 1 50); do
 done
 [[ "$OK" = 1 ]] || fail "spawned run did not complete"
 
-echo "[5/8] WRONG signature → 401, no new run"
+echo "[5/8] WRONG signature → 404, no new run"
 RUNS_BEFORE=$(sqlite3 "$DB" "SELECT count(*) FROM runs;")
 CODE=$(deliver "$BODY" -H "X-Hub-Signature-256: sha256=deadbeef" -H "X-Delivery-Id: d-bad")
-[[ "$CODE" = "401" ]] || fail "bad-sig code=$CODE (want 401)"
+[[ "$CODE" = "404" ]] || fail "bad-sig code=$CODE (want 404)"
 sleep 1
 RUNS_AFTER=$(sqlite3 "$DB" "SELECT count(*) FROM runs;")
 [[ "$RUNS_BEFORE" = "$RUNS_AFTER" ]] || fail "bad-sig spawned a run ($RUNS_BEFORE→$RUNS_AFTER)"
 
-echo "[6/8] oversized body (> 512) → 400"
+echo "[6/8] oversized body (> 512) → 404"
 BIG="{\"goal\":\"$(head -c 600 < /dev/zero | tr '\0' 'A')\"}"
 CODE=$(deliver "$BIG" -H "X-Hub-Signature-256: sha256=$(sign "$BIG")" -H "X-Delivery-Id: d-big")
-[[ "$CODE" = "400" ]] || fail "oversized code=$CODE (want 400)"
+[[ "$CODE" = "404" ]] || fail "oversized code=$CODE (want 404)"
 
 echo "[7/8] replay same delivery id (VALID signature) → 200 idempotent ack, no 2nd run"
 # Re-send d-ok-1's exact body+signature. The signature is VALID (identical to
@@ -138,4 +138,4 @@ for n in 1 2 3 4 5; do
 done
 [[ "$GOT429" = 1 ]] || fail "rate limiter never returned 429 over a burst of 5 (burst=2)"
 
-echo "PASS ✓ — webhookdef CRUD, signed→run, bad-sig→401, oversized→400, replay-dedup, rate-limit→429"
+echo "PASS ✓ — webhookdef CRUD, signed→run, bad-sig→404, oversized→404, replay-dedup, rate-limit→429"

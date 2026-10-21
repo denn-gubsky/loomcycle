@@ -6,6 +6,7 @@ import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api"
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
 import NoTraceOverrideBanner from "./NoTraceOverrideBanner";
+import OpenModeBanner from "./OpenModeBanner";
 import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
 import { NAV_ITEMS } from "./navItems";
 import Combobox, { type ComboRow } from "./Combobox";
@@ -311,6 +312,7 @@ export default function Layout() {
               gates each surface server-side (defence in depth). */}
           <SettingsMenu isAdmin={isAdmin} hasTenantScope={hasTenantScope} />
         </header>
+        <OpenModeBanner principal={principal} />
         {(isAdmin || hasTenantScope) && <NoTraceOverrideBanner />}
         <main className="content">
           <Outlet context={{ userId, principal: principal ?? null, focusTenant }} />

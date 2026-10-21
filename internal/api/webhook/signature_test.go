@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,8 +206,8 @@ func TestVerifySignature_SecretNotInAllowlist_Unresolvable(t *testing.T) {
 	if !errors.As(err, &ae) || ae.verdict != verdictUnresolved {
 		t.Fatalf("want unresolvable authError, got %v", err)
 	}
-	if ae.secretEnv != "WH_SECRET" {
-		t.Fatalf("want secretEnv=WH_SECRET, got %q", ae.secretEnv)
+	if !strings.Contains(ae.msg, "WH_SECRET") {
+		t.Fatalf("want the log message to name WH_SECRET, got %q", ae.msg)
 	}
 }
 

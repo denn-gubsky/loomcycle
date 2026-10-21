@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -187,7 +186,17 @@ func (c *Crypto) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools
 		if err != nil {
 			return nil, errPermission(err.Error(), ""), false
 		}
-		f, err := os.Open(resolved)
+		// Open through the volume's os.Root, as Read does (RFC ES #1).
+		vfs, err := openVolumeFS(root, fence)
+		if err != nil {
+			return nil, errPermission(err.Error(), ""), false
+		}
+		defer vfs.Close()
+		rel, err := vfs.rel(resolved)
+		if err != nil {
+			return nil, errPermission(err.Error(), ""), false
+		}
+		f, err := vfs.open(rel)
 		if err != nil {
 			return nil, errNotFound(fmt.Sprintf("cannot open %s", r.raw), "Check the path."), false
 		}
@@ -270,14 +279,28 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 			return errPermission(err.Error(), ""), false
 		}
 		// As the Write tool: a temp file beside the target, then an atomic
-		// rename, so a reader never sees half a file. The file keeps the temp
-		// file's 0600 mode, as Write's does.
-		tmp, err := os.CreateTemp(filepath.Dir(target), ".loomcycle-crypto-*")
+		// rename, so a reader never sees half a file — both through the
+		// volume's os.Root (RFC ES #1). The file keeps the temp file's 0600
+		// mode, as Write's does.
+		vfs, err := openVolumeFS(root, fence)
+		if err != nil {
+			return errPermission(err.Error(), ""), false
+		}
+		defer vfs.Close()
+		rel, err := vfs.rel(target)
+		if err != nil {
+			return errPermission(err.Error(), ""), false
+		}
+		dir, err := vfs.openDir(filepath.Dir(rel))
 		if err != nil {
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
 		}
-		tmpName := tmp.Name()
-		defer os.Remove(tmpName)
+		defer dir.Close()
+		tmp, tmpName, err := createTemp(dir, ".loomcycle-crypto-")
+		if err != nil {
+			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
+		}
+		defer dir.Remove(tmpName)
 		if _, err := tmp.Write(data); err != nil {
 			tmp.Close()
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
@@ -288,7 +311,7 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 		if err := ctx.Err(); err != nil {
 			return errTransient("the call was cancelled", ""), false
 		}
-		if err := os.Rename(tmpName, target); err != nil {
+		if err := dir.Rename(tmpName, filepath.Base(rel)); err != nil {
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
 		}
 		return tools.Result{}, true

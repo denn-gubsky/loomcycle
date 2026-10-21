@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -247,7 +247,7 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 		for _, f := range findings {
 			w := f.Warning()
 			warnings = append(warnings, w)
-			log.Printf("snapshot capture: %s", w)
+			slog.Warn("snapshot capture finding", "warning", w)
 		}
 	}
 

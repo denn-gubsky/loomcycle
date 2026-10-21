@@ -4019,7 +4019,12 @@ type Env struct {
 	// bearer still fails rather than silently downgrading to the public view —
 	// a bad credential is an error, not an invitation to show less.
 	PublicConfig bool
-	DataDir      string
+	// AllowOpenMode (LOOMCYCLE_ALLOW_OPEN_MODE=1) lets the server start in open
+	// mode — no LOOMCYCLE_AUTH_TOKEN and no admin operator token, so every route
+	// is unauthenticated — on a listener beyond loopback. Without it such a boot
+	// is refused (RFC ES #8); on loopback open mode needs no opt-in.
+	AllowOpenMode bool
+	DataDir       string
 	// HTTPHostAllowlist is the comma-separated list of hostnames the
 	// HTTP and WebFetch tools may reach. Empty = both tools refuse all
 	// calls. Suffix-matched: an entry "example.com" matches both
@@ -5220,6 +5225,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
 		PublicConfig:                os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
+		AllowOpenMode:               os.Getenv("LOOMCYCLE_ALLOW_OPEN_MODE") == "1",
 		DataDir:                     getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
 		HTTPHostAllowlist:           splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:    splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),

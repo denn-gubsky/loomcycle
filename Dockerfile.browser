@@ -16,7 +16,7 @@
 # `builds:` stage; this only COPYs it). pinchtab/pinchtab is multi-arch, so the
 # `FROM` resolves per target platform under buildx. Published to
 # docker.io/denngubsky/loomcycle-browser.
-FROM pinchtab/pinchtab:0.15.0 AS pinchtab
+FROM pinchtab/pinchtab:v0.15.2 AS pinchtab
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /

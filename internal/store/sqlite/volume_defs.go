@@ -2,340 +2,58 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
-// VolumeDef* implements the RFC AH Phase 2a persistent dynamic volume
-// substrate. Flat (tenant_id, name) table — no version, no parent, no
-// content hash (a Volume points at mutable on-disk state outside the def).
-// See internal/store/store.go for the interface contract.
+// The RFC AH volume substrate (volume_defs, ephemeral_volume_defs) queries
+// live in internal/store/sqlshared, written once for both stores.
 
-// VolumeDefCreate UPSERTs the (tenant_id, name) row. Re-creating an
-// existing name UPDATES the definition (so the tool's "different mode
-// updates" semantics hold) and bumps updated_at, leaving created_at
-// intact. created_at/updated_at are stamped here (server clock) so the
-// caller never supplies wall-clock fields.
 func (s *Store) VolumeDefCreate(ctx context.Context, row store.VolumeDefRow) (store.VolumeDefRow, error) {
-	now := time.Now()
-	row.CreatedAt = now
-	row.UpdatedAt = now
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO volume_defs (tenant_id, name, definition, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(tenant_id, name) DO UPDATE SET
-		     definition = excluded.definition,
-		     updated_at = excluded.updated_at`,
-		row.TenantID, row.Name, string(row.Definition), now.UnixNano(), now.UnixNano(),
-	); err != nil {
-		return store.VolumeDefRow{}, err
-	}
-	// Re-read so created_at reflects the original create on an update
-	// (the ON CONFLICT branch does not touch created_at).
-	return s.VolumeDefGetByName(ctx, row.TenantID, row.Name)
+	return sqlshared.VolumeDefCreate(ctx, s.shared(), row)
 }
 
 func (s *Store) VolumeDefGetByName(ctx context.Context, tenantID, name string) (store.VolumeDefRow, error) {
-	var (
-		out        store.VolumeDefRow
-		definition string
-		createdAt  int64
-		updatedAt  int64
-	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT tenant_id, name, definition, created_at, updated_at
-		 FROM volume_defs WHERE tenant_id = ? AND name = ?`, tenantID, name,
-	).Scan(&out.TenantID, &out.Name, &definition, &createdAt, &updatedAt)
-	if err == sql.ErrNoRows {
-		return store.VolumeDefRow{}, &store.ErrNotFound{Kind: "volume_def", ID: name}
-	}
-	if err != nil {
-		return store.VolumeDefRow{}, err
-	}
-	out.Definition = json.RawMessage(definition)
-	out.CreatedAt = time.Unix(0, createdAt)
-	out.UpdatedAt = time.Unix(0, updatedAt)
-	return out, nil
+	return sqlshared.VolumeDefGetByName(ctx, s.shared(), tenantID, name)
 }
 
 func (s *Store) VolumeDefList(ctx context.Context, tenantID string) ([]store.VolumeDefRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT tenant_id, name, definition, created_at, updated_at
-		 FROM volume_defs WHERE tenant_id = ? ORDER BY name`, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []store.VolumeDefRow
-	for rows.Next() {
-		var (
-			r          store.VolumeDefRow
-			definition string
-			createdAt  int64
-			updatedAt  int64
-		)
-		if err := rows.Scan(&r.TenantID, &r.Name, &definition, &createdAt, &updatedAt); err != nil {
-			return nil, err
-		}
-		r.Definition = json.RawMessage(definition)
-		r.CreatedAt = time.Unix(0, createdAt)
-		r.UpdatedAt = time.Unix(0, updatedAt)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return sqlshared.VolumeDefList(ctx, s.shared(), tenantID)
 }
 
 func (s *Store) VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM volume_defs WHERE tenant_id = ? AND name = ?`, tenantID, name)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return sqlshared.VolumeDefDelete(ctx, s.shared(), tenantID, name)
 }
 
-// SnapshotReadVolumeDefs returns every tenant's volume rows, ordered by
-// (tenant_id, name).
 func (s *Store) SnapshotReadVolumeDefs(ctx context.Context) ([]store.VolumeDefRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT tenant_id, name, definition, created_at, updated_at
-		 FROM volume_defs ORDER BY tenant_id, name`)
-	if err != nil {
-		return nil, fmt.Errorf("snapshot read volume_defs: %w", err)
-	}
-	defer rows.Close()
-	var out []store.VolumeDefRow
-	for rows.Next() {
-		var (
-			r                    store.VolumeDefRow
-			definition           string
-			createdAt, updatedAt int64
-		)
-		if err := rows.Scan(&r.TenantID, &r.Name, &definition, &createdAt, &updatedAt); err != nil {
-			return nil, fmt.Errorf("snapshot read volume_defs: %w", err)
-		}
-		r.Definition = json.RawMessage(definition)
-		r.CreatedAt = time.Unix(0, createdAt)
-		r.UpdatedAt = time.Unix(0, updatedAt)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return sqlshared.SnapshotReadVolumeDefs(ctx, s.shared())
 }
 
-// SnapshotRestoreVolumeDef inserts one volume row keeping both timestamps; a
-// volume already on (tenant_id, name) is left alone. The conflict target is
-// the key, not INSERT OR IGNORE, which would also swallow a NOT NULL failure
-// as "already here".
 func (s *Store) SnapshotRestoreVolumeDef(ctx context.Context, row store.VolumeDefRow) (bool, error) {
-	if row.Name == "" {
-		return false, fmt.Errorf("snapshot restore volume_defs: name required")
-	}
-	created, updated := row.CreatedAt, row.UpdatedAt
-	if created.IsZero() {
-		created = time.Now()
-	}
-	if updated.IsZero() {
-		updated = created
-	}
-	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO volume_defs (tenant_id, name, definition, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(tenant_id, name) DO NOTHING`,
-		row.TenantID, row.Name, string(row.Definition), created.UnixNano(), updated.UnixNano(),
-	)
-	if err != nil {
-		return false, fmt.Errorf("snapshot restore volume_defs: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("snapshot restore volume_defs: %w", err)
-	}
-	return n > 0, nil
+	return sqlshared.SnapshotRestoreVolumeDef(ctx, s.shared(), row)
 }
 
-// ---- RFC AH Phase 2b ephemeral (run-tree-scoped) volumes ----
-
-// EphemeralVolumeCreate UPSERTs the (root_run_id, name) row. Re-creating an
-// existing name within the same run updates the definition + leaves
-// created_at intact (mirrors VolumeDefCreate). created_at is stamped here
-// (server clock).
-//
-// One thing an update never does: turn a read-only volume writable. Read-only
-// is one-way (EphemeralVolumeSetReadOnly), and this is the only other writer
-// of the row, so the rule is kept here and not left to each caller.
 func (s *Store) EphemeralVolumeCreate(ctx context.Context, row store.EphemeralVolumeDefRow) (store.EphemeralVolumeDefRow, error) {
-	now := time.Now()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO ephemeral_volume_defs (root_run_id, name, tenant_id, definition, created_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(root_run_id, name) DO UPDATE SET
-		     tenant_id  = excluded.tenant_id,
-		     definition = CASE
-		         WHEN json_extract(ephemeral_volume_defs.definition, '$.mode') = 'ro'
-		         THEN json_set(excluded.definition, '$.mode', 'ro')
-		         ELSE excluded.definition END`,
-		row.RootRunID, row.Name, row.TenantID, string(row.Definition), now.UnixNano(),
-	); err != nil {
-		return store.EphemeralVolumeDefRow{}, err
-	}
-	return s.ephemeralVolumeGet(ctx, row.RootRunID, row.Name)
-}
-
-// ephemeralVolumeGet is an internal by-PK read used to re-read after an
-// upsert (so created_at reflects the original create on an update).
-func (s *Store) ephemeralVolumeGet(ctx context.Context, rootRunID, name string) (store.EphemeralVolumeDefRow, error) {
-	var (
-		out        store.EphemeralVolumeDefRow
-		definition string
-		createdAt  int64
-	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT root_run_id, name, tenant_id, definition, created_at
-		 FROM ephemeral_volume_defs WHERE root_run_id = ? AND name = ?`, rootRunID, name,
-	).Scan(&out.RootRunID, &out.Name, &out.TenantID, &definition, &createdAt)
-	if err == sql.ErrNoRows {
-		return store.EphemeralVolumeDefRow{}, &store.ErrNotFound{Kind: "ephemeral_volume_def", ID: name}
-	}
-	if err != nil {
-		return store.EphemeralVolumeDefRow{}, err
-	}
-	out.Definition = json.RawMessage(definition)
-	out.CreatedAt = time.Unix(0, createdAt)
-	return out, nil
+	return sqlshared.EphemeralVolumeCreate(ctx, s.shared(), row)
 }
 
 func (s *Store) EphemeralVolumeListByRun(ctx context.Context, rootRunID string) ([]store.EphemeralVolumeDefRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT root_run_id, name, tenant_id, definition, created_at
-		 FROM ephemeral_volume_defs WHERE root_run_id = ? ORDER BY name`, rootRunID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []store.EphemeralVolumeDefRow
-	for rows.Next() {
-		var (
-			r          store.EphemeralVolumeDefRow
-			definition string
-			createdAt  int64
-		)
-		if err := rows.Scan(&r.RootRunID, &r.Name, &r.TenantID, &definition, &createdAt); err != nil {
-			return nil, err
-		}
-		r.Definition = json.RawMessage(definition)
-		r.CreatedAt = time.Unix(0, createdAt)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return sqlshared.EphemeralVolumeListByRun(ctx, s.shared(), rootRunID)
 }
 
-// EphemeralVolumeSetReadOnly sets one row's mode to "ro" and reports whether
-// the row exists.
 func (s *Store) EphemeralVolumeSetReadOnly(ctx context.Context, rootRunID, name string) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE ephemeral_volume_defs SET definition = json_set(definition, '$.mode', 'ro')
-		  WHERE root_run_id = ? AND name = ?`, rootRunID, name)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n > 0, err
+	return sqlshared.EphemeralVolumeSetReadOnly(ctx, s.shared(), rootRunID, name)
 }
 
-// EphemeralVolumeListByTenant returns the tenant's LIVE ephemeral rows
-// (RFC AH Phase 4 Web UI). Ordered by (root_run_id, name) for a stable
-// view. Tenant-scoped at the query, so a tenant never sees another's rows.
 func (s *Store) EphemeralVolumeListByTenant(ctx context.Context, tenantID string) ([]store.EphemeralVolumeDefRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT root_run_id, name, tenant_id, definition, created_at
-		 FROM ephemeral_volume_defs WHERE tenant_id = ? ORDER BY root_run_id, name`, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []store.EphemeralVolumeDefRow
-	for rows.Next() {
-		var (
-			r          store.EphemeralVolumeDefRow
-			definition string
-			createdAt  int64
-		)
-		if err := rows.Scan(&r.RootRunID, &r.Name, &r.TenantID, &definition, &createdAt); err != nil {
-			return nil, err
-		}
-		r.Definition = json.RawMessage(definition)
-		r.CreatedAt = time.Unix(0, createdAt)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return sqlshared.EphemeralVolumeListByTenant(ctx, s.shared(), tenantID)
 }
 
 func (s *Store) EphemeralVolumeDeleteByRun(ctx context.Context, rootRunID string) (int, error) {
-	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM ephemeral_volume_defs WHERE root_run_id = ?`, rootRunID)
-	if err != nil {
-		return 0, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	return int(n), nil
+	return sqlshared.EphemeralVolumeDeleteByRun(ctx, s.shared(), rootRunID)
 }
 
-// EphemeralVolumeSweepCandidates returns DISTINCT (root_run_id, tenant_id)
-// whose owning run is TERMINAL and NOT paused/pausing — the crash-recovery
-// backstop's work list. The terminal-and-not-paused filter mirrors
-// SweepStaleRuns: a paused run is parked (no heartbeat by design), not
-// crashed, so its ephemeral volumes must survive to be reused on resume.
-//
-// A tree with a run still running beneath its root is not a candidate either:
-// a detached team walk keeps its starter's root run id and outlives the root,
-// so its members use the tree after the root ends. live walks UP from every
-// running run through parent_run_id (point reads on the primary key) and
-// yields one (id, parent) row per link, so a root with a run beneath it is
-// some row's parent. UNION, not UNION ALL: a parent chain that loops back on
-// itself repeats a row and the recursion stops. Its seed reads the running
-// runs, the read SweepStaleRuns makes on every tick of its own.
 func (s *Store) EphemeralVolumeSweepCandidates(ctx context.Context) ([]store.EphemeralVolumeSweepRow, error) {
-	args := append([]any{string(store.RunRunning)}, store.TerminalRunStatusArgs()...)
-	rows, err := s.db.QueryContext(ctx,
-		`WITH RECURSIVE live(id, parent) AS (
-		     SELECT id, parent_run_id FROM runs
-		      WHERE status = ? AND parent_run_id IS NOT NULL
-		   UNION
-		     SELECT p.id, p.parent_run_id FROM runs p JOIN live l ON p.id = l.parent
-		      WHERE p.parent_run_id IS NOT NULL
-		 )
-		 SELECT DISTINCT e.root_run_id, e.tenant_id
-		 FROM ephemeral_volume_defs e
-		 JOIN runs r ON r.id = e.root_run_id
-		 WHERE r.status IN (`+sqlitePlaceholders(len(store.TerminalRunStatuses))+`)
-		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')
-		   AND NOT EXISTS (SELECT 1 FROM live WHERE live.parent = e.root_run_id)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []store.EphemeralVolumeSweepRow
-	for rows.Next() {
-		var r store.EphemeralVolumeSweepRow
-		if err := rows.Scan(&r.RootRunID, &r.TenantID); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return sqlshared.EphemeralVolumeSweepCandidates(ctx, s.shared())
 }
