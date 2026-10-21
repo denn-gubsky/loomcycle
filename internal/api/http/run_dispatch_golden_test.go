@@ -234,8 +234,19 @@ func (g *goldenServer) post(path, body string) *goldenResp {
 
 func (g *goldenServer) postAs(bearer, path, body string) *goldenResp {
 	g.t.Helper()
+	return g.do(http.MethodPost, bearer, path, body)
+}
+
+// get sends a GET (a re-attach to a run's stream) as post sends a POST.
+func (g *goldenServer) get(path string) *goldenResp {
+	g.t.Helper()
+	return g.do(http.MethodGet, g.bearer, path, "")
+}
+
+func (g *goldenServer) do(method, bearer, path, body string) *goldenResp {
+	g.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.ts.URL+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, g.ts.URL+path, strings.NewReader(body))
 	if err != nil {
 		g.t.Fatal(err)
 	}
@@ -247,9 +258,9 @@ func (g *goldenServer) postAs(bearer, path, body string) *goldenResp {
 	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
-		g.t.Fatalf("POST %s: %v", path, err)
+		g.t.Fatalf("%s %s: %v", method, path, err)
 	}
-	r := &goldenResp{method: http.MethodPost, path: path, status: resp.StatusCode, header: resp.Header,
+	r := &goldenResp{method: method, path: path, status: resp.StatusCode, header: resp.Header,
 		notify: make(chan struct{}, 1), closed: make(chan struct{}), cancel: cancel}
 	g.t.Cleanup(cancel)
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {

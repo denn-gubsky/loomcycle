@@ -318,3 +318,70 @@ func TestRunOnce_AContinuationAcrossReplicasIsBusyWhileAnotherReplicaHoldsTheSes
 		t.Errorf("this replica only: err = %v, want the run to start", err)
 	}
 }
+
+// An interactive continuation outlives its client, as an interactive run
+// does: parked for the operator, it is still alive after the client leaves,
+// re-attachable, and it goes on when the operator writes to it. And it keeps
+// its session while it lives: another turn on the session is refused as busy.
+func TestHandleMessages_InteractiveContinuationOutlivesItsClient(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	r := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("hi again", `"interactive":true`))
+	agentID, runID := g.parkedThenClientGone(t, r)
+
+	second := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("me too", ""))
+	second.drain(t)
+	if second.status != http.StatusConflict || !strings.Contains(second.body, "session_busy") {
+		t.Errorf("a second turn while the interactive continuation is parked: %d %s, want 409 session_busy", second.status, second.body)
+	}
+	if run, err := g.st.GetRun(context.Background(), runID); err != nil || run.Status != store.RunRunning {
+		t.Fatalf("after its client left the continuation is %q (%v), want still running", run.Status, err)
+	}
+
+	tail := g.get("/v1/runs/" + runID + "/stream")
+	tail.until(t, "awaiting_input", 1)
+	in := g.post("/v1/runs/"+runID+"/input", `{"text":"keep going"}`)
+	in.drain(t)
+	if in.status != http.StatusOK {
+		t.Fatalf("input to the re-attached continuation: %d %s", in.status, in.body)
+	}
+	tail.until(t, "awaiting_input", 2)
+
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+	tail.drain(t)
+	waitRunStatus(t, g.st, runID, store.RunCancelled)
+	// Its end lets the session go.
+	third := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("after the end", ""))
+	third.drain(t)
+	if third.status != http.StatusOK {
+		t.Errorf("a turn after the continuation ended: %d %s, want 200", third.status, third.body)
+	}
+}
+
+// POST /v1/runs with session_id is a continuation too: an interactive one
+// keeps its session after its client leaves.
+func TestHandleRuns_InteractiveSessionContinuationKeepsItsSessionAfterTheClientLeaves(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("term")
+	r := g.post("/v1/runs", goldenRunBody("term", "hi again", `"interactive":true,"session_id":"`+sid+`"`))
+	agentID, _ := g.parkedThenClientGone(t, r)
+
+	second := g.post("/v1/sessions/"+sid+"/messages", goldenMsgBody("me too", ""))
+	second.drain(t)
+	if second.status != http.StatusConflict || !strings.Contains(second.body, "session_busy") {
+		t.Errorf("a second turn while the interactive continuation is parked: %d %s, want 409 session_busy", second.status, second.body)
+	}
+	g.post("/v1/agents/"+agentID+"/cancel", "").drain(t)
+}
+
+// parkedThenClientGone waits for r's run to park for input, drops the
+// client's connection and gives the server time to notice.
+func (g *goldenServer) parkedThenClientGone(t *testing.T, r *goldenResp) (agentID, runID string) {
+	t.Helper()
+	agentID, runID, _ = r.ids(t)
+	r.until(t, "awaiting_input", 1)
+	r.cancel()
+	r.drain(t)
+	time.Sleep(300 * time.Millisecond)
+	return agentID, runID
+}

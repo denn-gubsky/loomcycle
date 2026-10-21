@@ -3009,6 +3009,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	var priorMessages []providers.Message
 	// The session lock a continuation holds; nil for a run in a new session.
 	var sessHold *sessionHold
+	// handOff flips true once a detached run's goroutine takes over the
+	// teardown (startDetachedLoop): from then on the defers here leave alone
+	// what it releases — the session lock among them.
+	handOff := false
 
 	// A fresh top-level run is outside every team, whatever its caller's ctx
 	// carried: a team's own agents are reachable only from a walk of the team.
@@ -3064,7 +3068,13 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 			return fmt.Errorf("%w: another request is in flight on session %q", runner.ErrSessionBusy, in.SessionID)
 		}
 		sessHold = hold
-		defer sessHold.release()
+		// A detached continuation holds its session until it ends, not until
+		// its caller leaves: its teardown releases it (see handOff).
+		defer func() {
+			if !handOff {
+				sessHold.release()
+			}
+		}()
 	}
 
 	// RFC AX: use the live principal when one is on ctx (gRPC/MCP/connector);
@@ -3201,7 +3211,6 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if detached {
 		runParent = context.WithoutCancel(ctx)
 	}
-	handOff := false
 	runCtx, cancelFn := context.WithCancelCause(runParent)
 	defer func() {
 		if !handOff {
@@ -3847,6 +3856,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 				s.cancelReg.Deregister(agentID)
 				runSpan.End()
 				cancelFn(nil)
+				// A continuation's session is the run's until it ends: no
+				// other turn on it meanwhile, whoever is attached.
+				sessHold.release()
 			},
 		})
 		switch {
@@ -3935,7 +3947,8 @@ func (s *Server) trySessionLock(id string) (*sessionHold, bool) {
 // on this replica while it waits.
 //
 // A nil hold is a run on no existing session, and every method is a no-op on
-// it. A hold is used only by the goroutine of the request that took it.
+// it. A hold is used by one goroutine at a time: the request that took it,
+// or — once a detached run has taken over its teardown — that run's.
 type sessionHold struct {
 	cluster clusterLocker // nil in single-replica mode
 	id      string
@@ -5507,13 +5520,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	in.RateAdmitted = true
 	in.SessionLockAcrossReplicas = true
-	// A continuation held for review outlives a caller that leaves: a verdict
-	// can take far longer than a client keeps its stream. It keeps its
-	// session and its run slot until then too: this request holds both, so it
-	// waits for the run's end, client gone or not.
-	// ET-P1 decision: D4 — an INTERACTIVE continuation is not detached: the
-	// client leaving still cancels it (POST /v1/runs interactive survives it).
-	in.Detached = body.Review
+	// An interactive continuation parks for its operator, and one held for
+	// review waits for a verdict: either can take far longer than a client
+	// keeps its stream, so neither stops when the client leaves (RFC ET P1
+	// decision D4, owner 2026-10-21), and a client re-attaches through
+	// GET /v1/runs/{run_id}/stream. Each holds its session until it ends
+	// (RunOnce hands the session lock to the detached run). Its run slot is
+	// held as a fresh detached run's is — until this request returns — except
+	// a review's: this request waits for the verdict, keeping the slot the
+	// held run runs in, as it always has.
+	in.Detached = body.Interactive || body.Review
 	in.HoldUntilEnd = body.Review
 
 	rs := &runStartStream{s: s, w: w, r: r, parent: connector.StripRuntimeParentContext(body.ParentContext)}
