@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -490,7 +490,7 @@ func (s *Semaphore) Stats() Stats {
 		defer cancel()
 		perUser, err := qs.Snapshot(ctx)
 		if err != nil {
-			log.Printf("concurrency: quota snapshot failed: %v", err)
+			slog.Warn("concurrency: quota snapshot failed", "err", err)
 		} else {
 			out.PerUser = perUser
 		}

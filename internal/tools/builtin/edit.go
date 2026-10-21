@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -87,15 +87,41 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
 
-	info, err := os.Stat(resolved)
+	// Read and replace through one handle on the file's directory, opened
+	// via the volume's os.Root, so a directory swapped for a symlink after
+	// the check is refused rather than followed out of the volume (RFC ES #1).
+	vfs, err := openVolumeFS(root, fence)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
+	defer vfs.Close()
+	rel, err := vfs.rel(resolved)
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	dir, err := vfs.openDir(filepath.Dir(rel))
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
+	defer dir.Close()
+	base := filepath.Base(rel)
+
+	f, err := vfs.openIn(dir, base)
+	if err != nil {
+		return tools.Result{Text: vfs.pathErr("open", rel, err).Error(), IsError: true}, nil
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return tools.Result{Text: err.Error(), IsError: true}, nil
+	}
 	if info.Size() > maxBytes {
+		f.Close()
 		return tools.Result{Text: fmt.Sprintf("file size %d exceeds limit %d", info.Size(), maxBytes), IsError: true}, nil
 	}
 
-	body, err := os.ReadFile(resolved)
+	body, err := io.ReadAll(f)
+	f.Close()
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
@@ -115,13 +141,11 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		replaced = strings.Replace(string(body), args.OldString, args.NewString, 1)
 	}
 
-	parent := filepath.Dir(resolved)
-	tmp, err := os.CreateTemp(parent, ".loomcycle-edit-*")
+	tmp, tmpName, err := createTemp(dir, ".loomcycle-edit-")
 	if err != nil {
 		return tools.Result{Text: "create tempfile: " + err.Error(), IsError: true}, nil
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer dir.Remove(tmpName)
 
 	if _, err := tmp.WriteString(replaced); err != nil {
 		tmp.Close()
@@ -133,7 +157,7 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if err := ctx.Err(); err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-	if err := os.Rename(tmpName, resolved); err != nil {
+	if err := dir.Rename(tmpName, base); err != nil {
 		return tools.Result{Text: "rename: " + err.Error(), IsError: true}, nil
 	}
 	return tools.Result{Text: fmt.Sprintf("edited %s (%d replacement%s)", resolved, count, plural(count))}, nil

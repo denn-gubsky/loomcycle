@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -103,9 +102,9 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 
 // effectiveRoot resolves which sandbox root a file/exec tool call targets
 // (RFC AH) and enforces the rw requirement. It is the ONE seam volumes add:
-// every file tool calls this to pick a root, then the UNCHANGED
-// resolveInsideRoot(root, path) does the TOCTOU-safe containment check
-// against it.
+// every file tool calls this to pick a root, then resolveInsideRoot(root,
+// path) checks containment against it and volumeFS does the open through an
+// os.Root, so a swap after the check cannot escape (RFC ES #1).
 //
 // needWrite && readOnly → refuse (Write/Edit/NotebookEdit and Bash require
 // rw; none can truly enforce ro, so they refuse rather than ship a false
@@ -247,18 +246,6 @@ func confirmEphemeralWritable(ctx context.Context, volumeName string) (readOnly 
 	return readOnly, nil
 }
 
-// isFenceDir reports whether a directory met in a walk is the fence, so the
-// walk skips it: the dynamic root is not listed or searched through a static
-// binding. The walk's paths are real only when the volume root is, so the
-// directory is resolved before comparing, and only when its name matches.
-func isFenceDir(fence, path string, d os.DirEntry) bool {
-	if fence == "" || !d.IsDir() || d.Name() != filepath.Base(fence) {
-		return false
-	}
-	real, err := filepath.EvalSymlinks(path)
-	return err == nil && real == fence
-}
-
 // defaultBinding returns the binding a call with no explicit `volume`
 // targets: the one marked Default, else the sole binding when there's
 // exactly one, else nil (the caller errors listing the names). Returns a
@@ -316,9 +303,11 @@ func absUnderRoot(rootResolved, target string) string {
 // not exist yet.
 //
 // The order matters: EvalSymlinks BOTH root and target before the Rel
-// check. This blocks the TOCTOU where target was a symlink at check time
-// but a different file at open time, and the case where target is a
-// symlink to outside root.
+// check, which refuses a target that is a symlink to outside root. The
+// result is a CHECK, not something to open: a path component can be swapped
+// for a symlink after it, so the file tools open the resolved path through
+// volumeFS (an os.Root), never by this string (RFC ES #1). It also produces
+// the user-facing error text, and maps the Bashbox fallback's cwd.
 func resolveInsideRoot(root, target string) (resolved string, err error) {
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {

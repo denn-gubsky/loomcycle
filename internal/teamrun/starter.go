@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -518,7 +518,7 @@ func (r *agentRunner) log(format string, args ...any) {
 		r.logf(format, args...)
 		return
 	}
-	log.Printf(format, args...)
+	slog.Info(fmt.Sprintf(format, args...))
 }
 
 // bindFromMessage projects the source message into ${var.*} per `binds`, using

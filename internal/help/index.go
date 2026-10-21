@@ -30,7 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -265,7 +265,7 @@ func ReconcileIndex(ctx context.Context, set *Set, st IndexStore, emb providers.
 		return stats, fmt.Errorf("help index: list existing: %w", err)
 	}
 	if truncated {
-		log.Printf("help index: existing-row list truncated at %d; prune may be incomplete", helpListLimit)
+		slog.Warn("help index: existing-row list truncated; prune may be incomplete", "limit", helpListLimit)
 	}
 	existingHash := make(map[string]string, len(existing))
 	for _, e := range existing {
@@ -343,7 +343,7 @@ func ReconcileIndex(ctx context.Context, set *Set, st IndexStore, emb providers.
 				// The section keeps its "" sentinel hash, so it is re-attempted on
 				// the next reconcile; count it failed and keep indexing the rest
 				// rather than aborting the whole index.
-				log.Printf("help index: embed-set %q failed, will retry next reconcile: %v", p.sec.Key, err)
+				slog.Warn("help index: embed-set failed, will retry next reconcile", "key", p.sec.Key, "err", err)
 				stats.Failed++
 				continue
 			}
@@ -428,7 +428,7 @@ func QueryIndex(ctx context.Context, set *Set, st IndexStore, emb providers.Embe
 			// up, MemoryEmbedSearch returns ErrDimensionMismatch for every query
 			// against the stale rows). Warn and fall through to the substring scan,
 			// exactly as the empty-index case below does.
-			log.Printf("help query: hybrid path failed, degrading to substring: %v", err)
+			slog.Warn("help query: hybrid path failed, degrading to substring", "err", err)
 		} else {
 			// Record dead-link drops even when every hit was dead (so the signal
 			// is emitted before falling through to the substring scan). No-op-safe.
@@ -495,7 +495,7 @@ func hybridQuery(ctx context.Context, set *Set, st IndexStore, emb providers.Emb
 		// store write on the read path.
 		if _, ok := set.Get(v.TopicSlug); !ok {
 			dead++
-			log.Printf("help query: dropped dead-link hit topic=%q heading=%q (topic no longer in corpus)", v.TopicSlug, v.Heading)
+			slog.Debug("help query: dropped dead-link hit (topic no longer in corpus)", "topic", v.TopicSlug, "heading", v.Heading)
 			continue
 		}
 		out = append(out, QueryResult{

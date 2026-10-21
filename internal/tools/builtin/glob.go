@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -156,38 +157,34 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	}
 	var matches []fileInfo
 
-	err = filepath.WalkDir(searchRoot, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if isFenceDir(fence, path, d) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		rel, err := filepath.Rel(searchRoot, path)
-		if err != nil {
-			return nil
-		}
-		// On Windows filepath.Rel uses `\`; normalise so the pattern
-		// language is `/`-only regardless of host OS.
-		rel = filepath.ToSlash(rel)
+	// The walk goes through an os.Root opened at the volume root, one
+	// directory handle at a time, so a directory swapped for a symlink
+	// mid-walk is skipped rather than listed from outside the volume, and the
+	// fence is skipped (RFC ES #1).
+	vfs, err := openVolumeFS(root, fence)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	defer vfs.Close()
+	startRel, err := vfs.rel(searchRoot)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	vfs.walk(startRel, func(dir *os.Root, path string, d fs.DirEntry) {
+		// On Windows paths use `\`; normalise so the pattern language is
+		// `/`-only regardless of host OS.
+		rel := filepath.ToSlash(path)
 		relSegments := strings.Split(rel, "/")
 		if !doublestarMatch(patSegments, relSegments) {
-			return nil
+			return
 		}
-		info, statErr := d.Info()
+		info, statErr := dir.Lstat(d.Name())
 		var mt int64
 		if statErr == nil {
 			mt = info.ModTime().UnixNano()
 		}
 		matches = append(matches, fileInfo{rel: rel, mtime: mt})
-		return nil
 	})
-	if err != nil {
-		return errResult(fmt.Sprintf("walk: %v", err)), nil
-	}
 
 	// mtime DESC; tie-break on path ASC for determinism.
 	sort.Slice(matches, func(i, j int) bool {

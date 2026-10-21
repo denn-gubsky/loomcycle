@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -238,20 +238,20 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 			decisions = append(decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: PhasePre,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if ctx.Err() != nil {
-				log.Printf("hooks: pre %s/%s failed (run ended): %v", h.Owner, h.Name, err)
+				slog.WarnContext(ctx, "hooks: pre hook failed (run ended)", "hook", h.Owner+"/"+h.Name, "err", err)
 				// The run was cancelled while the hook ran (a code hook can be
 				// waiting on a person's answer). Fail-open must not run the tool
 				// of a run that is already over.
 				return PreOutcome{Deny: &ToolResult{IsError: true, Text: "tool_call cancelled: the run ended while hook " + h.Owner + "/" + h.Name + " was deciding"}, Decisions: decisions}
 			}
 			if h.FailMode == FailClosed {
-				log.Printf("hooks: pre %s/%s failed (fail_mode=closed): %v", h.Owner, h.Name, err)
+				slog.WarnContext(ctx, "hooks: pre hook failed (fail_mode=closed)", "hook", h.Owner+"/"+h.Name, "err", err)
 				return PreOutcome{Deny: &ToolResult{
 					IsError: true,
 					Text:    "tool_call denied: hook " + h.Owner + "/" + h.Name + " unavailable",
 				}, Decisions: decisions}
 			}
-			log.Printf("hooks: pre %s/%s failed (fail_mode=open, passing through): %v", h.Owner, h.Name, err)
+			slog.WarnContext(ctx, "hooks: pre hook failed (fail_mode=open, passing through)", "hook", h.Owner+"/"+h.Name, "err", err)
 			continue
 		}
 		if res.Deny != nil {
@@ -277,8 +277,8 @@ func (d *Dispatcher) RunPre(ctx context.Context, ident Identity, tu ToolCall) Pr
 				// that started returning allow_hosts without the matching yaml
 				// change). Counter exposed via Stats() for graphability.
 				d.hostWidenDenied.Add(1)
-				log.Printf("hooks: pre %s/%s (tenant=%q) returned allow_hosts=%v but may not widen hosts (not on hooks.permit_host_widen, or not from an operator-authored definition); dropping grant",
-					h.Owner, h.Name, h.Tenant, res.AllowHosts)
+				slog.WarnContext(ctx, "hooks: pre hook returned allow_hosts but may not widen hosts (not on hooks.permit_host_widen, or not from an operator-authored definition); dropping grant",
+					"hook", h.Owner+"/"+h.Name, "hook_tenant", h.Tenant, "allow_hosts", res.AllowHosts)
 				continue
 			}
 			// Permitted. Union into the accumulator (dedup on
@@ -389,7 +389,7 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if h.FailMode == FailClosed {
-				log.Printf("hooks: %s %s/%s failed (fail_mode=closed): %v", h.Phase, h.Owner, h.Name, err)
+				slog.WarnContext(ctx, "hooks: "+string(h.Phase)+" hook failed (fail_mode=closed)", "hook", h.Owner+"/"+h.Name, "err", err)
 				out.Result = ToolResult{
 					IsError: true,
 					Text:    "tool_result discarded: hook " + h.Owner + "/" + h.Name + " unavailable",
@@ -397,7 +397,7 @@ func (d *Dispatcher) RunPost(ctx context.Context, ident Identity, tu ToolCall, o
 				out.AdditionalContext = nil
 				return out
 			}
-			log.Printf("hooks: %s %s/%s failed (fail_mode=open, passing through): %v", h.Phase, h.Owner, h.Name, err)
+			slog.WarnContext(ctx, "hooks: "+string(h.Phase)+" hook failed (fail_mode=open, passing through)", "hook", h.Owner+"/"+h.Name, "err", err)
 			continue
 		}
 		if res.Result != nil {
@@ -589,12 +589,12 @@ func (d *Dispatcher) RunGate(ctx context.Context, ident Identity, phase Phase, i
 			out.Decisions = append(out.Decisions, Decision{Owner: h.Owner, Name: h.Name, Phase: h.Phase,
 				Kind: "unavailable", FailMode: failModeOf(h), Reason: DecisionReason(err)})
 			if h.FailMode == FailClosed || ctx.Err() != nil {
-				log.Printf("hooks: %s %s/%s failed (fail_mode=%s): %v", phase, h.Owner, h.Name, failModeOf(h), err)
+				slog.WarnContext(ctx, "hooks: "+string(phase)+" hook failed", "hook", h.Owner+"/"+h.Name, "fail_mode", string(failModeOf(h)), "err", err)
 				out.Denied, out.Reason = true, "hook "+h.Owner+"/"+h.Name+" is unavailable"
 				out.AdditionalContext = nil
 				return out
 			}
-			log.Printf("hooks: %s %s/%s failed (fail_mode=open, passing through): %v", phase, h.Owner, h.Name, err)
+			slog.WarnContext(ctx, "hooks: "+string(phase)+" hook failed (fail_mode=open, passing through)", "hook", h.Owner+"/"+h.Name, "err", err)
 			continue
 		}
 		if res.Decision == "deny" {
@@ -639,7 +639,7 @@ func (d *Dispatcher) Observe(ctx context.Context, ident Identity, phase Phase, i
 		defer cancel()
 		for _, h := range matched {
 			if _, err := d.invokeLifecycle(octx, h, ident, info); err != nil {
-				log.Printf("hooks: %s %s/%s failed (observe only, ignored): %v", phase, h.Owner, h.Name, err)
+				slog.WarnContext(octx, "hooks: "+string(phase)+" hook failed (observe only, ignored)", "hook", h.Owner+"/"+h.Name, "err", err)
 			}
 		}
 	}()
@@ -721,18 +721,18 @@ func (d *Dispatcher) RunAgentStop(ctx context.Context, ident Identity, stop Life
 				// The run ended while the hook was deciding. Reported as allow,
 				// the loop left normally and recorded an answer nobody approved
 				// as a completion.
-				log.Printf("hooks: agent_stop %s failed (run ended): %v", name, err)
+				slog.WarnContext(ctx, "hooks: agent_stop hook failed (run ended)", "hook", name, "err", err)
 				out.Kind, out.Reason, out.By = StopCancelled, "the run ended while hook "+name+" was deciding", name
 				return out
 			}
 			if h.FailMode == FailClosed {
-				log.Printf("hooks: agent_stop %s failed (fail_mode=closed, holding): %v", name, err)
+				slog.WarnContext(ctx, "hooks: agent_stop hook failed (fail_mode=closed, holding)", "hook", name, "err", err)
 				if out.Kind == StopAllow {
 					out.Kind, out.Reason, out.By = StopHold, "hook "+name+" is unavailable", name
 				}
 				continue
 			}
-			log.Printf("hooks: agent_stop %s failed (fail_mode=open, passing through): %v", name, err)
+			slog.WarnContext(ctx, "hooks: agent_stop hook failed (fail_mode=open, passing through)", "hook", name, "err", err)
 			continue
 		}
 		switch res.Decision {

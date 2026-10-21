@@ -13,7 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -460,7 +460,7 @@ func dropDeadLinks(entries []store.MemorySearchEntry) ([]store.MemorySearchEntry
 			dropped++
 			// Debug-level: dead links are rare (a store-consistency window), so
 			// this stays quiet in steady state. No secrets — key only.
-			log.Printf("memory.search: dropped dead-link hit key=%q (backing value no longer resolves)", e.Key)
+			slog.Debug("memory.search: dropped dead-link hit (backing value no longer resolves)", "key", e.Key)
 			continue
 		}
 		kept = append(kept, e)
@@ -574,7 +574,7 @@ func (b *Backend) Add(ctx context.Context, scope store.MemoryScope, scopeID stri
 			// The k/v row stands; only the vector failed. Log and continue —
 			// downgrading a transient embed error to a hard Add failure would
 			// lose the memory the caller just handed us.
-			log.Printf("memory.add: verbatim row %q stored but embed failed (recall won't surface it yet): %v", key, err)
+			slog.WarnContext(ctx, "memory.add: verbatim row stored but embed failed (recall won't surface it yet)", "key", key, "err", err)
 		}
 	}
 	return memory.AddResult{Status: memory.AddDone, EventID: key}, nil

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -150,14 +150,41 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 		maxBytes = notebookEditDefaultMaxBytes
 	}
 
-	st, err := os.Stat(resolved)
+	// Read and replace through one handle on the notebook's directory,
+	// opened via the volume's os.Root, so a directory swapped for a symlink
+	// after the check is refused rather than followed out of the volume
+	// (RFC ES #1).
+	vfs, err := openVolumeFS(root, fence)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	defer vfs.Close()
+	rel, err := vfs.rel(resolved)
+	if err != nil {
+		return errResult(err.Error()), nil
+	}
+	dir, err := vfs.openDir(filepath.Dir(rel))
 	if err != nil {
 		return errResult("stat: " + err.Error()), nil
 	}
+	defer dir.Close()
+	base := filepath.Base(rel)
+
+	f, err := vfs.openIn(dir, base)
+	if err != nil {
+		return errResult("stat: " + vfs.pathErr("open", rel, err).Error()), nil
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return errResult("stat: " + err.Error()), nil
+	}
 	if st.Size() > maxBytes {
+		f.Close()
 		return errResult(fmt.Sprintf("notebook exceeds %d bytes (got %d)", maxBytes, st.Size())), nil
 	}
-	raw, err := os.ReadFile(resolved)
+	raw, err := io.ReadAll(f)
+	f.Close()
 	if err != nil {
 		return errResult("read: " + err.Error()), nil
 	}
@@ -245,13 +272,11 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Atomic write — tempfile in the same dir + rename. Same recipe
 	// as Write so cancellation leaves no trace at the target.
-	resolvedDir := filepath.Dir(resolved)
-	tmp, err := os.CreateTemp(resolvedDir, ".loomcycle-nbedit-*")
+	tmp, tmpName, err := createTemp(dir, ".loomcycle-nbedit-")
 	if err != nil {
 		return errResult("create tempfile: " + err.Error()), nil
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer dir.Remove(tmpName)
 	if _, err := tmp.Write(out); err != nil {
 		tmp.Close()
 		return errResult("write tempfile: " + err.Error()), nil
@@ -262,7 +287,7 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	if err := ctx.Err(); err != nil {
 		return errResult(err.Error()), nil
 	}
-	if err := os.Rename(tmpName, resolved); err != nil {
+	if err := dir.Rename(tmpName, base); err != nil {
 		return errResult("rename: " + err.Error()), nil
 	}
 
