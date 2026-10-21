@@ -181,7 +181,16 @@ func (a *AgentDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 // sees only its own tenant. Without this, an admin viewing the library got
 // empty bodies for every def outside its own principal tenant (notably the
 // shared "" tenant where bootstrapped/legacy defs live).
+//
+// Off-run only (RFC ES #15). A run started with an admin token carries that
+// principal into its model's tool calls, and AgentDef, SkillDef, TeamDef,
+// Evaluation and Context are agent tools: without this a prompt-injected run
+// could read, retire, promote or fork any tenant's definitions. Inside a run
+// an admin principal sees and acts on its own tenant only, like any caller.
 func defCallerIsAdmin(ctx context.Context) bool {
+	if tools.RunID(ctx) != "" {
+		return false
+	}
 	p, ok := auth.PrincipalFromContext(ctx)
 	return ok && auth.HasScope(p.Scopes, auth.ScopeAdmin)
 }
@@ -316,6 +325,17 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 		log.Printf("agentdef: %s by %q on no-trace agent %q in tenant %q: %s", op, subject, name, tenant, action)
 	}
 	return nil
+}
+
+// defRowReadable reports whether the caller may READ a definition owned by
+// rowTenant — get / list, and a TeamDef's run or render by def_id: its own
+// tenant's, the shared ("") tier, or any tenant's for an off-run admin. The
+// shared tier is what lookup already resolves for every tenant's runs and what
+// fork accepts as a parent, so reading it shows nothing a run could not use.
+// Writing it (retire, promote) stays the owner's: those guards compare the
+// tenant strictly.
+func defRowReadable(ctx context.Context, rowTenant string) bool {
+	return rowTenant == "" || rowTenant == tools.RunIdentity(ctx).TenantID || defCallerIsAdmin(ctx)
 }
 
 // forkParentVisible reports whether a caller in callerTenant may fork a
@@ -728,7 +748,7 @@ func (a *AgentDef) execGet(ctx context.Context, policy tools.AgentDefPolicyValue
 	// in tenant T cannot read another tenant's def. Return the SAME opaque
 	// not-found a missing def returns — never leak existence/body of a
 	// cross-tenant row.
-	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defRowReadable(ctx, row.TenantID) {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
@@ -749,12 +769,11 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
 	// RFC N: AgentDefListByName returns rows across ALL tenants for a
-	// name (names are per-tenant now). Filter to the caller's own tenant
-	// so a tenant lists only its own versions.
-	tenantID := tools.RunIdentity(ctx).TenantID
+	// name (names are per-tenant now). Filter to what the caller may read:
+	// its own tenant's versions and the shared tier's (defRowReadable).
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
 		out = append(out, rowResponseMap(r))

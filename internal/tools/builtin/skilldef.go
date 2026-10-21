@@ -461,7 +461,7 @@ func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillPolicyValue, i
 	// in tenant T cannot read another tenant's def. Return the SAME opaque
 	// not-found a missing def returns — never leak existence/body of a
 	// cross-tenant row.
-	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defRowReadable(ctx, row.TenantID) {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
@@ -482,12 +482,11 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, 
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
 	// RFC N: SkillDefListByName returns rows across ALL tenants for a name
-	// (names are per-tenant now). Filter to the caller's own tenant so a
-	// tenant lists only its own versions.
-	tenantID := tools.RunIdentity(ctx).TenantID
+	// (names are per-tenant now). Filter to what the caller may read: its
+	// own tenant's versions and the shared tier's (defRowReadable).
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
 		out = append(out, skillDefRowResponseMap(r))

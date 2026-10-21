@@ -68,7 +68,9 @@ Present when they apply:
 - `self_names` — the names the end-user declared for themselves.
 - `principal` — the credential this run acts under: `tenant_id`, `subject`,
   `scopes`, `is_admin`, `legacy`, `token_def_id`, `token_suffix`. Never the
-  token itself.
+  token itself. When `is_admin` is true inside a run, `admin_in_run: false`
+  says the admin's reach does not apply here: you read and change your own
+  tenant's definitions (and read the shared ones), like any tenant's run.
 - `loomcycle` (`version`, `commit`, `build_time`) and `server`
   (`listen_addr`, `url`).
 

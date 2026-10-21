@@ -809,7 +809,7 @@ func (t *TeamDef) execGet(ctx context.Context, in teamDefInput) (tools.Result, e
 	// RFC N: def_id is a global handle but a def is owned by exactly one tenant.
 	// A caller in tenant T cannot read another tenant's def — return the SAME
 	// opaque not-found a missing def returns (never leak existence/body).
-	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+	if !defRowReadable(ctx, row.TenantID) {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
 	return okJSON(teamDefRowResponse(row, false))
@@ -824,11 +824,11 @@ func (t *TeamDef) execList(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errResult(fmt.Sprintf("list: %s", err)), nil
 	}
 	// RFC N: TeamDefListByName returns rows across ALL tenants for a name.
-	// Filter to the caller's own tenant so a tenant lists only its own versions.
-	tenantID := tools.RunIdentity(ctx).TenantID
+	// Filter to what the caller may read: its own tenant's versions and the
+	// shared tier's (defRowReadable).
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		if !defCallerIsAdmin(ctx) && r.TenantID != tenantID {
+		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
 		out = append(out, teamDefRowResponseMap(r))
@@ -1254,7 +1254,7 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 	switch {
 	case in.DefID != "":
 		row, err = t.Store.TeamDefGet(ctx, in.DefID)
-		if err == nil && !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		if err == nil && !defRowReadable(ctx, row.TenantID) {
 			return errResult(fmt.Sprintf("render_diagram: def_id %q not found", in.DefID)), nil
 		}
 	case in.Name != "":
@@ -1338,7 +1338,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	switch {
 	case in.DefID != "":
 		row, err = t.Store.TeamDefGet(ctx, in.DefID)
-		if err == nil && !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
+		if err == nil && !defRowReadable(ctx, row.TenantID) {
 			return errResult(fmt.Sprintf("run: def_id %q not found", in.DefID)), nil
 		}
 	case in.Name != "":

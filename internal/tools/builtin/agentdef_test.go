@@ -311,19 +311,20 @@ func TestAgentDefTool_ForkFallsBackToSharedBase(t *testing.T) {
 	}
 	tenantForkDefID := out["def_id"].(string)
 
-	// The new version is stamped under jobember: a non-admin tenant `list`
-	// is tenant-scoped, so jobember sees exactly its own forked version and
-	// NOT the "" base.
+	// The new version is stamped under jobember. A non-admin tenant `list`
+	// shows its own versions and the shared "" tier's (read-only), so
+	// jobember sees exactly its fork and the "" base it forked from.
 	res, _ = tool.Execute(ctxTenant, json.RawMessage(`{"op":"list","name":"legacy-seed"}`))
 	if res.IsError {
 		t.Fatalf("tenant list after fork: %s", res.Text)
 	}
 	versions := decodeResult(t, res.Text)["versions"].([]any)
-	if len(versions) != 1 {
-		t.Fatalf("jobember list = %d versions, want 1 (its own fork, stamped under jobember)", len(versions))
+	listed := map[string]bool{}
+	for _, v := range versions {
+		listed[v.(map[string]any)["def_id"].(string)] = true
 	}
-	if versions[0].(map[string]any)["def_id"].(string) != tenantForkDefID {
-		t.Errorf("jobember's only version should be its fork %q", tenantForkDefID)
+	if len(versions) != 2 || !listed[tenantForkDefID] || !listed[sharedDefID] {
+		t.Fatalf("jobember list = %v, want its fork %q and the shared base %q", listed, tenantForkDefID, sharedDefID)
 	}
 
 	// Own-tenant precedence: a SECOND jobember fork now resolves jobember's

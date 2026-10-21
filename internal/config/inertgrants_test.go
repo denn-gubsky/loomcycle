@@ -60,6 +60,26 @@ func TestInertToolGrants_ReportsOnlyGatesThatStillGrantNothing(t *testing.T) {
 	}
 }
 
+// ScheduleDef and the A2A def tools are never given to a run, so they are inert
+// even with their gate set, and the message says to drop them rather than
+// telling the operator to set a scope that changes nothing.
+func TestInertToolGrants_AnOperatorOnlyToolIsInertWhateverItsGate(t *testing.T) {
+	for _, def := range []AgentDef{
+		{Tools: []string{"ScheduleDef"}},
+		{Tools: []string{"ScheduleDef"}, ScheduleDefScopes: []string{"any"}},
+		{Tools: []string{"A2AServerCardDef"}, A2AServerCardDefScopes: []string{"any"}},
+		{Tools: []string{"A2AAgentDef"}, A2AAgentDefScopes: []string{"any"}},
+	} {
+		got := InertToolGrants(def)
+		if len(got) != 1 {
+			t.Fatalf("%v: got %v, want one grant", def.Tools, names(got))
+		}
+		if !strings.Contains(got[0].Message, "not available to agents") || !strings.Contains(got[0].Message, "Drop the tool") {
+			t.Errorf("%v: message %q does not say the tool is unavailable", def.Tools, got[0].Message)
+		}
+	}
+}
+
 // The message has to name the GATE, not just the tool. A reader told only
 // "AgentDef is inert" still has to work out which yaml key governs it, and that
 // is not guessable from the tool name — which is most of why this was hard to

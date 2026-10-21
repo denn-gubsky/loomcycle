@@ -2672,9 +2672,12 @@ func TestAgentGateWarnings(t *testing.T) {
 		// def-authoring tools: listed without their *_def_scopes → silent default-deny.
 		{"agentdef no scope", AgentDef{Tools: []string{"AgentDef"}}, []string{"agent_def_scopes is empty"}},
 		{"agentdef with scope", AgentDef{Tools: []string{"AgentDef"}, AgentDefScopes: []string{"any"}}, nil},
-		{"scheduledef no scope", AgentDef{Tools: []string{"ScheduleDef"}}, []string{"schedule_def_scopes is empty"}},
-		{"a2a server-card def no scope", AgentDef{Tools: []string{"A2AServerCardDef"}}, []string{"a2a_server_card_def_scopes is empty"}},
-		{"a2a agent def no scope", AgentDef{Tools: []string{"A2AAgentDef"}}, []string{"a2a_agent_def_scopes is empty"}},
+		// Operator-surface tools: no run is given them, so listing one is inert
+		// whatever its scope says, and the advice is to drop it.
+		{"scheduledef no scope", AgentDef{Tools: []string{"ScheduleDef"}}, []string{"ScheduleDef is not available to agents"}},
+		{"scheduledef with scope", AgentDef{Tools: []string{"ScheduleDef"}, ScheduleDefScopes: []string{"any"}}, []string{"ScheduleDef is not available to agents"}},
+		{"a2a server-card def no scope", AgentDef{Tools: []string{"A2AServerCardDef"}}, []string{"A2AServerCardDef is not available to agents"}},
+		{"a2a agent def with scope", AgentDef{Tools: []string{"A2AAgentDef"}, A2AAgentDefScopes: []string{"any"}}, []string{"A2AAgentDef is not available to agents"}},
 		{"volumedef no scope", AgentDef{Tools: []string{"VolumeDef"}}, []string{"volume_def_scopes is empty"}},
 		{"volumedef with scope", AgentDef{Tools: []string{"VolumeDef"}, VolumeDefScopes: []string{"named:work"}}, nil},
 	}
