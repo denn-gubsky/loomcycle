@@ -164,6 +164,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ConfiguredRunNotReapedAsStale", testConfiguredRunNotReapedAsStale},
 		// RFC EI P3: queued runs, waiting for a run slot.
 		{"QueuedRunLifecycle", testQueuedRunLifecycle},
+		{"SessionHasLiveRun", testSessionHasLiveRun},
 		{"QueuedRunCancelledBeforeStart", testQueuedRunCancelledBeforeStart},
 		{"ConfiguredRunQueuesThenStarts", testConfiguredRunQueuesThenStarts},
 		{"QueuedRunFailedOnRestartNotSwept", testQueuedRunFailedOnRestartNotSwept},

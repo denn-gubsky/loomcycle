@@ -301,36 +301,7 @@ func (s *Server) sessionHasLiveRun(ctx context.Context, sessionID, except string
 	if s.sessionLockPG == nil {
 		return false, nil
 	}
-	runs, err := s.store.RunsForSession(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	cutoff := time.Now().Add(-s.heartbeatStaleAfter())
-	for _, r := range runs {
-		if r.ID != except && runIsLive(r, cutoff) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// runIsLive is sessionHasLiveRun's rule for one row; cutoff is now less
-// HeartbeatStaleAfter.
-func runIsLive(r store.Run, cutoff time.Time) bool {
-	switch r.Status {
-	case store.RunQueued:
-		return !r.StartedAt.Before(cutoff)
-	case store.RunRunning:
-		if r.PauseState == store.PauseStatePaused || r.PauseState == store.PauseStatePausing {
-			return true
-		}
-		beat := r.LastHeartbeatAt
-		if beat.IsZero() {
-			beat = r.StartedAt
-		}
-		return !beat.Before(cutoff)
-	}
-	return false
+	return s.store.SessionHasLiveRun(ctx, sessionID, except, time.Now().Add(-s.heartbeatStaleAfter()))
 }
 
 // heartbeatStaleAfter is how long a run may go without a heartbeat before it
