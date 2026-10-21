@@ -125,15 +125,17 @@ webhooks:
 
 A shared front-half runs for every request, then forks on `delivery`:
 
-1. **Read** the raw body under the server's request limit
-   (`LOOMCYCLE_MAX_REQUEST_BYTES`, default 16 MiB), before the name is looked
-   up, so how the body is read never depends on whether the name exists.
-2. **Resolve** the active `WebhookDef` by the `{name}` in the URL (never
-   from the body). Unknown or disabled → opaque `404`. A body over the
-   definition's `body_size_limit_bytes` (default 1 MiB, never above the
-   request limit) gets the same `404`. A body nested more than 128 deep, or
-   holding more than a million values, is refused as malformed before it is
-   decoded.
+1. **Resolve** the active `WebhookDef` by the `{name}` in the URL (never
+   from the body).
+2. **Read or discard** the raw body — the same way for every name, so how
+   it is read never tells whether the name exists. A live definition keeps
+   at most its `body_size_limit_bytes` (default 1 MiB, never above the
+   server's `LOOMCYCLE_MAX_REQUEST_BYTES`); the rest, or the whole body of
+   an unknown or disabled name, is read and discarded up to the request
+   limit, within 30 seconds. Unknown or disabled → opaque `404`; a body over
+   the definition's limit gets the same `404`. A body nested more than 128
+   deep, or holding more than a million values, is refused as malformed
+   before it is decoded.
 3. **Verify the signature over the raw bytes, before any parsing.**
    HMAC-SHA256 with a constant-time compare. Three envelopes auto-detected
    from the header *value* (so a custom header name still parses):
