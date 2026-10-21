@@ -1663,6 +1663,7 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | Env var | Default | Bounds |
 |---|---|---|
 | `LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT` | `1h` | How long a parked interactive run waits for a message before it ends. A Go duration (`30m`, `2h`); `0` waits forever. A value that does not parse is refused at startup. |
+| `LOOMCYCLE_BATCH_JOIN_TIMEOUT` | `1h` | How long a batch in mode `join` (`POST /v1/runs:batch`, MCP `spawn_runs`, gRPC `SpawnRunBatch`) waits for its children when the request gives no `timeout_ms`; a request's `timeout_ms` replaces it, larger or smaller. When it passes, a child the batch started is cancelled and a child joined to an existing run by `idempotency_key` is left running; each comes back in its slot with its `run_id` and an `error` saying the join timed out, and the finished children as usual. A Go duration; `0` = no server bound (the join still ends when the caller's deadline or connection does). A value that does not parse is refused at startup. |
 
 **Sub-agent limits.** Bounds on the children an agent starts with the `Agent` tool. Each is per run, not per tree (a child's own children count against the child); unset or `0` means the default.
 
