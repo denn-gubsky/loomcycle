@@ -130,6 +130,7 @@ const (
 	goldenRestrictedBearer = "golden-tok-restricted" // may start only "plain"
 	goldenRatedBearer      = "golden-tok-rated"      // one start, then none for a minute
 	goldenMemberBearer     = "golden-tok-member"     // unrestricted member of "acme"
+	goldenIsolatedBearer   = "golden-tok-isolated"   // isolated member "eve" of "acme": its own sessions only
 )
 
 type goldenServer struct {
@@ -180,14 +181,19 @@ func newGoldenServer(t *testing.T, o goldenOpts) *goldenServer {
 	t.Cleanup(func() { _ = st.Close() })
 	if o.authed {
 		member := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}
-		for _, tok := range []struct{ id, bearer, restrictions string }{
-			{"def_golden_restricted", goldenRestrictedBearer, `{"agents":["plain"]}`},
-			{"def_golden_rated", goldenRatedBearer, `{"rate":{"per_minute":1,"burst":1}}`},
-			{"def_golden_member", goldenMemberBearer, ""},
+		isolated := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeUser}
+		for _, tok := range []struct {
+			id, bearer, subject, restrictions string
+			scopes                            []string
+		}{
+			{"def_golden_restricted", goldenRestrictedBearer, "dev", `{"agents":["plain"]}`, member},
+			{"def_golden_rated", goldenRatedBearer, "dev", `{"rate":{"per_minute":1,"burst":1}}`, member},
+			{"def_golden_member", goldenMemberBearer, "dev", "", member},
+			{"def_golden_isolated", goldenIsolatedBearer, "eve", "", isolated},
 		} {
 			if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
-				DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: "dev",
-				TokenHash: auth.HashToken(testTokenPepper, tok.bearer), AllowedScopes: member,
+				DefID: tok.id, Name: "u-" + tok.id, TenantID: "acme", Subject: tok.subject,
+				TokenHash: auth.HashToken(testTokenPepper, tok.bearer), AllowedScopes: tok.scopes,
 				RestrictionsJSON: tok.restrictions,
 			}); err != nil {
 				t.Fatal(err)

@@ -548,3 +548,38 @@ func TestHandleMessages_QueuedContinuationIsBusyIfAnotherReplicasTurnIsLive(t *t
 		t.Errorf("the queued continuation's end = %s, want the busy reason", frame)
 	}
 }
+
+// session_id on POST /v1/runs tells a caller nothing about a session it may
+// not use: an isolated member probing another user's session gets the same
+// answer as for a session that does not exist, and a token limited to some
+// agents is never told the name of an agent outside its list.
+func TestHandleRuns_SessionIDRevealsNothingTheCallerMayNotSee(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{authed: true})
+	r := g.postAs(goldenMemberBearer, "/v1/runs", goldenRunBody("other", "first turn", ""))
+	_, _, sid := r.ids(t)
+	r.drain(t)
+
+	// An isolated member: another user's session reads as a missing one.
+	probe := func(id string) *goldenResp {
+		resp := g.postAs(goldenIsolatedBearer, "/v1/runs", goldenRunBody("plain", "hi", `"session_id":"`+id+`"`))
+		resp.drain(t)
+		return resp
+	}
+	seen, missing := probe(sid), probe("s_0123456789abcdef")
+	if seen.status != http.StatusNotFound || seen.status != missing.status ||
+		strings.ReplaceAll(seen.body, sid, "X") != strings.ReplaceAll(missing.body, "s_0123456789abcdef", "X") {
+		t.Errorf("isolated member: another user's session = %d %q, a missing one = %d %q; want the same 404",
+			seen.status, seen.body, missing.status, missing.body)
+	}
+	if strings.Contains(seen.body, "other") {
+		t.Errorf("isolated member learned the session's agent: %q", seen.body)
+	}
+
+	// A token limited to "plain", on a session of "other": refused without
+	// the name.
+	limited := g.postAs(goldenRestrictedBearer, "/v1/runs", goldenRunBody("plain", "hi", `"session_id":"`+sid+`"`))
+	limited.drain(t)
+	if limited.status < 400 || strings.Contains(limited.body, `"other"`) {
+		t.Errorf("restricted token: %d %q, want a refusal that does not name agent \"other\"", limited.status, limited.body)
+	}
+}

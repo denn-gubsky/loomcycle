@@ -5262,12 +5262,22 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	// session_id continues the session (RFC ET P1 decision A18, owner
 	// 2026-10-21): the session's history is replayed and it runs the session's
 	// agent and identity. RunOnce takes the session's agent and ignores the
-	// request's, so a request naming another agent is refused here, by name,
-	// rather than silently run as the session's. A session the caller cannot
-	// see reads as missing, and RunOnce answers that with its opaque 404.
+	// request's, so a request naming another agent is refused here rather than
+	// silently run as the session's — and refused without telling the caller
+	// anything it may not see: a session it may not use (another tenant's,
+	// another user's for an isolated member) is left to RunOnce's opaque 404,
+	// and the session's agent is named only when the token may run it.
 	if req.SessionID != "" {
-		if sess, err := s.tenantStore(r.Context()).GetSession(r.Context(), req.SessionID); err == nil && sess.Agent != req.Agent {
-			http.Error(w, fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", req.SessionID, sess.Agent, req.Agent), http.StatusBadRequest)
+		if sess, err := s.store.GetSession(r.Context(), req.SessionID); err == nil && sessionOwnershipOK(r.Context(), sess) && sess.Agent != req.Agent {
+			if err := s.admitPrincipalAgent(r.Context(), req.Agent); err != nil {
+				writeAgentNotAllowed(w, err)
+				return
+			}
+			msg := fmt.Sprintf("session %q does not continue with agent %q: a session continues with its own agent", req.SessionID, req.Agent)
+			if s.admitPrincipalAgent(r.Context(), sess.Agent) == nil {
+				msg = fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", req.SessionID, sess.Agent, req.Agent)
+			}
+			http.Error(w, msg, http.StatusBadRequest)
 			return
 		}
 	}
