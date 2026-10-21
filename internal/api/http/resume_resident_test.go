@@ -277,20 +277,21 @@ func TestResidentChild_ResumedParkedSendIsNotEndedByTheStartupPark(t *testing.T)
 	}
 }
 
-// pauseFlips records the runs a resume flips back to running, in order.
+// pauseFlips records the runs a resume claims back to running, in order.
 type pauseFlips struct {
 	store.Store
 	mu  sync.Mutex
 	ids []string
 }
 
-func (p *pauseFlips) SetRunPauseState(ctx context.Context, runID, state string) error {
-	if state == store.PauseStateRunning {
+func (p *pauseFlips) ClaimPausedRun(ctx context.Context, runID string) (bool, error) {
+	ok, err := p.Store.ClaimPausedRun(ctx, runID)
+	if ok {
 		p.mu.Lock()
 		p.ids = append(p.ids, runID)
 		p.mu.Unlock()
 	}
-	return p.Store.SetRunPauseState(ctx, runID, state)
+	return ok, err
 }
 
 // ResumePausedRuns resumes a paused child before its paused parent, though the

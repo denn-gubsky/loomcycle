@@ -504,7 +504,9 @@ func (s *Store) AppendEvent(ctx context.Context, runID string, eventType string,
 	return nil
 }
 
-// FinishRun marks the run terminal. Idempotent: the WHERE status='running'
+// FinishRun marks the run terminal, and no longer paused: an ended row is not
+// resumable, and one left reading 'paused' would be found by every resume pass
+// (RFC ES F1). Idempotent: the WHERE status='running'
 // guard prevents a late-arriving completed/failed write from overwriting
 // a terminal cancellation. Returns nil whether the row was actually
 // updated or not (matches SQLite adapter contract).
@@ -532,7 +534,8 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 			credential_source = $14,
 			credential_scope_id = $15,
 			result = $17::jsonb,
-			draft = NULL, queued_input = NULL
+			draft = NULL, queued_input = NULL,
+			pause_state = 'running'
 		 WHERE id = $1 AND status IN ($16, $18)`,
 		runID, string(status), completed, nullableText(stopReason),
 		usage.InputTokens, usage.OutputTokens,
@@ -2418,6 +2421,17 @@ func (s *Store) SetRunPauseState(ctx context.Context, runID, state string) error
 		return &store.ErrNotFound{Kind: "run", ID: runID}
 	}
 	return nil
+}
+
+// ClaimPausedRun implements store.Store.
+func (s *Store) ClaimPausedRun(ctx context.Context, runID string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET pause_state = $1 WHERE id = $2 AND pause_state = $3`,
+		store.PauseStateRunning, runID, store.PauseStatePaused)
+	if err != nil {
+		return false, fmt.Errorf("claim paused run: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // SetRunReplica implements store.Store.
