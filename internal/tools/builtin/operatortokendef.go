@@ -57,11 +57,20 @@ type OperatorTokenDef struct {
 
 	// LegacyTokenSet reports whether LOOMCYCLE_AUTH_TOKEN is configured
 	// (wired from main.go). When false, retiring the LAST admin-scoped token
-	// would flip authConfigured to false → unauthenticated open mode, so the
+	// would flip authConfigured to false → unauthenticated open mode (or, with
+	// config principals declared, leave no admin credential), so the
 	// no-fail-open guard in execRetire refuses it. When a legacy fallback
 	// exists, retiring the last admin merely re-enables it (recoverable), so
 	// the guard does not fire.
 	LegacyTokenSet bool
+
+	// AdminPrincipalDeclared reports whether a config principal that can log in
+	// holds substrate:admin (config.AdminPrincipalResolved, captured at boot).
+	// Then retiring the last admin token leaves an admin credential and, since
+	// declared principals keep auth on, no open mode, so execRetire allows it.
+	// A declared principal WITHOUT admin keeps auth on too, but the retire
+	// would leave nobody able to manage tokens, so it stays refused.
+	AdminPrincipalDeclared bool
 
 	// ConfigTenants are the tenant ids the config `principals:` block declares
 	// (config.PrincipalTenants, captured at boot like the principals themselves).
@@ -566,14 +575,15 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 	// than a lockout. Refuse it; the operator must create/rotate another admin
 	// token first (or keep the legacy fallback). Rotate is exempt by
 	// construction: it mints a replacement admin token for the same principal
-	// before retiring the prior, so the count never reaches zero.
-	if !s.LegacyTokenSet && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
+	// before retiring the prior, so the count never reaches zero. An admin
+	// config principal is a standing admin credential, so it lifts the guard.
+	if !s.LegacyTokenSet && !s.AdminPrincipalDeclared && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
 		n, cErr := s.Store.OperatorTokenDefCountActiveAdmin(ctx)
 		if cErr != nil {
 			return errResult(fmt.Sprintf("retire: admin-count check: %s", cErr)), nil
 		}
 		if n <= 1 {
-			return errResult("retire: refusing to retire the last admin-scoped token — with no LOOMCYCLE_AUTH_TOKEN fallback this would drop the server into unauthenticated open mode; create or rotate another substrate:admin token first"), nil
+			return errResult("retire: refusing to retire the last admin-scoped token — with no LOOMCYCLE_AUTH_TOKEN fallback and no admin config principal this would leave no admin credential (and, with no config principals, drop the server into unauthenticated open mode); create or rotate another substrate:admin token first"), nil
 		}
 	}
 	now := time.Now().UTC()

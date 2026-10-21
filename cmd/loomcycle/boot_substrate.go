@@ -224,12 +224,13 @@ func (b *boot) wireAuth() {
 		logLegacyTokenSnapshot(snap, tokenHasher.AcceptsUnpeppered())
 	}
 	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
-		Store:                storeIface,
-		Hasher:               tokenHasher,
-		Audit:                tokenAudit,
-		RotationGraceSeconds: graceSecs,
-		LegacyTokenSet:       cfg.Env.AuthToken != "",
-		ConfigTenants:        cfg.PrincipalTenants(),
+		Store:                  storeIface,
+		Hasher:                 tokenHasher,
+		Audit:                  tokenAudit,
+		RotationGraceSeconds:   graceSecs,
+		LegacyTokenSet:         cfg.Env.AuthToken != "",
+		AdminPrincipalDeclared: cfg.AdminPrincipalResolved(),
+		ConfigTenants:          cfg.PrincipalTenants(),
 	})
 	// RFC L Decision 11: per-replica auth-token resolution cache. Default
 	// 30s TTL; LOOMCYCLE_AUTH_CACHE_TTL_SECONDS=0 disables it (direct

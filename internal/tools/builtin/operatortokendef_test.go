@@ -92,6 +92,27 @@ func TestOperatorTokenDef_RetireLastAdmin_AllowedWithLegacyOrNonAdmin(t *testing
 	}
 }
 
+// A config principal holding substrate:admin keeps auth on and keeps an admin
+// credential (RFC ES F2), so the last admin token may be retired. A declared
+// principal WITHOUT admin keeps auth on but would leave nobody able to manage
+// tokens, so that retire is still refused.
+func TestOperatorTokenDef_RetireLastAdmin_AllowedOnlyWithAnAdminPrincipal(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	tool.AdminPrincipalDeclared = true
+	mustOp(t, tool, ctx, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
+		t.Fatalf("with an admin config principal, retiring the last admin token should be allowed; got %s", res.Text)
+	}
+
+	tool2, ctx2, _, cleanup2 := operatorTokenDefFixture(t) // no admin principal
+	defer cleanup2()
+	mustOp(t, tool2, ctx2, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+	if res, _ := tool2.Execute(ctx2, json.RawMessage(`{"op":"retire","name":"ops"}`)); !res.IsError {
+		t.Fatal("with no admin config principal and no legacy secret, retiring the last admin token must stay refused")
+	}
+}
+
 func TestOperatorTokenDef_CreateMintsTokenOnceAndStoresPepperedHash(t *testing.T) {
 	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
