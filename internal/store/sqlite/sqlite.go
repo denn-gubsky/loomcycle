@@ -969,7 +969,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		// (tenant_id, scope, scope_id, name) key; definition holds ONLY sealed
 		// ciphertext (inline backend, see internal/credential) or an external
 		// pointer — never a plaintext secret. scope/scope_id isolate user A's
-		// token from user B's. Excluded from snapshots.
+		// token from user B's. Excluded from snapshots. Rows under scope
+		// 'system' are runtime markers (store.SystemMarkerGet), holding a
+		// non-secret note rather than sealed ciphertext.
 		`CREATE TABLE IF NOT EXISTS credential_defs (
 			tenant_id   TEXT NOT NULL DEFAULT '',
 			scope       TEXT NOT NULL,

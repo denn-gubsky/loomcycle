@@ -90,7 +90,7 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	if err != nil {
 		return TokenRewrapReport{}, err
 	}
-	marked, err := s.tokenRewrapMarked(ctx)
+	marked, err := s.store.SystemMarkerGet(ctx, tokenRewrapMarker)
 	if err != nil {
 		return TokenRewrapReport{}, err
 	}
@@ -144,7 +144,7 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	if !marked {
 		// After the rewrap committed: a marker without it would strand the
 		// rows. Failing here leaves only the tagged rows as the record.
-		if err := s.markTokenRewrap(ctx); err != nil {
+		if err := s.store.SystemMarkerSet(ctx, tokenRewrapMarker); err != nil {
 			log.Printf("auth: recording the token-hash rewrap failed (retried at the next boot): %v", err)
 		}
 	}
@@ -152,31 +152,9 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 	return rep, nil
 }
 
-// The rewrap marker's key in the credential table. Scope "system" is outside
-// the scopes a credential is stored under (tenant, user, agent), so no
-// credential surface lists or resolves it; it holds no secret.
-const (
-	tokenRewrapMarkerScope = "system"
-	tokenRewrapMarkerName  = "operator-token-rewrap"
-)
-
-func (s *Server) tokenRewrapMarked(ctx context.Context) (bool, error) {
-	_, err := s.store.CredentialDefGet(ctx, "", tokenRewrapMarkerScope, "", tokenRewrapMarkerName)
-	if isNotFound(err) {
-		return false, nil
-	}
-	return err == nil, err
-}
-
-func (s *Server) markTokenRewrap(ctx context.Context) error {
-	_, err := s.store.CredentialDefPut(ctx, store.CredentialDefRow{
-		Scope:      tokenRewrapMarkerScope,
-		Name:       tokenRewrapMarkerName,
-		Backend:    "marker",
-		Definition: []byte(`{"rewrapped_unpeppered_token_hashes":true}`),
-	})
-	return err
-}
+// tokenRewrapMarker names the system marker the first derived-pepper boot
+// records (store.SystemMarkerGet).
+const tokenRewrapMarker = "operator-token-rewrap"
 
 // lookupOlderTokenForm is the miss path of the token lookup under a derived
 // pepper: try the wrapped form and the previous key's forms of bearer, and on
