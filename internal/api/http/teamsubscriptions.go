@@ -367,13 +367,12 @@ func (s *Server) runSubscribedTeam(ctx context.Context, sub teamSubscription) er
 	if err != nil {
 		return err
 	}
-	// The walk is not cancelled with the sweep (RFC ES F1): ctx is the
-	// process's background one, which a shutdown cancels right after it parks
-	// the runs in flight, and cancelling the walk then ends its parked members
-	// cancelled after the shutdown counted them paused. The process exit ends
-	// the walk, and the next boot ends its members as it ends any walk's a
-	// restart interrupted.
-	res, err := s.TeamDef(s.subscriptionCtx(context.WithoutCancel(ctx), sub), input)
+	// Under the sweep's ctx on purpose (RFC ES F1): the walk runs inside an
+	// advisory lock that pins a pool connection until it returns, so a walk
+	// that outlived a shutdown would hold the pool's close until the SIGKILL.
+	// A shutdown cancels it; its source is not acked, so the next sweep runs
+	// it again.
+	res, err := s.TeamDef(s.subscriptionCtx(ctx, sub), input)
 	if err != nil {
 		s.subBackoff.record(sub.DefID, err)
 		return err

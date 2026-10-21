@@ -1327,13 +1327,13 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 			}
 		},
 	}
-	// The run outlives the scheduler's stop, as fireRun's does: a shutdown
-	// parks it for the next boot to resume, and the scheduler's ctx is the
-	// process's background one, cancelled right after that pause — which
-	// would end a parked run cancelled. The pass's budget still ends it.
-	runCtx, endRun := detachFromStop(ctx)
-	defer endRun()
-	runErr := s.runner.RunOnce(runCtx, in, cb)
+	// Under the scheduler's ctx on purpose, unlike fireRun's run (RFC ES F1):
+	// the fan-out runs inside an advisory lock, which pins a pool connection
+	// until it returns. A run detached from the scheduler's stop and parked by
+	// a shutdown would never return, so the pool's close — and the process —
+	// would wait for the SIGKILL, while another replica resumed the run. A
+	// shutdown cancels the pass instead; the next tick does it again.
+	runErr := s.runner.RunOnce(ctx, in, cb)
 	usageMu.Lock()
 	refused := keyRefused
 	usageMu.Unlock()
@@ -1556,22 +1556,5 @@ func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDu
 				s.logf("scheduler: %q reached max_fires=%d — retired def %s", row.Name, def.MaxFires, row.DefID)
 			}
 		}
-	}
-}
-
-// detachFromStop is ctx without the scheduler's stop: it ends when ctx ends
-// for any other reason — a budget running out, with that budget's cause, which
-// the pass reads off its own ctx once the run returns — but not when ctx is
-// cancelled plainly, as the scheduler's is when it stops.
-func detachFromStop(ctx context.Context) (context.Context, context.CancelFunc) {
-	out, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
-	stop := context.AfterFunc(ctx, func() {
-		if cause := context.Cause(ctx); !errors.Is(cause, context.Canceled) {
-			cancel(cause)
-		}
-	})
-	return out, func() {
-		stop()
-		cancel(nil)
 	}
 }
