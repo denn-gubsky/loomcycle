@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -270,5 +271,35 @@ func TestManager_ResumeFlipsOnlyThisReplicasPausedRows(t *testing.T) {
 		if got.PauseState != want {
 			t.Errorf("%s.PauseState = %q, want %q", id, got.PauseState, want)
 		}
+	}
+}
+
+// At the interrupt point the turn canceller is asked to stop the current turn
+// of each run not yet parked — and of none that has parked.
+func TestManager_ShutdownPauseCancelsTheTurnOfUnparkedRunsOnly(t *testing.T) {
+	m, s, cleanup := newTestManager(t)
+	defer cleanup()
+	stop := make(chan struct{})
+	defer close(stop)
+	parker := newShutdownRun(t, s, "parker")
+	busy := newShutdownRun(t, s, "busy")
+	m.RegisterRun(parker.ID)
+	defer m.DeregisterRun(parker.ID)
+	m.RegisterRun(busy.ID)
+	defer m.DeregisterRun(busy.ID)
+	parkWhenPaused(t, m, s, parker.ID, stop)
+	var mu sync.Mutex
+	var asked []string
+	m.SetShutdownTurnCanceller(func(runID string) {
+		mu.Lock()
+		asked = append(asked, runID)
+		mu.Unlock()
+	})
+
+	_ = m.PauseForShutdown(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(asked, []string{busy.ID}) {
+		t.Errorf("turn cancels = %v, want only the unparked run %s", asked, busy.ID)
 	}
 }

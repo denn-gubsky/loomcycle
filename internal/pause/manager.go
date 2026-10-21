@@ -136,6 +136,10 @@ type Manager struct {
 	// SetReplicaID. Guarded by mu.
 	replicaID string
 
+	// turnCanceller stops a run's current turn (SetShutdownTurnCanceller); nil
+	// stops none. Guarded by mu.
+	turnCanceller func(runID string)
+
 	// toolsInterrupted is set at a shutdown pause's interrupt point. A run
 	// registering after it starts with its tool calls interrupted.
 	toolsInterrupted atomic.Bool
@@ -973,5 +977,17 @@ func (m *Manager) Snapshot(ctx context.Context) (StateSnapshot, error) {
 func (m *Manager) SetReplicaID(id string) {
 	m.mu.Lock()
 	m.replicaID = id
+	m.mu.Unlock()
+}
+
+// SetShutdownTurnCanceller installs what stops a run's current turn at a
+// shutdown pause's interrupt point. A run whose turn can be stopped (an
+// interactive or a resident run) then parks waiting for its next message — a
+// clean boundary — even when it is inside a model call, where interrupting its
+// tools alone would leave it unparked. fn is told the run id and stops nothing
+// for a run with no stoppable turn.
+func (m *Manager) SetShutdownTurnCanceller(fn func(runID string)) {
+	m.mu.Lock()
+	m.turnCanceller = fn
 	m.mu.Unlock()
 }

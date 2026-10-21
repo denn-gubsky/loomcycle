@@ -115,10 +115,14 @@ func (m *Manager) waitParked(until time.Time) bool {
 }
 
 // interruptUnparkedTools stops the tool calls of every registered run not
-// parked now, and of every run that registers from now on, and names the
-// runs it stopped.
+// parked now, and of every run that registers from now on, stops the current
+// turn of each of those runs that has one to stop (SetShutdownTurnCanceller),
+// and names the runs it stopped.
 func (m *Manager) interruptUnparkedTools() []string {
 	m.toolsInterrupted.Store(true)
+	m.mu.Lock()
+	cancelTurn := m.turnCanceller
+	m.mu.Unlock()
 	var ids []string
 	m.activeRuns.Range(func(k, v any) bool {
 		e := v.(*runEntry)
@@ -129,6 +133,11 @@ func (m *Manager) interruptUnparkedTools() []string {
 		return true
 	})
 	sort.Strings(ids)
+	if cancelTurn != nil {
+		for _, id := range ids {
+			cancelTurn(id)
+		}
+	}
 	return ids
 }
 
