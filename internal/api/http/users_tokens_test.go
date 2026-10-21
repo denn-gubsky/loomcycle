@@ -133,6 +133,21 @@ func TestHandleMintUserToken_UnknownUser404(t *testing.T) {
 	}
 }
 
+// A caller with no tenant — open mode, or an admin principal declared without
+// one — cannot mint a member token: the row needs a tenant. That was a 500
+// token_create_failed from the store; it is the caller's state, so say so.
+func TestHandleMintUserToken_TenantlessCallerRefusedClearly(t *testing.T) {
+	s, st := tokenAuthServer(t, "")
+	admin := auth.Principal{Subject: "ops", Scopes: []string{auth.ScopeAdmin}, TokenDefID: "cfg:ops"}
+	seedUser(t, st, "", "dave", "tenant", "active")
+
+	rec := httptest.NewRecorder()
+	s.handleMintUserToken(rec, bodyReq("POST", "/v1/_users/dave/tokens", "", admin, "subject", "dave"))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "tenant_required") {
+		t.Fatalf("tenant-less mint = %d %s, want 400 tenant_required", rec.Code, rec.Body.String())
+	}
+}
+
 // A disabled user cannot be minted a token.
 func TestHandleMintUserToken_DisabledUserRejected(t *testing.T) {
 	s, st := tokenAuthServer(t, "legacy")

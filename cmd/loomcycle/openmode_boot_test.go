@@ -127,6 +127,39 @@ func TestBoot_AdminTokenWithoutLegacySecretIsNotOpenMode(t *testing.T) {
 	}
 }
 
+// Config principals turn auth on with no legacy secret and no admin token
+// (RFC ES F2): the deployment boots on a public address, refuses a request with
+// no bearer, and does not log that it is unauthenticated.
+func TestBoot_DeclaredPrincipalsWithoutLegacySecretIsNotOpenMode(t *testing.T) {
+	b := newOpenModeBoot(t)
+	yaml := openModeBootYAML + `principals:
+  alice:
+    tenant: acme
+    subject: alice
+    scopes: [substrate:tenant]
+    token_env: LOOMCYCLE_ALICE_TOKEN
+`
+	if err := os.WriteFile(b.cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := b.boot(t, "0.0.0.0", map[string]string{"LOOMCYCLE_ALICE_TOKEN": "lct_boot_test_alice"})
+	if !res.served {
+		t.Fatalf("auth by config principals on 0.0.0.0 did not serve /healthz\n%s", res.log)
+	}
+	if res.unauthStatus != http.StatusUnauthorized {
+		t.Errorf("GET /v1/runs with no bearer = %d, want 401", res.unauthStatus)
+	}
+	for _, phrase := range []string{openModeWarning, "unauthenticated"} {
+		if strings.Contains(res.log, phrase) {
+			t.Errorf("a principals-only deployment logged %q as if it were open\n%s", phrase, res.log)
+		}
+	}
+	// alice is a tenant principal and the store is empty: nobody can administer.
+	if !strings.Contains(res.log, "no admin credential") {
+		t.Errorf("a principals-only deployment with no admin principal should say nobody can administer it\n%s", res.log)
+	}
+}
+
 // The boot tests share one build of the binary: each build links the whole
 // runtime, which takes tens of seconds on a loaded machine.
 var bootBinary struct {
