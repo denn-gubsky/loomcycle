@@ -170,6 +170,10 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 	// display/intent, but their boot-built subsystems run the old values until a
 	// restart — exactly what restart_required says.
 	s.cfgHolder.Store(candidate)
+	// The config's principals are part of bearer resolution, so a cached
+	// resolution may name one this reload removed or changed. Local only: a
+	// reload changes this replica's config, not its peers'.
+	s.tokenCache.flush()
 	return res, nil
 }
 

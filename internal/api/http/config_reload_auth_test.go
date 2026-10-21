@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
@@ -36,5 +37,26 @@ func TestReloadConfig_DroppingPrincipalsAllowedWithLegacySecret(t *testing.T) {
 	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil })
 	if _, err := s.ReloadConfig(context.Background(), false); err != nil {
 		t.Fatalf("reload keeping a legacy secret: %v", err)
+	}
+}
+
+// A principal a reload removes stops authenticating at once, not when its
+// cached resolution expires.
+func TestReloadConfig_RemovedPrincipalStopsAuthenticatingAtOnce(t *testing.T) {
+	s := declaredOnlyServer(t)
+	s.EnableTokenCache(time.Hour)
+	if _, ok := s.resolvePrincipal(context.Background(), declaredAliceSecret); !ok {
+		t.Fatal("alice should resolve before the reload")
+	}
+	candidate := &config.Config{Principals: map[string]config.PrincipalDef{
+		"bob": {Tenant: "acme", Subject: "bob", Scopes: []string{"runs:read"}, TokenEnv: "LOOMCYCLE_BOB_TOKEN"},
+	}}
+	candidate.Env = s.cfg().Env
+	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil })
+	if _, err := s.ReloadConfig(context.Background(), false); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, ok := s.resolvePrincipal(context.Background(), declaredAliceSecret); ok {
+		t.Error("a principal removed by a reload still authenticated from the token cache")
 	}
 }
