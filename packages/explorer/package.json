@@ -50,7 +50,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "react-markdown": "^9.1.0",
+    "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },
   "peerDependencies": {
