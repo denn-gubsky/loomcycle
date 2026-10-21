@@ -1280,11 +1280,11 @@ A token row stores `SHA-256(pepper ‖ token)`, never the token. The pepper is w
 
 A key rotation works the same way at login: with the old key in `LOOMCYCLE_SECRET_KEY_PREVIOUS`, a token on either form under the pepper it derived still logs in and is moved onto the new one. Those rows cannot be rewrapped at boot (that needs the token); the boot log counts how many are left, so you know when `LOOMCYCLE_SECRET_KEY_PREVIOUS` can go.
 
-**What this does not stop:** someone who can write the database, deletes that marker row and every derived-pepper token row (logging out every token holder), then writes an unpeppered row for a token of their choosing, has the next boot rewrap it. Someone who can only insert rows cannot. Without the pepper they cannot write a row that authenticates any other way.
+**What this does not stop:** someone who can write the database, deletes that marker row (and every derived-pepper token row, if any exist), then writes an unpeppered row for a token of their choosing, has the next boot rewrap it. On a deployment with no token rows — only `LOOMCYCLE_AUTH_TOKEN` or config principals — that takes deleting one row and logs nobody out. Someone who can only insert rows cannot. Without the pepper they cannot write a row that authenticates any other way.
 
 **Upgrade every replica together, and plan a rollback as a re-mint.** A release without the derived pepper cannot read the `p1:` form, and a release before the rewrap cannot read `w1:`. In a mixed-version cluster, a rewrapped token gets `401` from every old replica, and a token minted on an old replica without `LOOMCYCLE_SECRET_KEY` after a new replica has started is refused by the new ones; upgrade all replicas at once. Rolling back to such a release, or removing `LOOMCYCLE_SECRET_KEY`, logs out every token minted, rewrapped or rehashed since; plan to re-mint them.
 
-**What still invalidates tokens:** changing or removing an explicit pepper; setting an explicit pepper on a deployment that used a derived one; removing `LOOMCYCLE_SECRET_KEY` when the pepper is derived from it; and dropping `LOOMCYCLE_SECRET_KEY_PREVIOUS` before every token has logged in once under the new key.
+**What still invalidates tokens:** changing or removing an explicit pepper (also when the next boot rewraps those rows under a derived pepper: a rewrap keeps only tokens minted with no pepper working); setting an explicit pepper on a deployment that used a derived one; removing `LOOMCYCLE_SECRET_KEY` when the pepper is derived from it; and dropping `LOOMCYCLE_SECRET_KEY_PREVIOUS` before every token has logged in once under the new key.
 
 ### Deleting a run tree
 
