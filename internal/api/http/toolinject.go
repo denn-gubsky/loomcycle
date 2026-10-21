@@ -107,7 +107,7 @@ func (s *Server) renderContextTools(ctx context.Context, mi memInject) string {
 	if len(mi.Tools) == 0 {
 		return ""
 	}
-	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	tctx := tools.UpdateRunPolicy(s.docToolCtx(ctx, mi), func(p *tools.RunPolicy) { p.Tools = toolNames(mi.Tools) })
 	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg()}
 	req, _ := json.Marshal(map[string]any{"op": "tools"})
 	res, err := ct.Execute(tctx, req)
@@ -208,7 +208,7 @@ func (s *Server) renderContextGuide(ctx context.Context, mi memInject) string {
 	if len(mi.Tools) == 0 {
 		return ""
 	}
-	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	tctx := tools.UpdateRunPolicy(s.docToolCtx(ctx, mi), func(p *tools.RunPolicy) { p.Tools = toolNames(mi.Tools) })
 	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg()}
 	req, _ := json.Marshal(map[string]any{"op": "guide"})
 	res, err := ct.Execute(tctx, req)
@@ -287,7 +287,7 @@ const toolGuidePreamble = "How to call your tools — the op to pass and the req
 // safe to bake into a prompt — unlike op=self. This renderer builds the fuller
 // Context tool (Store/SqlMem/Embedder) the probe needs, which the server holds.
 func (s *Server) renderContextCapabilities(ctx context.Context, mi memInject) string {
-	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	tctx := tools.UpdateRunPolicy(s.docToolCtx(ctx, mi), func(p *tools.RunPolicy) { p.Tools = toolNames(mi.Tools) })
 	ct := &builtin.Context{
 		Tools:    mi.Tools,
 		Cfg:      s.cfg(),

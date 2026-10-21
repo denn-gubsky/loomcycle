@@ -65,33 +65,6 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 		Isolated: auth.IsIsolated(principal, ok),
 	})
 	ctx = tools.WithAgentName(ctx, grpcSubstrateAdminAgentName)
-	// AgentTools wildcard ceiling (F11): operator-trust path → mirror HTTP
-	// substrateAdminCtx + MCP operatorCtx so a gRPC `agentdef`/`skilldef`
-	// create with a tool-bearing tools overlay validates instead of
-	// refusing "caller's effective tools not on ctx". Per-run contexts
-	// keep the agent's actual list, so the in-loop escalation guard is unchanged.
-	ctx = tools.WithAgentTools(ctx, []string{"*"})
-	// RFC BL P2: the operator substrate plane also gets the consolidation grant
-	// (own-scope, tenant-confined), consistent with the open memory scope here.
-	// It does NOT get the origin=consolidator provenance stamp — that requires an
-	// actual run and this plane has no run id (see builtin.provenanceForSet).
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "global"},
-		Consolidation: true,
-	})
-	// Channel: unrestricted, said with the discriminator rather than a "*" in
-	// the allowlist. The matcher supports an exact name and a trailing "/*"
-	// prefix only, so the old []string{"*"} matched NO channel and this plane
-	// silently held no channel authority at all.
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		AllPublish:   true,
-		AllSubscribe: true,
-	})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: grpcSubstrateAdminAgentName,
-	})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true}) // RFC BA: nil patterns = allow all skills
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{
 		Scopes:   []string{"any"},
 		SelfName: grpcSubstrateAdminAgentName,
@@ -127,16 +100,6 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	// OperatorTokenDef: gRPC substrate admin is operator-trust → grant
 	// admin (RFC L).
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
-	// VolumeDef: same operator-trust posture; "any" scope lets the
-	// gRPC-admin call create/delete/purge any volume name. The tool still
-	// stamps the authoritative tenant (RunIdentity above) + opaque-404s
-	// cross-tenant (RFC AH / mirrors MemoryBackendDef).
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
-		Scopes: []string{"any"},
-	})
-	// Evaluation: the grant every off-run transport shares (HTTP, MCP), from the
-	// token — not every op for every principal.
-	ctx = tools.WithEvaluationPolicy(ctx, tools.OffRunEvaluationPolicy(principal, ok))
 	// History tool (RFC BE): own-scope access (self/user/tenant) always; the
 	// cross-tenant `global` scope only for an admin principal — mirrors the HTTP
 	// substrateAdminUserCtx grant + the in-loop historyGlobalAllowed gate. The
@@ -157,7 +120,46 @@ func substrateGRPCCtx(ctx context.Context) context.Context {
 	case auth.HasScope(principal.Scopes, auth.ScopeTenant):
 		histScopes = []string{"self", "user", "tenant"}
 	}
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: histScopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+		// AgentTools wildcard ceiling (F11): operator-trust path → mirror HTTP
+		// substrateAdminCtx + MCP operatorCtx so a gRPC `agentdef`/`skilldef`
+		// create with a tool-bearing tools overlay validates instead of
+		// refusing "caller's effective tools not on ctx". Per-run contexts
+		// keep the agent's actual list, so the in-loop escalation guard is unchanged.
+		p.Tools = []string{"*"}
+		// RFC BL P2: the operator substrate plane also gets the consolidation grant
+		// (own-scope, tenant-confined), consistent with the open memory scope here.
+		// It does NOT get the origin=consolidator provenance stamp — that requires an
+		// actual run and this plane has no run id (see builtin.provenanceForSet).
+		p.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "global"},
+			Consolidation: true,
+		}
+		// Channel: unrestricted, said with the discriminator rather than a "*" in
+		// the allowlist. The matcher supports an exact name and a trailing "/*"
+		// prefix only, so the old []string{"*"} matched NO channel and this plane
+		// silently held no channel authority at all.
+		p.Channel = tools.ChannelPolicyValue{
+			AllPublish:   true,
+			AllSubscribe: true,
+		}
+		p.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"any"},
+			SelfName: grpcSubstrateAdminAgentName,
+		}
+		p.Skill = tools.SkillPolicyValue{Granted: true} // RFC BA: nil patterns = allow all skills
+		// VolumeDef: same operator-trust posture; "any" scope lets the
+		// gRPC-admin call create/delete/purge any volume name. The tool still
+		// stamps the authoritative tenant (RunIdentity above) + opaque-404s
+		// cross-tenant (RFC AH / mirrors MemoryBackendDef).
+		p.VolumeDef = tools.VolumeDefPolicyValue{
+			Scopes: []string{"any"},
+		}
+		// Evaluation: the grant every off-run transport shares (HTTP, MCP), from the
+		// token — not every op for every principal.
+		p.Evaluation = tools.OffRunEvaluationPolicy(principal, ok)
+		p.History = tools.HistoryPolicyValue{Scopes: histScopes}
+	})
 	return ctx
 }
 

@@ -467,62 +467,6 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		TenantID: principal.TenantID,
 	})
 	ctx = tools.WithAgentName(ctx, substrateAdminAgentName)
-	// AgentTools wildcard: substrate admin = operator trust. Without
-	// this, AgentDef.create / SkillDef.create with a non-empty
-	// tools overlay refuse with "caller's effective
-	// tools not on ctx (runtime misconfiguration)" because
-	// the create-time ceiling check (assertToolsSubset against
-	// callerTools) treats a nil callerTools as "unknown ceiling →
-	// refuse". For operator-trust paths the operator is the security
-	// boundary (bearer-authed /v1/_*), so attach a wildcard ceiling
-	// the subset check recognises. Regular per-run contexts continue
-	// to set WithAgentTools to the agent's actual tools list,
-	// so the capability-escalation guard for in-loop AgentDef calls
-	// is unchanged.
-	ctx = tools.WithAgentTools(ctx, []string{"*"})
-	// Memory: full scope access. QuotaBytes=0 falls back to the
-	// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES).
-	// RFC BL P2: the operator substrate-admin plane also gets the consolidation
-	// grant (own-scope, tenant-confined), consistent with the open scope here.
-	// It does NOT get the origin=consolidator provenance stamp — that requires an
-	// actual run and this plane has no run id (see builtin.provenanceForSet).
-	// `tenant` joins the list to match the MCP operator plane, which got it when
-	// tenant scope shipped while this plane was missed. Not a widening: `global` is
-	// already here and is strictly broader, and the tenant itself comes from the
-	// principal (dispatchSubstrate's RunIdentity), never the wire. Without it the
-	// Web UI could SEE a tenant document in the Path tree and not open it — which is
-	// how the omission surfaced.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant", "global"},
-		Consolidation: true,
-	})
-	// SQL Memory: same omission, one layer down. A tenant Document needs BOTH grants
-	// (structure in SQL Memory, chunk bodies in Memory), so stamping only the memory
-	// half above would still refuse. `global` is deliberately absent — SQL Memory has
-	// no global tier, and listing a scope the engine cannot create would turn a clear
-	// refusal into a confusing provisioning error.
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"},
-	})
-	// Channel: unrestricted, said with the discriminator rather than a "*" in
-	// the allowlist. The matcher supports an exact name and a trailing "/*"
-	// prefix only, so the old []string{"*"} matched NO channel and this plane
-	// silently held no channel authority at all.
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		AllPublish:   true,
-		AllSubscribe: true,
-	})
-	// AgentDef + SkillDef: "any" scope (operator-blessed admin).
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"any"},
-		SelfName: substrateAdminAgentName,
-	})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Granted: true}) // RFC BA: nil patterns = allow all skills
-	// VolumeDef (RFC AH Phase 2a): "any" scope so the HTTP-admin caller can
-	// create/delete/purge any dynamic volume name (operator trust).
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{
-		Scopes: []string{"any"},
-	})
 	// ScheduleDef: same operator-trust posture; "any" scope lets the
 	// HTTP-admin call create/fork/retire any schedule name regardless
 	// of the orchestrator-agent naming used by in-loop callers.
@@ -558,10 +502,6 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 		Scopes:   []string{"any"},
 		SelfName: substrateAdminAgentName,
 	})
-	// Evaluation: the grant every off-run transport shares. It used to be every
-	// op for every principal here, which an isolated user would have reached the
-	// moment a route dispatched to the tool.
-	ctx = tools.WithEvaluationPolicy(ctx, tools.OffRunEvaluationPolicy(principal, hasPrincipal))
 	// History tool (RFC BE / RFC BY): scope by principal authority.
 	//   - a delegated USER (a member — neither tenant operator nor admin) sees
 	//     ONLY its own chats: [self, user]. This is the cap that makes
@@ -578,7 +518,69 @@ func substrateAdminCtx(ctx context.Context) context.Context {
 	case auth.HasScope(principal.Scopes, auth.ScopeTenant):
 		histScopes = []string{"self", "user", "tenant"}
 	}
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: histScopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+		// AgentTools wildcard: substrate admin = operator trust. Without
+		// this, AgentDef.create / SkillDef.create with a non-empty
+		// tools overlay refuse with "caller's effective
+		// tools not on ctx (runtime misconfiguration)" because
+		// the create-time ceiling check (assertToolsSubset against
+		// callerTools) treats a nil callerTools as "unknown ceiling →
+		// refuse". For operator-trust paths the operator is the security
+		// boundary (bearer-authed /v1/_*), so attach a wildcard ceiling
+		// the subset check recognises. Regular per-run contexts continue
+		// to set WithAgentTools to the agent's actual tools list,
+		// so the capability-escalation guard for in-loop AgentDef calls
+		// is unchanged.
+		p.Tools = []string{"*"}
+		// Memory: full scope access. QuotaBytes=0 falls back to the
+		// global default (LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES).
+		// RFC BL P2: the operator substrate-admin plane also gets the consolidation
+		// grant (own-scope, tenant-confined), consistent with the open scope here.
+		// It does NOT get the origin=consolidator provenance stamp — that requires an
+		// actual run and this plane has no run id (see builtin.provenanceForSet).
+		// `tenant` joins the list to match the MCP operator plane, which got it when
+		// tenant scope shipped while this plane was missed. Not a widening: `global` is
+		// already here and is strictly broader, and the tenant itself comes from the
+		// principal (dispatchSubstrate's RunIdentity), never the wire. Without it the
+		// Web UI could SEE a tenant document in the Path tree and not open it — which is
+		// how the omission surfaced.
+		p.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant", "global"},
+			Consolidation: true,
+		}
+		// SQL Memory: same omission, one layer down. A tenant Document needs BOTH grants
+		// (structure in SQL Memory, chunk bodies in Memory), so stamping only the memory
+		// half above would still refuse. `global` is deliberately absent — SQL Memory has
+		// no global tier, and listing a scope the engine cannot create would turn a clear
+		// refusal into a confusing provisioning error.
+		p.SqlMem = tools.SqlMemPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"},
+		}
+		// Channel: unrestricted, said with the discriminator rather than a "*" in
+		// the allowlist. The matcher supports an exact name and a trailing "/*"
+		// prefix only, so the old []string{"*"} matched NO channel and this plane
+		// silently held no channel authority at all.
+		p.Channel = tools.ChannelPolicyValue{
+			AllPublish:   true,
+			AllSubscribe: true,
+		}
+		// AgentDef + SkillDef: "any" scope (operator-blessed admin).
+		p.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"any"},
+			SelfName: substrateAdminAgentName,
+		}
+		p.Skill = tools.SkillPolicyValue{Granted: true} // RFC BA: nil patterns = allow all skills
+		// VolumeDef (RFC AH Phase 2a): "any" scope so the HTTP-admin caller can
+		// create/delete/purge any dynamic volume name (operator trust).
+		p.VolumeDef = tools.VolumeDefPolicyValue{
+			Scopes: []string{"any"},
+		}
+		// Evaluation: the grant every off-run transport shares. It used to be every
+		// op for every principal here, which an isolated user would have reached the
+		// moment a route dispatched to the tool.
+		p.Evaluation = tools.OffRunEvaluationPolicy(principal, hasPrincipal)
+		p.History = tools.HistoryPolicyValue{Scopes: histScopes}
+	})
 	// OperatorTokenDef: operator-admin (RFC L). The /v1/_* endpoints are
 	// bearer-authed against the operator; minting auth tokens is the
 	// operator's prerogative. PR2's middleware additionally gates this

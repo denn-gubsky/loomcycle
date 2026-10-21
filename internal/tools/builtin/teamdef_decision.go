@@ -163,7 +163,7 @@ func (t *TeamDef) decider() teamrun.DecideFunc {
 		if err != nil {
 			return "", &teamrun.DecisionError{Code: decisionInvalidInput, Message: "the questions are not readable"}
 		}
-		res, err := t.Decision.Execute(tools.WithDecisionPolicy(ctx, nil), raw)
+		res, err := t.Decision.Execute(tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Decision = nil }), raw)
 		if err != nil {
 			return "", err
 		}

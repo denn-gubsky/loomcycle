@@ -48,9 +48,19 @@ func (s *Server) renderTenantInfo(ctx context.Context, mi memInject) string {
 // needs (see the file comment on why they are server-side).
 func (s *Server) tenantRootCtx(ctx context.Context, mi memInject) context.Context {
 	dctx := s.docToolCtx(ctx, mi)
-	dctx = tools.WithMemoryPolicy(dctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx = withTenantDocGrants(dctx)
 	return dctx
+}
+
+// withTenantDocGrants grants the tenant-scope Memory and SQL Memory a
+// server-side read or write of an operator-authored tenant Document needs (a
+// Document's chunk bodies are in Memory and its structure in SQL Memory). The
+// rest of ctx's policy is kept.
+func withTenantDocGrants(ctx context.Context) context.Context {
+	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+		p.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		p.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	})
 }
 
 // ensureTenantRootDoc provisions the document on first reference. Mirrors

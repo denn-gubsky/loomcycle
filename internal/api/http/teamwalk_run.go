@@ -181,9 +181,11 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	// grant is made here, narrowed to the one kind a breakpoint uses: a
 	// question. Without it every pause errors, and a pause that cannot be
 	// answered aborts the walk.
-	walkCtx = tools.WithInterruptionPolicy(walkCtx, tools.InterruptionPolicyValue{
-		Enabled: true,
-		Kinds:   []string{"question"},
+	walkCtx = tools.UpdateRunPolicy(walkCtx, func(p *tools.RunPolicy) {
+		p.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{
+			Enabled: true,
+			Kinds:   []string{"question"},
+		})
 	})
 
 	finish := func(end builtin.WalkEnd) {

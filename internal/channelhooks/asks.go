@@ -230,7 +230,9 @@ func (j *job) askHold(ctx context.Context, pos int, hookName, name, reason strin
 			return holdAnswer(rec.Text, rec.IsError)
 		}
 	}
-	askCtx := tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"question"}})
+	askCtx := tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+		p.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"question"}})
+	})
 	askCtx, err := sess.Begin(askCtx)
 	if err != nil {
 		return "", err
