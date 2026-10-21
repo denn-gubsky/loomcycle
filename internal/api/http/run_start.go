@@ -186,6 +186,14 @@ type sessionAgentMismatchError struct{ msg string }
 func (e *sessionAgentMismatchError) Error() string { return e.msg }
 func (e *sessionAgentMismatchError) Unwrap() error { return runner.ErrInvalidArgument }
 
+// errContinuationAgentNotAllowed refuses a continuation of a session whose
+// agent the caller's token may not run. It names the session, which the caller
+// named, and not its agent, which a token limited to other agents must not
+// learn.
+func errContinuationAgentNotAllowed(sessionID string) error {
+	return fmt.Errorf("%w: session %q continues with an agent this token may not run", runner.ErrAgentNotAllowed, sessionID)
+}
+
 // sessionAgentMismatch is the refusal of a continuation of session sessionID
 // (whose agent is sessionAgent) that names requested instead. It tells the
 // caller nothing it may not see: an agent its token may not run is refused as

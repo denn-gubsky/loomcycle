@@ -3053,6 +3053,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if in.Agent != "" && in.Agent != sess.Agent {
 			return s.sessionAgentMismatch(ctx, in.SessionID, sess.Agent, in.Agent)
 		}
+		// A token limited to some agents may continue only a session whose
+		// agent is on its list. Checked before the session's team, whose
+		// refusal names the agent and the team.
+		if s.admitPrincipalAgent(ctx, sess.Agent) != nil {
+			return errContinuationAgentNotAllowed(in.SessionID)
+		}
 		// A no-trace session has no transcript to continue from. Refused here,
 		// before any slot or lock, with its own answer; it used to reach the row
 		// creation and come back as an internal error.
@@ -3120,13 +3126,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// the ctx tenant is wrong here.
 	// The agent is final here (a continuation has taken its session's, a
 	// started draft its row's), so this covers all three.
+	// (A continuation's agent was admitted with its session, above.)
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
-		if isContinuation {
-			// The session's agent, which this caller did not name: refused
-			// without telling a token limited to some agents the name of
-			// one outside its list.
-			return fmt.Errorf("%w: session %q continues with an agent this token may not run", runner.ErrAgentNotAllowed, in.SessionID)
-		}
 		return err
 	}
 	if err := s.admitPrincipalOverrides(ctx, overridesSetIn(&in)); err != nil {
