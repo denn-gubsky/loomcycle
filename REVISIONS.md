@@ -8,6 +8,295 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.119.0
+
+*The fixes from a security review of the whole runtime. A server authenticated only by a minted admin token could serve a request unauthenticated when it failed to read its token store: that now fails closed. **Open mode is refused on a public listener**, declaring config `principals:` turns authentication on, and operator-token hashes are peppered by default. **Some upgrades need an action: read the upgrade notes first.** Also: a shutdown pauses the runs in flight and a restart resumes them, `POST /v1/runs` starts runs the way every other transport does, logs can be JSON, and Amazon Bedrock can be reached with AWS IAM credentials.*
+
+A minor release: #1890 to #2009.
+- the security review's fixes (RFC ES): authentication (#1949, #1952, #1957, #1999, #2000, #2001, #2003), egress and webhooks (#1951, #1961), Bash, Bashbox and the file tools (#1950, #1953, #1963), authority inside a run (#1997, #2002), the shutdown pause (#1998, #2005), and supply chain and CI (#1894, #1895, #1897, #1948, #1966, #1988);
+- the code restructuring (RFC ET): `POST /v1/runs` and session messages start through the shared run start (#1960, #1967) with follow-ups (#2004), reads confined for agent-restricted tokens (#2007), run-policy inheritance (#1958, #1959, #2006, #2008), structured logging (#1955), and internal splits with no behaviour change (#1896, #1921, #1954, #1956, #1962);
+- #1891 and #1892 (RFC EM) add AWS IAM authentication for Amazon Bedrock;
+- #1890 fixes paragraph breaks in the chat bridges' core;
+- #1893, #1964 and #1996 fix flaky tests, and #1987 regroups Dependabot;
+- 72 dependency updates came from Dependabot, and #2009 is these notes.
+- `@loomcycle/client` and the Python adapter are 1.119.0. The TS client's `RunSpec` type gains `spawn.offered_overrides` (#2008), and the `sessionId` doc now says it continues the session. The Python adapter accepts protobuf 7. No method changes in either.
+
+### A store error no longer reads as open mode (#1957)
+
+loomcycle decides whether authentication is on by checking for `LOOMCYCLE_AUTH_TOKEN` and, failing that, by counting the admin operator tokens in its store. Any error reading that count meant open mode, so the request was served with no principal, token minting included.
+
+- **Affected:** deployments authenticated only by a minted admin operator token, with no `LOOMCYCLE_AUTH_TOKEN`. A deployment with `LOOMCYCLE_AUTH_TOKEN` set was safe.
+- **Trigger:** a database fault, or a client that half-closes its connection so its own request is cancelled before the count runs. On an unpatched build, 39 of 50 such no-bearer requests to `/v1/_me` got `200` with `open_mode:true`. The gRPC interceptor and the A2A frontier used the same check.
+- **Second case:** a `LOOMCYCLE_AUTH_TOKEN` retired by an admin token authenticated again as `substrate:admin` while the count could not be read, and the answer was cached for the token-cache lifetime.
+
+Both now fail closed: the request needs a valid bearer and gets `401` (gRPC `Unauthenticated`) without one. During a store outage, no-bearer requests get `401`, where before they were served.
+
+### Open mode is refused on a public listener (#1949, #2000)
+
+Open mode is a server with no `LOOMCYCLE_AUTH_TOKEN`, no config `principals:` and no admin operator token. Every route is unauthenticated. Nothing stopped it on `0.0.0.0`.
+
+- **Boot refusal.** A server in open mode now exits at boot when `LOOMCYCLE_LISTEN_ADDR` or `LOOMCYCLE_GRPC_ADDR` binds anything but `127.0.0.0/8`, `::1` or `localhost`. `:8787`, `0.0.0.0`, `::`, a LAN address and any other host name count as public:
+
+  ```
+  auth: refusing to start in open mode on LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787: …
+  ```
+
+  Set `LOOMCYCLE_AUTH_TOKEN` (`openssl rand -hex 32`) or declare `principals:`, bind `127.0.0.1`, or, for a throwaway test harness only, set `LOOMCYCLE_ALLOW_OPEN_MODE=1`.
+- A boot that cannot read the store to decide is refused too.
+- **Warnings.** The open-mode warning used to check only `LOOMCYCLE_AUTH_TOKEN`, so it fired on a deployment authenticated by an admin token, and the gRPC banner said `auth=false` there. It now follows the real decision and repeats every 10 minutes. The Web UI shows an "Unauthenticated" banner in open mode. `loomcycle doctor` warns about a public listener in open mode.
+- **WebSocket bearer.** A `bearer.<token>` entry in `Sec-WebSocket-Protocol` was accepted on every request. It now authenticates only a WebSocket upgrade to `/v1/client-tools`. No loomcycle client sent it anywhere else.
+
+### Declaring config principals turns authentication on (#2000, #2001)
+
+A deployment whose only credentials were config `principals:` ran in open mode. Every caller was the default admin in tenant `""`, the declared principals never authenticated as themselves, and minting a user token answered `500`.
+
+- **Now:** declaring any principal turns authentication on. Requests without a valid bearer get `401` (gRPC `Unauthenticated`), each principal authenticates as itself, and `/v1/_me` no longer reports `open_mode`.
+- **Fail-closed:** a principal whose `token_env` is empty still turns authentication on. If no credential can log in, every request gets `401`, and boot says so.
+- **Boot warnings:** "no credential can authenticate", and "no admin credential", which names the fix: add a `substrate:admin` principal or set `LOOMCYCLE_AUTH_TOKEN`.
+- **Config reload** (`POST /v1/_config/reload`):
+  - A reload with principals answered `422 config_invalid` from its second load on (#2001). It works now.
+  - A reload is refused when the running config turns authentication on by itself (`LOOMCYCLE_AUTH_TOKEN` or principals) and the new one does not. An admin token in the store does not make it acceptable. To move from principals to minted tokens only, restart or keep `LOOMCYCLE_AUTH_TOKEN`.
+  - A reload is refused when it drops the last config admin credential and the store holds no admin token.
+  - A successful reload flushes the token cache, so a removed principal stops authenticating at once.
+- **First load (#2001):** a `${NAME}` reference to a principal's `token_env` elsewhere in the config, such as an MCP server header, was replaced by the bearer on the first load in a process. It is now left literal, as later loads did.
+- **User-token mint:** a tenant-less caller gets `400 tenant_required` instead of `500 token_create_failed`.
+- The last-admin-token retire guard stays unless an admin principal that can log in exists, read at retire time.
+
+### Operator-token hashes are peppered by default (#1952, #1999, #2003)
+
+With no `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`, a token's stored hash was a plain SHA-256 of the token. Anyone who can write the `operator_token_defs` table could insert a row for a token of their choosing and log in with it.
+
+- **Derived pepper.** With no explicit pepper, the pepper is now derived from `LOOMCYCLE_SECRET_KEY` (HKDF-SHA256). New hashes are stored as `p1:<key fingerprint>:<HMAC>`.
+- **Existing rows.** At the first boot with a derived pepper, every stored hash is rewrapped in one transaction as `w1:<key fingerprint>:<HMAC of the old hash>`, and a marker row records that this boot happened. A `w1:` row moves to `p1:` at its token's next login. No existing token stops working.
+- **The unpeppered fallback is gone.** A row written later with a plain SHA-256 hash never authenticates. Boot logs any such row by `def_id`.
+- Rows hashed under `LOOMCYCLE_SECRET_KEY_PREVIOUS` still authenticate and move to the current key at login.
+- **Unchanged:** an explicit `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` keeps its hashes byte-identical. A deployment with neither a pepper nor `LOOMCYCLE_SECRET_KEY` is unchanged and gets a boot warning.
+- An admin token row that cannot authenticate (an unpeppered row the rewrap refused, or one under a key no longer configured) no longer disables `LOOMCYCLE_AUTH_TOKEN`, and no longer counts for the last-admin retire guard.
+- `loomcycle doctor` reports where the pepper comes from: explicit, derived or none.
+
+### A shutdown pauses runs; a restart resumes them (#1998, #2005)
+
+On SIGTERM or SIGINT the server stopped its workers and returned. Nothing paused or waited for the runs in flight. Their rows were left `running` for the stale-run sweeper to fail, and a Bash command's process outlived the server.
+
+- **The pause.** New runs are refused (`503`) and each run in flight parks at its next iteration boundary, bounded by `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS` (default 7000; `0` turns the pause off; capped at 5 minutes). The HTTP and gRPC listeners drain alongside it for at most 5 s each. gRPC `GracefulStop` now has that 5 s deadline.
+- **The interrupt.** At three quarters of the bound, the tool calls of runs not yet parked are interrupted. A Bash or Bashbox-fallback command's process group is killed, and the call fails with `interrupted: the runtime shut down while this call was running, so it may not have finished.` An interactive or resident run has its turn stopped and parks waiting for its next message.
+- **The resume.** The next boot resumes every paused run. The resumed run reads the interrupted call's failure and decides whether to run it again.
+- **In a cluster:**
+  - every replica also runs the resume pass periodically, one replica at a time, so a rolling update that starts the new replica first still resumes the old one's runs;
+  - the dead-replica sweep no longer fails paused runs;
+  - each resume claims its row with a compare-and-set, and the user's run slot moves with the run.
+- **Not resumed:** a non-interactive run still in a model call when the bound runs out, and a no-trace run. They end as before.
+- A fan-out parent keeps its children only with `LOOMCYCLE_RESUME_FANOUT=1`. Without it the interrupt cancels its spawn and the children end cancelled.
+- A blocking call (an `Interruption`, a `Channel` await, an `Agent` wait or poll) is interrupted too, so a person may see the same interruption twice.
+- A memory-consolidation pass and a team subscription's walk are cancelled at shutdown. The next tick repeats them.
+
+### Bash and Bashbox host commands end with their process group (#1950)
+
+Only the direct child was killed on a timeout. A background process holding the output pipe blocked the call for its whole life: `sleep 600 & echo hi` took 600 s whatever the timeout.
+
+- Bash and the Bashbox host-command fallback now run each command in its own process group. A timeout or cancel kills the whole group.
+- A command that exits normally kills nothing: a `server &` keeps running. The output pipe is closed 2 s after the exit, and the call succeeds with `[output closed 2s after exit: a background process still holds it]`.
+- A descendant that calls `setsid()` leaves the group and survives. Bash is still not a sandbox.
+- Ctrl-C in the terminal no longer reaches in-flight Bash children directly. Stopping loomcycle interrupts them through the shutdown pause instead.
+
+### The file tools open volume files through `os.Root` (#1950)
+
+Read, Write, Edit, NotebookEdit, Grep, Glob and the Crypto tool's volume references checked a path, then opened the path string. Anything that could create symlinks in the volume, including gbash's `ln -s` on a read-write Bashbox mount, could swap a directory for a symlink in between and reach outside the volume.
+
+- Every open now walks the path one directory handle at a time, checks each step is the directory the path named, and refuses a swapped one: `the path changed while it was being opened; try again`.
+- Grep and Glob walk by directory handle and never follow a symlinked directory.
+- **Behaviour change:** a directory inside a volume that the server may traverse but not list (mode `0100`, or a `0300` drop box) is now refused with `permission denied`. Before, Read and Write worked through it.
+
+### Bashbox: per-command credentials and a memory cap (#1953, #1963)
+
+- **The model can read any credential given to a shell.** The docs said a credential passed to a Bashbox host command was out of the model's reach. It is not: with `git` allowed, `git -c alias.x='!env' x` prints it. The docs and the help topic now say so plainly.
+- **Per-command binding.** `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` accepts `cmd:NAME`, for example `git:GITHUB_TOKEN,gh:GH_TOKEN`. A bound credential reaches only that command. A bare `NAME` reaches every allowed command, as before.
+- **Boot validation.** The server refuses to boot, even with Bashbox off, on:
+  - a malformed `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` entry, or a name outside `[A-Za-z0-9_-]{1,128}`;
+  - a binding to a command missing from `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`;
+  - a `cmd:NAME` entry in `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`, which has no per-command form.
+- **Memory cap.** A write to a read-only volume goes to an in-memory overlay in loomcycle's own heap, which had no limit: `yes > f` passed 3 GiB in about a second. `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES` (default 64 MiB, at least 1 MiB) now caps the total one call writes to in-memory files: writes, new files and directories, copies of volume files into memory (`chmod`, `touch`, `mv`, `ln`, an append) and named pipes. Deleting does not give bytes back. A write past the cap fails with `no space left on device`, and the call fails. Writes to a read-write volume go to disk and are not counted.
+- **Escape suite.** `make bashbox-escape` runs every Bashbox containment test, and CI runs it on every pull request.
+- See "Into a shell" in [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md), the Bashbox part of [`docs/TOOLS.md`](docs/TOOLS.md), and §9d.4 of [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Egress: link-local fence, header redaction, tenant MCP servers (#1951, #1961)
+
+- **Vouched names never reach link-local or metadata addresses.** A host name on `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` was exempt from the private-address check wherever it resolved, so whoever controls its DNS could point it at `169.254.169.254`. A vouched name still reaches loopback, RFC 1918, CGNAT and ULA addresses, but never:
+  - link-local (`169.254.0.0/16`, `fe80::/10`);
+  - the metadata addresses `fd00:ec2::254`, `fd00:ec2::23` and `100.100.100.200`;
+  - local-use NAT64 (`64:ff9b:1::/48`) and Teredo (`2001::/32`), whose embedded IPv4 cannot be read.
+
+  Only a CIDR entry covering them allows them. An IPv6 address with a zone (`fe80::1%en0`) is refused.
+- **An IP-literal host entry in that space refuses boot**, naming the entry that works: list `100.100.100.200/32`, not `100.100.100.200`.
+- **HTTP tool header redaction.** The HTTP tool wrote every response header into the tool result, so session cookies and minted tokens reached the model. A header whose name contains `token`, `secret`, `session`, `cookie`, `credential`, `password`, `auth`, `jwt` or `bearer`, or ends in `key`, now reads `[redacted]`: `Set-Cookie`, `Authorization`, `X-Auth-Token`, `Ocp-Apim-Subscription-Key`. `WWW-Authenticate`, `Proxy-Authenticate`, `X-OAuth-Scopes`, `Access-Control-Allow-Credentials` and the pagination headers `Page-Token`, `Next-Page-Token` and `Continuation-Token` stay readable. The header lines are now sorted by name.
+- **Tenant MCP servers dial through the egress guard.** `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` defaults to on, so no MCP-HTTP connection was guarded, including one to a server a tenant registered at runtime. A tenant's MCP server now always dials through the guard, whatever that setting says. One on a private address is refused, with a tool error that names the server, its tenant and the fix: list its host in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, or have an admin re-save the definition outside a run. Boot logs a `mcp_server_defs: WARNING:` line for each one whose host is `localhost` or a private IP literal. Operator yaml servers and admin-saved definitions are unaffected.
+- An MCPServerDef saved from inside a run is never operator-authored, even in a run started with an admin token.
+- The private-address rules are in [`docs/TOOLS.md`](docs/TOOLS.md).
+
+### Webhooks answer a bad signature like an unknown name (#1951)
+
+A webhook answered `404` for an unknown name but `401` for a bad signature, so a caller could find which names exist. A definition whose secret did not resolve answered `503` naming the env var or `$cred:` reference.
+
+| Delivery | Before | Now |
+|---|---|---|
+| wrong signature, stale timestamp, missing signature header, wrong bearer | `401 {"error":"unauthorized"}` | `404 {"error":"unknown_webhook"}`, byte-identical to an unknown or disabled name |
+| body over the definition's `body_size_limit_bytes` | `400 {"error":"bad_body"}` | `404 {"error":"unknown_webhook"}` |
+| secret unresolvable, or `auth.kind: none` without `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED=1` | `503` naming the secret, or `unauthenticated_mode_disabled` | `503 {"error":"unavailable"}` |
+
+- Every name reads the body the same way, under a 30 s read deadline, so neither an `Expect: 100-continue` probe nor a stalled sender tells names apart.
+- The delivery log, the delivery counts and the server log keep the real verdict and the secret's name. **A 404 from a webhook you created means a wrong secret or signature: check its recent deliveries.**
+- This covers `/v1/_webhooks/{name}`, the tenant form, the forge presets and team-local webhooks. The admin dry-run `/v1/_webhooks/{name}/test` still reports the verdict.
+
+### Operator authority never comes from inside a run (#1997, #2002)
+
+A run started with an admin token carries the admin principal into every tool call its model makes, and the definition tools treated such a call as the operator. A prompt-injected model is not the operator.
+
+- **Reachable before this release:** an agent in such a run could list, retire, promote or fork another tenant's AgentDefs, SkillDefs and TeamDefs, and read its evaluations and lineage. That included runs started with `LOOMCYCLE_AUTH_TOKEN`.
+- **Now:** inside a run, an admin principal acts like a tenant caller. It reads and writes its own tenant, reads and forks the shared `""` tier, cannot retire or promote a shared definition, and gets the same opaque not-found any tenant's run gets for another tenant's. Off-run callers (the HTTP, gRPC and MCP operator planes, the Web UI) keep cross-tenant reach.
+- The operator-only checks of the other definition tools (a free `api_key_env`, a `$cred:` not yet stored, a trigger in another tenant, another user's credential scope) also require an off-run caller. None of those tools is given to agents today.
+- Every run can now read the shared `""` tier through get and list, which it could already fork and run.
+- `Context op=self` reports `principal.admin_in_run: false` for an admin principal inside a run.
+- Listing ScheduleDef, A2AServerCardDef or A2AAgentDef in an agent's tools now warns that the tool is not available to agents. It never was.
+
+### `POST /v1/runs` starts runs through the shared run start (#1960, #1967, #2004)
+
+`POST /v1/runs` and `POST /v1/sessions/{id}/messages` had their own copies of the run start that gRPC, MCP, A2A, the scheduler, webhooks and batch share, so every run feature landed twice. Both are now translators over the shared start. Golden SSE transcripts pinned the old behaviour first, and every difference was listed and decided. Most answers are unchanged. The changes:
+
+- **`session_id` on `POST /v1/runs` is a real continuation:** the session's transcript is replayed, and the run uses the session's agent and identity. It used to append a fresh run with no replay, under the request's agent. A request naming a different agent gets `400`. MCP `spawn_run`, gRPC `Run` and `runs:batch` now refuse it the same way, where before they ran the session's agent.
+- **A detached run streams live.** It used to tail the store. Its steer echo arrives with `source:"api"`, and no replayed input frame is sent. The Web UI de-duplicates the operator's echo. Re-attaching with `GET /v1/runs/{id}/stream` is unchanged.
+- **An interactive continuation survives the client leaving** and can be re-attached, like a fresh interactive run.
+- gRPC `Continue` takes the cluster-wide session lock, as HTTP does.
+- The system prompt is no longer stored inside a run's `user_input`.
+- A cancelled run records its last events, and a run cancelled mid-turn records one error event, not two.
+- Continuations now get the fan-out cap, the run overrides, recall and the memory harvest.
+- A continuation sent right after a cancel or a run's end waits up to 5 s for that run to finish, instead of `409 session_busy`.
+- A run's stream no longer drops a `done` written just before its terminal status.
+
+### Interactive runs end after an hour idle (#2004)
+
+A parked interactive run waited for input forever.
+
+- A run parked at `awaiting_input` with no message for `LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT` (default `1h`; `0` waits forever) now ends `completed`, with stop reason `idle_timeout`, on the answer it already gave.
+- The session is kept. A normal continuation resumes it with the whole history.
+- A steer after the end gets `404`, with a hint to continue the session. The chat bridges already treat a `404` as "the run ended".
+- It covers every top-level run. It does not cover review holds, sub-runs or resident children, which have their own bounds.
+- A value that does not parse as a Go duration is refused at startup.
+
+### Agent-restricted tokens read only what their list reaches (#2004, #2007, #1958, #1959)
+
+A token limited to some agents (`restrictions.agents`) was confined on the run plane, but its reads were checked by tenant only.
+
+- **Reads (#2007):** a run is readable when the root of its spawn tree is a listed agent, and a session when every run in it is. Elsewhere the answer is the route's own not-found, byte-identical to a nonexistent id. This covers 16 read paths on HTTP, MCP and gRPC: transcripts, runs, streams, prompts, walk and child listings, user agents, interrupts and the run-state stream. Unrestricted, admin, legacy and open-mode callers are unchanged.
+- **Two laundering paths are closed:** `POST /v1/sessions/{id}/replay` of a session the token cannot read, and an `idempotency_key` another caller used, which returned that caller's run.
+- **Continuation refusals (#2004)** no longer name the session's agent, and give one answer whatever agent the request names. An unreachable session answers `404`, where it was `403`.
+- **Team walks (#1958):** a walk started from an operator plane passed the operator's authority to every member, so a tenant member's walk could record AgentDefs as operator-authored and create schedules under `any`. Members now start without it.
+- **Hook host grants (#1959):** a hook's `allow_hosts` for one `Agent` call reached the child's whole run. It now stops at the spawn.
+
+### Amazon Bedrock with AWS credentials (#1891, #1892)
+
+loomcycle reached Bedrock only with a static Bedrock API key. A provider can now authenticate with AWS IAM:
+
+```yaml
+providers:
+  bedrock-claude:
+    driver: anthropic
+    base_url: https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic
+    auth:
+      type: aws_sigv4          # or aws_bedrock_token
+      region: eu-central-1     # must match base_url
+      # role_arn / external_id_env / session_name / service: optional
+```
+
+- `aws_sigv4` signs every call. `aws_bedrock_token` mints Bedrock's short-term key and re-mints it after 80% of its life.
+- Credentials come from the AWS SDK's chain: environment, shared files, ECS, EKS and EC2 instance roles, with an optional `AssumeRole`. They refresh before they expire. The EC2 metadata service is used through IMDSv2 only.
+- It works in the existing Anthropic and OpenAI drivers, on the `bedrock-runtime` and `bedrock-mantle` hosts. The routing probe lists Bedrock's models.
+- A tenant's own key overrides the operator's under the name `AWS_BEARER_TOKEN_BEDROCK`. Every secret obtained is registered with the redactor.
+- **`bedrock` preset:** `LOOMCYCLE_PRESETS=base,bedrock` adds `bedrock-claude` and `bedrock-openai` for `LOOMCYCLE_BEDROCK_REGION`. It changes no routing.
+- `loomcycle doctor` checks each `auth` provider's AWS identity, and warns when host Bash or the Bashbox host fallback is on beside one, since a host command can read the instance role's credentials. The Web UI routing page shows an admin how each provider authenticates.
+- See "Amazon Bedrock with AWS credentials" in [`docs/PROVIDERS.md`](docs/PROVIDERS.md), with the IAM policy.
+
+### Structured logging (#1955)
+
+- `LOOMCYCLE_LOG_FORMAT=text|json` (default `text`) and `LOOMCYCLE_LOG_LEVEL=debug|info|warn|error` (default `info`).
+- Text output is byte-identical to before. JSON is one object per line, with `run_id`, `tenant`, `agent`, `user`, `trace_id` and `span_id` where a line belongs to a run.
+- 159 log calls in 29 packages are converted; the rest follow. An unconverted line is never hidden by the level, so a fatal reason always prints.
+- The values of secret-named env variables are masked in log lines.
+
+### Run-policy inheritance (#2006, #2008)
+
+A run's policy was set value by value through 26 context setters and copied into child runs field by field. It is now one typed run policy with one inheritance rule per field, and a test fails on a field without a rule. Fixed on the way:
+
+- a child's fan-out cap is now the smaller of its parent's and its own;
+- a spawn's compaction override, parallel-spawn index and timeout no longer reach descendants;
+- a locked child no longer inherits its parent's refused compaction or context settings, and its host list can only narrow;
+- a resumed sub-run offers its children the overrides it offered live (#2008). In an A→B→A′ chain, an `interruption` narrowing from A was lost after a restart. The offer is recorded as `spawn.offered_overrides` in the child's run record.
+
+### Smaller fixes
+
+- **Chat bridges (#1890):** an agent's text before and after a tool call ran together into one paragraph. `@loomcycle/bridge-core` 0.2.1 starts a new paragraph. It publishes on its own tag, and the bridges move to it in a later release.
+- **Env catalogue (#1988):** a duplicated `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` entry is removed, so the TrueNAS form matches its generator.
+
+### Supply chain and CI (#1894, #1895, #1897, #1948, #1966, #1987)
+
+- **Vulnerable dependencies (#1897):** `golang.org/x/net` moves to v0.60.0 and OpenTelemetry to v1.45.0, for five vulnerabilities `govulncheck` found reachable.
+- **Go toolchain (#1966):** CI and release builds now take the newest Go 1.26 patch, not the runner's cached one. That puts the fix for GO-2026-6809 (`crypto/x509`, Go 1.26.10) into the release binaries.
+- **Scanning (#1895):** `govulncheck` fails a pull request on a reachable vulnerability; gosec reports, and CodeQL scans Go and TypeScript.
+- **Reporting (#1894, #1948):** `SECURITY.md` describes private reporting through GitHub Security Advisories, with response targets.
+- **Dependabot (#1894, #1948, #1987):** weekly updates for Go modules, npm, pip, GitHub Actions, Dockerfiles and compose files. npm is grouped by dependency across every package, and majors of the dev toolchain are taken by hand.
+
+### Internal restructuring (no behaviour change)
+
+- `main()` is split from 3,240 lines into ordered boot phases (#1954), and the 1,617-line loop into per-phase methods (#1962).
+- The 404-method `Store` interface is split into 38 domain interfaces (#1921), and a shared SQL dialect layer serves both backends, used first by dirents and volumes (#1956).
+- `scripts/js-packages.sh` and `make js-install`, `js-build`, `js-test`, `js-typecheck` and `js-audit` run npm tasks across every JavaScript package (#1896).
+
+### Dependency updates
+
+72 Dependabot updates:
+- **Go modules:** a group of 18, among them gRPC 1.84, pgx 5.11, modernc sqlite 1.60, a2a-go 2.6 and OpenTelemetry 1.47.
+- **npm:** across the Web UI, the TS adapter and the packages, including TypeScript 7, Vitest 5, Vite 8 and `@types/node` 26 in most packages. Further majors of the dev toolchain are taken by hand (#1987).
+- **GitHub Actions** to new majors: `actions/checkout`, `setup-go`, `setup-python` and `setup-node`; `docker/setup-buildx-action`, `setup-qemu-action`, `login-action` and `build-push-action`; `goreleaser/goreleaser-action`.
+- **Docker:** the Web UI build stage to `node:26-alpine`, pinchtab v0.15.2 in the browser image and compose files, nginx 1.31 in the cluster compose file. The bridge images, and the cloud stack's loomboard and landing images, move to Node 26 when they are next built.
+- **Python adapter:** protobuf below 8.
+
+### Upgrade notes
+
+- **No migration and no schema change.** The token rewrap stores one marker row, and a finished run's pause state is now cleared; neither needs an action.
+- **Act on these before you upgrade:**
+  - **Open mode on a public listener is refused at boot.** A server with no `LOOMCYCLE_AUTH_TOKEN`, no `principals:` and no admin token now exits when `LOOMCYCLE_LISTEN_ADDR` or `LOOMCYCLE_GRPC_ADDR` binds beyond loopback. Set `LOOMCYCLE_AUTH_TOKEN`, bind `127.0.0.1`, or, for a test harness only, set `LOOMCYCLE_ALLOW_OPEN_MODE=1`. Docker: `-e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787` now needs `-e LOOMCYCLE_AUTH_TOKEN=…`.
+  - **Config `principals:` turn authentication on.** A deployment that declared principals and relied on open mode now answers `401` to a request without a valid bearer. A principal with an empty `token_env` turns it on too.
+  - **Token hashes, when `LOOMCYCLE_SECRET_KEY` is set and `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` is not:**
+    - **upgrade every replica together.** An older release cannot read the `p1:` and `w1:` forms, so a token is refused by an old replica once a new one has rewrapped or rehashed it;
+    - **rolling back means re-minting every operator token**, since the first boot rewraps every stored hash;
+    - from now on, removing `LOOMCYCLE_SECRET_KEY`, or changing it without `LOOMCYCLE_SECRET_KEY_PREVIOUS`, logs out every operator token. Changing an explicit pepper does too, as before.
+  - **Bashbox credentials:** a malformed `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` entry, a binding to a command not in `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`, or a `cmd:NAME` entry in `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` now refuses boot, even with Bashbox off.
+  - **Private-host allowlist:** a link-local or metadata IP literal listed as a host entry (such as `100.100.100.200`) now refuses boot. List it as a CIDR (`100.100.100.200/32`).
+  - **Tenant MCP servers on private addresses** are refused at dial, whatever `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` says. List the host in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, or have an admin re-save the definition outside a run. Boot lists the affected definitions.
+  - **Shutdown:** a replica's in-flight runs pause on SIGTERM for up to `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS` (default 7000 ms), which leaves room within Docker's default 10 s stop grace. To give runs longer, raise it together with `stop_grace_period`, `terminationGracePeriodSeconds` or `TimeoutStopSec`. A fan-out parent keeps its children across the restart only with `LOOMCYCLE_RESUME_FANOUT=1`. `0` restores the old shutdown.
+- **Behaviour changes:**
+  - **Webhooks:** a bad signature, a stale timestamp, a missing signature header, a wrong bearer and an over-size body all answer `404 {"error":"unknown_webhook"}`. An unresolvable secret answers `503 {"error":"unavailable"}`. A 404 from your own webhook means a wrong secret: see its delivery log.
+  - **HTTP tool:** credential-bearing response header values read `[redacted]`, and the header lines are sorted.
+  - **Egress:** a vouched host name never reaches link-local, metadata, local-use NAT64 or Teredo addresses. Only a CIDR entry covering them does.
+  - **File tools:** a traverse-only directory inside a volume (mode `0100`, or a `0300` drop box) is refused.
+  - **Bashbox:** on a read-only volume, a call that writes more than `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES` (default 64 MiB) to in-memory files fails with `no space left on device`.
+  - **Bash:** a command that leaves a background process holding its output returns 2 s after it exits. A timeout kills the whole process group.
+  - **An admin token's run stays in its own tenant.** It reads, but cannot retire or promote, shared `""` definitions. Those are the ones made in open mode or before the first token, by yaml schedules or webhooks, or through the stdio `loomcycle mcp`. Runs started with `LOOMCYCLE_AUTH_TOKEN` execute in tenant `default`, so this applies to them, and Evaluation no longer shows them the evaluations of runs fired by yaml schedules or webhooks. Do cross-tenant work from an operator surface.
+  - **Interactive runs:** a parked run with no message for `LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT` (default 1h) ends `completed` with `idle_timeout`. Its session is kept. A steer after that gets `404`. Set `0` to wait forever.
+  - **`POST /v1/runs` with `session_id`** continues the session: its transcript is replayed and its own agent runs. A request naming a different agent gets `400`.
+  - **A detached `POST /v1/runs`** streams live. The steer echo arrives with `source:"api"`, and no replayed input frame is sent.
+  - **Agent-restricted tokens** read only runs and sessions whose spawn-tree root is on their list. Anything else answers the route's not-found, and listings drop it. A continuation of an unreachable session answers `404`, where it was `403`.
+  - **WebSocket bearer:** `Sec-WebSocket-Protocol: bearer.<token>` authenticates only the WebSocket upgrade to `/v1/client-tools`.
+  - **User-token mint** from a tenant-less caller: `400 tenant_required`, was `500`.
+- **New env vars:**
+  - `LOOMCYCLE_ALLOW_OPEN_MODE` (default off);
+  - `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS` (default 7000);
+  - `LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT` (default `1h`);
+  - `LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES` (default 64 MiB);
+  - `LOOMCYCLE_LOG_FORMAT` (default `text`) and `LOOMCYCLE_LOG_LEVEL` (default `info`);
+  - `LOOMCYCLE_BEDROCK_REGION`, for the `bedrock` preset.
+- **Release binaries** are built with the newest Go 1.26 patch.
+- **Images:** a minor tag rebuilds every image. All are at 1.119.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images.
+
 ## What's in v1.118.1
 
 *A token limited to an agent named in a group, such as `chat/medium`, could not be minted: the request was refused with 400 `invalid_restrictions`. Every bridge mints each of its users such a token for its one agent, so no bridge could answer anyone.*

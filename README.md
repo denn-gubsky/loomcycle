@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.118.1.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.119.0.</em>
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.118) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.119) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -199,11 +199,21 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.118) is fixes. A queued run that never starts
+The most recent line (v1.119.0) is the fixes from a security review of the
+whole runtime. A server authenticated only by a minted admin token no longer
+serves a request unauthenticated when it cannot read its token store. Open mode
+is refused on a public listener, declaring config `principals:` turns
+authentication on, and operator-token hashes are peppered by default. A shutdown
+pauses the runs in flight and a restart resumes them, `POST /v1/runs` starts runs
+the way every other transport does, logs can be JSON, and Amazon Bedrock can be
+reached with AWS IAM credentials. Some upgrades need an action: see the upgrade
+notes in [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.118 was fixes. A queued run that never starts
 now releases its idempotency key and publishes its end, and a restart during a
 pause no longer holds the boot or a snapshot restore until the resume. An agent
 told it hit the configured-run cap no longer retries forever, and only an
-operator may change a shared HookDef. The v1.118.1 patch lets a token be limited
+operator may change a shared HookDef. The v1.118.1 patch let a token be limited
 to an agent named in a group, such as `chat/medium`, which every chat bridge
 needs. See [`REVISIONS.md`](REVISIONS.md).
 
