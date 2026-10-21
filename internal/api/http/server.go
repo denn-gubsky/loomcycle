@@ -7282,6 +7282,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// a resume narrows against the first two again and restores the third.
 	subRunCfg.Spawn = spawnRecordOf(parentPolicy.Volumes, childPolicy.FanoutCap)
 	subRunCfg.Spawn.CryptoScopes = parentPolicy.Crypto.Scopes
+	// The offer the child passes on to its own children is its parent's
+	// (Inherit), which a resume cannot read off a parent ctx.
+	subRunCfg.Spawn.OfferedOverrides = offeredOverridesRecordOf(childPolicy.Overrides)
 	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
 	// Effort actually take effect — resolved AFTER the inheritance above, so a
 	// model, tier or routing block the child inherits is the one it runs on. resolveAgent re-reads cfg.Agents and
