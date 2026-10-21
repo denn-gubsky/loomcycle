@@ -8884,6 +8884,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Likewise where this run reports its outcome (a spawn with result
 	// "object"): a run it spawns must not write over it.
 	subRunCtx = tools.WithChildOutcome(subRunCtx, nil)
+	// And a pre hook's host grant: the loop attaches it to the one tool call it
+	// judged, and when that call is this spawn it is on ctx here. Left on, it
+	// widened the child's every HTTP call for its whole run; the child's calls
+	// are judged by its own hooks.
+	subRunCtx = tools.WithoutExtraAllowedHosts(subRunCtx)
 	defer func() {
 		if !prepOK {
 			subCancelFn(nil)

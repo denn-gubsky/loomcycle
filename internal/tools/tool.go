@@ -336,6 +336,17 @@ func WithExtraAllowedHosts(ctx context.Context, extras []string) context.Context
 	return context.WithValue(ctx, ctxKeyExtraAllowedHosts{}, extras)
 }
 
+// WithoutExtraAllowedHosts takes any per-call host grant off ctx, which
+// WithExtraAllowedHosts cannot do (an empty list leaves ctx unchanged). A run
+// spawned from inside a granted call — the Agent tool, a TeamDef walk — derives
+// its ctx from that call's, so the spawn boundary clears the grant with this.
+func WithoutExtraAllowedHosts(ctx context.Context) context.Context {
+	if ExtraAllowedHosts(ctx) == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyExtraAllowedHosts{}, []string(nil))
+}
+
 // ExtraAllowedHosts returns the per-call host-widening grants from
 // ctx, or nil when nothing was attached. Tools that enforce a host
 // allowlist consult this AFTER their operator-floor + caller-narrowed
