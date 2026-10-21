@@ -22,7 +22,7 @@ func operatorTokenDefFixture(t *testing.T) (*OperatorTokenDef, context.Context, 
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
-	tool := &OperatorTokenDef{Store: s, Hasher: auth.NewTokenHasher(testPepper, "", "", false), Audit: audit.NopSink{}}
+	tool := &OperatorTokenDef{Store: s, Hasher: auth.NewTokenHasher(testPepper, "", ""), Audit: audit.NopSink{}}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_admin", UserID: "ops"})
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	return tool, ctx, s, func() { _ = s.Close() }
@@ -89,6 +89,27 @@ func TestOperatorTokenDef_RetireLastAdmin_AllowedWithLegacyOrNonAdmin(t *testing
 	mustOp(t, tool2, ctx2, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
 	if res, _ := tool2.Execute(ctx2, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
 		t.Fatalf("with a legacy fallback, retiring the last admin should be allowed; got %s", res.Text)
+	}
+}
+
+// A config principal holding substrate:admin keeps auth on and keeps an admin
+// credential (RFC ES F2), so the last admin token may be retired. A declared
+// principal WITHOUT admin keeps auth on but would leave nobody able to manage
+// tokens, so that retire is still refused.
+func TestOperatorTokenDef_RetireLastAdmin_AllowedOnlyWithAnAdminPrincipal(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	tool.AdminPrincipalDeclared = func() bool { return true }
+	mustOp(t, tool, ctx, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
+		t.Fatalf("with an admin config principal, retiring the last admin token should be allowed; got %s", res.Text)
+	}
+
+	tool2, ctx2, _, cleanup2 := operatorTokenDefFixture(t) // no admin principal
+	defer cleanup2()
+	mustOp(t, tool2, ctx2, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
+	if res, _ := tool2.Execute(ctx2, json.RawMessage(`{"op":"retire","name":"ops"}`)); !res.IsError {
+		t.Fatal("with no admin config principal and no legacy secret, retiring the last admin token must stay refused")
 	}
 }
 
@@ -656,7 +677,7 @@ func TestOperatorTokenDef_RetentionIsStoredAndSurvivesRotation(t *testing.T) {
 func TestOperatorTokenDef_MintsUnderTheDerivedPepper(t *testing.T) {
 	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
-	tool.Hasher = auth.NewTokenHasher("", "derived-pepper", "", true)
+	tool.Hasher = auth.NewTokenHasher("", "derived-pepper", "")
 
 	out := mustOp(t, tool, ctx, `{"op":"create","name":"dp","tenant_id":"acme","subject":"dp","scopes":["runs:create"]}`)
 	plaintext, _ := out["token"].(string)
@@ -665,7 +686,7 @@ func TestOperatorTokenDef_MintsUnderTheDerivedPepper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store get: %v", err)
 	}
-	if row.TokenHash != tool.Hasher.Hash(plaintext) || !tool.Hasher.IsCurrent(row.TokenHash) {
+	if row.TokenHash != tool.Hasher.Hash(plaintext) || tool.Hasher.Form(row.TokenHash) != auth.FormCurrent {
 		t.Errorf("create: stored hash is not the derived-pepper hash")
 	}
 

@@ -5,6 +5,8 @@ import (
 	"os"
 	"sort"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 )
@@ -81,7 +83,8 @@ func (o *overridePolicyYAML) UnmarshalYAML(unmarshal func(any) error) error {
 //     env name must not silently ship a mis-scoped or inert identity).
 //   - a token_env that is EMPTY at boot → the principal is INERT (skipped, no
 //     entry in the table) + a startup warning. Fail-safe: a missing secret means
-//     "no token resolves to this identity", never an open door.
+//     "no token resolves to this identity", never an open door — the declaration
+//     still turns authentication on (DeclaresPrincipals).
 //   - tenant must be "" or one charset-clean path segment, not reserved, and not
 //     differ only by case from another principal's tenant → else config-load
 //     error (the tenant id names a directory under the dynamic volume root).
@@ -145,10 +148,11 @@ func resolvePrincipals(c *Config) error {
 		// header/url/env referencing ${LOOMCYCLE_ALICE_TOKEN} would exfiltrate
 		// the bearer to the server host (the same S1 exfil class the denylist
 		// closes for the built-in infra secrets, never extended to the newer
-		// per-principal tokens). Written once at config-load, before any runtime
-		// ExpandEnv reader (the MCPServerDef path); denied even for an inert
-		// (empty-at-boot) principal so the name is permanently non-interpolatable.
-		expandDenyNames[def.TokenEnv] = true
+		// per-principal tokens). Denied even for an inert (empty-at-boot)
+		// principal so the name is permanently non-interpolatable. A load has
+		// already added it from the raw text (denyDeclaredPrincipalBearers),
+		// before expansion; this covers a Config resolved without a load.
+		principalBearerEnvs.add(def.TokenEnv)
 		if bad := auth.UnknownScopes(def.Scopes); len(bad) > 0 {
 			return fmt.Errorf("principals.%s: unknown scope(s) %v (not in the closed catalog)", name, bad)
 		}
@@ -186,7 +190,7 @@ func resolvePrincipals(c *Config) error {
 		}
 		secret := os.Getenv(def.TokenEnv)
 		if secret == "" {
-			c.Warnings = append(c.Warnings, fmt.Sprintf("principals.%s: token_env %s is empty — principal is inert (no token resolves to it)", name, def.TokenEnv))
+			c.Warnings = append(c.Warnings, fmt.Sprintf("principals.%s: token_env %s is empty — principal is inert (no token resolves to it; declaring it still turns authentication on)", name, def.TokenEnv))
 			continue
 		}
 		if prev, dup := secretOwner[secret]; dup {
@@ -205,6 +209,64 @@ func resolvePrincipals(c *Config) error {
 		})
 	}
 	return nil
+}
+
+// DeclaresPrincipals reports whether the config declares any principal, inert
+// ones included. Declaring one turns authentication on (RFC ES F2): an inert
+// principal (its token_env empty at boot) authenticates nobody, but it says the
+// operator meant the server to require a bearer, so a missing env var must not
+// read as "serve everyone". ResolvedPrincipals is consulted too because it is
+// the table the resolver matches against, and a caller may build it directly.
+func (c *Config) DeclaresPrincipals() bool {
+	return len(c.Principals) > 0 || len(c.ResolvedPrincipals) > 0
+}
+
+// AdminPrincipalResolved reports whether a declared principal that can log in
+// (its secret set at boot) holds substrate:admin.
+func (c *Config) AdminPrincipalResolved() bool {
+	for _, dp := range c.ResolvedPrincipals {
+		if dp.Secret != "" && auth.HasScope(dp.Principal.Scopes, auth.ScopeAdmin) {
+			return true
+		}
+	}
+	return false
+}
+
+// denyDeclaredPrincipalBearers adds every principals.*.token_env named in the
+// layers' RAW text to principalBearerEnvs. It must run before any layer is
+// ${...}-expanded: expansion happens on the text, long before validate reaches
+// resolvePrincipals, so without it the first load in a process interpolated a
+// principal's bearer into, say, a static MCP header, and checks that refuse a
+// bearer as a credential source passed at boot and failed on reload. All layers
+// are scanned first, because a principal declared in a later layer must protect
+// its bearer from an earlier layer's text.
+//
+// Best effort by design: a layer that cannot be read or parsed is skipped (the
+// load itself reports it), and a name stays denied even when the load fails —
+// the set only ever widens.
+func denyDeclaredPrincipalBearers(layers []Layer) {
+	for _, l := range layers {
+		raw := l.Data
+		if raw == nil {
+			b, err := os.ReadFile(l.Name)
+			if err != nil {
+				continue
+			}
+			raw = b
+		}
+		var doc struct {
+			Principals map[string]struct {
+				TokenEnv string `yaml:"token_env"`
+			} `yaml:"principals"`
+		}
+		// A partial decode still yields the names it reached.
+		_ = yaml.Unmarshal(raw, &doc)
+		for _, p := range doc.Principals {
+			if p.TokenEnv != "" {
+				principalBearerEnvs.add(p.TokenEnv)
+			}
+		}
+	}
 }
 
 // PrincipalTenants returns the distinct tenant ids the `principals:` block

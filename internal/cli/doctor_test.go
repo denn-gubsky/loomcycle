@@ -32,6 +32,8 @@ type stubConfig struct {
 	tokenEnv       config.Env
 	grpc           string
 	allowOpen      bool
+	principals     int
+	loginable      int
 }
 
 func (s *stubConfig) TokenHasher() (auth.TokenHasher, error) { return s.tokenEnv.TokenHasher() }
@@ -39,7 +41,9 @@ func (s *stubConfig) TokenHasher() (auth.TokenHasher, error) { return s.tokenEnv
 func (s *stubConfig) NonLoopbackListeners() []string {
 	return (&config.Env{ListenAddr: configListenAddr(s), GrpcAddr: s.grpc}).NonLoopbackListeners()
 }
-func (s *stubConfig) AllowOpenMode() bool { return s.allowOpen }
+func (s *stubConfig) AllowOpenMode() bool     { return s.allowOpen }
+func (s *stubConfig) DeclaredPrincipals() int { return s.principals }
+func (s *stubConfig) LoginPrincipals() int    { return s.loginable }
 
 func (s *stubConfig) AWSAuthProviders() map[string]AWSAuthProvider { return s.awsProviders }
 func (s *stubConfig) HostShellEnabled() bool                       { return s.hostShell }
@@ -245,6 +249,29 @@ func TestDoctor_OpenModeOnLoopback_NoOpenModeWarning(t *testing.T) {
 	out := runDoctorOpenMode(t, &stubConfig{listen: freePort(t)})
 	if strings.Contains(out, "Open mode") {
 		t.Errorf("open mode on loopback should not WARN of a refusal:\n%s", out)
+	}
+}
+
+// TestDoctor_DeclaredPrincipalsAreAuth: config principals turn auth on (RFC ES
+// F2), so a deployment with no LOOMCYCLE_AUTH_TOKEN but declared principals is
+// not open — no open-mode WARN on a public listener, and doctor says auth is on.
+func TestDoctor_DeclaredPrincipalsAreAuth(t *testing.T) {
+	_, port, _ := net.SplitHostPort(freePort(t))
+	out := runDoctorOpenMode(t, &stubConfig{listen: "0.0.0.0:" + port, principals: 2, loginable: 1})
+	if strings.Contains(out, "Open mode") || strings.Contains(out, "unauthenticated") {
+		t.Errorf("principals declared: doctor still reports open mode:\n%s", out)
+	}
+	if !strings.Contains(out, "[PASS]  Authentication") || !strings.Contains(out, "2 config principal") {
+		t.Errorf("principals declared: want a PASS saying auth is on through them:\n%s", out)
+	}
+}
+
+// TestDoctor_AllPrincipalsInert_WARNs: auth is on, but with every principal's
+// token_env unset no principal can log in, so that is a WARN, not a PASS.
+func TestDoctor_AllPrincipalsInert_WARNs(t *testing.T) {
+	out := runDoctorOpenMode(t, &stubConfig{listen: freePort(t), principals: 2})
+	if !strings.Contains(out, "[WARN]  Authentication") || !strings.Contains(out, "inert") {
+		t.Errorf("every principal inert: want a WARN saying so:\n%s", out)
 	}
 }
 
@@ -542,8 +569,7 @@ func TestCheckTokenPepper_ReportsTheSourceAndWarnsOnNoneWithAuth(t *testing.T) {
 		wantLine string
 	}{
 		{"explicit", config.Env{OperatorTokenPepper: "p"}, true, "PASS"},
-		{"derived", config.Env{SecretKey: key}, true, "move to it at their next login"},
-		{"derived, fallback off", config.Env{SecretKey: key, TokenLegacyHashOff: true}, true, "unpeppered token hashes refused"},
+		{"derived", config.Env{SecretKey: key}, true, "rewrapped under it when the server starts"},
 		{"none with auth", config.Env{}, true, "WARN"},
 		{"none without auth", config.Env{}, false, "no auth configured"},
 		{"malformed key", config.Env{SecretKey: "short"}, true, "FAIL"},

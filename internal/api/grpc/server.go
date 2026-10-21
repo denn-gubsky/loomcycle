@@ -142,10 +142,10 @@ type Config struct {
 	// RunOnce); when nil, they fall back to the legacy constant-time
 	// AuthToken compare with no principal.
 	PrincipalResolver func(context.Context, string) (auth.Principal, bool)
-	// AuthConfigured reports whether auth is active (legacy secret set OR
-	// an admin token exists). Wired alongside PrincipalResolver so gRPC
-	// shares HTTP's open-mode decision: when it returns false the
-	// interceptors pass through (dev). Nil → fall back to AuthToken != "".
+	// AuthConfigured reports whether auth is active (legacy secret set,
+	// config principals declared, or an admin token exists). Wired alongside
+	// PrincipalResolver so gRPC shares HTTP's open-mode decision: when it
+	// returns false the interceptors pass through (dev). Nil → fall back to AuthToken != "".
 	AuthConfigured func(context.Context) bool
 	BuildCommit    string
 	BuildTime      string

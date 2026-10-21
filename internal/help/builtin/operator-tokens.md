@@ -237,6 +237,18 @@ says is delivered to the caller and stored nowhere.
 - See `loomcycle help no-trace-runs` for what a no-trace run keeps and
   what it cannot do.
 
+## Open mode, and what turns authentication on
+
+With no `LOOMCYCLE_AUTH_TOKEN`, no `principals:` in the config and no
+admin-scoped OperatorTokenDef, the server runs in **open mode**: every
+route is served with no bearer, and it refuses to start on an address
+beyond loopback unless `LOOMCYCLE_ALLOW_OPEN_MODE=1`. Any one of the
+three turns authentication on. A declared principal counts even when its
+`token_env` is empty at boot: it authenticates nobody, but the server
+still requires a bearer. Only a principal with `substrate:admin` can mint
+tokens; if none of the declared principals has it, add one or set
+`LOOMCYCLE_AUTH_TOKEN` when you need an admin.
+
 ## Migration from LOOMCYCLE_AUTH_TOKEN (zero-disruption)
 
 The legacy shared secret keeps working until the **first admin-scoped**
@@ -259,15 +271,14 @@ re-displayed). Now distribute per-principal tokens at your own pace.
   neither, tokens are hashed with no pepper and the server warns at boot.
   Changing an explicit pepper invalidates every token (env-allowlisted,
   never logged).
-- `LOOMCYCLE_TOKEN_LEGACY_HASH` — `off` refuses tokens still on the
-  unpeppered hash from before the derived pepper. By default such a token
-  still logs in if its row existed when the server started, and is
-  rehashed onto the current pepper. A token under the pepper
-  `LOOMCYCLE_SECRET_KEY_PREVIOUS` derives keeps logging in (and is
-  rehashed) whenever that key is set, either way. Every boot logs how many
-  remain, with their def_ids; set `off` once it reports none. Upgrade every
-  replica together: an older release cannot read a rehashed token, and
-  rolling back means re-minting tokens.
+- Tokens minted before a pepper existed are rewrapped under the derived
+  pepper when the server first starts with `LOOMCYCLE_SECRET_KEY`, and keep
+  working; each moves to the current form at its next login. A token row
+  with an unpeppered hash written after that never authenticates; the boot
+  log names it. A token under the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS`
+  derives keeps logging in (and is rehashed) while that key is set. Upgrade
+  every replica together: an older release cannot read a rewrapped or
+  rehashed token, and rolling back means re-minting tokens.
 - `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` — per-replica resolution cache TTL
   (default 30; `0` disables it for immediate revocation). A token
   mutation flushes the cache locally and, in a cluster, broadcasts a

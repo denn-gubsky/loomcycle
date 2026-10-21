@@ -15,7 +15,10 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-var _ loop.IdlePauser = (*pauseGate)(nil)
+var (
+	_ loop.IdlePauser      = (*pauseGate)(nil)
+	_ loop.ToolInterrupter = (*pauseGate)(nil)
+)
 
 // pauseGate is the per-run loop.PauseGate implementation (RFC X / F41). It
 // wraps the runtime pause Manager + store so the loop can cooperatively park
@@ -53,6 +56,12 @@ func (g *pauseGate) PauseCh() <-chan struct{} {
 		return nil
 	}
 	return g.mgr.PauseCh()
+}
+
+// ToolInterrupt is the context a shutdown cancels to stop this run's tool
+// calls when it has not parked in time (pause.Manager.PauseForShutdown).
+func (g *pauseGate) ToolInterrupt() context.Context {
+	return g.mgr.ToolInterrupt(g.runID)
 }
 
 // Park persists pause_state='paused', blocks until the runtime resumes (or the

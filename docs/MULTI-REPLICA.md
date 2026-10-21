@@ -183,6 +183,8 @@ There is no split-brain scenario: Postgres is the single source of truth. If the
    - **Across replicas:** `concurrency_policy` and `catch_up_max` read what is running from the shared `schedule_active_runs` table, so they hold cluster-wide.
    - **`replace` across replicas:** `concurrency_policy: replace` stops the running run or team walk on whichever replica runs it — the cancel is routed to the owner. If the owner cannot be reached within the cancel ack timeout, the slot is skipped as `forbid` would skip it; nothing starts over a run it could not stop.
 
+10. **A replica that shuts down parks its own runs; the next replica to BOOT resumes them.** SIGTERM pauses only that replica's runs (see `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS` in [CONFIGURATION.md](CONFIGURATION.md) §9c) — the cluster's pause state is untouched — and deletes its `replicas` row on the way out. Paused rows are re-dispatched by the boot-time resume pass, which runs once per boot (one replica at a time, under an advisory lock). So a restart of the same replica, or any replica booting after it, picks them up; a replica that was already running does not. In a rolling update that starts the new replica before stopping the old one, the old one's parked runs wait for the next boot of any replica.
+
 ## Roadmap (post-v1.0)
 
 - **Redis backplane.** When LISTEN/NOTIFY throughput becomes the bottleneck. v1.1+.

@@ -79,6 +79,11 @@ func (b *boot) buildServer() {
 		log.Fatalf("auth: %v", err)
 	}
 	b.bootAuthConfigured = bootAuthConfigured
+	if bootAuthConfigured {
+		for _, w := range srv.AuthPostureWarnings(context.Background()) {
+			log.Printf("auth: WARNING: %s", w)
+		}
+	}
 	// The providers' call lanes (providers.<id>.max_concurrent / lanes). The
 	// registry already gates every provider with this scheduler; the server
 	// gets the same instance to report it and to reload it.

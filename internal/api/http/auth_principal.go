@@ -37,14 +37,15 @@ func isNotFound(err error) bool {
 // authMiddleware authenticates the request, stamps the resolved
 // principal into ctx, and enforces the route's required scope.
 //
-//   - open mode (no auth configured at all) → pass through (dev only)
+//   - open mode (no legacy secret, no config principal, no admin token) →
+//     pass through (dev only)
 //   - unknown/expired/invalid bearer → 401 opaque (no oracle)
 //   - valid bearer but insufficient scope → 403 insufficient_scope JSON naming
 //     the scope + the RFC 6750 hint
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.authConfigured(r.Context()) {
-			// No shared secret AND no tokens → open mode (dev). Startup
+			// No shared secret, principal or admin token → open mode (dev). Startup
 			// logged a warning. No principal is stamped; run-creation
 			// sites fall back to the wire user_id/tenant_id unchanged.
 			next.ServeHTTP(w, r)
@@ -261,8 +262,9 @@ func (s *Server) ResolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 }
 
 // AuthConfigured is the exported wrapper for the gRPC adapter's and the A2A
-// frontier's open-mode decision (RFC L) — true when a legacy secret is set or
-// an admin token exists, and true when the store cannot say (fails closed).
+// frontier's open-mode decision (RFC L) — true when a legacy secret is set,
+// config principals are declared or an admin token exists, and true when the
+// store cannot say (fails closed).
 func (s *Server) AuthConfigured(ctx context.Context) bool {
 	return s.authConfigured(ctx)
 }
@@ -307,25 +309,16 @@ func extractBearer(r *http.Request) (string, bool) {
 }
 
 // authConfiguredErr reports whether authentication is active: true when a
-// legacy shared secret is set, or any admin-scoped OperatorTokenDef exists.
-// When neither holds, the server is in dev open-mode. The error is set when
-// the store could not be asked, and the answer is then unknown.
+// legacy shared secret is set, the config declares any principal (RFC ES F2),
+// or any admin-scoped OperatorTokenDef exists. When none holds, the server is
+// in dev open-mode. The error is set when the store could not be asked, and
+// the answer is then unknown.
 //
 // (A deployment with ONLY narrow tokens and no legacy secret + no admin
 // token can't be bootstrapped — the admin endpoints that create tokens
 // require auth — so the admin-count check is sufficient in practice.)
 func (s *Server) authConfiguredErr(ctx context.Context) (bool, error) {
-	if s.cfg().Env.AuthToken != "" {
-		return true, nil
-	}
-	if s.store == nil {
-		return false, nil
-	}
-	n, err := s.store.OperatorTokenDefCountActiveAdmin(ctx)
-	if err != nil {
-		return false, err
-	}
-	return n > 0, nil
+	return s.authConfiguredUnder(ctx, s.cfg())
 }
 
 // authConfigured is the request-path form of authConfiguredErr, and it fails
@@ -389,7 +382,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 
 // resolvePrincipalUncached is the resolution itself: token substrate
 // first (indexed peppered-hash lookup, honoring the rotation grace
-// window; on a miss, the legacy hashes of lookupLegacyToken), then the
+// window; on a miss, the older forms of lookupOlderTokenForm), then the
 // legacy LOOMCYCLE_AUTH_TOKEN fallback (disabled once an admin-scoped
 // token exists — the no-lockout migration gate). Returns
 // (_, false) for unknown/expired/invalid — the caller maps that to an
@@ -404,19 +397,13 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 // at that instant rather than at the end of its own TTL.
 func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHasher, bearer, hash string) (auth.Principal, bool, bool, time.Time) {
 	var never time.Time
-	// A refusal that went through the legacy-hash lookups is not cached
-	// (RFC ES D2; see lookupLegacyToken).
+	// A refusal that went through the older-form lookups is not cached
+	// (RFC ES F3; see lookupOlderTokenForm).
 	negativeCacheable := true
 	if s.store != nil {
-		// Read BEFORE the lookup: a concurrent first login of this same token
-		// may rehash the row and empty the set while it runs.
-		legacyActive := h.HasLegacyCandidates() && !s.legacyTokens.empty()
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
-		if err == nil {
-			// On the current hash: no longer a legacy candidate (RFC ES D2).
-			s.legacyTokens.forget(row.DefID)
-		} else if isNotFound(err) && legacyActive {
-			row, err = s.lookupLegacyToken(ctx, h, bearer, hash, err)
+		if isNotFound(err) && (s.wrappedTokens.Load() || h.HasPrevious()) {
+			row, err = s.lookupOlderTokenForm(ctx, h, bearer, hash, err)
 			negativeCacheable = false
 		}
 		if err == nil {
@@ -481,7 +468,7 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 			Legacy:   true,
 		}, true, true, never
 	}
-	return auth.Principal{}, false, negativeCacheable, never // genuine unknown → cacheable negative, unless the legacy lookups ran
+	return auth.Principal{}, false, negativeCacheable, never // genuine unknown → cacheable negative, unless the older-form lookups ran
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is

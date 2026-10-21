@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	loomgrpc "github.com/denn-gubsky/loomcycle/internal/api/grpc"
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/pause"
 	googlegrpc "google.golang.org/grpc"
 )
 
@@ -101,10 +104,10 @@ func (b *boot) startListeners() {
 	b.grpcSrv = grpcSrv
 }
 
-// waitAndShutdown is boot phase 11: block until SIGINT/SIGTERM, then stop
-// the background work, the listeners and the flushers, in that order. The
-// store, SQL Memory, MCP pool and backplane close after it returns, from
-// main's cleanups.
+// waitAndShutdown is boot phase 11: block until SIGINT/SIGTERM, then pause the
+// runs in flight while the listeners drain, then stop the background work and
+// the flushers, in that order. The store, SQL Memory, MCP pool and backplane
+// close after it returns, from main's cleanups.
 func (b *boot) waitAndShutdown() {
 	otelShutdown := b.otelShutdown
 	pr := b.pr
@@ -115,13 +118,51 @@ func (b *boot) waitAndShutdown() {
 	bgCancel := b.bgCancel
 	countFlusherDone := b.countFlusherDone
 	grpcSrv := b.grpcSrv
+	pauseMgr := b.pauseMgrRef
+	pauseTimeout := time.Duration(b.cfg.Env.ShutdownPauseTimeoutMs) * time.Millisecond
+	if pauseMgr == nil {
+		pauseTimeout = 0
+	}
 
 	// Graceful shutdown.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Println("shutting down…")
-	bgCancel() // tear down sweeper + GC goroutines first
+
+	// RFC ES F1: park the runs in flight so the next boot resumes them, while
+	// the listeners drain. Concurrently, not one after the other, so the whole
+	// shutdown fits a container's stop grace (Docker's default is 10 s): the
+	// pause is bounded by its own knob, each drain by 5 s. The pause comes
+	// before bgCancel — that deletes this replica's heartbeat row and stops the
+	// sweepers while runs are still finishing their turns.
+	var drain sync.WaitGroup
+	if pauseTimeout > 0 {
+		drain.Add(1)
+		go func() {
+			defer drain.Done()
+			logShutdownPause(pauseMgr.PauseForShutdown(pauseTimeout))
+		}()
+	}
+	if grpcSrv != nil {
+		drain.Add(1)
+		go func() {
+			defer drain.Done()
+			stopGRPC(grpcSrv, grpcStopTimeout, pauseTimeout > 0)
+		}()
+	}
+	// The ctx's cancel runs when waitAndShutdown returns, before main's
+	// cleanups — the order it ran in when it was main's last defer.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	drain.Add(1)
+	go func() {
+		defer drain.Done()
+		_ = httpServer.Shutdown(ctx)
+	}()
+	drain.Wait()
+
+	bgCancel() // tear down sweeper + GC goroutines
 	if heartbeatRunner != nil {
 		heartbeatRunner.Stop()
 	}
@@ -134,14 +175,6 @@ func (b *boot) waitAndShutdown() {
 	if pr.anthropicOAuthRefresher != nil {
 		pr.anthropicOAuthRefresher.Stop()
 	}
-	if grpcSrv != nil {
-		grpcSrv.GracefulStop()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	// This defer (and otelCancel's below) runs when waitAndShutdown returns,
-	// before main's cleanups — the order it ran in when it was main's last defer.
-	defer cancel()
-	_ = httpServer.Shutdown(ctx)
 	// RFC BL: stop the access-count flusher and flush the final window AFTER the
 	// HTTP+gRPC servers have finished draining. In-flight Search requests
 	// Record() access bumps right up to the end of that drain window, so the
@@ -172,5 +205,49 @@ func (b *boot) waitAndShutdown() {
 		if err := otelShutdown(otelCtx); err != nil {
 			log.Printf("otel: shutdown failed: %v", err)
 		}
+	}
+}
+
+// grpcStopTimeout bounds the gRPC server's graceful stop, which otherwise waits
+// for every open stream to end — and a stream whose run is parked for the
+// shutdown never does.
+const grpcStopTimeout = 5 * time.Second
+
+// stopGRPC stops srv gracefully within timeout. Past it, when runs were paused
+// for the shutdown, the remaining RPCs are left to the process exit: Stop
+// would cancel them, and a run started on a gRPC stream runs under that
+// stream's context, so a run parked for the shutdown would end cancelled
+// instead of being resumed. With no shutdown pause, Stop cancels them, which
+// is what stops their tool calls.
+func stopGRPC(srv *googlegrpc.Server, timeout time.Duration, runsPaused bool) {
+	done := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(timeout):
+	}
+	if runsPaused {
+		log.Printf("grpc: %s graceful stop expired; the open streams end with the process", timeout)
+		return
+	}
+	log.Printf("grpc: %s graceful stop expired; stopping the open streams", timeout)
+	srv.Stop()
+	<-done
+}
+
+// logShutdownPause reports what the shutdown pause did with the runs in flight.
+func logShutdownPause(res pause.ShutdownResult) {
+	log.Printf("shutdown: %d run(s) paused for the next boot to resume (%s); %d had their tool calls interrupted",
+		res.ParkedRuns, res.Duration.Round(time.Millisecond), len(res.InterruptedRuns))
+	if len(res.UnparkedRuns) > 0 {
+		log.Printf("shutdown: %d run(s) did not park in time and are not resumed (raise LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS): %s",
+			len(res.UnparkedRuns), strings.Join(res.UnparkedRuns, ", "))
+	}
+	if res.UnpausableRuns > 0 {
+		log.Printf("shutdown: %d no-trace run(s) in flight are lost: they have nothing stored to resume from", res.UnpausableRuns)
 	}
 }
