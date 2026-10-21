@@ -811,6 +811,13 @@ func TestScheduler_SlotClaimSuppressesDoubleFire(t *testing.T) {
 	_ = st.ScheduleDefSetActive(ctx, "", "sched-double-fire", defID, "test")
 	_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 
+	// The claim moves next_run_at to the next top of the hour, so a test
+	// that crosses one sees a NEW slot come due and fire — a correct second
+	// call. Start clear of the boundary, as backlogFixture does.
+	if left := time.Until(time.Now().UTC().Truncate(time.Hour).Add(time.Hour)); left < 5*time.Second {
+		time.Sleep(left + time.Second)
+	}
+
 	const perFireDelay = 300 * time.Millisecond
 	var calls atomic.Int32
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) {
