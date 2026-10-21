@@ -52,16 +52,54 @@ func (s *Server) startDetachedLoop(d detachedLoop) <-chan struct{} {
 			}
 			d.teardown()
 		}()
-		loopRes, runErr := loop.Run(d.loopCtx, d.opts)
+		opts := d.opts
+		var loopErr lastErrorEvent
+		opts.OnEvent = loopErr.watch(opts.OnEvent)
+		loopRes, runErr := loop.Run(d.loopCtx, opts)
 		if runErr != nil {
-			// Persist (not stream) the failure so a tailing client sees it.
-			d.emit(runErrorEvent(runErr))
+			// Persist the failure so a tailing client sees it — unless the
+			// loop's own last error event already says exactly this, as it
+			// does for most failures (a cancel mid-turn among them): a second
+			// copy showed the failure twice. A classified copy still goes out,
+			// since it carries the category the loop's event lacks.
+			if ev := runErrorEvent(runErr); ev.ErrorInfo != nil || !loopErr.is(ev.Error) {
+				d.emit(ev)
+			}
 		}
 		// WithoutCancel: the store write must not ride a runCtx that an
 		// API-cancel already cancelled (the cause is still read from runCtx).
 		s.finishRunWithCancel(context.WithoutCancel(d.runCtx), d.runCtx, d.runID, loopRes, runErr, d.meta)
 	}()
 	return done
+}
+
+// lastErrorEvent remembers the text of the last error event a run emitted.
+// The loop may emit from more than one goroutine.
+type lastErrorEvent struct {
+	mu   sync.Mutex
+	text string
+	seen bool
+}
+
+// watch wraps emit to record each error event before passing it on.
+func (l *lastErrorEvent) watch(emit func(providers.Event)) func(providers.Event) {
+	return func(ev providers.Event) {
+		if ev.Type == providers.EventError {
+			l.mu.Lock()
+			l.text, l.seen = ev.Error, true
+			l.mu.Unlock()
+		}
+		if emit != nil {
+			emit(ev)
+		}
+	}
+}
+
+// is reports whether the last error event emitted said text.
+func (l *lastErrorEvent) is(text string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.seen && l.text == text
 }
 
 // forwardWhileAttached wraps a run's forward to its caller so that it stops
