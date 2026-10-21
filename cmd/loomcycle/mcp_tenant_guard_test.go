@@ -40,8 +40,17 @@ func TestMCPPoolBuild_TenantDefAlwaysDialsThroughTheGuard(t *testing.T) {
 	reg.Set(mcp.DynamicMCPServerSpec{TenantID: "acme", Name: "tenant-loopback", Transport: "http", URL: peer.srv.URL})
 	reg.Set(mcp.DynamicMCPServerSpec{TenantID: "acme", Name: "tenant-metadata", Transport: "http", URL: "http://169.254.169.254/mcp"})
 	for _, name := range []string{"tenant-loopback", "tenant-metadata"} {
-		if err := call(name); err == nil || !strings.Contains(err.Error(), "blocked") {
+		err := call(name)
+		if err == nil || !strings.Contains(err.Error(), "blocked") {
 			t.Errorf("%s: err = %v, want the egress guard's refusal", name, err)
+			continue
+		}
+		// The refusal is actionable: it names the server, its tenant and both
+		// ways to restore it.
+		for _, want := range []string{`"` + name + `"`, `tenant "acme"`, "LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "re-save"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: refusal lacks %q: %v", name, want, err)
+			}
 		}
 	}
 	if got := peer.seen(); len(got) != 0 {

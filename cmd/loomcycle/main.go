@@ -1634,6 +1634,16 @@ func main() {
 			log.Printf("mcp_server_defs: WARNING: %s", warn)
 		}
 	}
+	// Read-only: name every active server a tenant registered at runtime
+	// whose host is localhost or a private IP the operator has not vouched
+	// for. Those dial through the egress guard and are refused at each call.
+	if warns, err := mcpServerDefTool.PrivateHostWarnings(context.Background()); err != nil {
+		log.Printf("mcp_server_defs: private-host audit: %v (continuing)", err)
+	} else {
+		for _, warn := range warns {
+			log.Printf("mcp_server_defs: WARNING: %s", warn)
+		}
+	}
 
 	// v1.x RFC G — outbound A2A: register one synthetic
 	// `a2a__<peer>__<skill>` tool per (operator-registered peer,
@@ -4486,7 +4496,8 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 					hdrs[k] = config.ExpandEnv(v)
 				}
 			}
-			return mcphttp.New(mcphttp.Config{
+			trusted := mcpOperatorTrusted(spec)
+			c, err := mcphttp.New(mcphttp.Config{
 				URL:     config.ExpandEnv(spec.URL),
 				Headers: hdrs,
 				// Egress guard: OFF by default for the operator's own servers
@@ -4498,7 +4509,7 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				// (RFC ES follow-up). HTTPPrivateHostAllowlist exempts the
 				// private hosts the operator vouched for, under netguard's
 				// rules (a vouched name never reaches link-local or metadata).
-				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs || !mcpOperatorTrusted(spec),
+				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs || !trusted,
 				PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 				// RFC AR — resolve $cred:<name> header tokens per-request from
 				// the tenant credential store (per-user tokens bind correctly on
@@ -4509,6 +4520,10 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				// its headers went out as written.
 				CredSubstitute: lateCredSubstitute(credSubstitute),
 			})
+			if err != nil || trusted {
+				return c, err
+			}
+			return guardedTenantMCP{Client: c, name: name, tenant: tenant}, nil
 		case "stdio":
 			// F31: a runtime-registered stdio server. The substrate only
 			// admits a stdio row when LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO is
@@ -4529,6 +4544,31 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 // LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS.
 func mcpOperatorTrusted(spec lookup.MCPServerSpec) bool {
 	return spec.Source == "static" || spec.OperatorAuthored
+}
+
+// guardedTenantMCP is a tenant's MCP server client. When the egress guard
+// refuses its dial, the error says which server it is and how the operator
+// restores it, instead of a bare "blocked" a tenant cannot act on.
+type guardedTenantMCP struct {
+	*mcphttp.Client
+	name, tenant string
+}
+
+func (g guardedTenantMCP) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	out, err := g.Client.Call(ctx, method, params)
+	return out, g.explain(err)
+}
+
+func (g guardedTenantMCP) Notify(ctx context.Context, method string, params any) error {
+	return g.explain(g.Client.Notify(ctx, method, params))
+}
+
+func (g guardedTenantMCP) explain(err error) error {
+	if err == nil || !strings.Contains(err.Error(), "blocked:") {
+		return err
+	}
+	return fmt.Errorf("mcp server %q (tenant %q) was registered at runtime, so it dials only public addresses or a private host the operator vouched for; "+
+		"to allow it, add its host to LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, or have an admin re-save the definition off-run: %w", g.name, g.tenant, err)
 }
 
 func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
