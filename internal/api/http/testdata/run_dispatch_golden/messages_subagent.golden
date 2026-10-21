@@ -1,0 +1,23 @@
+== continuation: POST /v1/sessions/<id:1>/messages
+status: 200
+content-type: text/event-stream
+event: session {"text":"<id:1>","type":"session"}
+event: agent {"agent_id":"<id:2>","parent_agent_id":null,"parent_context":null,"run_id":"<id:3>","session_id":"<id:1>"}
+event: started {"type":"started"}
+event: tool_call {"tool_use":{"id":"tu_golden_1","input":{"name":"child","prompt":"child task"},"name":"Agent"},"type":"tool_call"}
+event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+event: tool_result {"text":"[sub-agent agent_id=<id:4> run_id=<id:5>]\nhello","tool_use":{"id":"tu_golden_1","input":{"name":"child","prompt":"child task"},"name":"Agent"},"type":"tool_result"}
+event: text {"text":"parent done","type":"text"}
+event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":6,"output_tokens":4,"provider":"stub"}}
+stored row: {"agent":"parent","agent_id":"<id:2>","credential_source":"operator","id":"<id:3>","input_tokens":6,"output_tokens":4,"pause_state":"running","provider":"stub","result":{"final_text":"parent done"},"run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:1>","status":"completed","stop_reason":"end_turn"}
+stored event: user_input [{"content":[{"text":"SPAWN a child","type":"trusted-text"}],"role":"user"}]
+stored event: system_prompt {"system_prompt":"you are the parent"}
+stored event: started {"type":"started"}
+stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"SPAWN a child","type":"text"}],"system":[{"text":"you are the parent","type":"text"}]},"type":"prompt_snapshot"}
+stored event: tool_call {"tool_use":{"id":"tu_golden_1","input":{"name":"child","prompt":"child task"},"name":"Agent"},"type":"tool_call"}
+stored event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+stored event: tool_result {"text":"[sub-agent agent_id=<id:4> run_id=<id:5>]\nhello","tool_use":{"id":"tu_golden_1","input":{"name":"child","prompt":"child task"},"name":"Agent"},"type":"tool_result"}
+stored event: text {"text":"parent done","type":"text"}
+stored event: usage {"type":"usage","usage":{"input_tokens":3,"output_tokens":2,"provider":"stub","timing":{}}}
+stored event: done {"stop_reason":"end_turn","type":"done","usage":{"input_tokens":6,"output_tokens":4,"provider":"stub"}}

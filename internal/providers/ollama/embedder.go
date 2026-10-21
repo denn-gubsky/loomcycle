@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -131,7 +131,8 @@ func newEmbedder(providerID string, opts providers.EmbedderOptions) (*Embedder, 
 			hint = " (in a container, point this at the host's Ollama)"
 		}
 		// Announce the default once, at construction.
-		log.Printf("%s embedder: no base_url configured (memory.embedder.base_url / %s) — defaulting to %s%s", providerID, envName, baseURL, hint)
+		slog.Info("embedder: no base_url configured — defaulting"+hint,
+			"provider", providerID, "base_url", baseURL, "setting", "memory.embedder.base_url / "+envName)
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &Embedder{

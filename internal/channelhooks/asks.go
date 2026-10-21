@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -167,12 +167,12 @@ func (j *job) cancelStaleAsks(ctx context.Context) {
 	}
 	rows, err := j.w.cfg.Store.InterruptListByRun(ctx, j.progress.RunID, store.InterruptStatusPending)
 	if err != nil {
-		log.Printf("channelhooks: %s message %s: list pending asks: %v", j.msg.Channel, j.msg.ID, err)
+		slog.WarnContext(ctx, "channelhooks: list pending asks failed", "channel", j.msg.Channel, "message_id", j.msg.ID, "err", err)
 		return
 	}
 	for _, r := range rows {
 		if err := j.w.cfg.Store.InterruptFinish(ctx, r.InterruptID, store.InterruptStatusCancelled, store.InterruptResolvedByHookRestart); err != nil {
-			log.Printf("channelhooks: %s message %s: cancel stale ask %s: %v", j.msg.Channel, j.msg.ID, r.InterruptID, err)
+			slog.WarnContext(ctx, "channelhooks: cancel stale ask failed", "channel", j.msg.Channel, "message_id", j.msg.ID, "interrupt_id", r.InterruptID, "err", err)
 		}
 	}
 }

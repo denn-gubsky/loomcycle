@@ -497,6 +497,7 @@ func Run(t *testing.T, factory Factory) {
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},
 		{"DirentListUnderRecursive", testDirentListUnderRecursive},
+		{"DirentUnderTreatsUnderscoreLiterally", testDirentUnderTreatsUnderscoreLiterally},
 		{"DirentDeleteAndDeleteUnder", testDirentDeleteAndDeleteUnder},
 		{"DirentMoveCascade", testDirentMoveCascade},
 		{"DirentScopeIsolation", testDirentScopeIsolation},
@@ -14796,6 +14797,39 @@ func testDirentListUnderRecursive(t *testing.T, s store.Store) {
 	// a (parent /docs/) + b (parent /docs/a/); NOT docs itself (parent /), NOT other.
 	if len(got) != 2 {
 		t.Fatalf("recursive list of /docs/ = %+v, want 2 (a, b)", names(got))
+	}
+}
+
+// testDirentUnderTreatsUnderscoreLiterally pins the LIKE escaping behind the
+// recursive ops: "_" is a valid name character and a LIKE wildcard, so an
+// unescaped "/a_b/" prefix would also reach "/axb/"'s children.
+func testDirentUnderTreatsUnderscoreLiterally(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, d := range [][2]string{{"/", "a_b"}, {"/a_b/", "x"}, {"/", "axb"}, {"/axb/", "y"}} {
+		if _, err := s.DirentCreate(ctx, mkDirent("", "user", "u1", d[0], d[1], "directory", `{}`)); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	got, err := s.DirentListUnder(ctx, "", "user", "u1", "/a_b/")
+	if err != nil {
+		t.Fatalf("list under: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "x" {
+		t.Errorf("list under /a_b/ = %v, want [x]", names(got))
+	}
+	moved, err := s.DirentMove(ctx, "", "user", "u1", "/", "a_b", "/", "c_d")
+	if err != nil || !moved {
+		t.Fatalf("move: moved=%v err=%v", moved, err)
+	}
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/axb/", "y"); err != nil {
+		t.Errorf("/axb/y must not move with /a_b: %v", err)
+	}
+	n, err := s.DirentDeleteUnder(ctx, "", "user", "u1", "/c_d/")
+	if err != nil || n != 1 {
+		t.Errorf("delete under /c_d/ = %d err=%v, want 1 (only x)", n, err)
+	}
+	if _, err := s.DirentGet(ctx, "", "user", "u1", "/axb/", "y"); err != nil {
+		t.Errorf("/axb/y must survive delete under /c_d/: %v", err)
 	}
 }
 

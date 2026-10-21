@@ -1,0 +1,4 @@
+== paused: POST /v1/sessions/<id:1>/messages
+status: 503
+content-type: application/json
+body: {"code":"runtime_paused","error":"runtime is paused (snapshot quiesce); retry after resume"}

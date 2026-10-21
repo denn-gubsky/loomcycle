@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	runcancel "github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -2593,6 +2595,198 @@ func maybeRecap(ctx context.Context, opts RunOptions, messages []providers.Messa
 	return out, true
 }
 
+// loopControl is where an iteration phase sends the loop next. Each value
+// stands for the statement the phase's code used before it was a method.
+type loopControl int
+
+const (
+	loopProceed loopControl = iota // go on to the iteration's next phase
+	loopNext                       // `continue`: start the next iteration
+	loopEnd                        // `break`: leave the loop for the run's finish
+	loopReturn                     // `return`: runLoop returns res and err as they are
+)
+
+// loopExit is how a phase left the iteration. The zero value proceeds.
+type loopExit struct {
+	ctl loopControl
+	res RunResult // only with loopReturn
+	err error     // only with loopReturn
+}
+
+func exitReturn(res RunResult, err error) loopExit {
+	return loopExit{ctl: loopReturn, res: res, err: err}
+}
+
+// reportStatefulInert says which of a run's settings a stateful run does not
+// apply, rather than dropping them silently: tool_choice, output_format,
+// agent_stop hooks and review.
+func reportStatefulInert(ctx context.Context, opts *RunOptions, emit func(providers.Event)) {
+	if !opts.ToolChoice.IsZero() {
+		// Said rather than silently dropped: a stateful step already forces
+		// its own state tool, so a second forced choice has nothing to apply to.
+		msg := "tool_choice is not applied to a stateful run: every step already calls its state tool"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Tool: opts.ToolChoice.Name, Gate: "tool_choice", Message: msg}})
+	}
+	if !opts.OutputFormat.IsZero() {
+		// A stateful run's product is its state Σ, shaped by state_schema; its
+		// steps are tool calls, so there is no free-text answer to hold.
+		msg := "output_format is not applied to a stateful run: its result is the state, shaped by context.state_schema"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
+	}
+	if opts.Hooks != nil && opts.Hooks.Matches(ctx, HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
+		// Same reason as review below: the step loop's product is its
+		// state, not an answer an agent_stop hook could block or hold.
+		msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Gate: "agent_stop", Message: msg}})
+	}
+	if opts.reviewAtBoundary(ctx) {
+		// A stateful run ends by marking its state done; there is no
+		// finished answer the loop could hold for a verdict.
+		msg := "review is not applied to a stateful run: it has no finished answer to hold, only its state"
+		emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Gate: "review", Message: msg}})
+	}
+}
+
+// runState is what runLoop carries from one iteration to the next: one is
+// allocated per run, and the phases of an iteration are its methods. A field
+// is read where it is used, never copied out for later — a park, a fallback
+// or a compaction replaces it mid-iteration, and a copy would go stale.
+type runState struct {
+	// opts is runLoop's own RunOptions, not a copy: tryProviderFallback,
+	// moveForQueue and the operator-turn parks swap its provider, model and
+	// shape in place, and the next phase must see the swap.
+	opts *RunOptions
+	emit func(providers.Event)
+
+	iterCap        int
+	unboundedIters bool
+	system         []providers.ContentBlock
+	toolSpecs      []providers.ToolSpec
+	bg             *tools.Background
+	toolChoice     *toolChoicePolicy
+	outputFormat   *outputFormatPolicy
+	// answerShape is what Context op=self reports about the two policies.
+	answerShape *atomic.Pointer[tools.AnswerShape]
+
+	// messages is the canonical conversation. Phases append to it and parks
+	// and distillation replace it; the request is built from it each turn.
+	messages []providers.Message
+
+	// The context footprint that drives distillation; see where runLoop seeds
+	// them. preambleTokens is fixed for the run.
+	preambleTokens  int
+	lastCtxTokens   int
+	lastWindow      int
+	lastCompactIter int
+	// pendingTokens is what the conversation grew by after the last call was
+	// measured: that call's answer and the tool results appended for the next
+	// one. The auto-compaction gate adds it, so it judges the request about to
+	// be sent — a large tool result used to ride out once before the gate saw
+	// it, which on a small window is the request that overflows.
+	pendingTokens int
+	// ⚠️ THE SEED IS A GUESS, AND A GUESS MUST NOT BE REPORTED AS A FINDING.
+	// Until a turn returns, lastCtxTokens is chars/4 over content no tokenizer
+	// has seen and lastWindow is the static capability a driver may still
+	// revise (Ollama reads the model's actually-loaded window from /api/ps
+	// only after a call). The seed exists so a one-iteration continuation can
+	// still DISTIL before it sends an oversized prompt; arming the run's
+	// operator-facing REPORTS from it was collateral.
+	//
+	// It matters because the seed counts the preamble, and a preamble is not a
+	// short history: it is fixed and irreducible, so on an agent whose system
+	// prompt and tool catalogue are most of a small window it sits above the
+	// threshold on iteration ZERO, before the conversation exists. The run then
+	// told its operator "keep_last_n 6 pins all 1 message(s)" at severity
+	// warning, and "88% of the window is in use and distillation did not shrink
+	// it" — three alarms, on every run, about a request that had not been sent.
+	//
+	// So: the gate still OPENS on the seed (that protection is the point of
+	// seeding it), and distillation still runs. Only the reporting waits for a
+	// number the provider actually returned.
+	footprintMeasured bool
+	// recapMode: the run distils by L1 recap rather than compaction.
+	recapMode bool
+	// Distillation declines dedup on (mode, reason) for the life of the run,
+	// mirroring the server's seenLimit set.
+	//
+	// The PAIR is the key, deliberately. A reason that is a property of the
+	// CONFIGURATION — keep_last_n spanning the conversation, reasoning:keep —
+	// is equally true on every iteration, and repeating it would bury it in its
+	// own noise. A state-dependent one (not_smaller) can legitimately recur as
+	// the history changes, and a DIFFERENT reason always gets through.
+	//
+	// This complements the debounce above rather than duplicating it: the
+	// debounce suppresses re-attempts within its window, this suppresses a
+	// repeat of the same verdict after that window expires.
+	seenDecline map[string]bool
+	// The most recent decline, surfaced on Context op=self.
+	//
+	// This is why the value is held rather than read off the event stream: the
+	// EVENT fires once per (mode, reason), but the CONDITION persists, and an
+	// agent reading op=self on turn 20 needs it as much as on turn 3. A
+	// consumer that only saw the event would have to remember it itself.
+	lastDistill tools.LastDistillValue
+	// iterVerdicts collects the declines of ONE gate opening. The exhaustion
+	// report needs what was tried and refused — "the window is full" and "the
+	// mechanism ran and refused, here is why" call for opposite next moves.
+	iterVerdicts []providers.ContextTierVerdict
+	// seenExhausted keeps the exhaustion report to once per run per severity
+	// band, for the same reason declines dedup: a condition that is true every
+	// iteration would otherwise bury itself.
+	seenExhausted map[int]bool
+	// compactRequested is set by Context op=compact and taken at the next
+	// iteration's distillation gate.
+	compactRequested atomic.Bool
+	// distillEmit is emit for the distillers: it records and dedups declines.
+	distillEmit func(providers.Event)
+
+	totalUsage  providers.Usage
+	finalText   string
+	stopReason  string
+	reviewRound int // holds for review so far (reported on each hold)
+	stopBlocks  int // agent_stop blocks of the current answer, in a row
+
+	// fallbackAttempts counts cumulative v0.8.2 provider switches per
+	// run. tryProviderFallback bumps it on each successful switch;
+	// the FallbackPolicy.MaxAttempts cap (default 3) is enforced
+	// there. A fallback "consumes" one iter slot from the outer loop
+	// — we don't decrement iter, because a deliberate switch should
+	// still count toward MaxIterations as work the run did.
+	fallbackAttempts int
+	// firstTurnSucceeded flips true after the first iteration
+	// completes successfully (an assistant message has been
+	// appended to `messages`). Used by tryProviderFallback to
+	// honor RunOptions.FallbackPolicy.PinAfterSuccess — once the
+	// transcript has provider-specific state, fallback to a
+	// different provider risks cross-family translation bugs.
+	firstTurnSucceeded bool
+	// movedForQueue: the run has made its one queue-aware move (MoveForQueue).
+	movedForQueue bool
+	// sameProviderRetries counts CONSECUTIVE retryable failures
+	// against the current (provider, model). Reset to 0 on any
+	// successful Call() that yields events (whether the iteration
+	// ultimately failed in-stream or not — we measure conn-level
+	// recovery, not iteration-level success). Also reset by
+	// tryProviderFallback when it switches the provider, since the
+	// retry budget is per-provider. Capped at opts.MaxSameProviderRetries
+	// (clamped to maxSameProviderRetriesCap=5).
+	sameProviderRetries int
+
+	// The current turn's cancel and its registry disarm; see runLoop.
+	turnCancelFn context.CancelCauseFunc
+	disarmTurn   func()
+
+	promptSnapshotted bool // RFC DI: the first request is recorded once
+	// closingTurn is set when the last allowed iteration dispatched tools: the
+	// loop runs ONE more model call, with tools disabled, so those results are
+	// read and answered instead of thrown away. See closingTurnRequest.
+	closingTurn bool
+}
+
 // runLoop is the loop itself; Run (runclock.go) wraps it with the run's clock.
 func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// An interactive run is operator-driven and Cancel-bounded: each operator
@@ -2855,34 +3049,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// P (`system`) and the action-tool catalog are resolved, into the self-
 	// contained stateful loop. The append/recap machinery below does not apply.
 	if contextStatefulMode(opts.Context) {
-		if !opts.ToolChoice.IsZero() {
-			// Said rather than silently dropped: a stateful step already forces
-			// its own state tool, so a second forced choice has nothing to apply to.
-			msg := "tool_choice is not applied to a stateful run: every step already calls its state tool"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Tool: opts.ToolChoice.Name, Gate: "tool_choice", Message: msg}})
-		}
-		if !opts.OutputFormat.IsZero() {
-			// A stateful run's product is its state Σ, shaped by state_schema; its
-			// steps are tool calls, so there is no free-text answer to hold.
-			msg := "output_format is not applied to a stateful run: its result is the state, shaped by context.state_schema"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Gate: "output_format", Message: msg}})
-		}
-		if opts.Hooks != nil && opts.Hooks.Matches(ctx, HookIdentity(ctx, opts.AgentName, 0), hooks.PhaseAgentStop) {
-			// Same reason as review below: the step loop's product is its
-			// state, not an answer an agent_stop hook could block or hold.
-			msg := "agent_stop hooks are not applied to a stateful run: it has no finished answer to decide on, only its state"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Gate: "agent_stop", Message: msg}})
-		}
-		if opts.reviewAtBoundary(ctx) {
-			// A stateful run ends by marking its state done; there is no
-			// finished answer the loop could hold for a verdict.
-			msg := "review is not applied to a stateful run: it has no finished answer to hold, only its state"
-			emit(providers.Event{Type: providers.EventCapabilityInert, Text: msg,
-				CapabilityInert: &providers.CapabilityInertInfo{Gate: "review", Message: msg}})
-		}
+		reportStatefulInert(ctx, &opts, emit)
 		return runStateful(ctx, opts, system, messages, toolSpecs, iterCap, emit)
 	}
 	// The children run on after the calls that started them; they end with
@@ -2897,28 +3064,67 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	}
 	defer bg.Close(runcancel.CauseWithReason("its parent run ended while it was still running"))
 
-	toolChoice := newToolChoicePolicy(opts.ToolChoice)
-	outputFormat := newOutputFormatPolicy(opts.OutputFormat)
-	if err := toolChoice.checkTool(toolSpecs); err != nil {
+	s := &runState{
+		opts:           &opts,
+		emit:           emit,
+		iterCap:        iterCap,
+		unboundedIters: unboundedIters,
+		system:         system,
+		toolSpecs:      toolSpecs,
+		bg:             bg,
+		messages:       messages,
+		toolChoice:     newToolChoicePolicy(opts.ToolChoice),
+		outputFormat:   newOutputFormatPolicy(opts.OutputFormat),
+		answerShape:    &answerShape,
+	}
+	if err := s.toolChoice.checkTool(toolSpecs); err != nil {
 		emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 		return RunResult{}, err
 	}
-	// Published, not stamped: see tools.AnswerShape. Re-published wherever the
-	// answer can move — the policies, the target, or a spent `until`.
-	publishAnswerShape := func() {
-		answerShape.Store(&tools.AnswerShape{
-			ToolChoice:   toolChoice.report(opts.Provider, opts.Model, opts.Effort),
-			OutputFormat: outputFormat.report(opts.Provider, opts.Model, len(toolSpecs) > 0),
-		})
-	}
-	publishAnswerShape()
+	s.publishAnswerShape()
 
 	// Context compaction (v2): a self-request flag the Context op=compact tool
 	// sets (checked at the next iteration boundary), plus the previous iteration's
 	// context footprint + window ceiling that drive the auto-compact threshold.
 	// lastCompactIter debounces back-to-back auto-compactions.
-	var compactRequested atomic.Bool
-	ctx = tools.WithCompactRequest(ctx, &compactRequested)
+	ctx = tools.WithCompactRequest(ctx, &s.compactRequested)
+	s.seedDistillation()
+
+	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
+	// disarmTurn removes its armed registry token. Both are re-created per turn
+	// (below, right before the model call) and released here on Run exit — any
+	// path, including a panic unwinding through a caller's recover — so a
+	// turn-cancel can never fire against a finished run. Initialised to no-ops so
+	// the first turn's setup + a non-turn-cancellable run (ArmTurnCancel nil) are
+	// clean.
+	s.turnCancelFn = context.CancelCauseFunc(func(error) {})
+	s.disarmTurn = func() {}
+	defer func() {
+		s.disarmTurn()
+		s.turnCancelFn(nil)
+	}()
+
+	parkAbandoned, ex := s.resumeParked(ctx)
+	if ex.ctl == loopReturn {
+		return ex.res, ex.err
+	}
+
+	for iter := 0; !parkAbandoned && (iter < iterCap || s.closingTurn); iter++ {
+		ex := s.iteration(ctx, iter)
+		if ex.ctl == loopReturn {
+			return ex.res, ex.err
+		}
+		if ex.ctl == loopEnd {
+			break
+		}
+	}
+	return s.finish()
+}
+
+// seedDistillation sets up the run's distillation state before its first
+// iteration: the context footprint the gate opens on, the decline and
+// exhaustion dedup, and the emit the distillers report through.
+func (s *runState) seedDistillation() {
 	// ⚠️ SEEDED, not zero. These used to start at 0 and stay there until the
 	// first provider call RETURNED, while the distillation gate runs at the TOP
 	// of an iteration — so a run whose very first request was already near the
@@ -2940,63 +3146,17 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// Post-call distillation was the alternative and is the wrong shape: for a
 	// continuation it would distil for a NEXT Run() whose counters start at
 	// zero again, which is indistinguishable from doing nothing.
-	// Computed once: the system prompt and tool catalogue do not change within
+	// Computed once: the s.system prompt and tool catalogue do not change within
 	// a run, and they are most of the request on a small window.
-	preambleTokens := estimatePreambleTokens(system, toolSpecs)
-	lastCtxTokens := estimatePromptTokens(preambleTokens, messages)
-	lastWindow := effectiveWindow(0, opts)
-	// ⚠️ THE SEED IS A GUESS, AND A GUESS MUST NOT BE REPORTED AS A FINDING.
-	// Until a turn returns, lastCtxTokens is chars/4 over content no tokenizer
-	// has seen and lastWindow is the static capability a driver may still
-	// revise (Ollama reads the model's actually-loaded window from /api/ps
-	// only after a call). The seed exists so a one-iteration continuation can
-	// still DISTIL before it sends an oversized prompt; arming the run's
-	// operator-facing REPORTS from it was collateral.
-	//
-	// It matters because the seed counts the preamble, and a preamble is not a
-	// short history: it is fixed and irreducible, so on an agent whose system
-	// prompt and tool catalogue are most of a small window it sits above the
-	// threshold on iteration ZERO, before the conversation exists. The run then
-	// told its operator "keep_last_n 6 pins all 1 message(s)" at severity
-	// warning, and "88% of the window is in use and distillation did not shrink
-	// it" — three alarms, on every run, about a request that had not been sent.
-	//
-	// So: the gate still OPENS on the seed (that protection is the point of
-	// seeding it), and distillation still runs. Only the reporting waits for a
-	// number the provider actually returned.
-	footprintMeasured := false
-	lastCompactIter := -2
-	// Distillation declines dedup on (mode, reason) for the life of the run,
-	// mirroring the server's seenLimit set.
-	//
-	// The PAIR is the key, deliberately. A reason that is a property of the
-	// CONFIGURATION — keep_last_n spanning the conversation, reasoning:keep —
-	// is equally true on every iteration, and repeating it would bury it in its
-	// own noise. A state-dependent one (not_smaller) can legitimately recur as
-	// the history changes, and a DIFFERENT reason always gets through.
-	//
-	// This complements the debounce above rather than duplicating it: the
-	// debounce suppresses re-attempts within its window, this suppresses a
-	// repeat of the same verdict after that window expires.
-	seenDecline := map[string]bool{}
-	// The most recent decline, surfaced on Context op=self.
-	//
-	// This is why the value is held rather than read off the event stream: the
-	// EVENT fires once per (mode, reason), but the CONDITION persists, and an
-	// agent reading op=self on turn 20 needs it as much as on turn 3. A
-	// consumer that only saw the event would have to remember it itself.
-	var lastDistill tools.LastDistillValue
-	// iterVerdicts collects the declines of ONE gate opening. The exhaustion
-	// report needs what was tried and refused — "the window is full" and "the
-	// mechanism ran and refused, here is why" call for opposite next moves.
-	var iterVerdicts []providers.ContextTierVerdict
-	// seenExhausted keeps the exhaustion report to once per run per severity
-	// band, for the same reason declines dedup: a condition that is true every
-	// iteration would otherwise bury itself.
-	seenExhausted := map[int]bool{}
-	distillEmit := func(ev providers.Event) {
+	s.preambleTokens = estimatePreambleTokens(s.system, s.toolSpecs)
+	s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+	s.lastWindow = effectiveWindow(0, *s.opts)
+	s.lastCompactIter = -2
+	s.seenDecline = map[string]bool{}
+	s.seenExhausted = map[int]bool{}
+	s.distillEmit = func(ev providers.Event) {
 		if ev.Type == providers.EventContextDistillDeclined && ev.ContextDistill != nil {
-			if !footprintMeasured {
+			if !s.footprintMeasured {
 				// Nothing has been measured yet — see footprintMeasured. The
 				// decline is real (the distillation genuinely did not run), but
 				// the CONDITION it describes is an estimate of a request the
@@ -3008,7 +3168,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 			// Keep this iteration's verdict for the exhaustion report. Cleared
 			// at the top of each gate opening, so the report carries what was
 			// tried THIS time rather than an accumulation across the run.
-			iterVerdicts = append(iterVerdicts, providers.ContextTierVerdict{
+			s.iterVerdicts = append(s.iterVerdicts, providers.ContextTierVerdict{
 				Mode: ev.ContextDistill.Mode, Reason: ev.ContextDistill.Reason,
 				Message: ev.ContextDistill.Message,
 			})
@@ -3017,7 +3177,7 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 			// (Before or after the dedup is equivalent today — the first
 			// occurrence always passes through — so this is about having a
 			// single origin, not about ordering.)
-			lastDistill = tools.LastDistillValue{
+			s.lastDistill = tools.LastDistillValue{
 				Mode: ev.ContextDistill.Mode, Reason: ev.ContextDistill.Reason,
 				Message: ev.ContextDistill.Message,
 			}
@@ -3026,65 +3186,26 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 			// to an operator, and suppressing the second because the first was
 			// quieter is how a condition gets buried by its own earlier self.
 			key := ev.ContextDistill.Mode + "|" + ev.ContextDistill.Reason + "|" + ev.ContextDistill.Severity
-			if seenDecline[key] {
+			if s.seenDecline[key] {
 				return
 			}
-			seenDecline[key] = true
+			s.seenDecline[key] = true
 		}
-		emit(ev)
+		s.emit(ev)
 	}
 	// L1 recap (RFC CR) reuses lastCompactIter to debounce — the two distillation
 	// modes are mutually exclusive per run. No running-recap state is threaded: the
 	// prior recap rides the transcript (see RecapMessages), so replay/resume are
 	// byte-identical without restoring loop state.
-	recapMode := contextRecapMode(opts.Context)
+	s.recapMode = contextRecapMode(s.opts.Context)
+}
 
-	var totalUsage providers.Usage
-	var finalText string
-	var stopReason string
-	reviewRound := 0 // holds for review so far (reported on each hold)
-	stopBlocks := 0  // agent_stop blocks of the current answer, in a row
-	// fallbackAttempts counts cumulative v0.8.2 provider switches per
-	// run. tryProviderFallback bumps it on each successful switch;
-	// the FallbackPolicy.MaxAttempts cap (default 3) is enforced
-	// there. A fallback "consumes" one iter slot from the outer loop
-	// — we don't decrement iter, because a deliberate switch should
-	// still count toward MaxIterations as work the run did.
-	var fallbackAttempts int
-	// firstTurnSucceeded flips true after the first iteration
-	// completes successfully (an assistant message has been
-	// appended to `messages`). Used by tryProviderFallback to
-	// honor RunOptions.FallbackPolicy.PinAfterSuccess — once the
-	// transcript has provider-specific state, fallback to a
-	// different provider risks cross-family translation bugs.
-	var firstTurnSucceeded bool
-	// movedForQueue: the run has made its one queue-aware move (MoveForQueue).
-	var movedForQueue bool
-
-	// sameProviderRetries counts CONSECUTIVE retryable failures
-	// against the current (provider, model). Reset to 0 on any
-	// successful Call() that yields events (whether the iteration
-	// ultimately failed in-stream or not — we measure conn-level
-	// recovery, not iteration-level success). Also reset by
-	// tryProviderFallback when it switches the provider, since the
-	// retry budget is per-provider. Capped at opts.MaxSameProviderRetries
-	// (clamped to maxSameProviderRetriesCap=5).
-	var sameProviderRetries int
-
-	// RFC BH turn-scoped cancel: turnCancelFn cancels the CURRENT turn's ctx and
-	// disarmTurn removes its armed registry token. Both are re-created per turn
-	// (below, right before the model call) and released here on Run exit — any
-	// path, including a panic unwinding through a caller's recover — so a
-	// turn-cancel can never fire against a finished run. Initialised to no-ops so
-	// the first turn's setup + a non-turn-cancellable run (ArmTurnCancel nil) are
-	// clean.
-	turnCancelFn := context.CancelCauseFunc(func(error) {})
-	disarmTurn := func() {}
-	defer func() {
-		disarmTurn()
-		turnCancelFn(nil)
-	}()
-
+// resumeParked puts a resumed run back where it paused, before its first
+// model call: parked for its operator, held for review, or waiting for its
+// background children. It reports whether the run's loop is to be skipped
+// (it ends on the turn it had already finished); a cancelled wait ends the
+// run instead.
+func (s *runState) resumeParked(ctx context.Context) (bool, loopExit) {
 	// A resumed run that was parked when it paused waits HERE, before the first
 	// model call, rather than being handed a conversation with nothing to answer.
 	// When the operator's turn arrives the loop proceeds normally with it
@@ -3092,15 +3213,15 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// parked run that is cancelled ends — on the end_turn it had already
 	// reached before the pause.
 	parkAbandoned := false
-	if opts.StartParked && opts.Interactive && opts.SteerQueue != nil {
+	if s.opts.StartParked && s.opts.Interactive && s.opts.SteerQueue != nil {
 		var resumedWithInput bool
-		messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, 0, lastCtxTokens, preambleTokens, emit)
+		s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, s.opts, s.messages, 0, s.lastCtxTokens, s.preambleTokens, s.emit)
 		if !resumedWithInput {
 			// Cancelled while waiting. The run ends on the end_turn it had
 			// already reached before the pause; skipping the loop entirely lets
 			// the shared terminal block below emit it, so there is one
 			// EventDone site rather than two that can drift.
-			stopReason = "end_turn"
+			s.stopReason = "end_turn"
 			parkAbandoned = true
 		}
 	}
@@ -3109,46 +3230,46 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// it was holding. Approve ends it on that answer (an interactive run then
 	// waits for its next message, as it would have); feedback continues the
 	// loop with the feedback appended; reject ends it rejected.
-	if h := opts.ResumeHeld; h != nil && !parkAbandoned && opts.SteerQueue != nil {
-		reviewRound = h.Round
-		finalText = lastAssistantText(messages)
+	if h := s.opts.ResumeHeld; h != nil && !parkAbandoned && s.opts.SteerQueue != nil {
+		s.reviewRound = h.Round
+		s.finalText = lastAssistantText(s.messages)
 		outcome := reviewApproved
 		// A hook's hold is restored whether or not review is armed: arming
 		// never took it, so disarming cannot have released it.
-		if h.HeldBy != "" || opts.reviewAtBoundary(ctx) {
+		if h.HeldBy != "" || s.opts.reviewAtBoundary(ctx) {
 			heldSince := h.HeldAt
 			if heldSince.IsZero() {
 				heldSince = time.Now()
 			}
-			messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, h.SinceTurn, h.Round, lastCtxTokens, preambleTokens, time.Time{}, heldSince, h.HeldBy, emit)
+			s.messages, s.lastCtxTokens, outcome = parkForReview(ctx, s.opts, s.messages, h.SinceTurn, h.Round, s.lastCtxTokens, s.preambleTokens, time.Time{}, heldSince, h.HeldBy, s.emit)
 		}
 		switch outcome {
 		case reviewExpired:
-			stopReason = StopReasonReviewExpired
+			s.stopReason = StopReasonReviewExpired
 			parkAbandoned = true
 		case reviewAborted:
 			err := ctx.Err()
 			if err == nil {
 				err = errReviewAbandoned
 			}
-			return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
+			return false, exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
 		case reviewRejected:
-			stopReason = StopReasonRejected
+			s.stopReason = StopReasonRejected
 			parkAbandoned = true
 		case reviewApproved:
-			stopReason = "end_turn"
+			s.stopReason = "end_turn"
 			parkAbandoned = true
-			if opts.interactiveAtBoundary(ctx) {
+			if s.opts.interactiveAtBoundary(ctx) {
 				var resumedWithInput bool
-				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, h.SinceTurn, lastCtxTokens, preambleTokens, emit)
+				s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, s.opts, s.messages, h.SinceTurn, s.lastCtxTokens, s.preambleTokens, s.emit)
 				parkAbandoned = !resumedWithInput
 			} else {
 				// Finishing on the approved answer, as the loop's own end of
 				// turn does: a message waiting is answered first.
 				var compacted, took bool
-				messages, compacted, took = finishSteer(&opts, messages, iterCap > 0, emit)
+				s.messages, compacted, took = finishSteer(s.opts, s.messages, s.iterCap > 0, s.emit)
 				if compacted {
-					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
+					s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
 				}
 				parkAbandoned = !took
 			}
@@ -3159,1012 +3280,137 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// paused waits for them again here. The wake is the one it would have had:
 	// a note naming how each ended — those that ended while it was paused
 	// included — then its next turn.
-	if opts.ResumeAwaitingChildren && opts.RestoreBackground != nil && !parkAbandoned {
-		note, noted, ok := parkForChildren(ctx, &opts, bg, 0, emit)
+	if s.opts.ResumeAwaitingChildren && s.opts.RestoreBackground != nil && !parkAbandoned {
+		note, noted, ok := parkForChildren(ctx, s.opts, s.bg, 0, s.emit)
 		if !ok {
 			err := ctx.Err()
 			if err == nil {
 				err = context.Canceled
 			}
-			return RunResult{StopReason: "cancelled", FinalText: lastAssistantText(messages), Usage: totalUsage}, err
+			return false, exitReturn(RunResult{StopReason: "cancelled", FinalText: lastAssistantText(s.messages), Usage: s.totalUsage}, err)
 		}
-		messages = appendChildrenNote(messages, note, noted, emit)
+		s.messages = appendChildrenNote(s.messages, note, noted, s.emit)
 	}
 
-	promptSnapshotted := false // RFC DI: the first request is recorded once
-	// closingTurn is set when the last allowed iteration dispatched tools: the
-	// loop runs ONE more model call, with tools disabled, so those results are
-	// read and answered instead of thrown away. See closingTurnRequest.
-	closingTurn := false
-	// pendingTokens is what the conversation grew by after the last call was
-	// measured: that call's answer and the tool results appended for the next
-	// one. The auto-compaction gate adds it, so it judges the request about to
-	// be sent — a large tool result used to ride out once before the gate saw
-	// it, which on a small window is the request that overflows.
-	pendingTokens := 0
-outerLoop:
-	for iter := 0; !parkAbandoned && (iter < iterCap || closingTurn); iter++ {
-		// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
-		// under the caller-opened loomcycle.run span (api/http opens
-		// the run span at each of the 4 run-creation sites). The
-		// iteration body has multiple exit paths (fallback continue,
-		// unrecoverable return, terminal break, normal fall-through),
-		// so End() is called explicitly at each — Go's `defer` runs
-		// at function-scope only, not loop-iteration-scope.
-		iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
+	return parkAbandoned, loopExit{}
+}
 
-		// RFC BH: release the PREVIOUS turn's cancel ctx + registry token at the top
-		// of each iteration — before any early-return path below (pause-gate,
-		// context-transform) — so nothing leaks and a cancel racing the inter-turn
-		// boundary finds no armed token (409). This turn re-arms lower, right before
-		// the model call. No-ops on the first iteration and after a park (already
-		// disarmed there).
-		disarmTurn()
-		turnCancelFn(nil)
+// iteration runs one turn of the loop: the boundary work, the model call,
+// what follows the turn, and the turn's tool calls. It returns where the loop
+// goes next; a turn that ran its tools starts the next iteration.
+func (s *runState) iteration(ctx context.Context, iter int) loopExit {
+	// v0.10.0 OTEL: one loomcycle.iteration span per turn. Nested
+	// under the caller-opened loomcycle.run span (api/http opens
+	// the run span at each of the 4 run-creation sites). The
+	// iteration body has multiple exit paths (fallback continue,
+	// unrecoverable return, terminal break, normal fall-through),
+	// so End() is called explicitly at each. It stayed explicit when
+	// the body became this method: some exits do work after End
+	// (reclaiming the run slot, releasing the turn), and a deferred End
+	// would move the span's end past it.
+	iterCtx, iterSpan := lcotel.RecordIteration(ctx, iter)
 
-		// Queue-aware routing after the start: the first call's provider was
-		// chosen when the run started; at each later call boundary, a run with
-		// no slot held for it (its lease was preempted or expired, or the lane
-		// keeps none) may move once to a provider where it would not wait so
-		// long. Never after the first success when the operator pinned runs to
-		// their provider (PinAfterSuccess) — the reason that pin exists applies
-		// to a move as much as to a fallback.
-		if iter > 0 && !movedForQueue && opts.MoveForQueue != nil &&
-			!(opts.FallbackPolicy.PinAfterSuccess && firstTurnSucceeded) {
-			movedForQueue = moveForQueue(ctx, &opts, messages, emit)
-		}
+	// RFC BH: release the PREVIOUS turn's cancel ctx + registry token at the top
+	// of each iteration — before any early-return path below (pause-gate,
+	// context-transform) — so nothing leaks and a cancel racing the inter-turn
+	// boundary finds no armed token (409). This turn re-arms lower, right before
+	// the model call. No-ops on the first iteration and after a park (already
+	// disarmed there).
+	s.disarmTurn()
+	s.turnCancelFn(nil)
 
-		// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
-		// ctx so the Context tool's op=self can report them to the agent
-		// (non-secret introspection). Per-iteration, not once at Run start,
-		// because tryProviderFallback swaps opts.Provider/opts.Model in place
-		// — this keeps op=self truthful about what the agent is actually
-		// running on after a fallback. Tools dispatched this iteration receive
-		// iterCtx, so the value reaches them without per-tool wiring.
-		iterCtx = tools.WithResolvedProvider(iterCtx, opts.Provider.ID())
-		iterCtx = tools.WithResolvedModel(iterCtx, opts.Model)
-		iterCtx = tools.WithResolvedSampling(iterCtx, opts.Sampling)
-		iterCtx = withIteration(iterCtx, iter)
-		iterCtx = tools.WithIterationBudget(iterCtx, iter+1, iterCap, unboundedIters) // op=self: iterations used / left
-		iterCtx = tools.WithMaxContextTokens(iterCtx, opts.MaxContextTokens)          // RFC CJ — configured cap for op=self
-		// NB: the context-footprint stamp (tools.WithContextUsage) is applied
-		// LOWER — after drainSteer + auto/self compaction — so a same-turn
-		// op=self never reports a stale pre-compaction footprint.
-
-		// Heartbeat fires at the top of each iteration. Cheap path —
-		// implementations are expected to be ~one UPDATE. Failures
-		// should NOT propagate (a sweeper in the future is the
-		// authoritative path; a missed heartbeat just means we have
-		// to wait for the sweeper to catch up).
-		if opts.OnHeartbeat != nil {
-			opts.OnHeartbeat()
-		}
-
-		// Cooperative pause/quiesce (RFC X / F41): if a runtime pause is in
-		// effect, park HERE — a clean iteration boundary, never mid-turn /
-		// between a tool_use and its tool_results. Park persists
-		// pause_state='paused', blocks until resume, then restores 'running'.
-		// On ctx cancel while parked it returns an error and we exit the run.
-		if opts.PauseGate != nil && opts.PauseGate.PauseRequested() {
-			if err := opts.PauseGate.Park(iterCtx); err != nil {
-				iterSpan.End()
-				return RunResult{StopReason: "cancelled", Usage: totalUsage}, ctx.Err()
-			}
-		}
-		// After the park, so a run resumed into a spent budget stops here too.
-		if opts.BudgetGate != nil {
-			if err := opts.BudgetGate(); err != nil {
-				iterSpan.End()
-				// Emitted as well as returned: the event is what the transcript
-				// keeps and what a stream that is not HTTP's ends on.
-				emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-				return RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: totalUsage}, err
-			}
-		}
-
-		// Mid-turn steering (internal/steer): drain any operator-injected
-		// instructions and append each as a user turn BEFORE this iteration's
-		// provider call. Drained ONLY here, at the top of the iteration —
-		// never between a tool_use assistant turn and its tool_results user
-		// turn (which would orphan the tool_use and 400 the provider). After
-		// a tool round the messages end [...assistant(tool_use),
-		// user(tool_results)]; appending a user(steer) turn yields consecutive
-		// user turns, which every provider accepts (replay already emits them).
-		if opts.SteerQueue != nil {
-			var steerCompacted bool
-			messages, steerCompacted = drainSteer(opts.SteerQueue, messages, opts.OnSteer, emit)
-			if steerCompacted {
-				// A steer-delivered compaction shrank the running history; refresh
-				// the footprint so the auto-compact check + op=self below reflect
-				// the compacted size, not the stale pre-compaction value.
-				lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-				pendingTokens = 0 // the estimate covers the whole history
-			}
-		}
-		// Background children that ended since the last call are named in one
-		// note, here — after the last tool results, never between a tool_use
-		// and its result — the boundary operator messages use.
-		if note, noted := bg.TakeNotes(); note != "" {
-			messages = appendChildrenNote(messages, note, noted, emit)
-		}
-
-		// Auto / self-requested context distillation — also a clean boundary
-		// (drainSteer ran; no tool cycle is mid-flight). Fires when the agent asked
-		// (Context op=compact) OR the PREVIOUS iteration's footprint crossed the
-		// configured threshold. In recap mode (RFC CR L1) the loop recaps inline;
-		// otherwise it compacts (L0). The two are mutually exclusive per run —
-		// choosing recap bypasses the compaction auto-trigger. The smaller next
-		// request self-debounces. Applies to ALL runs (interactive + autonomous).
-		selfReq := compactRequested.Swap(false)
-		used := lastCtxTokens + pendingTokens
-		pendingTokens = 0
-		// The gate opens on EITHER threshold. A mode whose primary sits above
-		// the backstop — or whose primary cannot fire at all — must still reach
-		// compaction, or the window fills with nothing consulted.
-		var primaryDue bool
-		if recapMode {
-			primaryDue = shouldAutoRecap(opts.Context, used, lastWindow, iter, lastCompactIter)
-		} else {
-			primaryDue = shouldAutoCompact(opts.Compaction, used, lastWindow, iter, lastCompactIter)
-		}
-		backstopDue := iter > lastCompactIter+1 &&
-			backstopAvailable(opts.Compaction) &&
-			aboveBackstop(opts.Compaction, used, lastWindow)
-		distill := selfReq || primaryDue || backstopDue
-		if distill {
-			trigger := "auto"
-			if selfReq {
-				trigger = "self"
-			}
-			// The debounce advances on every ATTEMPT, not only on success.
-			// It used to sit inside the `if did` blocks below, so a decline
-			// left it untouched, the gate re-fired on the very next iteration,
-			// and a summarize call was burned every iteration for the rest of
-			// the run — against a condition that could not change.
-			lastCompactIter = iter
-			iterVerdicts = nil
-			reclaimed := false
-			if recapMode {
-				if newMsgs, did := maybeRecap(iterCtx, opts, messages, used, lastWindow, distillEmit, trigger); did {
-					messages = newMsgs
-					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-					reclaimed = true
-				}
-			}
-			// ⚠️ THE SECOND TIER. Compaction is reachable from EVERY mode, not
-			// only append — which is the whole point: a recap that declines used
-			// to leave nothing else to try, and the run climbed to the limit.
-			//
-			// It is the right last resort precisely because it fails
-			// DIFFERENTLY: empty_summary is a property of the recap budget and
-			// the recap prompt, and a compaction summary runs on neither. A
-			// second tier that failed for the same reasons would be theatre.
-			//
-			// Reached when the mode's own distiller did not reclaim AND the
-			// footprint is at the backstop. In append mode compaction IS the
-			// primary, so this is its only invocation there.
-			if !reclaimed && (backstopDue || selfReq || !recapMode) &&
-				backstopAvailable(opts.Compaction) {
-				if newMsgs, did := maybeAutoCompact(iterCtx, opts, messages, used, lastWindow, distillEmit, trigger); did {
-					messages = newMsgs
-					// Compaction shrank the history; refresh the footprint so
-					// op=self below reflects the compacted size, not the
-					// pre-compaction value (the next turn's usage overwrites it).
-					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-					reclaimed = true
-				}
-			}
-			// Nothing reclaimed the window, and the footprint is at the point
-			// where something should have. Say so — this is the run heading for
-			// the provider's limit, and it is the one condition an operator must
-			// never have to infer from an absence of events.
-			if !reclaimed && footprintMeasured &&
-				aboveBackstop(opts.Compaction, lastCtxTokens, lastWindow) {
-				reportExhausted(distillEmit, seenExhausted, opts.Compaction,
-					lastCtxTokens, lastWindow, iterVerdicts)
-			}
-		}
-
-		// Context footprint (input+cache of the last completed turn, or the
-		// post-compaction estimate when a compaction just ran above) so Context
-		// op=self can show the agent how full its window is — the signal it needs
-		// to decide whether to self-compact (op=compact). Stamped HERE, below
-		// drainSteer + auto/self compaction, so a same-turn op=self never reports
-		// the stale pre-compaction footprint. 0 on the first iteration.
-		iterCtx = tools.WithContextUsage(iterCtx, lastCtxTokens, lastWindow)
-		// Stamped HERE, beside the footprint, so the two cannot describe
-		// different iterations. The footprint alone is a trap: an agent told it
-		// is at 99% calls op=compact, and if distillation is declining
-		// structurally that call reaches the same decline and teaches nothing.
-		iterCtx = tools.WithLastDistill(iterCtx, lastDistill)
-
-		// Context-transform plugins (RFC Z / F43): run the configured chain on a
-		// COPY of the outbound context — the loop's canonical system/messages
-		// (and so the persisted transcript + code-js replay input) stay
-		// untouched. Skipped for the synthetic code-js provider (local replay,
-		// no external leak; redacting its bytes would trip replay divergence).
-		// No caching in this version — the chain re-runs over the copy each turn.
-		reqSystem, reqMessages := system, messages
-		if len(opts.ContextPlugins) > 0 && opts.Provider.ID() != codeJSProviderID {
-			cs, cm, perr := contextplugin.Apply(iterCtx, opts.ContextPlugins, system, messages)
-			if perr != nil {
-				emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
-				return RunResult{Iterations: iter}, perr
-			}
-			reqSystem, reqMessages = cs, cm
-		}
-
-		// RFC BH: arm the per-turn cancel token covering THIS turn's model call +
-		// tool dispatch (the previous turn was released at the top of the loop).
-		// turnCtx is a child of the RUN ctx, so a whole-run cancel STILL cascades to
-		// the turn; a turn-cancel fires only turnCtx (cause ErrTurnCancelled, run ctx
-		// alive) and is caught below. When ArmTurnCancel is nil the token is never
-		// fired, so turnCtx behaves exactly like iterCtx — the loop stays
-		// byte-identical.
-		var turnCtx context.Context
-		turnCtx, turnCancelFn = context.WithCancelCause(iterCtx)
-		disarmTurn = func() {}
-		if opts.ArmTurnCancel != nil {
-			disarmTurn = opts.ArmTurnCancel(turnCancelFn)
-		}
-
-		// A retune adopted at the last operator turn replaced the source a policy
-		// was built from; rebuild it so this call, not a later one, carries it.
-		toolChoice = toolChoice.adopt(opts.ToolChoice, toolSpecs, emit)
-		outputFormat = outputFormat.adopt(opts.OutputFormat)
-		publishAnswerShape()
-		// RFC DI: re-checked per request so a fallback onto a target that cannot
-		// enforce the choice is reported too; a no-op while the target is unchanged.
-		toolChoice.reportIfUnenforced(opts.Provider, opts.Model, opts.Effort, emit)
-		// RFC DI: a target that does not show the model the schema gets it in
-		// the system prompt. Appended to a copy, per call, so a fallback onto a
-		// native target drops it again and the canonical system stays untouched.
-		if note, ok := outputFormat.promptNote(opts.Provider, opts.Model, len(toolSpecs) > 0); ok {
-			reqSystem = append(reqSystem[:len(reqSystem):len(reqSystem)], note)
-		}
-		req := providers.Request{
-			Model:            opts.Model,
-			System:           reqSystem,
-			Messages:         reqMessages,
-			Tools:            toolSpecs,
-			ToolChoice:       toolChoice.forCall(),
-			OutputFormat:     outputFormat.forCall(opts.Provider, opts.Model, len(toolSpecs) > 0, emit),
-			MaxTokens:        opts.MaxTokens,        // 0 → driver default
-			MaxContextTokens: opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
-			Effort:           opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
-			// OnEvent lets the driver fire pre-channel events (currently
-			// EventRetry during a 429 sleep) directly to the same caller
-			// hook the loop uses for response events. Without this hop
-			// the retry would be invisible to SSE consumers.
-			OnEvent: emit,
-		}
-		// Map the resolved per-agent sampling params onto the flat Request
-		// fields (each driver applies the subset its provider supports).
-		if s := opts.Sampling; s != nil {
-			req.Temperature = s.Temperature
-			req.TopP = s.TopP
-			req.TopK = s.TopK
-			req.FrequencyPenalty = s.FrequencyPenalty
-			req.PresencePenalty = s.PresencePenalty
-			req.Seed = s.Seed
-			req.Stop = s.Stop
-		}
-		if closingTurn {
-			closingTurnRequest(&req, opts)
-		}
-		if !promptSnapshotted {
-			// RFC DI: what the model was first asked, exactly as sent. Once
-			// per loop entry; a resumed run records the prompt it resumed with.
-			promptSnapshotted = true
-			emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
-		}
-		callTimer := providers.StartCallTimer(opts.Now)
-		ch, err := opts.Provider.Call(turnCtx, req)
-		if err != nil {
-			// The operator cancelled this turn while its call was still waiting
-			// (in a provider's call lane, or anywhere else Call blocks), so the
-			// call failed with the turn's cancellation. That is the same event as
-			// a cancel during generation and ends the same way: the run parks for
-			// the operator's next message. It is checked before everything below
-			// because it says nothing about the provider, so no retry, fallback
-			// or resolver feedback applies. Nothing was generated, so the history
-			// needs no repair.
-			if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
-				var resumed bool
-				messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
-				iterSpan.End()
-				if !resumed {
-					break
-				}
-				// A call waiting for its lane lends the run's global slot, and
-				// it could not take it back under the cancelled turn when none
-				// was free. Take it back under the run's own ctx before the run
-				// computes again: the next turn may be routed to a provider no
-				// lane gates, which would never take it back on its own. A
-				// no-op when the slot is not lent.
-				if concurrency.RunSlotFrom(ctx).Reclaim(ctx) != nil {
-					break
-				}
-				continue outerLoop
-			}
-			// v0.12.9 same-provider retry: when the operator opted
-			// into MaxSameProviderRetries > 0, retryable errors
-			// (429, 5xx, network) sleep with exponential backoff and
-			// re-attempt the SAME (provider, model) before
-			// MarkRateLimited cools the matrix entry and
-			// tryProviderFallback escalates. Captures the common
-			// case of a brief provider-side burst: real-world 429s
-			// often clear within 1-3 seconds, well under the 30s
-			// MarkRateLimited cooldown.
-			if ctx.Err() == nil &&
-				sameProviderRetries < opts.MaxSameProviderRetries &&
-				providers.ClassifyError(err) == providers.ErrorClassRetryable {
-				sameProviderRetries++
-				backoff := sameProviderRetryBackoff(sameProviderRetries)
-				emit(providers.Event{
-					Type: providers.EventRetry,
-					Retry: &providers.RetryInfo{
-						Provider: opts.Provider.ID(),
-						Attempt:  sameProviderRetries,
-						WaitMs:   backoff.Milliseconds(),
-						Reason:   providers.RetryReasonSchedule,
-					},
-				})
-				select {
-				case <-ctx.Done():
-					lcotel.SetSpanError(iterSpan, ctx.Err())
-					iterSpan.End()
-					turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-					return RunResult{Iterations: iter}, ctx.Err()
-				case <-time.After(backoff):
-				}
-				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; same-provider retry scheduled")
-				iterSpan.End()
-				continue outerLoop
-			}
-			// Resolver feedback: a non-context error from Call() is
-			// the driver giving up after its own retries. Route the
-			// feedback by error class:
-			//
-			//   429 (rate limit) → MarkRateLimited (self-recovering
-			//     30s cooldown; transient, not "model broken")
-			//   5xx / model 404 / network → MarkStalled (15-min
-			//     probe-gated recovery; "model is broken for a
-			//     while, stop wasting calls")
-			//
-			// The split matters: pre-v0.12.7 MarkStalled treated 429
-			// the same as 5xx, which under the x1000 load test
-			// (2026-05-26) cascaded ~120 rate-limited runs into 800+
-			// "no provider available" 503s for the rest of the probe
-			// interval. PR #235 patched this with a skip-on-429
-			// guard; this site is the structural fix — positive call
-			// to the right method.
-			//
-			// ctx errors are user-side cancellation, not provider
-			// faults — don't pollute the matrix on either path. RFC AX: an
-			// operator-key refusal is a PER-RUN policy decision (this restricted
-			// run may not use the operator key), not a model outage — marking the
-			// (provider, model) stalled would poison the shared availability
-			// matrix and wrongly exclude the model from OTHER (non-restricted)
-			// runs for the probe interval. Skip matrix feedback for it.
-			//
-			// A cancelled TURN (turnCtx done, run ctx alive) is not a provider
-			// fault either. Call can now sit in a provider's call lane for as long
-			// as the queue is, so an operator cancelling the turn of a queued run
-			// is an ordinary event — and must not mark a healthy model stalled.
-			if ctx.Err() == nil && turnCtx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
-				if providers.IsRateLimit(err) {
-					if opts.MarkRateLimited != nil {
-						opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
-					}
-				} else if opts.MarkStalled != nil {
-					opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
-				}
-			}
-			// v0.8.2: when the run carries a fallback policy and the
-			// error class is retryable, swap to the next provider
-			// and re-run this iteration. tryProviderFallback emits
-			// EventProviderFallback (+ EventCacheInvalidated when
-			// switching away from anthropic) and mutates opts in
-			// place. Outcome==Switched → continue the outer loop
-			// without surfacing the error. Other outcomes fall
-			// through to the original error path. The fallback path
-			// switches (provider, model), so the per-pair retry
-			// budget resets — the new pair starts fresh.
-			if tryProviderFallback(ctx, &opts, &fallbackAttempts, err, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
-				sameProviderRetries = 0
-				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; fallback engaged")
-				iterSpan.End()
-				continue outerLoop
-			}
-			emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			if tools.RunIsNoTrace(ctx) {
-				// A provider's error can quote the prompt; a no-trace run's
-				// span is exported without it.
-				lcotel.SetSpanErrorMessage(iterSpan, "provider call failed")
-			} else {
-				lcotel.SetSpanError(iterSpan, err)
-			}
-			iterSpan.End()
-			turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-			return RunResult{Iterations: iter}, err
-		}
-		// Call() succeeded — the connection / driver was healthy
-		// enough to open the response stream. Reset the same-provider
-		// retry counter so the next retryable error (if any) starts
-		// from a fresh budget. In-stream errors below have their own
-		// retry path.
-		sameProviderRetries = 0
-
-		// Collect this iteration: assistant text, any tool_use blocks, usage.
-		var assistantBlocks []providers.ContentBlock
-		var pendingTools []providers.ToolUse
-		var iterText string
-		var iterStop string
-		var iterUsage *providers.Usage
-		// iterReasoning holds the accumulated reasoning_content from
-		// thinking-mode models (DeepSeek V4 Pro / deepseek-reasoner).
-		// Stamped onto the assistant Message we append below so the
-		// next iteration's request body echoes it back to the API
-		// per DeepSeek's roundtrip contract. Empty for non-thinking
-		// providers.
-		var iterReasoning string
-		// iterReasoningSignature holds the Anthropic extended-thinking block's
-		// signature (paired with iterReasoning); stamped onto the assistant
-		// Message so the Anthropic driver replays the thinking block, seal
-		// included, on the tool-use continuation (else Anthropic 400s). Empty
-		// for non-Anthropic / non-thinking turns.
-		var iterReasoningSignature string
-		// sawDone: the stream ended with the driver's EventDone. Every error
-		// branch below leaves the iteration, so reaching the end of the range
-		// without it means the stream just closed — see the check after it.
-		var sawDone bool
-
-		for ev := range ch {
-			callTimer.Observe(ev)
-			switch ev.Type {
-			case providers.EventText:
-				iterText += ev.Text
-				emit(ev)
-			case providers.EventThinking:
-				// Forward the live reasoning trace to the consumer (SSE / gRPC /
-				// adapters) so a UI can render "thinking…" as the model streams
-				// it. Deliberately NOT accumulated into the assistant message
-				// content and NOT echoed into the next request — the full trace
-				// is carried separately on EventDone.Reasoning (see
-				// providers.EventThinking). Before this case existed the switch
-				// had no branch for EventThinking (and no default), so every
-				// provider's streamed thinking was silently dropped here and
-				// never reached any client — the driver emitted it, the loop ate
-				// it. Regression: TestRun_ForwardsEventThinking.
-				emit(ev)
-			case providers.EventToolCall:
-				// Some providers (Ollama) don't issue tool_call IDs. Anthropic
-				// and OpenAI both 400 if we replay an empty-ID tool_use in the
-				// next turn's history, so we synthesise one here. The synth ID
-				// is deterministic per (run, iter, slot) so a replay produces
-				// the same value.
-				tu := *ev.ToolUse
-				if tu.ID == "" {
-					tu.ID = fmt.Sprintf("lc-%d-%d", iter, len(pendingTools))
-				}
-				pendingTools = append(pendingTools, tu)
-				assistantBlocks = append(assistantBlocks, providers.ContentBlock{
-					Type:      "tool_use",
-					ToolUseID: tu.ID,
-					ToolName:  tu.Name,
-					ToolInput: tu.Input,
-				})
-				emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
-			case providers.EventDone:
-				sawDone = true
-				iterStop = ev.StopReason
-				// A copy: the loop stamps provider, window and timing onto
-				// it below, and the provider's value is not ours to write —
-				// a driver or fixture may hand the same *Usage to several
-				// concurrent runs, which made those stamps a data race.
-				iterUsage = nil
-				if ev.Usage != nil {
-					u := *ev.Usage
-					iterUsage = &u
-				}
-				iterReasoning = ev.Reasoning
-				iterReasoningSignature = ev.ReasoningSignature
-			case providers.EventError:
-				// RFC BH: an operator turn-cancel aborted this turn's stream (turnCtx
-				// cancelled, RUN ctx still alive) — not a provider fault. Skip the
-				// retry / fallback / matrix-feedback machinery below (which would
-				// MarkStalled the model + could swap providers), drain the channel so
-				// the sender goroutine doesn't leak, and let the post-stream
-				// turn-cancel handler park the run.
-				if ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
-					for range ch {
-					}
-					break
-				}
-				// v0.8.2 classification: build the RAW error string so
-				// the status-prefix regex sees the bare "<name>
-				// <code>:" shape. The streamErr wrap below would
-				// obscure that; reserved for the FINAL return value.
-				rawErr := errors.New(ev.Error)
-
-				// v0.12.9 same-provider retry on in-stream retryable
-				// errors. Drain the rest of the channel (drivers may
-				// emit a trailing EventDone after EventError; we must
-				// consume it or the goroutine sending events leaks) and
-				// re-attempt the same (provider, model). Same budget
-				// as the Call() error path.
-				if ctx.Err() == nil &&
-					sameProviderRetries < opts.MaxSameProviderRetries &&
-					providers.ClassifyError(rawErr) == providers.ErrorClassRetryable {
-					for range ch {
-					}
-					sameProviderRetries++
-					backoff := sameProviderRetryBackoff(sameProviderRetries)
-					emit(providers.Event{
-						Type: providers.EventRetry,
-						Retry: &providers.RetryInfo{
-							Provider: opts.Provider.ID(),
-							Attempt:  sameProviderRetries,
-							WaitMs:   backoff.Milliseconds(),
-							Reason:   providers.RetryReasonSchedule,
-						},
-					})
-					select {
-					case <-ctx.Done():
-						lcotel.SetSpanError(iterSpan, ctx.Err())
-						iterSpan.End()
-						turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-						return RunResult{Iterations: iter}, ctx.Err()
-					case <-time.After(backoff):
-					}
-					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; same-provider retry scheduled")
-					iterSpan.End()
-					continue outerLoop
-				}
-
-				// Resolver feedback for in-stream errors: same
-				// 429-vs-5xx routing as the Call() error path
-				// above. Driver opened the SSE/NDJSON stream
-				// successfully but then surfaced a provider-side
-				// error mid-stream — route to MarkRateLimited or
-				// MarkStalled based on whether it's a 429.
-				streamErr := errors.New(ev.Error)
-				if ctx.Err() == nil {
-					if providers.IsRateLimit(streamErr) {
-						if opts.MarkRateLimited != nil {
-							opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
-						}
-					} else if opts.MarkStalled != nil {
-						opts.MarkStalled(opts.Provider.ID(), opts.Model, ev.Error)
-					}
-				}
-				if tryProviderFallback(ctx, &opts, &fallbackAttempts, rawErr, emit, messages, firstTurnSucceeded) == fallbackOutcomeSwitched {
-					for range ch {
-					}
-					sameProviderRetries = 0
-					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; fallback engaged")
-					iterSpan.End()
-					continue outerLoop
-				}
-				emit(ev)
-				// Drain any trailing events (a driver may emit an EventDone
-				// after EventError) so the sending goroutine doesn't block on
-				// the channel until ctx-cancel / the idle timeout — mirrors the
-				// same-provider-retry + fallback drains above. Without it, the
-				// terminal error path was the one branch that abandoned ch.
-				for range ch {
-				}
-				if tools.RunIsNoTrace(ctx) {
-					lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error")
-				} else {
-					lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
-				}
-				iterSpan.End()
-				turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-				return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error)
-			}
-		}
-
-		// A stream that closed with neither EventDone nor EventError is a call
-		// that never finished: the server hung up, or the driver's own terminal
-		// error was lost when its stream context was cancelled (an idle timeout
-		// races the error send against ctx.Done). Read as a turn it is an empty
-		// end_turn, and the run used to COMPLETE with no text, no stop reason and
-		// zero usage — invisible as a failure to every caller. A cancelled turn
-		// or run closes the stream the same way; that is not a provider fault,
-		// and turnCtx (a child of the run ctx) tells the two apart.
-		if !sawDone && turnCtx.Err() == nil {
-			msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", opts.Provider.ID())
-			emit(providers.Event{Type: providers.EventError, Error: msg})
-			lcotel.SetSpanErrorMessage(iterSpan, msg)
-			iterSpan.End()
-			turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-			return RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg)
-		}
-
-		// RFC BH: did the operator cancel THIS turn while the model was generating
-		// (run ctx still alive)? Covers both a driver that surfaced EventError on
-		// the turnCtx-cancel (short-circuited above) and one that just closed the
-		// stream. The run-level cancel is checked FIRST (ctx.Err()==nil): a
-		// whole-run cancel terminates as before, never mistaken for a turn-cancel.
-		turnCancelledMidGen := opts.ArmTurnCancel != nil && ctx.Err() == nil &&
-			errors.Is(context.Cause(turnCtx), ErrTurnCancelled)
-
-		// Prepend any text before tool_use blocks so the assistant turn is well-formed.
-		if iterText != "" {
-			assistantBlocks = append(
-				[]providers.ContentBlock{providers.DialogueText(iterText)},
-				assistantBlocks...,
-			)
-		}
-		messages = append(messages, providers.Message{
-			Role:               "assistant",
-			Content:            assistantBlocks,
-			Reasoning:          iterReasoning,
-			ReasoningSignature: iterReasoningSignature,
-		})
-		// Mark the run "past turn one." Any subsequent retryable
-		// error that would have triggered cross-provider fallback
-		// is suppressed when PinAfterSuccess is set — the
-		// transcript now has provider-specific state.
-		firstTurnSucceeded = true
-
-		// Clear any stale per-model stall flag in the resolver
-		// matrix: this iteration just succeeded against
-		// (provider, model), which is the most direct possible
-		// evidence the pair is healthy. Without this, a stall
-		// from an earlier transient failure could outlive a
-		// proven recovery and collapse a tier's cascade between
-		// probes. Idempotent at the resolver layer.
-		if opts.ClearStall != nil {
-			opts.ClearStall(opts.Provider.ID(), opts.Model)
-		}
-
-		if iterUsage != nil {
-			totalUsage.InputTokens += iterUsage.InputTokens
-			totalUsage.OutputTokens += iterUsage.OutputTokens
-			totalUsage.CacheCreationTokens += iterUsage.CacheCreationTokens
-			totalUsage.CacheReadTokens += iterUsage.CacheReadTokens
-			totalUsage.Model = iterUsage.Model
-			// Capture the ACTUAL provider that served this iteration.
-			// opts.Provider is mutated in place by tryProviderFallback
-			// when a runtime fallback engages, so reading ID() here
-			// reflects the post-fallback identity. Used by downstream
-			// analysis to quantify primary-vs-fallback routing.
-			totalUsage.Provider = opts.Provider.ID()
-			// RFC AV: carry the per-call credential source (which key paid,
-			// stamped by the driver) onto the run-level summary. The last
-			// successful iteration's source becomes runs.credential_source —
-			// best-effort for the summary; the exact per-call split is in the
-			// token_usage ledger (one row per EventUsage below).
-			totalUsage.CredentialSource = iterUsage.CredentialSource
-			totalUsage.CredentialScopeID = iterUsage.CredentialScopeID
-			// Stamp the serving model's context-window ceiling onto the
-			// per-iteration usage event so the UI can render a "context
-			// used / max" gauge. Set on iterUsage (discarded after this
-			// iteration) NOT totalUsage, so the run-final accounting stays
-			// byte-stable; 0 when the provider reports an unknown window.
-			// A driver may already report a per-CALL window (e.g. Ollama
-			// reads the model's actual loaded context from /api/ps) — prefer
-			// that and only fall back to the static capability default.
-			// RFC CJ: a per-agent context budget caps the EFFECTIVE window used
-			// by the distillation threshold + the gauge. See effectiveWindow —
-			// shared with the run-start seed so the two cannot disagree.
-			iterUsage.MaxContextTokens = effectiveWindow(iterUsage.MaxContextTokens, opts)
-			// RFC AV: stamp the serving provider onto the per-call usage event
-			// too (not just totalUsage) so the token_usage row records which
-			// provider actually served this call — exact across mid-run fallback.
-			iterUsage.Provider = opts.Provider.ID()
-			// How long the call took, for the throughput estimate and the ledger.
-			callTimer.Stamp(iterUsage)
-			emit(providers.Event{Type: providers.EventUsage, Usage: iterUsage})
-			// Retain this turn's CURRENT context footprint (input + cache, i.e.
-			// what the request actually sent — NOT cumulative totalUsage, which
-			// only grows) + the window ceiling, so the NEXT iteration's
-			// top-of-loop auto-compact check sees the live utilization. After a
-			// compaction the next request shrinks, so this self-debounces.
-			lastCtxTokens = iterUsage.InputTokens + iterUsage.CacheReadTokens + iterUsage.CacheCreationTokens
-			lastWindow = iterUsage.MaxContextTokens
-			// Set BESIDE the values it qualifies, not derived from a separate
-			// flag: the question the reports ask is "did a provider report
-			// this footprint", and the only honest answer is at the assignment
-			// that made it so.
-			footprintMeasured = true
-		}
-
-		stopReason = iterStop
-		finalText = iterText
-		toolChoice.observe(pendingTools) // a COMPLETED turn advances the tool_choice
-		publishAnswerShape()
-
-		// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
-		// the model was streaming. Keep the partial assistant output (appended
-		// above; a completed call's usage was billed above too), but leave the
-		// history VALID before parking:
-		//   - drop a content-less assistant turn (cancel before anything streamed) —
-		//     an empty assistant message 400s the next call;
-		//   - synthesize a "cancelled by operator" tool_result for every tool_use the
-		//     model started but we never dispatched — a dangling tool_use 400s too.
-		// Then route into the interactive park (not the terminate/break path).
-		if turnCancelledMidGen {
-			if n := len(messages); n > 0 && messages[n-1].Role == "assistant" && len(messages[n-1].Content) == 0 {
-				messages = messages[:n-1]
-			}
-			if len(pendingTools) > 0 {
-				messages = append(messages, providers.Message{Role: "user", Content: cancelledToolResults(pendingTools)})
-			}
-			var resumed bool
-			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
-			iterSpan.End()
-			if !resumed {
-				break
-			}
-			continue outerLoop
-		}
-
-		// The closing turn's text is the run's answer, whatever it ended on, and
-		// the run stops at its cap. A finished answer goes through the end of a
-		// turn below like any answer on the last iteration — agent_stop hooks
-		// and review decide on it with no iteration left, the children it can
-		// no longer read are cancelled and named — but it is not offered to an
-		// interactive park, and a run that ends on it is recorded as stopped
-		// at its cap.
-		if closingTurn && len(pendingTools) > 0 {
-			// A model that called tools anyway (a provider that cannot be
-			// held to "none"): they are never run. Answer them so the
-			// history a continuation replays stays valid. Its text is what a
-			// run ending at the cap mid-tool-use leaves: no answer to decide on.
-			messages = append(messages, providers.Message{Role: "user", Content: notRunToolResults(pendingTools)})
-			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
-			cancelUnreadChildren(bg, emit)
-			stopReason = "max_iterations"
-			iterSpan.End()
-			break
-		}
-
-		// Terminal: model is done.
-		if iterStop != "tool_use" || len(pendingTools) == 0 {
-			// agent_stop hooks decide first: an automated check that blocks the
-			// answer spares a person reviewing one that will change anyway.
-			heldBy := ""
-			if opts.Hooks != nil {
-				out := opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, opts.AgentName, iter),
-					hooks.LifecycleInfo{FinalText: finalText, StopReason: iterStop, StopBlocks: stopBlocks})
-				decisions := out.Decisions
-				if out.Kind == hooks.StopBlock && (stopBlocks >= MaxStopBlocks || iter+1 >= iterCap) {
-					// The block fails the run below and sends no turn back. A
-					// persisted block is what a transcript replay rebuilds that
-					// turn from, so recording it would give a continuation a
-					// message the model never had; the run's error names the
-					// hook and its reason instead.
-					decisions = withoutBlocks(decisions)
-				}
-				EmitHookDecisions(emit, providers.ToolUse{}, decisions)
-				switch out.Kind {
-				case hooks.StopBlock:
-					if stopBlocks >= MaxStopBlocks {
-						iterSpan.End()
-						turnCancelFn(nil)
-						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
-							fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, stopBlocks+1, out.Reason)
-					}
-					if iter+1 >= iterCap {
-						// No iteration is left to answer the block. Leaving the
-						// loop would end the run end_turn on the very answer
-						// the hook refused, so it fails the way the cap does.
-						iterSpan.End()
-						turnCancelFn(nil)
-						return RunResult{StopReason: StopReasonStopBlocked, FinalText: finalText, Usage: totalUsage},
-							fmt.Errorf("hook %s blocked the answer, and the run has no iteration left to answer it; the reason: %s", out.By, out.Reason)
-					}
-					stopBlocks++
-					// The reason goes back as a user turn and the model answers
-					// again. The persisted hook_decision is what a transcript
-					// replay rebuilds this turn from.
-					messages = append(messages, blockTurn(out.Reason))
-					iterSpan.End()
-					continue outerLoop
-				case hooks.StopHold:
-					heldBy = out.By
-				case hooks.StopCancelled:
-					// Returned as an error, like an abandoned review hold, so the
-					// run is recorded cancelled: leaving the loop cleanly would
-					// record an answer no hook approved as a completion.
-					iterSpan.End()
-					turnCancelFn(nil)
-					err := ctx.Err()
-					if err == nil {
-						err = context.Canceled
-					}
-					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
-				}
-			}
-			stopBlocks = 0
-			if heldBy != "" && opts.SteerQueue == nil {
-				// Nothing can deliver a verdict to this run (a sub-agent the
-				// Agent tool spawned has no steer queue). It ends rejected, so
-				// the answer the hook would not let through is never accepted.
-				emit(providers.Event{Type: providers.EventError, Error: fmt.Sprintf("hook %s held the answer, but this run cannot be held for review; it ends rejected", heldBy)})
-				stopReason = StopReasonRejected
-				iterSpan.End()
-				break outerLoop
-			}
-			// Held for review: the answer is done but not accepted. Checked
-			// BEFORE the interactive park, because an approved answer still
-			// parks an interactive run for its next message afterwards.
-			if opts.SteerQueue != nil && (heldBy != "" || opts.reviewAtBoundary(ctx)) {
-				disarmTurn()
-				reviewRound++
-				var outcome reviewOutcome
-				now := time.Now()
-				messages, lastCtxTokens, outcome = parkForReview(ctx, &opts, messages, iter, reviewRound, lastCtxTokens, preambleTokens, now, now, heldBy, emit)
-				switch outcome {
-				case reviewExpired:
-					stopReason = StopReasonReviewExpired
-					iterSpan.End()
-					break outerLoop
-				case reviewRevise:
-					iterSpan.End()
-					if iter+1 >= iterCap {
-						// No iteration is left to answer the feedback. Leaving
-						// the loop would end the run end_turn on the answer the
-						// reviewer sent back; it was never approved.
-						emit(providers.Event{Type: providers.EventError, Error: "the reviewer sent the answer back, but the run has no iteration left to revise it; it ends rejected"})
-						stopReason = StopReasonRejected
-						break outerLoop
-					}
-					continue outerLoop
-				case reviewRejected:
-					stopReason = StopReasonRejected
-					iterSpan.End()
-					break outerLoop
-				case reviewAborted:
-					iterSpan.End()
-					// Returned as an error, like the pause park's cancel, so the
-					// run is recorded cancelled: leaving the loop cleanly would
-					// record an answer nobody approved as a completion.
-					turnCancelFn(nil)
-					err := ctx.Err()
-					if err == nil {
-						err = errReviewAbandoned
-					}
-					return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
-				}
-			}
-			// The turn has ended: children started to stop with it do now.
-			bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
-			// Persistent interactive run: park instead of terminating. Wait
-			// for the operator's next instruction (or Cancel). The run holds
-			// its concurrency slot while idle — the documented fairness
-			// trade-off of an always-on terminal agent (bounded by the
-			// existing per-user / global run caps).
-			if opts.interactiveAtBoundary(ctx) && opts.SteerQueue != nil && !closingTurn {
-				// RFC BH: the turn ended and the run is about to park — no longer
-				// mid-turn, so disarm the turn-cancel token (a cancel while parked
-				// finds nothing armed → the handler 409s it).
-				disarmTurn()
-				var resumedWithInput bool
-				messages, lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, emit)
-				iterSpan.End()
-				if !resumedWithInput {
-					break
-				}
-				continue outerLoop
-			}
-			// The run would finish, but background children it started are
-			// still running: it waits for all of them, then takes another turn
-			// with a note on how each ended. With no iteration left for that
-			// turn nothing could read them, so they are cancelled instead —
-			// a parent never ends leaving children behind.
-			if waiting, _ := bg.Outstanding(); len(waiting) > 0 {
-				if iter+1 >= iterCap {
-					cancelUnreadChildren(bg, emit)
-				} else {
-					disarmTurn()
-					note, noted, ok := parkForChildren(ctx, &opts, bg, iter, emit)
-					iterSpan.End()
-					if !ok {
-						turnCancelFn(nil)
-						err := ctx.Err()
-						if err == nil {
-							err = context.Canceled
-						}
-						return RunResult{StopReason: "cancelled", FinalText: finalText, Usage: totalUsage}, err
-					}
-					messages = appendChildrenNote(messages, note, noted, emit)
-					continue outerLoop
-				}
-			}
-			// The run is finishing. A message sent while this answer was being
-			// written was acknowledged, so it is answered — one more turn,
-			// whose answer becomes the run's — and the queue closes only once
-			// a final answer ends with nothing waiting.
-			if opts.SteerQueue != nil {
-				var compacted, took bool
-				messages, compacted, took = finishSteer(&opts, messages, iter+1 < iterCap, emit)
-				if compacted {
-					lastCtxTokens = estimatePromptTokens(preambleTokens, messages)
-				}
-				if took {
-					disarmTurn()
-					iterSpan.End()
-					continue outerLoop
-				}
-			}
-			if closingTurn {
-				stopReason = "max_iterations"
-			}
-			iterSpan.End()
-			break
-		}
-
-		// Execute pending tools concurrently, bounded by
-		// opts.ToolParallelism, and append a single user turn with
-		// all results in tool_call order.
-		//
-		// Two ordering rules cohabit here. The MESSAGE we hand the
-		// model on the next turn lists tool_results in the same order
-		// the model emitted the tool_calls — Anthropic correlates by
-		// tool_use_id but staying stable on the wire avoids subtle
-		// surprises in cache reuse and transcript reads. The EVENTS
-		// we emit on the SSE stream go out in COMPLETION order — fast
-		// tools' results stream out first, slow ones last — because
-		// callers rendering live progress want "company 1 done" the
-		// moment company 1 is done, not after company 3 finishes too.
-		hookIdent := HookIdentity(ctx, opts.AgentName, iter)
-		// The effective window is stamped HERE, not at the top of the iteration
-		// with the rest: lastWindow has just been refreshed from THIS turn's
-		// call, so the first tool of a run sees the window the driver reported
-		// (Ollama's actually-loaded context) rather than the static seed, and a
-		// mid-turn fallback's window rather than the replaced provider's.
-		toolCtx := tools.WithEffectiveContextWindow(turnCtx, lastWindow)
-		toolResults := executePendingTools(toolCtx, opts.Dispatcher, pendingTools, opts.ToolParallelism, opts.Hooks, hookIdent, emit)
-		messages = append(messages, providers.Message{Role: "user", Content: toolResults})
-		if why, stop := opts.Dispatcher.RepeatedFailure(); stop {
-			msg := "run stopped: " + why + " after being told it cannot succeed as sent"
-			emit(providers.Event{Type: providers.EventError, Error: msg})
-			disarmTurn()
-			turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
-			iterSpan.End()
-			return RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: totalUsage}, errors.New(msg)
-		}
-
-		// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
-		// while its tools ran. executePendingTools returns one result per pending
-		// tool (a ctx-cancelled tool is reported error-shaped), so the
-		// assistant(tool_use)/user(tool_result) pairing above is already VALID — no
-		// synthesis needed. The completed model call was billed above; the
-		// interrupted tools just carry an error result. Park instead of looping into
-		// another model turn. Run-cancel is checked first (ctx.Err()==nil).
-		if opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
-			var resumed bool
-			messages, lastCtxTokens, resumed = finishTurnCancel(ctx, &opts, messages, iter, lastCtxTokens, preambleTokens, reasonFromCause(context.Cause(turnCtx)), emit, disarmTurn)
-			iterSpan.End()
-			if !resumed {
-				break
-			}
-			continue outerLoop
-		}
-
-		// Normal fall-through to next iteration. Disarm the turn-cancel token at
-		// this turn boundary so a cancel racing the inter-turn gap finds nothing
-		// armed (409) rather than firing a spent token (RFC BH §9.4); the next turn
-		// re-arms. End the iteration span here — the for loop's continue opens a
-		// fresh one.
-		disarmTurn()
-		iterSpan.End()
-		// The next request carries this turn's answer and its tool results on
-		// top of what the call just measured.
-		pendingTokens = estimateMessageTokens(messages[len(messages)-2:])
-		if grantsClosingTurn(iter, iterCap, unboundedIters) {
-			closingTurn = true
-		}
+	iterCtx, ex := s.beginIteration(ctx, iterCtx, iterSpan, iter)
+	if ex.ctl != loopProceed {
+		return ex
 	}
+
+	s.takeBoundaryInput()
+
+	// Auto / self-requested context distillation — also a clean boundary
+	// (drainSteer ran; no tool cycle is mid-flight). Fires when the agent asked
+	// (Context op=compact) OR the PREVIOUS iteration's footprint crossed the
+	// configured threshold. In recap mode (RFC CR L1) the loop recaps inline;
+	// otherwise it compacts (L0). The two are mutually exclusive per run —
+	// choosing recap bypasses the compaction auto-trigger. The smaller next
+	// request self-debounces. Applies to ALL runs (interactive + autonomous).
+	s.distillAtBoundary(iterCtx, iter)
+
+	// Context footprint (input+cache of the last completed turn, or the
+	// post-compaction estimate when a compaction just ran above) so Context
+	// op=self can show the agent how full its window is — the signal it needs
+	// to decide whether to self-compact (op=compact). Stamped HERE, below
+	// drainSteer + auto/self compaction, so a same-turn op=self never reports
+	// the stale pre-compaction footprint. 0 on the first iteration.
+	iterCtx = tools.WithContextUsage(iterCtx, s.lastCtxTokens, s.lastWindow)
+	// Stamped HERE, beside the footprint, so the two cannot describe
+	// different iterations. The footprint alone is a trap: an agent told it
+	// is at 99% calls op=compact, and if distillation is declining
+	// structurally that call reaches the same decline and teaches nothing.
+	iterCtx = tools.WithLastDistill(iterCtx, s.lastDistill)
+
+	// Context-transform plugins (RFC Z / F43): run the configured chain on a
+	// COPY of the outbound context — the loop's canonical system/messages
+	// (and so the persisted transcript + code-js replay input) stay
+	// untouched. Skipped for the synthetic code-js provider (local replay,
+	// no external leak; redacting its bytes would trip replay divergence).
+	// No caching in this version — the chain re-runs over the copy each turn.
+	reqSystem, reqMessages, ex := s.outboundContext(iterCtx, iter)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+
+	// RFC BH: arm the per-turn cancel token covering THIS turn's model call +
+	// tool dispatch (the previous turn was released at the top of the loop).
+	// turnCtx is a child of the RUN ctx, so a whole-run cancel STILL cascades to
+	// the turn; a turn-cancel fires only turnCtx (cause ErrTurnCancelled, run ctx
+	// alive) and is caught below. When ArmTurnCancel is nil the token is never
+	// fired, so turnCtx behaves exactly like iterCtx — the loop stays
+	// byte-identical.
+	turnCtx := s.armTurn(iterCtx)
+
+	req := s.buildRequest(reqSystem, reqMessages)
+	// The timer is started here and handed down rather than returned with
+	// the turn: a pointer that leaves callModel would be a heap allocation on
+	// every model call.
+	callTimer := providers.StartCallTimer(s.opts.Now)
+	t, ex := s.callModel(ctx, turnCtx, iterSpan, iter, req, callTimer)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+
+	s.recordTurn(t, callTimer)
+
+	if ex := s.endTurn(ctx, turnCtx, iterSpan, iter, t); ex.ctl != loopProceed {
+		return ex
+	}
+
+	if ex := s.dispatchTools(ctx, turnCtx, iterSpan, iter, t.pendingTools); ex.ctl != loopProceed {
+		return ex
+	}
+
+	// Normal fall-through to next iteration. Disarm the turn-cancel token at
+	// this turn boundary so a cancel racing the inter-turn gap finds nothing
+	// armed (409) rather than firing a spent token (RFC BH §9.4); the next turn
+	// re-arms. End the iteration span here — the for loop's continue opens a
+	// fresh one.
+	s.disarmTurn()
+	iterSpan.End()
+	// The next request carries this turn's answer and its tool results on
+	// top of what the call just measured.
+	s.pendingTokens = estimateMessageTokens(s.messages[len(s.messages)-2:])
+	if grantsClosingTurn(iter, s.iterCap, s.unboundedIters) {
+		s.closingTurn = true
+	}
+	return loopExit{ctl: loopNext}
+}
+
+// finish ends the run after its loop: it names how the loop ran out, parses
+// a structured answer, and emits the run's EventDone.
+func (s *runState) finish() (RunResult, error) {
 	// RFC BH: release the last turn's cancel ctx once the loop has exited (break or
 	// MaxIterations exhaustion). The run-exit defer would catch it too, but calling
 	// it here keeps the context lifecycle explicit + go-vet clean.
-	turnCancelFn(nil)
+	s.turnCancelFn(nil)
 
 	// If the for loop exited by exhausting MaxIterations while the model was
 	// still mid-tool-use, the stop_reason will be stuck at "tool_use" but no
@@ -4176,19 +3422,19 @@ outerLoop:
 	// iteration, then `continue` found no iteration left. The stop reason is
 	// still the previous answer's end_turn, which would record the run as
 	// finished on an answer that was sent back, with the turn unanswered.
-	if stopReason == "end_turn" && len(messages) > 0 && messages[len(messages)-1].Role == "user" {
-		stopReason = "max_iterations"
+	if s.stopReason == "end_turn" && len(s.messages) > 0 && s.messages[len(s.messages)-1].Role == "user" {
+		s.stopReason = "max_iterations"
 	}
-	if stopReason == "tool_use" {
-		stopReason = "max_iterations"
+	if s.stopReason == "tool_use" {
+		s.stopReason = "max_iterations"
 		// An unbounded-iterations provider (code-js) is exempt from the
 		// MaxIterations cap and bounded by its run-level timeout instead, so
 		// reaching iterCap here means the runaway hard ceiling — run() kept
 		// requesting tool calls without returning AND the timeout never fired.
 		// That's a non-terminating tool-call loop (a code-agent bug), not a too-
 		// small cap; name it accordingly. (Capability-driven, not ID-coupled.)
-		if unboundedIters {
-			log.Printf("code agent %q hit the %d-call runaway ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates.", opts.AgentName, iterCap)
+		if s.unboundedIters {
+			log.Printf("code agent %q hit the %d-call runaway ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates.", s.opts.AgentName, s.iterCap)
 		}
 	}
 
@@ -4198,18 +3444,1060 @@ outerLoop:
 	// means. An answer that does not parse only leaves Structured empty; the
 	// run stays rejected.
 	var structured map[string]any
-	if stopReason == "end_turn" || EndsRejected(stopReason) {
-		structured = outputFormat.structured(finalText, emit)
+	if s.stopReason == "end_turn" || EndsRejected(s.stopReason) {
+		structured = s.outputFormat.structured(s.finalText, s.emit)
 	}
-	emit(providers.Event{Type: providers.EventDone, StopReason: stopReason, Usage: &totalUsage})
+	s.emit(providers.Event{Type: providers.EventDone, StopReason: s.stopReason, Usage: &s.totalUsage})
 
 	return RunResult{
-		StopReason: stopReason,
-		FinalText:  finalText,
-		Iterations: iterationCount(messages),
-		Usage:      totalUsage,
+		StopReason: s.stopReason,
+		FinalText:  s.finalText,
+		Iterations: iterationCount(s.messages),
+		Usage:      s.totalUsage,
 		Structured: structured,
 	}, nil
+}
+
+// beginIteration is an iteration's boundary work before it takes any input:
+// a queue-aware move, the per-iteration ctx stamps (returned), the heartbeat,
+// and the pause and budget gates, either of which can end the run here.
+func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.Span, iter int) (context.Context, loopExit) {
+	// Queue-aware routing after the start: the first call's provider was
+	// chosen when the run started; at each later call boundary, a run with
+	// no slot held for it (its lease was preempted or expired, or the lane
+	// keeps none) may move once to a provider where it would not wait so
+	// long. Never after the first success when the operator pinned runs to
+	// their provider (PinAfterSuccess) — the reason that pin exists applies
+	// to a move as much as to a fallback.
+	if iter > 0 && !s.movedForQueue && s.opts.MoveForQueue != nil &&
+		!(s.opts.FallbackPolicy.PinAfterSuccess && s.firstTurnSucceeded) {
+		s.movedForQueue = moveForQueue(ctx, s.opts, s.messages, s.emit)
+	}
+
+	// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
+	// ctx so the Context tool's op=self can report them to the agent
+	// (non-secret introspection). Per-iteration, not once at Run start,
+	// because tryProviderFallback swaps opts.Provider/opts.Model in place
+	// — this keeps op=self truthful about what the agent is actually
+	// running on after a fallback. Tools dispatched this iteration receive
+	// iterCtx, so the value reaches them without per-tool wiring.
+	iterCtx = tools.WithResolvedProvider(iterCtx, s.opts.Provider.ID())
+	iterCtx = tools.WithResolvedModel(iterCtx, s.opts.Model)
+	iterCtx = tools.WithResolvedSampling(iterCtx, s.opts.Sampling)
+	iterCtx = withIteration(iterCtx, iter)
+	iterCtx = tools.WithIterationBudget(iterCtx, iter+1, s.iterCap, s.unboundedIters) // op=self: iterations used / left
+	iterCtx = tools.WithMaxContextTokens(iterCtx, s.opts.MaxContextTokens)            // RFC CJ — configured cap for op=self
+	// NB: the context-footprint stamp (tools.WithContextUsage) is applied
+	// LOWER — after drainSteer + auto/self compaction — so a same-turn
+	// op=self never reports a stale pre-compaction footprint.
+
+	// Heartbeat fires at the top of each iteration. Cheap path —
+	// implementations are expected to be ~one UPDATE. Failures
+	// should NOT propagate (a sweeper in the future is the
+	// authoritative path; a missed heartbeat just means we have
+	// to wait for the sweeper to catch up).
+	if s.opts.OnHeartbeat != nil {
+		s.opts.OnHeartbeat()
+	}
+
+	// Cooperative pause/quiesce (RFC X / F41): if a runtime pause is in
+	// effect, park HERE — a clean iteration boundary, never mid-turn /
+	// between a tool_use and its tool_results. Park persists
+	// pause_state='paused', blocks until resume, then restores 'running'.
+	// On ctx cancel while parked it returns an error and we exit the run.
+	if s.opts.PauseGate != nil && s.opts.PauseGate.PauseRequested() {
+		if err := s.opts.PauseGate.Park(iterCtx); err != nil {
+			iterSpan.End()
+			return iterCtx, exitReturn(RunResult{StopReason: "cancelled", Usage: s.totalUsage}, ctx.Err())
+		}
+	}
+	// After the park, so a run resumed into a spent budget stops here too.
+	if s.opts.BudgetGate != nil {
+		if err := s.opts.BudgetGate(); err != nil {
+			iterSpan.End()
+			// Emitted as well as returned: the event is what the transcript
+			// keeps and what a stream that is not HTTP's ends on.
+			s.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+			return iterCtx, exitReturn(RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: s.totalUsage}, err)
+		}
+	}
+
+	return iterCtx, loopExit{}
+}
+
+// takeBoundaryInput appends what arrived for the run between turns: operator
+// steer messages, then a note on background children that ended.
+func (s *runState) takeBoundaryInput() {
+	// Mid-turn steering (internal/steer): drain any operator-injected
+	// instructions and append each as a user turn BEFORE this iteration's
+	// provider call. Drained ONLY here, at the top of the iteration —
+	// never between a tool_use assistant turn and its tool_results user
+	// turn (which would orphan the tool_use and 400 the provider). After
+	// a tool round the messages end [...assistant(tool_use),
+	// user(tool_results)]; appending a user(steer) turn yields consecutive
+	// user turns, which every provider accepts (replay already emits them).
+	if s.opts.SteerQueue != nil {
+		var steerCompacted bool
+		s.messages, steerCompacted = drainSteer(s.opts.SteerQueue, s.messages, s.opts.OnSteer, s.emit)
+		if steerCompacted {
+			// A steer-delivered compaction shrank the running history; refresh
+			// the footprint so the auto-compact check + op=self below reflect
+			// the compacted size, not the stale pre-compaction value.
+			s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+			s.pendingTokens = 0 // the estimate covers the whole history
+		}
+	}
+	// Background children that ended since the last call are named in one
+	// note, here — after the last tool results, never between a tool_use
+	// and its result — the boundary operator messages use.
+	if note, noted := s.bg.TakeNotes(); note != "" {
+		s.messages = appendChildrenNote(s.messages, note, noted, s.emit)
+	}
+
+}
+
+// distillAtBoundary is an iteration's distillation gate: recap, compaction as
+// the second tier, and the exhaustion report when neither reclaimed the
+// window. It runs at the top of an iteration, after operator input is drained
+// and before the request is built, and only ever replaces s.messages.
+func (s *runState) distillAtBoundary(iterCtx context.Context, iter int) {
+	selfReq := s.compactRequested.Swap(false)
+	used := s.lastCtxTokens + s.pendingTokens
+	s.pendingTokens = 0
+	// The gate opens on EITHER threshold. A mode whose primary sits above
+	// the backstop — or whose primary cannot fire at all — must still reach
+	// compaction, or the window fills with nothing consulted.
+	var primaryDue bool
+	if s.recapMode {
+		primaryDue = shouldAutoRecap(s.opts.Context, used, s.lastWindow, iter, s.lastCompactIter)
+	} else {
+		primaryDue = shouldAutoCompact(s.opts.Compaction, used, s.lastWindow, iter, s.lastCompactIter)
+	}
+	backstopDue := iter > s.lastCompactIter+1 &&
+		backstopAvailable(s.opts.Compaction) &&
+		aboveBackstop(s.opts.Compaction, used, s.lastWindow)
+	distill := selfReq || primaryDue || backstopDue
+	if distill {
+		trigger := "auto"
+		if selfReq {
+			trigger = "self"
+		}
+		// The debounce advances on every ATTEMPT, not only on success.
+		// It used to sit inside the `if did` blocks below, so a decline
+		// left it untouched, the gate re-fired on the very next iteration,
+		// and a summarize call was burned every iteration for the rest of
+		// the run — against a condition that could not change.
+		s.lastCompactIter = iter
+		s.iterVerdicts = nil
+		reclaimed := false
+		if s.recapMode {
+			if newMsgs, did := maybeRecap(iterCtx, *s.opts, s.messages, used, s.lastWindow, s.distillEmit, trigger); did {
+				s.messages = newMsgs
+				s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+				reclaimed = true
+			}
+		}
+		// ⚠️ THE SECOND TIER. Compaction is reachable from EVERY mode, not
+		// only append — which is the whole point: a recap that declines used
+		// to leave nothing else to try, and the run climbed to the limit.
+		//
+		// It is the right last resort precisely because it fails
+		// DIFFERENTLY: empty_summary is a property of the recap budget and
+		// the recap prompt, and a compaction summary runs on neither. A
+		// second tier that failed for the same reasons would be theatre.
+		//
+		// Reached when the mode's own distiller did not reclaim AND the
+		// footprint is at the backstop. In append mode compaction IS the
+		// primary, so this is its only invocation there.
+		if !reclaimed && (backstopDue || selfReq || !s.recapMode) &&
+			backstopAvailable(s.opts.Compaction) {
+			if newMsgs, did := maybeAutoCompact(iterCtx, *s.opts, s.messages, used, s.lastWindow, s.distillEmit, trigger); did {
+				s.messages = newMsgs
+				// Compaction shrank the history; refresh the footprint so
+				// op=self below reflects the compacted size, not the
+				// pre-compaction value (the next turn's usage overwrites it).
+				s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+				reclaimed = true
+			}
+		}
+		// Nothing reclaimed the window, and the footprint is at the point
+		// where something should have. Say so — this is the run heading for
+		// the provider's limit, and it is the one condition an operator must
+		// never have to infer from an absence of events.
+		if !reclaimed && s.footprintMeasured &&
+			aboveBackstop(s.opts.Compaction, s.lastCtxTokens, s.lastWindow) {
+			reportExhausted(s.distillEmit, s.seenExhausted, s.opts.Compaction,
+				s.lastCtxTokens, s.lastWindow, s.iterVerdicts)
+		}
+	}
+
+}
+
+// outboundContext is the system prompt and conversation this turn sends:
+// the canonical ones, or a copy the context-transform plugins rewrote.
+func (s *runState) outboundContext(iterCtx context.Context, iter int) ([]providers.ContentBlock, []providers.Message, loopExit) {
+	reqSystem, reqMessages := s.system, s.messages
+	if len(s.opts.ContextPlugins) > 0 && s.opts.Provider.ID() != codeJSProviderID {
+		cs, cm, perr := contextplugin.Apply(iterCtx, s.opts.ContextPlugins, s.system, s.messages)
+		if perr != nil {
+			s.emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
+			return nil, nil, exitReturn(RunResult{Iterations: iter}, perr)
+		}
+		reqSystem, reqMessages = cs, cm
+	}
+	return reqSystem, reqMessages, loopExit{}
+}
+
+// armTurn arms the cancel of the turn about to start and returns its ctx.
+func (s *runState) armTurn(iterCtx context.Context) context.Context {
+	var turnCtx context.Context
+	turnCtx, s.turnCancelFn = context.WithCancelCause(iterCtx)
+	s.disarmTurn = func() {}
+	if s.opts.ArmTurnCancel != nil {
+		s.disarmTurn = s.opts.ArmTurnCancel(s.turnCancelFn)
+	}
+	return turnCtx
+}
+
+// buildRequest assembles this turn's request from the outbound context and
+// the run's current target, policies and sampling. It also records the
+// run's first prompt.
+func (s *runState) buildRequest(reqSystem []providers.ContentBlock, reqMessages []providers.Message) providers.Request {
+	// A retune adopted at the last operator turn replaced the source a policy
+	// was built from; rebuild it so this call, not a later one, carries it.
+	s.toolChoice = s.toolChoice.adopt(s.opts.ToolChoice, s.toolSpecs, s.emit)
+	s.outputFormat = s.outputFormat.adopt(s.opts.OutputFormat)
+	s.publishAnswerShape()
+	// RFC DI: re-checked per request so a fallback onto a target that cannot
+	// enforce the choice is reported too; a no-op while the target is unchanged.
+	s.toolChoice.reportIfUnenforced(s.opts.Provider, s.opts.Model, s.opts.Effort, s.emit)
+	// RFC DI: a target that does not show the model the schema gets it in
+	// the system prompt. Appended to a copy, per call, so a fallback onto a
+	// native target drops it again and the canonical system stays untouched.
+	if note, ok := s.outputFormat.promptNote(s.opts.Provider, s.opts.Model, len(s.toolSpecs) > 0); ok {
+		reqSystem = append(reqSystem[:len(reqSystem):len(reqSystem)], note)
+	}
+	req := providers.Request{
+		Model:            s.opts.Model,
+		System:           reqSystem,
+		Messages:         reqMessages,
+		Tools:            s.toolSpecs,
+		ToolChoice:       s.toolChoice.forCall(),
+		OutputFormat:     s.outputFormat.forCall(s.opts.Provider, s.opts.Model, len(s.toolSpecs) > 0, s.emit),
+		MaxTokens:        s.opts.MaxTokens,        // 0 → driver default
+		MaxContextTokens: s.opts.MaxContextTokens, // 0 → driver/provider default (RFC CJ)
+		Effort:           s.opts.Effort,           // "" → driver default; PR 3 wires per-driver translation
+		// OnEvent lets the driver fire pre-channel events (currently
+		// EventRetry during a 429 sleep) directly to the same caller
+		// hook the loop uses for response events. Without this hop
+		// the retry would be invisible to SSE consumers.
+		OnEvent: s.emit,
+	}
+	// Map the resolved per-agent sampling params onto the flat Request
+	// fields (each driver applies the subset its provider supports).
+	if sm := s.opts.Sampling; sm != nil {
+		req.Temperature = sm.Temperature
+		req.TopP = sm.TopP
+		req.TopK = sm.TopK
+		req.FrequencyPenalty = sm.FrequencyPenalty
+		req.PresencePenalty = sm.PresencePenalty
+		req.Seed = sm.Seed
+		req.Stop = sm.Stop
+	}
+	if s.closingTurn {
+		closingTurnRequest(&req, *s.opts)
+	}
+	if !s.promptSnapshotted {
+		// RFC DI: what the model was first asked, exactly as sent. Once
+		// per loop entry; a resumed run records the prompt it resumed with.
+		s.promptSnapshotted = true
+		s.emit(providers.Event{Type: providers.EventPromptSnapshot, PromptSnapshot: providers.NewPromptSnapshot(req.System, req.Messages)})
+	}
+	return req
+}
+
+// callModel makes this turn's provider call and reads its response. A call
+// that fails leaves the iteration: a cancelled turn parks, a retryable error
+// retries the same provider or falls back to another, and anything else ends
+// the run.
+func (s *runState) callModel(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, req providers.Request, callTimer *providers.CallTimer) (turnOutput, loopExit) {
+	ch, err := s.opts.Provider.Call(turnCtx, req)
+	if err != nil {
+		return turnOutput{}, s.callFailed(ctx, turnCtx, iterSpan, iter, err)
+	}
+	// Call() succeeded — the connection / driver was healthy
+	// enough to open the response stream. Reset the same-provider
+	// retry counter so the next retryable error (if any) starts
+	// from a fresh budget. In-stream errors below have their own
+	// retry path.
+	s.sameProviderRetries = 0
+
+	return s.readTurn(ctx, turnCtx, iterSpan, iter, ch, callTimer)
+}
+
+// callFailed handles a provider call that returned an error instead of a
+// stream. It never proceeds: every outcome leaves the iteration.
+func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, err error) loopExit {
+	// The operator cancelled this turn while its call was still waiting
+	// (in a provider's call lane, or anywhere else Call blocks), so the
+	// call failed with the turn's cancellation. That is the same event as
+	// a cancel during generation and ends the same way: the run parks for
+	// the operator's next message. It is checked before everything below
+	// because it says nothing about the provider, so no retry, fallback
+	// or resolver feedback applies. Nothing was generated, so the history
+	// needs no repair.
+	if s.opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+		var resumed bool
+		s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), s.emit, s.disarmTurn)
+		iterSpan.End()
+		if !resumed {
+			return loopExit{ctl: loopEnd}
+		}
+		// A call waiting for its lane lends the run's global slot, and
+		// it could not take it back under the cancelled turn when none
+		// was free. Take it back under the run's own ctx before the run
+		// computes again: the next turn may be routed to a provider no
+		// lane gates, which would never take it back on its own. A
+		// no-op when the slot is not lent.
+		if concurrency.RunSlotFrom(ctx).Reclaim(ctx) != nil {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+	// v0.12.9 same-provider retry: when the operator opted
+	// into MaxSameProviderRetries > 0, retryable errors
+	// (429, 5xx, network) sleep with exponential backoff and
+	// re-attempt the SAME (provider, model) before
+	// MarkRateLimited cools the matrix entry and
+	// tryProviderFallback escalates. Captures the common
+	// case of a brief provider-side burst: real-world 429s
+	// often clear within 1-3 seconds, well under the 30s
+	// MarkRateLimited cooldown.
+	if ctx.Err() == nil &&
+		s.sameProviderRetries < s.opts.MaxSameProviderRetries &&
+		providers.ClassifyError(err) == providers.ErrorClassRetryable {
+		s.sameProviderRetries++
+		backoff := sameProviderRetryBackoff(s.sameProviderRetries)
+		s.emit(providers.Event{
+			Type: providers.EventRetry,
+			Retry: &providers.RetryInfo{
+				Provider: s.opts.Provider.ID(),
+				Attempt:  s.sameProviderRetries,
+				WaitMs:   backoff.Milliseconds(),
+				Reason:   providers.RetryReasonSchedule,
+			},
+		})
+		select {
+		case <-ctx.Done():
+			lcotel.SetSpanError(iterSpan, ctx.Err())
+			iterSpan.End()
+			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+			return exitReturn(RunResult{Iterations: iter}, ctx.Err())
+		case <-time.After(backoff):
+		}
+		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; same-provider retry scheduled")
+		iterSpan.End()
+		return loopExit{ctl: loopNext}
+	}
+	// Resolver feedback: a non-context error from Call() is
+	// the driver giving up after its own retries. Route the
+	// feedback by error class:
+	//
+	//   429 (rate limit) → MarkRateLimited (self-recovering
+	//     30s cooldown; transient, not "model broken")
+	//   5xx / model 404 / network → MarkStalled (15-min
+	//     probe-gated recovery; "model is broken for a
+	//     while, stop wasting calls")
+	//
+	// The split matters: pre-v0.12.7 MarkStalled treated 429
+	// the same as 5xx, which under the x1000 load test
+	// (2026-05-26) cascaded ~120 rate-limited runs into 800+
+	// "no provider available" 503s for the rest of the probe
+	// interval. PR #235 patched this with a skip-on-429
+	// guard; this site is the structural fix — positive call
+	// to the right method.
+	//
+	// ctx errors are user-side cancellation, not provider
+	// faults — don't pollute the matrix on either path. RFC AX: an
+	// operator-key refusal is a PER-RUN policy decision (this restricted
+	// run may not use the operator key), not a model outage — marking the
+	// (provider, model) stalled would poison the shared availability
+	// matrix and wrongly exclude the model from OTHER (non-restricted)
+	// runs for the probe interval. Skip matrix feedback for it.
+	//
+	// A cancelled TURN (turnCtx done, run ctx alive) is not a provider
+	// fault either. Call can now sit in a provider's call lane for as long
+	// as the queue is, so an operator cancelling the turn of a queued run
+	// is an ordinary event — and must not mark a healthy model stalled.
+	if ctx.Err() == nil && turnCtx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
+		if providers.IsRateLimit(err) {
+			if s.opts.MarkRateLimited != nil {
+				s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
+			}
+		} else if s.opts.MarkStalled != nil {
+			s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, err.Error())
+		}
+	}
+	// v0.8.2: when the run carries a fallback policy and the
+	// error class is retryable, swap to the next provider
+	// and re-run this iteration. tryProviderFallback emits
+	// EventProviderFallback (+ EventCacheInvalidated when
+	// switching away from anthropic) and mutates opts in
+	// place. Outcome==Switched → continue the outer loop
+	// without surfacing the error. Other outcomes fall
+	// through to the original error path. The fallback path
+	// switches (provider, model), so the per-pair retry
+	// budget resets — the new pair starts fresh.
+	if tryProviderFallback(ctx, s.opts, &s.fallbackAttempts, err, s.emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
+		s.sameProviderRetries = 0
+		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; fallback engaged")
+		iterSpan.End()
+		return loopExit{ctl: loopNext}
+	}
+	s.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+	if tools.RunIsNoTrace(ctx) {
+		// A provider's error can quote the prompt; a no-trace run's
+		// span is exported without it.
+		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed")
+	} else {
+		lcotel.SetSpanError(iterSpan, err)
+	}
+	iterSpan.End()
+	s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+	return exitReturn(RunResult{Iterations: iter}, err)
+}
+
+// turnOutput is what one model call streamed back: the assistant turn's
+// parts, how it stopped, and its usage.
+type turnOutput struct {
+	assistantBlocks        []providers.ContentBlock
+	pendingTools           []providers.ToolUse
+	iterText               string
+	iterStop               string
+	iterUsage              *providers.Usage
+	iterReasoning          string
+	iterReasoningSignature string
+	// turnCancelledMidGen: the operator cancelled this turn while the model
+	// was generating, read once, right after the stream ended.
+	turnCancelledMidGen bool
+}
+
+// readTurn consumes the model's response stream for one turn. A stream error
+// leaves the iteration — a same-provider retry or a fallback starts the next
+// one, anything else ends the run — and so does a stream that closed without
+// finishing.
+func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, ch <-chan providers.Event, callTimer *providers.CallTimer) (turnOutput, loopExit) {
+	// Collect this iteration: assistant text, any tool_use blocks, usage.
+	var assistantBlocks []providers.ContentBlock
+	var pendingTools []providers.ToolUse
+	var iterText string
+	var iterStop string
+	var iterUsage *providers.Usage
+	// iterReasoning holds the accumulated reasoning_content from
+	// thinking-mode models (DeepSeek V4 Pro / deepseek-reasoner).
+	// Stamped onto the assistant Message we append below so the
+	// next iteration's request body echoes it back to the API
+	// per DeepSeek's roundtrip contract. Empty for non-thinking
+	// providers.
+	var iterReasoning string
+	// iterReasoningSignature holds the Anthropic extended-thinking block's
+	// signature (paired with iterReasoning); stamped onto the assistant
+	// Message so the Anthropic driver replays the thinking block, seal
+	// included, on the tool-use continuation (else Anthropic 400s). Empty
+	// for non-Anthropic / non-thinking turns.
+	var iterReasoningSignature string
+	// sawDone: the stream ended with the driver's EventDone. Every error
+	// branch below leaves the iteration, so reaching the end of the range
+	// without it means the stream just closed — see the check after it.
+	var sawDone bool
+
+	for ev := range ch {
+		callTimer.Observe(ev)
+		switch ev.Type {
+		case providers.EventText:
+			iterText += ev.Text
+			s.emit(ev)
+		case providers.EventThinking:
+			// Forward the live reasoning trace to the consumer (SSE / gRPC /
+			// adapters) so a UI can render "thinking…" as the model streams
+			// it. Deliberately NOT accumulated into the assistant message
+			// content and NOT echoed into the next request — the full trace
+			// is carried separately on EventDone.Reasoning (see
+			// providers.EventThinking). Before this case existed the switch
+			// had no branch for EventThinking (and no default), so every
+			// provider's streamed thinking was silently dropped here and
+			// never reached any client — the driver emitted it, the loop ate
+			// it. Regression: TestRun_ForwardsEventThinking.
+			s.emit(ev)
+		case providers.EventToolCall:
+			// Some providers (Ollama) don't issue tool_call IDs. Anthropic
+			// and OpenAI both 400 if we replay an empty-ID tool_use in the
+			// next turn's history, so we synthesise one here. The synth ID
+			// is deterministic per (run, iter, slot) so a replay produces
+			// the same value.
+			tu := *ev.ToolUse
+			if tu.ID == "" {
+				tu.ID = fmt.Sprintf("lc-%d-%d", iter, len(pendingTools))
+			}
+			pendingTools = append(pendingTools, tu)
+			assistantBlocks = append(assistantBlocks, providers.ContentBlock{
+				Type:      "tool_use",
+				ToolUseID: tu.ID,
+				ToolName:  tu.Name,
+				ToolInput: tu.Input,
+			})
+			s.emit(providers.Event{Type: providers.EventToolCall, ToolUse: &tu})
+		case providers.EventDone:
+			sawDone = true
+			iterStop = ev.StopReason
+			// A copy: the loop stamps provider, window and timing onto
+			// it below, and the provider's value is not ours to write —
+			// a driver or fixture may hand the same *Usage to several
+			// concurrent runs, which made those stamps a data race.
+			iterUsage = nil
+			if ev.Usage != nil {
+				u := *ev.Usage
+				iterUsage = &u
+			}
+			iterReasoning = ev.Reasoning
+			iterReasoningSignature = ev.ReasoningSignature
+		case providers.EventError:
+			// RFC BH: an operator turn-cancel aborted this turn's stream (turnCtx
+			// cancelled, RUN ctx still alive) — not a provider fault. Skip the
+			// retry / fallback / matrix-feedback machinery below (which would
+			// MarkStalled the model + could swap providers), drain the channel so
+			// the sender goroutine doesn't leak, and let the post-stream
+			// turn-cancel handler park the run.
+			if ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+				for range ch {
+				}
+				break
+			}
+			// v0.8.2 classification: build the RAW error string so
+			// the status-prefix regex sees the bare "<name>
+			// <code>:" shape. The streamErr wrap below would
+			// obscure that; reserved for the FINAL return value.
+			rawErr := errors.New(ev.Error)
+
+			// v0.12.9 same-provider retry on in-stream retryable
+			// errors. Drain the rest of the channel (drivers may
+			// emit a trailing EventDone after EventError; we must
+			// consume it or the goroutine sending events leaks) and
+			// re-attempt the same (provider, model). Same budget
+			// as the Call() error path.
+			if ctx.Err() == nil &&
+				s.sameProviderRetries < s.opts.MaxSameProviderRetries &&
+				providers.ClassifyError(rawErr) == providers.ErrorClassRetryable {
+				for range ch {
+				}
+				s.sameProviderRetries++
+				backoff := sameProviderRetryBackoff(s.sameProviderRetries)
+				s.emit(providers.Event{
+					Type: providers.EventRetry,
+					Retry: &providers.RetryInfo{
+						Provider: s.opts.Provider.ID(),
+						Attempt:  s.sameProviderRetries,
+						WaitMs:   backoff.Milliseconds(),
+						Reason:   providers.RetryReasonSchedule,
+					},
+				})
+				select {
+				case <-ctx.Done():
+					lcotel.SetSpanError(iterSpan, ctx.Err())
+					iterSpan.End()
+					s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+					return turnOutput{}, exitReturn(RunResult{Iterations: iter}, ctx.Err())
+				case <-time.After(backoff):
+				}
+				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; same-provider retry scheduled")
+				iterSpan.End()
+				return turnOutput{}, loopExit{ctl: loopNext}
+			}
+
+			// Resolver feedback for in-stream errors: same
+			// 429-vs-5xx routing as the Call() error path
+			// above. Driver opened the SSE/NDJSON stream
+			// successfully but then surfaced a provider-side
+			// error mid-stream — route to MarkRateLimited or
+			// MarkStalled based on whether it's a 429.
+			streamErr := errors.New(ev.Error)
+			if ctx.Err() == nil {
+				if providers.IsRateLimit(streamErr) {
+					if s.opts.MarkRateLimited != nil {
+						s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
+					}
+				} else if s.opts.MarkStalled != nil {
+					s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, ev.Error)
+				}
+			}
+			if tryProviderFallback(ctx, s.opts, &s.fallbackAttempts, rawErr, s.emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
+				for range ch {
+				}
+				s.sameProviderRetries = 0
+				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; fallback engaged")
+				iterSpan.End()
+				return turnOutput{}, loopExit{ctl: loopNext}
+			}
+			s.emit(ev)
+			// Drain any trailing events (a driver may emit an EventDone
+			// after EventError) so the sending goroutine doesn't block on
+			// the channel until ctx-cancel / the idle timeout — mirrors the
+			// same-provider-retry + fallback drains above. Without it, the
+			// terminal error path was the one branch that abandoned ch.
+			for range ch {
+			}
+			if tools.RunIsNoTrace(ctx) {
+				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error")
+			} else {
+				lcotel.SetSpanErrorMessage(iterSpan, ev.Error)
+			}
+			iterSpan.End()
+			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+			return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error))
+		}
+	}
+
+	// A stream that closed with neither EventDone nor EventError is a call
+	// that never finished: the server hung up, or the driver's own terminal
+	// error was lost when its stream context was cancelled (an idle timeout
+	// races the error send against ctx.Done). Read as a turn it is an empty
+	// end_turn, and the run used to COMPLETE with no text, no stop reason and
+	// zero usage — invisible as a failure to every caller. A cancelled turn
+	// or run closes the stream the same way; that is not a provider fault,
+	// and turnCtx (a child of the run ctx) tells the two apart.
+	if !sawDone && turnCtx.Err() == nil {
+		msg := fmt.Sprintf("%s: the response stream ended before the model finished its turn", s.opts.Provider.ID())
+		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+		lcotel.SetSpanErrorMessage(iterSpan, msg)
+		iterSpan.End()
+		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
+		return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg))
+	}
+
+	// RFC BH: did the operator cancel THIS turn while the model was generating
+	// (run ctx still alive)? Covers both a driver that surfaced EventError on
+	// the turnCtx-cancel (short-circuited above) and one that just closed the
+	// stream. The run-level cancel is checked FIRST (ctx.Err()==nil): a
+	// whole-run cancel terminates as before, never mistaken for a turn-cancel.
+	turnCancelledMidGen := s.opts.ArmTurnCancel != nil && ctx.Err() == nil &&
+		errors.Is(context.Cause(turnCtx), ErrTurnCancelled)
+
+	return turnOutput{
+		assistantBlocks:        assistantBlocks,
+		pendingTools:           pendingTools,
+		iterText:               iterText,
+		iterStop:               iterStop,
+		iterUsage:              iterUsage,
+		iterReasoning:          iterReasoning,
+		iterReasoningSignature: iterReasoningSignature,
+		turnCancelledMidGen:    turnCancelledMidGen,
+	}, loopExit{}
+}
+
+// dispatchTools runs the tools the model called this turn and appends their
+// results as one user turn. It leaves the iteration when the dispatcher
+// stops the run on a repeated failure or the operator cancelled the turn
+// while the tools ran.
+func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, pendingTools []providers.ToolUse) loopExit {
+	// Execute pending tools concurrently, bounded by
+	// opts.ToolParallelism, and append a single user turn with
+	// all results in tool_call order.
+	//
+	// Two ordering rules cohabit here. The MESSAGE we hand the
+	// model on the next turn lists tool_results in the same order
+	// the model emitted the tool_calls — Anthropic correlates by
+	// tool_use_id but staying stable on the wire avoids subtle
+	// surprises in cache reuse and transcript reads. The EVENTS
+	// we emit on the SSE stream go out in COMPLETION order — fast
+	// tools' results stream out first, slow ones last — because
+	// callers rendering live progress want "company 1 done" the
+	// moment company 1 is done, not after company 3 finishes too.
+	hookIdent := HookIdentity(ctx, s.opts.AgentName, iter)
+	// The effective window is stamped HERE, not at the top of the iteration
+	// with the rest: lastWindow has just been refreshed from THIS turn's
+	// call, so the first tool of a run sees the window the driver reported
+	// (Ollama's actually-loaded context) rather than the static seed, and a
+	// mid-turn fallback's window rather than the replaced provider's.
+	toolCtx := tools.WithEffectiveContextWindow(turnCtx, s.lastWindow)
+	toolResults := executePendingTools(toolCtx, s.opts.Dispatcher, pendingTools, s.opts.ToolParallelism, s.opts.Hooks, hookIdent, s.emit)
+	s.messages = append(s.messages, providers.Message{Role: "user", Content: toolResults})
+	if why, stop := s.opts.Dispatcher.RepeatedFailure(); stop {
+		msg := "run stopped: " + why + " after being told it cannot succeed as sent"
+		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+		s.disarmTurn()
+		s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
+		iterSpan.End()
+		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: s.totalUsage}, errors.New(msg))
+	}
+
+	// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
+	// while its tools ran. executePendingTools returns one result per pending
+	// tool (a ctx-cancelled tool is reported error-shaped), so the
+	// assistant(tool_use)/user(tool_result) pairing above is already VALID — no
+	// synthesis needed. The completed model call was billed above; the
+	// interrupted tools just carry an error result. Park instead of looping into
+	// another model turn. Run-cancel is checked first (ctx.Err()==nil).
+	if s.opts.ArmTurnCancel != nil && ctx.Err() == nil && errors.Is(context.Cause(turnCtx), ErrTurnCancelled) {
+		var resumed bool
+		s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), s.emit, s.disarmTurn)
+		iterSpan.End()
+		if !resumed {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+	return loopExit{}
+}
+
+// recordTurn appends the model's turn to the conversation and accounts for
+// it: the resolver hears the pair is healthy, the run's usage and context
+// footprint take the call's numbers, and the answer so far is this turn's.
+func (s *runState) recordTurn(t turnOutput, callTimer *providers.CallTimer) {
+	// Prepend any text before tool_use blocks so the assistant turn is well-formed.
+	if t.iterText != "" {
+		t.assistantBlocks = append(
+			[]providers.ContentBlock{providers.DialogueText(t.iterText)},
+			t.assistantBlocks...,
+		)
+	}
+	s.messages = append(s.messages, providers.Message{
+		Role:               "assistant",
+		Content:            t.assistantBlocks,
+		Reasoning:          t.iterReasoning,
+		ReasoningSignature: t.iterReasoningSignature,
+	})
+	// Mark the run "past turn one." Any subsequent retryable
+	// error that would have triggered cross-provider fallback
+	// is suppressed when PinAfterSuccess is set — the
+	// transcript now has provider-specific state.
+	s.firstTurnSucceeded = true
+
+	// Clear any stale per-model stall flag in the resolver
+	// matrix: this iteration just succeeded against
+	// (provider, model), which is the most direct possible
+	// evidence the pair is healthy. Without this, a stall
+	// from an earlier transient failure could outlive a
+	// proven recovery and collapse a tier's cascade between
+	// probes. Idempotent at the resolver layer.
+	if s.opts.ClearStall != nil {
+		s.opts.ClearStall(s.opts.Provider.ID(), s.opts.Model)
+	}
+
+	if t.iterUsage != nil {
+		s.totalUsage.InputTokens += t.iterUsage.InputTokens
+		s.totalUsage.OutputTokens += t.iterUsage.OutputTokens
+		s.totalUsage.CacheCreationTokens += t.iterUsage.CacheCreationTokens
+		s.totalUsage.CacheReadTokens += t.iterUsage.CacheReadTokens
+		s.totalUsage.Model = t.iterUsage.Model
+		// Capture the ACTUAL provider that served this iteration.
+		// opts.Provider is mutated in place by tryProviderFallback
+		// when a runtime fallback engages, so reading ID() here
+		// reflects the post-fallback identity. Used by downstream
+		// analysis to quantify primary-vs-fallback routing.
+		s.totalUsage.Provider = s.opts.Provider.ID()
+		// RFC AV: carry the per-call credential source (which key paid,
+		// stamped by the driver) onto the run-level summary. The last
+		// successful iteration's source becomes runs.credential_source —
+		// best-effort for the summary; the exact per-call split is in the
+		// token_usage ledger (one row per EventUsage below).
+		s.totalUsage.CredentialSource = t.iterUsage.CredentialSource
+		s.totalUsage.CredentialScopeID = t.iterUsage.CredentialScopeID
+		// Stamp the serving model's context-window ceiling onto the
+		// per-iteration usage event so the UI can render a "context
+		// used / max" gauge. Set on iterUsage (discarded after this
+		// iteration) NOT totalUsage, so the run-final accounting stays
+		// byte-stable; 0 when the provider reports an unknown window.
+		// A driver may already report a per-CALL window (e.g. Ollama
+		// reads the model's actual loaded context from /api/ps) — prefer
+		// that and only fall back to the static capability default.
+		// RFC CJ: a per-agent context budget caps the EFFECTIVE window used
+		// by the distillation threshold + the gauge. See effectiveWindow —
+		// shared with the run-start seed so the two cannot disagree.
+		t.iterUsage.MaxContextTokens = effectiveWindow(t.iterUsage.MaxContextTokens, *s.opts)
+		// RFC AV: stamp the serving provider onto the per-call usage event
+		// too (not just totalUsage) so the token_usage row records which
+		// provider actually served this call — exact across mid-run fallback.
+		t.iterUsage.Provider = s.opts.Provider.ID()
+		// How long the call took, for the throughput estimate and the ledger.
+		callTimer.Stamp(t.iterUsage)
+		s.emit(providers.Event{Type: providers.EventUsage, Usage: t.iterUsage})
+		// Retain this turn's CURRENT context footprint (input + cache, i.e.
+		// what the request actually sent — NOT cumulative totalUsage, which
+		// only grows) + the window ceiling, so the NEXT iteration's
+		// top-of-loop auto-compact check sees the live utilization. After a
+		// compaction the next request shrinks, so this self-debounces.
+		s.lastCtxTokens = t.iterUsage.InputTokens + t.iterUsage.CacheReadTokens + t.iterUsage.CacheCreationTokens
+		s.lastWindow = t.iterUsage.MaxContextTokens
+		// Set BESIDE the values it qualifies, not derived from a separate
+		// flag: the question the reports ask is "did a provider report
+		// this footprint", and the only honest answer is at the assignment
+		// that made it so.
+		s.footprintMeasured = true
+	}
+
+	s.stopReason = t.iterStop
+	s.finalText = t.iterText
+	s.toolChoice.observe(t.pendingTools) // a COMPLETED turn advances the tool_choice
+	s.publishAnswerShape()
+
+}
+
+// endTurn decides what follows the model's turn: a park when the operator
+// cancelled it mid-generation, the end of the run when the closing turn
+// called tools anyway, and finishAnswer when the model answered. It proceeds
+// only when the turn's tool calls are to be dispatched.
+func (s *runState) endTurn(ctx, turnCtx context.Context, iterSpan trace.Span, iter int, t turnOutput) loopExit {
+	// RFC BH turn-cancel (mid-generation): the operator stopped this turn while
+	// the model was streaming. Keep the partial assistant output (appended
+	// above; a completed call's usage was billed above too), but leave the
+	// history VALID before parking:
+	//   - drop a content-less assistant turn (cancel before anything streamed) —
+	//     an empty assistant message 400s the next call;
+	//   - synthesize a "cancelled by operator" tool_result for every tool_use the
+	//     model started but we never dispatched — a dangling tool_use 400s too.
+	// Then route into the interactive park (not the terminate/break path).
+	if t.turnCancelledMidGen {
+		if n := len(s.messages); n > 0 && s.messages[n-1].Role == "assistant" && len(s.messages[n-1].Content) == 0 {
+			s.messages = s.messages[:n-1]
+		}
+		if len(t.pendingTools) > 0 {
+			s.messages = append(s.messages, providers.Message{Role: "user", Content: cancelledToolResults(t.pendingTools)})
+		}
+		var resumed bool
+		s.messages, s.lastCtxTokens, resumed = finishTurnCancel(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, reasonFromCause(context.Cause(turnCtx)), s.emit, s.disarmTurn)
+		iterSpan.End()
+		if !resumed {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+
+	// The closing turn's text is the run's answer, whatever it ended on, and
+	// the run stops at its cap. A finished answer goes through the end of a
+	// turn below like any answer on the last iteration — agent_stop hooks
+	// and review decide on it with no iteration left, the children it can
+	// no longer read are cancelled and named — but it is not offered to an
+	// interactive park, and a run that ends on it is recorded as stopped
+	// at its cap.
+	if s.closingTurn && len(t.pendingTools) > 0 {
+		// A model that called tools anyway (a provider that cannot be
+		// held to "none"): they are never run. Answer them so the
+		// history a continuation replays stays valid. Its text is what a
+		// run ending at the cap mid-tool-use leaves: no answer to decide on.
+		s.messages = append(s.messages, providers.Message{Role: "user", Content: notRunToolResults(t.pendingTools)})
+		s.bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
+		cancelUnreadChildren(s.bg, s.emit)
+		s.stopReason = "max_iterations"
+		iterSpan.End()
+		return loopExit{ctl: loopEnd}
+	}
+
+	// Terminal: model is done.
+	if t.iterStop != "tool_use" || len(t.pendingTools) == 0 {
+		return s.finishAnswer(ctx, iterSpan, iter, t.iterStop)
+	}
+	return loopExit{}
+}
+
+// agentStop runs the agent_stop hooks on a finished answer. It returns who
+// holds the answer for review, if a hook did; a block or a cancel leaves the
+// iteration instead.
+func (s *runState) agentStop(ctx context.Context, iterSpan trace.Span, iter int, iterStop string) (string, loopExit) {
+	heldBy := ""
+	if s.opts.Hooks != nil {
+		out := s.opts.Hooks.RunAgentStop(ctx, HookIdentity(ctx, s.opts.AgentName, iter),
+			hooks.LifecycleInfo{FinalText: s.finalText, StopReason: iterStop, StopBlocks: s.stopBlocks})
+		decisions := out.Decisions
+		if out.Kind == hooks.StopBlock && (s.stopBlocks >= MaxStopBlocks || iter+1 >= s.iterCap) {
+			// The block fails the run below and sends no turn back. A
+			// persisted block is what a transcript replay rebuilds that
+			// turn from, so recording it would give a continuation a
+			// message the model never had; the run's error names the
+			// hook and its reason instead.
+			decisions = withoutBlocks(decisions)
+		}
+		EmitHookDecisions(s.emit, providers.ToolUse{}, decisions)
+		switch out.Kind {
+		case hooks.StopBlock:
+			if s.stopBlocks >= MaxStopBlocks {
+				iterSpan.End()
+				s.turnCancelFn(nil)
+				return "", exitReturn(RunResult{StopReason: StopReasonStopBlocked, FinalText: s.finalText, Usage: s.totalUsage},
+					fmt.Errorf("hook %s blocked the answer %d times in a row; the last reason: %s", out.By, s.stopBlocks+1, out.Reason))
+			}
+			if iter+1 >= s.iterCap {
+				// No iteration is left to answer the block. Leaving the
+				// loop would end the run end_turn on the very answer
+				// the hook refused, so it fails the way the cap does.
+				iterSpan.End()
+				s.turnCancelFn(nil)
+				return "", exitReturn(RunResult{StopReason: StopReasonStopBlocked, FinalText: s.finalText, Usage: s.totalUsage},
+					fmt.Errorf("hook %s blocked the answer, and the run has no iteration left to answer it; the reason: %s", out.By, out.Reason))
+			}
+			s.stopBlocks++
+			// The reason goes back as a user turn and the model answers
+			// again. The persisted hook_decision is what a transcript
+			// replay rebuilds this turn from.
+			s.messages = append(s.messages, blockTurn(out.Reason))
+			iterSpan.End()
+			return "", loopExit{ctl: loopNext}
+		case hooks.StopHold:
+			heldBy = out.By
+		case hooks.StopCancelled:
+			// Returned as an error, like an abandoned review hold, so the
+			// run is recorded cancelled: leaving the loop cleanly would
+			// record an answer no hook approved as a completion.
+			iterSpan.End()
+			s.turnCancelFn(nil)
+			err := ctx.Err()
+			if err == nil {
+				err = context.Canceled
+			}
+			return "", exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
+		}
+	}
+	return heldBy, loopExit{}
+}
+
+// finishAnswer is the end of a turn on which the model answered rather than
+// called tools: agent_stop hooks, a review hold, the interactive park, the
+// wait for background children and a last steer message each get their say
+// before the run ends on the answer. It never proceeds: it either ends the
+// run or starts the turn one of them asked for.
+func (s *runState) finishAnswer(ctx context.Context, iterSpan trace.Span, iter int, iterStop string) loopExit {
+	// agent_stop hooks decide first: an automated check that blocks the
+	// answer spares a person reviewing one that will change anyway.
+	heldBy, ex := s.agentStop(ctx, iterSpan, iter, iterStop)
+	if ex.ctl != loopProceed {
+		return ex
+	}
+	s.stopBlocks = 0
+	if heldBy != "" && s.opts.SteerQueue == nil {
+		// Nothing can deliver a verdict to this run (a sub-agent the
+		// Agent tool spawned has no steer queue). It ends rejected, so
+		// the answer the hook would not let through is never accepted.
+		s.emit(providers.Event{Type: providers.EventError, Error: fmt.Sprintf("hook %s held the answer, but this run cannot be held for review; it ends rejected", heldBy)})
+		s.stopReason = StopReasonRejected
+		iterSpan.End()
+		return loopExit{ctl: loopEnd}
+	}
+	// Held for review: the answer is done but not accepted. Checked
+	// BEFORE the interactive park, because an approved answer still
+	// parks an interactive run for its next message afterwards.
+	if s.opts.SteerQueue != nil && (heldBy != "" || s.opts.reviewAtBoundary(ctx)) {
+		s.disarmTurn()
+		s.reviewRound++
+		var outcome reviewOutcome
+		now := time.Now()
+		s.messages, s.lastCtxTokens, outcome = parkForReview(ctx, s.opts, s.messages, iter, s.reviewRound, s.lastCtxTokens, s.preambleTokens, now, now, heldBy, s.emit)
+		switch outcome {
+		case reviewExpired:
+			s.stopReason = StopReasonReviewExpired
+			iterSpan.End()
+			return loopExit{ctl: loopEnd}
+		case reviewRevise:
+			iterSpan.End()
+			if iter+1 >= s.iterCap {
+				// No iteration is left to answer the feedback. Leaving
+				// the loop would end the run end_turn on the answer the
+				// reviewer sent back; it was never approved.
+				s.emit(providers.Event{Type: providers.EventError, Error: "the reviewer sent the answer back, but the run has no iteration left to revise it; it ends rejected"})
+				s.stopReason = StopReasonRejected
+				return loopExit{ctl: loopEnd}
+			}
+			return loopExit{ctl: loopNext}
+		case reviewRejected:
+			s.stopReason = StopReasonRejected
+			iterSpan.End()
+			return loopExit{ctl: loopEnd}
+		case reviewAborted:
+			iterSpan.End()
+			// Returned as an error, like the pause park's cancel, so the
+			// run is recorded cancelled: leaving the loop cleanly would
+			// record an answer nobody approved as a completion.
+			s.turnCancelFn(nil)
+			err := ctx.Err()
+			if err == nil {
+				err = errReviewAbandoned
+			}
+			return exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
+		}
+	}
+	// The turn has ended: children started to stop with it do now.
+	s.bg.EndTurn(runcancel.CauseWithReason("its parent ended its turn (on_parent_end: cancel)"))
+	// Persistent interactive run: park instead of terminating. Wait
+	// for the operator's next instruction (or Cancel). The run holds
+	// its concurrency slot while idle — the documented fairness
+	// trade-off of an always-on terminal agent (bounded by the
+	// existing per-user / global run caps).
+	if s.opts.interactiveAtBoundary(ctx) && s.opts.SteerQueue != nil && !s.closingTurn {
+		// RFC BH: the turn ended and the run is about to park — no longer
+		// mid-turn, so disarm the turn-cancel token (a cancel while parked
+		// finds nothing armed → the handler 409s it).
+		s.disarmTurn()
+		var resumedWithInput bool
+		s.messages, s.lastCtxTokens, resumedWithInput = parkForOperatorTurn(ctx, s.opts, s.messages, iter, s.lastCtxTokens, s.preambleTokens, s.emit)
+		iterSpan.End()
+		if !resumedWithInput {
+			return loopExit{ctl: loopEnd}
+		}
+		return loopExit{ctl: loopNext}
+	}
+	// The run would finish, but background children it started are
+	// still running: it waits for all of them, then takes another turn
+	// with a note on how each ended. With no iteration left for that
+	// turn nothing could read them, so they are cancelled instead —
+	// a parent never ends leaving children behind.
+	if waiting, _ := s.bg.Outstanding(); len(waiting) > 0 {
+		if iter+1 >= s.iterCap {
+			cancelUnreadChildren(s.bg, s.emit)
+		} else {
+			s.disarmTurn()
+			note, noted, ok := parkForChildren(ctx, s.opts, s.bg, iter, s.emit)
+			iterSpan.End()
+			if !ok {
+				s.turnCancelFn(nil)
+				err := ctx.Err()
+				if err == nil {
+					err = context.Canceled
+				}
+				return exitReturn(RunResult{StopReason: "cancelled", FinalText: s.finalText, Usage: s.totalUsage}, err)
+			}
+			s.messages = appendChildrenNote(s.messages, note, noted, s.emit)
+			return loopExit{ctl: loopNext}
+		}
+	}
+	// The run is finishing. A message sent while this answer was being
+	// written was acknowledged, so it is answered — one more turn,
+	// whose answer becomes the run's — and the queue closes only once
+	// a final answer ends with nothing waiting.
+	if s.opts.SteerQueue != nil {
+		var compacted, took bool
+		s.messages, compacted, took = finishSteer(s.opts, s.messages, iter+1 < s.iterCap, s.emit)
+		if compacted {
+			s.lastCtxTokens = estimatePromptTokens(s.preambleTokens, s.messages)
+		}
+		if took {
+			s.disarmTurn()
+			iterSpan.End()
+			return loopExit{ctl: loopNext}
+		}
+	}
+	if s.closingTurn {
+		s.stopReason = "max_iterations"
+	}
+	iterSpan.End()
+	return loopExit{ctl: loopEnd}
+}
+
+// publishAnswerShape publishes, not stamps: see tools.AnswerShape.
+// Re-published wherever the answer can move — the policies, the target, or a
+// spent `until`.
+func (s *runState) publishAnswerShape() {
+	s.answerShape.Store(&tools.AnswerShape{
+		ToolChoice:   s.toolChoice.report(s.opts.Provider, s.opts.Model, s.opts.Effort),
+		OutputFormat: s.outputFormat.report(s.opts.Provider, s.opts.Model, len(s.toolSpecs) > 0),
+	})
 }
 
 // executeTool runs one tool through the dispatcher; returns a marker error

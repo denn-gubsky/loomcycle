@@ -4,7 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -201,16 +201,16 @@ func LoadLibrary(overlayRoot string) (*Library, error) {
 		// Refuse to follow symlinks (same posture as Context.help).
 		fi, err := os.Lstat(path)
 		if err != nil {
-			log.Printf("mcp-recipes: skipping %s: lstat: %v", path, err)
+			slog.Warn("mcp-recipes: skipping recipe: lstat failed", "path", path, "err", err)
 			continue
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			log.Printf("mcp-recipes: skipping %s: symlink (overlay recipes must be regular files)", path)
+			slog.Warn("mcp-recipes: skipping symlink (overlay recipes must be regular files)", "path", path)
 			continue
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			log.Printf("mcp-recipes: skipping %s: %v", path, err)
+			slog.Warn("mcp-recipes: skipping recipe", "path", path, "err", err)
 			continue
 		}
 		nameFromFile := strings.TrimSuffix(e.Name(), ".json")
@@ -218,7 +218,7 @@ func LoadLibrary(overlayRoot string) (*Library, error) {
 		if err != nil {
 			// Soft-skip: one malformed overlay recipe must not kill
 			// the CLI. Bundled defaults loaded above remain intact.
-			log.Printf("mcp-recipes: skipping %s: %v", path, err)
+			slog.Warn("mcp-recipes: skipping recipe", "path", path, "err", err)
 			continue
 		}
 		rec.Source = "overlay"
@@ -236,11 +236,11 @@ func LoadLibrary(overlayRoot string) (*Library, error) {
 			}
 			lib.disabled[line] = true
 			if _, known := lib.recipes[line]; !known {
-				log.Printf("mcp-recipes: .disabled lists %q which doesn't exist in the library — ignoring", line)
+				slog.Warn("mcp-recipes: .disabled lists a recipe which doesn't exist in the library — ignoring", "recipe", line)
 			}
 		}
 	} else if !os.IsNotExist(err) {
-		log.Printf("mcp-recipes: cannot read %s: %v (no recipes disabled)", disabledPath, err)
+		slog.Warn("mcp-recipes: cannot read .disabled (no recipes disabled)", "path", disabledPath, "err", err)
 	}
 
 	return lib, nil

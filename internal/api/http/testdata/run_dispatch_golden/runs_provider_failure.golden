@@ -1,0 +1,14 @@
+== run: POST /v1/runs
+status: 200
+content-type: text/event-stream
+event: session {"text":"<id:1>","type":"session"}
+event: agent {"agent_id":"<id:2>","parent_agent_id":null,"parent_context":null,"run_id":"<id:3>","session_id":"<id:1>"}
+event: started {"type":"started"}
+event: error {"error":"stub: the response stream ended before the model finished its turn","type":"error"}
+event: error {"error":"provider error: stub: the response stream ended before the model finished its turn","type":"error"}
+stored row: {"agent":"plain","agent_id":"<id:2>","error":"provider error: stub: the response stream ended before the model finished its turn","id":"<id:3>","input_tokens":0,"output_tokens":0,"pause_state":"running","run_config":{"agent_version":{"static":true},"iteration_limit":16},"session_id":"<id:1>","status":"failed"}
+stored event: user_input [{"content":[{"cacheable":true,"text":"be brief","type":"trusted-text"}],"role":"system"},{"content":[{"text":"FAIL now","type":"trusted-text"}],"role":"user"}]
+stored event: system_prompt {"system_prompt":"be brief"}
+stored event: started {"type":"started"}
+stored event: prompt_snapshot {"prompt_snapshot":{"input":[{"text":"FAIL now","type":"text"}],"system":[{"text":"be brief","type":"text"}]},"type":"prompt_snapshot"}
+stored event: error {"error":"stub: the response stream ended before the model finished its turn","type":"error"}

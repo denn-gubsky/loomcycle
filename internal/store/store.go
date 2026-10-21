@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"slices"
 	"strconv"
@@ -1710,7 +1711,58 @@ type TenantSummary struct {
 //
 // All methods take ctx. Implementations must honour ctx cancellation for
 // long-running queries (transcript replay especially).
+//
+// Store is the union of the domain interfaces below; each method belongs to
+// exactly one of them (TestStore_IsDisjointUnionOfDomainInterfaces). A
+// consumer that needs one domain should take that interface, not Store. A new
+// method goes into its domain interface, never into this list directly.
+//
+// Close (io.Closer) releases backend resources. Idempotent.
 type Store interface {
+	SessionStore
+	RunStore
+	PendingRunStore
+	EventStore
+	UsageStore
+	TokenLimitStore
+	RetentionStore
+	UserStore
+	SnapshotStore
+	SnapshotReadStore
+	SnapshotRestoreStore
+	MemoryStore
+	MemoryChangeStore
+	MemoryConsolidationStore
+	MemoryVectorStore
+	ChannelStore
+	AgentDefStore
+	SkillDefStore
+	TeamDefStore
+	WebhookDeliveryStore
+	HookDefStore
+	MCPServerDefStore
+	VolumeDefStore
+	CredentialDefStore
+	DirentStore
+	EphemeralVolumeStore
+	ScheduleDefStore
+	ScheduleRunStateStore
+	A2ADefStore
+	WebhookDefStore
+	MemoryBackendDefStore
+	DocumentSourceDefStore
+	OperatorTokenStore
+	EvaluationStore
+	MetricsStore
+	DynamicAgentStore
+	InterruptStore
+	ChannelDefStore
+	io.Closer
+}
+
+// SessionStore persists sessions — the conversations runs belong to — their
+// metadata, and the per-chat embedding index.
+type SessionStore interface {
 	// CreateSession creates a new session with a generated ID. userID
 	// may be empty for v0.3 back-compat callers.
 	CreateSession(ctx context.Context, tenantID, agent, userID string) (Session, error)
@@ -1718,228 +1770,6 @@ type Store interface {
 	// GetSession returns the session metadata. Returns ErrNotFound if
 	// the ID doesn't exist.
 	GetSession(ctx context.Context, sessionID string) (Session, error)
-
-	// CreateRun starts a new run within an existing session, in
-	// status "running". Returns ErrNotFound if sessionID doesn't exist.
-	// identity carries the v0.4 tracking fields; pass a zero value to
-	// behave as v0.3.
-	CreateRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
-
-	// CreateConfiguredRun inserts a DRAFT (RFC DI D5): a run in status
-	// "configured" that holds no slot and runs nothing until StartConfiguredRun.
-	// draft is the raw request that will start it, minus secrets — opaque to
-	// the store, like run_config. Returns ErrNotFound if sessionID doesn't
-	// exist.
-	CreateConfiguredRun(ctx context.Context, sessionID string, identity RunIdentity, draft json.RawMessage) (Run, error)
-
-	// GetRunDraft returns a configured run's draft. ErrRunNotConfigured once the
-	// run has started (the draft is cleared then); ErrNotFound for no such run.
-	GetRunDraft(ctx context.Context, runID string) (json.RawMessage, error)
-
-	// UpdateRunDraft replaces a configured run's draft, guarded on the status so
-	// an edit racing a start cannot land on a running run. ErrRunNotConfigured
-	// when the run is no longer configured; ErrNotFound for no such run.
-	UpdateRunDraft(ctx context.Context, runID string, draft json.RawMessage) error
-
-	// StartConfiguredRun moves a draft to "running" in one guarded UPDATE
-	// (WHERE status = 'configured'), so of two concurrent starts exactly one
-	// wins; the loser gets ErrRunNotConfigured. It re-stamps started_at and the
-	// heartbeat to now — a draft's started_at is its creation time, and the
-	// stale-run sweeper would otherwise reap a long-waiting draft as a run that
-	// never heartbeated — and records what was resolved at start from identity:
-	// agent_def_id, model, user_tier, interactive, the confinement bits,
-	// run_config, and (Postgres) replica_id, so cross-replica cancel routes to
-	// the replica actually running it. The draft is cleared. The identity
-	// fields fixed at create (agent_id, user_id, tenant_id, parents) are not
-	// changed.
-	//
-	// draft, when non-empty, is the draft the start was built from, and the
-	// transition happens only while the stored draft is still that one: a start
-	// reads the draft before it waits for admission, and an edit landing in
-	// between must not be silently discarded. ErrDraftChanged when it moved.
-	StartConfiguredRun(ctx context.Context, runID string, identity RunIdentity, draft json.RawMessage) (Run, error)
-
-	// CreateQueuedRun inserts a run in status "queued" (RFC EI P3): accepted,
-	// waiting for a run slot, with no loop yet. identity carries what is known
-	// before the run starts; StartQueuedRun records the rest. The idempotency
-	// key is claimed here, as CreateRun claims it. Returns ErrNotFound if
-	// sessionID doesn't exist.
-	CreateQueuedRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
-
-	// QueueConfiguredRun moves a draft whose start has to wait for a run slot
-	// to "queued", guarded like StartConfiguredRun on the draft it was read
-	// as (ErrDraftChanged when it moved). The draft stays on the row until
-	// StartQueuedRun; it can no longer be edited or deleted, only cancelled.
-	QueueConfiguredRun(ctx context.Context, runID string, draft json.RawMessage) error
-
-	// StartQueuedRun moves a queued run to "running", recording what was
-	// resolved at start as StartConfiguredRun does (started_at and the
-	// heartbeat re-stamped to now, the draft cleared). ErrRunNotQueued when
-	// the run is no longer queued (a cancel won); ErrNotFound for none.
-	StartQueuedRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
-
-	// SetQueuedInput records the request a queued run will start from, so a
-	// restart can start it (see QueuedRun). Only while the run is queued:
-	// ErrRunNotQueued otherwise (it started, or a cancel ended it, meanwhile).
-	// Cleared when the run starts or ends.
-	SetQueuedInput(ctx context.Context, runID string, input json.RawMessage) error
-	// ListQueuedRuns returns the runs whose waiter is gone: at boot, the queued
-	// rows of replicaID (or, when replicaID is empty, every queued row — a
-	// single-replica store) created before startedBefore, since a restart ends
-	// every wait. Oldest first, the order they queued in.
-	ListQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time) ([]QueuedRun, error)
-	// FailQueuedRun fails a queued run a restart cannot start again: reason is
-	// the error recorded, stop_reason "restarted", and its idempotency keys
-	// are released so a caller's retry runs the work. ErrRunNotQueued when the
-	// run is no longer queued.
-	FailQueuedRun(ctx context.Context, runID, reason string) error
-	// EndQueuedRun ends a queued run that never started — its wait was
-	// cancelled, or it was refused at its start — with status (RunCancelled
-	// or RunFailed), stopReason and errMsg. Like FailQueuedRun it releases the
-	// idempotency keys, since the work was never done, and clears the stored
-	// request. ErrRunNotQueued when the run is no longer queued.
-	EndQueuedRun(ctx context.Context, runID string, status RunStatus, stopReason, errMsg string) error
-
-	// DeleteConfiguredRun discards a draft: its events, the run row, and its
-	// session when nothing else is in it. ErrRunNotConfigured for a run that is
-	// not a draft (cancel is the verb for a live run); ErrNotFound for none.
-	DeleteConfiguredRun(ctx context.Context, runID string) error
-
-	// CountConfiguredRuns counts the drafts one (tenant, user) holds — the
-	// per-user draft cap. Empty tenant or user matches the empty value, not
-	// "any".
-	CountConfiguredRuns(ctx context.Context, tenantID, userID string) (int, error)
-
-	// SweepExpiredConfiguredRuns discards every draft created before cutoff,
-	// as DeleteConfiguredRun does, and returns how many. Without it a draft
-	// would pin its session forever: retention prunes only sessions whose runs
-	// are all terminal.
-	SweepExpiredConfiguredRuns(ctx context.Context, cutoff time.Time) (int, error)
-
-	// AppendEvent persists one event for a run. Implementations should be
-	// safe to call from the loop's goroutine on the hot path; bulk-insert
-	// is not required (a run typically emits 10–100 events).
-	AppendEvent(ctx context.Context, runID string, eventType string, payload []byte) error
-
-	// FinishRun marks the run terminal and stores the aggregated usage and
-	// stop reason (or error message, when status is "failed"). Idempotent:
-	// calling on an already-finished run is a no-op.
-	FinishRun(ctx context.Context, runID string, status RunStatus, stopReason string, usage Usage, errMsg string) error
-
-	// RecordCallUsage appends one per-call usage row (RFC AV). Append-only; the
-	// caller supplies a fully-formed row (identity + tokens + priced cost). It
-	// is the granular ledger beneath the FinishRun per-run summary.
-	RecordCallUsage(ctx context.Context, row TokenUsageRow) error
-
-	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
-	// Used by the rollup invariant test + (later) the archiver. An empty runID
-	// returns the rows that name no run: model calls made outside one (a
-	// decision asked over the API), charged to a tenant and user directly.
-	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
-
-	// RecentCallTimings returns the latest TIMED per-call rows (duration_ms set)
-	// recorded at or after since — at most perModel per (provider, model) —
-	// oldest first, for seeding the throughput estimate at boot (RFC DT). Only
-	// the fields the estimate reads are filled: run_id, provider, model, the
-	// token buckets, the timing and ts.
-	RecentCallTimings(ctx context.Context, since time.Time, perModel int) ([]TokenUsageRow, error)
-
-	// RunCostSummary sums a run's per-call token_usage ledger into its authoritative
-	// per-run cost (RFC AV): cost = SUM(token_usage.cost), currency = MAX(cost_currency)
-	// among priced rows, priced = at least one non-NULL cost row. FinishRun uses this
-	// so runs.cost == Σ(ledger) BY CONSTRUCTION — it can't disagree with the ledger on
-	// a mid-run fallback (where pricing the final model × cumulative tokens differs
-	// from summing each call at its own model). An unpriced run (no priced rows) yields
-	// currency="" so the caller stores a NULL cost, preserving the NULL-vs-zero
-	// distinction (a genuine zero — mock/code-js — carries a currency). An empty
-	// runID names no run and sums nothing: it must not collect the calls made
-	// outside any run, which share the empty run_id.
-	RunCostSummary(ctx context.Context, runID string) (cost float64, currency string, priced bool, err error)
-
-	// UsageReport aggregates the token_usage ledger for a report (RFC AV Phase 2):
-	// summed tokens + cost grouped by the requested dimensions, over an optional
-	// tenant + time window. The operator bill (source=operator) and per-tenant
-	// consumption fall out of the group-by + a source dimension. Reads recent
-	// per-call rows UNION the compact usage_archive rollup, so old (pruned)
-	// windows still report.
-	UsageReport(ctx context.Context, q UsageQuery) ([]UsageAggregate, error)
-
-	// TokenLimitPut upserts one per-scope token budget on its
-	// (tenant_id, scope, scope_id) primary key (RFC AW). A nil SoftLimit/
-	// HardLimit stores NULL for that tier (unset). Idempotent.
-	TokenLimitPut(ctx context.Context, row TokenLimitRow) error
-
-	// TokenLimitDelete removes the budget for a scope → the scope is unlimited
-	// again. A no-op (no error) when the row does not exist.
-	TokenLimitDelete(ctx context.Context, tenantID, scope, scopeID string) error
-
-	// TokenLimitsAll returns every token-limit row (RFC AW). The in-memory limits
-	// tracker caches these at boot + on CRUD; tenant filtering for the read API
-	// happens at the HTTP layer, so this returns all rows unscoped.
-	TokenLimitsAll(ctx context.Context) ([]TokenLimitRow, error)
-
-	// UsageCarryRaise stores the month-to-date usage a snapshot restore carried
-	// in for (TenantID, UserID, Month), keeping the LARGER of the stored and the
-	// incoming Tokens, and returns how much the stored value grew (0 when it
-	// already held at least as much). Taking the maximum makes a re-restore of
-	// the same snapshot a no-op, and a later snapshot of the same month raise
-	// the carry rather than add to it. A zero Tokens is a no-op; a negative one
-	// is refused.
-	UsageCarryRaise(ctx context.Context, row UsageCarryRow) (grew int64, err error)
-
-	// UsageEstimateAdd adds tokens to the estimated usage of (tenantID, userID)
-	// for the UTC month starting at month. Unlike UsageCarryRaise it ADDS: each
-	// call is one unmeasured model call. A zero is a no-op; a negative count is
-	// refused.
-	UsageEstimateAdd(ctx context.Context, tenantID, userID string, month time.Time, tokens int64) error
-
-	// UsageCarryForMonth returns every carry row for one UTC month start.
-	// limits.MonthToDate adds them to the ledger aggregate. They are never part
-	// of UsageReport: the carry is budget state, not billing data.
-	UsageCarryForMonth(ctx context.Context, month time.Time) ([]UsageCarryRow, error)
-
-	// UsageCarryCountSubject / UsageCarryDeleteSubject count and delete one
-	// subject's carry rows across every month, for subject erasure.
-	UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error)
-	UsageCarryDeleteSubject(ctx context.Context, tenantID, userID string) (int, error)
-
-	// RetentionOverridePut sets the timed override for (TenantID, Agent),
-	// replacing any there, and removes rows that expired before now.
-	RetentionOverridePut(ctx context.Context, row RetentionOverrideRow, now time.Time) error
-	// RetentionOverrideDelete ends the override for (tenantID, agent). It
-	// reports whether there was one.
-	RetentionOverrideDelete(ctx context.Context, tenantID, agent string) (bool, error)
-	// RetentionOverrideActive reports whether (tenantID, agent) has an
-	// override that has not run out at now.
-	RetentionOverrideActive(ctx context.Context, tenantID, agent string, now time.Time) (bool, error)
-	// RetentionOverridesActive lists every override that has not run out at
-	// now, across tenants, ordered by tenant and agent.
-	RetentionOverridesActive(ctx context.Context, now time.Time) ([]RetentionOverrideRow, error)
-
-	// RollupAndPruneUsage folds every token_usage row older than olderThan into
-	// usage_archive (day-bucketed, summed per dimension tuple) and deletes the
-	// rolled-up raw rows, in one transaction. Idempotent — re-running a window
-	// folds via the archive PK (ON CONFLICT adds). Returns the count of raw rows
-	// pruned. The rollup-and-prune sweeper calls this on a timer (RFC AV Phase 2b).
-	RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (pruned int, err error)
-
-	// PrunableAgedSessions returns session ids where EVERY run is terminal
-	// (completed/failed/cancelled) with no run running/paused/pausing, and the
-	// session's most-recent completed_at is older than olderThan. Oldest first,
-	// capped at limit. The archiver (RFC AV Phase 2b2) prunes by SESSION, not by
-	// run — the continuation path replays GetTranscript(session_id) (all runs),
-	// so pruning one aged run inside a still-continued session would corrupt the
-	// transcript. A session with any non-terminal run is never returned. A PINNED
-	// session (sessions.pinned) is likewise never returned — pinning exempts a
-	// chat from ALL automated retention (the RFC BM chats sweeper + this legacy
-	// RFC AV archiver both consume this list), and is the operator's escape hatch
-	// for a chat any age-based sweep would otherwise take.
-	//
-	// match + agents narrow the result by the session's AUTHORING AGENT
-	// (sessions.agent), so one caller can sweep a subset of agents on a different
-	// schedule from the rest. See SessionAgentMatch for the three modes and for
-	// why an empty name set means opposite things under Only and Except.
-	PrunableAgedSessions(ctx context.Context, olderThan time.Time, match SessionAgentMatch, agents []string, limit int) ([]string, error)
 
 	// ConsolidatableSessions returns the sessions a background memory
 	// consolidator has not folded in yet (RFC BL P2): every run in the session
@@ -2007,87 +1837,6 @@ type Store interface {
 	// a real, already-settled session inside the target's own tenant.
 	SessionSettledAt(ctx context.Context, tenantID, sessionID string) (settledAt time.Time, userID string, err error)
 
-	// RunsForSession returns every run in the session (any status), oldest first.
-	// The archiver uses it to export a session's runs before cascade-deleting it.
-	RunsForSession(ctx context.Context, sessionID string) ([]Run, error)
-
-	// DeleteSessionCascade deletes a session and all its runs + events in one
-	// transaction (events + runs removed explicitly, then the session row).
-	// token_usage rows are LEFT INTACT — usage has its own retention
-	// (RollupAndPruneUsage), and the usage report does not join runs/sessions.
-	// RFC AV Phase 2b2.
-	DeleteSessionCascade(ctx context.Context, sessionID string) error
-
-	// DeleteRunSet deletes the named runs and what is stored about them, in one
-	// transaction: their events, interrupts, evaluations (by the run they
-	// judge) and memory_pending rows, then the run rows. A session is removed —
-	// with its session_embeddings row and any memory_pending row naming it —
-	// only when none of its runs is left afterwards; sessionIDs names further
-	// sessions to remove on the same condition (a session that holds no run at
-	// all). The usage ledger (token_usage, usage_archive) is LEFT INTACT.
-	//
-	// The caller collects the set (a run tree) and authorizes it; the store
-	// re-checks, inside the transaction, the two things that can change between
-	// that walk and the delete, and deletes nothing when either fails:
-	//
-	//   - every named run is finished or a never-started draft, and not paused
-	//     or pausing (*ErrRunLive names one that is not);
-	//   - no run outside the set names a run inside it as its parent, i.e. the
-	//     set is still a whole tree (*ErrRunLive names the outside child).
-	//
-	// Ids that match no row are ignored, so a repeated call returns zero counts.
-	DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (RunSetDeletion, error)
-
-	// ListPurgeableRetiredDefVersions returns retired-and-old substrate def
-	// versions eligible for the RFC BM data-retention purge, for one def-type
-	// (agent / skill / team / hook / mcp_server / schedule / a2a_server_card /
-	// a2a_agent / webhook / memory_backend — see RetentionDefTables). A row
-	// qualifies when ALL of:
-	//   - retired = true,
-	//   - created_at < olderThan (the age cutoff),
-	//   - it is NOT the current active pointer (defence-in-depth: even a
-	//     retired-but-active "ActiveRetired" corrupt-legacy row is protected),
-	//   - it is not the parent_def_id of a surviving version (leaf-first),
-	//   - for "hook" only: no non-terminal run (by status, or pause_state
-	//     paused/pausing) names it in run_config.pinned_hooks.defs — resume
-	//     fires exactly the pinned versions and fails closed on a missing one,
-	//   - and it is beyond the keepLastN most-recent qualifying versions per
-	//     (tenant_id, name) — so the N newest retired versions survive as
-	//     lineage history. keepLastN=0 keeps none (purge every qualifying row).
-	// Ordered (tenant, name, version DESC), capped at limit (<=0 → a sane
-	// default). An unknown defType is an error (the def-type is looked up in a
-	// hardcoded table allowlist and NEVER interpolated raw). Read-only.
-	ListPurgeableRetiredDefVersions(ctx context.Context, defType string, olderThan time.Time, keepLastN, limit int) ([]RetiredDefRef, error)
-
-	// DeleteDefVersions hard-deletes the given def_ids from one def-type's defs
-	// table (RFC BM purge). Empty defIDs → (0, nil). Returns the rows-affected
-	// count. An unknown defType is an error (allowlist-checked, never
-	// interpolated raw). The caller (the retention sweeper) supplies only ids
-	// that ListPurgeableRetiredDefVersions returned.
-	DeleteDefVersions(ctx context.Context, defType string, defIDs []string) (int, error)
-
-	// GetTranscript returns all events for a session, ordered by Seq.
-	// Returns an empty slice (not error) for a session with no runs yet.
-	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)
-
-	// GetRunEventsSince returns a run's events with Seq > afterSeq, ordered by
-	// Seq ascending, capped at limit (<=0 means a sane default). Run-scoped
-	// (not session-scoped) and incremental, so the interactive-run SSE tail
-	// (GET /v1/runs/{run_id}/stream) can poll cheaply without re-reading the
-	// whole session transcript each tick. Returns an empty slice (not error)
-	// when nothing is newer than afterSeq.
-	GetRunEventsSince(ctx context.Context, runID string, afterSeq int64, limit int) ([]Event, error)
-
-	// ListEvents returns events across all sessions matching the
-	// filter, ordered by ts DESC (newest first). Used by the v0.8.21
-	// /v1/_events audit endpoint. Returns the rows AND the total
-	// match count (for pagination UIs that show "page N of M");
-	// total is an unbounded COUNT(*) over the same filter — bounded
-	// by indexes events_by_ts / events_by_type_ts. Pagination is
-	// offset-based for simplicity; cursor-based pagination is a
-	// follow-up if scale demands.
-	ListEvents(ctx context.Context, filter EventFilter, limit, offset int) ([]Event, int64, error)
-
 	// ListSessions returns sessions matching the filter, each rolled up with
 	// its runs' aggregates (RFC BE — the History tool's browse/search surface).
 	// RunCount / InputTokens / OutputTokens / Cost sum the session's runs;
@@ -2123,27 +1872,26 @@ type Store interface {
 	// embedding are candidates (INNER JOIN). Ranking is in Go over the folded
 	// candidate set; limit caps the returned rows.
 	SessionEmbedSearch(ctx context.Context, filter SessionFilter, query []float32, limit int) ([]SessionSimilar, error)
+}
 
-	// GetLastEventForRun returns the highest-seq event recorded for
-	// the given run. v0.8.21 introduces this so the list-agents
-	// endpoint can derive "awaited state" (channel/interrupted/
-	// running) cheaply from one row per running agent — without
-	// pulling the full transcript. Returns *ErrNotFound{Kind:"event"}
-	// when the run has no events yet (just-created, hasn't streamed
-	// anything).
-	GetLastEventForRun(ctx context.Context, runID string) (Event, error)
+// RunStore persists started runs: creation, reads and listings, liveness
+// (heartbeat, stale sweep), and the mutable run columns (model, config, pause
+// state, replica).
+type RunStore interface {
+	// CreateRun starts a new run within an existing session, in
+	// status "running". Returns ErrNotFound if sessionID doesn't exist.
+	// identity carries the v0.4 tracking fields; pass a zero value to
+	// behave as v0.3.
+	CreateRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
 
-	// GetLastEventOfTypes returns the highest-seq event of the run whose type
-	// is one of types — "the latest of these", which the latest event overall
-	// cannot answer once other writers append to the run between them. Returns
-	// *ErrNotFound{Kind:"event"} when the run has none of them.
-	GetLastEventOfTypes(ctx context.Context, runID string, types []string) (Event, error)
+	// FinishRun marks the run terminal and stores the aggregated usage and
+	// stop reason (or error message, when status is "failed"). Idempotent:
+	// calling on an already-finished run is a no-op.
+	FinishRun(ctx context.Context, runID string, status RunStatus, stopReason string, usage Usage, errMsg string) error
 
-	// GetLastEventOfTypesBefore is GetLastEventOfTypes over the run's events
-	// with seq < beforeSeq: the latest of these older than a given event. The
-	// run read uses it to find where the latest turn's tool calls begin (see
-	// awaited.ForRun). Returns *ErrNotFound{Kind:"event"} when there is none.
-	GetLastEventOfTypesBefore(ctx context.Context, runID string, types []string, beforeSeq int64) (Event, error)
+	// RunsForSession returns every run in the session (any status), oldest first.
+	// The archiver uses it to export a session's runs before cascade-deleting it.
+	RunsForSession(ctx context.Context, sessionID string) ([]Run, error)
 
 	// GetRunByAgentID returns the most recently started run carrying
 	// the given agent_id. Returns *ErrNotFound when no such row.
@@ -2230,65 +1978,6 @@ type Store interface {
 	// and nextCursor are ListRunsByWalk's. tenantID scopes the result to one
 	// tenant; "" returns all tenants. The caller authorizes the parent run.
 	ListChildRuns(ctx context.Context, tenantID, parentRunID string, limit int, cursor string) (runs []Run, nextCursor string, err error)
-
-	// ListUsers returns the distinct user_ids that have runs in the
-	// store, with summary stats per user (run counts by status, last
-	// activity). Drives the v0.7.3 Web UI's user picker so operators
-	// don't have to type a UUID. Excludes runs with empty user_id
-	// (the default for callers that don't supply identity).
-	//
-	// Capped at 200 users ordered by last_started_at DESC. A bigger
-	// list would be a UX problem anyway — the UI then needs filtering
-	// rather than dropdown.
-	//
-	// tenantID scopes the result to one tenant (the Web UI's per-tenant
-	// workspace + the super-admin tenant-focus), filtering on the
-	// denormalised runs.tenant_id; "" returns all tenants.
-	ListUsers(ctx context.Context, tenantID string) ([]UserSummary, error)
-
-	// UserCreate inserts a first-class user identity row (RFC BX P2a).
-	// Returns *ErrConflict{Kind:"user", ID:subject} on a (tenant, subject)
-	// PK collision. Stamps CreatedAt to now if the caller left it zero.
-	// Rejects an AccessMode / Status outside the shared enum (so a direct
-	// store caller can't persist a value the wire layer would refuse).
-	UserCreate(ctx context.Context, row UserRow) error
-
-	// UserGet returns one identity row by (tenantID, subject). Returns
-	// *ErrNotFound{Kind:"user", ID:subject} when the row is absent — so a
-	// cross-tenant probe is an opaque miss, never an existence oracle.
-	UserGet(ctx context.Context, tenantID, subject string) (UserRow, error)
-
-	// UserList returns every identity row for tenantID ordered by
-	// (tenant_id, subject); tenantID "" returns ALL tenants' rows (the
-	// super-admin path — mirrors ListUsers' "" = all-tenants convention).
-	// Empty slice (not nil) when none match.
-	UserList(ctx context.Context, tenantID string) ([]UserRow, error)
-
-	// UserUpdate patches mutable fields on one identity row. Nil patch
-	// fields leave the corresponding column unchanged. Returns
-	// *ErrNotFound{Kind:"user"} when the (tenant, subject) row is absent,
-	// and rejects an AccessMode / Status outside the shared enum.
-	UserUpdate(ctx context.Context, tenantID, subject string, patch UserPatch) error
-
-	// UserDelete hard-deletes one identity row and reports whether a row
-	// was removed (false = the row did not exist). The subject's OWNED data
-	// (runs / sessions / memory) has no FK to this table and is left intact
-	// — deleting the identity record is not the erasure surface.
-	UserDelete(ctx context.Context, tenantID, subject string) (bool, error)
-
-	// ListTenants enumerates tenants that have RUN something, with derived
-	// per-tenant counts. A GROUP BY over runs.tenant_id, mirroring ListUsers —
-	// there is no tenants table, and this deliberately does not create one.
-	//
-	// Consequence stated rather than hidden: a tenant that exists (has a minted
-	// token, or defs) but has never started a run does NOT appear. An empty result
-	// means "no activity", not "no tenants".
-	//
-	// ADMIN-ONLY at every transport. Not because the counts are sensitive but
-	// because the LIST ITSELF is: which tenants exist is precisely what a
-	// tenant-confined principal must not learn, which is why every other
-	// cross-tenant read here is an opaque not-found rather than a filtered list.
-	ListTenants(ctx context.Context) ([]TenantSummary, error)
 
 	// UpdateHeartbeat sets last_heartbeat_at on a run to the current
 	// time. Called by the loop at each iteration. No-op if the run
@@ -2395,7 +2084,401 @@ type Store interface {
 	// pauses first (lower risk of stale state being overwritten by
 	// fresher runs that paused later in the same window).
 	ListPausedRuns(ctx context.Context) ([]Run, error)
+}
 
+// PendingRunStore persists runs that exist but have not started:
+// configured-run drafts and runs queued for a slot.
+type PendingRunStore interface {
+	// CreateConfiguredRun inserts a DRAFT (RFC DI D5): a run in status
+	// "configured" that holds no slot and runs nothing until StartConfiguredRun.
+	// draft is the raw request that will start it, minus secrets — opaque to
+	// the store, like run_config. Returns ErrNotFound if sessionID doesn't
+	// exist.
+	CreateConfiguredRun(ctx context.Context, sessionID string, identity RunIdentity, draft json.RawMessage) (Run, error)
+
+	// GetRunDraft returns a configured run's draft. ErrRunNotConfigured once the
+	// run has started (the draft is cleared then); ErrNotFound for no such run.
+	GetRunDraft(ctx context.Context, runID string) (json.RawMessage, error)
+
+	// UpdateRunDraft replaces a configured run's draft, guarded on the status so
+	// an edit racing a start cannot land on a running run. ErrRunNotConfigured
+	// when the run is no longer configured; ErrNotFound for no such run.
+	UpdateRunDraft(ctx context.Context, runID string, draft json.RawMessage) error
+
+	// StartConfiguredRun moves a draft to "running" in one guarded UPDATE
+	// (WHERE status = 'configured'), so of two concurrent starts exactly one
+	// wins; the loser gets ErrRunNotConfigured. It re-stamps started_at and the
+	// heartbeat to now — a draft's started_at is its creation time, and the
+	// stale-run sweeper would otherwise reap a long-waiting draft as a run that
+	// never heartbeated — and records what was resolved at start from identity:
+	// agent_def_id, model, user_tier, interactive, the confinement bits,
+	// run_config, and (Postgres) replica_id, so cross-replica cancel routes to
+	// the replica actually running it. The draft is cleared. The identity
+	// fields fixed at create (agent_id, user_id, tenant_id, parents) are not
+	// changed.
+	//
+	// draft, when non-empty, is the draft the start was built from, and the
+	// transition happens only while the stored draft is still that one: a start
+	// reads the draft before it waits for admission, and an edit landing in
+	// between must not be silently discarded. ErrDraftChanged when it moved.
+	StartConfiguredRun(ctx context.Context, runID string, identity RunIdentity, draft json.RawMessage) (Run, error)
+
+	// CreateQueuedRun inserts a run in status "queued" (RFC EI P3): accepted,
+	// waiting for a run slot, with no loop yet. identity carries what is known
+	// before the run starts; StartQueuedRun records the rest. The idempotency
+	// key is claimed here, as CreateRun claims it. Returns ErrNotFound if
+	// sessionID doesn't exist.
+	CreateQueuedRun(ctx context.Context, sessionID string, identity RunIdentity) (Run, error)
+
+	// QueueConfiguredRun moves a draft whose start has to wait for a run slot
+	// to "queued", guarded like StartConfiguredRun on the draft it was read
+	// as (ErrDraftChanged when it moved). The draft stays on the row until
+	// StartQueuedRun; it can no longer be edited or deleted, only cancelled.
+	QueueConfiguredRun(ctx context.Context, runID string, draft json.RawMessage) error
+
+	// StartQueuedRun moves a queued run to "running", recording what was
+	// resolved at start as StartConfiguredRun does (started_at and the
+	// heartbeat re-stamped to now, the draft cleared). ErrRunNotQueued when
+	// the run is no longer queued (a cancel won); ErrNotFound for none.
+	StartQueuedRun(ctx context.Context, runID string, identity RunIdentity) (Run, error)
+
+	// SetQueuedInput records the request a queued run will start from, so a
+	// restart can start it (see QueuedRun). Only while the run is queued:
+	// ErrRunNotQueued otherwise (it started, or a cancel ended it, meanwhile).
+	// Cleared when the run starts or ends.
+	SetQueuedInput(ctx context.Context, runID string, input json.RawMessage) error
+	// ListQueuedRuns returns the runs whose waiter is gone: at boot, the queued
+	// rows of replicaID (or, when replicaID is empty, every queued row — a
+	// single-replica store) created before startedBefore, since a restart ends
+	// every wait. Oldest first, the order they queued in.
+	ListQueuedRuns(ctx context.Context, replicaID string, startedBefore time.Time) ([]QueuedRun, error)
+	// FailQueuedRun fails a queued run a restart cannot start again: reason is
+	// the error recorded, stop_reason "restarted", and its idempotency keys
+	// are released so a caller's retry runs the work. ErrRunNotQueued when the
+	// run is no longer queued.
+	FailQueuedRun(ctx context.Context, runID, reason string) error
+	// EndQueuedRun ends a queued run that never started — its wait was
+	// cancelled, or it was refused at its start — with status (RunCancelled
+	// or RunFailed), stopReason and errMsg. Like FailQueuedRun it releases the
+	// idempotency keys, since the work was never done, and clears the stored
+	// request. ErrRunNotQueued when the run is no longer queued.
+	EndQueuedRun(ctx context.Context, runID string, status RunStatus, stopReason, errMsg string) error
+
+	// DeleteConfiguredRun discards a draft: its events, the run row, and its
+	// session when nothing else is in it. ErrRunNotConfigured for a run that is
+	// not a draft (cancel is the verb for a live run); ErrNotFound for none.
+	DeleteConfiguredRun(ctx context.Context, runID string) error
+
+	// CountConfiguredRuns counts the drafts one (tenant, user) holds — the
+	// per-user draft cap. Empty tenant or user matches the empty value, not
+	// "any".
+	CountConfiguredRuns(ctx context.Context, tenantID, userID string) (int, error)
+
+	// SweepExpiredConfiguredRuns discards every draft created before cutoff,
+	// as DeleteConfiguredRun does, and returns how many. Without it a draft
+	// would pin its session forever: retention prunes only sessions whose runs
+	// are all terminal.
+	SweepExpiredConfiguredRuns(ctx context.Context, cutoff time.Time) (int, error)
+}
+
+// EventStore persists the run event log: appends, transcripts and event reads.
+type EventStore interface {
+	// AppendEvent persists one event for a run. Implementations should be
+	// safe to call from the loop's goroutine on the hot path; bulk-insert
+	// is not required (a run typically emits 10–100 events).
+	AppendEvent(ctx context.Context, runID string, eventType string, payload []byte) error
+
+	// GetTranscript returns all events for a session, ordered by Seq.
+	// Returns an empty slice (not error) for a session with no runs yet.
+	GetTranscript(ctx context.Context, sessionID string) ([]Event, error)
+
+	// GetRunEventsSince returns a run's events with Seq > afterSeq, ordered by
+	// Seq ascending, capped at limit (<=0 means a sane default). Run-scoped
+	// (not session-scoped) and incremental, so the interactive-run SSE tail
+	// (GET /v1/runs/{run_id}/stream) can poll cheaply without re-reading the
+	// whole session transcript each tick. Returns an empty slice (not error)
+	// when nothing is newer than afterSeq.
+	GetRunEventsSince(ctx context.Context, runID string, afterSeq int64, limit int) ([]Event, error)
+
+	// ListEvents returns events across all sessions matching the
+	// filter, ordered by ts DESC (newest first). Used by the v0.8.21
+	// /v1/_events audit endpoint. Returns the rows AND the total
+	// match count (for pagination UIs that show "page N of M");
+	// total is an unbounded COUNT(*) over the same filter — bounded
+	// by indexes events_by_ts / events_by_type_ts. Pagination is
+	// offset-based for simplicity; cursor-based pagination is a
+	// follow-up if scale demands.
+	ListEvents(ctx context.Context, filter EventFilter, limit, offset int) ([]Event, int64, error)
+
+	// GetLastEventForRun returns the highest-seq event recorded for
+	// the given run. v0.8.21 introduces this so the list-agents
+	// endpoint can derive "awaited state" (channel/interrupted/
+	// running) cheaply from one row per running agent — without
+	// pulling the full transcript. Returns *ErrNotFound{Kind:"event"}
+	// when the run has no events yet (just-created, hasn't streamed
+	// anything).
+	GetLastEventForRun(ctx context.Context, runID string) (Event, error)
+
+	// GetLastEventOfTypes returns the highest-seq event of the run whose type
+	// is one of types — "the latest of these", which the latest event overall
+	// cannot answer once other writers append to the run between them. Returns
+	// *ErrNotFound{Kind:"event"} when the run has none of them.
+	GetLastEventOfTypes(ctx context.Context, runID string, types []string) (Event, error)
+
+	// GetLastEventOfTypesBefore is GetLastEventOfTypes over the run's events
+	// with seq < beforeSeq: the latest of these older than a given event. The
+	// run read uses it to find where the latest turn's tool calls begin (see
+	// awaited.ForRun). Returns *ErrNotFound{Kind:"event"} when there is none.
+	GetLastEventOfTypesBefore(ctx context.Context, runID string, types []string, beforeSeq int64) (Event, error)
+}
+
+// UsageStore persists the per-call token-usage ledger and its archive rollup.
+type UsageStore interface {
+	// RecordCallUsage appends one per-call usage row (RFC AV). Append-only; the
+	// caller supplies a fully-formed row (identity + tokens + priced cost). It
+	// is the granular ledger beneath the FinishRun per-run summary.
+	RecordCallUsage(ctx context.Context, row TokenUsageRow) error
+
+	// TokenUsageForRun returns all per-call usage rows for a run, oldest first.
+	// Used by the rollup invariant test + (later) the archiver. An empty runID
+	// returns the rows that name no run: model calls made outside one (a
+	// decision asked over the API), charged to a tenant and user directly.
+	TokenUsageForRun(ctx context.Context, runID string) ([]TokenUsageRow, error)
+
+	// RecentCallTimings returns the latest TIMED per-call rows (duration_ms set)
+	// recorded at or after since — at most perModel per (provider, model) —
+	// oldest first, for seeding the throughput estimate at boot (RFC DT). Only
+	// the fields the estimate reads are filled: run_id, provider, model, the
+	// token buckets, the timing and ts.
+	RecentCallTimings(ctx context.Context, since time.Time, perModel int) ([]TokenUsageRow, error)
+
+	// RunCostSummary sums a run's per-call token_usage ledger into its authoritative
+	// per-run cost (RFC AV): cost = SUM(token_usage.cost), currency = MAX(cost_currency)
+	// among priced rows, priced = at least one non-NULL cost row. FinishRun uses this
+	// so runs.cost == Σ(ledger) BY CONSTRUCTION — it can't disagree with the ledger on
+	// a mid-run fallback (where pricing the final model × cumulative tokens differs
+	// from summing each call at its own model). An unpriced run (no priced rows) yields
+	// currency="" so the caller stores a NULL cost, preserving the NULL-vs-zero
+	// distinction (a genuine zero — mock/code-js — carries a currency). An empty
+	// runID names no run and sums nothing: it must not collect the calls made
+	// outside any run, which share the empty run_id.
+	RunCostSummary(ctx context.Context, runID string) (cost float64, currency string, priced bool, err error)
+
+	// UsageReport aggregates the token_usage ledger for a report (RFC AV Phase 2):
+	// summed tokens + cost grouped by the requested dimensions, over an optional
+	// tenant + time window. The operator bill (source=operator) and per-tenant
+	// consumption fall out of the group-by + a source dimension. Reads recent
+	// per-call rows UNION the compact usage_archive rollup, so old (pruned)
+	// windows still report.
+	UsageReport(ctx context.Context, q UsageQuery) ([]UsageAggregate, error)
+
+	// RollupAndPruneUsage folds every token_usage row older than olderThan into
+	// usage_archive (day-bucketed, summed per dimension tuple) and deletes the
+	// rolled-up raw rows, in one transaction. Idempotent — re-running a window
+	// folds via the archive PK (ON CONFLICT adds). Returns the count of raw rows
+	// pruned. The rollup-and-prune sweeper calls this on a timer (RFC AV Phase 2b).
+	RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (pruned int, err error)
+}
+
+// TokenLimitStore persists per-scope token budgets and the month-to-date
+// usage they count beyond the ledger (restored carry, unmeasured estimates).
+type TokenLimitStore interface {
+	// TokenLimitPut upserts one per-scope token budget on its
+	// (tenant_id, scope, scope_id) primary key (RFC AW). A nil SoftLimit/
+	// HardLimit stores NULL for that tier (unset). Idempotent.
+	TokenLimitPut(ctx context.Context, row TokenLimitRow) error
+
+	// TokenLimitDelete removes the budget for a scope → the scope is unlimited
+	// again. A no-op (no error) when the row does not exist.
+	TokenLimitDelete(ctx context.Context, tenantID, scope, scopeID string) error
+
+	// TokenLimitsAll returns every token-limit row (RFC AW). The in-memory limits
+	// tracker caches these at boot + on CRUD; tenant filtering for the read API
+	// happens at the HTTP layer, so this returns all rows unscoped.
+	TokenLimitsAll(ctx context.Context) ([]TokenLimitRow, error)
+
+	// UsageCarryRaise stores the month-to-date usage a snapshot restore carried
+	// in for (TenantID, UserID, Month), keeping the LARGER of the stored and the
+	// incoming Tokens, and returns how much the stored value grew (0 when it
+	// already held at least as much). Taking the maximum makes a re-restore of
+	// the same snapshot a no-op, and a later snapshot of the same month raise
+	// the carry rather than add to it. A zero Tokens is a no-op; a negative one
+	// is refused.
+	UsageCarryRaise(ctx context.Context, row UsageCarryRow) (grew int64, err error)
+
+	// UsageEstimateAdd adds tokens to the estimated usage of (tenantID, userID)
+	// for the UTC month starting at month. Unlike UsageCarryRaise it ADDS: each
+	// call is one unmeasured model call. A zero is a no-op; a negative count is
+	// refused.
+	UsageEstimateAdd(ctx context.Context, tenantID, userID string, month time.Time, tokens int64) error
+
+	// UsageCarryForMonth returns every carry row for one UTC month start.
+	// limits.MonthToDate adds them to the ledger aggregate. They are never part
+	// of UsageReport: the carry is budget state, not billing data.
+	UsageCarryForMonth(ctx context.Context, month time.Time) ([]UsageCarryRow, error)
+
+	// UsageCarryCountSubject / UsageCarryDeleteSubject count and delete one
+	// subject's carry rows across every month, for subject erasure.
+	UsageCarryCountSubject(ctx context.Context, tenantID, userID string) (int, error)
+	UsageCarryDeleteSubject(ctx context.Context, tenantID, userID string) (int, error)
+}
+
+// RetentionStore holds the retention and deletion surface: timed retention
+// overrides, aged-session discovery, cascade and run-tree deletes, and the
+// retired-def purge.
+type RetentionStore interface {
+	// RetentionOverridePut sets the timed override for (TenantID, Agent),
+	// replacing any there, and removes rows that expired before now.
+	RetentionOverridePut(ctx context.Context, row RetentionOverrideRow, now time.Time) error
+	// RetentionOverrideDelete ends the override for (tenantID, agent). It
+	// reports whether there was one.
+	RetentionOverrideDelete(ctx context.Context, tenantID, agent string) (bool, error)
+	// RetentionOverrideActive reports whether (tenantID, agent) has an
+	// override that has not run out at now.
+	RetentionOverrideActive(ctx context.Context, tenantID, agent string, now time.Time) (bool, error)
+	// RetentionOverridesActive lists every override that has not run out at
+	// now, across tenants, ordered by tenant and agent.
+	RetentionOverridesActive(ctx context.Context, now time.Time) ([]RetentionOverrideRow, error)
+
+	// PrunableAgedSessions returns session ids where EVERY run is terminal
+	// (completed/failed/cancelled) with no run running/paused/pausing, and the
+	// session's most-recent completed_at is older than olderThan. Oldest first,
+	// capped at limit. The archiver (RFC AV Phase 2b2) prunes by SESSION, not by
+	// run — the continuation path replays GetTranscript(session_id) (all runs),
+	// so pruning one aged run inside a still-continued session would corrupt the
+	// transcript. A session with any non-terminal run is never returned. A PINNED
+	// session (sessions.pinned) is likewise never returned — pinning exempts a
+	// chat from ALL automated retention (the RFC BM chats sweeper + this legacy
+	// RFC AV archiver both consume this list), and is the operator's escape hatch
+	// for a chat any age-based sweep would otherwise take.
+	//
+	// match + agents narrow the result by the session's AUTHORING AGENT
+	// (sessions.agent), so one caller can sweep a subset of agents on a different
+	// schedule from the rest. See SessionAgentMatch for the three modes and for
+	// why an empty name set means opposite things under Only and Except.
+	PrunableAgedSessions(ctx context.Context, olderThan time.Time, match SessionAgentMatch, agents []string, limit int) ([]string, error)
+
+	// DeleteSessionCascade deletes a session and all its runs + events in one
+	// transaction (events + runs removed explicitly, then the session row).
+	// token_usage rows are LEFT INTACT — usage has its own retention
+	// (RollupAndPruneUsage), and the usage report does not join runs/sessions.
+	// RFC AV Phase 2b2.
+	DeleteSessionCascade(ctx context.Context, sessionID string) error
+
+	// DeleteRunSet deletes the named runs and what is stored about them, in one
+	// transaction: their events, interrupts, evaluations (by the run they
+	// judge) and memory_pending rows, then the run rows. A session is removed —
+	// with its session_embeddings row and any memory_pending row naming it —
+	// only when none of its runs is left afterwards; sessionIDs names further
+	// sessions to remove on the same condition (a session that holds no run at
+	// all). The usage ledger (token_usage, usage_archive) is LEFT INTACT.
+	//
+	// The caller collects the set (a run tree) and authorizes it; the store
+	// re-checks, inside the transaction, the two things that can change between
+	// that walk and the delete, and deletes nothing when either fails:
+	//
+	//   - every named run is finished or a never-started draft, and not paused
+	//     or pausing (*ErrRunLive names one that is not);
+	//   - no run outside the set names a run inside it as its parent, i.e. the
+	//     set is still a whole tree (*ErrRunLive names the outside child).
+	//
+	// Ids that match no row are ignored, so a repeated call returns zero counts.
+	DeleteRunSet(ctx context.Context, runIDs, sessionIDs []string) (RunSetDeletion, error)
+
+	// ListPurgeableRetiredDefVersions returns retired-and-old substrate def
+	// versions eligible for the RFC BM data-retention purge, for one def-type
+	// (agent / skill / team / hook / mcp_server / schedule / a2a_server_card /
+	// a2a_agent / webhook / memory_backend — see RetentionDefTables). A row
+	// qualifies when ALL of:
+	//   - retired = true,
+	//   - created_at < olderThan (the age cutoff),
+	//   - it is NOT the current active pointer (defence-in-depth: even a
+	//     retired-but-active "ActiveRetired" corrupt-legacy row is protected),
+	//   - it is not the parent_def_id of a surviving version (leaf-first),
+	//   - for "hook" only: no non-terminal run (by status, or pause_state
+	//     paused/pausing) names it in run_config.pinned_hooks.defs — resume
+	//     fires exactly the pinned versions and fails closed on a missing one,
+	//   - and it is beyond the keepLastN most-recent qualifying versions per
+	//     (tenant_id, name) — so the N newest retired versions survive as
+	//     lineage history. keepLastN=0 keeps none (purge every qualifying row).
+	// Ordered (tenant, name, version DESC), capped at limit (<=0 → a sane
+	// default). An unknown defType is an error (the def-type is looked up in a
+	// hardcoded table allowlist and NEVER interpolated raw). Read-only.
+	ListPurgeableRetiredDefVersions(ctx context.Context, defType string, olderThan time.Time, keepLastN, limit int) ([]RetiredDefRef, error)
+
+	// DeleteDefVersions hard-deletes the given def_ids from one def-type's defs
+	// table (RFC BM purge). Empty defIDs → (0, nil). Returns the rows-affected
+	// count. An unknown defType is an error (allowlist-checked, never
+	// interpolated raw). The caller (the retention sweeper) supplies only ids
+	// that ListPurgeableRetiredDefVersions returned.
+	DeleteDefVersions(ctx context.Context, defType string, defIDs []string) (int, error)
+}
+
+// UserStore persists first-class user identities and the derived user and
+// tenant activity listings.
+type UserStore interface {
+	// ListUsers returns the distinct user_ids that have runs in the
+	// store, with summary stats per user (run counts by status, last
+	// activity). Drives the v0.7.3 Web UI's user picker so operators
+	// don't have to type a UUID. Excludes runs with empty user_id
+	// (the default for callers that don't supply identity).
+	//
+	// Capped at 200 users ordered by last_started_at DESC. A bigger
+	// list would be a UX problem anyway — the UI then needs filtering
+	// rather than dropdown.
+	//
+	// tenantID scopes the result to one tenant (the Web UI's per-tenant
+	// workspace + the super-admin tenant-focus), filtering on the
+	// denormalised runs.tenant_id; "" returns all tenants.
+	ListUsers(ctx context.Context, tenantID string) ([]UserSummary, error)
+
+	// UserCreate inserts a first-class user identity row (RFC BX P2a).
+	// Returns *ErrConflict{Kind:"user", ID:subject} on a (tenant, subject)
+	// PK collision. Stamps CreatedAt to now if the caller left it zero.
+	// Rejects an AccessMode / Status outside the shared enum (so a direct
+	// store caller can't persist a value the wire layer would refuse).
+	UserCreate(ctx context.Context, row UserRow) error
+
+	// UserGet returns one identity row by (tenantID, subject). Returns
+	// *ErrNotFound{Kind:"user", ID:subject} when the row is absent — so a
+	// cross-tenant probe is an opaque miss, never an existence oracle.
+	UserGet(ctx context.Context, tenantID, subject string) (UserRow, error)
+
+	// UserList returns every identity row for tenantID ordered by
+	// (tenant_id, subject); tenantID "" returns ALL tenants' rows (the
+	// super-admin path — mirrors ListUsers' "" = all-tenants convention).
+	// Empty slice (not nil) when none match.
+	UserList(ctx context.Context, tenantID string) ([]UserRow, error)
+
+	// UserUpdate patches mutable fields on one identity row. Nil patch
+	// fields leave the corresponding column unchanged. Returns
+	// *ErrNotFound{Kind:"user"} when the (tenant, subject) row is absent,
+	// and rejects an AccessMode / Status outside the shared enum.
+	UserUpdate(ctx context.Context, tenantID, subject string, patch UserPatch) error
+
+	// UserDelete hard-deletes one identity row and reports whether a row
+	// was removed (false = the row did not exist). The subject's OWNED data
+	// (runs / sessions / memory) has no FK to this table and is left intact
+	// — deleting the identity record is not the erasure surface.
+	UserDelete(ctx context.Context, tenantID, subject string) (bool, error)
+
+	// ListTenants enumerates tenants that have RUN something, with derived
+	// per-tenant counts. A GROUP BY over runs.tenant_id, mirroring ListUsers —
+	// there is no tenants table, and this deliberately does not create one.
+	//
+	// Consequence stated rather than hidden: a tenant that exists (has a minted
+	// token, or defs) but has never started a run does NOT appear. An empty result
+	// means "no activity", not "no tenants".
+	//
+	// ADMIN-ONLY at every transport. Not because the counts are sensitive but
+	// because the LIST ITSELF is: which tenants exist is precisely what a
+	// tenant-confined principal must not learn, which is why every other
+	// cross-tenant read here is an opaque not-found rather than a filtered list.
+	ListTenants(ctx context.Context) ([]TenantSummary, error)
+}
+
+// SnapshotStore persists snapshot rows themselves.
+type SnapshotStore interface {
 	// ---- v0.8.17 Pause/Resume/Snapshot — Snapshot storage (PR 2) ----
 
 	// SnapshotCreate inserts one row into the snapshots table.
@@ -2423,7 +2506,10 @@ type Store interface {
 	// returns an error for the "doesn't exist" case — idempotent
 	// delete is the operator-friendly default.
 	SnapshotDelete(ctx context.Context, id string) (bool, error)
+}
 
+// SnapshotReadStore holds the bulk readers a snapshot capture uses.
+type SnapshotReadStore interface {
 	// ---- v0.8.17 Snapshot capture — bulk readers (PR 2.3a) ----
 	//
 	// The methods below return ALL rows in their tables. They power
@@ -2555,7 +2641,11 @@ type Store interface {
 	// preserves submission order so post-restore Evaluation.aggregate
 	// queries see the same time series.
 	SnapshotReadEvaluations(ctx context.Context) ([]EvaluationRow, error)
+}
 
+// SnapshotRestoreStore holds the idempotent raw inserts a snapshot restore
+// uses.
+type SnapshotRestoreStore interface {
 	// ---- v0.8.17 Snapshot restore — idempotent raw inserts (PR 3.2a) ----
 	//
 	// The methods below INSERT rows with caller-supplied IDs +
@@ -2744,7 +2834,10 @@ type Store interface {
 	// never rolls back a newer target budget; `inserted` is true only on the
 	// first write.
 	SnapshotRestoreTokenLimit(ctx context.Context, row TokenLimitRow) (bool, error)
+}
 
+// MemoryStore persists key/value Memory rows and their provenance.
+type MemoryStore interface {
 	// tenantID is the leading isolation axis on every Memory* method
 	// below (RFC BL). It is server-supplied (from RunIdentity / the def
 	// row / the authenticated principal) — NEVER model- or wire-derived
@@ -2832,41 +2925,6 @@ type Store interface {
 	// resets, on a re-incr) the expiry; ttl <= 0 keeps the existing
 	// expiry untouched (or no expiry on a fresh row).
 	MemoryIncrement(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string, delta int64, ttl time.Duration) (int64, error)
-
-	// AppendMemoryChange records one change-data-capture row (RFC CD Part C),
-	// emitted by the CDC store decorator after a successful memory/document
-	// write when LOOMCYCLE_MEMORY_CHANGES_ENABLED. Best-effort: a failure must
-	// NOT fail the originating write (the decorator logs and continues). Seq is
-	// store-assigned (monotonic); At is store-stamped.
-	AppendMemoryChange(ctx context.Context, c MemoryChange) error
-
-	// GetMemoryChangesSince returns a tenant's change rows with Seq > afterSeq,
-	// oldest first, capped at limit — the SSE cursor read. Tenant-scoped: a
-	// caller only ever sees its OWN tenant's changes.
-	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]MemoryChange, error)
-
-	// GetMemoryChangesSinceAllTenants is GetMemoryChangesSince across EVERY
-	// tenant, the operator layer included, in one seq order. Each row carries
-	// its tenant.
-	//
-	// Only an operator-declared change subscription with no tenant_id calls it
-	// — subscriptions are declared in the operator's yaml and nowhere else. A
-	// caller acting for a principal must use GetMemoryChangesSince.
-	GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]MemoryChange, error)
-
-	// PruneMemoryChanges deletes change rows recorded before olderThan and
-	// returns the count removed — keeps the opt-in feed table bounded.
-	PruneMemoryChanges(ctx context.Context, olderThan time.Time) (int, error)
-
-	// GetChangeSubscriptionCursor returns the last seq delivered to a
-	// change-subscription (RFC CD Part C push), or 0 if it has never delivered.
-	// The persisted cursor makes push delivery resume at-least-once across a
-	// restart (the subscriber dedupes on the monotonic seq).
-	GetChangeSubscriptionCursor(ctx context.Context, name string) (int64, error)
-
-	// SetChangeSubscriptionCursor upserts the last delivered seq for a
-	// change-subscription.
-	SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error
 
 	// MemoryAtomicUpdate runs `reducer` as an atomic read-modify-write
 	// against (scope, scopeID, key). The reducer receives the current
@@ -3008,6 +3066,76 @@ type Store interface {
 	// key is a clean no-op (no error) — the consolidator may race a delete.
 	MemorySupersede(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) error
 
+	// MemoryScopeUsage sums a scope's live key count and byte footprint
+	// (len(key)+len(value)) server-side, EXCLUDING keys under excludeKeyPrefix.
+	//
+	// It exists because the quota check cannot be done by listing. Listing is
+	// capped, and a scope holding thousands of Document chunk bodies truncates
+	// before the agent's own memory rows are reached — so the check refused every
+	// write with "more than N keys" while the actual memory footprint was a few
+	// kilobytes. Summing in SQL has no cap and needs one round trip, which also
+	// retires the "if we ever need to scale this" note on the old path.
+	//
+	// excludeKeyPrefixes are caller-supplied namespaces left out of the count (the
+	// Document chunk-body and derived-unit prefixes in practice); none, or only
+	// empty ones, counts everything. Expired and superseded rows are excluded,
+	// matching what a read would actually surface.
+	MemoryScopeUsage(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, excludeKeyPrefixes ...string) (keys int, bytes int, err error)
+
+	// MemoryListAfter pages EVERY live row under keyPrefix in key order: only rows with
+	// key > afterKey ("" = from the start), at most limit (clamped to 1..1000). Live
+	// means what MemoryList returns — not expired, not superseded.
+	//
+	// It exists for sweeps that must visit each row exactly once whatever state its
+	// embedding is in — the document re-index compares every chunk's stored index text
+	// with what it should be. MemoryList has no cursor, and MemoryEmbedListMissing sees
+	// only rows WITHOUT an embedding. Only key, value and the create/update times are
+	// populated.
+	MemoryListAfter(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
+}
+
+// MemoryChangeStore persists the memory change-data-capture feed and its
+// subscription cursors.
+type MemoryChangeStore interface {
+	// AppendMemoryChange records one change-data-capture row (RFC CD Part C),
+	// emitted by the CDC store decorator after a successful memory/document
+	// write when LOOMCYCLE_MEMORY_CHANGES_ENABLED. Best-effort: a failure must
+	// NOT fail the originating write (the decorator logs and continues). Seq is
+	// store-assigned (monotonic); At is store-stamped.
+	AppendMemoryChange(ctx context.Context, c MemoryChange) error
+
+	// GetMemoryChangesSince returns a tenant's change rows with Seq > afterSeq,
+	// oldest first, capped at limit — the SSE cursor read. Tenant-scoped: a
+	// caller only ever sees its OWN tenant's changes.
+	GetMemoryChangesSince(ctx context.Context, tenantID string, afterSeq int64, limit int) ([]MemoryChange, error)
+
+	// GetMemoryChangesSinceAllTenants is GetMemoryChangesSince across EVERY
+	// tenant, the operator layer included, in one seq order. Each row carries
+	// its tenant.
+	//
+	// Only an operator-declared change subscription with no tenant_id calls it
+	// — subscriptions are declared in the operator's yaml and nowhere else. A
+	// caller acting for a principal must use GetMemoryChangesSince.
+	GetMemoryChangesSinceAllTenants(ctx context.Context, afterSeq int64, limit int) ([]MemoryChange, error)
+
+	// PruneMemoryChanges deletes change rows recorded before olderThan and
+	// returns the count removed — keeps the opt-in feed table bounded.
+	PruneMemoryChanges(ctx context.Context, olderThan time.Time) (int, error)
+
+	// GetChangeSubscriptionCursor returns the last seq delivered to a
+	// change-subscription (RFC CD Part C push), or 0 if it has never delivered.
+	// The persisted cursor makes push delivery resume at-least-once across a
+	// restart (the subscriber dedupes on the monotonic seq).
+	GetChangeSubscriptionCursor(ctx context.Context, name string) (int64, error)
+
+	// SetChangeSubscriptionCursor upserts the last delivered seq for a
+	// change-subscription.
+	SetChangeSubscriptionCursor(ctx context.Context, name string, seq int64) error
+}
+
+// MemoryConsolidationStore persists the background-consolidation queue and the
+// per-target consolidation cursors and leases.
+type MemoryConsolidationStore interface {
 	// MemoryPendingEnqueue appends one durable consolidation-queue row. The
 	// consolidator drains these oldest-first (MemoryPendingDrain) and acks them
 	// after a successful consolidation (MemoryPendingAck). Row.ID is generated
@@ -3080,22 +3208,6 @@ type Store interface {
 	// own tenant. A tenant-owned caller must use MemoryPendingTargets.
 	MemoryPendingTargetsAllTenants(ctx context.Context, scope MemoryScope, limit int) ([]MemoryPendingTarget, error)
 
-	// MemoryScopeUsage sums a scope's live key count and byte footprint
-	// (len(key)+len(value)) server-side, EXCLUDING keys under excludeKeyPrefix.
-	//
-	// It exists because the quota check cannot be done by listing. Listing is
-	// capped, and a scope holding thousands of Document chunk bodies truncates
-	// before the agent's own memory rows are reached — so the check refused every
-	// write with "more than N keys" while the actual memory footprint was a few
-	// kilobytes. Summing in SQL has no cap and needs one round trip, which also
-	// retires the "if we ever need to scale this" note on the old path.
-	//
-	// excludeKeyPrefixes are caller-supplied namespaces left out of the count (the
-	// Document chunk-body and derived-unit prefixes in practice); none, or only
-	// empty ones, counts everything. Expired and superseded rows are excluded,
-	// matching what a read would actually surface.
-	MemoryScopeUsage(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, excludeKeyPrefixes ...string) (keys int, bytes int, err error)
-
 	// MemoryCursorGet returns the consolidation cursor for a target. It is a
 	// GET-OR-DEFAULT: a target with no row yet returns a zero-watermark,
 	// unleased MemoryCursorRow (TenantID/Scope/ScopeID populated, everything
@@ -3141,7 +3253,11 @@ type Store interface {
 	//
 	// Idempotent, and 0 is the ordinary answer: almost no run holds a lease.
 	MemoryCursorReleaseByOwner(ctx context.Context, owner string) (int, error)
+}
 
+// MemoryVectorStore persists memory embeddings and serves vector and full-text
+// search, where the backend supports them.
+type MemoryVectorStore interface {
 	// SupportsVectors reports whether this backend instance can serve
 	// the MemoryEmbed* family. Backends without a vector index loaded
 	// return false; the Memory tool's `search` op + `embed: true`
@@ -3269,23 +3385,16 @@ type Store interface {
 	// under the query, and so the cursor is meaningful.
 	MemoryEmbedListMissing(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
 
-	// MemoryListAfter pages EVERY live row under keyPrefix in key order: only rows with
-	// key > afterKey ("" = from the start), at most limit (clamped to 1..1000). Live
-	// means what MemoryList returns — not expired, not superseded.
-	//
-	// It exists for sweeps that must visit each row exactly once whatever state its
-	// embedding is in — the document re-index compares every chunk's stored index text
-	// with what it should be. MemoryList has no cursor, and MemoryEmbedListMissing sees
-	// only rows WITHOUT an embedding. Only key, value and the create/update times are
-	// populated.
-	MemoryListAfter(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix, afterKey string, limit int) ([]MemoryEntry, error)
-
 	// MemoryEmbedStats returns per-(provider, model) row counts and
 	// total embedding bytes for the given scope. Drives the v0.9.0
 	// PR 4 admin endpoint `/v1/_memory/embed_stats`. ErrVectorUnsupported
 	// on backends without vector ops.
 	MemoryEmbedStats(ctx context.Context, tenantID string, scope MemoryScope) (MemoryEmbedStats, error)
+}
 
+// ChannelStore persists channel messages, subscriber cursors and hook-held
+// deliveries.
+type ChannelStore interface {
 	// ChannelPublish appends one message to a channel. The message's
 	// ID is assigned by the store (ULID — sortable by publish time);
 	// the returned id is the cursor agents pass back on subsequent
@@ -3416,53 +3525,21 @@ type Store interface {
 	// n8n integration RFC).
 	ChannelStats(ctx context.Context) ([]ChannelStats, error)
 
-	// BackfillAgentDefContentSHA256 walks every agent_defs row with a
-	// NULL or empty content_sha256, calls signFn with the row's
-	// (name, definition) JSON to compute the canonical hash, and
-	// writes it back. Returns the count of rows updated.
-	//
-	// Idempotent: a second call after a complete backfill finds zero
-	// NULL rows and returns 0. Boot-time hook runs this once after
-	// migrations; subsequent boots are O(0) once the column is
-	// fully populated.
-	//
-	// signFn is injected so the store package stays free of any
-	// agents/skills import — the v0.9.x hash algorithm lives in
-	// internal/agents.Sign, and main.go assembles the closure that
-	// calls it.
-	//
-	// Errors from signFn ABORT the backfill (return on first error)
-	// rather than skipping the row, because a hash-compute failure on
-	// any well-formed Definition JSONB indicates a code bug, not a
-	// data problem.
-	BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+	// ChannelPurge deletes all buffered messages for a channel WITHOUT
+	// removing the channel definition or subscriber cursors — the
+	// "drain the queue" operation that ChannelsDelete's full teardown
+	// is too blunt for. Works on ANY name: yaml-declared channels have
+	// no runtime `channels` row, but their messages live in the same
+	// channel_messages table. Idempotent — purging a channel with no
+	// messages returns (0, nil) rather than ErrNotFound; existence is
+	// the caller's concern. Returns the number of messages deleted. A
+	// non-empty scope narrows the purge to that scope's messages (one
+	// tenant's layer of a global channel, not its same-named channels).
+	ChannelPurge(ctx context.Context, tenantID, name string, scope MemoryScope) (int, error)
+}
 
-	// BackfillAgentDefSystemPromptBase walks every agent_defs row,
-	// decodes its definition, fills the `system_prompt_base` field
-	// from `system_prompt` when the former is empty, and writes the
-	// row back. Returns the count of rows updated.
-	//
-	// Idempotent: a second call after a complete backfill finds no
-	// rows missing the field and returns 0. Boot-time hook runs this
-	// once after migrations.
-	//
-	// Why: PR #186 fixed the runtime symptom (substrate-loaded agents
-	// losing their instructions on skill-enabled runs) via a read-side
-	// normalizer. This backfill closes the on-disk data gap so the
-	// field is materialized for legacy rows too — useful when
-	// snapshot/restore round-trips a substrate-only deployment to a
-	// reader that strictly trusts the persisted shape.
-	//
-	// The transform happens at the JSON layer (the store doesn't
-	// import mergedDef from internal/tools/builtin). Rows whose
-	// definition JSON fails to decode are skipped with a log line
-	// rather than aborting the backfill — a single hand-edited row
-	// shouldn't block the rest.
-	BackfillAgentDefSystemPromptBase(ctx context.Context) (int, error)
-
-	// BackfillSkillDefContentSHA256 — mirror of the AgentDef backfill.
-	BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
-
+// AgentDefStore persists the AgentDef substrate.
+type AgentDefStore interface {
 	// ---- v0.8.5 Self-Evolution Substrate ----
 	//
 	// `AgentDef` is the agent-authored agent-definition versioning
@@ -3538,6 +3615,53 @@ type Store interface {
 	// op). Retiring a NON-active version leaves the pointer untouched.
 	AgentDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// BackfillAgentDefContentSHA256 walks every agent_defs row with a
+	// NULL or empty content_sha256, calls signFn with the row's
+	// (name, definition) JSON to compute the canonical hash, and
+	// writes it back. Returns the count of rows updated.
+	//
+	// Idempotent: a second call after a complete backfill finds zero
+	// NULL rows and returns 0. Boot-time hook runs this once after
+	// migrations; subsequent boots are O(0) once the column is
+	// fully populated.
+	//
+	// signFn is injected so the store package stays free of any
+	// agents/skills import — the v0.9.x hash algorithm lives in
+	// internal/agents.Sign, and main.go assembles the closure that
+	// calls it.
+	//
+	// Errors from signFn ABORT the backfill (return on first error)
+	// rather than skipping the row, because a hash-compute failure on
+	// any well-formed Definition JSONB indicates a code bug, not a
+	// data problem.
+	BackfillAgentDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+
+	// BackfillAgentDefSystemPromptBase walks every agent_defs row,
+	// decodes its definition, fills the `system_prompt_base` field
+	// from `system_prompt` when the former is empty, and writes the
+	// row back. Returns the count of rows updated.
+	//
+	// Idempotent: a second call after a complete backfill finds no
+	// rows missing the field and returns 0. Boot-time hook runs this
+	// once after migrations.
+	//
+	// Why: PR #186 fixed the runtime symptom (substrate-loaded agents
+	// losing their instructions on skill-enabled runs) via a read-side
+	// normalizer. This backfill closes the on-disk data gap so the
+	// field is materialized for legacy rows too — useful when
+	// snapshot/restore round-trips a substrate-only deployment to a
+	// reader that strictly trusts the persisted shape.
+	//
+	// The transform happens at the JSON layer (the store doesn't
+	// import mergedDef from internal/tools/builtin). Rows whose
+	// definition JSON fails to decode are skipped with a log line
+	// rather than aborting the backfill — a single hand-edited row
+	// shouldn't block the rest.
+	BackfillAgentDefSystemPromptBase(ctx context.Context) (int, error)
+}
+
+// SkillDefStore persists the SkillDef substrate.
+type SkillDefStore interface {
 	// ---- v0.8.22 SkillDef substrate ----
 	//
 	// Mirror of AgentDef* with the same invariants. Concurrency
@@ -3565,6 +3689,12 @@ type Store interface {
 	SkillDefGetActive(ctx context.Context, tenantID, name string) (SkillDefRow, error)
 	SkillDefSetRetired(ctx context.Context, defID string, retired bool) error
 
+	// BackfillSkillDefContentSHA256 — mirror of the AgentDef backfill.
+	BackfillSkillDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+}
+
+// TeamDefStore persists the TeamDef substrate.
+type TeamDefStore interface {
 	// ---- TeamDef substrate ----
 	//
 	// Mirror of SkillDef* with the same invariants. Concurrency
@@ -3601,7 +3731,11 @@ type Store interface {
 	// progress in tenantID (every channel under TeamChannelName(name, "")), so a
 	// team later created under the name starts with none of them.
 	TeamDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
 
+// WebhookDeliveryStore persists webhook runtime state: a team's armed
+// webhooks, durable delivery dedup, and delivery counters.
+type WebhookDeliveryStore interface {
 	// ---- A team's own webhooks, armed by running walks ----
 	//
 	// One row per webhook a running walk of a team armed: the durable record
@@ -3701,7 +3835,10 @@ type Store interface {
 	// tenant that owns it, its name, and whether it is the operator's static
 	// one (a yaml webhook and a shared-tenant WebhookDef may share a name).
 	WebhookCounts(ctx context.Context, tenantID, name string, static bool) ([]WebhookCount, error)
+}
 
+// HookDefStore persists the HookDef substrate.
+type HookDefStore interface {
 	// ---- HookDef substrate ----
 	//
 	// Mirror of TeamDef* with the same invariants: a per-name lock keeps the
@@ -3725,7 +3862,10 @@ type Store interface {
 	// HookDefDelete hard-deletes every version of name in tenantID plus its
 	// active pointer. Returns whether anything was deleted.
 	HookDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
 
+// MCPServerDefStore persists the MCPServerDef substrate.
+type MCPServerDefStore interface {
 	// ---- v0.9.x MCPServerDef substrate ----
 	//
 	// Third substrate primitive after AgentDef + SkillDef. Same shape
@@ -3765,7 +3905,10 @@ type Store interface {
 	// SkillDef backfills. Walks NULL/empty content_sha256 rows + calls
 	// the injected signFn. Idempotent; boot-time-only.
 	BackfillMCPServerDefContentSHA256(ctx context.Context, signFn func(name string, def []byte) (string, error)) (int, error)
+}
 
+// VolumeDefStore persists filesystem VolumeDefs.
+type VolumeDefStore interface {
 	// ---- RFC AH Phase 2a VolumeDef substrate ----
 	//
 	// Deliberately NOT the content-addressed versioning lifecycle the
@@ -3789,7 +3932,10 @@ type Store interface {
 	// It NEVER touches the on-disk directory — that is the tool's `purge`
 	// op, which deletes the row AND the files behind a four-way fence.
 	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
 
+// CredentialDefStore persists encrypted per-tenant CredentialDefs.
+type CredentialDefStore interface {
 	// ---- RFC AR CredentialDef — secure per-tenant credential store ----
 	//
 	// A flat (tenant_id, scope, scope_id, name) table. The `definition` holds
@@ -3807,7 +3953,10 @@ type Store interface {
 	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (CredentialDefRow, error)
 	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]CredentialDefRow, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
+}
 
+// DirentStore persists the Path VFS naming layer.
+type DirentStore interface {
 	// ---- RFC AL Path primitive — the dirent (path tree) substrate ----
 	//
 	// A dirent maps a (tenant_id, scope, scope_id, parent_path, name)
@@ -3833,7 +3982,10 @@ type Store interface {
 	DirentDelete(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (bool, error)
 	DirentDeleteUnder(ctx context.Context, tenantID, scope, scopeID, prefix string) (int, error)
 	DirentMove(ctx context.Context, tenantID, scope, scopeID, fromParent, fromName, toParent, toName string) (bool, error)
+}
 
+// EphemeralVolumeStore persists run-scoped ephemeral volumes.
+type EphemeralVolumeStore interface {
 	// ---- RFC AH Phase 2b ephemeral (run-tree-scoped) volumes ----
 	//
 	// A SEPARATE table from volume_defs: an ephemeral volume is scoped to
@@ -3881,7 +4033,10 @@ type Store interface {
 	// filter mirrors SweepStaleRuns exactly (a paused run is parked, not
 	// crashed: its ephemeral volumes must survive to be reused on resume).
 	EphemeralVolumeSweepCandidates(ctx context.Context) ([]EphemeralVolumeSweepRow, error)
+}
 
+// ScheduleDefStore persists the ScheduleDef substrate.
+type ScheduleDefStore interface {
 	// ---- v1.x RFC E ScheduleDef substrate ----
 	//
 	// Fourth substrate primitive after AgentDef + SkillDef + MCPServerDef.
@@ -3911,7 +4066,11 @@ type Store interface {
 	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
 	ScheduleDefGetActive(ctx context.Context, tenantID, name string) (ScheduleDefRow, error)
 	ScheduleDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// ScheduleRunStateStore persists the scheduler's per-def runtime state and its
+// active-run ledger.
+type ScheduleRunStateStore interface {
 	// ---- v1.x RFC E ScheduleDef runtime (sweeper-side) ----
 	//
 	// schedule_run_state tracks per-def runtime state (last_run_id,
@@ -3992,6 +4151,13 @@ type Store interface {
 	// with the run's final status. The reconciler finishes them.
 	ScheduleActiveRunsListEnded(ctx context.Context, limit int) ([]ScheduleActiveRunEnded, error)
 
+	// ScheduleRunStatePause sets paused_until = until (or NULL if
+	// until.IsZero()). Resume = call with zero time.
+	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
+}
+
+// A2ADefStore persists the A2A substrate: server cards and remote agents.
+type A2ADefStore interface {
 	// ---- v1.x RFC G A2A substrate (server + client sides) ----
 	//
 	// Two content-addressed Defs added for A2A protocol integration.
@@ -4037,7 +4203,10 @@ type Store interface {
 	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
 	A2AAgentDefGetActive(ctx context.Context, tenantID, name string) (A2AAgentDefRow, error)
 	A2AAgentDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// WebhookDefStore persists the WebhookDef substrate.
+type WebhookDefStore interface {
 	// WebhookDef is the v1.x RFC H Input Webhooks substrate — same
 	// content-addressed identity + lineage + promotion shape as
 	// A2AAgentDef, minus the sweeper run_state table. A WebhookDef
@@ -4060,7 +4229,10 @@ type Store interface {
 	// *ErrNotFound when no pointer exists. RFC N: tenantID "" = shared.
 	WebhookDefGetActive(ctx context.Context, tenantID, name string) (WebhookDefRow, error)
 	WebhookDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// MemoryBackendDefStore persists the MemoryBackendDef substrate.
+type MemoryBackendDefStore interface {
 	// MemoryBackendDef is the v1.x RFC I MR-3a substrate — a faithful
 	// mirror of WebhookDef (same content-addressed identity + lineage +
 	// promotion shape, no sweeper run_state table). A MemoryBackendDef
@@ -4085,7 +4257,10 @@ type Store interface {
 	// "" = the shared/operator/legacy tenant.
 	MemoryBackendDefGetActive(ctx context.Context, tenantID, name string) (MemoryBackendDefRow, error)
 	MemoryBackendDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// DocumentSourceDefStore persists the DocumentSourceDef substrate.
+type DocumentSourceDefStore interface {
 	// DocumentSourceDef is a faithful structural mirror of MemoryBackendDef
 	// (same content-addressed identity + lineage + promotion shape, no
 	// sweeper run_state table). A DocumentSourceDef declares a named
@@ -4108,7 +4283,10 @@ type Store interface {
 	// "" = the shared/operator/legacy tenant.
 	DocumentSourceDefGetActive(ctx context.Context, tenantID, name string) (DocumentSourceDefRow, error)
 	DocumentSourceDefSetRetired(ctx context.Context, defID string, retired bool) error
+}
 
+// OperatorTokenStore persists operator bearer-token rows.
+type OperatorTokenStore interface {
 	// ---- OperatorTokenDef (RFC L OSS multi-tenant authorization) ----
 	//
 	// Bearer tokens bound to an authoritative principal (tenant_id +
@@ -4159,11 +4337,10 @@ type Store interface {
 	// a tenant is kept: the rows are the registry of tenant spellings a new
 	// tenant is checked against for a case-fold collision.
 	OperatorTokenDefDeleteExpired(ctx context.Context, before time.Time) (int, error)
+}
 
-	// ScheduleRunStatePause sets paused_until = until (or NULL if
-	// until.IsZero()). Resume = call with zero time.
-	ScheduleRunStatePause(ctx context.Context, defID string, until time.Time) error
-
+// EvaluationStore persists evaluation scores.
+type EvaluationStore interface {
 	// ---- Evaluation ----
 	//
 	// `Evaluation` is the score-attached-to-(run, def) primitive.
@@ -4195,7 +4372,10 @@ type Store interface {
 	// retired ancestors included). The returned LineageIncluded flag
 	// echoes the option for caller-side assertion.
 	EvaluationAggregate(ctx context.Context, defID string, opts AggregateOpts) (AggregateResult, error)
+}
 
+// MetricsStore persists process metric samples.
+type MetricsStore interface {
 	// ---- Metrics sampler (v0.8.x) -------------------------------------
 
 	// MetricsWriteSample persists one process_samples row. The caller
@@ -4224,7 +4404,10 @@ type Store interface {
 	// MetricsSweep deletes samples whose sampled_at < cutoff. Returns
 	// the count deleted. Idempotent under concurrent sweepers.
 	MetricsSweep(ctx context.Context, cutoff time.Time) (int, error)
+}
 
+// DynamicAgentStore persists dynamic (runtime-registered) agents.
+type DynamicAgentStore interface {
 	// DynamicAgentUpsert writes a dynamic agent row. RFC N: the
 	// (tenant_id, name) tuple is the primary key — re-upserting the
 	// same (tenant, name) overwrites the definition and resets
@@ -4258,7 +4441,10 @@ type Store interface {
 	// run from a periodic goroutine; idempotent under concurrent
 	// sweepers (single atomic DELETE).
 	DynamicAgentSweep(ctx context.Context) (int, error)
+}
 
+// InterruptStore persists interruptions.
+type InterruptStore interface {
 	// ---- Interruption (v0.8.16) -------------------------------------
 	//
 	// Durable row that survives process restart + drives the listing
@@ -4340,7 +4526,10 @@ type Store interface {
 	// transitioned. Safe to run from a periodic goroutine;
 	// idempotent under concurrent sweepers (single atomic UPDATE).
 	InterruptSweepExpired(ctx context.Context) (int, error)
+}
 
+// ChannelDefStore persists runtime-declared channels.
+type ChannelDefStore interface {
 	// ---- v0.11.5 runtime channel CRUD ----
 	//
 	// Runtime-declared channels live in the `channels` table; yaml-
@@ -4381,21 +4570,6 @@ type Store interface {
 	// of its persisted messages + cursors. Returns ErrNotFound when
 	// the name isn't in the runtime table.
 	ChannelsDelete(ctx context.Context, tenantID, name string) error
-
-	// ChannelPurge deletes all buffered messages for a channel WITHOUT
-	// removing the channel definition or subscriber cursors — the
-	// "drain the queue" operation that ChannelsDelete's full teardown
-	// is too blunt for. Works on ANY name: yaml-declared channels have
-	// no runtime `channels` row, but their messages live in the same
-	// channel_messages table. Idempotent — purging a channel with no
-	// messages returns (0, nil) rather than ErrNotFound; existence is
-	// the caller's concern. Returns the number of messages deleted. A
-	// non-empty scope narrows the purge to that scope's messages (one
-	// tenant's layer of a global channel, not its same-named channels).
-	ChannelPurge(ctx context.Context, tenantID, name string, scope MemoryScope) (int, error)
-
-	// Close releases backend resources. Idempotent.
-	Close() error
 }
 
 // ChannelRow is one runtime-declared channel persisted in the store.

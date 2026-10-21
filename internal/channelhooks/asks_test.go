@@ -444,8 +444,10 @@ func TestWorker_AReplayAfterARestartIsDeterministic(t *testing.T) {
 	first := pendingAsk(t, f.st, runs)
 	resolveAsk(t, f.st, bus, first, "yes")
 	deadline := time.Now().Add(5 * time.Second)
+	var stale string // the first worker's second question, left pending
 	for time.Now().Before(deadline) {
 		if rows, _ := f.st.InterruptListByRun(context.Background(), first.RunID, store.InterruptStatusPending); len(rows) == 1 && rows[0].InterruptID != first.InterruptID {
+			stale = rows[0].InterruptID
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -464,7 +466,11 @@ func TestWorker_AReplayAfterARestartIsDeterministic(t *testing.T) {
 	for time.Now().Before(deadline) && second.InterruptID == "" {
 		rows, _ := f.st.InterruptListByRun(context.Background(), first.RunID, store.InterruptStatusPending)
 		for _, r := range rows {
-			if r.Question == "second" {
+			// The fresh worker asks the second question anew. The first
+			// worker's row is cancelled when that worker stops, but the
+			// write can land after this read; answering it then fails
+			// with "already resolved, timed out, or cancelled".
+			if r.Question == "second" && r.InterruptID != stale {
 				second = r
 			}
 		}
