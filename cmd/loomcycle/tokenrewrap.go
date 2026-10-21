@@ -26,7 +26,7 @@ func logTokenRewrap(rep lchttp.TokenRewrapReport) {
 		log.Printf("auth: WARNING: %d token(s) hashed under a LOOMCYCLE_SECRET_KEY that is neither the current nor the previous one; they will not authenticate (set that key as LOOMCYCLE_SECRET_KEY_PREVIOUS, or re-mint them)", rep.OtherKey)
 	}
 	if len(rep.Refused) > 0 {
-		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash in a table already on the derived pepper — a server on it never writes one, so they came from a database edit or a replica without LOOMCYCLE_SECRET_KEY; they will not authenticate; def_ids: %s",
+		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash written after the first boot on the derived pepper — a server on it never writes one, so they came from a database edit or a replica without LOOMCYCLE_SECRET_KEY; they will not authenticate; def_ids: %s",
 			len(rep.Refused), capIDs(rep.Refused))
 	}
 }
