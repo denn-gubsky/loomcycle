@@ -16,7 +16,7 @@
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/outfit": "^5.3.0",
     "@loomcycle/client": "^1.97.0",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^5.5.0",
     "lucide-react": "^0.460.0",
     "mermaid": "^11.16.0",
     "react": "^19.3.1",
