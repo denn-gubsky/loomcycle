@@ -222,7 +222,7 @@ services:
   #    exposure). Widen its browsing domain allowlist (IDPI) per your needs — see
   #    INSTALL.md and the pinchtab security guide.
   pinchtab:
-    image: pinchtab/pinchtab:0.15.0
+    image: pinchtab/pinchtab:v0.15.2
     restart: unless-stopped
     # loomnet: loomcycle reaches this server's MCP over it. loom-dev: reach a
     # serve-and-test session by its --network-alias (http://<alias>:<port>). The alias

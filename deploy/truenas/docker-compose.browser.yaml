@@ -191,7 +191,7 @@ services:
   # On loom-dev so it can reach an exposed session's dev server; on loomnet so loomcycle
   # reaches its MCP. Widen its browsing allowlist (IDPI) per your aliases — see INSTALL.md.
   pinchtab:
-    image: pinchtab/pinchtab:0.15.0
+    image: pinchtab/pinchtab:v0.15.2
     restart: unless-stopped
     networks: [loomnet, loom-dev]
     env_file:

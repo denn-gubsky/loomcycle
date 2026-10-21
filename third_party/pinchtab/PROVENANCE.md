@@ -7,11 +7,11 @@ with every copy, but the upstream image carries neither file. These are
 vendored here so the browser image ships them at `/usr/share/doc/pinchtab/`.
 
 - **Project:** `https://github.com/pinchtab/pinchtab`
-- **Version:** `v0.15.0` (must match the `FROM pinchtab/pinchtab:` tag in
+- **Version:** `v0.15.2` (must match the `FROM pinchtab/pinchtab:` tag in
   `Dockerfile.browser`)
 - **License:** MIT, Copyright (c) 2026 Luigi Agosti
 - **Files:** `LICENSE` and `THIRD_PARTY_LICENSES.md`, unmodified, from the
-  `v0.15.0` tag
+  `v0.15.2` tag (byte-identical to v0.15.0)
 
 SHA-256 (verify after any update):
 
