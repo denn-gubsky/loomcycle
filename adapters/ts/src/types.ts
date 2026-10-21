@@ -1051,10 +1051,12 @@ export interface RunOptions extends RunOverrideOptions {
    *    downstream.
    *  Ignored when `allowedHosts` is unset. */
   webSearchFilter?: "drop" | "keep";
-  /** Bind the run to an existing session (v0.x). When set, the new run is
-   *  appended to that session (transcript is NOT replayed by /v1/runs —
-   *  use continueSession for replay semantics). When empty, a fresh
-   *  session is created and announced as the first SSE frame. */
+  /** Continue an existing session. When set, the run is a continuation,
+   *  exactly as {@link LoomcycleClient.continueSession} starts one: the
+   *  session's transcript is replayed to the model, and the run uses the
+   *  session's agent and identity. `agent` must then name the session's own
+   *  agent; a different one is refused (400). When empty, a fresh session is
+   *  created and announced as the first SSE frame. */
   sessionId?: string;
   tenantId?: string;
   /** Caller-supplied user binding (v0.4+). Records the run under this
