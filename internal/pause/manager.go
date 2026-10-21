@@ -928,12 +928,15 @@ func (m *Manager) Resume(ctx context.Context) (ResumeResult, error) {
 	resumed := 0
 	var warnings []string
 	for _, r := range paused {
-		// Only this replica's rows (RFC ES F1). ListPausedRuns is cluster-wide:
-		// another live replica's parked runs are flipped by their own gates as
-		// the resume reaches it, and a row a stopped replica parked has no loop
-		// anywhere — flipped to running it would never be resumed, so it stays
-		// paused for the resume pass.
-		if !m.HoldsRun(r.ID) && r.ReplicaID != replicaID {
+		// In a cluster, only the runs this process holds (RFC ES F1).
+		// ListPausedRuns is cluster-wide: another live replica's parked runs
+		// are flipped by their own gates as the resume reaches it, and any row
+		// no loop here holds — a stopped replica's, a restored one, even one
+		// stamped with this replica's id by an earlier process — has no loop
+		// to wake: flipped to running it would never be resumed, so it stays
+		// paused for the resume pass. A single replica (no id) flips every
+		// row, as before.
+		if replicaID != "" && !m.HoldsRun(r.ID) {
 			continue
 		}
 		if err := m.store.SetRunPauseState(ctx, r.ID, store.PauseStateRunning); err != nil {
@@ -973,7 +976,7 @@ func (m *Manager) Snapshot(ctx context.Context) (StateSnapshot, error) {
 }
 
 // SetReplicaID names the replica this manager runs on (cluster mode). Resume
-// flips only the paused rows that carry it, or that this process holds.
+// then flips only the paused rows this process holds.
 func (m *Manager) SetReplicaID(id string) {
 	m.mu.Lock()
 	m.replicaID = id
