@@ -2271,7 +2271,7 @@ func teamChannelAuthorityIssues(ctx context.Context, def teamgraph.Definition) [
 		return nil
 	}
 	var issues []teamIssue
-	pol := tools.ChannelPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Channel
 	for _, side := range []struct {
 		name string
 		want []string

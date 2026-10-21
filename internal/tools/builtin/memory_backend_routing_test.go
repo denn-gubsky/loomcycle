@@ -42,9 +42,11 @@ func routingFixture(t *testing.T) (*Memory, context.Context, func()) {
 // withBackend returns ctx carrying a memory policy whose resolved backend
 // NAME is set (mirrors what the HTTP server stamps from agent config).
 func withBackend(ctx context.Context, name string) context.Context {
-	return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		Backend:       name,
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			Backend:       name,
+		}
 	})
 }
 

@@ -34,7 +34,7 @@ func histCtx(scopes []string, agent, user, tenant string) context.Context {
 		TenantID: tenant,
 	})
 	ctx = tools.WithAgentName(ctx, agent)
-	return tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: scopes})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: scopes} })
 }
 
 // seedChat creates a session (a "chat") owned by (tenant, agent, user).
@@ -78,7 +78,7 @@ func TestHistory_RefusesWithoutStore(t *testing.T) {
 
 func TestHistory_DefaultDenyWithoutPolicy(t *testing.T) {
 	h, _ := historyFixture(t)
-	// No WithHistoryPolicy → empty scopes → default-deny.
+	// No history policy → empty scopes → default-deny.
 	ctx := tools.WithAgentName(tools.WithRunIdentity(context.Background(),
 		tools.RunIdentityValue{TenantID: "t1"}), "agentA")
 	res, _ := h.Execute(ctx, json.RawMessage(`{"op":"list","scope":"self"}`))

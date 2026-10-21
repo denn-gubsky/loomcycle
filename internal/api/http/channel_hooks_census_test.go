@@ -67,9 +67,11 @@ func TestChannelHookCensus_EverySurfaceIsIntercepted(t *testing.T) {
 	}{
 		{"agent Channel tool", "", func(t *testing.T, srv *Server, st store.Store) {
 			tool := &builtin.Channel{Store: st, Writer: srv.systemPublisher.(channels.Writer)}
-			runCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-				Publish:  []string{"screened"},
-				Channels: map[string]tools.ChannelDef{"screened": {Name: "screened", Scope: "global", MaxMessages: 100}},
+			runCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+				rp.Channel = tools.ChannelPolicyValue{
+					Publish:  []string{"screened"},
+					Channels: map[string]tools.ChannelDef{"screened": {Name: "screened", Scope: "global", MaxMessages: 100}},
+				}
 			})
 			res, err := tool.Execute(runCtx, json.RawMessage(`{"op":"publish","channel":"screened","value":{}}`))
 			if err != nil || res.IsError || !strings.Contains(res.Text, `"awaiting_hooks":true`) {

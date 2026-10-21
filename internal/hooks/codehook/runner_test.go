@@ -29,7 +29,7 @@ func (f *fakeInterruption) Execute(ctx context.Context, in json.RawMessage) (too
 	f.mu.Lock()
 	n := len(f.inputs)
 	f.inputs = append(f.inputs, string(in))
-	f.policies = append(f.policies, tools.InterruptionPolicy(ctx))
+	f.policies = append(f.policies, tools.PolicyOf(ctx).Interruption.Load())
 	f.mu.Unlock()
 	if f.delay > 0 {
 		select {
@@ -84,7 +84,7 @@ func TestRunner_AnAskHoldsTheCallAndTheAnswerDecides(t *testing.T) {
 		var a = Interruption.ask({question: "Allow " + ev.tool_call.name + "?", options: ["allow", "deny"]});
 		return a === "allow" ? {decision: "allow"} : {decision: "deny", reason: "operator said " + a};
 	}`)
-	ctx := tools.WithInterruptionPolicy(context.Background(), tools.InterruptionPolicyValue{Enabled: false, MaxPending: 3})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Interruption: tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: false, MaxPending: 3})})
 	got, err := r.Run(ctx, h, "pre_tool_use", preCall("HTTP", `{}`))
 	if err != nil || got.Decision != "deny" || got.Reason != "operator said deny" {
 		t.Fatalf("got %+v, %v", got, err)

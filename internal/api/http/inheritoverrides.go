@@ -36,7 +36,7 @@ func (s *Server) inheritOverridesForChild(
 	childCfg runConfigRecord,
 	childDefID, childName string,
 ) (config.AgentDef, runConfigRecord) {
-	parent := tools.RunOverrides(ctx)
+	parent := tools.PolicyOf(ctx).Overrides
 	if len(parent.Record) == 0 {
 		return def, childCfg
 	}

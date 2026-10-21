@@ -102,7 +102,9 @@ func TestCredentialBinding_AnUnopenableEnvVarRemovesTheHostVar(t *testing.T) {
 		AllowedCreds:    []string{"GITHUB_TOKEN"},
 		CredResolve:     b.envVar("bash"),
 	}
-	ctx := tools.WithVolumePolicy(runCtx(), tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: cwd, Default: true}}})
+	ctx := tools.UpdateRunPolicy(runCtx(), func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default", Root: cwd, Default: true}}}
+	})
 	body, _ := json.Marshal(map[string]string{"command": "env"})
 	res, err := bash.Execute(ctx, body)
 	if err != nil {

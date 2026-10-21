@@ -111,8 +111,8 @@ func TestChunkLabels_ScopeKeyMatchesResolveScope(t *testing.T) {
 			// comparison — this test is about the KEY, not the authorization.
 			gctx := ctx
 			if tc.requested == "tenant" {
-				gctx = tools.WithMemoryPolicy(gctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-				gctx = tools.WithSqlMemPolicy(gctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+				gctx = tools.UpdateRunPolicy(gctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+				gctx = tools.UpdateRunPolicy(gctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 			}
 			want, _, err := d.resolveScope(gctx, tc.requested)
 			if err != nil {
@@ -240,7 +240,7 @@ func TestMemorySearch_DocumentHitCarriesItsDocumentAndHeading(t *testing.T) {
 	m := &Memory{Store: vs, Embedder: fake, SqlMem: d.SqlMem}
 	// The Memory tool gates scopes on the agent's own ACL; the Document tool's
 	// grants above do not carry over.
-	mctx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	mctx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 	res, err := m.Execute(mctx, []byte(`{"op":"search","scope":"user","query":"claims","top_k":5}`))
 	if err != nil {
 		t.Fatalf("Memory.Execute: %v", err)

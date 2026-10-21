@@ -31,8 +31,15 @@ func ephemeralWithCheck(t *testing.T, m *modeCheck) (context.Context, *tools.Eph
 	eph, bound := realDir(t), realDir(t)
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("scratch", tools.EphemeralVolumeRef{Root: eph})
-	ctx := tools.WithEphemeralVolumes(ctxWith(tools.VolumeBinding{Name: "default", Root: bound, Default: true}), set)
+	ctx := tools.WithEphemeralVolumes(ephemeralWritable(ctxWith(tools.VolumeBinding{Name: "default", Root: bound, Default: true})), set)
 	return tools.WithEphemeralModeCheck(ctx, m.check), set, eph
+}
+
+// ephemeralWritable is a run its entry point granted ephemeral write, as it
+// grants every run whose definition does not say `ephemeral_volumes: ro`. A
+// run with no policy at all writes to no ephemeral volume.
+func ephemeralWritable(ctx context.Context) context.Context {
+	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.EphemeralWritable = true })
 }
 
 func writeTo(t *testing.T, ctx context.Context, volume string) tools.Result {

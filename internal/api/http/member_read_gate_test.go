@@ -81,7 +81,7 @@ func TestHistoryScopeCap_ByPrincipalAuthority(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := substrateAdminCtx(auth.WithPrincipal(context.Background(), tc.p))
-			got := tools.HistoryPolicy(ctx).Scopes
+			got := tools.PolicyOf(ctx).History.Scopes
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("history scopes = %v, want %v", got, tc.want)
 			}

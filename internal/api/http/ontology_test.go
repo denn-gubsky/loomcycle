@@ -146,9 +146,8 @@ func ontologyFixture(t *testing.T) (*Server, memInject) {
 func (s *Server) ontologyDocExists(t *testing.T, mi memInject) bool {
 	t.Helper()
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	dctx := tools.WithMemoryPolicy(s.docToolCtx(context.Background(), mi),
-		tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx := tools.UpdateRunPolicy(s.docToolCtx(context.Background(), mi), func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+	dctx = tools.UpdateRunPolicy(dctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	req, _ := json.Marshal(map[string]any{
 		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,
 	})

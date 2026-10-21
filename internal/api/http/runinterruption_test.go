@@ -445,9 +445,9 @@ func TestInterruptionPolicyForRun_NarrowsAndNeverGrants(t *testing.T) {
 func TestOverrideInheritance_ChildKeepsTheParentsInterruptionNarrowing(t *testing.T) {
 	srv := routingServer(t)
 	parentRec := runConfigRecord{Interruption: &config.AgentInterruptionACL{}}
-	ctx := tools.WithRunOverrides(context.Background(), tools.RunOverridesValue{
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Overrides: tools.RunOverridesValue{
 		Record: parentRec.marshal(), AgentName: "router",
-	})
+	}})
 	_, cfg := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle"}, runConfigRecord{}, "", "router")
 	if cfg.Interruption == nil || cfg.Interruption.Enabled {
 		t.Errorf("child interruption = %+v, want the parent's switch-off inherited", cfg.Interruption)

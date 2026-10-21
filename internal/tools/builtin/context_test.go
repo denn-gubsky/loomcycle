@@ -63,7 +63,7 @@ func contextFixture(t *testing.T) (*Context, context.Context) {
 	ctx = tools.WithResolvedModel(ctx, "claude-opus-4-test")
 	temp := 0.7
 	ctx = tools.WithResolvedSampling(ctx, &config.Sampling{Temperature: &temp})
-	ctx = tools.WithAgentTools(ctx, []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "Memory", "Context", "mcp__jobs__patchApp"} })
 	return tool, ctx
 }
 
@@ -224,9 +224,11 @@ func TestContextTool_SelfReportsNoFilesystemAndNetwork(t *testing.T) {
 func TestContextTool_SelfNetworkCallerList(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	tool.Cfg = &config.Config{Env: config.Env{HTTPHostAllowlist: []string{"operator-floor.example.com"}}}
-	ctx = tools.WithHostPolicy(ctx, tools.HostPolicyValue{
-		AllowedHosts: []string{"caller.example.com"},
-		HasList:      true,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Hosts = tools.HostPolicyValue{
+			AllowedHosts: []string{"caller.example.com"},
+			HasList:      true,
+		}
 	})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	if res.IsError {
@@ -343,7 +345,7 @@ func TestContextTool_SelfReportsCompaction(t *testing.T) {
 	tool := &Context{}
 	enabled := true
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_x"})
-	ctx = tools.WithCompactionPolicy(ctx, &config.Compaction{Enabled: &enabled})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Compaction = &config.Compaction{Enabled: &enabled} })
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	out := decodeResult(t, res.Text)
 	if _, present := out["compaction"]; !present {
@@ -491,7 +493,7 @@ func TestContextTool_ToolsFiltersByAgentToolsList(t *testing.T) {
 		t.Fatalf("tools: %s", res.Text)
 	}
 	out := decodeResult(t, res.Text)
-	// 4 of the 5 fake tools are in AgentTools (Bash is excluded).
+	// 4 of the 5 fake tools are in the run policy's Tools (Bash is excluded).
 	if out["count"].(float64) != 4 {
 		t.Errorf("count = %v, want 4 (Bash excluded by ctx allowlist)", out["count"])
 	}
@@ -501,7 +503,7 @@ func TestContextTool_ToolsFiltersByAgentToolsList(t *testing.T) {
 		gotNames[e.(map[string]any)["name"].(string)] = true
 	}
 	if gotNames["Bash"] {
-		t.Error("Bash should be filtered out (not in AgentTools ctx)")
+		t.Error("Bash should be filtered out (not in the run policy's Tools)")
 	}
 	if !gotNames["Read"] || !gotNames["Memory"] || !gotNames["Context"] || !gotNames["mcp__jobs__patchApp"] {
 		t.Errorf("missing expected tool in catalog: %v", gotNames)
@@ -627,29 +629,42 @@ func TestContextTool_DocOutsideAllowlist(t *testing.T) {
 func TestContextTool_PermissionsBundle(t *testing.T) {
 	tool, ctx := contextFixture(t)
 	// Attach a host policy + memory policy so they appear in the output.
-	ctx = tools.WithHostPolicy(ctx, tools.HostPolicyValue{
-		AllowedHosts: []string{"api.example.com"},
-		HasList:      true,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Hosts = tools.HostPolicyValue{
+			AllowedHosts: []string{"api.example.com"},
+			HasList:      true,
+		}
 	})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		QuotaBytes:    1024,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			QuotaBytes:    1024,
+		}
 	})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"findings"},
-		Subscribe: []string{"findings"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"findings"},
+			Subscribe: []string{"findings"},
+		}
 	})
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{
-		Scopes:   []string{"self"},
-		SelfName: "researcher",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{
+			Scopes:   []string{"self"},
+			SelfName: "researcher",
+		}
 	})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{
-		Patterns: []string{"doc/*"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{
+			Granted:  true,
+			Patterns: []string{"doc/*"},
+		}
 	})
-	ctx = tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{
-		Scopes: []string{"submit_self", "read_any"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Evaluation = tools.EvaluationPolicyValue{
+			Scopes: []string{"submit_self", "read_any"},
+		}
 	})
-	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"user"}} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"permissions"}`))
 	if res.IsError {
@@ -794,7 +809,7 @@ func substrateFixture(t *testing.T) (*Context, store.Store, context.Context, str
 	}
 	runCtx := tools.WithAgentName(context.Background(), agentName)
 	runCtx = tools.WithRunIdentity(runCtx, tools.RunIdentityValue{AgentID: "a_test", UserID: "alice"})
-	runCtx = tools.WithAgentTools(runCtx, []string{"Read", "Context"})
+	runCtx = tools.UpdateRunPolicy(runCtx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "Context"} })
 	return tool, s, runCtx, agentName, v1.DefID, v2.DefID
 }
 
@@ -1193,13 +1208,15 @@ func TestContextTool_EvaluationsRefusedToAnIsolatedRunLikeAMissingDef(t *testing
 
 func TestContextTool_ChannelsListsAccessible(t *testing.T) {
 	tool, _, ctx, _, _, _ := substrateFixture(t)
-	chCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"findings", "findings/*"},
-		Subscribe: []string{"findings", "alerts"},
-		Channels: map[string]tools.ChannelDef{
-			"findings": {Name: "findings", Scope: "agent", Semantic: "queue"},
-			"alerts":   {Name: "alerts", Scope: "global", DefaultTTL: 3600},
-		},
+	chCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"findings", "findings/*"},
+			Subscribe: []string{"findings", "alerts"},
+			Channels: map[string]tools.ChannelDef{
+				"findings": {Name: "findings", Scope: "agent", Semantic: "queue"},
+				"alerts":   {Name: "alerts", Scope: "global", DefaultTTL: 3600},
+			},
+		}
 	})
 	res, _ := tool.Execute(chCtx, json.RawMessage(`{"op":"channels"}`))
 	if res.IsError {

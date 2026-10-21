@@ -32,16 +32,18 @@ func broadcastFixture(t *testing.T) (*Channel, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "orchestrator")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"c1", "c2", "c3"},
-		Subscribe: []string{"c1", "c2", "c3", "readonly"},
-		Channels: map[string]tools.ChannelDef{
-			"c1":          {Name: "c1", Scope: "global", Semantic: "queue"},
-			"c2":          {Name: "c2", Scope: "global", Semantic: "queue"},
-			"c3":          {Name: "c3", Scope: "global", Semantic: "queue"},
-			"readonly":    {Name: "readonly", Scope: "global", Semantic: "queue"},
-			"_system/sig": {Name: "_system/sig", Scope: "global", Semantic: "broadcast"},
-		},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"c1", "c2", "c3"},
+			Subscribe: []string{"c1", "c2", "c3", "readonly"},
+			Channels: map[string]tools.ChannelDef{
+				"c1":          {Name: "c1", Scope: "global", Semantic: "queue"},
+				"c2":          {Name: "c2", Scope: "global", Semantic: "queue"},
+				"c3":          {Name: "c3", Scope: "global", Semantic: "queue"},
+				"readonly":    {Name: "readonly", Scope: "global", Semantic: "queue"},
+				"_system/sig": {Name: "_system/sig", Scope: "global", Semantic: "broadcast"},
+			},
+		}
 	})
 	return tool, ctx, func() { _ = s.Close() }
 }

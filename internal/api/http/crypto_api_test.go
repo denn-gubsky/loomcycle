@@ -78,7 +78,7 @@ func TestCryptoAPI_TenantOperatorUsesItsTenantKeyAndRunsOpenIt(t *testing.T) {
 	// The same tenant's run decrypts it with the tool.
 	runCtx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", UserID: "u9", AgentID: "a_1"})
 	runCtx = tools.WithRunID(runCtx, "run_1")
-	runCtx = tools.WithCryptoPolicy(runCtx, tools.CryptoPolicyValue{Scopes: []string{"tenant"}})
+	runCtx = tools.UpdateRunPolicy(runCtx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"tenant"}} })
 	res, err := s.tools[0].Execute(runCtx, json.RawMessage(`{"op":"decrypt","ciphertext":"`+ct+`","context":"customer:42"}`))
 	if err != nil || res.IsError || !strings.Contains(res.Text, "card 4111") {
 		t.Fatalf("in-run decrypt of the API's ciphertext = %+v %v", res, err)

@@ -161,8 +161,10 @@ func TestCoreBlock_TenantWriteStillNeedsTheGrant(t *testing.T) {
 	// With the grant it succeeds, so the refusal above is the gate and not some
 	// unrelated failure. A test that only proves "it errored" would pass against a
 	// typo in the op name.
-	granted := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"},
+	granted := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"},
+		}
 	})
 	if res, err := mem.Execute(granted, write); err != nil || res.IsError {
 		t.Errorf("the same write must succeed WITH the grant: %v %s", err, res.Text)

@@ -28,9 +28,11 @@ func memoryFixture(t *testing.T) (*Memory, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "qa-agent")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		QuotaBytes:    0,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			QuotaBytes:    0,
+		}
 	})
 	return tool, ctx, func() { _ = s.Close() }
 }
@@ -47,7 +49,9 @@ func TestMemory_TenantIsolation(t *testing.T) {
 	mkCtx := func(tenant string) context.Context {
 		ctx := tools.WithAgentName(context.Background(), "qa-agent")
 		ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", TenantID: tenant})
-		ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+		ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+			rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}}
+		})
 		return ctx
 	}
 	ctxA := mkCtx("tenant-a")
@@ -104,7 +108,9 @@ func TestMemory_RejectsGlobalScope(t *testing.T) {
 	// stays unreachable across any future policy refactor.
 	ctx2 := tools.WithAgentName(context.Background(), "qa-agent")
 	ctx2 = tools.WithRunIdentity(ctx2, tools.RunIdentityValue{UserID: "alice"})
-	ctx2 = tools.WithMemoryPolicy(ctx2, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "global"}})
+	ctx2 = tools.UpdateRunPolicy(ctx2, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "global"}}
+	})
 	res2, err := tool.Execute(ctx2, json.RawMessage(`{"op":"get","scope":"global","key":"__help__"}`))
 	if err != nil {
 		t.Fatalf("execute (policy-allows-global): %v", err)
@@ -215,7 +221,7 @@ func TestMemoryTool_ScopeNotInPolicyRefused(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
 	// Override policy: only allow agent scope.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"set","scope":"user","key":"x","value":1}`))
 	if !res.IsError {
@@ -232,7 +238,7 @@ func TestMemoryTool_NoPolicyMeansNoAccess(t *testing.T) {
 	// Strip policy entirely — agent has Memory in tools but
 	// no memory_scopes — this simulates the "tool granted but no
 	// scopes configured" misconfiguration.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"agent","key":"x"}`))
 	if !res.IsError {
@@ -244,7 +250,7 @@ func TestMemoryTool_AgentScopeRequiresAgentName(t *testing.T) {
 	tool, _, cleanup := memoryFixture(t)
 	defer cleanup()
 	// Build a fresh ctx WITHOUT an agent name.
-	ctx := tools.WithMemoryPolicy(context.Background(), tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}}})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"agent","key":"x"}`))
 	if !res.IsError {
@@ -256,7 +262,7 @@ func TestMemoryTool_UserScopeRequiresUserID(t *testing.T) {
 	tool, _, cleanup := memoryFixture(t)
 	defer cleanup()
 	ctx := tools.WithAgentName(context.Background(), "qa-agent")
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"get","scope":"user","key":"x"}`))
 	if !res.IsError {
@@ -305,9 +311,11 @@ func TestMemoryTool_QuotaEnforcement(t *testing.T) {
 
 	// Tighten the per-scope quota via policy override. 64 bytes is
 	// enough for one small value but not two.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent"},
-		QuotaBytes:    64,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent"},
+			QuotaBytes:    64,
+		}
 	})
 
 	// First write fits.
@@ -611,8 +619,10 @@ func TestMemoryTool_Reducers_RefuseScopeNotInPolicy(t *testing.T) {
 	ctx := tools.WithAgentName(context.Background(), "qa-agent")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
 	// Policy only allows agent scope; user-scope reducer calls must refuse.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent"},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent"},
+		}
 	})
 
 	for _, op := range []string{"merge", "append_dedupe", "bounded_list"} {

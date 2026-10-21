@@ -33,7 +33,7 @@ func TestApplyAgentDefOverlay_Empty(t *testing.T) {
 
 // Regression: a substrate AgentDef row that sets memory_backend must carry
 // it through the overlay merge. This is the def_id-pinned sub-agent path
-// (runSubAgent → applyAgentDefOverlay → WithMemoryPolicy{Backend}); a
+// (runSubAgent → applyAgentDefOverlay → RunPolicy.Memory.Backend); a
 // dropped field silently routes the sub-agent to the operator-default
 // backend instead of the one the dynamic def pinned — the exact drift the
 // field exists to prevent. Mirrors memory_quota_bytes, which was already

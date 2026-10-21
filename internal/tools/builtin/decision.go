@@ -169,7 +169,7 @@ func (d *Decision) allowedModels(ctx context.Context, asked string) (name string
 	for _, m := range infos {
 		operator = append(operator, m.Name)
 	}
-	return tools.DecisionPolicy(ctx).Pick(asked, d.Service.Default(), operator)
+	return tools.PolicyOf(ctx).Decision.Pick(asked, d.Service.Default(), operator)
 }
 
 func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {

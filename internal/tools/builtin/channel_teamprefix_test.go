@@ -15,9 +15,11 @@ func TestChannelTool_ReservedTeamPrefixRefusedOnEveryOp(t *testing.T) {
 	tool, ctx, cleanup := channelFixture(t)
 	defer cleanup()
 	const name = "_team/sdlc/events"
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		AllPublish: true, AllSubscribe: true,
-		Channels: map[string]tools.ChannelDef{name: {Name: name, Scope: "tenant"}},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			AllPublish: true, AllSubscribe: true,
+			Channels: map[string]tools.ChannelDef{name: {Name: name, Scope: "tenant"}},
+		}
 	})
 	for _, in := range []string{
 		`{"op":"publish","channel":"` + name + `","value":{}}`,

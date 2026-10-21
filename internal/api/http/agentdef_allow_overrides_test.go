@@ -169,7 +169,7 @@ func TestFixedAgent_APinnedVersionsOwnLockDecides(t *testing.T) {
 		ctx := tools.WithRunIdentity(t.Context(), tools.RunIdentityValue{UserID: "alice", AgentID: "a_acme_parent", TenantID: "acme"})
 		if override {
 			off := false
-			ctx = tools.WithCompactionOverride(ctx, &config.Compaction{Enabled: &off})
+			ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.CompactionOverride = &config.Compaction{Enabled: &off} })
 		}
 		_, _, _, err := f.srv.runSubAgent(ctx, "worker", "", "hi", defID)
 		return err
@@ -198,7 +198,7 @@ func TestFixedAgent_APinnedVersionsOwnLockDecides(t *testing.T) {
 func TestFixedAgent_ALockedDefinitionInheritsNoOverrides(t *testing.T) {
 	srv := routingServer(t)
 	parentRec := runConfigRecord{Routing: &routingOverride{Model: "model-b"}}
-	ctx := tools.WithRunOverrides(t.Context(), tools.RunOverridesValue{Record: parentRec.marshal(), AgentName: "router"})
+	ctx := tools.WithRunPolicy(t.Context(), tools.RunPolicy{Overrides: tools.RunOverridesValue{Record: parentRec.marshal(), AgentName: "router"}})
 
 	locked := false
 	got, cfg := srv.inheritOverridesForChild(ctx, config.AgentDef{Tier: "middle", AllowOverrides: &locked}, runConfigRecord{}, "", "router")
@@ -208,7 +208,7 @@ func TestFixedAgent_ALockedDefinitionInheritsNoOverrides(t *testing.T) {
 	// What only takes away is still passed down: a run told not to ask a
 	// person must not ask one through a locked copy of itself.
 	narrowed := runConfigRecord{Routing: &routingOverride{Model: "model-b"}, Interruption: &config.AgentInterruptionACL{}}
-	nctx := tools.WithRunOverrides(t.Context(), tools.RunOverridesValue{Record: narrowed.marshal(), AgentName: "router"})
+	nctx := tools.WithRunPolicy(t.Context(), tools.RunPolicy{Overrides: tools.RunOverridesValue{Record: narrowed.marshal(), AgentName: "router"}})
 	if _, ncfg := srv.inheritOverridesForChild(nctx, config.AgentDef{Tier: "middle", AllowOverrides: &locked}, runConfigRecord{}, "", "router"); ncfg.Interruption == nil {
 		t.Error("a locked child dropped its parent's interruption narrowing")
 	}

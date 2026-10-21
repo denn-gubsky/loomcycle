@@ -46,7 +46,7 @@ import (
 //   - volumeName != "" → that binding; the agent isn't bound to it → error
 //     listing the volumes it IS bound to.
 func resolveVolume(ctx context.Context, volumeName string) (root string, readOnly bool, name, fence string, err error) {
-	pol := tools.VolumePolicy(ctx)
+	pol := tools.PolicyOf(ctx).Volumes
 	if volumeName != "" {
 		ref, ok := tools.EphemeralVolumes(ctx).Get(volumeName)
 		if !ok && !boundTo(pol, volumeName) {
@@ -62,7 +62,7 @@ func resolveVolume(ctx context.Context, volumeName string) (root string, readOnl
 			// Read-only when the volume is, or when this run was given
 			// ephemeral volumes read-only by its own or an ancestor's
 			// definition. Either is enough; nothing here widens.
-			return ref.Root, ref.ReadOnly || tools.EphemeralReadOnly(ctx), volumeName, "", nil
+			return ref.Root, ref.ReadOnly || !tools.PolicyOf(ctx).EphemeralWritable, volumeName, "", nil
 		}
 	}
 

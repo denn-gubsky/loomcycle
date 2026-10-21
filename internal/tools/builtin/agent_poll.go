@@ -236,7 +236,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	childCtx := tools.WithSpawnUntrusted(tools.WithChildRunID(cctx, runID), e.untrusted)
 	childCtx, mark = tools.WithContentMark(childCtx)
 	if !e.compaction.IsZero() {
-		childCtx = tools.WithCompactionOverride(childCtx, e.compaction)
+		childCtx = tools.UpdateRunPolicy(childCtx, func(p *tools.RunPolicy) { p.CompactionOverride = e.compaction })
 	}
 	// The child's review holds reach the parent's stream as they do in wait
 	// mode; here they also move its state to held and back.

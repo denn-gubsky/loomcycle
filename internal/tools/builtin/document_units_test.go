@@ -96,7 +96,9 @@ func TestDocumentSearch_FindsAChunkThroughItsUnit(t *testing.T) {
 	}
 
 	off := false
-	octx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Units: &off})
+	octx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Units: &off}
+	})
 	b, _ := json.Marshal(map[string]any{"op": "search", "query": "reboot", "limit": 5})
 	out, err := d.Execute(octx, b)
 	if err != nil || out.IsError {

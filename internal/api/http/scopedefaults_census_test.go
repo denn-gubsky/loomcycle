@@ -121,8 +121,11 @@ func TestScopeDefaultCensus_TheCensusSeesTheSites(t *testing.T) {
 			seen += strings.Count(string(src), "MemoryPolicyValue{") + strings.Count(string(src), "SqlMemPolicyValue{")
 		}
 	}
-	if seen < 19 {
+	// The run entry points (RunOnce, resume, a child's own grant) share one
+	// construction in agentRunPolicy, and the tenant-Document reads one in
+	// withTenantDocGrants.
+	if seen < 9 {
 		t.Fatalf("the census found only %d MemoryPolicyValue construction sites; it is meant "+
-			"to cover every one of them (10 memory + 9 sql at the time of writing) and has stopped doing so", seen)
+			"to cover every one of them (5 memory + 4 sql at the time of writing) and has stopped doing so", seen)
 	}
 }

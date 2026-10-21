@@ -17,9 +17,11 @@ import (
 func TestCoreBlock_OverLimitWriteRefused(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
-	ctx = tools.WithCoreBlocksPolicy(ctx, tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
-		{Label: "notes", Scope: "agent", LimitBytes: 16},
-	}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
+			{Label: "notes", Scope: "agent", LimitBytes: 16},
+		}}
+	})
 
 	// 30-byte value > 16-byte limit → refused.
 	over := `{"op":"set","scope":"agent","key":"core/notes","value":"xxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`
@@ -44,9 +46,11 @@ func TestCoreBlock_OverLimitWriteRefused(t *testing.T) {
 func TestCoreBlock_ReadOnlyRefusesAgentWrite(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
-	ctx = tools.WithCoreBlocksPolicy(ctx, tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
-		{Label: "human", Scope: "user", ReadOnly: true},
-	}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
+			{Label: "human", Scope: "user", ReadOnly: true},
+		}}
+	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"set","scope":"user","key":"core/human","value":"tampered"}`))
 	if !res.IsError {
@@ -66,9 +70,11 @@ func TestCoreBlock_ReadOnlyRefusesAgentWrite(t *testing.T) {
 func TestCoreBlock_ReadOnlyRefusesAllMutatingOps(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
-	ctx = tools.WithCoreBlocksPolicy(ctx, tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
-		{Label: "ro", Scope: "agent", ReadOnly: true},
-	}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
+			{Label: "ro", Scope: "agent", ReadOnly: true},
+		}}
+	})
 
 	cases := []struct {
 		name string
@@ -101,12 +107,14 @@ func TestCoreBlock_ReadOnlyRefusesAllMutatingOps(t *testing.T) {
 func TestCoreBlock_LimitEnforcedOnGrowingOps(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
-	ctx = tools.WithCoreBlocksPolicy(ctx, tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
-		{Label: "cap_m", Scope: "agent", LimitBytes: 24},
-		{Label: "cap_a", Scope: "agent", LimitBytes: 24},
-		{Label: "cap_b", Scope: "agent", LimitBytes: 24},
-		{Label: "cap_ok", Scope: "agent", LimitBytes: 24},
-	}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
+			{Label: "cap_m", Scope: "agent", LimitBytes: 24},
+			{Label: "cap_a", Scope: "agent", LimitBytes: 24},
+			{Label: "cap_b", Scope: "agent", LimitBytes: 24},
+			{Label: "cap_ok", Scope: "agent", LimitBytes: 24},
+		}}
+	})
 
 	// Each op's resulting value exceeds the 24-byte cap → refused.
 	over := []struct {
@@ -145,9 +153,11 @@ func TestCoreBlock_LimitEnforcedOnGrowingOps(t *testing.T) {
 func TestCoreBlock_ScopeMismatchDoesNotGate(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
-	ctx = tools.WithCoreBlocksPolicy(ctx, tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
-		{Label: "human", Scope: "user", ReadOnly: true},
-	}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
+			{Label: "human", Scope: "user", ReadOnly: true},
+		}}
+	})
 	// agent-scope core/human is a distinct key — the user-scope block must not gate it.
 	if res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"set","scope":"agent","key":"core/human","value":"ok"}`)); res.IsError {
 		t.Errorf("agent-scope write should not be gated by a user-scope block: %s", res.Text)

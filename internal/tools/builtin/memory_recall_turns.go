@@ -65,7 +65,7 @@ func (m *Memory) attachSourceTurns(ctx context.Context, scope store.MemoryScope,
 	// EffectiveHistoryScopes applies the same unset-means-what-the-caller-owns
 	// default the History tool itself uses, so an ordinary agent is unaffected and
 	// only an explicit denial (`history_scope: ["-*"]`) bites.
-	histScopes := tools.EffectiveHistoryScopes(ctx, tools.HistoryPolicy(ctx).Scopes)
+	histScopes := tools.EffectiveHistoryScopes(ctx, tools.PolicyOf(ctx).History.Scopes)
 	if !historyScopeAllowsOwnChats(histScopes) {
 		return 0, 0
 	}

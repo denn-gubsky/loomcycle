@@ -96,7 +96,7 @@ func (t *TeamDef) decisionAuthorityIssues(ctx context.Context, def teamgraph.Def
 		return nil
 	}
 	holdsTool := false
-	for _, name := range tools.AgentTools(ctx) {
+	for _, name := range tools.PolicyOf(ctx).Tools {
 		if name == "Decision" {
 			holdsTool = true
 		}
@@ -136,7 +136,7 @@ func (t *TeamDef) decisionAuthorityIssues(ctx context.Context, def teamgraph.Def
 		if !slices.Contains(operator, name) {
 			continue // not a model here at all: the sweep reports it unrunnable
 		}
-		if _, allowed, ok := tools.DecisionPolicy(ctx).Pick(name, operatorDefault, operator); !ok {
+		if _, allowed, ok := tools.PolicyOf(ctx).Decision.Pick(name, operatorDefault, operator); !ok {
 			out = append(out, teamIssue{Kind: teamIssueDecisionAuthority, Severity: severityRefused, Path: base + ".model", State: st.ID, Field: "model",
 				Detail: fmt.Sprintf("state %q asks decision model %q, which its author may not ask (it may ask: %s) — "+
 					"a team may only do what its author may", st.ID, name, strings.Join(allowed, ", "))})
@@ -163,7 +163,7 @@ func (t *TeamDef) decider() teamrun.DecideFunc {
 		if err != nil {
 			return "", &teamrun.DecisionError{Code: decisionInvalidInput, Message: "the questions are not readable"}
 		}
-		res, err := t.Decision.Execute(tools.WithDecisionPolicy(ctx, nil), raw)
+		res, err := t.Decision.Execute(tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Decision = nil }), raw)
 		if err != nil {
 			return "", err
 		}

@@ -204,10 +204,14 @@ func seedTenantOntology(t *testing.T, d *Document, ctx context.Context) {
 // grantedTenantCtx is the OPERATOR's authority — what Settings → Ontology runs with.
 // Reads and adoptions in these tests use it; the proposals deliberately do not.
 func grantedTenantCtx(ctx context.Context) context.Context {
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"}})
-	return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
 }
 
 // TestAdoptSubjectProposal_DoesNotBackfillFactsFromOtherScopes — RFC CV P4, decided

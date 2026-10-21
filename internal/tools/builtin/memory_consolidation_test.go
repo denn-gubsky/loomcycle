@@ -21,9 +21,11 @@ import (
 // the same grant with no run id and must not be stamped. See provenanceForSet.
 func grantedConsolidationCtx(ctx context.Context) context.Context {
 	ctx = tools.WithRunID(ctx, "run_consolidation_pass")
-	return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		Consolidation: true,
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			Consolidation: true,
+		}
 	})
 }
 

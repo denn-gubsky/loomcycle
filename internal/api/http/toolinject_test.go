@@ -186,7 +186,7 @@ func TestAllowedToolRefs_AllHaveRenderer(t *testing.T) {
 // Two independent implementations of "what tools do I have" would drift silently.
 func TestToolInject_MatchesContextToolsOp(t *testing.T) {
 	fixtures := toolFixtures()
-	ctx := tools.WithAgentTools(context.Background(), toolNames(fixtures))
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: toolNames(fixtures)})
 	ct := &builtin.Context{Tools: fixtures}
 	req, _ := json.Marshal(map[string]any{"op": "tools"})
 	res, err := ct.Execute(ctx, req)
@@ -281,7 +281,7 @@ func TestToolGuide_ReachesTheAssembledPrompt(t *testing.T) {
 // implementations of "how do I call my tools" would drift silently.
 func TestToolGuide_MatchesContextGuideOp(t *testing.T) {
 	fixtures := []tools.Tool{guideTool{}, describedTool{"Read", "Read a file."}}
-	ctx := tools.WithAgentTools(context.Background(), toolNames(fixtures))
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: toolNames(fixtures)})
 	ct := &builtin.Context{Tools: fixtures}
 	req, _ := json.Marshal(map[string]any{"op": "guide"})
 	res, err := ct.Execute(ctx, req)

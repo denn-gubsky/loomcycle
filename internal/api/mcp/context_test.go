@@ -38,7 +38,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// MemoryPolicy: empty AllowedScopes ⇒ every memory op fails.
-	mp := tools.MemoryPolicy(ctx)
+	mp := tools.PolicyOf(ctx).Memory
 	if len(mp.AllowedScopes) == 0 {
 		t.Errorf("MemoryPolicy.AllowedScopes empty; all Memory ops would fail")
 	}
@@ -62,7 +62,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	// this passed, and the matcher (exact name or a trailing "/*" prefix, and
 	// nothing else) never matched a real channel — so the plane silently held
 	// NO channel authority at all.
-	cp := tools.ChannelPolicy(ctx)
+	cp := tools.PolicyOf(ctx).Channel
 	for _, side := range []string{"publish", "subscribe"} {
 		all, list := cp.GrantsFor(side)
 		if !all && !builtin.ChannelAllowed("any-channel-name", list) {
@@ -72,7 +72,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// AgentDefPolicy: empty Scopes ⇒ every mutation op fails.
-	ap := tools.AgentDefPolicy(ctx)
+	ap := tools.PolicyOf(ctx).AgentDef
 	if len(ap.Scopes) == 0 {
 		t.Errorf("AgentDefPolicy.Scopes empty; all AgentDef ops would fail")
 	}
@@ -81,7 +81,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// EvaluationPolicy: needs submit_any + read_any for full operator access.
-	ep := tools.EvaluationPolicy(ctx)
+	ep := tools.PolicyOf(ctx).Evaluation
 	wantEvalScopes := map[string]bool{"submit_any": false, "read_any": false}
 	for _, s := range ep.Scopes {
 		if _, ok := wantEvalScopes[s]; ok {
@@ -95,7 +95,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	}
 
 	// HistoryPolicy: empty Scopes ⇒ Context.history refuses.
-	hp := tools.HistoryPolicy(ctx)
+	hp := tools.PolicyOf(ctx).History
 	if len(hp.Scopes) == 0 {
 		t.Errorf("HistoryPolicy.Scopes empty; Context.history would refuse")
 	}
@@ -104,7 +104,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 	// which is now an EMPTY pattern allowlist (empty = allow all). The old
 	// semantics were inverted — empty used to mean default-deny. Assert the
 	// stamped policy allows an arbitrary name (i.e. it is not a deny-all).
-	skp := tools.SkillPolicy(ctx)
+	skp := tools.PolicyOf(ctx).Skill
 	if skillmatch.DeniesAll(skp.Patterns) || !skillmatch.Allowed(skp.Patterns, "any-skill") {
 		t.Errorf("operator SkillPolicy must allow all skills; got patterns %v", skp.Patterns)
 	}
@@ -123,7 +123,7 @@ func TestOperatorCtx_AttachesAllRequiredPolicies(t *testing.T) {
 
 	// VolumeDefPolicy: empty Scopes ⇒ MCP `volumedef` meta-tool refuses
 	// create/delete/purge with default-deny. RFC AH Phase 5 regression guard.
-	vdp := tools.VolumeDefPolicy(ctx)
+	vdp := tools.PolicyOf(ctx).VolumeDef
 	if len(vdp.Scopes) == 0 {
 		t.Errorf("VolumeDefPolicy.Scopes empty; VolumeDef create/delete/purge via MCP would fail")
 	}
@@ -211,25 +211,25 @@ func TestMcpPrincipalCtx_NonAdminPrincipal_DeniesOperatorPlane(t *testing.T) {
 	}
 	// History (RFC BE): admin gets the cross-tenant `global` scope; a tenant
 	// principal gets the own-tenant scopes (self/user/tenant) but NOT `global`.
-	if !historyHasScope(tools.HistoryPolicy(admin).Scopes, "global") {
-		t.Errorf("admin principal must grant cross-tenant History (global); got %v", tools.HistoryPolicy(admin).Scopes)
+	if !historyHasScope(tools.PolicyOf(admin).History.Scopes, "global") {
+		t.Errorf("admin principal must grant cross-tenant History (global); got %v", tools.PolicyOf(admin).History.Scopes)
 	}
-	if historyHasScope(tools.HistoryPolicy(tenant).Scopes, "global") {
-		t.Errorf("non-admin principal must NOT grant cross-tenant History (global); got %v", tools.HistoryPolicy(tenant).Scopes)
+	if historyHasScope(tools.PolicyOf(tenant).History.Scopes, "global") {
+		t.Errorf("non-admin principal must NOT grant cross-tenant History (global); got %v", tools.PolicyOf(tenant).History.Scopes)
 	}
-	if len(tools.HistoryPolicy(tenant).Scopes) == 0 {
+	if len(tools.PolicyOf(tenant).History.Scopes) == 0 {
 		t.Errorf("non-admin principal should still get own-tenant History scopes; got none")
 	}
 	// Evaluation is not part of the operator plane: a tenant operator gets
 	// every op, as on HTTP and gRPC, and the tool confines it to its tenant.
-	if !historyHasScope(tools.EvaluationPolicy(tenant).Scopes, "read_any") {
-		t.Errorf("a tenant operator's Evaluation grant must include read_any; got %v", tools.EvaluationPolicy(tenant).Scopes)
+	if !historyHasScope(tools.PolicyOf(tenant).Evaluation.Scopes, "read_any") {
+		t.Errorf("a tenant operator's Evaluation grant must include read_any; got %v", tools.PolicyOf(tenant).Evaluation.Scopes)
 	}
 
 	// Def families: both admin and tenant get "any" within their stamped
 	// tenant (confinement is the TenantID stamp + lookup filter, not a scope
 	// narrowing — RFC AG §3.1).
-	if len(tools.AgentDefPolicy(tenant).Scopes) == 0 {
+	if len(tools.PolicyOf(tenant).AgentDef.Scopes) == 0 {
 		t.Errorf("non-admin principal must still get def-family scopes (tenant-confined)")
 	}
 }
@@ -274,11 +274,11 @@ func TestMCPPolicies_TenantTokenMayWriteMemorySqlAndDocuments(t *testing.T) {
 			p := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: tc.scopes}
 			ctx := mcpPrincipalCtx(auth.WithPrincipal(context.Background(), p))
 
-			mem := tools.MemoryPolicy(ctx).AllowedScopes
+			mem := tools.PolicyOf(ctx).Memory.AllowedScopes
 			if !containsStr(mem, "tenant") {
 				t.Errorf("memory_scopes = %v, missing `tenant` — the tenant keyspace is unreachable", mem)
 			}
-			sql := tools.SqlMemPolicy(ctx).AllowedScopes
+			sql := tools.PolicyOf(ctx).SqlMem.AllowedScopes
 			if len(sql) == 0 {
 				t.Fatalf("sql_scopes is EMPTY — every sql_* op over MCP fails default-deny")
 			}
@@ -305,7 +305,7 @@ func TestMCPPolicies_TenantTokenMayWriteMemorySqlAndDocuments(t *testing.T) {
 // active run" one.
 func TestMCPPolicies_SqlScopesOmitsRun(t *testing.T) {
 	ctx := operatorCtx(context.Background())
-	if containsStr(tools.SqlMemPolicy(ctx).AllowedScopes, "run") {
+	if containsStr(tools.PolicyOf(ctx).SqlMem.AllowedScopes, "run") {
 		t.Error("sql_scopes should not include `run` on a plane that has no run")
 	}
 }

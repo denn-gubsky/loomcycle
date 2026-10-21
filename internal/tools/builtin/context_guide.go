@@ -21,7 +21,7 @@ import (
 // which required fields, the one thing to get right) that the system-prompt
 // injector renders, and that an agent can also call directly to self-serve.
 //
-// Read-only, like every Context op. Filtered by the ctx-attached AgentTools list,
+// Read-only, like every Context op. Filtered by the run policy's Tools list,
 // exactly as op=tools is, so it reflects THIS run's effective tools.
 func (c *Context) execGuide(ctx context.Context) (tools.Result, error) {
 	allowSet, ok := agentToolSet(ctx)

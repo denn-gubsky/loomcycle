@@ -69,16 +69,20 @@ func TestTeamDefCreate_LocalSkillPassesEverySkillDefCreateGate(t *testing.T) {
 		{"body size cap", nil, `{"body":"` + strings.Repeat("x", 5000) + `"}`, "LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES"},
 		{"skills allowlist: name outside it",
 			func(c context.Context) context.Context {
-				return tools.WithSkillPolicy(c, tools.SkillPolicyValue{Patterns: []string{"other/*"}})
+				return tools.UpdateRunPolicy(c, func(rp *tools.RunPolicy) {
+					rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"other/*"}}
+				})
 			},
 			`{"body":"b"}`, "allowlist"},
 		{"skills allowlist: deny all",
 			func(c context.Context) context.Context {
-				return tools.WithSkillPolicy(c, tools.SkillPolicyValue{Patterns: []string{"-*"}})
+				return tools.UpdateRunPolicy(c, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}} })
 			},
 			`{"body":"b"}`, "allowlist"},
 		{"tools ceiling unknown",
-			func(c context.Context) context.Context { return tools.WithAgentTools(c, nil) },
+			func(c context.Context) context.Context {
+				return tools.UpdateRunPolicy(c, func(rp *tools.RunPolicy) { rp.Tools = nil })
+			},
 			`{"body":"b","tools":["Read"]}`, "effective tools not on ctx"},
 	} {
 		t.Run(tc.gate, func(t *testing.T) {
@@ -104,7 +108,9 @@ func TestTeamDefCreate_LocalSkillPassesEverySkillDefCreateGate(t *testing.T) {
 // team's subtree may write that team's skills and no other team's.
 func TestTeamDefCreate_SkillAllowlistIsJudgedUnderTheTeamQualifiedName(t *testing.T) {
 	tool, ctx := skillTeamFixture(t)
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"sdlc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"sdlc/*"}}
+	})
 	team := skillTeam(`["Read","Skill"]`, `{"body":"b"}`)
 	if res := teamOp(t, tool, ctx, "create", "sdlc", team); res.IsError {
 		t.Fatalf("sdlc/* covers sdlc/style, but create was refused: %s", res.Text)
@@ -154,7 +160,9 @@ func TestTeamDefFork_InheritedLocalSkillsAreGatedAgainstTheForker(t *testing.T) 
 	narrow := localAuthorCtx("", []string{"any"}, []string{"Read"})
 	wantRefused(t, teamOp(t, tool, narrow, "fork", "sdlc", noLocal), "fork by a caller without Grep", "Tools cannot widen", "Grep")
 
-	outside := tools.WithSkillPolicy(operator, tools.SkillPolicyValue{Patterns: []string{"other/*"}})
+	outside := tools.UpdateRunPolicy(operator, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"other/*"}}
+	})
 	wantRefused(t, teamOp(t, tool, outside, "fork", "sdlc", noLocal), "fork by a caller whose allowlist misses the skill", "allowlist", "sdlc/style")
 
 	rows, err := tool.Store.TeamDefListByName(operator, "sdlc")

@@ -50,7 +50,9 @@ func TestCodeHook_AnAskIsAPendingInterruptAndItsAnswerDecides(t *testing.T) {
 
 	runCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a1"})
 	runCtx = tools.WithRunID(runCtx, run.ID)
-	runCtx = tools.WithInterruptionPolicy(runCtx, tools.InterruptionPolicyValue{Enabled: false})
+	runCtx = tools.UpdateRunPolicy(runCtx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: false})
+	})
 
 	for _, answer := range []string{"deny", "allow"} {
 		done := make(chan hooks.PreOutcome, 1)

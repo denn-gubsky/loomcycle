@@ -200,51 +200,6 @@ func (d *Dispatcher) Specs(order []Tool) []providers.ToolSpec {
 	return out
 }
 
-// ctxKeyAgentTools is the context key under which the runtime stores
-// the calling agent's effective tools list (after agent + caller
-// narrowing). Tools that need to apply secondary subset checks (like
-// the built-in Skill tool, which validates skill `allowed-tools` ⊆
-// agent `tools` at call time) read it via AgentTools.
-type ctxKeyAgentTools struct{}
-
-// WithAgentTools attaches the agent's effective tool names to ctx. The
-// HTTP server calls this once per run before invoking the loop so any
-// tool that resolves dynamic permissions has the same view of "what
-// the agent can use."
-func WithAgentTools(ctx context.Context, names []string) context.Context {
-	return context.WithValue(ctx, ctxKeyAgentTools{}, names)
-}
-
-// AgentTools returns the agent's effective tool names from ctx, or
-// nil if not attached. Returning nil from a tool that requires this
-// list should cause the tool to refuse with a clear "misconfigured
-// runtime" message.
-func AgentTools(ctx context.Context) []string {
-	v, _ := ctx.Value(ctxKeyAgentTools{}).([]string)
-	return v
-}
-
-// ctxKeyAgentToolPatterns holds the agent's RAW tool declaration — globs
-// preserved (e.g. "mcp__sandbox__*"), unlike ctxKeyAgentTools which carries the
-// glob RESOLVED to concrete pool tool names. The Skill tool's subset check needs
-// the raw form so a glob-scoped skill can be matched against a glob-scoped agent
-// (a resolved concrete list can never cover a broader skill glob).
-type ctxKeyAgentToolPatterns struct{}
-
-// WithAgentToolPatterns attaches the agent's raw tool patterns. Set at run start
-// alongside WithAgentTools; both describe "what the agent can use" — this one
-// before glob resolution, that one after.
-func WithAgentToolPatterns(ctx context.Context, patterns []string) context.Context {
-	return context.WithValue(ctx, ctxKeyAgentToolPatterns{}, patterns)
-}
-
-// AgentToolPatterns returns the agent's raw tool patterns from ctx, or nil if
-// not attached (callers then fall back to the resolved AgentTools list).
-func AgentToolPatterns(ctx context.Context) []string {
-	v, _ := ctx.Value(ctxKeyAgentToolPatterns{}).([]string)
-	return v
-}
-
 type ctxKeySearchProviders struct{}
 
 // WithSearchProviders attaches the agent's per-agent web-search fallback list
@@ -261,17 +216,6 @@ func SearchProviders(ctx context.Context) []string {
 	v, _ := ctx.Value(ctxKeySearchProviders{}).([]string)
 	return v
 }
-
-// ctxKeyHostPolicy is the context key for the run's effective HTTP
-// host narrowing policy — what the CALLER (top-level: HTTP request
-// body; sub-agent: inherited from the parent's ctx) asked for in
-// allowed_hosts / web_search_filter. Sub-agents read this via
-// HostPolicy and re-apply the parent's narrowing to their own tools,
-// so a parent that worked against ["localhost"] under
-// CALLER_AUTHORITATIVE doesn't spawn children that mysteriously fall
-// back to the operator's static allowlist (which typically doesn't
-// include localhost). See server.runSubAgent.
-type ctxKeyHostPolicy struct{}
 
 // HostPolicyValue captures the caller-authoritative HTTP host policy.
 //
@@ -294,24 +238,9 @@ type HostPolicyValue struct {
 	NarrowOnly bool
 }
 
-// WithHostPolicy attaches the caller's host narrowing policy to ctx.
-// runRequest sets this once for top-level runs; sub-agents inherit it
-// via the ctx chain (Agent tool's Execute → runSubAgent passes the
-// parent's ctx through).
-func WithHostPolicy(ctx context.Context, p HostPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyHostPolicy{}, p)
-}
-
-// HostPolicy returns the caller's host narrowing policy from ctx, or
-// the zero value (HasList=false, no narrowing) if not attached.
-func HostPolicy(ctx context.Context) HostPolicyValue {
-	v, _ := ctx.Value(ctxKeyHostPolicy{}).(HostPolicyValue)
-	return v
-}
-
 // ctxKeyExtraAllowedHosts is the context key for v0.8.17 per-call
 // host-widening grants from permitted Pre-hooks. Distinct from
-// HostPolicy: HostPolicy carries the caller-authoritative narrowing
+// RunPolicy.Hosts: Hosts carries the caller-authoritative narrowing
 // that applies for the entire run and is inherited by sub-agents.
 // ExtraAllowedHosts is per-tool-call only — set by loop.dispatchOneTool
 // for the SINGLE Execute() call after a permitted Pre-hook returned
@@ -356,20 +285,6 @@ func ExtraAllowedHosts(ctx context.Context) []string {
 	return v
 }
 
-// ctxKeyVolumePolicy is the context key for the run's effective
-// filesystem-volume policy (RFC AH). It mirrors HostPolicy exactly:
-// the run-start path resolves the agent's declared `volumes` against
-// the operator's top-level `volumes:` config into a binding set and
-// attaches it here; the file/exec tools read it via VolumePolicy to
-// resolve which root a given call targets; sub-agents read the
-// parent's policy from ctx and re-apply NARROW-ONLY narrowing (child ⊆
-// parent), the filesystem analog of the host-allowlist narrowing.
-//
-// A run with NO policy attached (unbound agent, no `volumes:` config)
-// falls back to each tool's construction-time Root — the legacy global
-// jail — so behaviour is byte-identical to pre-feature deployments.
-type ctxKeyVolumePolicy struct{}
-
 // VolumeBinding is one filesystem volume an agent is bound to. Root is
 // the already-resolved absolute path (validated to exist + be a dir at
 // config-load for static volumes); ReadOnly enforces the ro/rw axis
@@ -406,24 +321,6 @@ type VolumeBinding struct {
 type VolumePolicyValue struct {
 	Active   bool
 	Bindings []VolumeBinding
-}
-
-// WithVolumePolicy attaches the run's volume policy to ctx. It ALWAYS sets
-// the value — even an inactive/empty policy must OVERWRITE any policy a child
-// ctx inherited from its parent. (A sub-agent narrowed to an empty binding
-// set would otherwise keep the parent's policy via ctx-value inheritance, a
-// confinement-widening bug.)
-func WithVolumePolicy(ctx context.Context, p VolumePolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyVolumePolicy{}, p)
-}
-
-// VolumePolicy returns the run's volume policy from ctx, or the zero value
-// (Active=false) when none was attached. Active=false is the "no volume
-// bound" signal — the file/exec tools refuse (RFC AH Phase 3: no legacy
-// fallback root survives).
-func VolumePolicy(ctx context.Context) VolumePolicyValue {
-	v, _ := ctx.Value(ctxKeyVolumePolicy{}).(VolumePolicyValue)
-	return v
 }
 
 // ctxKeyEphemeralVolumes carries the run-tree's EphemeralVolumeSet (RFC AH
@@ -532,28 +429,6 @@ func (s *EphemeralVolumeSet) Names() []string {
 func (s *EphemeralVolumeSet) Has(name string) bool {
 	_, ok := s.Get(name)
 	return ok
-}
-
-type ctxKeyEphemeralReadOnly struct{}
-
-// WithEphemeralReadOnly marks ctx so every ephemeral volume resolves
-// read-only for this run, whatever the volume's own mode. It is set for an
-// agent whose definition says `ephemeral_volumes: ro`, and reaches the agents
-// it spawns through the ctx chain.
-//
-// There is no call that clears it, which is what makes inheriting it correct:
-// a descendant of a run that gave up write access cannot get it back.
-func WithEphemeralReadOnly(ctx context.Context) context.Context {
-	if EphemeralReadOnly(ctx) {
-		return ctx
-	}
-	return context.WithValue(ctx, ctxKeyEphemeralReadOnly{}, true)
-}
-
-// EphemeralReadOnly reports whether this run gets ephemeral volumes read-only.
-func EphemeralReadOnly(ctx context.Context) bool {
-	v, _ := ctx.Value(ctxKeyEphemeralReadOnly{}).(bool)
-	return v
 }
 
 // EphemeralModeCheck reads a tree's ephemeral volume from where it is
@@ -836,40 +711,17 @@ func RunIdentity(ctx context.Context) RunIdentityValue {
 	return v
 }
 
-// ctxKeyFanoutCap carries a RUN's own sub-agent fan-out cap.
-type ctxKeyFanoutCap struct{}
-
-// WithFanoutCap stamps the run's fan-out width onto ctx.
-//
-// The cap is normally resolved from the calling agent's DEFINITION, by name, at
-// spawn time. A per-run value has no path through a name lookup, so it travels
-// on ctx like every other per-run policy — and, like them, it reaches sub-agents
-// through the ctx chain.
-//
-// Inheriting it is correct BECAUSE the value can only ever have been lowered: a
-// descendant of a run narrowed to 1 is narrowed too, and no spawn anywhere in
-// the tree can widen what an ancestor gave up.
-func WithFanoutCap(ctx context.Context, n int) context.Context {
-	if n <= 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, ctxKeyFanoutCap{}, n)
-}
-
-// FanoutCap returns the run's own fan-out cap, or 0 when the run set none and
-// the caller should fall back to the definition.
-func FanoutCap(ctx context.Context) int {
-	n, _ := ctx.Value(ctxKeyFanoutCap{}).(int)
-	return n
-}
-
 // RunOverridesValue carries a run's own override record DOWN the spawn tree,
 // together with the identity of the definition it was authored against.
 //
 // The identity travels with the record because the record alone is not enough
 // to know whether a child may use it: an override names a model valid for ONE
-// definition's declared set, and a different agent has a different set. See
-// WithRunOverrides.
+// definition's declared set, and a different agent has a different set. So only
+// a child of the SAME definition takes it (RFC DC D9) — across definitions it
+// could name a model that agent may not use, and a cheap summariser child
+// silently inheriting a frontier model is a cost decision nobody made. This
+// keeps the overrides coherent with sampling, compaction and context, which
+// also flow WITHIN a definition and stop at its boundary.
 type RunOverridesValue struct {
 	// Record is the parent's configuration record, opaque here — internal/tools
 	// cannot name the shape without importing the HTTP layer.
@@ -918,36 +770,6 @@ func (v RunOverridesValue) SameDefinitionAs(defID, name string) bool {
 	}
 	return v.AgentName != "" && v.AgentName == name
 }
-
-// WithRunOverrides stamps the run's override record onto ctx so its children
-// can inherit it — but only children of the SAME definition (RFC DC D9).
-//
-// Why not blanket inheritance: an override names a model or provider valid for
-// the definition it was authored against, because that definition's declared
-// set bounds what it may name. A different agent has a different set, so
-// inheriting across definitions can produce a value that agent may not use — a
-// refusal the caller never asked for and cannot easily explain. It is also
-// surprising in the other direction: a cheap summariser child silently
-// inheriting a frontier model is a cost decision nobody made.
-//
-// This keeps the spawn-tree behaviour coherent with sampling / compaction /
-// context, which already flow down: they flow WITHIN a definition and stop at
-// its boundary.
-func WithRunOverrides(ctx context.Context, v RunOverridesValue) context.Context {
-	if len(v.Record) == 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, ctxKeyRunOverrides{}, v)
-}
-
-// RunOverrides returns the parent's override record, or the zero value when
-// there is none to inherit.
-func RunOverrides(ctx context.Context) RunOverridesValue {
-	v, _ := ctx.Value(ctxKeyRunOverrides{}).(RunOverridesValue)
-	return v
-}
-
-type ctxKeyRunOverrides struct{}
 
 // HasRunIdentity reports whether ctx belongs to a RUN at all.
 //
@@ -1027,12 +849,6 @@ func AgentName(ctx context.Context) string {
 	return v
 }
 
-// ctxKeyMemoryPolicy is the context key for the per-agent Memory tool
-// policy (allowed scopes + scope-byte quota override). Set by the HTTP
-// server from the agent's yaml definition; read by the Memory tool to
-// gate writes and surface "scope not allowed" refusals to the model.
-type ctxKeyMemoryPolicy struct{}
-
 // MemoryPolicyValue is the per-agent Memory access policy.
 //
 //   - AllowedScopes is the yaml `memory_scopes` allowlist; an empty
@@ -1082,43 +898,6 @@ type MemoryPolicyValue struct {
 	Units *bool
 }
 
-// WithMemoryPolicy attaches the agent's resolved Memory policy to ctx.
-func WithMemoryPolicy(ctx context.Context, p MemoryPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyMemoryPolicy{}, p)
-}
-
-// MemoryPolicy returns the agent's Memory policy from ctx. Zero value
-// (empty AllowedScopes, QuotaBytes=0) means "no Memory access".
-func MemoryPolicy(ctx context.Context) MemoryPolicyValue {
-	v, _ := ctx.Value(ctxKeyMemoryPolicy{}).(MemoryPolicyValue)
-	return v
-}
-
-type ctxKeyDecisionPolicy struct{}
-
-// WithDecisionPolicy attaches the agent's `decision` block: the narrowing of
-// the operator's decision models the Decision tool applies to this run's
-// calls. It is set for EVERY run, nil included: a sub-agent's context derives
-// from its parent's, so a child that set nothing would otherwise run under the
-// parent's narrowing rather than its own definition's.
-func WithDecisionPolicy(ctx context.Context, d *config.AgentDecision) context.Context {
-	return context.WithValue(ctx, ctxKeyDecisionPolicy{}, d)
-}
-
-// DecisionPolicy returns the agent's decision narrowing, or nil for none: an
-// agent that declares no block, and a call made outside a run.
-func DecisionPolicy(ctx context.Context) *config.AgentDecision {
-	d, _ := ctx.Value(ctxKeyDecisionPolicy{}).(*config.AgentDecision)
-	return d
-}
-
-// ctxKeySqlMemPolicy is the context key for the per-agent RFC AA SQL Memory
-// policy (allowed scopes + per-scope byte-quota override). Set by the HTTP
-// server from the agent's yaml `sql_scopes` / `sql_quota_bytes`; read by the
-// Memory tool's sql_query / sql_exec ops to gate access. Sub-agents inherit
-// the parent's policy via this ctx key, like MemoryPolicy / HostPolicy.
-type ctxKeySqlMemPolicy struct{}
-
 // SqlMemPolicyValue is the per-agent SQL Memory access policy.
 //
 //   - AllowedScopes is the yaml `sql_scopes` allowlist {agent,user,run}. An
@@ -1136,52 +915,12 @@ type SqlMemPolicyValue struct {
 	QuotaBytes    int
 }
 
-// WithSqlMemPolicy attaches the agent's resolved SQL Memory policy to ctx.
-func WithSqlMemPolicy(ctx context.Context, p SqlMemPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeySqlMemPolicy{}, p)
-}
-
-// SqlMemPolicy returns the agent's SQL Memory policy from ctx. Zero value
-// (empty AllowedScopes, QuotaBytes=0) means "no SQL access".
-func SqlMemPolicy(ctx context.Context) SqlMemPolicyValue {
-	v, _ := ctx.Value(ctxKeySqlMemPolicy{}).(SqlMemPolicyValue)
-	return v
-}
-
-// ctxKeyCoreBlocksPolicy is the context key for the per-run RFC BL P1 core
-// memory blocks. Set by the HTTP server from the agent's resolved core-block
-// set (own + inherited); read by (1) the Memory tool to enforce read_only /
-// limit_bytes on writes to a `core/<label>` key, and (2) a sub-agent's
-// injection, which reads the PARENT's blocks off this key when it opts into
-// inherit_core_blocks.
-type ctxKeyCoreBlocksPolicy struct{}
-
 // CoreBlocksPolicyValue carries the resolved core memory blocks that apply to
 // the current run. Blocks is operator-resolved from agent config (own +
 // inherited) — never model-supplied, same trust posture as MemoryPolicyValue.
 type CoreBlocksPolicyValue struct {
 	Blocks []config.CoreBlock
 }
-
-// WithCoreBlocksPolicy attaches the run's resolved core-block set to ctx.
-func WithCoreBlocksPolicy(ctx context.Context, p CoreBlocksPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyCoreBlocksPolicy{}, p)
-}
-
-// CoreBlocksPolicy returns the run's core-block set from ctx. Zero value (nil
-// Blocks) means the run has no core blocks configured.
-func CoreBlocksPolicy(ctx context.Context) CoreBlocksPolicyValue {
-	v, _ := ctx.Value(ctxKeyCoreBlocksPolicy{}).(CoreBlocksPolicyValue)
-	return v
-}
-
-// ctxKeyChannelPolicy is the context key for the per-agent Channel
-// tool ACL (v0.8.4). Set by the HTTP server from the agent's yaml
-// definition; read by the Channel tool to gate publish/subscribe and
-// surface "channel not allowed" refusals to the model. Sub-agents
-// inherit the parent's policy via this ctx key just like
-// MemoryPolicy and HostPolicy.
-type ctxKeyChannelPolicy struct{}
 
 // ChannelPolicyValue is the per-agent Channel access policy.
 //
@@ -1256,21 +995,6 @@ type ChannelDef struct {
 	Hooked bool
 }
 
-// WithChannelPolicy attaches the agent's resolved Channel policy to ctx.
-func WithChannelPolicy(ctx context.Context, p ChannelPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyChannelPolicy{}, p)
-}
-
-// ChannelPolicy returns the agent's Channel policy from ctx. Zero
-// value (nil Publish/Subscribe, empty Channels) means "no Channel
-// access" — the tool surfaces this as a clear "not configured"
-// refusal so operators see one explicit failure instead of a
-// stack-trace.
-func ChannelPolicy(ctx context.Context) ChannelPolicyValue {
-	v, _ := ctx.Value(ctxKeyChannelPolicy{}).(ChannelPolicyValue)
-	return v
-}
-
 // InterruptionPolicyValue is the per-agent Interruption access
 // policy (v0.8.16). Default-deny: an absent block means Enabled is
 // false and every Interruption op returns is_error with a clear
@@ -1291,23 +1015,13 @@ type InterruptionPolicyValue struct {
 	MaxPending int
 }
 
-type ctxKeyInterruptionPolicy struct{}
-
-// WithInterruptionPolicy attaches the agent's resolved Interruption
-// policy to ctx. The HTTP server's RunOnce / handleRuns wraps the
-// loop ctx with this so any Interruption.Execute downstream can
-// recover the policy in one call.
-func WithInterruptionPolicy(ctx context.Context, p InterruptionPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyInterruptionPolicy{}, p)
-}
-
 // InterruptionPolicyHolder is a run's interruption policy that may change
 // while the run is going: a retune of a parked run takes effect at its next
 // operator turn, long after the loop's ctx was built. The ctx cannot be
 // replaced mid-run — it is threaded by value through the loop and into every
-// tool call — so the ctx carries this holder and the server swaps what it
-// holds. Safe for concurrent use: parallel tool calls read while the server
-// writes.
+// tool call — so the run's policy carries this holder (RunPolicy.Interruption)
+// and the server swaps what it holds. Safe for concurrent use: parallel tool
+// calls read while the server writes.
 type InterruptionPolicyHolder struct {
 	p atomic.Pointer[InterruptionPolicyValue]
 }
@@ -1319,8 +1033,11 @@ func NewInterruptionPolicyHolder(p InterruptionPolicyValue) *InterruptionPolicyH
 	return h
 }
 
-// Load returns the current policy.
+// Load returns the current policy; a nil holder grants nothing.
 func (h *InterruptionPolicyHolder) Load() InterruptionPolicyValue {
+	if h == nil {
+		return InterruptionPolicyValue{}
+	}
 	if p := h.p.Load(); p != nil {
 		return *p
 	}
@@ -1330,29 +1047,6 @@ func (h *InterruptionPolicyHolder) Load() InterruptionPolicyValue {
 // Store replaces the policy every later Load sees.
 func (h *InterruptionPolicyHolder) Store(p InterruptionPolicyValue) {
 	h.p.Store(&p)
-}
-
-// WithInterruptionPolicyHolder attaches a live policy to ctx. It shares the
-// key WithInterruptionPolicy uses, so whichever was attached last wins — a
-// sub-agent's own fixed policy shadows its parent's holder.
-func WithInterruptionPolicyHolder(ctx context.Context, h *InterruptionPolicyHolder) context.Context {
-	return context.WithValue(ctx, ctxKeyInterruptionPolicy{}, h)
-}
-
-// InterruptionPolicy returns the agent's Interruption policy from
-// ctx. Zero value (Enabled=false) means "not enabled" — the tool
-// surfaces this as a clear refusal so operators see one explicit
-// failure instead of a stack trace.
-func InterruptionPolicy(ctx context.Context) InterruptionPolicyValue {
-	switch v := ctx.Value(ctxKeyInterruptionPolicy{}).(type) {
-	case InterruptionPolicyValue:
-		return v
-	case *InterruptionPolicyHolder:
-		if v != nil {
-			return v.Load()
-		}
-	}
-	return InterruptionPolicyValue{}
 }
 
 // ctxKeyDispatcher is the context key carrying the run's tool
@@ -1589,45 +1283,6 @@ func ChildRunID(ctx context.Context) string {
 	return v
 }
 
-// ctxKeySpawnIndex carries a child's index within its parent's parallel_spawn
-// (RFC X Phase 3). parallel_spawn stamps it per child so the sub-run runner
-// can emit the child's spawn-ledger "started" event with the right index.
-// Stored as index+1 internally so a genuine index 0 is distinguishable from
-// "unset"; SpawnIndex returns (index, ok).
-type ctxKeySpawnIndex struct{}
-
-// WithSpawnIndex attaches a child's parallel_spawn index to ctx.
-func WithSpawnIndex(ctx context.Context, index int) context.Context {
-	return context.WithValue(ctx, ctxKeySpawnIndex{}, index+1)
-}
-
-// SpawnIndex returns the child's parallel_spawn index and whether it was set.
-func SpawnIndex(ctx context.Context) (int, bool) {
-	v, ok := ctx.Value(ctxKeySpawnIndex{}).(int)
-	if !ok || v == 0 {
-		return 0, false
-	}
-	return v - 1, true
-}
-
-// ctxKeySpawnTimeoutMs carries a parallel_spawn child's timeout_ms beside its
-// index, so the sub-run runner records it on the child's spawn-ledger
-// "started" row: a parent resumed from a snapshot re-arms the bound from it.
-type ctxKeySpawnTimeoutMs struct{}
-
-// WithSpawnTimeoutMs attaches a parallel_spawn child's timeout_ms (0 = none).
-// Set wherever the index is, so a nested fan-out never inherits an
-// ancestor's bound.
-func WithSpawnTimeoutMs(ctx context.Context, ms int) context.Context {
-	return context.WithValue(ctx, ctxKeySpawnTimeoutMs{}, ms)
-}
-
-// SpawnTimeoutMs is the child's parallel_spawn timeout_ms, or 0.
-func SpawnTimeoutMs(ctx context.Context) int {
-	v, _ := ctx.Value(ctxKeySpawnTimeoutMs{}).(int)
-	return v
-}
-
 // PauseGate is the minimal pause-park surface a tool needs (RFC X Phase 3).
 // The Agent tool's parallel_spawn uses it to PARK the fan-out parent run while
 // it's blocked awaiting children (the loop's own top-of-iteration park is
@@ -1687,39 +1342,6 @@ func CompactRequest(ctx context.Context) *atomic.Bool {
 	return v
 }
 
-type ctxKeyCompactionPolicy struct{}
-
-// WithCompactionPolicy attaches the run's RESOLVED-but-sparse compaction settings
-// to ctx (per-run/per-spawn > parent-inherited > child def, defaults applied at
-// use-time). A sub-agent inherits this; the spawn path blends a child def +
-// per-spawn override over it. nil/IsZero is a no-op.
-func WithCompactionPolicy(ctx context.Context, c *config.Compaction) context.Context {
-	if c.IsZero() {
-		return ctx
-	}
-	return context.WithValue(ctx, ctxKeyCompactionPolicy{}, c)
-}
-
-// CompactionPolicy returns the inherited compaction settings (sparse), or nil.
-func CompactionPolicy(ctx context.Context) *config.Compaction {
-	c, _ := ctx.Value(ctxKeyCompactionPolicy{}).(*config.Compaction)
-	return c
-}
-
-type ctxKeyContextPolicy struct{}
-
-// WithContextPolicy attaches the run's RESOLVED-but-sparse layered-context
-// settings to ctx (per-run > parent-inherited > child def, defaults applied at
-// use-time; RFC CR). A sub-agent inherits this; the spawn path blends the child
-// def over it (parent-set fields win). Read by Context op=self to report the
-// active mode. nil/IsZero is a no-op.
-func WithContextPolicy(ctx context.Context, c *config.Context) context.Context {
-	if c.IsZero() {
-		return ctx
-	}
-	return context.WithValue(ctx, ctxKeyContextPolicy{}, c)
-}
-
 type ctxKeyExecState struct{}
 
 // ExecStateHolder holds the live structured execution state Σ of an L2 stateful
@@ -1741,30 +1363,6 @@ func WithExecutionState(ctx context.Context, h *ExecStateHolder) context.Context
 func ExecutionState(ctx context.Context) *ExecStateHolder {
 	h, _ := ctx.Value(ctxKeyExecState{}).(*ExecStateHolder)
 	return h
-}
-
-// ContextPolicy returns the inherited layered-context settings (sparse), or nil.
-func ContextPolicy(ctx context.Context) *config.Context {
-	c, _ := ctx.Value(ctxKeyContextPolicy{}).(*config.Context)
-	return c
-}
-
-type ctxKeyCompactionOverride struct{}
-
-// WithCompactionOverride carries a per-spawn compaction override (the Agent
-// tool's `compaction` field on a spawn entry) from the tool to runSubAgent,
-// which blends it on top of the child's effective policy. nil/IsZero is a no-op.
-func WithCompactionOverride(ctx context.Context, c *config.Compaction) context.Context {
-	if c.IsZero() {
-		return ctx
-	}
-	return context.WithValue(ctx, ctxKeyCompactionOverride{}, c)
-}
-
-// CompactionOverride returns the per-spawn compaction override, or nil.
-func CompactionOverride(ctx context.Context) *config.Compaction {
-	c, _ := ctx.Value(ctxKeyCompactionOverride{}).(*config.Compaction)
-	return c
 }
 
 // UntrustedInput is one piece of text a parent hands its child as DATA: the
@@ -1888,26 +1486,6 @@ func RunUntrusted(ctx context.Context) []UntrustedInput {
 // Non-secret — the agent is allowed to know what it is running on.
 type ctxKeyResolvedProvider struct{}
 type ctxKeyResolvedModel struct{}
-
-type ctxKeyOperatorAuthored struct{}
-
-// WithOperatorAuthored records whether the agent this run resolved was written
-// by an OPERATOR rather than by an agent at runtime.
-//
-// Stamped from the RESOLVED definition at loop-ctx assembly, beside the other
-// per-agent policies, so a tool can ask without re-reading the definition
-// plane. Absent means false — a run whose ctx was never stamped has not proved
-// operator authorship, which is the safe direction.
-func WithOperatorAuthored(ctx context.Context, v bool) context.Context {
-	return context.WithValue(ctx, ctxKeyOperatorAuthored{}, v)
-}
-
-// OperatorAuthored reports whether this run's agent definition was
-// operator-authored. False for an unstamped ctx.
-func OperatorAuthored(ctx context.Context) bool {
-	v, _ := ctx.Value(ctxKeyOperatorAuthored{}).(bool)
-	return v
-}
 
 // WithResolvedProvider attaches the resolved provider id to ctx.
 func WithResolvedProvider(ctx context.Context, providerID string) context.Context {
@@ -2164,10 +1742,6 @@ func HasEventEmitter(ctx context.Context) bool {
 	return ok && fn != nil
 }
 
-// ctxKeyAgentDefPolicy carries the v0.8.5 AgentDef-tool capability
-// gate. Mirrors MemoryPolicy / ChannelPolicy shape.
-type ctxKeyAgentDefPolicy struct{}
-
 // AgentDefPolicyValue is the per-agent AgentDef-tool access policy.
 //
 //   - Scopes is the operator-yaml agent_def_scopes list. Closed set:
@@ -2184,19 +1758,6 @@ type ctxKeyAgentDefPolicy struct{}
 type AgentDefPolicyValue struct {
 	Scopes   []string
 	SelfName string
-}
-
-// WithAgentDefPolicy attaches the policy to ctx.
-func WithAgentDefPolicy(ctx context.Context, p AgentDefPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyAgentDefPolicy{}, p)
-}
-
-// AgentDefPolicy returns the policy from ctx. Zero value = no
-// access (default-deny — the tool refuses every mutation op until
-// scopes are explicitly granted via yaml).
-func AgentDefPolicy(ctx context.Context) AgentDefPolicyValue {
-	v, _ := ctx.Value(ctxKeyAgentDefPolicy{}).(AgentDefPolicyValue)
-	return v
 }
 
 type ctxKeyScheduleDefPolicy struct{}
@@ -2361,36 +1922,29 @@ func OperatorTokenDefPolicy(ctx context.Context) OperatorTokenDefPolicyValue {
 	return v
 }
 
-// ctxKeySkillPolicy carries the RFC BA per-agent skill access policy — the
-// agent's `skills:` pattern allowlist, governing skill listing, use (Skill
-// invoke), and authoring (SkillDef create/fork/list/get) uniformly.
-type ctxKeySkillPolicy struct{}
-
 // SkillPolicyValue is the per-agent skill access policy (RFC BA).
 //
 //   - Patterns is the operator-yaml `skills:` pattern allowlist evaluated by
 //     internal/skillmatch (`doc/*`/`+doc/*` allow, `-doc/*`/`-*` deny). Empty =
-//     allow ALL (the RFC BA default); `-*` = deny all.
+//     allow ALL (the RFC BA default); `-*` = deny all. Read it through
+//     Effective, which denies all when the policy was never granted.
 type SkillPolicyValue struct {
 	Patterns []string
+	// Granted marks a policy an entry point built. The zero value — a run
+	// whose entry point built none — allows no skill, whatever Patterns says;
+	// a granted policy with empty Patterns allows every skill (the RFC BA
+	// default for an agent that declares no `skills:`).
+	Granted bool
 }
 
-// WithSkillPolicy attaches the policy to ctx.
-func WithSkillPolicy(ctx context.Context, p SkillPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeySkillPolicy{}, p)
+// Effective is the allowlist to evaluate: the policy's patterns when it was
+// granted, and a deny-all ("-*") when it was not.
+func (p SkillPolicyValue) Effective() []string {
+	if !p.Granted {
+		return []string{"-*"}
+	}
+	return p.Patterns
 }
-
-// SkillPolicy returns the policy from ctx. Zero value (nil Patterns) = allow
-// all — the RFC BA default when nothing was stamped (open mode / admin paths).
-func SkillPolicy(ctx context.Context) SkillPolicyValue {
-	v, _ := ctx.Value(ctxKeySkillPolicy{}).(SkillPolicyValue)
-	return v
-}
-
-// ctxKeyVolumeDefPolicy carries the RFC AH Phase 2a VolumeDef-tool
-// capability gate. Mirrors SkillDefPolicy (no SelfName — volumes have no
-// agent identity, so no "self" scope).
-type ctxKeyVolumeDefPolicy struct{}
 
 // VolumeDefPolicyValue is the per-agent VolumeDef-tool access policy.
 //
@@ -2404,45 +1958,12 @@ type VolumeDefPolicyValue struct {
 	Scopes []string
 }
 
-// WithVolumeDefPolicy attaches the policy to ctx.
-func WithVolumeDefPolicy(ctx context.Context, p VolumeDefPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyVolumeDefPolicy{}, p)
-}
-
-// VolumeDefPolicy returns the policy from ctx. Zero value = default-deny
-// (the tool refuses create/delete/purge until scopes are granted via yaml).
-func VolumeDefPolicy(ctx context.Context) VolumeDefPolicyValue {
-	v, _ := ctx.Value(ctxKeyVolumeDefPolicy{}).(VolumeDefPolicyValue)
-	return v
-}
-
-// ctxKeyEvaluationPolicy carries the v0.8.5 Evaluation-tool gate.
-type ctxKeyEvaluationPolicy struct{}
-
 // EvaluationPolicyValue is the per-agent Evaluation policy.
 // Multi-select scopes; default-deny when Scopes is empty. See
 // config.AgentDef.EvaluationScopes docstring for the closed set.
 type EvaluationPolicyValue struct {
 	Scopes []string
 }
-
-// WithEvaluationPolicy attaches the policy to ctx.
-func WithEvaluationPolicy(ctx context.Context, p EvaluationPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyEvaluationPolicy{}, p)
-}
-
-// EvaluationPolicy returns the policy from ctx. Zero value =
-// no access.
-func EvaluationPolicy(ctx context.Context) EvaluationPolicyValue {
-	v, _ := ctx.Value(ctxKeyEvaluationPolicy{}).(EvaluationPolicyValue)
-	return v
-}
-
-// ctxKeyHistoryPolicy is the key under which the runtime stashes the
-// History tool's owner-scope policy (RFC BE). Multi-select scopes; same
-// shape as AgentDefPolicy and EvaluationPolicy. The closed set lives on
-// config.AgentDef.HistoryScope.
-type ctxKeyHistoryPolicy struct{}
 
 // HistoryPolicyValue is the per-agent gate for the History tool (RFC BE).
 // Multi-select; empty Scopes = default-deny (History refuses every op).
@@ -2460,17 +1981,6 @@ type ctxKeyHistoryPolicy struct{}
 // AgentName(ctx); this policy only says which scope SELECTORS are permitted.
 type HistoryPolicyValue struct {
 	Scopes []string
-}
-
-// WithHistoryPolicy attaches the policy to ctx.
-func WithHistoryPolicy(ctx context.Context, p HistoryPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyHistoryPolicy{}, p)
-}
-
-// HistoryPolicy returns the policy from ctx. Zero value = no access.
-func HistoryPolicy(ctx context.Context) HistoryPolicyValue {
-	v, _ := ctx.Value(ctxKeyHistoryPolicy{}).(HistoryPolicyValue)
-	return v
 }
 
 // Execute looks up the named tool and runs it. Unknown tool names consult

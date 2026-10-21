@@ -135,7 +135,7 @@ func (e *Evaluation) Execute(ctx context.Context, raw json.RawMessage) (tools.Re
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
-	policy := tools.EvaluationPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Evaluation
 
 	switch in.Op {
 	case "submit":

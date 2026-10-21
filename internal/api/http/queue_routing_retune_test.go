@@ -233,8 +233,10 @@ func TestOverrideInheritance_AChildInheritsItsParentsRetunedRouting(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	spawnCtx := tools.WithRunOverrides(ctx, tools.RunOverridesValue{
-		Record: startRec.marshal(), AgentName: "router", RunID: parent.ID,
+	spawnCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Overrides = tools.RunOverridesValue{
+			Record: startRec.marshal(), AgentName: "router", RunID: parent.ID,
+		}
 	})
 
 	got, cfg := srv.inheritOverridesForChild(spawnCtx, config.AgentDef{Tier: "middle"}, runConfigRecord{}, "", "router")

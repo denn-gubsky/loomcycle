@@ -157,7 +157,7 @@ func (s *SkillDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
-	policy := tools.SkillPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Skill
 
 	switch in.Op {
 	case "create":
@@ -273,7 +273,7 @@ func (s *SkillDef) gateNewSkill(ctx context.Context, policy tools.SkillPolicyVal
 		return nil, fmt.Errorf("%s: %s", op, err)
 	}
 	// Tools ceiling: the caller's effective tools.
-	callerTools := tools.AgentTools(ctx)
+	callerTools := tools.PolicyOf(ctx).Tools
 	if len(def.Tools) > 0 {
 		if callerTools == nil {
 			return nil, fmt.Errorf("%s: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening", op)
@@ -603,10 +603,10 @@ func (s *SkillDef) execVerify(ctx context.Context, policy tools.SkillPolicyValue
 // Authoring additionally requires the agent to hold the SkillDef tool + the
 // tools ⊆ subset check (assertToolsSubset).
 func (s *SkillDef) checkScopeForName(policy tools.SkillPolicyValue, name, _ string) error {
-	if skillmatch.Allowed(policy.Patterns, name) {
+	if skillmatch.Allowed(policy.Effective(), name) {
 		return nil
 	}
-	return fmt.Errorf("SkillDef tool: skill %q is not permitted by this agent's `skills:` allowlist (%v)", name, policy.Patterns)
+	return fmt.Errorf("SkillDef tool: skill %q is not permitted by this agent's `skills:` allowlist (%v)", name, policy.Effective())
 }
 
 // buildDefinition takes the base definition (parent's JSON for

@@ -132,7 +132,7 @@ func renderRealConversation(t *testing.T) string {
 		}
 	}
 	ctx := tools.WithRunIdentity(bg, tools.RunIdentityValue{AgentID: "a_caller", UserID: "u1", TenantID: "t1"})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: []string{"user"}} })
 	// The exact request the pass makes (readTranscript).
 	req := fmt.Sprintf(`{"op":"get","scope":"user","session_id":%q,"format":"conversation","omit_untrusted":true}`, sess.ID)
 	res, err := (&builtin.History{Store: st}).Execute(ctx, json.RawMessage(req))

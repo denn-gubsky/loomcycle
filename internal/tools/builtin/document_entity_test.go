@@ -248,8 +248,8 @@ func TestEntity_TenantWritesRequireBothGrants(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, ctx, _ := documentFixture(t)
-			ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: tc.mem})
-			ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: tc.sql})
+			ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: tc.mem} })
+			ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: tc.sql} })
 
 			out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"shared"}`)
 			if !tc.allow {

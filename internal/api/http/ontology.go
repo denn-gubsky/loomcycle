@@ -28,7 +28,6 @@ import (
 	"strings"
 
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -65,8 +64,7 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	// a server-side read of operator-authored config on the run's own tenant, not an
 	// agent reaching tenant memory, so the policy is stamped here rather than
 	// requiring every agent that renders the placeholder to hold the tenant grant.
-	dctx = tools.WithMemoryPolicy(dctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx = withTenantDocGrants(dctx)
 
 	// The GATE is the root chunk's status, which get_document reports directly.
 	// (It does NOT return a chunk list — an earlier draft of this read expected one
@@ -181,8 +179,7 @@ func (s *Server) provisionOntologyDoc(ctx context.Context, mi memInject) {
 
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.docToolCtx(ctx, mi)
-	dctx = tools.WithMemoryPolicy(dctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx = withTenantDocGrants(dctx)
 
 	probe, _ := json.Marshal(map[string]any{
 		"op": "get_document", "scope": "tenant", "path": meminject.OntologyPath,

@@ -246,7 +246,9 @@ func localPeerCfg() *config.Config {
 
 func memoryRunCtx(tenant string) context.Context {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a1", UserID: "u1", TenantID: tenant})
-	return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Backend: "peer"}
+	})
 }
 
 var labelled = map[string]string{"acme's credential": "v-acme", "globex's credential": "v-globex", "the shared layer's credential": "v-shared"}

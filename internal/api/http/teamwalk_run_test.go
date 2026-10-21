@@ -36,7 +36,7 @@ func TestOpenTeamWalkRun_GrantsWhatThePauseMachineryNeeds(t *testing.T) {
 	if tools.RunID(base) != "" {
 		t.Fatal("the substrate plane already had a run id — this test no longer covers the gap")
 	}
-	if tools.InterruptionPolicy(base).Enabled {
+	if tools.PolicyOf(base).Interruption.Load().Enabled {
 		t.Fatal("the substrate plane already granted Interruption — this test no longer covers the gap")
 	}
 
@@ -50,7 +50,7 @@ func TestOpenTeamWalkRun_GrantsWhatThePauseMachineryNeeds(t *testing.T) {
 	if got := tools.RunID(walkCtx); got != runID {
 		t.Errorf("ctx run id = %q, want %q", got, runID)
 	}
-	pol := tools.InterruptionPolicy(walkCtx)
+	pol := tools.PolicyOf(walkCtx).Interruption.Load()
 	if !pol.Enabled {
 		t.Error("Interruption is not enabled on the walk ctx — every pause would error, and an unanswerable pause ABORTS the walk")
 	}

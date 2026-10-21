@@ -65,7 +65,7 @@ type memInject struct {
 // applyMemoryInjection expands the agent's system prompt with its core memory
 // blocks + the other {{memory:...}} variants, and returns (the possibly-rewritten
 // agent def, the effective core-block set). The caller stamps the returned
-// blocks onto the run ctx via tools.WithCoreBlocksPolicy so (a) the Memory tool
+// blocks onto the run policy (RunPolicy.CoreBlocks) so (a) the Memory tool
 // can enforce read_only/limit_bytes and (b) an inherit_core_blocks sub-agent
 // picks them up.
 //
@@ -74,7 +74,7 @@ type memInject struct {
 func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.AgentDef, mi memInject) (config.AgentDef, []config.CoreBlock) {
 	// The parent run's blocks ride on ctx (empty for a top-level run) — this is
 	// the inheritance channel for an inherit_core_blocks sub-agent.
-	parentInheritable := tools.CoreBlocksPolicy(ctx).Blocks
+	parentInheritable := tools.PolicyOf(ctx).CoreBlocks.Blocks
 	blocks := effectiveCoreBlocks(agentDef.CoreBlocks, agentDef.InheritCoreBlocks, parentInheritable)
 
 	// inject_tool_guide implicitly appends the runtime-knowledge refs the agent did

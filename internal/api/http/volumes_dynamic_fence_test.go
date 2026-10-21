@@ -70,7 +70,7 @@ func TestStaticVolume_DoesNotReachTheDynamicRoot(t *testing.T) {
 			"pool":    {Path: dyn, Mode: "rw", DynamicRoot: true},
 		}})}
 		pol := policyOf(srv)
-		c := tools.WithVolumePolicy(ctx, pol)
+		c := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Volumes = pol })
 		reach := []struct {
 			tool tools.Tool
 			args map[string]any

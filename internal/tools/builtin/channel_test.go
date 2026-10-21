@@ -35,14 +35,16 @@ func channelFixture(t *testing.T) (*Channel, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"findings", "alerts"},
-		Subscribe: []string{"findings", "alerts", "findings/*"},
-		Channels: map[string]tools.ChannelDef{
-			"findings":       {Name: "findings", Scope: "agent", MaxMessages: 1000, Semantic: "queue"},
-			"alerts":         {Name: "alerts", Scope: "global", DefaultTTL: 3600, Semantic: "broadcast"},
-			"findings/alpha": {Name: "findings/alpha", Scope: "agent", Semantic: "queue"},
-		},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"findings", "alerts"},
+			Subscribe: []string{"findings", "alerts", "findings/*"},
+			Channels: map[string]tools.ChannelDef{
+				"findings":       {Name: "findings", Scope: "agent", MaxMessages: 1000, Semantic: "queue"},
+				"alerts":         {Name: "alerts", Scope: "global", DefaultTTL: 3600, Semantic: "broadcast"},
+				"findings/alpha": {Name: "findings/alpha", Scope: "agent", Semantic: "queue"},
+			},
+		}
 	})
 	return tool, ctx, func() { _ = s.Close() }
 }
@@ -78,12 +80,14 @@ func TestChannelTool_PublishRefusedWithoutACL(t *testing.T) {
 	tool, ctx, cleanup := channelFixture(t)
 	defer cleanup()
 	// Replace policy: agent may subscribe but NOT publish to findings.
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{}, // no publish allowed
-		Subscribe: []string{"findings"},
-		Channels: map[string]tools.ChannelDef{
-			"findings": {Name: "findings", Scope: "agent"},
-		},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{}, // no publish allowed
+			Subscribe: []string{"findings"},
+			Channels: map[string]tools.ChannelDef{
+				"findings": {Name: "findings", Scope: "agent"},
+			},
+		}
 	})
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"findings","value":{"x":1}}`))
 	if !res.IsError {
@@ -521,16 +525,18 @@ func TestChannelTool_AgentRefusedOnPublisherSystemChannel(t *testing.T) {
 	defer cleanup()
 
 	// Override policy with a `publisher: system` channel.
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"_system/heartbeat-1m"},
-		Subscribe: []string{"_system/heartbeat-1m"},
-		Channels: map[string]tools.ChannelDef{
-			"_system/heartbeat-1m": {
-				Name:      "_system/heartbeat-1m",
-				Scope:     "global",
-				Publisher: "system",
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"_system/heartbeat-1m"},
+			Subscribe: []string{"_system/heartbeat-1m"},
+			Channels: map[string]tools.ChannelDef{
+				"_system/heartbeat-1m": {
+					Name:      "_system/heartbeat-1m",
+					Scope:     "global",
+					Publisher: "system",
+				},
 			},
-		},
+		}
 	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"_system/heartbeat-1m","value":{}}`))
@@ -549,15 +555,17 @@ func TestChannelTool_AgentRefusedOnSystemPrefix(t *testing.T) {
 	// Even if the operator forgot to set publisher: system but
 	// declared a `_system/...` channel, the prefix itself blocks
 	// agent publishes.
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish: []string{"_system/alarms/info"},
-		Channels: map[string]tools.ChannelDef{
-			"_system/alarms/info": {
-				Name:  "_system/alarms/info",
-				Scope: "global",
-				// Publisher empty — but the prefix should still refuse.
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish: []string{"_system/alarms/info"},
+			Channels: map[string]tools.ChannelDef{
+				"_system/alarms/info": {
+					Name:  "_system/alarms/info",
+					Scope: "global",
+					// Publisher empty — but the prefix should still refuse.
+				},
 			},
-		},
+		}
 	})
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"publish","channel":"_system/alarms/info","value":{}}`))

@@ -598,8 +598,9 @@ func agentVersionOf(def config.AgentDef) *agentVersionRecord {
 // context at spawn.
 type spawnRecord struct {
 	Volumes volumeCeilingRecord `json:"volumes"`
-	// FanoutCap is the parallel_spawn width the child inherited on ctx; 0 when
-	// its ancestors set none and its definition decides.
+	// FanoutCap is the parallel_spawn width the child runs with: its parent's
+	// run cap narrowed by its own definition's (tools.NarrowFanoutCap); 0 when
+	// neither sets one and the cap lookup resolves the agent by name.
 	FanoutCap int `json:"fanout_cap,omitempty"`
 	// Resident marks a resident child (Agent op=open): a resume rebuilds it as
 	// one — parked between its parent's sends, reachable by its run id.
@@ -635,7 +636,7 @@ type volumeCeilingBinding struct {
 }
 
 // spawnRecordOf captures a child's ceiling from its parent's volume policy and
-// the fan-out cap on the parent's ctx. Always non-nil: its presence is what
+// the fan-out cap the child runs with. Always non-nil: its presence is what
 // tells resume the child's ceiling is known, including "the parent was not
 // confined by volumes" (Active false), which a nil record cannot say.
 func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int) *spawnRecord {

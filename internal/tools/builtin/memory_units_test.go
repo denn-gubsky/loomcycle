@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -18,20 +19,44 @@ import (
 // that opted out would get units on exactly the path nobody tested.
 func TestMemoryUnits_IsCarriedByEveryPolicyConstructionSite(t *testing.T) {
 	unitsField := regexp.MustCompile(`(?m)^\s+Units:\s`)
-	for _, f := range []string{"../../api/http/server.go", "../../api/http/resume.go"} {
+	total := 0
+	for _, f := range runPolicyBuilderFiles(t) {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)
 		}
 		src := string(b)
 		sibling := strings.Count(src, "RecallIncludeTurns: ")
-		if sibling == 0 {
-			t.Fatalf("%s carries no RecallIncludeTurns — this guard would assert nothing", f)
-		}
+		total += sibling
 		if mine := len(unitsField.FindAllString(src, -1)); mine != sibling {
 			t.Errorf("%s builds MemoryPolicyValue %d times carrying RecallIncludeTurns but %d carrying Units", f, sibling, mine)
 		}
 	}
+	if total == 0 {
+		t.Fatal("the run entry points carry no RecallIncludeTurns — this guard would assert nothing")
+	}
+}
+
+// runPolicyBuilderFiles are the files a run's policy is built in: every
+// non-test file of the HTTP server package, where RunOnce, resume and the
+// spawn path build it. Listed from the directory rather than by name, so a
+// construction site that moves between files stays in the sweep.
+func runPolicyBuilderFiles(t *testing.T) []string {
+	t.Helper()
+	all, err := filepath.Glob("../../api/http/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, f := range all {
+		if !strings.HasSuffix(f, "_test.go") {
+			out = append(out, f)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("found no source files in ../../api/http")
+	}
+	return out
 }
 
 // TestMemoryUnits_RoundTripsTheAgentDefinition — counted as CARRIES (a struct
@@ -98,7 +123,7 @@ func TestMemorySearch_ReportsTheUnitThatFoundAChunk(t *testing.T) {
 	search := func(policy tools.MemoryPolicyValue) string {
 		t.Helper()
 		policy.AllowedScopes = []string{"user"}
-		res, _ := m.Execute(tools.WithMemoryPolicy(ctx, policy), json.RawMessage(`{"op":"search","scope":"user","query":"reboot","top_k":3}`))
+		res, _ := m.Execute(tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = policy }), json.RawMessage(`{"op":"search","scope":"user","query":"reboot","top_k":3}`))
 		if res.IsError {
 			t.Fatalf("search: %s", res.Text)
 		}

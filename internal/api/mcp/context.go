@@ -110,87 +110,89 @@ func operatorCtx(ctx context.Context) context.Context {
 // — so even if such a tool were reached it refuses. Evaluation is not decided
 // by isAdmin: it takes tools.OffRunEvaluationPolicy, as HTTP and gRPC do.
 func grantOperatorPolicies(ctx context.Context, agentName string, isAdmin bool) context.Context {
-	// AgentTools wildcard ceiling (F11): without it, agentdef/skilldef create
-	// with a non-empty tools overlay refuses ("caller's effective
-	// tools not on ctx"). Operator-trust → the same wildcard the HTTP
-	// /v1/_agentdef admin path uses (substrateAdminCtx).
-	ctx = tools.WithAgentTools(ctx, []string{"*"})
-
-	// Memory: full scope access (QuotaBytes=0 → global default cap). RFC BL P2:
-	// the operator plane also gets the consolidation grant — a session with open
-	// memory scope can drive the cursor/pending/supersede ops on its OWN
-	// (tenant-confined) scopes, consistent with the wildcard posture here.
-	//
-	// It does NOT get the origin=consolidator provenance stamp: that requires an
-	// actual run, and this plane has no run id. An operator writing a fact by hand
-	// is not a machine distilling one from a transcript, and the column has to stay
-	// a trustworthy filter for the latter. See builtin.provenanceForSet.
-	//
-	// `tenant` (RFC BL P4b) is granted here for BOTH admin and tenant principals.
-	// This plane IS the operator — a substrate:tenant token is the tenant operator,
-	// with full power inside its own tenant — and curating tenant-shared reference
-	// material is exactly what it is for. Confinement is the TenantID stamped from
-	// the principal, so a tenant token reaches only ITS tenant's tenant scope; the
-	// scope list is not what keeps tenants apart.
-	//
-	// It is deliberately WIDER than an ordinary agent's grant, because the trust is
-	// different in kind: an agent gets `tenant` only when an operator lists it in
-	// yaml, whereas this session is the operator, authenticated as themselves.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant", "global"},
-		Consolidation: true,
-	})
-	// SQL Memory: never stamped before, which meant EVERY sql_* op over MCP failed
-	// default-deny with "this agent has no sql_scopes configured" — at any scope,
-	// since v1.2.0. Verified against a live deployment rather than inferred.
-	//
-	// Documents hid the gap: the Document tool talks to sqlmem directly instead of
-	// through the Memory tool's policy check, so document ops over MCP worked while
-	// the SQL ops beside them did not.
-	//
-	// `run` is omitted on purpose: an MCP-direct call has no run, so granting it
-	// would trade a clear "not configured" refusal for a confusing "requires an
-	// active run" one.
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"},
-	})
-	// Channel: unrestricted, said with the discriminator rather than a "*" in
-	// the allowlist. The matcher supports an exact name and a trailing "/*"
-	// prefix only, so the old []string{"*"} matched NO channel and this plane
-	// silently held no channel authority at all.
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		AllPublish:   true,
-		AllSubscribe: true,
-	})
-
-	// Def families: "any" name within the stamped tenant (same for admin +
-	// tenant; the tenant filter at the lookup confines a tenant principal).
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{})
+	// The operator-only def families: an operator plane's own authority, which
+	// no run holds (the spawn path strips it).
 	ctx = tools.WithScheduleDefPolicy(ctx, tools.ScheduleDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithA2AServerCardDefPolicy(ctx, tools.A2AServerCardDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithA2AAgentDefPolicy(ctx, tools.A2AAgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithWebhookDefPolicy(ctx, tools.WebhookDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithMemoryBackendDefPolicy(ctx, tools.MemoryBackendDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
 	ctx = tools.WithDocumentSourceDefPolicy(ctx, tools.DocumentSourceDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName})
-	ctx = tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"any"}})
 
 	// Evaluation: the grant every off-run transport shares, decided from the
 	// token rather than isAdmin — a tenant operator gets every op here as it
 	// does on HTTP and gRPC, and the tool confines it to its own tenant.
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
-	ctx = tools.WithEvaluationPolicy(ctx, tools.OffRunEvaluationPolicy(p, hasPrincipal))
 
+	// RFC BE History: a tenant principal gets the own-tenant scopes but NOT
+	// `global` — the tenant stamp on ctx + the tool's fold confine every op to
+	// this tenant/subject. The operator plane has full owner-scope reach
+	// INCLUDING cross-tenant `global`.
+	histScopes := []string{"self", "user", "tenant"}
 	if isAdmin {
-		// Operator plane.
-		// RFC BE History: full owner-scope reach INCLUDING cross-tenant `global`.
-		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant", "global"}})
+		histScopes = append(histScopes, "global")
+		// Operator plane. A tenant principal's mint plane stays default-deny (zero).
 		ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
-	} else {
-		// Tenant principal: the mint plane stays default-deny (zero). RFC BE
-		// History gets the own-tenant scopes but NOT `global` — the tenant stamp
-		// on ctx + the tool's fold confine every op to this tenant/subject.
-		ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}})
 	}
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		// tools-ceiling wildcard ceiling (F11): without it, agentdef/skilldef create
+		// with a non-empty tools overlay refuses ("caller's effective
+		// tools not on ctx"). Operator-trust → the same wildcard the HTTP
+		// /v1/_agentdef admin path uses (substrateAdminCtx).
+		rp.Tools = []string{"*"}
+		// Memory: full scope access (QuotaBytes=0 → global default cap). RFC BL P2:
+		// the operator plane also gets the consolidation grant — a session with open
+		// memory scope can drive the cursor/pending/supersede ops on its OWN
+		// (tenant-confined) scopes, consistent with the wildcard posture here.
+		//
+		// It does NOT get the origin=consolidator provenance stamp: that requires an
+		// actual run, and this plane has no run id. An operator writing a fact by hand
+		// is not a machine distilling one from a transcript, and the column has to stay
+		// a trustworthy filter for the latter. See builtin.provenanceForSet.
+		//
+		// `tenant` (RFC BL P4b) is granted here for BOTH admin and tenant principals.
+		// This plane IS the operator — a substrate:tenant token is the tenant operator,
+		// with full power inside its own tenant — and curating tenant-shared reference
+		// material is exactly what it is for. Confinement is the TenantID stamped from
+		// the principal, so a tenant token reaches only ITS tenant's tenant scope; the
+		// scope list is not what keeps tenants apart.
+		//
+		// It is deliberately WIDER than an ordinary agent's grant, because the trust is
+		// different in kind: an agent gets `tenant` only when an operator lists it in
+		// yaml, whereas this session is the operator, authenticated as themselves.
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant", "global"},
+			Consolidation: true,
+		}
+		// SQL Memory: never stamped before, which meant EVERY sql_* op over MCP failed
+		// default-deny with "this agent has no sql_scopes configured" — at any scope,
+		// since v1.2.0. Verified against a live deployment rather than inferred.
+		//
+		// Documents hid the gap: the Document tool talks to sqlmem directly instead of
+		// through the Memory tool's policy check, so document ops over MCP worked while
+		// the SQL ops beside them did not.
+		//
+		// `run` is omitted on purpose: an MCP-direct call has no run, so granting it
+		// would trade a clear "not configured" refusal for a confusing "requires an
+		// active run" one.
+		rp.SqlMem = tools.SqlMemPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"},
+		}
+		// Channel: unrestricted, said with the discriminator rather than a "*" in
+		// the allowlist. The matcher supports an exact name and a trailing "/*"
+		// prefix only, so the old []string{"*"} matched NO channel and this plane
+		// silently held no channel authority at all.
+		rp.Channel = tools.ChannelPolicyValue{
+			AllPublish:   true,
+			AllSubscribe: true,
+		}
+		// Def families: "any" name within the stamped tenant (same for admin +
+		// tenant; the tenant filter at the lookup confines a tenant principal).
+		rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"any"}, SelfName: agentName}
+		rp.Skill = tools.SkillPolicyValue{Granted: true} // every skill
+		rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}}
+		rp.Evaluation = tools.OffRunEvaluationPolicy(p, hasPrincipal)
+		rp.History = tools.HistoryPolicyValue{Scopes: histScopes}
+	})
 	return ctx
 }

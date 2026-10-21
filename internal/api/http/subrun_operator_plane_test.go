@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -79,11 +80,17 @@ func TestPrepareSubRun_EveryOperatorPlaneSetterIsReplacedForTheChild(t *testing.
 	for file, fns := range planes {
 		for _, fn := range fns {
 			for name := range toolsSetterCalls(t, []string{file}, fn, true) {
+				// A plane's RunPolicy writes are judged field by field, below:
+				// the child's policy replaces its parent's, but Inherit carries
+				// some fields across.
+				if name == "WithRunPolicy" || name == "UpdateRunPolicy" {
+					continue
+				}
 				stamped[name] = true
 			}
 		}
 	}
-	if len(stamped) < 10 {
+	if len(stamped) < 6 {
 		t.Fatalf("found only %d operator-plane setters (%v); the scan is not reading the planes", len(stamped), stamped)
 	}
 	pkgFiles, err := filepath.Glob("*.go")
@@ -113,6 +120,114 @@ func TestPrepareSubRun_EveryOperatorPlaneSetterIsReplacedForTheChild(t *testing.
 	}
 }
 
+// The RunPolicy fields an operator plane writes are ones a spawned child never
+// takes from its parent. The child's policy replaces the parent's, but Inherit
+// carries Hosts, Volumes, EphemeralWritable, Crypto, FanoutCap, Overrides,
+// Compaction and Context across (inherit / narrow / merge): an operator grant
+// on any of those would reach every member of a walk the plane starts. Read
+// from the planes' own UpdateRunPolicy closures and RunPolicy literals, and
+// judged by the rule table Inherit is checked against.
+func TestPrepareSubRun_OperatorPlaneWritesNoPolicyFieldAChildInherits(t *testing.T) {
+	planes := map[string][]string{
+		"substrate_admin.go":   {"substrateAdminCtx", "substrateAdminUserCtx"},
+		"../mcp/context.go":    {"mcpPrincipalCtx", "operatorCtx", "grantOperatorPolicies"},
+		"../grpc/substrate.go": {"substrateGRPCCtx", "substrateGRPCUserCtx"},
+	}
+	written := map[string][]string{} // field -> planes
+	for file, fns := range planes {
+		for _, fn := range fns {
+			for field := range runPolicyFieldsWritten(t, file, fn) {
+				written[field] = append(written[field], fn)
+			}
+		}
+	}
+	if len(written) < 5 {
+		t.Fatalf("found only %d RunPolicy fields written by the planes (%v); the scan is not reading them", len(written), written)
+	}
+	var carried []string
+	for field, fns := range written {
+		switch rule := tools.InheritRule(field); rule {
+		case "own", "clear":
+		case "":
+			t.Errorf("a plane writes %q, which is not a RunPolicy field", field)
+		default:
+			carried = append(carried, fmt.Sprintf("%s (%s, by %s)", field, rule, strings.Join(fns, ", ")))
+		}
+	}
+	sort.Strings(carried)
+	if len(carried) > 0 {
+		t.Errorf("an operator plane writes RunPolicy fields a spawned child takes from its parent: %v — "+
+			"a walk the plane starts would hand them to every member", carried)
+	}
+}
+
+// runPolicyFieldsWritten returns the RunPolicy fields fn sets: assignments to
+// the parameter of a tools.UpdateRunPolicy closure, and the keys of a
+// tools.RunPolicy literal. fn must exist in file.
+func runPolicyFieldsWritten(t *testing.T, file, fn string) map[string]bool {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", file, err)
+	}
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok || fd.Name.Name != fn || fd.Body == nil {
+			continue
+		}
+		out := map[string]bool{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				sel, ok := n.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "UpdateRunPolicy" || len(n.Args) != 2 {
+					return true
+				}
+				lit, ok := n.Args[1].(*ast.FuncLit)
+				if !ok || len(lit.Type.Params.List) != 1 || len(lit.Type.Params.List[0].Names) != 1 {
+					t.Fatalf("%s: an UpdateRunPolicy call this guard cannot read", fn)
+				}
+				param := lit.Type.Params.List[0].Names[0].Name
+				ast.Inspect(lit.Body, func(m ast.Node) bool {
+					as, ok := m.(*ast.AssignStmt)
+					if !ok {
+						return true
+					}
+					for _, lhs := range as.Lhs {
+						// p.Field = ..., and p.Field.Sub = ... names Field.
+						for {
+							sel, ok := lhs.(*ast.SelectorExpr)
+							if !ok {
+								break
+							}
+							if id, ok := sel.X.(*ast.Ident); ok && id.Name == param {
+								out[sel.Sel.Name] = true
+								break
+							}
+							lhs = sel.X
+						}
+					}
+					return true
+				})
+			case *ast.CompositeLit:
+				if sel, ok := n.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "RunPolicy" {
+					for _, e := range n.Elts {
+						if kv, ok := e.(*ast.KeyValueExpr); ok {
+							if id, ok := kv.Key.(*ast.Ident); ok {
+								out[id.Name] = true
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+		return out
+	}
+	t.Fatalf("function %s not found in %s", fn, file)
+	return nil
+}
+
 // toolsSetterCalls returns the tools.With*/Without* functions fn calls, looking
 // for fn in files. A required fn that is not found fails the test, so renaming
 // a plane cannot make the guard pass vacuously; an optional one (the spawn
@@ -140,7 +255,8 @@ func toolsSetterCalls(t *testing.T, files []string, fn string, required bool) ma
 				if !ok {
 					return true
 				}
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "tools" && strings.HasPrefix(sel.Sel.Name, "With") {
+				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "tools" &&
+					(strings.HasPrefix(sel.Sel.Name, "With") || sel.Sel.Name == "UpdateRunPolicy") {
 					out[sel.Sel.Name] = true
 				}
 				return true

@@ -124,9 +124,13 @@ func documentDirentFixture(t *testing.T) (*Document, context.Context, store.Stor
 	// BOTH grants — a tenant document is shared by every agent in the tenant, so it
 	// is opt-in; this is the state a granted agent runs in.
 	ctx = tools.WithAgentName(ctx, "curator")
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"}})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
 	return d, ctx, st
 }

@@ -181,10 +181,12 @@ func (r *Runner) Run(ctx context.Context, h *hooks.Hook, event string, payload a
 
 	// The hook's own grant: it may ask (and notify) under the run's pending cap
 	// whether or not the agent itself may interrupt.
-	askCtx := tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{
-		Enabled:    true,
-		Kinds:      []string{"question"},
-		MaxPending: tools.InterruptionPolicy(ctx).MaxPending,
+	askCtx := tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+		p.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{
+			Enabled:    true,
+			Kinds:      []string{"question"},
+			MaxPending: p.Interruption.Load().MaxPending,
+		})
 	})
 	// ctx can carry the loop's hooked executor (a post hook runs on the tool
 	// call's ctx). An ask delivered through a consumer's tool would then go

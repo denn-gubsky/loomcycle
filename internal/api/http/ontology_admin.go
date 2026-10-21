@@ -262,8 +262,7 @@ func (s *Server) ontologyDocCtx(ctx context.Context, mi memInject) context.Conte
 	// adopt. Marked so the ontology guard admits them while refusing an agent's tool call
 	// (which is never stamped, because there is no wire field for it).
 	dctx := tools.WithSubstrateOperator(s.docToolCtx(ctx, mi))
-	dctx = tools.WithMemoryPolicy(dctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx = withTenantDocGrants(dctx)
 	return dctx
 }
 

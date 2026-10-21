@@ -237,7 +237,10 @@ func TestEphemeralModeCheck_AnotherReplicasSetModeStopsAWriteHere(t *testing.T) 
 
 	// This replica: its own set, loaded from the rows while they said rw.
 	here := srv.loadEphemeralVolumes(ctx, runID, tools.NewEphemeralVolumeSet())
-	runCtx := tools.WithEphemeralModeCheck(tools.WithEphemeralVolumes(ctx, here), srv.ephemeralModeCheck(runID))
+	// A run its entry point granted ephemeral write, as every run without
+	// `ephemeral_volumes: ro` is.
+	runCtx := tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.EphemeralWritable = true })
+	runCtx = tools.WithEphemeralModeCheck(tools.WithEphemeralVolumes(runCtx, here), srv.ephemeralModeCheck(runID))
 	write := func() tools.Result {
 		in, _ := json.Marshal(map[string]any{"volume": "work", "path": "a.txt", "content": "x"})
 		res, err := (&builtin.Write{}).Execute(runCtx, in)

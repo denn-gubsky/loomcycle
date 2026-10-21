@@ -193,7 +193,7 @@ func (c *Channel) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errValidation(fmt.Sprintf("invalid input JSON: %s", err), "Send the input as a JSON object matching the tool schema."), nil
 	}
-	policy := tools.ChannelPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Channel
 	if policy.Channels == nil && c.Catalog != nil {
 		policy.Channels = c.Catalog(ctx)
 	}

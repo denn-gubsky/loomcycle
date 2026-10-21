@@ -143,7 +143,7 @@ func TestDocumentSearch_OrdersLikeMemorySearch(t *testing.T) {
 	_ = json.Unmarshal([]byte(out.Text), &doc)
 
 	m := &Memory{Store: d.Store, Embedder: d.Embedder, MaxValueBytes: 1 << 16, DefaultQuotaBytes: 1 << 20}
-	mctx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	mctx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 	res, _ := m.Execute(mctx, json.RawMessage(`{"op":"search","scope":"user","query":"failed err_4711","prefix":"doc.chunk:","top_k":5}`))
 	if res.IsError {
 		t.Fatalf("memory search: %s", res.Text)
@@ -209,7 +209,9 @@ func TestDocumentSearch_TheAgentsRerankAppliesHereToo(t *testing.T) {
 		t.Fatalf("precondition: search order puts %s first, want %s", got, target)
 	}
 
-	rctx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Rerank: rerankOn()})
+	rctx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}, Rerank: rerankOn()}
+	})
 	b2, _ := json.Marshal(map[string]any{"op": "search", "query": "failed err_4711", "limit": 2})
 	out, err := d.Execute(rctx, b2)
 	if err != nil || out.IsError {

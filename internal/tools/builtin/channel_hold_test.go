@@ -28,13 +28,15 @@ func holdFixture(t *testing.T) (*Channel, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test"})
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"gate", "open"},
-		Subscribe: []string{"gate", "open"},
-		Channels: map[string]tools.ChannelDef{
-			"gate": {Name: "gate", Scope: "agent", Semantic: "queue", Hold: true},
-			"open": {Name: "open", Scope: "agent", Semantic: "queue"},
-		},
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"gate", "open"},
+			Subscribe: []string{"gate", "open"},
+			Channels: map[string]tools.ChannelDef{
+				"gate": {Name: "gate", Scope: "agent", Semantic: "queue", Hold: true},
+				"open": {Name: "open", Scope: "agent", Semantic: "queue"},
+			},
+		}
 	})
 	return tool, ctx, func() { _ = s.Close() }
 }
@@ -152,13 +154,15 @@ func TestChannelHold_ReleaseNeedsPublishNotSubscribe(t *testing.T) {
 	defer cleanup()
 	publishTo(t, tool, ctx, "gate", 1)
 
-	readOnly := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:   []string{"open"},
-		Subscribe: []string{"gate"},
-		Channels: map[string]tools.ChannelDef{
-			"gate": {Name: "gate", Scope: "agent", Hold: true},
-			"open": {Name: "open", Scope: "agent"},
-		},
+	readOnly := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:   []string{"open"},
+			Subscribe: []string{"gate"},
+			Channels: map[string]tools.ChannelDef{
+				"gate": {Name: "gate", Scope: "agent", Hold: true},
+				"open": {Name: "open", Scope: "agent"},
+			},
+		}
 	})
 	res, _ := tool.Execute(readOnly, json.RawMessage(`{"op":"release","channel":"gate"}`))
 	if !res.IsError {

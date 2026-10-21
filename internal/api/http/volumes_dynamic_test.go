@@ -41,10 +41,7 @@ func TestVolumePolicyForAgent_ResolvesDynamicVolume(t *testing.T) {
 
 	// Create two dynamic volumes (one rw, one ro) for tenant "acme".
 	tool := &builtin.VolumeDef{Store: st, Cfg: cfg, MaxNameLen: 64}
-	toolCtx := tools.WithVolumeDefPolicy(
-		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"}),
-		tools.VolumeDefPolicyValue{Scopes: []string{"any"}},
-	)
+	toolCtx := tools.UpdateRunPolicy(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"}), func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"any"}} })
 	for _, body := range []string{
 		`{"op":"create","name":"repo-rw","mode":"rw"}`,
 		`{"op":"create","name":"repo-ro","mode":"ro"}`,
@@ -80,7 +77,7 @@ func TestVolumePolicyForAgent_ResolvesDynamicVolume(t *testing.T) {
 	}
 
 	// End-to-end through the REAL Write tool with the resolved policy on ctx.
-	wCtx := tools.WithVolumePolicy(runCtx, pol)
+	wCtx := tools.UpdateRunPolicy(runCtx, func(rp *tools.RunPolicy) { rp.Volumes = pol })
 	w := &builtin.Write{} // construction-time Root unset: only a volume can satisfy.
 
 	rwBody, _ := json.Marshal(map[string]string{"path": "out.txt", "content": "hi", "volume": "repo-rw"})

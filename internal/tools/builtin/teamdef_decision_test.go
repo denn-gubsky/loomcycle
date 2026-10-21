@@ -88,9 +88,9 @@ func TestTeamDefCreate_ADecisionStateNeedsAnAuthorWhoHoldsTheDecisionTool(t *tes
 // asks the operator's default at run time.
 func TestTeamDefCreate_ADecisionStateMayAskOnlyWhatItsAuthorMay(t *testing.T) {
 	tool := decisionTeamFixture(t)
-	narrowed := tools.WithDecisionPolicy(
-		localAuthorCtx("", []string{"any"}, []string{"TeamDef", "Decision"}),
-		&config.AgentDecision{Models: []string{"deep"}, Default: "deep"})
+	narrowed := tools.UpdateRunPolicy(localAuthorCtx("", []string{"any"}, []string{"TeamDef", "Decision"}), func(rp *tools.RunPolicy) {
+		rp.Decision = &config.AgentDecision{Models: []string{"deep"}, Default: "deep"}
+	})
 
 	wantRefused(t, teamOp(t, tool, narrowed, "create", "gated", gateTeam("decide")), "a model outside the author's",
 		`asks decision model "decide"`, "it may ask: deep")

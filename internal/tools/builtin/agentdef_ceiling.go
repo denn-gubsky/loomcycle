@@ -74,7 +74,7 @@ func authorIsOperatorPlane(ctx context.Context) bool {
 	if tools.RunID(ctx) != "" {
 		return false
 	}
-	for _, t := range tools.AgentTools(ctx) {
+	for _, t := range tools.PolicyOf(ctx).Tools {
 		if t == "*" {
 			return true
 		}
@@ -193,7 +193,7 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 	if len(child) == 0 {
 		return nil
 	}
-	pol := tools.VolumePolicy(ctx)
+	pol := tools.PolicyOf(ctx).Volumes
 	bound := map[string]tools.VolumeBinding{}
 	var ceiling []string
 	if pol.Active {
@@ -233,7 +233,7 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 // ---- memory / SQL / history ----
 
 func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	pol := tools.MemoryPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Memory
 	ceiling := pol.AllowedScopes
 	consolidation, includeTurns, attachTraces := pol.Consolidation, pol.RecallIncludeTurns, pol.RecallAttachTraces
 	if base != nil {
@@ -283,7 +283,7 @@ func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string
 }
 
 func ceilSQL(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	ceiling := tools.SqlMemPolicy(ctx).AllowedScopes
+	ceiling := tools.PolicyOf(ctx).SqlMem.AllowedScopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveSqlScopes(ctx, base.SqlScopes))
 	}
@@ -310,7 +310,7 @@ func historyScopes(ctx context.Context, declared []string) []string {
 }
 
 func ceilHistory(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	ceiling := tools.HistoryPolicy(ctx).Scopes
+	ceiling := tools.PolicyOf(ctx).History.Scopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, historyScopes(ctx, base.HistoryScope))
 	}
@@ -329,7 +329,7 @@ func isTeamLocalRef(entry string) bool {
 }
 
 func ceilChannels(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	pol := tools.ChannelPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Channel
 	var basePub, baseSub []string
 	if base != nil {
 		basePub, baseSub = base.Channels.Publish, base.Channels.Subscribe
@@ -375,7 +375,7 @@ func ceilInterruption(ctx context.Context, def mergedDef, base *mergedDef, held 
 	if !def.Interruption.Enabled && len(def.Interruption.Kinds) == 0 {
 		return nil
 	}
-	pol := tools.InterruptionPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Interruption.Load()
 	var ceiling []string
 	if pol.Enabled {
 		ceiling = interruptionKinds(pol.Kinds)
@@ -406,7 +406,7 @@ func ceilEvaluation(ctx context.Context, def mergedDef, base *mergedDef, held st
 	}
 	// The run's policy is already effective (submit_self when its definition
 	// declared none).
-	ceiling := tools.EvaluationPolicy(ctx).Scopes
+	ceiling := tools.PolicyOf(ctx).Evaluation.Scopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveEvaluationScopes(base.EvaluationScopes))
 	}
@@ -430,7 +430,7 @@ func ceilCrypto(ctx context.Context, def mergedDef, base *mergedDef, held string
 	}
 	// The run's policy is already effective (and, for a sub-agent, already
 	// narrowed by its parent's).
-	ceiling := tools.CryptoPolicy(ctx).Scopes
+	ceiling := tools.PolicyOf(ctx).Crypto.Scopes
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveCryptoScopes(base.CryptoScopes))
 	}
@@ -554,7 +554,7 @@ func skillsWithin(child, ceiling []string) bool {
 }
 
 func ceilSkills(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	author := tools.SkillPolicy(ctx).Patterns
+	author := tools.PolicyOf(ctx).Skill.Effective()
 	if skillsWithin(def.Skills, author) || (base != nil && skillsWithin(def.Skills, base.Skills)) {
 		return nil
 	}
@@ -617,7 +617,7 @@ func defScopeCovered(c, childName string, ceiling []string, ceilingSelf string) 
 }
 
 func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *mergedDef, held string) error {
-	ad, sd := tools.AgentDefPolicy(ctx), tools.ScheduleDefPolicy(ctx)
+	ad, sd := tools.PolicyOf(ctx).AgentDef, tools.ScheduleDefPolicy(ctx)
 	sc, aa := tools.A2AServerCardDefPolicy(ctx), tools.A2AAgentDefPolicy(ctx)
 	var b mergedDef
 	if base != nil {
@@ -633,7 +633,7 @@ func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *merged
 		{field: "a2a_server_card_def_scopes", child: def.A2AServerCardDefScopes, ceil: sc.Scopes, selfName: sc.SelfName, baseVal: b.A2AServerCardDefScopes},
 		{field: "a2a_agent_def_scopes", child: def.A2AAgentDefScopes, ceil: aa.Scopes, selfName: aa.SelfName, baseVal: b.A2AAgentDefScopes},
 		// Volume grants have no "self": a volume has no agent identity.
-		{field: "volume_def_scopes", child: def.VolumeDefScopes, ceil: tools.VolumeDefPolicy(ctx).Scopes, baseVal: b.VolumeDefScopes},
+		{field: "volume_def_scopes", child: def.VolumeDefScopes, ceil: tools.PolicyOf(ctx).VolumeDef.Scopes, baseVal: b.VolumeDefScopes},
 	} {
 		childName := name
 		if g.field == "volume_def_scopes" {

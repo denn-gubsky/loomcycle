@@ -858,7 +858,7 @@ func (a *AgentTool) executeSpawn(ctx context.Context, in agentInput) (tools.Resu
 	// Per-spawn compaction override (the parent steering this child's context
 	// management); runSubAgent blends it on top of inheritance.
 	if !in.Compaction.IsZero() {
-		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
+		subCtx = tools.UpdateRunPolicy(subCtx, func(p *tools.RunPolicy) { p.CompactionOverride = in.Compaction })
 	}
 	// Where the child's run reports its outcome, when the caller wants the
 	// object. Always set, nil included (tools.WithChildOutcome).
@@ -1104,14 +1104,16 @@ func (a *AgentTool) executeParallelSpawn(ctx context.Context, in agentInput) (to
 			// Thread the child's index so runSubAgent can emit the
 			// spawn_child_started ledger row with the right index + run_id.
 			childCtx := tools.WithSpawnUntrusted(subCtx, untrusted[i])
-			if ledger {
-				childCtx = tools.WithSpawnTimeoutMs(tools.WithSpawnIndex(childCtx, i), sp.TimeoutMs)
-			}
-			// Per-spawn compaction override (the parent steering this child's
-			// context management); runSubAgent blends it on top of inheritance.
-			if !sp.Compaction.IsZero() {
-				childCtx = tools.WithCompactionOverride(childCtx, sp.Compaction)
-			}
+			childCtx = tools.UpdateRunPolicy(childCtx, func(p *tools.RunPolicy) {
+				if ledger {
+					p.SpawnIndex, p.SpawnTimeoutMs = i+1, sp.TimeoutMs // index+1: 0 is "not a parallel_spawn child"
+				}
+				// Per-spawn compaction override (the parent steering this child's
+				// context management); runSubAgent blends it on top of inheritance.
+				if !sp.Compaction.IsZero() {
+					p.CompactionOverride = sp.Compaction
+				}
+			})
 			// The bound starts here, once the child holds a slot: time queued
 			// behind its siblings is the call's concurrency, not the child's work.
 			var outcome *tools.ChildOutcome
@@ -1351,7 +1353,7 @@ func (a *AgentTool) executeOpen(ctx context.Context, in agentInput) (tools.Resul
 	}
 	subCtx := tools.WithSpawnUntrusted(IncrementAgentDepth(ctx), untrusted)
 	if !in.Compaction.IsZero() {
-		subCtx = tools.WithCompactionOverride(subCtx, in.Compaction)
+		subCtx = tools.UpdateRunPolicy(subCtx, func(p *tools.RunPolicy) { p.CompactionOverride = in.Compaction })
 	}
 	childRunID, output, state, err := a.OpenChild(subCtx, in.Name, in.Prompt, in.DefID, in.IdleTTLSeconds, in.TimeoutMs)
 	var lim *tools.LiveChildLimitError

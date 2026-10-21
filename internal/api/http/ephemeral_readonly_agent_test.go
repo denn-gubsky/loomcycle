@@ -15,20 +15,25 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
-// ephemeral_volumes: ro on a definition marks the run; a definition without it
-// leaves an inherited mark alone.
-func TestEphemeralReadOnlyFor_MarksAndNeverUnmarks(t *testing.T) {
+// ephemeral_volumes: ro on a definition marks the run; a child whose definition
+// does not say so keeps an inherited mark, and one whose definition does is
+// marked under an unmarked parent.
+func TestEphemeralReadOnly_DefinitionMarksAndChildNeverUnmarks(t *testing.T) {
+	h := newReviewHarness(t)
 	ctx := context.Background()
-	if tools.EphemeralReadOnly(ephemeralReadOnlyFor(ctx, config.AgentDef{})) {
+	unmarked, _ := h.srv.agentRunPolicy(ctx, config.AgentDef{}, "a", runPolicySource{})
+	if !unmarked.EphemeralWritable {
 		t.Error("an agent without the setting was marked")
 	}
-	marked := ephemeralReadOnlyFor(ctx, config.AgentDef{EphemeralVolumes: "ro"})
-	if !tools.EphemeralReadOnly(marked) {
+	marked, _ := h.srv.agentRunPolicy(ctx, config.AgentDef{EphemeralVolumes: "ro"}, "a", runPolicySource{})
+	if marked.EphemeralWritable {
 		t.Fatal("ephemeral_volumes: ro did not mark the run")
 	}
-	// A child with no setting of its own, under a marked parent.
-	if !tools.EphemeralReadOnly(ephemeralReadOnlyFor(marked, config.AgentDef{})) {
+	if marked.Inherit(tools.ChildGrant{Own: unmarked}).EphemeralWritable {
 		t.Error("a child's definition without the setting cleared its parent's")
+	}
+	if unmarked.Inherit(tools.ChildGrant{Own: marked}).EphemeralWritable {
+		t.Error("a child's own ephemeral_volumes: ro did not mark it under an unmarked parent")
 	}
 }
 

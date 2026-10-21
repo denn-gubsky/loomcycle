@@ -21,7 +21,7 @@ import (
 func cryptoFixture(t *testing.T, scopes ...string) (*Crypto, *CredentialDef, context.Context) {
 	t.Helper()
 	cd, ctx := credFixture(t, "u1", testKEK())
-	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: scopes})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: scopes} })
 	return &Crypto{Engine: cd.Engine}, cd, ctx
 }
 
@@ -267,7 +267,7 @@ func TestCrypto_RunCredentialsNeedTheRunScope(t *testing.T) {
 	if _, res := cryptoExec(t, c, ctx, `{"op":"encrypt","run":"sess","key_type":"aes-256-gcm","plaintext":"x"}`); !res.IsError {
 		t.Fatal("a run credential was used without the run scope")
 	}
-	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"run"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"run"}} })
 	out, res := cryptoExec(t, c, ctx, `{"op":"encrypt","run":"sess","key_type":"aes-256-gcm","plaintext":"hand-off"}`)
 	mustOK(t, "encrypt", res)
 	ct := out["ciphertext"].(string)
@@ -446,7 +446,7 @@ func TestCrypto_ASameNamedKeyInAnotherScopeNeverStandsIn(t *testing.T) {
 		t.Error("the pinned signature was not made with the tenant's key")
 	}
 	// A scope the run may not use cannot be pinned.
-	ctxT := tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"tenant"}})
+	ctxT := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"tenant"}} })
 	if _, res := cryptoExec(t, c, ctxT, `{"op":"sign","key":"signing","key_scope":"agent","data":"x"}`); !res.IsError || res.Error.Category != tools.CategoryPermission {
 		t.Errorf("pinning an ungranted scope = %+v, want a permission refusal", res)
 	}

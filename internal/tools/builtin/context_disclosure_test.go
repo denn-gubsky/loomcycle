@@ -58,7 +58,7 @@ func disclosedBy(t *testing.T, ct *Context, ctx context.Context, op string) []st
 func TestContextDisclosure_OnlyWhatTheAgentHolds(t *testing.T) {
 	ct := catalogContext()
 	for _, op := range []string{"tools", "guide"} {
-		ctx := tools.WithAgentTools(context.Background(), []string{"Read", "mcp__slack__send"})
+		ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Read", "mcp__slack__send"}})
 		got := disclosedBy(t, ct, ctx, op)
 		want := []string{"Read", "mcp__slack__send"}
 		if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -83,7 +83,7 @@ func TestContextDisclosure_OnlyWhatTheAgentHolds(t *testing.T) {
 // of an allowlist is a bug with extra steps.
 func TestContextDisclosure_HonoursTheGlobConvention(t *testing.T) {
 	ct := catalogContext()
-	ctx := tools.WithAgentTools(context.Background(), []string{"Read", "mcp__slack__*"})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Read", "mcp__slack__*"}})
 	got := disclosedBy(t, ct, ctx, "tools")
 	want := []string{"Read", "mcp__slack__list", "mcp__slack__send"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -105,7 +105,7 @@ func TestContextDisclosure_HonoursTheGlobConvention(t *testing.T) {
 // everything from the operator while showing everything to an unstamped caller.
 func TestContextDisclosure_WildcardMeansEverything(t *testing.T) {
 	ct := catalogContext()
-	ctx := tools.WithAgentTools(context.Background(), []string{"*"})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"*"}})
 	got := disclosedBy(t, ct, ctx, "tools")
 	if len(got) != 6 {
 		t.Errorf(`a "*" grant disclosed %d tools, want all 6: %v`, len(got), got)
@@ -136,7 +136,7 @@ func TestContextDisclosure_UnstampedCtxDisclosesNothing(t *testing.T) {
 // name lookup over the catalog.
 func TestContextDisclosure_DocRespectsTheGrant(t *testing.T) {
 	ct := catalogContext()
-	ctx := tools.WithAgentTools(context.Background(), []string{"Read"})
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Read"}})
 
 	res, _ := ct.Execute(ctx, json.RawMessage(`{"op":"doc","name":"Read"}`))
 	if res.IsError {

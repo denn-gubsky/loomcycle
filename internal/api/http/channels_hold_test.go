@@ -431,9 +431,11 @@ func TestChannelTool_AHoldSetMidRunApplies(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	// The run's policy, as built when it started: inbox is not held.
-	runCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-		Publish:  []string{"inbox"},
-		Channels: map[string]tools.ChannelDef{"inbox": {Name: "inbox", Scope: "global", MaxMessages: 100}},
+	runCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Channel = tools.ChannelPolicyValue{
+			Publish:  []string{"inbox"},
+			Channels: map[string]tools.ChannelDef{"inbox": {Name: "inbox", Scope: "global", MaxMessages: 100}},
+		}
 	})
 	hold := true
 	if err := st.ChannelsUpdate(ctx, "", "inbox", store.ChannelPatch{Hold: &hold}); err != nil {
@@ -471,9 +473,11 @@ func TestChannelHoldCensus_EverySurfaceIsHeld(t *testing.T) {
 	}{
 		{"agent Channel tool", "", func(t *testing.T, srv *Server, st store.Store) {
 			tool := &builtin.Channel{Store: st, Writer: srv.systemPublisher.(channels.Writer)}
-			runCtx := tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{
-				Publish:  []string{"gate"},
-				Channels: map[string]tools.ChannelDef{"gate": {Name: "gate", Scope: "global", MaxMessages: 100}},
+			runCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+				rp.Channel = tools.ChannelPolicyValue{
+					Publish:  []string{"gate"},
+					Channels: map[string]tools.ChannelDef{"gate": {Name: "gate", Scope: "global", MaxMessages: 100}},
+				}
 			})
 			if res, err := tool.Execute(runCtx, json.RawMessage(`{"op":"publish","channel":"gate","value":{}}`)); err != nil || res.IsError {
 				t.Fatalf("publish: err=%v result=%s", err, res.Text)

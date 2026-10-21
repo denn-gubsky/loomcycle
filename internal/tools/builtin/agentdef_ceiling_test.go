@@ -17,7 +17,7 @@ import (
 // tools ceiling, outside any run — so an authoring call is not narrowed by an
 // agent's policies.
 func operatorPlane(ctx context.Context) context.Context {
-	return tools.WithAgentTools(ctx, []string{"*"})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 }
 
 // ceilingFixture is an AgentDef tool with two static volumes and one static
@@ -56,17 +56,23 @@ func ceilingFixture(t *testing.T) (*AgentDef, context.Context) {
 	ctx := tools.WithRunID(context.Background(), "run_author")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_author", UserID: "u1", TenantID: "t1"})
 	ctx = tools.WithAgentName(ctx, "sdlc/meta")
-	ctx = tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}, SelfName: "sdlc/meta"}
+	})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 	// Memory and SQL below their ordinary default (user, tenant), so an unset
 	// one passing is that default at work and not the author holding it. The
 	// author does hold what an unset history_scope and volumes resolve to
 	// ([user], the default volume), so a case leaving those out judges only
 	// the field it is about.
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}})
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user"}})
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: []string{"self", "user"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "default"}}}
+	})
+	// Every skill, as an agent declaring no `skills:` holds.
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} })
 	return tool, ctx
 }
 
@@ -88,26 +94,29 @@ type ceilingCase struct {
 	within string
 	// refusedAs is what the wider value's refusal names, when not the field.
 	refusedAs string
-	// absentGrantsAll: the field's policy, when no one stamped it, means "all"
-	// rather than "none" (skills), so the missing-policy case does not apply.
-	absentGrantsAll bool
 }
 
 func ceilingCases() []ceilingCase {
 	return []ceilingCase{
 		{field: "volumes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}}
+				})
 			},
 			wider: `{"volumes":["work","secrets"]}`, within: `{"volumes":["work"]}`},
 		{field: "memory_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}}
+				})
 			},
 			wider: `{"memory_scopes":["user","tenant"]}`, within: `{"memory_scopes":["user"]}`},
 		{field: "memory_consolidation",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}, Consolidation: true})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent"}, Consolidation: true}
+				})
 			},
 			// The memory grants are judged one by one: holding consolidation
 			// is not holding the recall grants.
@@ -115,45 +124,53 @@ func ceilingCases() []ceilingCase {
 			within: `{"memory_consolidation":true}`},
 		{field: "core_blocks",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}}
+				})
 			},
 			wider:  `{"core_blocks":[{"label":"brief","scope":"tenant"}]}`,
 			within: `{"core_blocks":[{"label":"brief","scope":"user"}]}`},
 		{field: "sql_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}}
+				})
 			},
 			wider: `{"sql_scopes":["user","tenant"]}`, within: `{"sql_scopes":["user"]}`},
 		{field: "history_scope",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.History = tools.HistoryPolicyValue{Scopes: []string{"self", "user", "tenant"}}
+				})
 			},
 			// The legacy "any" is the cross-tenant "global" it stands for.
 			wider: `{"history_scope":["tenant","any"]}`, within: `{"history_scope":["tenant"]}`},
 		{field: "channels.publish",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 			},
 			wider: `{"channels":{"publish":["team/*","ops"]}}`, within: `{"channels":{"publish":["team/review","team/x/*"]}}`},
 		{field: "channels.subscribe",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Subscribe: []string{"team/review"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Subscribe: []string{"team/review"}} })
 			},
 			wider: `{"channels":{"subscribe":["team/*"]}}`, within: `{"channels":{"subscribe":["team/review"]}}`},
 		{field: "interruption",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true})
+				})
 			},
 			wider: `{"interruption":{"enabled":true,"kinds":["question","approval"]}}`, refusedAs: "interruption.kinds:", within: `{"interruption":{"enabled":true,"max_pending":2}}`},
 		{field: "evaluation_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithEvaluationPolicy(ctx, tools.EvaluationPolicyValue{Scopes: []string{"submit_any"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Evaluation = tools.EvaluationPolicyValue{Scopes: []string{"submit_any"}} })
 			},
 			// submit_any covers every submit; it does not cover reading.
 			wider: `{"evaluation_scopes":["submit_self","read_any"]}`, within: `{"evaluation_scopes":["submit_self","submit_descendants"]}`},
 		{field: "crypto_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"agent", "user"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"agent", "user"}} })
 			},
 			wider: `{"crypto_scopes":["user","tenant"]}`, within: `{"crypto_scopes":["user"]}`},
 		{field: "agent_def_scopes",
@@ -177,15 +194,19 @@ func ceilingCases() []ceilingCase {
 			wider: `{"a2a_agent_def_scopes":["named:peers/**"]}`, within: `{"a2a_agent_def_scopes":["named:peers/one"]}`},
 		{field: "volume_def_scopes",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"named:scratch"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"named:scratch"}}
+				})
 			},
 			wider: `{"volume_def_scopes":["any"]}`, within: `{"volume_def_scopes":["named:scratch"]}`},
 		{field: "skills",
 			policy: func(ctx context.Context) context.Context {
-				return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*", "-doc/secret"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*", "-doc/secret"}}
+				})
 			},
 			// Unset is "every skill"; dropping the author's deny widens too.
-			wider: `{"system_prompt":"x"}`, within: `{"skills":["doc/redactor","-doc/secret","-doc/old"]}`, absentGrantsAll: true},
+			wider: `{"system_prompt":"x"}`, within: `{"skills":["doc/redactor","-doc/secret","-doc/old"]}`},
 	}
 }
 
@@ -208,7 +229,7 @@ func TestAgentDefCreate_InRunAuthorIsRefusedEveryCapabilityItDoesNotHold(t *test
 			}
 
 			op := operatorPlane(context.Background())
-			op = tools.WithAgentDefPolicy(op, tools.AgentDefPolicyValue{Scopes: []string{"any"}})
+			op = tools.UpdateRunPolicy(op, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"any"}} })
 			if res := agentDefOp(t, tool, op, "create", "sdlc/op-"+strings.ReplaceAll(c.field, ".", "-"), c.wider); res.IsError {
 				t.Fatalf("operator plane, wider %s: refused: %s", c.field, res.Text)
 			}
@@ -221,11 +242,17 @@ func TestAgentDefCreate_InRunAuthorIsRefusedEveryCapabilityItDoesNotHold(t *test
 // overlay when the caller's tools are not on ctx.
 func TestAgentDefCreate_MissingAuthorPolicyFailsClosed(t *testing.T) {
 	for _, c := range ceilingCases() {
-		if c.absentGrantsAll || c.field == "agent_def_scopes" {
-			continue // skills: no policy is the documented "all"; agent_def_scopes: the name gate needs one
+		if c.field == "agent_def_scopes" {
+			continue // the name gate needs one
 		}
 		t.Run(c.field, func(t *testing.T) {
 			tool, ctx := ceilingFixture(t)
+			if c.field == "skills" {
+				// The fixture's author holds every skill; this one holds none
+				// stamped at all. A skill policy nobody granted allows no
+				// skill, as every other missing policy allows nothing.
+				ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{} })
+			}
 			wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", c.within), "no policy, "+c.field, c.field+":")
 		})
 	}
@@ -252,11 +279,11 @@ func TestAgentDefCreate_ReviewerEscalationCaseIsRefused(t *testing.T) {
 // The same wildcard on a run's ctx grants nothing: a run is always narrowed.
 func TestAgentDefCreate_WildcardToolsInsideARunIsStillNarrowed(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithAgentTools(ctx, []string{"*"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} })
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"sql_scopes":["tenant"]}`), "wildcard in a run", "sql_scopes:")
 
 	off := operatorPlane(context.Background())
-	off = tools.WithAgentDefPolicy(off, tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}})
+	off = tools.UpdateRunPolicy(off, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"named:sdlc/**"}} })
 	if res := agentDefOp(t, tool, off, "create", "sdlc/new", `{"sql_scopes":["tenant"],"volumes":["secrets"]}`); res.IsError {
 		t.Fatalf("operator plane refused: %s", res.Text)
 	}
@@ -272,9 +299,13 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 	tool, ctx := ceilingFixture(t)
 	// Below every default: memory and SQL [agent] (the fixture), history
 	// [self], bound to the volume "work" only, interruptions of kind approval.
-	ctx = tools.WithHistoryPolicy(ctx, tools.HistoryPolicyValue{Scopes: []string{"self"}})
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}})
-	ctx = tools.WithInterruptionPolicy(ctx, tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.History = tools.HistoryPolicyValue{Scopes: []string{"self"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work"}}}
+	})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Interruption = tools.NewInterruptionPolicyHolder(tools.InterruptionPolicyValue{Enabled: true, Kinds: []string{"approval"}})
+	})
 	const rest = `"history_scope":["self"],"volumes":["work"]`
 
 	if res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{`+rest+`}`); res.IsError {
@@ -291,7 +322,7 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 		"unset volumes", "volumes: left unset", `"default"`, "set volumes explicitly")
 	// The escalation the default would hand out: an author with no volume at
 	// all minting an agent bound to the operator's default host directory.
-	noVolumes := tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{})
+	noVolumes := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Volumes = tools.VolumePolicyValue{} })
 	wantRefused(t, agentDefOp(t, tool, noVolumes, "create", "sdlc/x", `{"history_scope":["self"]}`),
 		"unset volumes, author holds none", "volumes: left unset", `"default"`)
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`,"interruption":{"enabled":true}}`),
@@ -299,7 +330,9 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`,"interruption":{"enabled":true,"kinds":["question"]}}`),
 		"explicit kinds", "interruption.kinds:")
 
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}}
+	})
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{`+rest+`}`), "unset skills", "skills: left unset")
 }
 
@@ -307,7 +340,9 @@ func TestAgentDefCreate_UnsetFieldIsJudgedUnlessItIsAMemoryDefault(t *testing.T)
 // declared read-write, so a new agent naming it could write: refused.
 func TestAgentDefCreate_ReadOnlyHeldVolumeIsNotGrantedReadWrite(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", ReadOnly: true}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", ReadOnly: true}}}
+	})
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"volumes":["work"]}`), "ro volume", "read-only")
 }
 
@@ -316,7 +351,7 @@ func TestAgentDefCreate_ReadOnlyHeldVolumeIsNotGrantedReadWrite(t *testing.T) {
 // neither the forker nor that version holds.
 func TestAgentDefFork_CapabilityCeilingKeepsTheLineageButCannotWiden(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 
 	if res := agentDefOp(t, tool, ctx, "fork", "sdlc/wide", `{"system_prompt":"rewritten"}`); res.IsError {
 		t.Fatalf("prompt-only fork refused: %s", res.Text)
@@ -343,7 +378,7 @@ func TestTeamDefCreate_LocalAgentIsHeldToTheCapabilityCeiling(t *testing.T) {
 	ctx = tools.WithRunID(ctx, "run_author")
 	wantRefused(t, teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle","tools":["Read"],"sql_scopes":["tenant"]}`)),
 		"team-local agent with sql_scopes", "local.agents", "sql_scopes:")
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	if res := teamOp(t, tool, ctx, "create", "sdlc", localTeam(`{"tier":"middle","tools":["Read"],"sql_scopes":["tenant"]}`)); res.IsError {
 		t.Fatalf("team-local agent within the author's sql_scopes refused: %s", res.Text)
 	}
@@ -422,10 +457,12 @@ func TestDefScopeCovered_IsNarrowOnly(t *testing.T) {
 func TestTeamDefCreate_LocalAgentGrantsOfTheTeamsOwnChannelsAndSkillsAreNotJudged(t *testing.T) {
 	tool, ctx := skillTeamFixture(t)
 	ctx = tools.WithRunID(ctx, "run_author")
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 	// The team's skill is authored as "<team>/style", which this allows; it
 	// does not allow "./style" as a pattern.
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"sdlc/*", "sdlc2/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"sdlc/*", "sdlc2/*"}}
+	})
 	team := func(publish string) string {
 		return `{"entry":"review","local":{"channels":{"events":{"scope":"tenant"}},
 		  "agents":{"reviewer":{"tier":"middle","tools":["Read","Skill"],"skills":["./style"],
@@ -461,7 +498,7 @@ func TestIsTeamLocalRef_AcceptsOnlyOneWellFormedName(t *testing.T) {
 // entry as one of a team's own channels.
 func TestAgentDefCreate_MalformedLocalChannelRefIsJudged(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithChannelPolicy(ctx, tools.ChannelPolicyValue{Publish: []string{"team/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Channel = tools.ChannelPolicyValue{Publish: []string{"team/*"}} })
 	for _, entry := range []string{"./*", "./a/b", "./../x", "./"} {
 		wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"channels":{"publish":[`+strconv.Quote(entry)+`]}}`),
 			"publish "+entry, "channels.publish:")
@@ -472,7 +509,9 @@ func TestAgentDefCreate_MalformedLocalChannelRefIsJudged(t *testing.T) {
 // passing the ceiling on such a list hands out nothing beyond the team.
 func TestAgentDefCreate_OnlyLocalSkillRefsGrantNoGlobalSkill(t *testing.T) {
 	tool, ctx := ceilingFixture(t)
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}}
+	})
 	res := agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"skills":["./x"]}`)
 	if res.IsError {
 		t.Fatalf("create: %s", res.Text)
@@ -490,6 +529,6 @@ func TestAgentDefCreate_OnlyLocalSkillRefsGrantNoGlobalSkill(t *testing.T) {
 			t.Errorf("an agent granted %v may invoke the global skill %q", def.Skills, global)
 		}
 	}
-	denyAll := tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"-*"}})
+	denyAll := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}} })
 	wantRefused(t, agentDefOp(t, tool, denyAll, "create", "sdlc/new2", `{"skills":["./x"]}`), "deny-all author", "skills:")
 }

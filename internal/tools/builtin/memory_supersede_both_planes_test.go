@@ -33,9 +33,11 @@ func supersedeFixture(t *testing.T) (*Memory, *Document, context.Context) {
 	d, ctx, s := documentFixture(t)
 	m := &Memory{Store: s, SqlMem: d.SqlMem, MaxValueBytes: 65536}
 	ctx = tools.WithRunID(ctx, "run_consolidation_pass")
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		Consolidation: true,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			Consolidation: true,
+		}
 	})
 	return m, d, ctx
 }
@@ -177,11 +179,13 @@ func TestMemorySupersede_RawRowStillWorks(t *testing.T) {
 // the user-scope case passes under both the right and the wrong coordinates.
 func TestMemorySupersede_ClosesATenantScopeFactToo(t *testing.T) {
 	m, d, ctx := supersedeFixture(t)
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user", "tenant"},
-		Consolidation: true,
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user", "tenant"},
+			Consolidation: true,
+		}
 	})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 
 	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Tenant facts","path":"/t/tenant-facts"}`)
 	if r.IsError {

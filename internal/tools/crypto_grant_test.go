@@ -68,7 +68,7 @@ func TestNarrowCryptoScopes_IsTheIntersectionInTheChildsOrder(t *testing.T) {
 }
 
 func TestCryptoPolicy_ZeroValueWhenUnsetAndAllowsOnlyGrantedScopes(t *testing.T) {
-	unset := CryptoPolicy(context.Background())
+	unset := PolicyOf(context.Background()).Crypto
 	if len(unset.Scopes) != 0 {
 		t.Fatalf("unset policy = %v, want no scopes", unset.Scopes)
 	}
@@ -78,8 +78,8 @@ func TestCryptoPolicy_ZeroValueWhenUnsetAndAllowsOnlyGrantedScopes(t *testing.T)
 		}
 	}
 
-	ctx := WithCryptoPolicy(context.Background(), CryptoPolicyValue{Scopes: []string{"user", "run"}})
-	p := CryptoPolicy(ctx)
+	ctx := WithRunPolicy(context.Background(), RunPolicy{Crypto: CryptoPolicyValue{Scopes: []string{"user", "run"}}})
+	p := PolicyOf(ctx).Crypto
 	for s, want := range map[string]bool{"user": true, "run": true, "agent": false, "tenant": false, "": false, DenyAllScopes: false} {
 		if got := p.Allows(s); got != want {
 			t.Errorf("Allows(%q) = %v, want %v", s, got, want)

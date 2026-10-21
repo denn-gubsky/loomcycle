@@ -26,9 +26,11 @@ func TestMemoryReducers_RefusedOverCapLeavesTheValueUnchanged(t *testing.T) {
 			return ctx
 		}, "quota"},
 		{"core block limit_bytes", func(ctx context.Context, _ *Memory) context.Context {
-			return tools.WithCoreBlocksPolicy(ctx, tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
-				{Label: "k", Scope: "agent", LimitBytes: 40},
-			}})
+			return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+				rp.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: []config.CoreBlock{
+					{Label: "k", Scope: "agent", LimitBytes: 40},
+				}}
+			})
 		}, "limit_bytes"},
 	}
 	ops := []struct {

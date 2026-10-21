@@ -902,87 +902,20 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		VerdictsOnly: takesOnlyVerdicts(run) && !resident, // a resident child takes its parent's sends
 	}, emit)
 
-	loopCtx := tools.WithAgentTools(runCtx, toolNames(allowedTools))
-	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools) // raw globs for the Skill subset check
 	// RFC AR: honor a tenant/user provider-key override on the resumed run too.
-	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
+	loopCtx := providers.WithCredentialResolver(runCtx, s.credResolver)
 	// RFC AX: mirror the restored negative permission bit onto ctx for the
 	// stage-2 driver backstop (drivers import providers, not auth/tools).
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !run.OperatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
-	// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
-	// inherit the same reach the original's did. Zero value (no record) leaves
-	// the operator floor as the only bound, exactly as before.
-	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
-	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:         agentDef.MemoryQuotaBytes,
-		Backend:            agentDef.MemoryBackend,
-		Consolidation:      agentDef.MemoryConsolidation,
-		RecallIncludeTurns: agentDef.RecallIncludeTurns,
-		RecallAttachTraces: agentDef.RecallAttachTraces,
-		Rerank:             agentDef.MemoryRerank,
-		Units:              agentDef.MemoryUnits,
-	})
-	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
+	src := s.resumedPolicySource(loopCtx, run, runCfg, agentDef)
+	src.Tools = allowedTools
 	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
 	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
-	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
-	// RFC AA SQL Memory: re-derive the sql_scopes ACL from the agent def too —
-	// without this a resumed/restored run reads a zero SqlMemPolicy and every
-	// sql_query/sql_exec default-denies, a silent loss of SQL Memory access
-	// across pause / snapshot / cross-instance resume (mirrors the memory +
-	// volume policy re-derivation above).
-	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
-		QuotaBytes:    agentDef.SqlQuotaBytes,
-	})
-	// Restored from the run's own record, stamped for sub-agent inheritance.
-	// The context policy is stamped too: every non-resume run path does, so
-	// without it a resumed run's children inherited a different retention mode
-	// from the original's children.
-	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
-	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
-	// as the original's were. A live sub-run never sets its own: it runs on
-	// the width inherited from its ancestors, which its record kept.
-	//
-	// A sub-run with no record of it (spawned before the record existed) fails
-	// closed to serial, as its volumes and hosts do: the width its ancestors
-	// allowed is unknown, and its definition's is exactly the widening the
-	// record guards against.
-	fanoutCap := agentDef.MaxConcurrentChildren
-	switch {
-	case runCfg.Spawn != nil && runCfg.Spawn.FanoutCap > 0:
-		fanoutCap = runCfg.Spawn.FanoutCap
-	case runCfg.Spawn == nil && isSubRun(run):
-		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
-		fanoutCap = 1
-	}
-	loopCtx = tools.WithFanoutCap(loopCtx, fanoutCap)
-	// RFC DC P5: offer this run's overrides to its children. Only a child of the
-	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
-	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
-		Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID,
-	})
-
-	loopCtx = tools.WithContextPolicy(loopCtx, runCfg.Context)
-	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
-	// Volume confinement (RFC AH attach-gap fix): without it a volume-bound
-	// agent would resume with no volume policy at all. A top-level run's is its
-	// agent's own; a sub-run's is narrowed to its parent's, as it was live.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.resumedVolumePolicy(loopCtx, run, runCfg.Spawn, agentDef))
-	// Read-only ephemeral volumes: what the run started with, read from its
-	// record, or what its definition says now. Either is enough, so a
-	// definition that gained the setting during the pause applies, and one
-	// that lost it does not hand write access back. A sub-run with no spawn
-	// record at all cannot say what it started with, so it resumes
-	// read-only, as it resumes confined to no volume.
-	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
-	if runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)) {
-		loopCtx = tools.WithEphemeralReadOnly(loopCtx)
-	}
+	src.CoreBlocks = coreBlocks
+	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, run.Agent, src)
+	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
 	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
 	// from any ephemeral_volume_defs rows this run created before it was
 	// paused/snapshotted (the sweeper skips paused runs, so the rows + on-disk
@@ -998,18 +931,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.loadEphemeralVolumes(loopCtx, rootRunID, ephSet))
 	loopCtx = s.withEphemeralRecord(loopCtx, rootRunID)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
-	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, run.Agent)
-	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
-	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
-	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithCryptoPolicy(loopCtx, resumedCryptoPolicy(run, runCfg.Spawn, agentDef))
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	// From the run's record, which a retune may have changed since it started —
-	// an autonomous run that never parked adopts a retune here.
-	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, runCfg.Interruption)
 	loopCtx = tools.WithParentRunID(loopCtx, run.ParentRunID) // "" for a top-level run: stays unset
 	loopCtx = tools.WithRunID(loopCtx, run.ID)
 	if added := runCfg.additions(); !added.Empty() {
@@ -2291,4 +2214,63 @@ func toolResultText(m providers.Message) string {
 		}
 	}
 	return b.String()
+}
+
+// resumedPolicySource is what a resumed run's policy is rebuilt from beyond its
+// definition: its row and its configuration record, which kept what it
+// inherited when it started. The caller adds its tool set and core blocks,
+// re-derived from the definition like its prompt. A sub-run's policy built
+// from this matches the one Inherit gave it live
+// (TestResume_SubRunPolicyMatchesItsLiveSpawn).
+func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg runConfigRecord, agentDef config.AgentDef) runPolicySource {
+	// RFC DC P2: the resumed run's fan-out width, so its children are as narrow
+	// as the original's were. A sub-run's is the one its spawn recorded — what
+	// it ran with live — narrowed by its definition again, as Inherit narrows
+	// it, so a record written before the child's own cap was applied cannot
+	// hand it its parent's wider one.
+	//
+	// A sub-run with no record of it (spawned before the record existed) fails
+	// closed to serial, as its volumes and hosts do: the width its ancestors
+	// allowed is unknown, and its definition's is exactly the widening the
+	// record guards against.
+	fanoutCap := agentDef.MaxConcurrentChildren
+	switch {
+	case runCfg.Spawn != nil:
+		fanoutCap = tools.NarrowFanoutCap(runCfg.Spawn.FanoutCap, agentDef.MaxConcurrentChildren)
+	case isSubRun(run):
+		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
+		fanoutCap = 1
+	}
+	return runPolicySource{
+		// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
+		// inherit the same reach the original's did. Zero value (no record)
+		// leaves the operator floor as the only bound, exactly as before.
+		Hosts: runCfg.hostPolicy(),
+		// Volume confinement (RFC AH attach-gap fix): without it a volume-bound
+		// agent would resume with no volume policy at all. A top-level run's is
+		// its agent's own; a sub-run's is narrowed to its parent's, as it was
+		// live.
+		Volumes: s.resumedVolumePolicy(ctx, run, runCfg.Spawn, agentDef),
+		// Read-only ephemeral volumes: what the run started with, read from its
+		// record, or what its definition says now. Either is enough, so a
+		// definition that gained the setting during the pause applies, and one
+		// that lost it does not hand write access back. A sub-run with no spawn
+		// record at all cannot say what it started with, so it resumes
+		// read-only, as it resumes confined to no volume.
+		EphemeralReadOnly: runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)),
+		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
+		// Restored from the run's own record, for sub-agent inheritance. The
+		// context policy too: every non-resume run path stamps it, so without
+		// it a resumed run's children inherited a different retention mode
+		// from the original's children.
+		Compaction: runCfg.Compaction,
+		Context:    runCfg.Context,
+		FanoutCap:  fanoutCap,
+		// RFC DC P5: offer this run's overrides to its children. Only a child
+		// of the SAME definition will take them.
+		Overrides: tools.RunOverridesValue{Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID},
+		// From the run's record, which a retune may have changed since it
+		// started — an autonomous run that never parked adopts a retune here.
+		Interruption: runCfg.Interruption,
+	}
 }

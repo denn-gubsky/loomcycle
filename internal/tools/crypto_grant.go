@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"context"
-
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -10,9 +8,6 @@ import (
 // is what that tool reads; the name is config's, so the boot advisories and
 // this package agree on it without importing the tool.
 const CryptoToolName = config.CryptoToolName
-
-// ctxKeyCryptoPolicy carries the Crypto tool's key-scope gate.
-type ctxKeyCryptoPolicy struct{}
 
 // CryptoPolicyValue is the per-run Crypto grant: which key scopes ("agent",
 // "user", "tenant", "run") the run's key-backed crypto operations may use.
@@ -23,17 +18,6 @@ type ctxKeyCryptoPolicy struct{}
 // Scopes is always effective: de-duplicated and holding only known values.
 type CryptoPolicyValue struct {
 	Scopes []string
-}
-
-// WithCryptoPolicy attaches the policy to ctx.
-func WithCryptoPolicy(ctx context.Context, p CryptoPolicyValue) context.Context {
-	return context.WithValue(ctx, ctxKeyCryptoPolicy{}, p)
-}
-
-// CryptoPolicy returns the policy from ctx. Zero value = no key scope.
-func CryptoPolicy(ctx context.Context) CryptoPolicyValue {
-	v, _ := ctx.Value(ctxKeyCryptoPolicy{}).(CryptoPolicyValue)
-	return v
 }
 
 // Allows reports whether the policy grants key scope.

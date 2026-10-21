@@ -50,7 +50,7 @@ import (
 //
 // Quota enforcement happens at write time (set / incr). The agent's
 // per-yaml `memory_quota_bytes` overrides the global default; both
-// land via tools.MemoryPolicy(ctx).
+// land via tools.PolicyOf(ctx).Memory.
 type Memory struct {
 	// Store is the persistence backend. Required; nil disables the
 	// tool entirely (every call returns an is_error tool_result with
@@ -142,7 +142,7 @@ type Memory struct {
 // backend resolves the memrank.Backend the data ops route through,
 // honoring the agent's per-run memory_backend NAME (RFC I MR-3b).
 //
-// The backend name comes from tools.MemoryPolicy(ctx).Backend — which is
+// The backend name comes from tools.PolicyOf(ctx).Memory.Backend — which is
 // stamped from the operator-resolved agent config — and is NEVER
 // model/tool input. Same trust posture as MemoryScopes: the model picks
 // the scope, the operator picks the backend.
@@ -164,7 +164,7 @@ type Memory struct {
 //     external `mem9` kind was removed, so a stored kind:mem9 row now lands
 //     here and serves from in-process rather than failing the agent's run.
 func (m *Memory) backend(ctx context.Context) memrank.Backend {
-	name := tools.MemoryPolicy(ctx).Backend
+	name := tools.PolicyOf(ctx).Memory.Backend
 	if name == "" {
 		return m.defaultBackend()
 	}
@@ -533,7 +533,7 @@ func provenanceForSet(ctx context.Context, in memoryInput) store.MemoryProvenanc
 		prov.SourceSessionID = clampField(in.Provenance.SourceSessionID)
 		prov.SourceRunID = clampField(in.Provenance.SourceRunID)
 	}
-	if tools.RunID(ctx) != "" && tools.MemoryPolicy(ctx).Consolidation {
+	if tools.RunID(ctx) != "" && tools.PolicyOf(ctx).Memory.Consolidation {
 		prov.Origin = memoryOriginConsolidator
 	}
 	return prov
@@ -701,7 +701,7 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 // + the runtime-supplied scope_id, or a refusal error suitable for
 // surfacing as a tool_result.
 func (m *Memory) resolveScope(ctx context.Context, requested string) (store.MemoryScope, string, error) {
-	policy := tools.MemoryPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Memory
 	if requested == "" {
 		return "", "", memRefuse(errValidation("missing required field: scope",
 			"Pass scope: agent, user or tenant — whichever this agent's memory_scopes grants."))
@@ -780,7 +780,7 @@ func (m *Memory) resolveSqlScope(ctx context.Context, requested string) (scope, 
 		return "", "", memRefuse(errValidation("missing required field: scope (one of: agent, user, run)",
 			"Pass a scope this agent's sql_scopes grants."))
 	}
-	pol := tools.SqlMemPolicy(ctx)
+	pol := tools.PolicyOf(ctx).SqlMem
 	if len(pol.AllowedScopes) == 0 {
 		return "", "", memRefuse(errPermission("Memory tool: this agent has no sql_scopes configured — add `sql_scopes: [agent]` (and/or user, run, tenant) to the agent yaml",
 			"This agent cannot use SQL memory until an operator grants sql_scopes."))
@@ -898,7 +898,7 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 		return memErr(fmt.Sprintf("sql_exec: %s", aerr), aerr), nil
 	}
 	// Per-agent quota override wins over the manager default when > 0.
-	quota := tools.SqlMemPolicy(ctx).QuotaBytes
+	quota := tools.PolicyOf(ctx).SqlMem.QuotaBytes
 	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: scope, ScopeID: scopeID}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)
 	start := time.Now()
@@ -1261,7 +1261,7 @@ func coreBlockFor(ctx context.Context, scope store.MemoryScope, key string) *con
 		return nil
 	}
 	label := strings.TrimPrefix(key, coreBlockKeyPrefix)
-	blocks := tools.CoreBlocksPolicy(ctx).Blocks
+	blocks := tools.PolicyOf(ctx).CoreBlocks.Blocks
 	for i := range blocks {
 		if blocks[i].Label == label && blocks[i].Scope == string(scope) {
 			return &blocks[i]
@@ -1680,7 +1680,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	// model the same rows twice in two shapes, which is the duplication the dedup path
 	// exists to prevent. `ErrTracesNotCombinable` already refuses mixing traces with
 	// other sources, so "the caller asked for traces" is exactly a traces-only query.
-	if tools.MemoryPolicy(ctx).RecallAttachTraces && !sourcesIncludeTraces(sources) {
+	if tools.PolicyOf(ctx).Memory.RecallAttachTraces && !sourcesIncludeTraces(sources) {
 		turns, found := m.attachQuestionTurns(ctx, scope, scopeID, in.Query)
 		out["source_turns"] = turns
 		out["source_turns_found"] = found
@@ -1980,7 +1980,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// across three local models they do not make it — this run's own earlier arm had
 	// qwen3.6 passing include_turns on 51 of 128 calls despite being told to pass it
 	// every time. An operator who wants the turns should not be relying on that.
-	wantTurns := in.IncludeTurns || tools.MemoryPolicy(ctx).RecallIncludeTurns
+	wantTurns := in.IncludeTurns || tools.PolicyOf(ctx).Memory.RecallIncludeTurns
 	if wantTurns {
 		turnsAttached, turnsDropped = m.attachSourceTurns(ctx, scope, memories, spans)
 	}
@@ -1994,7 +1994,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// that had been told to pass it every time.
 	var questionTurns []map[string]any
 	questionTurnsFound := 0
-	if tools.MemoryPolicy(ctx).RecallAttachTraces {
+	if tools.PolicyOf(ctx).Memory.RecallAttachTraces {
 		questionTurns, questionTurnsFound = m.attachQuestionTurns(ctx, scope, scopeID, in.Query)
 	}
 
@@ -2032,7 +2032,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	// off by default, so "the grant is on but the index is empty" and "the index is
 	// full and nothing matched" are the same empty list, and only an operator can fix
 	// the first one.
-	if tools.MemoryPolicy(ctx).RecallAttachTraces {
+	if tools.PolicyOf(ctx).Memory.RecallAttachTraces {
 		out["source_turns"] = questionTurns
 		out["source_turns_found"] = questionTurnsFound
 	}
@@ -2136,7 +2136,7 @@ const (
 // memory_consolidation grant. Default-deny: the grant is a SEPARATE gate from
 // memory_scopes, so a scope-authorized agent still cannot run these ops without it.
 func consolidationGate(ctx context.Context, op string) (tools.Result, bool) {
-	if tools.MemoryPolicy(ctx).Consolidation {
+	if tools.PolicyOf(ctx).Memory.Consolidation {
 		return tools.Result{}, false
 	}
 	return errPermission(fmt.Sprintf("memory: %s requires the memory_consolidation grant (add memory_consolidation: true to the agent config)", op),
@@ -3037,7 +3037,7 @@ func (m *Memory) reducerCap(ctx context.Context, op string, scope store.MemorySc
 // scope holds OTHER than key — the existing row at key is about to be replaced,
 // so its bytes are not additive.
 func (m *Memory) scopeUsageExcluding(ctx context.Context, scope store.MemoryScope, scopeID, key string) (quota, used int, err error) {
-	policy := tools.MemoryPolicy(ctx)
+	policy := tools.PolicyOf(ctx).Memory
 	quota = policy.QuotaBytes
 	if quota <= 0 {
 		quota = m.DefaultQuotaBytes

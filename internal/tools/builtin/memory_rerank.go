@@ -12,7 +12,7 @@ import (
 // parameter, because a rerank is a model call per search and the model is not
 // the party that pays for it.
 func rerankOptions(ctx context.Context) memrank.RerankOptions {
-	r := tools.MemoryPolicy(ctx).Rerank
+	r := tools.PolicyOf(ctx).Memory.Rerank
 	if !r.On() {
 		return memrank.RerankOptions{}
 	}
@@ -44,6 +44,6 @@ func renderRerank(out map[string]any, opts memrank.RerankOptions, rep *memrank.R
 // search units (`memory_units: false`). Unset means units are used wherever an
 // operator generated them.
 func noUnits(ctx context.Context) bool {
-	u := tools.MemoryPolicy(ctx).Units
+	u := tools.PolicyOf(ctx).Memory.Units
 	return u != nil && !*u
 }

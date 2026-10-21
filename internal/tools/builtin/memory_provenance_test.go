@@ -132,15 +132,17 @@ func TestMemory_ProvenanceSchemaIsClosed(t *testing.T) {
 // grant + NO run (the operator-plane shape) ⇒ not stamped, while the descriptive
 // fields still record normally.
 //
-// Fails-before if provenanceForSet checks only MemoryPolicy(ctx).Consolidation.
+// Fails-before if provenanceForSet checks only PolicyOf(ctx).Memory.Consolidation.
 func TestMemorySet_ConsolidatorOriginRequiresARun(t *testing.T) {
 	tool, ctx, cleanup := memoryFixture(t)
 	defer cleanup()
 
 	// An operator-plane context: the grant and open scopes, but no run id.
-	operatorCtx := tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{
-		AllowedScopes: []string{"agent", "user"},
-		Consolidation: true,
+	operatorCtx := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{
+			AllowedScopes: []string{"agent", "user"},
+			Consolidation: true,
+		}
 	})
 	in := `{"op":"set","scope":"agent","key":"fact/from-operator","value":"x","provenance":{"class":"fact"}}`
 	if res, _ := tool.Execute(operatorCtx, json.RawMessage(in)); res.IsError {

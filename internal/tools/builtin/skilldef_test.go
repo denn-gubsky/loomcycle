@@ -36,8 +36,8 @@ func skillDefFixture(t *testing.T) (*SkillDef, context.Context, func()) {
 	}
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read", "WebFetch", "SkillDef"})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{}) // empty = allow all
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "WebFetch", "SkillDef"} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true} }) // empty = allow all
 	return tool, ctx, func() { _ = s.Close() }
 }
 
@@ -149,8 +149,10 @@ func TestSkillDefTool_WhitelistGrant(t *testing.T) {
 	// Whitelist exactly karpathy-guidelines.
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read", "WebFetch"})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"karpathy-guidelines"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read", "WebFetch"} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"karpathy-guidelines"}}
+	})
 
 	// In-allowlist: fork the whitelisted skill.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"karpathy-guidelines","overlay":{"body":"forked"}}`))
@@ -174,8 +176,10 @@ func TestSkillDefTool_WhitelistGlobGrant(t *testing.T) {
 
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"doc/*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"doc/*"}}
+	})
 
 	// Matching group → create allowed.
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"doc/summarizer","overlay":{"body":"x"}}`))
@@ -192,18 +196,20 @@ func TestSkillDefTool_WhitelistGlobGrant(t *testing.T) {
 // RFC BA: an EMPTY allowlist = allow all (create-anywhere) — the inverse of the
 // old default-deny-when-no-scopes behaviour. This is the documented default so
 // an agent with no `skills:` field can still author.
-func TestSkillDefTool_NoPolicyAllowsCreate(t *testing.T) {
+func TestSkillDefTool_NoPolicyRefusesCreate(t *testing.T) {
 	tool, _, cleanup := skillDefFixture(t)
 	defer cleanup()
 
-	// ctx WITHOUT WithSkillPolicy → zero-value policy → empty patterns → allow.
+	// ctx WITHOUT a skill policy: the run's entry point granted none, so it
+	// may author no skill — a missing policy fails closed. (A GRANTED policy
+	// with empty patterns is the RFC BA allow-all; skillDefFixture's.)
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"any-skill","overlay":{"body":"x"}}`))
-	if res.IsError {
-		t.Fatalf("empty allowlist should allow create-anywhere; got %s", res.Text)
+	if !res.IsError {
+		t.Fatalf("a run with no skill policy created a skill: %s", res.Text)
 	}
 }
 
@@ -214,8 +220,8 @@ func TestSkillDefTool_DenyAllRefusesCreate(t *testing.T) {
 
 	ctx := tools.WithAgentName(context.Background(), "researcher")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_test"})
-	ctx = tools.WithAgentTools(ctx, []string{"Read"})
-	ctx = tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"-*"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"Read"} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"-*"}} })
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"any-skill","overlay":{"body":"x"}}`))
 	if !res.IsError {

@@ -134,7 +134,7 @@ func TestUpsertChunk_AConsolidationPassSaysSo(t *testing.T) {
 			// keying on the grant alone would let any authenticated operator session
 			// mint facts claiming a machine distilled them.
 			ctx = tools.WithRunID(ctx, "run-1")
-			ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{Consolidation: tc.consolidation})
+			ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{Consolidation: tc.consolidation} })
 			doc := newEntityDoc(t, d, ctx)
 			sk := sidecarScope(t, d, ctx)
 
@@ -163,7 +163,7 @@ func TestUpsertChunk_AConsolidationPassSaysSo(t *testing.T) {
 // for — a trustworthy filter for facts a machine distilled from a transcript.
 func TestUpsertChunk_TheGrantAloneIsNotEnough(t *testing.T) {
 	d, ctx, st := documentFixture(t)
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{Consolidation: true}) // no run id
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{Consolidation: true} }) // no run id
 	doc := newEntityDoc(t, d, ctx)
 	sk := sidecarScope(t, d, ctx)
 

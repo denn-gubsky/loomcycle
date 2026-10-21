@@ -223,8 +223,8 @@ func TestOntologyTree_AbsentDocumentIsNotAnError(t *testing.T) {
 func ontologyRetrievalFixture(t *testing.T, confirm bool) (*Document, context.Context) {
 	t.Helper()
 	d, ctx, _ := documentFixture(t)
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	// SETUP ACTS AS THE OPERATOR. Building the fixture means writing the ontology
 	// document and flipping its confirm status, which RFC CA's guard reserves for the
 	// operator surfaces — an agent context is refused, correctly. That refusal is what
@@ -672,8 +672,8 @@ func TestOntologyTree_RejectingAParentDoesNotSwitchOffLiveChildren(t *testing.T)
 func ontologyAgentFixture(t *testing.T) (*Document, context.Context, context.Context) {
 	t.Helper()
 	d, base, _ := documentFixture(t)
-	base = tools.WithMemoryPolicy(base, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	base = tools.WithSqlMemPolicy(base, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	opCtx := tools.WithSubstrateOperator(base)
 
 	md := "# Tenant Ontology\n\n## event\n- `occurred_at`\n"

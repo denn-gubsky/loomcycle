@@ -168,12 +168,14 @@ func TestDefPromote_AnotherTenantsDefIsRefusedAsNotFound(t *testing.T) {
 		{"AgentDef", func(t *testing.T) (tools.Tool, context.Context, func()) { return agentDefFixture(t) },
 			`{"system_prompt":"p"}`,
 			func(ctx context.Context) context.Context {
-				return tools.WithAgentDefPolicy(ctx, tools.AgentDefPolicyValue{Scopes: []string{"named:acme-own"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"named:acme-own"}} })
 			}},
 		{"SkillDef", func(t *testing.T) (tools.Tool, context.Context, func()) { return skillDefFixture(t) },
 			`{"body":"b"}`,
 			func(ctx context.Context) context.Context {
-				return tools.WithSkillPolicy(ctx, tools.SkillPolicyValue{Patterns: []string{"acme-own"}})
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.Skill = tools.SkillPolicyValue{Granted: true, Patterns: []string{"acme-own"}}
+				})
 			}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {

@@ -230,7 +230,7 @@ func (h *History) authorizedScope(ctx context.Context, requested string) (string
 		// Measured live, models made that call again and again. `user` when it
 		// is granted, else `self` as before.
 		requested = "self"
-		if containsScope(tools.HistoryPolicy(ctx).Scopes, "user") {
+		if containsScope(tools.PolicyOf(ctx).History.Scopes, "user") {
 			requested = "user"
 		}
 	}
@@ -239,7 +239,7 @@ func (h *History) authorizedScope(ctx context.Context, requested string) (string
 	default:
 		return "", fmt.Errorf("history: unknown scope %q (want one of: self, user, tenant, global)", requested)
 	}
-	pol := tools.HistoryPolicy(ctx)
+	pol := tools.PolicyOf(ctx).History
 	if !containsScope(pol.Scopes, requested) {
 		if len(pol.Scopes) == 0 {
 			return "", historyScopeNotGranted{fmt.Sprintf("history: no history_scope policy (default-deny); grant history_scope: [%s] on the agent to allow it", requested)}

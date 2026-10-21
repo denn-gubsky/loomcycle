@@ -14,7 +14,7 @@ import (
 // knows a publish there is checked (and may be rewritten or dropped) before
 // anyone sees it — and names no channel it cannot use.
 func TestChannelTool_ListChannelsNamesHookedChannels(t *testing.T) {
-	ctx := tools.WithChannelPolicy(context.Background(), tools.ChannelPolicyValue{
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Channel: tools.ChannelPolicyValue{
 		Publish:   []string{"inbox"},
 		Subscribe: []string{"plain"},
 		Channels: map[string]tools.ChannelDef{
@@ -22,7 +22,7 @@ func TestChannelTool_ListChannelsNamesHookedChannels(t *testing.T) {
 			"plain":  {Name: "plain", Scope: "global"},
 			"secret": {Name: "secret", Scope: "global", Hooked: true},
 		},
-	})
+	}})
 	st, err := sqlite.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)

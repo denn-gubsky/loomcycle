@@ -146,7 +146,7 @@ func (a *AgentDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
-	policy := tools.AgentDefPolicy(ctx)
+	policy := tools.PolicyOf(ctx).AgentDef
 
 	switch in.Op {
 	case "create":
@@ -409,10 +409,10 @@ func (a *AgentDef) gateNewDef(ctx context.Context, policy tools.AgentDefPolicyVa
 	// resulting agent — a capability-escalation path. Mirror of the subset
 	// check in `fork`.
 	//
-	// AgentTools(ctx) returns nil in test contexts; we refuse a non-empty
+	// PolicyOf(ctx).Tools returns nil in test contexts; we refuse a non-empty
 	// Tools overlay when the ceiling is unknown rather than silently allowing
 	// widening.
-	callerTools := tools.AgentTools(ctx)
+	callerTools := tools.PolicyOf(ctx).Tools
 	if len(def.Tools) > 0 {
 		if callerTools == nil {
 			return mergedDef{}, nil, fmt.Errorf("%s: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening", op)

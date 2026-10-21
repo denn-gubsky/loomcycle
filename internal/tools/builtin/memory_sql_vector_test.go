@@ -102,7 +102,7 @@ func TestMemorySQL_EmbedDirectiveRoundTrip(t *testing.T) {
 	tool := &Memory{Store: s, SqlMem: mgr, Embedder: emb}
 	ctx := tools.WithAgentName(context.Background(), "vec-agent")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t", AgentID: "a", RootRunID: "run-v"})
-	ctx = tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent"}} })
 
 	exec := func(payload string) {
 		t.Helper()

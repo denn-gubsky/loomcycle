@@ -26,8 +26,12 @@ import (
 func direntDocCtx(tenant, user string) context.Context {
 	ctx := tools.WithAgentName(context.Background(), "writer")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a", UserID: user, TenantID: tenant})
-	ctx = tools.WithMemoryPolicy(ctx, tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
-	return tools.WithSqlMemPolicy(ctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
+	})
 }
 
 type restoredDoc struct {

@@ -107,6 +107,9 @@ func withEphemeralWork(t *testing.T, h *detachHarness, root string, s *starter) 
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("work", tools.EphemeralVolumeRef{Root: dir})
 	s.ctx = tools.WithEphemeralVolumes(s.ctx, set)
+	// The starter writes to its tree's ephemeral volumes, as a run whose
+	// definition does not make them read-only does; its members inherit that.
+	s.ctx = tools.UpdateRunPolicy(s.ctx, func(p *tools.RunPolicy) { p.EphemeralWritable = true })
 	return dir
 }
 

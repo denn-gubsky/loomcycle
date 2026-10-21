@@ -278,9 +278,8 @@ func (s *Server) setOntologyStatus(t *testing.T, tenant, status string, wantCode
 func (s *Server) exportOntologyMD(t *testing.T, mi memInject) string {
 	t.Helper()
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	dctx := tools.WithMemoryPolicy(s.docToolCtx(context.Background(), mi),
-		tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}})
+	dctx := tools.UpdateRunPolicy(s.docToolCtx(context.Background(), mi), func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}} })
+	dctx = tools.UpdateRunPolicy(dctx, func(rp *tools.RunPolicy) { rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}} })
 	req, _ := json.Marshal(map[string]any{
 		"op": "export_md", "scope": "tenant", "path": meminject.OntologyPath, "include_metadata": false,
 	})

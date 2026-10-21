@@ -111,8 +111,10 @@ func TestVolumeDefTool_SetModeRefusals(t *testing.T) {
 		t.Fatal(res.Text)
 	}
 	other, _ := ephemeralCtx(base, "run-2")
-	noScope := tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{})
-	onlyOther := tools.WithVolumeDefPolicy(ctx, tools.VolumeDefPolicyValue{Scopes: []string{"named:scratch"}})
+	noScope := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.VolumeDef = tools.VolumeDefPolicyValue{} })
+	onlyOther := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.VolumeDef = tools.VolumeDefPolicyValue{Scopes: []string{"named:scratch"}}
+	})
 	for _, c := range []struct {
 		name string
 		ctx  context.Context
@@ -144,7 +146,7 @@ func TestContextTool_SelfListsEphemeralVolumesWithTheirMode(t *testing.T) {
 	set.Add("repo", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/r/repo"})
 	set.Add("notes", tools.EphemeralVolumeRef{Root: "/pool/_ephemeral/r/notes"})
 	set.SetReadOnly("repo")
-	ctx = tools.WithEphemeralVolumes(ctx, set)
+	ctx = tools.WithEphemeralVolumes(ephemeralWritable(ctx), set)
 
 	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
 	if res.IsError {

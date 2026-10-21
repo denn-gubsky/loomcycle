@@ -60,7 +60,9 @@ func TestDecision_ARefusalIsWordedForItsCaller(t *testing.T) {
 			decision.CodeModelNotAllowed, tools.CategoryValidation,
 			`model "nope" is not one of the decision models you may ask`,
 			`model "nope" is not one of the decision models you may ask`},
-		{"no model left to ask", func(ctx context.Context) context.Context { return tools.WithDecisionPolicy(ctx, nothingLeft) }, `{` + oneNoul + `}`,
+		{"no model left to ask", func(ctx context.Context) context.Context {
+			return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Decision = nothingLeft })
+		}, `{` + oneNoul + `}`,
 			decision.CodeModelNotAllowed, tools.CategoryValidation,
 			"none of the decision models you may ask is offered by this deployment",
 			"none of the decision models you may ask is offered by this deployment"},

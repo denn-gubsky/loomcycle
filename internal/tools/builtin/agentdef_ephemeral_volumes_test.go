@@ -123,7 +123,7 @@ func TestResolveVolume_EphemeralReadOnlyRunCannotWriteAnEphemeralVolume(t *testi
 	eph := realDir(t)
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("scratch", tools.EphemeralVolumeRef{Root: eph}) // created read-write
-	ctx := tools.WithEphemeralVolumes(ctxWith(tools.VolumeBinding{Name: "default", Root: bound, Default: true}), set)
+	ctx := tools.WithEphemeralVolumes(ephemeralWritable(ctxWith(tools.VolumeBinding{Name: "default", Root: bound, Default: true})), set)
 
 	write := func(ctx context.Context, volume string) tools.Result {
 		return fileCall(t, ctx, &Write{}, map[string]any{"volume": volume, "path": "a.txt", "content": "x"})
@@ -131,7 +131,7 @@ func TestResolveVolume_EphemeralReadOnlyRunCannotWriteAnEphemeralVolume(t *testi
 	if res := write(ctx, "scratch"); res.IsError {
 		t.Fatalf("without the setting the write must work (otherwise this test proves nothing): %s", res.Text)
 	}
-	ro := tools.WithEphemeralReadOnly(ctx)
+	ro := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.EphemeralWritable = false })
 	if res := write(ro, "scratch"); !res.IsError || !strings.Contains(res.Text, "read-only") {
 		t.Errorf("a read-only run wrote to the ephemeral volume: error=%v %q", res.IsError, res.Text)
 	}

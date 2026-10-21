@@ -99,7 +99,7 @@ func (s *Server) renderToolResult(ctx context.Context, mi memInject, ref meminje
 // list and renders the result as a compact one-line-per-tool inventory.
 //
 // mi.Tools is the run's ALREADY-RESOLVED allowedTools — the same slice the
-// dispatcher and WithAgentTools get — so the rendered inventory is what the agent
+// dispatcher and RunPolicy.Tools get — so the rendered inventory is what the agent
 // can actually call, not the server's whole registry. It is passed as both the
 // candidate set and the ctx allowlist, which makes op=tools' intersection a no-op
 // on an already-filtered list.
@@ -107,7 +107,7 @@ func (s *Server) renderContextTools(ctx context.Context, mi memInject) string {
 	if len(mi.Tools) == 0 {
 		return ""
 	}
-	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	tctx := tools.UpdateRunPolicy(s.docToolCtx(ctx, mi), func(p *tools.RunPolicy) { p.Tools = toolNames(mi.Tools) })
 	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg()}
 	req, _ := json.Marshal(map[string]any{"op": "tools"})
 	res, err := ct.Execute(tctx, req)
@@ -208,7 +208,7 @@ func (s *Server) renderContextGuide(ctx context.Context, mi memInject) string {
 	if len(mi.Tools) == 0 {
 		return ""
 	}
-	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	tctx := tools.UpdateRunPolicy(s.docToolCtx(ctx, mi), func(p *tools.RunPolicy) { p.Tools = toolNames(mi.Tools) })
 	ct := &builtin.Context{Tools: mi.Tools, Cfg: s.cfg()}
 	req, _ := json.Marshal(map[string]any{"op": "guide"})
 	res, err := ct.Execute(tctx, req)
@@ -287,7 +287,7 @@ const toolGuidePreamble = "How to call your tools — the op to pass and the req
 // safe to bake into a prompt — unlike op=self. This renderer builds the fuller
 // Context tool (Store/SqlMem/Embedder) the probe needs, which the server holds.
 func (s *Server) renderContextCapabilities(ctx context.Context, mi memInject) string {
-	tctx := tools.WithAgentTools(s.docToolCtx(ctx, mi), toolNames(mi.Tools))
+	tctx := tools.UpdateRunPolicy(s.docToolCtx(ctx, mi), func(p *tools.RunPolicy) { p.Tools = toolNames(mi.Tools) })
 	ct := &builtin.Context{
 		Tools:    mi.Tools,
 		Cfg:      s.cfg(),

@@ -25,7 +25,7 @@ func seedHookDef(t *testing.T, st store.Store, ctx context.Context, name string,
 
 func agentDefCall(t *testing.T, tool *AgentDef, ctx context.Context, in string) (tools.Result, map[string]any) {
 	t.Helper()
-	ctx = tools.WithAgentTools(ctx, []string{"*"}) // the operator's own call
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = []string{"*"} }) // the operator's own call
 	res, err := tool.Execute(ctx, json.RawMessage(in))
 	if err != nil {
 		t.Fatal(err)

@@ -32,8 +32,12 @@ func (s *Server) docExistsAt(t *testing.T, mi memInject, scope, path string) boo
 	t.Helper()
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.docToolCtx(context.Background(), mi)
-	dctx = tools.WithMemoryPolicy(dctx, tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}})
-	dctx = tools.WithSqlMemPolicy(dctx, tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}})
+	dctx = tools.UpdateRunPolicy(dctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}}
+	})
+	dctx = tools.UpdateRunPolicy(dctx, func(rp *tools.RunPolicy) {
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}
+	})
 	req, _ := json.Marshal(map[string]any{"op": "get_document", "scope": scope, "path": path})
 	res, _ := doc.Execute(dctx, req)
 	return !res.IsError

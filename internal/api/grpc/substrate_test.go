@@ -362,7 +362,7 @@ func TestSubstrateGRPCCtx_HistoryScopesAdminGatesGlobal(t *testing.T) {
 		TenantID: "acme",
 		Scopes:   []string{auth.ScopeTenant},
 	})
-	got := tools.HistoryPolicy(substrateGRPCCtx(tenantCtx)).Scopes
+	got := tools.PolicyOf(substrateGRPCCtx(tenantCtx)).History.Scopes
 	for _, want := range []string{"self", "user", "tenant"} {
 		if !has(got, want) {
 			t.Errorf("tenant operator: scope %q not granted (got %v)", want, got)
@@ -381,7 +381,7 @@ func TestSubstrateGRPCCtx_HistoryScopesAdminGatesGlobal(t *testing.T) {
 		TenantID: "acme",
 		Scopes:   []string{auth.ScopeAdmin},
 	})
-	gotAdmin := tools.HistoryPolicy(substrateGRPCCtx(adminCtx)).Scopes
+	gotAdmin := tools.PolicyOf(substrateGRPCCtx(adminCtx)).History.Scopes
 	if !has(gotAdmin, "global") {
 		t.Errorf("admin principal must get the global scope (got %v)", gotAdmin)
 	}
@@ -621,7 +621,7 @@ func TestGrpcSubstrate_ScheduleDefCtxSynthesis(t *testing.T) {
 // VolumeDef. Unlike the SkillDef/ScheduleDef tests above (which use `list`),
 // this MUST use `create`: the VolumeDef policy gates create/delete/purge ONLY
 // — get/list are ungated reads — so a list op would pass even if
-// substrateGRPCCtx forgot WithVolumeDefPolicy. A real builtin.VolumeDef tool
+// substrateGRPCCtx forgot the VolumeDef grant. A real builtin.VolumeDef tool
 // is wired so the in-process scope gate fires if-and-only-if the gRPC handler
 // fails to stamp the "any" volume_def policy.
 func TestGrpcSubstrate_VolumeDefCtxSynthesis(t *testing.T) {

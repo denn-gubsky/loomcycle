@@ -284,7 +284,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		// also the bit that decides which prompt-expansion families this
 		// agent's definition may use, so an agent seeing an expansion refused
 		// can tell WHY rather than guessing.
-		"operator_authored": tools.OperatorAuthored(ctx),
+		"operator_authored": tools.PolicyOf(ctx).OperatorAuthored,
 	}
 	// scopes: for each scoped tool this run holds, which values of its `scope`
 	// argument this run may use, and for the rest the refusal a call would get.
@@ -391,7 +391,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// (inherited from the parent + per-run/per-spawn overrides). An agent can read
 	// this to decide whether to self-compact (Context op=compact). Omitted when
 	// no compaction is configured.
-	if cp := tools.CompactionPolicy(ctx); !cp.IsZero() {
+	if cp := tools.PolicyOf(ctx).Compaction; !cp.IsZero() {
 		out["compaction"] = cp
 	}
 	// context_policy: the resolved layered-context / retention settings in effect
@@ -400,7 +400,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// is: this reports HOW the history is distilled. In recap mode an agent's older
 	// reasoning is folded into a running recap; op=compact triggers a recap rather
 	// than a compaction. Omitted when no context block is configured (append).
-	if cx := tools.ContextPolicy(ctx); !cx.IsZero() {
+	if cx := tools.PolicyOf(ctx).Context; !cx.IsZero() {
 		out["context_policy"] = cx
 	}
 	// context: how full the window is as of the last completed turn (used =
@@ -449,7 +449,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// Inactive (no policy) → the agent has NO filesystem access (RFC AH
 	// Phase 3 sandbox-by-default; the legacy jail is gone), reported so the
 	// model knows file/exec tools will refuse rather than guessing host paths.
-	if vp := tools.VolumePolicy(ctx); vp.Active {
+	if vp := tools.PolicyOf(ctx).Volumes; vp.Active {
 		vols := make([]map[string]any, 0, len(vp.Bindings))
 		for _, b := range vp.Bindings {
 			mode := "rw"
@@ -499,7 +499,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			mode := "rw"
 			// Read-only in the record wins, as it does for a write
 			// (confirmEphemeralWritable); the mode only ever narrows.
-			if ref.ReadOnly || recordedRO[name] || tools.EphemeralReadOnly(ctx) {
+			if ref.ReadOnly || recordedRO[name] || !tools.PolicyOf(ctx).EphemeralWritable {
 				mode = "ro"
 			}
 			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
@@ -509,7 +509,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 				continue
 			}
 			mode := "rw"
-			if r.ReadOnly || tools.EphemeralReadOnly(ctx) {
+			if r.ReadOnly || !tools.PolicyOf(ctx).EphemeralWritable {
 				mode = "ro"
 			}
 			entry := map[string]any{"name": r.Name, "mode": mode}
@@ -533,7 +533,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// the operator's static allowlist is the floor. allowed_hosts is suffix-
 	// matched; an empty list means no web egress (deny-all). Omitted only when
 	// there's no policy to report (no caller list and Cfg is nil).
-	hp := tools.HostPolicy(ctx)
+	hp := tools.PolicyOf(ctx).Hosts
 	if hp.HasList {
 		out["network"] = map[string]any{
 			"allowed_hosts": nonNilStrings(hp.AllowedHosts),
@@ -676,7 +676,7 @@ func (c *Context) execTime(ctx context.Context) (tools.Result, error) {
 
 func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 	// The agent's effective tool name list is attached to ctx by the server at
-	// run start (tools.WithAgentTools). c.Tools is the runtime-wide CATALOG, so
+	// run start (RunPolicy.Tools). c.Tools is the runtime-wide CATALOG, so
 	// this filter is what keeps an agent's introspection to its own grant.
 	allowSet, ok := agentToolSet(ctx)
 	if !ok {
@@ -743,7 +743,7 @@ func (c *Context) execTools(ctx context.Context) (tools.Result, error) {
 // mean a tool literally named "*" and hid every tool from the operator surfaces
 // that pass it.
 func agentToolSet(ctx context.Context) (map[string]bool, bool) {
-	allowed := tools.AgentTools(ctx)
+	allowed := tools.PolicyOf(ctx).Tools
 	if allowed == nil {
 		return nil, false
 	}
@@ -839,15 +839,15 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 	// Surface the per-run policy bundles that gate the agent's
 	// behaviour. The model can compare its intended actions to these
 	// gates before attempting them (avoids "tool refused" surprises).
-	hostPol := tools.HostPolicy(ctx)
-	memPol := tools.MemoryPolicy(ctx)
-	chPol := tools.ChannelPolicy(ctx)
-	adPol := tools.AgentDefPolicy(ctx)
-	sdPol := tools.SkillPolicy(ctx)
-	evPol := tools.EvaluationPolicy(ctx)
+	hostPol := tools.PolicyOf(ctx).Hosts
+	memPol := tools.PolicyOf(ctx).Memory
+	chPol := tools.PolicyOf(ctx).Channel
+	adPol := tools.PolicyOf(ctx).AgentDef
+	sdPol := tools.PolicyOf(ctx).Skill
+	evPol := tools.PolicyOf(ctx).Evaluation
 
 	out := map[string]any{
-		"tools": tools.AgentTools(ctx),
+		"tools": tools.PolicyOf(ctx).Tools,
 		"host_policy": map[string]any{
 			"has_list":          hostPol.HasList,
 			"allowed_hosts":     hostPol.AllowedHosts,
@@ -858,19 +858,19 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			"quota_bytes":    memPol.QuotaBytes,
 			// The sql_* ops and Document's tenant scope check this grant, not
 			// allowed_scopes; without it the model sees half its memory policy.
-			"sql_scopes": tools.SqlMemPolicy(ctx).AllowedScopes,
+			"sql_scopes": tools.PolicyOf(ctx).SqlMem.AllowedScopes,
 		},
-		"history_scopes": tools.HistoryPolicy(ctx).Scopes,
+		"history_scopes": tools.PolicyOf(ctx).History.Scopes,
 		"channels": map[string]any{
 			"publish":   chPol.Publish,
 			"subscribe": chPol.Subscribe,
 		},
 		"agent_def_scopes":  adPol.Scopes,
-		"skills":            sdPol.Patterns,
+		"skills":            sdPol.Effective(),
 		"evaluation_scopes": evPol.Scopes,
 		// The key scopes the Crypto tool's key-backed ops may use; empty
 		// means keyless ops only.
-		"crypto_scopes": tools.CryptoPolicy(ctx).Scopes,
+		"crypto_scopes": tools.PolicyOf(ctx).Crypto.Scopes,
 	}
 	return okJSON(out)
 }
@@ -1105,7 +1105,7 @@ func (c *Context) execEvaluations(ctx context.Context, in contextInput) (tools.R
 // ---- channels ----
 
 func (c *Context) execChannels(ctx context.Context, in contextInput) (tools.Result, error) {
-	pol := tools.ChannelPolicy(ctx)
+	pol := tools.PolicyOf(ctx).Channel
 	type channelSummary struct {
 		Name        string `json:"name"`
 		Scope       string `json:"scope,omitempty"`

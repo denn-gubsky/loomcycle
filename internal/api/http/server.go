@@ -752,7 +752,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 			// than the definition's — applyResourceOverride refuses to raise it.
 			// The lookup below resolves by agent NAME, which a per-run value has
 			// no path through, so it rides ctx instead.
-			if n := tools.FanoutCap(ctx); n > 0 {
+			if n := tools.PolicyOf(ctx).FanoutCap; n > 0 {
 				return n
 			}
 			// RFC N: resolve within the calling run's tenant (carried via
@@ -2137,7 +2137,7 @@ func subAgentCryptoPolicy(parent tools.CryptoPolicyValue, def config.AgentDef) t
 // and authoring (SkillDef create/fork). Empty patterns = allow all (the RFC BA
 // default); `-*` = deny all.
 func (s *Server) skillPolicyForAgent(agentDef config.AgentDef) tools.SkillPolicyValue {
-	return tools.SkillPolicyValue{Patterns: agentDef.Skills}
+	return tools.SkillPolicyValue{Patterns: agentDef.Skills, Granted: true}
 }
 
 // volumeDefPolicyForAgent returns the RFC AH Phase 2a VolumeDef policy
@@ -2389,45 +2389,6 @@ func (s *Server) volumePolicyForAgent(ctx context.Context, agentDef config.Agent
 	return tools.VolumePolicyValue{Active: true, Bindings: bindings}
 }
 
-// narrowVolumes computes a sub-agent's volume binding set as the
-// NARROW-ONLY intersection (RFC AH §4): child set = (child-declared) ∩
-// (parent's active bindings). A child can NEVER gain a volume the parent
-// lacks; where both hold a volume, ReadOnly resolves to the MORE
-// restrictive of the two (ro wins). This mirrors NarrowHosts exactly —
-// the parent's policy is the floor, the child can only shrink it.
-//
-// The child's Default flag is preserved from the child's own declaration
-// (the parent might mark a different volume as its default), so an
-// omitted `volume` in the child resolves against the child's own designated
-// default among the surviving intersection.
-//
-// Called ONLY with an ACTIVE parent (see childVolumePolicy). The result is
-// ALWAYS active: an empty intersection means the child shares none of the
-// parent's volumes and is confined to NOTHING (every file-tool call refused),
-// NOT dropped back to the legacy jail.
-func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValue {
-	parentByName := make(map[string]tools.VolumeBinding, len(parent.Bindings))
-	for _, b := range parent.Bindings {
-		parentByName[b.Name] = b
-	}
-	out := make([]tools.VolumeBinding, 0, len(child.Bindings))
-	for _, cb := range child.Bindings {
-		pb, ok := parentByName[cb.Name]
-		if !ok {
-			continue // child named a volume the parent lacks — drop it.
-		}
-		// More-restrictive-wins on the ro/rw axis: ro if EITHER side is ro.
-		out = append(out, tools.VolumeBinding{
-			Name:     cb.Name,
-			Root:     pb.Root, // parent's resolved root is authoritative.
-			ReadOnly: cb.ReadOnly || pb.ReadOnly,
-			Default:  cb.Default,
-			Fence:    pb.Fence, // with the root it fences.
-		})
-	}
-	return tools.VolumePolicyValue{Active: true, Bindings: out}
-}
-
 // childVolumePolicy resolves a sub-agent's volume policy from the parent's
 // run policy + the child's AgentDef (RFC AH §4). Three cases:
 //
@@ -2442,13 +2403,7 @@ func narrowVolumes(parent, child tools.VolumePolicyValue) tools.VolumePolicyValu
 //   - Bound child of a confined parent: NARROW — child-declared ∩ parent
 //     (narrow-only; a child can never reach a volume the parent lacks).
 func (s *Server) childVolumePolicy(ctx context.Context, parentVol tools.VolumePolicyValue, def config.AgentDef) tools.VolumePolicyValue {
-	if !parentVol.Active {
-		return s.volumePolicyForAgent(ctx, def)
-	}
-	if len(def.Volumes) == 0 {
-		return parentVol
-	}
-	return narrowVolumes(parentVol, s.volumePolicyForAgent(ctx, def))
+	return tools.ChildVolumes(parentVol, s.volumePolicyForAgent(ctx, def), len(def.Volumes) > 0)
 }
 
 // applyAgentDefOverlay overlays the v0.8.5 agent_defs.definition JSON
@@ -2666,7 +2621,7 @@ func (s *Server) mergedChannelDefsFor(ctx context.Context, tenantID string, incl
 
 // channelPolicyForAgent builds the v0.8.4 Channel-tool policy from the agent
 // yaml + the top-level `channels:` block AND the runtime channel store.
-// Returns a value suitable for tools.WithChannelPolicy. The Channels map is a
+// Returns the run policy's Channel field. The Channels map is a
 // copy of every declared channel — the tool layer needs the per-channel
 // scope/TTL/max_messages even for channels NOT in this agent's allowlist
 // (e.g. to phrase a useful refusal message). The runtime store read is
@@ -3738,10 +3693,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// The run's own turn calls lend its global slot while they wait for a
 	// provider lane (concurrency.RunSlot).
-	loopCtx := concurrency.WithRunSlot(tools.WithAgentTools(runCtx, toolNames(allowedTools)), runSlot)
-	// Raw (glob-preserving) patterns for the Skill tool's subset check — the
-	// resolved names above have the agent's globs already expanded.
-	loopCtx = tools.WithAgentToolPatterns(loopCtx, agentDef.Tools)
+	loopCtx := concurrency.WithRunSlot(runCtx, runSlot)
 	// RFC AR: honor a tenant/user provider-key override (ANTHROPIC_API_KEY,
 	// BRAVE_API_KEY, …) for this run. Sub-agents inherit it via subRunCtx←ctx.
 	loopCtx = providers.WithCredentialResolver(loopCtx, s.credResolver)
@@ -3749,60 +3701,38 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// driver backstop (drivers import providers, not auth/tools).
 	loopCtx = providers.WithOperatorKeyAllowed(loopCtx, !operatorKeyRestricted)
 	loopCtx = tools.WithRunIdentity(loopCtx, rid)
-	loopCtx = tools.WithHostPolicy(loopCtx, hostPolicy)
-	// Memory tool policy: agent name + per-agent scope allowlist +
-	// per-agent quota override. The Memory tool reads these from ctx
-	// at call time to refuse out-of-policy operations and resolve
-	// scope_id (yaml agent name for `agent` scope, user_id for
-	// `user` scope).
+	// The Memory tool resolves `agent` scope to this name.
 	loopCtx = tools.WithAgentName(loopCtx, effectiveAgentName)
-	loopCtx = tools.WithMemoryPolicy(loopCtx, tools.MemoryPolicyValue{
-		AllowedScopes:      tools.EffectiveMemoryScopes(loopCtx, agentDef.MemoryScopes),
-		QuotaBytes:         agentDef.MemoryQuotaBytes,
-		Backend:            agentDef.MemoryBackend,
-		Consolidation:      agentDef.MemoryConsolidation,
-		RecallIncludeTurns: agentDef.RecallIncludeTurns,
-		RecallAttachTraces: agentDef.RecallAttachTraces,
-		Rerank:             agentDef.MemoryRerank,
-		Units:              agentDef.MemoryUnits,
-	})
-	loopCtx = tools.WithDecisionPolicy(loopCtx, agentDef.Decision)
-	// RFC BL P1: the run's resolved core blocks — read by the Memory tool to
-	// enforce read_only/limit_bytes, and inherited by an inherit_core_blocks
-	// sub-agent off this ctx key.
-	loopCtx = tools.WithCoreBlocksPolicy(loopCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
-	// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
-	loopCtx = tools.WithSqlMemPolicy(loopCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: tools.EffectiveSqlScopes(loopCtx, agentDef.SqlScopes),
-		QuotaBytes:    agentDef.SqlQuotaBytes,
-	})
-	// Resolved compaction settings flow down the spawn tree via ctx: a sub-agent
-	// inherits the parent's effective policy (its def fills any gaps the parent
-	// left unset), overridable per-spawn by the Agent tool.
-	loopCtx = tools.WithCompactionPolicy(loopCtx, runCfg.Compaction)
-	// RFC DC P2: the run's own fan-out width. It is otherwise resolved from the
-	// calling agent's NAME at spawn time, which a per-run value cannot reach.
-	// Inheriting it down the tree is safe because it can only have been LOWERED.
-	loopCtx = tools.WithFanoutCap(loopCtx, agentDef.MaxConcurrentChildren)
-	// RFC DC P5: offer this run's overrides to its children. Only a child of the
-	// SAME definition will take them (tools.RunOverridesValue.SameDefinitionAs).
-	loopCtx = tools.WithRunOverrides(loopCtx, tools.RunOverridesValue{
-		Record: runCfg.marshal(),
-		// A top-level run pins no def_id (RunInput does not carry one), so
-		// identity here is the agent NAME. See SameDefinitionAs.
-		DefID: "", AgentName: effectiveAgentName, RunID: runID,
-	})
-
-	// RFC CR: the resolved layered-context policy flows down the spawn tree the
-	// same way — a sub-agent inherits the parent's effective mode; its def fills
-	// gaps the parent left unset.
+	// The run's whole policy, after its identity: its memory, SQL and history
+	// defaults resolve from the user, tenant and isolation on ctx.
 	mergedContext := runCfg.Context // per-run > per-agent (RFC CR); resolved once, above
-	loopCtx = tools.WithContextPolicy(loopCtx, mergedContext)
-	// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
-	// empty policy (the file tools fall back to the legacy jail Root);
-	// sub-agents inherit + narrow this via runSubAgent.
-	loopCtx = tools.WithVolumePolicy(loopCtx, s.volumePolicyForAgent(loopCtx, agentDef))
-	loopCtx = ephemeralReadOnlyFor(loopCtx, agentDef)
+	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, effectiveAgentName, runPolicySource{
+		Tools: allowedTools,
+		Hosts: hostPolicy,
+		// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
+		// inactive policy (every file tool refuses); sub-agents inherit and
+		// narrow this.
+		Volumes:    s.volumePolicyForAgent(loopCtx, agentDef),
+		CoreBlocks: coreBlocks,
+		Crypto:     cryptoPolicyForAgent(agentDef),
+		// Resolved compaction and layered-context settings flow down the spawn
+		// tree: a sub-agent inherits the parent's effective policy (its def
+		// fills any gaps the parent left unset), compaction overridable
+		// per-spawn by the Agent tool.
+		Compaction: runCfg.Compaction,
+		Context:    mergedContext,
+		// RFC DC P2: the run's own fan-out width. It is otherwise resolved from
+		// the calling agent's NAME at spawn time, which a per-run value cannot
+		// reach.
+		FanoutCap: agentDef.MaxConcurrentChildren,
+		// RFC DC P5: offer this run's overrides to its children. Only a child of
+		// the SAME definition will take them (RunOverridesValue.SameDefinitionAs).
+		// A top-level run pins no def_id (RunInput does not carry one), so
+		// identity here is the agent NAME.
+		Overrides:    tools.RunOverridesValue{Record: runCfg.marshal(), AgentName: effectiveAgentName, RunID: runID},
+		Interruption: in.Interruption,
+	})
+	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
 	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
@@ -3813,19 +3743,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
 	loopCtx = s.withEphemeralRecord(loopCtx, runID)
-	loopCtx = tools.WithChannelPolicy(loopCtx, s.channelPolicyForAgent(loopCtx, agentDef))
-	loopCtx = tools.WithOperatorAuthored(loopCtx, agentDef.OperatorAuthored)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
-	adPolicy, evPolicy := s.substratePoliciesForAgent(agentDef, effectiveAgentName)
-	loopCtx = tools.WithAgentDefPolicy(loopCtx, adPolicy)
-	loopCtx = tools.WithSkillPolicy(loopCtx, s.skillPolicyForAgent(agentDef))
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
-	loopCtx = tools.WithVolumeDefPolicy(loopCtx, s.volumeDefPolicyForAgent(agentDef))
-	loopCtx = tools.WithEvaluationPolicy(loopCtx, evPolicy)
-	loopCtx = tools.WithCryptoPolicy(loopCtx, cryptoPolicyForAgent(agentDef))
-	loopCtx = tools.WithHistoryPolicy(loopCtx, s.historyPolicyForAgent(loopCtx, agentDef))
-	loopCtx, liveInterruption := s.startRunInterruption(loopCtx, agentDef, in.Interruption)
 	loopCtx = tools.WithRunID(loopCtx, runID)
 	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef, hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
@@ -7254,32 +7174,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// callers can't override (the sub is loomcycle-controlled).
 	subAgentID := newAgentID()
 
-	// The sub-run's own resolved configuration, merged HERE because the run row
-	// is written a few lines below and the record travels on it.
-	//
-	// Safe to merge before the two def rewrites further down
-	// (resolveSkillBodiesForRun / applyMemoryInjection): both return a copy with
-	// only SystemPrompt changed, which
-	// TestSubRunConfig_DefRewritesLeaveTuningUntouched pins.
-	//
-	// Compaction flows DOWN the spawn tree (unlike memory/channels/sampling,
-	// which are the child's own). The parent's effective policy (on ctx) wins per
-	// field; the child def fills any field the PARENT left unset; a per-spawn
-	// Agent-tool override (also on ctx) wins over both. RFC CR's layered context
-	// inherits the same way, minus the per-spawn override knob (P4). Sampling and
-	// the timeout are the child's own — a breeder varies temperature by FORKING a
-	// def — and the host narrowing is the parent's, inherited through ctx.
-	//
-	// Not into a child that runs on its definition only: the parent's
-	// effective compaction and context carry its caller's per-run values,
-	// which such a child refuses from anyone, so it runs on its own.
-	parentCompaction, parentContext := tools.CompactionPolicy(ctx), tools.ContextPolicy(ctx)
-	if agentLocksOverrides(def) {
-		parentCompaction, parentContext = nil, nil
-	}
-	subCompaction := config.MergeCompaction(def.Compaction, parentCompaction)
-	// A parent's per-spawn override is an override like a caller's: a child
-	// that runs on its definition only refuses it.
+	// What the parent's run holds, and what this spawn asked for (its
+	// compaction override, its ledger index): the child's policy is decided
+	// from it by Inherit, below.
+	parentPolicy := tools.PolicyOf(ctx)
 	subRetention := s.resolveRetention(ctx, tenant, name, def, "")
 	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
@@ -7295,10 +7193,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// call: that call's stored copy is a marker (makeRecordingEmit).
 		tools.MarkContentNotRetained(ctx)
 	}
-	// Checked on the definition the child will run — after a def_id pin, so
-	// the pinned version's own lock is the one that decides.
+	// A parent's per-spawn override is an override like a caller's: a child
+	// that runs on its definition only refuses it. Checked on the definition
+	// the child will run — after a def_id pin, so the pinned version's own
+	// lock is the one that decides.
 	var spawnSet []string
-	if tools.CompactionOverride(ctx) != nil {
+	if parentPolicy.CompactionOverride != nil {
 		spawnSet = append(spawnSet, "compaction")
 	}
 	if interactive {
@@ -7307,33 +7207,19 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err := admitAgentOverrides(name, def, spawnSet); err != nil {
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
-	subCompaction = config.MergeCompaction(subCompaction, tools.CompactionOverride(ctx))
-	subContext := config.MergeContext(def.Context, parentContext)
-	// A child that runs on its definition only takes its parent's host list
-	// as a narrowing, as a request naming it directly would; a list that
-	// already only narrows stays so down the tree. Decided here, before the
-	// record is written, so the record and the child's tools agree and a
-	// resume applies the list the way the child ran with it.
-	subHostPolicy := tools.HostPolicy(ctx)
-	if subHostPolicy.HasList && callerHostsNarrowOnly(ctx, def) {
-		subHostPolicy.NarrowOnly = true
-	}
+	// The sub-run's own configuration record, written with the run row a few
+	// lines below. Sampling and the timeout are the child's own — a breeder
+	// varies temperature by FORKING a def. What it inherits (hosts,
+	// compaction, context, fan-out) is filled in from its policy once
+	// inheritOverridesForChild has settled its definition.
 	subRunCfg := runConfigRecord{
 		Hooks:             additionsRecord(hooks.AdditionsFrom(ctx)), // inherited from the parent run
 		SourcedHooks:      hooks.AdditionsFrom(ctx).Sourced,          // and a team state's, with their source
 		Sampling:          def.Sampling,
 		ToolChoice:        def.ToolChoice, // the child's own, like sampling
 		OutputFormat:      def.OutputFormat,
-		Compaction:        subCompaction,
-		Context:           subContext,
 		MaxContextTokens:  def.MaxContextTokens,
 		RunTimeoutSeconds: def.RunTimeoutSeconds,
-		Hosts:             hostRecordOf(subHostPolicy),
-		// The parent's volume confinement and inherited fan-out width, both read
-		// off ctx below and never re-derivable once the parent's ctx is gone.
-		Spawn: spawnRecordOf(tools.VolumePolicy(ctx), tools.FanoutCap(ctx)),
-		// What the child runs with: its parent's, read off ctx, or its own.
-		EphemeralReadOnly: tools.EphemeralReadOnly(ctx) || def.EphemeralVolumes == config.EphemeralVolumesReadOnly,
 		// The version the child's NAME resolved to — under a def_id pin, the
 		// base the pinned version was laid over — so a resume rebuilds the same
 		// definition; the pin itself is AgentDefID on the row.
@@ -7343,9 +7229,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// walk and wave stamps): a resume reads the team's own agents from it.
 		TeamScope: teamScopeRecordOf(ctx),
 	}
-	// The parent's key scopes, which narrow the child's below and which a
-	// resume cannot re-derive once the parent's ctx is gone.
-	subRunCfg.Spawn.CryptoScopes = tools.CryptoPolicy(ctx).Scopes
 
 	// RFC DC P5 / D9: a child inherits the parent's overrides only when it is
 	// the SAME DEFINITION. Across definitions the parent's model may not even be
@@ -7355,6 +7238,45 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Identity is the substrate def_id, falling back to the agent NAME for
 	// static (yaml) agents, which have no def row.
 	def, subRunCfg = s.inheritOverridesForChild(ctx, def, subRunCfg, defID, name)
+
+	// The child's policy, decided by Inherit from its parent's and its own
+	// definition's. Built here, before the record is written, because the
+	// record keeps what the child inherited (a resume cannot re-derive it
+	// once the parent's ctx is gone) and must agree with what it runs with.
+	// Its tool set and core blocks are only known once its prompt is
+	// assembled below; they are its own (ruleOwn), so the decision is
+	// repeated there with them filled in and every other field unchanged.
+	//
+	// ctx still carries the PARENT's identity, which matches the child's in
+	// every field the definition's defaults read (user, tenant, isolation).
+	// Safe to read def before the prompt rewrites below
+	// (resolveSkillBodiesForRun / applyMemoryInjection): both return a copy
+	// with only SystemPrompt changed, which
+	// TestSubRunConfig_DefRewritesLeaveTuningUntouched pins.
+	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
+		Volumes:      s.volumePolicyForAgent(ctx, def),
+		Crypto:       cryptoPolicyForAgent(def),
+		Compaction:   def.Compaction,
+		Context:      def.Context,
+		FanoutCap:    def.MaxConcurrentChildren,
+		Interruption: subRunCfg.Interruption,
+	})
+	childGrant := tools.ChildGrant{
+		Own:             childOwn,
+		DeclaresVolumes: len(def.Volumes) > 0,
+		LocksOverrides:  agentLocksOverrides(def),
+		HostsNarrowOnly: callerHostsNarrowOnly(ctx, def),
+	}
+	childPolicy := parentPolicy.Inherit(childGrant)
+	subRunCfg.Hosts = hostRecordOf(childPolicy.Hosts)
+	subRunCfg.Compaction = childPolicy.Compaction
+	subRunCfg.Context = childPolicy.Context
+	subRunCfg.EphemeralReadOnly = !childPolicy.EphemeralWritable
+	// The parent's volume confinement and key scopes are the ceilings the
+	// child was narrowed against, and its fan-out width the one it runs with:
+	// a resume narrows against the first two again and restores the third.
+	subRunCfg.Spawn = spawnRecordOf(parentPolicy.Volumes, childPolicy.FanoutCap)
+	subRunCfg.Spawn.CryptoScopes = parentPolicy.Crypto.Scopes
 	// Route through resolveAgentDef so an overlay's Model/Tier/Provider/
 	// Effort actually take effect — resolved AFTER the inheritance above, so a
 	// model, tier or routing block the child inherits is the one it runs on. resolveAgent re-reads cfg.Agents and
@@ -7474,7 +7396,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// sub-run's own emitter is swapped in below). Gives a restored fan-out
 	// parent the (index → run_id) mapping to await + re-collect this child.
 	if s.cfg().Env.ResumeFanout {
-		if idx, ok := tools.SpawnIndex(ctx); ok {
+		if idx, ok := parentPolicy.SpawnChildIndex(); ok {
 			if tuID := tools.ToolUseID(ctx); tuID != "" {
 				if emit := tools.EventEmitter(ctx); emit != nil {
 					emit(providers.Event{
@@ -7484,7 +7406,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 							Index:     idx,
 							RunID:     subRunID,
 							Agent:     name,
-							TimeoutMs: tools.SpawnTimeoutMs(ctx),
+							TimeoutMs: parentPolicy.SpawnTimeoutMs,
 						},
 					})
 				}
@@ -7646,9 +7568,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// "host \"localhost\" not in allowlist", waste iterations
 	// guessing hostnames, get capped by max_iterations, never write
 	// the documents (2026-05-06).
-	// subHostPolicy is the parent's, made narrow-only above for a locked child.
-	if subHostPolicy.HasList || s.cfg().Env.HTTPCallerAuthoritative {
-		subTools = builtin.NarrowHosts(subTools, subHostPolicy.AllowedHosts, subHostPolicy.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !subHostPolicy.NarrowOnly)
+	// The child's hosts are the parent's, made narrow-only for a locked child.
+	if hp := childPolicy.Hosts; hp.HasList || s.cfg().Env.HTTPCallerAuthoritative {
+		subTools = builtin.NarrowHosts(subTools, hp.AllowedHosts, hp.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !hp.NarrowOnly)
 	}
 	subDispatcher := s.newDispatcher(subTools)
 
@@ -7720,92 +7642,34 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// The sub's run identity is also threaded through ctx so a
 	// recursive Agent tool call from this sub picks up the right
 	// parent_agent_id (= subAgentID).
-	subCtx := tools.WithAgentTools(subRunCtx, toolNames(subTools))
-	subCtx = tools.WithAgentToolPatterns(subCtx, def.Tools) // raw globs for the Skill subset check
-	subCtx = tools.WithRunIdentity(subCtx, subRID)
+	subCtx := tools.WithRunIdentity(subRunCtx, subRID)
 	// The parent's global slot is not the child's to lend: a child takes no
 	// admission slot, and its calls wait while the parent holds its own.
 	subCtx = concurrency.WithRunSlot(subCtx, nil)
 	subCtx = tools.WithAgentName(subCtx, name)
-	// Sub-agents get THEIR OWN Memory policy from yaml — the parent's
-	// memory_scopes do NOT cascade. This matches the existing
-	// `tools` model: a child's surface is its own yaml's
-	// authority. Cross-agent state-sharing is what the `user` scope
-	// is for; sub-agents that share state with their parent simply
-	// both list `user` (or `agent` keyed by a shared name) in their
-	// memory_scopes.
-	subCtx = tools.WithMemoryPolicy(subCtx, tools.MemoryPolicyValue{
-		AllowedScopes:      tools.EffectiveMemoryScopes(subCtx, def.MemoryScopes),
-		QuotaBytes:         def.MemoryQuotaBytes,
-		Backend:            def.MemoryBackend,
-		Consolidation:      def.MemoryConsolidation,
-		RecallIncludeTurns: def.RecallIncludeTurns,
-		RecallAttachTraces: def.RecallAttachTraces,
-		Rerank:             def.MemoryRerank,
-		Units:              def.MemoryUnits,
-	})
-	subCtx = tools.WithDecisionPolicy(subCtx, def.Decision)
-	// RFC BL P1: the sub-agent's effective core blocks (its own + any inherited
-	// user/tenant blocks). Replaces the parent's policy on subCtx so the Memory
-	// tool enforces THIS agent's blocks and a grandchild inherits from here.
-	subCtx = tools.WithCoreBlocksPolicy(subCtx, tools.CoreBlocksPolicyValue{Blocks: coreBlocks})
-	// RFC AA: the sub-agent's SQL Memory ACL is its OWN def's sql_scopes
-	// (like memory/channels, not inherited down the tree). Empty →
-	// default-deny. The run-scope DB keys off RootRunID (inherited unchanged
-	// above), so a child granted `run` reads/writes the SAME ephemeral DB as
-	// the rest of the tree — dropped once at the top-level run's completion.
-	subCtx = tools.WithSqlMemPolicy(subCtx, tools.SqlMemPolicyValue{
-		AllowedScopes: tools.EffectiveSqlScopes(subCtx, def.SqlScopes),
-		QuotaBytes:    def.SqlQuotaBytes,
-	})
-	// Stamped on subCtx so the child's OWN children inherit both recursively,
-	// and passed to the sub-loop's RunOptions. Merged above, with the run row.
-	subCtx = tools.WithCompactionPolicy(subCtx, subCompaction)
-	subCtx = tools.WithContextPolicy(subCtx, subContext)
-	// RFC AH §4 — the load-bearing spawn invariant: a child's volume set is
-	// the NARROW-ONLY intersection of (child-declared) ∩ (parent's active
-	// bindings). A sub-agent can never gain a volume its parent lacks, and
-	// where both hold one the ro/rw axis resolves to the more restrictive.
-	// Mirrors the host-allowlist narrowing read from ctx just above (4376).
-	subCtx = tools.WithVolumePolicy(subCtx, s.childVolumePolicy(subCtx, tools.VolumePolicy(ctx), def))
-	// The child's own definition can take write access to ephemeral volumes
-	// away. What its parent gave up is already on subCtx, which derives from
-	// the parent's ctx, and nothing here gives it back.
-	subCtx = ephemeralReadOnlyFor(subCtx, def)
+	// The child's policy, decided again now that its own tool set and core
+	// blocks are known — both are its own, so every other field is what the
+	// record above was written from. It REPLACES the parent's: whatever the
+	// parent held reaches the child only where Inherit says it does.
+	childGrant.Own.Tools = toolNames(subTools)
+	// RFC BL P1: the child's effective core blocks (its own + any inherited
+	// user/tenant blocks), so the Memory tool enforces THIS agent's blocks and
+	// a grandchild inherits from here.
+	childGrant.Own.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: coreBlocks}
+	childPolicy = parentPolicy.Inherit(childGrant)
+	subCtx = tools.WithRunPolicy(subCtx, childPolicy)
 	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
 	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
 	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down
 	// unchanged. A sub-agent creating an ephemeral volume thus registers it in
 	// the shared set the whole tree resolves through, and it is purged with the
 	// tree at the top-level run's completion (sub-agents never purge).
-	// Sub-agent's Channel policy follows the same per-yaml shape as
-	// MemoryPolicy above. The Channels map (operator-declared
-	// channels) IS shared with the parent — those are operator
-	// state, not agent state. The ALLOWLISTS (publish / subscribe)
-	// come from the child's yaml.
-	subCtx = tools.WithChannelPolicy(subCtx, s.channelPolicyForAgent(subCtx, def))
-	subCtx = tools.WithOperatorAuthored(subCtx, def.OperatorAuthored)
+	//
 	// Sub-agent event emitter writes to the SUB's transcript (per
 	// subEmit above). Channel-tool publishes from inside the sub
 	// surface on the sub's SSE stream, not the parent's.
 	subCtx = tools.WithEventEmitter(subCtx, subEmit)
-	// Sub-agent's substrate policies come from ITS OWN yaml — same
-	// shape as Memory/Channel. selfName is the sub's name so the
-	// "self" scope resolves to the sub-agent's identity, not the
-	// parent's.
-	subADPolicy, subEvPolicy := s.substratePoliciesForAgent(def, name)
-	subCtx = tools.WithAgentDefPolicy(subCtx, subADPolicy)
-	subCtx = tools.WithSkillPolicy(subCtx, s.skillPolicyForAgent(def))
 	subCtx = tools.WithSearchProviders(subCtx, def.SearchProviders)
-	subCtx = tools.WithVolumeDefPolicy(subCtx, s.volumeDefPolicyForAgent(def))
-	subCtx = tools.WithEvaluationPolicy(subCtx, subEvPolicy)
-	// Unlike the per-yaml policies above, a child's key scopes are NARROWED by
-	// its parent's: it holds only what both its own definition and the parent
-	// run hold, so spawning a helper with a wider definition reaches no key the
-	// parent could not.
-	subCtx = tools.WithCryptoPolicy(subCtx, subAgentCryptoPolicy(tools.CryptoPolicy(ctx), def))
-	subCtx = tools.WithHistoryPolicy(subCtx, s.historyPolicyForAgent(subCtx, def))
-	subCtx, _ = s.startRunInterruption(subCtx, def, subRunCfg.Interruption)
 	// subCtx still carries the PARENT's run id here, which is exactly the
 	// parent id; it is replaced by the child's on the next line.
 	subCtx = tools.WithParentRunID(subCtx, tools.RunID(subCtx))
@@ -7866,9 +7730,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Sampling:               def.Sampling,
 		ToolChoice:             def.ToolChoice,
 		OutputFormat:           def.OutputFormat,
-		Compaction:             subCompaction,
-		Context:                subContext,       // RFC CR: inherited layered-context policy
-		ContextPlugins:         s.contextPlugins, // RFC Z runtime-wide chain (sub-agents included; code-js exempt in the loop)
+		Compaction:             childPolicy.Compaction,
+		Context:                childPolicy.Context, // RFC CR: inherited layered-context policy
+		ContextPlugins:         s.contextPlugins,    // RFC Z runtime-wide chain (sub-agents included; code-js exempt in the loop)
 		UserTier:               parentTier,
 		FallbackPolicy:         fbPolicy,
 		ReResolve:              fbReResolve,
@@ -9665,16 +9529,6 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	}
 }
 
-// ephemeralReadOnlyFor marks ctx when the agent's definition gives it
-// ephemeral volumes read-only. It never unmarks: an agent whose definition
-// does not say so keeps whatever its ancestors' did.
-func ephemeralReadOnlyFor(ctx context.Context, def config.AgentDef) context.Context {
-	if def.EphemeralVolumes == config.EphemeralVolumesReadOnly {
-		return tools.WithEphemeralReadOnly(ctx)
-	}
-	return ctx
-}
-
 // withEphemeralRecord attaches what a run reads of its tree's recorded
 // ephemeral volumes: the mode check a write makes, and the records a lookup of
 // a name the in-memory set lacks falls back to. Both read the rows every
@@ -9989,7 +9843,7 @@ func newAgentID() string {
 }
 
 // toolNames returns the names of a slice of tools — used to populate
-// the per-run AgentTools context value for tools that need a runtime
+// the per-run RunPolicy.Tools value for tools that need a runtime
 // view of "what this agent can use" (e.g. the Skill tool's subset
 // check on each call).
 func toolNames(ts []tools.Tool) []string {

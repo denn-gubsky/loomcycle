@@ -44,7 +44,7 @@ func TestCrypto_X25519KeyEncryptsToItselfAndToAnyoneHoldingItsPublicKey(t *testi
 	jb, _ := json.Marshal(jwk)
 	pub, _ := json.Marshal(string(jb))
 	// A caller with no crypto scope at all can still encrypt to a public key.
-	noScope := tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{})
+	noScope := tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{} })
 	out, res = cryptoExec(t, c, noScope, `{"op":"encrypt","public_key":`+string(pub)+`,"plaintext":"from a stranger"}`)
 	mustOK(t, "encrypt to a public key", res)
 	out, res = cryptoExec(t, c, ctx, `{"op":"decrypt","key":"inbox","ciphertext":"`+out["ciphertext"].(string)+`"}`)
@@ -173,9 +173,11 @@ func TestCrypto_PasswordsHashAndVerifyWithoutAKey(t *testing.T) {
 // refCtx is a run's ctx for references: a bound default volume and the tools
 // a reference needs.
 func refCtx(ctx context.Context, dir string, toolNames ...string) context.Context {
-	ctx = tools.WithVolumePolicy(ctx, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true}}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true}}}
+	})
 	ctx = tools.WithRunID(ctx, "run_ref")
-	return tools.WithAgentTools(ctx, append([]string{"Crypto"}, toolNames...))
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Tools = append([]string{"Crypto"}, toolNames...) })
 }
 
 // A file is encrypted to another file and back, byte for byte, and neither
@@ -246,9 +248,11 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	full := refCtx(ctx, dir, "Read", "Write")
-	readOnly := tools.WithVolumePolicy(full, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true, ReadOnly: true}}})
+	readOnly := tools.UpdateRunPolicy(full, func(rp *tools.RunPolicy) {
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{{Name: "work", Root: dir, Default: true, ReadOnly: true}}}
+	})
 	operator := tools.WithSubstrateOperator(context.Background())
-	operator = tools.WithCryptoPolicy(tools.WithRunIdentity(operator, tools.RunIdentityValue{TenantID: "tnt"}), tools.CryptoPolicyValue{Scopes: []string{"tenant"}})
+	operator = tools.UpdateRunPolicy(tools.WithRunIdentity(operator, tools.RunIdentityValue{TenantID: "tnt"}), func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"tenant"}} })
 
 	for name, c2 := range map[string]struct {
 		ctx  context.Context
@@ -257,7 +261,7 @@ func TestCrypto_ReferencesAreRefusedOutsideTheAgentsAuthority(t *testing.T) {
 	}{
 		"no Read tool":        {refCtx(ctx, dir, "Write"), `{"op":"encrypt","key":"files","from":"volume:a.txt"}`, tools.CategoryPermission},
 		"no Write tool":       {refCtx(ctx, dir, "Read"), `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:b.txt"}`, tools.CategoryPermission},
-		"no tool list":        {tools.WithAgentTools(full, nil), `{"op":"encrypt","key":"files","from":"volume:a.txt"}`, tools.CategoryPermission},
+		"no tool list":        {tools.UpdateRunPolicy(full, func(rp *tools.RunPolicy) { rp.Tools = nil }), `{"op":"encrypt","key":"files","from":"volume:a.txt"}`, tools.CategoryPermission},
 		"dot-dot escape":      {full, `{"op":"encrypt","key":"files","from":"volume:../` + filepath.Base(outside) + `/secret.txt"}`, tools.CategoryPermission},
 		"symlink escape":      {full, `{"op":"encrypt","key":"files","from":"volume:link.txt"}`, tools.CategoryPermission},
 		"read-only volume":    {readOnly, `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:b.txt"}`, tools.CategoryPermission},
@@ -291,7 +295,7 @@ func TestCrypto_ANarrowedRunCannotReachAToolItWasNarrowedOutOf(t *testing.T) {
 	mustOK(t, "generate", res)
 	dir := t.TempDir()
 	narrowed := refCtx(ctx, dir) // effective tools: [Crypto]
-	narrowed = tools.WithAgentToolPatterns(narrowed, []string{"Crypto", "Read", "Write"})
+	narrowed = tools.UpdateRunPolicy(narrowed, func(rp *tools.RunPolicy) { rp.ToolPatterns = []string{"Crypto", "Read", "Write"} })
 	if _, res := cryptoExec(t, c, narrowed, `{"op":"encrypt","key":"files","plaintext":"x","to":"volume:out.txt"}`); !res.IsError || res.Error.Category != tools.CategoryPermission {
 		t.Errorf("narrowed run = %+v, want a permission refusal", res)
 	}
@@ -362,7 +366,7 @@ func TestCrypto_MemoryReferencesUseMemorysOwnChecks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	c.Memory = &Memory{Store: s, MaxValueBytes: 65536, DefaultQuotaBytes: 1 << 20}
-	mctx := tools.WithMemoryPolicy(refCtx(ctx, t.TempDir(), "Memory"), tools.MemoryPolicyValue{AllowedScopes: []string{"user"}})
+	mctx := tools.UpdateRunPolicy(refCtx(ctx, t.TempDir(), "Memory"), func(rp *tools.RunPolicy) { rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}} })
 
 	out, res := cryptoExec(t, c, mctx, `{"op":"encrypt","key":"m","plaintext":"note","to":"memory:user/secret-note"}`)
 	mustOK(t, "encrypt to memory", res)
@@ -401,7 +405,7 @@ func TestCrypto_DocumentReferencesGoThroughTheDocumentTool(t *testing.T) {
 	c := &Crypto{Docs: d}
 	ctx := tools.WithRunIdentity(dctx, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt",
 		UserCredentials: map[string]string{"doc-key": "0123456789abcdef0123456789abcdef-a-secret"}})
-	ctx = tools.WithCryptoPolicy(ctx, tools.CryptoPolicyValue{Scopes: []string{"run"}})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"run"}} })
 	ctx = refCtx(ctx, t.TempDir(), "Document")
 	ref := "document:user/" + chunkID
 

@@ -30,7 +30,7 @@ func TestSubAgent_VolumeNarrowOnly_ChildNotDeclaringParentVolumeLosesIt(t *testi
 	child := tools.VolumePolicyValue{Bindings: []tools.VolumeBinding{
 		{Name: "repo-a", Root: "/work/a", Default: true},
 	}}
-	got := bindingNames(narrowVolumes(parent, child))
+	got := bindingNames(tools.NarrowVolumes(parent, child))
 	if _, ok := got["repo-a"]; !ok {
 		t.Error("child declaring repo-a should keep it")
 	}
@@ -50,7 +50,7 @@ func TestSubAgent_VolumeNarrowOnly_ChildCannotGainVolumeParentLacks(t *testing.T
 		{Name: "repo-a", Root: "/work/a", Default: true},
 		{Name: "repo-b", Root: "/work/b"},
 	}}
-	got := bindingNames(narrowVolumes(parent, child))
+	got := bindingNames(tools.NarrowVolumes(parent, child))
 	if _, ok := got["repo-b"]; ok {
 		t.Error("child must not gain repo-b — the parent lacks it (no widening on spawn)")
 	}
@@ -60,7 +60,7 @@ func TestSubAgent_VolumeNarrowOnly_ChildCannotGainVolumeParentLacks(t *testing.T
 }
 
 // A child that declares a SHARED volume name with a DIFFERENT root cannot
-// redirect it — narrowVolumes keeps the PARENT's resolved root as authoritative.
+// redirect it — NarrowVolumes keeps the PARENT's resolved root as authoritative.
 // Guards the (otherwise-untested) `Root: pb.Root` invariant against a refactor
 // that accidentally trusts the child's declared root.
 func TestSubAgent_VolumeNarrowOnly_ChildCannotSmuggleDifferentRoot(t *testing.T) {
@@ -70,7 +70,7 @@ func TestSubAgent_VolumeNarrowOnly_ChildCannotSmuggleDifferentRoot(t *testing.T)
 	child := tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 		{Name: "repo-a", Root: "/attacker/path", Default: true}, // tries to redirect
 	}}
-	got := bindingNames(narrowVolumes(parent, child))
+	got := bindingNames(tools.NarrowVolumes(parent, child))
 	if b, ok := got["repo-a"]; !ok || b.Root != "/work/a" {
 		t.Errorf("child must not redirect a shared volume's root; got %q want /work/a", got["repo-a"].Root)
 	}
@@ -85,7 +85,7 @@ func TestSubAgent_VolumeNarrowOnly_MoreRestrictiveModeWins(t *testing.T) {
 	child := tools.VolumePolicyValue{Bindings: []tools.VolumeBinding{
 		{Name: "shared", Root: "/work/shared", ReadOnly: false, Default: true}, // child wants rw
 	}}
-	got := bindingNames(narrowVolumes(parent, child))
+	got := bindingNames(tools.NarrowVolumes(parent, child))
 	b, ok := got["shared"]
 	if !ok {
 		t.Fatal("shared should survive the intersection")
@@ -96,7 +96,7 @@ func TestSubAgent_VolumeNarrowOnly_MoreRestrictiveModeWins(t *testing.T) {
 }
 
 // childVolumePolicy orchestration (RFC AH §4) — the real spawn path, not just
-// the pure narrowVolumes intersection.
+// the pure NarrowVolumes intersection.
 
 // An INACTIVE parent (legacy / no `default` volume) resolves the child as if
 // top-level — its own declared volumes apply (there is no parent volume scope
