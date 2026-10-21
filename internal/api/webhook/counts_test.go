@@ -95,7 +95,7 @@ func TestReceiver_CountsEachDeliveryUnderItsOutcomeAndWritesOnlyOnFlush(t *testi
 	answer(t, "ping", rec, "/v1/_webhooks/gh", ping, githubDelivery(ping, "d1", "ping"), http.StatusOK)
 	issue := `{"issue":{"number":1}}`
 	answer(t, "issues", rec, "/v1/_webhooks/gh", issue, githubDelivery(issue, "d2", "issues"), http.StatusAccepted)
-	answer(t, "unsigned", rec, "/v1/_webhooks/gh", pushBody, http.Header{"X-Github-Event": {"push"}}, http.StatusUnauthorized)
+	answer(t, "unsigned", rec, "/v1/_webhooks/gh", pushBody, http.Header{"X-Github-Event": {"push"}}, http.StatusNotFound)
 	answer(t, "shape", rec, "/v1/_webhooks/gh", pushBody, githubDelivery(pushBody, "d3", "pull_request"), http.StatusBadRequest)
 	tag := strings.Replace(pushBody, "refs/heads/main", "refs/tags/v1", 1)
 	answer(t, "a tag push", rec, "/v1/_webhooks/gh", tag, githubDelivery(tag, "d4", "push"), http.StatusAccepted)

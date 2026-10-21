@@ -120,13 +120,13 @@ func TestReceiver_FiltersWithoutEvents(t *testing.T) {
 }
 
 // The filters run after the signature: an unsigned body a filter would miss
-// is refused 401, and learns nothing about the filters.
+// is refused with the unknown-name 404, and learns nothing about the filters.
 func TestReceiver_FiltersRunAfterTheSignature(t *testing.T) {
 	rec := newScopeReceiver(openScopeStore(t), &fakeRunner{runID: "r"}, map[string]config.Webhook{"gh": githubBranchPushHook()})
 	tag := pushTo("refs/tags/v1", false, "acme/app")
 	h := githubDelivery(tag, "d1", "push")
 	h.Set("X-Hub-Signature-256", githubSig("not-the-secret", []byte(tag)))
-	answerAny(t, "unsigned", rec, "/v1/_webhooks/gh", tag, h, http.StatusUnauthorized)
+	answerAny(t, "unsigned", rec, "/v1/_webhooks/gh", tag, h, http.StatusNotFound)
 }
 
 // The dry-run makes the same check and names the filter that missed.

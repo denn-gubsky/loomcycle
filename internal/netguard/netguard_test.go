@@ -5,7 +5,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -177,13 +179,15 @@ func isGuardRefusal(err error) bool {
 }
 
 // TestGuardedDial_AllowlistedCGNATHostStillDials: now that CGNAT is private, an
-// operator's exact-host entry for a tailnet peer must still exempt it.
+// operator's exact-host entry for a tailnet peer must still exempt it. (Not
+// 100.100.100.200: that is Alibaba Cloud's metadata address, which a host
+// entry never covers.)
 func TestGuardedDial_AllowlistedCGNATHostStillDials(t *testing.T) {
-	const addr = "100.100.100.200:9"
+	const addr = "100.101.102.103:9"
 	if err := guardedDialErr(t, nil, addr); !isGuardRefusal(err) {
 		t.Fatalf("unlisted CGNAT address: err = %v, want a guard refusal", err)
 	}
-	if err := guardedDialErr(t, []string{"100.100.100.200"}, addr); isGuardRefusal(err) {
+	if err := guardedDialErr(t, []string{"100.101.102.103"}, addr); isGuardRefusal(err) {
 		t.Fatalf("exact-host entry should exempt the CGNAT peer, got %v", err)
 	}
 }
@@ -249,5 +253,181 @@ func TestIsPrivateIP_CoversAWSCredentialEndpoints(t *testing.T) {
 		if !IsPrivateIP(net.ParseIP(s)) {
 			t.Errorf("%s is reachable by an agent request", s)
 		}
+	}
+}
+
+// stubResolver resolves each host to fixed addresses, so a test can make an
+// operator-vouched name point wherever an attacker controlling its DNS would.
+type stubResolver map[string][]string
+
+func (r stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	addrs, ok := r[host]
+	if !ok {
+		return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+	}
+	out := make([]net.IPAddr, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, net.IPAddr{IP: net.ParseIP(a)})
+	}
+	return out, nil
+}
+
+// vouchedDialErr dials peer.vouched.test (resolved to resolveTo) through the
+// guard with allow as the operator's private-host allowlist.
+func vouchedDialErr(t *testing.T, resolveTo, port string, allow []string) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	dial := guardedDialContext(stubResolver{"peer.vouched.test": {resolveTo}}, false, allow)
+	conn, err := dial(ctx, "tcp", net.JoinHostPort("peer.vouched.test", port))
+	if err == nil {
+		_ = conn.Close()
+	}
+	return err
+}
+
+// TestGuardedDial_VouchedNameStillRefusesLinkLocal: vouching a name trusts the
+// operator's network, not whoever controls the name's DNS, so the name never
+// reaches link-local or a cloud metadata address — including one inside CGNAT
+// or ULA space, or carried in a NAT64 address.
+func TestGuardedDial_VouchedNameStillRefusesLinkLocal(t *testing.T) {
+	allow := []string{"vouched.test"} // suffix entry: covers peer.vouched.test
+	for _, addr := range []string{
+		"169.254.169.254",    // EC2 / GCP / Azure metadata
+		"169.254.170.2",      // ECS task credentials
+		"fe80::1",            // IPv6 link-local
+		"fd00:ec2::254",      // EC2 metadata over IPv6 (ULA)
+		"fd00:ec2::23",       // EKS Pod Identity agent over IPv6 (ULA)
+		"100.100.100.200",    // Alibaba Cloud metadata (CGNAT)
+		"64:ff9b::a9fe:a9fe", // NAT64 spelling of 169.254.169.254
+	} {
+		if err := vouchedDialErr(t, addr, "9", allow); !isGuardRefusal(err) {
+			t.Errorf("vouched name resolving to %s: err = %v, want a guard refusal", addr, err)
+		}
+	}
+}
+
+// TestGuardedDial_VouchedNameStillReachesPrivateRanges: the link-local fence
+// leaves the vouch's purpose intact — a LAN, tailnet, ULA or loopback peer.
+func TestGuardedDial_VouchedNameStillReachesPrivateRanges(t *testing.T) {
+	allow := []string{"vouched.test"}
+	for _, addr := range []string{"10.0.0.5", "100.101.102.103", "fd7a:115c:a1e0::1"} {
+		if err := vouchedDialErr(t, addr, "9", allow); isGuardRefusal(err) {
+			t.Errorf("vouched name resolving to %s refused by the guard: %v", addr, err)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	if err := vouchedDialErr(t, "127.0.0.1", port, allow); err != nil {
+		t.Fatalf("vouched name resolving to loopback should connect: %v", err)
+	}
+}
+
+// TestGuardedDial_CIDREntryReallowsLinkLocal: an operator who really means a
+// link-local or metadata address says so with a CIDR entry covering it.
+func TestGuardedDial_CIDREntryReallowsLinkLocal(t *testing.T) {
+	if err := vouchedDialErr(t, "169.254.169.254", "9", []string{"vouched.test", "169.254.0.0/16"}); isGuardRefusal(err) {
+		t.Fatalf("CIDR entry 169.254.0.0/16 should re-allow the link-local address: %v", err)
+	}
+	if err := vouchedDialErr(t, "100.100.100.200", "9", []string{"vouched.test", "100.100.100.200/32"}); isGuardRefusal(err) {
+		t.Fatalf("CIDR entry 100.100.100.200/32 should re-allow the address: %v", err)
+	}
+}
+
+// TestSocketControl_VouchedNameRefusesLinkLocal: the socket-level re-check
+// applies the same fence as the pre-dial filter, so an address reaching the
+// socket by another path is refused too.
+func TestSocketControl_VouchedNameRefusesLinkLocal(t *testing.T) {
+	vouched := socketControl(blockedFor(false, true, nil))
+	if err := vouched("tcp4", "169.254.169.254:80", nil); err == nil {
+		t.Error("Control admitted 169.254.169.254 for a vouched name")
+	}
+	if err := vouched("tcp6", "[fd00:ec2::254]:80", nil); err == nil {
+		t.Error("Control admitted fd00:ec2::254 for a vouched name")
+	}
+	if err := vouched("tcp4", "10.0.0.5:80", nil); err != nil {
+		t.Errorf("Control refused a vouched name's RFC 1918 address: %v", err)
+	}
+
+	cidr := socketControl(blockedFor(false, true, []netip.Prefix{netip.MustParsePrefix("169.254.0.0/16")}))
+	if err := cidr("tcp4", "169.254.169.254:80", nil); err != nil {
+		t.Errorf("Control refused a link-local address a CIDR entry covers: %v", err)
+	}
+}
+
+// TestGuardedDial_VouchedNameRefusesUnwrappableIPv4Embeddings: an IPv6 form
+// whose embedded IPv4 cannot be located reliably (local-use NAT64, whose prefix
+// length the operator chooses; Teredo, whose client address is obfuscated) may
+// carry a link-local address to a gateway, so a vouched name never reaches one.
+func TestGuardedDial_VouchedNameRefusesUnwrappableIPv4Embeddings(t *testing.T) {
+	allow := []string{"vouched.test"}
+	for _, addr := range []string{
+		"64:ff9b:1::a9fe:a9fe",                 // local-use NAT64, 169.254.169.254 at a /96 offset
+		"64:ff9b:1:a9fe:a9fe::",                // local-use NAT64, 169.254.169.254 at a /48 offset
+		"2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
+	} {
+		if err := vouchedDialErr(t, addr, "9", allow); !isGuardRefusal(err) {
+			t.Errorf("vouched name resolving to %s: err = %v, want a guard refusal", addr, err)
+		}
+	}
+	vouched := socketControl(blockedFor(false, true, nil))
+	if err := vouched("tcp6", "[64:ff9b:1::a9fe:a9fe]:80", nil); err == nil {
+		t.Error("Control admitted 64:ff9b:1::a9fe:a9fe for a vouched name")
+	}
+}
+
+// TestGuardedDial_VouchedNameReachesEmbeddedPrivateIPv4: where the embedded
+// IPv4 can be read (well-known NAT64, 6to4, IPv4-mapped), a vouched name still
+// reaches an RFC 1918 address carried that way, as it does the IPv4 itself.
+func TestGuardedDial_VouchedNameReachesEmbeddedPrivateIPv4(t *testing.T) {
+	allow := []string{"vouched.test"}
+	for _, addr := range []string{"64:ff9b::a00:5", "2002:a00:5::1", "::ffff:10.0.0.5"} {
+		if err := vouchedDialErr(t, addr, "9", allow); isGuardRefusal(err) {
+			t.Errorf("vouched name resolving to %s refused by the guard: %v", addr, err)
+		}
+	}
+	if err := vouchedDialErr(t, "64:ff9b:1::a9fe:a9fe", "9", []string{"vouched.test", "64:ff9b:1::/48"}); isGuardRefusal(err) {
+		t.Errorf("a CIDR entry covering local-use NAT64 should re-allow it: %v", err)
+	}
+}
+
+// TestValidatePrivateHostAllowlist_RefusesLinkLocalHostEntry: an IP literal
+// listed as a host entry never admits a link-local or metadata address, so the
+// entry would silently do nothing; startup says so and names the CIDR form.
+func TestValidatePrivateHostAllowlist_RefusesLinkLocalHostEntry(t *testing.T) {
+	for entry, cidr := range map[string]string{
+		"169.254.169.254": "169.254.169.254/32",
+		"100.100.100.200": "100.100.100.200/32",
+		"fd00:ec2::254":   "fd00:ec2::254/128",
+		"[fe80::1]":       "fe80::1/128",
+	} {
+		err := ValidatePrivateHostAllowlist([]string{"localhost", entry})
+		if err == nil || !strings.Contains(err.Error(), cidr) {
+			t.Errorf("entry %q: err = %v, want a refusal naming %s", entry, err, cidr)
+		}
+	}
+	if err := ValidatePrivateHostAllowlist([]string{"10.0.0.5", "100.101.102.103", "169.254.0.0/16"}); err != nil {
+		t.Errorf("valid entries refused: %v", err)
+	}
+}
+
+// TestSocketControl_RefusesZonedAndUnparsableAddresses: the socket-level
+// re-check judges a zoned IPv6 address (fe80::1%en0) by its address, and
+// refuses an address it cannot parse rather than letting it through.
+func TestSocketControl_RefusesZonedAndUnparsableAddresses(t *testing.T) {
+	for name, control := range map[string]func(string, string, syscall.RawConn) error{
+		"unlisted": socketControl(blockedFor(false, false, nil)),
+		"vouched":  socketControl(blockedFor(false, true, nil)),
+	} {
+		for _, addr := range []string{"[fe80::1%en0]:80", "[fe80::1%25en0]:80", "not-an-address:80", "no-port"} {
+			if err := control("tcp6", addr, nil); err == nil {
+				t.Errorf("%s: Control admitted %q", name, addr)
+			}
+		}
+	}
+	if err := socketControl(blockedFor(false, false, nil))("tcp4", "8.8.8.8:443", nil); err != nil {
+		t.Errorf("Control refused a public address: %v", err)
 	}
 }

@@ -237,14 +237,14 @@ func TestTeamLocalWebhook_VerifiesAndDedupsLikeAWebhookDef(t *testing.T) {
 	}
 	defer disarm()
 
-	if w := deliverToTeam(h.mux, hookPath, `{"pr":1}`, "d-1", false); w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+	if w := deliverToTeam(h.mux, hookPath, `{"pr":1}`, "d-1", false); w.Code != http.StatusNotFound || w.Body.String() != "{\"error\":\"unknown_webhook\"}\n" {
 		t.Errorf("unsigned: %d %s", w.Code, w.Body.String())
 	}
 	req := httptest.NewRequest(http.MethodPost, hookPath, strings.NewReader(`{"pr":1}`))
 	req.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
 	w := httptest.NewRecorder()
 	h.mux.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":\"unauthorized\"}\n" {
+	if w.Code != http.StatusNotFound || w.Body.String() != "{\"error\":\"unknown_webhook\"}\n" {
 		t.Errorf("badly signed: %d %s", w.Code, w.Body.String())
 	}
 	if got := h.stored("_team/hooked/events", store.MemoryScopeTenant, ""); len(got) != 0 {

@@ -112,6 +112,9 @@ type boot struct {
 	// buildServer; closures built before then (registerSecret) read it here
 	// at call time.
 	srv *lchttp.Server
+	// bootAuthConfigured is the open-mode decision made right after srv is
+	// built (RFC ES #8); startBackground repeats the warning while it is false.
+	bootAuthConfigured bool
 
 	// The rest of the server build.
 	hookDefTool           *builtin.HookDef
