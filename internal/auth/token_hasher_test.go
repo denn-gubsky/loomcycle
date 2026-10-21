@@ -27,11 +27,11 @@ func TestTokenHasher_DerivedPepperTagsBothForms(t *testing.T) {
 		t.Fatalf("source = %q, want derived", h.Source())
 	}
 	// Both computed outside Go: tag + ":" + hex(SHA-256(pepper)[:8]) + ":" +
-	// hex(HMAC-SHA256(key=pepper, msg)), msg = the token for p1 and the
-	// hex text of SHA-256(token) for w1.
+	// hex(HMAC-SHA256(key=pepper, msg)), msg = the token for p1 and
+	// "w1" 0x00 + the hex text of SHA-256(token) for w1.
 	const (
 		knownCurrent = "p1:08f0be883564cbf2:6cdbeead4825a28fdf0eade839cac55e57188ae9c848ff099b3d8102eddba34b"
-		knownWrapped = "w1:08f0be883564cbf2:939be6b7e5d7d92d717bb5b694384e9435a6389efb3383636d294ab3c3f82e85"
+		knownWrapped = "w1:08f0be883564cbf2:453da591a2e0290fe76244d4aae0999699eefafea7e885354da40f5b276dcfee"
 	)
 	if got := h.Hash("lct_x"); got != knownCurrent {
 		t.Fatalf("current hash = %q, want %q", got, knownCurrent)
@@ -41,6 +41,11 @@ func TestTokenHasher_DerivedPepperTagsBothForms(t *testing.T) {
 	}
 	if got := h.WrappedHash("lct_x"); got != knownWrapped {
 		t.Errorf("WrappedHash = %q, want the wrap of the unpeppered hash %q", got, knownWrapped)
+	}
+	// Domain separation: a bearer equal to the token's unpeppered hash must
+	// not produce the wrapped form's MAC under the current form.
+	if mac := func(x string) string { return x[strings.LastIndex(x, ":")+1:] }; mac(h.Hash(HashToken("", "lct_x"))) == mac(knownWrapped) {
+		t.Error("the current and wrapped forms share a MAC")
 	}
 	if strings.Contains(knownCurrent+knownWrapped, "derived") {
 		t.Error("the stored forms must not contain the pepper")

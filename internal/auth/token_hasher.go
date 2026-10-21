@@ -24,7 +24,7 @@ const (
 // The stored forms of a hash made with a DERIVED pepper carry a tag:
 //
 //	p1:<pepper fingerprint>:<hex HMAC-SHA256(pepper, token)>
-//	w1:<pepper fingerprint>:<hex HMAC-SHA256(pepper, unpeppered hash)>
+//	w1:<pepper fingerprint>:<hex HMAC-SHA256(pepper, "w1" 0x00 unpeppered hash)>
 //
 // p1 is what every mint writes. w1 is a row minted before any pepper existed
 // (its token_hash the unpeppered hex SHA-256(token), HashToken("", token)),
@@ -32,6 +32,11 @@ const (
 // text, exactly as it was stored (RFC ES F3). A lookup recomputes it from the
 // presented token. Either form needs the pepper to compute, so a database
 // writer can forge neither.
+//
+// The w1 message is domain-separated ("w1" and a NUL before the hash) so the
+// two forms never share a MAC: without it, presenting a token's unpeppered
+// hash AS a bearer would give a p1 MAC equal to that token's w1 MAC, and only
+// the differing prefix would keep the two apart.
 //
 // Why a tag at all (RFC ES #6): the hash is one-way, so without one nothing
 // can tell a row hashed under the derived pepper from a legacy unpeppered
@@ -90,7 +95,9 @@ func (k derivedKey) tagged(version, msg string) string {
 
 func (k derivedKey) hash(token string) string { return k.tagged(currentTagVersion, token) }
 
-func (k derivedKey) wrap(unpeppered string) string { return k.tagged(wrappedTagVersion, unpeppered) }
+func (k derivedKey) wrap(unpeppered string) string {
+	return k.tagged(wrappedTagVersion, wrappedTagVersion+"\x00"+unpeppered)
+}
 
 func (k derivedKey) has(stored, version string) bool {
 	return strings.HasPrefix(stored, version+":"+k.fp+":")

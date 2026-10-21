@@ -26,8 +26,8 @@ func bootTokenHashes(t *testing.T, s *Server) {
 
 // wrappedFormFor spells out the stored wrapped form independently of the
 // code under test, so the format is pinned: "w1:<first 8 bytes of
-// SHA-256(pepper), hex>:<hex HMAC-SHA256(pepper, the stored unpeppered hash
-// as its 64-char hex text)>".
+// SHA-256(pepper), hex>:<hex HMAC-SHA256(pepper, "w1" 0x00 + the stored
+// unpeppered hash as its 64-char hex text)>".
 func wrappedFormFor(t *testing.T, secretKey, token string) string {
 	t.Helper()
 	pepper, err := credential.DeriveTokenPepper(secretKey)
@@ -36,7 +36,7 @@ func wrappedFormFor(t *testing.T, secretKey, token string) string {
 	}
 	fp := sha256.Sum256([]byte(pepper))
 	mac := hmac.New(sha256.New, []byte(pepper))
-	mac.Write([]byte(auth.HashToken("", token)))
+	mac.Write([]byte("w1\x00" + auth.HashToken("", token)))
 	return "w1:" + hex.EncodeToString(fp[:8]) + ":" + hex.EncodeToString(mac.Sum(nil))
 }
 
