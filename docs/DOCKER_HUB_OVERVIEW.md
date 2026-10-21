@@ -68,7 +68,7 @@ No `vX` or `vX.Y` floating tags during the v0.11.x line — too early for major-
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LOOMCYCLE_LISTEN_ADDR` | `127.0.0.1:8787` | Set to `0.0.0.0:8787` inside the container so port-mapping works. This needs `LOOMCYCLE_AUTH_TOKEN` (or an admin operator token): in open mode the server refuses a non-loopback address |
+| `LOOMCYCLE_LISTEN_ADDR` | `127.0.0.1:8787` | Set to `0.0.0.0:8787` inside the container so port-mapping works. This needs `LOOMCYCLE_AUTH_TOKEN` (or config `principals:`, or an admin operator token): in open mode the server refuses a non-loopback address |
 | `LOOMCYCLE_ALLOW_OPEN_MODE` | (unset) | `1` starts in open mode (no auth, every route open) on a non-loopback address anyway. Throwaway test harnesses only |
 | `LOOMCYCLE_STORAGE_BACKEND` | `sqlite` | Set to `postgres` to use the Postgres backend |
 | `LOOMCYCLE_PG_DSN` | (unset) | Postgres DSN — required when backend is postgres |

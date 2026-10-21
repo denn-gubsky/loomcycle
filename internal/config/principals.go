@@ -83,7 +83,8 @@ func (o *overridePolicyYAML) UnmarshalYAML(unmarshal func(any) error) error {
 //     env name must not silently ship a mis-scoped or inert identity).
 //   - a token_env that is EMPTY at boot → the principal is INERT (skipped, no
 //     entry in the table) + a startup warning. Fail-safe: a missing secret means
-//     "no token resolves to this identity", never an open door.
+//     "no token resolves to this identity", never an open door — the declaration
+//     still turns authentication on (DeclaresPrincipals).
 //   - tenant must be "" or one charset-clean path segment, not reserved, and not
 //     differ only by case from another principal's tenant → else config-load
 //     error (the tenant id names a directory under the dynamic volume root).
@@ -189,7 +190,7 @@ func resolvePrincipals(c *Config) error {
 		}
 		secret := os.Getenv(def.TokenEnv)
 		if secret == "" {
-			c.Warnings = append(c.Warnings, fmt.Sprintf("principals.%s: token_env %s is empty — principal is inert (no token resolves to it)", name, def.TokenEnv))
+			c.Warnings = append(c.Warnings, fmt.Sprintf("principals.%s: token_env %s is empty — principal is inert (no token resolves to it; declaring it still turns authentication on)", name, def.TokenEnv))
 			continue
 		}
 		if prev, dup := secretOwner[secret]; dup {
@@ -208,6 +209,27 @@ func resolvePrincipals(c *Config) error {
 		})
 	}
 	return nil
+}
+
+// DeclaresPrincipals reports whether the config declares any principal, inert
+// ones included. Declaring one turns authentication on (RFC ES F2): an inert
+// principal (its token_env empty at boot) authenticates nobody, but it says the
+// operator meant the server to require a bearer, so a missing env var must not
+// read as "serve everyone". ResolvedPrincipals is consulted too because it is
+// the table the resolver matches against, and a caller may build it directly.
+func (c *Config) DeclaresPrincipals() bool {
+	return len(c.Principals) > 0 || len(c.ResolvedPrincipals) > 0
+}
+
+// AdminPrincipalResolved reports whether a declared principal that can log in
+// (its secret set at boot) holds substrate:admin.
+func (c *Config) AdminPrincipalResolved() bool {
+	for _, dp := range c.ResolvedPrincipals {
+		if dp.Secret != "" && auth.HasScope(dp.Principal.Scopes, auth.ScopeAdmin) {
+			return true
+		}
+	}
+	return false
 }
 
 // denyDeclaredPrincipalBearers adds every principals.*.token_env named in the

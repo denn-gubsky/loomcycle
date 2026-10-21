@@ -120,6 +120,12 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 
+	// Validation too, so a dry run reports it: no reload turns auth off or
+	// takes the last admin credential.
+	if err := s.refuseReloadLosingAuth(ctx, candidate); err != nil {
+		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
+	}
+
 	// The candidate was loaded from disk; the runtime-wired fields of the
 	// running config carry over (an auth provider rebuilt below must still
 	// hand its secrets to the redactor).
@@ -164,6 +170,10 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 	// display/intent, but their boot-built subsystems run the old values until a
 	// restart — exactly what restart_required says.
 	s.cfgHolder.Store(candidate)
+	// The config's principals are part of bearer resolution, so a cached
+	// resolution may name one this reload removed or changed. Local only: a
+	// reload changes this replica's config, not its peers'.
+	s.tokenCache.flush()
 	return res, nil
 }
 

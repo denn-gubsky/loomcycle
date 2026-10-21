@@ -47,8 +47,8 @@ export LOOMCYCLE_AUTH_TOKEN="<bearer-token>"
 ./bin/loomcycle --config loomcycle.yaml
 ```
 
-`:8788` binds every interface. With no `LOOMCYCLE_AUTH_TOKEN` and no admin
-operator token the server is in open mode, and it refuses to start on a
+`:8788` binds every interface. With no `LOOMCYCLE_AUTH_TOKEN`, no config
+`principals:` and no admin operator token the server is in open mode, and it refuses to start on a
 listener beyond loopback — HTTP or gRPC — unless `LOOMCYCLE_ALLOW_OPEN_MODE=1`
 is set. For a local open-mode test, bind `127.0.0.1:8788`.
 
@@ -59,7 +59,7 @@ rather than a feature toggle, so it lives in env-only.
 | Setting | Env | Default | Notes |
 |---|---|---|---|
 | gRPC listener address | `LOOMCYCLE_GRPC_ADDR` | (off) | E.g. `":8788"` or `"127.0.0.1:8788"`. Unset → no gRPC server. |
-| Bearer token | `LOOMCYCLE_AUTH_TOKEN` | (open mode) | Same token as the HTTP middleware. Empty, with no admin operator token → unauthenticated (open mode), which is refused on a non-loopback listener unless `LOOMCYCLE_ALLOW_OPEN_MODE=1`. |
+| Bearer token | `LOOMCYCLE_AUTH_TOKEN` | (open mode) | Same token as the HTTP middleware. Empty, with no config `principals:` and no admin operator token → unauthenticated (open mode), which is refused on a non-loopback listener unless `LOOMCYCLE_ALLOW_OPEN_MODE=1`. |
 | Build tags surfaced via Health() | `LOOMCYCLE_BUILD_COMMIT` / `LOOMCYCLE_BUILD_TIME` | (empty) | Set by your release pipeline. Adapters read these for compatibility checks. |
 
 ## Wire surface
