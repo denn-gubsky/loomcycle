@@ -1107,6 +1107,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
+            label: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
+            description: 'A top-level interactive run parked for its operator ends after this long with no message (stop reason idle_timeout). Its session is kept: the next message continues it. A Go duration; 0 waits forever. Default 1h. (example: 1h)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_GIT_SOURCE_HOSTS
             label: LOOMCYCLE_GIT_SOURCE_HOSTS
             description: 'Off unless hosts are listed. `VolumeDef op=create ephemeral:true source:{git:…}` then fetches the commit inside the runtime, so no agent holds the token. The agent needs "source:git" in volume_def_scopes, and a credential it names must be restricted (allowed_urls) to a URL covering the repository. (example: github.com,gitea.example.com)'

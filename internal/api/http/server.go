@@ -3842,6 +3842,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		SteerQueue:          steerQ,
 		OnSteer:             onSteer,
 		CloseSteerIfEmpty:   closeSteer,
+		IdleTimeout:         s.cfg().Env.InteractiveIdleTimeout, // top-level only: sub-agents start elsewhere, with their own lifecycle
 		Effort:              effort,
 		MarkStalled:         s.markStalledFn(providerID, model),
 		ObserveCall:         s.callObserver(runID),
@@ -8576,7 +8577,10 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run input queue full; retry shortly", http.StatusTooManyRequests)
 		return
 	case errors.Is(err, connector.ErrRunNotInFlight):
-		http.Error(w, "no in-flight run for that run_id", http.StatusNotFound)
+		// Also the answer to a message that just missed a run ending (an
+		// interactive run's idle timeout closes its queue first): the run is
+		// gone, its session is not.
+		http.Error(w, "no in-flight run for that run_id; to go on, continue its session with POST /v1/sessions/{session_id}/messages", http.StatusNotFound)
 		return
 	case errors.Is(err, connector.ErrSteeringUnavailable):
 		http.Error(w, "steering is not enabled on this server", http.StatusServiceUnavailable)
