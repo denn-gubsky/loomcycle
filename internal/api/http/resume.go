@@ -438,9 +438,24 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// gives the row back as paused, so a later pass tries it again instead of
 	// leaving a running row with no loop for the stale-run sweeper.
 	settled := false
+	ownerSlotHandled := false // another copy here settled the run and its slot
 	defer func() {
 		if !settled {
 			s.unclaimPausedRun(run.ID)
+			return
+		}
+		// Settled — dispatched here, or ended — so the per-user slot the
+		// process that parked the run took for it goes back (RFC ES F1):
+		// in a cluster that slot is a row in user_quotas, which outlived
+		// the process, and the resumed run takes its own. Once per park:
+		// only the pass that claimed the row settles it. A top-level run
+		// only (a sub-run never takes one), and only a row a cluster
+		// process admitted (it carries that replica's id; a restored row
+		// does not). A single replica's counts went with its process.
+		if run.ParentRunID == "" && run.ReplicaID != "" && !ownerSlotHandled {
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s.sem.ReleaseUserSlot(rctx, run.TenantID, run.UserID)
 		}
 	}()
 	flag := func(reason string) {
@@ -824,6 +839,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		cancelFn(nil)
 		if held, _ := s.heldInCancelRegistry(run); held {
 			settled = true // a copy here holds it: not ours to give back
+			ownerSlotHandled = true
 			return errRunAlreadyLive
 		}
 		return fmt.Errorf("cancel registry: %w", regErr)
@@ -1175,8 +1191,16 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// caller's resume loop never blocks. Wait, not AcquireForUser: the run
 		// was admitted before its pause, so a full queue, the queue timeout or
 		// the per-user cap must not turn it into a failed run — it queues
-		// until a slot frees or it is cancelled.
-		release, aerr := s.sem.Wait(runCtx)
+		// until a slot frees or it is cancelled. A top-level run is counted
+		// against its user while it runs (WaitForUser), as it was before the
+		// pause, without being refused at the cap; a sub-run never is.
+		var release func()
+		var aerr error
+		if run.ParentRunID == "" {
+			release, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID)
+		} else {
+			release, aerr = s.sem.Wait(runCtx)
+		}
 		if aerr != nil {
 			s.finishRunFailedReason(run.ID, "resume: acquire run slot: "+aerr.Error(), meta)
 			return

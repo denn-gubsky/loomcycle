@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,5 +139,81 @@ func TestResumePausedRun_ACancelBetweenClaimAndUnclaimStays(t *testing.T) {
 	}
 	if n, _ := srv.ResumePausedRuns(ctx); n != 0 || prov.calls.Load() != 0 {
 		t.Errorf("a later pass resumed %d, model called %d time(s): the cancelled run was resurrected", n, prov.calls.Load())
+	}
+}
+
+// quotaGateCounts is a cluster per-user counter that records what is done to
+// it. Its methods match the semaphore's gate.
+type quotaGateCounts struct {
+	mu       sync.Mutex
+	admitted int
+	released int
+}
+
+func (g *quotaGateCounts) TryAcquire(context.Context, string, string, int) (bool, error) {
+	return true, nil
+}
+func (g *quotaGateCounts) CountAdmitted(context.Context, string, string) error {
+	g.mu.Lock()
+	g.admitted++
+	g.mu.Unlock()
+	return nil
+}
+func (g *quotaGateCounts) Release(context.Context, string, string) {
+	g.mu.Lock()
+	g.released++
+	g.mu.Unlock()
+}
+func (g *quotaGateCounts) Snapshot(context.Context) (map[string]int, error) { return nil, nil }
+func (g *quotaGateCounts) counts() (int, int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.admitted, g.released
+}
+
+// stampReplica reports every paused row as parked by a replica that is gone:
+// the sqlite store keeps no replica column (cluster mode is Postgres-only).
+type stampReplica struct {
+	store.Store
+	replica string
+}
+
+func (s stampReplica) ListPausedRuns(ctx context.Context) ([]store.Run, error) {
+	runs, err := s.Store.ListPausedRuns(ctx)
+	for i := range runs {
+		runs[i].ReplicaID = s.replica
+	}
+	return runs, err
+}
+
+// In a cluster, a run a stopped replica parked still holds the per-user slot
+// that replica took for it. Its resume gives that slot back — once, however
+// many passes list it — and the resumed run takes its own, counted like any
+// run's and given back when it ends.
+func TestResumePausedRun_MovesTheUsersSlotFromTheStoppedReplica(t *testing.T) {
+	srv, cfg, _, run := relistFixture(t)
+	cfg.Agents["ghost"] = config.AgentDef{Provider: "scripted", Model: "stub-model", SystemPrompt: "x", Tools: []string{}}
+	gate := &quotaGateCounts{}
+	srv.sem.WithPerUserCap(1).WithUserQuotaStore(gate)
+	srv.store = stampReplica{Store: srv.store, replica: "gone-replica"}
+	ctx := context.Background()
+
+	if n, w := srv.ResumePausedRuns(ctx); n != 1 {
+		t.Fatalf("resumed %d (warnings %v), want 1", n, w)
+	}
+	waitWalkRunStatus(t, srv.store, run.ID, store.RunCompleted)
+	if n, _ := srv.ResumePausedRuns(ctx); n != 0 {
+		t.Fatalf("second pass resumed %d, want 0", n)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		admitted, released := gate.counts()
+		if admitted == 1 && released == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("per-user counter: %d counted, %d released; want the resumed run counted once and two releases (the stopped replica's slot, then the run's own)", admitted, released)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -665,3 +665,81 @@ func TestSemaphore_ClusterMode_QueuedWaiterWakesAndReleases(t *testing.T) {
 		t.Errorf("gate.releaseCount = %d, want exactly 1 (no double-release on wakeup)", r)
 	}
 }
+
+func (g *stubQuotaGate) CountAdmitted(_ context.Context, tenantID, userID string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.counts[userKey{tenant: tenantID, user: userID}]++
+	return nil
+}
+
+// A resumed run counts against its user like any run while it runs, but is not
+// refused at the cap: it was admitted before its pause, and refusing would
+// cancel work that already started. The count goes back with its release.
+func TestSemaphore_WaitForUser_CountsTheUserWithoutRefusingAtTheCap(t *testing.T) {
+	s := New(4, 4, time.Second).WithPerUserCap(1)
+	first, err := s.AcquireForUser(context.Background(), "", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first()
+	release, err := s.WaitForUser(context.Background(), "", "alice")
+	if err != nil {
+		t.Fatalf("WaitForUser at the cap = %v, want admitted", err)
+	}
+	if got := s.Stats().PerUser["alice"]; got != 2 {
+		t.Errorf("alice's count with the resumed run = %d, want 2", got)
+	}
+	release()
+	if got := s.Stats().PerUser["alice"]; got != 1 {
+		t.Errorf("alice's count after the resumed run's release = %d, want 1", got)
+	}
+	if _, err := s.AcquireForUser(context.Background(), "", "alice"); err == nil {
+		t.Error("a new run of alice's was admitted over her cap while her first still runs")
+	}
+}
+
+// In cluster mode the resumed run's count is the cluster-wide one: counted
+// past the cap, and released with the run.
+func TestSemaphore_WaitForUser_ClusterCountsAndReleases(t *testing.T) {
+	gate := newStubQuotaGate()
+	gate.atCapFor["alice"] = true
+	s := New(4, 4, time.Second).WithPerUserCap(1).WithUserQuotaStore(gate)
+	release, err := s.WaitForUser(context.Background(), "", "alice")
+	if err != nil {
+		t.Fatalf("WaitForUser at the cluster cap = %v, want admitted", err)
+	}
+	if got := gate.count("alice"); got != 1 {
+		t.Errorf("cluster count = %d, want 1", got)
+	}
+	release()
+	waitFor(t, func() bool { return gate.releaseCount() == 1 && gate.count("alice") == 0 })
+}
+
+// ReleaseUserSlot gives back a cluster per-user slot a process that is gone
+// took — a run it admitted and parked — and does nothing on a single replica,
+// whose counts went with the process.
+func TestSemaphore_ReleaseUserSlot(t *testing.T) {
+	gate := newStubQuotaGate()
+	gate.counts[userKey{user: "alice"}] = 1
+	s := New(4, 4, time.Second).WithPerUserCap(1).WithUserQuotaStore(gate)
+	s.ReleaseUserSlot(context.Background(), "", "alice")
+	if gate.releaseCount() != 1 || gate.count("alice") != 0 {
+		t.Errorf("releases = %d, count = %d; want one release to 0", gate.releaseCount(), gate.count("alice"))
+	}
+	single := New(4, 4, time.Second).WithPerUserCap(1)
+	single.ReleaseUserSlot(context.Background(), "", "alice") // must not panic or count
+	if got := single.Stats().PerUser["alice"]; got != 0 {
+		t.Errorf("single-replica count = %d, want 0", got)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if cond() {
+			return
+		}
+	}
+	t.Fatal("condition not met within 2s")
+}
