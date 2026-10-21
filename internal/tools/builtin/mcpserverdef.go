@@ -86,7 +86,7 @@ const mcpServerDefDescription = `Register, fork, promote, retire, rediscover, an
 	`allowlist. create/fork auto-discover the upstream's tools (tools/list) at ingestion ` +
 	`(best-effort; opt out with discover:false), so a separate rediscover is only needed to ` +
 	`refresh a changed tool surface. A ${NAME} reference in url, headers or a stdio command/args/env ` +
-	`reads the server's environment when it dials, so only an admin may store one; anyone else uses ` +
+	`reads the server's environment when it dials, so only an admin, outside a run, may store one; anyone else uses ` +
 	`${run.credentials.<name>} or $cred:<name>. A stored definition holding one that an admin did not ` +
 	`save is logged as a warning, and the server may be set to refuse to dial it. ` +
 	`Operations: create, fork, get, list, retire, promote, rediscover, verify.`
