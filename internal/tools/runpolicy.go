@@ -207,6 +207,14 @@ var inheritRules = map[string]inheritRule{
 	"SpawnTimeoutMs":     ruleClear,   // this spawn's ledger bound
 }
 
+// InheritRule names the rule Inherit applies to the RunPolicy field named
+// field — "own", "inherit", "narrow", "merge" or "clear" — or "" when there is
+// no such field. Read by the guards that check a policy-stamping site against
+// what a spawned child would take from it.
+func InheritRule(field string) string {
+	return string(inheritRules[field])
+}
+
 // Inherit returns a spawned child's policy: for every field, its parent's (p),
 // its own definition's (c.Own), the narrower of the two, or nothing — as
 // inheritRules says. It is the one place a child's policy is decided; the
