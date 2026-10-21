@@ -376,7 +376,7 @@ jobs:
       # links the GHCR package to this repo in the UI.
       - name: Build + push loomcycle-browser (linux/amd64)
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.browser
