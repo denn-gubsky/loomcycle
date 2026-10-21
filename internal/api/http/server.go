@@ -3046,18 +3046,20 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		if !sessionOwnershipOK(ctx, sess) {
 			return fmt.Errorf("%w: %s", runner.ErrSessionNotFound, in.SessionID)
 		}
-		// A continuation runs its session's agent (RFC ET P1 decision A18).
-		// A caller naming another agent is refused rather than silently run
-		// as the session's — after the ownership check, so the refusal says
-		// nothing about a session the caller may not use.
-		if in.Agent != "" && in.Agent != sess.Agent {
-			return s.sessionAgentMismatch(ctx, in.SessionID, sess.Agent, in.Agent)
-		}
 		// A token limited to some agents may continue only a session whose
-		// agent is on its list. Checked before the session's team, whose
+		// agent is on its list. Checked first, and answered the same whatever
+		// the request names — no agent, the session's, another one: an answer
+		// that changed with the name would let a caller enumerate names until
+		// it learned the session's agent. And before the session's team, whose
 		// refusal names the agent and the team.
 		if s.admitPrincipalAgent(ctx, sess.Agent) != nil {
 			return errContinuationAgentNotAllowed(in.SessionID)
+		}
+		// A continuation runs its session's agent (RFC ET P1 decision A18).
+		// A caller naming another agent is refused rather than silently run
+		// as the session's.
+		if in.Agent != "" && in.Agent != sess.Agent {
+			return s.sessionAgentMismatch(ctx, in.SessionID, sess.Agent, in.Agent)
 		}
 		// A no-trace session has no transcript to continue from. Refused here,
 		// before any slot or lock, with its own answer; it used to reach the row

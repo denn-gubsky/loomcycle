@@ -96,3 +96,61 @@ func TestHandleMessages_AContinuationRefusalDoesNotNameAnAgentTheTokenMayNotRun(
 		t.Error("the restricted token's turn reached the model")
 	}
 }
+
+// A token limited to some agents that continues a session whose agent is not
+// on its list gets one answer, whatever agent the request names — none, the
+// session's own, one on the list, one that is not. Two different answers let
+// the caller enumerate names until the answer changes, and so learn the
+// session's agent.
+func TestContinuation_ARestrictedTokenGetsOneAnswerWhateverAgentItNames(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{authed: true})
+	r := g.postAs(goldenMemberBearer, "/v1/runs", goldenRunBody("other", "first turn", ""))
+	_, _, sid := r.ids(t)
+	r.drain(t)
+
+	type answer struct {
+		status int
+		body   string
+	}
+	answers := map[string]answer{}
+	msg := g.postAs(goldenRestrictedBearer, "/v1/sessions/"+sid+"/messages", goldenMsgBody("PROBE turn", ""))
+	msg.drain(t)
+	answers["messages, no agent"] = answer{msg.status, msg.body}
+	for _, name := range []string{"other", "plain", "zzz-not-an-agent"} {
+		resp := g.postAs(goldenRestrictedBearer, "/v1/runs", goldenRunBody(name, "PROBE turn", `"session_id":"`+sid+`"`))
+		resp.drain(t)
+		answers["runs, agent "+name] = answer{resp.status, resp.body}
+	}
+	want := answers["messages, no agent"]
+	if want.status != http.StatusForbidden || strings.Contains(want.body, "other") {
+		t.Errorf("messages: %d %q, want a 403 that does not name the session's agent", want.status, want.body)
+	}
+	for k, a := range answers {
+		if a != want {
+			t.Errorf("%s: %d %q; want the same answer as every other probe: %d %q", k, a.status, a.body, want.status, want.body)
+		}
+	}
+
+	// The MCP spawn tools (and gRPC Run) reach the same RunOnce.
+	restricted := auth.WithPrincipal(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "dev", TokenDefID: "def_golden_restricted",
+		Scopes:       []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+		Restrictions: auth.Restrictions{Agents: []string{"plain"}},
+	})
+	errs := map[string]string{}
+	for _, name := range []string{"", "other", "plain", "zzz-not-an-agent"} {
+		res, err := g.srv.SpawnRun(restricted, connector.SpawnRunRequest{Agent: name, SessionID: sid, Segments: spawnSegs("PROBE turn")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		errs[name] = res.Status + " " + res.Error
+	}
+	for name, e := range errs {
+		if e != errs[""] {
+			t.Errorf("spawn naming %q: %q; want the same as naming none: %q", name, e, errs[""])
+		}
+	}
+	if _, ran := g.prov.sawCall("PROBE turn"); ran {
+		t.Error("a probe reached the model")
+	}
+}

@@ -195,16 +195,14 @@ func errContinuationAgentNotAllowed(sessionID string) error {
 }
 
 // sessionAgentMismatch is the refusal of a continuation of session sessionID
-// (whose agent is sessionAgent) that names requested instead. It tells the
-// caller nothing it may not see: an agent its token may not run is refused as
-// any start of it is, and the session's agent is named only when the token
-// may run it.
+// (whose agent is sessionAgent) that names requested instead. The caller's
+// token may run sessionAgent (RunOnce admits it first, so a token that may
+// not gets one answer whatever it names), so naming it tells the caller
+// nothing new; an agent the token may not run is refused as any start of it
+// is.
 func (s *Server) sessionAgentMismatch(ctx context.Context, sessionID, sessionAgent, requested string) error {
 	if err := s.admitPrincipalAgent(ctx, requested); err != nil {
 		return err
-	}
-	if s.admitPrincipalAgent(ctx, sessionAgent) != nil {
-		return &sessionAgentMismatchError{msg: fmt.Sprintf("session %q does not continue with agent %q: a session continues with its own agent", sessionID, requested)}
 	}
 	return &sessionAgentMismatchError{msg: fmt.Sprintf("session %q belongs to agent %q, not %q: a session continues with its own agent", sessionID, sessionAgent, requested)}
 }
