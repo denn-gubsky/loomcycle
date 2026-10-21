@@ -3121,6 +3121,12 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// The agent is final here (a continuation has taken its session's, a
 	// started draft its row's), so this covers all three.
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
+		if isContinuation {
+			// The session's agent, which this caller did not name: refused
+			// without telling a token limited to some agents the name of
+			// one outside its list.
+			return fmt.Errorf("%w: session %q continues with an agent this token may not run", runner.ErrAgentNotAllowed, in.SessionID)
+		}
 		return err
 	}
 	if err := s.admitPrincipalOverrides(ctx, overridesSetIn(&in)); err != nil {

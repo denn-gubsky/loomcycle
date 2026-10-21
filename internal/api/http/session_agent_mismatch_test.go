@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -67,6 +68,29 @@ func TestSpawnRun_SessionAgentMismatchDoesNotNameAnAgentTheTokenMayNotRun(t *tes
 	}
 	if res.Status != "failed" || res.Error == "" || strings.Contains(res.Error, `"other"`) {
 		t.Errorf("restricted token: status %q error %q, want a refusal that does not name agent \"other\"", res.Status, res.Error)
+	}
+	if _, ran := g.prov.sawCall("LIMITED turn"); ran {
+		t.Error("the restricted token's turn reached the model")
+	}
+}
+
+// Continuing a session through POST /v1/sessions/{id}/messages with a token
+// limited to some agents, when the session's agent is not one of them, is
+// refused without naming that agent: the caller named none, and the refusal
+// must not tell it one outside its list.
+func TestHandleMessages_AContinuationRefusalDoesNotNameAnAgentTheTokenMayNotRun(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{authed: true})
+	r := g.postAs(goldenMemberBearer, "/v1/runs", goldenRunBody("other", "first turn", ""))
+	_, _, sid := r.ids(t)
+	r.drain(t)
+
+	limited := g.postAs(goldenRestrictedBearer, "/v1/sessions/"+sid+"/messages", goldenMsgBody("LIMITED turn", ""))
+	limited.drain(t)
+	if limited.status != http.StatusForbidden || !strings.Contains(limited.body, "agent_not_allowed") {
+		t.Errorf("restricted token: %d %q, want 403 agent_not_allowed", limited.status, limited.body)
+	}
+	if strings.Contains(limited.body, "other") {
+		t.Errorf("restricted token learned the session's agent: %q", limited.body)
 	}
 	if _, ran := g.prov.sawCall("LIMITED turn"); ran {
 		t.Error("the restricted token's turn reached the model")
