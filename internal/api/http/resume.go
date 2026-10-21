@@ -2241,6 +2241,14 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
 		fanoutCap = 1
 	}
+	// RFC DC P5: the offer this run makes its children. A sub-run's is the one
+	// its spawn recorded — its parent's, as it held it live; a top-level run,
+	// or a sub-run recorded before the offer was, offers its own record. Only
+	// a child of the offer's definition takes it.
+	offer := tools.RunOverridesValue{Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID}
+	if runCfg.Spawn != nil && runCfg.Spawn.OfferedOverrides != nil {
+		offer = runCfg.Spawn.OfferedOverrides.value()
+	}
 	return runPolicySource{
 		// RFC DD Gap 2: the run's own narrowing, so the resumed run's sub-agents
 		// inherit the same reach the original's did. Zero value (no record)
@@ -2266,9 +2274,7 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		Compaction: runCfg.Compaction,
 		Context:    runCfg.Context,
 		FanoutCap:  fanoutCap,
-		// RFC DC P5: offer this run's overrides to its children. Only a child
-		// of the SAME definition will take them.
-		Overrides: tools.RunOverridesValue{Record: runCfg.marshal(), DefID: run.AgentDefID, AgentName: run.Agent, RunID: run.ID},
+		Overrides:  offer,
 		// From the run's record, which a retune may have changed since it
 		// started — an autonomous run that never parked adopts a retune here.
 		Interruption: runCfg.Interruption,

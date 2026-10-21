@@ -1787,7 +1787,10 @@ func TestRoundTrip_PreservesRunConfig(t *testing.T) {
 
 	// Opaque here by design — the snapshot package does not decode it, exactly
 	// as it does not decode a transcript payload.
-	cfg := json.RawMessage(`{"sampling":{"temperature":0.11},"run_timeout_seconds":45,"hosts":{"allowed_hosts":["api.example"],"has_list":true}}`)
+	// The spawn record nests the offering run's own record (a sub-run's
+	// offered_overrides), which must survive as JSON inside JSON.
+	cfg := json.RawMessage(`{"sampling":{"temperature":0.11},"run_timeout_seconds":45,"hosts":{"allowed_hosts":["api.example"],"has_list":true},` +
+		`"spawn":{"volumes":{"active":false},"offered_overrides":{"record":{"interruption":{"enabled":true,"max_pending":1}},"agent_name":"qa","run_id":"r_root"}}}`)
 
 	sess, _ := src.CreateSession(ctx, "t", "qa", "user1")
 	run, err := src.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_cfg", UserID: "user1", RunConfig: cfg})

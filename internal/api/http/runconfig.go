@@ -617,6 +617,52 @@ type spawnRecord struct {
 	// narrows again against it (resumedCryptoPolicy); absent means the parent
 	// held none, so a sub-run recorded before this field resumes with none.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// OfferedOverrides is the override offer the child holds for its own
+	// children: its parent's, passed down unchanged (tools.RunPolicy.Inherit),
+	// so a grandchild of the offering run's definition takes that run's
+	// overrides even through a child of another definition (A→B→A′). A resume
+	// has no parent ctx to take it from and cannot rebuild it from the parent
+	// chain without losing that case, so it is recorded. Present on every
+	// sub-run recorded since — `{}` when the parent offered nothing — and
+	// absent on one recorded before, which offers its own record on resume, as
+	// every resumed sub-run did before.
+	OfferedOverrides *offeredOverridesRecord `json:"offered_overrides,omitempty"`
+}
+
+// offeredOverridesRecord mirrors tools.RunOverridesValue. Record is the
+// offering run's own configuration record, kept as JSON (not as opaque bytes)
+// so a snapshot's literal scan reads inside it as it reads the rest.
+type offeredOverridesRecord struct {
+	Record    json.RawMessage `json:"record,omitempty"`
+	DefID     string          `json:"def_id,omitempty"`
+	AgentName string          `json:"agent_name,omitempty"`
+	RunID     string          `json:"run_id,omitempty"`
+}
+
+// offeredOverridesRecordOf records the offer a child holds. Always non-nil:
+// its presence is what tells a resume the offer was recorded. A record that is
+// not JSON — never one this package marshalled — is left out rather than
+// failing the marshal of the whole child record; the run id still lets a
+// grandchild read the offering run's record from the store.
+func offeredOverridesRecordOf(v tools.RunOverridesValue) *offeredOverridesRecord {
+	rec := &offeredOverridesRecord{DefID: v.DefID, AgentName: v.AgentName, RunID: v.RunID}
+	if len(v.Record) > 0 {
+		if !json.Valid(v.Record) {
+			log.Printf("run_config: the override offer of run %q is not JSON; recording it without its record", v.RunID)
+		} else {
+			rec.Record = json.RawMessage(v.Record)
+		}
+	}
+	return rec
+}
+
+// value is the offer as the child held it.
+func (r *offeredOverridesRecord) value() tools.RunOverridesValue {
+	v := tools.RunOverridesValue{DefID: r.DefID, AgentName: r.AgentName, RunID: r.RunID}
+	if len(r.Record) > 0 {
+		v.Record = []byte(r.Record)
+	}
+	return v
 }
 
 // volumeCeilingRecord mirrors tools.VolumePolicyValue minus each binding's
