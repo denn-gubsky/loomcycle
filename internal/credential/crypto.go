@@ -240,3 +240,30 @@ func (s *Sealer) Open(sealed Sealed, id Identity) ([]byte, error) {
 func (s *Sealer) NeedsReseal(sealed Sealed) bool {
 	return s.Enabled() && sealed.KeyID != s.currentID
 }
+
+// tokenPepperInfo is the HKDF info for the operator-token pepper. It must
+// never change: a different value is a different pepper, and every token
+// hashed under the old one stops authenticating.
+const tokenPepperInfo = "loomcycle/operator-token-pepper/v1"
+
+// DeriveTokenPepper derives the operator-token pepper from a master key
+// (LOOMCYCLE_SECRET_KEY or its _PREVIOUS), parsed exactly as NewSealer parses
+// it: HKDF-SHA256(key, info="loomcycle/operator-token-pepper/v1"), hex. It is
+// the pepper a deployment gets when it sets no explicit
+// LOOMCYCLE_OPERATOR_TOKEN_PEPPER (RFC ES D2). The info string separates it
+// from the per-tenant credential keys derived from the same master key. An
+// empty key yields "" (no derived pepper).
+func DeriveTokenPepper(secretKeyB64 string) (string, error) {
+	if strings.TrimSpace(secretKeyB64) == "" {
+		return "", nil
+	}
+	kek, err := decodeKey(secretKeyB64)
+	if err != nil {
+		return "", err
+	}
+	pepper, err := hkdf.Key(sha256.New, kek, nil, tokenPepperInfo, 32)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(pepper), nil
+}

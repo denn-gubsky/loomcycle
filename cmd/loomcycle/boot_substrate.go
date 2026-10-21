@@ -202,9 +202,30 @@ func (b *boot) wireAuth() {
 	if err := builtin.CheckPrincipalTenantsAgainstTokens(context.Background(), storeIface, cfg.PrincipalTenants()); err != nil {
 		log.Fatalf("config: principals: %v", err)
 	}
+	// RFC ES D2: the effective token pepper — explicit, else derived from
+	// LOOMCYCLE_SECRET_KEY, else none. One hasher for every mint and lookup.
+	tokenHasher, err := cfg.Env.TokenHasher()
+	if err != nil {
+		log.Fatalf("auth: token pepper: %v", err)
+	}
+	srv.SetTokenHasher(tokenHasher)
+	switch tokenHasher.Source() {
+	case auth.PepperNone:
+		if srv.AuthConfigured(context.Background()) {
+			log.Printf("auth: WARNING: operator tokens are hashed with no pepper — anyone who can write the database can mint a working token. Set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER.")
+		}
+	case auth.PepperDerived:
+		// Before serving: only rows on a legacy hash NOW may log in under one.
+		snap, serr := srv.SnapshotLegacyTokenRows(context.Background())
+		if serr != nil {
+			log.Printf("auth: listing tokens on a legacy hash failed (none will log in under one until a restart): %v", serr)
+			break
+		}
+		logLegacyTokenSnapshot(snap, tokenHasher.AcceptsUnpeppered())
+	}
 	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
 		Store:                storeIface,
-		Pepper:               cfg.Env.OperatorTokenPepper,
+		Hasher:               tokenHasher,
 		Audit:                tokenAudit,
 		RotationGraceSeconds: graceSecs,
 		LegacyTokenSet:       cfg.Env.AuthToken != "",

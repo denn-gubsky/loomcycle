@@ -574,6 +574,12 @@ type Server struct {
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
 	tokenCache *tokenCache
+	// legacyTokens is the boot snapshot of token rows still on a legacy
+	// hash (RFC ES D2, token_legacy.go). Zero value: none.
+	legacyTokens legacyTokenSet
+	// tokenHasher is the token hasher fixed at boot (SetTokenHasher); nil →
+	// built from the config per use.
+	tokenHasher *auth.TokenHasher
 
 	// mcpHTTPHandler is the v0.8.15.3 HTTP MCP transport (alternate
 	// front-end to the stdio MCP server). Typed as http.Handler — NOT

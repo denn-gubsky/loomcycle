@@ -22,7 +22,7 @@ func operatorTokenDefFixture(t *testing.T) (*OperatorTokenDef, context.Context, 
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
-	tool := &OperatorTokenDef{Store: s, Pepper: testPepper, Audit: audit.NopSink{}}
+	tool := &OperatorTokenDef{Store: s, Hasher: auth.NewTokenHasher(testPepper, "", "", false), Audit: audit.NopSink{}}
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_admin", UserID: "ops"})
 	ctx = tools.WithOperatorTokenDefPolicy(ctx, tools.OperatorTokenDefPolicyValue{Admin: true})
 	return tool, ctx, s, func() { _ = s.Close() }
@@ -648,5 +648,35 @@ func TestOperatorTokenDef_RetentionIsStoredAndSurvivesRotation(t *testing.T) {
 	}
 	if !res.IsError || !strings.Contains(res.Text, "retention") {
 		t.Errorf("a misspelled retention: is_error=%v text=%q, want a refusal naming retention", res.IsError, res.Text)
+	}
+}
+
+// RFC ES D2: with a derived pepper, both mint paths (create and rotate)
+// store the tagged derived hash the auth lookup computes.
+func TestOperatorTokenDef_MintsUnderTheDerivedPepper(t *testing.T) {
+	tool, ctx, s, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	tool.Hasher = auth.NewTokenHasher("", "derived-pepper", "", true)
+
+	out := mustOp(t, tool, ctx, `{"op":"create","name":"dp","tenant_id":"acme","subject":"dp","scopes":["runs:create"]}`)
+	plaintext, _ := out["token"].(string)
+	defID, _ := out["def_id"].(string)
+	row, err := s.OperatorTokenDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("store get: %v", err)
+	}
+	if row.TokenHash != tool.Hasher.Hash(plaintext) || !tool.Hasher.IsCurrent(row.TokenHash) {
+		t.Errorf("create: stored hash is not the derived-pepper hash")
+	}
+
+	out = mustOp(t, tool, ctx, `{"op":"rotate","name":"dp"}`)
+	plaintext, _ = out["token"].(string)
+	defID, _ = out["def_id"].(string)
+	row, err = s.OperatorTokenDefGet(ctx, defID)
+	if err != nil {
+		t.Fatalf("store get rotated: %v", err)
+	}
+	if row.TokenHash != tool.Hasher.Hash(plaintext) {
+		t.Errorf("rotate: stored hash is not the derived-pepper hash")
 	}
 }
