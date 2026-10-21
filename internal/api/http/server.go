@@ -5245,7 +5245,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	in.RateAdmitted = true
-	// ET-P1 decision: A20 — this route holds a session across replicas.
+	// A continued session is held in every replica (as gRPC Continue holds it).
 	in.SessionLockAcrossReplicas = true
 	// An interactive run parks for its operator, and a run held for review
 	// waits for a verdict: either can take far longer than the caller keeps

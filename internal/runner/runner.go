@@ -488,8 +488,9 @@ type RunInput struct {
 	// the cluster half go while the run waits for a slot — a queue of
 	// continuations would otherwise hold a pool connection each — and takes it
 	// back when the run is admitted, reading the session's history again
-	// since another replica may have taken a turn meanwhile. Set by the HTTP
-	// routes; without a cluster lock configured it changes nothing.
+	// since another replica may have taken a turn meanwhile. Set by every
+	// transport that continues a session (the HTTP routes, gRPC Continue);
+	// without a cluster lock configured it changes nothing.
 	SessionLockAcrossReplicas bool
 
 	// HoldUntilEnd keeps a Detached run's caller waiting for the run's end

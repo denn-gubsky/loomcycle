@@ -1262,6 +1262,9 @@ func (s *Server) Continue(req *loomcyclepb.ContinueRequest, stream loomcyclepb.L
 		InjectToolGuide:       req.InjectToolGuide,
 	})
 	in.Hooks, in.ToolHooks = added.Hooks, added.ToolHooks
+	// Its session is held in every replica, as the HTTP continuation routes
+	// hold it: two replicas must not take turns on one session at once.
+	in.SessionLockAcrossReplicas = true
 	return s.driveStream(stream.Context(), stream, in)
 }
 

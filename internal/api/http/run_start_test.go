@@ -294,3 +294,27 @@ func TestRestartQueuedRuns_ContinuationRunsHoldingTheClusterLock(t *testing.T) {
 	gate <- struct{}{}
 	waitRunStatus(t, s.store, run.ID, store.RunCompleted)
 }
+
+// A continuation that asks for its session lock across replicas — gRPC
+// Continue and both HTTP routes do — is refused as busy while another replica
+// holds the session; one that does not is not stopped by it.
+func TestRunOnce_AContinuationAcrossReplicasIsBusyWhileAnotherReplicaHoldsTheSession(t *testing.T) {
+	g := newGoldenServer(t, goldenOpts{})
+	sid := g.completedSession("plain")
+	locker := newFakeClusterLocker()
+	g.srv.sessionLockPG = locker
+	release, ok := locker.TryLock(context.Background(), sid) // another replica's turn
+	if !ok {
+		t.Fatal("could not take the session's cluster lock")
+	}
+	defer release()
+
+	in := runner.RunInput{SessionID: sid, Segments: oneUserSeg("again"), SessionLockAcrossReplicas: true}
+	if err := g.srv.RunOnce(context.Background(), in, runner.RunCallbacks{}); !errors.Is(err, runner.ErrSessionBusy) {
+		t.Errorf("across replicas: err = %v, want ErrSessionBusy", err)
+	}
+	in.SessionLockAcrossReplicas = false
+	if err := g.srv.RunOnce(context.Background(), in, runner.RunCallbacks{}); err != nil {
+		t.Errorf("this replica only: err = %v, want the run to start", err)
+	}
+}
