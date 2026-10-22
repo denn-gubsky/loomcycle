@@ -269,6 +269,21 @@ Bump the image tag → new binary → refreshed embedded presets automatically; 
 + overlay persist. If the new version bumped the Postgres schema, the
 `loomcycle-migrate` step re-runs `migrate up` on redeploy.
 
+Operator tokens minted with no pepper (by a release before v1.119.0, or while
+`LOOMCYCLE_SECRET_KEY` was unset) are refused until rewrapped, and the boot log names
+them. In the TrueNAS shell, with the container from `docker ps`:
+
+```sh
+# 1. list the rows (writes nothing)
+docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap
+# 2. rewrap the ones you minted (or: --all-listed <digest> from step 1)
+docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap --def-id <id> --def-id <id>
+```
+
+The container already carries the server's env and config, so the command sees the
+same database and pepper. It is safe while the server runs. A row you never minted
+was written into the database: retire it instead.
+
 ## Browser + sandbox variant (serve-and-test)
 
 The walkthrough above is the lean, single-tenant toolbox posture. To instead let an
