@@ -66,7 +66,7 @@ func retireReloadServerWith(t *testing.T, principals map[string]config.Principal
 		Store:                  st,
 		Hasher:                 hasher,
 		Audit:                  audit.NopSink{},
-		LegacyTokenSet:         cfg.Env.AuthToken != "",
+		LegacyTokenSet:         s.LegacyTokenSet,
 		AdminPrincipalDeclared: s.AdminPrincipalResolved,
 	}
 	ctx := tools.WithOperatorTokenDefPolicy(context.Background(), tools.OperatorTokenDefPolicyValue{Admin: true})
@@ -242,3 +242,20 @@ func TestRetireLastAdminToken_AllowedAfterReloadAddsAdminPrincipal(t *testing.T)
 	}
 }
 
+// The retire guard reads LOOMCYCLE_AUTH_TOKEN from the CURRENT config too, as
+// the bearer check does: once a reload sets it, the last admin token may go.
+func TestRetireLastAdminToken_AllowedAfterReloadSetsLegacySecret(t *testing.T) {
+	s, exec := retireReloadServerWith(t, map[string]config.PrincipalDef{"alice": raAli})
+	if res := exec(`{"op":"retire","name":"root"}`); !res.IsError {
+		t.Fatal("retired the last admin token with no admin credential in config; want refused")
+	}
+	candidate := raConfig(&config.Config{}, map[string]config.PrincipalDef{"alice": raAli})
+	candidate.Env = s.cfg().Env
+	candidate.Env.AuthToken = "legacy"
+	if err := reloadCandidate(s, candidate, false); err != nil {
+		t.Fatalf("reload setting LOOMCYCLE_AUTH_TOKEN: %v", err)
+	}
+	if res := exec(`{"op":"retire","name":"root"}`); res.IsError {
+		t.Fatalf("retire after a reload set LOOMCYCLE_AUTH_TOKEN: %s", res.Text)
+	}
+}

@@ -55,14 +55,16 @@ type OperatorTokenDef struct {
 	// 0 → 64.
 	MaxScopes int
 
-	// LegacyTokenSet reports whether LOOMCYCLE_AUTH_TOKEN is configured
-	// (wired from main.go). When false, retiring the LAST admin-scoped token
-	// would flip authConfigured to false → unauthenticated open mode (or, with
-	// config principals declared, leave no admin credential), so the
-	// no-fail-open guard in execRetire refuses it. When a legacy fallback
-	// exists, retiring the last admin merely re-enables it (recoverable), so
-	// the guard does not fire.
-	LegacyTokenSet bool
+	// LegacyTokenSet reports whether LOOMCYCLE_AUTH_TOKEN is configured.
+	// When false, retiring the LAST admin-scoped token would flip
+	// authConfigured to false → unauthenticated open mode (or, with config
+	// principals declared, leave no admin credential), so the no-fail-open
+	// guard in execRetire refuses it. When a legacy fallback exists, retiring
+	// the last admin merely re-enables it (recoverable), so the guard does not
+	// fire. A func read at retire time, like AdminPrincipalDeclared: a config
+	// reload can set or clear the secret, and the bearer check reads it live,
+	// so the guard must judge the same config. Nil means not set.
+	LegacyTokenSet func() bool
 
 	// AdminPrincipalDeclared reports whether a config principal that can log in
 	// holds substrate:admin. Then retiring the last admin token leaves an admin
@@ -581,7 +583,8 @@ func (s *OperatorTokenDef) execRetire(ctx context.Context, in operatorTokenDefIn
 	// before retiring the prior, so the count never reaches zero. An admin
 	// config principal is a standing admin credential, so it lifts the guard.
 	adminPrincipal := s.AdminPrincipalDeclared != nil && s.AdminPrincipalDeclared()
-	if !s.LegacyTokenSet && !adminPrincipal && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
+	legacy := s.LegacyTokenSet != nil && s.LegacyTokenSet()
+	if !legacy && !adminPrincipal && auth.HasScope(target.AllowedScopes, auth.ScopeAdmin) {
 		// Only admin tokens that can still authenticate (RFC ES F3): a row
 		// under a pepper no longer configured is no fallback.
 		include, exclude := s.Hasher.UsablePrefixes()
