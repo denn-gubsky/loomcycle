@@ -213,7 +213,8 @@ Before it, v1.119.0 was the fixes from a security review of the
 whole runtime. A server authenticated only by a minted admin token no longer
 served a request unauthenticated when it could not read its token store. Open
 mode was refused on a public listener, declaring config `principals:` turned
-authentication on, and operator-token hashes were peppered by default. A shutdown
+authentication on, and operator-token hashes were peppered whenever
+`LOOMCYCLE_SECRET_KEY` is set. A shutdown
 paused the runs in flight and a restart resumed them, `POST /v1/runs` started runs
 the way every other transport does, logs could be JSON, and Amazon Bedrock could
 be reached with AWS IAM credentials. See [`REVISIONS.md`](REVISIONS.md).
@@ -617,7 +618,7 @@ Full request flow, abstractions, and concurrency model: [`docs/ARCHITECTURE.md`]
 - **No vendor binary** in the loop. Pure HTTP to provider APIs. No subprocess auth inheritance.
 - **Default-deny everything.** Every built-in tool is disabled until env-configured. Every agent gets zero tools until `tools` is set.
 - **Two-layer policy + per-request narrowing.** Operator floor in env; agent narrowing in yaml; caller narrowing per-run. Caller can never widen.
-- **SSRF defence.** Hostname allowlist + RFC1918/loopback/link-local IP block at the dial layer. Defeats DNS rebinding.
+- **SSRF defence.** Hostname allowlist + RFC1918/loopback/link-local IP block at the dial layer, re-checked on the connected address, so DNS rebinding cannot slip past it. A private host the operator vouches for **by name** may still resolve to any private address except link-local and cloud metadata; vouch by CIDR to trust no name. See [`docs/TOOLS.md`](docs/TOOLS.md).
 - **Constant-time bearer auth.** `sha256+CTC` on both HTTP and gRPC.
 - **`Bash` is restricted, not isolated.** Run inside a container or VM if you need real isolation.
 
