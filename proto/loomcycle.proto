@@ -1743,9 +1743,10 @@ message AdmissionInfo {
 // and what the gRPC status carries in google.rpc.ErrorInfo details, so one
 // condition reads the same whichever surface a consumer is on.
 message ErrorInfo {
-  // transient | validation | business | permission. Empty only on a failed
-  // tool call that is not classified yet but carries a call_format; any other
-  // unclassified failure omits the whole message.
+  // transient | validation | business | permission, or cancelled on the
+  // error event of a run stopped before it finished (nothing failed). Empty
+  // only on a failed tool call that is not classified yet but carries a
+  // call_format; any other unclassified failure omits the whole message.
   string category = 1;
 
   // Answers only "will resending this exact call fail?" — not "should the

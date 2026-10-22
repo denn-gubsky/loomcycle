@@ -279,7 +279,7 @@ class ErrorInfo:
     failed tool call not yet classified that still carries ``call_format``.
     """
 
-    category: str  # "transient" | "validation" | "business" | "permission"
+    category: str  # "transient" | "validation" | "business" | "permission" | "cancelled"
     is_retryable: bool
     description: str = ""
     # Optional backoff hint in milliseconds, meaningful only when

@@ -351,6 +351,10 @@ export interface EventPayload {
     max_context_tokens?: number;
   };
   error?: string;
+  // The machine-readable half of an `error` frame (errkind.Info on the
+  // server). category "cancelled" is a run stopped before it finished, which
+  // is not a failure.
+  error_info?: { category?: string; is_retryable?: boolean; description?: string };
   retry?: { provider?: string; attempt?: number; wait_ms?: number; reason?: string };
   // interruption_pending sidecar (providers.InterruptionEventInfo): the agent
   // raised a question via the Interruption tool and is now blocked. The run's

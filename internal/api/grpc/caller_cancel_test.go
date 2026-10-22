@@ -172,6 +172,9 @@ func TestRun_APICancelMidTurnEndsWithOneErrorFrame(t *testing.T) {
 	if errorFrames != 1 || frames[len(frames)-1].GetType() != "error" {
 		t.Fatalf("frames = %v, want the stream to end with exactly one error frame", frameTypes(frames))
 	}
+	if cat := frames[len(frames)-1].GetErrorInfo().GetCategory(); cat != "cancelled" {
+		t.Errorf("error frame category = %q, want cancelled: a stopped run is not a failure", cat)
+	}
 
 	events, err := st.GetTranscript(context.Background(), ids.SessionID)
 	if err != nil || len(events) == 0 {

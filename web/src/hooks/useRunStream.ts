@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { dropEchoedSteer, newEchoes, type Echoes } from "../lib/operatorEcho";
+import { errorFrameStatus } from "../lib/runEnd";
 import {
   cancelAgent,
   compactRun,
@@ -153,7 +154,7 @@ export function useRunStream(): UseRunStream {
       setPendingInterrupt(null);
     }
     if (ev.type === "error") {
-      setStatus("failed");
+      setStatus(errorFrameStatus(ev));
       if (typeof ev.error === "string") setError(ev.error);
       setPendingInterrupt(null);
     }

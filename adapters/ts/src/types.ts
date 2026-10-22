@@ -488,8 +488,9 @@ export interface CallFormat {
  *  "retry shortly" and "your budget is exhausted" look identical and want
  *  opposite responses. */
 export interface ErrorInfo {
-  /** "transient" | "validation" | "business" | "permission". Absent only on a
-   *  failed tool call not yet classified that still carries
+  /** "transient" | "validation" | "business" | "permission", or "cancelled"
+   *  on the error frame of a run stopped before it finished (nothing failed).
+   *  Absent only on a failed tool call not yet classified that still carries
    *  `correct_call_format`. */
   category?: string;
   /** Answers only "will resending this exact call fail?" — not "should I give
