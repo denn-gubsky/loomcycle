@@ -20,6 +20,15 @@ import (
 // the two together.
 const systemUserID = "_system"
 
+// isNotFound reports whether err is the store's missing-row error. It asks the
+// error what it is rather than naming *store.ErrNotFound, because the store
+// sits in a higher layer (RFC EX); *store.ErrNotFound is the only error that
+// answers.
+func isNotFound(err error) bool {
+	var nf interface{ NotFound() bool }
+	return errors.As(err, &nf) && nf.NotFound()
+}
+
 // Engine is the domain layer over the credential store + crypto — the single
 // entry point the credentialdef tool and the runtime-side $cred: resolver share.
 // Its metadata-returning ops (Get/List/PutInline) strip the sealed definition;
@@ -196,8 +205,7 @@ func (e *Engine) checkExpiresAt(expiresAt *time.Time) error {
 func (e *Engine) existingUsername(ctx context.Context, id Identity) (string, error) {
 	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
+		if isNotFound(err) {
 			return "", nil
 		}
 		return "", err
@@ -216,8 +224,7 @@ func (e *Engine) existingUsername(ctx context.Context, id Identity) (string, err
 func (e *Engine) existingRestriction(ctx context.Context, id Identity) (*[]string, error) {
 	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
+		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -267,8 +274,7 @@ func (e *Engine) Delete(ctx context.Context, id Identity) (bool, error) {
 			return true, err
 		}
 	} else if err != nil {
-		var nf *store.ErrNotFound
-		if !errors.As(err, &nf) {
+		if !isNotFound(err) {
 			return false, err
 		}
 	}
@@ -397,8 +403,7 @@ func (e *Engine) findScopes(ctx context.Context, tenantID, agentName, userID, na
 		}
 		row, err := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
 		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
+			if isNotFound(err) {
 				continue // not in this scope — try the next
 			}
 			return credentialdef.Row{}, false, err
@@ -494,8 +499,7 @@ func (e *Engine) expiredErr(row credentialdef.Row, name string) error {
 func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (string, bool, error) {
 	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
+		if isNotFound(err) {
 			return "", false, nil
 		}
 		return "", false, err
@@ -521,8 +525,7 @@ func (e *Engine) ResolveToCompare(ctx context.Context, tenantID, name string) (s
 func (e *Engine) HasToCompare(ctx context.Context, tenantID, name string) (bool, error) {
 	row, err := e.store.CredentialDefGet(ctx, tenantID, "tenant", "", name)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
+		if isNotFound(err) {
 			return false, nil
 		}
 		return false, err

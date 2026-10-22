@@ -6955,6 +6955,11 @@ type ErrNotFound struct {
 
 func (e *ErrNotFound) Error() string { return e.Kind + " not found: " + e.ID }
 
+// NotFound reports that the error is a missing row. A package below the store
+// (internal/credential) recognises a miss by this method, since it cannot
+// import the store to name the type.
+func (*ErrNotFound) NotFound() bool { return true }
+
 // ErrRunLive is DeleteRunSet's refusal: RunID is a run the delete may not
 // remove yet. Outside is false for a run in the set that is still running,
 // awaiting input, paused or pausing; true for a run OUTSIDE the set whose

@@ -45,7 +45,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // UsageCrypto is the definition's usage for a crypto-key credential.
@@ -398,8 +397,7 @@ func (e *Engine) absent(ctx context.Context, id Identity) error {
 	if err == nil {
 		return fmt.Errorf("%w (%q in %s scope)", ErrKeyExists, id.Name, id.Scope)
 	}
-	var nf *store.ErrNotFound
-	if errors.As(err, &nf) {
+	if isNotFound(err) {
 		return nil
 	}
 	return err
@@ -573,8 +571,7 @@ func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name 
 		}
 		r, gerr := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
 		if gerr != nil {
-			var nf *store.ErrNotFound
-			if errors.As(gerr, &nf) {
+			if isNotFound(gerr) {
 				continue
 			}
 			return credentialdef.Row{}, false, sawOther, gerr
@@ -667,8 +664,7 @@ func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, user
 func (e *Engine) ResolveKMSSecret(ctx context.Context, id Identity) (string, bool, error) {
 	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
+		if isNotFound(err) {
 			return "", false, nil
 		}
 		return "", false, err
