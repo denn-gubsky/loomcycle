@@ -277,7 +277,7 @@ them. In the TrueNAS shell, with the container from `docker ps`:
 # 1. list the rows (writes nothing)
 docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap
 # 2. rewrap the ones you minted (or: --all-listed <digest> from step 1)
-docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap --def-id <id> --def-id <id>
+docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap --def-id <def_id>@<fingerprint> --def-id <def_id>@<fingerprint>
 ```
 
 The container already carries the server's env and config, so the command sees the
