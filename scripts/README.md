@@ -75,7 +75,7 @@ that a pull request will not catch that test failing and `main` will.
 
 `internal/api/http` and `internal/tools/builtin` each hold ~2,100 tests that
 run one after another, so each sets the race job's length on its own. CI runs
-each in two halves on separate runners:
+each in parts on separate runners (`api/http` in thirds, `builtin` in halves):
 
 ```sh
 scripts/ci/split-tests.sh ./internal/api/http/ 1/2 -race   # prints a -run regexp
@@ -83,5 +83,5 @@ scripts/ci/split-tests.sh ./internal/api/http/ 1/2 -race   # prints a -run regex
 
 The names come from `go test -list` with the run's own build flags, sorted and
 dealt round-robin, so every test lands in exactly one half and a new test needs
-no list. To split another package, add its halves to the `go-race` matrix in
+no list. To split another package, add its parts to the `go-race` matrix in
 `.github/workflows/ci.yml` and its path to the `rest` shard's `without`.

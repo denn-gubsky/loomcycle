@@ -75,32 +75,40 @@ jobs:
     # runner it took ~15 min, set by internal/api/http and
     # internal/tools/builtin: each is ~2,100 tests that run one after another,
     # so more cores did not help and a shard of their own is still their whole
-    # length. Each is split in two by test name (scripts/ci/split-tests.sh deals
-    # the sorted names round-robin, so every test lands in exactly one half);
-    # every other package runs in the last shard. A pull request runs only the
-    # packages its change can reach, and a shard left with none is skipped.
+    # length. Each is split by test name (scripts/ci/split-tests.sh deals the
+    # sorted names round-robin, so every test lands in exactly one part). The
+    # next heaviest (cmd/loomcycle, the sqlite store, snapshot) share a shard,
+    # and every other package runs in the last. Sized from the first sharded
+    # run: api/http halves ran 381s, builtin halves 291s, the rest 553s. A pull
+    # request runs only the packages its change can reach, and a shard left
+    # with none is skipped.
     name: Go race (${{ matrix.shard }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - shard: api/http 1/2
+          - shard: api/http 1/3
             within: ./internal/api/http/
-            split: 1/2
-          - shard: api/http 2/2
+            split: 1/3
+          - shard: api/http 2/3
             within: ./internal/api/http/
-            split: 2/2
+            split: 2/3
+          - shard: api/http 3/3
+            within: ./internal/api/http/
+            split: 3/3
           - shard: tools/builtin 1/2
             within: ./internal/tools/builtin/
             split: 1/2
           - shard: tools/builtin 2/2
             within: ./internal/tools/builtin/
             split: 2/2
+          - shard: cmd, store, snapshot
+            within: ./cmd/... ./internal/store/... ./internal/snapshot/...
           - shard: rest
             within: ./...
             # Every package a shard above names, or it runs twice.
-            without: ./internal/api/http/ ./internal/tools/builtin/
+            without: ./internal/api/http/ ./internal/tools/builtin/ ./cmd/... ./internal/store/... ./internal/snapshot/...
     steps:
       - uses: actions/checkout@v7
         with:
