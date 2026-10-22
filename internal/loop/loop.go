@@ -4128,6 +4128,15 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 				}
 				break
 			}
+			// The run's own ctx ended (its caller left, its deadline passed,
+			// an API cancel): a driver whose read failed on the cancelled
+			// request reports that as an error. It is the cancel, not a
+			// provider fault.
+			if ctx.Err() != nil {
+				for range ch {
+				}
+				return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
+			}
 			// v0.8.2 classification: build the RAW error string so
 			// the status-prefix regex sees the bare "<name>
 			// <code>:" shape. The streamErr wrap below would
@@ -4228,6 +4237,14 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 		return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg))
 	}
+	// The run's own ctx ended while the model was generating, so the stream
+	// closed unfinished. Taken as a turn it is an empty end_turn, which ended
+	// the run completed on its partial text. A turn whose done arrived first
+	// did finish, and goes on as one; a turn cancel leaves the run's ctx
+	// alive and is handled below.
+	if !sawDone && ctx.Err() != nil {
+		return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
+	}
 
 	// RFC BH: did the operator cancel THIS turn while the model was generating
 	// (run ctx still alive)? Covers both a driver that surfaced EventError on
@@ -4247,6 +4264,18 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		iterReasoningSignature: iterReasoningSignature,
 		turnCancelledMidGen:    turnCancelledMidGen,
 	}, loopExit{}
+}
+
+// runEndedMidTurn ends a run whose ctx ended while the model was streaming,
+// with that ctx's error, as the run's other cancel exits do: the run end
+// reads the ctx's cause for why. partial is the text the turn had streamed,
+// kept as the cancelled run's answer.
+func (s *runState) runEndedMidTurn(ctx context.Context, iterSpan trace.Span, iter int, partial string) loopExit {
+	err := ctx.Err()
+	lcotel.SetSpanError(iterSpan, err)
+	iterSpan.End()
+	s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
+	return exitReturn(RunResult{StopReason: "cancelled", FinalText: partial, Iterations: iter, Usage: s.totalUsage}, err)
 }
 
 // dispatchTools runs the tools the model called this turn and appends their

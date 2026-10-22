@@ -9360,9 +9360,8 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 		return
 	}
 	// A batch child its join's deadline cut off (SpawnRunBatch). Checked by
-	// cause, not by runErr: a turn whose stream the cancelled ctx closed reads
-	// to the loop as a finished turn, so the run returns nil and would be
-	// written "completed" with whatever partial text it had.
+	// cause, ahead of the caller branch below, which would name it by its
+	// ctx error ("caller deadline exceeded") instead.
 	if errors.Is(context.Cause(runCtx), errBatchJoinTimedOut) {
 		s.finishRunCancelled(ctx, runID, res, errBatchJoinTimedOut.Error(), meta)
 		return
@@ -9378,11 +9377,16 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	// failures). finishRunCancelled writes the terminal row under a fresh
 	// background ctx, so it persists even though runCtx is cancelled.
 	//
-	// A run TIMEOUT surfaces as context.DeadlineExceeded (not Canceled), so it
-	// still falls through to finishRun's failed path — a timeout IS a failure.
-	if runCtx.Err() != nil && errors.Is(runErr, context.Canceled) {
+	// A deadline on runCtx is the caller's too (a gRPC deadline, an MCP
+	// spawn_run transport timeout, a consolidation pass's budget): the run
+	// has no time limit of its own on its ctx — its max_wall_seconds ends it
+	// through the API-cancel branch above. So it is a cancel, not a failure.
+	if runCtx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 		reason := "client disconnected"
-		if !meta.IsTopLevel {
+		switch {
+		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
+			reason = "caller deadline exceeded"
+		case !meta.IsTopLevel:
 			reason = "parent run cancelled"
 		}
 		s.finishRunCancelled(ctx, runID, res, reason, meta)
@@ -9404,7 +9408,7 @@ func terminalStatusOf(runCtx context.Context, res loop.RunResult, runErr error) 
 		if errors.Is(context.Cause(runCtx), cancel.ErrCancelledByAPI) {
 			return store.RunCancelled
 		}
-		if runCtx.Err() != nil && errors.Is(runErr, context.Canceled) {
+		if runCtx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 			return store.RunCancelled
 		}
 	}
