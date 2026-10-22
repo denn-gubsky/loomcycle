@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/procgroup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -150,7 +151,7 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", args.Command)
 	cmd.Dir = cwd
-	bindProcessGroup(cmd)
+	procgroup.Bind(cmd)
 	// Pass the original Execute ctx (carries the run identity) rather than the
 	// timeout-bound runCtx — see buildEnv.
 	env, envNotes := b.buildEnv(ctx)
@@ -166,14 +167,14 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if startErr != nil {
 		return tools.Result{Text: "start: " + startErr.Error(), IsError: true}, nil
 	}
-	// On ctx cancel bindProcessGroup SIGKILLs the command's process group,
+	// On ctx cancel procgroup.Bind SIGKILLs the command's process group,
 	// so an in-flight Wait() returns with an exit error. A descendant that
 	// left the group with setsid() survives — consistent with "Bash is not a
 	// true sandbox". Run inside a container if that matters.
 	waitErr := cmd.Wait()
 	// ErrWaitDelay: the command exited successfully but a background process
 	// it started still held the output, so the pipe was closed after
-	// hostChildWaitDelay. That is a success; later output is not captured.
+	// procgroup.WaitDelay. That is a success; later output is not captured.
 	waitDelayed := errors.Is(waitErr, exec.ErrWaitDelay)
 	if waitDelayed {
 		waitErr = nil
@@ -189,7 +190,7 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		fmt.Fprintf(&b2, "\n[output truncated at %d bytes]", maxOut)
 	}
 	if waitDelayed {
-		fmt.Fprintf(&b2, "\n[output closed %v after exit: a background process still holds it]", hostChildWaitDelay)
+		fmt.Fprintf(&b2, "\n[output closed %v after exit: a background process still holds it]", procgroup.WaitDelay)
 	}
 	// A command that already exited 0 was not killed, even if the timeout
 	// fired while its output was still draining: exec stops watching the

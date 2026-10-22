@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/procgroup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/ewhauser/gbash"
 	"github.com/ewhauser/gbash/commands"
@@ -206,14 +207,14 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		}
 		// inv.Args excludes argv[0] (the command name) — see find.go:86.
 		// ctx is the timeout-bound run context; on timeout/cancel
-		// bindProcessGroup SIGKILLs the child's whole process group, so the
+		// procgroup.Bind SIGKILLs the child's whole process group, so the
 		// descendants it spawns (a git credential helper, hook, pager) die
 		// with it. As with the Bash tool, a descendant that calls setsid()
 		// escapes the group — this is not a container; run loomcycle in one
 		// for hard isolation.
 		cmd := exec.CommandContext(ctx, name, inv.Args...)
 		cmd.Dir = hostCwd
-		bindProcessGroup(cmd)
+		procgroup.Bind(cmd)
 		env, envNotes := b.fallbackEnv(ctx, name)
 		for _, n := range envNotes {
 			fmt.Fprintf(inv.Stderr, "%s: %s\n", name, n)
@@ -224,10 +225,10 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 		cmd.Stderr = inv.Stderr
 		runErr := cmd.Run()
 		// ErrWaitDelay: the command succeeded, but a background process it
-		// started held the output until hostChildWaitDelay closed it. Say
+		// started held the output until procgroup.WaitDelay closed it. Say
 		// so, as Bash does, so the model knows later output was not captured.
 		if errors.Is(runErr, exec.ErrWaitDelay) {
-			fmt.Fprintf(inv.Stderr, "[output closed %v after exit: a background process still holds it]\n", hostChildWaitDelay)
+			fmt.Fprintf(inv.Stderr, "[output closed %v after exit: a background process still holds it]\n", procgroup.WaitDelay)
 			return nil
 		}
 		if runErr == nil {

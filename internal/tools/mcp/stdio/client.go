@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/procgroup"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
 
@@ -76,7 +77,13 @@ func Spawn(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	// Its own process group, so Close can stop the server together with
+	// what it started: most servers are launched through a wrapper (npx,
+	// uvx, a script) whose child is the real server and inherits stdout.
+	// Killing only the wrapper left that child holding stdout, so Close
+	// never saw EOF and blocked until the server exited on its own. On
+	// Linux the server also dies with loomcycle.
+	if err := procgroup.StartInOwnGroup(cmd); err != nil {
 		return nil, fmt.Errorf("start: %w", err)
 	}
 	c := &Client{
@@ -228,20 +235,40 @@ func awaitWrite(ctx context.Context, done <-chan error, doneCh <-chan struct{}, 
 	}
 }
 
-// Close terminates the child process. Any in-flight Calls receive a
-// transport error via doneCh. Idempotent.
+// closeWaitBound is how long Close waits for the server's output to end
+// after killing its process group. Only a descendant that left the group
+// with setsid() can still hold stdout then.
+const closeWaitBound = procgroup.WaitDelay
+
+// Close terminates the child process and everything in its process group.
+// Any in-flight Calls receive a transport error via doneCh. Idempotent, and
+// it returns within closeWaitBound of the kill: the pool calls it from a
+// failed handshake (inside a run's tool call) and at shutdown.
 func (c *Client) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	// Closing stdin signals EOF to a well-behaved server, which should
-	// exit cleanly. If it doesn't, Wait() below will hang until we kill.
+	// Closing stdin signals EOF to a well-behaved server. The kill follows
+	// at once, with no grace period (RFC EU D2).
 	_ = c.stdin.Close()
-	// Best-effort kill if it hasn't exited; ignore errors.
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+	select {
+	case <-c.doneCh:
+		// The server already exited and was reaped: its pid may be reused,
+		// so its group is not signalled.
+		return nil
+	default:
 	}
-	<-c.doneCh
+	_ = procgroup.KillGroup(c.cmd)
+	select {
+	case <-c.doneCh:
+	case <-time.After(closeWaitBound):
+		// A descendant that left the group still holds the output pipes.
+		// Closing our ends ends readLoop's Scan, so it reaps the server
+		// (killed above) and closes doneCh. The descendant survives.
+		_ = c.stdout.Close()
+		_ = c.stderr.Close()
+		<-c.doneCh
+	}
 	return nil
 }
 

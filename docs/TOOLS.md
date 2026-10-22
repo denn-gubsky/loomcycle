@@ -147,6 +147,8 @@ mcp_servers:
 
 Without `tools` on the server entry, every tool the server advertises is registered. With it, only the listed tools are registered, and the rest are dropped before any agent can ever request them.
 
+**How a stdio server is started and stopped.** Each stdio server runs in its own process group, so stopping it stops what it started: `npx` and `uvx` start the real server as their own child, and a shell wrapper may start more. loomcycle stops a server when its handshake fails, when it is replaced after crashing, and at shutdown: it closes the server's stdin, then kills the whole group at once, and waits at most 2 s for the output to end. A process the server started that left the group with `setsid()` survives. On Linux a stdio server also dies with loomcycle, even when loomcycle is killed without a chance to clean up; on macOS a server that ignores its stdin closing keeps running after a loomcycle crash. A server launched with `docker run -i` is a container, which killing the `docker` client does not necessarily stop: run it with `--rm`, and check that it is gone after loomcycle stops.
+
 ## Layer 2 — agent-side: exposing tools
 
 Each agent definition lists which tools it can access. The list is **anchored**: anything not on it is invisible.
