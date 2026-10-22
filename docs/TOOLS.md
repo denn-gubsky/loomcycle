@@ -642,8 +642,9 @@ Two pieces of operator config gate vector ops:
    ```yaml
    memory:
      embedder:
-       provider: openai     # openai | gemini | anthropic (Voyage proxy) | ollama-local | ollama
+       provider: openai     # a provider id: openai | gemini | anthropic (Voyage proxy) | ollama-local | ollama, or any declared provider whose driver has an embedder
        model: text-embedding-3-large
+       api: ""              # optional; the embedder protocol, needed only for bedrock (below)
        base_url: ""         # optional; self-hosted / alternative endpoint
        api_key_env: ""      # optional; env-var NAME holding the credential
        dimensions: 0        # optional; 0 = the model's native vector width
@@ -652,6 +653,10 @@ Two pieces of operator config gate vector ops:
    ```
 
 When `memory.embedder:` is unset, the `search` op and `embed: true` on `set` refuse with `embedder_not_configured`. The k/v ops are unaffected — operators not wanting semantic search don't have to configure anything.
+
+**Which embedder serves the provider.** In order: `api:` when set; the provider id when an embedder is registered under it (`openai`, `gemini`, `ollama`, `ollama-local`, and `anthropic`, which is Voyage); then the provider's driver, so a provider declared under its own id (`my-gateway: { driver: openai, base_url: … }`) embeds with the `openai` embedder at its own endpoint, with its own key. A custom id with `driver: anthropic` has no embedder (Anthropic has no embeddings API; Voyage is reachable only as `anthropic`), and a provider with an `auth:` block needs `api: bedrock`.
+
+**Queries and stored text.** Some models embed a search query differently from the text it is matched against (Cohere's `search_query` and `search_document`). loomcycle embeds what it stores as documents (Memory `set` with `embed`, Document chunks, past chats, traces, backfill and re-embed, SQL Memory `$embed`) and what it searches with as queries (Memory `search` and `recall`, Document `search`, graph seeds and verbatim answers, `Recall`, History search by query, the help index). Today only the Bedrock embedder distinguishes the two; for every other embedder both are the same call. `loomcycle memory-calibrate` measures a query against stored text, the comparison the consolidation merge pass makes.
 
 **Anthropic embedder note:** v0.9.0 ships an Anthropic *stub* that refuses with `embedder_not_implemented`. Anthropic has no native embeddings API today; v0.9.1 will wire Voyage AI under this driver name. Use `openai` or `gemini` for v0.9.0.
 
@@ -700,7 +705,23 @@ memory:
 
 **DeepSeek has no embeddings API.** It serves chat completions only, so there is no `deepseek` embedder and no amount of configuration produces one. A DeepSeek-for-chat deployment pairs with a local Ollama (above) or any OpenAI-compatible server for the embedding half. If DeepSeek ever ships an OpenAI-compatible embeddings endpoint, `provider: openai` + `base_url` reaches it with no code change.
 
-**`dimensions` and the index ceiling.** Some models (qwen3-embedding) support Matryoshka truncation, and `dimensions:` asks for a narrower vector. Unset (0) keeps the model's native width. It is worth setting when that width exceeds **2000**: pgvector caps HNSW/IVFFlat indexes at 2000 dimensions, and while loomcycle creates no vector index today (sequential scan plus the scope pre-filter — see migration `0017`), a 4096-dim corpus forecloses ever adding one without re-embedding everything. Wide vectors otherwise store and search fine — a 4096-dim vector is 16 KB per row. **Changing `dimensions` on a populated store invalidates the stored vectors**: search compares the stored `dimension` column before the cosine query and refuses with `dimension_mismatch` until `POST /v1/_memory/reembed` migrates them. Only the `ollama-local` / `ollama` drivers send it today.
+**`dimensions` and the index ceiling.** Some models (qwen3-embedding) support Matryoshka truncation, and `dimensions:` asks for a narrower vector. Unset (0) keeps the model's native width. It is worth setting when that width exceeds **2000**: pgvector caps HNSW/IVFFlat indexes at 2000 dimensions, and while loomcycle creates no vector index today (sequential scan plus the scope pre-filter — see migration `0017`), a 4096-dim corpus forecloses ever adding one without re-embedding everything. Wide vectors otherwise store and search fine — a 4096-dim vector is 16 KB per row. **Changing `dimensions` on a populated store invalidates the stored vectors**: search compares the stored `dimension` column before the cosine query and refuses with `dimension_mismatch` until `POST /v1/_memory/reembed` migrates them. Only the `ollama-local` / `ollama` and `bedrock` embedders send it today.
+
+##### Amazon Bedrock embedders (Cohere Embed)
+
+On AWS, `memory.embedder` can embed through Bedrock with the AWS credentials of a Bedrock provider (PROVIDERS.md → "Amazon Bedrock with AWS credentials"): Cohere Embed v4 or v3, signed per call, no key in any config.
+
+```yaml
+models:
+  cohere-embed: { provider: bedrock-claude, model: eu.cohere.embed-v4:0, kind: embedder }
+memory:
+  embedder:
+    model: cohere-embed
+    api: bedrock
+    dimensions: 1024      # v4: 256 | 512 | 1024 | 1536 (0 = 1536); v3: 0 or 1024
+```
+
+`api: bedrock` is required on a provider with an `auth:` block, and `base_url` / `api_key_env` are refused with it: the credentials go only to the provider's own `bedrock-runtime` host. Searches are embedded as `search_query` and stored text as `search_document` (above). `eu.cohere.embed-v4:0` may process text in any EU destination region of the profile; `cohere.embed-multilingual-v3` keeps it in the region. Regions, IAM and the dimensions table are in PROVIDERS.md → "Embeddings". Switching to it on a populated store needs `POST /v1/_memory/reembed`, and the similarity bands below need `loomcycle memory-calibrate` again.
 
 ##### Consolidation similarity bands
 
