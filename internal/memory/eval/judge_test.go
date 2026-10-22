@@ -190,7 +190,7 @@ func TestParseJudgeReply_ToleratesWhatProductionTolerates(t *testing.T) {
 // starts scoring a prompt nobody sends — and the framing here is not cosmetic: the
 // delimiters and the data-only line ARE the anti-instruction mitigation.
 func TestJudgePrompt_MatchesTheShippedRendering(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "cmd", "loomcycle", "embedded", "bundles", "memory.yaml")
+	path := filepath.Join("..", "..", "embedded", "bundles", "memory.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read embedded memory bundle: %v", err)
@@ -235,7 +235,7 @@ func TestJudgePrompt_MatchesTheShippedRendering(t *testing.T) {
 // consolidator's. A batch gives the judge sibling claims for context, so measuring at a
 // different size measures a different question than the pipeline asks.
 func TestJudgeBatchSize_MatchesTheBundle(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "cmd", "loomcycle", "embedded", "bundles", "memory.yaml")
+	path := filepath.Join("..", "..", "embedded", "bundles", "memory.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read embedded memory bundle: %v", err)
@@ -255,7 +255,7 @@ func TestJudgeBatchSize_MatchesTheBundle(t *testing.T) {
 // this harness scores that the runtime rejects would show up as a permanent, unexplained
 // miss.
 func TestJudgeVerdicts_MatchTheBundlesVocabulary(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "cmd", "loomcycle", "embedded", "bundles", "memory.yaml")
+	path := filepath.Join("..", "..", "embedded", "bundles", "memory.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read embedded memory bundle: %v", err)

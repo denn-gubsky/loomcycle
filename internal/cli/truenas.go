@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 	"gopkg.in/yaml.v3"
 )
 
