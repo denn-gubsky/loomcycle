@@ -48,10 +48,14 @@ func (s *Server) AdminPrincipalResolved() bool {
 //     to open, with nothing to notice (no open-mode warning runs once boot
 //     saw auth on). The cost: a reload cannot drop every principal of a
 //     server that relies on admin tokens alone; that takes a restart.
-//   - the last admin credential. An admin principal lets the last admin token
-//     be retired, so a reload dropping that principal afterwards would leave
-//     nobody able to manage tokens.
-func (s *Server) refuseReloadLosingAuth(ctx context.Context, candidate *config.Config) error {
+//   - the admin credential (RFC ES C1). When the running config holds one (the
+//     legacy secret or an admin principal that can log in), the new one must
+//     too. Admin tokens in the store do not count, for the same reason: another
+//     replica, whose config still has an admin principal and so lifts its
+//     last-admin-token retire guard, can retire the last one right after the
+//     reload, and nobody could administer this replica. Dropping the admin
+//     principal of a server that relies on admin tokens takes a restart.
+func (s *Server) refuseReloadLosingAuth(candidate *config.Config) error {
 	cur := s.cfg()
 	if configAuthenticates(cur) && !configAuthenticates(candidate) {
 		return errors.New("the new config declares no principals and sets no LOOMCYCLE_AUTH_TOKEN, so the " +
@@ -60,18 +64,10 @@ func (s *Server) refuseReloadLosingAuth(ctx context.Context, candidate *config.C
 			"to change how the server authenticates")
 	}
 	if configAdmin(cur) && !configAdmin(candidate) {
-		n := 0
-		if s.store != nil {
-			var err error
-			if n, err = s.store.OperatorTokenDefCountActiveAdmin(ctx); err != nil {
-				return fmt.Errorf("cannot tell whether the new config leaves an admin credential: %w", err)
-			}
-		}
-		if n == 0 {
-			return errors.New("the new config would leave no admin credential: it drops the last substrate:admin " +
-				"principal, sets no LOOMCYCLE_AUTH_TOKEN, and the store holds no admin operator token; keep the admin " +
-				"principal, or mint an admin token first")
-		}
+		return errors.New("the new config would leave no admin credential in config: it drops the last " +
+			"substrate:admin principal that can log in and sets no LOOMCYCLE_AUTH_TOKEN (admin operator tokens " +
+			"do not count here: one can be retired at any moment). Keep the admin principal, set " +
+			"LOOMCYCLE_AUTH_TOKEN, or restart to drop it")
 	}
 	return nil
 }

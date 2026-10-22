@@ -122,7 +122,7 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 
 	// Validation too, so a dry run reports it: no reload turns auth off or
 	// takes the last admin credential.
-	if err := s.refuseReloadLosingAuth(ctx, candidate); err != nil {
+	if err := s.refuseReloadLosingAuth(candidate); err != nil {
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 

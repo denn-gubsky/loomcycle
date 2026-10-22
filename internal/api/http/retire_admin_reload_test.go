@@ -15,10 +15,11 @@ import (
 )
 
 // An admin config principal lifts the last-admin-token retire guard (RFC ES
-// F2). Both the guard and a config reload must see the CURRENT principals:
-// a reload can drop the admin principal, and a token retire can drop the last
-// admin token, in either order, and neither may leave the server with no admin
-// credential — or, with no principal left, in open mode.
+// F2). A reload and a token retire, in either order and on either replica,
+// must not leave the server with no admin credential — or, with no principal
+// left, in open mode. The reload decides both on its config alone (RFC ES F2
+// for open mode, C1 for the admin credential): a store token can be retired
+// right after the check, by a replica whose own config lifts its guard.
 
 var (
 	raOps = config.PrincipalDef{Subject: "ops", Scopes: []string{auth.ScopeAdmin}, TokenEnv: "LOOMCYCLE_OPS_TOKEN"}
@@ -64,6 +65,11 @@ func retireReloadServer(t *testing.T) (*Server, func(in string) tools.Result) {
 
 func reloadTo(t *testing.T, s *Server, principals map[string]config.PrincipalDef) error {
 	t.Helper()
+	return reloadToDry(t, s, principals, false)
+}
+
+func reloadToDry(t *testing.T, s *Server, principals map[string]config.PrincipalDef, dry bool) error {
+	t.Helper()
 	// As a real reload loads it: each kept principal with its resolved secret.
 	candidate := &config.Config{Principals: principals}
 	for _, dp := range s.cfg().ResolvedPrincipals {
@@ -73,20 +79,55 @@ func reloadTo(t *testing.T, s *Server, principals map[string]config.PrincipalDef
 	}
 	candidate.Env = s.cfg().Env
 	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil })
-	_, err := s.ReloadConfig(context.Background(), false)
+	_, err := s.ReloadConfig(context.Background(), dry)
 	return err
 }
 
-// Reload first: the admin token keeps an admin credential, so dropping the admin
-// principal (keeping a tenant one) is allowed; the retire after it must then be
-// refused, or nobody could administer.
-func TestRetireLastAdminToken_RefusedAfterReloadDropsAdminPrincipal(t *testing.T) {
-	s, exec := retireReloadServer(t)
-	if err := reloadTo(t, s, map[string]config.PrincipalDef{"alice": raAli}); err != nil {
-		t.Fatalf("reload dropping the admin principal while an admin token exists: %v", err)
+// Whether a config holds an admin credential is decided by the config alone
+// (RFC ES C1). An admin token in the store does not let a reload drop the admin
+// principal: another replica, whose config still has its admin principal, may
+// retire that token a moment later, leaving nobody able to administer.
+func TestReloadDroppingAdminPrincipal_RefusedEvenWithAnAdminToken(t *testing.T) {
+	s, _ := retireReloadServer(t)
+	for _, dry := range []bool{true, false} {
+		err := reloadToDry(t, s, map[string]config.PrincipalDef{"alice": raAli}, dry)
+		if !errors.Is(err, config.ErrReloadInvalid) || !strings.Contains(err.Error(), "LOOMCYCLE_AUTH_TOKEN") ||
+			!strings.Contains(err.Error(), "restart") {
+			t.Fatalf("reload (dry=%v) dropping the admin principal with an admin token present: err = %v, "+
+				"want ErrReloadInvalid naming a restart and LOOMCYCLE_AUTH_TOKEN", dry, err)
+		}
 	}
-	if res := exec(`{"op":"retire","name":"root"}`); !res.IsError {
-		t.Fatal("retired the last admin token after a reload dropped the admin principal; want refused")
+	if !s.AdminPrincipalResolved() {
+		t.Error("the refused reload still dropped the admin principal")
+	}
+}
+
+// A reload that keeps the admin principal may drop other principals.
+func TestReloadKeepingAdminPrincipal_Allowed(t *testing.T) {
+	s, _ := retireReloadServer(t)
+	if err := reloadTo(t, s, map[string]config.PrincipalDef{"ops": raOps}); err != nil {
+		t.Fatalf("reload keeping the admin principal: %v", err)
+	}
+	if !s.AdminPrincipalResolved() {
+		t.Error("the admin principal did not survive a reload that kept it")
+	}
+}
+
+// LOOMCYCLE_AUTH_TOKEN is an admin credential in config, so with it set a
+// reload may drop the admin principal.
+func TestReloadDroppingAdminPrincipal_AllowedWithLegacySecret(t *testing.T) {
+	s, _ := retireReloadServer(t)
+	candidate := &config.Config{Principals: map[string]config.PrincipalDef{"alice": raAli}}
+	candidate.Env = s.cfg().Env
+	candidate.Env.AuthToken = "legacy"
+	for _, dp := range s.cfg().ResolvedPrincipals {
+		if dp.Principal.Subject == "alice" {
+			candidate.ResolvedPrincipals = append(candidate.ResolvedPrincipals, dp)
+		}
+	}
+	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil })
+	if _, err := s.ReloadConfig(context.Background(), false); err != nil {
+		t.Fatalf("reload dropping the admin principal while setting LOOMCYCLE_AUTH_TOKEN: %v", err)
 	}
 }
 
@@ -134,6 +175,26 @@ func TestReload_CrossReplicaRetireCannotOpenServer(t *testing.T) {
 	}
 	if on, err := a.AuthConfiguredErr(context.Background()); err != nil || !on {
 		t.Fatalf("replica A after B retired the last admin token: authConfigured = (%v, %v), want on", on, err)
+	}
+}
+
+// Two replicas sharing one store, nothing concurrent: A reloads its admin
+// principal away (keeping a tenant one) while an admin token exists, then B —
+// whose config keeps its admin principal — retires that token. A must not be
+// left with no admin credential: its reload is refused.
+func TestReload_CrossReplicaRetireCannotLeaveNoAdmin(t *testing.T) {
+	b, exec := retireReloadServer(t)
+	cfgA := &config.Config{Principals: b.cfg().Principals, ResolvedPrincipals: b.cfg().ResolvedPrincipals}
+	cfgA.Env = b.cfg().Env
+	a := &Server{cfgHolder: config.NewHolder(cfgA), store: b.store}
+	if err := reloadTo(t, a, map[string]config.PrincipalDef{"alice": raAli}); !errors.Is(err, config.ErrReloadInvalid) {
+		t.Errorf("replica A reload dropping its admin principal while an admin token exists: err = %v, want ErrReloadInvalid", err)
+	}
+	if res := exec(`{"op":"retire","name":"root"}`); res.IsError {
+		t.Fatalf("replica B retire (its admin principal is live): %s", res.Text)
+	}
+	if !a.AdminPrincipalResolved() {
+		t.Fatal("replica A has no admin credential after B retired the last admin token")
 	}
 }
 
