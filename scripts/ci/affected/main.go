@@ -25,12 +25,12 @@
 //
 // Usage:
 //
-//	affected [-base REV] [-head REV] [-within PATTERN] [-explain]
+//	affected [-base REV] [-head REV] [-within PATTERNS] [-exclude PATTERNS] [-explain]
 //
-// -explain writes to stderr why each package was selected.
-//
-// -within restricts the output to the packages a go list pattern names, for
-// the CI steps that test a fixed subset (the Postgres tiers). The output is one
+// -within restricts the output to the packages that space-separated go list
+// patterns name, for the CI steps that test a fixed subset (the Postgres
+// tiers, one race shard); -exclude removes the packages its patterns name.
+// -explain writes to stderr why each package was selected. The output is one
 // import path per line, sorted; no output means no test can see the change.
 package main
 
@@ -74,7 +74,8 @@ type pkg struct {
 func main() {
 	base := flag.String("base", "HEAD^1", "git revision the change is measured from")
 	head := flag.String("head", "HEAD", "git revision of the change")
-	within := flag.String("within", "./...", "go list pattern the output is restricted to")
+	within := flag.String("within", "./...", "space-separated go list patterns the output is restricted to")
+	exclude := flag.String("exclude", "", "space-separated go list patterns removed from the output")
 	explain := flag.Bool("explain", false, "write to stderr why each package was selected")
 	flag.Parse()
 
@@ -82,13 +83,13 @@ func main() {
 	if *explain {
 		why = os.Stderr
 	}
-	if err := run(*base, *head, *within, os.Stdout, why); err != nil {
+	if err := run(*base, *head, *within, *exclude, os.Stdout, why); err != nil {
 		fmt.Fprintln(os.Stderr, "affected:", err)
 		os.Exit(1)
 	}
 }
 
-func run(base, head, within string, out, why io.Writer) error {
+func run(base, head, within, exclude string, out, why io.Writer) error {
 	root, err := gitOutput("rev-parse", "--show-toplevel")
 	if err != nil {
 		return err
@@ -108,6 +109,15 @@ func run(base, head, within string, out, why io.Writer) error {
 	scope, err := listImportPaths(root, within)
 	if err != nil {
 		return err
+	}
+	if exclude != "" {
+		drop, err := listImportPaths(root, exclude)
+		if err != nil {
+			return err
+		}
+		for ip := range drop {
+			delete(scope, ip)
+		}
 	}
 
 	for _, s := range selectPackages(pkgs, changed) {
@@ -360,14 +370,14 @@ func stringLit(e ast.Expr) (string, bool) {
 	return s, err == nil
 }
 
-func listImportPaths(root, pattern string) (map[string]bool, error) {
-	cmd := exec.Command("go", "list", "-e", pattern)
+func listImportPaths(root, patterns string) (map[string]bool, error) {
+	cmd := exec.Command("go", append([]string{"list", "-e"}, strings.Fields(patterns)...)...)
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go list %s: %v: %s", pattern, err, stderr.String())
+		return nil, fmt.Errorf("go list %s: %v: %s", patterns, err, stderr.String())
 	}
 	set := map[string]bool{}
 	for _, l := range nonEmptyLines(string(raw)) {

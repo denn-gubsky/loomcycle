@@ -53,6 +53,7 @@ everything, so a test the selection misses still fails there.
 
 ```sh
 scripts/ci/select-packages.sh ./...                 # what CI would run (all, outside a PR)
+scripts/ci/select-packages.sh ./... "./internal/api/http/"   # less what a pattern names
 GITHUB_EVENT_NAME=pull_request scripts/ci/select-packages.sh ./...
 go run ./scripts/ci/affected -base "$(git merge-base origin/main HEAD)" -explain  # your commits, with reasons
 ```
@@ -69,3 +70,18 @@ every package.
 The blind spot is a test that builds a path to another directory at run time
 from something other than literals: write such paths as literals, or accept
 that a pull request will not catch that test failing and `main` will.
+
+## `ci/split-tests.sh` — one package's tests across several runners
+
+`internal/api/http` and `internal/tools/builtin` each hold ~2,100 tests that
+run one after another, so each sets the race job's length on its own. CI runs
+each in parts on separate runners (`api/http` in thirds, `builtin` in halves):
+
+```sh
+scripts/ci/split-tests.sh ./internal/api/http/ 1/2 -race   # prints a -run regexp
+```
+
+The names come from `go test -list` with the run's own build flags, sorted and
+dealt round-robin, so every test lands in exactly one half and a new test needs
+no list. To split another package, add its parts to the `go-race` matrix in
+`.github/workflows/ci.yml` and its path to the `rest` shard's `without`.

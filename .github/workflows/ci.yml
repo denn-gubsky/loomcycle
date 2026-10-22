@@ -26,10 +26,6 @@ jobs:
         go-version: ["1.26.x"]
     steps:
       - uses: actions/checkout@v7
-        with:
-          # Two commits: the pull request's merge commit and its first parent,
-          # which scripts/ci/select-packages.sh diffs against.
-          fetch-depth: 2
 
       - uses: actions/setup-go@v7
         with:
@@ -61,16 +57,80 @@ jobs:
         # a path filter would miss a bump that arrives another way, and a
         # change to bashbox.go can weaken containment just as well. The
         # target fails if any case is skipped, so a runner missing git, curl,
-        # env or printenv cannot pass it vacuously. The race step below runs
-        # the same tests again under -race.
+        # env or printenv cannot pass it vacuously. The race shards run the
+        # same tests again under -race.
         run: make bashbox-escape
 
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  go-race:
+    # The race suite, split across runners (RFC EX Phase 1). On one 4-core
+    # runner it took ~15 min, set by internal/api/http and
+    # internal/tools/builtin: each is ~2,100 tests that run one after another,
+    # so more cores did not help and a shard of their own is still their whole
+    # length. Each is split by test name (scripts/ci/split-tests.sh deals the
+    # sorted names round-robin, so every test lands in exactly one part). The
+    # next heaviest (cmd/loomcycle, the sqlite store, snapshot) share a shard,
+    # and every other package runs in the last. Sized from the first sharded
+    # run: api/http halves ran 381s, builtin halves 291s, the rest 553s. A pull
+    # request runs only the packages its change can reach, and a shard left
+    # with none is skipped.
+    name: Go race (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: api/http 1/3
+            within: ./internal/api/http/
+            split: 1/3
+          - shard: api/http 2/3
+            within: ./internal/api/http/
+            split: 2/3
+          - shard: api/http 3/3
+            within: ./internal/api/http/
+            split: 3/3
+          - shard: tools/builtin 1/2
+            within: ./internal/tools/builtin/
+            split: 1/2
+          - shard: tools/builtin 2/2
+            within: ./internal/tools/builtin/
+            split: 2/2
+          - shard: cmd, store, snapshot
+            within: ./cmd/... ./internal/store/... ./internal/snapshot/...
+          - shard: rest
+            within: ./...
+            # Every package a shard above names, or it runs twice.
+            without: ./internal/api/http/ ./internal/tools/builtin/ ./cmd/... ./internal/store/... ./internal/snapshot/...
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Two commits: the pull request's merge commit and its first parent,
+          # which scripts/ci/select-packages.sh diffs against.
+          fetch-depth: 2
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
+          cache: true
+
       # A pull request tests only the packages whose tests can see its change;
-      # main tests everything (RFC EX Phase 1). The job log lists each selected
-      # package and why. vet, build and the escape suite above stay whole.
+      # main tests everything. The job log lists each selected package and why.
       - name: Select packages
         id: sel
-        run: echo "pkgs=$(scripts/ci/select-packages.sh ./...)" >> "$GITHUB_OUTPUT"
+        env:
+          WITHIN: ${{ matrix.within }}
+          WITHOUT: ${{ matrix.without }}
+        run: echo "pkgs=$(scripts/ci/select-packages.sh "$WITHIN" "$WITHOUT")" >> "$GITHUB_OUTPUT"
 
       - name: Test (race detector)
         if: steps.sel.outputs.pkgs != ''
@@ -132,16 +192,17 @@ jobs:
           # has no atomic rename exchange. CI must run them, not skip them.
           LOOMCYCLE_TEST_REQUIRE_EXCHANGE: "1"
           PKGS: ${{ steps.sel.outputs.pkgs }}
-        run: go test -race -gcflags='modernc.org/...=-race=false' -timeout 3600s $PKGS
-
-      - name: gofmt check
+          SPLIT: ${{ matrix.split }}
         run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "::error::Files need gofmt:"
-            echo "$unformatted"
-            exit 1
+          flags=(-race '-gcflags=modernc.org/...=-race=false')
+          run=()
+          if [ -n "$SPLIT" ]; then
+            # shellcheck disable=SC2086 # one package in a split shard
+            run=(-run "$(scripts/ci/split-tests.sh $PKGS "$SPLIT" "${flags[@]}")")
           fi
+          # shellcheck disable=SC2086 # PKGS is a space-separated list
+          go test "${flags[@]}" -timeout 3600s "${run[@]}" $PKGS
+
 
   go-postgres:
     # Named for the TIERS it gates, not just the store contract: this job now
