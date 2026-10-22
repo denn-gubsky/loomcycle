@@ -17,8 +17,37 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Which parts of the tree a pull request touches (RFC EX Phase 1). Every
+    # job below waits for this and is skipped when its part is untouched; on
+    # main every output is true. scripts/ci/changes.sh says how each is decided.
+    name: Changes
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.c.outputs.go }}
+      runtime: ${{ steps.c.outputs.runtime }}
+      web: ${{ steps.c.outputs.web }}
+      ts: ${{ steps.c.outputs.ts }}
+      python: ${{ steps.c.outputs.python }}
+      bridges: ${{ steps.c.outputs.bridges }}
+      proto: ${{ steps.c.outputs.proto }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache: true
+      - name: Classify the change
+        id: c
+        run: scripts/ci/changes.sh >> "$GITHUB_OUTPUT"
+
   go:
     name: Go ${{ matrix.go-version }}
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -83,6 +112,8 @@ jobs:
     # request runs only the packages its change can reach, and a shard left
     # with none is skipped.
     name: Go race (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -211,6 +242,8 @@ jobs:
     # debugging a coord or sqlmem regression to the wrong package. The job KEY
     # stays go-postgres.
     name: Go (Postgres tiers)
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     # Runs the shared storetest contract against a REAL Postgres so
     # backend-parity bugs are caught in CI, not only on SQLite. The contract
@@ -473,6 +506,8 @@ jobs:
 
   runtime-codejs:
     name: Runtime suites (code-js)
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -501,6 +536,8 @@ jobs:
 
   ts-adapter:
     name: TypeScript adapter
+    needs: changes
+    if: needs.changes.outputs.ts == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -527,6 +564,8 @@ jobs:
   # SDK app answering a posted activity through a fake Bot Connector.
   bridge-teams-integration:
     name: Teams bridge integration
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.bridges == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -566,6 +605,8 @@ jobs:
   # core is built first; the publish workflow refuses that dependency.
   bridges:
     name: Bridges
+    needs: changes
+    if: needs.changes.outputs.bridges == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -596,6 +637,8 @@ jobs:
   # a change that breaks an image fails its PR rather than its release.
   bridge-images:
     name: Bridge images
+    needs: changes
+    if: needs.changes.outputs.bridges == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -618,6 +661,8 @@ jobs:
 
   web-ui:
     name: Web UI build
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -684,6 +729,8 @@ jobs:
   # the committed stubs genuinely disagree with the proto.
   proto-drift:
     name: Generated stubs match the proto
+    needs: changes
+    if: needs.changes.outputs.proto == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -744,6 +791,8 @@ jobs:
 
   python-adapter:
     name: Python adapter
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

@@ -85,3 +85,18 @@ The names come from `go test -list` with the run's own build flags, sorted and
 dealt round-robin, so every test lands in exactly one half and a new test needs
 no list. To split another package, add its parts to the `go-race` matrix in
 `.github/workflows/ci.yml` and its path to the `rest` shard's `without`.
+
+## `ci/changes.sh` — which CI jobs a pull request needs
+
+The `changes` job runs this first and every other job is skipped when its part
+of the tree is untouched: `web` for the Web UI and the packages it compiles
+from source, `ts` and `python` for the adapters, `bridges` for the bridge
+packages and their image, `proto` for the proto and its generated stubs,
+`runtime` for the code-js runtime suites. `go` is true when
+`scripts/ci/affected` finds any Go test that can see the change, which
+includes non-Go files that Go tests read (the TS adapter, the proto, `web/`).
+A docs-only pull request runs nothing but this job. On `main` every job runs.
+
+```sh
+GITHUB_EVENT_NAME=pull_request CI_DIFF_BASE=abc123^ CI_DIFF_HEAD=abc123 scripts/ci/changes.sh
+```

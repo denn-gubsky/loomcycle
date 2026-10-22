@@ -25,7 +25,12 @@
 //
 // Usage:
 //
-//	affected [-base REV] [-head REV] [-within PATTERNS] [-exclude PATTERNS] [-explain]
+//	affected [-base REV] [-head REV] [-within PATTERNS] [-exclude PATTERNS] [-explain] [-no-walkers]
+//
+// -no-walkers ignores tests that walk the whole repository (a root read). Those
+// census tests look at every file, so every change selects them; CI uses this
+// flag only to decide whether a change concerns Go at all, and then runs the
+// selection without it, walkers included.
 //
 // -within restricts the output to the packages that space-separated go list
 // patterns name, for the CI steps that test a fixed subset (the Postgres
@@ -77,19 +82,20 @@ func main() {
 	within := flag.String("within", "./...", "space-separated go list patterns the output is restricted to")
 	exclude := flag.String("exclude", "", "space-separated go list patterns removed from the output")
 	explain := flag.Bool("explain", false, "write to stderr why each package was selected")
+	noWalkers := flag.Bool("no-walkers", false, "ignore tests that walk the whole repository")
 	flag.Parse()
 
 	var why io.Writer
 	if *explain {
 		why = os.Stderr
 	}
-	if err := run(*base, *head, *within, *exclude, os.Stdout, why); err != nil {
+	if err := run(*base, *head, *within, *exclude, *noWalkers, os.Stdout, why); err != nil {
 		fmt.Fprintln(os.Stderr, "affected:", err)
 		os.Exit(1)
 	}
 }
 
-func run(base, head, within, exclude string, out, why io.Writer) error {
+func run(base, head, within, exclude string, noWalkers bool, out, why io.Writer) error {
 	root, err := gitOutput("rev-parse", "--show-toplevel")
 	if err != nil {
 		return err
@@ -105,6 +111,9 @@ func run(base, head, within, exclude string, out, why io.Writer) error {
 	pkgs, err := loadPackages(root, "./...")
 	if err != nil {
 		return err
+	}
+	if noWalkers {
+		pkgs = withoutWalkers(pkgs)
 	}
 	scope, err := listImportPaths(root, within)
 	if err != nil {
@@ -214,6 +223,23 @@ func reaches(p pkg, owners map[string]bool, changed []string) string {
 		}
 	}
 	return ""
+}
+
+// withoutWalkers drops every package's read of the repository root, so a
+// census test is selected only by its own package and imports.
+func withoutWalkers(pkgs []pkg) []pkg {
+	out := make([]pkg, len(pkgs))
+	for i, p := range pkgs {
+		var reads []string
+		for _, r := range p.reads {
+			if r != "" {
+				reads = append(reads, r)
+			}
+		}
+		p.reads = reads
+		out[i] = p
+	}
+	return out
 }
 
 // owningPackage returns the package whose directory is the nearest ancestor of

@@ -97,6 +97,16 @@ func TestSelectPackages_DocsChangeSelectsOnlyRepoWalkers(t *testing.T) {
 	}
 }
 
+func TestWithoutWalkers_DocsChangeSelectsNothing(t *testing.T) {
+	if got := selectPackages(withoutWalkers(fixture()), []string{"docs/CONFIGURATION.md"}); len(got) != 0 {
+		t.Fatalf("got %v, want none", got)
+	}
+	got := paths(selectPackages(withoutWalkers(fixture()), []string{"proto/loomcycle.proto"}))
+	if want := []string{"m/internal/api"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestSelectPackages_NoChangeSelectsNothing(t *testing.T) {
 	if got := selectPackages(fixture(), nil); len(got) != 0 {
 		t.Fatalf("got %v, want none", got)
