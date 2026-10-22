@@ -2943,6 +2943,11 @@ export interface TeamDefDetail {
   retired?: boolean;
   content_sha256?: string;
   definition: unknown;
+  /** True on a version of the shared tier (a team defined with no tenant): a
+   *  non-admin token may read, run and fork it but not retire or promote it.
+   *  Absent on your own tenant's versions, and for a caller whose own tenant is
+   *  the shared one. */
+  shared?: boolean;
 }
 
 /** One team version's record in {@link TeamVersionList} (op=list). Same shape
@@ -2960,6 +2965,11 @@ export interface TeamVersion {
   bootstrapped_from_static?: boolean;
   content_sha256?: string;
   definition?: unknown;
+  /** True on a version of the shared tier (a team defined with no tenant): a
+   *  non-admin token may read, run and fork it but not retire or promote it.
+   *  Absent on your own tenant's versions, and for a caller whose own tenant is
+   *  the shared one. */
+  shared?: boolean;
 }
 
 /** Result of {@link LoomcycleClient.listTeamVersions} (op=list) — every version
@@ -4358,6 +4368,11 @@ export interface AgentDefRowResponse {
    *  carried identical content, so no new version was minted. Absent on a
    *  real mint. Drives {@link LoomcycleClient.ensureCodeAgent}'s `changed`. */
   deduplicated?: boolean;
+  /** True on a get/list row of the shared tier (a definition made with no
+   *  tenant): a non-admin token may read and fork it but not retire or promote it.
+   *  Absent on your own tenant's rows, and for a caller whose own tenant is the
+   *  shared one. */
+  shared?: boolean;
 }
 
 /** Response shape for `AgentDef verify`. Answers "is the supplied
