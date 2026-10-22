@@ -25,6 +25,9 @@ const FORM_COL_COLLAPSE_KEY = "loomcycle.run.form-col.collapsed";
 export default function RunView() {
   const defaultUserId = useUserId();
   const [agents, setAgents] = useState<string[]>([]);
+  // Each agent's starting context window, from the same library listing —
+  // lets the live pane draw its gauge's ceiling before the first model call.
+  const [windows, setWindows] = useState<Record<string, number>>({});
   const [agentsErr, setAgentsErr] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("single");
 
@@ -33,7 +36,13 @@ export default function RunView() {
     listLibraryAgents()
       .then((r) => {
         if (cancelled) return;
-        setAgents((r.entries ?? []).map((e) => e.name).sort());
+        const entries = r.entries ?? [];
+        setAgents(entries.map((e) => e.name).sort());
+        setWindows(
+          Object.fromEntries(
+            entries.filter((e) => (e.context_window ?? 0) > 0).map((e) => [e.name, e.context_window!]),
+          ),
+        );
       })
       .catch((e) => {
         if (!cancelled) setAgentsErr(e instanceof Error ? e.message : String(e));
@@ -64,7 +73,7 @@ export default function RunView() {
       )}
 
       {tab === "single" && (
-        <SingleRunTab agents={agents} defaultUserId={defaultUserId} />
+        <SingleRunTab agents={agents} windows={windows} defaultUserId={defaultUserId} />
       )}
       {tab === "fanout" && (
         <FanOutTab agents={agents} defaultUserId={defaultUserId} />
@@ -100,12 +109,18 @@ function TabButton({
 
 function SingleRunTab({
   agents,
+  windows,
   defaultUserId,
 }: {
   agents: string[];
+  windows: Record<string, number>;
   defaultUserId: string;
 }) {
   const run = useRunStream();
+  // The agent this tab last started from the form, for its known context
+  // window. A re-attached or draft run names no agent up front; its gauge
+  // waits for the run's own report.
+  const [startedAgent, setStartedAgent] = useState("");
   const sessions = useInteractiveSessions(defaultUserId);
   // Collapse the whole left column to a thin strip so the live terminal can
   // use the full width during a run. Persisted so it survives navigation.
@@ -129,6 +144,7 @@ function SingleRunTab({
   useEffect(() => {
     if (attachRunId && attachedRef.current !== attachRunId) {
       attachedRef.current = attachRunId;
+      setStartedAgent("");
       run.attach(attachRunId);
       const next = new URLSearchParams(searchParams);
       next.delete("attach");
@@ -150,6 +166,7 @@ function SingleRunTab({
     next.delete("start_draft");
     next.delete("draft_agent");
     setSearchParams(next, { replace: true });
+    setStartedAgent("");
     const go = (prompt: string) => run.startDraft(startDraftId, prompt);
     if (!startDraftAgent) {
       go("");
@@ -212,13 +229,19 @@ function SingleRunTab({
             userId={defaultUserId}
             sessions={sessions}
             currentRunId={run.runId}
-            onOpen={run.attach}
+            onOpen={(rid) => {
+              setStartedAgent("");
+              run.attach(rid);
+            }}
           />
           <RunForm
             agents={agents}
             defaultUserId={defaultUserId}
             submitting={run.status === "running"}
-            onSubmit={(req) => run.start(req)}
+            onSubmit={(req) => {
+              setStartedAgent(req.agent);
+              run.start(req);
+            }}
             defaultAgent={stagedAgent}
             defaultPrompt={stagedPrompt}
             onSaveDraft={saveDraft}
@@ -250,6 +273,7 @@ function SingleRunTab({
           lastUsage={run.lastUsage}
           pendingInterrupt={run.pendingInterrupt}
           onAnswerInterrupt={run.answerInterrupt}
+          contextWindow={startedAgent ? windows[startedAgent] : undefined}
         />
       </div>
     </div>

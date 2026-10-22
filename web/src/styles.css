@@ -2944,6 +2944,18 @@ button.primary:disabled {
   font-family: var(--mono);
   font-size: 16px;
 }
+/* An agent's starting context window — the list chip and the detail header.
+   Neutral: it is a fact about the agent, not a status. */
+.def-chip-ctx {
+  font-family: var(--mono);
+  color: var(--fg-soft, #9aa);
+  border: 1px solid var(--border, #2a2a32);
+}
+.lineage-header-ctx {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-soft, #9aa);
+}
 
 /* ---- LineageTree: indented <ul> rows ---- */
 .lineage-tree,
@@ -4754,7 +4766,40 @@ button.primary:disabled {
   font-size: 12px;
   color: var(--muted, #9aa);
 }
-/* Context-size gauge in the live-run header: a thin bar + "ctx X/Y (Z%)". */
+/* Run metrics strip under the live-run header (RunMetricsBar): the serving
+   provider/model, ▲ input / ▼ output, tokens per second, and the context
+   gauge. Wraps rather than truncates in a narrow ensemble cell. */
+.run-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border, #2a2a32);
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-soft, #9aa);
+}
+.run-metrics-item {
+  white-space: nowrap;
+}
+.run-metrics-model {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.run-metrics-rate.live {
+  color: var(--accent);
+}
+/* A provisional estimate for a call still streaming — replaced by the measured
+   rate when the call's usage arrives. */
+.run-metrics-rate.provisional {
+  font-style: italic;
+  opacity: 0.85;
+}
+/* Context gauge: a thin bar + "ctx X / Y (Z%)" — in the run metrics strip and
+   the run page header. */
 .ctx-gauge {
   display: inline-flex;
   align-items: center;
@@ -4777,11 +4822,23 @@ button.primary:disabled {
   height: 100%;
   background: var(--accent);
 }
-.ctx-bar-fill.ctx-mid {
+.ctx-bar-fill[data-level="warn"] {
   background: var(--running, #f0a040);
 }
-.ctx-bar-fill.ctx-high {
-  background: var(--error, #e0556a);
+.ctx-bar-fill[data-level="full"] {
+  background: var(--danger, #cc3333);
+}
+/* What the run does with its context as the window fills — beside Compact in
+   the live pane, and in the run page header. A fact, not a status: muted. */
+.ctx-method {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-soft, #9aa);
+  border: 1px solid var(--border, #2a2a32);
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  cursor: help;
 }
 .live-run-cancel {
   margin-left: auto;

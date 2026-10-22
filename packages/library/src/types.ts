@@ -60,6 +60,10 @@ export interface LibraryEntry {
    *  mcp-servers by the *ListNames summary queries; drives "Hide retired". */
   live_version_count?: number;
   active_retired?: boolean;
+  /** Agents only: the context window, in tokens, a run of this agent starts
+   *  with (the resolved provider's window, lowered by the agent's own
+   *  max_context_tokens). Absent when unknown. */
+  context_window?: number;
   /** Static-side definition payload (same JSON shape as the substrate body).
    *  Omitted when in_static is false. */
   static_definition?: unknown;

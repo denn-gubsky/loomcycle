@@ -1800,6 +1800,14 @@ func effectiveWindow(reported int, opts RunOptions) int {
 	return w
 }
 
+// StartWindow is the context window a run starts with: effectiveWindow before
+// any call has reported a per-call window. Exported so a catalog that reports
+// the window an agent's runs would get reads the loop's own rule instead of
+// keeping a copy of it.
+func StartWindow(p providers.Provider, maxContextTokens int) int {
+	return effectiveWindow(0, RunOptions{Provider: p, MaxContextTokens: maxContextTokens})
+}
+
 // estimatePreambleTokens estimates the part of a request that is NOT the
 // conversation: the system prompt and the tool catalogue.
 //

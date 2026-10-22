@@ -1,0 +1,15 @@
+{
+  "compaction": {
+    "autocompact_at_pct": 80,
+    "keep_first": true,
+    "keep_last_n": 4,
+    "target_percentage": 10
+  },
+  "context": {
+    "autorecap_at_pct": 80,
+    "keep_last_n": 6,
+    "mode": "append",
+    "reasoning": "recap",
+    "recap_max_chars": 512
+  }
+}

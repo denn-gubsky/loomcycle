@@ -28,6 +28,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -58,6 +60,11 @@ type LibraryEntry struct {
 	// skills, AND mcp-servers by their *ListNames summary queries.
 	LiveVersionCount int  `json:"live_version_count,omitempty"`
 	ActiveRetired    bool `json:"active_retired,omitempty"`
+	// ContextWindow is the context window, in tokens, a run of this agent
+	// starts with: the resolved provider's window, lowered by the agent's own
+	// max_context_tokens. Agents only; omitted when the window is unknown or
+	// the agent does not resolve to a provider right now.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // libraryListResponse is the envelope returned by all three handlers.
@@ -108,6 +115,7 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			InStatic:         true,
 			StaticDefinition: marshalStaticAgentDef(def),
 		}
+		windowTenant := tenantID
 		if sub, ok := subRows[name]; ok {
 			entry.InSubstrate = true
 			entry.VersionCount = sub.VersionCount
@@ -116,8 +124,10 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			entry.LastUpdated = sub.LastUpdated
 			entry.LiveVersionCount = sub.LiveVersionCount
 			entry.ActiveRetired = sub.ActiveRetired
+			windowTenant = sub.TenantID
 		}
 		entry.Source = deriveSource(entry.InStatic, entry.InSubstrate)
+		entry.ContextWindow = s.agentContextWindow(r.Context(), windowTenant, name)
 		entries = append(entries, entry)
 		seen[name] = struct{}{}
 	}
@@ -135,10 +145,45 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			LastUpdated:      sub.LastUpdated,
 			LiveVersionCount: sub.LiveVersionCount,
 			ActiveRetired:    sub.ActiveRetired,
+			ContextWindow:    s.agentContextWindow(r.Context(), sub.TenantID, name),
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	writeJSONOK(w, libraryListResponse{Entries: entries})
+}
+
+// agentContextWindow is the context window a run of the named agent would
+// start with, resolved in tenantID — the definition the tenant's runs resolve
+// to, the provider that definition routes to now, and that provider's window
+// lowered by the agent's own max_context_tokens (loop.StartWindow, the rule
+// the run itself seeds its gauge and distillation gate with). 0 = unknown: the
+// agent does not resolve, its provider is not registered, or neither reports a
+// window.
+//
+// tenantID is always the caller's own tenant or, for an admin's unfocused
+// view, the tenant that owns the listed row, so a tenant operator learns one
+// number about its own agents and the shared catalog and nothing about
+// another tenant's definitions. It resolves as a run under the default user
+// tier with no operator-key restriction would — the same read-only projection
+// ResolveAgentProvider makes; a run started under another user tier or a
+// per-run max_context_tokens can get a different window.
+func (s *Server) agentContextWindow(ctx context.Context, tenantID, name string) int {
+	if s.providers == nil {
+		return 0
+	}
+	def, ok := s.lookupAgent(ctx, tenantID, name)
+	if !ok {
+		return 0
+	}
+	providerID, _, _, err := s.resolveAgentDef(ctx, def, tenantID, "", name, "", false)
+	if err != nil {
+		return 0
+	}
+	p, err := s.providers.Get(providerID)
+	if err != nil || p == nil {
+		return 0
+	}
+	return loop.StartWindow(p, def.MaxContextTokens)
 }
 
 // handleListLibrarySkills serves GET /v1/_library/skills.

@@ -2,7 +2,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AgentDetailPane, { ChildrenAwaitOrChip, RunClockFacts, RunTeamBadge, stopRun } from "./AgentDetailPane";
+import AgentDetailPane, { ChildrenAwaitOrChip, RunClockFacts, RunTeamBadge, RunUsageFacts, stopRun } from "./AgentDetailPane";
 import { AgentTabStrip } from "./AgentDetailTabs";
 
 // The web tests render to static markup (no DOM), so effects never run. The
@@ -189,5 +189,47 @@ describe("RunClockFacts", () => {
 
   it("shows nothing for a model-driven run", () => {
     expect(html({ usage: { provider: "anthropic" }, spec: { run_timeout_seconds: 300 } })).toBe("");
+  });
+});
+
+describe("RunUsageFacts", () => {
+  // A session transcript holds every run of the session; the header speaks
+  // for its own run only.
+  const usage = (run_id: string, seq: number, input: number, output: number, decode_ms: number) => ({
+    seq,
+    run_id,
+    ts_ns: 0,
+    type: "usage",
+    event: {
+      type: "usage",
+      usage: { input_tokens: input, output_tokens: output, max_context_tokens: 32768, timing: { duration_ms: decode_ms, decode_ms } },
+    },
+  });
+  const events = [
+    usage("r_mine", 1, 4000, 100, 2000),
+    usage("r_other", 2, 30000, 900, 1000),
+    usage("r_mine", 3, 9000, 300, 3000),
+  ];
+
+  it("shows its own run's latest footprint against the window and the run's average rate", () => {
+    const html = renderToStaticMarkup(
+      createElement(RunUsageFacts, { run: { run_id: "r_mine", status: "completed" }, events }),
+    );
+    expect(html).toContain("ctx 9.0k / 33k (27%)");
+    expect(html).toContain("80.0 tok/s avg");
+  });
+
+  it("shows the latest call's rate while the run is live", () => {
+    const html = renderToStaticMarkup(
+      createElement(RunUsageFacts, { run: { run_id: "r_mine", status: "running" }, events }),
+    );
+    expect(html).toContain("100 tok/s");
+    expect(html).not.toContain("avg");
+  });
+
+  it("renders nothing for a run with no usage rows", () => {
+    expect(
+      renderToStaticMarkup(createElement(RunUsageFacts, { run: { run_id: "r_none", status: "completed" }, events })),
+    ).toBe("");
   });
 });

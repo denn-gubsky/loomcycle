@@ -5474,6 +5474,10 @@ export interface LibraryEntry<T = unknown> {
   active_def_id?: string;
   latest_version?: number;
   last_updated?: string;
+  /** /v1/_library/agents only: the context window, in tokens, a run of
+   *  this agent starts with — the resolved provider's window, lowered by
+   *  the agent's own max_context_tokens. Omitted when unknown. */
+  context_window?: number;
   /** Static-side definition body. Omitted when in_static is false
    *  (dynamic-only entries have no static body — query the substrate
    *  via AgentDef/SkillDef/MCPServerDef tools to fetch the active

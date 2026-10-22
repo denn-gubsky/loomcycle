@@ -7,6 +7,9 @@ import {
 } from "../hooks/useRunStream";
 import { type TranscriptEvent } from "../api";
 import { settledToolIds } from "../lib/toolSettlement";
+import { metricsFromEvents } from "../lib/runMetrics";
+import RunMetricsBar from "./RunMetricsBar";
+import ContextMethodBadge, { useRunContextMethod } from "./ContextMethodBadge";
 
 // LiveRunPane renders one run's live transcript + controls. Decoupled
 // from useRunStream (takes plain props) so both the single-run tab and
@@ -33,6 +36,7 @@ export default function LiveRunPane({
   pendingInterrupt,
   onAnswerInterrupt,
   compact,
+  contextWindow,
 }: {
   events: TranscriptEvent[];
   status: RunStatus;
@@ -49,6 +53,9 @@ export default function LiveRunPane({
   pendingInterrupt?: PendingInterrupt | null;
   onAnswerInterrupt?: (answer: string) => void;
   compact?: boolean;
+  // The window a run of this agent starts with, when the caller knows it
+  // before the first model call reports one (see RunMetricsBar).
+  contextWindow?: number;
 }) {
   const [followUp, setFollowUp] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -105,6 +112,13 @@ export default function LiveRunPane({
     return servers.size;
   }, [events]);
 
+  // The metrics bar's numbers, from the usage frames on the stream (one per
+  // model call; a re-attach replays them, so a returning operator sees the
+  // same totals).
+  const metrics = useMemo(() => metricsFromEvents(events), [events]);
+  // What the run does with its context as the window fills, beside Compact.
+  const contextMethod = useRunContextMethod(runId);
+
   // The agent is actively working when the run is live, not parked awaiting
   // input, and not blocked on an interruption — i.e. a provider call is in
   // flight, the model is streaming, or a tool is executing. That's when the
@@ -126,7 +140,7 @@ export default function LiveRunPane({
       <div className="live-run-header">
         <span className={`pill ${status}`}>{status}</span>
         {agentId && <code className="live-run-agentid">{agentId}</code>}
-        <ContextGauge usage={lastUsage} />
+        <ContextMethodBadge method={contextMethod} />
         {onCompact &&
           !pendingInterrupt &&
           events.length > 0 &&
@@ -158,6 +172,8 @@ export default function LiveRunPane({
           </button>
         )}
       </div>
+
+      <RunMetricsBar metrics={metrics} running={running} knownWindow={contextWindow} />
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -231,42 +247,6 @@ export default function LiveRunPane({
         </form>
       )}
     </div>
-  );
-}
-
-// ContextGauge renders "ctx used / max (pct%)" from the latest usage event.
-// Context used = input + cache_read + cache_creation tokens — the true prompt
-// footprint for the turn (input_tokens alone undercounts when prompt caching
-// is active, since the cached prefix is reported under cache_read, not input).
-// Output tokens are excluded (they're the response, not context the prompt
-// consumed). When max is unknown (0 — e.g. Ollama) we show only the absolute
-// size with no bar/percent.
-function ContextGauge({ usage }: { usage?: LiveUsage | null }) {
-  if (!usage) return null;
-  const used =
-    (usage.input_tokens ?? 0) +
-    (usage.cache_read_input_tokens ?? 0) +
-    (usage.cache_creation_input_tokens ?? 0);
-  if (used <= 0) return null;
-  const max = usage.max_context_tokens ?? 0;
-  const fmtK = (n: number) =>
-    n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
-  if (max <= 0) {
-    return (
-      <span className="ctx-gauge" title="context used (max window unknown)">
-        ctx {fmtK(used)}
-      </span>
-    );
-  }
-  const pct = Math.min(100, Math.round((used / max) * 100));
-  const level = pct >= 90 ? "ctx-high" : pct >= 70 ? "ctx-mid" : "ctx-low";
-  return (
-    <span className="ctx-gauge" title={`${used} / ${max} tokens`}>
-      <span className="ctx-bar">
-        <span className={`ctx-bar-fill ${level}`} style={{ width: `${pct}%` }} />
-      </span>
-      ctx {fmtK(used)} / {fmtK(max)} ({pct}%)
-    </span>
   );
 }
 
