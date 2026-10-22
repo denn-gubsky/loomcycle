@@ -437,9 +437,22 @@ jobs:
           cache-dependency-path: packages/bridge-*/package-lock.json
       - name: Integration (real loomcycle)
         working-directory: packages/bridge-teams
+        env:
+          TEAMS_BRIDGE_IT_LOG_OUT: ${{ runner.temp }}/teams-bridge-it/loomcycle.log
         run: |
           npm ci
           ./test/integration/run.sh
+
+      # The server's full log when the integration fails, with a goroutine
+      # dump taken at the failure: the job output carries only the log's last
+      # 200 lines.
+      - name: Keep the loomcycle log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: teams-bridge-it-loomcycle-log
+          path: ${{ runner.temp }}/teams-bridge-it/loomcycle.log
+          if-no-files-found: ignore
 
   # The bridges (RFC EQ): bridge-core, then every platform bridge beside it.
   # One job for all of them, so adding a bridge needs no CI change. A platform
