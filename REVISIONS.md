@@ -16,7 +16,7 @@ A minor release: #2020 to #2034.
 - #2027 and #2032 (RFC EV) add the embedder query mode, the driver-based embedder lookup and the Bedrock embedder;
 - the re-audit residuals (RFC EU): the MCP stdio stop (#2024), the volume purge (#2025), webhook timing (#2026), gbash v0.0.41 (#2023), and the security wording (#2022, #2029);
 - fixes: the single `spawn_run` join bound (#2020) and runs cancelled mid-turn (#2021);
-- CI and tests: swap-race proofs fail instead of skipping (#2028), `go mod verify` plus a gosec high-severity gate (#2030), and tests that pin per-connection rebinding checks and WebFetch returning no response headers (#2031);
+- CI and tests: swap-race proofs fail instead of skipping (#2028), `go mod verify` plus a gosec high-severity gate (#2030), tests that pin per-connection rebinding checks and WebFetch returning no response headers (#2031), and a failing Teams bridge integration run keeping its server log and a goroutine dump (#2033);
 - #2023 updates gbash and its `awk`/`jq` contrib modules to v0.0.41; no other dependency changes. #2034 is these notes.
 - `@loomcycle/client` and the Python adapter are 1.121.0. #2021 documents the new `cancelled` value of `error_info.category` in both (a plain string field, so no type change). No method changes in either.
 
