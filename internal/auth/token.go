@@ -10,13 +10,19 @@ import (
 // RFC L OSS multi-tenant authorization — token minting + hashing.
 //
 // A token is a 256-bit CSPRNG secret, base58-encoded, with a fixed
-// `lct_` prefix. The hash stored in operator_token_defs is
-// SHA-256(pepper ‖ token), hex — indexable for a single-lookup auth hot
-// path, compared with the existing constant-time primitive. argon2id is
-// deliberately NOT used: a high-entropy random token needs no slow KDF,
-// and a salted hash can't be indexed. The pepper (an env-allowlisted
-// var) means a stolen DB dump without the pepper yields no usable
-// lookup. See rfcs/oss-multi-tenant-authorization.md Decision 2/3.
+// `lct_` prefix. The hash stored in operator_token_defs is indexable for
+// a single-lookup auth hot path and compared with the existing
+// constant-time primitive. argon2id is deliberately NOT used: a
+// high-entropy random token needs no slow KDF, and a salted hash can't be
+// indexed. The pepper's job is to stop someone who can WRITE the database
+// from inserting a row for a token of their choosing; a dump is useless
+// either way, since the token cannot be recovered from its hash.
+//
+// Which pepper and which stored form is TokenHasher's business
+// (token_hasher.go): an explicit LOOMCYCLE_OPERATOR_TOKEN_PEPPER keeps the
+// untagged HashToken form below; otherwise a pepper derived from
+// LOOMCYCLE_SECRET_KEY stores the tagged `p1:` form; with neither, rows
+// use HashToken with an empty pepper and boot warns.
 
 // TokenPrefix is the fixed, grep-friendly prefix on every minted token.
 const TokenPrefix = "lct_"
@@ -25,10 +31,11 @@ const TokenPrefix = "lct_"
 // retained (as token_suffix) for log correlation. Never the secret.
 const TokenSuffixLen = 6
 
-// HashToken returns hex(SHA-256(pepper ‖ token)). The same function is
-// used at mint time (to store) and at auth time (to look up), so the two
-// can never drift. An empty pepper is allowed (single-binary dev) but an
-// operator running multi-tenant should set one.
+// HashToken returns hex(SHA-256(pepper ‖ token)), the untagged form: what
+// an explicit pepper stores, and what an empty pepper stores when there is
+// no LOOMCYCLE_SECRET_KEY to derive one from. Under a derived pepper a row
+// on this form never authenticates until `loomcycle tokens rewrap` wraps
+// it. Mint and lookup both go through TokenHasher, so they cannot drift.
 func HashToken(pepper, token string) string {
 	h := sha256.New()
 	h.Write([]byte(pepper))

@@ -6,7 +6,7 @@ Security fixes land on `main` and ship in the next release of the **latest minor
 
 | Version | Supported |
 | ------- | --------- |
-| 1.118.x (latest minor) | Yes |
+| 1.120.x (latest minor) | Yes |
 | Anything older | No |
 
 The table moves with each minor release; the [releases page](https://github.com/denn-gubsky/loomcycle/releases) is authoritative. The same rule covers the adapters and packages published from this repo (`@loomcycle/client`, the `loomcycle` Python package, the `@loomcycle/*` npm packages, the Docker images): the latest published version is the supported one.
@@ -54,6 +54,8 @@ Some behaviour is a documented property of the posture an operator chose, not a 
 - **The `Bash` tool is not a sandbox.** When enabled it runs real host processes that can reach absolute paths and the network. Run loomcycle in a container or VM if `Bash` is exposed to untrusted prompts. See [`docs/TOOLS.md`](docs/TOOLS.md#built-ins).
 - **Open mode is for localhost only.** With no `LOOMCYCLE_AUTH_TOKEN` and no minted tokens, every request is allowed as an admin. See [README: Tier 1](README.md#tier-1-zero-config-dev-open-mode-localhost) and [`docs/CONFIGURATION.md` §9b](docs/CONFIGURATION.md#9b-multi-tenant-authentication-rfc-l) for the authenticated modes.
 - **Bashbox and gbash maturity.** `Bashbox` runs commands in gbash, an in-process sandbox with no OS process and no network; gbash is alpha and pinned. It is a strong layer for untrusted prompts; for mutually hostile tenants on one process, also run loomcycle in a container. Commands an operator allowlists for host fallback run on the real host. See [`docs/TOOLS.md`](docs/TOOLS.md#built-ins) and the `bashbox` help topic.
+- **A private host vouched for by name trusts its DNS.** An entry in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` that is a host name (suffix-matched) lets every outbound request loomcycle makes (the HTTP and WebFetch tools, MCP over HTTP, A2A, hook webhooks, remote memory and document peers, git sources) reach that name wherever it resolves: loopback, RFC 1918, CGNAT or ULA. Whoever controls the name's DNS, or can create a name under a suffix entry, can point it at another private service. A vouched name never reaches a link-local or cloud-metadata address; only a CIDR entry covering the address admits those. To trust no DNS, list private hosts by CIDR only. See [`docs/TOOLS.md`](docs/TOOLS.md#built-ins).
+- **Operator-token hashes are peppered only with a secret.** A token row stores a hash, never the token. The pepper that stops a database writer from inserting a row for a token of their choosing is `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`, or one derived from `LOOMCYCLE_SECRET_KEY`. With neither, rows are hashed with no pepper and the server only warns at boot. Set `LOOMCYCLE_SECRET_KEY` on any deployment with minted tokens. See [`docs/CONFIGURATION.md`, Token pepper](docs/CONFIGURATION.md#token-pepper).
 - **Volumes are the filesystem boundary.** An agent reaches the disk only through the volumes bound to it; `Bash` and Bashbox host-fallback commands are not confined by them. See [`docs/CONFIGURATION.md` §9d](docs/CONFIGURATION.md#9d-filesystem-volumes--per-agent-rorw-scopes-rfc-ah) and the `volumes` help topic.
 - **The code sandbox sidecar** has its own isolation posture: [`docs/SANDBOX.md`](docs/SANDBOX.md#isolation-posture).
 
