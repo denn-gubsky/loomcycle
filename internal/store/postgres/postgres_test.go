@@ -189,10 +189,9 @@ func appendOption(dsn, key, value string) string {
 // below, which requires LOOMCYCLE_TEST_PG_VECTOR=1 + a pgvector-
 // installed Postgres.
 func TestStoreContract(t *testing.T) {
-	dsn := pgDSNFromEnv(t)
+	pool := newSchemaPool(t, pgDSNFromEnv(t))
 	storetest.Run(t, func(t *testing.T) (store.Store, func()) {
-		fix := freshSchema(t, dsn)
-		return fix.store, fix.cleanup
+		return pool.fixture(t, false)
 	})
 }
 
@@ -213,10 +212,9 @@ func TestStoreContractWithPgvector(t *testing.T) {
 	if os.Getenv("LOOMCYCLE_TEST_PG_VECTOR") != "1" {
 		t.Skip("LOOMCYCLE_TEST_PG_VECTOR not set; skipping pgvector round-trip contract tests")
 	}
-	dsn := pgDSNFromEnv(t)
+	pool := newSchemaPool(t, pgDSNFromEnv(t))
 	storetest.Run(t, func(t *testing.T) (store.Store, func()) {
-		fix := freshSchemaWithVectors(t, dsn, true)
-		return fix.store, fix.cleanup
+		return pool.fixture(t, true)
 	})
 }
 
