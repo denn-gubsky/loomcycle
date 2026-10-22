@@ -325,6 +325,17 @@ export interface AdmissionEventInfo {
   kind?: string; // on call_*: the call lane's model kind ("chat")
 }
 
+// CallTiming mirrors providers.CallTiming: how long one model call took, in
+// milliseconds. 0/absent means "not measured", never "took no time".
+export interface CallTiming {
+  duration_ms?: number;
+  ttft_ms?: number;
+  load_ms?: number;
+  prefill_ms?: number;
+  decode_ms?: number;
+  queue_ms?: number;
+}
+
 // EventPayload mirrors providers.Event on the server side. Carried
 // inside `TranscriptEvent.event` (the wire shape from
 // /v1/sessions/{id}/transcript wraps each row with seq/run_id/ts_ns
@@ -349,6 +360,11 @@ export interface EventPayload {
     // Provider.Capabilities()). 0/absent = unknown (e.g. Ollama). Used
     // by the live terminal to render a "context used / max" gauge.
     max_context_tokens?: number;
+    // The provider that served this call (after any fallback).
+    provider?: string;
+    // How long the call took (providers.CallTiming): milliseconds, 0/absent
+    // = not measured. Drives the tokens-per-second readout (lib/runMetrics).
+    timing?: CallTiming;
   };
   error?: string;
   // The machine-readable half of an `error` frame (errkind.Info on the
