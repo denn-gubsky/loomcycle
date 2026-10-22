@@ -48,6 +48,7 @@ import (
 	// (still referenced directly: code-agent validation and the residual OAuth path).
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
 	anthropic_oauth_dev "github.com/denn-gubsky/loomcycle/internal/providers/anthropic_oauth_dev"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/bedrock" // the Bedrock embedder (memory.embedder.api: bedrock)
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
