@@ -28,7 +28,7 @@ const (
 //
 // p1 is what every mint writes. w1 is a row minted before any pepper existed
 // (its token_hash the unpeppered hex SHA-256(token), HashToken("", token)),
-// wrapped at boot without its token: the MAC is over that 64-character hex
+// wrapped by `loomcycle tokens rewrap` without its token: the MAC is over that 64-character hex
 // text, exactly as it was stored (RFC ES F3). A lookup recomputes it from the
 // presented token. Either form needs the pepper to compute, so a database
 // writer can forge neither.
@@ -157,7 +157,7 @@ func (h TokenHasher) Hash(token string) string {
 }
 
 // Wrap is the wrapped form of a stored unpeppered hash under the current
-// pepper — what the boot rewrap writes. Empty unless the pepper is derived.
+// pepper — what the rewrap command writes. Empty unless the pepper is derived.
 func (h TokenHasher) Wrap(unpeppered string) string {
 	if !h.derived() {
 		return ""

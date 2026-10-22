@@ -12,24 +12,21 @@ import (
 // pre-pepper deployment would otherwise print thousands.
 const tokenRewrapLogMaxIDs = 50
 
-// logTokenRewrap reports, at every boot under a derived pepper, what the
-// token-hash rewrap did (RFC ES F3). The def_ids are listed so a row nobody
-// minted stands out.
-func logTokenRewrap(rep lchttp.TokenRewrapReport) {
-	if len(rep.Rewrapped) > 0 {
-		// An untagged row may also be from an explicit pepper since removed;
-		// the two are indistinguishable, and that kind does not come back.
-		log.Printf("auth: rewrapped %d untagged token hash(es) under the derived pepper — tokens minted with no pepper keep working; any minted under a since-removed LOOMCYCLE_OPERATOR_TOKEN_PEPPER stay invalid; def_ids: %s",
-			len(rep.Rewrapped), capIDs(rep.Rewrapped))
-	}
+// logTokenHashes reports, at every boot under a derived pepper, the token
+// rows still on an older form (RFC ES F3/C2). The def_ids of unpeppered rows
+// are listed so a row nobody minted stands out before anyone rewraps it.
+func logTokenHashes(rep lchttp.TokenHashReport) {
 	log.Printf("auth: tokens moving to the current pepper at their next login: %d wrapped, %d under a previous LOOMCYCLE_SECRET_KEY",
 		rep.Wrapped, rep.Previous)
 	if rep.OtherKey > 0 {
 		log.Printf("auth: WARNING: %d token(s) hashed under a LOOMCYCLE_SECRET_KEY that is neither the current nor the previous one; they will not authenticate (set that key as LOOMCYCLE_SECRET_KEY_PREVIOUS, or re-mint them)", rep.OtherKey)
 	}
-	if len(rep.Refused) > 0 {
-		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash written after the first boot on the derived pepper — a server on it never writes one, so they came from a database edit or a replica without LOOMCYCLE_SECRET_KEY; they will not authenticate; def_ids: %s",
-			len(rep.Refused), capIDs(rep.Refused))
+	if len(rep.Untagged) > 0 {
+		// An untagged row may also be from an explicit pepper since removed;
+		// the two are indistinguishable, and the rewrap cannot bring that
+		// kind back.
+		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash and will not authenticate until `loomcycle tokens rewrap` moves them onto the derived pepper — tokens minted before LOOMCYCLE_SECRET_KEY was set. Check the def_ids first: one you never minted was written straight into the database; retire it instead. def_ids: %s",
+			len(rep.Untagged), capIDs(rep.Untagged))
 	}
 }
 

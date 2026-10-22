@@ -579,8 +579,9 @@ type Server struct {
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
 	tokenCache *tokenCache
 	// wrappedTokens reports whether a token row may be on the wrapped form
-	// (RFC ES F3, token_rewrap.go): set by the boot rewrap, which is the only
-	// writer of that form, so the lookup skips it when none exists.
+	// (RFC ES F3/C2, token_rewrap.go): set by the boot scan, true when it
+	// found a wrapped row or an untagged one the rewrap command may wrap, so
+	// the lookup skips that form when none can exist.
 	wrappedTokens atomic.Bool
 	// tokenHasher is the token hasher fixed at boot (SetTokenHasher); nil →
 	// built from the config per use.

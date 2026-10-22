@@ -155,6 +155,7 @@ func TestTokenLookup_ConcurrentFirstLoginRehashedMidLookupAuthenticates(t *testi
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
 	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	rewrapTokenHashes(t, s)
 	bootTokenHashes(t, s)
 	old := hasherFor(t, env).WrappedHash("lct_old")
 	cur := hasherFor(t, env).Hash("lct_old")
@@ -185,6 +186,7 @@ func TestTokenLookup_ConcurrentFirstLoginLosingTheRehashAuthenticates(t *testing
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
 	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	rewrapTokenHashes(t, s)
 	bootTokenHashes(t, s)
 	old := hasherFor(t, env).WrappedHash("lct_old")
 	cur := hasherFor(t, env).Hash("lct_old")
@@ -215,6 +217,7 @@ func TestTokenLookup_NegativeAfterOlderFormLookupIsNotCached(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
 	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	rewrapTokenHashes(t, s)
 	bootTokenHashes(t, s)
 	s.tokenCache = newTokenCache(30 * time.Second)
 
