@@ -1847,7 +1847,7 @@ Off unless the operator lists the hosts a repository may be fetched from.
 
 **Who may ask.** An agent needs `VolumeDef` in its tools, the usual grant for the volume's name, and `source:git` in `volume_def_scopes`. `any` does not include `source:git`.
 
-**The Git tool shares these hosts and limits.** Its `clone`, `fetch`, `pull` and `ls_remote` reach only `LOOMCYCLE_GIT_SOURCE_HOSTS`, under the same byte, object, time and concurrency limits; an agent needs `git_remote: [fetch]`. Push and commit identity have their own settings:
+**The Git tool shares these hosts and limits.** Its `clone`, `fetch`, `pull` and `ls_remote` reach only `LOOMCYCLE_GIT_SOURCE_HOSTS`, under the same byte, object, time and concurrency limits; an agent needs `git_remote: [fetch]`. `LOOMCYCLE_GIT_SOURCE_MAX_FILES` also bounds how many entries a checkout, merge, pull or reset may write (with a 1 GiB byte bound); `MAX_FILE_BYTES` does not apply to the Git tool. Push and commit identity have their own settings:
 
 | Setting | Default | Meaning |
 |---|---|---|

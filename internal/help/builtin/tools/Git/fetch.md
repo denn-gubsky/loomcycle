@@ -23,15 +23,19 @@ and is checked on every call; `url` is not accepted here.
   one `*` on each side. A refspec that would write your checked-out branch is
   refused.
 - `tags` — also fetch every tag (by default only tags pointing at fetched
-  commits come along).
+  commits come along). A tag you already have is never moved by a fetch,
+  as git refuses to clobber one: it is listed in `kept_tags` instead.
 - `prune` — delete remote-tracking branches the remote no longer has.
 - `depth` — limit the history fetched to this many commits.
 
 ## Returns
 
-`{op: "fetch", up_to_date, updated: [{name, old, new}]}`. Each entry in
-`updated` is a ref that moved; an empty `old` is a ref created, an empty
-`new` one deleted.
+`{op: "fetch", up_to_date, updated: [{name, old, new}], kept_tags?}`. Each
+entry in `updated` is a ref that moved; an empty `old` is a ref created, an
+empty `new` one deleted. `kept_tags` names local tags the remote has
+elsewhere, left where they were. Without `refspecs` a fetch updates the
+remote-tracking branches (`refs/remotes/<remote>/*`), whatever the
+repository's configuration says.
 
 ## Errors
 

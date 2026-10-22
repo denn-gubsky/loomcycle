@@ -24,6 +24,7 @@ call. A `"$ghapp:<name>"` credential gets a token that may write; a
 - `force` — overwrite remote branches even when that discards commits there.
 - `force_with_lease` — overwrite only if each remote branch is still where
   this repository last fetched it. Safer than `force`; not with `force`.
+  Each refspec must push a branch to the remote branch of the same name.
 
 ## Returns
 

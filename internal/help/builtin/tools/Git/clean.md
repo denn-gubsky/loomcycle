@@ -4,21 +4,26 @@ description: "Git op=clean — remove untracked files (and with dirs, untracked 
 ---
 `clean` deletes files the repository does not track and does not ignore.
 Tracked files and ignored files are never touched, and a nested repository
-is left alone. Without `dirs`, only untracked files in tracked directories
-are removed. Needs a read-write volume.
+(any directory holding its own `.git`) is left alone, files and all.
+Without `dirs`, only untracked files in tracked directories are removed;
+with `dirs`, untracked files in untracked directories go too, and then each
+directory left empty is removed. A directory that still holds something
+(an ignored file, a nested repository) stays. Needs a read-write volume.
 
 Deleted files cannot be recovered: list them with `dry_run` first.
 
 ## Arguments
 
 - `volume`, `repo` — which repository (defaults: your default volume, its root).
-- `dirs` — also remove untracked directories, with everything in them.
+- `dirs` — also remove untracked files in untracked directories, and the
+  directories they leave empty.
 - `dry_run` — only list what would be removed.
 
 ## Returns
 
-`{op: "clean", dry_run, paths}` — what was (or would be) removed, sorted. A
-directory is listed with a trailing `/`.
+`{op: "clean", dry_run, paths}` — what was (or would be) removed: the files,
+sorted, then the emptied directories with a trailing `/`, deepest first. A
+dry run lists exactly what a real run removes.
 
 ## Errors
 
@@ -34,7 +39,7 @@ See what would go:
 ```
 
 ```json result
-{"op": "clean", "dry_run": true, "paths": ["scratch.txt", "tmp/"]}
+{"op": "clean", "dry_run": true, "paths": ["scratch.txt", "tmp/out.log", "tmp/"]}
 ```
 
 Then remove it:

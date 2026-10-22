@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -68,11 +69,59 @@ type Git struct {
 	// (LOOMCYCLE_GIT_AUTHOR_NAME / _EMAIL). Empty: the agent's name and an
 	// address under .invalid.
 	AuthorName, AuthorEmail string
-	// Audit records every network operation. Nil records nothing.
+	// Audit records every network operation, refused ones included. Nil
+	// records nothing.
 	Audit audit.Sink
+
+	// locks serialises the ops on one repository. go-git rewrites the index
+	// in place with no lock file, and the loop runs a batch of tool calls
+	// concurrently: two adds at once lost one of them.
+	locksMu sync.Mutex
+	locks   map[string]*gitRepoLock
+}
+
+// gitRepoLock is one repository's lock: a one-slot channel, so a waiter
+// gives up when its run is cancelled. n counts holders and waiters, so the
+// entry is dropped when nobody needs it.
+type gitRepoLock struct {
+	slot chan struct{}
+	n    int
+}
+
+// lockRepo takes the repository's lock, keyed by its real path, and returns
+// the release. It fails only when ctx ends first.
+func (g *Git) lockRepo(ctx context.Context, key string) (func(), error) {
+	g.locksMu.Lock()
+	if g.locks == nil {
+		g.locks = map[string]*gitRepoLock{}
+	}
+	l := g.locks[key]
+	if l == nil {
+		l = &gitRepoLock{slot: make(chan struct{}, 1)}
+		g.locks[key] = l
+	}
+	l.n++
+	g.locksMu.Unlock()
+	forget := func() {
+		g.locksMu.Lock()
+		if l.n--; l.n == 0 {
+			delete(g.locks, key)
+		}
+		g.locksMu.Unlock()
+	}
+	select {
+	case l.slot <- struct{}{}:
+		return func() { <-l.slot; forget() }, nil
+	case <-ctx.Done():
+		forget()
+		return nil, ctx.Err()
+	}
 }
 
 const (
+	// gitMaxListed caps every list a result carries (files, branches,
+	// tags, remotes, refs); a longer one is cut and marked truncated.
+	gitMaxListed         = 1000
 	gitDefaultLogMax     = 20
 	gitMaxLogMax         = 200
 	gitDefaultDiffBytes  = 64 << 10
@@ -245,9 +294,23 @@ func (g *Git) Execute(ctx context.Context, input json.RawMessage) (tools.Result,
 }
 
 // repoDir resolves in.Volume and in.Repo to the volume's filesystem and the
-// repository directory's path relative to its root. create makes the
-// directory when it is missing (init, clone). The caller closes vfs.
-func (g *Git) repoDir(ctx context.Context, in gitInput, needWrite, create bool) (vfs *volumeFS, rel string, res tools.Result, ok bool) {
+// repository directory's path relative to its root, and takes that
+// repository's lock. create makes the directory when it is missing (init,
+// clone). The caller calls release, which unlocks and closes vfs.
+func (g *Git) repoDir(ctx context.Context, in gitInput, needWrite, create bool) (vfs *volumeFS, rel string, release func(), res tools.Result, ok bool) {
+	vfs, rel, res, ok = g.repoDirUnlocked(ctx, in, needWrite, create)
+	if !ok {
+		return nil, "", nil, res, false
+	}
+	unlock, err := g.lockRepo(ctx, filepath.Join(vfs.dir, rel))
+	if err != nil {
+		vfs.Close()
+		return nil, "", nil, gitRefusal("timeout", "waiting for another Git operation on this repository"), false
+	}
+	return vfs, rel, func() { unlock(); vfs.Close() }, tools.Result{}, true
+}
+
+func (g *Git) repoDirUnlocked(ctx context.Context, in gitInput, needWrite, create bool) (vfs *volumeFS, rel string, res tools.Result, ok bool) {
 	root, fence, err := effectiveRoot(ctx, in.Volume, needWrite)
 	if err != nil {
 		return nil, "", gitRefusal("volume_refused", err.Error()), false
@@ -293,11 +356,11 @@ func (g *Git) repoDir(ctx context.Context, in gitInput, needWrite, create bool) 
 // openRepo opens the repository for a local op, or (init) creates it and
 // returns the init result in res with a nil repo.
 func (g *Git) openRepo(ctx context.Context, in gitInput, needWrite, isInit bool) (*gitrepo.Repo, func(), tools.Result) {
-	vfs, rel, res, ok := g.repoDir(ctx, in, needWrite, isInit)
+	vfs, rel, release, res, ok := g.repoDir(ctx, in, needWrite, isInit)
 	if !ok {
 		return nil, func() {}, res
 	}
-	done := func() { vfs.Close() }
+	done := release
 	wt, err := newVolumeBilly(vfs, rel)
 	if err != nil {
 		done()
@@ -325,6 +388,7 @@ func (g *Git) openRepo(ctx context.Context, in gitInput, needWrite, isInit bool)
 		done()
 		return nil, func() {}, gitLocalRefusal(err)
 	}
+	r.SetLimits(g.limits())
 	return r, done, tools.Result{}
 }
 
@@ -352,7 +416,8 @@ func (g *Git) local(ctx context.Context, r *gitrepo.Repo, in gitInput) tools.Res
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
-		return gitOK(map[string]any{"head": head, "files": st, "clean": len(st) == 0})
+		files, truncated := capList(st)
+		return gitOK(map[string]any{"head": head, "files": files, "clean": len(st) == 0, "truncated": truncated})
 	case "log":
 		max := in.Max
 		if max <= 0 {
@@ -404,19 +469,27 @@ func (g *Git) local(ctx context.Context, r *gitrepo.Repo, in gitInput) tools.Res
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
-		return gitOK(map[string]any{"branches": b})
+		b, truncated := capList(b)
+		return gitOK(map[string]any{"branches": b, "truncated": truncated})
 	case "tag_list":
 		t, err := r.Tags()
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
-		return gitOK(map[string]any{"tags": t})
+		t, truncated := capList(t)
+		return gitOK(map[string]any{"tags": t, "truncated": truncated})
 	case "remote_list":
 		rs, err := r.Remotes()
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
-		return gitOK(map[string]any{"remotes": rs})
+		// A remote URL written by someone else (an operator's CI clone) can
+		// carry a token in its user part; the model is not shown it.
+		for i := range rs {
+			rs[i].URL = withoutUserinfo(rs[i].URL)
+		}
+		rs, truncated := capList(rs)
+		return gitOK(map[string]any{"remotes": rs, "truncated": truncated})
 	case "merge_base":
 		bases, err := r.MergeBase(in.From, in.To)
 		if err != nil {
@@ -500,7 +573,37 @@ func (g *Git) local(ctx context.Context, r *gitrepo.Repo, in gitInput) tools.Res
 	if err != nil {
 		return gitOK(map[string]any{"op": in.Op, "ok": true})
 	}
-	return gitOK(map[string]any{"op": in.Op, "ok": true, "head": head, "files": st})
+	files, truncated := capList(st)
+	return gitOK(map[string]any{"op": in.Op, "ok": true, "head": head, "files": files, "truncated": truncated})
+}
+
+// capList cuts a list to gitMaxListed and says whether it did.
+func capList[T any](xs []T) ([]T, bool) {
+	if len(xs) > gitMaxListed {
+		return xs[:gitMaxListed], true
+	}
+	return xs, false
+}
+
+// withoutUserinfo is a URL with any user and password removed. A URL that
+// does not parse is replaced, not shown.
+func withoutUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(unparseable url)"
+	}
+	u.User = nil
+	return u.String()
+}
+
+// limits are the expansion limits a repository's content is held to: the
+// operator's git-source file limit, and the library's byte default.
+func (g *Git) limits() gitrepo.Limits {
+	var l gitrepo.Limits
+	if g.Source != nil {
+		l.MaxFiles = g.Source.MaxFiles
+	}
+	return l
 }
 
 // signature is who the tool commits as: the operator's identity, else the
@@ -555,22 +658,36 @@ func withRunTrailer(msg, runID string) string {
 
 // network runs clone, fetch, pull, push and ls_remote.
 func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Result {
+	// Every attempt is audited, a refused one too: an agent trying a
+	// credential on a URL it does not cover, or a host the operator does
+	// not list, is what an operator most wants to see.
+	ev := g.auditEvent(ctx, in, "", "")
+	refuse := func(res tools.Result) tools.Result {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(res.Text), &e)
+		ev.GitOutcome = e.Error
+		g.record(ev)
+		return res
+	}
+	deny := func(class, detail string) tools.Result { return refuse(gitRefusal(class, detail)) }
 	pol := tools.PolicyOf(ctx).GitRemote
 	need := "fetch"
 	if kind == gitPush {
 		need = "push"
 	}
 	if !pol.Allows(need) {
-		return gitRefusal("git_remote_not_allowed", fmt.Sprintf("this agent's git_remote does not include %q", need))
+		return deny("git_remote_not_allowed", fmt.Sprintf("this agent's git_remote does not include %q", need))
 	}
 	src := g.Source
 	if src == nil || len(src.Hosts) == 0 || src.Transport == nil {
-		return gitRefusal("git_network_disabled", "the operator has not enabled git hosts (LOOMCYCLE_GIT_SOURCE_HOSTS)")
+		return deny("git_network_disabled", "the operator has not enabled git hosts (LOOMCYCLE_GIT_SOURCE_HOSTS)")
 	}
 	hosts := src.Hosts
 	if kind == gitPush {
 		if len(g.PushHosts) == 0 {
-			return gitRefusal("git_push_disabled", "the operator has not enabled push (LOOMCYCLE_GIT_PUSH_HOSTS)")
+			return deny("git_push_disabled", "the operator has not enabled push (LOOMCYCLE_GIT_PUSH_HOSTS)")
 		}
 		hosts = g.PushHosts
 	}
@@ -589,21 +706,23 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		wt   billy.Filesystem
 	)
 	if in.Op != "ls_remote" {
-		vfs, rel, res, ok := g.repoDir(ctx, in, true, in.Op == "clone")
+		vfs, rel, release, res, ok := g.repoDir(ctx, in, true, in.Op == "clone")
 		if !ok {
-			return res
+			return refuse(res)
 		}
-		defer vfs.Close()
+		defer release()
 		var err error
 		if wt, err = newVolumeBilly(vfs, rel); err != nil {
-			return gitRefusal("invalid_argument", err.Error())
+			return deny("invalid_argument", err.Error())
 		}
 		if in.Op == "clone" {
 			if ents, err := wt.ReadDir("/"); err != nil || len(ents) > 0 {
-				return gitRefusal("already_exists", "clone needs an empty or new directory")
+				return deny("already_exists", "clone needs an empty or new directory")
 			}
 		} else if repo, err = gitrepo.Open(wt); err != nil {
-			return gitLocalRefusal(err)
+			return refuse(gitLocalRefusal(err))
+		} else {
+			repo.SetLimits(g.limits())
 		}
 	}
 
@@ -616,20 +735,22 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 	rawURL := in.URL
 	if repo != nil {
 		if in.URL != "" {
-			return gitRefusal("invalid_argument", "url is for clone and ls_remote; fetch, pull and push use the remote's URL")
+			return deny("invalid_argument", "url is for clone and ls_remote; fetch, pull and push use the remote's URL")
 		}
 		u, err := repo.RemoteURL(remote)
 		if err != nil {
-			return gitLocalRefusal(err)
+			return refuse(gitLocalRefusal(err))
 		}
 		rawURL = u
 	}
+	ev.GitRepository = redactURLPath(rawURL)
 	host, err := gitsource.ValidateURL(rawURL)
 	if err != nil {
-		return gitRefusal("invalid_argument", strings.TrimPrefix(err.Error(), gitsource.ErrInvalidRequest.Error()+": "))
+		return deny("invalid_argument", strings.TrimPrefix(err.Error(), gitsource.ErrInvalidRequest.Error()+": "))
 	}
+	ev.GitHost = host
 	if !hostListed(hosts, host) {
-		return gitRefusal("host_not_allowed", "")
+		return deny("host_not_allowed", "")
 	}
 
 	// The credential, resolved for this run and this URL only.
@@ -640,17 +761,17 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 			resolve = g.PushCredential
 		}
 		if resolve == nil {
-			return gitRefusal("credential_unresolvable", "")
+			return deny("credential_unresolvable", "")
 		}
 		username, token, err = resolve(ctx, in.Credential, rawURL)
 		switch {
 		case errors.Is(err, ErrGitCredentialURLNotAllowed):
-			return gitRefusal("credential_url_not_allowed", "")
+			return deny("credential_url_not_allowed", "")
 		case errors.Is(err, errGitCredentialIsAppConfig):
-			return gitRefusal("credential_unresolvable", errGitCredentialIsAppConfig.Error())
+			return deny("credential_unresolvable", errGitCredentialIsAppConfig.Error())
 		case err != nil:
 			log.Printf("git: credential for host %s could not be resolved: %v", host, err)
-			return gitRefusal("credential_unresolvable", "")
+			return deny("credential_unresolvable", "")
 		}
 	}
 
@@ -659,12 +780,12 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		case src.Slots <- struct{}{}:
 			defer func() { <-src.Slots }()
 		case <-ctx.Done():
-			return gitRefusal("timeout", "waiting for a free git slot")
+			return deny("timeout", "waiting for a free git slot")
 		}
 	}
 	spool, err := os.MkdirTemp("", "loomcycle-git-")
 	if err != nil {
-		return gitRefusal("git_failed", "spool directory")
+		return deny("git_failed", "spool directory")
 	}
 	defer os.RemoveAll(spool)
 
@@ -684,7 +805,6 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		}
 	}
 
-	ev := g.auditEvent(ctx, in, rawURL, host)
 	out, err := g.runNetwork(ctx, in, repo, wt, n, remote)
 	if err != nil {
 		class := gitrepo.Class(err)
@@ -712,11 +832,13 @@ func (g *Git) runNetwork(ctx context.Context, in gitInput, repo *gitrepo.Repo, w
 	switch in.Op {
 	case "ls_remote":
 		refs, err := gitrepo.LsRemote(ctx, n)
-		return map[string]any{"op": "ls_remote", "refs": refs}, err
+		refs, truncated := capList(refs)
+		return map[string]any{"op": "ls_remote", "refs": refs, "truncated": truncated}, err
 	case "clone":
 		r, err := gitrepo.Clone(ctx, wt, n, gitrepo.CloneOptions{
 			RemoteName: in.Remote, Branch: in.Branch, Depth: in.Depth,
 			SingleBranch: in.SingleBranch, NoCheckout: in.NoCheckout,
+			Limits: g.limits(),
 		})
 		if err != nil {
 			return nil, err
@@ -725,7 +847,11 @@ func (g *Git) runNetwork(ctx context.Context, in gitInput, repo *gitrepo.Repo, w
 		return map[string]any{"op": "clone", "head": head}, nil
 	case "fetch":
 		res, err := repo.Fetch(ctx, n, gitrepo.FetchOptions{Remote: remote, RefSpecs: in.RefSpecs, Depth: in.Depth, Prune: in.Prune, Tags: in.Tags})
-		return map[string]any{"op": "fetch", "up_to_date": res.UpToDate, "updated": res.Updated}, err
+		out := map[string]any{"op": "fetch", "up_to_date": res.UpToDate, "updated": res.Updated}
+		if len(res.KeptTags) > 0 {
+			out["kept_tags"] = res.KeptTags
+		}
+		return out, err
 	case "pull":
 		res, err := repo.Pull(ctx, n, gitrepo.PullOptions{Remote: remote, Branch: in.Branch})
 		return map[string]any{"op": "pull", "up_to_date": res.UpToDate, "head": res.Head}, err
