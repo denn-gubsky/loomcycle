@@ -1683,6 +1683,11 @@ export interface RunSpec {
      *  own `crypto_scopes` were narrowed to, and are narrowed to again on
      *  resume. Absent: the parent held none. */
     crypto_scopes?: string[];
+    /** The parent run's shell-credential narrowing at spawn (RFC EW): the
+     *  names the child's own `shell_credentials` were narrowed to, and are
+     *  narrowed to again on resume. Absent: the parent narrowed nothing. `[]`:
+     *  the parent allowed none. */
+    shell_credentials?: string[];
     /** The override offer the child passes on to its own children: its
      *  parent's, unchanged, so a resume offers what the live child did. Only
      *  a child of the offering run's definition (`def_id`, else `agent_name`)
@@ -4737,6 +4742,13 @@ export interface AgentDefOverlay {
    *  only. Held to the author's own grant; a sub-agent holds only what its
    *  parent run also holds. */
   crypto_scopes?: string[];
+  /** Which operator-listed credentials the agent's `Bash` and Bashbox host
+   *  commands receive (RFC EW): only these names of
+   *  `LOOMCYCLE_BASH_ALLOWED_CREDS` / `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`.
+   *  Unset = every credential the operator lists; `[]` = none; never adds one.
+   *  Held to the author's own narrowing; a sub-agent gets only the names its
+   *  parent run also allows. */
+  shell_credentials?: string[];
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

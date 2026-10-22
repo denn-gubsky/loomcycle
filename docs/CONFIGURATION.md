@@ -925,6 +925,7 @@ Parsed into the `frontmatter` struct by `parseAgent` in `internal/agents/loader.
 | `channels` | object | Channel tool ACL | `{publish: [...], subscribe: [...]}`. |
 | `agent_def_scopes` | `[]string` | AgentDef tool scope | `self` / `descendants` / `named:<name>` / `any`. Empty = default-deny. |
 | `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / `submit_descendants` / `submit_any` / `read_any`. Unset = `[submit_self]`: the agent may evaluate its own run and nothing else. See "Unset scope gates" below. |
+| `shell_credentials` | `[]string` | Credentials a shell receives | Keeps only these names of the operator's `LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` for the agent's `Bash` and Bashbox host commands; never adds one, and a `cmd:NAME` binding stays its command's. Unset = every credential the operator lists. `[]` = none. A sub-agent gets only the names both it and its parent allow. Not per-run overridable. See [CREDENTIALS.md](CREDENTIALS.md), "Into a shell". |
 | `volume_def_scopes` | `[]string` | VolumeDef tool scope | `any` / `named:<volume>`. Empty = default-deny. Gates create/delete/purge of dynamic volumes; get/list are tenant-scoped reads. See §9d.1. |
 
 **Unset scope gates.** `memory_scopes` and `evaluation_scopes` used to deny everything when empty. They now resolve, at run time, to what the caller already owns: `memory_scopes` to `user` (plus `tenant` for a non-isolated tenant member) and `evaluation_scopes` to `[submit_self]`. Two yaml-only gates follow the same rule: unset `sql_scopes` resolves to `[user]` and unset `history_scope` to `[user]`. The three `user` defaults need a `user_id` on the run; a run without one gets nothing. `agent_def_scopes` and `volume_def_scopes` are unchanged: empty still denies.
@@ -1020,7 +1021,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`, `shell_credentials`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
 
 ### Operator-yaml `agents:` overlay
 

@@ -73,6 +73,9 @@ type RunPolicy struct {
 	Skill      SkillPolicyValue
 	Evaluation EvaluationPolicyValue
 	Crypto     CryptoPolicyValue
+	// ShellCreds narrows which operator-listed credentials the Bash tool and
+	// the Bashbox host-command fallback inject (RFC EW). Zero: all of them.
+	ShellCreds ShellCredsPolicyValue
 	// OperatorAuthored is whether the run's agent definition was written by
 	// an operator rather than by an agent at runtime.
 	OperatorAuthored bool
@@ -197,6 +200,7 @@ var inheritRules = map[string]inheritRule{
 	"Skill":              ruleOwn,     //
 	"Evaluation":         ruleOwn,     //
 	"Crypto":             ruleNarrow,  // the child's own scopes its parent also holds
+	"ShellCreds":         ruleNarrow,  // the credential names both the parent and the child allow (RFC EW)
 	"OperatorAuthored":   ruleOwn,     //
 	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set, else the one set
 	"Overrides":          ruleInherit, // only a child of the same definition takes them
@@ -247,6 +251,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		Skill:             own.Skill,
 		Evaluation:        own.Evaluation,
 		Crypto:            CryptoPolicyValue{Scopes: NarrowCryptoScopes(p.Crypto.Scopes, own.Crypto.Scopes)},
+		ShellCreds:        NarrowShellCreds(p.ShellCreds, own.ShellCreds),
 		OperatorAuthored:  own.OperatorAuthored,
 		FanoutCap:         NarrowFanoutCap(p.FanoutCap, own.FanoutCap),
 		Overrides:         p.Overrides,

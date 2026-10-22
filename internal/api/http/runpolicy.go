@@ -29,6 +29,10 @@ type runPolicySource struct {
 	CoreBlocks []config.CoreBlock
 	// Crypto is the run's key-scope grant.
 	Crypto tools.CryptoPolicyValue
+	// ShellCreds, when set, is the run's shell-credential narrowing from
+	// outside its definition (a resumed sub-run's, narrowed again against its
+	// recorded parent). nil: its definition's shell_credentials (RFC EW).
+	ShellCreds *tools.ShellCredsPolicyValue
 	// Compaction and Context are the run's resolved compaction and
 	// layered-context settings.
 	Compaction *config.Compaction
@@ -92,6 +96,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		Skill:            s.skillPolicyForAgent(def),
 		Evaluation:       evPolicy,
 		Crypto:           src.Crypto,
+		ShellCreds:       shellCredsOf(def, src.ShellCreds),
 		OperatorAuthored: def.OperatorAuthored,
 		FanoutCap:        max(src.FanoutCap, 0),
 		Overrides:        overridesOffer(src.Overrides),
@@ -123,4 +128,13 @@ func nilIfZeroContext(c *config.Context) *config.Context {
 		return nil
 	}
 	return c
+}
+
+// shellCredsOf is a run's shell-credential narrowing: the one given from
+// outside its definition when there is one, else its definition's own.
+func shellCredsOf(def config.AgentDef, given *tools.ShellCredsPolicyValue) tools.ShellCredsPolicyValue {
+	if given != nil {
+		return *given
+	}
+	return tools.ShellCredsFor(def.ShellCredentials)
 }

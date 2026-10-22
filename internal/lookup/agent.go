@@ -416,6 +416,11 @@ type SubstrateAgentDef struct {
 	// builtin.mergedDef: a key-scope grant that did not survive the read would
 	// come back default-deny. Not part of content_sha256 (authority).
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ShellCredentials mirrors config.AgentDef.ShellCredentials (RFC EW). Kept
+	// in sync with builtin.mergedDef: dropped on the read, a stored agent that
+	// narrowed its shell's credentials would come back with every credential
+	// the operator lists. A pointer, so `[]` (none) survives the read as none.
+	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// F40: the *_def_scopes capability gates — the substrate-def slice of the
 	// F14 closure, so a runtime-authored meta-agent's fork/schedule/etc.
 	// authority survives the round-trip instead of defaulting to deny. The
@@ -517,6 +522,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Channels:               def.Channels,
 		EvaluationScopes:       def.EvaluationScopes,
 		CryptoScopes:           def.CryptoScopes,
+		ShellCredentials:       def.ShellCredentials,
 		Interruption:           def.Interruption,
 		AgentDefScopes:         def.AgentDefScopes,
 		ScheduleDefScopes:      def.ScheduleDefScopes,
@@ -585,6 +591,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Channels:              s.Channels,
 		EvaluationScopes:      s.EvaluationScopes,
 		CryptoScopes:          s.CryptoScopes,
+		ShellCredentials:      s.ShellCredentials,
 		Interruption:          s.Interruption,
 		// F40: surface the capability gates to the policy layer so a
 		// runtime-authored meta-agent's AgentDef/Schedule/etc. scopes apply.

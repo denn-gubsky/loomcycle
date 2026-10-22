@@ -500,6 +500,10 @@ type RegisterAgentRequest struct {
 	// CryptoScopes is the Crypto tool's key-scope grant (config.AgentDef.
 	// CryptoScopes): agent / user / tenant / run, or ["-*"]. Unset = none.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ShellCredentials narrows which operator-listed credentials the agent's
+	// Bash and Bashbox host commands receive (config.AgentDef.ShellCredentials,
+	// RFC EW). Absent = every credential the operator lists; [] = none.
+	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 
 	// TTLSeconds is how long this dynamic agent should live. When
 	// 0, falls back to LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS

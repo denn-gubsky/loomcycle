@@ -2148,6 +2148,23 @@ type AgentDef struct {
 	// it is not part of content_sha256.
 	CryptoScopes []string `yaml:"crypto_scopes"`
 
+	// ShellCredentials narrows which credentials the Bash tool and the Bashbox
+	// host-command fallback inject into this agent's commands (RFC EW). The
+	// operator's LOOMCYCLE_BASH_ALLOWED_CREDS and
+	// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS say which credentials a shell
+	// may receive at all; this keeps only the names listed here. It never adds
+	// a name the operator did not list, and a "cmd:NAME" binding in the
+	// fallback list stays bound to its command.
+	//
+	// Absent (nil) narrows nothing: every credential the operator lists, as
+	// before the field existed. `[]` means none. A pointer, so the two stay
+	// apart through every copy and merge.
+	//
+	// A sub-agent receives only the names both it and its parent run allow.
+	// Not per-run overridable. Authority, not content: not part of
+	// content_sha256.
+	ShellCredentials *CredentialNames `yaml:"shell_credentials"`
+
 	// HistoryScope gates the RFC BE History tool (browse/search/annotate
 	// past chats). Owner-scope vocabulary:
 	//
@@ -7065,6 +7082,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Retention:        d.Retention,
 		EvaluationScopes: d.EvaluationScopes,
 		CryptoScopes:     d.CryptoScopes,
+		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
 		// content hash matches the substrate.
@@ -7283,6 +7301,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.CryptoScopes != nil {
 		out.CryptoScopes = override.CryptoScopes
+	}
+	if override.ShellCredentials != nil {
+		out.ShellCredentials = override.ShellCredentials
 	}
 	if override.HistoryScope != nil {
 		out.HistoryScope = override.HistoryScope
@@ -7553,7 +7574,8 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 		return false
 	}
 	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
-		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0
+		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0 ||
+		a.ShellCredentials != nil
 }
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
@@ -7691,6 +7713,64 @@ func IsCryptoScope(s string) bool { return validCryptoScopes[s] }
 // One function for every place a definition is authored — operator yaml, the
 // AgentDef substrate overlay, register_agent — so a value refused at boot is
 // not quietly kept by a runtime write.
+// CredentialNames is a list of credential names: an agent's
+// shell_credentials (RFC EW). There, a present but empty list means "none"
+// while an absent one means "every credential the operator lists", so a nil
+// list must never be written as JSON null, which reads back as absent and
+// would widen the agent to every credential. It always encodes as a list.
+type CredentialNames []string
+
+// MarshalJSON writes a nil list as [] (see CredentialNames).
+func (n CredentialNames) MarshalJSON() ([]byte, error) {
+	if n == nil {
+		return []byte("[]"), nil
+	}
+	return json.Marshal([]string(n))
+}
+
+// ValidateShellCredentials refuses a shell_credentials entry that is not a
+// credential name (RFC EW). A well-formed name the operator does not list is
+// not an error: the operator's lists are deployment settings that may change
+// under a stored definition, so it is reported as an inert grant instead
+// (InertShellCredentials).
+func ValidateShellCredentials(names *CredentialNames) error {
+	if names == nil {
+		return nil
+	}
+	for i, n := range *names {
+		if !bashboxFallbackCredNameRe.MatchString(n) {
+			return fmt.Errorf("shell_credentials[%d]: %q is not a credential name (want ^[A-Za-z0-9_-]{1,128}$)", i, n)
+		}
+	}
+	return nil
+}
+
+// InertShellCredentials returns the names in an agent's shell_credentials
+// that neither LOOMCYCLE_BASH_ALLOWED_CREDS nor
+// LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS lists: names that keep nothing,
+// since the field only narrows the operator's lists.
+func (e Env) InertShellCredentials(names *CredentialNames) []string {
+	if names == nil {
+		return nil
+	}
+	listed := map[string]bool{}
+	for _, n := range e.BashAllowedCreds {
+		listed[n] = true
+	}
+	for _, entry := range e.BashboxFallbackAllowedCreds {
+		if _, n, err := ParseBashboxFallbackCred(entry); err == nil {
+			listed[n] = true
+		}
+	}
+	var inert []string
+	for _, n := range *names {
+		if !listed[n] {
+			inert = append(inert, n)
+		}
+	}
+	return inert
+}
+
 func ValidateCryptoScopes(scopes []string) error {
 	for i, sc := range scopes {
 		if sc == cryptoDenyAll {
@@ -8903,6 +8983,7 @@ func validate(c *Config) error {
 		// logged once at boot, never fatal — an operator may legitimately list a
 		// tool they haven't gated yet.
 		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
+		c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
 		if !c.Decision.Configured() {
 			for _, tool := range agent.Tools {
 				if tool == "Decision" {
@@ -9009,6 +9090,9 @@ func validate(c *Config) error {
 		// refused here rather than dropped at run time, where it would grant
 		// nothing while the operator believed it granted something.
 		if err := ValidateCryptoScopes(agent.CryptoScopes); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := ValidateShellCredentials(agent.ShellCredentials); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		// History tool (RFC BE): validate history_scope entries against the
@@ -9514,4 +9598,22 @@ func validateAWSSecretAllowlists(c *Config) error {
 		}
 	}
 	return nil
+}
+
+// shellCredentialWarnings advises on an agent's shell_credentials (RFC EW),
+// never fatally: the field only narrows the operator's two lists, so a name
+// neither lists keeps nothing, and the field reaches nothing on an agent that
+// holds neither shell tool.
+func shellCredentialWarnings(name string, a AgentDef, env Env) []string {
+	if a.ShellCredentials == nil {
+		return nil
+	}
+	var out []string
+	if inert := env.InertShellCredentials(a.ShellCredentials); len(inert) > 0 {
+		out = append(out, fmt.Sprintf("agent %q: shell_credentials lists %s, which neither LOOMCYCLE_BASH_ALLOWED_CREDS nor LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS names; the field only keeps credentials the operator lists, so these keep nothing", name, strings.Join(inert, ", ")))
+	}
+	if !slices.Contains(a.Tools, "Bash") && !slices.Contains(a.Tools, "Bashbox") {
+		out = append(out, fmt.Sprintf("agent %q: shell_credentials is set but neither Bash nor Bashbox is in tools, so it narrows nothing", name))
+	}
+	return out
 }

@@ -147,6 +147,10 @@ type Agent struct {
 	// config.AgentDef.CryptoScopes). Authority, not content: like
 	// AgentDefScopes it round-trips but is NOT part of content_sha256.
 	CryptoScopes []string
+	// ShellCredentials narrows the credentials Bash and the Bashbox fallback
+	// inject (see config.AgentDef.ShellCredentials, RFC EW). nil = absent.
+	// Authority, not content: not part of the content hash.
+	ShellCredentials *[]string
 	// Interruption is the v0.8.16 Interruption-tool ACL (enabled / kinds /
 	// max_pending). Mirrors config.AgentDef.Interruption. Carried here (F14)
 	// so an MD-declared `interruption:` block round-trips to config at boot
@@ -439,6 +443,7 @@ type frontmatter struct {
 	Retention             string                     `yaml:"retention"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	CryptoScopes          []string                   `yaml:"crypto_scopes"`
+	ShellCredentials      *[]string                  `yaml:"shell_credentials"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
@@ -526,6 +531,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Retention = fm.Retention
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.CryptoScopes = fm.CryptoScopes
+	a.ShellCredentials = fm.ShellCredentials
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body

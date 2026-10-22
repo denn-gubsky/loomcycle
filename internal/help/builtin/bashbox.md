@@ -89,7 +89,9 @@ Commands gbash doesn't implement — `git`, `gh`, `npm`, … — normally fail w
 - `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=git:GITHUB_TOKEN,gh:GH_TOKEN` —
   stored credentials resolved for your tenant/user and passed into those host
   commands. `cmd:NAME` hands the credential to that one command only; a bare
-  `NAME` hands it to every allowlisted command.
+  `NAME` hands it to every allowlisted command. Your agent's
+  `shell_credentials` may keep only some of these, or none; `Context op=self`
+  lists the names your host commands actually receive.
 
 These variables are injected only into the host command, so the sandbox's own
 `env` does not list them. They are **not** hidden from you: an allowlisted host

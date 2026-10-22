@@ -254,7 +254,10 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 // declared order), then creds that were not already contributed by a host var.
 // The notes say which credentials were left unset and why (mergeCredEnv).
 func (b *Bashbox) fallbackEnv(ctx context.Context, command string) (env, notes []string) {
-	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), b.fallbackCredsFor(command), b.CredResolve)
+	// The agent's shell_credentials keep only some of the names bound to this
+	// command (RFC EW); a "cmd:NAME" binding stays its command's.
+	creds := tools.PolicyOf(ctx).ShellCreds.Filter(b.fallbackCredsFor(command))
+	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), creds, b.CredResolve)
 }
 
 // fallbackCredsFor names the credentials injected into the host command

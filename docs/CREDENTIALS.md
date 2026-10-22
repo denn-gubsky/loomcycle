@@ -279,6 +279,31 @@ hands `GITHUB_TOKEN` to `git` only. A bare name still reaches every
 allowlisted command. A binding does not stop the command from passing the
 value on: whatever it starts inherits it.
 
+**Per agent: `shell_credentials`.** The two lists above apply to every agent
+that holds `Bash` or `Bashbox`. An agent can keep only some of them:
+
+```yaml
+agents:
+  reviewer:
+    tools: [Read, Grep, Bash]
+    shell_credentials: []              # its shell gets none of them
+  releaser:
+    tools: [Bash, Bashbox]
+    shell_credentials: [GITHUB_TOKEN]  # only this one, where the operator lists it
+```
+
+Unset keeps every credential the operator lists, as before. The field only
+narrows: a name neither list contains keeps nothing (a boot warning says so),
+and a `git:GITHUB_TOKEN` binding still hands the credential to `git` alone. A
+sub-agent gets only the names both it and its parent allow, a resumed run gets
+back the narrowing it had, and a caller cannot change it per run. `Context
+op=self` lists, under `shell_credentials`, the names a run's shell receives
+(never a value), so an agent can tell why a variable is unset. It narrows
+stored credentials only: host variables passed with
+`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` are the operator's own setting and
+are not affected. It does not hide a credential the agent still receives,
+which its shell can print as before.
+
 ## Crypto keys and the `Crypto` tool
 
 A credential can also be a **crypto key** (`usage: crypto`): a key the `Crypto` tool uses to encrypt, decrypt, sign, verify, MAC or make one-time codes. Its material is never shown — not when it is generated, not to the agent that uses it, not in `get` or `list`. A crypto key is never sent anywhere either: `$cred:<name>` refuses it on every path (MCP headers, provider keys, Bash variables), and does not fall back to a same-named credential in a wider scope.

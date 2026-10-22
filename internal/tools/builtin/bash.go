@@ -222,7 +222,10 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // bounded command execution, so it must not race the command's wall-clock.
 // The notes say which credentials were left unset and why (mergeCredEnv).
 func (b *Bash) buildEnv(ctx context.Context) (env, notes []string) {
-	return mergeCredEnv(ctx, scrubbedHostEnv(b.AllowedExtraEnv), b.AllowedCreds, b.CredResolve)
+	// The agent's shell_credentials keep only some of the operator's names
+	// (RFC EW); it never adds one.
+	creds := tools.PolicyOf(ctx).ShellCreds.Filter(b.AllowedCreds)
+	return mergeCredEnv(ctx, scrubbedHostEnv(b.AllowedExtraEnv), creds, b.CredResolve)
 }
 
 // scrubbedHostEnv builds the environment for a host child process: PATH always

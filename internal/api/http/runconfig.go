@@ -617,6 +617,12 @@ type spawnRecord struct {
 	// narrows again against it (resumedCryptoPolicy); absent means the parent
 	// held none, so a sub-run recorded before this field resumes with none.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ShellCredentials is the parent run's shell-credential narrowing at spawn
+	// (RFC EW): the names the child's own shell_credentials were narrowed to.
+	// A resume narrows again against it. nil: the parent narrowed nothing,
+	// which is also what a record written before the field means, since no
+	// run could narrow before it existed. `[]`: the parent allowed none.
+	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// OfferedOverrides is the override offer the child holds for its own
 	// children: its parent's, passed down unchanged (tools.RunPolicy.Inherit),
 	// so a grandchild of the offering run's definition takes that run's

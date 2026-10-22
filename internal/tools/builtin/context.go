@@ -545,6 +545,9 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"source":        "operator_default",
 		}
 	}
+	if sc := shellCredentialsReport(c.Cfg, tools.PolicyOf(ctx).ShellCreds); sc != nil {
+		out["shell_credentials"] = sc
+	}
 	// principal: the resolved auth identity (RFC L) — WHO this run acts as and
 	// what its credential may do. Non-secret: subject + tenant + scopes + the
 	// token DEF id and the 6-char log-correlation suffix; NEVER the bearer
@@ -1416,4 +1419,29 @@ func (c *Context) selfNames(ctx context.Context, ident tools.RunIdentityValue) [
 		return nil
 	}
 	return memrank.ParseSelfNames(out.Markdown)
+}
+
+// shellCredentialsReport is what Context op=self says about the credentials
+// a shell receives (RFC EW): the NAMES Bash and the Bashbox fallback inject
+// for this run once its agent's shell_credentials narrowed the operator's
+// lists, never a value, so an agent can tell why a variable is unset. A
+// fallback entry keeps its "cmd:NAME" binding. nil when the operator lists
+// no shell credentials at all.
+func shellCredentialsReport(cfg *config.Config, sc tools.ShellCredsPolicyValue) map[string]any {
+	if cfg == nil || (len(cfg.Env.BashAllowedCreds) == 0 && len(cfg.Env.BashboxFallbackAllowedCreds) == 0) {
+		return nil
+	}
+	fallback := []string{}
+	for _, entry := range cfg.Env.BashboxFallbackAllowedCreds {
+		if _, name, err := config.ParseBashboxFallbackCred(entry); err == nil && sc.Allows(name) {
+			fallback = append(fallback, entry)
+		}
+	}
+	return map[string]any{
+		"bash":             nonNilStrings(sc.Filter(cfg.Env.BashAllowedCreds)),
+		"bashbox_fallback": fallback,
+		// narrowed: the agent's shell_credentials kept only some of the
+		// operator's names; false means every name the operator lists.
+		"narrowed": sc.Set,
+	}
 }
