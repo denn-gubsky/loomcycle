@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.119.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.120.0.</em>
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.119) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.120) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -199,15 +199,24 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.119.0) is the fixes from a security review of the
+The most recent line (v1.120.0) closes the security review whose fixes
+shipped in v1.119.0. Boot no longer rewraps operator tokens minted before the
+pepper: `loomcycle tokens rewrap` lists them and rewraps only the rows an
+operator names after reviewing them. A deployment upgrading straight from a
+release before v1.119.0 must run it once. A config reload keeps an admin
+credential in config, a resume gives back exactly the per-user slot a run took,
+and a batch spawn in join mode can no longer wait forever. Shared-tier
+definitions are marked in get and list, and the chat bridges move to 0.2.0.
+See the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.119.0 was the fixes from a security review of the
 whole runtime. A server authenticated only by a minted admin token no longer
-serves a request unauthenticated when it cannot read its token store. Open mode
-is refused on a public listener, declaring config `principals:` turns
-authentication on, and operator-token hashes are peppered by default. A shutdown
-pauses the runs in flight and a restart resumes them, `POST /v1/runs` starts runs
-the way every other transport does, logs can be JSON, and Amazon Bedrock can be
-reached with AWS IAM credentials. Some upgrades need an action: see the upgrade
-notes in [`REVISIONS.md`](REVISIONS.md).
+served a request unauthenticated when it could not read its token store. Open
+mode was refused on a public listener, declaring config `principals:` turned
+authentication on, and operator-token hashes were peppered by default. A shutdown
+paused the runs in flight and a restart resumed them, `POST /v1/runs` started runs
+the way every other transport does, logs could be JSON, and Amazon Bedrock could
+be reached with AWS IAM credentials. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.118 was fixes. A queued run that never starts
 now releases its idempotency key and publishes its end, and a restart during a
