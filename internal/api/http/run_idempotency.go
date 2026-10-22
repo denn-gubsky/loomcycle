@@ -90,12 +90,23 @@ const existingRunPollInterval = 200 * time.Millisecond
 // wait is the join: it returns once the run has ended. It does not wait on a
 // run that is parked for its next message or held for a review, which would
 // never end on its own, and it stops when ctx ends — the caller's timeout or
-// departure. In both cases the run is reported as it is, still running. The
-// run is never cancelled from here: this caller did not start it.
+// departure. A caller that set no deadline (MCP spawn_run with no timeout_ms
+// and no operator default, a session that never cancels) is held to the
+// server's join bound instead, LOOMCYCLE_BATCH_JOIN_TIMEOUT: without it a run
+// that never ends would hold the call forever. In every case the run is
+// reported as it is, still running, and is never cancelled from here: this
+// caller did not start it.
 func (s *Server) existingRunResult(ctx context.Context, dup *runner.DuplicateRunError, wait bool, parentContext *store.ParentContext) connector.SpawnRunResult {
 	res := connector.SpawnRunResult{
 		AgentID: dup.AgentID, RunID: dup.RunID, SessionID: dup.SessionID,
 		Status: string(store.RunRunning), ParentContext: parentContext, Deduplicated: true,
+	}
+	var boundC <-chan time.Time
+	bound := s.cfg().Env.BatchJoinTimeout
+	if _, hasDeadline := ctx.Deadline(); wait && bound > 0 && !hasDeadline {
+		t := time.NewTimer(bound)
+		defer t.Stop()
+		boundC = t.C
 	}
 	// The row is read on a ctx that outlives the caller's: a wait that ended
 	// with the caller still reports the run as it is now.
@@ -123,6 +134,9 @@ func (s *Server) existingRunResult(ctx context.Context, dup *runner.DuplicateRun
 		}
 		select {
 		case <-ctx.Done():
+			return res
+		case <-boundC:
+			res.Error = fmt.Sprintf("join timed out after %s; the run goes on (another request with this idempotency_key started it): read it by run_id", bound)
 			return res
 		case <-time.After(existingRunPollInterval):
 		}
