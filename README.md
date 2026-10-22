@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.121.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.122.0.</em>
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.121) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.122) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -199,17 +199,21 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.121.0) adds embeddings on Amazon Bedrock:
-`memory.embedder` can use Cohere Embed, signed with a Bedrock provider's AWS
-credentials, so a deployment on an instance role gets memory search and
-consolidation merging with no key. Search queries are embedded in a query mode
-that embedders such as Cohere distinguish from stored text, and an embedder can
-sit on any provider whose driver has one. It also closes the residuals of an
-independent re-audit of the security review: MCP stdio servers stop with their
-process group, a volume purge cannot be redirected by a symlink swap, refused
-webhook deliveries cost the same time, and gbash moves to v0.0.41. A run its
-caller ends mid-turn is now recorded `cancelled`. See the upgrade notes in
+The most recent line (v1.122.0) adds per-agent shell credentials: a
+`shell_credentials` field narrows which operator-listed credentials an agent's
+Bash and Bashbox host commands receive, so one agent can keep a shell without
+seeing every secret. The Web UI's run views show the serving model, tokens in
+and out, a live tok/s, a context-window gauge and the run's context method
+next to Compact, and the agent Library shows each agent's context window.
+Settings → Tokens can rotate and retire per-user tokens again. See
 [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.121.0 added embeddings on Amazon Bedrock:
+`memory.embedder` could use Cohere Embed, signed with a Bedrock provider's AWS
+credentials, search queries were embedded in a query mode, and an embedder could
+sit on any provider whose driver has one. It also closed the residuals of an
+independent re-audit of the security review, and a run its caller ends mid-turn
+was recorded `cancelled`. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.120.0 closed the security review whose fixes
 shipped in v1.119.0. Boot stopped rewrapping operator tokens minted before the
