@@ -105,15 +105,13 @@ export function metricsFromEvents(events: readonly TranscriptEvent[], runId?: st
   return { ...m, streamingTokPerSec: streamingEstimate(rows) };
 }
 
-// Events that come before a model call starts. No event marks the start of a
-// call itself — `started` is sent once per run, before the first — so the call
-// is taken to start at the LAST of these seen before it streams anything: the
-// run starting, an operator message (the client's own echo, or a steer), or a
-// tool result (the round that the next call answers). Queueing for a slot and
-// prefill therefore count, as they do in loomboard's estimate. A row of this
-// kind arriving after the call has begun streaming — a steer is drained only at
-// the next boundary — does not restart it.
-const CALL_START_EVENTS = new Set(["started", "user_echo", "steer", "tool_result"]);
+// The estimate is measured from a call's FIRST streamed delta, not from when
+// the call began: the server-timed rate that replaces it at the call's end is
+// generation time (Ollama's decode phase, else duration less queueing), so an
+// estimate that also counted queueing, model load and prefill climbed from ~1
+// toward a figure it never reached and then jumped (measured on a cold local
+// model: ~17 live against 26.1 timed). The first delta's own text was generated
+// before it arrived, so only the characters after it are counted.
 
 // Shorter windows than this give no estimate. A re-attach replays a call's
 // deltas in one burst, all stamped on arrival, and a rate over that sliver of
@@ -122,40 +120,39 @@ export const MIN_ESTIMATE_WINDOW_MS = 500;
 
 /** A provisional output rate for the call still in flight, before its usage
  *  frame brings the server-timed figure: streamed characters / 4 (the same
- *  chars-per-token rule loomcycle's own estimates use) over the time since the
- *  call started, as of the latest delta. Rows carry their arrival time.
+ *  chars-per-token rule loomcycle's own estimates use) streamed after the
+ *  call's first delta, over the time from that delta to the latest one. Rows
+ *  carry their arrival time.
  *
  *  Thinking deltas count: a reasoning model's thinking is billed as output and
  *  is most of what it generates on a hard turn, so leaving it out would read as
  *  a stall. A tool call does not: it arrives whole at the end of the call, and
- *  counting it would spike the rate at the last moment. If no start event was
- *  seen, the call is taken to start at its first delta.
+ *  counting it would spike the rate at the last moment.
  *
  *  0 when nothing is streaming: a `usage` frame closes the call. */
 export function streamingEstimate(rows: readonly TranscriptEvent[]): number {
-  let startNs: number | null = null;
+  let firstNs: number | null = null;
   let lastNs = 0;
   let chars = 0;
   for (const e of rows) {
     const type = e.event?.type ?? e.type;
     if (type === "usage") {
-      startNs = null;
+      firstNs = null;
       lastNs = 0;
       chars = 0;
       continue;
     }
-    if (CALL_START_EVENTS.has(type)) {
-      if (chars === 0) startNs = e.ts_ns;
-      continue;
-    }
     if ((type === "text" || type === "thinking") && e.event?.text) {
-      if (startNs === null) startNs = e.ts_ns;
+      if (firstNs === null) {
+        firstNs = e.ts_ns;
+        continue;
+      }
       chars += e.event.text.length;
       lastNs = e.ts_ns;
     }
   }
-  if (chars === 0 || startNs === null) return 0;
-  const elapsedMs = (lastNs - startNs) / 1_000_000;
+  if (chars === 0 || firstNs === null) return 0;
+  const elapsedMs = (lastNs - firstNs) / 1_000_000;
   if (elapsedMs < MIN_ESTIMATE_WINDOW_MS) return 0;
   return tokensPerSecond(chars / 4, elapsedMs);
 }

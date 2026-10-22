@@ -138,14 +138,24 @@ describe("the streaming estimate of a call in flight", () => {
   const text = (ms: number, s: string) => at(ms, { type: "text", text: s });
   const chars = (n: number) => "x".repeat(n);
 
-  it("rises as text streams, measured from the call's start rather than its first character", () => {
-    // The call starts at 0; prefill until 1000; 400 chars (≈100 tokens) by 2000.
-    const early = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200))]);
+  it("rises as text streams, measured from the first delta so prefill and model load do not count", () => {
+    // The call starts at 0 and spends a second loading and prefilling; the
+    // first delta lands at 1000. The timed figure that replaces the estimate is
+    // generation time, so the estimate measures from that delta, and counts only
+    // what streamed after it (the first delta's text was generated before it).
+    const one = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200))]);
+    expect(one.streamingTokPerSec).toBe(0);
     const later = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200)), text(2000, chars(200))]);
-    expect(early.streamingTokPerSec).toBeCloseTo(50 / 1, 6);
-    expect(later.streamingTokPerSec).toBeCloseTo(100 / 2, 6);
+    expect(later.streamingTokPerSec).toBeCloseTo(50 / 1, 6);
     const faster = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200)), text(2000, chars(600))]);
     expect(faster.streamingTokPerSec).toBeGreaterThan(later.streamingTokPerSec);
+  });
+
+  it("is not lowered by a long load before the first delta", () => {
+    const cold = metricsFromEvents([at(0, { type: "started" }), text(8000, chars(40)), text(10000, chars(400))]);
+    const warm = metricsFromEvents([at(7900, { type: "started" }), text(8000, chars(40)), text(10000, chars(400))]);
+    expect(cold.streamingTokPerSec).toBeCloseTo(50, 6);
+    expect(warm.streamingTokPerSec).toBeCloseTo(cold.streamingTokPerSec, 6);
   });
 
   it("is replaced by the call's own timed figure when its usage arrives", () => {
@@ -155,16 +165,17 @@ describe("the streaming estimate of a call in flight", () => {
     expect(m.lastCallTokPerSec).toBeCloseTo(150 / 3, 6);
   });
 
-  it("starts over for the next call, from the tool results that began it", () => {
+  it("starts over for the next call once the previous usage closes it", () => {
     const [cloud] = frames;
     const m = metricsFromEvents([
       at(0, { type: "started" }),
       text(1000, chars(4000)),
       at(3000, cloud),
       at(5000, { type: "tool_result", text: "ok", tool_use: { id: "t1", name: "Read", input: {} } }),
-      text(6000, chars(400)),
+      text(6000, chars(40)),
+      text(7000, chars(400)),
     ]);
-    // 100 tokens over the 1 s since the tool result — nothing from the first call.
+    // 100 tokens over the 1 s after the new call's first delta — nothing from the first call.
     expect(m.streamingTokPerSec).toBeCloseTo(100, 6);
   });
 
@@ -175,7 +186,9 @@ describe("the streaming estimate of a call in flight", () => {
       at(1500, { type: "tool_call", tool_use: { id: "t", name: "Read", input: { path: chars(4000) } } }),
       text(2000, chars(400)),
     ]);
-    expect(m.streamingTokPerSec).toBeCloseTo(200 / 2, 6);
+    // The thinking delta opens the window; the 400 text chars after it are
+    // 100 tokens over 1 s. The whole tool call adds nothing.
+    expect(m.streamingTokPerSec).toBeCloseTo(100 / 1, 6);
   });
 
   it("is zero for a call that has streamed no text", () => {
