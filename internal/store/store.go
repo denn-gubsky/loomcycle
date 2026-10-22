@@ -2150,6 +2150,25 @@ type RunStore interface {
 	// a resumed run its new process counted against its user (user_slot
 	// TRUE). A missing row is a no-op.
 	MarkRunUserSlot(ctx context.Context, runID string) error
+
+	// FindLiveAgentRun returns a top-level run of agent for (tenantID, userID)
+	// whose status is "running" — a row parked awaiting its resume included —
+	// and reports whether there is one. The tenant match is exact ("" is the
+	// shared tenant, not every tenant). Of several, one not paused comes
+	// first, then the most recently active, so a caller that ignores a paused
+	// row parked too long has seen every row it would ignore once it gets
+	// that one. It reads by user and agent, so a user's many newer runs never
+	// hide it, as they could in ListActiveRunsByUser's newest-100 page.
+	FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (LiveAgentRun, bool, error)
+}
+
+// LiveAgentRun is what FindLiveAgentRun reports of a running run.
+type LiveAgentRun struct {
+	ID         string
+	PauseState string
+	// LastActiveAt is its last heartbeat, or its start when it has none: for
+	// a paused row, about when it parked.
+	LastActiveAt time.Time
 }
 
 // PendingRunStore persists runs that exist but have not started:

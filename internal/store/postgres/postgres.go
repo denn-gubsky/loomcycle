@@ -2475,6 +2475,31 @@ func (s *Store) MarkRunUserSlot(ctx context.Context, runID string) error {
 	return nil
 }
 
+// FindLiveAgentRun implements store.Store.
+func (s *Store) FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (store.LiveAgentRun, bool, error) {
+	var out store.LiveAgentRun
+	var pause *string
+	err := s.pool.QueryRow(ctx,
+		`SELECT r.id, r.pause_state, COALESCE(r.last_heartbeat_at, r.started_at) AS active
+		   FROM runs r JOIN sessions s ON r.session_id = s.id
+		  WHERE r.user_id = $1 AND COALESCE(r.tenant_id, '') = $2 AND s.agent = $3
+		    AND r.parent_run_id IS NULL AND r.status = 'running'
+		  ORDER BY (COALESCE(r.pause_state, '') = $4) ASC, active DESC
+		  LIMIT 1`,
+		userID, tenantID, agent, store.PauseStatePaused,
+	).Scan(&out.ID, &pause, &out.LastActiveAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.LiveAgentRun{}, false, nil
+	}
+	if err != nil {
+		return store.LiveAgentRun{}, false, fmt.Errorf("find live agent run: %w", err)
+	}
+	if pause != nil {
+		out.PauseState = *pause
+	}
+	return out, true, nil
+}
+
 // SetRunReplica implements store.Store.
 func (s *Store) SetRunReplica(ctx context.Context, runID, replicaID string) error {
 	tag, err := s.pool.Exec(ctx,

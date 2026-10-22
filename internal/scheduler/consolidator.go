@@ -769,23 +769,34 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 // lease from its transcript rather than taking it again, so after a downtime
 // past the lease's TTL the second pass gets the lease and both write. The run
 // row is the record every replica shares; a row parked awaiting its resume
-// counts too, since the resume will do the work.
+// counts too, since the resume will do the work — but only for
+// cfg.stalePausedPassAfter: a parked pass nobody resumes would otherwise hold
+// its target for good. Past that it is logged and ignored.
+//
+// Keyed by agent and (tenant, user), not by schedule or scope: the run row
+// carries neither. Only scope "user" fans out (fanoutScope), so two schedules
+// running the same consolidator agent for one user consolidate the same
+// target, and holding them off each other is right.
 //
 // A read fault answers not live: the lease still guards the common case, and
 // a consolidation must not stall on a transient read.
 func (s *Scheduler) livePass(ctx context.Context, target consolidationTarget, selfAgent string) (string, bool) {
-	// A tenant of "" reads every tenant, so the rows are matched on tenant too.
-	runs, err := s.store.ListActiveRunsByUser(ctx, target.TenantID, target.UserID, store.RunRunning)
+	run, found, err := s.store.FindLiveAgentRun(ctx, target.TenantID, target.UserID, selfAgent)
 	if err != nil {
 		s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q) for a live pass: %v", target.TenantID, target.UserID, err)
 		return "", false
 	}
-	for _, r := range runs {
-		if r.Agent == selfAgent && r.ParentRunID == "" && r.TenantID == target.TenantID {
-			return r.ID, true
-		}
+	if !found {
+		return "", false
 	}
-	return "", false
+	// A paused row comes after any that is not, so this one being stale
+	// means every row of the agent's for the target is.
+	if run.PauseState == store.PauseStatePaused && time.Since(run.LastActiveAt) > s.cfg.stalePausedPassAfter {
+		s.logf("scheduler: WARNING: consolidation fan-out: pass %s for target (tenant=%q user=%q) has been parked since %s without a resume — no longer holding the target for it",
+			run.ID, target.TenantID, target.UserID, run.LastActiveAt.UTC().Format(time.RFC3339))
+		return "", false
+	}
+	return run.ID, true
 }
 
 // fairTargetOrder is the order a fan-out dispatches in, and so also what its

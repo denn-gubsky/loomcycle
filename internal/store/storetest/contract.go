@@ -180,6 +180,7 @@ func Run(t *testing.T, factory Factory) {
 		{"ClaimPausedRunSucceedsOnce", testClaimPausedRunSucceedsOnce},
 		{"UnclaimPausedRunLeavesAnEndedRunEnded", testUnclaimPausedRunLeavesAnEndedRunEnded},
 		{"TakeRunUserSlotReportsEachSlotOnce", testTakeRunUserSlotReportsEachSlotOnce},
+		{"FindLiveAgentRunReadsPastNewerRuns", testFindLiveAgentRunReadsPastNewerRuns},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
@@ -5177,6 +5178,55 @@ func testTakeRunUserSlotReportsEachSlotOnce(t *testing.T, s store.Store) {
 	}
 	if err := s.MarkRunUserSlot(ctx, "run_does_not_exist"); err != nil {
 		t.Errorf("MarkRunUserSlot of a missing row: %v, want nil", err)
+	}
+}
+
+// FindLiveAgentRun finds a running top-level run of one agent for one user in
+// one tenant, however many newer runs the user has: a resumed run keeps its
+// old start. Sub-runs, ended runs and other tenants' runs are not it; a run
+// not paused is preferred over a paused one.
+func testFindLiveAgentRunReadsPastNewerRuns(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	find := func(tenant string) (store.LiveAgentRun, bool) {
+		t.Helper()
+		got, ok, err := s.FindLiveAgentRun(ctx, tenant, "u", "cons")
+		if err != nil {
+			t.Fatalf("FindLiveAgentRun: %v", err)
+		}
+		return got, ok
+	}
+	if _, ok := find("t"); ok {
+		t.Fatal("found a run in an empty store")
+	}
+	cons, _ := s.CreateSession(ctx, "t", "cons", "u")
+	paused, _ := s.CreateRun(ctx, cons.ID, store.RunIdentity{AgentID: "a_live_paused", UserID: "u", TenantID: "t"})
+	_ = s.SetRunPauseState(ctx, paused.ID, store.PauseStatePaused)
+	chat, _ := s.CreateSession(ctx, "t", "chat", "u")
+	for i := 0; i < 105; i++ {
+		if _, err := s.CreateRun(ctx, chat.ID, store.RunIdentity{AgentID: fmt.Sprintf("a_live_chat_%d", i), UserID: "u", TenantID: "t"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A sub-run of the agent's, and the agent's run in another tenant.
+	_, _ = s.CreateRun(ctx, cons.ID, store.RunIdentity{AgentID: "a_live_sub", UserID: "u", TenantID: "t", ParentRunID: paused.ID})
+	other, _ := s.CreateSession(ctx, "o", "cons", "u")
+	_, _ = s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_live_other", UserID: "u", TenantID: "o"})
+
+	got, ok := find("t")
+	if !ok || got.ID != paused.ID || got.PauseState != store.PauseStatePaused || got.LastActiveAt.IsZero() {
+		t.Fatalf("FindLiveAgentRun = %+v, %v; want the paused run %s, with its activity", got, ok, paused.ID)
+	}
+	running, _ := s.CreateRun(ctx, cons.ID, store.RunIdentity{AgentID: "a_live_running", UserID: "u", TenantID: "t"})
+	if got, _ := find("t"); got.ID != running.ID {
+		t.Errorf("FindLiveAgentRun = %s, want the run not paused (%s) first", got.ID, running.ID)
+	}
+	_ = s.FinishRun(ctx, running.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+	_ = s.FinishRun(ctx, paused.ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+	if got, ok := find("t"); ok {
+		t.Errorf("FindLiveAgentRun = %+v after the agent's runs ended; want none (a sub-run is not it)", got)
+	}
+	if got, ok := find(""); ok {
+		t.Errorf("tenant \"\" found %+v; want an exact tenant match", got)
 	}
 }
 

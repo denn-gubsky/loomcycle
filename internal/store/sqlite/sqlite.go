@@ -4002,6 +4002,31 @@ func (s *Store) MarkRunUserSlot(ctx context.Context, runID string) error {
 	return nil
 }
 
+// FindLiveAgentRun implements store.Store.
+func (s *Store) FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (store.LiveAgentRun, bool, error) {
+	var out store.LiveAgentRun
+	var pause sql.NullString
+	var active int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT r.id, r.pause_state, COALESCE(r.last_heartbeat_at, r.started_at) AS active
+		   FROM runs r JOIN sessions s ON r.session_id = s.id
+		  WHERE r.user_id = ? AND COALESCE(r.tenant_id, '') = ? AND s.agent = ?
+		    AND r.parent_run_id IS NULL AND r.status = 'running'
+		  ORDER BY (COALESCE(r.pause_state, '') = ?) ASC, active DESC
+		  LIMIT 1`,
+		userID, tenantID, agent, store.PauseStatePaused,
+	).Scan(&out.ID, &pause, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.LiveAgentRun{}, false, nil
+	}
+	if err != nil {
+		return store.LiveAgentRun{}, false, fmt.Errorf("find live agent run: %w", err)
+	}
+	out.PauseState = pause.String
+	out.LastActiveAt = time.Unix(0, active)
+	return out, true, nil
+}
+
 // ListPausedRuns implements store.Store. Returns runs at pause_state =
 // 'paused' (NOT 'pausing' — the column distinguishes in-flight pause
 // transitions from at-rest paused state). Ordered by started_at ASC

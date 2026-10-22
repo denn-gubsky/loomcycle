@@ -2,7 +2,9 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -71,5 +73,55 @@ func TestFanout_ALivePassInAnotherTenantDoesNotHoldTheTarget(t *testing.T) {
 
 	if calls := fr.Calls(); len(calls) != 1 || calls[0].UserID != "alice" {
 		t.Fatalf("calls = %+v, want one pass for alice", calls)
+	}
+}
+
+// The check reads past a busy user's newer runs. A resumed pass keeps its old
+// started_at, so it is the OLDEST running row of a user whose chats kept
+// going; a read of the user's newest runs missed it and started a second
+// pass.
+func TestFanout_ALivePassBehindManyNewerRunsStillHoldsTheTarget(t *testing.T) {
+	def := fanoutDef(nil)
+	sched, fr, st, _ := fanoutFixture(t, def, nil)
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	seedSettledSession(t, st, "", "alice")
+	seedLivePass(t, st, "", "alice", def.Agent, store.PauseStateRunning)
+	ctx := context.Background()
+	busy, err := st.CreateSession(ctx, "", "chat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 105; i++ {
+		if _, err := st.CreateRun(ctx, busy.ID, store.RunIdentity{AgentID: fmt.Sprintf("busy-%d", i), UserID: "alice"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fireT(t, sched)
+
+	if calls := fr.Calls(); len(calls) != 0 {
+		t.Fatalf("dispatched %d pass(es) for alice, want none: her pass is still live behind 105 newer runs", len(calls))
+	}
+}
+
+// A pass parked for its resume holds its target only for so long: one that is
+// never resumed (its agent gone, resumes failing) must not stop the target's
+// consolidation for good. Past the bound the tick runs a new pass, and says
+// which run it is ignoring.
+func TestFanout_APassParkedPastTheBoundNoLongerHoldsTheTarget(t *testing.T) {
+	def := fanoutDef(nil)
+	sched, fr, st, logs := fanoutFixture(t, def, func(c *Config) { c.stalePausedPassAfter = time.Millisecond })
+	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
+	seedSettledSession(t, st, "", "alice")
+	seedLivePass(t, st, "", "alice", def.Agent, store.PauseStatePaused)
+	time.Sleep(20 * time.Millisecond)
+
+	fireT(t, sched)
+
+	if calls := fr.Calls(); len(calls) != 1 || calls[0].UserID != "alice" {
+		t.Fatalf("calls = %+v, want one pass for alice: the parked pass is past the bound", calls)
+	}
+	if !logs.contains("parked") {
+		t.Errorf("ignoring the stuck pass is not logged; logs:\n%s", logs.all())
 	}
 }
