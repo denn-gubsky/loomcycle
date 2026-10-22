@@ -14,9 +14,9 @@ require (
 	// gbash is Bashbox's sandbox and pre-1.0. A PR that bumps it runs
 	// `make bashbox-escape` and quotes the upstream changes to path resolution,
 	// the filesystem layer and command dispatch (docs/TOOLS.md, Bashbox).
-	github.com/ewhauser/gbash v0.0.40
-	github.com/ewhauser/gbash/contrib/awk v0.0.40
-	github.com/ewhauser/gbash/contrib/jq v0.0.40
+	github.com/ewhauser/gbash v0.0.41
+	github.com/ewhauser/gbash/contrib/awk v0.0.41
+	github.com/ewhauser/gbash/contrib/jq v0.0.41
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/golang-migrate/migrate/v4 v4.20.1
