@@ -81,6 +81,7 @@ const skillDefDescription = `Author, fork, promote, retire, and inspect skill de
 	`Static SKILL.md files (LOOMCYCLE_SKILLS_ROOT) remain the operator's immutable ground truth; ` +
 	`this tool produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED. Promotion is explicit — selection is policy, not runtime. ` +
+	`get and list also return shared skills, marked "shared": true: you may read and fork them, but not retire or promote them. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
 const skillDefInputSchema = `{
@@ -467,7 +468,7 @@ func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillPolicyValue, i
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return okJSON(skillDefRowResponse(row, false))
+	return okJSON(markSharedTier(ctx, skillDefRowResponse(row, false), row.TenantID))
 }
 
 func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
@@ -489,7 +490,7 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, 
 		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
-		out = append(out, skillDefRowResponseMap(r))
+		out = append(out, markSharedTier(ctx, skillDefRowResponseMap(r), r.TenantID))
 	}
 	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }

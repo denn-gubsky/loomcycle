@@ -42,4 +42,6 @@ Every save is a new, immutable version with its own `def_id`; a team's name
 points at one **active** version, which `run` uses unless you pin a `def_id`.
 `create` makes it active; `fork` does not unless you pass `promote: true`.
 Teams belong to your tenant: another tenant's are invisible, and asking for
-one by `def_id` is an ordinary "not found".
+one by `def_id` is an ordinary "not found". Shared teams (defined with no
+tenant) are the exception: `get` and `list` return them marked `shared: true`,
+and you may run and fork them, but not retire or promote them.
