@@ -362,11 +362,27 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		return errResult(fmt.Sprintf("create: object store: %s", err)), nil
 	}
 	cleanup := func() {
-		_ = os.RemoveAll(storeDir)
+		// The fence compares resolved paths, and path is built from the
+		// configured dynamic root, which may be a symlink: rebase the parent
+		// onto the root's real path, or the fence refuses this call's own
+		// cleanup. Only the operator-configured root is resolved. The run
+		// directory below it is where a run could plant a symlink, and
+		// resolving it would move the fence wherever that link points.
+		parent := filepath.Dir(path)
+		if rootReal, err := filepath.EvalSymlinks(dynRoot); err == nil {
+			if rel, err := filepath.Rel(dynRoot, parent); err == nil {
+				parent = filepath.Join(rootReal, rel)
+			}
+		}
+		// The object store, usually already removed by a failed fetch,
+		// fenced like the volume's own directory below.
+		if _, err := fencedRemoveAll(dynRoot, parent, storeDir, "git source cleanup"); err != nil {
+			log.Printf("volumedef: git source: cleanup of %s object store: %v", in.Name, err)
+		}
 		// The volume's directory, removed whole: it holds a partly written
 		// tree. Fenced like every other delete of a volume: the path is
 		// re-checked to be strictly inside this run's ephemeral directory.
-		if _, err := fencedRemoveAll(dynRoot, filepath.Dir(path), path, "git source cleanup"); err != nil {
+		if _, err := fencedRemoveAll(dynRoot, parent, path, "git source cleanup"); err != nil {
 			log.Printf("volumedef: git source: cleanup of %s: %v", in.Name, err)
 		}
 		undo()
