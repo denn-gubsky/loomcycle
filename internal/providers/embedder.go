@@ -104,11 +104,13 @@ type EmbedderOptions struct {
 
 	// Dimensions asks the provider for a specific output vector width
 	// (Matryoshka truncation — Ollama's `dimensions`, OpenAI's
-	// `dimensions` on text-embedding-3-*). Zero = omit the parameter
-	// entirely and keep the model's native size; drivers MUST NOT send
-	// a literal 0. Honoured today by the `ollama` driver only; other
-	// drivers ignore it (wiring openai's would also require relaxing
-	// its static (model → dimension) sanity check).
+	// `dimensions` on text-embedding-3-*, Cohere Embed v4's
+	// `output_dimension`). Zero = omit the parameter entirely and keep the
+	// model's native size; drivers MUST NOT send a literal 0. Honoured today
+	// by the `ollama` and `bedrock` drivers only (bedrock checks it against
+	// the widths the model serves); other drivers ignore it (wiring openai's
+	// would also require relaxing its static (model → dimension) sanity
+	// check).
 	//
 	// Changing this on a populated store invalidates the stored vectors:
 	// MemoryEmbedSearch compares the query width against the stored
@@ -126,6 +128,13 @@ type EmbedderOptions struct {
 	// http.Client{Timeout: opts.Timeout}. Tests inject an httptest
 	// server's client via this field.
 	HTTPClient *http.Client
+
+	// Auth authenticates each request with the AWS credentials of the
+	// provider the embedder names, instead of APIKey (RFC EV: SigV4, or a
+	// minted Bedrock key). Set only for the `bedrock` embedder, and only with
+	// that provider's own endpoint in BaseURL: the credentials must never go
+	// to another host. Nil = APIKey, as for every other embedder.
+	Auth RequestAuth
 }
 
 // HTTPClientOrDefault returns opts.HTTPClient when set, otherwise a
