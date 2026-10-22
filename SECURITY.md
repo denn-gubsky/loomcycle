@@ -6,7 +6,7 @@ Security fixes land on `main` and ship in the next release of the **latest minor
 
 | Version | Supported |
 | ------- | --------- |
-| 1.120.x (latest minor) | Yes |
+| 1.121.x (latest minor) | Yes |
 | Anything older | No |
 
 The table moves with each minor release; the [releases page](https://github.com/denn-gubsky/loomcycle/releases) is authoritative. The same rule covers the adapters and packages published from this repo (`@loomcycle/client`, the `loomcycle` Python package, the `@loomcycle/*` npm packages, the Docker images): the latest published version is the supported one.

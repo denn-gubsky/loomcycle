@@ -8,6 +8,128 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.121.0
+
+*Embeddings on Amazon Bedrock, and the residuals of an independent re-audit of the security review. **`memory.embedder` can now use Cohere Embed on Bedrock**, signed with a Bedrock provider's AWS credentials, so a deployment that runs on an instance role needs no key to get memory search, Document search and consolidation merging. Search queries are now embedded in a query mode that embedders such as Cohere distinguish from stored text, and an embedder can sit on any provider whose driver has one, under any name. Also: a run its caller ends mid-turn is recorded `cancelled`, not `completed`; a single `spawn_run` on a held key stops at the join bound; MCP stdio servers are stopped with their process group; a volume purge can no longer be redirected by a symlink swap; refused webhook deliveries cost the same time; and gbash moves to v0.0.41. **Read the upgrade notes: a new error category, a per-file limit in Bashbox, and an embedder config that is now refused.***
+
+A minor release: #2020 to #2034.
+- #2027 and #2032 (RFC EV) add the embedder query mode, the driver-based embedder lookup and the Bedrock embedder;
+- the re-audit residuals (RFC EU): the MCP stdio stop (#2024), the volume purge (#2025), webhook timing (#2026), gbash v0.0.41 (#2023), and the security wording (#2022, #2029);
+- fixes: the single `spawn_run` join bound (#2020) and runs cancelled mid-turn (#2021);
+- CI and tests: swap-race proofs fail instead of skipping (#2028), `go mod verify` plus a gosec high-severity gate (#2030), tests that pin per-connection rebinding checks and WebFetch returning no response headers (#2031), and a failing Teams bridge integration run keeping its server log and a goroutine dump (#2033);
+- #2023 updates gbash and its `awk`/`jq` contrib modules to v0.0.41; no other dependency changes. #2034 is these notes.
+- `@loomcycle/client` and the Python adapter are 1.121.0. #2021 documents the new `cancelled` value of `error_info.category` in both (a plain string field, so no type change). No method changes in either.
+
+### Embeddings on Amazon Bedrock (#2032)
+
+A deployment that runs all inference through Bedrock with an IAM role had no embedder. Memory recall, vector search, Document search, Recall and trace search refused with `embedder_not_configured`, and consolidation stored duplicates because the similarity merge never ran. Bedrock serves embeddings only through `InvokeModel`, which none of the existing embedders speak.
+
+- **Configure it** on a Bedrock provider that already authenticates with AWS credentials (an `auth:` block, such as `bedrock-claude` from the `bedrock` preset):
+
+  ```yaml
+  models:
+    cohere-embed: { provider: bedrock-claude, model: eu.cohere.embed-v4:0, kind: embedder }
+  memory:
+    embedder:
+      model: cohere-embed
+      api: bedrock
+      dimensions: 1024
+  ```
+
+  The new `memory.embedder.api: bedrock` names the protocol. The embedder uses the provider's host (its `base_url` path is dropped) and the provider's credentials: the same chain, nothing fetched at boot, every secret registered with the redactor. `aws_bedrock_token` mode works too.
+- **Models:** Cohere Embed v4 (`cohere.embed-v4:0`) and v3 (`cohere.embed-multilingual-v3`, `cohere.embed-english-v3`), as a base id or an inference-profile id (`eu.`, `us.`, `global.` …). An application-profile ARN is refused.
+  - v4 `dimensions`: 256, 512, 1024 or 1536 (default 1536). v3 is fixed at 1024. Any other value is refused at config load with the allowed ones.
+  - **Residency:** v4 is not served in-region in eu-central-1. From Frankfurt it is reached through `eu.cohere.embed-v4:0`, which processes in six EU regions, or `global.`, which may leave the EU. `cohere.embed-multilingual-v3` runs in eu-central-1 itself.
+- **Config load refuses** `api: bedrock` on a provider with no `auth:`, on a `bedrock-mantle` provider (it serves no embeddings), on a `base_url` other than `https://bedrock-runtime.<auth.region>.amazonaws.com`, with an `auth.service` other than `bedrock`, and together with the embedder block's own `base_url` or `api_key_env`. The credentials can reach only the provider's own runtime host.
+- **Calls:** batches of at most 96 texts (fewer with a smaller `memory.embedder.batch_size` or `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE`), order kept, each vector's width checked. Over-long texts are truncated rather than failing the batch. Up to 3 attempts for 408, 429, 500 and 503, with short backoff and `Retry-After` honoured (capped at 10 s), all inside the embedder's timeout; expired credentials get one refresh and retry. No credentials fails each call with the permanent `provider authentication unavailable` error and never stops boot.
+- **Errors** name the model id, region, status and AWS error type, plus the first line of AWS's message, capped. Never the input texts.
+- **`loomcycle doctor`** has a new Embedder line for any configured embedder: provider, embedder, model and width. For `api: bedrock` it says the credentials are the provider's (whose identity the AWS line already prints), and warns when the model is not in the region's model listing.
+- **IAM:** `bedrock:InvokeModel` on the model. For a cross-region profile such as `eu.cohere.embed-v4:0`, on the profile ARN in the calling region **and** on `arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0` in every region the profile routes to. Allowing the model names is not enough.
+- **Not included:** a tenant's own Bedrock key for embeddings, embedder token usage in the usage ledger (Bedrock reports no counts for Cohere), and Titan embeddings.
+- The `bedrock` preset gains a commented embedder example; it still declares no new provider and changes no routing. See "Embeddings" under "Amazon Bedrock with AWS credentials" in [`docs/PROVIDERS.md`](docs/PROVIDERS.md) and the embedder section of [`docs/TOOLS.md`](docs/TOOLS.md).
+
+### Search queries are embedded in a query mode (#2027)
+
+Retrieval embedders such as Cohere place a search query differently from the stored text it should find (`search_query` against `search_document`). loomcycle embedded both the same way.
+
+- **An embedder may now have a query mode**, and every search embeds its query through it: Memory search and recall (and so Document search, trace recall, prompt injection, `POST /v1/_memory/search` and the consolidation merge pass), Recall, help search, Document verbatim answers and graph seeds, History content search, and History `related` by free text. Stored text, and comparisons of two stored texts (Document `related`, History `related` by chat, SQL Memory `$embed`, `POST /v1/embeddings`), keep the document mode.
+- **Only the Bedrock embedder has a query mode.** For OpenAI, Gemini, Ollama, Voyage and the rest both modes are the same call, so their vectors, results and calibration are unchanged.
+- **`loomcycle memory-calibrate`** measures new facts in query mode against stored facts in document mode, the comparison the merge pass makes, so a merge band calibrated for Cohere fits what merging does.
+
+### An embedder on any provider whose driver has one (#2027)
+
+`memory.embedder` looked its embedder up by provider id, so only the built-in ids could embed. A provider declared under its own name, `my-gateway: { driver: openai }` or any OpenAI-compatible gateway, failed with `unknown provider`.
+
+- **The lookup is now:** `memory.embedder.api` when set; else the provider id, as before (`ollama-local` stays the local flavour, `anthropic` stays Voyage); else the provider's driver (never `anthropic`, which has no embeddings API); else an error naming the provider, its driver and the embedders available.
+- Config validation and boot use the same lookup, so a config that loads builds the embedder it was checked against.
+- **A provider with an `auth:` block is refused as the embedder unless `api: bedrock` is set.** Before, such a config loaded and would have sent the vendor key named by the id (an `OPENAI_API_KEY`, say) to the Bedrock host.
+
+### A run its caller ends mid-turn is recorded cancelled (#2021)
+
+When a run's caller ended it mid-turn (an HTTP client disconnecting from a non-detached stream, an MCP `spawn_run` transport timeout, a gRPC deadline or cancel, a parent cancelling a sub-agent), the run was stored `completed` with its partial text, or `failed` with "context canceled".
+
+- **Now it is `cancelled`**, with a reason: "client disconnected", "parent run cancelled" or "caller deadline exceeded". A caller deadline at a turn boundary, previously `failed`, is `cancelled` "caller deadline exceeded".
+- **An API cancel mid-stream** ends the SSE stream and gRPC `Run` with one `error` frame carrying `error_info.category: "cancelled"`, where it ended with `done` and an empty reason (gRPC: with no terminal frame). The Web UI terminal shows "cancelled".
+- **A new error category value, `cancelled`**, not retryable. A consumer that switches exhaustively on `error_info.category` will see it.
+- A wall-limit cut mid-turn records stop reason `wall_limit` (it read `cancelled` on a `failed` row). An Agent-tool child cut by its `timeout_ms` mid-stream is reported timed out instead of returning its partial text as the answer. Stateful runs had the same bug and are fixed too.
+- **Compaction:** a summary cut by a cancel is no longer applied, so a truncated summary is never persisted (the manual compact answers `502`). A summary stream that ends without finishing on a live connection is retried once, never applied truncated.
+- Unchanged: the shutdown pause, operator pause, retune, model swap, review hold, idle timeout, provider fallback and turn cancel, none of which cancel the run. A scheduler `on_complete` hook still fires only on `completed`.
+
+### A single spawn_run on a held key stops at the join bound (#2020)
+
+v1.120.0 bounded the batch join (#2012). A single blocking `spawn_run` (MCP, connector `SpawnRun`) whose `idempotency_key` joined a run another request started still waited until that run ended. With no `timeout_ms` and `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS` at its default `0`, that could be forever.
+
+- **When the caller sets no deadline**, the wait now stops at `LOOMCYCLE_BATCH_JOIN_TIMEOUT` (default `1h`). The run is reported as it is: `running`, its ids, `deduplicated: true`, and the batch's "join timed out after …; the run goes on" error. It is never cancelled, since this caller did not start it.
+- A caller deadline still wins, `0` leaves the wait to the caller, and the streaming surfaces (`POST /v1/runs`, gRPC `Run`) are unchanged.
+
+### MCP stdio servers stop with their process group (#2024)
+
+Most stdio MCP servers start through a wrapper (`npx -y …`, `uvx …`, a script) whose child is the real server. Closing a server killed only the wrapper and then waited for the real server to exit on its own, usually never. A tool call whose server failed its handshake hung instead of returning the error, and one wrapped server stalled shutdown.
+
+- **A stdio server now starts in its own process group.** Closing it closes stdin, kills the whole group at once, and waits at most 2 s for its output to end before letting go. A descendant that left the group (`setsid()`) survives, as it does for Bash.
+- **On Linux** a server is also killed when loomcycle dies, even by `SIGKILL`. macOS has no equivalent; see [`docs/TOOLS.md`](docs/TOOLS.md) for what survives a crash there.
+
+### A volume purge cannot be redirected by a symlink swap (#2025)
+
+Every destructive volume delete (the VolumeDef purge, the per-run ephemeral purge and its sweeper, the git-source cleanup) checked a resolved path and then deleted by that path string. An ancestor swapped for a symlink in between carried the delete wherever the link pointed: outside the dynamic root, or into another tenant's directory, which passed the root check. A run needed Bash or a Bashbox host command on a static volume containing the dynamic root to swap it.
+
+- **The delete now goes through a handle on the dynamic root**, opened one directory at a time with an identity check per step, as the file tools do since v1.119.0. A swapped component is refused.
+- **Fix:** under a dynamic root configured through a symlink, the git-source cleanup refused its own directory (logged `REFUSED`) and left it behind. It now cleans up.
+
+### Refused webhook deliveries cost the same (#2026)
+
+v1.119.0 made every refused delivery answer the same `404` bytes, but not in the same time: a few probes with a large body told a live webhook name from an unknown one.
+
+- **Every refusal now costs two HMAC passes over the body**, the most a live check makes: an unknown or disabled name, an oversize body, a missing or malformed signature, a stale timestamp, and a wrong bearer token. Verdicts are unchanged.
+- **Left:** a live webhook copies the body into memory before checking it, about 0.2 ms per MiB, which a made-up name deliberately does not. The first delivery to a webhook whose secret is a stored credential reads it, then caches it for 5 s. See [`docs/FORGE_WEBHOOKS.md`](docs/FORGE_WEBHOOKS.md).
+- **Cost:** a refused delivery takes two SHA-256 passes over a body the server already reads in full.
+
+### gbash v0.0.41 in Bashbox (#2023)
+
+Bashbox runs gbash inside the loomcycle process, so a gbash panic or hang reaches every run on the replica. v0.0.41 fixes several of each: expansion and parser panics and blow-ups, heredoc hangs, budget checks that `eval`, `source` and `trap` skipped, background jobs outliving the run, and unbounded `cp`, `tar` and `gzip` output. In the filesystem layer, `..` after a symlink now applies to the link's target, a hard link needs write access to its source, and reading a host directory no longer hangs on a FIFO.
+
+- **Behaviour change: one file written through a redirect or `cp` stops at 8 MiB**, on read-only and read-write volumes; a named pipe buffers at most 64 KiB. Reads through a read-write volume were already capped at 10 MiB. loomcycle does not change gbash's limit.
+
+### Security wording, CI and tests (#2022, #2028, #2029, #2030, #2031)
+
+- **README and SECURITY.md say what two protections cover** (#2022). A host vouched for by name in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` still reaches loopback and private ranges wherever its DNS points, never link-local or cloud metadata. Operator-token hashes are peppered only when `LOOMCYCLE_SECRET_KEY` (or an explicit pepper) is set.
+- **A WebSocket bearer can land in proxy logs** (#2029). A browser sends it in `Sec-WebSocket-Protocol`, which many proxies log. [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the `client-tools` help topic say what to do: a short-lived per-user token limited to the agents it needs, never an operator bearer.
+- **CI** fails, rather than skips, when the symlink swap-race proofs cannot run (#2028), runs `go mod verify`, fails on high-severity gosec findings, and logs a failed advisory unlock through the logger (#2030).
+- **Two behaviours are now pinned by tests** (#2031): a vouched host name is resolved and checked again on every connection, so a name that later answers the metadata address is refused; and WebFetch returns no response headers (cookies, tokens) to the model.
+
+### Upgrade notes
+
+- **No migration.**
+- **Behaviour changes:**
+  - **Runs ended by their caller mid-turn** are `cancelled` with a reason, not `completed` with partial text or `failed`. An API cancel mid-stream ends the stream with an `error` frame, `error_info.category: "cancelled"`. **A new category value**: check any consumer that switches exhaustively on it.
+  - **Bashbox:** one file written through a redirect or `cp` stops at 8 MiB.
+  - **Embedder config:** an embedder on a provider with an `auth:` block is refused at load unless it sets `memory.embedder.api: bedrock`.
+  - **Search vectors:** unchanged for every embedder but Bedrock. Only an embedder with a query mode embeds queries differently.
+  - **A single `spawn_run`** joining a held key with no deadline returns after `LOOMCYCLE_BATCH_JOIN_TIMEOUT` (default 1h), the run still going.
+  - **MCP stdio servers** are killed with their whole process group when closed, with no grace period.
+- **Switching to a Bedrock embedder:** set `memory.embedder` as above, restart, run `loomcycle memory-calibrate` and set `memory.consolidation.merge_threshold` and `related_threshold` from it. On a store that already has vectors, `POST /v1/_memory/reembed`; for facts stored with no vector, `POST /v1/_memory/backfill_embeddings`. Similarity bands belong to the embedding model and do not carry over. The probe `PUT …/keys/probe?embed=true` needs a vector-capable store; `POST /v1/embeddings` exercises the embedder directly.
+- **Images:** a minor tag rebuilds every image. All are at 1.121.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images.
+
 ## What's in v1.120.0
 
 *The security review's closing decisions, and a bound on batch joins. **Boot no longer rewraps operator tokens minted before the pepper**: a new `loomcycle tokens rewrap` command lists them and rewraps only the rows you name after reviewing them. **A deployment upgrading straight from a release before v1.119.0 must run it once: read the upgrade notes first.** Also: a config reload keeps an admin credential in config, a resume gives back exactly the per-user slot a run took, a batch spawn in join mode can no longer wait forever, shared-tier definitions are marked in get and list, and the chat bridges move to 0.2.0.*

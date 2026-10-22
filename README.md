@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.120.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.121.0.</em>
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.120) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.121) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -199,15 +199,26 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.120.0) closes the security review whose fixes
-shipped in v1.119.0. Boot no longer rewraps operator tokens minted before the
+The most recent line (v1.121.0) adds embeddings on Amazon Bedrock:
+`memory.embedder` can use Cohere Embed, signed with a Bedrock provider's AWS
+credentials, so a deployment on an instance role gets memory search and
+consolidation merging with no key. Search queries are embedded in a query mode
+that embedders such as Cohere distinguish from stored text, and an embedder can
+sit on any provider whose driver has one. It also closes the residuals of an
+independent re-audit of the security review: MCP stdio servers stop with their
+process group, a volume purge cannot be redirected by a symlink swap, refused
+webhook deliveries cost the same time, and gbash moves to v0.0.41. A run its
+caller ends mid-turn is now recorded `cancelled`. See the upgrade notes in
+[`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.120.0 closed the security review whose fixes
+shipped in v1.119.0. Boot stopped rewrapping operator tokens minted before the
 pepper: `loomcycle tokens rewrap` lists them and rewraps only the rows an
-operator names after reviewing them. A deployment upgrading straight from a
-release before v1.119.0 must run it once. A config reload keeps an admin
-credential in config, a resume gives back exactly the per-user slot a run took,
-and a batch spawn in join mode can no longer wait forever. Shared-tier
-definitions are marked in get and list, and the chat bridges move to 0.2.0.
-See the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+operator names after reviewing them, and a deployment upgrading straight from a
+release before v1.119.0 must run it once. A config reload kept an admin
+credential in config, a resume gave back exactly the per-user slot a run took,
+and a batch spawn in join mode could no longer wait forever. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.119.0 was the fixes from a security review of the
 whole runtime. A server authenticated only by a minted admin token no longer
