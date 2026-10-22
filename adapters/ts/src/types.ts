@@ -1682,6 +1682,18 @@ export interface RunSpec {
      *  own `crypto_scopes` were narrowed to, and are narrowed to again on
      *  resume. Absent: the parent held none. */
     crypto_scopes?: string[];
+    /** The override offer the child passes on to its own children: its
+     *  parent's, unchanged, so a resume offers what the live child did. Only
+     *  a child of the offering run's definition (`def_id`, else `agent_name`)
+     *  takes it. `{}` when the parent offered nothing; absent on a sub-run
+     *  recorded before the field existed. Written by the server only. */
+    offered_overrides?: {
+      /** The offering run's own record, as it started. */
+      record?: RunSpec;
+      def_id?: string;
+      agent_name?: string;
+      run_id?: string;
+    };
   };
   /** The iteration limit the run started with. Absent for a run with none
    *  (unbounded, or an interactive run with no `max_iterations` of its own)

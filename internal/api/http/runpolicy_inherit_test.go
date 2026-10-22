@@ -148,7 +148,8 @@ func TestPrepareSubRun_LockedChildKeepsTheHostListNarrowOnly(t *testing.T) {
 // its spawn wrote carries what it inherited, and resume rebuilds the policy
 // from that record and the definition. Checked on a locked child of a parent
 // with a host list, a fan-out cap, key scopes, read-only ephemeral volumes and
-// an interruption narrowing it inherits as the same definition.
+// an interruption narrowing it inherits as the same definition — and the
+// parent's offer, which the child passes on to its own children (H5).
 func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	h := newReviewHarness(t)
 	locked := false
@@ -212,12 +213,15 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	if got, want := resumed.Interruption.Load(), live.Interruption.Load(); !reflect.DeepEqual(got, want) {
 		t.Errorf("interruption: resumed %+v, live %+v", got, want)
 	}
-	// Overrides is the one field that differs, and on purpose for now: live, a
-	// child keeps its PARENT's offer on ctx (its own children of the parent's
-	// definition take the parent's overrides); a resumed child offers its own
-	// record. Census hazard H5, left as it was by this change.
+	// Every other field compares as it is, Overrides included: live, a child
+	// keeps its PARENT's offer (its own children of the parent's definition
+	// take the parent's overrides), and its record keeps that offer for a
+	// resume to restore. The holder is compared by what it holds, above.
+	if len(live.Overrides.Record) == 0 {
+		t.Fatal("fixture: the live child holds no offer from its parent, so Overrides compares two zeros")
+	}
 	for _, p := range []*tools.RunPolicy{&live, &resumed} {
-		p.Interruption, p.Overrides = nil, tools.RunOverridesValue{}
+		p.Interruption = nil
 	}
 	if !reflect.DeepEqual(resumed, live) {
 		t.Errorf("the resumed sub-run's policy differs from the one it ran with live:\n resumed %+v\n live    %+v", resumed, live)
@@ -255,5 +259,140 @@ func TestResume_SubRunKeepsItsOwnFanoutCapUnderAnUncappedParent(t *testing.T) {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
 	if got := h.srv.resumedPolicySource(ctx, run, rec, def).FanoutCap; got != 2 {
 		t.Errorf("the resumed sub-run's fan-out cap is %d; its definition allows 2", got)
+	}
+}
+
+// resumedRunCtx is the ctx a resume runs runID's loop on, as far as a spawn
+// from it reads one: the run's identity, its agent name, its run id and the
+// policy rebuilt from its row and record (resumePausedRun). The tool set is
+// left out: it is the run's own (ruleOwn), and no child reads it.
+func resumedRunCtx(t *testing.T, h *reviewHarness, runID string) context.Context {
+	t.Helper()
+	run, err := h.st.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCfg, ok := decodeRunConfig(run.RunConfig)
+	if !ok {
+		t.Fatalf("run %s wrote no configuration record", runID)
+	}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+		UserID: run.UserID, TenantID: run.TenantID, AgentID: run.AgentID, SessionID: run.SessionID, Isolated: run.Isolated,
+	})
+	ctx = tools.WithAgentName(ctx, run.Agent)
+	def, _, err := h.srv.resolveAgentName(ctx, run.TenantID, run.Agent, nameFromAgentTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, _ := h.srv.agentRunPolicy(ctx, def, run.Agent, h.srv.resumedPolicySource(ctx, run, runCfg, def))
+	ctx = tools.WithRunPolicy(ctx, policy)
+	ctx = tools.WithParentRunID(ctx, run.ParentRunID)
+	return tools.WithRunID(ctx, run.ID)
+}
+
+// H5, the case recomputing from the parent chain would get wrong: root A
+// narrows its interruptions, spawns B (another definition), and B spawns A′ (A
+// again). Live, B holds A's offer and hands it to A′, which is A's definition
+// and takes the narrowing. A resume of B used to offer B's own record instead,
+// which A′ is not the definition of — so an A′ spawned after B resumed asked
+// a person as often as its definition allows, where its live twin could not.
+func TestResume_ChainGrandchildOfTheRootsDefinitionKeepsItsNarrowing(t *testing.T) {
+	h := newReviewHarness(t)
+	ctx := context.Background()
+	cfg := h.srv.cfg()
+	cfg.Agents["A"] = config.AgentDef{
+		Model: "stub-model", SystemPrompt: "a", Tools: []string{"Agent", "Interruption"},
+		Interruption: config.AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 5},
+	}
+	cfg.Agents["B"] = config.AgentDef{Model: "stub-model", SystemPrompt: "b", Tools: []string{"Agent"}}
+
+	// The root's row and record, as a top-level run of A writes them: a spawn
+	// reads the offering run's record as it is now.
+	rootRec := runConfigRecord{Interruption: &config.AgentInterruptionACL{Enabled: true, MaxPending: 1}}
+	sess, err := h.st.CreateSession(ctx, "", "A", "u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := h.st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_root", UserID: "u1", RunConfig: rootRec.marshal()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootCtx := tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "u1", AgentID: "a_root", RootRunID: root.ID, SessionID: sess.ID})
+	rootCtx = tools.WithAgentName(tools.WithRunID(rootCtx, root.ID), "A")
+	rootCtx = tools.WithRunPolicy(rootCtx, tools.RunPolicy{
+		Overrides: tools.RunOverridesValue{Record: rootRec.marshal(), AgentName: "A", RunID: root.ID},
+	})
+
+	spawn := func(parent context.Context, name string) *subRunPrep {
+		t.Helper()
+		prep, err := h.srv.prepareSubRunValues(parent, name, nameFromAgentTool, "", "go", "", false, func(providers.Event) {}, nil, nil, false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(prep.cleanup)
+		return prep
+	}
+	b := spawn(rootCtx, "B")
+	aLive := spawn(b.LoopCtx, "A")
+	live := tools.PolicyOf(aLive.LoopCtx).Interruption.Load()
+	// What live does, pinned so a change to it is seen: A′ is A's definition,
+	// so it takes the root's narrowing through B, which is not.
+	if live.MaxPending != 1 {
+		t.Fatalf("live: A′ under B allows %d pending interruptions; the root narrowed A to 1", live.MaxPending)
+	}
+
+	// B resumed, then spawning A′.
+	aUnderResumedB := spawn(resumedRunCtx(t, h, b.RunID), "A")
+	if got := tools.PolicyOf(aUnderResumedB.LoopCtx).Interruption.Load(); !reflect.DeepEqual(got, live) {
+		t.Errorf("A′ spawned by a resumed B: interruption %+v; spawned by the live B: %+v", got, live)
+	}
+	// A′ itself resumed.
+	if got := tools.PolicyOf(resumedRunCtx(t, h, aLive.RunID)).Interruption.Load(); !reflect.DeepEqual(got, live) {
+		t.Errorf("A′ resumed: interruption %+v; live: %+v", got, live)
+	}
+}
+
+// A sub-run recorded before the offer was (its spawn record has none) resumes
+// as it always did: offering its own record to its children.
+func TestResume_SubRunWithNoRecordedOfferOffersItsOwnRecord(t *testing.T) {
+	h := newReviewHarness(t)
+	run := store.Run{ID: "r_child", Agent: "child", ParentRunID: "r_parent", UserID: "u1"}
+	rec := runConfigRecord{Spawn: &spawnRecord{}, Interruption: &config.AgentInterruptionACL{Enabled: true, MaxPending: 1}}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1"})
+	got := h.srv.resumedPolicySource(ctx, run, rec, config.AgentDef{Model: "stub-model"}).Overrides
+	want := tools.RunOverridesValue{Record: rec.marshal(), AgentName: "child", RunID: "r_child"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("offer = %+v (record %s), want its own record %s", got, got.Record, want.Record)
+	}
+}
+
+// The recorded offer reads back as the offer it was, and an offer whose record
+// is not JSON is recorded without it rather than costing the child its whole
+// configuration record (json.Marshal refuses a RawMessage that is not JSON).
+func TestOfferedOverridesRecord_RoundTripsAndNeverCostsTheChildItsRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   tools.RunOverridesValue
+		want tools.RunOverridesValue
+	}{
+		{"json", tools.RunOverridesValue{Record: []byte(`{"interruption":{"enabled":true,"max_pending":1}}`), DefID: "d1", AgentName: "A", RunID: "r_root"},
+			tools.RunOverridesValue{Record: []byte(`{"interruption":{"enabled":true,"max_pending":1}}`), DefID: "d1", AgentName: "A", RunID: "r_root"}},
+		{"not json", tools.RunOverridesValue{Record: []byte(`not json`), AgentName: "A", RunID: "r_root"},
+			tools.RunOverridesValue{AgentName: "A", RunID: "r_root"}},
+		{"no offer", tools.RunOverridesValue{}, tools.RunOverridesValue{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := runConfigRecord{Spawn: &spawnRecord{OfferedOverrides: offeredOverridesRecordOf(tc.in)}}.marshal()
+			if raw == nil {
+				t.Fatal("the child's record did not marshal")
+			}
+			back, ok := decodeRunConfig(raw)
+			if !ok || back.Spawn == nil || back.Spawn.OfferedOverrides == nil {
+				t.Fatalf("the recorded offer did not read back from %s", raw)
+			}
+			if got := back.Spawn.OfferedOverrides.value(); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("offer read back as %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }
