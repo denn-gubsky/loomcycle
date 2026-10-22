@@ -23,7 +23,7 @@ The most common consumer is Claude Code: you can ask Claude to "spawn a `qa-agen
 - In `detach` mode it returns that run's ids and its current status.
 - In `join` mode, and on `spawn_run`, it waits for that run to end and returns its result, read from the run's row. The text is the stored (redacted) answer and `limits` is absent.
 - On the streaming surfaces (`POST /v1/runs`, gRPC `Run`) the response is the existing run's stream: the `session` and `agent` frames a fresh run sends, the `agent` frame carrying `deduplicated: true`, then the run's events from its first, ending when the run does. Closing the stream does not stop the run.
-- A timeout on such a call ends the wait only. The run was not started by this call, so it is not cancelled, and it is reported as `running`.
+- A timeout on such a call ends the wait only. The run was not started by this call, so it is not cancelled, and it is reported as `running`. A `join` batch always has such a timeout: its `timeout_ms`, or else the server's join bound (see "Bounding a batch join" below).
 - A run that is waiting for a person (parked for input, or held for review) is returned at once as `running`.
 
 The request body is not compared: the same key with a different prompt still returns the first run, so build the key from what makes the work distinct. A key is refused on a continuation (`session_id`), on a configured run, and when two children of one batch share it. It lives as long as the run's session is retained, and travels with a paused run through a snapshot.
@@ -46,6 +46,15 @@ It is refused with `board_chunk_id` (a board-bound walk resumes its stored posit
 - It survives a restart: the limit is in the run's `spec`, and a resumed run is charged the lifetime it had already used.
 - A sub-agent takes no limit of its own from it; it ends because its parent's cancel reaches it.
 - A run reads its own limit with `Context op=self`: `run_budget.wall_limit_ms` and `wall_elapsed_ms`.
+
+**Bounding a batch join: `timeout_ms` and the server's join bound.** A `join` batch (`spawn_runs`, `POST /v1/runs:batch`, gRPC `SpawnRunBatch`) never waits forever. Its wait is bounded by the request's `timeout_ms` when set, and otherwise by the operator's `LOOMCYCLE_BATCH_JOIN_TIMEOUT` (a Go duration, default `1h`; `0` = no server bound, so only the caller's own deadline or disconnect ends the wait). The two differ in what happens to a child still going when the bound passes:
+
+- **`timeout_ms`**: the batch's own unfinished children are cancelled, recorded `cancelled`, and their `error` says the join timed out.
+- **The server's bound**: the join only stops waiting. The batch's own children keep running and come back with their current status (`running`, or `queued` while they wait for a run slot), their `run_id`, `session_id` and `agent_id`, and an `error` saying the join timed out and the run goes on. Read or stream them by `run_id`.
+- **A child joined to an existing run by `idempotency_key`** is never cancelled, under either bound, because another request started it. It comes back with that run's current status and `deduplicated: true`.
+- A child that had not been admitted when the bound passed is not started, and comes back `cancelled` with no ids.
+
+Children that finish inside the bound are reported as before. The reason for an unfinished child is in the existing `error` field; there is no new field.
 
 **No-trace runs: `retention`.** `spawn_run`, each `spawn_runs` child, each `POST /v1/runs:batch` child, `POST /v1/runs` and the gRPC `Run` and `SpawnRunBatch` requests take an optional `retention`. `"none"` makes the run a no-trace run: what it says is returned to the caller and stored nowhere. The agent's definition or the caller's token can also make a run no-trace, and the strictest wins. Such a run cannot be interactive, continued, compacted or retuned (`retention_none_unsupported`). See `docs/CONFIGURATION.md`, "No-trace runs".
 
