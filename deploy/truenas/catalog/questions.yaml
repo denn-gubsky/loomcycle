@@ -1119,6 +1119,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_BATCH_JOIN_TIMEOUT
+            label: LOOMCYCLE_BATCH_JOIN_TIMEOUT
+            description: 'How long a batch in mode join (POST /v1/runs:batch, MCP spawn_runs, gRPC SpawnRunBatch) waits for its children when the request gives no timeout_ms. Past it the join only stops waiting: no child is cancelled. Each child still going comes back running (or queued) with its run_id and an error saying the join timed out, and goes on; only a request''s own timeout_ms cancels. A Go duration; 0 = no serv…'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_GIT_SOURCE_HOSTS
             label: LOOMCYCLE_GIT_SOURCE_HOSTS
             description: 'Off unless hosts are listed. `VolumeDef op=create ephemeral:true source:{git:…}` then fetches the commit inside the runtime, so no agent holds the token. The agent needs "source:git" in volume_def_scopes, and a credential it names must be restricted (allowed_urls) to a URL covering the repository. (example: github.com,gitea.example.com)'

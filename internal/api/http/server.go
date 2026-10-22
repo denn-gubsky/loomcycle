@@ -9355,6 +9355,14 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 		s.finishRunCancelled(ctx, runID, res, reason, meta)
 		return
 	}
+	// A batch child its join's deadline cut off (SpawnRunBatch). Checked by
+	// cause, not by runErr: a turn whose stream the cancelled ctx closed reads
+	// to the loop as a finished turn, so the run returns nil and would be
+	// written "completed" with whatever partial text it had.
+	if errors.Is(context.Cause(runCtx), errBatchJoinTimedOut) {
+		s.finishRunCancelled(ctx, runID, res, errBatchJoinTimedOut.Error(), meta)
+		return
+	}
 	// A run whose context was cancelled WITHOUT an API-cancel cause ended
 	// because the caller went away — most commonly a CLIENT DISCONNECT on a
 	// non-interactive run (its runCtx derives from the request ctx, so a

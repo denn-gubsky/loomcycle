@@ -60,6 +60,13 @@ func (s *Server) SpawnRun(ctx context.Context, req connector.SpawnRunRequest) (c
 // SpawnRunResult — the blocking half of SpawnRun, shared with the start of a
 // configured run. parentContext is echoed back to the caller.
 func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentContext *store.ParentContext) (connector.SpawnRunResult, error) {
+	return s.runBlockingObserved(ctx, in, parentContext, nil)
+}
+
+// runBlockingObserved is runBlocking that also tells observe the run's ids
+// when it is registered, for a caller that may stop waiting before the run
+// ends (a batch join at the server's bound). nil = no observer.
+func (s *Server) runBlockingObserved(ctx context.Context, in runner.RunInput, parentContext *store.ParentContext, observe func(agentID, runID, sessionID string)) (connector.SpawnRunResult, error) {
 
 	// Capture: the OnRegistered callback gives us the resolved IDs;
 	// OnEvent accumulates text deltas + the final usage/stop_reason.
@@ -74,6 +81,9 @@ func (s *Server) runBlocking(ctx context.Context, in runner.RunInput, parentCont
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
 			regAgentID, regRunID, regSessionID = agentID, runID, sessionID
+			if observe != nil {
+				observe(agentID, runID, sessionID)
+			}
 		},
 		OnEvent: func(ev providers.Event) {
 			finalText.Observe(ev)
@@ -258,14 +268,32 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 		return connector.BatchSpawnResult{}, fmt.Errorf("spawn_runs: mode %q not supported (want %q or %q)", mode, "join", "detach")
 	}
 
-	// Optional batch-level join deadline. A child still running when it fires
-	// has its RunOnce ctx cancelled (derived from this ctx) and is reported
-	// with a cancelled status in-envelope — the batch still returns the
-	// finished children's results.
-	if req.TimeoutMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(req.TimeoutMS)*time.Millisecond)
-		defer cancel()
+	// The join's deadline, so that it ends even when its caller never does (a
+	// gRPC call with no deadline once waited for ever on a child keyed to
+	// someone else's run that never ended). A detached batch does not wait.
+	//
+	// The request's timeout_ms is the caller's deadline on its runs: a fresh
+	// child still going when it passes is cancelled — its RunOnce ctx derives
+	// from this one. Without it the server's LOOMCYCLE_BATCH_JOIN_TIMEOUT only
+	// ends the wait: each child still going is reported with its ids and goes
+	// on (joinChildUntil). A child joined to an existing run by idempotency_key
+	// is never cancelled by either: that run belongs to another request.
+	var timeoutMS, serverBound time.Duration
+	if mode == "join" {
+		if req.TimeoutMS > 0 {
+			timeoutMS = time.Duration(req.TimeoutMS) * time.Millisecond
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeoutCause(ctx, timeoutMS, errBatchJoinTimedOut)
+			defer cancel()
+		} else if c := s.cfg(); c != nil {
+			serverBound = c.Env.BatchJoinTimeout
+		}
+	}
+	waitCtx := ctx
+	if serverBound > 0 {
+		var stop context.CancelFunc
+		waitCtx, stop = context.WithTimeoutCause(ctx, serverBound, errBatchJoinWaitEnded)
+		defer stop()
 	}
 
 	results := make([]connector.SpawnRunResult, n)
@@ -285,30 +313,222 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 				results[i] = s.spawnDetached(ctx, spawn)
 				return
 			}
-			res, err := s.SpawnRun(ctx, spawn)
-			if err != nil {
-				// SpawnRun captures run failures in-result and returns a nil
-				// error; a non-nil error here is an unexpected dispatch failure.
-				// Surface it in THIS child's envelope, never fail the batch.
-				res.Status = string(store.RunFailed)
-				if res.Error == "" {
-					res.Error = err.Error()
-				}
-				// Batch children are a fourth writer of failure state; classify
-				// here too so a child refused by admission is as legible as a
-				// single spawn_run refused the same way.
-				if res.ErrorInfo == nil {
-					if info, ok := errclassify.CategoryOf(err); ok {
-						res.ErrorInfo = &info
-					}
-				}
+			if serverBound > 0 {
+				results[i] = s.joinChildUntil(ctx, waitCtx, serverBound, spawn)
+				return
 			}
+			res := batchChildResult(s.SpawnRun(ctx, spawn))
+			markJoinTimedOut(ctx, timeoutMS, &res)
 			results[i] = res
 		}(i)
 	}
 	wg.Wait()
 
 	return connector.BatchSpawnResult{Results: results, Spawned: n}, nil
+}
+
+// errBatchJoinTimedOut is the cause a request's timeout_ms carries. The run
+// end reads it on a child's ctx to record the child cancelled, and a child's
+// slot reads it to say why.
+var errBatchJoinTimedOut = errors.New("batch join timed out")
+
+// errBatchJoinWaitEnded is the cause the server's join bound carries. It is on
+// the wait only, never on a child's run ctx, so no run is ended by it.
+var errBatchJoinWaitEnded = errors.New("batch join stopped waiting")
+
+// batchChildResult folds a child's dispatch error into its own slot.
+func batchChildResult(res connector.SpawnRunResult, err error) connector.SpawnRunResult {
+	if err == nil {
+		return res
+	}
+	// SpawnRun captures run failures in-result and returns a nil error; a
+	// non-nil error here is an unexpected dispatch failure. Surface it in THIS
+	// child's envelope, never fail the batch.
+	res.Status = string(store.RunFailed)
+	if res.Error == "" {
+		res.Error = err.Error()
+	}
+	// Batch children are a fourth writer of failure state; classify here too
+	// so a child refused by admission is as legible as a single spawn_run
+	// refused the same way.
+	if res.ErrorInfo == nil {
+		if info, ok := errclassify.CategoryOf(err); ok {
+			res.ErrorInfo = &info
+		}
+	}
+	return res
+}
+
+// joinChildUntil runs one join child under the server's bound: it waits for
+// the child until waitCtx ends, and when the bound is what ended it, stops
+// waiting without ending the run.
+//
+// The run's ctx follows the caller's (followCtx) — values, and cancellation
+// while the join waits — so a caller that leaves or whose deadline passes
+// ends the child exactly as it did before the bound existed. At the bound a
+// registered run is cut loose from the caller and reported with its ids, and
+// goes on after the call returns, holding its admission slot until it ends,
+// like a detached child: the transport's ctx ending with the call must not
+// end it. A child not registered by then (still being admitted, or joined to
+// an existing run by idempotency_key, which registers nothing) is withdrawn
+// instead, so no run starts that the caller holds no id for; withdrawing a
+// joined child only ends the wait, never the run another request started.
+func (s *Server) joinChildUntil(ctx, waitCtx context.Context, bound time.Duration, spawn connector.SpawnRunRequest) connector.SpawnRunResult {
+	spawn.ParentContext = connector.StripRuntimeParentContext(spawn.ParentContext)
+	runCtx := newFollowCtx(ctx)
+	defer runCtx.release() // a child that ended needs its watcher no more
+
+	var (
+		mu                        sync.Mutex
+		registered, withdrawn     bool
+		agentID, runID, sessionID string
+	)
+	observe := func(a, r, ses string) {
+		mu.Lock()
+		defer mu.Unlock()
+		registered, agentID, runID, sessionID = true, a, r, ses
+	}
+	ended := make(chan connector.SpawnRunResult, 1)
+	go func() {
+		ended <- batchChildResult(s.runBlockingObserved(runCtx, connector.SpawnRequestToRunInput(spawn), spawn.ParentContext, observe))
+	}()
+
+	select {
+	case res := <-ended:
+		return res
+	case <-waitCtx.Done():
+	}
+	if !errors.Is(context.Cause(waitCtx), errBatchJoinWaitEnded) {
+		// The caller left first. Its departure reaches the run through
+		// runCtx, which ends it as before; report what that leaves.
+		return <-ended
+	}
+	mu.Lock()
+	if registered {
+		runCtx.release()
+	} else {
+		withdrawn = true
+		runCtx.abort()
+	}
+	mu.Unlock()
+	if withdrawn {
+		res := <-ended
+		switch {
+		case res.Deduplicated:
+			if !store.IsTerminalRunStatus(store.RunStatus(res.Status)) {
+				res.Error = fmt.Sprintf("join timed out after %s; the run goes on (another request with this idempotency_key started it): read it by run_id", bound)
+			}
+		case res.RunID == "":
+			res.Status = string(store.RunCancelled)
+			res.Error = fmt.Sprintf("join timed out after %s before the run was admitted; it was not started", bound)
+		default:
+			// Registered in the instant after the withdrawal: it was ended
+			// as it started, by the abort.
+			res.Status = string(store.RunCancelled)
+			res.Error = fmt.Sprintf("join timed out after %s as the run was being admitted; it was withdrawn", bound)
+		}
+		return res
+	}
+	select {
+	case res := <-ended: // it ended as the bound passed
+		return res
+	default:
+	}
+	res := connector.SpawnRunResult{
+		AgentID: agentID, RunID: runID, SessionID: sessionID,
+		Status:        string(store.RunRunning),
+		ParentContext: spawn.ParentContext,
+		Error:         fmt.Sprintf("join timed out after %s; the run goes on: read it by run_id", bound),
+	}
+	if s.store != nil {
+		if run, err := s.store.GetRun(context.WithoutCancel(ctx), runID); err == nil {
+			res.Status = string(run.Status) // queued while it waits for a run slot
+		}
+	}
+	return res
+}
+
+// followCtx is a run ctx that carries its parent's values and follows its
+// parent's cancellation until released, and after that ends only through what
+// derives from it (the cancel registry). Until release, Err and Cause are the
+// parent's own, so a run its caller ended is recorded exactly as one whose ctx
+// was the caller's. It reports no deadline, so nothing below it copies the
+// caller's deadline into a bound that would outlive the release.
+type followCtx struct {
+	context.Context // context.WithoutCancel(parent): values only
+	done            chan struct{}
+	stop            chan struct{}
+	stopOnce        sync.Once
+	doneOnce        sync.Once
+	mu              sync.Mutex
+	err             error
+}
+
+func newFollowCtx(parent context.Context) *followCtx {
+	c := &followCtx{Context: context.WithoutCancel(parent), done: make(chan struct{}), stop: make(chan struct{})}
+	go func() {
+		select {
+		case <-parent.Done():
+			c.end(parent.Err())
+		case <-c.stop:
+		}
+	}()
+	return c
+}
+
+func (c *followCtx) Done() <-chan struct{} { return c.done }
+
+func (c *followCtx) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *followCtx) end(err error) {
+	c.doneOnce.Do(func() {
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+
+// release stops following the parent; the ctx ends no more of itself.
+func (c *followCtx) release() { c.stopOnce.Do(func() { close(c.stop) }) }
+
+// abort ends the ctx now, as a cancel would.
+func (c *followCtx) abort() {
+	c.release()
+	c.end(context.Canceled)
+}
+
+// markJoinTimedOut says, in a child's own slot, that the request's timeout_ms
+// came before the child's end. A run another request started keeps the status
+// its row has — running, as a rule — and its ids, so the caller can read or
+// stream it by run_id. This batch's own run was cut off by the deadline, so it
+// reads cancelled whatever the cut left behind: the loop takes a stream closed
+// by a cancelled ctx for a finished turn, and the run comes back "completed"
+// with whatever partial text it had. Only that deadline is reported: a caller
+// that left is not there to read the envelope.
+//
+// It is called as the child's call returns, so a child marked here was still
+// going when the deadline fired, short of one that ended in the instant before.
+func markJoinTimedOut(joinCtx context.Context, bound time.Duration, res *connector.SpawnRunResult) {
+	if !errors.Is(context.Cause(joinCtx), errBatchJoinTimedOut) {
+		return
+	}
+	switch {
+	case res.Deduplicated:
+		if !store.IsTerminalRunStatus(store.RunStatus(res.Status)) {
+			res.Error = fmt.Sprintf("join timed out after %s; the run goes on (another request with this idempotency_key started it): read it by run_id", bound)
+		}
+	case res.RunID == "":
+		res.Status = string(store.RunCancelled)
+		res.Error = fmt.Sprintf("join timed out after %s before the run was admitted; it was not started", bound)
+	default:
+		res.Status = string(store.RunCancelled)
+		res.Error = fmt.Sprintf("join timed out after %s; the run was cancelled", bound)
+	}
 }
 
 // CancelRun looks up the run by agent_id and triggers cancellation

@@ -3,7 +3,7 @@
 import { consoleLogger, createBridge, type Bridge, type BridgeAdapter, type BridgeOptions } from "@loomcycle/bridge-core";
 
 import { DiscordApi } from "./api.js";
-import { registerCommands } from "./commands.js";
+import { HELP_TEXT, registerCommands } from "./commands.js";
 import type { DiscordConfig } from "./config.js";
 import { interactionRoute } from "./interactions.js";
 import { DiscordPort, type DiscordRef } from "./port.js";
@@ -34,7 +34,9 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
   const key = publicKeyFromHex(cfg.publicKey);
 
   const adapter: BridgeAdapter<DiscordRef> = {
-    platform: { name: "discord", label: "Discord" },
+    // `/ask prompt:/help` reaches the core as "/help": answer with the same
+    // list as the /help command, not the core's typed-command one.
+    platform: { name: "discord", label: "Discord", helpText: HELP_TEXT },
     // Without the Gateway there is no message to edit as it grows, and each
     // turn is one message per 2,000 characters.
     capabilities: { streaming: "never", maxMessageChars: MAX_MESSAGE_CHARS },

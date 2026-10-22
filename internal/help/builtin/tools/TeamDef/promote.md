@@ -15,7 +15,8 @@ name walks that version. Promoting an older version is how you roll back.
 
 ## Errors
 
-- `promote: def_id "..." not found` — no such version in your tenant.
+- `promote: def_id "..." not found` — no such version in your tenant. A shared
+  version (`shared: true` in `get`/`list`) is not yours to promote.
 - `promote: ...` — a name one of the team's own agents would run under is
   taken.
 

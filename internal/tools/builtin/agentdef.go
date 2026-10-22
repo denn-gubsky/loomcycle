@@ -88,6 +88,7 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`your own (a fork may also keep what the forked version has). An unset memory_scopes or sql_scopes takes the ` +
 	`ordinary memory default; any other unset field is judged at its default (the operator's default volume, ` +
 	`the user's history, the question interruption kind, every skill), so set it explicitly when yours is narrower. ` +
+	`get and list also return shared definitions, marked "shared": true: you may read and fork them, but not retire or promote them. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
 const agentDefInputSchema = `{
@@ -336,6 +337,20 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 // tenant strictly.
 func defRowReadable(ctx context.Context, rowTenant string) bool {
 	return rowTenant == "" || rowTenant == tools.RunIdentity(ctx).TenantID || defCallerIsAdmin(ctx)
+}
+
+// markSharedTier adds "shared": true to a get / list row of the shared ("")
+// tier, and leaves every other row as it was (RFC ES C3). defRowReadable puts
+// both tiers in one answer and each tier numbers its own versions, so without
+// the mark a caller cannot tell the shared "version 1" it may only read and
+// fork from its own "version 1" it may retire and promote. A caller whose own
+// tenant is "" (open mode, the stdio MCP server, a run a yaml schedule or
+// webhook fired) owns that tier, so nothing is marked for it.
+func markSharedTier(ctx context.Context, row map[string]any, rowTenant string) map[string]any {
+	if rowTenant == "" && tools.RunIdentity(ctx).TenantID != "" {
+		row["shared"] = true
+	}
+	return row
 }
 
 // forkParentVisible reports whether a caller in callerTenant may fork a
@@ -754,7 +769,7 @@ func (a *AgentDef) execGet(ctx context.Context, policy tools.AgentDefPolicyValue
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return okJSON(rowResponse(row, false))
+	return okJSON(markSharedTier(ctx, rowResponse(row, false), row.TenantID))
 }
 
 func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
@@ -776,7 +791,7 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
-		out = append(out, rowResponseMap(r))
+		out = append(out, markSharedTier(ctx, rowResponseMap(r), r.TenantID))
 	}
 	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }

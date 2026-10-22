@@ -343,6 +343,14 @@ describe("discord bridge over HTTP", () => {
     expect(lc.calls).toHaveLength(0);
   });
 
+  it("answers /ask /help with the Discord command list, not the core's", async () => {
+    const res = await post(dmCommand("ask", "/help"));
+    expect(res.json).toEqual(DEFERRED);
+    await waitFor(() => discord.calls.length === 1, "the reply");
+    expect(discord.contents()[0]).toContain("/ask");
+    expect(lc.runs).toHaveLength(0);
+  });
+
   it("routes /stop to the core, which replaces the deferred response", async () => {
     const res = await post(dmCommand("stop"));
     expect(res.json).toEqual(DEFERRED);
