@@ -1,6 +1,14 @@
-package teamgraph
+package teamspec
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
+
+// varNameRe is the variable-name charset, the same [a-zA-Z0-9_-]{1,64} the
+// credentials validator enforces and the expander matches — so a name that
+// validates here is a name the expander can actually resolve.
+var varNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // ValidateVarName checks one variable name against the grammar a definition's
 // own `vars`, `set` and `capture` keys are held to. Exported for a definition

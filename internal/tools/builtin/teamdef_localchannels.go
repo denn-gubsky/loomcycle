@@ -113,7 +113,7 @@ func localChannelIssues(team string, def teamgraph.Definition) []teamIssue {
 	names := def.LocalChannelNames()
 	if len(names) > 0 {
 		// Stored as "_team/<team>/<name>", which must split one way.
-		if err := teamgraph.ValidateName(team); err != nil {
+		if err := teamspec.ValidateName(team); err != nil {
 			issues = append(issues, refused(teamIssueNameInvalid, "local.channels", fmt.Sprintf(
 				"local: a team that declares its own channels needs a name of one segment "+
 					"(A-Z a-z 0-9 _ -), because each is stored under the team's name: %v", err)))

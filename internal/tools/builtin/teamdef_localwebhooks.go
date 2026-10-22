@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -185,7 +186,7 @@ func localWebhookIssues(ctx context.Context, creds *credential.Engine, team stri
 		}
 	}
 	// One segment of the URL the webhook is reached at.
-	if err := teamgraph.ValidateName(team); err != nil {
+	if err := teamspec.ValidateName(team); err != nil {
 		issues = append(issues, refused(teamIssueNameInvalid, "local.webhooks", fmt.Sprintf(
 			"local: a team that declares its own webhooks needs a name of one segment "+
 				"(A-Z a-z 0-9 _ -), because each is reached under the team's name: %v", err)))
