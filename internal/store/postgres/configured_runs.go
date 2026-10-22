@@ -100,6 +100,7 @@ func (s *Store) startRun(ctx context.Context, runID string, identity store.RunId
 			replica_id              = $11,
 			-- One way: a start may withhold the user's scope, never give it back.
 			credentials_no_user_scope = credentials_no_user_scope OR $14,
+			user_slot               = $15,
 			draft                   = NULL, queued_input = NULL
 		WHERE id = $1 AND status = $12 AND ($13::jsonb IS NULL OR draft = $13::jsonb)`,
 		runID, string(store.RunRunning), now,
@@ -114,6 +115,7 @@ func (s *Store) startRun(ctx context.Context, runID string, identity store.RunId
 		string(from),
 		nullableJSONArg(draft),
 		identity.CredentialsNoUserScope,
+		identity.UserSlot,
 	)
 	if err != nil {
 		return 0, err

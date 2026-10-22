@@ -89,11 +89,23 @@ type Config struct {
 	// sweep and needs SOME budget to share fairly. 0 → defaultFanoutSweepBudget.
 	// Tests shorten it.
 	fanoutSweepBudget time.Duration
+
+	// stalePausedPassAfter is how long a consolidation pass parked awaiting
+	// its resume keeps its target from the fan-out (see livePass). 0 →
+	// defaultStalePausedPassAfter. Tests shorten it.
+	stalePausedPassAfter time.Duration
 }
 
 // defaultFanoutSweepBudget is a consolidation fan-out sweep's whole budget —
 // the value the scheduler's old per-fire cap gave it.
 const defaultFanoutSweepBudget = 10 * time.Minute
+
+// defaultStalePausedPassAfter bounds how long a parked consolidation pass that
+// nobody resumes keeps its target from every later tick: four times the
+// longest lease a pass can hold (Memory cursor_lease caps lease_ttl_ms at an
+// hour). A pass parked that long has lost its lease anyway, and a resume pass
+// that could take it would have done so within one replica sweep interval.
+const defaultStalePausedPassAfter = 4 * time.Hour
 
 // defaults applies the documented defaults to a zero-value Config.
 func (c Config) defaults() Config {
@@ -102,6 +114,9 @@ func (c Config) defaults() Config {
 	}
 	if c.fanoutSweepBudget == 0 {
 		c.fanoutSweepBudget = defaultFanoutSweepBudget
+	}
+	if c.stalePausedPassAfter == 0 {
+		c.stalePausedPassAfter = defaultStalePausedPassAfter
 	}
 	if c.MaxConcurrentFires == 0 {
 		c.MaxConcurrentFires = runtime.NumCPU() * 4

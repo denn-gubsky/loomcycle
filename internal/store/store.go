@@ -1102,7 +1102,30 @@ type RunIdentity struct {
 	// restored verbatim on resume (RFC DD). Opaque JSON: the store persists it,
 	// the caller owns its shape. nil when the run overrode nothing.
 	RunConfig json.RawMessage
+	// UserSlot: the run's admission counted it against its user in the
+	// cluster's shared per-user counter (user_quotas). Persisted to
+	// runs.user_slot by CreateRun, StartQueuedRun and StartConfiguredRun, so
+	// the resume of a run whose replica stopped gives back exactly the slot it
+	// took (TakeRunUserSlot). false for a sub-run, a run admitted while the
+	// per-user cap was off, and every single-replica run.
+	UserSlot bool
 }
+
+// RunUserSlot is what TakeRunUserSlot found on a run's row.
+type RunUserSlot int
+
+const (
+	// RunUserSlotNone: the run holds no shared per-user slot — its admission
+	// took none, the slot was already taken back, or there is no such row.
+	RunUserSlotNone RunUserSlot = iota
+	// RunUserSlotHeld: the run held one, and this call is the one that took
+	// it: give it back once.
+	RunUserSlotHeld
+	// RunUserSlotUnrecorded: the row says nothing (written before
+	// runs.user_slot existed, or restored from a snapshot); the caller decides
+	// from the row's other fields. Reported once too.
+	RunUserSlotUnrecorded
+)
 
 // ParentContext is the typed caller-tracking lineage attached to a run
 // and propagated to all its sub-agents. The runtime stores and echoes
@@ -2113,6 +2136,39 @@ type RunStore interface {
 	// ended and unlisted, where an unconditional write would put it back on
 	// the resume list. Reports whether it did.
 	UnclaimPausedRun(ctx context.Context, runID string) (bool, error)
+
+	// TakeRunUserSlot takes the record of the shared per-user slot a run
+	// holds, so its resume gives that slot back exactly once (RFC ES C4). A
+	// compare-and-set: a held slot (user_slot TRUE) or an unrecorded one
+	// (NULL) is reported to exactly one caller and the row then reads FALSE;
+	// every later call, and a run that took none, gets RunUserSlotNone. A
+	// crash between the take and the release leaks the slot rather than
+	// giving back another run's.
+	TakeRunUserSlot(ctx context.Context, runID string) (RunUserSlot, error)
+
+	// MarkRunUserSlot records that a run now holds a shared per-user slot:
+	// a resumed run its new process counted against its user (user_slot
+	// TRUE). A missing row is a no-op.
+	MarkRunUserSlot(ctx context.Context, runID string) error
+
+	// FindLiveAgentRun returns a top-level run of agent for (tenantID, userID)
+	// whose status is "running" — a row parked awaiting its resume included —
+	// and reports whether there is one. The tenant match is exact ("" is the
+	// shared tenant, not every tenant). Of several, one not paused comes
+	// first, then the most recently active, so a caller that ignores a paused
+	// row parked too long has seen every row it would ignore once it gets
+	// that one. It reads by user and agent, so a user's many newer runs never
+	// hide it, as they could in ListActiveRunsByUser's newest-100 page.
+	FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (LiveAgentRun, bool, error)
+}
+
+// LiveAgentRun is what FindLiveAgentRun reports of a running run.
+type LiveAgentRun struct {
+	ID         string
+	PauseState string
+	// LastActiveAt is its last heartbeat, or its start when it has none: for
+	// a paused row, about when it parked.
+	LastActiveAt time.Time
 }
 
 // PendingRunStore persists runs that exist but have not started:

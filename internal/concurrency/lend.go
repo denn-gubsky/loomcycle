@@ -55,6 +55,17 @@ func (s *Semaphore) runRelease(key userKey, qs userQuotaGate, rs *RunSlot) func(
 	return rs.end
 }
 
+// SharedUserCount reports that the admitted run is counted against its user in
+// the cluster's shared counter, which outlives this process: the run's row
+// records it, so a resume after this process stops gives back exactly the
+// slot the run took. false before admission, with the per-user cap off, for a
+// run naming no user, and on a single replica.
+func (rs *RunSlot) SharedUserCount() bool {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.qs != nil && rs.key.user != ""
+}
+
 // end gives back what the run holds when it ends: its per-user count, and its
 // global slot unless it is lent. Idempotent.
 func (rs *RunSlot) end() {

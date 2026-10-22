@@ -461,7 +461,11 @@ func (s *Semaphore) Wait(ctx context.Context) (release func(), err error) {
 // A cluster count that cannot be written is logged and skipped: the run is not
 // failed over an accounting write, and is then not counted, so its release
 // gives nothing back either.
-func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string) (release func(), err error) {
+//
+// sharedCount reports that the run is counted in the cluster's shared counter,
+// which outlives this process: the caller records it on the run's row, so a
+// resume after this process stops gives back exactly that slot.
+func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string) (release func(), sharedCount bool, err error) {
 	key := userKey{tenant: tenantID, user: userID}
 	s.mu.Lock()
 	qs := s.quotaStore
@@ -486,10 +490,11 @@ func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string) (r
 		s.perUser[key]++
 		relKey = key
 	}
+	shared := relQS != nil
 	if s.active < s.maxConcurrent {
 		s.active++
 		s.mu.Unlock()
-		return s.releaseFn(relKey, relQS), nil
+		return s.releaseFn(relKey, relQS), shared, nil
 	}
 	w := &semWaiter{ch: make(chan struct{}, 1)}
 	s.admitted = append(s.admitted, w)
@@ -498,10 +503,10 @@ func (s *Semaphore) WaitForUser(ctx context.Context, tenantID, userID string) (r
 
 	select {
 	case <-w.ch:
-		return s.releaseFn(relKey, relQS), nil
+		return s.releaseFn(relKey, relQS), shared, nil
 	case <-ctx.Done():
 		s.cancelWaiter(w, relKey, relQS)
-		return nil, ctx.Err()
+		return nil, false, ctx.Err()
 	}
 }
 

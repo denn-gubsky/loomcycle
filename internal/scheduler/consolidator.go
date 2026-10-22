@@ -740,11 +740,63 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 	}
 	ordered := escalatedFirst(fairTargetOrder(withWork(fromSessions), withWork(fromQueue), rotation), escalated)
 
+	// Checked while the cap fills, not over every candidate: one read per
+	// target that could still be dispatched.
 	maxTargets := s.cfg.MaxConsolidationTargets
-	if len(ordered) <= maxTargets {
-		return ordered, 0, nil
+	out := make([]consolidationTarget, 0, min(len(ordered), maxTargets))
+	for i, c := range ordered {
+		if len(out) == maxTargets {
+			return out, len(ordered) - i, nil
+		}
+		if runID, live := s.livePass(ctx, c, def.Agent); live {
+			s.logf("scheduler: consolidation fan-out: target (tenant=%q user=%q) still has pass %s live — skipping it this tick", c.TenantID, c.UserID, runID)
+			continue
+		}
+		out = append(out, c)
 	}
-	return ordered[:maxTargets], len(ordered) - maxTargets, nil
+	return out, 0, nil
+}
+
+// livePass reports a pass of selfAgent for target whose run has not ended,
+// and its run id.
+//
+// The fan-out's own bookkeeping (the per-def running sweep, the fan-out lock)
+// covers only the passes a sweep dispatched and is still waiting on. A pass
+// parked by a shutdown and resumed after a restart, or by a snapshot restore,
+// runs outside any sweep (RFC ES C4), and until it advances its watermark its
+// target still has work — so the next tick would start a second pass on it.
+// The per-target lease does not cover that: the resumed run replays its
+// lease from its transcript rather than taking it again, so after a downtime
+// past the lease's TTL the second pass gets the lease and both write. The run
+// row is the record every replica shares; a row parked awaiting its resume
+// counts too, since the resume will do the work — but only for
+// cfg.stalePausedPassAfter: a parked pass nobody resumes would otherwise hold
+// its target for good. Past that it is logged and ignored.
+//
+// Keyed by agent and (tenant, user), not by schedule or scope: the run row
+// carries neither. Only scope "user" fans out (fanoutScope), so two schedules
+// running the same consolidator agent for one user consolidate the same
+// target, and holding them off each other is right.
+//
+// A read fault answers not live: the lease still guards the common case, and
+// a consolidation must not stall on a transient read.
+func (s *Scheduler) livePass(ctx context.Context, target consolidationTarget, selfAgent string) (string, bool) {
+	run, found, err := s.store.FindLiveAgentRun(ctx, target.TenantID, target.UserID, selfAgent)
+	if err != nil {
+		s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q) for a live pass: %v", target.TenantID, target.UserID, err)
+		return "", false
+	}
+	if !found {
+		return "", false
+	}
+	// A paused row comes after any that is not, so this one being stale
+	// means every row of the agent's for the target is.
+	if run.PauseState == store.PauseStatePaused && time.Since(run.LastActiveAt) > s.cfg.stalePausedPassAfter {
+		s.logf("scheduler: WARNING: consolidation fan-out: pass %s for target (tenant=%q user=%q) has been parked since %s without a resume — no longer holding the target for it",
+			run.ID, target.TenantID, target.UserID, run.LastActiveAt.UTC().Format(time.RFC3339))
+		return "", false
+	}
+	return run.ID, true
 }
 
 // fairTargetOrder is the order a fan-out dispatches in, and so also what its

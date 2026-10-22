@@ -1373,6 +1373,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// Read back on resume, which has no trigger to re-derive it from. See
 		// internal/store/postgres/migrations/0106_runs_credentials_no_user_scope.
 		`ALTER TABLE runs ADD COLUMN credentials_no_user_scope INTEGER NOT NULL DEFAULT 0`,
+		// Whether the run's admission took a slot in the shared per-user
+		// counter; NULL on rows from before the column and on restored rows.
+		// See internal/store/postgres/migrations/0108_runs_user_slot.
+		`ALTER TABLE runs ADD COLUMN user_slot INTEGER`,
 		// RFC BL — tenant-scope the Memory store + provenance/access columns.
 		// On an UPGRADED DB these ALTERs add the columns to the existing
 		// memory table; its old (scope, scope_id, key) PK is then replaced by
@@ -1839,8 +1843,8 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		pcVal = pcJSON
 	}
 	err := s.insertRunMarkingSession(ctx, sessionID, identity.Retention,
-		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention, credentials_no_user_scope)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO runs(id, session_id, status, started_at, agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention, credentials_no_user_scope, user_slot)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, sessionID, string(status), now.UnixNano(),
 		nilIfEmpty(identity.AgentID),
 		nilIfEmpty(identity.ParentAgentID),
@@ -1861,6 +1865,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 		nilIfEmpty(identity.DeliveryAltKey),
 		identity.Retention,
 		boolToInt(identity.CredentialsNoUserScope),
+		boolToInt(identity.UserSlot),
 	)
 	if err != nil {
 		// RFC H Decision 10: a collision on the runs_idempotency_key
@@ -3962,6 +3967,64 @@ func (s *Store) UnclaimPausedRun(ctx context.Context, runID string) (bool, error
 		return false, fmt.Errorf("unclaim paused run: %w", err)
 	}
 	return n == 1, nil
+}
+
+// TakeRunUserSlot implements store.Store. Two compare-and-sets, so each of a
+// held and an unrecorded slot is reported to one caller only.
+func (s *Store) TakeRunUserSlot(ctx context.Context, runID string) (store.RunUserSlot, error) {
+	for _, step := range []struct {
+		where string
+		found store.RunUserSlot
+	}{
+		{`user_slot = 1`, store.RunUserSlotHeld},
+		{`user_slot IS NULL`, store.RunUserSlotUnrecorded},
+	} {
+		res, err := s.db.ExecContext(ctx, `UPDATE runs SET user_slot = 0 WHERE id = ? AND `+step.where, runID)
+		if err != nil {
+			return store.RunUserSlotNone, fmt.Errorf("take run user slot: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return store.RunUserSlotNone, fmt.Errorf("take run user slot: %w", err)
+		}
+		if n == 1 {
+			return step.found, nil
+		}
+	}
+	return store.RunUserSlotNone, nil
+}
+
+// MarkRunUserSlot implements store.Store.
+func (s *Store) MarkRunUserSlot(ctx context.Context, runID string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE runs SET user_slot = 1 WHERE id = ?`, runID); err != nil {
+		return fmt.Errorf("mark run user slot: %w", err)
+	}
+	return nil
+}
+
+// FindLiveAgentRun implements store.Store.
+func (s *Store) FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (store.LiveAgentRun, bool, error) {
+	var out store.LiveAgentRun
+	var pause sql.NullString
+	var active int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT r.id, r.pause_state, COALESCE(r.last_heartbeat_at, r.started_at) AS active
+		   FROM runs r JOIN sessions s ON r.session_id = s.id
+		  WHERE r.user_id = ? AND COALESCE(r.tenant_id, '') = ? AND s.agent = ?
+		    AND r.parent_run_id IS NULL AND r.status = 'running'
+		  ORDER BY (COALESCE(r.pause_state, '') = ?) ASC, active DESC
+		  LIMIT 1`,
+		userID, tenantID, agent, store.PauseStatePaused,
+	).Scan(&out.ID, &pause, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.LiveAgentRun{}, false, nil
+	}
+	if err != nil {
+		return store.LiveAgentRun{}, false, fmt.Errorf("find live agent run: %w", err)
+	}
+	out.PauseState = pause.String
+	out.LastActiveAt = time.Unix(0, active)
+	return out, true, nil
 }
 
 // ListPausedRuns implements store.Store. Returns runs at pause_state =

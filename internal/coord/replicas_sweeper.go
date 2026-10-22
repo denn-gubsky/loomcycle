@@ -281,6 +281,12 @@ func (s *ReplicasSweeper) reapQuotas(ctx context.Context, replicaID string) erro
 	// with no tenant maps to the shared "" quota row. Without the coalesce a
 	// NULL run tenant would GROUP as NULL and the decrement's `tenant_id = $1`
 	// would never match (SQL NULL comparison), leaking the slot.
+	//
+	// Only the runs that took a slot count (RFC ES C4): a row records it in
+	// user_slot (migration 0108). Sub-runs and runs admitted with the per-user
+	// cap off took none, and counting them took back other runs' slots. A row
+	// from before the column records nothing; only a top-level run can have
+	// taken one.
 	quotaRows, err := s.pool.Query(ctx, `
 		SELECT COALESCE(tenant_id, '') AS tenant_id, user_id, COUNT(*) AS leaked
 		  FROM runs
@@ -288,6 +294,7 @@ func (s *ReplicasSweeper) reapQuotas(ctx context.Context, replicaID string) erro
 		   AND status = 'failed'
 		   AND error = 'owner replica died'
 		   AND user_id IS NOT NULL AND user_id != ''
+		   AND (user_slot OR (user_slot IS NULL AND parent_run_id IS NULL))
 		 GROUP BY COALESCE(tenant_id, ''), user_id
 	`, replicaID)
 	if err != nil {

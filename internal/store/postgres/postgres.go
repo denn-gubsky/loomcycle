@@ -395,8 +395,8 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 			)
 			INSERT INTO runs (
 				id, session_id, status, started_at,
-				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention, credentials_no_user_scope
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23::text, $24)`,
+				agent_id, parent_agent_id, parent_run_id, user_id, tenant_id, user_tier, agent_def_id, model, replica_id, parent_context, idempotency_key, interactive, operator_key_restricted, isolated, run_config, draft, walk_id, delivery_alt_key, retention, credentials_no_user_scope, user_slot
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19::jsonb, $20::jsonb, $21, $22, $23::text, $24, $25)`,
 			id, sessionID, string(status), now,
 			nullableText(identity.AgentID),
 			nullableText(identity.ParentAgentID),
@@ -418,6 +418,7 @@ func (s *Store) createRun(ctx context.Context, sessionID string, identity store.
 			nullableText(identity.DeliveryAltKey),
 			identity.Retention,
 			identity.CredentialsNoUserScope,
+			identity.UserSlot,
 		)
 		return err
 	}); err != nil {
@@ -2443,6 +2444,60 @@ func (s *Store) UnclaimPausedRun(ctx context.Context, runID string) (bool, error
 		return false, fmt.Errorf("unclaim paused run: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// TakeRunUserSlot implements store.Store. Two compare-and-sets, so each of a
+// held and an unrecorded slot is reported to one caller only.
+func (s *Store) TakeRunUserSlot(ctx context.Context, runID string) (store.RunUserSlot, error) {
+	for _, step := range []struct {
+		where string
+		found store.RunUserSlot
+	}{
+		{`user_slot`, store.RunUserSlotHeld},
+		{`user_slot IS NULL`, store.RunUserSlotUnrecorded},
+	} {
+		tag, err := s.pool.Exec(ctx, `UPDATE runs SET user_slot = FALSE WHERE id = $1 AND `+step.where, runID)
+		if err != nil {
+			return store.RunUserSlotNone, fmt.Errorf("take run user slot: %w", err)
+		}
+		if tag.RowsAffected() == 1 {
+			return step.found, nil
+		}
+	}
+	return store.RunUserSlotNone, nil
+}
+
+// MarkRunUserSlot implements store.Store.
+func (s *Store) MarkRunUserSlot(ctx context.Context, runID string) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE runs SET user_slot = TRUE WHERE id = $1`, runID); err != nil {
+		return fmt.Errorf("mark run user slot: %w", err)
+	}
+	return nil
+}
+
+// FindLiveAgentRun implements store.Store.
+func (s *Store) FindLiveAgentRun(ctx context.Context, tenantID, userID, agent string) (store.LiveAgentRun, bool, error) {
+	var out store.LiveAgentRun
+	var pause *string
+	err := s.pool.QueryRow(ctx,
+		`SELECT r.id, r.pause_state, COALESCE(r.last_heartbeat_at, r.started_at) AS active
+		   FROM runs r JOIN sessions s ON r.session_id = s.id
+		  WHERE r.user_id = $1 AND COALESCE(r.tenant_id, '') = $2 AND s.agent = $3
+		    AND r.parent_run_id IS NULL AND r.status = 'running'
+		  ORDER BY (COALESCE(r.pause_state, '') = $4) ASC, active DESC
+		  LIMIT 1`,
+		userID, tenantID, agent, store.PauseStatePaused,
+	).Scan(&out.ID, &pause, &out.LastActiveAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.LiveAgentRun{}, false, nil
+	}
+	if err != nil {
+		return store.LiveAgentRun{}, false, fmt.Errorf("find live agent run: %w", err)
+	}
+	if pause != nil {
+		out.PauseState = *pause
+	}
+	return out, true, nil
 }
 
 // SetRunReplica implements store.Store.

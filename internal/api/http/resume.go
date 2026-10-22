@@ -386,6 +386,36 @@ func (s *Server) heldInCancelRegistry(run store.Run) (bool, error) {
 	return true, nil
 }
 
+// releaseStoppedOwnersSlot gives back the shared per-user slot the stopped
+// process that parked run took for it, once (RFC ES C4). The row records
+// whether its admission took one; TakeRunUserSlot reports it to one caller
+// only, so two passes, or two parks, never give back more than was taken —
+// in particular nothing for a run admitted while the per-user cap was off,
+// where a release would take back another run's slot. A row that records
+// nothing (parked by an older binary) keeps the earlier rule: a top-level
+// run a cluster process admitted (it carries that replica's id; a restored
+// row does not). A single replica's counts went with its process, and
+// ReleaseUserSlot does nothing there.
+func (s *Server) releaseStoppedOwnersSlot(run store.Run) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	took, err := s.store.TakeRunUserSlot(ctx, run.ID)
+	if err != nil {
+		log.Printf("resume: read run %s's per-user slot: %v; not giving it back", run.ID, err)
+		return
+	}
+	switch took {
+	case store.RunUserSlotHeld:
+	case store.RunUserSlotUnrecorded:
+		if run.ParentRunID != "" || run.ReplicaID == "" {
+			return
+		}
+	default:
+		return
+	}
+	s.sem.ReleaseUserSlot(ctx, run.TenantID, run.UserID)
+}
+
 // resumePausedRun re-dispatches ONE paused run under its EXISTING run_id (no
 // CreateRun — the row already exists). It mirrors handleRuns' dispatch but
 // seeds the conversation from the transcript (PriorMessages) instead of a fresh
@@ -439,24 +469,24 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// leaving a running row with no loop for the stale-run sweeper.
 	settled := false
 	ownerSlotHandled := false // another copy here settled the run and its slot
+	// Settled — dispatched here, or ended — so the per-user slot the process
+	// that parked the run took for it goes back (RFC ES F1): in a cluster that
+	// slot is a row in user_quotas, which outlived the process, and the
+	// resumed run takes its own. Before the resumed run's loop starts, which
+	// records its own slot on the same row.
+	moveOwnerSlot := func() {
+		if ownerSlotHandled {
+			return
+		}
+		ownerSlotHandled = true
+		s.releaseStoppedOwnersSlot(run)
+	}
 	defer func() {
 		if !settled {
 			s.unclaimPausedRun(run.ID)
 			return
 		}
-		// Settled — dispatched here, or ended — so the per-user slot the
-		// process that parked the run took for it goes back (RFC ES F1):
-		// in a cluster that slot is a row in user_quotas, which outlived
-		// the process, and the resumed run takes its own. Once per park:
-		// only the pass that claimed the row settles it. A top-level run
-		// only (a sub-run never takes one), and only a row a cluster
-		// process admitted (it carries that replica's id; a restored row
-		// does not). A single replica's counts went with its process.
-		if run.ParentRunID == "" && run.ReplicaID != "" && !ownerSlotHandled {
-			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			s.sem.ReleaseUserSlot(rctx, run.TenantID, run.UserID)
-		}
+		moveOwnerSlot()
 	}()
 	flag := func(reason string) {
 		settled = true
@@ -1063,6 +1093,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if !meta.IsTopLevel {
 		releaseTree = s.holdRunTree(rootRunID)
 	}
+	moveOwnerSlot()
 	go func() {
 		// Panic-safe teardown: a panic must not crash the process (no
 		// recoveryMiddleware wraps this detached goroutine) nor leak the run in
@@ -1120,8 +1151,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// pause, without being refused at the cap; a sub-run never is.
 		var release func()
 		var aerr error
+		sharedCount := false
 		if run.ParentRunID == "" {
-			release, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID)
+			release, sharedCount, aerr = s.sem.WaitForUser(runCtx, run.TenantID, run.UserID)
 		} else {
 			release, aerr = s.sem.Wait(runCtx)
 		}
@@ -1130,6 +1162,14 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			return
 		}
 		defer release()
+		if sharedCount {
+			// The row says the run holds a slot again, so a resume after this
+			// process stops gives this one back (RFC ES C4). Unwritten, the
+			// slot leaks rather than a later resume taking back another's.
+			if err := s.store.MarkRunUserSlot(context.WithoutCancel(runCtx), run.ID); err != nil {
+				log.Printf("resume: record run %s's per-user slot: %v", run.ID, err)
+			}
+		}
 
 		loopRes, runErr := loop.Run(loopCtx, runOpts)
 		if runErr != nil {
