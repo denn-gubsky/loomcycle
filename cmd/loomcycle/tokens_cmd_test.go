@@ -85,7 +85,7 @@ func TestTokensRewrap_RewrapsTheUnpepperedRowUnderTheServersPepper(t *testing.T)
 	if got, want := tokensStoredHash(t, st), h.WrappedHash("lct_old"); got != want {
 		t.Fatalf("stored %q, want the wrapped form %q", got, want)
 	}
-	for _, want := range []string{"1 unpeppered", "rewrapped 1 of 1 named row(s)", "  def_old"} {
+	for _, want := range []string{"1 unpeppered", "rewrapped 1 of 1 named row(s)", `"def_old"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -112,7 +112,7 @@ func TestTokensRewrap_DryRunChangesNothing(t *testing.T) {
 	if got := tokensStoredHash(t, st); got != before {
 		t.Fatalf("a dry run rewrote the row to %q", got)
 	}
-	for _, want := range []string{"dry run: would rewrap 1 row(s)", "  def_old"} {
+	for _, want := range []string{"dry run: would rewrap 1 row(s)", `"def_old"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

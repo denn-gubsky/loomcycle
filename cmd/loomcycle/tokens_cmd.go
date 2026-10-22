@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,10 +174,19 @@ func printTokenReview(w io.Writer, rows []store.OperatorTokenDefRow) {
 		return
 	}
 	fmt.Fprintf(w, "\n%d unpeppered row(s) cannot log in until rewrapped:\n\n", len(rows))
+	// Every field below comes from the database, so a forged row chooses
+	// it: each is printed quoted, with control and non-printable characters
+	// escaped, so no row can redraw the terminal to hide itself or fake
+	// another.
+	suspicious := 0
 	for _, r := range rows {
-		fmt.Fprintf(w, "  %s\n", r.DefID)
-		fmt.Fprintf(w, "      name: %s   tenant: %s   subject: %s\n", r.Name, r.TenantID, r.Subject)
-		scopes := strings.Join(r.AllowedScopes, ", ")
+		fmt.Fprintf(w, "  %q\n", r.DefID)
+		fmt.Fprintf(w, "      name: %q   tenant: %q   subject: %q\n", r.Name, r.TenantID, r.Subject)
+		quoted := make([]string, 0, len(r.AllowedScopes))
+		for _, sc := range r.AllowedScopes {
+			quoted = append(quoted, strconv.Quote(sc))
+		}
+		scopes := strings.Join(quoted, ", ")
 		if scopes == "" {
 			scopes = "(none)"
 		}
@@ -189,6 +199,10 @@ func printTokenReview(w io.Writer, rows []store.OperatorTokenDefRow) {
 		if slices.Contains(r.AllowedScopes, auth.ScopeAdmin) {
 			fmt.Fprintf(w, "      !!! ADMIN TOKEN (%s): full control of every tenant. Be certain you minted it.\n", auth.ScopeAdmin)
 		}
+		if lchttp.SuspiciousTokenRow(r) {
+			suspicious++
+			fmt.Fprintln(w, "      !!! SUSPICIOUS: its fields hold control or non-printable characters, which no mint writes. It cannot be rewrapped; retire it.")
+		}
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "A def_id you never minted was written into the database: do not name it here; retire it instead")
@@ -196,13 +210,18 @@ func printTokenReview(w io.Writer, rows []store.OperatorTokenDefRow) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "To rewrap the rows you recognise, run again with the same config and environment, naming them:")
 	fmt.Fprintln(w, "  loomcycle tokens rewrap --def-id <id> [--def-id <id> ...]")
-	fmt.Fprintln(w, "or, to rewrap exactly the rows listed above (refused if any was added or changed since):")
+	if suspicious > 0 {
+		fmt.Fprintf(w, "%d row(s) above are SUSPICIOUS: --all-listed is refused while they are present; retire them, then review again.\n", suspicious)
+	}
+	// The count right before the digest: a row hidden from the listing
+	// would show as a count that does not match the rows above.
+	fmt.Fprintf(w, "or, to rewrap exactly the %d row(s) listed above (refused if any was added or changed since):\n", len(rows))
 	fmt.Fprintf(w, "  loomcycle tokens rewrap --all-listed %s\n", lchttp.UntaggedTokenSetDigest(rows))
 	fmt.Fprintln(w, "nothing was changed")
 }
 
 func printTokenRowIDs(w io.Writer, rows []store.OperatorTokenDefRow) {
 	for _, r := range rows {
-		fmt.Fprintf(w, "  %s\n", r.DefID)
+		fmt.Fprintf(w, "  %q\n", r.DefID)
 	}
 }

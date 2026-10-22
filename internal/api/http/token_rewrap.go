@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -157,12 +160,51 @@ func UntaggedTokenSetDigest(rows []store.OperatorTokenDefRow) string {
 	return hex.EncodeToString(d.Sum(nil))
 }
 
+// SuspiciousTokenRow reports whether any of a row's identifying fields holds
+// a character that is not printable (a control character such as ESC or a
+// newline, a format character such as a bidi override) or is not valid
+// UTF-8. Such a row can redraw an operator's terminal to hide itself or fake
+// another row in the review, and no mint writes one, so it is never
+// rewrapped.
+func SuspiciousTokenRow(r store.OperatorTokenDefRow) bool {
+	fields := append([]string{r.DefID, r.Name, r.TenantID, r.Subject}, r.AllowedScopes...)
+	for _, f := range fields {
+		if !utf8.ValidString(f) {
+			return true
+		}
+		for _, c := range f {
+			if !unicode.IsPrint(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // SelectUntaggedTokenRows picks the rows the operator confirmed from the
 // current unpeppered rows: exactly the named def_ids, or, with digest, the
 // whole set if it still digests to what the review printed. Exactly one of
 // the two must be given. Any named def_id that is not an unpeppered row now,
-// or a digest that does not match, refuses the selection outright.
+// or a digest that does not match, refuses the selection outright, as does
+// any selected row that is suspicious (SuspiciousTokenRow): retire it.
 func SelectUntaggedTokenRows(rows []store.OperatorTokenDefRow, defIDs []string, digest string) ([]store.OperatorTokenDefRow, error) {
+	picked, err := selectUntaggedTokenRows(rows, defIDs, digest)
+	if err != nil {
+		return nil, err
+	}
+	var suspicious []string
+	for _, r := range picked {
+		if SuspiciousTokenRow(r) {
+			suspicious = append(suspicious, strconv.Quote(r.DefID))
+		}
+	}
+	if len(suspicious) > 0 {
+		return nil, fmt.Errorf("refusing to rewrap a row whose fields hold control or non-printable characters, which no mint writes: %s; retire it", strings.Join(suspicious, ", "))
+	}
+	return picked, nil
+}
+
+func selectUntaggedTokenRows(rows []store.OperatorTokenDefRow, defIDs []string, digest string) ([]store.OperatorTokenDefRow, error) {
 	switch {
 	case len(defIDs) > 0 && digest != "":
 		return nil, fmt.Errorf("name rows by def_id or by digest, not both")
@@ -188,7 +230,7 @@ func SelectUntaggedTokenRows(rows []store.OperatorTokenDefRow, defIDs []string, 
 			seen[id] = true
 			r, ok := byID[id]
 			if !ok {
-				missing = append(missing, id)
+				missing = append(missing, strconv.Quote(id))
 				continue
 			}
 			picked = append(picked, r)

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
@@ -36,5 +37,11 @@ func capIDs(ids []string) string {
 		more = fmt.Sprintf(" and %d more", len(ids)-tokenRewrapLogMaxIDs)
 		ids = ids[:tokenRewrapLogMaxIDs]
 	}
-	return strings.Join(ids, ", ") + more
+	// A def_id comes from the database and a forged row chooses it: quoted,
+	// it cannot break the log line or carry terminal escapes.
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = strconv.Quote(id)
+	}
+	return strings.Join(quoted, ", ") + more
 }

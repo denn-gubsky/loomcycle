@@ -198,3 +198,60 @@ func TestTokensRewrap_StaleDigestRefusalDoesNotPrintTheNewDigest(t *testing.T) {
 		t.Errorf("the refusal printed a digest:\n%s%s", out.String(), errb.String())
 	}
 }
+
+// A forged row whose fields carry terminal escapes or newlines must not be
+// able to hide itself, or fake another row, in the review: every field from
+// the database is printed escaped, the row is flagged, it cannot be
+// rewrapped either way, and the row count sits right before the digest.
+func TestTokensRewrap_ControlCharactersInARowAreEscapedFlaggedAndRefused(t *testing.T) {
+	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
+	evil := "x\x1b[1A\x1b[2K\r\n  def_fake\n      name: ok"
+	if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+		DefID: "def_evil\x1b[8m", Name: evil, TenantID: "acme‮", Subject: "s\x07",
+		TokenHash: auth.HashToken("", "lct_evil"), AllowedScopes: []string{auth.ScopeAdmin + "\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	evilHash := auth.HashToken("", "lct_evil")
+	var out, errb bytes.Buffer
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath}, &out, &errb); rc != 0 {
+		t.Fatalf("review rc = %d, stderr: %s", rc, errb.String())
+	}
+	listing := out.String()
+	for _, raw := range []string{"\x1b", "\r", "\x07", "‮", "\n  def_fake"} {
+		if strings.Contains(listing, raw) {
+			t.Errorf("the listing printed %q raw:\n%s", raw, listing)
+		}
+	}
+	if !strings.Contains(listing, "SUSPICIOUS") {
+		t.Errorf("the row was not flagged:\n%s", listing)
+	}
+	lines := strings.Split(listing, "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "  loomcycle tokens rewrap --all-listed ") {
+			if i == 0 || !strings.Contains(lines[i-1], "2 row(s)") {
+				t.Errorf("the line before the digest does not carry the row count: %q", lines[max(i-1, 0)])
+			}
+		}
+	}
+
+	for name, args := range map[string][]string{
+		"all-listed": {"--all-listed", reviewDigest(t, listing)},
+		"def-id":     {"--def-id", "def_evil\x1b[8m"},
+	} {
+		out.Reset()
+		errb.Reset()
+		if rc := runTokens(append([]string{"rewrap", "--config", cfgPath}, args...), &out, &errb); rc != 2 {
+			t.Errorf("%s: rc = %d, want 2; stderr: %s", name, rc, errb.String())
+		}
+		if strings.Contains(errb.String(), "\x1b") {
+			t.Errorf("%s: the refusal printed an escape raw: %q", name, errb.String())
+		}
+		if rowHash(t, st, "def_evil\x1b[8m") != evilHash {
+			t.Errorf("%s: the suspicious row was rewrapped", name)
+		}
+	}
+	if got := tokensStoredHash(t, st); got != auth.HashToken("", "lct_old") {
+		t.Errorf("a refused run rewrote def_old to %q", got)
+	}
+}

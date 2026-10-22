@@ -531,3 +531,39 @@ func TestLegacyFallback_UsableAdminRowsDisableTheSharedSecret(t *testing.T) {
 		})
 	}
 }
+
+// A row whose fields hold control or non-printable characters (or invalid
+// UTF-8) is suspicious and refused by either way of naming it; an ordinary
+// row, non-ASCII letters included, is not.
+func TestSelectUntaggedTokenRows_RefusesSuspiciousRows(t *testing.T) {
+	plain := store.OperatorTokenDefRow{DefID: "def_ok", Name: "café", TenantID: "acme", Subject: "Zoë", AllowedScopes: []string{"runs:create"}, TokenHash: auth.HashToken("", "ok")}
+	if SuspiciousTokenRow(plain) {
+		t.Fatal("an ordinary row was flagged")
+	}
+	for name, mutate := range map[string]func(*store.OperatorTokenDefRow){
+		"escape in name":    func(r *store.OperatorTokenDefRow) { r.Name = "x\x1b[2K" },
+		"newline in def_id": func(r *store.OperatorTokenDefRow) { r.DefID = "def_x\n" },
+		"bidi in tenant":    func(r *store.OperatorTokenDefRow) { r.TenantID = "acme‮" },
+		"bell in subject":   func(r *store.OperatorTokenDefRow) { r.Subject = "s\x07" },
+		"tab in a scope":    func(r *store.OperatorTokenDefRow) { r.AllowedScopes = []string{"runs:create\t"} },
+		"invalid utf-8":     func(r *store.OperatorTokenDefRow) { r.Name = "\xff" },
+	} {
+		r := plain
+		r.DefID = "def_bad"
+		r.TokenHash = auth.HashToken("", "bad")
+		mutate(&r)
+		if !SuspiciousTokenRow(r) {
+			t.Errorf("%s: not flagged", name)
+		}
+		rows := []store.OperatorTokenDefRow{plain, r}
+		if _, err := SelectUntaggedTokenRows(rows, nil, UntaggedTokenSetDigest(rows)); err == nil {
+			t.Errorf("%s: --all-listed accepted a set holding it", name)
+		}
+		if _, err := SelectUntaggedTokenRows(rows, []string{r.DefID}, ""); err == nil {
+			t.Errorf("%s: naming it by def_id was accepted", name)
+		}
+		if got, err := SelectUntaggedTokenRows(rows, []string{"def_ok"}, ""); err != nil || len(got) != 1 {
+			t.Errorf("%s: naming only the ordinary row = (%d, %v)", name, len(got), err)
+		}
+	}
+}
