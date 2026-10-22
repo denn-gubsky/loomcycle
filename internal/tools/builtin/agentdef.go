@@ -338,6 +338,20 @@ func defRowReadable(ctx context.Context, rowTenant string) bool {
 	return rowTenant == "" || rowTenant == tools.RunIdentity(ctx).TenantID || defCallerIsAdmin(ctx)
 }
 
+// markSharedTier adds "shared": true to a get / list row of the shared ("")
+// tier, and leaves every other row as it was (RFC ES C3). defRowReadable puts
+// both tiers in one answer and each tier numbers its own versions, so without
+// the mark a caller cannot tell the shared "version 1" it may only read and
+// fork from its own "version 1" it may retire and promote. A caller whose own
+// tenant is "" (open mode, the stdio MCP server, a run a yaml schedule or
+// webhook fired) owns that tier, so nothing is marked for it.
+func markSharedTier(ctx context.Context, row map[string]any, rowTenant string) map[string]any {
+	if rowTenant == "" && tools.RunIdentity(ctx).TenantID != "" {
+		row["shared"] = true
+	}
+	return row
+}
+
 // forkParentVisible reports whether a caller in callerTenant may fork a
 // parent_def_id owned by rowTenant: its own tenant's, the shared ("") base, or
 // any tenant's for a substrate:admin. A def_id is a global handle, so a fork
@@ -754,7 +768,7 @@ func (a *AgentDef) execGet(ctx context.Context, policy tools.AgentDefPolicyValue
 	if err := a.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return okJSON(rowResponse(row, false))
+	return okJSON(markSharedTier(ctx, rowResponse(row, false), row.TenantID))
 }
 
 func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValue, in agentDefInput) (tools.Result, error) {
@@ -776,7 +790,7 @@ func (a *AgentDef) execList(ctx context.Context, policy tools.AgentDefPolicyValu
 		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
-		out = append(out, rowResponseMap(r))
+		out = append(out, markSharedTier(ctx, rowResponseMap(r), r.TenantID))
 	}
 	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }

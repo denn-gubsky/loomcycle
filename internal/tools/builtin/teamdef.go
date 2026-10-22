@@ -812,7 +812,7 @@ func (t *TeamDef) execGet(ctx context.Context, in teamDefInput) (tools.Result, e
 	if !defRowReadable(ctx, row.TenantID) {
 		return errResult(fmt.Sprintf("get: def_id %q not found", in.DefID)), nil
 	}
-	return okJSON(teamDefRowResponse(row, false))
+	return okJSON(markSharedTier(ctx, teamDefRowResponse(row, false), row.TenantID))
 }
 
 func (t *TeamDef) execList(ctx context.Context, in teamDefInput) (tools.Result, error) {
@@ -831,7 +831,7 @@ func (t *TeamDef) execList(ctx context.Context, in teamDefInput) (tools.Result, 
 		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
-		out = append(out, teamDefRowResponseMap(r))
+		out = append(out, markSharedTier(ctx, teamDefRowResponseMap(r), r.TenantID))
 	}
 	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }

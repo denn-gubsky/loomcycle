@@ -467,7 +467,7 @@ func (s *SkillDef) execGet(ctx context.Context, policy tools.SkillPolicyValue, i
 	if err := s.checkScopeForName(policy, row.Name, row.DefID); err != nil {
 		return errResult(err.Error()), nil
 	}
-	return okJSON(skillDefRowResponse(row, false))
+	return okJSON(markSharedTier(ctx, skillDefRowResponse(row, false), row.TenantID))
 }
 
 func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, in skillDefInput) (tools.Result, error) {
@@ -489,7 +489,7 @@ func (s *SkillDef) execList(ctx context.Context, policy tools.SkillPolicyValue, 
 		if !defRowReadable(ctx, r.TenantID) {
 			continue
 		}
-		out = append(out, skillDefRowResponseMap(r))
+		out = append(out, markSharedTier(ctx, skillDefRowResponseMap(r), r.TenantID))
 	}
 	return okJSONCount(map[string]any{"name": in.Name, "versions": out}, len(out))
 }
