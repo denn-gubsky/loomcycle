@@ -81,6 +81,7 @@ const skillDefDescription = `Author, fork, promote, retire, and inspect skill de
 	`Static SKILL.md files (LOOMCYCLE_SKILLS_ROOT) remain the operator's immutable ground truth; ` +
 	`this tool produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED. Promotion is explicit — selection is policy, not runtime. ` +
+	`get and list also return shared skills, marked "shared": true: you may read and fork them, but not retire or promote them. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
 const skillDefInputSchema = `{

@@ -88,6 +88,7 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`your own (a fork may also keep what the forked version has). An unset memory_scopes or sql_scopes takes the ` +
 	`ordinary memory default; any other unset field is judged at its default (the operator's default volume, ` +
 	`the user's history, the question interruption kind, every skill), so set it explicitly when yours is narrower. ` +
+	`get and list also return shared definitions, marked "shared": true: you may read and fork them, but not retire or promote them. ` +
 	`Operations: create, fork, get, list, retire, promote.`
 
 const agentDefInputSchema = `{

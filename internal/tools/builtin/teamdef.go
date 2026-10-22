@@ -352,7 +352,8 @@ const teamDefDescription = `Author, fork, promote, retire, and inspect team work
 	`run may also set review on starter, agent or parallel states (not a consolidator): ` +
 	`each member run is held when it finishes, for an operator to approve, send back with feedback, or reject; a rejected ` +
 	`starter member reaches the sink as status "rejected", and a rejected agent or parallel member fails like any failed member. retire soft-retires one version; delete ` +
-	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. Operations: ` +
+	`hard-removes a whole team by name (all versions + active pointer), scoped to your tenant. get and list also return shared ` +
+	`teams, marked "shared": true: you may read, run and fork them, but not retire or promote them. Operations: ` +
 	`create, fork, get, list, retire, delete, promote, verify, render_diagram, run, poll, cancel.`
 
 const teamDefInputSchema = `{

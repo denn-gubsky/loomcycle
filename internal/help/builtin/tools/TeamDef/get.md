@@ -13,11 +13,13 @@ description: "TeamDef op=get — read one version of a team by def_id, with its 
 
 `{def_id, name, version, parent_def_id, description, created_at,
 created_by_agent_id, retired, content_sha256, definition, promoted: false}` —
-`definition` is the whole graph.
+`definition` is the whole graph. A shared team's version (one defined with no
+tenant) also carries `shared: true`: you may read, run and fork it, but not
+retire or promote it.
 
 ## Errors
 
-- `get: def_id "..." not found` — no such version in your tenant.
+- `get: def_id "..." not found` — no such version in your tenant or the shared tier.
 
 ## Examples
 

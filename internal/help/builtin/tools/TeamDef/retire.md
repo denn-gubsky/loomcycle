@@ -22,7 +22,8 @@ team stops reading them, so check that nothing is still piling up there.
 ## Errors
 
 - `retire: missing required field: retired (true|false)`.
-- `retire: def_id "..." not found` — no such version in your tenant.
+- `retire: def_id "..." not found` — no such version in your tenant. A shared
+  version (`shared: true` in `get`/`list`) is not yours to retire.
 
 ## Examples
 
