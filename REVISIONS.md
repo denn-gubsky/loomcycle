@@ -16,7 +16,7 @@ A minor release: #2020 to #2034.
 - #2027 and #2032 (RFC EV) add the embedder query mode, the driver-based embedder lookup and the Bedrock embedder;
 - the re-audit residuals (RFC EU): the MCP stdio stop (#2024), the volume purge (#2025), webhook timing (#2026), gbash v0.0.41 (#2023), and the security wording (#2022, #2029);
 - fixes: the single `spawn_run` join bound (#2020) and runs cancelled mid-turn (#2021);
-- CI: swap-race proofs fail instead of skipping (#2028), and `go mod verify` plus a gosec high-severity gate (#2030);
+- CI and tests: swap-race proofs fail instead of skipping (#2028), `go mod verify` plus a gosec high-severity gate (#2030), and tests that pin per-connection rebinding checks and WebFetch returning no response headers (#2031);
 - #2023 updates gbash and its `awk`/`jq` contrib modules to v0.0.41; no other dependency changes. #2034 is these notes.
 - `@loomcycle/client` and the Python adapter are 1.121.0. #2021 documents the new `cancelled` value of `error_info.category` in both (a plain string field, so no type change). No method changes in either.
 
@@ -110,11 +110,12 @@ Bashbox runs gbash inside the loomcycle process, so a gbash panic or hang reache
 
 - **Behaviour change: one file written through a redirect or `cp` stops at 8 MiB**, on read-only and read-write volumes; a named pipe buffers at most 64 KiB. Reads through a read-write volume were already capped at 10 MiB. loomcycle does not change gbash's limit.
 
-### Security wording and CI (#2022, #2028, #2029, #2030)
+### Security wording, CI and tests (#2022, #2028, #2029, #2030, #2031)
 
 - **README and SECURITY.md say what two protections cover** (#2022). A host vouched for by name in `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` still reaches loopback and private ranges wherever its DNS points, never link-local or cloud metadata. Operator-token hashes are peppered only when `LOOMCYCLE_SECRET_KEY` (or an explicit pepper) is set.
 - **A WebSocket bearer can land in proxy logs** (#2029). A browser sends it in `Sec-WebSocket-Protocol`, which many proxies log. [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the `client-tools` help topic say what to do: a short-lived per-user token limited to the agents it needs, never an operator bearer.
 - **CI** fails, rather than skips, when the symlink swap-race proofs cannot run (#2028), runs `go mod verify`, fails on high-severity gosec findings, and logs a failed advisory unlock through the logger (#2030).
+- **Two behaviours are now pinned by tests** (#2031): a vouched host name is resolved and checked again on every connection, so a name that later answers the metadata address is refused; and WebFetch returns no response headers (cookies, tokens) to the model.
 
 ### Upgrade notes
 
