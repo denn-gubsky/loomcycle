@@ -147,16 +147,18 @@ func TestPrepareSubRun_LockedChildKeepsTheHostListNarrowOnly(t *testing.T) {
 // A sub-run resumed after a pause runs with the policy it had live: the record
 // its spawn wrote carries what it inherited, and resume rebuilds the policy
 // from that record and the definition. Checked on a locked child of a parent
-// with a host list, a fan-out cap, key scopes, shell credentials, read-only
-// ephemeral volumes and an interruption narrowing it inherits as the same
-// definition — and the parent's offer, which the child passes on to its own
-// children (H5).
+// with a host list, a fan-out cap, key scopes, shell credentials, a Git
+// network grant, read-only ephemeral volumes and an interruption narrowing it
+// inherits as the same definition — and the parent's offer, which the child
+// passes on to its own children (H5).
 func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	h := newReviewHarness(t)
 	locked := false
 	target := 20
 	// The child declares a shell credential its parent withholds; live it
 	// gets only the one both allow, and a resume must not hand the other back.
+	// Likewise it may push by its definition while its parent may only fetch:
+	// live it only fetches, and a resume must not hand push back.
 	childShellCreds := config.CredentialNames{"DEPLOY_KEY", "NPM_TOKEN"}
 	def := config.AgentDef{
 		Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent", "Interruption"},
@@ -165,6 +167,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		Interruption:          config.AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 5},
 		CryptoScopes:          []string{"run", "user"},
 		ShellCredentials:      &childShellCreds,
+		GitRemote:             []string{"fetch", "push"},
 		Compaction:            &config.Compaction{TargetPercentage: &target},
 	}
 	h.srv.cfg().Agents["child"] = def
@@ -176,6 +179,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		FanoutCap:         8,
 		Crypto:            tools.CryptoPolicyValue{Scopes: []string{"run"}},
 		ShellCreds:        tools.ShellCredsPolicyValue{Set: true, Names: []string{"GITHUB_TOKEN", "NPM_TOKEN"}},
+		GitRemote:         tools.GitRemotePolicyValue{Fetch: true},
 		EphemeralWritable: false, // read-only, which the child keeps
 		Compaction:        &config.Compaction{KeepLastN: &keep},
 		// The parent is the same definition, so its interruption narrowing
@@ -214,6 +218,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	if !live.Hosts.NarrowOnly || live.FanoutCap != 2 || live.Interruption.Load().MaxPending != 1 ||
 		!slices.Equal(live.Crypto.Scopes, []string{"run"}) || live.EphemeralWritable ||
 		!live.ShellCreds.Set || !slices.Equal(live.ShellCreds.Names, []string{"NPM_TOKEN"}) ||
+		live.GitRemote != (tools.GitRemotePolicyValue{Fetch: true}) ||
 		live.Compaction == nil || live.Compaction.KeepLastN != nil {
 		t.Fatalf("fixture: the live child's policy is not the one this test is built around: %+v", live)
 	}

@@ -1435,6 +1435,23 @@ func resumedShellCreds(run store.Run, rec *spawnRecord, def config.AgentDef) *to
 	return &v
 }
 
+// resumedGitRemote is the Git network grant a resumed run gets back (RFC FB):
+// a top-level run its definition's (nil: agentRunPolicy reads it), and a
+// sub-run its definition's narrowed again to its recorded parent's, as
+// Inherit narrowed it live. A sub-run with no record fails CLOSED with no
+// network, as resumedCryptoPolicy does: its parent's grant is unknown, and its
+// own definition's is exactly the widening the narrowing exists to prevent.
+func resumedGitRemote(run store.Run, rec *spawnRecord, def config.AgentDef) *tools.GitRemotePolicyValue {
+	if !isSubRun(run) {
+		return nil
+	}
+	v := tools.GitRemotePolicyValue{}
+	if rec != nil {
+		v = tools.NarrowGitRemote(tools.GitRemoteFor(rec.GitRemote), tools.GitRemoteFor(def.GitRemote))
+	}
+	return &v
+}
+
 // shellCredsRecordOf is the spawn record of a parent's shell-credential
 // narrowing: nil when it narrowed nothing, else its names (an empty list kept
 // as one, so a parent that allowed none is recorded as allowing none).
@@ -2337,6 +2354,7 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		EphemeralReadOnly: runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)),
 		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
 		ShellCreds:        resumedShellCreds(run, runCfg.Spawn, agentDef),
+		GitRemote:         resumedGitRemote(run, runCfg.Spawn, agentDef),
 		// Restored from the run's own record, for sub-agent inheritance. The
 		// context policy too: every non-resume run path stamps it, so without
 		// it a resumed run's children inherited a different retention mode

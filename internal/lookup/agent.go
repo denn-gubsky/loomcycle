@@ -421,6 +421,11 @@ type SubstrateAgentDef struct {
 	// narrowed its shell's credentials would come back with every credential
 	// the operator lists. A pointer, so `[]` (none) survives the read as none.
 	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
+	// GitRemote mirrors config.AgentDef.GitRemote (RFC FB). Kept in sync
+	// with builtin.mergedDef: dropped on the read, a stored agent's Git tool
+	// would lose its network grant. Absent and [] both mean none, so a plain
+	// omitempty list is enough here.
+	GitRemote []string `json:"git_remote,omitempty"`
 	// F40: the *_def_scopes capability gates — the substrate-def slice of the
 	// F14 closure, so a runtime-authored meta-agent's fork/schedule/etc.
 	// authority survives the round-trip instead of defaulting to deny. The
@@ -523,6 +528,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		EvaluationScopes:       def.EvaluationScopes,
 		CryptoScopes:           def.CryptoScopes,
 		ShellCredentials:       def.ShellCredentials,
+		GitRemote:              def.GitRemote,
 		Interruption:           def.Interruption,
 		AgentDefScopes:         def.AgentDefScopes,
 		ScheduleDefScopes:      def.ScheduleDefScopes,
@@ -592,6 +598,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		EvaluationScopes:      s.EvaluationScopes,
 		CryptoScopes:          s.CryptoScopes,
 		ShellCredentials:      s.ShellCredentials,
+		GitRemote:             s.GitRemote,
 		Interruption:          s.Interruption,
 		// F40: surface the capability gates to the policy layer so a
 		// runtime-authored meta-agent's AgentDef/Schedule/etc. scopes apply.
