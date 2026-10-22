@@ -146,7 +146,7 @@ func (ix *Index) Search(ctx context.Context, query string, k int) ([]Hit, error)
 	if len(snapshot) == 0 {
 		return nil, nil
 	}
-	vecs, err := ix.embedder.Embed(ctx, []string{query})
+	vecs, err := providers.EmbedQuery(ctx, ix.embedder, []string{query})
 	if err != nil || len(vecs) == 0 {
 		return nil, err
 	}

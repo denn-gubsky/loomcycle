@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -97,7 +98,7 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 		minScore = in.MinScore
 	}
 
-	vec, err := d.Embedder.Embed(ctx, []string{q})
+	vec, err := providers.EmbedQuery(ctx, d.Embedder, []string{q})
 	if err != nil {
 		return errFrom("verbatim_answer: embed: "+err.Error(), err), nil
 	}

@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -70,7 +71,7 @@ func (h *History) searchContent(ctx context.Context, scope string, in historyInp
 			"carries no user_id — use the default title match, or start the run with a user", "Omit match (title search), or pass match=title."), nil
 	}
 
-	vecs, err := h.Embedder.Embed(ctx, []string{query})
+	vecs, err := providers.EmbedQuery(ctx, h.Embedder, []string{query})
 	if err != nil {
 		return errFrom("history: search: embed: "+err.Error(), err), nil
 	}
