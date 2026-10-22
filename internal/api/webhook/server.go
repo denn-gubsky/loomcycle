@@ -2,6 +2,8 @@ package webhook
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -81,14 +83,51 @@ func (rec *Receiver) readDelivery(w http.ResponseWriter, r *http.Request, keep i
 	// bound there.
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(rec.bodyReadTimeout))
 	rd := http.MaxBytesReader(w, r.Body, rec.requestCap())
+	var read []byte
 	if keep > 0 {
 		b, err := io.ReadAll(io.LimitReader(rd, keep+1))
 		if err == nil && int64(len(b)) <= keep {
 			return b, true
 		}
+		read = b
 	}
-	_, _ = io.Copy(io.Discard, rd)
+	// Refused unread: an unknown or inert name, or a body over keep. A live
+	// webhook's refusal hashes the body (verifySignatureCounted), so this one
+	// does the same work on the same bytes, streamed, or its 404 would come
+	// back sooner and name the webhook as unknown (RFC EU, Part C). It still
+	// does not buffer the body: a live webhook's refusal costs the copy into
+	// its buffer on top, under a millisecond for a megabyte.
+	burn := refusalMACs(refusalMACPasses)
+	_, _ = burn.Write(read)
+	_, _ = io.Copy(burn, rd)
+	rec.noteRefusalMACs(refusalMACPasses)
 	return nil, false
+}
+
+// refusalMACPasses is how many HMAC-SHA256 passes over the body every
+// refused delivery makes: the most a live webhook's own check makes, one
+// for its secret and one for a previous secret during a rotation. A refusal
+// that made fewer is topped up to it, so the time to answer does not tell
+// an unknown name from a live one with a wrong signature, a bearer webhook
+// from an HMAC one, or a rotating webhook from one with a single secret.
+const refusalMACPasses = 2
+
+// refusalMACs returns a writer that computes n HMAC-SHA256 passes over what
+// is written to it and discards them. The key does not matter: only the
+// work does.
+func refusalMACs(n int) io.Writer {
+	ws := make([]io.Writer, n)
+	for i := range ws {
+		ws[i] = hmac.New(sha256.New, nil)
+	}
+	return io.MultiWriter(ws...)
+}
+
+// noteRefusalMACs tells a test how many MAC passes a refusal made.
+func (rec *Receiver) noteRefusalMACs(passes int) {
+	if rec.onRefusalMACs != nil {
+		rec.onRefusalMACs(passes)
+	}
 }
 
 // Receiver is the RFC H inbound-webhook HTTP handler. It is the
@@ -146,6 +185,10 @@ type Receiver struct {
 	// tests. Production wiring uses time.Now + os.Getenv.
 	now    func() time.Time
 	getenv func(string) string
+
+	// onRefusalMACs, when set (tests only), is told how many MAC passes
+	// over the body each refused delivery made.
+	onRefusalMACs func(passes int)
 }
 
 // Deps is the constructor input. runStateBus may be nil (disables ?sync);
@@ -432,7 +475,7 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 			return false
 		}
 		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
-	} else if verr := rec.verify(r.Context(), a, tenant, body, r.Header.Get); verr != nil {
+	} else if passes, verr := rec.verify(r.Context(), a, tenant, body, r.Header.Get); verr != nil {
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
 			// Config-side failure (secret not allowlisted / unset / no such
@@ -447,7 +490,13 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		// Signature mismatch / replay-window / bad header / wrong bearer:
 		// the same 404 as an unknown or disabled name, so the answer does
 		// not tell a caller that the name exists (RFC ES #4). The ring and
-		// the log keep the real verdict for the operator.
+		// the log keep the real verdict for the operator. The same work, too:
+		// topped up to refusalMACPasses over the body (RFC EU, Part C).
+		if extra := refusalMACPasses - passes; extra > 0 {
+			_, _ = refusalMACs(extra).Write(body)
+			passes += extra
+		}
+		rec.noteRefusalMACs(passes)
 		rec.finish(span, whKey, "", verdictRejectedSig, "")
 		rec.logf("webhook %q: signature rejected", name)
 		writeUnknownWebhook(w)
@@ -456,13 +505,14 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 	return true
 }
 
-// verify resolves auth's secrets and checks the request against them.
-func (rec *Receiver) verify(ctx context.Context, a config.WebhookAuth, tenant string, body []byte, headerGet func(string) string) error {
+// verify resolves auth's secrets and checks the request against them. It
+// returns how many MAC passes over the body the check made.
+func (rec *Receiver) verify(ctx context.Context, a config.WebhookAuth, tenant string, body []byte, headerGet func(string) string) (int, error) {
 	secrets, err := verificationSecrets(ctx, a, tenant, rec.creds, rec.envAllowlist, rec.getenv, rec.logf)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return verifySignature(a, secrets, body, headerGet, rec.now)
+	return verifySignatureCounted(a, secrets, body, headerGet, rec.now)
 }
 
 // replayAck answers a delivery already accepted — the idempotent re-send

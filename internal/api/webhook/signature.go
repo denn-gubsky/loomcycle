@@ -12,8 +12,12 @@ package webhook
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -213,12 +217,21 @@ func storedSecret(ctx context.Context, ref, tenant string, creds CredentialResol
 //
 // now is injected so the timestamp-window check is deterministic in tests.
 func verifySignature(a config.WebhookAuth, secrets []string, body []byte, headerGet func(string) string, now func() time.Time) error {
+	_, err := verifySignatureCounted(a, secrets, body, headerGet, now)
+	return err
+}
+
+// verifySignatureCounted is verifySignature that also reports how many MAC
+// passes over the body it made: one per secret for HMAC auth, whatever the
+// request's headers hold, and none for bearer auth. The receiver tops every
+// refused delivery up to refusalMACPasses with it (RFC EU, Part C).
+func verifySignatureCounted(a config.WebhookAuth, secrets []string, body []byte, headerGet func(string) string, now func() time.Time) (int, error) {
 	kind := strings.ToLower(strings.TrimSpace(a.Kind))
 	if kind == "" {
 		kind = "hmac"
 	}
 	if len(secrets) == 0 && (kind == "hmac" || kind == "bearer") {
-		return &authError{verdict: verdictUnresolved, msg: "auth: no secret resolved"}
+		return 0, &authError{verdict: verdictUnresolved, msg: "auth: no secret resolved"}
 	}
 
 	switch kind {
@@ -237,7 +250,7 @@ func verifySignature(a config.WebhookAuth, secrets []string, body []byte, header
 			got, prefix = headerGet("Authorization"), "Bearer "
 		}
 		if got == "" {
-			return errSignatureMismatch
+			return 0, errSignatureMismatch
 		}
 		matched := false
 		for _, want := range secrets {
@@ -246,9 +259,9 @@ func verifySignature(a config.WebhookAuth, secrets []string, body []byte, header
 			}
 		}
 		if !matched {
-			return errSignatureMismatch
+			return 0, errSignatureMismatch
 		}
-		return nil
+		return 0, nil
 
 	case "hmac":
 		return verifyHMAC(a, secrets, body, headerGet, now)
@@ -257,7 +270,7 @@ func verifySignature(a config.WebhookAuth, secrets []string, body []byte, header
 		// Unknown auth kind is a config error, not a request error. Treat
 		// as unresolvable so the operator sees a 503 rather than silently
 		// accepting or returning a misleading 401.
-		return &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: unknown kind %q", a.Kind)}
+		return 0, &authError{verdict: verdictUnresolved, msg: fmt.Sprintf("auth: unknown kind %q", a.Kind)}
 	}
 }
 
@@ -266,42 +279,71 @@ func verifySignature(a config.WebhookAuth, secrets []string, body []byte, header
 // Stripe header. The envelope shape (Stripe `t=,v1=` vs GitHub `sha256=`
 // vs bare hex) is detected from the header VALUE, not just its name, so an
 // operator who points a.Header at a custom name still gets correct parsing.
-func verifyHMAC(a config.WebhookAuth, secrets []string, body []byte, headerGet func(string) string, now func() time.Time) error {
-	raw := hmacSignatureHeader(a, headerGet)
-	if raw == "" {
-		return errSignatureMismatch
-	}
-
-	// GitHub envelope: `sha256=<hexmac>` over the raw body only.
-	if strings.HasPrefix(raw, "sha256=") {
-		wantHex := strings.TrimPrefix(raw, "sha256=")
-		return compareHMAC(secrets, body, wantHex)
-	}
-
-	// Bare-hex envelope (Linear `Linear-Signature`, and many custom HMAC
-	// sources): the entire header value is the hex HMAC-SHA256 of the raw
-	// body — no prefix, no timestamp. A Stripe envelope always contains ','
-	// and '=' so it is never all-hex; this branch is therefore unambiguous
-	// and must be checked BEFORE the Stripe parse.
-	if isHexString(raw) {
-		return compareHMAC(secrets, body, raw)
-	}
-
-	// Stripe envelope: `t=<unix>, v1=<hexmac>` over `<t>.<rawbody>`, its `t`
-	// within ±signatureTolerance. A stale or future `t` collapses to the same
-	// verdict as a bad MAC, so the client cannot probe the tolerance. Every
-	// secret is compared, whichever matches, as compareHMAC does.
-	at := now()
+//
+// It computes every secret's MAC before it looks at whether the header can
+// match, and returns how many it computed (one per secret). A missing or
+// malformed header, a stale Stripe `t` or bad hex used to return before any
+// MAC was computed, so the time to answer told such a request apart from a
+// well-formed one, and both from an unknown name (RFC EU, Part C).
+func verifyHMAC(a config.WebhookAuth, secrets []string, body []byte, headerGet func(string) string, now func() time.Time) (int, error) {
+	payload, wantHex, usable := hmacEnvelope(hmacSignatureHeader(a, headerGet), body, now())
+	want, err := hex.DecodeString(strings.TrimSpace(wantHex))
+	usable = usable && err == nil
+	// Every secret is compared, whichever matches, so the comparison count
+	// does not depend on which secret is current.
 	matched := false
 	for _, secret := range secrets {
-		if sigv1.Verify(secret, body, raw, at, signatureTolerance) {
+		m := hmac.New(sha256.New, []byte(secret))
+		m.Write(payload)
+		if hmac.Equal(m.Sum(nil), want) && usable {
 			matched = true
 		}
 	}
 	if !matched {
-		return errSignatureMismatch
+		return len(secrets), errSignatureMismatch
 	}
-	return nil
+	return len(secrets), nil
+}
+
+// hmacEnvelope reads a signature header: the payload its MAC covers, the
+// hex MAC it carries, and whether it can match at all. An unusable header
+// (absent, a Stripe envelope missing a field, an unparsable or stale `t`)
+// still names a payload, the body, so the MACs are computed all the same.
+//
+//   - GitHub `sha256=<hexmac>`: the MAC of the raw body.
+//   - Bare hex (Linear `Linear-Signature`, many custom sources): the whole
+//     value is the hex MAC of the raw body. A Stripe envelope always holds
+//     ',' and '=', so it is never all-hex; this is checked before Stripe.
+//   - Stripe `t=<unix>, v1=<hexmac>`: the MAC of `<t>.<rawbody>`, with `t`
+//     taken exactly as written and within ±signatureTolerance of now. A stale
+//     or future `t` gets the same verdict as a bad MAC, so the client cannot
+//     probe the tolerance.
+func hmacEnvelope(raw string, body []byte, now time.Time) (payload []byte, wantHex string, usable bool) {
+	switch {
+	case raw == "":
+		return body, "", false
+	case strings.HasPrefix(raw, "sha256="):
+		return body, strings.TrimPrefix(raw, "sha256="), true
+	case isHexString(raw):
+		return body, raw, true
+	}
+	ts, macHex := sigv1.Fields(raw)
+	if ts == "" || macHex == "" {
+		return body, macHex, false
+	}
+	unix, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return body, macHex, false
+	}
+	skew := now.Sub(time.Unix(unix, 0))
+	if skew < 0 {
+		skew = -skew
+	}
+	p := make([]byte, 0, len(ts)+1+len(body))
+	p = append(p, ts...)
+	p = append(p, '.')
+	p = append(p, body...)
+	return p, macHex, skew <= signatureTolerance
 }
 
 // hmacSignatureHeader returns the signature header value verifyHMAC checks:
@@ -365,22 +407,4 @@ func isHexString(s string) bool {
 		}
 	}
 	return true
-}
-
-// compareHMAC checks a body-only MAC (the GitHub and bare-hex envelopes)
-// against each secret, every secret whichever matches, so the time taken does
-// not say which did. Bad hex, a wrong length and a wrong MAC all collapse to
-// one verdict, so no information leaks; each compare is constant-time
-// (sigv1.VerifyBare).
-func compareHMAC(secrets []string, payload []byte, wantHex string) error {
-	matched := false
-	for _, secret := range secrets {
-		if sigv1.VerifyBare(secret, payload, wantHex) {
-			matched = true
-		}
-	}
-	if !matched {
-		return errSignatureMismatch
-	}
-	return nil
 }

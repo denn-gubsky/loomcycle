@@ -191,7 +191,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// none + opted in → fall through to projection (would accept).
-	} else if verr := rec.verify(r.Context(), wd.Auth, owner.TenantID, body, r.Header.Get); verr != nil {
+	} else if _, verr := rec.verify(r.Context(), wd.Auth, owner.TenantID, body, r.Header.Get); verr != nil {
 		verdict := verdictRejectedSig
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
