@@ -1379,6 +1379,12 @@ Rules worth knowing:
 
 Token listings (`GET /v1/_users/{subject}/tokens`, `operator-token show` / `list`) show `expires_at`, and `active` is false once a token has expired.
 
+### A token on a browser WebSocket
+
+A browser cannot set an `Authorization` header on a WebSocket, so the client-tools connection (`GET /v1/client-tools`, the `client-tools` help topic) also accepts the bearer as a `bearer.<token>` entry in `Sec-WebSocket-Protocol`. loomcycle reads that entry only on a WebSocket upgrade to that one path; on every other request it is ignored. The server answers with its own subprotocol and never echoes the token.
+
+The token still travels in a request header that many reverse proxies, load balancers and CDNs log, and it sits in browser JavaScript where any script on the page can read it. Give a browser client a per-user token with a short `ttl_seconds` and only the scopes and agents it needs (see [Token lifetime](#token-lifetime) and [Limiting a token to certain agents](#limiting-a-token-to-certain-agents)), never an operator or admin bearer, and keep `Sec-WebSocket-Protocol` out of proxy access logs where you can. A client that can set headers, such as Node or a CLI, should send `Authorization: Bearer` instead.
+
 ### Limiting a token to certain agents
 
 **Since v1.112.0.** A token can be limited to starting particular agents. This is for a token held by a client you do not control: it states the token's one purpose on the token itself, so it holds on every transport and not only behind a proxy route.
