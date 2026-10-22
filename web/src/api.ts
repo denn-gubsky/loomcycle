@@ -1812,6 +1812,10 @@ export interface LibraryEntry {
    *  and reclaimable by a fresh create. Absent for skills + mcp-servers. */
   live_version_count?: number;
   active_retired?: boolean;
+  /** Agents only: the context window, in tokens, a run of this agent starts
+   *  with (the resolved provider's window, lowered by the agent's own
+   *  max_context_tokens). Absent when unknown. */
+  context_window?: number;
   /**
    * Static-side definition payload. Same JSON shape as the substrate
    * body (snake_case keys mirroring lookup.SubstrateAgentDef /
