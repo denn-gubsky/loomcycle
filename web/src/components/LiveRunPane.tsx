@@ -9,6 +9,7 @@ import { type TranscriptEvent } from "../api";
 import { settledToolIds } from "../lib/toolSettlement";
 import { metricsFromEvents } from "../lib/runMetrics";
 import RunMetricsBar from "./RunMetricsBar";
+import ContextMethodBadge, { useRunContextMethod } from "./ContextMethodBadge";
 
 // LiveRunPane renders one run's live transcript + controls. Decoupled
 // from useRunStream (takes plain props) so both the single-run tab and
@@ -115,6 +116,8 @@ export default function LiveRunPane({
   // model call; a re-attach replays them, so a returning operator sees the
   // same totals).
   const metrics = useMemo(() => metricsFromEvents(events), [events]);
+  // What the run does with its context as the window fills, beside Compact.
+  const contextMethod = useRunContextMethod(runId);
 
   // The agent is actively working when the run is live, not parked awaiting
   // input, and not blocked on an interruption — i.e. a provider call is in
@@ -137,6 +140,7 @@ export default function LiveRunPane({
       <div className="live-run-header">
         <span className={`pill ${status}`}>{status}</span>
         {agentId && <code className="live-run-agentid">{agentId}</code>}
+        <ContextMethodBadge method={contextMethod} />
         {onCompact &&
           !pendingInterrupt &&
           events.length > 0 &&

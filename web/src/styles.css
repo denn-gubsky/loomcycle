@@ -4828,6 +4828,18 @@ button.primary:disabled {
 .ctx-bar-fill[data-level="full"] {
   background: var(--danger, #cc3333);
 }
+/* What the run does with its context as the window fills — beside Compact in
+   the live pane, and in the run page header. A fact, not a status: muted. */
+.ctx-method {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-soft, #9aa);
+  border: 1px solid var(--border, #2a2a32);
+  border-radius: 10px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  cursor: help;
+}
 .live-run-cancel {
   margin-left: auto;
   display: inline-flex;

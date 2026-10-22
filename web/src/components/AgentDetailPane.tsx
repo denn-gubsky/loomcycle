@@ -19,6 +19,7 @@ import { settledToolIds } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
 import { metricsFromEvents } from "../lib/runMetrics";
 import { ContextMeter, RunRate } from "./RunMetricsBar";
+import { RunContextMethod } from "./ContextMethodBadge";
 import {
   awaitedChildrenOf,
   isTeamWalkAgentId,
@@ -349,6 +350,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
               <span>{durationLabel(agent.started_at, agent.completed_at)}</span>
             )}
             <RunUsageFacts run={agent} events={events} />
+            <RunContextMethod run={agent} />
             <RunClockFacts run={agent} />
           </div>
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
