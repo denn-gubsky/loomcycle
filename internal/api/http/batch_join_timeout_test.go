@@ -155,13 +155,87 @@ func TestSpawnRunBatch_ACallerDeadlineEndsTheJoinBeforeTheBound(t *testing.T) {
 	assertHeldRunUntouched(t, s, held)
 }
 
-// A fresh child still going at the bound is this batch's own run, so it is
-// stopped as an explicit timeout_ms stops it — reported in its slot with its
-// ids and the reason — while a child that finished in time is reported as it
-// always was.
-func TestSpawnRunBatch_AFreshChildUnfinishedAtTheBoundIsCancelledAndSaysSo(t *testing.T) {
+// At the server's bound the join only stops waiting: a fresh child still
+// going comes back running, with its ids, and goes on after the call — even
+// once the caller's ctx ends, as a transport's does when the call returns —
+// to complete as it would have.
+func TestSpawnRunBatch_AFreshChildOutlivesTheServerBound(t *testing.T) {
 	s, gate := newGatedBatchServer(t, 8)
 	s.cfg().Env.BatchJoinTimeout = 300 * time.Millisecond
+	t.Cleanup(func() {
+		select {
+		case gate <- struct{}{}:
+		default:
+		}
+	})
+	callerCtx, callerDone := context.WithCancel(context.Background())
+	defer callerDone()
+
+	res, _ := joinWithin(t, func() connector.BatchSpawnResult {
+		res, err := s.SpawnRunBatch(callerCtx, connector.BatchSpawnRequest{Spawns: []connector.SpawnRunRequest{
+			{Agent: "r", UserID: "u1", Segments: oneUserSeg("a")},
+		}})
+		if err != nil {
+			t.Errorf("SpawnRunBatch: %v", err)
+		}
+		return res
+	})
+	callerDone() // the transport's ctx ends with the call
+
+	r := res.Results[0]
+	if r.Status != "running" || r.RunID == "" || r.SessionID == "" || r.AgentID == "" || r.Deduplicated {
+		t.Fatalf("child = %+v, want this batch's run reported running with its ids", r)
+	}
+	if !strings.Contains(r.Error, "join timed out") || !strings.Contains(r.Error, "goes on") {
+		t.Errorf("child error = %q, want it to say the join timed out and the run goes on", r.Error)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if run, err := s.store.GetRun(context.Background(), r.RunID); err != nil || run.Status != store.RunRunning {
+		t.Fatalf("the run is %q (err %v) after the join stopped waiting, want it still running", run.Status, err)
+	}
+	gate <- struct{}{}
+	waitRunStatus(t, s.store, r.RunID, store.RunCompleted)
+}
+
+// A caller that leaves while the join still waits ends a fresh child as it
+// always did — the server's bound changes only what happens when the bound
+// itself passes first.
+func TestSpawnRunBatch_ACallerThatLeavesStillEndsAFreshChild(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 8)
+	s.cfg().Env.BatchJoinTimeout = time.Hour
+	t.Cleanup(func() {
+		select {
+		case gate <- struct{}{}:
+		default:
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	res, _ := joinWithin(t, func() connector.BatchSpawnResult {
+		res, err := s.SpawnRunBatch(ctx, connector.BatchSpawnRequest{Spawns: []connector.SpawnRunRequest{
+			{Agent: "r", UserID: "u1", Segments: oneUserSeg("a")},
+		}})
+		if err != nil {
+			t.Errorf("SpawnRunBatch: %v", err)
+		}
+		return res
+	})
+	r := res.Results[0]
+	if r.RunID == "" || strings.Contains(r.Error, "join timed out") {
+		t.Fatalf("child = %+v, want the run the caller's departure ended, not a join timeout", r)
+	}
+	run, err := s.store.GetRun(context.Background(), r.RunID)
+	if err != nil || !store.IsTerminalRunStatus(run.Status) {
+		t.Fatalf("the run is %q (err %v) after its caller left, want it ended", run.Status, err)
+	}
+}
+
+// An explicit timeout_ms is the caller's own deadline on its runs: a fresh
+// child still going is cancelled — row and envelope — and says so, while a
+// child that finished in time is reported as it always was.
+func TestSpawnRunBatch_TimeoutMSCancelsAFreshChildAndSaysSo(t *testing.T) {
+	s, gate := newGatedBatchServer(t, 8)
+	s.cfg().Env.BatchJoinTimeout = time.Hour
 	gate <- struct{}{} // exactly one of the two children may finish
 	t.Cleanup(func() {
 		select {
@@ -171,7 +245,7 @@ func TestSpawnRunBatch_AFreshChildUnfinishedAtTheBoundIsCancelledAndSaysSo(t *te
 	})
 
 	res, _ := joinWithin(t, func() connector.BatchSpawnResult {
-		res, err := s.SpawnRunBatch(context.Background(), connector.BatchSpawnRequest{Spawns: []connector.SpawnRunRequest{
+		res, err := s.SpawnRunBatch(context.Background(), connector.BatchSpawnRequest{TimeoutMS: 300, Spawns: []connector.SpawnRunRequest{
 			{Agent: "r", UserID: "u1", Segments: oneUserSeg("a")},
 			{Agent: "r", UserID: "u1", Segments: oneUserSeg("b")},
 		}})
@@ -190,7 +264,7 @@ func TestSpawnRunBatch_AFreshChildUnfinishedAtTheBoundIsCancelledAndSaysSo(t *te
 		}
 	}
 	if finished == nil || stopped == nil {
-		t.Fatalf("results = %+v, want one completed and one cancelled at the bound", res.Results)
+		t.Fatalf("results = %+v, want one completed and one cancelled at the timeout", res.Results)
 	}
 	if finished.Error != "" || finished.FinalText != "partial" {
 		t.Errorf("the finished child = %+v, want its answer and no error", *finished)

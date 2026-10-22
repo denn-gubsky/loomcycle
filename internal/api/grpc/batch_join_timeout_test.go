@@ -48,11 +48,12 @@ func (p *heldProvider) Call(ctx context.Context, _ providers.Request) (<-chan pr
 	return ch, nil
 }
 
-// SpawnRunBatch in join mode, over the real HTTP server as the connector: a
-// child keyed to a run that never ends comes back at the server's join bound,
-// reported running with that run's ids and the reason it has no result, and
-// the run itself goes on — it belongs to the request that started it.
-func TestSpawnRunBatch_JoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
+// batchJoinGRPC serves the gRPC adapter over the real HTTP server as its
+// connector, with the given server join bound and a held provider whose
+// gate the test feeds. track names a run cleanup lets write its end (it
+// releases the provider) before the store closes.
+func batchJoinGRPC(t *testing.T, bound time.Duration) (client loomcyclepb.LoomcycleClient, st store.Store, gate chan struct{}, track func(runID string)) {
+	t.Helper()
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "grpc-batch-join.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestSpawnRunBatch_JoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 		Agents:      map[string]config.AgentDef{"agent": {Model: "stub-model", SystemPrompt: "hi"}},
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 4, MaxQueueDepth: 4},
 	}
-	cfg.Env.BatchJoinTimeout = 300 * time.Millisecond
+	cfg.Env.BatchJoinTimeout = bound
 	prov := &heldProvider{gate: make(chan struct{}, 4)}
 	httpSrv := lchttp.New(cfg, oneProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
 	adapter := New(Config{Store: st, CancelReg: cancel.NewRegistry(), Connector: httpSrv, Runner: httpSrv})
@@ -77,22 +78,75 @@ func TestSpawnRunBatch_JoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := loomcyclepb.NewLoomcycleClient(conn)
-	// Cleanups run last-registered first: release the held run and let it
-	// end, then stop serving, then close the store it writes to.
+	// Cleanups run last-registered first: release the held runs and let them
+	// end, then stop serving, then close the store they write to.
 	t.Cleanup(func() { _ = st.Close() })
 	t.Cleanup(gs.Stop)
 	t.Cleanup(func() { _ = conn.Close() })
-	var heldRunID string
+	var held []string
 	t.Cleanup(func() {
-		prov.gate <- struct{}{}
-		for i := 0; i < 100 && heldRunID != ""; i++ {
-			if run, err := st.GetRun(context.Background(), heldRunID); err == nil && store.IsTerminalRunStatus(run.Status) {
-				return
+		for range held {
+			select {
+			case prov.gate <- struct{}{}:
+			default:
 			}
-			time.Sleep(20 * time.Millisecond)
+		}
+		for _, id := range held {
+			for i := 0; i < 100; i++ {
+				if run, err := st.GetRun(context.Background(), id); err == nil && store.IsTerminalRunStatus(run.Status) {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
 		}
 	})
+	return loomcyclepb.NewLoomcycleClient(conn), st, prov.gate, func(id string) { held = append(held, id) }
+}
+
+// joinGRPCWithin calls SpawnRunBatch with no deadline and fails the test if it
+// has not returned in 10s: before the bound it waited for ever.
+func joinGRPCWithin(t *testing.T, client loomcyclepb.LoomcycleClient, req *loomcyclepb.BatchSpawnRequest) *loomcyclepb.SpawnResult {
+	t.Helper()
+	type joined struct {
+		res *loomcyclepb.BatchSpawnResult
+		err error
+	}
+	done := make(chan joined, 1)
+	go func() {
+		res, err := client.SpawnRunBatch(context.Background(), req)
+		done <- joined{res, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("join: %v", got.err)
+		}
+		return got.res.GetResults()[0]
+	case <-time.After(10 * time.Second):
+		t.Fatal("SpawnRunBatch did not return within 10s: the join waits on a run that never ends")
+		return nil
+	}
+}
+
+// waitStatus polls a run's row until it reaches want.
+func waitStatus(t *testing.T, st store.Store, runID string, want store.RunStatus) {
+	t.Helper()
+	for i := 0; i < 150; i++ {
+		if run, err := st.GetRun(context.Background(), runID); err == nil && run.Status == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	run, err := st.GetRun(context.Background(), runID)
+	t.Fatalf("run %s is %q (err %v), want %q", runID, run.Status, err, want)
+}
+
+// SpawnRunBatch in join mode, over the real HTTP server as the connector: a
+// child keyed to a run that never ends comes back at the server's join bound,
+// reported running with that run's ids and the reason it has no result, and
+// the run itself goes on — it belongs to the request that started it.
+func TestSpawnRunBatch_JoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
+	client, st, _, track := batchJoinGRPC(t, 300*time.Millisecond)
 
 	child := &loomcyclepb.RunRequest{Agent: "agent", UserId: "u1", IdempotencyKey: "held", Segments: userSegment("go")}
 	started, err := client.SpawnRunBatch(context.Background(), &loomcyclepb.BatchSpawnRequest{Mode: "detach", Spawns: []*loomcyclepb.RunRequest{child}})
@@ -103,42 +157,36 @@ func TestSpawnRunBatch_JoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 	if held.GetStatus() != "running" || held.GetRunId() == "" {
 		t.Fatalf("held run = %+v, want a fresh running run", held)
 	}
-	heldRunID = held.GetRunId()
+	track(held.GetRunId())
 
-	// No deadline on the call: before the bound this waited for ever. The
-	// test's own limit stops it failing by hanging the package.
-	type joined struct {
-		res *loomcyclepb.BatchSpawnResult
-		err error
-	}
-	done := make(chan joined, 1)
-	go func() {
-		res, err := client.SpawnRunBatch(context.Background(), &loomcyclepb.BatchSpawnRequest{Spawns: []*loomcyclepb.RunRequest{child}})
-		done <- joined{res, err}
-	}()
-	var got joined
-	select {
-	case got = <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("SpawnRunBatch did not return within 10s: the join waits on a run that never ends")
-	}
-	if got.err != nil {
-		t.Fatalf("join: %v", got.err)
-	}
-	r := got.res.GetResults()[0]
+	r := joinGRPCWithin(t, client, &loomcyclepb.BatchSpawnRequest{Spawns: []*loomcyclepb.RunRequest{child}})
 	if !r.GetDeduplicated() || r.GetRunId() != held.GetRunId() || r.GetSessionId() != held.GetSessionId() || r.GetStatus() != "running" {
 		t.Fatalf("joined child = %+v, want the held run reported running, deduplicated", r)
 	}
 	if !strings.Contains(r.GetError(), "join timed out") {
 		t.Errorf("joined child error = %q, want it to say the join timed out", r.GetError())
 	}
-
 	time.Sleep(100 * time.Millisecond)
-	run, err := st.GetRun(context.Background(), held.GetRunId())
-	if err != nil {
-		t.Fatal(err)
+	waitStatus(t, st, held.GetRunId(), store.RunRunning)
+}
+
+// A fresh child still going at the server's bound comes back running with its
+// ids and outlives the RPC — whose ctx ends as it returns — to complete.
+func TestSpawnRunBatch_AFreshChildOutlivesTheServerBound(t *testing.T) {
+	client, st, gate, track := batchJoinGRPC(t, 300*time.Millisecond)
+
+	r := joinGRPCWithin(t, client, &loomcyclepb.BatchSpawnRequest{Spawns: []*loomcyclepb.RunRequest{
+		{Agent: "agent", UserId: "u1", Segments: userSegment("go")},
+	}})
+	if r.GetStatus() != "running" || r.GetRunId() == "" || r.GetSessionId() == "" || r.GetDeduplicated() {
+		t.Fatalf("child = %+v, want this batch's run reported running with its ids", r)
 	}
-	if run.Status != store.RunRunning {
-		t.Fatalf("the held run is %q after the join gave up on it, want it still running", run.Status)
+	if !strings.Contains(r.GetError(), "join timed out") {
+		t.Errorf("child error = %q, want it to say the join timed out", r.GetError())
 	}
+	track(r.GetRunId())
+	time.Sleep(100 * time.Millisecond)
+	waitStatus(t, st, r.GetRunId(), store.RunRunning)
+	gate <- struct{}{}
+	waitStatus(t, st, r.GetRunId(), store.RunCompleted)
 }
