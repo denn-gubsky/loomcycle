@@ -25,7 +25,7 @@ func logTokenHashes(rep lchttp.TokenHashReport) {
 		// An untagged row may also be from an explicit pepper since removed;
 		// the two are indistinguishable, and the rewrap cannot bring that
 		// kind back.
-		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash and will not authenticate until `loomcycle tokens rewrap` moves them onto the derived pepper — tokens minted before LOOMCYCLE_SECRET_KEY was set. Check the def_ids first: one you never minted was written straight into the database; retire it instead. def_ids: %s",
+		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash and will not authenticate until rewrapped onto the derived pepper — tokens minted before LOOMCYCLE_SECRET_KEY was set, or rows written straight into the database. Review them with `loomcycle tokens rewrap` (lists them, writes nothing), then rewrap only the ones you minted; retire any you did not. def_ids: %s",
 			len(rep.Untagged), capIDs(rep.Untagged))
 	}
 }

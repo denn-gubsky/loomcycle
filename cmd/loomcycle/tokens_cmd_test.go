@@ -67,13 +67,13 @@ func testSecretKey() string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
 }
 
-// The command rewraps the unpeppered row onto the derived pepper's wrapped
-// form — the form a server's login recomputes from the token — while
+// The command rewraps a named unpeppered row onto the derived pepper's
+// wrapped form — the form a server's login recomputes from the token — while
 // another handle (a running server) holds the database.
 func TestTokensRewrap_RewrapsTheUnpepperedRowUnderTheServersPepper(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath}, &out, &errb); rc != 0 {
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old"}, &out, &errb); rc != 0 {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
 
@@ -85,7 +85,7 @@ func TestTokensRewrap_RewrapsTheUnpepperedRowUnderTheServersPepper(t *testing.T)
 	if got, want := tokensStoredHash(t, st), h.WrappedHash("lct_old"); got != want {
 		t.Fatalf("stored %q, want the wrapped form %q", got, want)
 	}
-	for _, want := range []string{"1 unpeppered", "rewrapped 1 of 1 row(s)", "  def_old"} {
+	for _, want := range []string{"1 unpeppered", "rewrapped 1 of 1 named row(s)", "  def_old"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -101,12 +101,12 @@ func TestTokensRewrap_RewrapsTheUnpepperedRowUnderTheServersPepper(t *testing.T)
 	}
 }
 
-// --dry-run lists the row and writes nothing.
+// --dry-run checks the named rows and writes nothing.
 func TestTokensRewrap_DryRunChangesNothing(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	before := tokensStoredHash(t, st)
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--dry-run"}, &out, &errb); rc != 0 {
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old", "--dry-run"}, &out, &errb); rc != 0 {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
 	if got := tokensStoredHash(t, st); got != before {

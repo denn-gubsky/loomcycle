@@ -25,19 +25,29 @@ func bootTokenHashes(t *testing.T, s *Server) {
 	}
 }
 
-// rewrapTokenHashes runs what `loomcycle tokens rewrap` runs, against s's
-// store and pepper.
-func rewrapTokenHashes(t *testing.T, s *Server) TokenRewrapResult {
+// rewrapTokenHashes runs what the operator's two steps of `loomcycle tokens
+// rewrap` run against s's store and pepper: list the unpeppered rows, then
+// confirm every listed row by the set's digest. Returns the rows listed and
+// how many were rewrapped.
+func rewrapTokenHashes(t *testing.T, s *Server) ([]store.OperatorTokenDefRow, int) {
 	t.Helper()
 	h, err := s.hasher()
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := RewrapUntaggedTokenHashes(context.Background(), s.store, h, false)
+	_, rows, err := ListUntaggedTokenRows(context.Background(), s.store, h)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	picked, err := SelectUntaggedTokenRows(rows, nil, UntaggedTokenSetDigest(rows))
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	n, err := RewrapTokenRows(context.Background(), s.store, h, picked)
 	if err != nil {
 		t.Fatalf("rewrap: %v", err)
 	}
-	return res
+	return rows, n
 }
 
 // wrappedFormFor spells out the stored wrapped form independently of the
@@ -115,9 +125,9 @@ func TestTokenRewrap_RowAuthenticatesOnARunningServerAfterTheCommand(t *testing.
 	}
 
 	cmd := &Server{cfgHolder: s.cfgHolder, store: st}
-	res := rewrapTokenHashes(t, cmd)
-	if res.Rewrapped != 1 || len(res.Untagged) != 1 || res.Untagged[0] != "def_old" {
-		t.Errorf("result = %+v, want def_old rewrapped", res)
+	rows, n := rewrapTokenHashes(t, cmd)
+	if n != 1 || len(rows) != 1 || rows[0].DefID != "def_old" {
+		t.Errorf("listed %+v, rewrapped %d; want def_old rewrapped", rows, n)
 	}
 	if got, want := storedHash(t, st, "def_old"), wrappedFormFor(t, env.SecretKey, "lct_old"); got != want {
 		t.Fatalf("the command left the row on %q, want the wrapped form %q", got, want)
@@ -130,26 +140,93 @@ func TestTokenRewrap_RowAuthenticatesOnARunningServerAfterTheCommand(t *testing.
 	}
 }
 
-// --dry-run reports what it would rewrap and writes nothing.
-func TestTokenRewrap_DryRunChangesNothing(t *testing.T) {
+// The review step lists the unpeppered rows and writes nothing.
+func TestTokenRewrap_ListingChangesNothing(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
 	bare := auth.HashToken("", "lct_old")
 	seedTokenHash(t, st, "def_old", bare)
 	bootTokenHashes(t, s)
 
-	res, err := RewrapUntaggedTokenHashes(context.Background(), st, hasherFor(t, env), true)
+	rep, rows, err := ListUntaggedTokenRows(context.Background(), st, hasherFor(t, env))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Rewrapped != 0 || len(res.Untagged) != 1 || res.Untagged[0] != "def_old" {
-		t.Errorf("dry run = %+v, want def_old listed and nothing rewrapped", res)
+	if len(rows) != 1 || rows[0].DefID != "def_old" || len(rep.Untagged) != 1 {
+		t.Errorf("listing = %+v / %+v, want def_old", rep, rows)
 	}
 	if got := storedHash(t, st, "def_old"); got != bare {
-		t.Fatalf("a dry run rewrote the row to %q", got)
+		t.Fatalf("listing rewrote the row to %q", got)
 	}
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); ok {
-		t.Error("the row authenticated after a dry run")
+		t.Error("the row authenticated after a listing")
+	}
+}
+
+// Only the rows the operator named are rewrapped; an unpeppered row nobody
+// named — a database writer's insert — stays refused.
+func TestTokenRewrap_OnlyNamedRowsAreRewrapped(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1)}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	forged := auth.HashToken("", "lct_forged")
+	seedTokenHash(t, st, "def_forged", forged)
+	bootTokenHashes(t, s)
+	h := hasherFor(t, env)
+
+	_, rows, err := ListUntaggedTokenRows(context.Background(), st, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	picked, err := SelectUntaggedTokenRows(rows, []string{"def_old"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := RewrapTokenRows(context.Background(), st, h, picked); err != nil || n != 1 {
+		t.Fatalf("rewrap = (%d, %v), want 1", n, err)
+	}
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
+		t.Error("the named row was refused")
+	}
+	if got := storedHash(t, st, "def_forged"); got != forged {
+		t.Errorf("an unnamed row was rewritten to %q", got)
+	}
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_forged"); ok {
+		t.Errorf("an unnamed row authenticated as %+v", p)
+	}
+}
+
+// A selection that does not match the current rows is refused outright: a
+// named def_id that is not unpeppered now, or a digest of a set that has
+// since gained a row or had a hash changed. Names and a digest together are
+// refused too.
+func TestSelectUntaggedTokenRows_RefusesWhatWasNotReviewed(t *testing.T) {
+	row := func(id, token string) store.OperatorTokenDefRow {
+		return store.OperatorTokenDefRow{DefID: id, TokenHash: auth.HashToken("", token)}
+	}
+	reviewed := []store.OperatorTokenDefRow{row("def_a", "a"), row("def_b", "b")}
+	digest := UntaggedTokenSetDigest(reviewed)
+
+	if got, err := SelectUntaggedTokenRows([]store.OperatorTokenDefRow{reviewed[1], reviewed[0]}, nil, digest); err != nil || len(got) != 2 {
+		t.Errorf("the reviewed set in another order = (%d rows, %v), want both", len(got), err)
+	}
+	for name, now := range map[string][]store.OperatorTokenDefRow{
+		"row added":    append(append([]store.OperatorTokenDefRow(nil), reviewed...), row("def_x", "x")),
+		"hash changed": {reviewed[0], row("def_b", "mine")},
+		"row gone":     {reviewed[0]},
+	} {
+		if _, err := SelectUntaggedTokenRows(now, nil, digest); err == nil {
+			t.Errorf("%s: the stale digest was accepted", name)
+		}
+	}
+	if _, err := SelectUntaggedTokenRows(reviewed, []string{"def_a", "def_gone"}, ""); err == nil {
+		t.Error("a def_id that is not an unpeppered row was accepted")
+	}
+	if _, err := SelectUntaggedTokenRows(reviewed, []string{"def_a"}, digest); err == nil {
+		t.Error("names and a digest together were accepted")
+	}
+	if _, err := SelectUntaggedTokenRows(reviewed, nil, ""); err == nil {
+		t.Error("an empty selection was accepted")
 	}
 }
 
@@ -164,7 +241,11 @@ func TestTokenRewrap_RefusedWithoutADerivedPepper(t *testing.T) {
 			_, st := derivedPepperServer(t, env)
 			h := auth.HashToken(env.OperatorTokenPepper, "lct_x")
 			seedTokenHash(t, st, "def_x", h)
-			if _, err := RewrapUntaggedTokenHashes(context.Background(), st, hasherFor(t, env), false); err == nil {
+			if _, _, err := ListUntaggedTokenRows(context.Background(), st, hasherFor(t, env)); err == nil {
+				t.Error("the listing ran without a derived pepper")
+			}
+			rows := []store.OperatorTokenDefRow{{DefID: "def_x", TokenHash: h}}
+			if _, err := RewrapTokenRows(context.Background(), st, hasherFor(t, env), rows); err == nil {
 				t.Fatal("the rewrap ran without a derived pepper")
 			}
 			if got := storedHash(t, st, "def_x"); got != h {
@@ -293,7 +374,7 @@ func (b *runningBesideStore) OperatorTokenRehashAll(ctx context.Context, ops []s
 }
 
 // Two rewraps at once (run from two shells, or beside a running server) both
-// find the unpeppered rows. The row is wrapped once — never a wrap of the
+// confirmed the same unpeppered rows. The row is wrapped once — never a wrap of the
 // wrapped form — and the token authenticates.
 func TestTokenRewrap_ConcurrentRunsWrapEachRowOnce(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
@@ -301,20 +382,24 @@ func TestTokenRewrap_ConcurrentRunsWrapEachRowOnce(t *testing.T) {
 	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
 	bootTokenHashes(t, srv)
 	h := hasherFor(t, env)
-	var other TokenRewrapResult
+	_, rows, err := ListUntaggedTokenRows(context.Background(), st, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other int
 	racing := &runningBesideStore{Store: st, beside: func() {
 		var err error
-		if other, err = RewrapUntaggedTokenHashes(context.Background(), st, h, false); err != nil {
+		if other, err = RewrapTokenRows(context.Background(), st, h, rows); err != nil {
 			t.Error(err)
 		}
 	}}
 
-	res, err := RewrapUntaggedTokenHashes(context.Background(), racing, h, false)
+	n, err := RewrapTokenRows(context.Background(), racing, h, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Rewrapped+other.Rewrapped != 1 || len(res.Untagged) != 1 {
-		t.Errorf("results = %+v and %+v, want the one row rewrapped once between them", res, other)
+	if n+other != 1 {
+		t.Errorf("rewrapped %d and %d, want the one row rewrapped once between them", n, other)
 	}
 	if got, want := storedHash(t, st, "def_old"), wrappedFormFor(t, env.SecretKey, "lct_old"); got != want {
 		t.Fatalf("stored %q, want it wrapped exactly once: %q", got, want)
@@ -338,7 +423,11 @@ func TestTokenRewrap_FailedRunCanBeRetried(t *testing.T) {
 	s, st := derivedPepperServer(t, env)
 	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
 	bootTokenHashes(t, s)
-	if _, err := RewrapUntaggedTokenHashes(context.Background(), failingRewrapStore{st}, hasherFor(t, env), false); err == nil {
+	_, rows, err := ListUntaggedTokenRows(context.Background(), st, hasherFor(t, env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RewrapTokenRows(context.Background(), failingRewrapStore{st}, hasherFor(t, env), rows); err == nil {
 		t.Fatal("a failed rewrap reported success")
 	}
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); ok {
