@@ -27,6 +27,10 @@ repository needs a read-write volume.
 | `log` | commits, newest first | `rev`, `paths` (first one filters), `max` (default 20, at most 200), `since`, `until`, `all` |
 | `show` | one commit and its patch | `rev` (default HEAD), `max_bytes` |
 | `diff` | a unified diff | none = unstaged changes; `staged` = staged vs HEAD; `from` = worktree vs a revision; `from` + `to` = two revisions; `paths`, `max_bytes` |
+| `blame` | who last changed each line of a file | `paths` (one file), `rev`, `max` lines (default 500) |
+| `grep` | search a commit's files (not your uncommitted changes) | `pattern`, `rev`, `paths`, `ignore_case`, `invert`, `max` matches (default 100) |
+| `notes_list` | git notes on recent commits | `rev`, `max` |
+| `submodule_list` | the submodules and the commits recorded for them | — |
 | `branch_list`, `tag_list`, `remote_list` | what exists | — |
 | `merge_base` | common ancestor | `from`, `to` |
 | `rev_parse` | a revision's full hash | `rev` |
@@ -37,8 +41,10 @@ repository needs a read-write volume.
 | `restore` | discard worktree changes, or unstage with `staged` | `paths` |
 | `reset` | move the branch | `mode` soft, mixed (default) or hard; `rev`; `paths` (mixed only) |
 | `commit` | record the staged changes | `message`; `all` stages tracked changes first; `amend`, `allow_empty` |
-| `checkout` | switch branch, or detach at a revision | `branch`, or `rev`; `create` makes `branch` at `rev`; `force` discards local changes |
+| `checkout` | switch branch, or detach at a revision | `branch`, or `rev`; `create` makes `branch` at `rev`; `force` discards local changes; `sparse` checks out only those directories |
 | `branch_create`, `branch_delete` | | `branch`, `rev`; `force` deletes an unmerged branch |
+| `tag_create`, `tag_delete` | a lightweight tag, or an annotated one with `message` | `tag`, `rev`, `message`, `force`, `sign_key` |
+| `remote_add`, `remote_remove`, `remote_set_url` | manage remotes | `remote`, `url` (https only) |
 | `merge` | fast-forward the current branch | `rev` |
 | `clean` | remove untracked files | `dirs`, `dry_run` |
 | `clone` | copy a repository into the volume | `url`, `credential`, `branch`, `depth`, `single_branch` |
@@ -46,9 +52,17 @@ repository needs a read-write volume.
 | `pull` | fetch and fast-forward the current branch | `remote`, `branch`, `credential` |
 | `push` | publish | `remote`, `credential`, `refspecs` (default: the current branch), `force`, `force_with_lease`, `tags` |
 | `ls_remote` | list a remote's refs without a repository | `url`, `credential` |
+| `submodule_update` | fetch one submodule at its recorded commit | `submodule` (a name from submodule_list), `credential` |
 
 Commits are made under the identity the operator configured, and each carries
 a `Loomcycle-Run:` trailer naming the run, so a reviewer can trace it.
+
+To sign a commit or an annotated tag, pass `sign_key`: the name of an
+`ed25519` crypto key your crypto_scopes reach (`sign_key_scope` picks the
+scope when the name is in more than one). The signature is git's SSH format;
+the result's `signed_by` is the key's public half, which a reviewer lists in
+an allowed-signers file to verify it. You never see the key. A signature
+counts as one Crypto operation.
 
 ## The network
 
@@ -79,6 +93,7 @@ carries only its class, never the server's own words. Classes include
 `not_a_repository`, `invalid_argument`, `invalid_revision`,
 `nothing_to_commit`, `worktree_dirty` (local changes would be lost; commit,
 restore, or pass `force`), `non_fast_forward`, `push_rejected`,
+`sign_key_refused`, `signing_unavailable`,
 `git_remote_not_allowed`, `git_network_disabled`, `git_push_disabled`,
 `host_not_allowed`, `credential_url_not_allowed`, `credential_unresolvable`,
 `auth_failed`, `not_found`, `source_too_large` (the repository passed the operator's size limits), `upload_too_large`, `timeout` and `fetch_failed`.

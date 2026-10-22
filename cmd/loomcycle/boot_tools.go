@@ -338,6 +338,10 @@ func (b *boot) buildTools() {
 	// Document through these tools' own scope checks.
 	cryptoTool.Memory = memoryTool
 	cryptoTool.Docs = documentTool
+	// RFC FB P2: the Git tool signs commits and tags through the Crypto
+	// tool, within the run's crypto_scopes, counted and audited as a
+	// Crypto op.
+	gitTool.Crypto = cryptoTool
 
 	// RFC BE — the History tool (browse/search/annotate past chats). Store
 	// late-bound below; the per-agent history_scope policy gates every op.

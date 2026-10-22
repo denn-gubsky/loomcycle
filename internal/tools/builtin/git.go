@@ -72,6 +72,9 @@ type Git struct {
 	// Audit records every network operation, refused ones included. Nil
 	// records nothing.
 	Audit audit.Sink
+	// Crypto signs commits and tags with a key the run's crypto_scopes
+	// reach (sign_key). Nil: signing is refused.
+	Crypto *Crypto
 
 	// locks serialises the ops on one repository. go-git rewrites the index
 	// in place with no lock file, and the loop runs a batch of tool calls
@@ -124,6 +127,10 @@ const (
 	gitMaxListed         = 1000
 	gitDefaultLogMax     = 20
 	gitMaxLogMax         = 200
+	gitDefaultBlameLines = 500
+	gitMaxBlameLines     = 5000
+	gitDefaultGrepMax    = 100
+	gitMaxGrepMax        = 1000
 	gitDefaultDiffBytes  = 64 << 10
 	gitMaxDiffBytes      = 1 << 20
 	gitFetchUploadBytes  = 16 << 20 // a fetch's negotiation (wants, haves)
@@ -136,9 +143,10 @@ func (g *Git) Name() string { return "Git" }
 func (g *Git) Description() string {
 	return "Work on a git repository inside a volume you are bound to, without a shell. " +
 		"Pick the operation with `op`; `volume` names the volume (default: your default one) and `repo` the repository's directory in it (default: the volume root). " +
-		"Read: status, log, show, diff, branch_list, tag_list, remote_list, merge_base, rev_parse. " +
-		"Change (read-write volume): init, add, rm, mv, restore, reset, commit, checkout, branch_create, branch_delete, merge (fast-forward only), clean. " +
-		"Network (only when your git_remote allows it, to hosts the operator lists): clone, fetch, pull (fast-forward only), push, ls_remote. " +
+		"Read: status, log, show, diff, blame, grep, branch_list, tag_list, remote_list, notes_list, submodule_list, merge_base, rev_parse. " +
+		"Change (read-write volume): init, add, rm, mv, restore, reset, commit, checkout (sparse too), branch_create, branch_delete, tag_create, tag_delete, remote_add, remote_remove, remote_set_url, merge (fast-forward only), clean. " +
+		"Commits and annotated tags can be signed with `sign_key`, a crypto key your crypto_scopes reach; you never see the key. " +
+		"Network (only when your git_remote allows it, to hosts the operator lists): clone, fetch, pull (fast-forward only), push, ls_remote, submodule_update. " +
 		"A network op takes `credential` as \"$cred:<name>\" or \"$ghapp:<name>\": the runtime resolves and sends it; you never see it, and it never goes into the repository. " +
 		"Cherry-pick, rebase, revert, stash and non-fast-forward merges are not available. Read file contents with Read, not with this tool. " +
 		"See the `git` help topic for every op's arguments."
@@ -148,7 +156,7 @@ func (g *Git) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":          {"type": "string", "enum": ["status","log","show","diff","branch_list","tag_list","remote_list","merge_base","rev_parse","init","add","rm","mv","restore","reset","commit","checkout","branch_create","branch_delete","merge","clean","clone","fetch","pull","push","ls_remote"]},
+			"op":          {"type": "string", "enum": ["status","log","show","diff","blame","grep","branch_list","tag_list","remote_list","notes_list","submodule_list","merge_base","rev_parse","init","add","rm","mv","restore","reset","commit","checkout","branch_create","branch_delete","tag_create","tag_delete","remote_add","remote_remove","remote_set_url","merge","clean","clone","fetch","pull","push","ls_remote","submodule_update"]},
 			"volume":      {"type": "string", "description": "Volume name; omit for your default volume. Context op=self lists your volumes."},
 			"repo":        {"type": "string", "description": "The repository's directory, relative to the volume root. Omit for the volume root. clone and init create it if missing; clone needs it empty."},
 			"paths":       {"type": "array", "items": {"type": "string"}, "description": "Repository-relative paths: add, rm, restore, reset (mixed), diff, log (first one)."},
@@ -182,7 +190,15 @@ func (g *Git) InputSchema() json.RawMessage {
 			"refspecs":    {"type": "array", "items": {"type": "string"}, "description": "fetch/push refspecs. push default: the current branch."},
 			"prune":       {"type": "boolean"},
 			"tags":        {"type": "boolean", "description": "fetch: fetch tags; push: push tags."},
-			"initial_branch": {"type": "string", "description": "init: the first branch (default main)."}
+			"initial_branch": {"type": "string", "description": "init: the first branch (default main)."},
+			"tag":         {"type": "string", "description": "tag_create/tag_delete: the tag name."},
+			"pattern":     {"type": "string", "description": "grep: an RE2 regular expression."},
+			"ignore_case": {"type": "boolean", "description": "grep: match without regard to case."},
+			"invert":      {"type": "boolean", "description": "grep: lines that do NOT match."},
+			"sparse":      {"type": "array", "items": {"type": "string"}, "description": "checkout: check out only these directories."},
+			"sign_key":    {"type": "string", "description": "commit/tag_create: sign with this crypto key (ed25519) your crypto_scopes reach."},
+			"sign_key_scope": {"type": "string", "enum": ["agent","user","tenant"], "description": "commit/tag_create: the scope that holds sign_key, when the name is in more than one."},
+			"submodule":   {"type": "string", "description": "submodule_update: the submodule's name, as submodule_list gives it."}
 		},
 		"required": ["op"]
 	}`)
@@ -224,6 +240,14 @@ type gitInput struct {
 	Prune          bool     `json:"prune"`
 	Tags           bool     `json:"tags"`
 	InitialBranch  string   `json:"initial_branch"`
+	Tag            string   `json:"tag"`
+	Pattern        string   `json:"pattern"`
+	IgnoreCase     bool     `json:"ignore_case"`
+	Invert         bool     `json:"invert"`
+	Sparse         []string `json:"sparse"`
+	SignKey        string   `json:"sign_key"`
+	SignKeyScope   string   `json:"sign_key_scope"`
+	Submodule      string   `json:"submodule"`
 }
 
 // gitOpKind sorts the ops by what they need: a read-write volume, the
@@ -241,7 +265,11 @@ var gitOps = map[string]gitOpKind{
 	"status": gitRead, "log": gitRead, "show": gitRead, "diff": gitRead,
 	"branch_list": gitRead, "tag_list": gitRead, "remote_list": gitRead,
 	"merge_base": gitRead, "rev_parse": gitRead,
-	"init": gitWrite, "add": gitWrite, "rm": gitWrite, "mv": gitWrite,
+	"blame": gitRead, "grep": gitRead, "notes_list": gitRead, "submodule_list": gitRead,
+	"tag_create": gitWrite, "tag_delete": gitWrite,
+	"remote_add": gitWrite, "remote_remove": gitWrite, "remote_set_url": gitWrite,
+	"submodule_update": gitFetch,
+	"init":             gitWrite, "add": gitWrite, "rm": gitWrite, "mv": gitWrite,
 	"restore": gitWrite, "reset": gitWrite, "commit": gitWrite,
 	"checkout": gitWrite, "branch_create": gitWrite, "branch_delete": gitWrite,
 	"merge": gitWrite, "clean": gitWrite,
@@ -529,17 +557,104 @@ func (g *Git) local(ctx context.Context, r *gitrepo.Repo, in gitInput) tools.Res
 		}
 	case "commit":
 		sig := g.signature(ctx)
-		h, err := r.Commit(gitrepo.CommitOptions{
+		signer, res, ok := g.signer(ctx, in)
+		if !ok {
+			return res
+		}
+		o := gitrepo.CommitOptions{
 			Message: withRunTrailer(in.Message, tools.RunID(ctx)),
 			Author:  sig, Committer: sig,
 			All: in.All, AllowEmpty: in.AllowEmpty, Amend: in.Amend,
+		}
+		if signer != nil {
+			o.Signer = signer
+		}
+		h, err := r.Commit(o)
+		if err != nil {
+			return gitSignOrLocalRefusal(err)
+		}
+		out := map[string]any{"op": "commit", "hash": h}
+		if signer != nil {
+			out["signed_by"] = signer.authorized
+		}
+		return gitOK(out)
+	case "checkout":
+		if err := r.Checkout(gitrepo.CheckoutOptions{Branch: in.Branch, Rev: in.Rev, Create: in.Create, Force: in.Force, SparseDirs: in.Sparse}); err != nil {
+			return gitLocalRefusal(err)
+		}
+	case "blame":
+		if len(in.Paths) != 1 {
+			return gitRefusal("invalid_argument", "blame takes one path in paths")
+		}
+		res, err := r.Blame(in.Paths[0], in.Rev, clampMax(in.Max, gitDefaultBlameLines, gitMaxBlameLines))
+		if err != nil {
+			return gitLocalRefusal(err)
+		}
+		return gitOK(map[string]any{"op": "blame", "lines": res.Lines, "truncated": res.Truncated})
+	case "grep":
+		matches, truncated, err := r.Grep(gitrepo.GrepOptions{
+			Pattern: in.Pattern, Rev: in.Rev, Paths: in.Paths, IgnoreCase: in.IgnoreCase, Invert: in.Invert,
+			MaxMatches: clampMax(in.Max, gitDefaultGrepMax, gitMaxGrepMax),
 		})
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
-		return gitOK(map[string]any{"op": "commit", "hash": h})
-	case "checkout":
-		if err := r.Checkout(gitrepo.CheckoutOptions{Branch: in.Branch, Rev: in.Rev, Create: in.Create, Force: in.Force}); err != nil {
+		return gitOK(map[string]any{"op": "grep", "matches": matches, "truncated": truncated})
+	case "notes_list":
+		notes, err := r.Notes(in.Rev, clampMax(in.Max, gitDefaultLogMax, gitMaxLogMax))
+		if err != nil {
+			return gitLocalRefusal(err)
+		}
+		return gitOK(map[string]any{"op": "notes_list", "notes": notes})
+	case "submodule_list":
+		subs, err := r.Submodules()
+		if err != nil {
+			return gitLocalRefusal(err)
+		}
+		subs, truncated := capList(subs)
+		return gitOK(map[string]any{"op": "submodule_list", "submodules": subs, "truncated": truncated})
+	case "tag_create":
+		signer, res, ok := g.signer(ctx, in)
+		if !ok {
+			return res
+		}
+		o := gitrepo.TagOptions{Name: in.Tag, Rev: in.Rev, Message: in.Message, Tagger: g.signature(ctx), Force: in.Force}
+		if signer != nil {
+			if in.Message == "" {
+				return gitRefusal("invalid_argument", "a signed tag is an annotated one: give it a message")
+			}
+			o.Signer = signer
+		}
+		tag, err := r.TagCreate(o)
+		if err != nil {
+			return gitSignOrLocalRefusal(err)
+		}
+		out := map[string]any{"op": "tag_create", "tag": tag}
+		if signer != nil {
+			out["signed_by"] = signer.authorized
+		}
+		return gitOK(out)
+	case "tag_delete":
+		if err := r.TagDelete(in.Tag); err != nil {
+			return gitLocalRefusal(err)
+		}
+	case "remote_add", "remote_set_url":
+		// Only an https URL is recorded; whether its host is one the
+		// operator lists is checked every time it is used.
+		if _, err := gitsource.ValidateURL(in.URL); err != nil {
+			return gitRefusal("invalid_argument", strings.TrimPrefix(err.Error(), gitsource.ErrInvalidRequest.Error()+": "))
+		}
+		var err error
+		if in.Op == "remote_add" {
+			err = r.RemoteAdd(in.Remote, in.URL)
+		} else {
+			err = r.RemoteSetURL(in.Remote, in.URL)
+		}
+		if err != nil {
+			return gitLocalRefusal(err)
+		}
+	case "remote_remove":
+		if err := r.RemoteRemove(in.Remote); err != nil {
 			return gitLocalRefusal(err)
 		}
 	case "branch_create":
@@ -606,6 +721,43 @@ func (g *Git) limits() gitrepo.Limits {
 		l.MaxFiles = g.Source.MaxFiles
 	}
 	return l
+}
+
+// clampMax is a model-chosen count bounded: def when unset, at most max.
+func clampMax(n, def, max int) int {
+	if n <= 0 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+// signer is the go-git Signer for in.SignKey, or nil when the call asks for
+// no signature. The key is resolved by the Crypto tool when the commit or
+// tag is signed, within the run's crypto_scopes.
+func (g *Git) signer(ctx context.Context, in gitInput) (*gitSigner, tools.Result, bool) {
+	if in.SignKey == "" {
+		if in.SignKeyScope != "" {
+			return nil, gitRefusal("invalid_argument", "sign_key_scope needs sign_key"), false
+		}
+		return nil, tools.Result{}, true
+	}
+	if g.Crypto == nil {
+		return nil, gitRefusal("signing_unavailable", "this deployment has no Crypto tool to sign with"), false
+	}
+	return &gitSigner{ctx: ctx, crypto: g.Crypto, name: in.SignKey, scope: in.SignKeyScope}, tools.Result{}, true
+}
+
+// gitSignOrLocalRefusal reports a failed commit or tag, naming a refused
+// signature as such: the Crypto tool's text says which key and why, and
+// names no secret.
+func gitSignOrLocalRefusal(err error) tools.Result {
+	if errors.Is(err, errGitSignKey) {
+		return gitRefusal("sign_key_refused", err.Error())
+	}
+	return gitLocalRefusal(err)
 }
 
 // signature is who the tool commits as: the operator's identity, else the
@@ -702,7 +854,7 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 	defer cancel()
 
 	// The repository, except for ls_remote, which needs none, and clone,
-	// which makes it.
+	// which makes it. submodule_update works in its superproject.
 	var (
 		repo *gitrepo.Repo
 		wt   billy.Filesystem
@@ -737,9 +889,15 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 	rawURL := in.URL
 	if repo != nil {
 		if in.URL != "" {
-			return deny("invalid_argument", "url is for clone and ls_remote; fetch, pull and push use the remote's URL")
+			return deny("invalid_argument", "url is for clone and ls_remote; fetch, pull, push and submodule_update use the repository's own URL")
 		}
-		u, err := repo.RemoteURL(remote)
+		var u string
+		var err error
+		if in.Op == "submodule_update" {
+			u, err = submoduleURL(repo, in.Submodule)
+		} else {
+			u, err = repo.RemoteURL(remote)
+		}
 		if err != nil {
 			return refuse(gitLocalRefusal(err))
 		}
@@ -860,8 +1018,33 @@ func (g *Git) runNetwork(ctx context.Context, in gitInput, repo *gitrepo.Repo, w
 	case "push":
 		res, err := repo.Push(ctx, n, gitrepo.PushOptions{Remote: remote, RefSpecs: in.RefSpecs, Force: in.Force, ForceWithLease: in.ForceWithLease, Tags: in.Tags})
 		return map[string]any{"op": "push", "up_to_date": res.UpToDate, "updated": res.Updated}, err
+	case "submodule_update":
+		sub, err := repo.SubmoduleUpdate(ctx, in.Submodule, n)
+		return map[string]any{"op": "submodule_update", "submodule": sub}, err
 	}
 	return nil, fmt.Errorf("%w: unknown network op %q", gitrepo.ErrInvalidArgument, in.Op)
+}
+
+// submoduleURL is the URL a submodule is fetched from: .gitmodules' entry,
+// a relative one resolved against the superproject's origin. It is
+// repository content, so it is validated like any remote before it is used.
+func submoduleURL(r *gitrepo.Repo, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("%w: submodule_update needs submodule (a name from submodule_list)", gitrepo.ErrInvalidArgument)
+	}
+	subs, err := r.Submodules()
+	if err != nil {
+		return "", err
+	}
+	for _, s := range subs {
+		if s.Name == name {
+			if s.URL == "" {
+				return "", fmt.Errorf("%w: submodule %q has no URL this tool can resolve", gitrepo.ErrInvalidArgument, name)
+			}
+			return s.URL, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no submodule %q", gitrepo.ErrInvalidArgument, name)
 }
 
 // localDetail is the text of a failure raised in this process before or
