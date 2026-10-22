@@ -52,6 +52,34 @@ type Embedder interface {
 	Dimension() int
 }
 
+// QueryEmbedder is an Embedder that embeds a search query differently from
+// stored text (Cohere's search_query vs search_document, say). Optional: an
+// embedder without it embeds queries with Embed, which is what every embedder
+// did before the split.
+//
+// Embed stays the STORED-TEXT side. A caller embedding text it is about to
+// compare against stored vectors calls EmbedQuery (the helper below); a caller
+// embedding text it stores, or comparing two stored texts, calls Embed.
+type QueryEmbedder interface {
+	EmbedQuery(ctx context.Context, texts []string) ([][]float32, error)
+}
+
+// EmbedQuery embeds texts as search queries when emb supports it, else with
+// Embed.
+//
+// It asks only the value it is given: it does not walk Unwrap. The server's
+// embedder is the driver inside its provider's lane inside the health observer,
+// and reaching past them to the driver would skip the lane and the counters for
+// every query. So each wrapper implements EmbedQuery itself (doing what its
+// Embed does) and hands on through this helper — a census test holds every
+// wrapper to that.
+func EmbedQuery(ctx context.Context, emb Embedder, texts []string) ([][]float32, error) {
+	if q, ok := emb.(QueryEmbedder); ok {
+		return q.EmbedQuery(ctx, texts)
+	}
+	return emb.Embed(ctx, texts)
+}
+
 // EmbedderOptions is the constructor input for every embedder driver.
 // Static configuration the embedder needs to make HTTP calls — operator
 // yaml + env vars get translated into this shape in

@@ -88,7 +88,10 @@ type ObservedEmbedder struct {
 	lastFailKind string
 }
 
-var _ Embedder = (*ObservedEmbedder)(nil)
+var (
+	_ Embedder      = (*ObservedEmbedder)(nil)
+	_ QueryEmbedder = (*ObservedEmbedder)(nil)
+)
 
 // ObserveEmbedder decorates e. A nil embedder returns nil so the caller's
 // "no embedder configured" checks (`if d.Embedder == nil`) keep working — wrapping
@@ -103,6 +106,20 @@ func ObserveEmbedder(e Embedder) *ObservedEmbedder {
 
 func (o *ObservedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	vecs, err := o.inner.Embed(ctx, texts)
+	o.record(err)
+	return vecs, err
+}
+
+// EmbedQuery is Embed for a search query: the same outcome bookkeeping, then
+// the inner embedder's query mode when it has one.
+func (o *ObservedEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
+	vecs, err := EmbedQuery(ctx, o.inner, texts)
+	o.record(err)
+	return vecs, err
+}
+
+// record books one call's outcome.
+func (o *ObservedEmbedder) record(err error) {
 	o.mu.Lock()
 	o.calls++
 	if err != nil {
@@ -115,7 +132,6 @@ func (o *ObservedEmbedder) Embed(ctx context.Context, texts []string) ([][]float
 		o.lastOK = time.Now().UTC()
 	}
 	o.mu.Unlock()
-	return vecs, err
 }
 
 func (o *ObservedEmbedder) Model() string    { return o.inner.Model() }
