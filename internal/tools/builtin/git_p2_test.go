@@ -160,3 +160,43 @@ func TestGit_SubmoduleURLIsCheckedAtUse(t *testing.T) {
 		t.Error("a refused submodule update reached a server")
 	}
 }
+
+// A submodule's credential is resolved for the submodule's own URL: one
+// restricted to the superproject's repository is refused for a submodule on
+// the same host, before any request.
+func TestGit_SubmoduleCredentialIsCheckedAgainstTheSubmoduleURL(t *testing.T) {
+	f := newGitServer(t, false)
+	root := realDir(t)
+	sup := filepath.Join(root, "sup")
+	if err := os.MkdirAll(sup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	subURL := f.base + "/acme/other.git"
+	gitRun(t, sup, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(sup, ".gitmodules"), []byte("[submodule \"lib\"]\n\tpath = lib\n\turl = "+subURL+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, sup, "add", ".gitmodules")
+	gitRun(t, sup, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("a", 40)+",lib")
+	gitRun(t, sup, "commit", "-q", "-m", "with a submodule")
+
+	var askedFor []string
+	// A credential restricted to the superproject's repository only.
+	resolve := func(_ context.Context, ref, target string) (string, string, error) {
+		askedFor = append(askedFor, target)
+		if target != f.repoURL {
+			return "", "", ErrGitCredentialURLNotAllowed
+		}
+		return "x-access-token", gitToolTestToken, nil
+	}
+	g := &Git{Source: f.source(resolve)}
+	ctx := gitCtx(root, false, tools.GitRemotePolicyValue{Fetch: true})
+	before := f.requests()
+	wantGitClass(t, g, ctx, map[string]any{"op": "submodule_update", "repo": "sup", "submodule": "lib", "credential": "$cred:forge"}, "credential_url_not_allowed")
+	if len(askedFor) != 1 || askedFor[0] != subURL {
+		t.Errorf("the credential was resolved for %v, want the submodule's URL %s", askedFor, subURL)
+	}
+	if f.requests() != before {
+		t.Error("a refused submodule update reached the server")
+	}
+}

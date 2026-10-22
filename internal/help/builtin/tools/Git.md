@@ -66,9 +66,12 @@ counts as one Crypto operation.
 
 ## The network
 
-`clone`, `fetch`, `pull`, `ls_remote` and `push` work only when your agent's
-`git_remote` allows them (`fetch` for the first four, `push` for push) and only
-to hosts the operator lists; push has its own host list. Only `https://` URLs
+`clone`, `fetch`, `pull`, `ls_remote`, `submodule_update` and `push` work
+only when your agent's `git_remote` allows them (`fetch` for all but push,
+`push` for push) and only to hosts the operator lists; push has its own host
+list. A submodule's URL comes from `.gitmodules` and is checked like any
+remote, and a credential you name must be allowed for the submodule's own
+URL, not the superproject's. Only `https://` URLs
 are accepted. A `fetch`, `pull` or `push` uses the remote's URL as the
 repository's configuration gives it, and the runtime checks that URL each
 time.

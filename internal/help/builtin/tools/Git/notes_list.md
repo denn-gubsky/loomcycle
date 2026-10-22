@@ -22,6 +22,9 @@ or a repository with no commit yet, is an empty list.
 ## Errors
 
 - `invalid_revision` — `rev` names nothing in this repository.
+- `source_too_large` — the work passed the repository's size limits (too
+  many entries or bytes to walk).
+- `timeout` — it ran past its two-minute deadline.
 - `not_a_repository` — no `.git` directory at `repo`.
 
 ## Examples

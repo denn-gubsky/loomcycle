@@ -20,7 +20,10 @@ index, so it is not reported as deleted and is still in the next commit. A
 file at a left-out path is removed only when it matches what the index held;
 anything else is someone's work and stays. The list is not remembered: a
 later `checkout`, `reset` or `merge` writes any file it adds wherever it is,
-so pass `sparse` again to keep the worktree narrow.
+so pass `sparse` again to keep the worktree narrow. A file you write at a
+left-out path is invisible to `status`, `add` and `commit` until a sparse
+checkout includes its directory again: keep your work under the listed
+directories.
 
 ## Arguments
 

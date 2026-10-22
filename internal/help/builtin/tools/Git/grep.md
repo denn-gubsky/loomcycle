@@ -20,7 +20,7 @@ Binary files and files over 8 MiB are skipped.
   everything.
 - `ignore_case` — match without regard to case.
 - `invert` — list the lines that do NOT match.
-- `max` — how many matching lines (default 100, at most 1000).
+- `max` — how many matching lines (default 100, at most 500).
 
 ## Returns
 
@@ -33,6 +33,9 @@ matches than `max`. A repository with no commit yet returns no matches.
 - `invalid_argument` — `pattern` is missing, too long or does not compile;
   or a path is absolute, has a `..` component or reaches into `.git`.
 - `invalid_revision` — `rev` names nothing in this repository.
+- `source_too_large` — the work passed the repository's size limits (too
+  many entries or bytes to walk).
+- `timeout` — it ran past its two-minute deadline.
 - `not_a_repository` — no `.git` directory at `repo`.
 
 ## Examples

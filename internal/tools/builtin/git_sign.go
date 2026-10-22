@@ -86,7 +86,7 @@ func (c *Crypto) signForGit(ctx context.Context, name, scope string, message []b
 	ev := c.gitSignEvent(ctx, ident)
 	failed := true
 	defer func() {
-		c.stats.count("sign", failed)
+		c.stats.count("git_sign", failed)
 		c.record(ctx, ev, failed)
 	}()
 	ref, res, ok := parseKeyRef(keyRef{Name: name, Scope: scope}, nil)
@@ -106,6 +106,10 @@ func (c *Crypto) signForGit(ctx context.Context, name, scope string, message []b
 	m, ok := key.material(key.current)
 	if !ok {
 		return nil, "", fmt.Errorf("%w: the key has no usable version", errGitSignKey)
+	}
+	// NewKeyFromSeed panics on a seed that is not 32 bytes.
+	if err := cryptoops.ValidateMaterial(key.keyType, m); err != nil {
+		return nil, "", fmt.Errorf("%w: the key's material is not a valid ed25519 seed", errGitSignKey)
 	}
 	priv := ed25519.NewKeyFromSeed(m)
 	armored, err = sshSignature(priv, message)
@@ -147,10 +151,18 @@ type gitSigner struct {
 	authorized  string
 }
 
+// gitSignMaxBytes bounds what one signature covers: a commit or tag
+// object, which holds no file content.
+const gitSignMaxBytes = 64 << 20
+
 func (s *gitSigner) Sign(message io.Reader) ([]byte, error) {
-	msg, err := io.ReadAll(io.LimitReader(message, 64<<20))
+	msg, err := io.ReadAll(io.LimitReader(message, gitSignMaxBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(msg) > gitSignMaxBytes {
+		// A signature over a truncated object would not verify; refuse.
+		return nil, fmt.Errorf("%w: the object to sign is over %d bytes", errGitSignKey, gitSignMaxBytes)
 	}
 	sig, pub, err := s.crypto.signForGit(s.ctx, s.name, s.scope, msg)
 	if err != nil {

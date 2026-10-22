@@ -18,7 +18,7 @@ attributed to it.
   repository.
 - `rev` — blame the file as this revision holds it. Default HEAD.
 - `max` — how many lines, from the top of the file (default 500, at most
-  5000).
+  2000).
 
 ## Returns
 
@@ -31,9 +31,12 @@ the file has more lines than `max`.
 
 - `invalid_argument` — `paths` does not hold exactly one entry; there is no
   file at that path in `rev`; the file is binary; some version of it is over
-  8 MiB; one change in its history touches over 5000 lines; or its history
-  is too long to follow. Use `log` with `paths` and `show` instead.
+  8 MiB; or one change in its history touches over 5000 of the lines being
+  blamed. Use `log` with `paths` and `show` instead.
 - `invalid_revision` — `rev` names nothing in this repository.
+- `source_too_large` — its history is too long or too large to follow
+  (over 20000 commits, or more bytes compared than the limit allows).
+- `timeout` — it ran past its two-minute deadline.
 - `not_a_repository` — no `.git` directory at `repo`.
 
 ## Examples

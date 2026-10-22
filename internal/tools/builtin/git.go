@@ -128,9 +128,13 @@ const (
 	gitDefaultLogMax     = 20
 	gitMaxLogMax         = 200
 	gitDefaultBlameLines = 500
-	gitMaxBlameLines     = 5000
+	gitMaxBlameLines     = 2000
 	gitDefaultGrepMax    = 100
-	gitMaxGrepMax        = 1000
+	gitMaxGrepMax        = 500
+	// gitReadTimeout bounds blame, grep and notes, which walk history or a
+	// whole tree in this process. go-git's own ops take no context, so
+	// these walks are the library's and stop when it ends.
+	gitReadTimeout       = 2 * time.Minute
 	gitDefaultDiffBytes  = 64 << 10
 	gitMaxDiffBytes      = 1 << 20
 	gitFetchUploadBytes  = 16 << 20 // a fetch's negotiation (wants, haves)
@@ -586,13 +590,17 @@ func (g *Git) local(ctx context.Context, r *gitrepo.Repo, in gitInput) tools.Res
 		if len(in.Paths) != 1 {
 			return gitRefusal("invalid_argument", "blame takes one path in paths")
 		}
-		res, err := r.Blame(in.Paths[0], in.Rev, clampMax(in.Max, gitDefaultBlameLines, gitMaxBlameLines))
+		rctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		res, err := r.Blame(rctx, in.Paths[0], in.Rev, clampMax(in.Max, gitDefaultBlameLines, gitMaxBlameLines))
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
 		return gitOK(map[string]any{"op": "blame", "lines": res.Lines, "truncated": res.Truncated})
 	case "grep":
-		matches, truncated, err := r.Grep(gitrepo.GrepOptions{
+		rctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		matches, truncated, err := r.Grep(rctx, gitrepo.GrepOptions{
 			Pattern: in.Pattern, Rev: in.Rev, Paths: in.Paths, IgnoreCase: in.IgnoreCase, Invert: in.Invert,
 			MaxMatches: clampMax(in.Max, gitDefaultGrepMax, gitMaxGrepMax),
 		})
@@ -601,7 +609,9 @@ func (g *Git) local(ctx context.Context, r *gitrepo.Repo, in gitInput) tools.Res
 		}
 		return gitOK(map[string]any{"op": "grep", "matches": matches, "truncated": truncated})
 	case "notes_list":
-		notes, err := r.Notes(in.Rev, clampMax(in.Max, gitDefaultLogMax, gitMaxLogMax))
+		rctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		notes, err := r.Notes(rctx, in.Rev, clampMax(in.Max, gitDefaultLogMax, gitMaxLogMax))
 		if err != nil {
 			return gitLocalRefusal(err)
 		}
@@ -878,6 +888,21 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		} else {
 			repo.SetLimits(g.limits())
 		}
+		if in.Op == "submodule_update" {
+			// The submodule is a repository of its own, which a call naming
+			// it as repo would lock under its own path: take that lock too,
+			// so the update's writes never race such a call. Always the
+			// superproject first, so two updates cannot deadlock.
+			path, err := submodulePath(repo, in.Submodule)
+			if err != nil {
+				return refuse(gitLocalRefusal(err))
+			}
+			unlock, err := g.lockRepo(ctx, filepath.Join(vfs.dir, rel, filepath.FromSlash(path)))
+			if err != nil {
+				return deny("timeout", "waiting for another Git operation on the submodule")
+			}
+			defer unlock()
+		}
 	}
 
 	// The URL to dial: given (clone, ls_remote) or the remote's, read as the
@@ -1023,6 +1048,20 @@ func (g *Git) runNetwork(ctx context.Context, in gitInput, repo *gitrepo.Repo, w
 		return map[string]any{"op": "submodule_update", "submodule": sub}, err
 	}
 	return nil, fmt.Errorf("%w: unknown network op %q", gitrepo.ErrInvalidArgument, in.Op)
+}
+
+// submodulePath is where a submodule lives in its superproject.
+func submodulePath(r *gitrepo.Repo, name string) (string, error) {
+	subs, err := r.Submodules()
+	if err != nil {
+		return "", err
+	}
+	for _, s := range subs {
+		if s.Name == name {
+			return s.Path, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no submodule %q", gitrepo.ErrInvalidArgument, name)
 }
 
 // submoduleURL is the URL a submodule is fetched from: .gitmodules' entry,
