@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -1442,7 +1443,7 @@ func restoreQueuedRun(ctx context.Context, s store.Store, e QueuedRunEntry, repl
 // that are not a JSON object are not a request. Sealed secrets are removed
 // whatever the envelope says — a snapshot never brings one in, even sealed.
 func restorableQueuedInput(e QueuedRunEntry) (json.RawMessage, bool) {
-	if len(e.QueuedInput) == 0 || e.Retention == store.RetentionNone {
+	if len(e.QueuedInput) == 0 || e.Retention == retentionmode.None {
 		return nil, false
 	}
 	var obj map[string]json.RawMessage

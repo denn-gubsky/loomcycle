@@ -84,6 +84,7 @@ var layers = []layer{
 			"internal/promptinject",
 			"internal/recipes",
 			"internal/redact",
+			"internal/retentionmode",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",

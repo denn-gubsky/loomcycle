@@ -163,7 +163,7 @@ var (
 // they're derived from the existing session row.
 type RunInput struct {
 	// Retention is the run's retention mode: "" (stored as usual) or
-	// store.RetentionNone (content is delivered and stored nowhere). No wire
+	// retentionmode.None (content is delivered and stored nowhere). No wire
 	// decoder sets it in this version.
 	Retention string
 

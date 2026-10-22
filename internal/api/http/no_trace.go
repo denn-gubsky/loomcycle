@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -21,7 +22,7 @@ import (
 
 // No-trace runs.
 //
-// A run whose retention mode is store.RetentionNone delivers its content to
+// A run whose retention mode is retentionmode.None delivers its content to
 // whoever is waiting for it and stores none of it. The caller on the
 // connection still gets the full stream, and a parent still gets its child's
 // answer: both come from memory. What reaches the store is metadata — that an
@@ -82,7 +83,7 @@ func (m *runModes) noTrace(ctx context.Context, st store.Store, runID string) bo
 		log.Printf("no-trace: could not read the retention mode of run %s (%v); storing a marker", runID, err)
 		return true
 	}
-	none := run.Retention == store.RetentionNone
+	none := run.Retention == retentionmode.None
 	m.note(runID, none)
 	return none
 }
@@ -123,24 +124,24 @@ func (t *traceFilterStore) SetRunConfigCAS(ctx context.Context, runID string, pr
 
 // CreateRun records the new run's mode, so its first event needs no lookup.
 func (t *traceFilterStore) CreateRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
-	if identity.Retention == store.RetentionNone {
+	if identity.Retention == retentionmode.None {
 		identity.RunConfig = noTraceRunConfig
 	}
 	run, err := t.Store.CreateRun(ctx, sessionID, identity)
 	if err == nil {
-		t.modes.note(run.ID, identity.Retention == store.RetentionNone)
+		t.modes.note(run.ID, identity.Retention == retentionmode.None)
 	}
 	return run, err
 }
 
 // CreateQueuedRun is CreateRun for a run that waits for its slot.
 func (t *traceFilterStore) CreateQueuedRun(ctx context.Context, sessionID string, identity store.RunIdentity) (store.Run, error) {
-	if identity.Retention == store.RetentionNone {
+	if identity.Retention == retentionmode.None {
 		identity.RunConfig = noTraceRunConfig
 	}
 	run, err := t.Store.CreateQueuedRun(ctx, sessionID, identity)
 	if err == nil {
-		t.modes.note(run.ID, identity.Retention == store.RetentionNone)
+		t.modes.note(run.ID, identity.Retention == retentionmode.None)
 	}
 	return run, err
 }
@@ -149,7 +150,7 @@ func (t *traceFilterStore) CreateQueuedRun(ctx context.Context, sessionID string
 // a no-trace run's record stays its mode. The row's mode counts as well as
 // the identity's: it was fixed when the run was queued.
 func (t *traceFilterStore) StartQueuedRun(ctx context.Context, runID string, identity store.RunIdentity) (store.Run, error) {
-	if identity.Retention == store.RetentionNone || t.modes.noTrace(ctx, t.Store, runID) {
+	if identity.Retention == retentionmode.None || t.modes.noTrace(ctx, t.Store, runID) {
 		identity.RunConfig = noTraceRunConfig
 	}
 	return t.Store.StartQueuedRun(ctx, runID, identity)
@@ -421,19 +422,19 @@ func cutPrefix(s, prefix string) (string, bool) {
 // override for that agent (retention_override.go). A token's mode never is:
 // a developer's own runs stay unstored whatever an operator switches on.
 func (s *Server) resolveRetention(ctx context.Context, tenant, agent string, def config.AgentDef, requested string) string {
-	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == store.RetentionNone {
-		return store.RetentionNone
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == retentionmode.None {
+		return retentionmode.None
 	}
-	if tools.RunIdentity(ctx).Retention == store.RetentionNone {
-		return store.RetentionNone
+	if tools.RunIdentity(ctx).Retention == retentionmode.None {
+		return retentionmode.None
 	}
-	if requested != store.RetentionNone && def.Retention != store.RetentionNone {
+	if requested != retentionmode.None && def.Retention != retentionmode.None {
 		return ""
 	}
 	if s.retentionLifted(ctx, tenant, agent) {
 		return ""
 	}
-	return store.RetentionNone
+	return retentionmode.None
 }
 
 // noTraceRefusal is a request a no-trace run cannot serve, with the HTTP
@@ -455,7 +456,7 @@ func (e *noTraceRefusal) Is(target error) bool { return target == runner.ErrRete
 // Refused, not degraded: a run that quietly lost its review would be worse
 // than one that never started.
 func admitNoTraceStart(mode string, interactive, review bool, sessionID string) error {
-	if mode != store.RetentionNone {
+	if mode != retentionmode.None {
 		return nil
 	}
 	switch {
@@ -521,7 +522,7 @@ func (s *Server) FailLostNoTraceRuns(ctx context.Context, bootedAt time.Time) (i
 // draft, or send a message into a run that stores its input.
 func principalIsNoTrace(ctx context.Context) bool {
 	p, ok := auth.PrincipalFromContext(ctx)
-	return ok && p.Restrictions.Retention == store.RetentionNone
+	return ok && p.Restrictions.Retention == retentionmode.None
 }
 
 // errNoTracePrincipalWrite refuses a no-trace token writing content that

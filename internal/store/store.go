@@ -200,8 +200,8 @@ type Session struct {
 	// creation; sub-agent sessions inherit the parent's value.
 	UserID string `json:"user_id,omitempty"`
 
-	// Retention is the session's retention mode: "" or RetentionNone. A
-	// RetentionNone session holds one no-trace run and is never continued.
+	// Retention is the session's retention mode: "" or retentionmode.None. A
+	// retentionmode.None session holds one no-trace run and is never continued.
 	// Written by CreateRun, with the run row, when the run has a mode; read
 	// by GetSession only.
 	Retention string `json:"retention,omitempty"`
@@ -626,7 +626,7 @@ type Run struct {
 	CredentialsNoUserScope bool `json:"credentials_no_user_scope,omitempty"`
 
 	// Retention is the run's retention mode: "" (everything is stored) or
-	// RetentionNone (content is delivered and stored nowhere). Persisted to
+	// retentionmode.None (content is delivered and stored nowhere). Persisted to
 	// runs.retention at creation and never changed.
 	Retention string `json:"retention,omitempty"`
 
@@ -842,24 +842,6 @@ type RetentionOverrideRow struct {
 	Until     time.Time `json:"until"`
 	SetBy     string    `json:"set_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-// RetentionNone is the retention mode of a run whose content is never stored.
-// The default mode is the empty string.
-const RetentionNone = "none"
-
-// ParseRetention reads a retention mode as a caller wrote it: "none", or the
-// default spelled "default" or left empty. It returns the stored form
-// (RetentionNone or ""). Anything else is an error — a misspelled "none" must
-// not become a run that stores everything.
-func ParseRetention(s string) (string, error) {
-	switch s {
-	case "", "default":
-		return "", nil
-	case RetentionNone:
-		return RetentionNone, nil
-	}
-	return "", fmt.Errorf("retention must be %q or %q, not %q", RetentionNone, "default", s)
 }
 
 // UsageCarryRow is month-to-date token usage a snapshot restore carried in
@@ -1094,7 +1076,7 @@ type RunIdentity struct {
 	// creation from the run identity that starts it.
 	CredentialsNoUserScope bool
 	// Retention is the run's retention mode, persisted to runs.retention: ""
-	// or RetentionNone. Decided before the row is written; nothing sets it
+	// or retentionmode.None. Decided before the row is written; nothing sets it
 	// afterwards. A run with a mode stamps it on its session in the same
 	// write.
 	Retention string
@@ -2034,7 +2016,7 @@ type RunStore interface {
 	// Used by internal/heartbeat for the periodic sweep goroutine.
 	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
 
-	// FailLostNoTraceRuns fails the RetentionNone runs a restart lost: rows
+	// FailLostNoTraceRuns fails the retentionmode.None runs a restart lost: rows
 	// still "running" that started before startedBefore — the moment this
 	// process began — and that this process owned. replicaID is the
 	// process's replica id; "" means it is the only one, and owns them all.

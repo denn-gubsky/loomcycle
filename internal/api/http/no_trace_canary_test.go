@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -287,7 +288,7 @@ func TestNoTraceCanary(t *testing.T) {
 						t.Errorf("the canary is in the process log after a no-trace run:\n%s", logged.buf.String())
 					}
 					run := runOfAgent(t, srv, "a_parent")
-					if run.Retention != store.RetentionNone || !store.IsTerminalRunStatus(run.Status) {
+					if run.Retention != retentionmode.None || !store.IsTerminalRunStatus(run.Status) {
 						t.Errorf("run row: retention=%q status=%q", run.Retention, run.Status)
 					}
 				})

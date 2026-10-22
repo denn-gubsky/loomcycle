@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -9066,7 +9067,7 @@ func validate(c *Config) error {
 		if err := ValidateAgentHooks(agent); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
-		if _, err := store.ParseRetention(agent.Retention); err != nil {
+		if _, err := retentionmode.Parse(agent.Retention); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := ValidateEphemeralVolumes(agent.EphemeralVolumes); err != nil {

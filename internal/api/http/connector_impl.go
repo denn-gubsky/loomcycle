@@ -30,6 +30,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
@@ -561,7 +562,7 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		// The cancel is broadcast to every replica with its reason.
-		if run.Retention == store.RetentionNone {
+		if run.Retention == retentionmode.None {
 			reason = ""
 		}
 	}

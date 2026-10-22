@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -18,7 +19,7 @@ func TestNoTrace_AQueuedRunRecordsOnlyItsMode(t *testing.T) {
 
 	holder := startRunOnce(s, context.Background(), runner.RunInput{Agent: "r", Segments: oneUserSeg("holds the slot")})
 	_, holderRun := holder.ids(t)
-	queued := startRunOnce(s, context.Background(), runner.RunInput{Agent: "r", Retention: store.RetentionNone, Segments: oneUserSeg("waits")})
+	queued := startRunOnce(s, context.Background(), runner.RunInput{Agent: "r", Retention: retentionmode.None, Segments: oneUserSeg("waits")})
 	_, runID := queued.ids(t)
 	waitRunStatus(t, s.store, runID, store.RunQueued)
 
@@ -36,7 +37,7 @@ func TestNoTrace_AQueuedRunRecordsOnlyItsMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Retention != store.RetentionNone {
+	if run.Retention != retentionmode.None {
 		t.Fatalf("retention = %q, want none", run.Retention)
 	}
 	if string(run.RunConfig) != string(noTraceRunConfig) {
