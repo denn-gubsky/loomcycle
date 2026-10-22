@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,16 +18,56 @@ import (
 // A file written to a read-only volume lives in an in-memory overlay that
 // shares loomcycle's heap with every other run, so its size is capped per
 // call. Writing past the default cap (64 MiB) stops with "no space left on
-// device" instead of growing the heap. The write here is bounded (100 MB), so
+// device" instead of growing the heap. gbash stops any single file at its own
+// 8 MiB limit (gbashFileLimit), so the cap is reached here across nine files
+// of 8 MB each, every one under that limit. The total is bounded (72 MB), so
 // the test cannot exhaust the machine's memory even where the cap is missing.
 func TestBashboxEscape_RoOverlayWriteStopsAtTheDefaultCap(t *testing.T) {
 	root := realDir(t)
 	b := &Bashbox{Enabled: true}
-	res := runBashbox(t, b, roCtx(root), "head -c 100000000 /dev/zero > big; wc -c < big")
+	res := runBashbox(t, b, roCtx(root), "for i in 1 2 3 4 5 6 7 8 9; do head -c 8000000 /dev/zero > f$i || break; done")
 	if !strings.Contains(res.Text, "no space left on device") {
-		t.Errorf("a 100 MB write to a read-only volume was not stopped at the cap: %.300q", res.Text)
+		t.Errorf("72 MB written to a read-only volume was not stopped at the 64 MiB cap: %.300q", res.Text)
 	}
 }
+
+// gbashFileLimit is gbash's default per-file size limit (policy MaxFileBytes,
+// 8 MiB), which v0.0.41 also applies to a file written through a redirect.
+// Loomcycle does not override it, so it is what a Bashbox script sees.
+const gbashFileLimit = 8 << 20
+
+// One file stops at gbash's per-file limit, before any overlay cap, and keeps
+// what fits. On a read-only volume that bounds what one redirect can put on
+// the shared heap; the 100 MB write here leaves at most 8 MiB behind.
+func TestBashboxEscape_OneRoFileStopsAtTheGbashFileLimit(t *testing.T) {
+	res := runBashbox(t, &Bashbox{Enabled: true}, roCtx(realDir(t)), "head -c 100000000 /dev/zero > big; echo size=$(wc -c < big)")
+	m := sizeMarker.FindStringSubmatch(res.Text)
+	if m == nil {
+		t.Fatalf("no size=<bytes> marker: the file grew past what gbash can read back, or the script failed: %.300q", res.Text)
+	}
+	if got, _ := strconv.Atoi(m[1]); got > gbashFileLimit {
+		t.Errorf("one redirect to a read-only volume stored %d bytes, past gbash's %d-byte file limit", got, gbashFileLimit)
+	}
+}
+
+// The same limit holds on a read-write volume, where the file reaches the
+// host: a model cannot write one file larger than 8 MiB through Bashbox.
+// Reads through the read-write mount were already capped, at 10 MiB.
+func TestBashbox_OneRwFileStopsAtTheGbashFileLimit(t *testing.T) {
+	root := realDir(t)
+	res := runBashbox(t, &Bashbox{Enabled: true}, bashCtx(root), "head -c 100000000 /dev/zero > big")
+	fi, err := os.Stat(filepath.Join(root, "big"))
+	if err != nil {
+		t.Fatalf("stat: %v (result %.300q)", err, res.Text)
+	}
+	if fi.Size() > gbashFileLimit {
+		t.Errorf("one redirect to a read-write volume wrote %d bytes to the host, past gbash's %d-byte file limit", fi.Size(), gbashFileLimit)
+	}
+}
+
+// sizeMarker finds the `size=<bytes>` line a script prints; an empty count
+// (wc refused the file) does not match.
+var sizeMarker = regexp.MustCompile(`size=(\d+)`)
 
 // overlayCapped is a Bashbox with a small cap, so a test that writes past it
 // costs megabytes, never the gigabytes an uncapped overlay would take.
@@ -297,19 +338,20 @@ func TestBashboxEscape_ManyEntriesHitTheCap(t *testing.T) {
 	}
 }
 
-// gbash's named pipes buffer in memory without limit (fs/fifo.go appends
-// every write to the pipe's buffer once a reader has opened it, read or not),
-// so bytes written to a FIFO are charged like any other write: a writer whose
-// reader never reads cannot grow the heap past the cap. The writer here is
-// bounded (20 MB), so the test stays small even where the charge is missing.
-func TestBashboxEscape_WriterToAnUnreadFifoHitsTheCap(t *testing.T) {
+// A writer whose reader never reads must not grow the heap. gbash v0.0.41
+// bounds a named pipe at 64 KiB and blocks the writer, as a host pipe does;
+// v0.0.40 buffered every write, and loomcycle's charge on FIFO writes is what
+// stopped it there. Either layer holds the heap, so the test asserts the
+// heap, not which layer refused. The writer is bounded (20 MB), so the test
+// stays small even where both are missing.
+func TestBashboxEscape_WriterToAnUnreadFifoKeepsTheHeapBounded(t *testing.T) {
 	var res tools.Result
 	grew := peakHeapDuring(func() {
 		res = runBashbox(t, overlayCapped(), roCtx(realDir(t)),
 			"mkfifo p; head -c 20000000 /dev/zero > p | sleep 1 < p; echo written")
 	})
-	if !res.IsError || !strings.Contains(res.Text, "write limit reached") {
-		t.Errorf("20 MB into a never-read FIFO was not stopped at a 4 MiB cap: %.300q", res.Text)
+	if !strings.Contains(res.Text, "written") {
+		t.Errorf("the script did not finish after its reader closed the FIFO: %.300q", res.Text)
 	}
 	if grew > 64<<20 {
 		t.Errorf("heap grew %d MiB writing to a never-read FIFO under a 4 MiB cap", grew>>20)
