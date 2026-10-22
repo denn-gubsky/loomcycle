@@ -329,8 +329,6 @@ var knownViolations = []knownViolation{
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
 
-	{"internal/memory/reranker", "internal/lanegate", cutMemWiring},
-	{"internal/memory/reranker", "internal/providerbuild", cutMemWiring},
 	{"internal/memory/unitgen", "internal/lanegate", cutMemWiring},
 	{"internal/memory/unitgen", "internal/providerbuild", cutMemWiring},
 
