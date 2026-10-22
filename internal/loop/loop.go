@@ -4288,8 +4288,14 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 // with that ctx's error, as the run's other cancel exits do: the run end
 // reads the ctx's cause for why. partial is the text the turn had streamed,
 // kept as the cancelled run's answer.
+//
+// The error is emitted as well as returned, as the exit for a call the cancel
+// stopped before it streamed does: a transport that sends no frame of its own
+// for the loop's error (gRPC Run) otherwise ends the stream with neither done
+// nor error, and the transcript ends on bare text.
 func (s *runState) runEndedMidTurn(ctx context.Context, iterSpan trace.Span, iter int, partial string) loopExit {
 	err := ctx.Err()
+	s.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
 	lcotel.SetSpanError(iterSpan, err)
 	iterSpan.End()
 	s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)

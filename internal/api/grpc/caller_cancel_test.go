@@ -3,6 +3,8 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net"
 	"path/filepath"
 	"testing"
@@ -49,7 +51,10 @@ func (openTurnProvider) Call(ctx context.Context, _ providers.Request) (<-chan p
 // the run cancelled, by its caller. The stream itself cannot be
 // written to after the deadline; the row is what records how the run ended.
 // Before the fix the row was written completed with an empty stop reason.
-func TestRun_CallerDeadlineMidTurnRecordsCancelled(t *testing.T) {
+// callerCancelGRPC serves the gRPC adapter over the real HTTP server, driven
+// by openTurnProvider, and returns the client, the store and the HTTP server.
+func callerCancelGRPC(t *testing.T) (loomcyclepb.LoomcycleClient, store.Store, *lchttp.Server) {
+	t.Helper()
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "grpc-caller-cancel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +80,11 @@ func TestRun_CallerDeadlineMidTurnRecordsCancelled(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	t.Cleanup(gs.Stop)
 	t.Cleanup(func() { _ = conn.Close() })
-	client := loomcyclepb.NewLoomcycleClient(conn)
+	return loomcyclepb.NewLoomcycleClient(conn), st, httpSrv
+}
+
+func TestRun_CallerDeadlineMidTurnRecordsCancelled(t *testing.T) {
+	client, st, _ := callerCancelGRPC(t)
 
 	ctx, stop := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer stop()
@@ -119,4 +128,64 @@ func TestRun_CallerDeadlineMidTurnRecordsCancelled(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// An API cancel while the model is mid-turn ends a gRPC Run's stream with
+// exactly one error frame, and the run's transcript ends with that error
+// event. The mid-turn cancel exit used to emit nothing: the stream closed OK
+// after bare text, and a re-attach replayed no end event at all.
+func TestRun_APICancelMidTurnEndsWithOneErrorFrame(t *testing.T) {
+	client, st, httpSrv := callerCancelGRPC(t)
+	stream, err := client.Run(context.Background(), &loomcyclepb.RunRequest{Agent: "agent", UserId: "u1", Segments: userSegment("go")})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var ids struct {
+		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
+	}
+	var frames []*loomcyclepb.Event
+	for {
+		ev, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("stream ended with %v, want a clean end after the error frame", err)
+		}
+		frames = append(frames, ev)
+		switch ev.GetType() {
+		case "agent":
+			_ = json.Unmarshal([]byte(ev.GetError()), &ids)
+		case "text":
+			if _, err := httpSrv.CancelRun(context.Background(), ids.AgentID, "stop"); err != nil {
+				t.Fatalf("CancelRun: %v", err)
+			}
+		}
+	}
+	errorFrames := 0
+	for _, f := range frames {
+		if f.GetType() == "error" {
+			errorFrames++
+		}
+	}
+	if errorFrames != 1 || frames[len(frames)-1].GetType() != "error" {
+		t.Fatalf("frames = %v, want the stream to end with exactly one error frame", frameTypes(frames))
+	}
+
+	events, err := st.GetTranscript(context.Background(), ids.SessionID)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("GetTranscript: %d events, err %v", len(events), err)
+	}
+	if last := events[len(events)-1]; last.Type != "error" {
+		t.Fatalf("the transcript ends with %q, want the error event", last.Type)
+	}
+}
+
+func frameTypes(frames []*loomcyclepb.Event) []string {
+	out := make([]string, len(frames))
+	for i, f := range frames {
+		out[i] = f.GetType()
+	}
+	return out
 }

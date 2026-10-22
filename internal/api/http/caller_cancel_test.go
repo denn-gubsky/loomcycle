@@ -147,3 +147,53 @@ func TestFinishRunWithCancel_CallerDeadlineRecordsCancelled(t *testing.T) {
 		assertCallerCancelled(t, srv.store, runID, "caller deadline exceeded")
 	}
 }
+
+// An API cancel while the model is mid-turn ends a POST /v1/runs stream with
+// exactly one error frame — the loop's own, not a second copy from the
+// transport — and the transcript ends with it.
+func TestRuns_APICancelMidTurnEndsWithOneErrorFrame(t *testing.T) {
+	s, _ := newGatedBatchServer(t, 8)
+	ts := httptest.NewServer(s.Mux())
+	defer ts.Close()
+	resp, err := http.Post(ts.URL+"/v1/runs", "application/json", strings.NewReader(
+		`{"agent":"r","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}`))
+	if err != nil {
+		t.Fatalf("post run: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var agentID, sessionID string
+	var types []string
+	for f := range sseLines(t, resp.Body) {
+		types = append(types, f[0])
+		switch f[0] {
+		case "agent":
+			var a struct {
+				AgentID   string `json:"agent_id"`
+				SessionID string `json:"session_id"`
+			}
+			_ = json.Unmarshal([]byte(f[1]), &a)
+			agentID, sessionID = a.AgentID, a.SessionID
+		case "text":
+			if _, err := s.CancelRun(context.Background(), agentID, "stop"); err != nil {
+				t.Fatalf("CancelRun: %v", err)
+			}
+		}
+	}
+	errorFrames := 0
+	for _, typ := range types {
+		if typ == "error" {
+			errorFrames++
+		}
+	}
+	if errorFrames != 1 || types[len(types)-1] != "error" {
+		t.Fatalf("frames = %v, want the stream to end with exactly one error frame", types)
+	}
+	events, err := s.store.GetTranscript(context.Background(), sessionID)
+	if err != nil || len(events) == 0 {
+		t.Fatalf("GetTranscript: %d events, err %v", len(events), err)
+	}
+	if last := events[len(events)-1]; last.Type != "error" {
+		t.Fatalf("the transcript ends with %q, want the error event", last.Type)
+	}
+}

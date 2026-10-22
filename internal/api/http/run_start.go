@@ -76,6 +76,10 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 			rs.stream.end()
 		}
 	}()
+	// The loop emits its own error event for most failures (a cancel mid-turn
+	// among them); the stream's last frame repeats it only when it adds
+	// something, as a detached run's does (startDetachedLoop).
+	var loopErr lastErrorEvent
 	cb := runner.RunCallbacks{
 		OnRegistered: func(agentID, runID, sessionID, _ string) {
 			st, ok := newSSE(rs.w)
@@ -99,16 +103,21 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 				"parent_context":  rs.parent,
 			})
 		},
-		OnEvent: func(ev providers.Event) {
+		OnEvent: loopErr.watch(func(ev providers.Event) {
 			if rs.stream != nil {
 				rs.stream.send(ev)
 			}
-		},
+		}),
 		// The loop's failure, as the stream's last frame. Not recorded: the
-		// loop recorded its own error event.
+		// loop recorded its own error event. Skipped when that event already
+		// said exactly this; a classified copy still goes out, since it
+		// carries the category the loop's event lacks.
 		OnRunError: func(err error) {
-			if rs.stream != nil {
-				rs.stream.send(runErrorEvent(err))
+			if rs.stream == nil {
+				return
+			}
+			if ev := runErrorEvent(err); ev.ErrorInfo != nil || !loopErr.is(ev.Error) {
+				rs.stream.send(ev)
 			}
 		},
 	}
