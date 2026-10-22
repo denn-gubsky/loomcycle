@@ -92,9 +92,13 @@ var layers = []layer{
 		},
 	},
 	{
-		// The provider interface and its drivers, and model resolution.
+		// The provider interface and its drivers, model resolution, and the
+		// decision-model client (it asks a model typed questions through a
+		// provider and imports nothing above L1; wiring it to lanes and
+		// endpoints is decision/decisionbuild, in L5).
 		name: "L1 providers",
 		subsystems: []string{
+			"internal/decision",
 			"internal/providers",
 			"internal/recall",
 			"internal/resolve",
@@ -157,7 +161,6 @@ var layers = []layer{
 			"internal/clienttools",
 			"internal/connector",
 			"internal/contextplugin",
-			"internal/decision",
 			"internal/decision/decisionbuild",
 			"internal/errclassify",
 			"internal/help",
@@ -217,6 +220,7 @@ var allowedSideways = []subsystemEdge{
 	{"internal/logging", "internal/redact"},
 
 	// L1
+	{"internal/decision", "internal/providers"},
 	{"internal/recall", "internal/providers"},
 
 	// L2
@@ -255,17 +259,14 @@ var allowedSideways = []subsystemEdge{
 	{"internal/a2a", "internal/runner"},
 	{"internal/channelhooks", "internal/tools"},
 	{"internal/clienttools", "internal/tools"},
-	{"internal/connector", "internal/decision"},
 	{"internal/connector", "internal/loop"},
 	{"internal/connector", "internal/runner"},
 	{"internal/connector", "internal/tools"},
-	{"internal/decision/decisionbuild", "internal/decision"},
 	{"internal/decision/decisionbuild", "internal/lanegate"},
 	{"internal/decision/decisionbuild", "internal/providerbuild"},
 	{"internal/errclassify", "internal/runner"},
 	{"internal/errclassify", "internal/tools"},
 	{"internal/hooks/codehook", "internal/tools"},
-	{"internal/lanegate", "internal/decision"},
 	{"internal/lanegate", "internal/teamrun"},
 	{"internal/loop", "internal/contextplugin"},
 	{"internal/loop", "internal/tools"},
@@ -278,7 +279,6 @@ var allowedSideways = []subsystemEdge{
 	{"internal/tools", "internal/lookup"},
 	{"internal/tools/builtin", "internal/capabilities"},
 	{"internal/tools/builtin", "internal/connector"},
-	{"internal/tools/builtin", "internal/decision"},
 	{"internal/tools/builtin", "internal/errclassify"},
 	{"internal/tools/builtin", "internal/help"},
 	{"internal/tools/builtin", "internal/lanegate"},
@@ -318,9 +318,8 @@ var knownViolations = []knownViolation{
 	{"internal/api/http", "cmd/loomcycle/embedded", cutEmbedded},
 	{"internal/cli", "cmd/loomcycle/embedded", cutEmbedded},
 
-	// decision.Registered, memory's grammar, store.ParseRetention and the
-	// team-channel names, teamgraph's name/var validators.
-	{"internal/config", "internal/decision", cutConfig},
+	// memory's grammar, store.ParseRetention and the team-channel names,
+	// teamgraph's name/var validators.
 	{"internal/config", "internal/memory", cutConfig},
 	{"internal/config", "internal/store", cutConfig},
 	{"internal/config", "internal/teamgraph", cutConfig},
@@ -333,7 +332,6 @@ var knownViolations = []knownViolation{
 
 	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
 	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/reranker", "internal/decision", cutMemWiring},
 	{"internal/memory/reranker", "internal/lanegate", cutMemWiring},
 	{"internal/memory/reranker", "internal/providerbuild", cutMemWiring},
 	{"internal/memory/unitgen", "internal/lanegate", cutMemWiring},
