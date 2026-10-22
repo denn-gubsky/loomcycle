@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/bridge-teams",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Microsoft Teams bridge for loomcycle interactive agents (RFC EN, on @loomcycle/bridge-core per RFC EQ): each Teams user chats with a loomcycle agent as their own loomcycle user, with streamed replies, steering, question and review cards, and restart recovery.",
   "license": "Apache-2.0",
@@ -48,7 +48,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@loomcycle/bridge-core": "^0.1.0",
+    "@loomcycle/bridge-core": "^0.2.1",
     "@microsoft/teams.api": "~2.1.1",
     "@microsoft/teams.apps": "~2.1.1"
   },
