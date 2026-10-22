@@ -1797,12 +1797,15 @@ var unhashedCapabilityTags = []string{
 // the active row; `incoming` is the normalized mergedDef about to be written.
 //
 // Both sides are compared through their JSON encoding, which is what makes the
-// nil-vs-empty case correct for free: every one of these fields is `omitempty`,
-// so an absent slice and an explicit `[]` both encode to "key missing" and
-// compare equal. Comparison is order-SENSITIVE for slices, matching the hashed
-// path (agents.TestSign_OrderPreservedInArrays pins that reordering `tools`
-// changes the hash, so reordering an authority list should count as a change
-// here too).
+// nil-vs-empty case correct for free: these fields are `omitempty` slices, so
+// an absent slice and an explicit `[]` both encode to "key missing" and
+// compare equal. The exception is `shell_credentials`, a pointer whose `[]`
+// means "none" and absent means "every operator credential": those two encode
+// differently and so count as a change, as they should (a fork changing only
+// that mints a new version). Comparison is order-SENSITIVE for slices,
+// matching the hashed path (agents.TestSign_OrderPreservedInArrays pins that
+// reordering `tools` changes the hash, so reordering an authority list should
+// count as a change here too).
 //
 // A stored definition that will not parse returns false: mint a new version
 // rather than dedup against a row whose capabilities cannot be verified.
