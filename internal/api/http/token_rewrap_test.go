@@ -589,3 +589,31 @@ func TestSelectUntaggedTokenRows_RefusesSuspiciousRows(t *testing.T) {
 		}
 	}
 }
+
+// The names listing has one row per (tenant, name), so a per-user name minted
+// in two tenants appears twice. The review lists rows by name, so it must
+// still list each row once: a row listed twice would be counted twice, and
+// the digest of the set would cover it twice.
+func TestTokenRewrap_NameInTwoTenantsListsEachRowOnce(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1)}
+	_, st := derivedPepperServer(t, env)
+	for _, r := range []struct{ defID, tenant string }{
+		{"def_00000000000000f1", "t1"},
+		{"def_00000000000000f2", "t2"},
+	} {
+		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+			DefID: r.defID, Name: "u-alice", TenantID: r.tenant, Subject: "alice",
+			TokenHash: auth.HashToken("", "lct_"+r.defID), AllowedScopes: []string{auth.ScopeRunsRead},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", r.defID, err)
+		}
+	}
+	res, err := ListUntaggedTokenRows(context.Background(), st, hasherFor(t, env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Live) != 2 || len(res.Untagged) != 2 ||
+		res.Untagged[0] != "def_00000000000000f1" || res.Untagged[1] != "def_00000000000000f2" {
+		t.Errorf("listing = live %d, untagged %v; want each of the two rows once", len(res.Live), res.Untagged)
+	}
+}

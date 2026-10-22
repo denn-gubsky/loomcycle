@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -187,14 +188,15 @@ func (s *Store) OperatorTokenDefListNames(ctx context.Context) ([]store.Operator
 		return nil, err
 	}
 	defer conn.Close()
-	// One summary per name. tenant_id/subject taken from the newest row;
+	// One summary per (tenant, name): a per-user name repeats across tenants.
 	// has_current = any non-retired, non-expired row exists.
+	now := time.Now().UnixNano()
 	rows, err := conn.QueryContext(ctx, `
-		SELECT name,
+		SELECT tenant_id, name,
 		       COUNT(*) AS token_count,
 		       MAX(created_at) AS last_updated,
 		       SUM(CASE WHEN retired_at IS NULL AND (expires_at IS NULL OR expires_at > ?) THEN 1 ELSE 0 END) AS current_count
-		FROM operator_token_defs GROUP BY name ORDER BY name`, time.Now().UnixNano())
+		FROM operator_token_defs GROUP BY tenant_id, name ORDER BY name, tenant_id`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +208,7 @@ func (s *Store) OperatorTokenDefListNames(ctx context.Context) ([]store.Operator
 			lastNs       int64
 			currentCount int
 		)
-		if err := rows.Scan(&sum.Name, &sum.TokenCount, &lastNs, &currentCount); err != nil {
+		if err := rows.Scan(&sum.TenantID, &sum.Name, &sum.TokenCount, &lastNs, &currentCount); err != nil {
 			return nil, err
 		}
 		sum.LastUpdated = time.Unix(0, lastNs)
@@ -216,15 +218,27 @@ func (s *Store) OperatorTokenDefListNames(ctx context.Context) ([]store.Operator
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	// Backfill tenant_id/subject from the newest row per name (cheap; the
-	// name set is small — operator-managed, not per-request).
+	// Backfill the subject from the newest row of each (tenant, name), and the
+	// newest live row's def_id (cheap; the name set is small — operator-managed,
+	// not per-request).
 	for i := range out {
 		r, err := scanOperatorTokenDef(conn.QueryRowContext(ctx,
-			operatorTokenDefSelect+` WHERE name = ? ORDER BY created_at DESC LIMIT 1`, out[i].Name))
+			operatorTokenDefSelect+` WHERE tenant_id = ? AND name = ? ORDER BY created_at DESC LIMIT 1`,
+			out[i].TenantID, out[i].Name))
 		if err == nil {
-			out[i].TenantID = r.TenantID
 			out[i].Subject = r.Subject
 		}
+		if !out[i].HasCurrent {
+			continue
+		}
+		var defID string
+		err = conn.QueryRowContext(ctx, `SELECT def_id FROM operator_token_defs
+			WHERE tenant_id = ? AND name = ? AND retired_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+			ORDER BY created_at DESC LIMIT 1`, out[i].TenantID, out[i].Name, now).Scan(&defID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		out[i].CurrentDefID = defID
 	}
 	return out, nil
 }

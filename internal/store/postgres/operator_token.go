@@ -167,25 +167,33 @@ func (s *Store) OperatorTokenDefListBySubject(ctx context.Context, tenantID, sub
 }
 
 func (s *Store) OperatorTokenDefListNames(ctx context.Context) ([]store.OperatorTokenDefNameSummary, error) {
-	// DISTINCT ON keeps the newest row per name for tenant/subject, while
-	// the aggregate columns roll up the whole name's history.
+	// One summary per (tenant, name): a per-user name repeats across tenants.
+	// The subject is the newest row's, current_def_id the newest live row's;
+	// the aggregate columns roll up the pair's whole history.
 	rows, err := s.pool.Query(ctx, `
-		SELECT name,
+		SELECT name, tenant_id,
 		       COUNT(*) AS token_count,
 		       MAX(created_at) AS last_updated,
 		       BOOL_OR(retired_at IS NULL AND (expires_at IS NULL OR expires_at > now())) AS has_current,
-		       (ARRAY_AGG(tenant_id ORDER BY created_at DESC))[1] AS tenant_id,
-		       (ARRAY_AGG(subject   ORDER BY created_at DESC))[1] AS subject
-		FROM operator_token_defs GROUP BY name ORDER BY name`)
+		       (ARRAY_AGG(subject ORDER BY created_at DESC))[1] AS subject,
+		       (ARRAY_AGG(def_id ORDER BY created_at DESC)
+		            FILTER (WHERE retired_at IS NULL AND (expires_at IS NULL OR expires_at > now())))[1] AS current_def_id
+		FROM operator_token_defs GROUP BY tenant_id, name ORDER BY name, tenant_id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []store.OperatorTokenDefNameSummary
 	for rows.Next() {
-		var sum store.OperatorTokenDefNameSummary
-		if err := rows.Scan(&sum.Name, &sum.TokenCount, &sum.LastUpdated, &sum.HasCurrent, &sum.TenantID, &sum.Subject); err != nil {
+		var (
+			sum     store.OperatorTokenDefNameSummary
+			current *string
+		)
+		if err := rows.Scan(&sum.Name, &sum.TenantID, &sum.TokenCount, &sum.LastUpdated, &sum.HasCurrent, &sum.Subject, &current); err != nil {
 			return nil, err
+		}
+		if current != nil {
+			sum.CurrentDefID = *current
 		}
 		out = append(out, sum)
 	}

@@ -6559,13 +6559,19 @@ var tokenFarFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // OperatorTokenDefNameSummary is one row of the names listing — no
 // secret material, suitable for GET /v1/_operatortokendef/names.
+//
+// There is one summary per (tenant, name), not per name: a per-user ("u-")
+// name repeats across tenants, and a retired operator name can be reused in
+// another tenant. CurrentDefID is how a caller acts on the row — a per-user
+// name cannot be rotated or retired by name.
 type OperatorTokenDefNameSummary struct {
-	Name        string    `json:"name"`
-	TenantID    string    `json:"tenant_id"`
-	Subject     string    `json:"subject"`
-	TokenCount  int       `json:"token_count"`  // including rotated/retired history
-	HasCurrent  bool      `json:"has_current"`  // a non-retired token exists
-	LastUpdated time.Time `json:"last_updated"` // newest created_at for the name
+	Name         string    `json:"name"`
+	TenantID     string    `json:"tenant_id"`
+	Subject      string    `json:"subject"`                  // of the newest row
+	TokenCount   int       `json:"token_count"`              // including rotated/retired history
+	HasCurrent   bool      `json:"has_current"`              // a non-retired, unexpired token exists
+	CurrentDefID string    `json:"current_def_id,omitempty"` // the newest such token; empty when none
+	LastUpdated  time.Time `json:"last_updated"`             // newest created_at for the name
 }
 
 // TokenHashMatch selects stored token_hash values by prefix: a hash matches

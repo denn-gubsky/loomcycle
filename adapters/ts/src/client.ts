@@ -2544,8 +2544,9 @@ export class LoomcycleClient {
     return this.listDefNames<DefNamesResponse>("documentsourcedef", opts);
   }
 
-  /** Every OperatorTokenDef name (`GET /v1/_operatortokendef/names`), with its
-   *  subject and token counts — never a token. **Admin token only**: token
+  /** Every OperatorTokenDef name (`GET /v1/_operatortokendef/names`), one row
+   *  per (tenant, name), with its subject, token counts and current def_id —
+   *  never a token. **Admin token only**: token
    *  minting stays operator-only, so a `substrate:tenant` token is refused
    *  with 403. */
   async listOperatorTokenDefNames(
