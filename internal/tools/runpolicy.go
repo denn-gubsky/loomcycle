@@ -16,10 +16,11 @@ import (
 // no memory, SQL, history, channel, interruption, def-family, skill,
 // evaluation or key scope, no ephemeral write, not operator-authored. The
 // fields that NARROW something the operator configured rather than grant it
-// — Hosts, Decision, CoreBlocks, FanoutCap, Overrides, Compaction, Context —
-// fall back to that floor when zero: the operator's host list and decision
-// models, no core blocks to guard, the definition's fan-out width, no
-// inherited override, no compaction or context setting.
+// — Hosts, Decision, CoreBlocks, FanoutCap, Overrides, Compaction, Context,
+// ShellCreds — fall back to that floor when zero: the operator's host list
+// and decision models, no core blocks to guard, the definition's fan-out
+// width, no inherited override, no compaction or context setting, every
+// shell credential the operator lists.
 //
 // Before RunPolicy each of these rode its own ctx key with its own setter, and
 // a child inherited whatever its spawn path forgot to restamp: a per-spawn
