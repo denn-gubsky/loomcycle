@@ -6,7 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/decision/decisionbuild"
+	"github.com/denn-gubsky/loomcycle/internal/decisionbuild"
 )
 
 // layersFor resolves embedded unit names to config layers, the same mapping

@@ -95,7 +95,7 @@ var layers = []layer{
 		// The provider interface and its drivers, model resolution, and the
 		// decision-model client (it asks a model typed questions through a
 		// provider and imports nothing above L1; wiring it to lanes and
-		// endpoints is decision/decisionbuild, in L5).
+		// endpoints is internal/decisionbuild, in L5).
 		name: "L1 providers",
 		subsystems: []string{
 			"internal/decision",
@@ -161,7 +161,7 @@ var layers = []layer{
 			"internal/clienttools",
 			"internal/connector",
 			"internal/contextplugin",
-			"internal/decision/decisionbuild",
+			"internal/decisionbuild",
 			"internal/errclassify",
 			"internal/help",
 			"internal/hooks/codehook",
@@ -262,8 +262,8 @@ var allowedSideways = []subsystemEdge{
 	{"internal/connector", "internal/loop"},
 	{"internal/connector", "internal/runner"},
 	{"internal/connector", "internal/tools"},
-	{"internal/decision/decisionbuild", "internal/lanegate"},
-	{"internal/decision/decisionbuild", "internal/providerbuild"},
+	{"internal/decisionbuild", "internal/lanegate"},
+	{"internal/decisionbuild", "internal/providerbuild"},
 	{"internal/errclassify", "internal/runner"},
 	{"internal/errclassify", "internal/tools"},
 	{"internal/hooks/codehook", "internal/tools"},
