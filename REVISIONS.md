@@ -8,6 +8,85 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.122.0
+
+*Per-agent shell credentials, run metrics in the Web UI, and a fix for rotating per-user tokens. **A new `shell_credentials` field narrows which operator-listed credentials an agent's Bash and Bashbox host commands receive**, so one agent can keep a shell without seeing every secret the others get. The Web UI's run views now show the serving model, tokens in and out, a live tok/s, a context-window gauge and the run's context method next to Compact; the agent Library shows each agent's context window. **Settings → Tokens can rotate and retire per-user (`u-`) tokens again**: it failed on every one since v1.112.0.*
+
+A minor release: #2035 to #2043.
+- #2035, #2036 and #2039 (RFC EW) add per-agent `shell_credentials`;
+- #2040 adds the run metrics, the context method label and the Library's context window;
+- #2037 fixes token rotate and retire in the Web UI and lists tokens per tenant;
+- #2038 runs only the Go tests a pull request's change can reach (CI only);
+- no dependency updates, and #2043 is these notes.
+- `@loomcycle/client` and the Python adapter are 1.122.0. The TS client gains optional fields only: `shell_credentials` on `AgentDefOverlay` and `RunSpec` (#2035), `current_def_id` on `OperatorTokenDefNameSummary` (#2037) and `context_window` on `LibraryEntry` (#2040). The Python adapter changes only its version. No method changes in either.
+
+### Per-agent shell credentials (#2035, #2036, #2039)
+
+`LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` apply to every agent that holds a shell, and the model can read every credential its shell is given. So the only way to keep one agent's model away from those secrets was to take the shell away.
+
+```yaml
+agents:
+  reviewer:
+    tools: [Read, Grep, Bash]
+    shell_credentials: []              # its shell gets none of them
+  releaser:
+    tools: [Bash, Bashbox]
+    shell_credentials: [GITHUB_TOKEN]  # only this one, where the operator lists it
+```
+
+- **It only narrows.** The field keeps a subset of the operator's lists and never adds a name. A `cmd:NAME` fallback binding stays bound to its command.
+- **Absent changes nothing**: every credential the operator lists, as before. `[]` means none. The two are kept apart everywhere they are stored, so `[]` never reads back as absent.
+- **A name an agent gave up reaches its shell from neither source** (#2039). When the operator also passes the same name as a host variable through `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`, the host value is withheld too. A host variable that is not a shell-credential name (`LANG`, `HOME`) is untouched.
+- **Sub-agents get the intersection** of their own names and their parent's. The parent's narrowing is kept on the spawn record, so a resumed sub-run narrows again against it (#2036 tests that crossing).
+- **Not overridable per run.** No wire change.
+- **Runtime-defined agents carry it:** the AgentDef overlay, a fork, `register_agent` and its MCP schema, and the Markdown agent format.
+  - A fork of a YAML agent keeps its narrowing.
+  - An in-run author may store only a subset of its own names plus the forked version's, and may not leave the field unset.
+  - The field is not part of `content_sha256`.
+- **`Context op=self`** reports the effective names and the withheld host variables (`shell_credentials.bashbox_fallback_withheld_env`). Names only, never a value.
+- **Boot advisories** name a listed name that neither operator list has, and the field on an agent with no shell tool.
+- **Web UI:** the agent editor has a `shell_credentials` JSON field (an empty box is unset; `[]` stays `[]`), and the Library shows the names as a grant, or `[]` as `shell_credentials: none`.
+- See [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md), the agent-field row in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and [`docs/TOOLS.md`](docs/TOOLS.md).
+
+### Run metrics and context in the Web UI (#2040)
+
+- **Every live run pane** (the /run terminal, ensemble cells, the orchestrator, the document assistant) has a metrics strip:
+  - the serving `provider/model`, after any fallback;
+  - ▲ input / ▼ output tokens, cumulative;
+  - **tok/s**: "~N tok/s" estimated while a call streams, replaced by the server-timed rate when the call ends; a finished run shows the run's average;
+  - a **context gauge**, used / window and %, amber above 80% and red from 95%.
+- **Context used** is the latest call's prompt (input + cache read + cache creation), never output: the same number the runtime's compaction trigger acts on, so the gauge and the runtime agree.
+- **tok/s** is generation time from the server's own per-call timing: Ollama's decode phase, else the call's duration less queueing. The live estimate is measured from the call's first streamed token, so model load and prefill do not drag it down and it agrees with the final figure.
+- **The context method** is shown next to the Compact button and on the run page: "append · auto-compact at 80%", "append · manual compact", "recap · auto at N%" or "stateful · evicts at N%", with the details in a tooltip.
+  - It is read from the run's recorded settings, so it works for finished runs.
+  - An agent with no `compaction:` block shows "auto-compact at 80%": the runtime compacts there as a safety net unless `compaction.enabled` is `false`.
+- **The run page header** adds the context gauge, tok/s and the context method beside tokens and duration. It counts only this run's usage, not the whole session's.
+- **The agent Library** shows each agent's context window ("ctx 200k"), and the /run tab shows it before the first call.
+  - `GET /v1/_library/agents` entries carry a new optional `context_window`: the resolved provider's window, lowered by the agent's own `max_context_tokens`, as a run of the agent starts with.
+  - It is resolved under the default user tier, so a run under another tier or with a per-run `max_context_tokens` can get a different one. The live gauge always shows the run's real window.
+  - Omitted when unknown, for example an Ollama model whose window is not configured.
+
+### Token rotate and retire by def_id, listed per tenant (#2037)
+
+- **Fix:** Settings → Tokens sent rotate and retire with the token's name. Since v1.112.0 the server refuses a per-user (`u-`) name as a target, because the same name can exist in several tenants. So every `u-` row failed with "is a per-user token name, which is not unique across tenants — target it by def_id". The table now acts on the row's token id.
+- **Fix:** `GET /v1/_operatortokendef/names` grouped tokens by name alone, so two tenants' `u-alice` merged into one row under whichever tenant minted last, with mixed counts, and a tenant-focused view lost the other tenant's token.
+  - It now returns one row per tenant and name, with a new `current_def_id`: the newest live token of that pair, the one to rotate or retire.
+  - The tenant case-fold check, which reads the same list, now sees a tenant whose only tokens share a per-user name with a newer tenant's.
+  - The `loomcycle tokens rewrap` review reads each name once, so such a name's rows are not listed twice.
+
+### CI (#2038)
+
+A pull request now runs only the Go test packages its change can reach (by package, test imports, and the relative paths tests open). `main` still runs everything.
+
+### Upgrade notes
+
+- **No migration.**
+- **Behaviour changes:**
+  - **`GET /v1/_operatortokendef/names`** returns one row per (tenant, name). A per-user name minted in several tenants now appears once per tenant. Rows carry an additive `current_def_id`. A script that took the single row per name should key on tenant and name.
+  - **`shell_credentials`:** nothing changes for an agent without the field. An agent that sets it also loses same-named host variables passed through `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`.
+  - **`GET /v1/_library/agents`:** agent entries may carry an additive `context_window`.
+- **Images:** a minor tag rebuilds every image. All are at 1.122.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images. The Web UI is built into the binary, so these UI changes need the new image.
+
 ## What's in v1.121.0
 
 *Embeddings on Amazon Bedrock, and the residuals of an independent re-audit of the security review. **`memory.embedder` can now use Cohere Embed on Bedrock**, signed with a Bedrock provider's AWS credentials, so a deployment that runs on an instance role needs no key to get memory search, Document search and consolidation merging. Search queries are now embedded in a query mode that embedders such as Cohere distinguish from stored text, and an embedder can sit on any provider whose driver has one, under any name. Also: a run its caller ends mid-turn is recorded `cancelled`, not `completed`; a single `spawn_run` on a held key stops at the join bound; MCP stdio servers are stopped with their process group; a volume purge can no longer be redirected by a symlink swap; refused webhook deliveries cost the same time; and gbash moves to v0.0.41. **Read the upgrade notes: a new error category, a per-file limit in Bashbox, and an embedder config that is now refused.***
