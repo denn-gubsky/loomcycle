@@ -2003,6 +2003,7 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 	}
 	var out strings.Builder
 	var usage *providers.Usage
+	sawDone := false
 	for ev := range ch {
 		timer.Observe(ev)
 		switch ev.Type {
@@ -2010,6 +2011,7 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 			out.WriteString(ev.Text)
 		case providers.EventDone:
 			usage = ev.Usage
+			sawDone = true
 		case providers.EventError:
 			// Whatever follows the error is discarded, but still read: a sender
 			// left blocked on this channel (a driver's goroutine, or the lane
@@ -2018,8 +2020,19 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 				for range ch {
 				}
 			}()
+			// A driver whose read failed on the cancelled request reports the
+			// cancel as an error; it is the cancel, as below.
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
 			return "", errors.New(ev.Error)
 		}
+	}
+	// The ctx ended mid-summary, so the stream closed unfinished. The text so
+	// far is a truncated summary, and taking it for a finished one replaced a
+	// history with it and persisted the marker a replay rebuilds from.
+	if !sawDone && ctx.Err() != nil {
+		return "", ctx.Err()
 	}
 	if usage != nil {
 		u := *usage
