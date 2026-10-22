@@ -304,3 +304,33 @@ func TestPush_ForceWithLeaseRefusesARenamingRefspec(t *testing.T) {
 		}
 	}
 }
+
+// A tree of nested directories that reference one subtree many times holds
+// no file, yet walking it is the expansion the limit exists for: the walk
+// that builds a commit's file map counts every entry it visits.
+func TestCommitSide_CountsDirectoriesAgainstTheLimit(t *testing.T) {
+	r, _, c := memRepo(t)
+	encode := func(o interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		return encodeObject(t, r, o)
+	}
+	level := encode(&object.Tree{})
+	for depth := 0; depth < 4; depth++ {
+		var entries []object.TreeEntry
+		for i := 0; i < 10; i++ {
+			entries = append(entries, object.TreeEntry{Name: fmt.Sprintf("d%d", i), Mode: filemode.Dir, Hash: level})
+		}
+		level = encode(&object.Tree{Entries: entries})
+	}
+	sig := object.Signature{Name: "x", Email: "x@x", When: c.sig().When}
+	h := encode(&object.Commit{Author: sig, Committer: sig, Message: "dirs", TreeHash: level})
+	commit, err := r.repo.CommitObject(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetLimits(Limits{MaxFiles: 1000})
+	if _, err := r.commitSide(commit); Class(err) != "source_too_large" {
+		t.Errorf("a tree of 11110 directory entries with a limit of 1000: %v, want source_too_large", err)
+	}
+}

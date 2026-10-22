@@ -585,15 +585,17 @@ func capList[T any](xs []T) ([]T, bool) {
 	return xs, false
 }
 
-// withoutUserinfo is a URL with any user and password removed. A URL that
-// does not parse is replaced, not shown.
+// withoutUserinfo is a URL rebuilt from its scheme, host and path only. A
+// token can sit in the user part, the query or the fragment, and a URL a
+// parser reads as opaque or hostless can carry one anywhere: so nothing is
+// removed from what was given, the parts known to be safe are copied, and
+// anything else is replaced, not shown.
 func withoutUserinfo(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil {
-		return "(unparseable url)"
+	if err != nil || u.Scheme == "" || u.Host == "" || u.Opaque != "" {
+		return "(url not shown)"
 	}
-	u.User = nil
-	return u.String()
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
 }
 
 // limits are the expansion limits a repository's content is held to: the

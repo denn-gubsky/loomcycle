@@ -155,6 +155,10 @@ func (r *Repo) commitSide(c *object.Commit) (side, error) {
 	w := object.NewTreeWalker(tree, true, nil)
 	defer w.Close()
 	s := side{}
+	// Every entry the walk visits counts, directories too: a tree of nested
+	// directories that reference one subtree many times holds no file at
+	// all, yet walking it is the expansion the limit exists for.
+	visited := 0
 	for {
 		name, e, err := w.Next()
 		if errors.Is(err, io.EOF) {
@@ -163,11 +167,14 @@ func (r *Repo) commitSide(c *object.Commit) (side, error) {
 		if err != nil {
 			return nil, fmt.Errorf("walk the tree of %s: %w", c.Hash, err)
 		}
+		if visited++; visited > r.maxFiles() {
+			return nil, r.tooManyFiles("the tree of " + c.Hash.String())
+		}
 		if e.Mode == filemode.Dir {
 			continue
 		}
-		if len(s) >= r.maxFiles() {
-			return nil, r.tooManyFiles("the tree of " + c.Hash.String())
+		if _, dup := s[name]; dup {
+			return nil, fmt.Errorf("%w: the tree of %s names %q twice", ErrInvalidArgument, c.Hash, truncate(name, 200))
 		}
 		s[name] = &sideEntry{hash: e.Hash, mode: e.Mode}
 	}

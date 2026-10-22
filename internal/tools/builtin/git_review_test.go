@@ -119,3 +119,25 @@ type noRoundTrip struct{}
 func (noRoundTrip) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("a refused git operation made a request")
 }
+
+// remote_list rebuilds a URL from its scheme, host and path: a token in the
+// user part, the query or the fragment, or in a URL a parser reads as
+// opaque, is never shown.
+func TestWithoutUserinfo_KeepsOnlySchemeHostAndPath(t *testing.T) {
+	const tok = "tok-9c2f-never-shown"
+	for _, raw := range []string{
+		"https://ci:" + tok + "@github.com/acme/app.git",
+		"https://github.com/acme/app.git?access_token=" + tok,
+		"https://github.com/acme/app.git#" + tok,
+		"https:" + tok + "@github.com/acme/app.git",
+		"github.com:" + tok,
+	} {
+		got := withoutUserinfo(raw)
+		if strings.Contains(got, tok) {
+			t.Errorf("%q shown as %q", raw, got)
+		}
+	}
+	if got := withoutUserinfo("https://github.com/acme/app.git"); got != "https://github.com/acme/app.git" {
+		t.Errorf("a plain URL became %q", got)
+	}
+}
