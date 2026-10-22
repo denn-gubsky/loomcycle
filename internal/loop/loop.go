@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -2003,6 +2004,7 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 	}
 	var out strings.Builder
 	var usage *providers.Usage
+	sawDone := false
 	for ev := range ch {
 		timer.Observe(ev)
 		switch ev.Type {
@@ -2010,6 +2012,7 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 			out.WriteString(ev.Text)
 		case providers.EventDone:
 			usage = ev.Usage
+			sawDone = true
 		case providers.EventError:
 			// Whatever follows the error is discarded, but still read: a sender
 			// left blocked on this channel (a driver's goroutine, or the lane
@@ -2018,8 +2021,24 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 				for range ch {
 				}
 			}()
+			// A driver whose read failed on the cancelled request reports the
+			// cancel as an error; it is the cancel, as below.
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
 			return "", errors.New(ev.Error)
 		}
+	}
+	// A stream that closed with no done event never finished: the ctx ended
+	// mid-summary, or the server hung up. The text so far is a truncated
+	// summary, and taking it for a finished one replaced a history with it and
+	// persisted the marker a replay rebuilds from. readTurn treats an
+	// unfinished turn the same way.
+	if !sawDone {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("%s: summary stream ended without completing", provider.ID())
 	}
 	if usage != nil {
 		u := *usage
@@ -4128,6 +4147,15 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 				}
 				break
 			}
+			// The run's own ctx ended (its caller left, its deadline passed,
+			// an API cancel): a driver whose read failed on the cancelled
+			// request reports that as an error. It is the cancel, not a
+			// provider fault.
+			if ctx.Err() != nil {
+				for range ch {
+				}
+				return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
+			}
 			// v0.8.2 classification: build the RAW error string so
 			// the status-prefix regex sees the bare "<name>
 			// <code>:" shape. The streamErr wrap below would
@@ -4228,6 +4256,14 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
 		return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg))
 	}
+	// The run's own ctx ended while the model was generating, so the stream
+	// closed unfinished. Taken as a turn it is an empty end_turn, which ended
+	// the run completed on its partial text. A turn whose done arrived first
+	// did finish, and goes on as one; a turn cancel leaves the run's ctx
+	// alive and is handled below.
+	if !sawDone && ctx.Err() != nil {
+		return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
+	}
 
 	// RFC BH: did the operator cancel THIS turn while the model was generating
 	// (run ctx still alive)? Covers both a driver that surfaced EventError on
@@ -4247,6 +4283,31 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		iterReasoningSignature: iterReasoningSignature,
 		turnCancelledMidGen:    turnCancelledMidGen,
 	}, loopExit{}
+}
+
+// runEndedMidTurn ends a run whose ctx ended while the model was streaming,
+// with that ctx's error, as the run's other cancel exits do: the run end
+// reads the ctx's cause for why. partial is the text the turn had streamed,
+// kept as the cancelled run's answer.
+//
+// The error is emitted as well as returned, as the exit for a call the cancel
+// stopped before it streamed does: a transport that sends no frame of its own
+// for the loop's error (gRPC Run) otherwise ends the stream with neither done
+// nor error, and the transcript ends on bare text. It is classified
+// cancelled, so a reader can tell a stopped run from a failed one — except
+// when the run's own wall limit cut it, which records the run failed.
+func (s *runState) runEndedMidTurn(ctx context.Context, iterSpan trace.Span, iter int, partial string) loopExit {
+	err := ctx.Err()
+	ev := providers.Event{Type: providers.EventError, Error: err.Error()}
+	if !errors.Is(context.Cause(ctx), errWallLimit) {
+		ev.ErrorInfo = &errkind.Info{Category: errkind.CategoryCancelled,
+			Description: "The run was stopped before the model finished its turn; nothing failed. Continue the session or start a new run to carry on."}
+	}
+	s.emit(ev)
+	lcotel.SetSpanError(iterSpan, err)
+	iterSpan.End()
+	s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
+	return exitReturn(RunResult{StopReason: "cancelled", FinalText: partial, Iterations: iter, Usage: s.totalUsage}, err)
 }
 
 // dispatchTools runs the tools the model called this turn and appends their

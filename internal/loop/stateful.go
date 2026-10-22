@@ -588,6 +588,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 	}
 	var text, thinking strings.Builder
 	var streamErr string
+	sawDone := false
 	for ev := range ch {
 		timer.Observe(ev)
 		switch ev.Type {
@@ -609,6 +610,7 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 				out.usage = &u
 			}
 			out.reasoning, out.reasoningSig = ev.Reasoning, ev.ReasoningSignature
+			sawDone = true
 		case providers.EventError:
 			streamErr = ev.Error
 		}
@@ -616,6 +618,12 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 	timer.Stamp(out.usage)
 	out.text = strings.TrimSpace(text.String())
 	out.thinking = strings.TrimSpace(thinking.String())
+	// The run's ctx ended mid-step, so the stream closed unfinished. Read as a
+	// reply with no emit_state, its partial prose could become the run's final
+	// answer once the patch retries ran out; it is the cancel, as in readTurn.
+	if !sawDone && ctx.Err() != nil {
+		return out, ctx.Err()
+	}
 	if streamErr != "" {
 		return out, errors.New(streamErr)
 	}

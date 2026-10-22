@@ -1,8 +1,11 @@
 package http
 
+import "github.com/denn-gubsky/loomcycle/internal/loop"
+
 // WallLimitReason is the stop reason of a run its own max_wall_seconds ended.
-// A fixed word, so a caller can match it.
-const WallLimitReason = "wall_limit"
+// A fixed word, so a caller can match it; the loop's own watcher reports the
+// same one.
+const WallLimitReason = loop.StopReasonWallLimit
 
 // wallLimitCancel is what the loop calls when a run's max_wall_seconds runs
 // out. It goes through the cancel registry rather than the run's ctx for two

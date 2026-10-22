@@ -31,9 +31,11 @@ import (
 
 // Category says what KIND of failure was hit, because that is the only thing
 // the caller actually has to decide from: resend this call, change it, or
-// stop. The four values are deliberately coarse — a finer taxonomy would not
-// change the decision, and a caller that has to reason about fifteen buckets
-// reasons about none of them.
+// stop. The four failure values are deliberately coarse — a finer taxonomy
+// would not change the decision, and a caller that has to reason about
+// fifteen buckets reasons about none of them. The fifth, cancelled, is not a
+// failure: it tells a reader a run was stopped, which the error's text alone
+// cannot say reliably.
 type Category string
 
 const (
@@ -59,6 +61,12 @@ const (
 	// read confirms the row exists and turns the error into an existence
 	// oracle.
 	CategoryPermission Category = "permission"
+
+	// CategoryCancelled — nothing failed: the run was stopped before it
+	// finished, by its caller or an operator. Not retryable as such; starting
+	// it again is a new decision, not a recovery. Carried only on a run's own
+	// terminal error event, never on a tool result.
+	CategoryCancelled Category = "cancelled"
 )
 
 // Info is the optional structured half of a failure. It exists so a caller

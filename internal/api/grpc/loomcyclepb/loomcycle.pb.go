@@ -6117,9 +6117,10 @@ func (x *AdmissionInfo) GetKind() string {
 // condition reads the same whichever surface a consumer is on.
 type ErrorInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// transient | validation | business | permission. Empty only on a failed
-	// tool call that is not classified yet but carries a call_format; any other
-	// unclassified failure omits the whole message.
+	// transient | validation | business | permission, or cancelled on the
+	// error event of a run stopped before it finished (nothing failed). Empty
+	// only on a failed tool call that is not classified yet but carries a
+	// call_format; any other unclassified failure omits the whole message.
 	Category string `protobuf:"bytes,1,opt,name=category,proto3" json:"category,omitempty"`
 	// Answers only "will resending this exact call fail?" — not "should the
 	// caller give up". A false here still leaves the alternatives in
