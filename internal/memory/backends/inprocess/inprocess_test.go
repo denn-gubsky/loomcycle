@@ -13,9 +13,9 @@ import (
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/runident"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -1175,7 +1175,7 @@ func TestAdd_EnqueuesWithTheSessionSoTheFactCanBeFollowedBack(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	b := inprocess.New(s, nil)
 
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{
+	ctx := runident.With(context.Background(), runident.Identity{
 		UserID: "u1", TenantID: "t1", SessionID: "s_the_chat",
 	})
 	if _, err := b.Add(ctx, store.MemoryScopeUser, "u1",
