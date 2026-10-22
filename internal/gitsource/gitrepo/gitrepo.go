@@ -88,8 +88,16 @@ func Class(err error) string {
 
 // Repo is an open repository: a working directory and the .git inside it.
 type Repo struct {
+	// base is the caller's filesystem, on which .git is opened.
+	base billy.Filesystem
+	// wt is base behind worktreeGuard: what go-git and the writers use for
+	// the working tree, where no path may reach into .git.
 	wt   billy.Filesystem
 	repo *git.Repository
+}
+
+func newRepo(base billy.Filesystem, repo *git.Repository) *Repo {
+	return &Repo{base: base, wt: guardWorktree(base), repo: repo}
 }
 
 // newStorage is the repository's object store, read through the caller's
@@ -135,11 +143,11 @@ func Init(wt billy.Filesystem, initialBranch string) (*Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	repo, err := git.InitWithOptions(st, wt, git.InitOptions{DefaultBranch: plumbing.NewBranchReferenceName(initialBranch)})
+	repo, err := git.InitWithOptions(st, guardWorktree(wt), git.InitOptions{DefaultBranch: plumbing.NewBranchReferenceName(initialBranch)})
 	if err != nil {
 		return nil, fmt.Errorf("init: %w", err)
 	}
-	return &Repo{wt: wt, repo: repo}, nil
+	return newRepo(wt, repo), nil
 }
 
 // Open opens the repository whose working directory is wt. Only a .git
@@ -160,7 +168,7 @@ func Open(wt billy.Filesystem) (*Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Repo{wt: wt, repo: repo}, nil
+	return newRepo(wt, repo), nil
 }
 
 func openRepo(wt billy.Filesystem) (*git.Repository, error) {
@@ -168,7 +176,7 @@ func openRepo(wt billy.Filesystem) (*git.Repository, error) {
 	if err != nil {
 		return nil, err
 	}
-	repo, err := git.Open(st, wt)
+	repo, err := git.Open(st, guardWorktree(wt))
 	if err != nil {
 		if errors.Is(err, git.ErrRepositoryNotExists) {
 			return nil, fmt.Errorf("%w: %v", ErrNotARepository, err)
@@ -221,7 +229,7 @@ func cleanPath(p string) (string, error) {
 		case ".", "..":
 			return bad("has a . or .. component")
 		}
-		if strings.TrimRight(strings.ToLower(c), ". ") == ".git" {
+		if isDotGitVariant(c) {
 			return bad("reaches into .git")
 		}
 	}

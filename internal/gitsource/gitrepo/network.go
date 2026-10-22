@@ -236,7 +236,7 @@ func Clone(ctx context.Context, wt billy.Filesystem, n Network, o CloneOptions) 
 	if o.Branch != "" {
 		co.ReferenceName = plumbing.NewBranchReferenceName(o.Branch)
 	}
-	_, cerr := git.CloneContext(ctx, g, wt, co)
+	_, cerr := git.CloneContext(ctx, g, guardWorktree(wt), co)
 	if cerr != nil && (errors.Is(cerr, plumbing.ErrReferenceNotFound) || errors.Is(cerr, git.NoMatchingRefSpecError{})) {
 		if c := finish(ctx, sess, nil); c != nil {
 			return nil, c
@@ -250,7 +250,7 @@ func Clone(ctx context.Context, wt billy.Filesystem, n Network, o CloneOptions) 
 	if err != nil {
 		return nil, err
 	}
-	return &Repo{wt: wt, repo: repo}, nil
+	return newRepo(wt, repo), nil
 }
 
 // listRemote lists the refs advertised at url. An empty repository has
@@ -465,7 +465,7 @@ func (r *Repo) fetch(ctx context.Context, sess *gitsource.Session, n Network, fo
 	if err != nil {
 		return FetchResult{}, err
 	}
-	g, err := guarded(ctx, sess, r.wt, n)
+	g, err := guarded(ctx, sess, r.base, n)
 	if err != nil {
 		return FetchResult{}, err
 	}
@@ -480,7 +480,7 @@ func (r *Repo) fetch(ctx context.Context, sess *gitsource.Session, n Network, fo
 	ferr := rem.FetchContext(ctx, fo)
 	// The fetch wrote objects and refs through another store; this one's
 	// caches (the list of packs among them) do not know of them.
-	repo, oerr := openRepo(r.wt)
+	repo, oerr := openRepo(r.base)
 	if oerr != nil {
 		return FetchResult{}, oerr
 	}

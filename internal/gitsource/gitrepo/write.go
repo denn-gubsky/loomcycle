@@ -130,6 +130,9 @@ func (r *Repo) Remove(paths []string, cached bool) error {
 		return nil
 	}
 	for _, p := range matched {
+		if err := treePath(p); err != nil {
+			return err
+		}
 		if err := r.wt.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
@@ -297,6 +300,9 @@ func (r *Repo) restoreWorktree(specs []string) (int, error) {
 // writeBlob writes an entry's content at p. What is at p is removed first,
 // so a link left there is replaced and never written through.
 func (r *Repo) writeBlob(p string, e *sideEntry) error {
+	if err := treePath(p); err != nil {
+		return err
+	}
 	if err := r.wt.Remove(p); err != nil && !os.IsNotExist(err) {
 		if err := billyutil.RemoveAll(r.wt, p); err != nil {
 			return fmt.Errorf("replace %s: %w", p, err)
@@ -427,6 +433,9 @@ func (r *Repo) hardReset(commit plumbing.Hash) error {
 	for p := range before {
 		if _, ok := after[p]; ok {
 			continue
+		}
+		if err := treePath(p); err != nil {
+			return err
 		}
 		if err := r.wt.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
@@ -837,6 +846,11 @@ func (r *Repo) Clean(dirs, dryRun bool) ([]string, error) {
 		out = append(out, d+"/")
 	}
 	sort.Strings(out)
+	for _, p := range append(append([]string(nil), files...), removeDirs...) {
+		if err := treePath(p); err != nil {
+			return nil, err
+		}
+	}
 	if dryRun {
 		return out, nil
 	}
