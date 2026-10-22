@@ -87,10 +87,17 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 	if provider == "" {
 		return nil, "", nil
 	}
+	// Which constructor serves the provider: the same function config
+	// validation used, so the embedder built is the one the config was checked
+	// against.
+	key, err := cfg.EmbedderKey(provider)
+	if err != nil {
+		return nil, "", err
+	}
 
 	var apiKey, baseURL string
 
-	if provider == "anthropic" {
+	if key == "anthropic" {
 		// EXCEPTION — the only provider that does NOT share its chat account.
 		// The `anthropic` embedder slot is a Voyage AI proxy (v0.10.2):
 		// Anthropic has no native embeddings API and points users at Voyage.
@@ -98,7 +105,9 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 		// service is a different vendor, so it must inherit NEITHER half of the
 		// `providers: anthropic:` entry — an Anthropic proxy base_url would
 		// receive Voyage requests, and ANTHROPIC_API_KEY would be sent to
-		// Voyage. Auth is the separate VOYAGE_API_KEY.
+		// Voyage. Auth is the separate VOYAGE_API_KEY. Keyed on the embedder
+		// chosen, not the provider id, so `api: anthropic` over another provider
+		// inherits nothing from that provider either.
 		apiKey = cfg.Env.VoyageAPIKey
 		if apiKey == "" {
 			slog.Warn("memory.embedder: provider=anthropic uses Voyage AI; set VOYAGE_API_KEY or Embed() calls will fail at 401")
@@ -164,7 +173,7 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 		batchSize = cfg.Env.MemoryEmbedBatchSize
 	}
 
-	e, err := providers.NewEmbedder(provider, providers.EmbedderOptions{
+	e, err := providers.NewEmbedder(key, providers.EmbedderOptions{
 		APIKey:     apiKey,
 		BaseURL:    baseURL,
 		Model:      model,

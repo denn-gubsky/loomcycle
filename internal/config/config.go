@@ -796,9 +796,16 @@ type MemoryEntryDecl struct {
 // load: Provider must be in the registered set (providers.NewEmbedder
 // catches unknown names); Model is required when Provider is set.
 type EmbedderConfig struct {
-	// Provider is the registered embedder driver name
-	// ("openai" / "gemini" / "anthropic" in v0.9.0).
+	// Provider is the provider id the embedder is served by: a built-in id with
+	// an embedder of its own ("openai", "ollama-local", "anthropic" = Voyage),
+	// or any declared provider whose driver has one. Usually carried by the
+	// models: alias named in Model instead.
 	Provider string `yaml:"provider"`
+	// API names the embedder protocol explicitly — one of
+	// providers.RegisteredEmbedders(). Empty = derive it from the provider (see
+	// EmbedderKey). Needed only where the provider cannot say: a provider that
+	// authenticates with AWS credentials (auth:).
+	API string `yaml:"api"`
 	// Model is the wire model id ("text-embedding-3-large" etc.).
 	Model string `yaml:"model"`
 	// BaseURL points the embedder at a self-hosted or alternative
@@ -6499,6 +6506,60 @@ func (c *Config) ExpandServiceModel(field, provider, model string) (string, stri
 	return p, m, nil
 }
 
+// EmbedderKey names the registered embedder constructor that memory.embedder
+// uses for provider, the provider id the block resolved to (ExpandServiceModel).
+// Config validation and the embedder factory both call it, so the embedder a
+// config is checked against is the one that gets built.
+//
+// The order, first match wins:
+//
+//  1. memory.embedder.api, which must be registered.
+//  2. A provider with an auth: block is refused unless step 1 chose bedrock: no
+//     embedder derived from its id or driver speaks AWS auth, and the per-id key
+//     fallback would send that vendor's key to the Bedrock host.
+//  3. The provider id, when an embedder is registered under it. This keeps every
+//     config that loaded before byte-identical: ollama-local stays the local
+//     flavour (its driver would make it the cloud one) and anthropic stays
+//     Voyage.
+//  4. The provider's driver, when an embedder is registered under it — except
+//     anthropic: that driver has no embeddings API, and the Voyage embedder
+//     registered as "anthropic" must not inherit a custom Anthropic provider.
+//     This is what lets `my-gateway: {driver: openai}` embed.
+//  5. Otherwise an error naming the provider, its driver and what is registered.
+func (c *Config) EmbedderKey(provider string) (string, error) {
+	registered := providers.RegisteredEmbedders()
+	isRegistered := func(k string) bool { return slices.Contains(registered, k) }
+	pc, declared := c.Providers[provider]
+
+	if api := c.Memory.Embedder.API; api != "" {
+		if !isRegistered(api) {
+			return "", fmt.Errorf("memory.embedder.api: unknown embedder %q (registered: %v)", api, registered)
+		}
+		if declared && pc.Auth != nil && api != EmbedderAPIBedrock {
+			return "", fmt.Errorf("memory.embedder: provider %q authenticates with AWS credentials (auth:), which the %q embedder does not speak — set memory.embedder.api: %s", provider, api, EmbedderAPIBedrock)
+		}
+		return api, nil
+	}
+	if declared && pc.Auth != nil {
+		return "", fmt.Errorf("memory.embedder: provider %q authenticates with AWS credentials (auth:), so its embedder protocol cannot be derived — set memory.embedder.api: %s", provider, EmbedderAPIBedrock)
+	}
+	if isRegistered(provider) {
+		return provider, nil
+	}
+	if declared && pc.Driver != "anthropic" && isRegistered(pc.Driver) {
+		return pc.Driver, nil
+	}
+	if !declared {
+		return "", fmt.Errorf("memory.embedder.provider: unknown provider %q (registered embedders: %v)", provider, registered)
+	}
+	return "", fmt.Errorf("memory.embedder.provider: provider %q (driver %q) has no embedder (registered embedders: %v); set memory.embedder.api to one of them if the provider serves its protocol", provider, pc.Driver, registered)
+}
+
+// EmbedderAPIBedrock is the memory.embedder.api value for Amazon Bedrock's
+// InvokeModel embeddings, the one embedder protocol a provider with an auth:
+// block can speak.
+const EmbedderAPIBedrock = "bedrock"
+
 // ExpandModelAlias resolves a model-alias (a key in the top-level models:
 // map) to its concrete provider/model, plus (RFC BG) a model_pattern glob when
 // the alias is a pattern alias. The alias only fills an EMPTY provider — an
@@ -9050,7 +9111,7 @@ func validate(c *Config) error {
 	// must have a known provider AND a model.
 	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" ||
 		c.Memory.Embedder.BaseURL != "" || c.Memory.Embedder.APIKeyEnv != "" ||
-		c.Memory.Embedder.Dimensions != 0 {
+		c.Memory.Embedder.Dimensions != 0 || c.Memory.Embedder.API != "" {
 		if err := c.requireModelKind("memory.embedder.model", c.Memory.Embedder.Model, ModelKindEmbedder); err != nil {
 			return err
 		}
@@ -9064,16 +9125,12 @@ func validate(c *Config) error {
 		if model == "" {
 			return fmt.Errorf("memory.embedder: model is required when embedder block is set")
 		}
-		known := providers.RegisteredEmbedders()
-		seen := false
-		for _, p := range known {
-			if p == provider {
-				seen = true
-				break
-			}
+		key, err := c.EmbedderKey(provider)
+		if err != nil {
+			return err
 		}
-		if !seen {
-			return fmt.Errorf("memory.embedder.provider: unknown provider %q (known: %v)", provider, known)
+		if err := providers.ValidateEmbedder(key, model, c.Memory.Embedder.Dimensions); err != nil {
+			return fmt.Errorf("memory.embedder: %w", err)
 		}
 		if c.Memory.Embedder.TimeoutMs < 0 {
 			return fmt.Errorf("memory.embedder.timeout_ms must be >= 0")

@@ -2,6 +2,7 @@ package providers_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -83,5 +84,29 @@ func TestRegisteredEmbeddersReturnsSorted(t *testing.T) {
 	}
 	if iA >= iZ {
 		t.Errorf("expected aaa before zzz, got %v", names)
+	}
+}
+
+func TestValidateEmbedder_RunsTheRegisteredValidatorOnly(t *testing.T) {
+	// The registry is process-global and outlives one run of this test
+	// (-count=N), so "no validator" is asked of a key nothing registers.
+	const key = "validator-test-key"
+	if err := providers.ValidateEmbedder("validator-test-never-registered", "m", 7); err != nil {
+		t.Fatalf("no validator registered: %v, want nil", err)
+	}
+	providers.RegisterEmbedderValidator(key, func(model string, dimensions int) error {
+		if dimensions != 0 {
+			return fmt.Errorf("model %s: dimensions %d not allowed", model, dimensions)
+		}
+		return nil
+	})
+	if err := providers.ValidateEmbedder(key, "m", 0); err != nil {
+		t.Fatalf("accepted input: %v", err)
+	}
+	if err := providers.ValidateEmbedder(key, "m", 7); err == nil || !strings.Contains(err.Error(), "dimensions 7") {
+		t.Fatalf("refused input = %v, want the validator's error", err)
+	}
+	if err := providers.ValidateEmbedder("another-key", "m", 7); err != nil {
+		t.Fatalf("a validator leaked to another key: %v", err)
 	}
 }

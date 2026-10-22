@@ -201,9 +201,10 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 
 	topK := q.TopK
 
-	// Embed the query text. Failures here are the embedder's problem —
-	// surface them directly so operators see exactly what went wrong.
-	vecs, err := b.embedder.Embed(ctx, []string{q.QueryText})
+	// Embed the query text, in the embedder's query mode when it has one.
+	// Failures here are the embedder's problem — surface them directly so
+	// operators see exactly what went wrong.
+	vecs, err := providers.EmbedQuery(ctx, b.embedder, []string{q.QueryText})
 	if err != nil {
 		err = fmt.Errorf("embed query: %w", err)
 		lcotel.SetSpanError(span, err)

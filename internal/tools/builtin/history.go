@@ -626,6 +626,9 @@ func (h *History) related(ctx context.Context, scope string, in historyInput) (t
 	}
 
 	var sourceText, excludeID string
+	// embed is Embed for the by-chat form, which compares one stored chat with
+	// others, and the embedder's query mode for a free-text query.
+	embed := h.Embedder.Embed
 	switch {
 	case in.SessionID != "":
 		sess, err := h.loadSessionInScope(ctx, scope, "related", in.SessionID)
@@ -641,11 +644,14 @@ func (h *History) related(ctx context.Context, scope string, in historyInput) (t
 		}
 	case strings.TrimSpace(in.Query) != "":
 		sourceText = strings.TrimSpace(in.Query)
+		embed = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return providers.EmbedQuery(ctx, h.Embedder, texts)
+		}
 	default:
 		return errValidation("history: related requires session_id or query", "Pass session_id (a chat to match) or query (free text)."), nil
 	}
 
-	vecs, err := h.Embedder.Embed(ctx, []string{sourceText})
+	vecs, err := embed(ctx, []string{sourceText})
 	if err != nil {
 		return errFrom("history: related: embed: "+err.Error(), err), nil
 	}

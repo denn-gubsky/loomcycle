@@ -47,8 +47,11 @@ const (
 
 // ifaceKinds classifies every interface declared in internal/providers.
 var ifaceKinds = map[string]ifaceKind{
-	"Provider":                      notOnProvider,
-	"Embedder":                      notOnProvider,
+	"Provider": notOnProvider,
+	"Embedder": notOnProvider,
+	// QueryEmbedder is asserted on an EMBEDDER, only by providers.EmbedQuery;
+	// every embedder wrapper implements it (embedder_census_test.go).
+	"QueryEmbedder":                 notOnProvider,
 	"Unwrapper":                     plumbing,
 	"KeyedProvider":                 optional,
 	"ThinkingDowngrader":            optional,

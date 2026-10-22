@@ -450,7 +450,7 @@ func QueryIndex(ctx context.Context, set *Set, st IndexStore, emb providers.Embe
 // BL §2.10 read-time dead-link guard (see the filter loop below) and returns the
 // number of hits it dropped so the caller can emit the dead-link signal.
 func hybridQuery(ctx context.Context, set *Set, st IndexStore, emb providers.Embedder, query string, topK int) ([]QueryResult, int, error) {
-	vecs, err := emb.Embed(ctx, []string{query})
+	vecs, err := providers.EmbedQuery(ctx, emb, []string{query})
 	if err != nil {
 		return nil, 0, fmt.Errorf("help query: embed: %w", err)
 	}

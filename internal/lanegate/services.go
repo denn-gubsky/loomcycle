@@ -71,7 +71,10 @@ type Embedder struct {
 	sched *concurrency.CallScheduler
 }
 
-var _ providers.Embedder = (*Embedder)(nil)
+var (
+	_ providers.Embedder      = (*Embedder)(nil)
+	_ providers.QueryEmbedder = (*Embedder)(nil)
+)
 
 // WrapEmbedder returns inner with every Embed inside the embedder lane of
 // provider id. A nil inner returns nil, so a caller's "no embedder configured"
@@ -118,13 +121,24 @@ func (e *Embedder) Dimension() int   { return e.inner.Dimension() }
 // batches texts into: the host is busy with it until it returns. An embedding
 // made for a run reports its wait on the run's stream (runReporter).
 func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return e.inLane(ctx, func(ctx context.Context) ([][]float32, error) { return e.inner.Embed(ctx, texts) })
+}
+
+// EmbedQuery is Embed for a search query: the same lane slot, then the inner
+// embedder's query mode when it has one.
+func (e *Embedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
+	return e.inLane(ctx, func(ctx context.Context) ([][]float32, error) { return providers.EmbedQuery(ctx, e.inner, texts) })
+}
+
+// inLane runs call inside one embedder-lane slot of e's provider.
+func (e *Embedder) inLane(ctx context.Context, call func(context.Context) ([][]float32, error)) ([][]float32, error) {
 	if !e.sched.Gated(e.id, config.ModelKindEmbedder) {
-		return e.inner.Embed(ctx, texts)
+		return call(ctx)
 	}
 	release, _, err := acquire(ctx, e.sched, nil, e.id, config.ModelKindEmbedder, e.inner.Model(), runReporter(ctx), nil, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return e.inner.Embed(ctx, texts)
+	return call(ctx)
 }

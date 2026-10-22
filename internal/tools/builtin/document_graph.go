@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -416,7 +417,7 @@ func (d *Document) graphSemanticSeeds(ctx context.Context, key sqlmem.ScopeKey, 
 	if d.Embedder == nil || strings.TrimSpace(query) == "" {
 		return nil
 	}
-	vec, err := d.Embedder.Embed(ctx, []string{query})
+	vec, err := providers.EmbedQuery(ctx, d.Embedder, []string{query})
 	if err != nil || len(vec) == 0 {
 		return nil
 	}
