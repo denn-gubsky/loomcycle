@@ -195,7 +195,7 @@ func With(ctx context.Context, ident Identity) context.Context {
 		// kept working. Two paths to the same value should resolve
 		// identically.
 		if existing := ident.UserCredentials["default"]; existing == "" {
-			creds := make(map[string]string, len(ident.UserCredentials)+1)
+			creds := make(map[string]string, len(ident.UserCredentials))
 			for k, v := range ident.UserCredentials {
 				creds[k] = v
 			}
