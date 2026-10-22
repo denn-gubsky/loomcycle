@@ -3,6 +3,7 @@ import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
 import Splitter from "./Splitter";
 import LineageTree, { buildLineageTree } from "./LineageTree";
+import { contextWindowLabel } from "../lib/contextWindow";
 
 // LineagePanel is the shared shape that backs each Library sub-tab
 // (Agents / Skills / MCP Servers). Left pane lists entries with
@@ -309,6 +310,14 @@ export default function LineagePanel({
       <div className="lineage-right">
         <div className="lineage-header">
           <h3>{selectedName}</h3>
+          {contextWindowLabel(selectedEntry?.context_window) && (
+            <span
+              className="lineage-header-ctx"
+              title="The context window a run of this agent starts with: its provider's window, lowered by the agent's own max_context_tokens"
+            >
+              context window: {contextWindowLabel(selectedEntry?.context_window)}
+            </span>
+          )}
           {versionsLoading && <span className="loading-indicator">loading…</span>}
           <div className="lineage-header-actions">
             {onRediscover && selectedName && (
@@ -418,7 +427,7 @@ function newCtaLabel(kind: SubstrateKind): string {
   }
 }
 
-function EntryList({
+export function EntryList({
   entries,
   selectedName,
   onSelect,
@@ -448,6 +457,14 @@ function EntryList({
               {entryCountLabel(e)}
             </span>
             <span className="lineage-name-chips">
+              {contextWindowLabel(e.context_window) && (
+                <span
+                  className="def-chip def-chip-ctx"
+                  title={`A run of this agent starts with a ${e.context_window}-token context window`}
+                >
+                  ctx {contextWindowLabel(e.context_window)}
+                </span>
+              )}
               {e.in_static && (
                 <span className="def-chip def-chip-static">static</span>
               )}
