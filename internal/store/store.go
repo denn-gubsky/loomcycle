@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // MintChannelMessageID returns a fresh channel-message id that's
@@ -1269,29 +1271,16 @@ func WithTeamScope(ctx context.Context, sc TeamScope) context.Context {
 	return context.WithValue(ctx, teamScopeCtxKey{}, sc)
 }
 
-// TeamChannelPrefix is the reserved prefix a team's own channels are stored
-// under: local channel n of team T keeps its messages and cursors as
-// "_team/T/n". Nothing else may declare a channel under it or address one by
-// that spelling — the operator's config, runtime ChannelDefs and the Channel
-// tool all refuse it — so the one way to such a channel is from inside the
-// team, and deleting the team can drop everything under its prefix.
-const TeamChannelPrefix = "_team/"
-
 // TeamChannelName is the name local channel `local` of team `team` is stored
 // under.
 func TeamChannelName(team, local string) string {
-	return TeamChannelPrefix + team + "/" + local
-}
-
-// IsTeamChannelName reports whether name is under the reserved team prefix.
-func IsTeamChannelName(name string) bool {
-	return strings.HasPrefix(name, TeamChannelPrefix)
+	return teamspec.ChannelPrefix + team + "/" + local
 }
 
 // SplitTeamChannelName is TeamChannelName's inverse: "_team/T/n" → (T, n).
 // ok=false for any other name, including one with an empty or extra segment.
 func SplitTeamChannelName(name string) (team, local string, ok bool) {
-	rest, found := strings.CutPrefix(name, TeamChannelPrefix)
+	rest, found := strings.CutPrefix(name, teamspec.ChannelPrefix)
 	if !found {
 		return "", "", false
 	}
@@ -1305,7 +1294,7 @@ func SplitTeamChannelName(name string) (team, local string, ok bool) {
 // TeamChannelDisplayName is how events and logs show a stored channel name:
 // "_team/T/n" as "T/n", any other name unchanged.
 func TeamChannelDisplayName(name string) string {
-	if rest, ok := strings.CutPrefix(name, TeamChannelPrefix); ok {
+	if rest, ok := strings.CutPrefix(name, teamspec.ChannelPrefix); ok {
 		return rest
 	}
 	return name

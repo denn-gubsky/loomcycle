@@ -60,6 +60,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -2686,10 +2687,10 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 	}
 	// The reserved prefix holds only team channels: a name under it that is
 	// not one is refused, not written as an undeclared channel.
-	if store.IsTeamChannelName(channel) {
+	if teamspec.IsChannelName(channel) {
 		team, local, ok := store.SplitTeamChannelName(channel)
 		if !ok {
-			return channels.WriteDef{}, fmt.Errorf("channel %q is under the reserved %q prefix and names no team's channel", channel, store.TeamChannelPrefix)
+			return channels.WriteDef{}, fmt.Errorf("channel %q is under the reserved %q prefix and names no team's channel", channel, teamspec.ChannelPrefix)
 		}
 		return s.teamChannelWriteDef(ctx, tenantID, team, local)
 	}

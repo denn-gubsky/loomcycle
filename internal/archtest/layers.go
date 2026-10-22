@@ -90,6 +90,7 @@ var layers = []layer{
 			"internal/skillmatch",
 			"internal/statepatch",
 			"internal/steer",
+			"internal/teamspec",
 			"internal/turncancel",
 		},
 	},
@@ -321,7 +322,6 @@ var knownViolations = []knownViolation{
 
 	// memory's grammar, store.ParseRetention and the team-channel names,
 	// teamgraph's name/var validators.
-	{"internal/config", "internal/store", cutConfig},
 	{"internal/config", "internal/teamgraph", cutConfig},
 
 	{"internal/credential", "internal/store", cutStoreIfaces},

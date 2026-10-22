@@ -9,6 +9,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -85,7 +86,7 @@ func localChannelIssues(team string, def teamgraph.Definition) []teamIssue {
 	// for every team: a team with no channels of its own must not reach
 	// another's by writing its stored name.
 	for _, ref := range teamgraph.ChannelRefs(def) {
-		if store.IsTeamChannelName(ref.Channel) {
+		if teamspec.IsChannelName(ref.Channel) {
 			issues = append(issues, teamIssue{
 				Kind: teamIssueChannelReserved, Severity: severityRefused, Path: ref.Path,
 				State: ref.State, Field: ref.Field, Channel: ref.Channel,
@@ -99,7 +100,7 @@ func localChannelIssues(team string, def teamgraph.Definition) []teamIssue {
 			list []string
 		}{{"publish", def.Channels.Publish}, {"subscribe", def.Channels.Subscribe}} {
 			for i, entry := range side.list {
-				if store.IsTeamChannelName(strings.TrimSpace(entry)) {
+				if teamspec.IsChannelName(strings.TrimSpace(entry)) {
 					issues = append(issues, teamIssue{
 						Kind: teamIssueChannelReserved, Severity: severityRefused,
 						Path: fmt.Sprintf("channels.%s[%d]", side.key, i), Channel: entry, Side: side.key,
@@ -148,7 +149,7 @@ func localAgentChannelGrantIssues(def teamgraph.Definition) []teamIssue {
 			for i, entry := range side.list {
 				entry = strings.TrimSpace(entry)
 				path := fmt.Sprintf("%s.channels.%s[%d]", teamgraph.PathKey("local.agents", agent), side.key, i)
-				if store.IsTeamChannelName(entry) {
+				if teamspec.IsChannelName(entry) {
 					issues = append(issues, teamIssue{
 						Kind: teamIssueChannelReserved, Severity: severityRefused, Path: path,
 						Agent: teamgraph.LocalRefPrefix + agent, Channel: entry, Side: side.key,

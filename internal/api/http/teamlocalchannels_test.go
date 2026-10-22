@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -321,7 +322,7 @@ func TestChannelWriter_TeamChannelWriteFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, st := range stats {
-		if store.IsTeamChannelName(st.Channel) {
+		if teamspec.IsChannelName(st.Channel) {
 			t.Errorf("a refused write left %d message(s) on %s (tenant %q)", st.MessageCount+st.Held, st.Channel, st.TenantID)
 		}
 	}
@@ -484,7 +485,7 @@ func TestListChannels_HidesATeamsOwnChannels(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, c := range resp.Channels {
-			if store.IsTeamChannelName(c.Name) || strings.Contains(c.Name, "triage") {
+			if teamspec.IsChannelName(c.Name) || strings.Contains(c.Name, "triage") {
 				t.Errorf("%s: the list shows %q (source %s)", who, c.Name, c.Source)
 			}
 		}
