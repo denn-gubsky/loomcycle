@@ -93,3 +93,53 @@ func firstTextOf(m providers.Message) string {
 	}
 	return m.Content[0].Text
 }
+
+// hungUpSummaryProvider streams the start of a summary and closes the stream
+// with no done event while the ctx is alive: the server hung up mid-summary.
+type hungUpSummaryProvider struct{ calls int }
+
+func (p *hungUpSummaryProvider) ID() string                  { return "stub" }
+func (p *hungUpSummaryProvider) Probe(context.Context) error { return nil }
+func (p *hungUpSummaryProvider) ListModels(context.Context) ([]string, error) {
+	return []string{"m"}, nil
+}
+func (p *hungUpSummaryProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *hungUpSummaryProvider) Call(context.Context, providers.Request) (<-chan providers.Event, error) {
+	p.calls++
+	ch := make(chan providers.Event, 1)
+	ch <- providers.Event{Type: providers.EventText, Text: "TRUNCATED"}
+	close(ch)
+	return ch, nil
+}
+
+// A summary stream that closed with no done event on a live ctx is not a
+// finished summary: the compaction does not happen and no marker is emitted.
+// It used to apply the truncated text as the summary.
+func TestMaybeAutoCompact_SummaryStreamEndedWithoutDoneAppliesNothing(t *testing.T) {
+	msgs := distillableConvo()
+	p := &hungUpSummaryProvider{}
+	opts := RunOptions{
+		Provider:   p,
+		Model:      "x",
+		Compaction: &config.Compaction{KeepLastN: cptr(2), KeepFirst: cptr(true), TargetPercentage: cptr(10)},
+	}
+	var markers int
+	out, did := maybeAutoCompact(context.Background(), opts, msgs, 0, 0, func(ev providers.Event) {
+		if ev.Type == providers.EventContextCompaction {
+			markers++
+		}
+	}, "auto")
+	if did || markers != 0 {
+		t.Fatalf("compacted = %v, markers = %d, want no compaction and no marker from a summary that never finished", did, markers)
+	}
+	if len(out) != len(msgs) {
+		t.Errorf("history changed: %d messages, want the %d it had", len(out), len(msgs))
+	}
+	// The no-effort retry runs once on any error while the ctx is alive; a
+	// hang-up is worth that one retry.
+	if p.calls != 2 {
+		t.Errorf("summary calls = %d, want 2 (the call and its one retry)", p.calls)
+	}
+}

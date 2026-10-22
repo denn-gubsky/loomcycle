@@ -2028,11 +2028,16 @@ func runSummarizeCall(ctx context.Context, provider providers.Provider, req prov
 			return "", errors.New(ev.Error)
 		}
 	}
-	// The ctx ended mid-summary, so the stream closed unfinished. The text so
-	// far is a truncated summary, and taking it for a finished one replaced a
-	// history with it and persisted the marker a replay rebuilds from.
-	if !sawDone && ctx.Err() != nil {
-		return "", ctx.Err()
+	// A stream that closed with no done event never finished: the ctx ended
+	// mid-summary, or the server hung up. The text so far is a truncated
+	// summary, and taking it for a finished one replaced a history with it and
+	// persisted the marker a replay rebuilds from. readTurn treats an
+	// unfinished turn the same way.
+	if !sawDone {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("%s: summary stream ended without completing", provider.ID())
 	}
 	if usage != nil {
 		u := *usage
