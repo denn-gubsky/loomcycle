@@ -734,9 +734,11 @@ func (v *VolumeDef) checkScopeForName(ctx context.Context, name string) error {
 //
 // Fences, in order:
 //
-//  1. EvalSymlinks the dynamic root + the target, and delete the RESOLVED
-//     real path — so a swapped symlink can't redirect the delete outside the
-//     volume. A non-existent target is a no-op success (removed=false): the
+//  1. EvalSymlinks the dynamic root + the target, and check the RESOLVED
+//     real path. The delete then goes through a handle on the dynamic root,
+//     walking to the target's parent one checked directory at a time, so a
+//     symlink swapped in after the check can't redirect it (RFC EU, Part A).
+//     A non-existent target is a no-op success (removed=false): the
 //     directory is already gone.
 //  2. The resolved path must be STRICTLY inside the dynamic root
 //     (relInsideRoot), and NOT equal the dynamic root OR the expectedParent
@@ -777,7 +779,29 @@ func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool,
 		log.Printf("%s REFUSED: resolved %q lacks expected prefix %q", who, resolved, expectedPrefix)
 		return false, fmt.Errorf("refusing to delete %q — it is not under the expected parent directory", resolved)
 	}
-	if err := os.RemoveAll(resolved); err != nil {
+	// Delete through a handle on the dynamic root, never by the checked
+	// string: an ancestor of resolved swapped for a symlink after the checks
+	// above would carry a path-based delete wherever the link points, into
+	// another tenant's directory or out of the root (RFC EU, Part A). openDir
+	// walks to the parent one directory handle at a time and refuses a step
+	// that is no longer the real directory the path named; RemoveAll inside
+	// that handle never follows a symlink.
+	vfs, err := openVolumeFS(rootResolved, "")
+	if err != nil {
+		return false, fmt.Errorf("dynamic root: %w", err)
+	}
+	defer vfs.Close()
+	parentRel, err := vfs.rel(filepath.Dir(resolved))
+	if err != nil {
+		return false, err
+	}
+	dir, err := vfs.openDir(parentRel)
+	if err != nil {
+		log.Printf("%s REFUSED: %v (target=%q)", who, err, target)
+		return false, fmt.Errorf("refusing to delete %q: %w", resolved, err)
+	}
+	defer dir.Close()
+	if err := dir.RemoveAll(filepath.Base(resolved)); err != nil {
 		return false, fmt.Errorf("remove %q: %w", resolved, err)
 	}
 	return true, nil

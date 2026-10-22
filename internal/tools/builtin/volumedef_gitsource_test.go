@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialtest"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitsourcetest"
@@ -320,6 +321,36 @@ func TestVolumeDefGitSource_AFailedCloneLeavesNothingAndTheNameIsFree(t *testing
 	// And the name is free: the right credential now succeeds under it.
 	if _, res := f.create(t, f.ctx, "repo", map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": right}, nil); res.IsError {
 		t.Errorf("after the failures the name should be free: %s", res.Text)
+	}
+}
+
+// The same failure under a dynamic root configured through a symlink. The
+// cleanup's fence compares resolved paths, so a cleanup that named its
+// parent by the configured path was refused (logged REFUSED) and removed
+// nothing. A failed fetch removes its own object store, and these failures
+// leave the volume's directory empty for undo, so nothing is left here
+// either way; the refusal is what the test catches.
+func TestVolumeDefGitSource_AFailedCloneUnderASymlinkedRootLeavesNothing(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	f := newGitSourceFixture(t, true)
+	link := filepath.Join(t.TempDir(), "dynamic-root-link")
+	if err := os.Symlink(f.root, link); err != nil {
+		t.Fatal(err)
+	}
+	f.tool.Cfg.Volumes["pool"] = config.Volume{Path: link, Mode: "rw", DynamicRoot: true}
+	right := f.credential(t, "repo", gitTestToken, &[]string{f.repo.URL})
+
+	// Over the byte limit: the clone has written files before it fails, so
+	// only the cleanup's fenced delete can remove them.
+	tiny := map[string]any{"url": f.repo.URL, "commit": f.repo.Head, "credential": right, "max_bytes": 300}
+	if _, res := f.create(t, f.ctx, "repo", tiny, nil); !res.IsError || !strings.Contains(res.Text, "source_too_large") {
+		t.Fatalf("over max_bytes: %q, want source_too_large", res.Text)
+	}
+	f.assertNothingLeft(t, "repo")
+	if strings.Contains(logs.String(), "REFUSED") {
+		t.Errorf("the fence refused the create's own cleanup:\n%s", logs.String())
 	}
 }
 
