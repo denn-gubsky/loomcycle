@@ -514,6 +514,8 @@ interface AgentDefBody {
   history_scope?: string[];
   evaluation_scopes?: string[];
   crypto_scopes?: string[];
+  // RFC EW: absent = every credential the operator lists; [] = none.
+  shell_credentials?: string[];
   volumes?: string[];
   agent_def_scopes?: string[];
   schedule_def_scopes?: string[];
@@ -604,6 +606,7 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     ["history_scope", body.history_scope],
     ["evaluation_scopes", body.evaluation_scopes],
     ["crypto_scopes", body.crypto_scopes],
+    ["shell_credentials", body.shell_credentials],
     ["volumes", body.volumes],
     ["agent_def_scopes", body.agent_def_scopes],
     ["schedule_def_scopes", body.schedule_def_scopes],
@@ -620,6 +623,9 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     // The state worth showing is the lock, which is the field being false.
     ["allow_overrides: false", body.allow_overrides === false],
     ["retention: none", body.retention === "none"],
+    // An empty shell_credentials is the narrowest setting, and an empty list
+    // would not render as a gate, so it is shown as a flag.
+    ["shell_credentials: none", Array.isArray(body.shell_credentials) && body.shell_credentials.length === 0],
   ];
   const shownGates = scopeGates.filter(([, v]) => v && v.length > 0);
   const shownFlags = flags.filter(([, v]) => v === true);

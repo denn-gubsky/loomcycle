@@ -20,7 +20,7 @@ const AGENTDEF_OVERLAY_KEYS = [
   "output_format", "provider", "providers", "recall_attach_traces", "recall_include_turns",
   "retention", "retry_attempts", "routing",
   "run_timeout_seconds", "sampling",
-  "schedule_def_scopes", "search_providers", "skills", "sql_quota_bytes",
+  "schedule_def_scopes", "search_providers", "shell_credentials", "skills", "sql_quota_bytes",
   "sql_scopes", "system_prompt", "system_prompt_base", "tier", "tool_choice", "tool_hooks", "tools",
   "unbounded_iterations", "volume_def_scopes", "volumes",
 ] as const;
