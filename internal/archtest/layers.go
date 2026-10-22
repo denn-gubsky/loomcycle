@@ -83,6 +83,7 @@ var layers = []layer{
 			"internal/procgroup",
 			"internal/recipes",
 			"internal/redact",
+			"internal/runident",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
@@ -300,7 +301,6 @@ const (
 	cutConfig      = "config's validators move down to config's layer (config hub)"
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
 	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
-	cutRunIdentity = "run identity moves below tools"
 )
 
 // knownViolation is one wrong-way import that exists today, as an exact
@@ -334,7 +334,4 @@ var knownViolations = []knownViolation{
 	{"internal/memory/unitgen", "internal/providerbuild", cutMemWiring},
 
 	// tools.RunIdentity / tools.RunID.
-	{"internal/docremote", "internal/tools", cutRunIdentity},
-	{"internal/memory/backends/inprocess", "internal/tools", cutRunIdentity},
-	{"internal/memory/backends/remote", "internal/tools", cutRunIdentity},
 }
