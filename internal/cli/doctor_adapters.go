@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
 )
 
 // doctor_adapters.go — narrow wrappers around config.Config so the
@@ -52,6 +53,35 @@ func (r *realConfig) AWSAuthProviders() map[string]AWSAuthProvider {
 		}
 	}
 	return out
+}
+
+// Embedder builds the embedder the server would (no network: a Bedrock
+// embedder's credentials are fetched on its first call) to report its width.
+func (r *realConfig) Embedder() (*DoctorEmbedder, error) {
+	ec := r.cfg.Memory.Embedder
+	if ec.Provider == "" && ec.Model == "" {
+		return nil, nil
+	}
+	provider, model, err := r.cfg.ExpandServiceModel("memory.embedder", ec.Provider, ec.Model)
+	if err != nil {
+		return nil, err
+	}
+	key, err := r.cfg.EmbedderKey(provider)
+	if err != nil {
+		return nil, err
+	}
+	e, err := embedders.Build(r.cfg)
+	if err != nil {
+		return nil, err
+	}
+	if e == nil {
+		return nil, nil
+	}
+	out := &DoctorEmbedder{Provider: provider, Key: key, Model: model, Dimension: e.Dimension()}
+	if pc := r.cfg.Providers[provider]; key == config.EmbedderAPIBedrock && pc.Auth != nil {
+		out.AWS = &AWSAuthProvider{BaseURL: pc.BaseURL, Auth: *pc.Auth}
+	}
+	return out, nil
 }
 
 func (r *realConfig) TokenHasher() (auth.TokenHasher, error) { return r.cfg.Env.TokenHasher() }

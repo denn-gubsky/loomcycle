@@ -31,6 +31,14 @@ func embedderKeyCfg(api string) *Config {
 			Auth: &ProviderAuth{Type: ProviderAuthSigV4, Region: "eu-central-1"}},
 		"bedrock-openai": {Driver: "openai", BaseURL: "https://bedrock-runtime.eu-central-1.amazonaws.com/openai/v1",
 			Auth: &ProviderAuth{Type: ProviderAuthSigV4, Region: "eu-central-1"}},
+		"bedrock-token": {Driver: "anthropic", BaseURL: "https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic",
+			Auth: &ProviderAuth{Type: ProviderAuthBedrockToken, Region: "eu-central-1"}},
+		"bedrock-mantle": {Driver: "openai", BaseURL: "https://bedrock-mantle.eu-central-1.api.aws/v1",
+			Auth: &ProviderAuth{Type: ProviderAuthSigV4, Region: "eu-central-1"}},
+		"signed-gateway": {Driver: "openai", BaseURL: "https://gateway.eu-central-1.example/v1",
+			Auth: &ProviderAuth{Type: ProviderAuthSigV4, Region: "eu-central-1", Service: "execute-api"}},
+		"bedrock-odd-service": {Driver: "anthropic", BaseURL: "https://bedrock-runtime.eu-central-1.amazonaws.com/anthropic",
+			Auth: &ProviderAuth{Type: ProviderAuthSigV4, Region: "eu-central-1", Service: "bedrock-mantle"}},
 	}}
 	c.Memory.Embedder.API = api
 	return c
@@ -53,6 +61,11 @@ func TestEmbedderKey_ResolvesEachProviderToItsConstructor(t *testing.T) {
 		// An explicit api wins over the id and the driver.
 		{"api over a custom driver", "openai", "my-gemini", "openai"},
 		{"api over a built-in id", "ollama", "ollama-local", "ollama"},
+		// RFC EV P2: Bedrock InvokeModel over either AWS-authenticated
+		// runtime provider, whatever its chat route.
+		{"bedrock over the anthropic route", "bedrock", "bedrock-claude", "bedrock"},
+		{"bedrock over the openai route", "bedrock", "bedrock-openai", "bedrock"},
+		{"bedrock over a minted-key provider", "bedrock", "bedrock-token", "bedrock"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := embedderKeyCfg(tc.api).EmbedderKey(tc.provider)
@@ -85,10 +98,14 @@ func TestEmbedderKey_RefusesWhatNoEmbedderServes(t *testing.T) {
 		{"auth provider, anthropic driver", "", "bedrock-claude", []string{"api: bedrock"}},
 		{"auth provider, openai driver", "", "bedrock-openai", []string{"api: bedrock"}},
 		{"auth provider, another api", "openai", "bedrock-openai", []string{"api: bedrock"}},
-		// api must name a registered embedder. RFC EV P2 registers bedrock;
-		// its case then moves to the accept table.
+		// api must name a registered embedder.
 		{"unknown api", "cohere", "openai", []string{"memory.embedder.api", `"cohere"`, "ollama-local"}},
-		{"bedrock before it is registered", "bedrock", "bedrock-claude", []string{"memory.embedder.api", `"bedrock"`}},
+		// api: bedrock speaks only to an AWS-authenticated runtime host.
+		{"bedrock over a provider without auth", "bedrock", "openai", []string{"api: bedrock", `"openai"`, "auth:"}},
+		{"bedrock over an undeclared provider", "bedrock", "nowhere", []string{"api: bedrock", `"nowhere"`}},
+		{"bedrock over mantle", "bedrock", "bedrock-mantle", []string{"bedrock-mantle", "bedrock-runtime"}},
+		{"bedrock over another signed host", "bedrock", "signed-gateway", []string{"bedrock-runtime.eu-central-1.amazonaws.com"}},
+		{"bedrock with another signing service", "bedrock", "bedrock-odd-service", []string{"auth.service", `"bedrock"`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := embedderKeyCfg(tc.api).EmbedderKey(tc.provider)
@@ -174,5 +191,72 @@ memory:
 	_, err := Load(writeCfg(t, body("7")))
 	if err == nil || !strings.Contains(err.Error(), "dimensions 7 is not one of 0, 8") || !strings.Contains(err.Error(), "memory.embedder") {
 		t.Fatalf("Load = %v, want the validator's refusal under memory.embedder", err)
+	}
+}
+
+// rfcEVConfig is RFC EV §4's example, on a provider the way the bedrock preset
+// declares it, with extra lines appended to the embedder block.
+func rfcEVConfig(model string, embedderLines string) string {
+	return `
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+providers:
+  bedrock-claude: { driver: anthropic, ` + bedrockRuntimeAuth + ` }
+  bedrock-mantle: { driver: openai, base_url: "https://bedrock-mantle.eu-central-1.api.aws/v1", auth: {type: aws_sigv4, region: eu-central-1} }
+models:
+  cohere-embed: { provider: bedrock-claude, model: ` + model + `, kind: embedder }
+  mantle-embed: { provider: bedrock-mantle, model: cohere.embed-v4:0, kind: embedder }
+memory:
+  embedder:
+    api: bedrock
+` + embedderLines
+}
+
+// TestEmbedderConfig_BedrockExampleLoads — RFC EV §4's block loads, v4 through
+// the EU profile and v3 in-region, at each width the model serves.
+func TestEmbedderConfig_BedrockExampleLoads(t *testing.T) {
+	for _, tc := range []struct{ model, dims string }{
+		{"eu.cohere.embed-v4:0", "1024"},
+		{"eu.cohere.embed-v4:0", "0"},
+		{"cohere.embed-v4:0", "256"},
+		{"global.cohere.embed-v4:0", "1536"},
+		{"cohere.embed-multilingual-v3", "1024"},
+		{"cohere.embed-multilingual-v3", "0"},
+	} {
+		cfg, err := Load(writeCfg(t, rfcEVConfig(tc.model, "    model: cohere-embed\n    dimensions: "+tc.dims+"\n")))
+		if err != nil {
+			t.Fatalf("%s/%s: %v", tc.model, tc.dims, err)
+		}
+		if got, err := cfg.EmbedderKey("bedrock-claude"); err != nil || got != EmbedderAPIBedrock {
+			t.Fatalf("EmbedderKey = %q, %v; want bedrock", got, err)
+		}
+	}
+}
+
+// TestEmbedderConfig_BedrockRefusals — what RFC EV §4 refuses at load, each
+// with a message that says what is allowed.
+func TestEmbedderConfig_BedrockRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, lines string
+		want               []string
+	}{
+		{"v4 width", "eu.cohere.embed-v4:0", "    model: cohere-embed\n    dimensions: 1000\n", []string{"memory.embedder", "1000", "256, 512, 1024, 1536"}},
+		{"v3 width", "cohere.embed-multilingual-v3", "    model: cohere-embed\n    dimensions: 512\n", []string{"memory.embedder", "512", "0 or 1024"}},
+		{"not cohere", "amazon.titan-embed-text-v2:0", "    model: cohere-embed\n", []string{"memory.embedder", "cohere.embed-v4:0"}},
+		{"application profile ARN", "\"arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc\"", "    model: cohere-embed\n", []string{"ARN"}},
+		{"mantle", "eu.cohere.embed-v4:0", "    model: mantle-embed\n", []string{"bedrock-mantle", "no embeddings"}},
+		{"base_url override", "eu.cohere.embed-v4:0", "    model: cohere-embed\n    base_url: https://elsewhere.example\n", []string{"memory.embedder.base_url", "api: bedrock"}},
+		{"api_key_env override", "eu.cohere.embed-v4:0", "    model: cohere-embed\n    api_key_env: LOOMCYCLE_SOME_KEY\n", []string{"memory.embedder.api_key_env", "api: bedrock"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeCfg(t, rfcEVConfig(tc.model, tc.lines)))
+			if err == nil {
+				t.Fatal("Load accepted it")
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not mention %s", err, w)
+				}
+			}
+		})
 	}
 }

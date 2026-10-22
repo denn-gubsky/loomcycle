@@ -16,6 +16,7 @@ package embedders
 
 import (
 	"log/slog"
+	"net/url"
 	"os"
 	"time"
 
@@ -96,8 +97,20 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 	}
 
 	var apiKey, baseURL string
+	var auth providers.RequestAuth
 
-	if key == "anthropic" {
+	if key == config.EmbedderAPIBedrock {
+		// Bedrock InvokeModel, signed with the provider's own AWS credentials
+		// (RFC EV). They may go to the provider's host only: the scheme and
+		// host of its base_url, never its chat route (/anthropic,
+		// /openai/v1), and never the block's own base_url or key (config
+		// refuses both with api: bedrock, in EmbedderKey above).
+		base, _, _ := providerbuild.ProviderEndpoint(cfg, provider)
+		if u, err := url.Parse(base); err == nil && u.Scheme != "" && u.Host != "" {
+			baseURL = u.Scheme + "://" + u.Host
+		}
+		auth = providerbuild.EmbedderAuth(cfg, provider)
+	} else if key == "anthropic" {
 		// EXCEPTION — the only provider that does NOT share its chat account.
 		// The `anthropic` embedder slot is a Voyage AI proxy (v0.10.2):
 		// Anthropic has no native embeddings API and points users at Voyage.
@@ -153,10 +166,10 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 	// here; the value never appears in yaml). An empty-valued var is not a
 	// silent fallback to the provider key: naming it is an explicit choice, so
 	// it wins either way.
-	if cfg.Memory.Embedder.BaseURL != "" {
+	if cfg.Memory.Embedder.BaseURL != "" && key != config.EmbedderAPIBedrock {
 		baseURL = cfg.Memory.Embedder.BaseURL
 	}
-	if cfg.Memory.Embedder.APIKeyEnv != "" {
+	if cfg.Memory.Embedder.APIKeyEnv != "" && key != config.EmbedderAPIBedrock {
 		apiKey = os.Getenv(cfg.Memory.Embedder.APIKeyEnv)
 		if apiKey == "" {
 			slog.Warn("memory.embedder: api_key_env is set but empty — the embedder will call unauthenticated",
@@ -180,6 +193,7 @@ func build(cfg *config.Config) (providers.Embedder, string, error) {
 		Dimensions: cfg.Memory.Embedder.Dimensions,
 		Timeout:    time.Duration(timeoutMs) * time.Millisecond,
 		BatchSize:  batchSize,
+		Auth:       auth,
 	})
 	return e, provider, err
 }

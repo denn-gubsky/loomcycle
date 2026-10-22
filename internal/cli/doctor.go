@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -158,6 +159,7 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 
 	checkAWSProviders(r, cfg)
+	checkEmbedder(r, cfg)
 
 	storageDetail, storageOK := checkStorageBackend(cfg)
 	if storageOK {
@@ -367,6 +369,20 @@ type configForDoctor interface {
 	// (Bash, or the Bashbox host-command fallback), which on EC2 can reach
 	// the instance metadata service.
 	HostShellEnabled() bool
+	// Embedder describes the memory embedder the server would build, or nil
+	// when none is configured. An error is what would stop the server at boot.
+	Embedder() (*DoctorEmbedder, error)
+}
+
+// DoctorEmbedder is the configured memory embedder, as doctor reports it.
+type DoctorEmbedder struct {
+	Provider  string // the provider id the block resolved to
+	Key       string // the embedder constructor (memory.embedder.api, or derived)
+	Model     string
+	Dimension int // 0 = learned on the first call (ollama)
+	// AWS is the provider's AWS authentication when the embedder signs with
+	// it (api: bedrock); nil otherwise.
+	AWS *AWSAuthProvider
 }
 
 // AWSAuthProvider is one provider's AWS authentication, as doctor checks it.
@@ -390,6 +406,60 @@ var awsIdentityForDoctor = func(ctx context.Context, p AWSAuthProvider) (account
 		return "", "", "", err
 	}
 	return a.CallerIdentity(ctx)
+}
+
+// awsListModelsForDoctor lists the models a provider's Bedrock host serves,
+// through its AWS credentials. A seam so tests need no AWS.
+var awsListModelsForDoctor = func(ctx context.Context, p AWSAuthProvider) ([]string, error) {
+	ext := ""
+	if p.Auth.ExternalIDEnv != "" {
+		ext = os.Getenv(p.Auth.ExternalIDEnv)
+	}
+	a, err := awsauth.New(ctx, awsauth.Config{
+		Mode: p.Auth.Type, Region: p.Auth.Region, Service: p.Auth.Service, BaseURL: p.BaseURL,
+		Chain: awsauth.ChainOptions{RoleARN: p.Auth.RoleARN, ExternalID: ext, SessionName: p.Auth.SessionName},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return a.ListModels(ctx)
+}
+
+// checkEmbedder reports the memory embedder (RFC EV §5.5). A Bedrock one signs
+// with its provider's AWS credentials, which checkAWSProviders reports, so
+// here only the model is checked: listed in the region, or a warning (a wrong
+// id, a model the region does not serve, or no access to it).
+func checkEmbedder(r *doctorRun, cfg configForDoctor) {
+	const label = "Embedder"
+	e, err := cfg.Embedder()
+	if err != nil {
+		r.fail(label, err.Error()+" (the server exits at boot on this)")
+		return
+	}
+	if e == nil {
+		return
+	}
+	dim := fmt.Sprintf("%d dimensions", e.Dimension)
+	if e.Dimension == 0 {
+		dim = "dimension learned on the first call"
+	}
+	detail := fmt.Sprintf("%s via the %s embedder, model %s, %s", e.Provider, e.Key, e.Model, dim)
+	if e.AWS == nil {
+		r.pass(label, detail)
+		return
+	}
+	detail += fmt.Sprintf("; signs with provider %s's AWS credentials (reported above)", e.Provider)
+	ctx, cancel := timeoutContext(10 * time.Second)
+	ids, err := awsListModelsForDoctor(ctx, *e.AWS)
+	cancel()
+	switch {
+	case err != nil:
+		r.warn(label, fmt.Sprintf("%s; could not list the models in %s to check the model: %v", detail, e.AWS.Auth.Region, err))
+	case !slices.Contains(ids, e.Model):
+		r.warn(label, fmt.Sprintf("%s; %s is not listed in %s: check the model id, the region, and that the account has access to it", detail, e.Model, e.AWS.Auth.Region))
+	default:
+		r.pass(label, fmt.Sprintf("%s; listed in %s", detail, e.AWS.Auth.Region))
+	}
 }
 
 // checkAWSProviders reports, for each provider that authenticates with AWS

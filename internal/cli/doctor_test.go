@@ -34,7 +34,11 @@ type stubConfig struct {
 	allowOpen      bool
 	principals     int
 	loginable      int
+	embedder       *DoctorEmbedder
+	embedderErr    error
 }
+
+func (s *stubConfig) Embedder() (*DoctorEmbedder, error) { return s.embedder, s.embedderErr }
 
 func (s *stubConfig) TokenHasher() (auth.TokenHasher, error) { return s.tokenEnv.TokenHasher() }
 

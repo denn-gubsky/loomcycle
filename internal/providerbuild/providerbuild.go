@@ -181,6 +181,21 @@ func awsRequestAuth(id string, pc config.ProviderConfig, baseURL string, sink fu
 	return ra
 }
 
+// EmbedderAuth is the AWS authentication of provider id for its memory
+// embedder (RFC EV: memory.embedder.api: bedrock), or nil when the provider
+// declares no auth: block. It is built exactly as the provider's own: lazy (no
+// network at build), every secret to cfg.SecretSink, and a chain that cannot
+// be configured fails each call instead of the build, because the server
+// treats an embedder construction error as fatal at boot. The caller sends it
+// only to the provider's own host.
+func EmbedderAuth(cfg *config.Config, id string) providers.RequestAuth {
+	pc, ok := cfg.Providers[id]
+	if !ok || pc.Auth == nil {
+		return nil
+	}
+	return awsRequestAuth(id, pc, resolveBaseURL(id, pc, cfg), cfg.SecretSink)
+}
+
 // unavailableAuth is the auth of a provider whose credential chain could not
 // be configured: every call fails with the reason.
 type unavailableAuth struct{ err error }

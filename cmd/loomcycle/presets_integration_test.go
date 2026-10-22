@@ -683,3 +683,56 @@ func TestEmbedded_BedrockPreset(t *testing.T) {
 		t.Errorf("without a region: err = %v", err)
 	}
 }
+
+// TestEmbedded_BedrockPresetEmbedderExampleLoads — the commented embedder
+// example in the bedrock preset (RFC EV), uncommented and stacked on
+// base,bedrock, loads and resolves to the Bedrock embedder: the example an
+// operator copies cannot rot.
+func TestEmbedded_BedrockPresetEmbedderExampleLoads(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	setPresetEnv(t)
+	var preset []byte
+	for _, u := range embedded.Units() {
+		if u.Name == "bedrock" {
+			preset = u.Data
+		}
+	}
+	if preset == nil {
+		t.Fatal("no bedrock preset")
+	}
+	// The example is the commented block after "# EMBEDDINGS", from its
+	// "# models:" line to the next bare "#".
+	_, section, ok := strings.Cut(string(preset), "# EMBEDDINGS")
+	if !ok {
+		t.Fatal("the bedrock preset has no EMBEDDINGS section")
+	}
+	var example []string
+	in := false
+	for _, line := range strings.Split(section, "\n") {
+		if strings.HasPrefix(line, "# models:") {
+			in = true
+		}
+		if !in {
+			continue
+		}
+		if strings.TrimSpace(line) == "#" {
+			break
+		}
+		example = append(example, strings.TrimPrefix(strings.TrimPrefix(line, "#"), " "))
+	}
+	body := strings.Join(example, "\n")
+	if !strings.Contains(body, "eu.cohere.embed-v4:0") || !strings.Contains(body, "api: bedrock") {
+		t.Fatalf("did not find the embedder example in the preset; got:\n%s", body)
+	}
+	layers := append(bootStackFor(t, "base", "bedrock"), config.Layer{Name: "example", Data: []byte(body)})
+	cfg, err := config.LoadLayers(layers...)
+	if err != nil {
+		t.Fatalf("the preset's embedder example does not load: %v\n%s", err, body)
+	}
+	if key, err := cfg.EmbedderKey("bedrock-claude"); err != nil || key != config.EmbedderAPIBedrock {
+		t.Fatalf("EmbedderKey = %q, %v; want bedrock", key, err)
+	}
+	if cfg.Memory.Embedder.Dimensions != 1024 {
+		t.Errorf("dimensions = %d, want the example's 1024", cfg.Memory.Embedder.Dimensions)
+	}
+}

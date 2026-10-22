@@ -333,6 +333,71 @@ For sensitive data, name the geography you need; the `bedrock` preset never pick
 | `… 403 … not authorized to perform: bedrock:InvokeModel` (`401` on runtime's OpenAI route) | The role may not invoke that model or profile. Permanent. |
 | `(SigV4 signature refused: check this server's clock and that auth.region …)` | Clock skew, or a `region` / `service` that does not match the host. |
 
+### Embeddings
+
+The same credentials can serve `memory.embedder`. Bedrock serves embeddings through InvokeModel on the runtime host only, and `api: bedrock` makes the embedder speak it to the provider it names. Supported: Cohere Embed v4 and Cohere Embed v3 (multilingual and English).
+
+```yaml
+models:
+  cohere-embed: { provider: bedrock-claude, model: eu.cohere.embed-v4:0, kind: embedder }
+memory:
+  embedder:
+    model: cohere-embed
+    api: bedrock
+    dimensions: 1024
+```
+
+- **The provider** is any `auth:` provider on `https://bedrock-runtime.<region>.amazonaws.com`, whatever its chat route (`/anthropic` or `/openai/v1`): the embedder uses the host only. `bedrock-mantle` serves no embeddings and is refused. `aws_sigv4` and `aws_bedrock_token` both work.
+- **`api: bedrock` is required** on an `auth:` provider. Without it the config is refused: no other embedder speaks AWS authentication.
+- **No endpoint or key of its own.** `memory.embedder.base_url` and `api_key_env` are refused with `api: bedrock`, so the credentials go only to the provider's own host.
+- **Queries and stored text.** Stored text is embedded as `search_document` and searches as `search_query` (TOOLS.md → "Vector / semantic search").
+- **Calls.** At most 96 texts per call (`batch_size` lowers it). A throttle (429), a model timeout (408) and a 500 or 503 are tried up to 3 times within `timeout_ms`; other errors are not retried. An error names the model, the region, the status and AWS's message, never the texts.
+- **Billing.** Embeddings always use the operator's AWS credentials (a tenant's `AWS_BEARER_TOKEN_BEDROCK` does not apply) and, as for every embedder, are not recorded in the usage ledger.
+
+**Model ids and regions.**
+
+| Model | id | Where it is served | Where text is processed |
+|---|---|---|---|
+| Cohere Embed v4 | `eu.cohere.embed-v4:0` (or `us.`, `apac.`, …) | through a geographic profile | any destination region of the profile; `eu.` today: eu-central-1, eu-north-1, eu-south-1, eu-south-2, eu-west-1, eu-west-3 |
+| Cohere Embed v4 | `global.cohere.embed-v4:0` | any commercial region | anywhere, outside your geography too |
+| Cohere Embed v4 | `cohere.embed-v4:0` | in-region where Bedrock serves it (not eu-central-1) | that region |
+| Cohere Embed Multilingual v3 | `cohere.embed-multilingual-v3` | in-region, eu-central-1 included | that region |
+| Cohere Embed English v3 | `cohere.embed-english-v3` | in-region | that region |
+
+Prefer `eu.cohere.embed-v4:0` (or your geography's profile) for v4, and never `global.` for data with residency rules. Where text must stay in the calling region, use `cohere.embed-multilingual-v3`. Destination regions change: check AWS's inference-profile list. An application inference-profile ARN is refused, because its model cannot be read from the id.
+
+**Dimensions.**
+
+| Model | `dimensions` | Width stored |
+|---|---|---|
+| Cohere Embed v4 | `0` (default), `256`, `512`, `1024`, `1536` | 1536 for `0`, else the value |
+| Cohere Embed v3 | `0` or `1024` | 1024 (fixed) |
+
+Any other value is refused at load. pgvector indexes at most 2000 dimensions, and every Cohere width is under that.
+
+**IAM.** A geographic profile is invoked in the calling region and served in any of its destination regions, so the role needs `bedrock:InvokeModel` on the profile ARN **and** on the foundation model in every destination region. Allowing `cohere.embed-*` by name is not enough:
+
+```json
+{
+  "Sid": "EmbedWithCohere",
+  "Effect": "Allow",
+  "Action": "bedrock:InvokeModel",
+  "Resource": [
+    "arn:aws:bedrock:eu-central-1:123456789012:inference-profile/eu.cohere.embed-v4:0",
+    "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0"
+  ]
+}
+```
+
+For v3 in the region: `arn:aws:bedrock:eu-central-1::foundation-model/cohere.embed-multilingual-v3`. `loomcycle doctor` prints the embedder (provider, model, width) and warns when the region does not list the model id; it uses the list permissions above.
+
+**Switching embedders.** Vectors from different models (or widths) are not comparable, and the similarity bands are a property of the model. After switching:
+
+1. On a populated store, `POST /v1/_memory/reembed` (also after changing `dimensions`).
+2. `loomcycle memory-calibrate`, then set `memory.consolidation.merge_threshold` and `related_threshold` from its output.
+
+A store with no vectors yet needs only step 2.
+
 ## `anthropic-oauth-dev` — Anthropic subscription billing (research/dev only)
 
 > ### ⚠ NO GUARANTEES — READ BEFORE ENABLING

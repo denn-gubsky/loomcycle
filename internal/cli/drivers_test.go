@@ -9,6 +9,7 @@ package cli
 // blank imports mirror the default-providers.yaml driver set exactly.
 import (
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/bedrock"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
