@@ -26,8 +26,9 @@ LOOMCYCLE_SECRET_KEY=$(openssl rand -base64 32)   # 32 bytes, base64
   the token-hash pepper is derived from this key, so removing it logs out every
   operator token, and `LOOMCYCLE_SECRET_KEY_PREVIOUS` must stay until every
   token has logged in once under the new key (each is rehashed at that login).
-  Tokens minted before the key was set are rewrapped under it when the server
-  starts. See CONFIGURATION.md, "Token pepper".
+  Tokens minted with no pepper (before v1.119.0, or before the key was set)
+  are refused until you review them and rewrap the ones you minted with
+  `loomcycle tokens rewrap`. See CONFIGURATION.md, "Token pepper".
 - **A stored credential that can't be decrypted is never replaced.** If the key
   is removed, rotated without `LOOMCYCLE_SECRET_KEY_PREVIOUS`, or wrong — or a
   row is corrupt — every credential stored under it is *held but unusable*,

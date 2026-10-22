@@ -84,6 +84,11 @@ func dispatchSubcommand() (mcpMode, done bool) {
 			// RFC L — mint / rotate / retire / show / list auth tokens
 			// against the running instance's admin endpoint.
 			os.Exit(cli.RunOperatorToken(os.Args[2:], os.Stdout, os.Stderr))
+		case "tokens":
+			// RFC ES C2 — `tokens rewrap`: move tokens minted before the
+			// derived pepper onto it. Opens the store directly, like the
+			// server, so it is dispatched here rather than in internal/cli.
+			os.Exit(runTokens(os.Args[2:], os.Stdout, os.Stderr))
 		// v0.8.17 runtime admin subcommands. Each is a thin HTTP
 		// client to the corresponding /v1/_pause / _resume / _state /
 		// _snapshots endpoint on the running instance addressed by

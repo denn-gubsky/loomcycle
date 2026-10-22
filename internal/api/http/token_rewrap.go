@@ -2,58 +2,60 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"log"
 	"sort"
+	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// RFC ES #6 / F3 — moving tokens minted before the derived pepper onto it.
+// RFC ES #6 / F3 / C2 — moving tokens minted before the derived pepper onto it.
 //
 // A row minted with no pepper carries the unpeppered hash, which anyone who
 // can write the database can compute for a token of their choosing. So such
-// a row is never accepted as it is. Instead, at boot under a derived pepper
-// and before serving, every such row is WRAPPED: its stored hash h becomes
+// a row is never accepted as it is. The operator moves the genuine ones onto
+// the pepper with `loomcycle tokens rewrap`: the stored hash h becomes
 // w1 = HMAC(pepper, h) (auth.TokenHasher), which a lookup recomputes from the
 // presented token. The token keeps working; the database stops holding
 // anything a writer could have computed.
 //
-// Which untagged rows are genuine: only those present at the FIRST boot under
-// a derived pepper. Every mint there writes a tagged hash and the rewrap
-// leaves none untagged, so a later untagged row was not written by such a
-// server. Two things record that the first boot happened, and the rewrap runs
-// only when neither is there:
+// Why a command the operator confirms row by row, not a pass at boot (C2):
+// nothing in a row says whether a server wrote it before the pepper existed
+// or a database writer wrote it since. A boot-time pass had to infer that
+// from database state (a marker row, the tagged rows), which a writer could
+// delete and have the next restart rewrap a row of their own. A command that
+// rewrapped every unpeppered row would only move the wait: insert, then wait
+// for the operator to run it. So the command lists the rows first and writes
+// only the ones the operator names — by def_id, or by a digest of the exact
+// (def_id, token_hash) set it listed, which refuses if any row was added or
+// changed since. Boot only reports. Nothing a database writer does makes
+// loomcycle rewrap a row nobody named.
 //
-//   - a tagged row (any form, any key) in the token table;
-//   - a marker row the first boot writes, so a table with no token rows yet
-//     (a deployment using only LOOMCYCLE_AUTH_TOKEN or config principals)
-//     is covered too (store.SystemMarkerGet).
-//
-// An untagged row otherwise is refused, never rewrapped — at this boot and at
-// every later one, which a per-boot allow-list of rows could not promise.
-//
-// The residual: a database writer who deletes the marker row (and every
-// tagged token row, if any exist), then writes an unpeppered row and waits
-// for a restart, has it rewrapped. On a deployment with no token rows — only
-// LOOMCYCLE_AUTH_TOKEN or config principals — that is one deleted row and
-// nobody is logged out. A writer limited to inserting rows cannot. No marker in the database can do better: absence of a row is
-// not something a database writer can be kept from causing, so sealing the
-// marker would add nothing — a forged marker only stops a rewrap.
+// What it cannot tell: a named row whose hash a writer replaced — before the
+// review, or, when named by def_id, before the write. The listing shows what
+// a row grants, not whose token it holds; that limit is documented.
 //
 // Rows under the PREVIOUS secret key's pepper cannot be rewrapped without
 // the token, so they move onto the current form at their next login, as
 // wrapped rows do.
 
-// TokenRewrapReport is what the boot rewrap found and did.
-type TokenRewrapReport struct {
-	// Rewrapped are the def_ids moved from an unpeppered hash onto the
-	// wrapped form at this boot (by this replica or one booting beside it),
-	// sorted. Not secret; listed so an operator can spot a row they never
-	// minted.
-	Rewrapped []string
-	// Wrapped counts rows on the wrapped form after the pass, Rewrapped
-	// included. Each moves to the current form at its next login.
+// TokenHashReport is what a scan of the token table found, read against a
+// derived pepper.
+type TokenHashReport struct {
+	// Untagged are the def_ids of rows on an unpeppered hash (or one under an
+	// explicit pepper since removed), sorted. Not secret; listed so an
+	// operator can spot a row they never minted. They cannot authenticate
+	// until rewrapped.
+	Untagged []string
+	// Wrapped counts rows on the wrapped form. Each moves to the current form
+	// at its next login.
 	Wrapped int
 	// Previous counts rows under the pepper LOOMCYCLE_SECRET_KEY_PREVIOUS
 	// derives. Each moves to the current form at its next login.
@@ -61,52 +63,28 @@ type TokenRewrapReport struct {
 	// OtherKey counts rows under a pepper neither secret key derives. They
 	// cannot authenticate.
 	OtherKey int
-	// Refused are the def_ids of unpeppered rows left alone because an
-	// earlier boot already ran under a derived pepper, sorted. They cannot
-	// authenticate.
-	Refused []string
 }
 
-// RewrapLegacyTokenRows wraps every unpeppered token row under the derived
-// pepper, if no earlier boot under a derived pepper happened. Call once at boot,
-// before serving. A no-op under an explicit pepper (its untagged rows are
-// current) and with no pepper. On an error nothing is rewrapped: the rows stay
-// unpeppered and cannot authenticate until a later boot rewraps them.
-func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, error) {
-	h, err := s.hasher()
+// scanTokenHashes reads every token row and sorts it by form under h,
+// returning the untagged rows themselves for a rewrap. The table has no
+// list-all; names then rows per name.
+func scanTokenHashes(ctx context.Context, st store.Store, h auth.TokenHasher) (TokenHashReport, []store.OperatorTokenDefRow, error) {
+	names, err := st.OperatorTokenDefListNames(ctx)
 	if err != nil {
-		return TokenRewrapReport{}, err
+		return TokenHashReport{}, nil, err
 	}
-	if s.store == nil || h.Source() != auth.PepperDerived {
-		s.wrappedTokens.Store(false)
-		return TokenRewrapReport{}, nil
-	}
-	// Until the pass knows better a wrapped row may exist, so an error below
-	// leaves the lookup trying the wrapped form. Trying it is always safe:
-	// it needs the pepper to forge.
-	s.wrappedTokens.Store(true)
-	// The table has no list-all; names then rows per name, once, at boot.
-	names, err := s.store.OperatorTokenDefListNames(ctx)
-	if err != nil {
-		return TokenRewrapReport{}, err
-	}
-	marked, err := s.store.SystemMarkerGet(ctx, tokenRewrapMarker)
-	if err != nil {
-		return TokenRewrapReport{}, err
-	}
-	var rep TokenRewrapReport
+	var rep TokenHashReport
 	var untagged []store.OperatorTokenDefRow
-	tagged := false
 	for _, n := range names {
-		rows, err := s.store.OperatorTokenDefListByName(ctx, n.Name)
+		rows, err := st.OperatorTokenDefListByName(ctx, n.Name)
 		if err != nil {
-			return TokenRewrapReport{}, err
+			return TokenHashReport{}, nil, err
 		}
 		for _, r := range rows {
 			switch h.Form(r.TokenHash) {
 			case auth.FormUntagged:
 				untagged = append(untagged, r)
-				continue
+				rep.Untagged = append(rep.Untagged, r.DefID)
 			case auth.FormWrapped:
 				rep.Wrapped++
 			case auth.FormPrevious:
@@ -114,47 +92,177 @@ func (s *Server) RewrapLegacyTokenRows(ctx context.Context) (TokenRewrapReport, 
 			case auth.FormOtherKey:
 				rep.OtherKey++
 			}
-			tagged = true
 		}
 	}
-	ids := make([]string, 0, len(untagged))
-	for _, r := range untagged {
-		ids = append(ids, r.DefID)
+	sort.Strings(rep.Untagged)
+	return rep, untagged, nil
+}
+
+// ReportTokenHashes is the boot check under a derived pepper: it counts the
+// token rows on each older form for the boot log, and changes nothing. Call
+// once at boot, before serving. A no-op under an explicit pepper (its
+// untagged rows are current) and with no pepper.
+func (s *Server) ReportTokenHashes(ctx context.Context) (TokenHashReport, error) {
+	h, err := s.hasher()
+	if err != nil {
+		return TokenHashReport{}, err
 	}
-	sort.Strings(ids)
-	switch {
-	case len(untagged) == 0:
-	case tagged || marked:
-		rep.Refused = ids
-	default:
-		ops := make([]store.OperatorTokenRehashOp, 0, len(untagged))
-		for _, r := range untagged {
-			ops = append(ops, store.OperatorTokenRehashOp{DefID: r.DefID, OldHash: r.TokenHash, NewHash: h.Wrap(r.TokenHash)})
-		}
-		// One transaction: a pass stopped part-way would leave a table that
-		// reads as already on the derived pepper, with the rest stranded.
-		// Each op is a compare-and-set, so a replica booting beside this one
-		// changes nothing the other already did.
-		if _, err := s.store.OperatorTokenRehashAll(ctx, ops); err != nil {
-			return TokenRewrapReport{}, err
-		}
-		rep.Rewrapped = ids
-		rep.Wrapped += len(ids)
+	if s.store == nil || h.Source() != auth.PepperDerived {
+		s.wrappedTokens.Store(false)
+		return TokenHashReport{}, nil
 	}
-	if !marked {
-		// After the rewrap committed: a marker without it would strand the
-		// rows. Failing here leaves only the tagged rows as the record.
-		if err := s.store.SystemMarkerSet(ctx, tokenRewrapMarker); err != nil {
-			log.Printf("auth: WARNING: recording the token-hash rewrap failed (retried at the next boot; until then only the tagged token rows keep a later unpeppered row from being rewrapped): %v", err)
-		}
+	// Until the scan knows better a wrapped row may exist, so an error below
+	// leaves the lookup trying the wrapped form. Trying it is always safe:
+	// it needs the pepper to forge.
+	s.wrappedTokens.Store(true)
+	rep, _, err := scanTokenHashes(ctx, s.store, h)
+	if err != nil {
+		return TokenHashReport{}, err
 	}
-	s.wrappedTokens.Store(rep.Wrapped > 0)
+	// An untagged row counts too: the rewrap command may move it onto the
+	// wrapped form while this server runs, and its token should then log in
+	// without a restart.
+	s.wrappedTokens.Store(rep.Wrapped > 0 || len(rep.Untagged) > 0)
 	return rep, nil
 }
 
-// tokenRewrapMarker names the system marker the first derived-pepper boot
-// records (store.SystemMarkerGet).
-const tokenRewrapMarker = "operator-token-rewrap"
+// ListUntaggedTokenRows is the review half of `loomcycle tokens rewrap`: the
+// scan of the token table under h's derived pepper, with the unpeppered rows
+// themselves (sorted by def_id) for the operator to inspect. Refused unless
+// the pepper is derived: under an explicit pepper the untagged rows are
+// current, and with no pepper there is nothing to wrap under.
+func ListUntaggedTokenRows(ctx context.Context, st store.Store, h auth.TokenHasher) (TokenHashReport, []store.OperatorTokenDefRow, error) {
+	if h.Source() != auth.PepperDerived {
+		return TokenHashReport{}, nil, fmt.Errorf("token pepper is %s, not derived: there is nothing to rewrap under", h.Source())
+	}
+	rep, rows, err := scanTokenHashes(ctx, st, h)
+	if err != nil {
+		return TokenHashReport{}, nil, err
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].DefID < rows[j].DefID })
+	return rep, rows, nil
+}
+
+// UntaggedTokenSetDigest names an exact set of unpeppered rows: hex SHA-256
+// over each (def_id, token_hash), sorted by def_id. The review prints it;
+// confirming with it rewraps that set and nothing else — a row added, or a
+// listed row's hash changed, since the review gives a different digest.
+// The stored hashes are unpeppered SHA-256 of tokens; the digest reveals
+// nothing about them a database reader does not already have.
+func UntaggedTokenSetDigest(rows []store.OperatorTokenDefRow) string {
+	sorted := append([]store.OperatorTokenDefRow(nil), rows...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].DefID < sorted[j].DefID })
+	d := sha256.New()
+	d.Write([]byte("loomcycle/token-rewrap-set/v1\n"))
+	for _, r := range sorted {
+		d.Write([]byte(r.DefID + "\x00" + r.TokenHash + "\n"))
+	}
+	return hex.EncodeToString(d.Sum(nil))
+}
+
+// SuspiciousTokenRow reports whether any of a row's identifying fields holds
+// a character that is not printable (a control character such as ESC or a
+// newline, a format character such as a bidi override) or is not valid
+// UTF-8. Such a row can redraw an operator's terminal to hide itself or fake
+// another row in the review, and no mint writes one, so it is never
+// rewrapped.
+func SuspiciousTokenRow(r store.OperatorTokenDefRow) bool {
+	fields := append([]string{r.DefID, r.Name, r.TenantID, r.Subject}, r.AllowedScopes...)
+	for _, f := range fields {
+		if !utf8.ValidString(f) {
+			return true
+		}
+		for _, c := range f {
+			if !unicode.IsPrint(c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SelectUntaggedTokenRows picks the rows the operator confirmed from the
+// current unpeppered rows: exactly the named def_ids, or, with digest, the
+// whole set if it still digests to what the review printed. Exactly one of
+// the two must be given. Any named def_id that is not an unpeppered row now,
+// or a digest that does not match, refuses the selection outright, as does
+// any selected row that is suspicious (SuspiciousTokenRow): retire it.
+func SelectUntaggedTokenRows(rows []store.OperatorTokenDefRow, defIDs []string, digest string) ([]store.OperatorTokenDefRow, error) {
+	picked, err := selectUntaggedTokenRows(rows, defIDs, digest)
+	if err != nil {
+		return nil, err
+	}
+	var suspicious []string
+	for _, r := range picked {
+		if SuspiciousTokenRow(r) {
+			suspicious = append(suspicious, strconv.Quote(r.DefID))
+		}
+	}
+	if len(suspicious) > 0 {
+		return nil, fmt.Errorf("refusing to rewrap a row whose fields hold control or non-printable characters, which no mint writes: %s; retire it", strings.Join(suspicious, ", "))
+	}
+	return picked, nil
+}
+
+func selectUntaggedTokenRows(rows []store.OperatorTokenDefRow, defIDs []string, digest string) ([]store.OperatorTokenDefRow, error) {
+	switch {
+	case len(defIDs) > 0 && digest != "":
+		return nil, fmt.Errorf("name rows by def_id or by digest, not both")
+	case digest != "":
+		// The new digest is deliberately not reported: it would invite
+		// confirming the changed set without looking at it.
+		if UntaggedTokenSetDigest(rows) != digest {
+			return nil, fmt.Errorf("the unpeppered rows no longer match the reviewed set: a row was added or changed since the review; run the review again")
+		}
+		return rows, nil
+	case len(defIDs) > 0:
+		byID := make(map[string]store.OperatorTokenDefRow, len(rows))
+		for _, r := range rows {
+			byID[r.DefID] = r
+		}
+		picked := make([]store.OperatorTokenDefRow, 0, len(defIDs))
+		seen := make(map[string]bool, len(defIDs))
+		var missing []string
+		for _, id := range defIDs {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			r, ok := byID[id]
+			if !ok {
+				missing = append(missing, strconv.Quote(id))
+				continue
+			}
+			picked = append(picked, r)
+		}
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("not an unpeppered token row: %s", strings.Join(missing, ", "))
+		}
+		return picked, nil
+	default:
+		return nil, fmt.Errorf("no rows named")
+	}
+}
+
+// RewrapTokenRows moves exactly the given rows onto the wrapped form under
+// h's derived pepper, in one transaction, and reports how many it moved.
+// Each write is a compare-and-set against the hash the row was listed with,
+// so a row changed since (by another rewrap running at the same time, or a
+// database writer) is left alone rather than wrapped as it now is. Safe
+// beside running servers.
+func RewrapTokenRows(ctx context.Context, st store.Store, h auth.TokenHasher, rows []store.OperatorTokenDefRow) (int, error) {
+	if h.Source() != auth.PepperDerived {
+		return 0, fmt.Errorf("token pepper is %s, not derived: there is nothing to rewrap under", h.Source())
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	ops := make([]store.OperatorTokenRehashOp, 0, len(rows))
+	for _, r := range rows {
+		ops = append(ops, store.OperatorTokenRehashOp{DefID: r.DefID, OldHash: r.TokenHash, NewHash: h.Wrap(r.TokenHash)})
+	}
+	return st.OperatorTokenRehashAll(ctx, ops)
+}
 
 // lookupOlderTokenForm is the miss path of the token lookup under a derived
 // pepper: try the wrapped form and the previous key's forms of bearer, and on

@@ -46,6 +46,13 @@ docker exec loomcycle /usr/local/bin/loomcycle doctor || true
 curl http://127.0.0.1:8787/healthz
 ```
 
+Upgrading with `LOOMCYCLE_SECRET_KEY` set? Operator tokens minted with no pepper
+(by a release before v1.119.0, or while the key was unset) are refused until
+rewrapped: list them with
+`docker exec loomcycle /usr/local/bin/loomcycle tokens rewrap` (writes nothing),
+then rerun with `--def-id <id>` for each one you minted. See `CONFIGURATION.md`,
+"Token pepper".
+
 ## Tags
 
 | Tag | What it points at |

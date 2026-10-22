@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
@@ -12,24 +13,21 @@ import (
 // pre-pepper deployment would otherwise print thousands.
 const tokenRewrapLogMaxIDs = 50
 
-// logTokenRewrap reports, at every boot under a derived pepper, what the
-// token-hash rewrap did (RFC ES F3). The def_ids are listed so a row nobody
-// minted stands out.
-func logTokenRewrap(rep lchttp.TokenRewrapReport) {
-	if len(rep.Rewrapped) > 0 {
-		// An untagged row may also be from an explicit pepper since removed;
-		// the two are indistinguishable, and that kind does not come back.
-		log.Printf("auth: rewrapped %d untagged token hash(es) under the derived pepper — tokens minted with no pepper keep working; any minted under a since-removed LOOMCYCLE_OPERATOR_TOKEN_PEPPER stay invalid; def_ids: %s",
-			len(rep.Rewrapped), capIDs(rep.Rewrapped))
-	}
+// logTokenHashes reports, at every boot under a derived pepper, the token
+// rows still on an older form (RFC ES F3/C2). The def_ids of unpeppered rows
+// are listed so a row nobody minted stands out before anyone rewraps it.
+func logTokenHashes(rep lchttp.TokenHashReport) {
 	log.Printf("auth: tokens moving to the current pepper at their next login: %d wrapped, %d under a previous LOOMCYCLE_SECRET_KEY",
 		rep.Wrapped, rep.Previous)
 	if rep.OtherKey > 0 {
 		log.Printf("auth: WARNING: %d token(s) hashed under a LOOMCYCLE_SECRET_KEY that is neither the current nor the previous one; they will not authenticate (set that key as LOOMCYCLE_SECRET_KEY_PREVIOUS, or re-mint them)", rep.OtherKey)
 	}
-	if len(rep.Refused) > 0 {
-		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash written after the first boot on the derived pepper — a server on it never writes one, so they came from a database edit or a replica without LOOMCYCLE_SECRET_KEY; they will not authenticate; def_ids: %s",
-			len(rep.Refused), capIDs(rep.Refused))
+	if len(rep.Untagged) > 0 {
+		// An untagged row may also be from an explicit pepper since removed;
+		// the two are indistinguishable, and the rewrap cannot bring that
+		// kind back.
+		log.Printf("auth: WARNING: %d token row(s) carry an unpeppered hash and will not authenticate until rewrapped onto the derived pepper — tokens minted before LOOMCYCLE_SECRET_KEY was set, or rows written straight into the database. Review them with `loomcycle tokens rewrap` (lists them, writes nothing), then rewrap only the ones you minted; retire any you did not. def_ids: %s",
+			len(rep.Untagged), capIDs(rep.Untagged))
 	}
 }
 
@@ -39,5 +37,11 @@ func capIDs(ids []string) string {
 		more = fmt.Sprintf(" and %d more", len(ids)-tokenRewrapLogMaxIDs)
 		ids = ids[:tokenRewrapLogMaxIDs]
 	}
-	return strings.Join(ids, ", ") + more
+	// A def_id comes from the database and a forged row chooses it: quoted,
+	// it cannot break the log line or carry terminal escapes.
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = strconv.Quote(id)
+	}
+	return strings.Join(quoted, ", ") + more
 }

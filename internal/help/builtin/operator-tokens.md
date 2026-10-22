@@ -271,11 +271,19 @@ re-displayed). Now distribute per-principal tokens at your own pace.
   neither, tokens are hashed with no pepper and the server warns at boot.
   Changing an explicit pepper invalidates every token (env-allowlisted,
   never logged).
-- Tokens minted before a pepper existed are rewrapped under the derived
-  pepper when the server first starts with `LOOMCYCLE_SECRET_KEY`, and keep
-  working; each moves to the current form at its next login. A token row
-  with an unpeppered hash written after that never authenticates; the boot
-  log names it. A token under the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS`
+- Tokens minted before a pepper existed carry an unpeppered hash. Under a
+  derived pepper they are refused at login, and the boot log names them by
+  def_id, until the operator moves them onto the pepper with
+  `loomcycle tokens rewrap`, run with the server's config and environment.
+  Without flags it only lists the rows (def_id, name, tenant, subject,
+  scopes, created time) and a digest of the set; it then rewraps only the
+  rows named with `--def-id`, or the listed set with `--all-listed <digest>`
+  (refused if a row was added or changed since). Fields print quoted; a row
+  holding control or non-printable characters is flagged suspicious and is
+  never rewrapped. A row you never minted was written into the database:
+  retire it instead. Safe while servers run; a
+  rewrapped token logs in without a restart and moves to the current form at
+  its next login. A token under the pepper `LOOMCYCLE_SECRET_KEY_PREVIOUS`
   derives keeps logging in (and is rehashed) while that key is set. Upgrade
   every replica together: an older release cannot read a rewrapped or
   rehashed token, and rolling back means re-minting tokens.

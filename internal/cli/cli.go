@@ -7,6 +7,7 @@
 //	loomcycle health [--target <url>]               — ping a running instance
 //	loomcycle migrate up|down|status [--config Y]   — run Postgres schema migrations
 //	loomcycle migrate sqlite-to-postgres            — copy data between adapters
+//	loomcycle tokens rewrap [--def-id ID]...        — list, then rewrap, pre-pepper tokens (cmd/loomcycle)
 //	loomcycle mcp [--config <yaml>]                 — run as MCP server (stdio, v0.8.15+)
 //
 // Each subcommand exposes a Run* function returning an exit code so the
@@ -63,6 +64,10 @@ func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "  migrate status  [--config <y>]   show current schema version + dirty flag")
 	fmt.Fprintln(w, "  migrate sqlite-to-postgres --src <path> --dst <dsn>")
 	fmt.Fprintln(w, "                                   copy SQLite data into Postgres")
+	fmt.Fprintln(w, "  tokens rewrap [--config <y>]     list operator tokens minted before")
+	fmt.Fprintln(w, "                                   LOOMCYCLE_SECRET_KEY (writes nothing)")
+	fmt.Fprintln(w, "    [--def-id <id>]...             then rewrap the named rows onto its pepper,")
+	fmt.Fprintln(w, "    | [--all-listed <digest>]      or exactly the set the listing showed")
 	fmt.Fprintln(w, "  mcp [--config <yaml>]            run as MCP server over stdio (v0.8.15+)")
 	fmt.Fprintf(w, "                                   exposes %d meta-tools; consumed by Claude\n", metaToolCount)
 	fmt.Fprintln(w, "                                   Code, Claude Desktop, custom orchestrators")

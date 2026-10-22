@@ -3982,20 +3982,7 @@ type CredentialDefStore interface {
 	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (CredentialDefRow, error)
 	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]CredentialDefRow, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
-	// SystemMarkerGet reports whether the runtime recorded the named one-time
-	// event; SystemMarkerSet records it (idempotent). A marker is a row of
-	// credential_defs under SystemMarkerScope — the one table with a free key,
-	// so no schema change — and, unlike every other row there, holds no
-	// sealed ciphertext: only a non-secret JSON note. No credential surface
-	// reads that scope (they take tenant | user | agent). Used by the boot
-	// rewrap of unpeppered token hashes (RFC ES F3).
-	SystemMarkerGet(ctx context.Context, name string) (bool, error)
-	SystemMarkerSet(ctx context.Context, name string) error
 }
-
-// SystemMarkerScope is the credential_defs scope that holds system markers
-// (CredentialDefStore.SystemMarkerGet). Outside the credential scopes.
-const SystemMarkerScope = "system"
 
 // DirentStore persists the Path VFS naming layer.
 type DirentStore interface {
@@ -4371,10 +4358,9 @@ type OperatorTokenStore interface {
 	OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash string) (bool, error)
 	// OperatorTokenRehashAll applies each op as OperatorTokenRehash does, all
 	// in one transaction, and reports how many rows changed. An error rolls
-	// every op back. Used for the boot rewrap of unpeppered token hashes
-	// (RFC ES F3), which must not stop part-way: a partly rewrapped table
-	// reads as one already on the derived pepper, and the rest would never be
-	// rewrapped.
+	// every op back. Used by the rewrap of unpeppered token hashes
+	// (`loomcycle tokens rewrap`, RFC ES F3/C2), which must not stop
+	// part-way and leave the operator guessing which rows moved.
 	OperatorTokenRehashAll(ctx context.Context, ops []OperatorTokenRehashOp) (int, error)
 	// OperatorTokenDefCountActiveAdmin counts tokens that still authenticate
 	// (not retired, not expired) whose allowed_scopes include

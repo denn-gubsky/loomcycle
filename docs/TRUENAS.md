@@ -200,6 +200,12 @@ datasets must be `chown`ed to 65532:65532.**
 - **Upgrade:** bump the image tag → new binary → refreshed embedded presets
   automatically; your form answers / overlay persist. Run `migrate up` (or leave
   auto-migrate on) if the new version bumped the Postgres schema.
+- **Operator tokens minted with no pepper** (by a release before v1.119.0, or
+  while `LOOMCYCLE_SECRET_KEY` was unset) are refused until rewrapped. The boot log names
+  them; review and rewrap inside the running container, which already has the
+  server's env and config: `docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap`
+  lists them and writes nothing, then rerun it with `--def-id <id>` for each row you
+  minted (or `--all-listed <digest>` from the listing). See CONFIGURATION.md, "Token pepper".
 
 ## Ingress (out of scope)
 

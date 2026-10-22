@@ -494,7 +494,6 @@ func Run(t *testing.T, factory Factory) {
 		{"VolumeDefCreateAndGet", testVolumeDefCreateAndGet},
 		{"VolumeDefTenantIsolation", testVolumeDefTenantIsolation},
 		{"CredentialDefScopeIsolation", testCredentialDefScopeIsolation},
-		{"SystemMarkerRoundTripsAndStaysOutOfCredentialListings", testSystemMarkerRoundTrips},
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
@@ -14115,31 +14114,6 @@ func testOperatorTokenDefCountActiveAdminMatching(t *testing.T, s store.Store) {
 	}
 	if n, _ := s.OperatorTokenDefCountActiveAdminMatching(ctx, store.TokenHashMatch{Prefixes: []string{"p1:aaaa:"}}); n != 0 {
 		t.Errorf("a retired admin row counted: %d", n)
-	}
-}
-
-// A system marker is recorded once, read back, and set again harmlessly; it
-// never shows in a credential listing of the shared tenant (RFC ES F3).
-func testSystemMarkerRoundTrips(t *testing.T, s store.Store) {
-	ctx := context.Background()
-	if ok, err := s.SystemMarkerGet(ctx, "m"); err != nil || ok {
-		t.Fatalf("unset marker = (%v, %v), want (false, nil)", ok, err)
-	}
-	for i := 0; i < 2; i++ {
-		if err := s.SystemMarkerSet(ctx, "m"); err != nil {
-			t.Fatalf("set #%d: %v", i+1, err)
-		}
-	}
-	if ok, err := s.SystemMarkerGet(ctx, "m"); err != nil || !ok {
-		t.Fatalf("set marker = (%v, %v), want (true, nil)", ok, err)
-	}
-	if ok, _ := s.SystemMarkerGet(ctx, "other"); ok {
-		t.Error("an unrelated marker reads as set")
-	}
-	for _, scope := range []string{"tenant", "user", "agent"} {
-		if rows, err := s.CredentialDefList(ctx, "", scope, ""); err != nil || len(rows) != 0 {
-			t.Errorf("credential listing (%s) = (%d rows, %v), want none", scope, len(rows), err)
-		}
 	}
 }
 

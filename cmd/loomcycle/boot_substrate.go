@@ -215,14 +215,15 @@ func (b *boot) wireAuth() {
 			log.Printf("auth: WARNING: operator tokens are hashed with no pepper — anyone who can write the database can mint a working token. Set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER.")
 		}
 	case auth.PepperDerived:
-		// Before serving: wrap the unpeppered rows under the derived pepper
-		// (RFC ES F3); an unpeppered hash never authenticates on its own.
-		rep, rerr := srv.RewrapLegacyTokenRows(context.Background())
+		// Before serving: report the token rows on an older form (RFC ES
+		// F3/C2). Boot changes none of them; an unpeppered hash never
+		// authenticates until `loomcycle tokens rewrap` wraps it.
+		rep, rerr := srv.ReportTokenHashes(context.Background())
 		if rerr != nil {
-			log.Printf("auth: WARNING: rewrapping unpeppered token hashes failed: %v — this replica rewrapped nothing; unless another replica booting now committed the rewrap, tokens still on an unpeppered hash will not authenticate until a restart rewraps them", rerr)
+			log.Printf("auth: WARNING: reading the token table to report older token hashes failed: %v", rerr)
 			break
 		}
-		logTokenRewrap(rep)
+		logTokenHashes(rep)
 	}
 	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
 		Store:                  storeIface,

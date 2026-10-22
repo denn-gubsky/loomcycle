@@ -486,9 +486,10 @@ func (s *Server) legacyFallbackDisabled(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// Only an admin token that can still authenticate counts (RFC ES F3): a
-	// refused unpeppered row, or one under a key no longer configured, would
-	// otherwise switch the shared secret off with no admin token left.
+	// Only an admin token that can still authenticate counts (RFC ES F3): an
+	// unpeppered row not yet rewrapped, or one under a key no longer
+	// configured, would otherwise switch the shared secret off with no admin
+	// token left.
 	include, exclude := h.UsablePrefixes()
 	n, err := s.store.OperatorTokenDefCountActiveAdminMatching(ctx, store.TokenHashMatch{Prefixes: include, ExcludePrefixes: exclude})
 	if err != nil {
