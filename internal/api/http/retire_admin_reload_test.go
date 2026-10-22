@@ -26,18 +26,38 @@ var (
 	raAli = config.PrincipalDef{Tenant: "acme", Subject: "alice", Scopes: []string{auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_ALICE_TOKEN"}
 )
 
+// raResolved is each test principal as a real load resolves it: with its secret.
+var raResolved = map[string]auth.DeclaredPrincipal{
+	"ops":   {Secret: "lct_ra_ops", Principal: auth.Principal{Subject: "ops", Scopes: raOps.Scopes, TokenDefID: "cfg:ops"}},
+	"alice": {Secret: "lct_ra_alice", Principal: auth.Principal{TenantID: "acme", Subject: "alice", Scopes: raAli.Scopes, TokenDefID: "cfg:alice"}},
+}
+
+// raConfig fills c with the named test principals (sorted, so the resolved
+// list is stable) and returns it.
+func raConfig(c *config.Config, principals map[string]config.PrincipalDef) *config.Config {
+	c.Principals = principals
+	c.ResolvedPrincipals = nil
+	for _, name := range []string{"alice", "ops"} {
+		if _, ok := principals[name]; ok {
+			c.ResolvedPrincipals = append(c.ResolvedPrincipals, raResolved[name])
+		}
+	}
+	return c
+}
+
 // retireReloadServer boots a server declaring an admin and a tenant principal
 // (no legacy secret), wires the token tool as boot does, and mints one admin
 // token. It returns the server and an admin-tool executor.
 func retireReloadServer(t *testing.T) (*Server, func(in string) tools.Result) {
 	t.Helper()
+	return retireReloadServerWith(t, map[string]config.PrincipalDef{"ops": raOps, "alice": raAli})
+}
+
+// retireReloadServerWith is retireReloadServer declaring only principals.
+func retireReloadServerWith(t *testing.T, principals map[string]config.PrincipalDef) (*Server, func(in string) tools.Result) {
+	t.Helper()
 	s, st := tokenAuthServer(t, "")
-	cfg := s.cfg()
-	cfg.Principals = map[string]config.PrincipalDef{"ops": raOps, "alice": raAli}
-	cfg.ResolvedPrincipals = []auth.DeclaredPrincipal{
-		{Secret: "lct_ra_ops", Principal: auth.Principal{Subject: "ops", Scopes: raOps.Scopes, TokenDefID: "cfg:ops"}},
-		{Secret: "lct_ra_alice", Principal: auth.Principal{TenantID: "acme", Subject: "alice", Scopes: raAli.Scopes, TokenDefID: "cfg:alice"}},
-	}
+	cfg := raConfig(s.cfg(), principals)
 	hasher, err := cfg.Env.TokenHasher()
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +66,7 @@ func retireReloadServer(t *testing.T) (*Server, func(in string) tools.Result) {
 		Store:                  st,
 		Hasher:                 hasher,
 		Audit:                  audit.NopSink{},
+		LegacyTokenSet:         cfg.Env.AuthToken != "",
 		AdminPrincipalDeclared: s.AdminPrincipalResolved,
 	}
 	ctx := tools.WithOperatorTokenDefPolicy(context.Background(), tools.OperatorTokenDefPolicyValue{Admin: true})
@@ -70,14 +91,12 @@ func reloadTo(t *testing.T, s *Server, principals map[string]config.PrincipalDef
 
 func reloadToDry(t *testing.T, s *Server, principals map[string]config.PrincipalDef, dry bool) error {
 	t.Helper()
-	// As a real reload loads it: each kept principal with its resolved secret.
-	candidate := &config.Config{Principals: principals}
-	for _, dp := range s.cfg().ResolvedPrincipals {
-		if _, kept := principals[dp.Principal.TokenDefID[len("cfg:"):]]; kept {
-			candidate.ResolvedPrincipals = append(candidate.ResolvedPrincipals, dp)
-		}
-	}
+	candidate := raConfig(&config.Config{}, principals)
 	candidate.Env = s.cfg().Env
+	return reloadCandidate(s, candidate, dry)
+}
+
+func reloadCandidate(s *Server, candidate *config.Config, dry bool) error {
 	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil })
 	_, err := s.ReloadConfig(context.Background(), dry)
 	return err
@@ -117,16 +136,10 @@ func TestReloadKeepingAdminPrincipal_Allowed(t *testing.T) {
 // reload may drop the admin principal.
 func TestReloadDroppingAdminPrincipal_AllowedWithLegacySecret(t *testing.T) {
 	s, _ := retireReloadServer(t)
-	candidate := &config.Config{Principals: map[string]config.PrincipalDef{"alice": raAli}}
+	candidate := raConfig(&config.Config{}, map[string]config.PrincipalDef{"alice": raAli})
 	candidate.Env = s.cfg().Env
 	candidate.Env.AuthToken = "legacy"
-	for _, dp := range s.cfg().ResolvedPrincipals {
-		if dp.Principal.Subject == "alice" {
-			candidate.ResolvedPrincipals = append(candidate.ResolvedPrincipals, dp)
-		}
-	}
-	s.SetConfigReloader(func() (*config.Config, error) { return candidate, nil })
-	if _, err := s.ReloadConfig(context.Background(), false); err != nil {
+	if err := reloadCandidate(s, candidate, false); err != nil {
 		t.Fatalf("reload dropping the admin principal while setting LOOMCYCLE_AUTH_TOKEN: %v", err)
 	}
 }
@@ -212,3 +225,20 @@ func TestReloadDroppingAdminPrincipal_RefusedAfterLastAdminTokenRetired(t *testi
 		t.Error("the refused reload still dropped the admin principal")
 	}
 }
+
+// The retire guard reads the admin principal from the CURRENT config: once a
+// reload adds one, the last admin token may go — the principal is the admin
+// credential left behind.
+func TestRetireLastAdminToken_AllowedAfterReloadAddsAdminPrincipal(t *testing.T) {
+	s, exec := retireReloadServerWith(t, map[string]config.PrincipalDef{"alice": raAli})
+	if res := exec(`{"op":"retire","name":"root"}`); !res.IsError {
+		t.Fatal("retired the last admin token with no admin credential in config; want refused")
+	}
+	if err := reloadTo(t, s, map[string]config.PrincipalDef{"ops": raOps, "alice": raAli}); err != nil {
+		t.Fatalf("reload adding an admin principal: %v", err)
+	}
+	if res := exec(`{"op":"retire","name":"root"}`); res.IsError {
+		t.Fatalf("retire after a reload added an admin principal: %s", res.Text)
+	}
+}
+
