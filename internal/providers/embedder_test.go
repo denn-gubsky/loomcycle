@@ -88,8 +88,10 @@ func TestRegisteredEmbeddersReturnsSorted(t *testing.T) {
 }
 
 func TestValidateEmbedder_RunsTheRegisteredValidatorOnly(t *testing.T) {
+	// The registry is process-global and outlives one run of this test
+	// (-count=N), so "no validator" is asked of a key nothing registers.
 	const key = "validator-test-key"
-	if err := providers.ValidateEmbedder(key, "m", 7); err != nil {
+	if err := providers.ValidateEmbedder("validator-test-never-registered", "m", 7); err != nil {
 		t.Fatalf("no validator registered: %v, want nil", err)
 	}
 	providers.RegisterEmbedderValidator(key, func(model string, dimensions int) error {
