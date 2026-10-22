@@ -56,7 +56,7 @@ func TestBlame_AttributesEachLineToTheCommitThatLastChangedIt(t *testing.T) {
 	write(t, fs, "f.txt", "one\nTWO\nthree\nfour\n")
 	second := commitAs(t, r, c, "Bob", "second")
 
-	res, err := r.Blame("f.txt", "", 10)
+	res, err := r.Blame(t.Context(), "f.txt", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,15 +69,15 @@ func TestBlame_AttributesEachLineToTheCommitThatLastChangedIt(t *testing.T) {
 	}
 
 	// maxLines cuts; an older revision blames its own version.
-	res, err = r.Blame("f.txt", "", 2)
+	res, err = r.Blame(t.Context(), "f.txt", "", 2)
 	if err != nil || len(res.Lines) != 2 || !res.Truncated {
 		t.Fatalf("Blame with max 2 = %+v, %v", res, err)
 	}
-	res, err = r.Blame("f.txt", first, 10)
+	res, err = r.Blame(t.Context(), "f.txt", first, 10)
 	if err != nil || fmt.Sprint(blameOwners(t, res)) != fmt.Sprint([]string{"Ann:one", "Ann:two", "Ann:three"}) {
 		t.Errorf("Blame at the first commit = %v, %v", blameOwners(t, res), err)
 	}
-	if res, err := r.Blame("other.txt", "", 1); err != nil || res.Truncated || len(res.Lines) != 1 {
+	if res, err := r.Blame(t.Context(), "other.txt", "", 1); err != nil || res.Truncated || len(res.Lines) != 1 {
 		t.Errorf("Blame of a one-line file with max 1 = %+v, %v", res, err)
 	}
 }
@@ -114,7 +114,7 @@ func TestBlame_FollowsEachParentOfAMerge(t *testing.T) {
 	if _, err := w.Commit("merge", &git.CommitOptions{Author: sig, Committer: sig, Parents: []plumbing.Hash{mustHash(main), mustHash(side)}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := r.Blame("f.txt", "", 10)
+	res, err := r.Blame(t.Context(), "f.txt", "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +133,11 @@ func TestBlame_RefusesBadArgumentsAndAnUnboundedChange(t *testing.T) {
 		path string
 		max  int
 	}{{"f.txt", 0}, {".git/config", 5}, {"../x", 5}, {"missing.txt", 5}, {"bin.dat", 5}} {
-		if _, err := r.Blame(tc.path, "", tc.max); !errors.Is(err, ErrInvalidArgument) {
+		if _, err := r.Blame(t.Context(), tc.path, "", tc.max); !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("Blame(%q, max %d): %v, want invalid_argument", tc.path, tc.max, err)
 		}
 	}
-	if _, err := r.Blame("f.txt", "nope", 5); !errors.Is(err, ErrInvalidRevision) {
+	if _, err := r.Blame(t.Context(), "f.txt", "nope", 5); !errors.Is(err, ErrInvalidRevision) {
 		t.Errorf("Blame at a missing revision: %v", err)
 	}
 
@@ -152,11 +152,11 @@ func TestBlame_RefusesBadArgumentsAndAnUnboundedChange(t *testing.T) {
 	commitAll(t, r, c, "big")
 	write(t, fs, "big.txt", b.String())
 	commitAll(t, r, c, "rewrite")
-	if _, err := r.Blame("big.txt", "", 5); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "too large to blame") {
+	if _, err := r.Blame(t.Context(), "big.txt", "", 5); !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "too large to blame") {
 		t.Errorf("Blame across a %d-line change: %v", maxDiffLines+1, err)
 	}
 	// The first version alone has no change to diff.
-	if res, err := r.Blame("big.txt", "HEAD~1", 3); err != nil || len(res.Lines) != 3 {
+	if res, err := r.Blame(t.Context(), "big.txt", "HEAD~1", 3); err != nil || len(res.Lines) != 3 {
 		t.Errorf("Blame of the added file = %+v, %v", res, err)
 	}
 }
@@ -180,7 +180,7 @@ func TestGrep_PatternCaseInvertPathsAndLimit(t *testing.T) {
 
 	check := func(o GrepOptions, want []string, wantTrunc bool) {
 		t.Helper()
-		got, trunc, err := r.Grep(o)
+		got, trunc, err := r.Grep(t.Context(), o)
 		if err != nil {
 			t.Fatalf("Grep(%+v): %v", o, err)
 		}
@@ -205,7 +205,7 @@ func TestGrep_PatternCaseInvertPathsAndLimit(t *testing.T) {
 	// A long line comes back cut.
 	write(t, fs, "long.txt", "x"+strings.Repeat("y", 2*maxLineText)+"\n")
 	commitAll(t, r, c, "long")
-	got, _, err := r.Grep(GrepOptions{Pattern: "^xy", MaxMatches: 1})
+	got, _, err := r.Grep(t.Context(), GrepOptions{Pattern: "^xy", MaxMatches: 1})
 	if err != nil || len(got) != 1 || len(got[0].Text) != maxLineText {
 		t.Errorf("Grep of a long line = %d bytes, %v", len(got[0].Text), err)
 	}
@@ -217,15 +217,15 @@ func TestGrep_PatternCaseInvertPathsAndLimit(t *testing.T) {
 		"too long":       {Pattern: strings.Repeat("a", maxGrepPattern+1), MaxMatches: 1},
 		"path into .git": {Pattern: "x", Paths: []string{".git"}, MaxMatches: 1},
 	} {
-		if _, _, err := r.Grep(o); !errors.Is(err, ErrInvalidArgument) {
+		if _, _, err := r.Grep(t.Context(), o); !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("Grep %s: %v, want invalid_argument", name, err)
 		}
 	}
-	if _, _, err := r.Grep(GrepOptions{Pattern: strings.Repeat("a", maxGrepPattern), MaxMatches: 1}); err != nil {
+	if _, _, err := r.Grep(t.Context(), GrepOptions{Pattern: strings.Repeat("a", maxGrepPattern), MaxMatches: 1}); err != nil {
 		t.Errorf("a pattern at the limit: %v", err)
 	}
 	empty, _, _ := memRepo(t)
-	if got, trunc, err := empty.Grep(GrepOptions{Pattern: "x", MaxMatches: 1}); err != nil || len(got) != 0 || trunc {
+	if got, trunc, err := empty.Grep(t.Context(), GrepOptions{Pattern: "x", MaxMatches: 1}); err != nil || len(got) != 0 || trunc {
 		t.Errorf("Grep of an unborn branch = %v, %v, %v", got, trunc, err)
 	}
 }
@@ -276,7 +276,7 @@ func TestNotes_ListsNotesNewestFirstFlatAndFannedOut(t *testing.T) {
 	write(t, fs, "a.txt", "3\n")
 	c3 := commitAll(t, r, c, "three")
 
-	if got, err := r.Notes("", 10); err != nil || len(got) != 0 {
+	if got, err := r.Notes(t.Context(), "", 10); err != nil || len(got) != 0 {
 		t.Fatalf("Notes with no notes ref = %v, %v", got, err)
 	}
 
@@ -297,20 +297,20 @@ func TestNotes_ListsNotesNewestFirstFlatAndFannedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := r.Notes("", 10)
+	got, err := r.Notes(t.Context(), "", 10)
 	if err != nil || len(got) != 2 {
 		t.Fatalf("Notes = %+v, %v", got, err)
 	}
 	if got[0] != (NoteInfo{Commit: c3, Note: "note three\n"}) || got[1].Commit != c1 || got[1].Note != long[:maxNoteText] {
 		t.Errorf("Notes = %q / %s (%d bytes)", got[0], got[1].Commit, len(got[1].Note))
 	}
-	if got, err := r.Notes("", 1); err != nil || len(got) != 1 || got[0].Commit != c3 {
+	if got, err := r.Notes(t.Context(), "", 1); err != nil || len(got) != 1 || got[0].Commit != c3 {
 		t.Errorf("Notes max 1 = %+v, %v", got, err)
 	}
-	if got, err := r.Notes(c2, 10); err != nil || len(got) != 1 || got[0].Commit != c1 {
+	if got, err := r.Notes(t.Context(), c2, 10); err != nil || len(got) != 1 || got[0].Commit != c1 {
 		t.Errorf("Notes from c2 = %+v, %v", got, err)
 	}
-	if _, err := r.Notes("", 0); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := r.Notes(t.Context(), "", 0); !errors.Is(err, ErrInvalidArgument) {
 		t.Errorf("Notes max 0: %v", err)
 	}
 }
@@ -329,7 +329,7 @@ func TestNotes_ReadsNotesGitWrote(t *testing.T) {
 	write(t, wt, "a.txt", "1\n")
 	h := commitAll(t, r, c, "one")
 	run(t, dir, "notes", "add", "-m", "reviewed", h)
-	got, err := r.Notes("", 5)
+	got, err := r.Notes(t.Context(), "", 5)
 	if err != nil || len(got) != 1 || got[0] != (NoteInfo{Commit: h, Note: "reviewed\n"}) {
 		t.Errorf("Notes = %+v, %v", got, err)
 	}
@@ -722,18 +722,25 @@ func TestSubmoduleUpdate_RefusesPathsItMustNotUse(t *testing.T) {
 			t.Errorf("SubmoduleUpdate(%s): %v, want invalid_argument", name, err)
 		}
 	}
+	// A link on the path is refused by the link check itself, before
+	// anything else looks at the path: its refusal names the link. (Later
+	// checks refuse a link at the submodule's own path too, so a bare
+	// invalid_argument would not show the link check ran.)
+	linkRefused := func(err error, link string) bool {
+		return errors.Is(err, ErrInvalidArgument) && strings.Contains(err.Error(), link+", on the submodule's path, is a link")
+	}
 	if err := fs.Symlink(".git", "lib"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.SubmoduleUpdate(t.Context(), "lib", n); !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("SubmoduleUpdate through a link to .git: %v, want invalid_argument", err)
+	if _, err := r.SubmoduleUpdate(t.Context(), "lib", n); !linkRefused(err, "lib") {
+		t.Errorf("SubmoduleUpdate through a link to .git: %v, want the link refused", err)
 	}
 	// A link above the submodule's directory is refused too.
 	if err := fs.Symlink(".git", "vendor"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.SubmoduleUpdate(t.Context(), "nested", n); !errors.Is(err, ErrInvalidArgument) {
-		t.Errorf("SubmoduleUpdate below a link to .git: %v, want invalid_argument", err)
+	if _, err := r.SubmoduleUpdate(t.Context(), "nested", n); !linkRefused(err, "vendor") {
+		t.Errorf("SubmoduleUpdate below a link to .git: %v, want the link refused", err)
 	}
 	if exists(fs, ".git/.git") || exists(fs, ".git/lib") {
 		t.Error("something was written into .git")

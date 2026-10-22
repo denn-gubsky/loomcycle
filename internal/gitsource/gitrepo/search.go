@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+
+	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 )
 
 // GrepOptions are Grep's.
@@ -34,10 +37,16 @@ type GrepOptions struct {
 
 // GrepMatch is one matching line.
 type GrepMatch struct {
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Text string `json:"text"` // cut to maxLineText bytes
+	Path string `json:"path"` // cut to maxGrepPath bytes
+	// PathTruncated reports Path was cut: it names no file as it stands.
+	PathTruncated bool   `json:"path_truncated,omitempty"`
+	Line          int    `json:"line"`
+	Text          string `json:"text"` // cut to maxLineText bytes
 }
+
+// maxGrepPath is where a match's path is cut. A tree may hold paths up to
+// maxArgLen bytes, and one is repeated on every matching line.
+const maxGrepPath = 1024
 
 // maxGrepPattern bounds a pattern. RE2 runs in time linear in the input,
 // but compiling a long expression is not free and nothing legitimate is
@@ -49,7 +58,13 @@ const maxGrepPattern = 1024
 // grep`, it skips binary files (a NUL in the first 8000 bytes); a file over
 // maxDiffFileBytes is skipped too. The library's grep is not used: it
 // collects every match in memory before returning any.
-func (r *Repo) Grep(o GrepOptions) ([]GrepMatch, bool, error) {
+//
+// The walk is bounded as a checkout's is: every entry visited, directories
+// too, counts against the file limit, and the trees and files read against
+// the byte limit; past either the search is refused (too large). o.Paths
+// keeps the walk out of the directories it cannot reach, so a narrow search
+// of a large tree costs what its part of the tree does.
+func (r *Repo) Grep(ctx context.Context, o GrepOptions) ([]GrepMatch, bool, error) {
 	if o.MaxMatches <= 0 {
 		return nil, false, fmt.Errorf("%w: max matches must be > 0", ErrInvalidArgument)
 	}
@@ -79,41 +94,61 @@ func (r *Repo) Grep(o GrepOptions) ([]GrepMatch, bool, error) {
 	} else if c, err = r.resolveCommit(o.Rev); err != nil {
 		return nil, false, err
 	}
-	tree, err := c.Tree()
-	if err != nil {
-		return nil, false, fmt.Errorf("read the tree of %s: %w", c.Hash, err)
-	}
-	w := object.NewTreeWalker(tree, true, nil)
-	defer w.Close()
+	b := r.newTreeBudget("the tree of " + c.Hash.String())
 	out := []GrepMatch{}
-	for {
-		name, e, err := w.Next()
-		if errors.Is(err, io.EOF) {
-			return out, false, nil
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("walk the tree of %s: %w", c.Hash, err)
-		}
+	truncated := false
+	err = r.walkTree(ctx, c.TreeHash, b, func(dir string) bool { return mayHold(specs, dir) }, func(name string, e object.TreeEntry) (bool, error) {
 		if (e.Mode != filemode.Regular && e.Mode != filemode.Executable) || !matchPaths(specs, name) {
-			continue
+			return false, nil
+		}
+		n, err := r.repo.Storer.EncodedObjectSize(e.Hash)
+		if err != nil {
+			return true, fmt.Errorf("read the size of %s: %w", e.Hash, err)
+		}
+		if n > maxDiffFileBytes {
+			return false, nil // skipped, not read
+		}
+		if err := b.read(n); err != nil {
+			return true, err
 		}
 		data, ok, err := r.content(&sideEntry{hash: e.Hash, mode: e.Mode})
 		if err != nil {
-			return nil, false, err
+			return true, err
 		}
 		if !ok || isBinary(data) {
-			continue
+			return false, nil
 		}
+		path, pathCut := cut(name, maxGrepPath), len(name) > maxGrepPath
 		for i, line := range splitLines(string(data)) {
 			if re.MatchString(line) == o.Invert {
 				continue
 			}
 			if len(out) == o.MaxMatches {
-				return out, true, nil
+				truncated = true
+				return true, nil
 			}
-			out = append(out, GrepMatch{Path: name, Line: i + 1, Text: cut(line, maxLineText)})
+			out = append(out, GrepMatch{Path: path, PathTruncated: pathCut, Line: i + 1, Text: cut(line, maxLineText)})
+		}
+		return false, nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, truncated, nil
+}
+
+// mayHold reports whether directory dir holds or is a path specs match, so
+// a walk must go into it: it is one of specs or under one, or above one.
+func mayHold(specs []string, dir string) bool {
+	if matchPaths(specs, dir) {
+		return true
+	}
+	for _, s := range specs {
+		if strings.HasPrefix(s, dir+"/") {
+			return true
 		}
 	}
+	return false
 }
 
 // NoteInfo is the note on one commit.
@@ -125,13 +160,19 @@ type NoteInfo struct {
 // maxNoteText is where a note is cut.
 const maxNoteText = 4096
 
+// maxNotes bounds the notes one notes tree may hold for Notes: past it the
+// listing is refused (too large) rather than built in memory.
+const maxNotes = 10000
+
 // notesRef is where `git notes` keeps notes by default.
 const notesRef plumbing.ReferenceName = "refs/notes/commits"
 
 // Notes lists the notes refs/notes/commits holds for the commits reachable
 // from rev ("" is HEAD), newest commit first, at most max of them. No
-// notes ref, or an unborn branch, is an empty list.
-func (r *Repo) Notes(rev string, max int) ([]NoteInfo, error) {
+// notes ref, or an unborn branch, is an empty list. The notes tree is walked
+// within the repository's limits, and ctx is checked at every entry and
+// every commit of the history: past its deadline the listing is a timeout.
+func (r *Repo) Notes(ctx context.Context, rev string, max int) ([]NoteInfo, error) {
 	if max <= 0 {
 		return nil, fmt.Errorf("%w: max must be > 0", ErrInvalidArgument)
 	}
@@ -147,7 +188,7 @@ func (r *Repo) Notes(rev string, max int) ([]NoteInfo, error) {
 	} else if start, err = r.resolveCommit(rev); err != nil {
 		return nil, err
 	}
-	notes, err := r.notesByCommit()
+	notes, err := r.notesByCommit(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +203,9 @@ func (r *Repo) Notes(rev string, max int) ([]NoteInfo, error) {
 	defer it.Close()
 	found := 0
 	err = it.ForEach(func(c *object.Commit) error {
+		if err := ctxDone(ctx); err != nil {
+			return err
+		}
 		blob, ok := notes[c.Hash]
 		if !ok {
 			return nil
@@ -188,8 +232,9 @@ func (r *Repo) Notes(rev string, max int) ([]NoteInfo, error) {
 // notesByCommit maps each annotated commit to its note's blob. A note's
 // path in the notes tree is the commit's hash, split by "/" into fan-out
 // directories once the tree grows ("ab/cdef..."); anything else in the tree
-// is not a note and is ignored.
-func (r *Repo) notesByCommit() (map[plumbing.Hash]plumbing.Hash, error) {
+// is not a note and is ignored. The walk is bounded as Grep's is, and a
+// tree of more than maxNotes notes is refused (too large).
+func (r *Repo) notesByCommit(ctx context.Context) (map[plumbing.Hash]plumbing.Hash, error) {
 	ref, err := r.repo.Reference(notesRef, true)
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
 		return nil, nil
@@ -201,30 +246,25 @@ func (r *Repo) notesByCommit() (map[plumbing.Hash]plumbing.Hash, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", notesRef, err)
 	}
-	tree, err := c.Tree()
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", notesRef, err)
-	}
-	w := object.NewTreeWalker(tree, true, nil)
-	defer w.Close()
 	out := map[plumbing.Hash]plumbing.Hash{}
-	for {
-		name, e, err := w.Next()
-		if errors.Is(err, io.EOF) {
-			return out, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", notesRef, err)
-		}
+	err = r.walkTree(ctx, c.TreeHash, r.newTreeBudget(notesRef.String()), nil, func(name string, e object.TreeEntry) (bool, error) {
 		if !e.Mode.IsFile() {
-			continue
+			return false, nil
 		}
 		hex := strings.ReplaceAll(name, "/", "")
 		if len(hex) != 40 || !plumbing.IsHash(hex) {
-			continue
+			return false, nil
+		}
+		if len(out) == maxNotes {
+			return true, fmt.Errorf("%w: %s holds over %d notes", gitsource.ErrTooLarge, notesRef, maxNotes)
 		}
 		out[plumbing.NewHash(hex)] = e.Hash
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return out, nil
 }
 
 // noteText is a note's text, cut to maxNoteText bytes.

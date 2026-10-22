@@ -444,7 +444,12 @@ func (r *Repo) Reset(mode, rev string, paths []string) error {
 // git never does and which would lose an agent's new work; so this is a
 // mixed reset, then the files tracked before and not now are removed and
 // the tracked ones are written from the index. An untracked file at a path
-// the commit has is written over, as git does. The caller has checked the
+// the commit has is written over, as git does. A directory left at a path
+// no longer tracked, a submodule's checkout above all, is left where it is,
+// as git leaves it; a file of the commit where a submodule's checkout is
+// refuses the reset (ErrWorktreeDirty), as writing it would delete the
+// submodule's files. What is removed is decided before anything is, so a
+// refusal leaves the files as they were. The caller has checked the
 // commit's tree and restores HEAD if this fails (keepHead).
 func (r *Repo) hardReset(commit plumbing.Hash) error {
 	before, err := r.indexSide()
@@ -469,13 +474,29 @@ func (r *Repo) hardReset(commit plumbing.Hash) error {
 	if err != nil {
 		return err
 	}
-	for p := range before {
-		if _, ok := after[p]; ok {
+	var gone []string
+	for p, e := range before {
+		a, kept := after[p]
+		if kept && (e.mode != filemode.Submodule || a.mode == filemode.Submodule) {
 			continue
 		}
 		if err := treePath(p); err != nil {
 			return err
 		}
+		full, err := r.nonEmptyDir(p)
+		if err != nil {
+			return err
+		}
+		switch {
+		case full && kept:
+			return fmt.Errorf("%w: %s holds a submodule's files, where the commit has a file", ErrWorktreeDirty, p)
+		case full, kept:
+			continue
+		}
+		gone = append(gone, p)
+	}
+	sort.Strings(gone)
+	for _, p := range gone {
 		if err := r.wt.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
@@ -483,6 +504,26 @@ func (r *Repo) hardReset(commit plumbing.Hash) error {
 	}
 	_, err = r.restoreWorktree(nil)
 	return err
+}
+
+// nonEmptyDir reports whether p is a directory, not a link, with anything
+// in it.
+func (r *Repo) nonEmptyDir(p string) (bool, error) {
+	fi, err := r.wt.Lstat(p)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", p, err)
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	entries, err := r.wt.ReadDir(p)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", p, err)
+	}
+	return len(entries) > 0, nil
 }
 
 func signature(s Signature, role string) (*object.Signature, error) {

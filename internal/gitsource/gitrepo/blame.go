@@ -2,6 +2,7 @@ package gitrepo
 
 import (
 	"container/heap"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	godiff "github.com/go-git/go-git/v5/utils/diff"
+
+	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 )
 
 // BlameResult is Blame's: the file's first lines, each with the commit that
@@ -32,8 +35,14 @@ type BlameLine struct {
 
 // maxBlameCommits bounds how many commits one blame visits. A commit whose
 // version of the file is its parent's costs a tree lookup; one that changed
-// it, a diff bounded by maxDiffLines.
-const maxBlameCommits = 100_000
+// it, a comparison counted against maxBlameBytes.
+const maxBlameCommits = 20_000
+
+// maxBlameBytes bounds the bytes one blame compares: both versions of the
+// file, at every commit that changed it. Each version may be up to
+// maxDiffFileBytes, so the commit bound alone allows hundreds of gigabytes;
+// the repository's own byte limit applies when it is lower.
+const maxBlameBytes int64 = 512 << 20
 
 // maxLineText is where a line's text is cut in a result.
 const maxLineText = 500
@@ -48,10 +57,13 @@ const maxLineText = 500
 // Diff, which detects no renames either), diffs a version against its
 // parent only when the change has at most maxDiffLines lines once the lines
 // both sides share at the start and end are set aside (beyond that the
-// blame is refused, not guessed), and visits at most maxBlameCommits
-// commits. A parent missing from a shallow history is a boundary: the lines
+// blame is refused, not guessed) and that change holds a line still being
+// blamed, visits at most maxBlameCommits commits and compares at most
+// maxBlameBytes (or the repository's byte limit, when lower); past either
+// bound the blame is refused (too large), and past ctx's deadline it is a
+// timeout. A parent missing from a shallow history is a boundary: the lines
 // that reach it are blamed on its child.
-func (r *Repo) Blame(p, rev string, maxLines int) (BlameResult, error) {
+func (r *Repo) Blame(ctx context.Context, p, rev string, maxLines int) (BlameResult, error) {
 	if maxLines <= 0 {
 		return BlameResult{}, fmt.Errorf("%w: max lines must be > 0", ErrInvalidArgument)
 	}
@@ -89,7 +101,7 @@ func (r *Repo) Blame(p, rev string, maxLines int) (BlameResult, error) {
 	if n == 0 {
 		return res, nil
 	}
-	owners, err := r.blameLines(start, blob, p, n)
+	owners, err := r.blameLines(ctx, start, blob, p, n)
 	if err != nil {
 		return BlameResult{}, err
 	}
@@ -200,7 +212,9 @@ func (q *suspects) Pop() any {
 
 // blameLines finds the commit of each of the first n lines of blob, the
 // version of p at start.
-func (r *Repo) blameLines(start *object.Commit, blob plumbing.Hash, p string, n int) ([]*object.Commit, error) {
+func (r *Repo) blameLines(ctx context.Context, start *object.Commit, blob plumbing.Hash, p string, n int) ([]*object.Commit, error) {
+	budget := min(maxBlameBytes, r.maxBytes())
+	var compared int64
 	owners := make([]*object.Commit, n)
 	all := make([]blameLine, n)
 	for i := range all {
@@ -220,7 +234,10 @@ func (r *Repo) blameLines(start *object.Commit, blob plumbing.Hash, p string, n 
 	push(start, blob, all)
 	for visited := 0; q.Len() > 0; visited++ {
 		if visited >= maxBlameCommits {
-			return nil, fmt.Errorf("%w: the file's history passes %d commits, too long to blame", ErrInvalidArgument, maxBlameCommits)
+			return nil, fmt.Errorf("%w: the file's history passes %d commits, too long to blame", gitsource.ErrTooLarge, maxBlameCommits)
+		}
+		if err := ctxDone(ctx); err != nil {
+			return nil, err
 		}
 		s := heap.Pop(q).(*suspect)
 		delete(pending, s.commit.Hash)
@@ -260,6 +277,10 @@ func (r *Repo) blameLines(start *object.Commit, blob plumbing.Hash, p string, n 
 			if err != nil {
 				return nil, err
 			}
+			// Counted before the binary check: a binary version is read too.
+			if compared += int64(len(ptext) + len(text)); compared > budget {
+				return nil, fmt.Errorf("%w: the file's history compares over %d bytes, too large to blame", gitsource.ErrTooLarge, budget)
+			}
 			if pbinary {
 				continue // no line of a binary version is a line of this one
 			}
@@ -280,41 +301,84 @@ func (r *Repo) blameLines(start *object.Commit, blob plumbing.Hash, p string, n 
 }
 
 // passLines splits lines (indexes into child) into those the child has
-// unchanged from parent, renumbered as parent's lines, and the rest.
+// unchanged from parent, renumbered as parent's lines, and the rest. The
+// lines both versions start and end with pass as they are; only when a
+// line in between is asked for is the middle diffed, and only then is a
+// middle over maxDiffLines refused: a large change elsewhere in the file
+// does not stop the blame of lines it did not touch.
 func passLines(parent, child string, lines []blameLine) (passed, kept []blameLine, err error) {
-	if changedLines(parent, child) > maxDiffLines {
-		return nil, nil, fmt.Errorf("%w: a change in the file's history has over %d lines, too large to blame", ErrInvalidArgument, maxDiffLines)
+	head, pmid, cmid := commonLines(parent, child)
+	headLines := countLines(parent[:head])
+	cEnd := headLines + countLines(cmid) // child's first line after the middle
+	shift := countLines(pmid) - countLines(cmid)
+	inMiddle := false
+	for _, l := range lines {
+		if l.cur >= headLines && l.cur < cEnd {
+			inMiddle = true
+			break
+		}
 	}
-	// toParent[i] is child line i's line in parent, -1 when the child added
-	// it.
-	toParent := make([]int, countLines(child))
-	pl, cl := 0, 0
-	for _, d := range godiff.DoWithTimeout(parent, child, maxFileDiffTime) {
-		k := countLines(d.Text)
-		// diffmatchpatch's operations, compared as numbers as diff.go does:
-		// -1 delete, 1 insert, 0 equal.
-		switch d.Type {
-		case -1:
-			pl += k
-		case 1:
-			for i := 0; i < k && cl < len(toParent); i++ {
-				toParent[cl] = -1
-				cl++
-			}
-		default:
-			for i := 0; i < k && cl < len(toParent); i++ {
-				toParent[cl] = pl
-				cl++
-				pl++
+	var toParent []int // child middle line i -> parent line, -1 when added
+	if inMiddle {
+		if max(countLines(pmid), countLines(cmid)) > maxDiffLines {
+			return nil, nil, fmt.Errorf("%w: a change in the file's history has over %d lines, too large to blame", ErrInvalidArgument, maxDiffLines)
+		}
+		toParent = make([]int, countLines(cmid))
+		pl, cl := headLines, 0
+		for _, d := range godiff.DoWithTimeout(pmid, cmid, maxFileDiffTime) {
+			k := countLines(d.Text)
+			// diffmatchpatch's operations, compared as numbers as diff.go
+			// does: -1 delete, 1 insert, 0 equal.
+			switch d.Type {
+			case -1:
+				pl += k
+			case 1:
+				for i := 0; i < k && cl < len(toParent); i++ {
+					toParent[cl] = -1
+					cl++
+				}
+			default:
+				for i := 0; i < k && cl < len(toParent); i++ {
+					toParent[cl] = pl
+					cl++
+					pl++
+				}
 			}
 		}
 	}
 	for _, l := range lines {
-		if l.cur < len(toParent) && toParent[l.cur] >= 0 {
-			passed = append(passed, blameLine{final: l.final, cur: toParent[l.cur]})
-			continue
+		switch {
+		case l.cur < headLines:
+			passed = append(passed, l)
+		case l.cur >= cEnd:
+			passed = append(passed, blameLine{final: l.final, cur: l.cur + shift})
+		case l.cur-headLines < len(toParent) && toParent[l.cur-headLines] >= 0:
+			passed = append(passed, blameLine{final: l.final, cur: toParent[l.cur-headLines]})
+		default:
+			kept = append(kept, l)
 		}
-		kept = append(kept, l)
 	}
 	return passed, kept, nil
+}
+
+// commonLines sets aside the whole lines a and b start and end with: head
+// is the byte length of the shared start (the same in both), and amid and
+// bmid are what is left between it and the shared end.
+func commonLines(a, b string) (head int, amid, bmid string) {
+	for a != "" && b != "" {
+		la, lb := lineEnd(a), lineEnd(b)
+		if a[:la] != b[:lb] {
+			break
+		}
+		a, b, head = a[la:], b[lb:], head+la
+	}
+	for a != "" && b != "" {
+		la := strings.LastIndexByte(a[:len(a)-1], '\n') + 1
+		lb := strings.LastIndexByte(b[:len(b)-1], '\n') + 1
+		if a[la:] != b[lb:] {
+			break
+		}
+		a, b = a[:la], b[:lb]
+	}
+	return head, a, b
 }

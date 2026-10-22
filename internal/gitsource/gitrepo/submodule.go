@@ -198,20 +198,27 @@ func (r *Repo) noLinksOnPath(p string) error {
 			return fmt.Errorf("%w: stat %s: %v", ErrInvalidArgument, q, err)
 		}
 		if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: %s is not a directory", ErrInvalidArgument, q)
+			return fmt.Errorf("%w: %s, on the submodule's path, is a link or a file", ErrInvalidArgument, q)
 		}
 	}
 	return nil
 }
 
 // openSubmodule opens the repository at p. Its .git is reached through the
-// caller's filesystem, its worktree through the guard, as Open does.
+// caller's filesystem, its worktree through the guard, as Open does. It has
+// this repository's limits: they are the operator's, and a submodule's
+// checkout expands a tree as the superproject's does.
 func (r *Repo) openSubmodule(p string) (*Repo, error) {
 	base, err := r.base.Chroot(p)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", p, err)
 	}
-	return Open(base)
+	sub, err := Open(base)
+	if err != nil {
+		return nil, err
+	}
+	sub.SetLimits(r.limits)
+	return sub, nil
 }
 
 // SubmoduleUpdate checks the submodule name out at the commit HEAD records
