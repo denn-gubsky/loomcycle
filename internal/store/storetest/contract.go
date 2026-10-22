@@ -647,14 +647,30 @@ func Run(t *testing.T, factory Factory) {
 		// (hook DB methods are Postgres-only). Guards the BUG-2 class:
 		// a shifted placeholder/scan that the SQLite path can't catch.
 	}
+	// The subtests run in parallel. Each builds its own store, and on
+	// Postgres that is a freshly migrated schema: run one after another the
+	// thousand-odd migrations were the whole cost of the CI job (~800s).
+	// sem caps how many stores exist at once, because each holds a connection
+	// pool of its own and Postgres refuses past max_connections (100 by
+	// default), whatever -parallel a machine with many cores picks.
+	sem := make(chan struct{}, contractParallelism)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			s, cleanup := factory(t)
 			defer cleanup()
 			tc.fn(t, s)
 		})
 	}
 }
+
+// contractParallelism bounds the contract subtests running at once. A
+// Postgres store opens up to 8 connections plus 2 to create its schema, so 6
+// stay under the default max_connections of 100 alongside the other
+// top-level tests of the package.
+const contractParallelism = 6
 
 func testCreateAndGetSession(t *testing.T, s store.Store) {
 	ctx := context.Background()

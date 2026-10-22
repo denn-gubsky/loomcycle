@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -101,19 +102,21 @@ func (f *runSetFixture) eval(runID, emitterRunID string) string {
 	return id
 }
 
-var runSetPendingSeq int
+// runSetPendingSeq keeps pending ids unique across the contract's parallel
+// subtests.
+var runSetPendingSeq atomic.Int64
 
 // pending enqueues a consolidation row naming the session and, when given,
 // the run.
 func (f *runSetFixture) pending(sessionID, runID string) string {
 	f.t.Helper()
 	// The id starts with the run it names, else the session.
-	runSetPendingSeq++
+	seq := runSetPendingSeq.Add(1)
 	owner := runID
 	if owner == "" {
 		owner = sessionID
 	}
-	id := fmt.Sprintf("%s/mp%d", owner, runSetPendingSeq)
+	id := fmt.Sprintf("%s/mp%d", owner, seq)
 	if err := f.s.MemoryPendingEnqueue(context.Background(), store.MemoryPendingRow{
 		ID: id, TenantID: f.tenant, Scope: store.MemoryScopeUser, ScopeID: "alice",
 		Payload: json.RawMessage(`{"m":"hi"}`), SourceSessionID: sessionID, SourceRunID: runID,
