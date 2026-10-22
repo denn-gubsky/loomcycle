@@ -446,6 +446,14 @@ func ceilCrypto(ctx context.Context, def mergedDef, base *mergedDef, held string
 // nothing may store anything; one narrowed to some names may store only a
 // subset of them, plus what the forked version already allowed, and may not
 // leave the field unset unless the forked version did.
+//
+// The ceiling is the UNION of the author's names and the forked version's,
+// as for crypto_scopes, and that is deliberate (RFC EW D7, the owner's call
+// after the post-merge review): a fork may keep what it forked, and an author
+// may add what its own shell holds, so one definition can hold names that
+// were each reachable separately. The operator's two env lists stay the hard
+// ceiling, and the stricter forms (the author's list alone, or the
+// intersection) were considered and declined.
 func ceilShellCreds(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
 	author := tools.PolicyOf(ctx).ShellCreds
 	if !author.Set {

@@ -86,3 +86,74 @@ func TestBashboxFallback_ShellCredentialsKeepsTheCommandBinding(t *testing.T) {
 		})
 	}
 }
+
+// envValue is name's value in env and whether it is set at all.
+func envValue(env []string, name string) (string, bool) {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, name+"=") {
+			return kv[len(name)+1:], true
+		}
+	}
+	return "", false
+}
+
+// RFC EW D6: a credential name the agent's shell_credentials narrowed away
+// reaches the Bashbox fallback from neither source. The operator's host
+// allowlist admits GITHUB_TOKEN from the host environment too; an agent that
+// gave the name up gets neither the stored credential nor the host variable,
+// for every command (the agent narrowed the name, not a binding). A host
+// variable that is not one of the operator's shell credentials (LANG) is
+// untouched, and an agent that did not narrow keeps today's behaviour.
+func TestBashboxFallback_ShellCredentialsWithholdsTheSameNamedHostVar(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "host-value")
+	t.Setenv("LANG", "C.UTF-8")
+	for _, c := range []struct {
+		name     string
+		resolve  CredEnvResolver
+		declared *config.CredentialNames
+		command  string
+		want     string // GITHUB_TOKEN's value, "" when it must be unset
+	}{
+		{"absent: git gets the host variable, as before", shellCredResolver, nil, "git", "host-value"},
+		{"absent: gh gets its stored credential over the host one", shellCredResolver, nil, "gh", "v-GITHUB_TOKEN"},
+		{"empty: git gets neither", shellCredResolver, names(), "git", ""},
+		{"empty: gh gets neither", shellCredResolver, names(), "gh", ""},
+		{"keeps another name: git gets neither", shellCredResolver, names("NPM_TOKEN"), "git", ""},
+		{"keeps it: git gets the host variable", shellCredResolver, names("GITHUB_TOKEN"), "git", "host-value"},
+		{"keeps it: gh gets its stored credential", shellCredResolver, names("GITHUB_TOKEN"), "gh", "v-GITHUB_TOKEN"},
+		{"no credential resolver: still withheld", nil, names(), "git", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := &Bashbox{
+				FallbackAllowedEnv:   []string{"GITHUB_TOKEN", "LANG"},
+				FallbackAllowedCreds: []string{"gh:GITHUB_TOKEN", "NPM_TOKEN"},
+				CredResolve:          c.resolve,
+			}
+			env, _ := b.fallbackEnv(withShellCreds(c.declared), c.command)
+			got, set := envValue(env, "GITHUB_TOKEN")
+			if c.want == "" && set {
+				t.Errorf("GITHUB_TOKEN reached the command (%q); the agent narrowed it away", got)
+			}
+			if c.want != "" && got != c.want {
+				t.Errorf("GITHUB_TOKEN = %q, want %q", got, c.want)
+			}
+			if v, _ := envValue(env, "LANG"); v != "C.UTF-8" {
+				t.Errorf("LANG = %q; a host variable that is not a shell credential must pass", v)
+			}
+		})
+	}
+}
+
+// The same for the Bash tool, whose host allowlist is the same mechanism.
+func TestBash_ShellCredentialsWithholdsTheSameNamedHostVar(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "host-value")
+	b := &Bash{AllowedExtraEnv: []string{"GITHUB_TOKEN"}, AllowedCreds: []string{"GITHUB_TOKEN"}}
+	env, _ := b.buildEnv(withShellCreds(nil))
+	if v, _ := envValue(env, "GITHUB_TOKEN"); v != "host-value" {
+		t.Errorf("absent: GITHUB_TOKEN = %q, want the host variable as before", v)
+	}
+	env, _ = b.buildEnv(withShellCreds(names()))
+	if _, set := envValue(env, "GITHUB_TOKEN"); set {
+		t.Error("empty: GITHUB_TOKEN reached the command; the agent narrowed it away")
+	}
+}

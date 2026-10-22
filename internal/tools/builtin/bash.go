@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -223,9 +224,11 @@ func (b *Bash) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // The notes say which credentials were left unset and why (mergeCredEnv).
 func (b *Bash) buildEnv(ctx context.Context) (env, notes []string) {
 	// The agent's shell_credentials keep only some of the operator's names
-	// (RFC EW); it never adds one.
-	creds := tools.PolicyOf(ctx).ShellCreds.Filter(b.AllowedCreds)
-	return mergeCredEnv(ctx, scrubbedHostEnv(b.AllowedExtraEnv), creds, b.CredResolve)
+	// (RFC EW); it never adds one, and a name it gave up is not let back in
+	// through the host allowlist either (D6).
+	sc := tools.PolicyOf(ctx).ShellCreds
+	host := withoutEnv(scrubbedHostEnv(b.AllowedExtraEnv), sc.WithheldHostNames(b.AllowedExtraEnv, b.AllowedCreds))
+	return mergeCredEnv(ctx, host, sc.Filter(b.AllowedCreds), b.CredResolve)
 }
 
 // scrubbedHostEnv builds the environment for a host child process: PATH always
@@ -242,6 +245,21 @@ func scrubbedHostEnv(allowedExtra []string) []string {
 		if v := os.Getenv(name); v != "" {
 			out = append(out, name+"="+v)
 		}
+	}
+	return out
+}
+
+// withoutEnv is env without the entries whose names are in names.
+func withoutEnv(env, names []string) []string {
+	if len(names) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if i := strings.IndexByte(kv, '='); i > 0 && slices.Contains(names, kv[:i]) {
+			continue
+		}
+		out = append(out, kv)
 	}
 	return out
 }

@@ -1425,8 +1425,9 @@ func (c *Context) selfNames(ctx context.Context, ident tools.RunIdentityValue) [
 // a shell receives (RFC EW): the NAMES Bash and the Bashbox fallback inject
 // for this run once its agent's shell_credentials narrowed the operator's
 // lists, never a value, so an agent can tell why a variable is unset. A
-// fallback entry keeps its "cmd:NAME" binding. nil when the operator lists
-// no shell credentials at all.
+// fallback entry keeps its "cmd:NAME" binding. It also names the fallback's
+// host variables withheld because the agent gave their names up. nil when
+// the operator lists no shell credentials at all.
 func shellCredentialsReport(cfg *config.Config, sc tools.ShellCredsPolicyValue) map[string]any {
 	if cfg == nil || (len(cfg.Env.BashAllowedCreds) == 0 && len(cfg.Env.BashboxFallbackAllowedCreds) == 0) {
 		return nil
@@ -1443,5 +1444,9 @@ func shellCredentialsReport(cfg *config.Config, sc tools.ShellCredsPolicyValue) 
 		// narrowed: the agent's shell_credentials kept only some of the
 		// operator's names; false means every name the operator lists.
 		"narrowed": sc.Set,
+		// Host variables the operator admits to fallback commands that are
+		// withheld because their name is a credential the agent gave up
+		// (D6). Bash has no operator host allowlist to report.
+		"bashbox_fallback_withheld_env": nonNilStrings(sc.WithheldHostNames(cfg.Env.BashboxFallbackAllowedEnv, fallbackCredNames(cfg.Env.BashboxFallbackAllowedCreds))),
 	}
 }

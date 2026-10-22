@@ -255,9 +255,12 @@ func (b *Bashbox) fallbackProxy(name, hostRoot string, readOnly bool) commands.C
 // The notes say which credentials were left unset and why (mergeCredEnv).
 func (b *Bashbox) fallbackEnv(ctx context.Context, command string) (env, notes []string) {
 	// The agent's shell_credentials keep only some of the names bound to this
-	// command (RFC EW); a "cmd:NAME" binding stays its command's.
-	creds := tools.PolicyOf(ctx).ShellCreds.Filter(b.fallbackCredsFor(command))
-	return mergeCredEnv(ctx, scrubbedHostEnv(b.FallbackAllowedEnv), creds, b.CredResolve)
+	// command (RFC EW); a "cmd:NAME" binding stays its command's. A name the
+	// agent gave up is not let back in through the host allowlist, for any
+	// command (D6): the agent narrowed the name, not a binding.
+	sc := tools.PolicyOf(ctx).ShellCreds
+	host := withoutEnv(scrubbedHostEnv(b.FallbackAllowedEnv), sc.WithheldHostNames(b.FallbackAllowedEnv, fallbackCredNames(b.FallbackAllowedCreds)))
+	return mergeCredEnv(ctx, host, sc.Filter(b.fallbackCredsFor(command)), b.CredResolve)
 }
 
 // fallbackCredsFor names the credentials injected into the host command
@@ -277,6 +280,18 @@ func (b *Bashbox) fallbackCredsFor(command string) []string {
 			continue
 		}
 		names = append(names, name)
+	}
+	return names
+}
+
+// fallbackCredNames are the credential names in the operator's fallback list,
+// whatever command each is bound to.
+func fallbackCredNames(entries []string) []string {
+	var names []string
+	for _, e := range entries {
+		if _, name, err := config.ParseBashboxFallbackCred(e); err == nil {
+			names = append(names, name)
+		}
 	}
 	return names
 }
