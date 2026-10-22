@@ -299,7 +299,6 @@ const (
 	cutEmbedded    = "move cmd/loomcycle/embedded under internal/ (cmd<->api<->cli cycle)"
 	cutConfig      = "config's validators move down to config's layer (config hub)"
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
-	cutStoretest   = "storetest stops importing channels and limits (store<->channels/limits cycle)"
 	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
 	cutRunIdentity = "run identity moves below tools"
 )
@@ -326,9 +325,6 @@ var knownViolations = []knownViolation{
 
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
-
-	{"internal/store/storetest", "internal/channels", cutStoretest},
-	{"internal/store/storetest", "internal/limits", cutStoretest},
 
 	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
 	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},
