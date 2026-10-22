@@ -292,27 +292,38 @@ func Calibrate(ctx context.Context, corpus CalibrationCorpus, emb providers.Embe
 		return CalibrationReport{}, fmt.Errorf("calibrate: no embedder")
 	}
 
-	texts := make([]string, 0, len(corpus.Bases)+len(corpus.Duplicates)+len(corpus.Related))
-	texts = append(texts, corpus.Bases...)
+	probes := make([]string, 0, len(corpus.Duplicates)+len(corpus.Related))
 	for _, p := range corpus.Duplicates {
-		texts = append(texts, p.Text)
+		probes = append(probes, p.Text)
 	}
 	for _, p := range corpus.Related {
-		texts = append(texts, p.Text)
+		probes = append(probes, p.Text)
 	}
 
-	vecs, err := emb.Embed(ctx, texts)
+	// Bases stand for stored facts and are embedded as stored text. Probes stand
+	// for the new fact the merge pass compares with them, which it looks up
+	// through Memory recall — and recall embeds its query in the embedder's query
+	// mode. The band has to be measured on that same comparison: one measured
+	// document-against-document would misplace the merge threshold for an
+	// embedder whose two modes differ. For one without a query mode both calls
+	// are Embed and nothing changes.
+	baseVecs, err := emb.Embed(ctx, corpus.Bases)
 	if err != nil {
 		return CalibrationReport{}, fmt.Errorf("embed corpus: %w", err)
 	}
-	if len(vecs) != len(texts) {
-		return CalibrationReport{}, fmt.Errorf("embed corpus: got %d vectors for %d texts", len(vecs), len(texts))
+	if len(baseVecs) != len(corpus.Bases) {
+		return CalibrationReport{}, fmt.Errorf("embed corpus: got %d vectors for %d bases", len(baseVecs), len(corpus.Bases))
+	}
+	probeVecs, err := providers.EmbedQuery(ctx, emb, probes)
+	if err != nil {
+		return CalibrationReport{}, fmt.Errorf("embed corpus probes: %w", err)
+	}
+	if len(probeVecs) != len(probes) {
+		return CalibrationReport{}, fmt.Errorf("embed corpus probes: got %d vectors for %d probes", len(probeVecs), len(probes))
 	}
 
-	nBases := len(corpus.Bases)
-	baseVecs := vecs[:nBases]
-	dupVecs := vecs[nBases : nBases+len(corpus.Duplicates)]
-	relVecs := vecs[nBases+len(corpus.Duplicates):]
+	dupVecs := probeVecs[:len(corpus.Duplicates)]
+	relVecs := probeVecs[len(corpus.Duplicates):]
 
 	var pairs []ScoredPair
 	collect := func(probes []LabeledProbe, probeVecs [][]float32, ownClass string) {
@@ -338,8 +349,8 @@ func Calibrate(ctx context.Context, corpus CalibrationCorpus, emb providers.Embe
 	// A driver that does not know its own width reports 0 (the v1.33.1
 	// dimension: 0 bug). The vectors are right here, so report what was
 	// actually returned rather than propagating the zero.
-	if info.Dimension == 0 && len(vecs[0]) > 0 {
-		info.Dimension = len(vecs[0])
+	if info.Dimension == 0 && len(baseVecs[0]) > 0 {
+		info.Dimension = len(baseVecs[0])
 	}
 
 	rep := Analyze(corpus.Name, info, pairs, configured)
