@@ -4754,7 +4754,34 @@ button.primary:disabled {
   font-size: 12px;
   color: var(--muted, #9aa);
 }
-/* Context-size gauge in the live-run header: a thin bar + "ctx X/Y (Z%)". */
+/* Run metrics strip under the live-run header (RunMetricsBar): the serving
+   provider/model, ▲ input / ▼ output, tokens per second, and the context
+   gauge. Wraps rather than truncates in a narrow ensemble cell. */
+.run-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border, #2a2a32);
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-soft, #9aa);
+}
+.run-metrics-item {
+  white-space: nowrap;
+}
+.run-metrics-model {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.run-metrics-rate.live {
+  color: var(--accent);
+}
+/* Context gauge: a thin bar + "ctx X / Y (Z%)" — in the run metrics strip and
+   the run page header. */
 .ctx-gauge {
   display: inline-flex;
   align-items: center;
@@ -4777,11 +4804,11 @@ button.primary:disabled {
   height: 100%;
   background: var(--accent);
 }
-.ctx-bar-fill.ctx-mid {
+.ctx-bar-fill[data-level="warn"] {
   background: var(--running, #f0a040);
 }
-.ctx-bar-fill.ctx-high {
-  background: var(--error, #e0556a);
+.ctx-bar-fill[data-level="full"] {
+  background: var(--danger, #cc3333);
 }
 .live-run-cancel {
   margin-left: auto;
