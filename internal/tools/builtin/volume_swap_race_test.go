@@ -59,7 +59,7 @@ func newSwapRaceAt(t *testing.T, root, outside, linkTarget, inside, outsideConte
 		t.Fatal(err)
 	}
 	if err := exchangePaths(d, swap); err != nil {
-		t.Skipf("atomic rename exchange unsupported here: %v", err)
+		skipWithoutExchange(t, err)
 	}
 	if err := exchangePaths(d, swap); err != nil {
 		t.Fatal(err)
@@ -86,6 +86,18 @@ func newSwapRaceAt(t *testing.T, root, outside, linkTarget, inside, outsideConte
 	})
 	t.Cleanup(s.stop)
 	return s
+}
+
+// skipWithoutExchange skips a swap-race test on a filesystem with no atomic
+// rename exchange. CI sets LOOMCYCLE_TEST_REQUIRE_EXCHANGE so a race proof can
+// never pass by being skipped: there it fails loudly instead, since CI runs
+// without -v and a skip would leave the package green.
+func skipWithoutExchange(t *testing.T, err error) {
+	t.Helper()
+	if os.Getenv("LOOMCYCLE_TEST_REQUIRE_EXCHANGE") != "" {
+		t.Fatalf("atomic rename exchange unsupported here and LOOMCYCLE_TEST_REQUIRE_EXCHANGE is set: %v", err)
+	}
+	t.Skipf("atomic rename exchange unsupported here: %v", err)
 }
 
 // outsideUntouched fails the test if anything outside the volume changed:

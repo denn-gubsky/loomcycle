@@ -36,7 +36,7 @@ func purgeRace(t *testing.T, root, linkTarget string) (escapes, purged int) {
 		t.Fatal(err)
 	}
 	if err := exchangePaths(eph, swap); err != nil {
-		t.Skipf("atomic rename exchange unsupported here: %v", err)
+		skipWithoutExchange(t, err)
 	}
 	if err := exchangePaths(eph, swap); err != nil {
 		t.Fatal(err)

@@ -110,6 +110,10 @@ jobs:
         # deliberate race under these exact flags: `WARNING: DATA RACE`, test
         # FAILs). Drop the -gcflags to get the old coverage back;
         # it costs ~8x in wall-clock, nothing else.
+        env:
+          # The symlink swap-race tests (RFC ES #1) skip where the filesystem
+          # has no atomic rename exchange. CI must run them, not skip them.
+          LOOMCYCLE_TEST_REQUIRE_EXCHANGE: "1"
         run: go test -race -gcflags='modernc.org/...=-race=false' -timeout 3600s ./...
 
       - name: gofmt check
