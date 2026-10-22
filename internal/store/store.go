@@ -3982,20 +3982,7 @@ type CredentialDefStore interface {
 	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (CredentialDefRow, error)
 	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]CredentialDefRow, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
-	// SystemMarkerGet reports whether the runtime recorded the named one-time
-	// event; SystemMarkerSet records it (idempotent). A marker is a row of
-	// credential_defs under SystemMarkerScope — the one table with a free key,
-	// so no schema change — and, unlike every other row there, holds no
-	// sealed ciphertext: only a non-secret JSON note. No credential surface
-	// reads that scope (they take tenant | user | agent). Used by the boot
-	// rewrap of unpeppered token hashes (RFC ES F3).
-	SystemMarkerGet(ctx context.Context, name string) (bool, error)
-	SystemMarkerSet(ctx context.Context, name string) error
 }
-
-// SystemMarkerScope is the credential_defs scope that holds system markers
-// (CredentialDefStore.SystemMarkerGet). Outside the credential scopes.
-const SystemMarkerScope = "system"
 
 // DirentStore persists the Path VFS naming layer.
 type DirentStore interface {
