@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -336,6 +337,29 @@ func TestCheckPrincipalTenantsAgainstTokens_RefusesCaseFoldCollision(t *testing.
 	}
 	if err := CheckPrincipalTenantsAgainstTokens(ctx, s, []string{"", "acme", "globex"}); err != nil {
 		t.Errorf("identical spellings: err = %v, want nil", err)
+	}
+}
+
+// A tenant whose only tokens are per-user ones, under a name another tenant
+// minted later, is still a known tenant. The names listing merged rows by
+// name and kept the newest row's tenant, so such a tenant was missing and its
+// case-twin passed the check.
+func TestCheckPrincipalTenantsAgainstTokens_SeesATenantBehindASharedUserTokenName(t *testing.T) {
+	_, ctx, s, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	base := time.Now().Add(-time.Hour)
+	for i, tenant := range []string{"acme", "zeta"} {
+		if _, err := s.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+			DefID: fmt.Sprintf("ot-shared-%d", i), Name: "u-alice", TenantID: tenant, Subject: "alice",
+			TokenHash: fmt.Sprintf("h-shared-%d", i), AllowedScopes: []string{"runs:read"},
+			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", tenant, err)
+		}
+	}
+	err := CheckPrincipalTenantsAgainstTokens(ctx, s, []string{"Acme"})
+	if err == nil || !strings.Contains(err.Error(), "differs only by case") {
+		t.Errorf("err = %v, want a case-collision error against acme", err)
 	}
 }
 

@@ -99,7 +99,9 @@ type UntaggedTokenRows struct {
 }
 
 // scanTokenHashes reads every token row and sorts it by form under h. The
-// table has no list-all; names then rows per name.
+// table has no list-all; names then rows per name. The names listing has one
+// row per (tenant, name) while the by-name read returns every tenant's rows,
+// so each name is read once.
 func scanTokenHashes(ctx context.Context, st store.Store, h auth.TokenHasher) (UntaggedTokenRows, error) {
 	names, err := st.OperatorTokenDefListNames(ctx)
 	if err != nil {
@@ -107,7 +109,12 @@ func scanTokenHashes(ctx context.Context, st store.Store, h auth.TokenHasher) (U
 	}
 	now := time.Now()
 	var res UntaggedTokenRows
+	seen := make(map[string]bool, len(names))
 	for _, n := range names {
+		if seen[n.Name] {
+			continue
+		}
+		seen[n.Name] = true
 		rows, err := st.OperatorTokenDefListByName(ctx, n.Name)
 		if err != nil {
 			return UntaggedTokenRows{}, err
