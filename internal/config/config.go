@@ -6538,6 +6538,11 @@ func (c *Config) EmbedderKey(provider string) (string, error) {
 		if declared && pc.Auth != nil && api != EmbedderAPIBedrock {
 			return "", fmt.Errorf("memory.embedder: provider %q authenticates with AWS credentials (auth:), which the %q embedder does not speak — set memory.embedder.api: %s", provider, api, EmbedderAPIBedrock)
 		}
+		if api == EmbedderAPIBedrock {
+			if err := c.checkBedrockEmbedder(provider, pc, declared); err != nil {
+				return "", err
+			}
+		}
 		return api, nil
 	}
 	if declared && pc.Auth != nil {
@@ -6559,6 +6564,37 @@ func (c *Config) EmbedderKey(provider string) (string, error) {
 // InvokeModel embeddings, the one embedder protocol a provider with an auth:
 // block can speak.
 const EmbedderAPIBedrock = "bedrock"
+
+// checkBedrockEmbedder holds memory.embedder.api: bedrock to the one place the
+// provider's AWS credentials may go (RFC EV §4): the provider's own Bedrock
+// runtime host, signed as bedrock. The embedder block's own base_url and
+// api_key_env are refused rather than dropped, so a config cannot read as if
+// it pointed the credentials somewhere else.
+func (c *Config) checkBedrockEmbedder(provider string, pc ProviderConfig, declared bool) error {
+	if !declared || pc.Auth == nil {
+		return fmt.Errorf("memory.embedder: api: bedrock needs a provider that authenticates with AWS credentials (an auth: block); provider %q has none", provider)
+	}
+	if c.Memory.Embedder.BaseURL != "" {
+		return fmt.Errorf("memory.embedder.base_url cannot be set with api: bedrock: the embedder uses provider %q's own Bedrock host, the only one its AWS credentials may go to", provider)
+	}
+	if c.Memory.Embedder.APIKeyEnv != "" {
+		return fmt.Errorf("memory.embedder.api_key_env cannot be set with api: bedrock: the embedder authenticates with provider %q's AWS credentials", provider)
+	}
+	u, err := url.Parse(pc.BaseURL)
+	if err != nil {
+		return fmt.Errorf("memory.embedder: provider %q base_url: %w", provider, err)
+	}
+	if awsauth.DefaultService(pc.BaseURL) == "bedrock-mantle" {
+		return fmt.Errorf("memory.embedder: provider %q is on bedrock-mantle, which serves no embeddings; api: bedrock needs a provider on bedrock-runtime.%s.amazonaws.com", provider, pc.Auth.Region)
+	}
+	if want := "bedrock-runtime." + pc.Auth.Region + ".amazonaws.com"; u.Scheme != "https" || u.Host != want {
+		return fmt.Errorf("memory.embedder: api: bedrock needs provider %q's base_url on https://%s, not %q", provider, want, pc.BaseURL)
+	}
+	if pc.Auth.Service != "" && pc.Auth.Service != "bedrock" {
+		return fmt.Errorf("memory.embedder: api: bedrock signs as service \"bedrock\"; provider %q sets auth.service %q", provider, pc.Auth.Service)
+	}
+	return nil
+}
 
 // ExpandModelAlias resolves a model-alias (a key in the top-level models:
 // map) to its concrete provider/model, plus (RFC BG) a model_pattern glob when

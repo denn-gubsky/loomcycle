@@ -10,6 +10,7 @@ package config
 // (verified: go list -deps of each driver excludes internal/config).
 import (
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/anthropic"
+	_ "github.com/denn-gubsky/loomcycle/internal/providers/bedrock"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/deepseek"
 	_ "github.com/denn-gubsky/loomcycle/internal/providers/gemini"
