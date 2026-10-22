@@ -285,6 +285,18 @@ func (b *boot) buildTools() {
 	}
 	b.allTools = append(b.allTools, volumeDefTool)
 
+	// RFC FB — the Git tool: repository work inside bound volumes through
+	// go-git, in process. Local ops need only the tool; the network is late-
+	// bound below with the git-source settings (off unless the operator
+	// lists hosts) and gated per agent by git_remote.
+	gitTool := &builtin.Git{
+		PushHosts:    cfg.Env.GitPushHosts,
+		PushMaxBytes: cfg.Env.GitPushMaxBytes,
+		AuthorName:   cfg.Env.GitAuthorName,
+		AuthorEmail:  cfg.Env.GitAuthorEmail,
+	}
+	b.allTools = append(b.allTools, gitTool)
+
 	// RFC AR — the CredentialDef tool (secure per-tenant credential store).
 	// Engine (store + Sealer) is late-bound below, once the store + the master
 	// key (LOOMCYCLE_SECRET_KEY) are available. In-loop with tenant/user/agent
@@ -430,6 +442,7 @@ func (b *boot) buildTools() {
 	b.skillDefTool = skillDefTool
 	b.teamDefTool = teamDefTool
 	b.volumeDefTool = volumeDefTool
+	b.gitTool = gitTool
 	b.credentialDefTool = credentialDefTool
 	b.cryptoTool = cryptoTool
 	b.pathTool = pathTool
