@@ -179,6 +179,7 @@ func Run(t *testing.T, factory Factory) {
 		{"FinishRunClearsThePause", testFinishRunClearsThePause},
 		{"ClaimPausedRunSucceedsOnce", testClaimPausedRunSucceedsOnce},
 		{"UnclaimPausedRunLeavesAnEndedRunEnded", testUnclaimPausedRunLeavesAnEndedRunEnded},
+		{"TakeRunUserSlotReportsEachSlotOnce", testTakeRunUserSlotReportsEachSlotOnce},
 		{"SnapshotRestoreRunKeepsItsTenant", testSnapshotRestoreRunKeepsItsTenant},
 		{"SnapshotRestoreRunKeepsItsParentRun", testSnapshotRestoreRunKeepsItsParentRun},
 		{"SnapshotRestoreRunKeepsItsDedupKeys", testSnapshotRestoreRunKeepsItsDedupKeys},
@@ -5106,6 +5107,76 @@ func testClaimPausedRunSucceedsOnce(t *testing.T, s store.Store) {
 	}
 	if ok, err := s.ClaimPausedRun(ctx, "run_does_not_exist"); err != nil || ok {
 		t.Errorf("ClaimPausedRun of a missing row = %v, %v; want false, nil", ok, err)
+	}
+}
+
+// TakeRunUserSlot reports the shared per-user slot each start path recorded,
+// to exactly one caller (RFC ES C4): a resume gives a stopped replica's slot
+// back once, and never one its run did not take. A row written without the
+// record (restored, or from before the column) is reported unrecorded, once.
+func testTakeRunUserSlotReportsEachSlotOnce(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	sess, _ := s.CreateSession(ctx, "t", "a", "u")
+	take := func(id string) store.RunUserSlot {
+		t.Helper()
+		got, err := s.TakeRunUserSlot(ctx, id)
+		if err != nil {
+			t.Fatalf("TakeRunUserSlot(%s): %v", id, err)
+		}
+		return got
+	}
+	held, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_slot_held", UserID: "u", UserSlot: true})
+	none, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_slot_none", UserID: "u"})
+	queued, err := s.CreateQueuedRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_slot_queued", UserID: "u"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartQueuedRun(ctx, queued.ID, store.RunIdentity{UserSlot: true}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := s.CreateConfiguredRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_slot_draft", UserID: "u"}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.StartConfiguredRun(ctx, draft.ID, store.RunIdentity{UserSlot: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{held.ID, queued.ID, draft.ID} {
+		if got := take(id); got != store.RunUserSlotHeld {
+			t.Errorf("first take of %s = %v, want held", id, got)
+		}
+		if got := take(id); got != store.RunUserSlotNone {
+			t.Errorf("second take of %s = %v, want none", id, got)
+		}
+	}
+	if got := take(none.ID); got != store.RunUserSlotNone {
+		t.Errorf("take of a run admitted with no slot = %v, want none", got)
+	}
+
+	// A resumed run its new process counted holds one again.
+	if err := s.MarkRunUserSlot(ctx, held.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := take(held.ID); got != store.RunUserSlotHeld {
+		t.Errorf("take after MarkRunUserSlot = %v, want held", got)
+	}
+
+	// A restored row carries no record.
+	if _, err := s.SnapshotRestoreRun(ctx, store.Run{ID: "run_slot_restored", SessionID: sess.ID, AgentID: "a_slot_restored", UserID: "u",
+		Status: store.RunRunning, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := take("run_slot_restored"); got != store.RunUserSlotUnrecorded {
+		t.Errorf("first take of a restored row = %v, want unrecorded", got)
+	}
+	if got := take("run_slot_restored"); got != store.RunUserSlotNone {
+		t.Errorf("second take of a restored row = %v, want none", got)
+	}
+	if got := take("run_does_not_exist"); got != store.RunUserSlotNone {
+		t.Errorf("take of a missing row = %v, want none", got)
+	}
+	if err := s.MarkRunUserSlot(ctx, "run_does_not_exist"); err != nil {
+		t.Errorf("MarkRunUserSlot of a missing row: %v, want nil", err)
 	}
 }
 

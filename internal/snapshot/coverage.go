@@ -124,7 +124,10 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "undrained rows only, captured before memory (at-least-once) and restored un-drained"},
 	"runs": {Kind: coverSection, Section: "paused_runs", Backends: onBoth,
 		Secrets: "reported: a literal header value in the run_config's recorded hooks (capture_findings)",
-		Reason:  "only runs with pause_state='paused' travel; per-run secrets are not columns"},
+		// user_slot is deliberately not carried: it names a slot in the source
+		// cluster's user_quotas, which does not travel, so a restored row reads
+		// NULL and its resume gives nothing back (no replica id either).
+		Reason: "only runs with pause_state='paused' travel; per-run secrets are not columns; user_slot is omitted (a source-cluster slot)"},
 	// A restored schedule's run state rides inside its def's entry, so a fire
 	// count never travels without its def. The scheduler re-queries the store
 	// every tick; it caches nothing a restore must refresh.

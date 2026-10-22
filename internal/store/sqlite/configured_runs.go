@@ -99,6 +99,7 @@ func (s *Store) startRun(ctx context.Context, runID string, identity store.RunId
 			-- One way: a start may withhold the user's scope, never give it back.
 			credentials_no_user_scope = MAX(credentials_no_user_scope, ?),
 			run_config              = ?,
+			user_slot               = ?,
 			draft                   = NULL, queued_input = NULL
 		WHERE id = ? AND status = ? AND (? IS NULL OR draft = ?)`,
 		string(store.RunRunning), now, now,
@@ -110,6 +111,7 @@ func (s *Store) startRun(ctx context.Context, runID string, identity store.RunId
 		boolToInt(identity.Isolated),
 		boolToInt(identity.CredentialsNoUserScope),
 		nilIfEmptyRaw(identity.RunConfig),
+		boolToInt(identity.UserSlot),
 		runID, string(from), nilIfEmptyRaw(draft), nilIfEmptyRaw(draft),
 	)
 	if err != nil {
