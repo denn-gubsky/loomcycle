@@ -143,9 +143,16 @@ func (opts EmbedderOptions) HTTPClientOrDefault() *http.Client {
 // modes are "missing API key", "unsupported model", "bad base URL".
 type EmbedderConstructor func(opts EmbedderOptions) (Embedder, error)
 
+// EmbedderValidator checks a memory.embedder block's model and dimensions at
+// config load, for an embedder whose rules config cannot know (which model ids
+// it serves, which output widths). Registered beside the constructor; most
+// embedders have none and are checked when they are built.
+type EmbedderValidator func(model string, dimensions int) error
+
 var (
 	embedderRegistryMu sync.RWMutex
 	embedderRegistry   = map[string]EmbedderConstructor{}
+	embedderValidators = map[string]EmbedderValidator{}
 )
 
 // RegisterEmbedder records a provider-name → constructor mapping.
@@ -157,6 +164,26 @@ func RegisterEmbedder(provider string, ctor EmbedderConstructor) {
 	embedderRegistryMu.Lock()
 	defer embedderRegistryMu.Unlock()
 	embedderRegistry[provider] = ctor
+}
+
+// RegisterEmbedderValidator records the config-load check for the embedder
+// registered under key. Later wins, as for RegisterEmbedder.
+func RegisterEmbedderValidator(key string, v EmbedderValidator) {
+	embedderRegistryMu.Lock()
+	defer embedderRegistryMu.Unlock()
+	embedderValidators[key] = v
+}
+
+// ValidateEmbedder runs the validator registered for key, if any. No validator
+// is not an error.
+func ValidateEmbedder(key, model string, dimensions int) error {
+	embedderRegistryMu.RLock()
+	v := embedderValidators[key]
+	embedderRegistryMu.RUnlock()
+	if v == nil {
+		return nil
+	}
+	return v(model, dimensions)
 }
 
 // NewEmbedder looks up the registered constructor for `provider` and
