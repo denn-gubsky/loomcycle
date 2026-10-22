@@ -53,3 +53,29 @@ providers:
 # tiers:
 #   middle: !prepend [bedrock-sonnet]
 #   low:    !prepend [bedrock-haiku]
+
+# EMBEDDINGS (example, commented so this preset changes nothing on its own).
+# memory.embedder can embed through Bedrock with the same AWS credentials:
+# `api: bedrock` speaks InvokeModel to the named provider's runtime host. Cohere
+# Embed v4 through the EU profile; v4 serves 256, 512, 1024 or 1536 dimensions
+# (default 1536).
+#
+# models:
+#   cohere-embed: { provider: bedrock-claude, model: eu.cohere.embed-v4:0, kind: embedder }
+# memory:
+#   embedder:
+#     model: cohere-embed
+#     api: bedrock
+#     dimensions: 1024
+#
+# RESIDENCY. eu.cohere.embed-v4:0 is a cross-region profile: text may be
+# processed in any of its EU destination regions, not only the one above. For
+# text that must stay in the region, use cohere.embed-multilingual-v3 (in-region
+# where Bedrock serves it; 1024 dimensions, leave `dimensions` at 0 or 1024).
+# Do not use global.* unless processing outside your geography is acceptable.
+#
+# IAM. bedrock:InvokeModel on the inference-profile ARN in this region AND on
+# the foundation model (arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0)
+# in every destination region of the profile. Switching the embedder or its
+# dimensions on a populated store needs POST /v1/_memory/reembed and a fresh
+# `loomcycle memory-calibrate`. docs/PROVIDERS.md has the details.
