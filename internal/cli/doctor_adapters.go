@@ -6,7 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // doctor_adapters.go — narrow wrappers around config.Config so the
@@ -70,7 +70,7 @@ func (r *realConfig) Embedder() (*DoctorEmbedder, error) {
 	if err != nil {
 		return nil, err
 	}
-	e, err := embedders.Build(r.cfg)
+	e, err := wiring.Embedder(r.cfg)
 	if err != nil {
 		return nil, err
 	}

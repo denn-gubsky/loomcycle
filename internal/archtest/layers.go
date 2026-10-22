@@ -176,6 +176,7 @@ var layers = []layer{
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",
+			"internal/wiring",
 		},
 	},
 	{
@@ -288,6 +289,8 @@ var allowedSideways = []subsystemEdge{
 	{"internal/tools/builtin", "internal/teamrun"},
 	{"internal/tools/builtin", "internal/throughput"},
 	{"internal/tools/builtin", "internal/tools"},
+	{"internal/wiring", "internal/lanegate"},
+	{"internal/wiring", "internal/providerbuild"},
 
 	// L6
 	{"internal/api", "internal/webui"},
@@ -326,8 +329,6 @@ var knownViolations = []knownViolation{
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
 
-	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
-	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},
 	{"internal/memory/reranker", "internal/lanegate", cutMemWiring},
 	{"internal/memory/reranker", "internal/providerbuild", cutMemWiring},
 	{"internal/memory/unitgen", "internal/lanegate", cutMemWiring},

@@ -1,4 +1,4 @@
-package embedders
+package wiring
 
 import (
 	"context"
@@ -14,12 +14,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
-// TestBuildGated_EmbeddingsAreCountedInTheProvidersEmbedderLane — the server's
+// TestGatedEmbedder_EmbeddingsAreCountedInTheProvidersEmbedderLane — the server's
 // embedder takes the embedder lane of the provider its block RESOLVED to (here
 // through a models: alias that carries the provider): with that lane at 1, four
-// embeddings asked for at once reach the endpoint one at a time. Build, the
+// embeddings asked for at once reach the endpoint one at a time. Embedder, the
 // CLI's construction, is the same embedder with no lane.
-func TestBuildGated_EmbeddingsAreCountedInTheProvidersEmbedderLane(t *testing.T) {
+func TestGatedEmbedder_EmbeddingsAreCountedInTheProvidersEmbedderLane(t *testing.T) {
 	var mu sync.Mutex
 	inFlight, peak, hits := 0, 0, 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +48,7 @@ func TestBuildGated_EmbeddingsAreCountedInTheProvidersEmbedderLane(t *testing.T)
 		mu.Unlock()
 		e, err := build()
 		if err != nil || e == nil {
-			t.Fatalf("build = %v, %v", e, err)
+			t.Fatalf("buildEmbedder = %v, %v", e, err)
 		}
 		var wg sync.WaitGroup
 		for i := 0; i < 4; i++ {
@@ -73,7 +73,7 @@ func TestBuildGated_EmbeddingsAreCountedInTheProvidersEmbedderLane(t *testing.T)
 		"ollama": {Lanes: map[string]concurrency.LaneConfig{config.ModelKindEmbedder: {MaxConcurrent: 1}}},
 	})
 	if p := embedAll(func() (providers.Embedder, error) {
-		return BuildGated(cfg, sched)
+		return GatedEmbedder(cfg, sched)
 	}); p != 1 {
 		t.Errorf("gated: %d embeddings at the endpoint at once, want 1 (providers.ollama.lanes.embedder.max_concurrent)", p)
 	}
@@ -83,17 +83,17 @@ func TestBuildGated_EmbeddingsAreCountedInTheProvidersEmbedderLane(t *testing.T)
 	// Control: the same four calls with no lane overlap, so the 1 above is the
 	// lane and not an endpoint that happens to serialise.
 	if p := embedAll(func() (providers.Embedder, error) {
-		return Build(cfg)
+		return Embedder(cfg)
 	}); p < 2 {
 		t.Errorf("ungated: peak %d, want the calls to overlap — the check above proves nothing", p)
 	}
 }
 
-// TestBuildGated_NoEmbedderIsStillNil — an unconfigured embedder must stay a
+// TestGatedEmbedder_NoEmbedderIsStillNil — an unconfigured embedder must stay a
 // nil interface through the gated build: callers test `embedder == nil`.
-func TestBuildGated_NoEmbedderIsStillNil(t *testing.T) {
-	e, err := BuildGated(&config.Config{}, concurrency.NewCallScheduler(nil))
+func TestGatedEmbedder_NoEmbedderIsStillNil(t *testing.T) {
+	e, err := GatedEmbedder(&config.Config{}, concurrency.NewCallScheduler(nil))
 	if err != nil || e != nil {
-		t.Fatalf("BuildGated(no block) = %#v, %v; want nil, nil", e, err)
+		t.Fatalf("GatedEmbedder(no block) = %#v, %v; want nil, nil", e, err)
 	}
 }
