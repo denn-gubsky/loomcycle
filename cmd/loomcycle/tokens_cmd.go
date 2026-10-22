@@ -159,7 +159,7 @@ func runTokensRewrap(args []string, stdout, stderr io.Writer) int {
 	if *dryRun {
 		fmt.Fprintf(stdout, "dry run: would rewrap %d row(s); nothing was changed:\n", len(picked))
 		for _, r := range picked {
-			printTokenRow(stdout, r)
+			printTokenRow(stdout, r, false)
 		}
 		return 0
 	}
@@ -170,7 +170,7 @@ func runTokensRewrap(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "rewrapped %d of %d named row(s):\n", len(moved), len(picked))
 	for _, r := range moved {
-		printTokenRow(stdout, r)
+		printTokenRow(stdout, r, false)
 	}
 	if left := len(res.Live) - len(picked); left > 0 {
 		fmt.Fprintf(stdout, "%d unpeppered row(s) you did not name were left as they are; they still cannot log in\n", left)
@@ -189,11 +189,12 @@ func runTokensRewrap(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printTokenRow prints one row as the review shows it. Every field comes
+// printTokenRow prints one row as the review shows it; review adds how to
+// name it for a rewrap. Every field comes
 // from the database, so a forged row chooses it: each is printed quoted,
 // with control and non-printable characters escaped, so no row can redraw
 // the terminal to hide itself or fake another.
-func printTokenRow(w io.Writer, r store.OperatorTokenDefRow) {
+func printTokenRow(w io.Writer, r store.OperatorTokenDefRow, review bool) {
 	fmt.Fprintf(w, "  %q\n", r.DefID)
 	fmt.Fprintf(w, "      name: %q   tenant: %q   subject: %q\n", r.Name, r.TenantID, r.Subject)
 	quoted := make([]string, 0, len(r.AllowedScopes))
@@ -223,7 +224,12 @@ func printTokenRow(w io.Writer, r store.OperatorTokenDefRow) {
 		fmt.Fprintln(w, "      !!! SUSPICIOUS: no mint writes this row (an odd def_id, or control or non-printable characters). It cannot be rewrapped.")
 		return
 	}
-	fmt.Fprintf(w, "      fingerprint: %s   to rewrap: --def-id %s@%s\n", lchttp.TokenRowFingerprint(r), r.DefID, lchttp.TokenRowFingerprint(r))
+	fp := lchttp.TokenRowFingerprint(r)
+	if review {
+		fmt.Fprintf(w, "      fingerprint: %s   to rewrap: --def-id %s@%s\n", fp, r.DefID, fp)
+		return
+	}
+	fmt.Fprintf(w, "      fingerprint: %s\n", fp)
 }
 
 // printTokenReview lists each live unpeppered row with what it grants, so the
@@ -243,7 +249,7 @@ func printTokenReview(w io.Writer, res lchttp.UntaggedTokenRows) {
 	fmt.Fprintf(w, "\n%d unpeppered row(s) cannot log in until rewrapped:\n\n", len(res.Live))
 	suspicious := 0
 	for _, r := range res.Live {
-		printTokenRow(w, r)
+		printTokenRow(w, r, true)
 		if lchttp.SuspiciousTokenRow(r) {
 			suspicious++
 		}
