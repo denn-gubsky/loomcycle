@@ -26,6 +26,10 @@ jobs:
         go-version: ["1.26.x"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Two commits: the pull request's merge commit and its first parent,
+          # which scripts/ci/select-packages.sh diffs against.
+          fetch-depth: 2
 
       - uses: actions/setup-go@v7
         with:
@@ -61,7 +65,15 @@ jobs:
         # the same tests again under -race.
         run: make bashbox-escape
 
+      # A pull request tests only the packages whose tests can see its change;
+      # main tests everything (RFC EX Phase 1). The job log lists each selected
+      # package and why. vet, build and the escape suite above stay whole.
+      - name: Select packages
+        id: sel
+        run: echo "pkgs=$(scripts/ci/select-packages.sh ./...)" >> "$GITHUB_OUTPUT"
+
       - name: Test (race detector)
+        if: steps.sel.outputs.pkgs != ''
         # Per-package timeout. `-race` instrumentation runs several-fold slower,
         # and `go test ./...` runs package binaries concurrently, so on a
         # CPU-constrained CI runner the largest suites contend for cores. This
@@ -119,7 +131,8 @@ jobs:
           # The symlink swap-race tests (RFC ES #1) skip where the filesystem
           # has no atomic rename exchange. CI must run them, not skip them.
           LOOMCYCLE_TEST_REQUIRE_EXCHANGE: "1"
-        run: go test -race -gcflags='modernc.org/...=-race=false' -timeout 3600s ./...
+          PKGS: ${{ steps.sel.outputs.pkgs }}
+        run: go test -race -gcflags='modernc.org/...=-race=false' -timeout 3600s $PKGS
 
       - name: gofmt check
         run: |
@@ -163,6 +176,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-go@v7
         with:
@@ -170,6 +185,22 @@ jobs:
           # The runner caches an older patch; take the newest so a stdlib fix lands.
           check-latest: true
           cache: true
+
+      # Each step below tests a fixed package set. On a pull request each set is
+      # narrowed to the packages the change can reach, and a step whose set is
+      # empty is skipped; on main every set runs whole (RFC EX Phase 1).
+      - name: Select packages
+        id: sel
+        run: |
+          {
+            echo "store=$(scripts/ci/select-packages.sh ./internal/store/...)"
+            echo "snapshot=$(scripts/ci/select-packages.sh ./internal/snapshot/...)"
+            echo "canary=$(scripts/ci/select-packages.sh ./internal/api/http/)"
+            echo "replicas=$(scripts/ci/select-packages.sh ./cmd/loomcycle/)"
+            echo "coord=$(scripts/ci/select-packages.sh ./internal/coord/...)"
+            echo "sqlmem=$(scripts/ci/select-packages.sh ./internal/sqlmem/...)"
+            echo "builtin=$(scripts/ci/select-packages.sh ./internal/tools/builtin/...)"
+          } >> "$GITHUB_OUTPUT"
 
       # The pgvector ROUND-TRIP contract (set + search + ordering + dimension
       # handling + CASCADE) is opt-in behind LOOMCYCLE_TEST_PG_VECTOR, and it was
@@ -189,9 +220,11 @@ jobs:
             -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
       - name: Postgres store contract
+        if: steps.sel.outputs.store != ''
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
           LOOMCYCLE_TEST_PG_VECTOR: "1"
+          PKGS: ${{ steps.sel.outputs.store }}
         # Explicit -timeout. This step had NONE, so it inherited Go's 600s default
         # while the postgres contract already ran ~497s locally on an idle box —
         # 83% of the budget, before pgvector was even enabled above. One added
@@ -227,7 +260,7 @@ jobs:
         # same names and dies on "schema already exists" — a timeout does not just
         # fail, it poisons the database for the following run in a way that looks
         # like an unrelated bug.
-        run: go test -count=1 -timeout 3600s ./internal/store/...
+        run: go test -count=1 -timeout 3600s $PKGS
 
       # SNAPSHOT COVERAGE, postgres half. The snapshot guards read the table set
       # from a freshly migrated schema on EACH backend (every table classified,
@@ -243,10 +276,11 @@ jobs:
       # component, so they cannot collide with the store contract's lct_ ones.
       # !cancelled() so a red store contract does not skip this gate.
       - name: Snapshot coverage guard (Postgres)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.sel.outputs.snapshot != '' }}
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
-        run: go test -count=1 -timeout 600s ./internal/snapshot/...
+          PKGS: ${{ steps.sel.outputs.snapshot }}
+        run: go test -count=1 -timeout 600s $PKGS
 
       # NO-TRACE CANARY (Postgres). A no-trace run must leave its content in no
       # table. The canary suite runs on both store backends, and without a DSN
@@ -258,7 +292,7 @@ jobs:
       # the whole HTTP API on sqlite and already runs in the `Go` job. Per-test
       # schemas are prefixed canary_. !cancelled() so it gates on its own.
       - name: No-trace canary (Postgres)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.sel.outputs.canary != '' }}
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
         run: go test -count=1 -timeout 600s -run 'TestNoTraceCanary' ./internal/api/http/
@@ -271,7 +305,7 @@ jobs:
       # service role is a superuser), so it shares nothing with the steps around
       # it. Builds the binary once, a couple of minutes on a shared runner.
       - name: Shutdown pause across replicas (Postgres)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.sel.outputs.replicas != '' }}
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
         run: go test -count=1 -timeout 900s -run 'TestBoot_ClusterReplicaResumesRunsAStoppedReplicaParked' ./cmd/loomcycle/
@@ -309,7 +343,7 @@ jobs:
       # The two surfaces share only the service container, so coord's result is
       # independent and worth having even when the contract is red.
       - name: Provision the coordination-tier DB
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.sel.outputs.coord != '' }}
         env:
           PGPASSWORD: loomcycle
         run: |
@@ -325,10 +359,11 @@ jobs:
       # live replicas); a data race here is the bug class that matters, and the
       # suite is fast enough (~3s locally) to afford the detector.
       - name: Coordination tier (Postgres)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.sel.outputs.coord != '' }}
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/coord_test?sslmode=disable
-        run: go test -count=1 -race -timeout 600s ./internal/coord/...
+          PKGS: ${{ steps.sel.outputs.coord }}
+        run: go test -count=1 -race -timeout 600s $PKGS
 
       # RFC AA SQL Memory postgres tier: provision a SEPARATE aux DB reached by a
       # NON-superuser CREATEROLE admin (exactly the production provisioning), so
@@ -351,10 +386,20 @@ jobs:
             -c "CREATE EXTENSION vector SCHEMA sqlmem_ext;" \
             -c "GRANT USAGE ON SCHEMA sqlmem_ext TO PUBLIC;"
       - name: SQL Memory postgres tier
+        if: ${{ steps.sel.outputs.sqlmem != '' || steps.sel.outputs.builtin != '' }}
         env:
           LOOMCYCLE_TEST_SQLMEM_PG_DSN: postgres://sqlmem_admin:auxpw@127.0.0.1:5432/sqlmem_aux?sslmode=disable
+          SQLMEM_PKGS: ${{ steps.sel.outputs.sqlmem }}
+          BUILTIN_PKGS: ${{ steps.sel.outputs.builtin }}
         run: |
-          go test -count=1 -race ./internal/sqlmem/...
+          if [ -n "$SQLMEM_PKGS" ]; then
+            go test -count=1 -race $SQLMEM_PKGS
+          fi
+          # BUILTIN_PKGS only gates this line; the path stays literal because
+          # ci_pgtier_filter_test reads the filter off it.
+          if [ -z "$BUILTIN_PKGS" ]; then
+            exit 0
+          fi
           # The {"$embed"} round-trip lives in the Memory tool package; run the
           # vector tests there too (they skip without the aux DSN).
           #

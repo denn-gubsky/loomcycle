@@ -45,3 +45,27 @@ sibling (`@loomcycle/client`, `@loomcycle/bridge-core`, ...) consumes it by its
 published npm version, never its source. A workspace would symlink the
 siblings together, so local runs and CI would test a dependency graph that npm
 users never install.
+
+## `ci/select-packages.sh` and `ci/affected` — which Go tests a pull request runs
+
+A pull request runs only the Go tests that can see its change. `main` runs
+everything, so a test the selection misses still fails there.
+
+```sh
+scripts/ci/select-packages.sh ./...                 # what CI would run (all, outside a PR)
+GITHUB_EVENT_NAME=pull_request scripts/ci/select-packages.sh ./...
+go run ./scripts/ci/affected -base "$(git merge-base origin/main HEAD)" -explain  # your commits, with reasons
+```
+
+`affected` selects a package with tests when a changed file is in the package
+itself, in a package its test binary imports (test-only imports included), or
+under a path its tests open with a relative literal such as
+`"../../adapters/ts/src/types.ts"` or `filepath.Join("..", "..", "bundles")`.
+Those paths are read from the test files, so there is no list to keep up to
+date. A change confined to `_test.go` files selects only its own package.
+`go.mod`, `go.sum`, `.github/workflows/ci.yml` and the selector itself select
+every package.
+
+The blind spot is a test that builds a path to another directory at run time
+from something other than literals: write such paths as literals, or accept
+that a pull request will not catch that test failing and `main` will.
