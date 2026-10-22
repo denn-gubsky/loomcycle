@@ -8,6 +8,118 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.120.0
+
+*The security review's closing decisions, and a bound on batch joins. **Boot no longer rewraps operator tokens minted before the pepper**: a new `loomcycle tokens rewrap` command lists them and rewraps only the rows you name after reviewing them. **A deployment upgrading straight from a release before v1.119.0 must run it once: read the upgrade notes first.** Also: a config reload keeps an admin credential in config, a resume gives back exactly the per-user slot a run took, a batch spawn in join mode can no longer wait forever, shared-tier definitions are marked in get and list, and the chat bridges move to 0.2.0.*
+
+A minor release: #2010 to #2019.
+- the security review's closing decisions (RFC ES): the token rewrap command (C2: #2015, #2018), the reload's admin credential (C1: #2013, #2016), the shared-tier mark (C3: #2011), and the per-user slot and consolidation pass across a resume (C4: #2014);
+- #2012 bounds a batch join, and #2017 documents it for MCP;
+- #2010 moves the four chat bridges to 0.2.0, on `@loomcycle/bridge-core` 0.2.1;
+- no dependency updates, and #2019 is these notes.
+- `@loomcycle/client` and the Python adapter are 1.120.0. The TS client's `AgentDefRowResponse`, `TeamDefDetail` and `TeamVersion` types gain an optional `shared` (#2011). The Python adapter changes only its version. No method changes in either.
+
+### Pre-pepper tokens are rewrapped by a command, not at boot (#2015, #2018)
+
+v1.119.0 rewrapped every unpeppered operator-token row at the first boot under a derived pepper, and stored a marker row to record that this boot had happened. Both are database state. Someone who can write the database could delete the marker (and any rows already on the pepper), insert an unpeppered row for a token they chose, and the next restart wrapped it into a working token. On a deployment with no token rows, that took deleting one row, and nobody was logged out.
+
+- **Boot only reports.** Under a derived pepper (`LOOMCYCLE_SECRET_KEY` set, no `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`), boot changes nothing. It logs a WARNING that counts the unpeppered rows, lists the live ones by quoted `def_id` (at most 50) and names `loomcycle tokens rewrap`. Login refuses those rows until they are rewrapped. Boot also logs the pepper's fingerprint: `auth: operator tokens use a pepper derived from LOOMCYCLE_SECRET_KEY, fingerprint …`.
+- **Step 1, review.** `loomcycle tokens rewrap` with no flags writes nothing. It prints the pepper's fingerprint, then each live unpeppered row: `def_id`, name, tenant, subject, scopes (an admin row is flagged), created, retired and expiry times, and a per-row fingerprint. Then the row count and a digest of the whole set. Every field is printed quoted, with control characters escaped, so a row cannot redraw the terminal to hide itself.
+- **Step 2, name the rows.** `--def-id <def_id>@<fingerprint>` (repeatable), copied from the review, or `--all-listed <digest>`.
+  - A bare `def_id` is refused. Either form is refused if a named row was added, retired or changed since the review, and the refusal never prints the new fingerprint or digest.
+  - Only the named rows are rewrapped, in one transaction, each a compare-and-set against the hash it was reviewed with. A row nobody named stays refused.
+  - `--dry-run` checks a selection and writes nothing.
+  - The result re-prints each rewrapped row, and lists a named row that changed in between as NOT moved (exit 1).
+- **Only live rows.** A retired or expired unpeppered row is listed apart as not rewrappable and can never be named. Wrapped, a forged row inserted already retired would have become a working token once someone cleared its `retired_at`. A row in its rotation grace window still counts as live.
+- **SUSPICIOUS rows are refused.** A `def_id` other than `def_` + 16 lowercase hex (the shape every mint writes), or a control, format or non-printable character or invalid UTF-8 in any field, marks the row SUSPICIOUS, and it cannot be rewrapped. Non-ASCII in a name, tenant or subject draws a lookalike warning. For a row you did not mint, retire it (`loomcycle operator-token retire --def-id <id>`): a retired row leaves the set.
+- **Run it with the server's key.**
+  - The command loads config as the server does (presets, `LOOMCYCLE_CONFIG_DIR`, `LOOMCYCLE_CONFIG_FILES`, `--config`, `--preset`) and opens the server's store. In a container, `docker exec <container> /usr/local/bin/loomcycle tokens rewrap` already has all of it.
+  - The fingerprint it prints must match the one in the boot log. It refuses (exit 2) when it finds live rows under another key and none under its own, the usual sign of a wrong `LOOMCYCLE_SECRET_KEY`.
+  - It also refuses under an explicit pepper or with no pepper, and when the SQLite database it would open does not exist.
+  - If a rewrap did run under the wrong key, set that key as `LOOMCYCLE_SECRET_KEY_PREVIOUS` on the server. Those rows then log in and move onto the current key.
+- **Safe while servers run.** Two runs at once wrap a row once, and a running server logs a rewrapped token in at once, with no restart.
+- **The v1.119.0 marker row is no longer read.** A deployment that has one keeps it; nothing needs removing.
+- **What this does not stop:** the review shows what a row grants, not whose token it holds. Someone who can write the database and replaces a genuine pre-pepper row's hash before you review it gets that row rewrapped for a token of their choosing. A change after the review is caught, by both the per-row fingerprint and the digest.
+- See "Token pepper" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#token-pepper).
+
+### A config reload keeps an admin credential in config (#2013, #2016)
+
+v1.119.0 refused a reload that dropped the last config admin credential only when the store held no admin token. That left a lockout across replicas:
+
+1. Replica A reloads a config that drops its `substrate:admin` principal while an admin token exists. The token made it acceptable.
+2. Replica B, whose config still has its admin principal, retires that last admin token. Its retire guard sees its own principal and allows it.
+3. Authentication stays on everywhere, but replica A has no admin credential at all. Nobody can mint tokens or use its admin routes until it restarts.
+
+- **Now:** when the running config has an admin credential (`LOOMCYCLE_AUTH_TOKEN`, or a `substrate:admin` principal that can log in), the new config must have one too. Admin tokens in the store no longer count. Otherwise the reload is refused with `422 config_invalid` (a dry run reports it), naming the ways out: keep the admin principal, set `LOOMCYCLE_AUTH_TOKEN`, or restart.
+- **The last-admin-token retire guard reads the current config** for both credentials. It read `LOOMCYCLE_AUTH_TOKEN` as it was at boot, so after a reload that set it, retiring the last admin token was still refused. A reload that sets `LOOMCYCLE_AUTH_TOKEN` or adds an admin principal now lifts the refusal at once.
+
+### A batch join can no longer wait forever (#2012, #2017)
+
+A batch spawn in join mode (`POST /v1/runs:batch`, MCP `spawn_runs`, gRPC `SpawnRunBatch`) had a deadline only when the request sent `timeout_ms`. A child whose `idempotency_key` matched a run that never finishes, or a fresh child that never finished (held for review with no TTL, or a provider that never answers), blocked the call for as long as the caller stayed: forever for a gRPC call with no deadline, a connected HTTP client or an MCP session.
+
+- **The bound** is the request's `timeout_ms` when set, and otherwise the new `LOOMCYCLE_BATCH_JOIN_TIMEOUT` (a Go duration, default `1h`; `0` = no server bound, so only the caller's deadline or disconnect ends the join). A request's `timeout_ms` replaces it, larger or smaller. A value that does not parse is refused at startup.
+- **At the server bound the join only stops waiting.** A child still going comes back with its current status (`running` or `queued`), its ids and an `error`: `join timed out after 1h0m0s; the run goes on: read it by run_id`. It keeps running, and keeps its admission slot, like a detached child, and completes as usual. A child not yet admitted is withdrawn, so no run starts that the caller has no id for.
+- **A request's `timeout_ms` cancels** the batch's own unfinished children. **Fix:** such a child was stored `completed` with its partial text. It is now recorded `cancelled`, "batch join timed out".
+- **A deduplicated child is never cancelled**, since another request started it. It comes back with that run's current status, its ids and `deduplicated: true`.
+- Unchanged: a caller's deadline or disconnect still ends the batch's fresh children, a batch that finishes inside the bound, detach mode, and the envelope on every transport (the reason uses the existing `error` field).
+- Not covered: a single MCP `spawn_run` on a held `idempotency_key` with no `timeout_ms` still waits until the MCP call is cancelled.
+- See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md), [`docs/GRPC.md`](docs/GRPC.md) and "Bounding a batch join" in [`docs/MCP_SERVER.md`](docs/MCP_SERVER.md).
+
+### Shared-tier definitions are marked in get and list (#2011)
+
+Since v1.119.0 a tenant caller, and an admin inside a run, reads two tiers of AgentDef, SkillDef and TeamDef definitions: its own tenant's and the shared `""` tier. It may retire or promote only its own. `get` and `list` returned both mixed together, and each tier numbers its own versions, so a list could show two "version 1" rows and nothing to say which one the caller owns.
+
+- **`get` and `list` rows of the shared tier carry `"shared": true`.** Every other row leaves the field out, so the change is additive. Create, fork, retire and promote responses are unchanged.
+- **Every transport:** `POST /v1/_agentdef`, `_skilldef` and `_teamdef`, the gRPC def RPCs and the MCP `agentdef`, `skilldef` and `teamdef` tools all return the same JSON. No proto or OpenAPI change: the gRPC def RPCs return the tool's JSON as bytes.
+- **A caller whose own tenant is `""` sees no mark**: it owns that tier and may retire and promote its rows. That is open mode, the stdio `loomcycle mcp`, and runs fired by a yaml schedule or webhook.
+- The in-run tool descriptions, the MCP tool descriptions and the TeamDef help topics now say that shared rows are marked, may be read, run and forked, and may not be retired or promoted (over MCP, only an admin token may).
+
+### Per-user slots and consolidation passes across a resume (#2014)
+
+Two leftovers from the v1.119.0 shutdown pause.
+
+- **A resume gives back exactly the per-user slot a run took.** When a resume settled a run that a stopped replica had parked, it gave that replica's `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER` slot back for every top-level run. A run admitted while the per-user cap was off took no slot, so the resume took back another run's, and the counter's floor at 0 hid it.
+  - Migration 0108 adds a nullable `runs.user_slot`. Every start path (a fresh run, a queued run's start, a configured run's start) records whether its admission counted the run in the cluster's shared counter.
+  - The resume takes that record by compare-and-set and gives back only a slot the run held. A row with no record (parked by an older binary) keeps the earlier rule: top-level with a replica id.
+  - A crash between taking a slot and recording it leaks one slot rather than releasing another run's.
+  - The column is not carried in snapshots: the slot it names lives in the source cluster's counter.
+- **The dead-replica reap gives back only the slots its runs took.** It decremented the per-user counter once per failed run with a user, sub-runs and runs admitted with the cap off included: a dead replica with one top-level run and five sub-agents gave back six slots where one was counted. It now counts a run that records a slot, or a top-level run from before migration 0108.
+- **A resumed consolidation pass is not doubled.** A pass can still come back through a resume: the process was killed before its shutdown cancel was stored, or a snapshot taken during an operator pause was restored. It then runs outside the fan-out that started it, and the next tick started a second pass on the same target.
+  - The fan-out now skips a target with a live top-level run of the consolidator agent in the same tenant and user, a parked one included, and logs the skip. The run row is what every replica sees, so a pass another replica resumed counts too.
+  - A parked pass that nobody resumes holds its target for at most 4 hours from its last heartbeat. The tick then logs a warning naming the run and consolidates the target again.
+  - The hold is by consolidator agent and user: two schedules running the same consolidator agent for one user hold each other off, as they target the same memory.
+- See item 10 of [`docs/MULTI-REPLICA.md`](docs/MULTI-REPLICA.md) and §9c of [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Chat bridges 0.2.0 (#2010)
+
+The four bridges depended on `@loomcycle/bridge-core` `^0.1.0`, which on a 0.x line never reaches 0.2, so the published bridges ran core 0.1.0.
+
+- `@loomcycle/bridge-telegram`, `-slack`, `-discord` and `-teams` are 0.2.0, on `@loomcycle/bridge-core` `^0.2.1`.
+- **Every bridge:** an agent's text before and after a tool call no longer runs together into one paragraph (core 0.2.1).
+- **Discord:** `/ask prompt:/help` lists the Discord commands, as `/help` does. It listed the core's typed commands, which have no `/ask`.
+- They are on npm, and the `loomcycle-bridge-<name>` images are on Docker Hub and GHCR as `:0.2.0` and `:latest`, for amd64 and arm64. They publish on their own tags, not with this release.
+
+### Upgrade notes
+
+- **Migration 0108** adds a nullable `runs.user_slot` on SQLite and Postgres. It is additive, has no backfill and applies at boot. Rows from before it keep the earlier slot rule.
+- **Act on this before you upgrade:**
+  - **Operator tokens, when you upgrade straight from a release before v1.119.0** with `LOOMCYCLE_SECRET_KEY` set and no `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`. Boot no longer rewraps the tokens minted before the pepper, and login refuses them until you run `loomcycle tokens rewrap` once:
+    1. run it with no flags, with the server's `LOOMCYCLE_SECRET_KEY` and config, and check that the pepper fingerprint it prints matches the server's boot log;
+    2. review the rows, then rewrap the ones you minted with `--def-id <def_id>@<fingerprint>` for each, or all of them with `--all-listed <digest>`. Retire any row you did not mint.
+
+    Under Docker or TrueNAS: `docker exec <container> /usr/local/bin/loomcycle tokens rewrap`. It is safe while the server runs and needs no restart. `LOOMCYCLE_AUTH_TOKEN` keeps working meanwhile. The v1.119.0 upgrade notes on token hashes apply too: upgrade every replica together, and a rollback means re-minting.
+  - **A deployment that already booted v1.119.0 with `LOOMCYCLE_SECRET_KEY` set has nothing to do.** That boot rewrapped its rows.
+  - **A digest or bare `--def-id` printed by an earlier build of the command no longer matches.** Re-run the review.
+- **Behaviour changes:**
+  - **Config reload:** when the running config has an admin credential, a reload that leaves the new config without one is refused, even when the store holds a minted admin token. To drop the last `substrate:admin` principal, restart or set `LOOMCYCLE_AUTH_TOKEN`.
+  - **Token retire:** after a reload that sets `LOOMCYCLE_AUTH_TOKEN` or adds an admin principal, retiring the last minted admin token is allowed straight away.
+  - **Batch join:** a join that used to hang now returns after `LOOMCYCLE_BATCH_JOIN_TIMEOUT` (default 1h), its unfinished children still running and reported as such. A child cut off by a request's `timeout_ms` is now recorded `cancelled`, where it was `completed` with partial text.
+  - **Def rows:** AgentDef, SkillDef and TeamDef `get` and `list` rows of the shared `""` tier carry an additive `"shared": true` for a caller whose own tenant is not `""`.
+  - **In a cluster:** a resume and the dead-replica reap give back a per-user slot only for a run that took one. A consolidation target whose pass is still live, or parked for under 4 hours, is skipped by the next tick.
+- **New env var:** `LOOMCYCLE_BATCH_JOIN_TIMEOUT` (default `1h`; `0` = no server bound).
+- **Chat bridges:** 0.2.0 takes effect only when you redeploy a bridge: pull `loomcycle-bridge-<name>:0.2.0` (or `:latest`), or install the 0.2.0 package.
+- **Images:** a minor tag rebuilds every image. All are at 1.120.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images.
+
 ## What's in v1.119.0
 
 *The fixes from a security review of the whole runtime. A server authenticated only by a minted admin token could serve a request unauthenticated when it failed to read its token store: that now fails closed. **Open mode is refused on a public listener**, declaring config `principals:` turns authentication on, and operator-token hashes are peppered by default. **Some upgrades need an action: read the upgrade notes first.** Also: a shutdown pauses the runs in flight and a restart resumes them, `POST /v1/runs` starts runs the way every other transport does, logs can be JSON, and Amazon Bedrock can be reached with AWS IAM credentials.*
