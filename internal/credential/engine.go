@@ -11,7 +11,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // systemUserID is channels.SystemPublisherUserID, the user the runs the
@@ -19,6 +18,18 @@ import (
 // channels package pulls in the coordination layer. The engine's test pins
 // the two together.
 const systemUserID = "_system"
+
+// Store is what the engine needs from persistence: the CredentialDef rows.
+// The engine declares it rather than taking the whole store, which sits in a
+// higher layer (RFC EX). CredentialDefGet reports a missing row with an error
+// that has a NotFound() bool method returning true, as internal/store's
+// *ErrNotFound does.
+type Store interface {
+	CredentialDefPut(ctx context.Context, row credentialdef.Row) (credentialdef.Row, error)
+	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error)
+	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error)
+	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
+}
 
 // isNotFound reports whether err is the store's missing-row error. It asks the
 // error what it is rather than naming *store.ErrNotFound, because the store
@@ -36,7 +47,7 @@ func isNotFound(err error) bool {
 // binding code (MCP $cred: substitution, provider/tool injection) — never a
 // model-facing tool path.
 type Engine struct {
-	store  store.Store
+	store  Store
 	sealer *Sealer
 	inline inlineBackend
 	// now is the clock expires_at is judged against; time.Now outside tests.
@@ -70,7 +81,7 @@ var (
 
 // NewEngine builds an Engine over a store and a Sealer (the Sealer may be
 // disabled — no KEK — in which case PutInline fails and inline resolves error).
-func NewEngine(st store.Store, sealer *Sealer) *Engine {
+func NewEngine(st Store, sealer *Sealer) *Engine {
 	return &Engine{store: st, sealer: sealer, inline: inlineBackend{sealer: sealer}, now: time.Now}
 }
 

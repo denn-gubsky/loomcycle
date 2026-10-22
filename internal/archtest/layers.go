@@ -298,7 +298,6 @@ var allowedSideways = []subsystemEdge{
 const (
 	cutEmbedded    = "move cmd/loomcycle/embedded under internal/ (cmd<->api<->cli cycle)"
 	cutConfig      = "config's validators move down to config's layer (config hub)"
-	cutStoreIfaces = "consumer-declared store interfaces (D4)"
 	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
 	cutRunIdentity = "run identity moves below tools"
 )
@@ -322,9 +321,6 @@ var knownViolations = []knownViolation{
 	{"internal/config", "internal/memory", cutConfig},
 	{"internal/config", "internal/store", cutConfig},
 	{"internal/config", "internal/teamgraph", cutConfig},
-
-	{"internal/credential", "internal/store", cutStoreIfaces},
-	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
 
 	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
 	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},

@@ -9,6 +9,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
+// The store the runtime hands NewEngine satisfies Store. Asserted here, not in
+// internal/store: these tests open a real store, so the store importing this
+// package would be an import cycle.
+var _ Store = store.Store(nil)
+
 func TestIsNotFound_MatchesOnlyTheStoresMissWrappedOrNot(t *testing.T) {
 	miss := &store.ErrNotFound{Kind: "credential_def", ID: "gh"}
 	for name, c := range map[string]struct {
