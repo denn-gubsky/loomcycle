@@ -298,11 +298,16 @@ and a `git:GITHUB_TOKEN` binding still hands the credential to `git` alone. A
 sub-agent gets only the names both it and its parent allow, a resumed run gets
 back the narrowing it had, and a caller cannot change it per run. `Context
 op=self` lists, under `shell_credentials`, the names a run's shell receives
-(never a value), so an agent can tell why a variable is unset. It narrows
-stored credentials only: host variables passed with
-`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` are the operator's own setting and
-are not affected. It does not hide a credential the agent still receives,
-which its shell can print as before.
+(never a value), so an agent can tell why a variable is unset. A name the
+agent gives up reaches its shell from neither source: when
+`LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` also admits a host variable of that
+name, the agent's host commands do not get it either, whatever command the
+credential is bound to, and `Context op=self` lists it under
+`bashbox_fallback_withheld_env`. Other host variables are the operator's own
+setting and are not affected. An agent written from inside a run may keep at
+most the names its author's shell keeps plus those of the version it forks;
+the operator's lists stay the ceiling either way. The field does not hide a
+credential the agent still receives, which its shell can print as before.
 
 ## Crypto keys and the `Crypto` tool
 

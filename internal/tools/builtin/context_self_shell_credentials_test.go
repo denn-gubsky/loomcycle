@@ -71,3 +71,39 @@ func TestContextSelf_ReportsTheEffectiveShellCredentials(t *testing.T) {
 		t.Errorf("no operator lists: reported %v, want nothing", sc)
 	}
 }
+
+// RFC EW D6: op=self also names the host variables the Bashbox fallback
+// withholds because the agent narrowed their names away, so an agent can tell
+// why a variable the operator admits is missing. Names only.
+func TestContextSelf_ReportsTheWithheldHostVariables(t *testing.T) {
+	cfg := &config.Config{Env: config.Env{
+		BashboxFallbackAllowedEnv:   []string{"GITHUB_TOKEN", "LANG"},
+		BashboxFallbackAllowedCreds: []string{"gh:GITHUB_TOKEN", "NPM_TOKEN"},
+	}}
+	withheld := func(declared *config.CredentialNames) []string {
+		t.Helper()
+		ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{ShellCreds: tools.ShellCredsFor(declared)})
+		res, _ := (&Context{Cfg: cfg}).Execute(ctx, json.RawMessage(`{"op":"self"}`))
+		var out struct {
+			ShellCredentials struct {
+				Withheld *[]string `json:"bashbox_fallback_withheld_env"`
+			} `json:"shell_credentials"`
+		}
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("self JSON: %v", err)
+		}
+		if out.ShellCredentials.Withheld == nil {
+			t.Fatalf("no bashbox_fallback_withheld_env in %s", res.Text)
+		}
+		return *out.ShellCredentials.Withheld
+	}
+	if got := withheld(nil); len(got) != 0 {
+		t.Errorf("absent: withheld %v, want none", got)
+	}
+	if got := withheld(names()); !reflect.DeepEqual(got, []string{"GITHUB_TOKEN"}) {
+		t.Errorf("empty: withheld %v, want [GITHUB_TOKEN] (LANG is not a shell credential)", got)
+	}
+	if got := withheld(names("GITHUB_TOKEN")); len(got) != 0 {
+		t.Errorf("keeps it: withheld %v, want none", got)
+	}
+}

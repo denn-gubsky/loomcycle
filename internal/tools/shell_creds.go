@@ -1,6 +1,10 @@
 package tools
 
-import "github.com/denn-gubsky/loomcycle/internal/config"
+import (
+	"slices"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
+)
 
 // ShellCredsPolicyValue is a run's narrowing of the credentials the Bash tool
 // and the Bashbox host-command fallback inject into a command's environment
@@ -51,6 +55,28 @@ func (v ShellCredsPolicyValue) Filter(operator []string) []string {
 	var out []string
 	for _, n := range operator {
 		if v.Allows(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// WithheldHostNames are the host variables a shell must not receive under
+// this narrowing (RFC EW D6): the names in hostAllowed (the operator's
+// host-variable allowlist for one tool) that are also among credNames (the
+// operator's shell credentials for that tool, whatever command a "cmd:NAME"
+// binding ties them to) and that the agent did not keep. Otherwise the
+// operator's host value would stand in for a credential the agent gave up,
+// the same reason a lapsed credential's host twin is removed. A host variable
+// that is not a shell credential name is never withheld, and an unnarrowed
+// agent withholds nothing.
+func (v ShellCredsPolicyValue) WithheldHostNames(hostAllowed, credNames []string) []string {
+	if !v.Set {
+		return nil
+	}
+	var out []string
+	for _, n := range hostAllowed {
+		if slices.Contains(credNames, n) && !v.Allows(n) && !slices.Contains(out, n) {
 			out = append(out, n)
 		}
 	}
