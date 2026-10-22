@@ -168,7 +168,7 @@ func toolDescriptors() []loommcp.ToolDescriptor {
 						}
 					},
 					"mode":       {"type": "string", "enum": ["join", "detach"], "description": "\"join\" (default): block until all children settle and return their results. \"detach\": return each child's run_id once it has started or queued; the runs continue after the call and are read with get_run."},
-					"timeout_ms": {"type": "integer", "minimum": 1, "description": "Optional join deadline: a child still running when it elapses is cancelled and reported with a cancelled status in-envelope. Refused with mode \"detach\", which does not wait."}
+					"timeout_ms": {"type": "integer", "minimum": 1, "description": "Optional join deadline: a child this call started that is still running when it elapses is cancelled and reported with a cancelled status in-envelope. Without it the server's default (an hour unless the operator set another) only stops the wait: a child still running then is NOT cancelled — it comes back with its current status (running, or queued) and its run_id, and goes on; read it later with get_run. A child whose idempotency_key named an existing run is never cancelled; it comes back with that run's current status. Either way a child cut off this way says in its error that the join timed out, and the other children are reported as usual. Refused with mode \"detach\", which does not wait."}
 				}
 			}`),
 		},
