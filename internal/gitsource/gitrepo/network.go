@@ -46,6 +46,9 @@ type CloneOptions struct {
 	Depth        int
 	SingleBranch bool
 	NoCheckout   bool
+	// Limits bound the cloned HEAD's tree, checked before it is checked
+	// out, and are the returned Repo's limits.
+	Limits Limits
 }
 
 // RefInfo is one ref a remote advertises.
@@ -57,18 +60,26 @@ type RefInfo struct {
 // FetchOptions are Fetch's.
 type FetchOptions struct {
 	Remote string // "" = origin
-	// RefSpecs default to the remote's configured ones. A bare branch name
-	// is "+refs/heads/NAME:refs/remotes/REMOTE/NAME".
+	// RefSpecs default to "+refs/heads/*:refs/remotes/REMOTE/*", never the
+	// remote's configured ones (the config is the agent's to write). A bare
+	// branch name is "+refs/heads/NAME:refs/remotes/REMOTE/NAME".
 	RefSpecs []string
 	Depth    int
 	Prune    bool
-	Tags     bool
+	// Tags fetches every tag (without it, the tags pointing into what is
+	// fetched). Either way a local tag the remote has elsewhere is kept,
+	// and reported in KeptTags, unless a "+" refspec names it.
+	Tags bool
 }
 
 // FetchResult reports a fetch.
 type FetchResult struct {
 	UpToDate bool        `json:"up_to_date"`
 	Updated  []RefUpdate `json:"updated"`
+	// KeptTags are local tags the remote has at another commit. They are
+	// left where they were, as git leaves them ("would clobber existing
+	// tag"), unless a refspec given with "+" names them.
+	KeptTags []string `json:"kept_tags,omitempty"`
 }
 
 // PullOptions are Pull's.
@@ -167,8 +178,10 @@ func guarded(ctx context.Context, sess *gitsource.Session, wt billy.Filesystem, 
 }
 
 // Clone clones n.URL into wt, which must have no .git. The remote's URL is
-// recorded as n.URL exactly. On failure what Clone created in wt is removed:
-// no partial repository is left to be mistaken for one.
+// recorded as n.URL exactly. The fetched HEAD's tree is checked against
+// o.Limits (and for paths into .git) before anything is checked out, with
+// or without a checkout. On failure what Clone created in wt is removed: no
+// partial repository is left to be mistaken for one.
 func Clone(ctx context.Context, wt billy.Filesystem, n Network, o CloneOptions) (_ *Repo, err error) {
 	remote := o.RemoteName
 	if remote == "" {
@@ -231,7 +244,8 @@ func Clone(ctx context.Context, wt billy.Filesystem, n Network, o CloneOptions) 
 		RemoteName:   remote,
 		Depth:        o.Depth,
 		SingleBranch: o.SingleBranch,
-		NoCheckout:   o.NoCheckout,
+		// The checkout is done below, once the tree is checked.
+		NoCheckout: true,
 	}
 	if o.Branch != "" {
 		co.ReferenceName = plumbing.NewBranchReferenceName(o.Branch)
@@ -250,7 +264,31 @@ func Clone(ctx context.Context, wt billy.Filesystem, n Network, o CloneOptions) 
 	if err != nil {
 		return nil, err
 	}
-	return newRepo(wt, repo), nil
+	r := newRepo(wt, repo)
+	r.SetLimits(o.Limits)
+	head, err := r.headCommit()
+	if err != nil {
+		return nil, err
+	}
+	if head == nil {
+		return r, nil // an empty remote has nothing to check out
+	}
+	if err := r.checkTree(head); err != nil {
+		return nil, err
+	}
+	if o.NoCheckout {
+		return r, nil
+	}
+	w, err := r.worktree()
+	if err != nil {
+		return nil, err
+	}
+	// As the library's own clone checks out: the index is empty, so this
+	// writes every file of the tree.
+	if err := w.Reset(&git.ResetOptions{Commit: head.Hash, Mode: git.MergeReset}); err != nil {
+		return nil, fmt.Errorf("checkout: %w", err)
+	}
+	return r, nil
 }
 
 // listRemote lists the refs advertised at url. An empty repository has
@@ -346,12 +384,17 @@ func parseRefSpec(s string, push bool) (config.RefSpec, error) {
 	return rs, nil
 }
 
-// fetchRefSpecs turns Fetch's refspecs into the library's. None of them may
-// write to the checked-out branch, which would move it under the worktree.
+// fetchRefSpecs turns Fetch's refspecs into the library's. No refspecs is
+// the default one, written out so the library never falls back to the
+// configured ones. None of them may write to the checked-out branch, which
+// would move it under the worktree.
 func (r *Repo) fetchRefSpecs(remote string, specs []string) ([]config.RefSpec, error) {
 	current, err := r.currentBranch()
 	if err != nil {
 		return nil, err
+	}
+	if len(specs) == 0 {
+		specs = []string{"+refs/heads/*:refs/remotes/" + remote + "/*"}
 	}
 	out := make([]config.RefSpec, 0, len(specs))
 	for _, s := range specs {
@@ -505,12 +548,50 @@ func (r *Repo) fetch(ctx context.Context, sess *gitsource.Session, n Network, fo
 	if err := finish(ctx, sess, ferr); err != nil {
 		return FetchResult{}, err
 	}
+	kept, err := r.keepTags(before, fo.RefSpecs)
+	if err != nil {
+		return FetchResult{}, err
+	}
 	after, err := r.refSnapshot()
 	if err != nil {
 		return FetchResult{}, err
 	}
 	updated := refUpdates(before, after)
-	return FetchResult{UpToDate: upToDate && len(updated) == 0, Updated: updated}, nil
+	return FetchResult{UpToDate: upToDate && len(updated) == 0, Updated: updated, KeptTags: kept}, nil
+}
+
+// keepTags puts back each local tag a fetch moved, and returns their short
+// names, sorted. git refuses to move an existing tag ("would clobber
+// existing tag") unless a "+" refspec names it; the library moves any tag
+// the remote has elsewhere, whatever the refspecs and the tag mode say, so
+// the tags are put back once it is done.
+func (r *Repo) keepTags(before map[plumbing.ReferenceName]plumbing.Hash, specs []config.RefSpec) ([]string, error) {
+	var kept []string
+	for name, old := range before {
+		if !name.IsTag() {
+			continue
+		}
+		forced := false
+		for _, rs := range specs {
+			if rs.IsForceUpdate() && dstMayBe(rs, name) {
+				forced = true
+				break
+			}
+		}
+		if forced {
+			continue
+		}
+		now, err := r.repo.Storer.Reference(name)
+		if err != nil || now.Type() != plumbing.HashReference || now.Hash() == old {
+			continue // deleted by a prune the caller asked for, or unmoved
+		}
+		if err := r.repo.Storer.SetReference(plumbing.NewHashReference(name, old)); err != nil {
+			return nil, fmt.Errorf("keep tag %s: %w", name.Short(), err)
+		}
+		kept = append(kept, name.Short())
+	}
+	sort.Strings(kept)
+	return kept, nil
 }
 
 // Pull fetches a branch of the remote and fast-forwards the current branch
@@ -620,6 +701,15 @@ func (r *Repo) Push(ctx context.Context, n Network, o PushOptions) (PushResult, 
 	if err != nil {
 		return PushResult{}, err
 	}
+	if o.ForceWithLease {
+		// The library checks a lease against the remote ref named like the
+		// source, not the destination; only an unrenamed refspec is safe.
+		for _, rs := range specs {
+			if !rs.IsDelete() && !sameSides(rs) {
+				return PushResult{}, fmt.Errorf("%w: force-with-lease needs each refspec to push to the ref of the same name (%q does not)", ErrInvalidArgument, truncate(string(rs), 200))
+			}
+		}
+	}
 	rem, err := r.repo.Remote(remote)
 	if err != nil {
 		return PushResult{}, fmt.Errorf("%w: no remote %q", ErrInvalidArgument, remote)
@@ -708,6 +798,13 @@ func (r *Repo) pushed(specs []config.RefSpec, remoteRefs map[plumbing.ReferenceN
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// sameSides reports whether a refspec's source and destination are the
+// same name or pattern.
+func sameSides(rs config.RefSpec) bool {
+	src, dst, _ := strings.Cut(strings.TrimPrefix(string(rs), "+"), ":")
+	return src == dst
 }
 
 // pushRejected reports a ref update refused, by the library's own

@@ -92,8 +92,9 @@ type Repo struct {
 	base billy.Filesystem
 	// wt is base behind worktreeGuard: what go-git and the writers use for
 	// the working tree, where no path may reach into .git.
-	wt   billy.Filesystem
-	repo *git.Repository
+	wt     billy.Filesystem
+	repo   *git.Repository
+	limits Limits
 }
 
 func newRepo(base billy.Filesystem, repo *git.Repository) *Repo {

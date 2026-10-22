@@ -198,7 +198,10 @@ func (r *Repo) Restore(paths []string, staged, worktree bool) error {
 		return err
 	}
 	src := side{}
-	if head != nil {
+	if staged && head != nil {
+		if err := r.checkTree(head); err != nil {
+			return err
+		}
 		if src, err = r.commitSide(head); err != nil {
 			return err
 		}
@@ -383,7 +386,14 @@ func (r *Repo) Reset(mode, rev string, paths []string) error {
 		}
 		// An unborn HEAD resets the paths to nothing: unstages them.
 		if rev != "HEAD" || head != nil {
-			if src, err = r.revSide(rev); err != nil {
+			c, err := r.resolveCommit(rev)
+			if err != nil {
+				return err
+			}
+			if err := r.checkTree(c); err != nil {
+				return err
+			}
+			if src, err = r.commitSide(c); err != nil {
 				return err
 			}
 		}
@@ -394,17 +404,23 @@ func (r *Repo) Reset(mode, rev string, paths []string) error {
 	if err != nil {
 		return err
 	}
-	if m == git.HardReset {
-		return r.hardReset(c.Hash)
-	}
-	w, err := r.worktree()
-	if err != nil {
+	// Even a soft reset is checked: what HEAD names, status and diff expand.
+	if err := r.checkTree(c); err != nil {
 		return err
 	}
-	if err := w.Reset(&git.ResetOptions{Commit: c.Hash, Mode: m}); err != nil {
-		return fmt.Errorf("reset: %w", err)
-	}
-	return nil
+	return r.keepHead(func() error {
+		if m == git.HardReset {
+			return r.hardReset(c.Hash)
+		}
+		w, err := r.worktree()
+		if err != nil {
+			return err
+		}
+		if err := w.Reset(&git.ResetOptions{Commit: c.Hash, Mode: m}); err != nil {
+			return fmt.Errorf("reset: %w", err)
+		}
+		return nil
+	})
 }
 
 // hardReset moves HEAD (its branch, or HEAD itself when detached) to commit
@@ -413,7 +429,8 @@ func (r *Repo) Reset(mode, rev string, paths []string) error {
 // git never does and which would lose an agent's new work; so this is a
 // mixed reset, then the files tracked before and not now are removed and
 // the tracked ones are written from the index. An untracked file at a path
-// the commit has is written over, as git does.
+// the commit has is written over, as git does. The caller has checked the
+// commit's tree and restores HEAD if this fails (keepHead).
 func (r *Repo) hardReset(commit plumbing.Hash) error {
 	before, err := r.indexSide()
 	if err != nil {
@@ -623,6 +640,9 @@ func (r *Repo) Checkout(o CheckoutOptions) error {
 			return err
 		}
 	}
+	if err := r.checkTree(target); err != nil {
+		return err
+	}
 	if !o.Force && !o.Keep {
 		if err := r.checkSwitch(target); err != nil {
 			return err
@@ -632,36 +652,40 @@ func (r *Repo) Checkout(o CheckoutOptions) error {
 	if err != nil {
 		return err
 	}
-	if branch != "" && o.Create {
-		if err := r.repo.Storer.SetReference(plumbing.NewHashReference(branch, target.Hash)); err != nil {
-			return fmt.Errorf("create branch: %w", err)
+	err = r.keepHead(func() error {
+		if branch != "" && o.Create {
+			if err := r.repo.Storer.SetReference(plumbing.NewHashReference(branch, target.Hash)); err != nil {
+				return fmt.Errorf("create branch: %w", err)
+			}
 		}
-	}
-	if o.Force {
-		// The library's forced checkout is its hard reset, which deletes
-		// untracked files; HEAD is moved here and hardReset does the rest.
-		head := plumbing.NewHashReference(plumbing.HEAD, target.Hash)
+		if o.Force {
+			// The library's forced checkout is its hard reset, which deletes
+			// untracked files; HEAD is moved here and hardReset does the rest.
+			head := plumbing.NewHashReference(plumbing.HEAD, target.Hash)
+			if branch != "" {
+				head = plumbing.NewSymbolicReference(plumbing.HEAD, branch)
+			}
+			if err := r.repo.Storer.SetReference(head); err != nil {
+				return fmt.Errorf("checkout: %w", err)
+			}
+			return r.hardReset(target.Hash)
+		}
+		opts := &git.CheckoutOptions{Keep: o.Keep}
 		if branch != "" {
-			head = plumbing.NewSymbolicReference(plumbing.HEAD, branch)
+			opts.Branch = branch
+		} else {
+			opts.Hash = target.Hash
 		}
-		if err := r.repo.Storer.SetReference(head); err != nil {
+		if err := w.Checkout(opts); err != nil {
 			return fmt.Errorf("checkout: %w", err)
 		}
-		return r.hardReset(target.Hash)
+		return nil
+	})
+	if err != nil && branch != "" && o.Create {
+		// The branch did not exist before (checked above).
+		_ = r.repo.Storer.RemoveReference(branch)
 	}
-	opts := &git.CheckoutOptions{Keep: o.Keep}
-	if branch != "" {
-		opts.Branch = branch
-	} else {
-		opts.Hash = target.Hash
-	}
-	if err := w.Checkout(opts); err != nil {
-		if o.Create {
-			_ = r.repo.Storer.RemoveReference(branch)
-		}
-		return fmt.Errorf("checkout: %w", err)
-	}
-	return nil
+	return err
 }
 
 // BranchCreate creates a branch at rev ("" is HEAD).
@@ -768,37 +792,52 @@ func (r *Repo) mergeFF(target *object.Commit) (string, error) {
 			return "", fmt.Errorf("%w: HEAD and %s have diverged", ErrNotFastForward, target.Hash)
 		}
 	}
-	if err := r.checkSwitch(target); err != nil {
+	if err := r.checkTree(target); err != nil {
 		return "", err
 	}
-	if head == nil {
-		// An unborn branch has no ref for the reset to move: create it.
-		branch, err := r.currentBranch()
-		if err != nil {
-			return "", err
-		}
-		if branch == "" {
-			return "", fmt.Errorf("%w: HEAD names no branch", ErrInvalidArgument)
-		}
-		if err := r.repo.Storer.SetReference(plumbing.NewHashReference(branch, target.Hash)); err != nil {
-			return "", fmt.Errorf("merge: %w", err)
-		}
+	if err := r.checkSwitch(target); err != nil {
+		return "", err
 	}
 	w, err := r.worktree()
 	if err != nil {
 		return "", err
 	}
-	// A merge reset moves HEAD's branch and rewrites what differs; the
-	// check above made sure nothing of the agent's is among it.
-	if err := w.Reset(&git.ResetOptions{Commit: target.Hash, Mode: git.MergeReset}); err != nil {
-		return "", fmt.Errorf("merge: %w", err)
+	err = r.keepHead(func() error {
+		if head == nil {
+			// An unborn branch has no ref for the reset to move: create it.
+			branch, err := r.currentBranch()
+			if err != nil {
+				return err
+			}
+			if branch == "" {
+				return fmt.Errorf("%w: HEAD names no branch", ErrInvalidArgument)
+			}
+			if err := r.repo.Storer.SetReference(plumbing.NewHashReference(branch, target.Hash)); err != nil {
+				return fmt.Errorf("merge: %w", err)
+			}
+		}
+		// A merge reset moves HEAD's branch and rewrites what differs; the
+		// check above made sure nothing of the agent's is among it.
+		if err := w.Reset(&git.ResetOptions{Commit: target.Hash, Mode: git.MergeReset}); err != nil {
+			return fmt.Errorf("merge: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	return target.Hash.String(), nil
 }
 
-// Clean removes untracked files that are not ignored, and with dirs the
-// untracked directories too, or with dryRun only lists them. A directory is
-// listed with a trailing "/". A nested repository is left alone, as git does.
+// Clean removes the untracked files that are not ignored, or with dryRun
+// only lists them. Without dirs a file in a directory holding nothing
+// tracked is left, as git clean without -d leaves it; with dirs it is
+// removed, and then the directories that removal emptied, deepest first.
+// No directory is ever removed with what is in it, so an ignored file keeps
+// its directory, and a nested repository (a directory holding a .git) is
+// left alone entirely: its files, uncommitted work included, are never
+// listed. The result is the files, sorted, then the emptied directories
+// with a trailing "/"; a dry run returns exactly what a real run removes.
 func (r *Repo) Clean(dirs, dryRun bool) ([]string, error) {
 	st, err := r.status()
 	if err != nil {
@@ -814,42 +853,50 @@ func (r *Repo) Clean(dirs, dryRun bool) ([]string, error) {
 			tracked[dir] = true
 		}
 	}
+	nested := map[string]bool{}
+	// inNestedRepo reports whether a directory above p holds a .git. An
+	// unreadable one counts as nested: what cannot be checked is kept.
+	inNestedRepo := func(p string) bool {
+		for dir := path.Dir(p); dir != "."; dir = path.Dir(dir) {
+			has, ok := nested[dir]
+			if !ok {
+				_, err := r.wt.Lstat(dir + "/" + git.GitDirName)
+				has = err == nil || !os.IsNotExist(err)
+				nested[dir] = has
+			}
+			if has {
+				return true
+			}
+		}
+		return false
+	}
+	// Status leaves ignored files out: they are never among these.
 	var files []string
-	topDirs := map[string]bool{}
 	for p, fs := range st {
 		if fs.Worktree != git.Untracked {
 			continue
 		}
-		// The highest directory above p that holds nothing tracked.
-		top := ""
-		parts := strings.Split(p, "/")
-		for i := 1; i < len(parts); i++ {
-			if d := strings.Join(parts[:i], "/"); !tracked[d] {
-				top = d
-				break
-			}
-		}
-		switch {
-		case top == "":
-			files = append(files, p)
-		case dirs:
-			topDirs[top] = true
-		}
-	}
-	out := append([]string(nil), files...)
-	var removeDirs []string
-	for d := range topDirs {
-		if _, err := r.wt.Lstat(d + "/" + git.GitDirName); err == nil {
-			continue
-		}
-		removeDirs = append(removeDirs, d)
-		out = append(out, d+"/")
-	}
-	sort.Strings(out)
-	for _, p := range append(append([]string(nil), files...), removeDirs...) {
 		if err := treePath(p); err != nil {
 			return nil, err
 		}
+		if !dirs && !tracked[path.Dir(p)] && path.Dir(p) != "." {
+			continue // in a directory holding nothing tracked
+		}
+		if inNestedRepo(p) {
+			continue
+		}
+		files = append(files, p)
+	}
+	sort.Strings(files)
+	var emptied []string
+	if dirs {
+		if emptied, err = r.emptiedDirs(files, tracked); err != nil {
+			return nil, err
+		}
+	}
+	out := append([]string(nil), files...)
+	for _, d := range emptied {
+		out = append(out, d+"/")
 	}
 	if dryRun {
 		return out, nil
@@ -859,9 +906,59 @@ func (r *Repo) Clean(dirs, dryRun bool) ([]string, error) {
 			return nil, fmt.Errorf("remove %s: %w", p, err)
 		}
 	}
-	for _, d := range removeDirs {
-		if err := billyutil.RemoveAll(r.wt, d); err != nil {
+	// Remove takes only an empty directory, so one that gained an entry
+	// since it was listed fails rather than losing it.
+	for _, d := range emptied {
+		if err := r.wt.Remove(d); err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("remove %s: %w", d, err)
+		}
+	}
+	return out, nil
+}
+
+// emptiedDirs is the directories above files that would hold nothing once
+// files are removed, deepest first: each one's entries are all among the
+// files or the directories already found emptied. A directory holding a
+// tracked path is never one.
+func (r *Repo) emptiedDirs(files []string, tracked map[string]bool) ([]string, error) {
+	gone := map[string]bool{}
+	cand := map[string]bool{}
+	for _, f := range files {
+		gone[f] = true
+		for dir := path.Dir(f); dir != "." && !tracked[dir]; dir = path.Dir(dir) {
+			cand[dir] = true
+		}
+	}
+	order := make([]string, 0, len(cand))
+	for d := range cand {
+		order = append(order, d)
+	}
+	sort.Slice(order, func(i, j int) bool {
+		di, dj := strings.Count(order[i], "/"), strings.Count(order[j], "/")
+		if di != dj {
+			return di > dj
+		}
+		return order[i] < order[j]
+	})
+	var out []string
+	for _, d := range order {
+		entries, err := r.wt.ReadDir(d)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read %s: %w", d, err)
+		}
+		empty := true
+		for _, e := range entries {
+			if !gone[d+"/"+e.Name()] {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			gone[d] = true
+			out = append(out, d)
 		}
 	}
 	return out, nil

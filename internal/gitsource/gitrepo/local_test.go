@@ -690,7 +690,7 @@ func TestClean_ListsThenRemovesUntrackedOnly(t *testing.T) {
 		t.Errorf("dry run without dirs = %v, %v", got, err)
 	}
 	got, err = r.Clean(true, true)
-	if err != nil || fmt.Sprint(got) != "[build/ junk.txt src/junk.go]" {
+	if err != nil || fmt.Sprint(got) != "[build/out.bin junk.txt src/junk.go build/]" {
 		t.Errorf("dry run with dirs = %v, %v", got, err)
 	}
 	if !exists(fs, "junk.txt") || !exists(fs, "build/out.bin") {

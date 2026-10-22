@@ -158,6 +158,10 @@ func (r *Repo) status() (git.Status, error) {
 	if err != nil {
 		return nil, fmt.Errorf("status: %w", err)
 	}
+	// The library builds the whole map; what is built on it is bounded.
+	if len(s) > r.maxFiles() {
+		return nil, r.tooManyFiles("the status")
+	}
 	return s, nil
 }
 

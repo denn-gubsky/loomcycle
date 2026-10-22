@@ -145,7 +145,8 @@ func (r *Repo) revSide(rev string) (side, error) {
 	return r.commitSide(c)
 }
 
-// commitSide is every file of a commit's tree.
+// commitSide is every file of a commit's tree, refused (too large) past
+// the file limit rather than built: a tree can name one subtree many times.
 func (r *Repo) commitSide(c *object.Commit) (side, error) {
 	tree, err := c.Tree()
 	if err != nil {
@@ -165,12 +166,16 @@ func (r *Repo) commitSide(c *object.Commit) (side, error) {
 		if e.Mode == filemode.Dir {
 			continue
 		}
+		if len(s) >= r.maxFiles() {
+			return nil, r.tooManyFiles("the tree of " + c.Hash.String())
+		}
 		s[name] = &sideEntry{hash: e.Hash, mode: e.Mode}
 	}
 }
 
-// indexSide is every merged entry of the index. A conflicted path's stages
-// are left out: there is no one content to show for it.
+// indexSide is every merged entry of the index, refused (too large) past the
+// file limit. A conflicted path's stages are left out: there is no one
+// content to show for it.
 func (r *Repo) indexSide() (side, error) {
 	idx, err := r.repo.Storer.Index()
 	if err != nil {
@@ -180,6 +185,9 @@ func (r *Repo) indexSide() (side, error) {
 	for _, e := range idx.Entries {
 		if e.Stage != mergedStage {
 			continue
+		}
+		if len(s) >= r.maxFiles() {
+			return nil, r.tooManyFiles("the index")
 		}
 		s[e.Name] = &sideEntry{hash: e.Hash, mode: e.Mode}
 	}
