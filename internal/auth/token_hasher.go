@@ -171,6 +171,16 @@ func (h TokenHasher) WrappedHash(token string) string {
 	return h.Wrap(HashToken("", token))
 }
 
+// Fingerprint names the current derived pepper without revealing it: the
+// fingerprint every tagged hash under it carries. Empty unless the pepper is
+// derived. Printed so an operator can check two processes use the same key.
+func (h TokenHasher) Fingerprint() string {
+	if !h.derived() {
+		return ""
+	}
+	return h.cur.fp
+}
+
 // HasPrevious reports whether a previous secret key's pepper is configured.
 func (h TokenHasher) HasPrevious() bool { return h.derived() && h.prev.pepper != "" }
 

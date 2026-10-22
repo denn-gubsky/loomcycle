@@ -30,7 +30,7 @@ func TestLogTokenHashes_ListsUntaggedRowsCappedAndNamesTheRewrapCommand(t *testi
 		many = append(many, fmt.Sprintf("def_%03d", i))
 	}
 	out := captureBootLog(t, func() {
-		logTokenHashes(lchttp.TokenHashReport{Untagged: many, Wrapped: 4, Previous: 2, OtherKey: 1})
+		logTokenHashes(lchttp.TokenHashReport{Untagged: many, Wrapped: 4, Previous: 2, OtherKey: 1, UntaggedDead: 3}, "0123456789abcdef")
 	})
 	for _, want := range []string{
 		fmt.Sprintf("WARNING: %d token row(s) carry an unpeppered hash", len(many)),
@@ -38,6 +38,8 @@ func TestLogTokenHashes_ListsUntaggedRowsCappedAndNamesTheRewrapCommand(t *testi
 		"def_000", "and 3 more",
 		"4 wrapped, 2 under a previous LOOMCYCLE_SECRET_KEY",
 		"1 token(s) hashed under a LOOMCYCLE_SECRET_KEY that is neither",
+		"fingerprint 0123456789abcdef",
+		"3 retired or expired token row(s)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("boot log lacks %q:\n%s", want, out)
@@ -47,7 +49,7 @@ func TestLogTokenHashes_ListsUntaggedRowsCappedAndNamesTheRewrapCommand(t *testi
 		t.Error("the def_id list was not capped")
 	}
 
-	quiet := captureBootLog(t, func() { logTokenHashes(lchttp.TokenHashReport{}) })
+	quiet := captureBootLog(t, func() { logTokenHashes(lchttp.TokenHashReport{}, "0123456789abcdef") })
 	if strings.Contains(quiet, "WARNING") {
 		t.Errorf("an empty report logged more than the counts: %q", quiet)
 	}

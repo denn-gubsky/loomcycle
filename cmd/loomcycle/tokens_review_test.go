@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -56,18 +57,18 @@ func wrapped(t *testing.T, token string) string {
 // with what it would grant, flags an admin row, warns, and writes nothing.
 func TestTokensRewrap_WithoutConfirmationListsAndWritesNothing(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
-	seedTokenRow(t, st, "def_adm", "lct_adm", auth.ScopeAdmin)
-	before, beforeAdm := tokensStoredHash(t, st), rowHash(t, st, "def_adm")
+	seedTokenRow(t, st, "def_00000000000000ac", "lct_adm", auth.ScopeAdmin)
+	before, beforeAdm := tokensStoredHash(t, st), rowHash(t, st, "def_00000000000000ac")
 	var out, errb bytes.Buffer
 	if rc := runTokens([]string{"rewrap", "--config", cfgPath}, &out, &errb); rc != 0 {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
-	if tokensStoredHash(t, st) != before || rowHash(t, st, "def_adm") != beforeAdm {
+	if tokensStoredHash(t, st) != before || rowHash(t, st, "def_00000000000000ac") != beforeAdm {
 		t.Fatal("the command wrote without the operator naming any row")
 	}
 	for _, want := range []string{
-		"def_old", "old", "default", "runs:create",
-		"def_adm", "def_adm-name", "acme", "def_adm-sub", "ADMIN",
+		"def_00000000000000a1", "old", "default", "runs:create",
+		"def_00000000000000ac", "def_00000000000000ac-name", "acme", "def_00000000000000ac-sub", "ADMIN",
 		"you never minted", "nothing was changed",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -81,16 +82,17 @@ func TestTokensRewrap_WithoutConfirmationListsAndWritesNothing(t *testing.T) {
 // stays as it is.
 func TestTokensRewrap_DefIDRewrapsOnlyTheNamedRows(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
-	seedTokenRow(t, st, "def_forged", "lct_forged", auth.ScopeAdmin)
-	forged := rowHash(t, st, "def_forged")
+	seedTokenRow(t, st, "def_00000000000000f0", "lct_forged", auth.ScopeAdmin)
+	forged := rowHash(t, st, "def_00000000000000f0")
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old"}, &out, &errb); rc != 0 {
+	named := reviewFingerprint(t, review(t, cfgPath), defOld)
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", named}, &out, &errb); rc != 0 {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
 	if got, want := tokensStoredHash(t, st), wrapped(t, "lct_old"); got != want {
 		t.Errorf("the named row is on %q, want %q", got, want)
 	}
-	if got := rowHash(t, st, "def_forged"); got != forged {
+	if got := rowHash(t, st, "def_00000000000000f0"); got != forged {
 		t.Errorf("a row nobody named was rewritten to %q", got)
 	}
 }
@@ -100,21 +102,22 @@ func TestTokensRewrap_DefIDNotUnpepperedRefusesAndWritesNothing(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	before := tokensStoredHash(t, st)
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old", "--def-id", "def_gone"}, &out, &errb); rc != 2 {
+	named := reviewFingerprint(t, review(t, cfgPath), defOld)
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", named, "--def-id", "def_00000000000000dd@0000000000000000"}, &out, &errb); rc != 2 {
 		t.Fatalf("rc = %d, want 2; stderr: %s", rc, errb.String())
 	}
-	if !strings.Contains(errb.String(), "def_gone") {
+	if !strings.Contains(errb.String(), "not a live unpeppered") || !strings.Contains(errb.String(), "def_00000000000000dd") {
 		t.Errorf("stderr does not name the row:\n%s", errb.String())
 	}
 	if got := tokensStoredHash(t, st); got != before {
-		t.Errorf("a refused run rewrote def_old to %q", got)
+		t.Errorf("a refused run rewrote def_00000000000000a1 to %q", got)
 	}
 }
 
 // --all-listed rewraps the set the review listed, all of it.
 func TestTokensRewrap_AllListedRewrapsTheReviewedSet(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
-	seedTokenRow(t, st, "def_two", "lct_two", "runs:create")
+	seedTokenRow(t, st, "def_0000000000000022", "lct_two", "runs:create")
 	var out, errb bytes.Buffer
 	if rc := runTokens([]string{"rewrap", "--config", cfgPath}, &out, &errb); rc != 0 {
 		t.Fatalf("review rc = %d", rc)
@@ -125,10 +128,10 @@ func TestTokensRewrap_AllListedRewrapsTheReviewedSet(t *testing.T) {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
 	if got, want := tokensStoredHash(t, st), wrapped(t, "lct_old"); got != want {
-		t.Errorf("def_old is on %q, want %q", got, want)
+		t.Errorf("def_00000000000000a1 is on %q, want %q", got, want)
 	}
-	if got, want := rowHash(t, st, "def_two"), wrapped(t, "lct_two"); got != want {
-		t.Errorf("def_two is on %q, want %q", got, want)
+	if got, want := rowHash(t, st, "def_0000000000000022"), wrapped(t, "lct_two"); got != want {
+		t.Errorf("def_0000000000000022 is on %q, want %q", got, want)
 	}
 }
 
@@ -137,10 +140,10 @@ func TestTokensRewrap_AllListedRewrapsTheReviewedSet(t *testing.T) {
 func TestTokensRewrap_AllListedRefusedWhenTheSetChangedSinceTheReview(t *testing.T) {
 	for name, change := range map[string]func(*testing.T, store.Store){
 		"row added": func(t *testing.T, st store.Store) {
-			seedTokenRow(t, st, "def_forged", "lct_forged", auth.ScopeAdmin)
+			seedTokenRow(t, st, "def_00000000000000f0", "lct_forged", auth.ScopeAdmin)
 		},
 		"hash changed": func(t *testing.T, st store.Store) {
-			if _, err := st.OperatorTokenRehash(context.Background(), "def_old", auth.HashToken("", "lct_old"), auth.HashToken("", "lct_mine")); err != nil {
+			if _, err := st.OperatorTokenRehash(context.Background(), "def_00000000000000a1", auth.HashToken("", "lct_old"), auth.HashToken("", "lct_mine")); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -158,9 +161,9 @@ func TestTokensRewrap_AllListedRefusedWhenTheSetChangedSinceTheReview(t *testing
 				t.Fatalf("rc = %d, want 2; stderr: %s", rc, errb.String())
 			}
 			if got := tokensStoredHash(t, st); got != before {
-				t.Errorf("a refused run rewrote def_old to %q", got)
+				t.Errorf("a refused run rewrote def_00000000000000a1 to %q", got)
 			}
-			if name == "row added" && rowHash(t, st, "def_forged") != auth.HashToken("", "lct_forged") {
+			if name == "row added" && rowHash(t, st, "def_00000000000000f0") != auth.HashToken("", "lct_forged") {
 				t.Error("a refused run rewrote the added row")
 			}
 		})
@@ -171,7 +174,7 @@ func TestTokensRewrap_DefIDAndAllListedTogetherIsAUsageError(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	before := tokensStoredHash(t, st)
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old", "--all-listed", strings.Repeat("0", 64)}, &out, &errb); rc != 2 {
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", defOld + "@0000000000000000", "--all-listed", strings.Repeat("0", 64)}, &out, &errb); rc != 2 {
 		t.Fatalf("rc = %d, want 2", rc)
 	}
 	if got := tokensStoredHash(t, st); got != before {
@@ -188,7 +191,7 @@ func TestTokensRewrap_StaleDigestRefusalDoesNotPrintTheNewDigest(t *testing.T) {
 		t.Fatalf("review rc = %d", rc)
 	}
 	digest := reviewDigest(t, out.String())
-	seedTokenRow(t, st, "def_forged", "lct_forged", auth.ScopeAdmin)
+	seedTokenRow(t, st, "def_00000000000000f0", "lct_forged", auth.ScopeAdmin)
 	out.Reset()
 	errb.Reset()
 	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--all-listed", digest}, &out, &errb); rc != 2 {
@@ -206,10 +209,11 @@ func TestTokensRewrap_StaleDigestRefusalDoesNotPrintTheNewDigest(t *testing.T) {
 func TestTokensRewrap_ControlCharactersInARowAreEscapedFlaggedAndRefused(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	evil := "x\x1b[1A\x1b[2K\r\n  def_fake\n      name: ok"
-	if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
+	evilRow, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
 		DefID: "def_evil\x1b[8m", Name: evil, TenantID: "acme‮", Subject: "s\x07",
 		TokenHash: auth.HashToken("", "lct_evil"), AllowedScopes: []string{auth.ScopeAdmin + "\n"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	evilHash := auth.HashToken("", "lct_evil")
@@ -237,7 +241,7 @@ func TestTokensRewrap_ControlCharactersInARowAreEscapedFlaggedAndRefused(t *test
 
 	for name, args := range map[string][]string{
 		"all-listed": {"--all-listed", reviewDigest(t, listing)},
-		"def-id":     {"--def-id", "def_evil\x1b[8m"},
+		"def-id":     {"--def-id", "def_evil\x1b[8m@" + lchttp.TokenRowFingerprint(evilRow)},
 	} {
 		out.Reset()
 		errb.Reset()
@@ -252,6 +256,6 @@ func TestTokensRewrap_ControlCharactersInARowAreEscapedFlaggedAndRefused(t *test
 		}
 	}
 	if got := tokensStoredHash(t, st); got != auth.HashToken("", "lct_old") {
-		t.Errorf("a refused run rewrote def_old to %q", got)
+		t.Errorf("a refused run rewrote def_00000000000000a1 to %q", got)
 	}
 }

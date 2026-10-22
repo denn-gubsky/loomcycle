@@ -14137,10 +14137,10 @@ func testOperatorTokenRehashIsACompareAndSet(t *testing.T, s store.Store) {
 }
 
 // OperatorTokenRehashAll applies its compare-and-sets in one transaction (RFC
-// ES F3: the boot rewrap). A batch that fails part-way changes nothing — a
-// partly rewrapped table would mark itself as already on the derived pepper
-// and strand the rest — and an op whose row moved on is a no-op, so a second
-// replica running the same batch changes nothing either.
+// ES F3/C2: `loomcycle tokens rewrap`). A batch that fails part-way changes
+// nothing, so the operator is never left guessing which rows moved; an op
+// whose row moved on is a no-op, so a second run of the same batch changes
+// nothing either; and the result says, per op, whether its row changed.
 func testOperatorTokenRehashAllIsAllOrNothing(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	for _, r := range []store.OperatorTokenDefRow{
@@ -14178,8 +14178,8 @@ func testOperatorTokenRehashAllIsAllOrNothing(t *testing.T, s store.Store) {
 		{DefID: "ot-ra-2", OldHash: "ra-stale", NewHash: "ra-new-2"},
 		{DefID: "ot-ra-none", OldHash: "ra-old-1", NewHash: "ra-new-x"},
 	}
-	if n, err := s.OperatorTokenRehashAll(ctx, ops); err != nil || n != 1 {
-		t.Fatalf("batch = (%d, %v), want (1, nil): only the op whose old hash matches lands", n, err)
+	if got, err := s.OperatorTokenRehashAll(ctx, ops); err != nil || len(got) != 3 || !got[0] || got[1] || got[2] {
+		t.Fatalf("batch = (%v, %v), want ([true false false], nil): only the op whose old hash matches lands", got, err)
 	}
 	if got := hashOf("ot-ra-1"); got != "ra-new-1" {
 		t.Errorf("ot-ra-1 = %q, want ra-new-1", got)
@@ -14188,11 +14188,11 @@ func testOperatorTokenRehashAllIsAllOrNothing(t *testing.T, s store.Store) {
 		t.Errorf("a stale op changed ot-ra-2 to %q", got)
 	}
 	// The same batch again (another replica): nothing left to change.
-	if n, err := s.OperatorTokenRehashAll(ctx, ops); err != nil || n != 0 {
-		t.Errorf("repeated batch = (%d, %v), want (0, nil)", n, err)
+	if got, err := s.OperatorTokenRehashAll(ctx, ops); err != nil || len(got) != 3 || got[0] || got[1] || got[2] {
+		t.Errorf("repeated batch = (%v, %v), want all false", got, err)
 	}
-	if n, err := s.OperatorTokenRehashAll(ctx, nil); err != nil || n != 0 {
-		t.Errorf("empty batch = (%d, %v), want (0, nil)", n, err)
+	if got, err := s.OperatorTokenRehashAll(ctx, nil); err != nil || len(got) != 0 {
+		t.Errorf("empty batch = (%v, %v), want none", got, err)
 	}
 }
 

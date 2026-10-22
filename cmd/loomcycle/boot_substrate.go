@@ -223,7 +223,7 @@ func (b *boot) wireAuth() {
 			log.Printf("auth: WARNING: reading the token table to report older token hashes failed: %v", rerr)
 			break
 		}
-		logTokenHashes(rep)
+		logTokenHashes(rep, tokenHasher.Fingerprint())
 	}
 	srv.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{
 		Store:                  storeIface,
