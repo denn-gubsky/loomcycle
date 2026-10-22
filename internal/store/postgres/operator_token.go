@@ -220,29 +220,29 @@ func (s *Store) OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash
 	return tag.RowsAffected() == 1, nil
 }
 
-func (s *Store) OperatorTokenRehashAll(ctx context.Context, ops []store.OperatorTokenRehashOp) (int, error) {
+func (s *Store) OperatorTokenRehashAll(ctx context.Context, ops []store.OperatorTokenRehashOp) ([]bool, error) {
 	if len(ops) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	changed := 0
-	for _, op := range ops {
+	changed := make([]bool, len(ops))
+	for i, op := range ops {
 		if op.DefID == "" || op.OldHash == "" || op.NewHash == "" {
-			return 0, fmt.Errorf("operator_token_def rehash: def_id + old and new hash required")
+			return nil, fmt.Errorf("operator_token_def rehash: def_id + old and new hash required")
 		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE operator_token_defs SET token_hash = $1 WHERE def_id = $2 AND token_hash = $3`, op.NewHash, op.DefID, op.OldHash)
 		if err != nil {
-			return 0, fmt.Errorf("operator_token_def rehash %q: %w", op.DefID, err)
+			return nil, fmt.Errorf("operator_token_def rehash %q: %w", op.DefID, err)
 		}
-		changed += int(tag.RowsAffected())
+		changed[i] = tag.RowsAffected() == 1
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, err
+		return nil, err
 	}
 	return changed, nil
 }

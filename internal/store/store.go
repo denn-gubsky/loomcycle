@@ -4357,11 +4357,11 @@ type OperatorTokenStore interface {
 	// current one at its first login (RFC ES D2).
 	OperatorTokenRehash(ctx context.Context, defID, oldHash, newHash string) (bool, error)
 	// OperatorTokenRehashAll applies each op as OperatorTokenRehash does, all
-	// in one transaction, and reports how many rows changed. An error rolls
-	// every op back. Used by the rewrap of unpeppered token hashes
-	// (`loomcycle tokens rewrap`, RFC ES F3/C2), which must not stop
-	// part-way and leave the operator guessing which rows moved.
-	OperatorTokenRehashAll(ctx context.Context, ops []OperatorTokenRehashOp) (int, error)
+	// in one transaction, and reports per op whether its row changed (index-
+	// aligned with ops). An error rolls every op back. Used by the rewrap of
+	// unpeppered token hashes (`loomcycle tokens rewrap`, RFC ES F3/C2),
+	// which reports exactly which named rows moved.
+	OperatorTokenRehashAll(ctx context.Context, ops []OperatorTokenRehashOp) ([]bool, error)
 	// OperatorTokenDefCountActiveAdmin counts tokens that still authenticate
 	// (not retired, not expired) whose allowed_scopes include
 	// "substrate:admin" (the no-lockout guard).

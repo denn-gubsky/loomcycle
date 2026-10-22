@@ -46,7 +46,7 @@ func tokensTestEnv(t *testing.T, secretKey, explicitPepper string) (store.Store,
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
-		DefID: "def_old", Name: "old", TenantID: "default", Subject: "old",
+		DefID: "def_00000000000000a1", Name: "old", TenantID: "default", Subject: "old",
 		TokenHash: auth.HashToken("", "lct_old"), AllowedScopes: []string{"runs:create"},
 	}); err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func tokensStoredHash(t *testing.T, st store.Store) string {
 	t.Helper()
 	rows, err := st.OperatorTokenDefListByName(context.Background(), "old")
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("read def_old: %d rows, %v", len(rows), err)
+		t.Fatalf("read def_00000000000000a1: %d rows, %v", len(rows), err)
 	}
 	return rows[0].TokenHash
 }
@@ -73,7 +73,8 @@ func testSecretKey() string {
 func TestTokensRewrap_RewrapsTheUnpepperedRowUnderTheServersPepper(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old"}, &out, &errb); rc != 0 {
+	named := reviewFingerprint(t, review(t, cfgPath), defOld)
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", named}, &out, &errb); rc != 0 {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
 
@@ -85,7 +86,7 @@ func TestTokensRewrap_RewrapsTheUnpepperedRowUnderTheServersPepper(t *testing.T)
 	if got, want := tokensStoredHash(t, st), h.WrappedHash("lct_old"); got != want {
 		t.Fatalf("stored %q, want the wrapped form %q", got, want)
 	}
-	for _, want := range []string{"1 unpeppered", "rewrapped 1 of 1 named row(s)", `"def_old"`} {
+	for _, want := range []string{"1 unpeppered", "rewrapped 1 of 1 named row(s)", `"def_00000000000000a1"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -106,13 +107,14 @@ func TestTokensRewrap_DryRunChangesNothing(t *testing.T) {
 	st, cfgPath := tokensTestEnv(t, testSecretKey(), "")
 	before := tokensStoredHash(t, st)
 	var out, errb bytes.Buffer
-	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", "def_old", "--dry-run"}, &out, &errb); rc != 0 {
+	named := reviewFingerprint(t, review(t, cfgPath), defOld)
+	if rc := runTokens([]string{"rewrap", "--config", cfgPath, "--def-id", named, "--dry-run"}, &out, &errb); rc != 0 {
 		t.Fatalf("rc = %d, stderr: %s", rc, errb.String())
 	}
 	if got := tokensStoredHash(t, st); got != before {
 		t.Fatalf("a dry run rewrote the row to %q", got)
 	}
-	for _, want := range []string{"dry run: would rewrap 1 row(s)", `"def_old"`} {
+	for _, want := range []string{"dry run: would rewrap 1 row(s)", `"def_00000000000000a1"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}

@@ -85,14 +85,14 @@ func TestTokenLookup_PreviousSecretKeyRowStillAuthenticates(t *testing.T) {
 	oldEnv := config.Env{SecretKey: pepperKey(1)}
 	env := config.Env{SecretKey: pepperKey(2), SecretKeyPrevious: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
-	seedTokenHash(t, st, "def_prev", hasherFor(t, oldEnv).Hash("lct_prev"))
+	seedTokenHash(t, st, "def_00000000000000d0", hasherFor(t, oldEnv).Hash("lct_prev"))
 	bootTokenHashes(t, s)
 
 	p, ok := s.resolvePrincipal(context.Background(), "lct_prev")
-	if !ok || p.TokenDefID != "def_prev" {
+	if !ok || p.TokenDefID != "def_00000000000000d0" {
 		t.Fatalf("token hashed under the previous key's pepper refused: ok=%v", ok)
 	}
-	if got, want := storedHash(t, st, "def_prev"), hasherFor(t, env).Hash("lct_prev"); got != want {
+	if got, want := storedHash(t, st, "def_00000000000000d0"), hasherFor(t, env).Hash("lct_prev"); got != want {
 		t.Errorf("row not rehashed onto the current key: %q, want %q", got, want)
 	}
 }
@@ -154,13 +154,13 @@ func (r *racingTokenStore) OperatorTokenDefGetByTokenHash(ctx context.Context, h
 func TestTokenLookup_ConcurrentFirstLoginRehashedMidLookupAuthenticates(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
-	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	seedTokenHash(t, st, "def_00000000000000a1", auth.HashToken("", "lct_old"))
 	rewrapTokenHashes(t, s)
 	bootTokenHashes(t, s)
 	old := hasherFor(t, env).WrappedHash("lct_old")
 	cur := hasherFor(t, env).Hash("lct_old")
 	s.store = &racingTokenStore{Store: st, at: cur, during: func() {
-		if _, err := st.OperatorTokenRehash(context.Background(), "def_old", old, cur); err != nil {
+		if _, err := st.OperatorTokenRehash(context.Background(), "def_00000000000000a1", old, cur); err != nil {
 			t.Error(err)
 		}
 	}}
@@ -168,7 +168,7 @@ func TestTokenLookup_ConcurrentFirstLoginRehashedMidLookupAuthenticates(t *testi
 	logs, restore := captureLog(t)
 	defer restore()
 
-	if p, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok || p.TokenDefID != "def_old" {
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok || p.TokenDefID != "def_00000000000000a1" {
 		t.Fatalf("racing first login refused: ok=%v", ok)
 	}
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
@@ -185,13 +185,13 @@ func TestTokenLookup_ConcurrentFirstLoginRehashedMidLookupAuthenticates(t *testi
 func TestTokenLookup_ConcurrentFirstLoginLosingTheRehashAuthenticates(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
-	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	seedTokenHash(t, st, "def_00000000000000a1", auth.HashToken("", "lct_old"))
 	rewrapTokenHashes(t, s)
 	bootTokenHashes(t, s)
 	old := hasherFor(t, env).WrappedHash("lct_old")
 	cur := hasherFor(t, env).Hash("lct_old")
 	s.store = &racingTokenStore{Store: st, at: old, during: func() {
-		if _, err := st.OperatorTokenRehash(context.Background(), "def_old", old, cur); err != nil {
+		if _, err := st.OperatorTokenRehash(context.Background(), "def_00000000000000a1", old, cur); err != nil {
 			t.Error(err)
 		}
 	}}
@@ -199,7 +199,7 @@ func TestTokenLookup_ConcurrentFirstLoginLosingTheRehashAuthenticates(t *testing
 	logs, restore := captureLog(t)
 	defer restore()
 
-	if p, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok || p.TokenDefID != "def_old" {
+	if p, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok || p.TokenDefID != "def_00000000000000a1" {
 		t.Fatalf("racing first login refused: ok=%v", ok)
 	}
 	if _, ok := s.resolvePrincipal(context.Background(), "lct_old"); !ok {
@@ -216,7 +216,7 @@ func TestTokenLookup_ConcurrentFirstLoginLosingTheRehashAuthenticates(t *testing
 func TestTokenLookup_NegativeAfterOlderFormLookupIsNotCached(t *testing.T) {
 	env := config.Env{SecretKey: pepperKey(1)}
 	s, st := derivedPepperServer(t, env)
-	seedTokenHash(t, st, "def_old", auth.HashToken("", "lct_old"))
+	seedTokenHash(t, st, "def_00000000000000a1", auth.HashToken("", "lct_old"))
 	rewrapTokenHashes(t, s)
 	bootTokenHashes(t, s)
 	s.tokenCache = newTokenCache(30 * time.Second)
