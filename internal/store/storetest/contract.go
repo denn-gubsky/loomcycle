@@ -34,8 +34,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/channels"
-	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -1466,15 +1464,28 @@ func testUsageRowsWithNoRun(t *testing.T, s store.Store) {
 	checkReport("before the rollup")
 
 	// What seeds a budget counter at boot, and what a snapshot carries as
-	// month-to-date: the same totals per (tenant, user).
-	mtd, err := limits.MonthToDate(ctx, s, old.Add(-24*time.Hour))
+	// month-to-date: the same totals per (tenant, user). These are the two
+	// reads the budget's month-to-date is computed from (limits.MonthToDate,
+	// whose arithmetic over them is unit-tested in its own package): the ledger
+	// since the month start by tenant and user, every token bucket counted, and
+	// the month's carry — none, as nothing was restored into this store.
+	month := old.Add(-24 * time.Hour)
+	byPair, err := s.UsageReport(ctx, store.UsageQuery{From: month,
+		GroupBy: []store.UsageDimension{store.UsageByTenant, store.UsageByUser}})
 	if err != nil {
-		t.Fatalf("MonthToDate: %v", err)
+		t.Fatalf("UsageReport since the month start: %v", err)
 	}
-	for k, want := range map[limits.UsageKey]int64{
-		{TenantID: "acme", UserID: "alice"}: 1116 + 4 + 50 + 100,
-		{TenantID: "acme"}:                  11,
-		{TenantID: "globex", UserID: "bob"}: 7,
+	mtd := map[key]int64{}
+	for _, a := range byPair {
+		mtd[key{tenant: a.TenantID, user: a.UserID}] += a.InputTokens + a.OutputTokens + a.CacheCreationTokens + a.CacheReadTokens
+	}
+	if carried, err := s.UsageCarryForMonth(ctx, month); err != nil || len(carried) != 0 {
+		t.Errorf("the month's carry = %+v, %v; want none", carried, err)
+	}
+	for k, want := range map[key]int64{
+		{tenant: "acme", user: "alice"}: 1116 + 4 + 50 + 100,
+		{tenant: "acme"}:                11,
+		{tenant: "globex", user: "bob"}: 7,
 	} {
 		if mtd[k] != want {
 			t.Errorf("month-to-date for %+v = %d, want %d", k, mtd[k], want)
@@ -10922,8 +10933,9 @@ func testTeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels(t *testing.T, s store
 }
 
 // testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill writes a team's own
-// channels the way the runtime does — through the channel writer, in the
-// team's tenant, under each scope such a channel may have (tenant: scope_id "";
+// channels the way the runtime does — in the shapes the channel writer stores
+// (channels.StorePublisher; its own tests pin those shapes), in the team's
+// tenant, under each scope such a channel may have (tenant: scope_id "";
 // user: one per user), with cursors, and with hook progress (no team channel
 // carries hooks today; the table is purged anyway) — then deletes the team and
 // asserts no row of it is left in any table, and that another team's and
@@ -10941,13 +10953,17 @@ func testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill(t *testing.T, s sto
 		}
 	}
 	gated := func(team string) string { return store.TeamChannelName(team, "gated") }
-	pub := &channels.StorePublisher{Store: s, HooksEnabled: true,
-		Defs: func(_ context.Context, tenant, channel string) (channels.WriteDef, error) {
-			if channel == gated("team-w") || channel == gated("team-v") {
-				return channels.WriteDef{Hooked: true, HookTenant: tenant}, nil
-			}
-			return channels.WriteDef{}, nil
-		}}
+	// write stores a message as the channel writer does: delivered now, or —
+	// on a channel whose hooks are on (gated) — held at the hook instant,
+	// naming the tenant whose hooks decide it.
+	write := func(m store.ChannelMessage) error {
+		m.Payload, m.PublishedByUserID = json.RawMessage(`{}`), "w"
+		if m.Channel == gated("team-w") || m.Channel == gated("team-v") {
+			m.VisibleAt, m.HookTenant = store.ChannelHookHeldVisibleAt(), m.TenantID
+		}
+		_, _, err := s.ChannelPublish(ctx, m, 0)
+		return err
+	}
 	type key struct {
 		tenant, team, local string
 		scope               store.MemoryScope
@@ -10963,8 +10979,7 @@ func testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill(t *testing.T, s sto
 	}
 	for _, k := range keys {
 		name := store.TeamChannelName(k.team, k.local)
-		if _, err := pub.Write(ctx, channels.WriteRequest{Channel: name, TenantID: k.tenant, Scope: k.scope, ScopeID: k.scopeID,
-			Payload: json.RawMessage(`{}`), PublishedBy: "w"}); err != nil {
+		if err := write(store.ChannelMessage{Channel: name, TenantID: k.tenant, Scope: k.scope, ScopeID: k.scopeID}); err != nil {
 			t.Fatalf("write %v: %v", k, err)
 		}
 		msgs, err := s.ChannelPeek(ctx, k.tenant, name, k.scope, k.scopeID, "", 1)
@@ -10976,8 +10991,7 @@ func testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill(t *testing.T, s sto
 		}
 	}
 	for _, team := range []string{"team-w", "team-v"} {
-		if _, err := pub.Write(ctx, channels.WriteRequest{Channel: gated(team), TenantID: "acme", Scope: store.MemoryScopeTenant,
-			Payload: json.RawMessage(`{}`), PublishedBy: "w"}); err != nil {
+		if err := write(store.ChannelMessage{Channel: gated(team), TenantID: "acme", Scope: store.MemoryScopeTenant}); err != nil {
 			t.Fatalf("write gated: %v", err)
 		}
 	}
