@@ -1417,6 +1417,35 @@ func resumedCryptoPolicy(run store.Run, rec *spawnRecord, def config.AgentDef) t
 	return subAgentCryptoPolicy(tools.CryptoPolicyValue{Scopes: rec.CryptoScopes}, def)
 }
 
+// resumedShellCreds is the shell-credential narrowing a resumed run gets back
+// (RFC EW): a top-level run its definition's (nil: agentRunPolicy reads it),
+// and a sub-run its definition's narrowed again to its recorded parent's, as
+// Inherit narrowed it live. A sub-run with no record, or a record written
+// before the field, narrows to its definition alone: no run could narrow its
+// shell's credentials before the field existed, so its parent narrowed none.
+func resumedShellCreds(run store.Run, rec *spawnRecord, def config.AgentDef) *tools.ShellCredsPolicyValue {
+	if !isSubRun(run) {
+		return nil
+	}
+	own := tools.ShellCredsFor(def.ShellCredentials)
+	if rec == nil {
+		return &own
+	}
+	v := tools.NarrowShellCreds(tools.ShellCredsFor(rec.ShellCredentials), own)
+	return &v
+}
+
+// shellCredsRecordOf is the spawn record of a parent's shell-credential
+// narrowing: nil when it narrowed nothing, else its names (an empty list kept
+// as one, so a parent that allowed none is recorded as allowing none).
+func shellCredsRecordOf(v tools.ShellCredsPolicyValue) *config.CredentialNames {
+	if !v.Set {
+		return nil
+	}
+	names := config.CredentialNames(append([]string{}, v.Names...))
+	return &names
+}
+
 // recordedParentVolumes rebuilds the parent's volume policy a sub-run was
 // spawned under. Names, modes and defaults come from the record; each root is
 // resolved now, by the same lookup a fresh run uses, so the record can never
@@ -2307,6 +2336,7 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		// read-only, as it resumes confined to no volume.
 		EphemeralReadOnly: runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)),
 		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
+		ShellCreds:        resumedShellCreds(run, runCfg.Spawn, agentDef),
 		// Restored from the run's own record, for sub-agent inheritance. The
 		// context policy too: every non-resume run path stamps it, so without
 		// it a resumed run's children inherited a different retention mode

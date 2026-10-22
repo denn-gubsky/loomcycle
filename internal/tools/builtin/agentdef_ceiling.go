@@ -104,6 +104,7 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 		func() error { return ceilInterruption(ctx, def, base, held) },
 		func() error { return ceilEvaluation(ctx, def, base, held) },
 		func() error { return ceilCrypto(ctx, def, base, held) },
+		func() error { return ceilShellCreds(ctx, def, base, held) },
 		func() error { return ceilSkills(ctx, def, base, held) },
 		func() error { return ceilDefScopes(ctx, name, def, base, held) },
 	}
@@ -435,6 +436,33 @@ func ceilCrypto(ctx context.Context, def mergedDef, base *mergedDef, held string
 		ceiling = scopeUnion(ceiling, tools.EffectiveCryptoScopes(base.CryptoScopes))
 	}
 	return subsetCeiling("crypto_scopes", eff, false, held, ceiling)
+}
+
+// ---- shell credentials ----
+
+// ceilShellCreds holds shell_credentials to the author's own narrowing (RFC
+// EW). Unset is the widest value here, every credential the operator lists,
+// so the rule is the reverse of crypto's: an author whose shell narrows
+// nothing may store anything; one narrowed to some names may store only a
+// subset of them, plus what the forked version already allowed, and may not
+// leave the field unset unless the forked version did.
+func ceilShellCreds(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
+	author := tools.PolicyOf(ctx).ShellCreds
+	if !author.Set {
+		return nil
+	}
+	forked := tools.ShellCredsPolicyValue{Set: true}
+	if base != nil {
+		forked = tools.ShellCredsFor(base.ShellCredentials)
+	}
+	if !forked.Set {
+		return nil // the forked version narrowed nothing, and a fork may keep that
+	}
+	ceiling := scopeUnion(author.Names, forked.Names)
+	if def.ShellCredentials == nil {
+		return refuseCapability("shell_credentials", "every credential the operator lists", true, held, ceiling)
+	}
+	return subsetCeiling("shell_credentials", *def.ShellCredentials, false, held, ceiling)
 }
 
 // ---- skills ----

@@ -7286,6 +7286,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// a resume narrows against the first two again and restores the third.
 	subRunCfg.Spawn = spawnRecordOf(parentPolicy.Volumes, childPolicy.FanoutCap)
 	subRunCfg.Spawn.CryptoScopes = parentPolicy.Crypto.Scopes
+	subRunCfg.Spawn.ShellCredentials = shellCredsRecordOf(parentPolicy.ShellCreds)
 	// The offer the child passes on to its own children is its parent's
 	// (Inherit), which a resume cannot read off a parent ctx.
 	subRunCfg.Spawn.OfferedOverrides = offeredOverridesRecordOf(childPolicy.Overrides)

@@ -176,6 +176,29 @@ var narrowAtMost = map[string]struct {
 		widerChild:    RunPolicy{Crypto: CryptoPolicyValue{Scopes: []string{"tenant"}}},
 		widerOfParent: RunPolicy{Crypto: CryptoPolicyValue{Scopes: []string{"user"}}},
 	},
+	"ShellCreds": {
+		// A narrowed parent's child is narrowed to names the parent allows;
+		// an unnarrowed parent bounds nothing (RFC EW: absent = every
+		// credential the operator lists).
+		atMost: func(c, p RunPolicy) bool {
+			if !p.ShellCreds.Set {
+				return true
+			}
+			if !c.ShellCreds.Set {
+				return false
+			}
+			for _, n := range c.ShellCreds.Names {
+				if !p.ShellCreds.Allows(n) {
+					return false
+				}
+			}
+			return true
+		},
+		wideOwn:             RunPolicy{ShellCreds: ShellCredsPolicyValue{Set: true, Names: []string{"A", "B", "C", "D"}}},
+		widerChild:          RunPolicy{ShellCreds: ShellCredsPolicyValue{Set: true, Names: []string{"B"}}},
+		widerOfParent:       RunPolicy{ShellCreds: ShellCredsPolicyValue{Set: true, Names: []string{"A"}}},
+		zeroParentUnbounded: true,
+	},
 	"FanoutCap": {
 		// A capped parent's child is capped no wider (0 would hand the
 		// width to a by-name lookup); an uncapped parent bounds nothing.
@@ -328,5 +351,60 @@ func fill(t *testing.T, v reflect.Value) {
 				return
 			}
 		}
+	}
+}
+
+// RFC EW: a child's shell credentials are the names both its parent run and
+// its own definition allow; an unset side narrows nothing; an empty list is
+// none, and stays none through a spawn.
+func TestRunPolicy_ShellCredsNarrowsForAChild(t *testing.T) {
+	set := func(names ...string) ShellCredsPolicyValue {
+		return ShellCredsPolicyValue{Set: true, Names: append([]string{}, names...)}
+	}
+	for _, c := range []struct {
+		name        string
+		parent, own ShellCredsPolicyValue
+		want        ShellCredsPolicyValue
+	}{
+		{"neither narrows", ShellCredsPolicyValue{}, ShellCredsPolicyValue{}, ShellCredsPolicyValue{}},
+		{"only the child narrows", ShellCredsPolicyValue{}, set("A"), set("A")},
+		{"only the parent narrows", set("A"), ShellCredsPolicyValue{}, set("A")},
+		{"both: the intersection", set("A", "B"), set("B", "C"), set("B")},
+		{"a parent that took none passes none on", set(), set("A"), set()},
+		{"a child that takes none takes none", set("A"), set(), set()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := RunPolicy{ShellCreds: c.parent}.Inherit(ChildGrant{Own: RunPolicy{ShellCreds: c.own}}).ShellCreds
+			if got.Set != c.want.Set || len(got.Names) != len(c.want.Names) {
+				t.Fatalf("got %+v, want %+v", got, c.want)
+			}
+			for i := range got.Names {
+				if got.Names[i] != c.want.Names[i] {
+					t.Fatalf("got %+v, want %+v", got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// Filter keeps the operator's names the narrowing allows, in the operator's
+// order, and never adds one the operator did not list.
+func TestShellCredsPolicy_FilterNeverWidens(t *testing.T) {
+	operator := []string{"A", "B"}
+	for _, c := range []struct {
+		name string
+		v    ShellCredsPolicyValue
+		want []string
+	}{
+		{"unset keeps the operator's list", ShellCredsPolicyValue{}, []string{"A", "B"}},
+		{"a name keeps only it", ShellCredsPolicyValue{Set: true, Names: []string{"B"}}, []string{"B"}},
+		{"empty keeps none", ShellCredsPolicyValue{Set: true}, nil},
+		{"a name the operator did not list adds nothing", ShellCredsPolicyValue{Set: true, Names: []string{"C"}}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.v.Filter(operator); !reflect.DeepEqual(got, c.want) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
 	}
 }

@@ -106,7 +106,12 @@ var agentDefOverridability = map[string]overridability{
 	// Reach over secret material, so a run cannot set it — not even to narrow,
 	// following evaluation_scopes; a sub-agent's narrowing is the spawn
 	// invariant, not an override.
-	"CryptoScopes":     notOverridable,
+	"CryptoScopes": notOverridable,
+	// Which operator-listed credentials the agent's shell receives (RFC EW).
+	// Reach over secret material, like CryptoScopes. A per-run narrowing would
+	// be harmless, but it needs a run-request field on every transport and
+	// RFC EW D4 left it out; a sub-agent's narrowing is the spawn invariant.
+	"ShellCredentials": notOverridable,
 	"Channels":         notOverridable,
 	"MemoryRoots":      notOverridable,
 	"MemoryQuotaBytes": notOverridable,

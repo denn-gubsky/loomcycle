@@ -280,6 +280,12 @@ export const agentDefRegistry: DefRegistry = {
     { key: "crypto_scopes", label: "Crypto keys", group: "Capabilities", type: "string-list",
       hint: "Which key scopes (agent, user, tenant, run) the Crypto tool's signing, encryption and decryption may use. A sub-agent holds only what its parent also holds.",
       placeholder: "agent", unsetMeans: "no key scope — keyless crypto ops only" },
+    // A JSON control, not a string list: the string-list control clears to
+    // unset when its last entry is removed, and unset here means EVERY
+    // credential, the opposite of what clearing the list would intend.
+    { key: "shell_credentials", label: "Shell credentials", group: "Capabilities", type: "json",
+      hint: "Which of the operator's shell credentials the agent's Bash and Bashbox host commands receive, as a JSON list of names. [] means none. Never adds a credential the operator did not list. A sub-agent gets only the names its parent also allows.",
+      placeholder: '["GITHUB_TOKEN"], or [] for none', unsetMeans: "every credential the operator lists" },
     { key: "history_scope", label: "History", group: "Capabilities", type: "string-list",
       hint: "Which past chats the agent may browse, search and annotate. Empty denies the History tool.",
       unsetMeans: "denied" },

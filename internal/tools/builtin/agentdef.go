@@ -1118,6 +1118,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := config.ValidateCryptoScopes(ov.CryptoScopes); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
+	if err := config.ValidateShellCredentials(ov.ShellCredentials); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// Left as written ("none" or "default") so a fork can tell "say nothing"
 	// from "ask for the default"; buildDefinition turns it into the stored
 	// form.
@@ -1464,6 +1467,13 @@ type mergedDef struct {
 	// own grant by ceilCrypto, and a fork that does not send it keeps its
 	// parent's.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ShellCredentials narrows the credentials the agent's Bash and Bashbox
+	// host commands receive (config.AgentDef.ShellCredentials, RFC EW). A
+	// pointer so "absent" (every credential the operator lists) and `[]`
+	// (none) stay apart in the stored JSON. Authority, not content: excluded
+	// from content_sha256, held to the author's own narrowing by
+	// ceilShellCreds, and a fork that does not send it keeps its parent's.
+	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
 	// The *_def_scopes capability gates (F40) — the substrate-def slice of the
 	// F14 closure. Without these a runtime-authored meta-agent (one that
 	// forks/promotes/schedules other agents) comes back default-deny and can't
@@ -1687,6 +1697,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.CryptoScopes != nil {
 		d.CryptoScopes = ov.CryptoScopes
 	}
+	if ov.ShellCredentials != nil {
+		d.ShellCredentials = ov.ShellCredentials
+	}
 	// Interruption: any non-zero field signals the operator set the block
 	// (Enabled true, or kinds/max_pending supplied). A fork that wants to
 	// DISABLE an inherited interruption block is an edge the create path
@@ -1772,7 +1785,8 @@ var unhashedCapabilityTags = []string{
 	"retry_attempts",
 	"run_timeout_seconds",
 	"schedule_def_scopes",
-	"skills", // the skills: pattern allowlist is authority, not content
+	"shell_credentials", // RFC EW: absent and [] differ, and the stored JSON keeps them apart
+	"skills",            // the skills: pattern allowlist is authority, not content
 	"system_prompt_base",
 	"volume_def_scopes",
 	"volumes",
@@ -1872,6 +1886,10 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		EvaluationScopes: s.EvaluationScopes,
 		Interruption:     s.Interruption,
 		CryptoScopes:     s.CryptoScopes,
+		// RFC EW: a fork of a static agent that narrowed its shell's
+		// credentials keeps the narrowing; without this copy the fork came
+		// back holding every credential the operator lists.
+		ShellCredentials: s.ShellCredentials,
 		// F40: a static meta-agent bootstrapped into the substrate keeps its
 		// capability gates, so a fork of it inherits them.
 		AgentDefScopes:         s.AgentDefScopes,
