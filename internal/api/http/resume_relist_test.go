@@ -197,6 +197,10 @@ func TestResumePausedRun_MovesTheUsersSlotFromTheStoppedReplica(t *testing.T) {
 	srv.sem.WithPerUserCap(1).WithUserQuotaStore(gate)
 	srv.store = stampReplica{Store: srv.store, replica: "gone-replica"}
 	ctx := context.Background()
+	// The stopped replica counted it against its user at admission.
+	if err := srv.store.MarkRunUserSlot(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	if n, w := srv.ResumePausedRuns(ctx); n != 1 {
 		t.Fatalf("resumed %d (warnings %v), want 1", n, w)
@@ -204,6 +208,11 @@ func TestResumePausedRun_MovesTheUsersSlotFromTheStoppedReplica(t *testing.T) {
 	waitWalkRunStatus(t, srv.store, run.ID, store.RunCompleted)
 	if n, _ := srv.ResumePausedRuns(ctx); n != 0 {
 		t.Fatalf("second pass resumed %d, want 0", n)
+	}
+	// The resumed run's own count is on its row, for a later resume to give
+	// back should this process stop too.
+	if got, err := srv.store.TakeRunUserSlot(ctx, run.ID); err != nil || got != store.RunUserSlotHeld {
+		t.Errorf("resumed run's row = %v (%v), want held: its new process counted it", got, err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -251,5 +260,78 @@ func TestResumePausedRuns_AnEndedRowStillMarkedPausedIsNeitherListedNorResumed(t
 	// A pass that listed the row before it ended cannot claim it either.
 	if ok, _ := srv.store.ClaimPausedRun(ctx, run.ID); ok {
 		t.Error("ClaimPausedRun claimed an ended row")
+	}
+}
+
+// A run admitted while the per-user cap was off took no per-user slot, so its
+// resume has none of the stopped replica's to give back: a release there would
+// take back another run's slot (RFC ES C4). Only the resumed run's own count
+// comes and goes.
+func TestResumePausedRun_GivesBackNoSlotTheStoppedReplicaNeverTook(t *testing.T) {
+	srv, cfg, _, run := relistFixture(t) // admitted with no per-user slot
+	cfg.Agents["ghost"] = config.AgentDef{Provider: "scripted", Model: "stub-model", SystemPrompt: "x", Tools: []string{}}
+	gate := &quotaGateCounts{}
+	srv.sem.WithPerUserCap(1).WithUserQuotaStore(gate)
+	srv.store = stampReplica{Store: srv.store, replica: "gone-replica"}
+	ctx := context.Background()
+
+	if n, w := srv.ResumePausedRuns(ctx); n != 1 {
+		t.Fatalf("resumed %d (warnings %v), want 1", n, w)
+	}
+	waitWalkRunStatus(t, srv.store, run.ID, store.RunCompleted)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		admitted, released := gate.counts()
+		if admitted == 1 && released == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("per-user counter: %d counted, %d released; want the resumed run counted once and released once, and nothing given back for the stopped replica", admitted, released)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if admitted, released := gate.counts(); admitted != 1 || released != 1 {
+		t.Fatalf("per-user counter settled at %d counted, %d released; want 1 and 1", admitted, released)
+	}
+}
+
+// A row from before runs.user_slot (parked by an older binary) records
+// nothing; its resume keeps the earlier rule and gives the stopped replica's
+// slot back for a top-level run that replica admitted — once.
+func TestResumePausedRun_ARowThatRecordsNoSlotKeepsTheEarlierRule(t *testing.T) {
+	srv, cfg, _, _ := relistFixture(t)
+	cfg.Agents["ghost"] = config.AgentDef{Provider: "scripted", Model: "stub-model", SystemPrompt: "x", Tools: []string{}}
+	ctx := context.Background()
+	// Only the legacy row is paused; the fixture's own run is ended.
+	if listed, _ := srv.store.ListPausedRuns(ctx); len(listed) == 1 {
+		_ = srv.store.FinishRun(ctx, listed[0].ID, store.RunCompleted, "end_turn", store.Usage{}, "")
+	}
+	sess, _ := srv.store.CreateSession(ctx, "", "ghost", "alice")
+	if _, err := srv.store.SnapshotRestoreRun(ctx, store.Run{ID: "r_legacy_slot", SessionID: sess.ID, AgentID: "a_legacy_slot",
+		UserID: "alice", Model: "stub-model", Status: store.RunRunning, PauseState: store.PauseStatePaused, StartedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	appendResumeEvent(t, srv, "r_legacy_slot", "user_input", []loop.PromptSegment{
+		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "hi"}}},
+	})
+	gate := &quotaGateCounts{}
+	srv.sem.WithPerUserCap(1).WithUserQuotaStore(gate)
+	srv.store = stampReplica{Store: srv.store, replica: "gone-replica"}
+
+	if n, w := srv.ResumePausedRuns(ctx); n != 1 {
+		t.Fatalf("resumed %d (warnings %v), want 1", n, w)
+	}
+	waitWalkRunStatus(t, srv.store, "r_legacy_slot", store.RunCompleted)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		admitted, released := gate.counts()
+		if admitted == 1 && released == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("per-user counter: %d counted, %d released; want the stopped replica's slot and the run's own given back", admitted, released)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -3479,7 +3479,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	}
 
 	// ---- Session+run creation ----
-	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: runCfg.marshal()}
+	identity := store.RunIdentity{AgentID: agentID, UserID: effectiveUserID, TenantID: effectiveTenantID, UserTier: in.UserTier, Model: model, ReplicaID: s.replicaID, ParentContext: in.ParentContext, IdempotencyKey: in.IdempotencyKey, DeliveryAltKey: in.DeliveryAltKey, Interactive: in.Interactive, OperatorKeyRestricted: operatorKeyRestricted, Isolated: isolated, CredentialsNoUserScope: in.CredentialsNoUserScope, Retention: retention, RunConfig: runCfg.marshal(),
+		// What the admission counted, for the resume of a run whose replica
+		// stops (RFC ES C4). Known only now: a queued row is written before it.
+		UserSlot: runSlot.SharedUserCount()}
 	var sessionID, runID string
 	switch {
 	case queued != nil || restarting:

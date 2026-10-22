@@ -683,9 +683,12 @@ func TestSemaphore_WaitForUser_CountsTheUserWithoutRefusingAtTheCap(t *testing.T
 		t.Fatal(err)
 	}
 	defer first()
-	release, err := s.WaitForUser(context.Background(), "", "alice")
+	release, shared, err := s.WaitForUser(context.Background(), "", "alice")
 	if err != nil {
 		t.Fatalf("WaitForUser at the cap = %v, want admitted", err)
+	}
+	if shared {
+		t.Error("a single replica's count reported as a shared one")
 	}
 	if got := s.Stats().PerUser["alice"]; got != 2 {
 		t.Errorf("alice's count with the resumed run = %d, want 2", got)
@@ -705,15 +708,67 @@ func TestSemaphore_WaitForUser_ClusterCountsAndReleases(t *testing.T) {
 	gate := newStubQuotaGate()
 	gate.atCapFor["alice"] = true
 	s := New(4, 4, time.Second).WithPerUserCap(1).WithUserQuotaStore(gate)
-	release, err := s.WaitForUser(context.Background(), "", "alice")
+	release, shared, err := s.WaitForUser(context.Background(), "", "alice")
 	if err != nil {
 		t.Fatalf("WaitForUser at the cluster cap = %v, want admitted", err)
+	}
+	if !shared {
+		t.Error("the cluster count is not reported as shared")
 	}
 	if got := gate.count("alice"); got != 1 {
 		t.Errorf("cluster count = %d, want 1", got)
 	}
 	release()
 	waitFor(t, func() bool { return gate.releaseCount() == 1 && gate.count("alice") == 0 })
+}
+
+// A resumed run the cluster counter could not count runs uncounted, and says
+// so: its row must not record a slot it does not hold (RFC ES C4).
+func TestSemaphore_WaitForUser_ReportsAFailedClusterCountAsNotShared(t *testing.T) {
+	gate := &failingCountGate{stubQuotaGate: newStubQuotaGate()}
+	s := New(4, 4, time.Second).WithPerUserCap(1).WithUserQuotaStore(gate)
+	release, shared, err := s.WaitForUser(context.Background(), "", "alice")
+	if err != nil {
+		t.Fatalf("WaitForUser = %v, want admitted", err)
+	}
+	defer release()
+	if shared {
+		t.Error("a count the cluster refused is reported as shared")
+	}
+}
+
+type failingCountGate struct{ *stubQuotaGate }
+
+func (failingCountGate) CountAdmitted(context.Context, string, string) error {
+	return errors.New("stub: count failed")
+}
+
+// An admitted run's slot reports whether the shared per-user counter counted
+// it: only in cluster mode, with the cap on, for a named user (RFC ES C4).
+func TestRunSlot_SharedUserCountOnlyWhenTheClusterCounterCountedIt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sem  *Semaphore
+		user string
+		want bool
+	}{
+		{"cluster, cap on", New(4, 4, 0).WithPerUserCap(1).WithUserQuotaStore(newStubQuotaGate()), "alice", true},
+		{"cluster, cap off", New(4, 4, 0).WithUserQuotaStore(newStubQuotaGate()), "alice", false},
+		{"cluster, no user", New(4, 4, 0).WithPerUserCap(1).WithUserQuotaStore(newStubQuotaGate()), "", false},
+		{"single replica", New(4, 4, 0).WithPerUserCap(1), "alice", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rs := &RunSlot{}
+			release, err := tc.sem.Admit(context.Background(), AdmitRequest{UserID: tc.user, Slot: rs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			if got := rs.SharedUserCount(); got != tc.want {
+				t.Errorf("SharedUserCount = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 // ReleaseUserSlot gives back a cluster per-user slot a process that is gone
