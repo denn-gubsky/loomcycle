@@ -3148,12 +3148,17 @@ export function getEnvTemplate(): Promise<{ env: string }> {
 // Operator/tenant token management (RFC L). POST /v1/_operatortokendef dispatches
 // by `op`. A refused op returns 422 {code:"tool_refused", error, tool}; the
 // helper surfaces the human-readable `error`.
+// One row per (tenant, name): a per-user ("u-") name repeats across tenants.
 export interface OperatorTokenNameSummary {
   name: string;
   tenant_id: string;
   subject: string;
   token_count: number;
   has_current: boolean;
+  // The newest live token's def_id; absent when none is live. Rotate and
+  // retire target it: the server refuses a per-user name, which is not unique
+  // across tenants.
+  current_def_id?: string;
   last_updated: string;
 }
 
@@ -3192,7 +3197,7 @@ async function postOperatorToken<T>(input: Record<string, unknown>): Promise<T> 
   return resp.json() as Promise<T>;
 }
 
-// listOperatorTokens returns one summary per token NAME (no secrets).
+// listOperatorTokens returns one summary per (tenant, token name) (no secrets).
 export function listOperatorTokens(): Promise<{ names: OperatorTokenNameSummary[] }> {
   return jsonFetch<{ names: OperatorTokenNameSummary[] }>("/v1/_operatortokendef/names");
 }
@@ -3206,16 +3211,19 @@ export function mintOperatorToken(req: {
   return postOperatorToken<OperatorTokenCreateResult>({ op: "create", ...req });
 }
 
-export function rotateOperatorToken(name: string, graceSeconds?: number): Promise<OperatorTokenCreateResult> {
-  const input: Record<string, unknown> = { op: "rotate", name };
+// rotateOperatorToken and retireOperatorToken act on one token by def_id, never
+// by name: a per-user name is not unique across tenants, so the server refuses
+// it, and acting by name could reach another tenant's token.
+export function rotateOperatorToken(defId: string, graceSeconds?: number): Promise<OperatorTokenCreateResult> {
+  const input: Record<string, unknown> = { op: "rotate", def_id: defId };
   if (graceSeconds && graceSeconds > 0) input.grace_seconds = graceSeconds;
   return postOperatorToken<OperatorTokenCreateResult>(input);
 }
 
 export function retireOperatorToken(
-  name: string,
+  defId: string,
 ): Promise<{ def_id: string; name: string; retired: boolean }> {
-  return postOperatorToken<{ def_id: string; name: string; retired: boolean }>({ op: "retire", name });
+  return postOperatorToken<{ def_id: string; name: string; retired: boolean }>({ op: "retire", def_id: defId });
 }
 
 // The RFC L closed scope catalog — the token-mint form's scope choices.

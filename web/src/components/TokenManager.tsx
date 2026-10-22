@@ -12,7 +12,8 @@ import {
 // TokenManager is the Settings → Tokens panel (RFC L token minting, web-reachable
 // for no-shell deployments — RFC AR/TrueNAS). It mirrors the `loomcycle
 // operator-token` CLI: generate a tenant/operator token (shown ONCE), list the
-// existing names, rotate, and retire. Admin-only — the backend gates
+// existing tokens (one row per tenant and name), rotate, and retire. Rotate and
+// retire act on the row's current def_id, never on the name. Admin-only — the backend gates
 // POST /v1/_operatortokendef at substrate:admin and SettingsView only renders
 // this for an is_admin principal, so this is the redundant client-side half.
 const DEFAULT_SCOPES = ["substrate:tenant"];
@@ -90,15 +91,15 @@ export default function TokenManager() {
     }
   };
 
-  const doRotate = async (n: string) => {
-    if (busy) return;
-    if (!confirm(`Rotate token "${n}"? The current secret keeps working during the grace window, then stops. A fresh secret is shown once.`)) {
+  const doRotate = async (t: OperatorTokenNameSummary) => {
+    if (busy || !t.current_def_id) return;
+    if (!confirm(`Rotate token "${t.name}" of tenant "${t.tenant_id}"? The current secret keeps working during the grace window, then stops. A fresh secret is shown once.`)) {
       return;
     }
     setBusy(true);
     setFormErr(null);
     try {
-      const res = await rotateOperatorToken(n);
+      const res = await rotateOperatorToken(t.current_def_id);
       setMinted(res);
       setCopied(false);
       await refresh();
@@ -109,15 +110,15 @@ export default function TokenManager() {
     }
   };
 
-  const doRetire = async (n: string) => {
-    if (busy) return;
-    if (!confirm(`Retire token "${n}"? Its secret stops authenticating immediately. This cannot be undone (mint a new token to replace it).`)) {
+  const doRetire = async (t: OperatorTokenNameSummary) => {
+    if (busy || !t.current_def_id) return;
+    if (!confirm(`Retire token "${t.name}" of tenant "${t.tenant_id}"? Its secret stops authenticating immediately. This cannot be undone (mint a new token to replace it).`)) {
       return;
     }
     setBusy(true);
     setFormErr(null);
     try {
-      await retireOperatorToken(n);
+      await retireOperatorToken(t.current_def_id);
       await refresh();
     } catch (e) {
       setFormErr(e instanceof Error ? e.message : String(e));
@@ -261,7 +262,7 @@ export default function TokenManager() {
           </thead>
           <tbody>
             {names.map((t) => (
-              <tr key={t.name}>
+              <tr key={`${t.tenant_id}/${t.name}`}>
                 <td>
                   <code>{t.name}</code>
                 </td>
@@ -288,16 +289,16 @@ export default function TokenManager() {
                   <button
                     type="button"
                     className="ghost-btn"
-                    disabled={busy || !t.has_current}
-                    onClick={() => doRotate(t.name)}
+                    disabled={busy || !t.current_def_id}
+                    onClick={() => doRotate(t)}
                   >
                     rotate
                   </button>
                   <button
                     type="button"
                     className="ghost-btn danger"
-                    disabled={busy || !t.has_current}
-                    onClick={() => doRetire(t.name)}
+                    disabled={busy || !t.current_def_id}
+                    onClick={() => doRetire(t)}
                   >
                     retire
                   </button>

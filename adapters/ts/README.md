@@ -501,7 +501,7 @@ One method per substrate family returns every declared name with its version rol
 | `listWebhookDefNames(opts?)` | `GET /v1/_webhookdef/names` |
 | `listMemoryBackendDefNames(opts?)` | `GET /v1/_memorybackenddef/names` |
 | `listDocumentSourceDefNames(opts?)` | `GET /v1/_documentsourcedef/names` |
-| `listOperatorTokenDefNames(opts?)` | `GET /v1/_operatortokendef/names` — **admin token only**; `{name, tenant_id, subject, token_count, has_current, last_updated}`, never a token. |
+| `listOperatorTokenDefNames(opts?)` | `GET /v1/_operatortokendef/names` — **admin token only**; one row per (tenant, name): `{name, tenant_id, subject, token_count, has_current, current_def_id?, last_updated}`, never a token. Rotate or retire by `current_def_id`; a per-user (`u-`) name is refused as a target. |
 
 All but the last return `DefNamesResponse`; `live_version_count` / `active_retired` are reported by the AgentDef, SkillDef, HookDef and MCPServerDef families. Teams have `listTeams()`.
 

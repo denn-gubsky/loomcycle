@@ -6464,16 +6464,20 @@ export interface DefNamesResponse {
   names: DefNameSummary[];
 }
 
-/** One token name's summary from {@link LoomcycleClient.listOperatorTokenDefNames}.
- *  Carries no secret material. */
+/** One (tenant, token name) summary from {@link LoomcycleClient.listOperatorTokenDefNames}.
+ *  A per-user (`u-`) name repeats across tenants, so it can appear once per
+ *  tenant. Carries no secret material. */
 export interface OperatorTokenDefNameSummary {
   name: string;
   tenant_id: string;
   subject: string;
-  /** Every token minted under the name, rotated and retired ones included. */
+  /** Every token minted under the name in this tenant, rotated and retired ones included. */
   token_count: number;
-  /** A non-retired token exists. */
+  /** A non-retired, unexpired token exists. */
   has_current: boolean;
+  /** The newest live token's def_id; absent when none is live. Rotate or
+   *  retire by it: a per-user name is refused as a target. */
+  current_def_id?: string;
   last_updated: string;
 }
 
