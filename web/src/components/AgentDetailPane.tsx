@@ -17,6 +17,8 @@ import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { settledToolIds } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
+import { metricsFromEvents } from "../lib/runMetrics";
+import { ContextMeter, RunRate } from "./RunMetricsBar";
 import {
   awaitedChildrenOf,
   isTeamWalkAgentId,
@@ -346,6 +348,7 @@ function AgentDetailPaneBody({ agentId, runId, ancestors, onSelect }: AgentDetai
             {agent.completed_at && (
               <span>{durationLabel(agent.started_at, agent.completed_at)}</span>
             )}
+            <RunUsageFacts run={agent} events={events} />
             <RunClockFacts run={agent} />
           </div>
           {agent.error && <div className="agent-err">error: {agent.error}</div>}
@@ -497,6 +500,33 @@ export function ChildrenAwaitOrChip({ agent, state }: { agent: Pick<Agent, "stat
       ))}
       {w.more > 0 && <span>+{w.more} more</span>}
     </span>
+  );
+}
+
+// RunUsageFacts adds the run's context gauge and throughput to its header,
+// from the usage rows the run persisted (one per model call) — the same frames
+// the live terminal reads, so the two show the same numbers.
+//
+// The gauge is the LATEST call's prompt against the window, not the peak: it
+// is what the runtime itself measures its distillation gate against, it drops
+// after a compaction (a peak would keep reporting a window the run no longer
+// fills), and it is what a continuation of the run starts from. The rate is
+// the latest call's while the run is live and the run's average once it ends.
+export function RunUsageFacts({
+  run,
+  events,
+}: {
+  run: Pick<Agent, "run_id" | "status">;
+  events: TranscriptEvent[];
+}) {
+  // The transcript is the SESSION's — every run of it — so read this run's rows.
+  const m = useMemo(() => metricsFromEvents(events, run.run_id), [events, run.run_id]);
+  if (m.calls === 0) return null;
+  return (
+    <>
+      <ContextMeter used={m.contextTokens} max={m.maxContextTokens} />
+      <RunRate metrics={m} mode={run.status === "running" ? "latest" : "average"} />
+    </>
   );
 }
 
