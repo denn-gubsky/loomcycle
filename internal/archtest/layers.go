@@ -81,6 +81,7 @@ var layers = []layer{
 			"internal/netguard",
 			"internal/otel",
 			"internal/procgroup",
+			"internal/promptinject",
 			"internal/recipes",
 			"internal/redact",
 			"internal/search",
@@ -319,7 +320,6 @@ var knownViolations = []knownViolation{
 
 	// memory's grammar, store.ParseRetention and the team-channel names,
 	// teamgraph's name/var validators.
-	{"internal/config", "internal/memory", cutConfig},
 	{"internal/config", "internal/store", cutConfig},
 	{"internal/config", "internal/teamgraph", cutConfig},
 

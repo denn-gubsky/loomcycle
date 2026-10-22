@@ -26,8 +26,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
-	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
@@ -8923,9 +8923,9 @@ func validate(c *Config) error {
 		// RFC BL P1: a {{memory:<variant>}} placeholder in the system prompt must
 		// reference a recognised variant — a typo is caught here, at boot, rather
 		// than silently rendering nothing at run time.
-		if unknown := meminject.UnknownVariants(agent.SystemPrompt); len(unknown) > 0 {
+		if unknown := promptinject.UnknownVariants(agent.SystemPrompt); len(unknown) > 0 {
 			return fmt.Errorf("agent %q: unknown {{memory:%s}} placeholder in system prompt (recognised: %s)",
-				name, unknown[0], strings.Join(meminject.AllVariants(), ", "))
+				name, unknown[0], strings.Join(promptinject.AllVariants(), ", "))
 		}
 		// A {{tool:<Tool>.<op>}} placeholder must name a ref on the read-only
 		// ALLOWLIST. Rejecting here is the whole reason the allowlist is safe to
@@ -8933,18 +8933,18 @@ func validate(c *Config) error {
 		// that it is not callable, instead of shipping a prompt that silently
 		// expands to nothing (or, in a design without the allowlist, one that runs
 		// a mutating tool on every run-entry, sub-agent spawn and resume).
-		if unknown := meminject.UnknownToolRefs(agent.SystemPrompt); len(unknown) > 0 {
+		if unknown := promptinject.UnknownToolRefs(agent.SystemPrompt); len(unknown) > 0 {
 			return fmt.Errorf("agent %q: {{tool:%s}} in system prompt is not an allowlisted read-only tool call (allowed: %s)",
-				name, unknown[0], strings.Join(meminject.AllToolRefs(), ", "))
+				name, unknown[0], strings.Join(promptinject.AllToolRefs(), ", "))
 		}
 		// The ARGUMENT form — {{tool:<Tool>:<argument>}} — has its own, smaller
 		// set, because it is the one family that can reach the network. Same
 		// reason to reject at boot, one step sharper: {{tool:Bash:rm -rf /}}
 		// matches the family's pattern on purpose so it is REFUSED here rather
 		// than sitting in a prompt that looks wired and is not.
-		if unknown := meminject.UnknownToolCalls(agent.SystemPrompt); len(unknown) > 0 {
+		if unknown := promptinject.UnknownToolCalls(agent.SystemPrompt); len(unknown) > 0 {
 			return fmt.Errorf("agent %q: {{tool:%s:...}} in system prompt is not a tool the argument form may name (allowed: %s)",
-				name, unknown[0], strings.Join(meminject.AllToolCalls(), ", "))
+				name, unknown[0], strings.Join(promptinject.AllToolCalls(), ", "))
 		}
 		// Same posture for a document ref: the placeholder pattern matches
 		// loosely on purpose, so a ref with no path is REFUSED loudly here rather
@@ -8952,7 +8952,7 @@ func validate(c *Config) error {
 		// Whether the document EXISTS is deliberately not checked — it can be
 		// created, moved or removed after config load, so a boot-time check would
 		// be a false guarantee; a missing document renders nothing at run time.
-		if bad := meminject.MalformedDocRefs(agent.SystemPrompt); len(bad) > 0 {
+		if bad := promptinject.MalformedDocRefs(agent.SystemPrompt); len(bad) > 0 {
 			return fmt.Errorf("agent %q: {{document:%s}} in system prompt is not a usable reference "+
 				"(want a path or id, optionally #heading — e.g. {{document:/specs/launch#Risks}})", name, bad[0])
 		}

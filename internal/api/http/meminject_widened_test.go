@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -319,8 +319,8 @@ func TestCallerSegments_OperatorAuthoredTeamResolvesTheWidenedFamilies(t *testin
 // this family fails soft into, so it would never be noticed.
 func TestWidenedToolCalls_AllHaveRenderer(t *testing.T) {
 	s := &Server{} // no cfg, no search registry: every renderer returns "" without dialing
-	for _, name := range meminject.AllToolCalls() {
-		call := meminject.ToolCall{Tool: name, Arg: "https://docs.example.com/a"}
+	for _, name := range promptinject.AllToolCalls() {
+		call := promptinject.ToolCall{Tool: name, Arg: "https://docs.example.com/a"}
 		if _, handled := s.renderToolCall(context.Background(), memInject{}, call); !handled {
 			t.Errorf("the widened set names %s but renderToolCall has no case for it", name)
 		}
