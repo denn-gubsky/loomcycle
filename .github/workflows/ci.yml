@@ -39,6 +39,11 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      # The module cache the build uses matches go.sum: a tampered or
+      # corrupted download in the cache fails here instead of being built.
+      - name: Verify modules
+        run: go mod verify
+
       - name: Vet
         run: go vet ./...
 

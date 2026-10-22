@@ -26,6 +26,9 @@ import (
 func (b *base) send(ctx context.Context, op string, req *http.Request) (int, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
+	// #nosec G704 -- the URL comes from a Ref that Validate pinned: an AWS
+	// region and GCP resource by strict pattern, a Vault address by
+	// checkVaultAddress, with Vault behind the caller's SSRF-guarded client.
 	resp, err := b.http.Do(req.WithContext(ctx))
 	if err != nil {
 		return 0, nil, &opError{kind: b.kind, op: op, sentinel: ErrUnavailable, cause: scrubURLError(err)}

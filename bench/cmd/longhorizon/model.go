@@ -56,6 +56,7 @@ type Usage struct {
 // content plus provider-reported token usage.
 func (c *ModelClient) Call(ctx context.Context, messages []Message) (string, Usage, error) {
 	body, _ := json.Marshal(chatRequest{Model: c.model, Provider: c.provider, Messages: messages, Temperature: 0})
+	// #nosec G704 -- c.base is the benchmark operator's own --base flag.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", Usage{}, err
@@ -64,7 +65,7 @@ func (c *ModelClient) Call(ctx context.Context, messages []Message) (string, Usa
 	if c.bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearer)
 	}
-	resp, err := c.httpc.Do(req)
+	resp, err := c.httpc.Do(req) // #nosec G704 -- see above: the operator's --base flag.
 	if err != nil {
 		return "", Usage{}, err
 	}

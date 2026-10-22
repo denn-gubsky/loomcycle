@@ -40,6 +40,7 @@ func SectionSiblings(basePath string) []string {
 			}
 			// os.Stat follows symlinks: a symlink to a regular file loads; a
 			// directory, broken symlink, or fifo is skipped.
+			// #nosec G703 -- m is a glob match in the operator's own config directory.
 			if fi, err := os.Stat(m); err != nil || !fi.Mode().IsRegular() {
 				continue
 			}
