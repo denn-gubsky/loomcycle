@@ -520,6 +520,7 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenDefCurrentByName", testOperatorTokenDefCurrentByName},
 		{"OperatorTokenDefRetireAndCountAdmin", testOperatorTokenDefRetireAndCountAdmin},
 		{"OperatorTokenDefListNames", testOperatorTokenDefListNames},
+		{"OperatorTokenDefListNamesPerTenant", testOperatorTokenDefListNamesPerTenant},
 		{"OperatorTokenDefListBySubject", testOperatorTokenDefListBySubject},
 		{"OperatorTokenRehashIsACompareAndSet", testOperatorTokenRehashIsACompareAndSet},
 		{"OperatorTokenRehashAllIsAllOrNothing", testOperatorTokenRehashAllIsAllOrNothing},
@@ -14462,6 +14463,69 @@ func testOperatorTokenDefListNames(t *testing.T, s store.Store) {
 	for _, n := range names {
 		if n.TenantID != "acme" || n.Subject == "" || !n.HasCurrent || n.TokenCount != 1 {
 			t.Errorf("summary wrong: %+v", n)
+		}
+	}
+}
+
+// testOperatorTokenDefListNamesPerTenant: a name repeated in two tenants (the
+// per-user "u-" namespace allows it) is two summaries, one per tenant, each
+// with its own counts and the def_id of its own newest live token. Merged by
+// name, one tenant's token vanished from the listing and the Web UI could only
+// act on the name, which the server refuses for a per-user name.
+func testOperatorTokenDefListNamesPerTenant(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour)
+	mk := func(defID, tenant string, age time.Duration, retired bool) {
+		t.Helper()
+		r := mkOperatorTokenDef(defID, "u-alice", tenant, "alice", "h-"+defID, []string{"runs:read"})
+		r.CreatedAt = base.Add(age)
+		if retired {
+			r.RetiredAt = base.Add(age + time.Second)
+		}
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", defID, err)
+		}
+	}
+	// t1: an older live token, a newer live one, and a newest retired one.
+	mk("ot-pt-t1-old", "t1", 1*time.Minute, false)
+	mk("ot-pt-t1-new", "t1", 2*time.Minute, false)
+	mk("ot-pt-t1-ret", "t1", 3*time.Minute, true)
+	// t2: one live token, minted after all of t1's.
+	mk("ot-pt-t2", "t2", 4*time.Minute, false)
+	// t3: only a retired token.
+	mk("ot-pt-t3", "t3", 5*time.Minute, true)
+
+	names, err := s.OperatorTokenDefListNames(ctx)
+	if err != nil {
+		t.Fatalf("list names: %v", err)
+	}
+	got := map[string]store.OperatorTokenDefNameSummary{}
+	for _, n := range names {
+		if n.Name != "u-alice" {
+			continue
+		}
+		if _, dup := got[n.TenantID]; dup {
+			t.Errorf("tenant %q listed twice for u-alice", n.TenantID)
+		}
+		got[n.TenantID] = n
+	}
+	if len(got) != 3 {
+		t.Fatalf("u-alice summaries by tenant = %v, want one each for t1, t2, t3", got)
+	}
+	want := map[string]struct {
+		count   int
+		current bool
+		defID   string
+	}{
+		"t1": {3, true, "ot-pt-t1-new"},
+		"t2": {1, true, "ot-pt-t2"},
+		"t3": {1, false, ""},
+	}
+	for tenant, w := range want {
+		n := got[tenant]
+		if n.TokenCount != w.count || n.HasCurrent != w.current || n.CurrentDefID != w.defID || n.Subject != "alice" {
+			t.Errorf("tenant %s: count=%d has_current=%v current_def_id=%q subject=%q, want %d %v %q alice",
+				tenant, n.TokenCount, n.HasCurrent, n.CurrentDefID, n.Subject, w.count, w.current, w.defID)
 		}
 	}
 }
