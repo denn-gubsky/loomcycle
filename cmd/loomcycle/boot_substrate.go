@@ -9,7 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
-	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
+	"github.com/denn-gubsky/loomcycle/internal/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
