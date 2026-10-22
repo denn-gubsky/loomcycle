@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -83,7 +84,7 @@ func (e *Engine) CanResolve() bool { return e.sealer.Enabled() }
 // Meta is what the engine tells a caller about a stored credential: the row
 // with its sealed definition removed, and the URL restriction read out of it.
 type Meta struct {
-	store.CredentialDefRow
+	credentialdef.Row
 	// AllowedURLs is the credential's URL restriction: nil for none, empty
 	// for "sent nowhere". Read from the stored row without opening the
 	// secret, so it is what the row SAYS; a row whose list was changed
@@ -160,7 +161,7 @@ func (e *Engine) PutInline(ctx context.Context, id Identity, plaintext string, e
 	if err != nil {
 		return Meta{}, err
 	}
-	row, err := e.store.CredentialDefPut(ctx, store.CredentialDefRow{
+	row, err := e.store.CredentialDefPut(ctx, credentialdef.Row{
 		TenantID: id.TenantID, Scope: id.Scope, ScopeID: id.ScopeID, Name: id.Name,
 		Backend: BackendInline, Definition: def, ExpiresAt: expiresAt,
 	})
@@ -369,13 +370,13 @@ func (e *Engine) resolve(ctx context.Context, tenantID, agentName, userID, name 
 // does not fall through to a less specific scope, for the reason a
 // restricted one does not: a user whose own token expired must be told so,
 // not quietly sent under the tenant's token of the same name.
-func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row store.CredentialDefRow, found bool, err error) {
+func (e *Engine) find(ctx context.Context, tenantID, agentName, userID, name string) (row credentialdef.Row, found bool, err error) {
 	return e.findScopes(ctx, tenantID, agentName, userID, name, true)
 }
 
 // findScopes is find with the tenant scope optional (withTenant); the agent
 // and user scopes are skipped by passing "" for them.
-func (e *Engine) findScopes(ctx context.Context, tenantID, agentName, userID, name string, withTenant bool) (row store.CredentialDefRow, found bool, err error) {
+func (e *Engine) findScopes(ctx context.Context, tenantID, agentName, userID, name string, withTenant bool) (row credentialdef.Row, found bool, err error) {
 	// The system user is no person: the runs the runtime starts on nobody's
 	// behalf are attributed to it. Whoever stored a credential in its "user"
 	// scope would have every such run send that in place of the tenant's.
@@ -400,27 +401,27 @@ func (e *Engine) findScopes(ctx context.Context, tenantID, agentName, userID, na
 			if errors.As(err, &nf) {
 				continue // not in this scope — try the next
 			}
-			return store.CredentialDefRow{}, false, err
+			return credentialdef.Row{}, false, err
 		}
 		if err := e.expiredErr(row, name); err != nil {
 			return row, true, err
 		}
 		return row, true, nil
 	}
-	return store.CredentialDefRow{}, false, nil
+	return credentialdef.Row{}, false, nil
 }
 
 // expired reports whether row has reached its expires_at. A credential is
 // expired AT its expires_at, not after it: a value valid "until" a time is
 // not handed out at that time.
-func (e *Engine) expired(row store.CredentialDefRow) bool {
+func (e *Engine) expired(row credentialdef.Row) bool {
 	return row.ExpiresAt != nil && !e.now().Before(*row.ExpiresAt)
 }
 
 // open returns row's value. Every failure to open it is ErrUnopenable (see
 // there): the row exists, so whatever went wrong, the caller must refuse
 // rather than treat the name as unknown.
-func (e *Engine) open(ctx context.Context, row store.CredentialDefRow, id Identity) (string, error) {
+func (e *Engine) open(ctx context.Context, row credentialdef.Row, id Identity) (string, error) {
 	backend, err := e.backendFor(row.Backend)
 	if err != nil {
 		return "", unopenable(id.Name, row.Scope, err)
@@ -449,7 +450,7 @@ func unopenable(name, scope string, cause error) error {
 // not parse, or a value sealed under a key this server does not hold (a KEK
 // rotated without _PREVIOUS, or a wrong one). A corrupt seal under a held key
 // passes here and is refused when opened.
-func (e *Engine) unopenableErr(row store.CredentialDefRow, name string) error {
+func (e *Engine) unopenableErr(row credentialdef.Row, name string) error {
 	if !e.CanResolve() {
 		return unopenable(name, row.Scope, ErrNoKey)
 	}
@@ -471,7 +472,7 @@ func (e *Engine) unopenableErr(row store.CredentialDefRow, name string) error {
 
 // expiredErr is ErrExpired for an expired row, naming the credential, its
 // scope and when it expired (never its value); nil otherwise.
-func (e *Engine) expiredErr(row store.CredentialDefRow, name string) error {
+func (e *Engine) expiredErr(row credentialdef.Row, name string) error {
 	if !e.expired(row) {
 		return nil
 	}
@@ -627,10 +628,10 @@ func (e *Engine) backendFor(name string) (Backend, error) {
 
 // metaOf reads what may be shown out of a row and drops the sealed Definition
 // — the only shape that ever leaves the engine toward a caller or a log.
-func (e *Engine) metaOf(row store.CredentialDefRow) Meta {
+func (e *Engine) metaOf(row credentialdef.Row) Meta {
 	m := Meta{AllowedURLs: restrictionOf(row.Definition), Username: usernameOf(row.Definition), Expired: e.expired(row)}
 	cryptoMeta(&m, row.Definition)
 	row.Definition = nil
-	m.CredentialDefRow = row
+	m.Row = row
 	return m
 }

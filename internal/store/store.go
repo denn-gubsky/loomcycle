@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 )
 
 // MintChannelMessageID returns a fresh channel-message id that's
@@ -4034,9 +4036,9 @@ type CredentialDefStore interface {
 	// CredentialDefPut UPSERTs the (tenant_id, scope, scope_id, name) row
 	// (create + update + rotate all map to it; rotation re-seals in place).
 	// CredentialDefGet returns *ErrNotFound on a miss.
-	CredentialDefPut(ctx context.Context, row CredentialDefRow) (CredentialDefRow, error)
-	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (CredentialDefRow, error)
-	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]CredentialDefRow, error)
+	CredentialDefPut(ctx context.Context, row credentialdef.Row) (credentialdef.Row, error)
+	CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error)
+	CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error)
 	CredentialDefDelete(ctx context.Context, tenantID, scope, scopeID, name string) (bool, error)
 }
 
@@ -6150,34 +6152,6 @@ type VolumeDefRow struct {
 	Definition json.RawMessage `json:"definition"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
-}
-
-// CredentialDefRow is a single RFC AR credential: a named secret scoped to a
-// (tenant, scope, scope_id) bucket. Definition holds ONLY sealed ciphertext
-// (inline backend) or an external-backend pointer — NEVER a plaintext secret;
-// callers that surface a row to a client MUST strip Definition (metadata-only).
-type CredentialDefRow struct {
-	// TenantID is the RFC N tenant-isolation axis. "" = shared/operator/legacy.
-	// Set from the authoritative principal at the write site, never the wire.
-	TenantID string `json:"tenant_id,omitempty"`
-	// Scope is "tenant" | "user" | "agent". ScopeID is "" for tenant, the user
-	// subject for user scope, the agent name for agent scope — together with
-	// name they form the row key, so user A's token can't collide with B's.
-	Scope   string `json:"scope"`
-	ScopeID string `json:"scope_id"`
-	Name    string `json:"name"`
-	// Backend is "inline" (sealed value) | "vault" | "aws_sm" | "gcp_sm" |
-	// "onepassword" (pointer only).
-	Backend string `json:"backend"`
-	// Definition is the sealed value ({"value":{key_id,nonce,ciphertext}}) for
-	// inline, or the external pointer JSON. Never plaintext, never logged.
-	Definition json.RawMessage `json:"definition"`
-	// ExpiresAt is when the credential stops resolving; nil = no expiry. The
-	// credential engine refuses an expired row on every by-name lookup; the
-	// row is kept so it can be listed and rotated.
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // DirentRow is one entry in the RFC AL Path tree: it names a backing resource
