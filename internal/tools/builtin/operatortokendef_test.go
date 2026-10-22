@@ -109,7 +109,7 @@ func TestOperatorTokenDef_RetireLastAdmin_AllowedWithLegacyOrNonAdmin(t *testing
 	// Last admin WITH a legacy fallback: allowed.
 	tool2, ctx2, _, cleanup2 := operatorTokenDefFixture(t)
 	defer cleanup2()
-	tool2.LegacyTokenSet = true
+	tool2.LegacyTokenSet = func() bool { return true }
 	mustOp(t, tool2, ctx2, `{"op":"create","name":"ops","tenant_id":"acme","subject":"ops","scopes":["substrate:admin"]}`)
 	if res, _ := tool2.Execute(ctx2, json.RawMessage(`{"op":"retire","name":"ops"}`)); res.IsError {
 		t.Fatalf("with a legacy fallback, retiring the last admin should be allowed; got %s", res.Text)

@@ -35,6 +35,13 @@ func (s *Server) AdminPrincipalResolved() bool {
 	return s.cfg().AdminPrincipalResolved()
 }
 
+// LegacyTokenSet reports whether the CURRENT config sets LOOMCYCLE_AUTH_TOKEN.
+// The token tool's last-admin retire guard reads it at retire time, as the
+// bearer check does, so a reload that set or cleared the secret is seen.
+func (s *Server) LegacyTokenSet() bool {
+	return s.cfg().Env.AuthToken != ""
+}
+
 // refuseReloadLosingAuth refuses a config reload that would take away what the
 // running server authenticates with:
 //

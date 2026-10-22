@@ -230,7 +230,7 @@ func (b *boot) wireAuth() {
 		Hasher:                 tokenHasher,
 		Audit:                  tokenAudit,
 		RotationGraceSeconds:   graceSecs,
-		LegacyTokenSet:         cfg.Env.AuthToken != "",
+		LegacyTokenSet:         srv.LegacyTokenSet,
 		AdminPrincipalDeclared: srv.AdminPrincipalResolved,
 		ConfigTenants:          cfg.PrincipalTenants(),
 	})
