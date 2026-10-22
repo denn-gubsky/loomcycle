@@ -190,6 +190,7 @@ func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]confi
 		// Explicit --config / CONFIG_FILES layers must each exist (no per-file XDG
 		// fallback). CONFIG_DIR files were already validated by configDirLayers.
 		for _, f := range cfgFiles {
+			// #nosec G703 -- f is the operator's own --config / LOOMCYCLE_CONFIG_FILES path.
 			if _, err := os.Stat(f); err != nil {
 				return nil, fmt.Errorf("config file not found: %s", f)
 			}

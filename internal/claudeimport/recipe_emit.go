@@ -70,6 +70,8 @@ func WriteSkillCopies(report *ImportReport, force bool) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("skill copy: read %s: %w", s.SourcePath, err)
 		}
+		// #nosec G703 -- DestinationPath is the operator's --dest joined with a
+		// directory entry's name (no separators, dot-names skipped; skill.go).
 		if err := os.WriteFile(s.DestinationPath, data, 0o644); err != nil {
 			return written, fmt.Errorf("skill copy: write %s: %w", s.DestinationPath, err)
 		}

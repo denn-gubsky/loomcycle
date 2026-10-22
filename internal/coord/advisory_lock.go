@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,7 +93,7 @@ func (l *AdvisoryLock) TryRun(ctx context.Context, lockKey int64, fn func(ctx co
 		if uerr := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, lockKey).Scan(&unlocked); uerr != nil {
 			// Log but do not propagate — the connection close on
 			// Release will also drop the lock.
-			fmt.Printf("coord: advisory_unlock(%d): %v\n", lockKey, uerr)
+			slog.Warn("coord: advisory_unlock failed", "lock_key", lockKey, "err", uerr)
 		}
 		_ = unlocked
 	}()
