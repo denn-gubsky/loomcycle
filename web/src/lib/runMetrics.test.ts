@@ -125,3 +125,79 @@ describe("formatCount", () => {
     expect(formatCount(1_300_000)).toBe("1.3M");
   });
 });
+
+describe("the streaming estimate of a call in flight", () => {
+  // Rows at explicit times (ms) so the window is exact.
+  const at = (ms: number, ev: EventPayload, seq = 0): TranscriptEvent => ({
+    seq,
+    run_id: "",
+    ts_ns: ms * 1_000_000,
+    type: ev.type,
+    event: ev,
+  });
+  const text = (ms: number, s: string) => at(ms, { type: "text", text: s });
+  const chars = (n: number) => "x".repeat(n);
+
+  it("rises as text streams, measured from the call's start rather than its first character", () => {
+    // The call starts at 0; prefill until 1000; 400 chars (≈100 tokens) by 2000.
+    const early = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200))]);
+    const later = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200)), text(2000, chars(200))]);
+    expect(early.streamingTokPerSec).toBeCloseTo(50 / 1, 6);
+    expect(later.streamingTokPerSec).toBeCloseTo(100 / 2, 6);
+    const faster = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(200)), text(2000, chars(600))]);
+    expect(faster.streamingTokPerSec).toBeGreaterThan(later.streamingTokPerSec);
+  });
+
+  it("is replaced by the call's own timed figure when its usage arrives", () => {
+    const [cloud] = frames;
+    const m = metricsFromEvents([at(0, { type: "started" }), text(1000, chars(4000)), at(3000, cloud)]);
+    expect(m.streamingTokPerSec).toBe(0);
+    expect(m.lastCallTokPerSec).toBeCloseTo(150 / 3, 6);
+  });
+
+  it("starts over for the next call, from the tool results that began it", () => {
+    const [cloud] = frames;
+    const m = metricsFromEvents([
+      at(0, { type: "started" }),
+      text(1000, chars(4000)),
+      at(3000, cloud),
+      at(5000, { type: "tool_result", text: "ok", tool_use: { id: "t1", name: "Read", input: {} } }),
+      text(6000, chars(400)),
+    ]);
+    // 100 tokens over the 1 s since the tool result — nothing from the first call.
+    expect(m.streamingTokPerSec).toBeCloseTo(100, 6);
+  });
+
+  it("counts streamed thinking as output, and not a whole tool call", () => {
+    const m = metricsFromEvents([
+      at(0, { type: "started" }),
+      at(1000, { type: "thinking", text: chars(400) }),
+      at(1500, { type: "tool_call", tool_use: { id: "t", name: "Read", input: { path: chars(4000) } } }),
+      text(2000, chars(400)),
+    ]);
+    expect(m.streamingTokPerSec).toBeCloseTo(200 / 2, 6);
+  });
+
+  it("is zero for a call that has streamed no text", () => {
+    const m = metricsFromEvents([
+      at(0, { type: "started" }),
+      at(1500, { type: "tool_call", tool_use: { id: "t", name: "Read", input: {} } }),
+    ]);
+    expect(m.streamingTokPerSec).toBe(0);
+  });
+
+  it("does not restart the call on a steer that lands mid-stream", () => {
+    const m = metricsFromEvents([
+      at(0, { type: "started" }),
+      text(1000, chars(200)),
+      at(1500, { type: "steer", user_input: { text: "also check X" } }),
+      text(2000, chars(200)),
+    ]);
+    expect(m.streamingTokPerSec).toBeCloseTo(100 / 2, 6);
+  });
+
+  it("says nothing over a window too short to mean anything (a replay lands at once)", () => {
+    const m = metricsFromEvents([at(0, { type: "started" }), text(5, chars(4000))]);
+    expect(m.streamingTokPerSec).toBe(0);
+  });
+});

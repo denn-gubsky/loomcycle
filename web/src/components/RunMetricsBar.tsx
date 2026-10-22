@@ -24,7 +24,7 @@ export default function RunMetricsBar({
 }) {
   const ctxMax = metrics.maxContextTokens || knownWindow || 0;
   const serving = [metrics.provider, metrics.model].filter(Boolean).join("/");
-  if (metrics.calls === 0 && ctxMax <= 0) return null;
+  if (metrics.calls === 0 && ctxMax <= 0 && metrics.streamingTokPerSec <= 0) return null;
   return (
     <div className="run-metrics">
       {serving && (
@@ -47,29 +47,43 @@ export default function RunMetricsBar({
           </span>
         </>
       )}
-      <RunRate metrics={metrics} mode={running ? "latest" : "average"} />
+      <RunRate metrics={metrics} mode={running ? "live" : "average"} />
       <ContextMeter used={metrics.contextTokens} max={ctxMax} />
     </div>
   );
 }
 
-// RunRate renders output tokens per second, measured from the server's own
-// per-call timing. "latest" is the most recent call's rate (what the model is
-// doing now — the live view); "average" is the run's, over every timed call,
-// and says so. Nothing renders until a call has been timed.
-export function RunRate({ metrics, mode }: { metrics: RunMetrics; mode: "latest" | "average" }) {
-  const rate = mode === "latest" ? metrics.lastCallTokPerSec : metrics.avgTokPerSec;
-  if (rate <= 0) return null;
+// RunRate renders output tokens per second. "live" is the live pane while the
+// run is going: a call still streaming shows a provisional "~N tok/s" estimate
+// from its streamed text (lib/runMetrics streamingEstimate), and otherwise the
+// latest call's server-timed rate, which replaces the estimate the moment that
+// call's usage frame arrives. "latest" is the latest timed call only; "average"
+// is the run's, over every timed call, and says so.
+export function RunRate({ metrics, mode }: { metrics: RunMetrics; mode: "live" | "latest" | "average" }) {
   const avg = `${formatRate(metrics.avgTokPerSec)} tok/s over ${metrics.timedOutputTokens} output tokens in ${(
     metrics.generationMs / 1000
   ).toFixed(1)}s of generation`;
+  if (mode === "live" && metrics.streamingTokPerSec > 0) {
+    return (
+      <span
+        className="run-metrics-item run-metrics-rate live provisional"
+        title={`An estimate for the call still streaming (its text at about 4 characters a token, since the call started); the measured rate replaces it when the call finishes.${
+          metrics.timedOutputTokens > 0 ? ` Run average so far: ${avg}.` : ""
+        }`}
+      >
+        ~{Math.round(metrics.streamingTokPerSec)} tok/s
+      </span>
+    );
+  }
+  const rate = mode === "average" ? metrics.avgTokPerSec : metrics.lastCallTokPerSec;
+  if (rate <= 0) return null;
   return (
     <span
-      className={mode === "latest" ? "run-metrics-item run-metrics-rate live" : "run-metrics-item run-metrics-rate"}
+      className={mode === "average" ? "run-metrics-item run-metrics-rate" : "run-metrics-item run-metrics-rate live"}
       title={
-        mode === "latest"
-          ? `Output tokens per second of the latest model call. Run average: ${avg}.`
-          : `Average output tokens per second over the run: ${avg}.`
+        mode === "average"
+          ? `Average output tokens per second over the run: ${avg}.`
+          : `Output tokens per second of the latest model call. Run average: ${avg}.`
       }
     >
       {formatRate(rate)} tok/s{mode === "average" ? " avg" : ""}

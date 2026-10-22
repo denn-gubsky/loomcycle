@@ -4792,6 +4792,12 @@ button.primary:disabled {
 .run-metrics-rate.live {
   color: var(--accent);
 }
+/* A provisional estimate for a call still streaming — replaced by the measured
+   rate when the call's usage arrives. */
+.run-metrics-rate.provisional {
+  font-style: italic;
+  opacity: 0.85;
+}
 /* Context gauge: a thin bar + "ctx X / Y (Z%)" — in the run metrics strip and
    the run page header. */
 .ctx-gauge {

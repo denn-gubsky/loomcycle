@@ -57,6 +57,27 @@ describe("RunRate", () => {
     expect(html).not.toContain("avg");
   });
 
+  it("shows a provisional estimate while a call is streaming", () => {
+    const html = renderToStaticMarkup(
+      createElement(RunRate, { metrics: { ...twoCalls, streamingTokPerSec: 24.6 }, mode: "live" }),
+    );
+    expect(html).toContain("~25 tok/s");
+    expect(html).toContain("estimate");
+  });
+
+  it("falls back to the latest timed call while live and nothing streams", () => {
+    const html = renderToStaticMarkup(createElement(RunRate, { metrics: twoCalls, mode: "live" }));
+    expect(html).toContain("80.0 tok/s");
+    expect(html).not.toContain("~");
+  });
+
+  it("estimates even before any call has been timed", () => {
+    const html = renderToStaticMarkup(
+      createElement(RunRate, { metrics: { ...emptyRunMetrics, streamingTokPerSec: 12 }, mode: "live" }),
+    );
+    expect(html).toContain("~12 tok/s");
+  });
+
   it("renders nothing without a timed call", () => {
     expect(renderToStaticMarkup(createElement(RunRate, { metrics: emptyRunMetrics, mode: "average" }))).toBe("");
   });
@@ -65,6 +86,7 @@ describe("RunRate", () => {
 describe("RunMetricsBar", () => {
   it("shows the serving provider/model, the totals, the rate and the context", () => {
     const html = renderToStaticMarkup(createElement(RunMetricsBar, { metrics: twoCalls, running: true }));
+    expect(html).toContain("80.0 tok/s");
     expect(html).toContain("local/local-model");
     expect(html).toContain("▲ 3.7k");
     expect(html).toContain("▼ 550");
@@ -86,6 +108,18 @@ describe("RunMetricsBar", () => {
     );
     expect(html).toContain("/ 33k");
     expect(html).toContain("68.8 tok/s avg");
+  });
+
+  it("shows the streaming estimate before the first call reports", () => {
+    const html = renderToStaticMarkup(
+      createElement(RunMetricsBar, {
+        metrics: { ...emptyRunMetrics, streamingTokPerSec: 30 },
+        running: true,
+        knownWindow: 65536,
+      }),
+    );
+    expect(html).toContain("~30 tok/s");
+    expect(html).toContain("ctx — / 66k");
   });
 
   it("renders nothing for a run with no usage and no known window", () => {

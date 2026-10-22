@@ -32,6 +32,10 @@ export interface RunMetrics {
   /** Output rate of the latest timed call, and the average over timed calls. */
   lastCallTokPerSec: number;
   avgTokPerSec: number;
+  /** A PROVISIONAL rate for the call still streaming — see streamingEstimate.
+   *  0 when no call is in flight, it has streamed nothing yet, or its window
+   *  is too short to mean anything. */
+  streamingTokPerSec: number;
 }
 
 export const emptyRunMetrics: RunMetrics = {
@@ -47,6 +51,7 @@ export const emptyRunMetrics: RunMetrics = {
   generationMs: 0,
   lastCallTokPerSec: 0,
   avgTokPerSec: 0,
+  streamingTokPerSec: 0,
 };
 
 /** Fold one call's usage into the run's totals.
@@ -81,6 +86,9 @@ export function foldUsage(m: RunMetrics, u: UsageFrame): RunMetrics {
     generationMs,
     lastCallTokPerSec: timed ? tokensPerSecond(output, genMs) : m.lastCallTokPerSec,
     avgTokPerSec: tokensPerSecond(timedOutputTokens, generationMs),
+    // The call this usage closes is no longer streaming; its timed figure
+    // above replaces whatever was estimated for it.
+    streamingTokPerSec: 0,
   };
 }
 
@@ -89,12 +97,67 @@ export function foldUsage(m: RunMetrics, u: UsageFrame): RunMetrics {
  *  Live rows carry no run id, so a live pane passes none. */
 export function metricsFromEvents(events: readonly TranscriptEvent[], runId?: string): RunMetrics {
   let m = emptyRunMetrics;
-  for (const e of events) {
-    if (runId !== undefined && e.run_id !== runId) continue;
+  const rows = runId === undefined ? events : events.filter((e) => e.run_id === runId);
+  for (const e of rows) {
     const ev = e.event;
     if (ev?.type === "usage" && ev.usage) m = foldUsage(m, ev.usage);
   }
-  return m;
+  return { ...m, streamingTokPerSec: streamingEstimate(rows) };
+}
+
+// Events that come before a model call starts. No event marks the start of a
+// call itself — `started` is sent once per run, before the first — so the call
+// is taken to start at the LAST of these seen before it streams anything: the
+// run starting, an operator message (the client's own echo, or a steer), or a
+// tool result (the round that the next call answers). Queueing for a slot and
+// prefill therefore count, as they do in loomboard's estimate. A row of this
+// kind arriving after the call has begun streaming — a steer is drained only at
+// the next boundary — does not restart it.
+const CALL_START_EVENTS = new Set(["started", "user_echo", "steer", "tool_result"]);
+
+// Shorter windows than this give no estimate. A re-attach replays a call's
+// deltas in one burst, all stamped on arrival, and a rate over that sliver of
+// time would read as thousands of tokens a second.
+export const MIN_ESTIMATE_WINDOW_MS = 500;
+
+/** A provisional output rate for the call still in flight, before its usage
+ *  frame brings the server-timed figure: streamed characters / 4 (the same
+ *  chars-per-token rule loomcycle's own estimates use) over the time since the
+ *  call started, as of the latest delta. Rows carry their arrival time.
+ *
+ *  Thinking deltas count: a reasoning model's thinking is billed as output and
+ *  is most of what it generates on a hard turn, so leaving it out would read as
+ *  a stall. A tool call does not: it arrives whole at the end of the call, and
+ *  counting it would spike the rate at the last moment. If no start event was
+ *  seen, the call is taken to start at its first delta.
+ *
+ *  0 when nothing is streaming: a `usage` frame closes the call. */
+export function streamingEstimate(rows: readonly TranscriptEvent[]): number {
+  let startNs: number | null = null;
+  let lastNs = 0;
+  let chars = 0;
+  for (const e of rows) {
+    const type = e.event?.type ?? e.type;
+    if (type === "usage") {
+      startNs = null;
+      lastNs = 0;
+      chars = 0;
+      continue;
+    }
+    if (CALL_START_EVENTS.has(type)) {
+      if (chars === 0) startNs = e.ts_ns;
+      continue;
+    }
+    if ((type === "text" || type === "thinking") && e.event?.text) {
+      if (startNs === null) startNs = e.ts_ns;
+      chars += e.event.text.length;
+      lastNs = e.ts_ns;
+    }
+  }
+  if (chars === 0 || startNs === null) return 0;
+  const elapsedMs = (lastNs - startNs) / 1_000_000;
+  if (elapsedMs < MIN_ESTIMATE_WINDOW_MS) return 0;
+  return tokensPerSecond(chars / 4, elapsedMs);
 }
 
 /** How long one call spent generating, in ms, from the server's own timing;
