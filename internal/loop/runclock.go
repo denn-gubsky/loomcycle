@@ -13,6 +13,9 @@ import (
 // errWallLimit is the cancel cause the wall-limit watcher sets on the run's ctx.
 var errWallLimit = errors.New("code_agent_wall_limit")
 
+// StopReasonWallLimit is the stop reason of a run its lifetime limit ended.
+const StopReasonWallLimit = "wall_limit"
+
 // wallRecheckFloor is the least time the watcher waits before re-reading the
 // clock. It only matters while a runtime pause holds the run's lifetime still
 // close to its limit; it may let a run overshoot its limit by this much.
@@ -110,6 +113,10 @@ func runClocked(ctx context.Context, opts RunOptions) (RunResult, error) {
 		}
 		err = fmt.Errorf("%w: run lived past its %s limit on total time, waits included "+
 			"(%s); what it was waiting on, and its sub-agents, were cancelled", errWallLimit, limit, source)
+		// Whichever exit the cut reached — a cancel exit reports "cancelled" —
+		// the run ended on its limit, and says so in the word the registry's
+		// wall-limit cancel records.
+		res.StopReason = StopReasonWallLimit
 	}
 	return res, err
 }

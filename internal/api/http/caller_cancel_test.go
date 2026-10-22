@@ -197,3 +197,25 @@ func TestRuns_APICancelMidTurnEndsWithOneErrorFrame(t *testing.T) {
 		t.Fatalf("the transcript ends with %q, want the error event", last.Type)
 	}
 }
+
+// A run the loop's own wall-limit watcher cut mid-turn (the fallback when the
+// registry's cancel did not land, or a code agent's lifetime limit) is
+// recorded failed with stop_reason wall_limit, the word the registry path
+// records — not the mid-turn cancel exit's "cancelled".
+func TestFinishRunWithCancel_WallLimitCutRecordsWallLimit(t *testing.T) {
+	srv, runID := newRunForFinishTest(t)
+	runCtx, cancelFn := context.WithCancelCause(context.Background())
+	defer cancelFn(nil)
+	res, runErr := loop.Run(runCtx, loop.RunOptions{
+		Provider: &gatedProvider{text: "partial", gate: make(chan struct{})}, Model: "stub-model", MaxWallSeconds: 1,
+		Segments: oneUserSeg("go"),
+	})
+	srv.finishRunWithCancel(context.Background(), runCtx, runID, res, runErr, runStateMeta{RunID: runID, IsTopLevel: true})
+	run, err := srv.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != store.RunFailed || run.StopReason != WallLimitReason {
+		t.Fatalf("run row = (%q, stop_reason %q), want (failed, %q)", run.Status, run.StopReason, WallLimitReason)
+	}
+}
