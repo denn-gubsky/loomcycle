@@ -137,7 +137,7 @@ func (s *Scheduler) planSlot(def scheduleDef, row store.ScheduleDueRow, now time
 func (s *Scheduler) catchUpMustWait(ctx context.Context, row store.ScheduleDueRow, def scheduleDef) bool {
 	active, err := s.store.ScheduleActiveRunsList(ctx, row.DefID)
 	if err != nil {
-		s.logf("scheduler: schedule %q: list its running runs: %v — the catch-up slot waits", row.Name, err)
+		s.logger.Warn("scheduler: schedule: list its running runs failed — the catch-up slot waits", "schedule", row.Name, "err", err)
 		return true
 	}
 	if def.ConcurrencyPolicy == policyAllow {

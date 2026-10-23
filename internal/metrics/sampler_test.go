@@ -1,8 +1,11 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,10 +143,11 @@ func TestSampler_GracefulStoreError(t *testing.T) {
 	ctx := context.Background()
 	rel, _ := sem.Acquire(ctx)
 	defer rel()
-	logs := 0
+	var buf bytes.Buffer
+	logs := func() int { return strings.Count(buf.String(), `msg="metrics: write failed"`) }
 	s := New(fs, sem, Config{
 		Interval: time.Second,
-		Logf:     func(string, ...any) { logs++ },
+		Logger:   slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	if err := s.sampleOnce(ctx, time.Now()); err == nil {
 		t.Fatal("expected error from sampleOnce, got nil")
@@ -151,20 +155,26 @@ func TestSampler_GracefulStoreError(t *testing.T) {
 	if s.failures != 1 {
 		t.Errorf("failures = %d after first error, want 1", s.failures)
 	}
-	if logs != 1 {
-		t.Errorf("log count = %d after first error, want 1 (loud-on-first)", logs)
+	if logs() != 1 {
+		t.Errorf("log count = %d after first error, want 1 (loud-on-first); logs:\n%s", logs(), buf.String())
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") || !strings.Contains(buf.String(), "consecutive=1") {
+		t.Errorf("first failure line missing level=ERROR / consecutive=1; logs:\n%s", buf.String())
 	}
 	// Subsequent failures up to N=9 should NOT log (rate-limit).
 	for i := 0; i < 8; i++ {
 		_ = s.sampleOnce(ctx, time.Now())
 	}
-	if logs != 1 {
-		t.Errorf("log count = %d after 9 errors, want still 1 (rate-limited)", logs)
+	if logs() != 1 {
+		t.Errorf("log count = %d after 9 errors, want still 1 (rate-limited)", logs())
 	}
 	// 10th failure logs again.
 	_ = s.sampleOnce(ctx, time.Now())
-	if logs != 2 {
-		t.Errorf("log count = %d after 10 errors, want 2", logs)
+	if logs() != 2 {
+		t.Errorf("log count = %d after 10 errors, want 2", logs())
+	}
+	if !strings.Contains(buf.String(), "consecutive=10") {
+		t.Errorf("10th failure line missing consecutive=10; logs:\n%s", buf.String())
 	}
 }
 
@@ -192,7 +202,7 @@ func TestSampler_RecoveryResetsCounter(t *testing.T) {
 	defer rel()
 	s := New(fs, sem, Config{
 		Interval: time.Second,
-		Logf:     func(string, ...any) {},
+		Logger:   slog.New(slog.DiscardHandler),
 	})
 	// Two failures.
 	_ = s.sampleOnce(ctx, time.Now())

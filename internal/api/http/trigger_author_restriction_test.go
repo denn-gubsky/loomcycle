@@ -106,7 +106,7 @@ func TestScheduleDef_FireOfAConfinedRunsScheduleIsConfined(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, st, srv, nil, nil, t.Logf)
+	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, st, srv, nil, nil, schedulerTestLogger(t, nil))
 	sched.Start(context.Background())
 	defer sched.Stop()
 	assertFiredConfined(t, prov)

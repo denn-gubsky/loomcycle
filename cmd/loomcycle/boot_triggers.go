@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -388,7 +389,7 @@ func (b *boot) startScheduler() {
 		// seam HTTP + gRPC drive interactive runs through). pauseMgr is
 		// guaranteed non-nil in this branch (storeIface != nil ⇒ pause
 		// manager constructed earlier in this function).
-		sched := scheduler.New(schedCfg, storeIface, srv, pauseMgrRef, nil, log.Printf)
+		sched := scheduler.New(schedCfg, storeIface, srv, pauseMgrRef, nil, slog.Default())
 		// Resolve on_complete: channel.publish to the channel's DECLARED scope
 		// (F37 / RFC T) so a hook on a scope:global channel lands at global,
 		// not under the run's user scope. Must be set before Start.
