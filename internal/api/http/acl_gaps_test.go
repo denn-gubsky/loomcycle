@@ -182,3 +182,49 @@ func TestACLGroups_EffectiveListsTransitiveMembers(t *testing.T) {
 		t.Errorf("twin effective: %s, route %s", res.Text, body)
 	}
 }
+
+// The lists include what the config declares, read-only and marked so,
+// shadowed as the resolver shadows them: a stored list of the same name wins.
+func TestACLLists_IncludeConfigDeclaredEntries(t *testing.T) {
+	deny := []authz.Rule{{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}}
+	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		c.ResolvedACL = &authz.Static{
+			ACLs: map[string]authz.ACL{
+				"cfg-only": {Name: "cfg-only", Description: "from yaml", Rules: deny},
+				"shadowed": {Name: "shadowed", Rules: deny},
+			},
+			Groups:   []authz.StaticGroup{{Tenant: "acme", Name: "cfg-group", Members: []string{"alice"}}, {Tenant: "other", Name: "elsewhere"}},
+			Bindings: []authz.StaticBinding{{Tenant: "acme", Binding: authz.Binding{ACL: "cfg-only", SubjectKind: authz.SubjectGroup, SubjectID: "cfg-group"}}},
+		}
+	})
+	rules := `[{"effect":"allow","actions":["invoke"],"resources":["tool:Read"]}]`
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"shadowed","rules":`+rules+`}`); code != 201 {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"list"}`)
+	if code != 200 || !strings.Contains(body, `"name":"cfg-only"`) || !strings.Contains(body, `"source":"config"`) || strings.Count(body, `"name":"shadowed"`) != 1 {
+		t.Errorf("acl list: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"get","name":"cfg-only"}`); code != 200 || !strings.Contains(body, `"source":"config"`) {
+		t.Errorf("get a config list: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "GET", "/v1/_acldef/names", ""); code != 200 || !strings.Contains(body, `"cfg-only"`) {
+		t.Errorf("names: %d %s", code, body)
+	}
+	code, body = bearerCall(t, ts, operatorBearer, "GET", "/v1/_groups", "")
+	if code != 200 || !strings.Contains(body, `"name":"cfg-group"`) || !strings.Contains(body, `"source":"config"`) || strings.Contains(body, "elsewhere") {
+		t.Errorf("group list: %d %s", code, body)
+	}
+	code, body = bearerCall(t, ts, operatorBearer, "GET", "/v1/_aclbinding", "")
+	if code != 200 || !strings.Contains(body, `"acl":"cfg-only"`) || !strings.Contains(body, `"source":"config"`) {
+		t.Errorf("binding list: %d %s", code, body)
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	if res := twinCall(t, srv, op, "groupdef", `{"op":"list"}`); !strings.Contains(res.Text, `"source":"config"`) {
+		t.Errorf("twin group list: %s", res.Text)
+	}
+	// A config entry is read-only: there is no row to write.
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_groups/cfg-group/members", `{"kind":"user","id":"bob"}`); code < 400 || code == 500 {
+		t.Errorf("a member write to a config group: %d %s", code, body)
+	}
+}

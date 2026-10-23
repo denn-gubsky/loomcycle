@@ -327,11 +327,31 @@ func (s *Server) aclGroupList(ctx context.Context, focus string) aclReply {
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
-	rows, err := s.store.GroupList(ctx, s.adminFocusedTenant(ctx, focus))
+	tenant := s.adminFocusedTenant(ctx, focus)
+	rows, err := s.store.GroupList(ctx, tenant)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "groups_list_failed", err.Error())
 	}
-	return aclOK(map[string]any{"groups": rows})
+	out := make([]any, 0, len(rows))
+	stored := map[string]bool{}
+	for _, row := range rows {
+		out = append(out, row)
+		stored[row.Name] = true
+	}
+	// Config-declared groups of the tenant, read-only. One the store also
+	// has is shown as the stored row (the editable one); the resolver
+	// unions the two groups' members.
+	if static := s.aclStatic(); static != nil {
+		for _, g := range static.Groups {
+			if g.Tenant == tenant && !stored[g.Name] {
+				stored[g.Name] = true
+				out = append(out, aclConfigGroup{TenantID: g.Tenant, Name: g.Name, Description: g.Description,
+					ExternalID: g.ExternalID, Members: g.Members, Groups: g.Groups, Source: aclres.SourceConfig})
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return aclEntryName(out[i]) < aclEntryName(out[j]) })
+	return aclOK(map[string]any{"groups": out})
 }
 
 func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest) aclReply {
@@ -611,6 +631,9 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 	case "get":
 		row, err := s.store.AclDefGet(ctx, tenant, req.Name)
 		if err != nil {
+			if entry, ok, cerr := s.aclConfigList(ctx, tenant, req.Name); cerr == nil && ok {
+				return aclOK(entry)
+			}
 			return aclStoreError(err, "acl")
 		}
 		return aclOK(row)
@@ -619,7 +642,19 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		if err != nil {
 			return aclFail(http.StatusInternalServerError, "acl_list_failed", err.Error())
 		}
-		return aclOK(map[string]any{"acls": rows, "builtin": builtinACLs()})
+		configured, err := s.aclConfigLists(ctx, tenant)
+		if err != nil {
+			return aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the config-declared lists could not be resolved; retry")
+		}
+		out := make([]any, 0, len(rows)+len(configured))
+		for _, row := range rows {
+			out = append(out, row)
+		}
+		for _, entry := range configured {
+			out = append(out, entry)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return aclEntryName(out[i]) < aclEntryName(out[j]) })
+		return aclOK(map[string]any{"acls": out, "builtin": builtinACLs()})
 	case "retire":
 		ok, err := s.store.AclDefRetire(ctx, tenant, req.Name)
 		if err != nil {
@@ -705,6 +740,93 @@ func aclListNotSelfBound(p auth.Principal, name string) error {
 	return nil
 }
 
+// The config-declared entries the management lists include (RFC EY §9):
+// read-only, marked "source":"config", in the shape of the stored rows they
+// sit beside. A stored row never carries "source".
+type aclConfigList struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	authz.ACL
+	Source string `json:"source"`
+}
+
+type aclConfigGroup struct {
+	TenantID    string   `json:"tenant_id,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	ExternalID  string   `json:"external_id,omitempty"`
+	Members     []string `json:"members,omitempty"`
+	Groups      []string `json:"groups,omitempty"`
+	Source      string   `json:"source"`
+}
+
+type aclConfigBinding struct {
+	TenantID    string     `json:"tenant_id,omitempty"`
+	ACL         string     `json:"acl"`
+	SubjectKind string     `json:"subject_kind"`
+	SubjectID   string     `json:"subject_id,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	Source      string     `json:"source"`
+}
+
+// aclEntryName is a list entry's name, stored or config, for sorting.
+func aclEntryName(v any) string {
+	switch e := v.(type) {
+	case store.AclDefRow:
+		return e.Name
+	case store.GroupRow:
+		return e.Name
+	case aclConfigList:
+		return e.Name
+	case aclConfigGroup:
+		return e.Name
+	}
+	return ""
+}
+
+// aclConfigLists is the config-declared lists a binding in tenant would
+// reach, sorted by name: each the resolver resolves to the config (no live
+// stored row of its name in the tenant or the shared tenant shadows it).
+func (s *Server) aclConfigLists(ctx context.Context, tenant string) ([]aclConfigList, error) {
+	static := s.aclStatic()
+	if static == nil || s.aclResolver == nil {
+		return nil, nil
+	}
+	names := make([]string, 0, len(static.ACLs))
+	for name := range static.ACLs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []aclConfigList
+	for _, name := range names {
+		entry, ok, err := s.aclConfigList(ctx, tenant, name)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
+}
+
+// aclConfigList is the config-declared list name, when the resolver would
+// resolve a binding in tenant to it.
+func (s *Server) aclConfigList(ctx context.Context, tenant, name string) (aclConfigList, bool, error) {
+	static := s.aclStatic()
+	if static == nil || s.aclResolver == nil {
+		return aclConfigList{}, false, nil
+	}
+	a, declared := static.ACLs[name]
+	if !declared {
+		return aclConfigList{}, false, nil
+	}
+	src, err := s.aclResolver.ACLSource(ctx, tenant, name)
+	if err != nil || src != aclres.SourceConfig {
+		return aclConfigList{}, false, err
+	}
+	return aclConfigList{ACL: a, Source: aclres.SourceConfig}, true, nil
+}
+
 func builtinACLs() []authz.ACL {
 	bl := authz.Baselines()
 	out := make([]authz.ACL, 0, len(bl))
@@ -744,14 +866,23 @@ func (s *Server) aclDefNames(ctx context.Context, focus string) aclReply {
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
-	rows, err := s.store.AclDefList(ctx, s.adminFocusedTenant(ctx, focus), false)
+	tenant := s.adminFocusedTenant(ctx, focus)
+	rows, err := s.store.AclDefList(ctx, tenant, false)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "acl_list_failed", err.Error())
 	}
-	names := make([]string, 0, len(rows))
+	configured, err := s.aclConfigLists(ctx, tenant)
+	if err != nil {
+		return aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the config-declared lists could not be resolved; retry")
+	}
+	names := make([]string, 0, len(rows)+len(configured))
 	for _, row := range rows {
 		names = append(names, row.Name)
 	}
+	for _, entry := range configured {
+		names = append(names, entry.Name)
+	}
+	sort.Strings(names)
 	return aclOK(map[string]any{"names": names})
 }
 
@@ -809,11 +940,26 @@ func (s *Server) aclBindingList(ctx context.Context, focus string, includeRetire
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
-	rows, err := s.store.AclBindingList(ctx, s.adminFocusedTenant(ctx, focus), includeRetired)
+	tenant := s.adminFocusedTenant(ctx, focus)
+	rows, err := s.store.AclBindingList(ctx, tenant, includeRetired)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "acl_bindings_list_failed", err.Error())
 	}
-	return aclOK(map[string]any{"bindings": rows})
+	out := make([]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row)
+	}
+	// Config-declared bindings of the tenant, read-only; they apply beside
+	// the stored ones (the resolver never shadows a binding).
+	for _, b := range s.aclStatic().BindingsIn(tenant) {
+		entry := aclConfigBinding{TenantID: tenant, ACL: b.ACL, SubjectKind: string(b.SubjectKind), SubjectID: b.SubjectID, Source: aclres.SourceConfig}
+		if !b.ExpiresAt.IsZero() {
+			t := b.ExpiresAt
+			entry.ExpiresAt = &t
+		}
+		out = append(out, entry)
+	}
+	return aclOK(map[string]any{"bindings": out})
 }
 
 func (s *Server) aclBindingCreate(ctx context.Context, focus string, req bindingRequest) aclReply {
