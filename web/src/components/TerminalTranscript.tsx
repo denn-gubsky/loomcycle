@@ -351,6 +351,17 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       const tail = p?.agent_def_id ? ` [${p.agent_def_id}]` : "";
       return { key, ts, kind, cls: "tl-text", payload: oneLine(head) + tail };
     }
+    case "capability_inert": {
+      // A tool the caller's access rules withheld: the pane's AclRemovedNotice
+      // already says so, so the stream keeps a short marker, not the raw event.
+      // Condensed rather than dropped: AgentDetailPane renders this transcript
+      // without the notice. Other gates keep the raw line.
+      const ci = ev.capability_inert;
+      if (ci?.gate === "acl" && ci.tool) {
+        return { key, ts, kind, cls: "tl-meta", payload: `${ci.tool} withheld by your access rules` };
+      }
+      return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
+    }
     default:
       return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
   }
