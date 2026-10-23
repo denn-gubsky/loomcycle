@@ -103,6 +103,18 @@ func TestExtractPPTX_SlidesNotesImages(t *testing.T) {
 	}
 }
 
+func TestExtractPPTX_ImageCarriesItsSlide(t *testing.T) {
+	s, _ := run(t, PPTX{}, boardPPTX(t, tinyPNG(t)), Options{Name: "board.pptx", Images: true})
+	// The picture is on the second slide of the deck's order.
+	if len(s.images) != 1 || s.images[0].Slide != 2 || s.images[0].Page != 0 {
+		t.Fatalf("images = %+v, want one on slide 2", s.images)
+	}
+	d, _ := run(t, DOCX{}, boardDOCX(t, tinyPNG(t)), Options{Name: "p.docx", Images: true})
+	if len(d.images) != 1 || d.images[0].Slide != 0 || d.images[0].Page != 0 {
+		t.Errorf("a DOCX picture has a page or slide: %+v", d.images)
+	}
+}
+
 func TestExtractHTML_HeadingsKept(t *testing.T) {
 	page := `<!doctype html><html><head><title>Новини правління</title><script>steal()</script></head><body>
 <h1>Засідання</h1><p>Рішення: затвердити
