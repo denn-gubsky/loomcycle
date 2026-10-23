@@ -201,14 +201,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.122.0) adds per-agent shell credentials: a
-`shell_credentials` field narrows which operator-listed credentials an agent's
-Bash and Bashbox host commands receive, so one agent can keep a shell without
-seeing every secret. The Web UI's run views show the serving model, tokens in
-and out, a live tok/s, a context-window gauge and the run's context method
-next to Compact, and the agent Library shows each agent's context window.
-Settings → Tokens can rotate and retire per-user tokens again. See
-[`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.122.0) adds access control: ACL rule lists, nested
+groups and bindings, with explicit deny over allow, asked at every HTTP, gRPC
+and MCP gate and intersected with an agent's own grants inside the run. It rolls
+out through `LOOMCYCLE_ACL` (`compat` by default, then `shadow`, then
+`enforce`), and is managed from a Settings → Access console, over every
+transport, a `loomcycle acl` command and both adapters, or declared in config.
+A new `Git` tool does repository work in a bound volume with the push credential
+held by the runtime; files an MCP tool returns are kept in a run inbox, with a
+`File` tool to inspect and keep them; and the server can serve a newer Web UI
+from a verified bundle, on disk or fetched by URL and pinned by SHA-256. It also
+adds per-agent shell credentials, run metrics in the Web UI and the embedder and
+decision models on the Routing page. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.121.0 added embeddings on Amazon Bedrock:
 `memory.embedder` could use Cohere Embed, signed with a Bedrock provider's AWS

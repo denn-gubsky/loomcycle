@@ -10,15 +10,160 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.122.0
 
-*Per-agent shell credentials, run metrics in the Web UI, and a fix for rotating per-user tokens. **A new `shell_credentials` field narrows which operator-listed credentials an agent's Bash and Bashbox host commands receive**, so one agent can keep a shell without seeing every secret the others get. The Web UI's run views now show the serving model, tokens in and out, a live tok/s, a context-window gauge and the run's context method next to Compact; the agent Library shows each agent's context window. **Settings → Tokens can rotate and retire per-user (`u-`) tokens again**: it failed on every one since v1.112.0.*
+*Access control, a Git tool, files from tools kept as files, and Web UI bundles that ship without a new binary. **Authority can now be written per user and per group: ACL rule lists, nested groups and bindings, with explicit deny over allow**, asked at every HTTP, gRPC and MCP gate and intersected with an agent's own grants inside the run. It rolls out through `LOOMCYCLE_ACL` (`compat` by default, then `shadow`, then `enforce`), so nothing changes until an operator writes a list or switches mode. Lists, groups and bindings are managed from a new Settings → Access console, over HTTP, gRPC, MCP, a `loomcycle acl` command and both adapters, and can be declared in config. **A new `Git` tool** does repository work in a bound volume without starting `git` and with the push credential held by the runtime. **Files an MCP tool returns are kept in a run inbox** instead of being dropped, with a `File` tool to inspect and keep them. **The server can serve a newer Web UI** from a verified bundle in a directory or fetched by URL and pinned by SHA-256. Also in this release: per-agent shell credentials, run metrics in the Web UI, the embedder and decision models on the Routing page, and a fix for rotating per-user tokens. **Read the upgrade notes: one migration, MCP results that now land on disk, a reserved volume name, and `go install` no longer works.***
 
-A minor release: #2035 to #2043.
+A minor release: #2035 to <this PR>.
+- access control (RFC EY, RFC EZ): the decision engine, store, gates, in-run intersection, HTTP management and config (#2055 to #2060), list writes asking `author` and `retire` (#2064, #2065), the Access console (#2069), management on gRPC, MCP and the CLI (#2079), the isolated baseline on MCP (#2080), the adapters (#2083), and follow-ups (#2084);
+- #2051 and #2053 (RFC FB) add the Git tool;
+- #2081 (RFC FF) keeps files tools return in a run inbox and adds the File tool;
+- #2066, #2068 and #2070 (RFC FE) serve a verified Web UI bundle from a directory or a pinned URL, and publish bundles on `webui-v*` tags;
+- #2075 shows the embedder and decision models on the Routing page;
 - #2035, #2036 and #2039 (RFC EW) add per-agent `shell_credentials`;
 - #2040 adds the run metrics, the context method label and the Library's context window;
 - #2037 fixes token rotate and retire in the Web UI and lists tokens per tenant;
-- #2038 runs only the Go tests a pull request's change can reach (CI only);
-- no dependency updates, and #2043 is these notes.
-- `@loomcycle/client` and the Python adapter are 1.122.0. The TS client gains optional fields only: `shell_credentials` on `AgentDefOverlay` and `RunSpec` (#2035), `current_def_id` on `OperatorTokenDefNameSummary` (#2037) and `context_window` on `LibraryEntry` (#2040). The Python adapter changes only its version. No method changes in either.
+- build, CI and package layering (RFC EX, RFC FE), no behaviour change: import-layering guards and the package cuts behind them (#2044, #2046, #2047, #2048, #2049, #2050, #2052, #2054, #2062), nested Go modules for `internal/errkind`, `internal/otel` and `internal/providers` (#2067, #2071, #2076), CI test selection, sharding and job skipping (#2038, #2041, #2042, #2045, #2063), the root `Dockerfile`'s Web UI stage (#2078), an empty gosec run writing its report (#2082), and architecture docs (#2061, #2077);
+- dependency updates: `vitest` 3.2.6 to 3.2.7 in `packages/explorer` (#2072), `jose` 6.2.12 to 6.2.13 in the landing page (#2073), and `actions/setup-go` 5 to 7 in CI (#2074). None reaches the binary. #2043 and <this PR> are these notes.
+- `@loomcycle/client` and the Python adapter are 1.122.0.
+  - **TS** gains 22 access-control methods (groups, lists, bindings, authz), about 40 exported types, `AclDeniedError` for a `403 acl_denied`, and optional `acl_mode`, `groups` and `acl_version` on `WhoamiResponse` (#2083). It also types the `file_captured` event (#2081), adds the optional `embedder` and `decision` blocks on `RoutingResponse` (#2075), and optional fields `git_remote` (#2051), `shell_credentials` (#2035), `current_def_id` (#2037) and `context_window` (#2040). **Fix:** an ACL `409` such as `group_external` is matched by its code, so a group named like "session-ops" no longer comes back as `SessionBusyError`.
+  - **Python** gains `group_def`, `acl_def`, `acl_binding` and `authz`, `AclRefusedError` (a `SubstrateToolRefusedError`, so existing catches still work) and `AclDeniedError` (#2083), and unwraps the `file_captured` event into `FileCapturedInfo` (#2081).
+
+### Access control: rule lists, groups and bindings (#2055 to #2060, #2064, #2065, #2080, #2084)
+
+Authority lived on the token: its scopes and agent restrictions name kinds of thing, never instances, never deny, and no group lets a hundred users share them. An operator could not say "the support group may run `chat/*` but not `admin/*`, may read the `shared-ro` volume but not write it, and never gets `Bash`".
+
+```yaml
+acls:
+  support:
+    rules:
+      - { effect: allow, actions: [run], resources: ["agent:chat/*"] }
+      - { effect: allow, actions: [read], resources: ["volume:shared-ro"] }
+      - { effect: deny, actions: [invoke], resources: ["tool:Bash"] }
+groups:
+  support: { tenant: acme, members: [alice, bob] }
+acl_bindings:
+  - { acl: support, group: support, tenant: acme }
+```
+
+- **A rule list** holds rules of the shape `{effect, actions, resources, when}`.
+  - **Resources** cover every primitive a principal can reach: agents, volumes, tools, skills, mounted MCP, A2A and client tools, memory, SQL memory, documents, history, channels, definition families, teams, credentials, crypto, models, tiers, the gateway, runs, principals, transports and git remotes. `acldef op=catalog` lists every type, verb and scope.
+  - **Selectors** are `/`-globs (`agent:chat/*`, `agent:chat/**`), scoped names (`memory:tenant`, `document:tenant:/kb/**`, `def:agent/chat/*`) or enums (`run:own`).
+  - **`when`** is a closed set: `transport`, `time` (days, hours, time zone), `interactive`, `tier`, `user_tier`, `source_cidr`, `owner_is_self`, `agent` and spawn `depth`. A condition the request cannot answer never holds.
+  - **An explicit deny beats any allow**, and order never matters. Parsing is strict: an unknown field, type or verb is refused.
+- **Groups** nest, at most 8 deep; a cycle or a self-membership is refused. A group with an `external_id` belongs to an identity provider: adding or removing members and upserting it are refused (`409 group_external`); deleting it is allowed.
+- **Bindings** attach a list to a user, a group, a token or a whole tenant, with an optional expiry. A binding to a list that no layer has (a retired or built-in name counts as missing), or with an expiry in the past, is refused (`400 acl_binding_invalid`).
+- **The rollout mode, `LOOMCYCLE_ACL`:**
+  - `compat` (default): the scope gates decide as before, and an explicit deny bound to the caller is honoured on top.
+  - `shadow`: the scope gates decide, and every disagreement with the engine is logged and audited (`acl_shadow_diverged`).
+  - `enforce`: the engine decides. A question no rule allows is refused `403 acl_denied`. A request whose rules could not be read is refused `503 acl_unavailable` (gRPC `Unavailable`), never admitted.
+  - Each token class carries a built-in list that reproduces its reach today: `builtin:admin`, `builtin:tenant-operator`, `builtin:member`, `builtin:isolated`, and `builtin:run-plane` for a token limited to some agents. So `enforce` with no lists written behaves like `compat`. #2080 adds the MCP session and its self-service tools (`credentialdef`, `evaluation`, `authz`) to `builtin:isolated`, which had refused them in `enforce`.
+- **Where it is asked:** the HTTP middleware (after every existing check), every gRPC RPC, and the MCP meta-tools, where a deny holds for an admin too. A run intake also asks `run agent:<name>`.
+  - A refusal is `403 {"code":"acl_denied","action","resource","reasons"}`, naming only the rules that denied.
+  - Refusals and divergences are audited (`acl_denied`, `acl_unavailable`, `acl_shadow_diverged`), never with a bearer.
+- **Inside a run, the agent's grants are intersected with the caller's rules** (#2058):
+  - a tool the caller may not `invoke`, built-in or mounted, is withheld from the model and reported once at run start as a `capability_inert` event with gate `acl`;
+  - a volume it may not `write` is bound read-only, and one it may not `read` is dropped;
+  - memory, SQL memory and history scopes it may not `read` are dropped, and skill denies are added to the agent's `skills:` patterns;
+  - the `Agent` tool asks `spawn agent:<child>` before a child starts, and the caller's rules bind every sub-agent;
+  - `Context op=self` reports an `acl` block: mode, version, groups and removed tools.
+- **Resolution:** a principal's rules are compiled from its groups (transitively), the bindings that reach it, and its class's built-in list, then cached until its tenant's `acl_version` moves. Every write invalidates the caches on every replica over the cluster bus. `LOOMCYCLE_ACL_CACHE_TTL_SECONDS` (default 5; `0` re-reads on every request) bounds the lag if a bus message is lost.
+- **`GET /v1/_me`** adds `acl_mode` (also in open mode), `groups` and `acl_version`.
+- **Config-declared lists, groups and bindings** (#2060): `acls:`, `groups:` and `acl_bindings:`, validated at load by the engine's own parser, so a bad entry fails `loomcycle validate` and the boot. A stored list of the same name shadows a config one, as for agents, and a reload applies on the next evaluation. Listings show config rows marked `"source":"config"`.
+- **Storage:** migration 0109 adds `acl_defs`, `user_groups`, `user_group_members`, `acl_bindings` and `acl_version` (sqlite creates them at boot).
+- **Not included:** snapshots do not carry these tables, so a restore on another instance has no lists, groups or bindings until they are written again or declared in config. A subject erasure leaves its group memberships and bindings. Runs started by a schedule, webhook or A2A peer carry no caller rules, as before. Document, Path and credential calls are not checked per call.
+- See the `LOOMCYCLE_ACL` row and "Config-declared access control" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Managing access on every transport (#2059, #2065, #2079, #2083, #2084)
+
+- **HTTP:**
+  - groups: `GET/POST /v1/_groups`, `GET/DELETE /v1/_groups/{name}`, `GET /v1/_groups/{name}/effective` (transitive members), `POST /v1/_groups/{name}/members`, `DELETE /v1/_groups/{name}/members/{kind}/{id}`;
+  - lists: `POST /v1/_acldef` with `op` `create`, `update`, `put`, `get`, `list` (with the built-in lists), `retire`, `validate`, `catalog` or `names`, and `GET /v1/_acldef/names`;
+  - bindings: `GET/POST /v1/_aclbinding` and `DELETE /v1/_aclbinding/{id}`;
+  - questions: `POST /v1/_authz/evaluation`, `/evaluations` (a batch, with `execute_all`, `deny_on_first_deny` or `permit_on_first_permit`), `/explain` (every rule of the type and why it did or did not match) and `/simulate` (a draft of lists and bindings over the stored state; nothing is written).
+- **gRPC:** the `GroupDef`, `AclDef`, `AclBinding` and `Authz` RPCs, op-dispatched JSON like `OperatorTokenDef`. The three management RPCs need `substrate:tenant`; `Authz` needs no scope.
+- **MCP:** the `groupdef`, `acldef`, `aclbinding` and `authz` meta-tools. Of the four, a member's or isolated user's `tools/list` shows only `authz`.
+- **CLI:** `loomcycle acl groups|policies|bindings|check|explain|simulate`, over HTTP like `loomcycle operator-token`. It never prints a bearer.
+- **One implementation holds every gate,** whatever the transport:
+  - management is for tenant operators and admin (admin focuses another tenant with `?tenant=` or `tenant`); a member is refused;
+  - any principal may ask the questions about itself, and a tenant operator about any subject of its tenant;
+  - each op asks its own question of what it names: a list's `create`, `update` and `put` need `author def:acl/<name>`, `retire` needs `retire`, `get` needs `read`; group writes need `manage`; binding writes need `author`. So a deny on authoring a list holds for a tenant operator too, and a principal allowed to write but denied read is refused on every transport;
+  - a delegated writer (not a tenant operator) may not bind, join or edit what shapes its own authority: a list bound to it, its token, a group it is in or its tenant (`403 acl_self_elevation`);
+  - every write is audited (`acl_written`, `group_written`, `binding_written`, `*_retired`, `*_deleted`) and invalidates the caches;
+  - none of it is reachable from inside a run (`403 operator_plane`).
+- **Row times are UTC**, unset times are omitted, and `"expires_at": ""` means no expiry. In the error info only a transient failure is retryable; `store_unavailable` (no store configured) is not.
+- See "Managing groups, ACL lists and bindings" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md), and the access-control sections of the gRPC and MCP-server guides.
+
+### The Access console (#2069, #2079)
+
+- **Settings → Access**, for tenant operators and admin, shows the rollout mode and what it means.
+  - **Groups:** create and delete, add and remove members (users and nested groups), the nesting tree and the effective members.
+  - **Policies:** rule lists, with the built-in ones read-only. A structured editor offers only what the catalog allows; a collapsible JSON/YAML view is validated before saving, and rules the editor cannot show are saved back unchanged.
+  - **Bindings:** create (user, group, token or tenant; optional expiry) and delete.
+  - **Simulator:** "as <subject>, may I <action> <resource>?", with the rule trail. A draft toggle evaluates unsaved edits; nothing is written.
+  - Config-declared rows show a "config · read-only" pill.
+- **The Users page** shows each user's groups, direct and through nesting, and the lists bound to it (own, via group, or tenant-wide; an expired one struck through).
+- **Refusals read as sentences on every page:** "You may not <action> <resource>, denied by list <x> v<n>, rule <i>". Other error messages are unchanged.
+- **The /run terminal** says when the caller's rules withheld a tool from the run, also on re-attach.
+
+### The Git tool (#2051, #2053)
+
+An agent could do git work only through a shell, with `GITHUB_TOKEN` in its environment. The model can read that token, and a real `git` runs whatever a repository's config names: hooks, `core.fsmonitor`, filter drivers, credential helpers.
+
+- **`Git`** works on a repository in a bound volume through go-git. It never starts a process or reads system git config.
+  - **Read** (any volume mode): `status`, `log`, `show`, `diff`, `branch_list`, `tag_list`, `remote_list`, `merge_base`, `rev_parse`, `blame`, `grep`, `notes_list`, `submodule_list`.
+  - **Change** (a read-write volume): `init`, `add`, `rm`, `mv`, `restore`, `reset`, `commit`, `checkout` (also `sparse`), `branch_create`, `branch_delete`, `merge` (fast-forward), `clean`, `tag_create`, `tag_delete`, `remote_add`, `remote_remove`, `remote_set_url`.
+  - **Network:** `clone`, `fetch`, `pull` (fast-forward), `push`, `ls_remote`, `submodule_update`.
+  - Not available: cherry-pick, rebase, revert, stash and non-fast-forward merges.
+- **Network access** needs the new agent field `git_remote` (`[fetch]` or `[fetch, push]`; absent means none) and a listed host. Fetches reach `LOOMCYCLE_GIT_SOURCE_HOSTS` under the git-source limits; pushes reach `LOOMCYCLE_GIT_PUSH_HOSTS` (unset: no push), up to `LOOMCYCLE_GIT_PUSH_MAX_BYTES` (100 MiB). `git_remote` is not overridable per run, narrows for sub-agents (also on resume) and is not part of `content_sha256`.
+- **The remote URL is checked when it is used**, https only, so editing `.git/config` between the check and the call changes nothing. A `$cred:` or `$ghapp:` credential resolves only when its `allowed_urls` cover the target. A push gets a write-scoped GitHub App token from a resolver no read path uses.
+- **The model never sees a credential or server text:** network failures reach it as a class, with the detail in the operator log. Every network op is audited with the credential's reference, never its value.
+- **Commits** carry the operator's author (`LOOMCYCLE_GIT_AUTHOR_NAME`, `LOOMCYCLE_GIT_AUTHOR_EMAIL`; default the agent's name at `loomcycle.invalid`) and a `Loomcycle-Run:` trailer. `commit` and `tag_create` can sign with an `ed25519` key the run's `crypto_scopes` reach (`sign_key`): the Crypto tool signs in git's SSH format and counts one op, the key never leaves the runtime, and `signed_by` returns the public key for an allowed-signers file.
+- **Submodules** are fetched only from a URL that passes the same checks as any remote, never the one `.gitmodules` names unchecked. Not recursive.
+- **Bounds:** a tree is walked against the file limit (`LOOMCYCLE_GIT_SOURCE_MAX_FILES`) and 1 GiB before anything moves, so a repository that expands one subtree many times cannot fill the disk. `blame`, `grep` and `notes_list` have their own budgets, and lists stop at 1,000 items with `truncated`. A failed reset, checkout or merge restores HEAD, the branch and the index.
+- **Path safety:** no write lands inside `.git`, and the filesystem walks verified directory handles, so a symlink swap cannot move it out of the volume. Unix only; elsewhere the tool refuses.
+- See the Git section of [`docs/TOOLS.md`](docs/TOOLS.md), [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md), and the `git_remote` row and git-source table in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Files tools return, and the File tool (#2081)
+
+An MCP tool result's `image`, `audio` and `resource` blocks were dropped without a word: an image-only result reached the model as an empty string.
+
+- **A returned file is kept in the run's inbox**, an ephemeral volume of the run tree named `inbox`, made under the `dynamic_root` volume on the first capture and purged with the tree. The model sees one line instead of the bytes:
+
+  ```
+  [file: volume:inbox:documents/report.pdf · application/pdf · 2.8 KiB · sha256:16d51716c3de… · from mcp:files/get_attachment]
+  ```
+
+  - Names keep their last segment, transliterated from Cyrillic and cut to `[A-Za-z0-9._-]`. The media type is the declared one, else sniffed.
+  - A `resource_link` becomes one line, resource text is kept, and an unknown block type is named. A text-only result is unchanged.
+  - A file over `LOOMCYCLE_FILE_MAX_BYTES` (64 MiB) or the tree's `LOOMCYCLE_FILE_INBOX_MAX_BYTES` (1 GiB), or no `dynamic_root` volume, gives `[file not kept: …]`. The bytes never reach the model.
+  - Each kept file emits a `file_captured` event: on SSE, in the transcript, on gRPC (`Event.file`) and in both adapters.
+- **`File`**, a new tool, works on files without their bytes passing through the model: `stat`, `ls`, `keep` (copy into a durable volume, never over a file unless `overwrite`), `rm` and `clear`. The inbox needs only `File`; another volume needs `Read` to look and `Write` to keep, and that tool's hooks judge the final path. `rm` and `clear` respect a read-only binding.
+- **`LOOMCYCLE_MCP_MAX_FRAME_BYTES`** (16 MiB) now caps an MCP HTTP response body, which was read without a limit, as well as a stdio line, whose fixed 16 MiB it replaces.
+- **`VolumeDef op=create` refuses the name `inbox`.**
+- Help articles cover the tool and each op.
+
+### Web UI bundles (#2066, #2068, #2070)
+
+The Web UI is built into the binary, so a UI fix waited for a binary release.
+
+- **`LOOMCYCLE_WEBUI_DIR`** serves an unpacked bundle instead. Its `manifest.json` lists every file's SHA-256 and the UI API levels it supports.
+  - At startup every file is checked: a symlink, an unlisted file, a wrong digest or an unsupported API level falls back to the built-in UI. A bad bundle never fails the boot.
+  - Limits: 64 MiB and 10,000 files.
+  - The verified files are served from memory, so a change on disk after startup reaches nobody. Bundle files cannot shadow the login, session and logout handlers.
+- **`LOOMCYCLE_WEBUI_BUNDLE_URL`** plus **`LOOMCYCLE_WEBUI_BUNDLE_SHA256`** fetch a bundle archive once at startup instead.
+  - https only, through the egress guard (a private host needs `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`), no environment proxy, 60 s, at most 96 MiB.
+  - The archive's digest is checked before anything is unpacked. The verified bundle is cached under the data directory by digest and re-verified on every boot; a cached digest needs no network.
+  - Setting only one of the two, setting the URL together with `LOOMCYCLE_WEBUI_DIR`, a URL that is not https or carries user info, or a malformed digest fails config load. A failed download falls back.
+  - No status, error or log line carries the URL's path or query.
+- **`/healthz`** reports `ui_bundle` (`source`: `embedded`, `dir` or `url`, the bundle's `ui_version`, and a fixed `fallback_reason` code) and `ui_api_level`; `/ui/login-config.json` reports `api_level`. gRPC `Health` does not carry them.
+- **Bundles are published** as GitHub releases on `webui-v*` tags (never marked latest), with the archive, its `.sha256` and the env lines to use it. `make webui-bundle VERSION=…` builds the same archive locally.
+- See the three rows in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and "Releasing a Web UI bundle" in [`scripts/README.md`](scripts/README.md).
+
+### Embedder and decision models on the Routing page (#2075)
+
+- **`GET /v1/_routing`** gains two optional blocks, omitted when not configured:
+  - `embedder`: provider, model, its `models:` alias, the vector width, and its health since boot (`untried`, `ok` or `failing`, with counts and the last failure kind; no error text or address);
+  - `decision`: the default and each allowed model, each with `reachable`, `listed` and `available` from the provider probe. Under the operator-key gate, a tenant sees only the decision models it can key.
+- **The Routing page** has a "service models" section: green for working, red for failing or unreachable, amber for not yet confirmed (an untried embedder, or a model the Ollama host has not pulled).
 
 ### Per-agent shell credentials (#2035, #2036, #2039)
 
@@ -74,18 +219,42 @@ agents:
   - The tenant case-fold check, which reads the same list, now sees a tenant whose only tokens share a per-user name with a newer tenant's.
   - The `loomcycle tokens rewrap` review reads each name once, so such a name's rows are not listed twice.
 
-### CI (#2038)
+### Build, CI and package layering
 
-A pull request now runs only the Go test packages its change can reach (by package, test imports, and the relative paths tests open). `main` still runs everything.
+- **Package layering** (#2044, #2046, #2047, #2048, #2049, #2050, #2052, #2054, #2062): a test now guards the import layering, and the packages that broke it were cut so nothing imports upward. The embedded config assets moved to `internal/embedded`. No behaviour change; `loomcycle validate` output and the embedded files are byte-identical.
+- **Nested Go modules** (#2067, #2071, #2076): `internal/errkind`, `internal/otel` and `internal/providers` are their own modules, so the compiler refuses an import from a driver into the rest of the binary. The root `go.mod` reaches them through `replace`, so `go install …@version` no longer works.
+- **CI** (#2038, #2041, #2042, #2045, #2063, #2082): a pull request runs only the Go test packages its change can reach (by package, test imports and the relative paths tests open) and skips jobs for parts of the tree it leaves alone; the race suite runs as seven shards and the Postgres tiers as three legs, and the Postgres store contract reuses a few migrated schemas; an empty gosec run writes an empty report, so the Security workflow on `main` is green again. `main` still runs everything.
+- **The root `Dockerfile`** builds its Web UI stage again (#2078). Release images come from `Dockerfile.release` and were not affected.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the layering, the modules and how CI chooses what to run (#2061, #2077).
 
 ### Upgrade notes
 
-- **No migration.**
+- **Migration 0109** (Postgres) adds the access-control tables. sqlite creates them at boot. No other migration.
+- **Access control changes nothing until you use it.** `LOOMCYCLE_ACL` defaults to `compat`: with no lists written or declared, every gate answers as before. Once a deny is bound to a caller, it is honoured in `compat` too.
+  - Before `enforce`, run `shadow` and read the `acl_shadow_diverged` log lines and audit events.
+  - In `enforce`, a request whose rules cannot be read is refused (`503 acl_unavailable`), not admitted.
+  - Snapshots do not carry lists, groups or bindings; re-create them, or declare them in config, after a restore on another instance.
 - **Behaviour changes:**
+  - **MCP tool results** with an image, audio, blob or resource block now keep the file in the run's inbox under the `dynamic_root` volume, counted against `LOOMCYCLE_FILE_INBOX_MAX_BYTES` per run tree, and the model sees a one-line `[file: …]` reference where it saw nothing. Without a `dynamic_root` volume it sees `[file not kept: …]`. Text-only results are unchanged.
+  - **MCP HTTP responses** over `LOOMCYCLE_MCP_MAX_FRAME_BYTES` (16 MiB) are refused; they were read without a limit.
+  - **The volume name `inbox` is reserved.** `VolumeDef op=create` refuses it, and a static or stored volume named `inbox` makes every capture fail with `[file not kept: …]`. Rename it.
+  - **MCP `tools/list`** shows the new `groupdef`, `acldef`, `aclbinding` and `authz` tools to operators and admin, and `authz` to members and isolated users.
+  - **`go install …@version` no longer works** (nested modules with `replace`). Install with Homebrew, Docker or a release tarball, or build from a clone.
   - **`GET /v1/_operatortokendef/names`** returns one row per (tenant, name). A per-user name minted in several tenants now appears once per tenant. Rows carry an additive `current_def_id`. A script that took the single row per name should key on tenant and name.
   - **`shell_credentials`:** nothing changes for an agent without the field. An agent that sets it also loses same-named host variables passed through `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`.
-  - **`GET /v1/_library/agents`:** agent entries may carry an additive `context_window`.
-- **Images:** a minor tag rebuilds every image. All are at 1.122.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images. The Web UI is built into the binary, so these UI changes need the new image.
+- **New environment variables:**
+  - `LOOMCYCLE_ACL` (`compat`, `shadow` or `enforce`; default `compat`) and `LOOMCYCLE_ACL_CACHE_TTL_SECONDS` (default 5).
+  - `LOOMCYCLE_GIT_PUSH_HOSTS` (unset: no push), `LOOMCYCLE_GIT_PUSH_MAX_BYTES` (default 100 MiB; a malformed value refuses the boot), `LOOMCYCLE_GIT_AUTHOR_NAME` and `LOOMCYCLE_GIT_AUTHOR_EMAIL`. The Git tool's fetches use the existing `LOOMCYCLE_GIT_SOURCE_HOSTS` and limits.
+  - `LOOMCYCLE_FILE_MAX_BYTES` (default 64 MiB), `LOOMCYCLE_FILE_INBOX_MAX_BYTES` (default 1 GiB) and `LOOMCYCLE_MCP_MAX_FRAME_BYTES` (default 16 MiB).
+  - `LOOMCYCLE_WEBUI_DIR`, or `LOOMCYCLE_WEBUI_BUNDLE_URL` with `LOOMCYCLE_WEBUI_BUNDLE_SHA256`. Unset, the built-in UI is served as before.
+- **New config:** the top-level `acls:`, `groups:` and `acl_bindings:` blocks, and the agent fields `git_remote` and `shell_credentials`.
+- **New wire surface, all additive:**
+  - HTTP: `/v1/_groups…`, `/v1/_acldef…`, `/v1/_aclbinding…` and `/v1/_authz/…`; `acl_mode`, `groups` and `acl_version` on `/v1/_me`; `embedder` and `decision` on `/v1/_routing`; `context_window` on `/v1/_library/agents`; `ui_bundle` and `ui_api_level` on `/healthz`.
+  - gRPC: the `GroupDef`, `AclDef`, `AclBinding` and `Authz` RPCs, and `Event.file` (field 23).
+  - The `file_captured` event on SSE and in the transcript, and `capability_inert` events with gate `acl`.
+  - New refusal codes: `acl_denied`, `acl_unavailable`, `acl_self_elevation`, `acl_binding_invalid`, `group_external` and `operator_plane`. No new `error_info.category` value.
+  - The `loomcycle acl` command and the `Git` and `File` tools.
+- **Images:** a minor tag rebuilds every image. All are at 1.122.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images. The Web UI is built into the binary, so the UI changes need the new image unless a bundle is configured.
 
 ## What's in v1.121.0
 
