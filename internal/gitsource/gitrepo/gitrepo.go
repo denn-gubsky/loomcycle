@@ -19,6 +19,7 @@
 package gitrepo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -45,6 +46,10 @@ var (
 	ErrNothingToCommit = errors.New("nothing_to_commit")
 	ErrWorktreeDirty   = errors.New("worktree_dirty")
 	ErrPushRejected    = errors.New("push_rejected")
+	// ErrTimeout is an operation stopped by its context's deadline. It is
+	// gitsource's own sentinel, so a timeout of a fetch and one of a local
+	// walk are one class and errors.Is matches either name.
+	ErrTimeout = gitsource.ErrTimeout
 	// ErrUpToDate is never returned: Fetch, Pull and Push report it in their
 	// result. It is kept so Class has a word for it.
 	ErrUpToDate = errors.New("already_up_to_date")
@@ -83,7 +88,24 @@ func Class(err error) string {
 			return c.Error()
 		}
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrTimeout.Error()
+	}
 	return classGitFailed
+}
+
+// ctxDone is ctx's error once it is done, else nil. A deadline is a
+// timeout (ErrTimeout); a cancellation is left unclassed: the caller went
+// away, and nothing is shown to it.
+func ctxDone(ctx context.Context) error {
+	err := ctx.Err()
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %v", ErrTimeout, err)
+	}
+	return fmt.Errorf("stopped: %w", err)
 }
 
 // Repo is an open repository: a working directory and the .git inside it.

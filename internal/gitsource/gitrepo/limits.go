@@ -1,6 +1,7 @@
 package gitrepo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -118,6 +119,84 @@ func (r *Repo) checkTree(c *object.Commit) error {
 		}
 	}
 	return nil
+}
+
+// treeBudget counts one walk of a tree against the repository's limits:
+// every entry visited, directories too (a tree of directories that name one
+// subtree many times holds no file, yet walking it is the expansion the
+// limits exist for), and the bytes of the trees decoded and the blobs read.
+type treeBudget struct {
+	what                string // what is walked, for the refusal
+	entries, maxEntries int
+	bytes, maxBytes     int64
+}
+
+func (r *Repo) newTreeBudget(what string) *treeBudget {
+	return &treeBudget{what: what, maxEntries: r.maxFiles(), maxBytes: r.maxBytes()}
+}
+
+func (b *treeBudget) entry() error {
+	if b.entries++; b.entries > b.maxEntries {
+		return fmt.Errorf("%w: %s has over %d entries", gitsource.ErrTooLarge, b.what, b.maxEntries)
+	}
+	return nil
+}
+
+func (b *treeBudget) read(n int64) error {
+	if b.bytes += n; b.bytes > b.maxBytes {
+		return fmt.Errorf("%w: %s reads over %d bytes", gitsource.ErrTooLarge, b.what, b.maxBytes)
+	}
+	return nil
+}
+
+// walkTree visits the entries under the tree root in git's path order (a
+// directory, then what is in it), as visit(path, entry). It goes into a
+// directory only when descend(path) is true (nil descends everywhere), and
+// stops when visit returns stop or an error. Each entry is counted against
+// b and checks ctx; a path over maxArgLen bytes refuses the walk, as
+// checkTree does, so a deep tree cannot build long paths.
+func (r *Repo) walkTree(ctx context.Context, root plumbing.Hash, b *treeBudget, descend func(string) bool, visit func(string, object.TreeEntry) (stop bool, err error)) error {
+	var walk func(h plumbing.Hash, prefix string) (bool, error)
+	walk = func(h plumbing.Hash, prefix string) (bool, error) {
+		// A tree is decoded whole, so its own size is counted before it is.
+		n, err := r.repo.Storer.EncodedObjectSize(h)
+		if err != nil {
+			return true, fmt.Errorf("read the size of %s: %w", h, err)
+		}
+		if err := b.read(n); err != nil {
+			return true, err
+		}
+		tree, err := r.repo.TreeObject(h)
+		if err != nil {
+			return true, fmt.Errorf("read tree %s: %w", h, err)
+		}
+		for _, e := range tree.Entries {
+			if err := ctxDone(ctx); err != nil {
+				return true, err
+			}
+			if err := b.entry(); err != nil {
+				return true, err
+			}
+			p := e.Name
+			if prefix != "" {
+				p = prefix + "/" + e.Name
+			}
+			if len(p) > maxArgLen {
+				return true, fmt.Errorf("%w: the repository holds a path over %d bytes", ErrInvalidArgument, maxArgLen)
+			}
+			if stop, err := visit(p, e); stop || err != nil {
+				return true, err
+			}
+			if e.Mode == filemode.Dir && (descend == nil || descend(p)) {
+				if stop, err := walk(e.Hash, p); stop || err != nil {
+					return true, err
+				}
+			}
+		}
+		return false, nil
+	}
+	_, err := walk(root, "")
+	return err
 }
 
 // headState is HEAD as an operation found it: HEAD's own form, and the

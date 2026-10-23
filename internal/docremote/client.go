@@ -20,7 +20,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/runident"
 )
 
 // Options configures a client. Filled by the caller from a config.DocumentSource.
@@ -85,7 +85,7 @@ func (c *Client) Do(ctx context.Context, payload map[string]any) (json.RawMessag
 func (c *Client) authHeader(ctx context.Context) (string, error) {
 	envName := c.defAPIKeyEnv
 	if c.tenancyKind == "key_per_tenant" && c.envPattern != "" {
-		envName = strings.ReplaceAll(c.envPattern, "{tenant_id}", tools.RunIdentity(ctx).TenantID)
+		envName = strings.ReplaceAll(c.envPattern, "{tenant_id}", runident.From(ctx).TenantID)
 	}
 	if envName == "" || c.keyResolver == nil {
 		return "", nil

@@ -153,6 +153,21 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "travels as the aggregate month-to-date total, not as rows",
 		Cache:  "limits.Tracker (month-to-date counters seeded at boot)"},
 	"users": {Kind: coverSection, Section: "users", Secrets: "none", Backends: onBoth},
+	// RFC EY access control (P1). Authority rows, no secret material; their
+	// envelope section is a later phase of the RFC, so a snapshot restored
+	// on another instance carries no ACL rows yet and the operator re-authors
+	// (or re-declares in config) what the source had. Stated here rather
+	// than left unclassified so the gap is a decision, not an accident.
+	"acl_defs": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC EY: ACL rule lists are not yet carried; a snapshot section lands in a later phase"},
+	"user_groups": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC EY: user groups are not yet carried; a snapshot section lands in a later phase"},
+	"user_group_members": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC EY: group memberships are not yet carried; a snapshot section lands in a later phase"},
+	"acl_bindings": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC EY: ACL bindings are not yet carried; a snapshot section lands in a later phase"},
+	"acl_version": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "a per-tenant change counter the replicas' caches key on; re-derived from the next write"},
 	// A volume's stored path is a filesystem grant lookup trusts, so it never
 	// travels: the target derives it under its own dynamic root. lookup reads
 	// the row per resolution, so nothing is cached.
