@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -1080,7 +1080,7 @@ func (s *ScheduleDef) reconcileStaticSchedule(ctx context.Context, name string, 
 	if err := json.Unmarshal(active.Definition, &cur); err != nil {
 		// A definition this method can't parse is one it must not try to
 		// repair — re-materializing would discard content we can't even read.
-		log.Printf("scheduler: schedule %q: active definition is unparseable (%v); leaving it alone", name, err)
+		slog.WarnContext(ctx, "scheduler: schedule's active definition is unparseable; leaving it alone", "schedule", name, "err", err)
 		return false, nil
 	}
 	curJSON, err := canonicalScheduleDefJSON(cur)
@@ -1096,28 +1096,29 @@ func (s *ScheduleDef) reconcileStaticSchedule(ctx context.Context, name string, 
 	// But it must not shadow the operator SILENTLY either — that is the whole
 	// bug — so name the drift and say how to give the yaml back.
 	if !active.BootstrappedFromStatic {
-		log.Printf("scheduler: schedule %q: yaml differs from the active definition%s, but that definition was authored or forked at runtime — the persisted def WINS. Retire it (ScheduleDef op=retire) to let the yaml re-materialize.",
-			name, describeScheduleEnabledDrift(want, cur))
+		slog.WarnContext(ctx, "scheduler: schedule yaml differs from the active definition, but that definition was authored or forked at runtime — the persisted def WINS. Retire it (ScheduleDef op=retire) to let the yaml re-materialize.",
+			append([]any{"schedule", name}, scheduleEnabledDriftAttrs(want, cur)...)...)
 		return false, nil
 	}
 
 	if _, err := s.bootstrapStatic(ctx, name, static); err != nil {
 		return false, err
 	}
-	log.Printf("scheduler: schedule %q: yaml changed since it was materialized%s — promoted a new version from the yaml", name, describeScheduleEnabledDrift(want, cur))
+	slog.InfoContext(ctx, "scheduler: schedule yaml changed since it was materialized — promoted a new version from the yaml",
+		append([]any{"schedule", name}, scheduleEnabledDriftAttrs(want, cur)...)...)
 	return true, nil
 }
 
-// describeScheduleEnabledDrift renders ` (yaml says enabled=true but the active
-// def says false)` when the two disagree on `enabled`, else "". Called only on
-// the drift paths. `enabled` gets this treatment specifically because it is the
+// scheduleEnabledDriftAttrs returns the log attrs `yaml_enabled=true
+// active_enabled=false` when the two disagree on `enabled`, else nil. Called
+// only on the drift paths. `enabled` gets this treatment specifically because it is the
 // field whose drift is invisible from the outside — a disabled schedule looks
 // exactly like a schedule that simply has not fired yet.
-func describeScheduleEnabledDrift(want, cur mergedScheduleDef) string {
+func scheduleEnabledDriftAttrs(want, cur mergedScheduleDef) []any {
 	if want.Enabled == nil || cur.Enabled == nil || *want.Enabled == *cur.Enabled {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf(" (yaml says enabled=%t but the active def says %t)", *want.Enabled, *cur.Enabled)
+	return []any{"yaml_enabled", *want.Enabled, "active_enabled", *cur.Enabled}
 }
 
 // canonicalScheduleDefJSON renders a mergedScheduleDef through the CURRENT

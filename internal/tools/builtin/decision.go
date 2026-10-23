@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/decision"
@@ -241,7 +241,7 @@ func (d *Decision) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 func decisionFailure(ctx context.Context, err error, allowed []string) tools.Result {
 	var e *decision.Error
 	if !errors.As(err, &e) {
-		log.Printf("Decision: %v", err)
+		slog.WarnContext(ctx, "Decision: the call to the decision model failed", "err", err)
 		return errFrom("Decision: "+decision.CodeCallFailed+": the call to the decision model failed", err)
 	}
 	what := e.Message
@@ -299,7 +299,7 @@ func decisionFailure(ctx context.Context, err error, allowed []string) tools.Res
 		}
 		return errBusiness(text(e.Code, what), next)
 	case decision.CodeTimeout:
-		log.Printf("Decision: %v", err)
+		slog.WarnContext(ctx, "Decision: the decision model did not answer in time", "err", err)
 		return errTransient(text(e.Code, "the decision model did not answer in time"),
 			"Send the same call again. If it times out again, ask fewer questions or shorten the state.")
 	}
@@ -316,7 +316,7 @@ func decisionFailure(ctx context.Context, err error, allowed []string) tools.Res
 		}
 		return res
 	}
-	log.Printf("Decision: %v", err)
+	slog.WarnContext(ctx, "Decision: the call to the decision model failed", "err", err)
 	failed := "the call to the decision model failed"
 	if what != "" {
 		failed += ": " + what

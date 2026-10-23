@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/url"
 	"os"
@@ -174,7 +173,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 	// as before.
 	def, prov, ok := lookup.MemoryBackend(ctx, m.Store, m.Cfg, tools.RunIdentity(ctx).TenantID, name)
 	if !ok {
-		log.Printf("memory: memory_backend %q not found — using operator-default backend", name)
+		slog.WarnContext(ctx, "memory: memory_backend not found — using operator-default backend", "memory_backend", name)
 		return m.defaultBackend()
 	}
 	switch def.Kind {
@@ -185,7 +184,8 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 		if err != nil {
 			// A misconfigured remote def must not fail the agent's run: log and
 			// serve locally (same degrade posture as the unknown-kind arm).
-			log.Printf("memory: memory_backend %q (kind=remote) is misconfigured: %v — using in-process fallback", name, err)
+			slog.WarnContext(ctx, "memory: memory_backend is misconfigured — using in-process fallback",
+				"memory_backend", name, "kind", "remote", "err", err)
 			return m.defaultBackend()
 		}
 		// fallback_on_error: inprocess wraps the remote so an unreachable peer
@@ -195,7 +195,8 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 		}
 		return rb
 	default:
-		log.Printf("memory: memory_backend %q has unknown kind %q — using in-process fallback", name, def.Kind)
+		slog.WarnContext(ctx, "memory: memory_backend has unknown kind — using in-process fallback",
+			"memory_backend", name, "kind", def.Kind)
 		return m.defaultBackend()
 	}
 }
@@ -1139,7 +1140,7 @@ func (m *Memory) auditSql(ctx context.Context, op, scope, scopeID, statement str
 		}
 	}
 	if err := m.SqlAudit.Record(ev); err != nil {
-		log.Printf("sqlmem: audit record (%s scope=%s) failed: %v", op, scope, err)
+		slog.ErrorContext(ctx, "sqlmem: audit record failed", "op", op, "scope", scope, "err", err)
 	}
 }
 
@@ -1409,7 +1410,7 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 			// Transient embedder failure after the k/v row landed; the
 			// row stands, the agent sees the partial-write outcome and can
 			// re-embed via the admin endpoint.
-			log.Printf("memory.set: embed failed for (scope=%s, key=%s): %s", scope, in.Key, res.EmbedWarning)
+			slog.WarnContext(ctx, "memory.set: embed failed", "scope", scope, "key", in.Key, "embed_warning", res.EmbedWarning)
 			resp["embedded"] = false
 			resp["embed_warning"] = res.EmbedWarning
 		}
@@ -1711,11 +1712,11 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		// lives in the backend (which sets that attribute on its span);
 		// the in-process path has no span here yet (broader OTEL is planned
 		// for v0.9.x — see CLAUDE.md). Until that lands, mirror the repo's
-		// current observability idiom (log.Printf) so operators can still
-		// see dedup activity on the in-process path.
+		// current observability idiom (an Info log line) so operators can
+		// still see dedup activity on the in-process path.
 		if res.DedupDropped > 0 {
-			log.Printf("memory.search: dedup dropped %d near-duplicate entries (scope=%s, mode=%s)",
-				res.DedupDropped, scope, dedupModeOrDefault(in.Dedup.Mode))
+			slog.InfoContext(ctx, "memory.search: dedup dropped near-duplicate entries",
+				"count", res.DedupDropped, "scope", scope, "mode", dedupModeOrDefault(in.Dedup.Mode))
 		}
 	}
 	// Don't silently ignore a non-zero source/frequency weight — those

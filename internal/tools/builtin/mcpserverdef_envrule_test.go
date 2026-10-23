@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -299,7 +300,7 @@ func TestMCPServerDefOperatorAuthored_CarriedIntoTheRehydratedRegistry(t *testin
 	plantMCPServerDef(t, tool, "acme", "legacy", `{"transport":"http","url":"https://n8n.example.com/mcp"}`)
 
 	reg := loommcp.NewDynamicRegistry() // a fresh boot's registry
-	if _, err := RehydrateMCPRegistry(context.Background(), tool.Store, tool.Cfg.MCPServers, reg, t.Logf); err != nil {
+	if _, err := RehydrateMCPRegistry(context.Background(), tool.Store, tool.Cfg.MCPServers, reg, slog.New(slog.NewTextHandler(t.Output(), nil))); err != nil {
 		t.Fatalf("rehydrate: %v", err)
 	}
 	if spec, ok := reg.Get("", "op-peer"); !ok || !spec.OperatorAuthored {

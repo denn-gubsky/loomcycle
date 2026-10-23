@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -336,7 +336,7 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		case errors.Is(err, errGitCredentialIsAppConfig):
 			return gitSourceRefusal("credential_unresolvable", errGitCredentialIsAppConfig.Error()), nil
 		case err != nil:
-			log.Printf("volumedef: git source: credential for host %s could not be resolved: %v", u.Host, err)
+			slog.WarnContext(ctx, "volumedef: git source: credential for a host could not be resolved", "host", u.Host, "err", err)
 			return gitSourceRefusal("credential_unresolvable", ""), nil
 		}
 	}
@@ -397,13 +397,13 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 		// The object store, usually already removed by a failed fetch,
 		// fenced like the volume's own directory below.
 		if _, err := fencedRemoveAll(dynRoot, parent, storeDir, "git source cleanup"); err != nil {
-			log.Printf("volumedef: git source: cleanup of %s object store: %v", in.Name, err)
+			slog.WarnContext(ctx, "volumedef: git source: cleanup of a volume's object store failed", "volume", in.Name, "err", err)
 		}
 		// The volume's directory, removed whole: it holds a partly written
 		// tree. Fenced like every other delete of a volume: the path is
 		// re-checked to be strictly inside this run's ephemeral directory.
 		if _, err := fencedRemoveAll(dynRoot, parent, path, "git source cleanup"); err != nil {
-			log.Printf("volumedef: git source: cleanup of %s: %v", in.Name, err)
+			slog.WarnContext(ctx, "volumedef: git source: cleanup of a volume failed", "volume", in.Name, "err", err)
 		}
 		undo()
 	}
@@ -423,7 +423,7 @@ func (v *VolumeDef) execCreateFromGit(ctx context.Context, in volumeDefInput, mo
 				base64.StdEncoding.EncodeToString([]byte(username+":"+token)), "[redacted]",
 			).Replace(detail)
 		}
-		log.Printf("volumedef: git source: host=%s class=%s: %s", u.Host, class, detail)
+		slog.WarnContext(ctx, "volumedef: git source: fetch refused", "host", u.Host, "class", class, "detail", detail)
 		return gitSourceRefusal(class, ""), nil
 	}
 

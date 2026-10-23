@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -219,8 +219,8 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if len(resupply.Missing) > 0 {
-		log.Printf("webhookdef %q: create stays disabled — it did not supply the credential keys a snapshot stripped: %s",
-			in.Name, strings.Join(resupply.Missing, ", "))
+		slog.WarnContext(ctx, "webhookdef: create stays disabled — it did not supply the credential keys a snapshot stripped",
+			"webhook", in.Name, "missing_keys", strings.Join(resupply.Missing, ", "))
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
@@ -401,8 +401,8 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if len(resupply.Missing) > 0 {
-		log.Printf("webhookdef %q: fork stays disabled — it did not re-supply the credential keys a snapshot stripped: %s",
-			in.Name, strings.Join(resupply.Missing, ", "))
+		slog.WarnContext(ctx, "webhookdef: fork stays disabled — it did not re-supply the credential keys a snapshot stripped",
+			"webhook", in.Name, "missing_keys", strings.Join(resupply.Missing, ", "))
 	}
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
@@ -779,7 +779,8 @@ func (s *WebhookDef) BootstrapStaticWebhooks(ctx context.Context) (int, error) {
 // secret out of the DB and is the preferred posture.
 func warnLiteralUserCredentials(name string, def mergedWebhookDef) {
 	if len(def.UserCredentials) > 0 {
-		log.Printf("webhookdef %q: user_credentials carries %d literal value(s) baked into the stored def (readable at rest) — prefer user_credentials_from_env to keep secrets out of the DB (F32)", name, len(def.UserCredentials))
+		slog.Warn("webhookdef: user_credentials carries literal value(s) baked into the stored def (readable at rest) — prefer user_credentials_from_env to keep secrets out of the DB (F32)",
+			"webhook", name, "count", len(def.UserCredentials))
 	}
 }
 

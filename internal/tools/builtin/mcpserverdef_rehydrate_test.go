@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -55,7 +56,7 @@ func TestRehydrateMCPRegistry_LoadsActiveDefsAndSkipsWhatBootSkips(t *testing.T)
 
 	static := map[string]config.MCPServer{"files": {Transport: "streamable-http", URL: "https://static.example.test/mcp"}}
 	reg := loommcp.NewDynamicRegistry()
-	n, err := RehydrateMCPRegistry(context.Background(), s, static, reg, t.Logf)
+	n, err := RehydrateMCPRegistry(context.Background(), s, static, reg, slog.New(slog.NewTextHandler(t.Output(), nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestRehydrateMCPRegistry_LoadsActiveDefsAndSkipsWhatBootSkips(t *testing.T)
 	}
 
 	// A second pass over an unchanged store makes nothing newly live.
-	again, err := RehydrateMCPRegistry(context.Background(), s, static, reg, t.Logf)
+	again, err := RehydrateMCPRegistry(context.Background(), s, static, reg, slog.New(slog.NewTextHandler(t.Output(), nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +188,7 @@ func TestRehydrate_ConcurrentRetireIsNotUndone(t *testing.T) {
 	g.arm()
 	rehydrated := make(chan error, 1)
 	go func() {
-		_, err := RehydrateMCPRegistry(context.Background(), g, nil, reg, t.Logf)
+		_, err := RehydrateMCPRegistry(context.Background(), g, nil, reg, slog.New(slog.NewTextHandler(t.Output(), nil)))
 		rehydrated <- err
 	}()
 	<-g.entered // the rehydrate has read mcp_v1 as live and has not Set it
@@ -232,7 +233,7 @@ func TestRehydrate_ConcurrentPromoteKeepsTheNewVersion(t *testing.T) {
 	g.arm()
 	rehydrated := make(chan error, 1)
 	go func() {
-		_, err := RehydrateMCPRegistry(context.Background(), g, nil, reg, t.Logf)
+		_, err := RehydrateMCPRegistry(context.Background(), g, nil, reg, slog.New(slog.NewTextHandler(t.Output(), nil)))
 		rehydrated <- err
 	}()
 	<-g.entered // the rehydrate has listed mcp_v1 as the active version
