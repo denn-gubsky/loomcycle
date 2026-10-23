@@ -35,8 +35,8 @@ type MCPCaller interface {
 func (s *Scheduler) dispatchHooks(ctx context.Context, scheduleName string, def scheduleDef, runID, agentID string) {
 	for i, h := range def.OnComplete {
 		if err := s.dispatchOneHook(ctx, scheduleName, def.UserID, def.Agent, def.TenantID, h, runID, agentID); err != nil {
-			s.logf("scheduler: schedule %q on_complete[%d] (%s) failed: %v",
-				scheduleName, i, h.Kind, err)
+			s.logger.Warn("scheduler: schedule on_complete hook failed",
+				"schedule", scheduleName, "hook", i, "hook_kind", h.Kind, "err", err)
 		}
 	}
 }

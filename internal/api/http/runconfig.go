@@ -9,6 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -120,6 +122,16 @@ type runConfigRecord struct {
 	// the bare operator floor, the one case where losing an override weakened
 	// a boundary rather than merely changing behaviour.
 	Hosts *runHostRecord `json:"hosts,omitempty"`
+
+	// ACLOrigin names whose access-control rules (RFC EY) bound the run: its
+	// caller's, or for a sub-run the originating caller's it inherited. A
+	// resume compiles that subject's CURRENT set and narrows the run by it as
+	// its start did; without it a paused, restored or restarted run came back
+	// on its agent's full grants. Absent when no set bound the run (no
+	// principal — open mode, a trigger's run — or a store fault in compat or
+	// shadow mode), and on a run recorded before it existed, which resumes
+	// unnarrowed as every run did before (see resumedACL).
+	ACLOrigin *aclOriginRecord `json:"acl_origin,omitempty"`
 
 	// Hooks are the hooks the run added to its agent's — its request's, and a
 	// sub-agent's inherited ones — so a resumed run fires what it fired before.
@@ -708,6 +720,45 @@ func spawnRecordOf(parentVol tools.VolumePolicyValue, fanoutCap int) *spawnRecor
 		})
 	}
 	return rec
+}
+
+// aclOriginRecord is the subject whose RFC EY set bound a run, and the
+// transport its request arrived on, which a rule's condition may name. Not the
+// rules themselves: a resume compiles the subject's set again
+// (aclres.ResolveSubject), so a binding revoked or added while the run was
+// paused holds when it resumes, as its definition is read again. Ids and a
+// class only, never a bearer.
+type aclOriginRecord struct {
+	TenantID   string `json:"tenant_id"`
+	Subject    string `json:"subject"`
+	TokenDefID string `json:"token_def_id,omitempty"`
+	// Class is the token class the set's baseline was chosen for
+	// (aclres.ClassKey).
+	Class     string `json:"class"`
+	Transport string `json:"transport,omitempty"`
+}
+
+// aclOriginOf records whose set eff is, with the transport on ctx; nil when
+// no set binds the run.
+func aclOriginOf(ctx context.Context, eff *authz.Effective) *aclOriginRecord {
+	if eff == nil {
+		return nil
+	}
+	return &aclOriginRecord{
+		TenantID: eff.Subject.TenantID, Subject: eff.Subject.ID, TokenDefID: eff.Subject.TokenDefID,
+		Class: eff.Subject.Class, Transport: authz.TransportFrom(ctx),
+	}
+}
+
+// principal names the recorded caller for an audit record or a gate's
+// refusal: ids only, no scopes.
+func (o *aclOriginRecord) principal() auth.Principal {
+	return auth.Principal{TenantID: o.TenantID, Subject: o.Subject, TokenDefID: o.TokenDefID}
+}
+
+// subject is the record as the resolver reads it.
+func (o *aclOriginRecord) subject() authz.Subject {
+	return authz.Subject{TenantID: o.TenantID, ID: o.Subject, TokenDefID: o.TokenDefID, Class: o.Class}
 }
 
 // additions is what the run added to its agent's hooks, as the record keeps

@@ -205,6 +205,42 @@ func principalACL(ctx context.Context) *authz.Effective {
 	return p.Effective
 }
 
+// recordedCaller is the caller of a run that outlived its request — a queued
+// run started after a restart — whose set was compiled again from the run's
+// record (recordedCallerACL). It stands in for the principal's set only: no
+// principal is put on ctx, so nothing else the run does reads scopes it
+// never had.
+type recordedCaller struct {
+	origin aclOriginRecord
+	eff    *authz.Effective
+}
+
+type ctxKeyRecordedCaller struct{}
+
+func withRecordedCaller(ctx context.Context, o aclOriginRecord, eff *authz.Effective) context.Context {
+	return context.WithValue(ctx, ctxKeyRecordedCaller{}, recordedCaller{origin: o, eff: eff})
+}
+
+func recordedCallerFrom(ctx context.Context) (recordedCaller, bool) {
+	rc, ok := ctx.Value(ctxKeyRecordedCaller{}).(recordedCaller)
+	return rc, ok && rc.eff != nil
+}
+
+// runCallerACL is the set a run starting on ctx is narrowed by: its
+// principal's, or with no principal the recorded caller's; nil when neither.
+func runCallerACL(ctx context.Context) *authz.Effective {
+	if eff := principalACL(ctx); eff != nil {
+		return eff
+	}
+	if _, ok := auth.PrincipalFromContext(ctx); ok {
+		return nil
+	}
+	if rc, ok := recordedCallerFrom(ctx); ok {
+		return rc.eff
+	}
+	return nil
+}
+
 // aclAdmitSpawn is the `spawn agent:<name>` question a parent asks before it
 // starts a child, against the ORIGINATING principal's set the parent policy
 // carries. No set (open mode, a trigger's run): nothing to ask.

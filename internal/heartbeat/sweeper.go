@@ -10,7 +10,7 @@ package heartbeat
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -39,10 +39,10 @@ type Config struct {
 	StaleAfter time.Duration
 
 	// Logger is the structured logger used for sweep results. Defaults
-	// to log.Printf when nil. Errors are logged at every tick;
+	// to slog.Default() when nil. Errors are logged at every tick;
 	// successful sweeps with zero rows are logged only periodically
 	// (the runtime is fine; chattering would just be noise).
-	Logger func(format string, args ...any)
+	Logger *slog.Logger
 
 	// AdvisoryLock is the v0.12.4 Phase 5 singleton-sweeper gate.
 	// When set, each tick acquires the lock before calling
@@ -87,7 +87,7 @@ type Sweeper struct {
 	store      store.Store
 	interval   time.Duration
 	staleAfter time.Duration
-	logf       func(format string, args ...any)
+	logger     *slog.Logger
 	lock       AdvisoryLocker
 	lockKey    int64
 	now        func() time.Time
@@ -104,7 +104,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		cfg.StaleAfter = DefaultStaleAfter
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = log.Printf
+		cfg.Logger = slog.Default()
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -113,7 +113,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		store:      st,
 		interval:   cfg.Interval,
 		staleAfter: cfg.StaleAfter,
-		logf:       cfg.Logger,
+		logger:     cfg.Logger,
 		lock:       cfg.AdvisoryLock,
 		lockKey:    cfg.AdvisoryLockKey,
 		now:        cfg.Now,
@@ -130,7 +130,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 	if s.store == nil {
 		return
 	}
-	s.logf("heartbeat: sweeper starting (interval=%s, stale_after=%s)", s.interval, s.staleAfter)
+	s.logger.Info("heartbeat: sweeper starting", "interval", s.interval, "stale_after", s.staleAfter)
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
 
@@ -145,7 +145,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.logf("heartbeat: sweeper stopping (ctx done)")
+			s.logger.Info("heartbeat: sweeper stopping (ctx done)")
 			return
 		case <-t.C:
 			// v0.12.4 Phase 5: when an AdvisoryLock is wired (cluster
@@ -167,7 +167,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 					return nil
 				})
 				if lockErr != nil {
-					s.logf("heartbeat: advisory lock infra error: %v", lockErr)
+					s.logger.Warn("heartbeat: advisory lock infra error", "err", lockErr)
 					continue
 				}
 				if !acquired {
@@ -178,16 +178,16 @@ func (s *Sweeper) Run(ctx context.Context) {
 				n, err = s.sweepOnce(ctx)
 			}
 			if err != nil {
-				s.logf("heartbeat: sweep failed: %v", err)
+				s.logger.Warn("heartbeat: sweep failed", "err", err)
 				continue
 			}
 			if n > 0 {
-				s.logf("heartbeat: marked %d stale run(s) as failed", n)
+				s.logger.Info("heartbeat: marked stale runs as failed", "stale", n)
 				noOpStreak = 0
 				continue
 			}
 			if noOpStreak == 0 || noOpStreak%noOpHeartbeatEvery == 0 {
-				s.logf("heartbeat: sweep tick — 0 stale runs (streak=%d)", noOpStreak)
+				s.logger.Info("heartbeat: sweep tick — 0 stale runs", "streak", noOpStreak)
 			}
 			noOpStreak++
 		}

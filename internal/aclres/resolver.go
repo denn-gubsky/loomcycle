@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,7 +38,7 @@ const maxEntries = 16384
 type key struct{ tenant, subject, token, class string }
 
 type entry struct {
-	principal auth.Principal // Groups + Effective filled
+	eff       *authz.Effective // its Subject carries the closed groups
 	version   int64
 	expiresAt time.Time
 }
@@ -108,6 +109,33 @@ func Class(p auth.Principal) string {
 	return "member"
 }
 
+// runPlaneSuffix marks a class key whose token RFC EF confines to the run
+// plane: the run-plane deny list is bound on top of the class baseline.
+const runPlaneSuffix = "+runplane"
+
+// ClassKey is the class a principal's set is compiled and cached for: its
+// baseline class (Class), with runPlaneSuffix when the token is confined to
+// the run plane. It is what authz.Subject.Class records, so a set can be
+// compiled again for the same subject without its principal (ResolveSubject).
+func ClassKey(p auth.Principal) string {
+	class := Class(p)
+	if p.Restrictions.RunPlaneOnly() {
+		class += runPlaneSuffix
+	}
+	return class
+}
+
+// splitClassKey reads a class key back: the baseline class and whether the
+// run-plane list applies. ok is false for a key ClassKey never produces.
+func splitClassKey(key string) (class string, runPlane, ok bool) {
+	class, runPlane = strings.CutSuffix(key, runPlaneSuffix)
+	switch class {
+	case "admin", "tenant", "isolated", "member":
+		return class, runPlane, true
+	}
+	return "", false, false
+}
+
 func baselineName(class string) string {
 	switch class {
 	case "admin":
@@ -127,27 +155,53 @@ func (r *Resolver) Resolve(ctx context.Context, p auth.Principal) (auth.Principa
 	if r == nil || p.Subject == "" {
 		return p, nil
 	}
-	class := Class(p)
-	if p.Restrictions.RunPlaneOnly() {
-		class += "+runplane"
-	}
-	k := key{p.TenantID, p.Subject, p.TokenDefID, class}
-	version, err := r.version(ctx, p.TenantID)
+	eff, err := r.resolve(ctx, authz.Subject{TenantID: p.TenantID, ID: p.Subject, TokenDefID: p.TokenDefID, Class: ClassKey(p)})
 	if err != nil {
 		return p, err
+	}
+	out := p
+	out.Groups, out.Effective = eff.Subject.Groups, eff
+	return out, nil
+}
+
+// ResolveSubject compiles the CURRENT set of the subject a set was compiled
+// for before — authz.Effective.Subject, its class included — with no
+// principal to hand: a run resumed after a pause or a restart, whose
+// caller's request is long gone, is narrowed by its caller's rules as they
+// stand now (a binding revoked during the pause holds). subj.Groups is
+// ignored and recomputed. A subject with no id or with a class ClassKey never
+// produces is an error, never a guess at a baseline.
+func (r *Resolver) ResolveSubject(ctx context.Context, subj authz.Subject) (*authz.Effective, error) {
+	if r == nil {
+		return nil, errors.New("no access-control resolver")
+	}
+	if subj.ID == "" {
+		return nil, errors.New("subject has no id")
+	}
+	if _, _, ok := splitClassKey(subj.Class); !ok {
+		return nil, fmt.Errorf("subject class %q is not one this resolver compiles", subj.Class)
+	}
+	return r.resolve(ctx, subj)
+}
+
+// resolve returns subj's compiled set from the cache while the tenant's
+// acl_version has not moved, else compiles it.
+func (r *Resolver) resolve(ctx context.Context, subj authz.Subject) (*authz.Effective, error) {
+	k := key{subj.TenantID, subj.ID, subj.TokenDefID, subj.Class}
+	version, err := r.version(ctx, subj.TenantID)
+	if err != nil {
+		return nil, err
 	}
 	r.mu.Lock()
 	if e, ok := r.entries[k]; ok && e.version == version && r.now().Before(e.expiresAt) {
 		r.mu.Unlock()
-		out := p
-		out.Groups, out.Effective = e.principal.Groups, e.principal.Effective
-		return out, nil
+		return e.eff, nil
 	}
 	r.mu.Unlock()
 
-	resolved, err := r.compile(ctx, p, version)
+	resolved, err := r.compile(ctx, subj, version)
 	if err != nil {
-		return p, err
+		return nil, err
 	}
 	r.mu.Lock()
 	if len(r.entries) >= maxEntries {
@@ -159,7 +213,7 @@ func (r *Resolver) Resolve(ctx context.Context, p auth.Principal) (auth.Principa
 	if ttl < time.Hour {
 		ttl = time.Hour
 	}
-	r.entries[k] = entry{principal: resolved, version: version, expiresAt: r.now().Add(ttl)}
+	r.entries[k] = entry{eff: resolved, version: version, expiresAt: r.now().Add(ttl)}
 	r.mu.Unlock()
 	return resolved, nil
 }
@@ -188,50 +242,50 @@ func (r *Resolver) version(ctx context.Context, tenant string) (int64, error) {
 // baseline — so a simulation can add a draft to it. The class is read as
 // the subject's token class would be; subj.Groups is recomputed.
 func (r *Resolver) Input(ctx context.Context, subj authz.Subject) (authz.Input, error) {
-	p := auth.Principal{TenantID: subj.TenantID, Subject: subj.ID, TokenDefID: subj.TokenDefID, Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}}
+	subj = authz.Subject{TenantID: subj.TenantID, ID: subj.ID, TokenDefID: subj.TokenDefID, Class: "member"}
 	version, err := r.version(ctx, subj.TenantID)
 	if err != nil {
 		return authz.Input{}, err
 	}
-	return r.input(ctx, p, version)
+	return r.input(ctx, subj, version)
 }
 
-func (r *Resolver) compile(ctx context.Context, p auth.Principal, version int64) (auth.Principal, error) {
-	in, err := r.input(ctx, p, version)
+func (r *Resolver) compile(ctx context.Context, subj authz.Subject, version int64) (*authz.Effective, error) {
+	in, err := r.input(ctx, subj, version)
 	if err != nil {
-		return p, err
+		return nil, err
 	}
-	eff, err := authz.Compile(in)
-	if err != nil {
-		return p, err
-	}
-	out := p
-	out.Groups, out.Effective = in.Subject.Groups, eff
-	return out, nil
+	return authz.Compile(in)
 }
 
-func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (authz.Input, error) {
+// input assembles what Compile is given for subj; subj.Class (a ClassKey)
+// picks the baseline, and subj.Groups is recomputed.
+func (r *Resolver) input(ctx context.Context, subj authz.Subject, version int64) (authz.Input, error) {
+	class, runPlane, ok := splitClassKey(subj.Class)
+	if !ok {
+		return authz.Input{}, fmt.Errorf("subject class %q is not one this resolver compiles", subj.Class)
+	}
 	static := r.staticNow()
-	direct, err := r.st.GroupsOfSubject(ctx, p.TenantID, p.Subject)
+	direct, err := r.st.GroupsOfSubject(ctx, subj.TenantID, subj.ID)
 	if err != nil {
 		return authz.Input{}, fmt.Errorf("groups: %w", err)
 	}
-	staticDirect, staticGraph := static.GroupsOf(p.TenantID, p.Subject)
+	staticDirect, staticGraph := static.GroupsOf(subj.TenantID, subj.ID)
 	direct = append(direct, staticDirect...)
 	var groups []string
 	if len(direct) > 0 {
-		graph, err := r.st.GroupGraph(ctx, p.TenantID)
+		graph, err := r.st.GroupGraph(ctx, subj.TenantID)
 		if err != nil {
 			return authz.Input{}, fmt.Errorf("group graph: %w", err)
 		}
 		groups = authz.Closure(authz.MergeGraph(graph, staticGraph), direct)
 	}
-	rows, err := r.st.AclBindingsFor(ctx, p.TenantID, p.Subject, groups, p.TokenDefID)
+	rows, err := r.st.AclBindingsFor(ctx, subj.TenantID, subj.ID, groups, subj.TokenDefID)
 	if err != nil {
 		return authz.Input{}, fmt.Errorf("bindings: %w", err)
 	}
 	in := authz.Input{
-		Subject: authz.Subject{TenantID: p.TenantID, ID: p.Subject, Groups: groups, TokenDefID: p.TokenDefID},
+		Subject: authz.Subject{TenantID: subj.TenantID, ID: subj.ID, Groups: groups, TokenDefID: subj.TokenDefID, Class: subj.Class},
 		Now:     r.now(),
 		Version: version,
 		ACLs:    map[string]authz.ACLVersion{},
@@ -239,10 +293,10 @@ func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (
 	// The class baseline, and the run-plane deny list for an RFC EF-confined
 	// token, are bound tenant-wide and resolved from the built-in table.
 	baselines := authz.Baselines()
-	base := baselineName(Class(p))
+	base := baselineName(class)
 	in.Bindings = append(in.Bindings, authz.Binding{ACL: base, SubjectKind: authz.SubjectTenant})
 	in.ACLs[base] = authz.ACLVersion{ACL: baselines[base]}
-	if p.Restrictions.RunPlaneOnly() {
+	if runPlane {
 		in.Bindings = append(in.Bindings, authz.Binding{ACL: authz.BaselineRunPlane, SubjectKind: authz.SubjectTenant})
 		in.ACLs[authz.BaselineRunPlane] = authz.ACLVersion{ACL: baselines[authz.BaselineRunPlane]}
 	}
@@ -251,12 +305,12 @@ func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (
 	}
 	// Config-declared bindings of the tenant apply beside the stored ones;
 	// AppliesTo filters them to this principal at compile.
-	in.Bindings = append(in.Bindings, static.BindingsIn(p.TenantID)...)
+	in.Bindings = append(in.Bindings, static.BindingsIn(subj.TenantID)...)
 	for _, b := range in.Bindings {
 		if _, seen := in.ACLs[b.ACL]; seen || authz.IsBuiltin(b.ACL) || !b.AppliesTo(in.Subject) {
 			continue
 		}
-		av, found, err := r.lookupACL(ctx, p.TenantID, b.ACL, static)
+		av, found, err := r.lookupACL(ctx, subj.TenantID, b.ACL, static)
 		if err != nil {
 			return authz.Input{}, err
 		}

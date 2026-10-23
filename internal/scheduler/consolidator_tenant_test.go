@@ -122,7 +122,7 @@ func TestFanout_OperatorScheduleHonoursCapAcrossTenants(t *testing.T) {
 	if got := len(fr.Calls()); got != 2 {
 		t.Fatalf("RunOnce calls = %d, want 2 (the cap, across all tenants); logs:\n%s", got, logs.all())
 	}
-	if !logs.contains("2 target(s) with new work deferred") {
+	if !logs.containsLine("target(s) with new work deferred", "dropped=2") {
 		t.Errorf("the deferred remainder must be logged; logs:\n%s", logs.all())
 	}
 	calls := fr.Calls()
@@ -319,7 +319,7 @@ func fanoutFixtureRow(t *testing.T, def scheduleDef, owner string, bootstrapped 
 		t.Fatalf("seed state: %v", err)
 	}
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, fr, nil, &fakeMCP{}, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 	sched.SetChannelWriter(&channels.StorePublisher{Store: st})
 	sched.SetProviderResolver(stubProviderResolver{provider: "anthropic"})
