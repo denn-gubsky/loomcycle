@@ -25,9 +25,10 @@ env:
 permissions:
   contents: read
 
-# Both jobs cover every Go module that ships: the runtime at the repo root and
-# deploy/builder, a separate module published as the loomcycle-builder image,
-# which `./...` from the root does not reach.
+# Both jobs cover every Go module that ships: the runtime at the repo root,
+# the in-tree modules the root go.mod replaces (internal/errkind, internal/otel;
+# RFC FE), and deploy/builder, a separate module published as the
+# loomcycle-builder image. `./...` from the root reaches none of them.
 jobs:
   govulncheck:
     name: govulncheck (${{ matrix.module }})
@@ -40,6 +41,10 @@ jobs:
             dir: .
           - module: builder
             dir: deploy/builder
+          - module: errkind
+            dir: internal/errkind
+          - module: otel
+            dir: internal/otel
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -86,6 +91,12 @@ jobs:
           - module: builder
             dir: deploy/builder
             prefix: deploy/builder/
+          - module: errkind
+            dir: internal/errkind
+            prefix: internal/errkind/
+          - module: otel
+            dir: internal/otel
+            prefix: internal/otel/
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
