@@ -1,18 +1,4 @@
-// Package embedders turns a loaded config's `memory.embedder` block into a
-// constructed providers.Embedder.
-//
-// WHY IT IS NOT IN cmd/loomcycle: the server is no longer the only caller.
-// Operator CLI subcommands (memory-calibrate) need the SAME embedder the
-// running server builds, and a second copy of the per-provider auth/base-URL
-// switch would drift — the CLI already learned that lesson once, when it
-// loaded a single config file while the server layered presets and reported a
-// false "no provider resolved" (see internal/cli.loadLayeredConfig).
-//
-// NOTE: the driver registry is populated by the blank imports in
-// cmd/loomcycle/main.go, so Build only resolves a provider in a binary that
-// links them. A test in another package must import the driver it needs (or
-// register a fake) exactly as before.
-package embedders
+package wiring
 
 import (
 	"log/slog"
@@ -27,7 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
-// Build turns cfg.Memory.Embedder into a constructed providers.Embedder,
+// Embedder turns cfg.Memory.Embedder into a constructed providers.Embedder,
 // resolving the endpoint + credential through the SAME path the chat-completion
 // drivers use (providerbuild.ProviderEndpoint). Returns (nil, nil) when no
 // embedder is configured — the Memory tool refuses vector ops with
@@ -50,32 +36,32 @@ import (
 // Per-embedder yaml knobs (timeout_ms, batch_size) override the env-var
 // defaults when set; the env-var fallback gives operators a single-place
 // override for many embedders without touching yaml.
-func Build(cfg *config.Config) (providers.Embedder, error) {
-	e, _, err := build(cfg)
+func Embedder(cfg *config.Config) (providers.Embedder, error) {
+	e, _, err := buildEmbedder(cfg)
 	return e, err
 }
 
-// BuildGated is Build for the running server: the embedder's calls take the
+// GatedEmbedder is Embedder for the running server: the embedder's calls take the
 // embedder lane of the provider the block resolved to (sched, the server's call
 // scheduler), so providers.<id>.lanes.embedder caps the embeddings in flight
 // and the provider's max_models_in_flight counts the embedding model beside
-// the chat models. Build stays ungated for a caller with no server scheduler
+// the chat models. Embedder stays ungated for a caller with no server scheduler
 // (the CLI's memory commands).
 //
 // The lane is the PROVIDER's, whatever endpoint the block's own base_url points
 // the embedder at: an operator who moved the embedder to a host of its own and
 // wants it capped apart from chat sets the embedder lane, which no chat call
 // takes.
-func BuildGated(cfg *config.Config, sched *concurrency.CallScheduler) (providers.Embedder, error) {
-	e, provider, err := build(cfg)
+func GatedEmbedder(cfg *config.Config, sched *concurrency.CallScheduler) (providers.Embedder, error) {
+	e, provider, err := buildEmbedder(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return lanegate.WrapEmbedder(provider, e, sched), nil
 }
 
-// build is Build plus the provider id the block resolved to ("" with no embedder).
-func build(cfg *config.Config) (providers.Embedder, string, error) {
+// buildEmbedder is Embedder plus the provider id the block resolved to ("" with no embedder).
+func buildEmbedder(cfg *config.Config) (providers.Embedder, string, error) {
 	if cfg.Memory.Embedder.Provider == "" && cfg.Memory.Embedder.Model == "" {
 		return nil, "", nil
 	}

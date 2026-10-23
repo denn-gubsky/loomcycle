@@ -516,6 +516,8 @@ interface AgentDefBody {
   crypto_scopes?: string[];
   // RFC EW: absent = every credential the operator lists; [] = none.
   shell_credentials?: string[];
+  // RFC FB: absent and [] both mean no Git network operation.
+  git_remote?: string[];
   volumes?: string[];
   agent_def_scopes?: string[];
   schedule_def_scopes?: string[];
@@ -607,6 +609,7 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     ["evaluation_scopes", body.evaluation_scopes],
     ["crypto_scopes", body.crypto_scopes],
     ["shell_credentials", body.shell_credentials],
+    ["git_remote", body.git_remote],
     ["volumes", body.volumes],
     ["agent_def_scopes", body.agent_def_scopes],
     ["schedule_def_scopes", body.schedule_def_scopes],

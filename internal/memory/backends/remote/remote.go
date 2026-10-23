@@ -29,8 +29,8 @@ import (
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	"github.com/denn-gubsky/loomcycle/internal/runident"
 	"github.com/denn-gubsky/loomcycle/internal/store"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // Options configures a remote backend. The factory fills these from a resolved
@@ -104,7 +104,7 @@ func New(o Options) (*Backend, error) {
 func (b *Backend) authHeader(ctx context.Context) (string, error) {
 	envName := b.defAPIKeyEnv
 	if b.tenancyKind == "key_per_tenant" && b.envPattern != "" {
-		envName = strings.ReplaceAll(b.envPattern, "{tenant_id}", tools.RunIdentity(ctx).TenantID)
+		envName = strings.ReplaceAll(b.envPattern, "{tenant_id}", runident.From(ctx).TenantID)
 	}
 	if envName == "" || b.keyResolver == nil {
 		return "", nil

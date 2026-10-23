@@ -286,6 +286,11 @@ export const agentDefRegistry: DefRegistry = {
     { key: "shell_credentials", label: "Shell credentials", group: "Capabilities", type: "json",
       hint: "Which of the operator's shell credentials the agent's Bash and Bashbox host commands receive, as a JSON list of names. [] means none. Never adds a credential the operator did not list. A sub-agent gets only the names its parent also allows.",
       placeholder: '["GITHUB_TOKEN"], or [] for none', unsetMeans: "every credential the operator lists" },
+    // A string list is enough here: unset and [] both mean no network, so a
+    // list cleared to unset means what clearing it intends.
+    { key: "git_remote", label: "Git network", group: "Capabilities", type: "string-list",
+      hint: "Which network operations the agent's Git tool may perform: fetch (clone, fetch, pull, ls_remote), and push alongside fetch. A sub-agent may do only what its parent also may.",
+      placeholder: "fetch", unsetMeans: "none — local repositories only" },
     { key: "history_scope", label: "History", group: "Capabilities", type: "string-list",
       hint: "Which past chats the agent may browse, search and annotate. Empty denies the History tool.",
       unsetMeans: "denied" },

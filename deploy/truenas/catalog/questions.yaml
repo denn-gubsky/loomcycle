@@ -433,7 +433,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
             label: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
-            description: 'The model CAN read these too (see above). PER-TENANT credentials (CredentialDef names) injected into fallback commands, resolved for each run''s own tenant/user/agent. `cmd:NAME` hands a credential to that one allowlisted command only (git:GITHUB_TOKEN,gh:GH_TOKEN); a bare NAME reaches every one. Overrides a same-named ALLOWED_ENV var. Requires LOOMCYCLE_SECRET_KEY (the credential KEK). Comma-sepa…'
+            description: The model CAN read these too (see above). PER-TENANT credentials (CredentialDef names) injected into fallback commands, resolved for each run's own tenant/user/agent. `cmd:NAME` hands a credential to that one allowlisted command only (git:GITHUB_TOKEN,gh:GH_TOKEN); a bare NAME reaches every one. Overrides a same-named ALLOWED_ENV var. Requires LOOMCYCLE_SECRET_KEY (the credential KEK). Comma-sepa…
             schema:
               type: string
               default: ""
@@ -1170,6 +1170,30 @@ questions:
           - variable: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
             label: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
             description: '(example: 500)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_PUSH_HOSTS
+            label: LOOMCYCLE_GIT_PUSH_HOSTS
+            description: '(example: github.com)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_PUSH_MAX_BYTES
+            label: LOOMCYCLE_GIT_PUSH_MAX_BYTES
+            description: '(example: 104857600)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_AUTHOR_NAME
+            label: LOOMCYCLE_GIT_AUTHOR_NAME
+            description: '(example: loomcycle-bot)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_AUTHOR_EMAIL
+            label: LOOMCYCLE_GIT_AUTHOR_EMAIL
+            description: '(example: bot@example.com)'
             schema:
               type: string
               default: ""

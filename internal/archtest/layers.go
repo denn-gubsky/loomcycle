@@ -28,9 +28,11 @@
 // role is low (config is schema) but it imports something high, it stays low
 // and the edge is a known violation: moving it up would hide the problem Phase
 // 2 has to fix. A subpackage gets its own subsystem only when its role differs
-// from its parent's: hooks/codehook runs hook bodies inside tool dispatch and
-// needs the tools package, while hooks (the definitions and the webhook seam)
-// does not.
+// from its parent's, and one whose role is higher than its parent's leaves the
+// parent's directory: codehook runs hook bodies inside tool dispatch and needs
+// the tools package, while hooks (the definitions and the webhook seam) does
+// not. Modules follow directories, so inside hooks/ it would close a cycle
+// through tools at directory granularity even with every package edge allowed.
 //
 // Test-support packages (storetest, credentialtest, mcptest, ...) follow the
 // same rules as any other package. Every one of them is imported only by
@@ -65,6 +67,7 @@ var layers = []layer{
 			"api",
 			"internal/a2a/sign",
 			"internal/audit",
+			"internal/authz",
 			"internal/awsauth",
 			"internal/breakpoints",
 			"internal/cancel",
@@ -87,6 +90,7 @@ var layers = []layer{
 			"internal/recipes",
 			"internal/redact",
 			"internal/retentionmode",
+			"internal/runident",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
@@ -100,7 +104,7 @@ var layers = []layer{
 		// The provider interface and its drivers, model resolution, and the
 		// decision-model client (it asks a model typed questions through a
 		// provider and imports nothing above L1; wiring it to lanes and
-		// endpoints is decision/decisionbuild, in L5).
+		// endpoints is internal/decisionbuild, in L5).
 		name: "L1 providers",
 		subsystems: []string{
 			"internal/decision",
@@ -164,12 +168,12 @@ var layers = []layer{
 			"internal/capabilities",
 			"internal/channelhooks",
 			"internal/clienttools",
+			"internal/codehook",
 			"internal/connector",
 			"internal/contextplugin",
-			"internal/decision/decisionbuild",
+			"internal/decisionbuild",
 			"internal/errclassify",
 			"internal/help",
-			"internal/hooks/codehook",
 			"internal/lanegate",
 			"internal/lookup",
 			"internal/loop",
@@ -181,6 +185,7 @@ var layers = []layer{
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",
+			"internal/wiring",
 		},
 	},
 	{
@@ -264,14 +269,14 @@ var allowedSideways = []subsystemEdge{
 	{"internal/a2a", "internal/runner"},
 	{"internal/channelhooks", "internal/tools"},
 	{"internal/clienttools", "internal/tools"},
+	{"internal/codehook", "internal/tools"},
 	{"internal/connector", "internal/loop"},
 	{"internal/connector", "internal/runner"},
 	{"internal/connector", "internal/tools"},
-	{"internal/decision/decisionbuild", "internal/lanegate"},
-	{"internal/decision/decisionbuild", "internal/providerbuild"},
+	{"internal/decisionbuild", "internal/lanegate"},
+	{"internal/decisionbuild", "internal/providerbuild"},
 	{"internal/errclassify", "internal/runner"},
 	{"internal/errclassify", "internal/tools"},
-	{"internal/hooks/codehook", "internal/tools"},
 	{"internal/lanegate", "internal/teamrun"},
 	{"internal/loop", "internal/contextplugin"},
 	{"internal/loop", "internal/tools"},
@@ -293,6 +298,8 @@ var allowedSideways = []subsystemEdge{
 	{"internal/tools/builtin", "internal/teamrun"},
 	{"internal/tools/builtin", "internal/throughput"},
 	{"internal/tools/builtin", "internal/tools"},
+	{"internal/wiring", "internal/lanegate"},
+	{"internal/wiring", "internal/providerbuild"},
 
 	// L6
 	{"internal/api", "internal/webui"},
@@ -302,8 +309,6 @@ var allowedSideways = []subsystemEdge{
 // change, so a failure message says which work an entry is waiting on.
 const (
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
-	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
-	cutRunIdentity = "run identity moves below tools"
 )
 
 // knownViolation is one wrong-way import that exists today, as an exact
@@ -321,15 +326,5 @@ var knownViolations = []knownViolation{
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
 
-	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
-	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/reranker", "internal/lanegate", cutMemWiring},
-	{"internal/memory/reranker", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/unitgen", "internal/lanegate", cutMemWiring},
-	{"internal/memory/unitgen", "internal/providerbuild", cutMemWiring},
-
 	// tools.RunIdentity / tools.RunID.
-	{"internal/docremote", "internal/tools", cutRunIdentity},
-	{"internal/memory/backends/inprocess", "internal/tools", cutRunIdentity},
-	{"internal/memory/backends/remote", "internal/tools", cutRunIdentity},
 }

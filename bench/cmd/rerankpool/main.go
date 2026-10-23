@@ -1,5 +1,5 @@
 // Command rerankpool reranks pre-fetched candidate pools with the SHIPPED rerank:
-// the operator's memory.reranker block, built by reranker.BuildRanker, of either
+// the operator's memory.reranker block, built by wiring.Reranker, of either
 // kind — the listwise one asked through the measured prompt and reply repair, the
 // decision one through /v1/systemone, both unchanged.
 //
@@ -26,7 +26,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 
 	// Every driver the default-providers layer names must be registered, as in
 	// cmd/loomcycle: the config refuses a provider whose driver is not compiled in.
@@ -85,7 +85,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	model, err := reranker.BuildRanker(cfg, nil)
+	model, err := wiring.Reranker(cfg, nil)
 	if err != nil {
 		return err
 	}

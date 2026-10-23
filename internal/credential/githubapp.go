@@ -189,6 +189,39 @@ func (m *GitHubAppMinter) TokenForRepository(ctx context.Context, tenantID, cfgJ
 	return m.tokenFor(ctx, tenantID, cfg)
 }
 
+// TokenForRepositoryWrite is TokenForRepository for a push: the token may
+// write the one repository's contents and nothing else (RFC FB D6). A config
+// that names its own permissions must already allow writing contents; one
+// that allows only reading is refused rather than asked for more. A config
+// that names no permissions takes what the installation was granted, and
+// GitHub refuses the mint if that does not include writing contents.
+func (m *GitHubAppMinter) TokenForRepositoryWrite(ctx context.Context, tenantID, cfgJSON, repository string) (string, error) {
+	cfg, err := parseGHAppConfig(cfgJSON)
+	if err != nil {
+		return "", err
+	}
+	if !ghRepoNameRe.MatchString(repository) {
+		return "", fmt.Errorf("github app: %q is not a repository name", repository)
+	}
+	if len(cfg.Repositories) > 0 {
+		covered := false
+		for _, r := range cfg.Repositories {
+			if strings.EqualFold(r, repository) {
+				covered = true
+			}
+		}
+		if !covered {
+			return "", fmt.Errorf("github app: the stored config does not cover repository %q", repository)
+		}
+	}
+	if len(cfg.Permissions) > 0 && cfg.Permissions["contents"] != "write" {
+		return "", errors.New("github app: the stored config's permissions do not allow writing contents, which a push needs")
+	}
+	cfg.Repositories = []string{repository}
+	cfg.Permissions = map[string]string{"contents": "write"}
+	return m.tokenFor(ctx, tenantID, cfg)
+}
+
 // ghRepoNameRe is the shape of a GitHub repository name.
 var ghRepoNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 

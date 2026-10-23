@@ -11,7 +11,7 @@ import { AGENTDEF_EXCLUDED, agentDefRegistry } from "./agentdef";
 const AGENTDEF_OVERLAY_KEYS = [
   "a2a_agent_def_scopes", "a2a_server_card_def_scopes", "agent_def_scopes", "allow_overrides",
   "channels", "code_body", "compaction", "context", "core_blocks", "crypto_scopes",
-  "decision", "description", "effort", "ephemeral_volumes", "evaluation_scopes", "history_scope", "hooks",
+  "decision", "description", "effort", "ephemeral_volumes", "evaluation_scopes", "git_remote", "history_scope", "hooks",
   "inherit_core_blocks", "inject_tool_guide", "internal", "interruption",
   "max_concurrent_children", "max_context_tokens", "max_iterations",
   "max_tokens", "memory_backend", "memory_consolidation",

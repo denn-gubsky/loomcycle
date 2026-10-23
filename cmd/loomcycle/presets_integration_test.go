@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/decision/decisionbuild"
+	"github.com/denn-gubsky/loomcycle/internal/decisionbuild"
 	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 

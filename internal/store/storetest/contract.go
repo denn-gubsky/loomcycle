@@ -498,6 +498,15 @@ func Run(t *testing.T, factory Factory) {
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
+		// RFC EY access control — ACL rule lists, groups, bindings, version.
+		{"AclDefPutGetVersionAndRetire", testAclDefPutGetVersionAndRetire},
+		{"AclDefRefusesInvalidRulesAndBuiltinNames", testAclDefRefusesInvalidRulesAndBuiltinNames},
+		{"AclDefTenantIsolation", testAclDefTenantIsolation},
+		{"GroupPutGetListDelete", testGroupPutGetListDelete},
+		{"GroupMembersNestingAndCycleRefusal", testGroupMembersNestingAndCycleRefusal},
+		{"GroupDeleteRemovesEdgesBothWays", testGroupDeleteRemovesEdgesBothWays},
+		{"AclBindingPutListRetireAndFor", testAclBindingPutListRetireAndFor},
+		{"AclVersionBumpsOnEveryWrite", testAclVersionBumpsOnEveryWrite},
 		// RFC AL Path primitive — the dirent (path tree) substrate.
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},
