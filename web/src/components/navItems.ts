@@ -17,7 +17,7 @@ import {
   ScrollText,
   Workflow,
 } from "lucide-react";
-import { type Visibility } from "../lib/visibility";
+import { canSee, grantOf, type Surfaces, type Visibility } from "../lib/visibility";
 
 // Left-sidebar navigation model (RFC AS §4 — per-surface visibility class,
 // replacing the old binary `adminOnly`):
@@ -87,3 +87,12 @@ export const NAV_ITEMS: NavItem[] = [
   // here — see MENU_LINKS in ../lib/settingsSections.
 ];
 
+// visibleNavItems is the left nav for a viewer, in order: the server's answer per
+// page when it gave one, the role rule otherwise.
+export function visibleNavItems(
+  isAdmin: boolean,
+  hasTenantScope: boolean,
+  surfaces: Surfaces | undefined,
+): NavItem[] {
+  return NAV_ITEMS.filter((it) => canSee(it.vis, isAdmin, hasTenantScope, grantOf(surfaces, it.id)));
+}

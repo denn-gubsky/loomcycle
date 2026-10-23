@@ -129,3 +129,31 @@ describe("settings deep links", () => {
     expect(resolveSection("limits", visibleSections(false, false))).toBeUndefined();
   });
 });
+
+describe("settings visibility from the server's capability summary", () => {
+  const all = Object.fromEntries(
+    [...SECTIONS.map((s) => s.id as string), "users"].map((id) => [id, true]),
+  );
+
+  it("hides Access from an operator denied read def:acl/*", () => {
+    const op = { ...all, access: false, tokens: false, presets: false, runtime: false, lanes: false, maintenance: false, health: false };
+    expect(visibleSections(false, true, op).map((s) => s.id)).not.toContain("access");
+    expect(labels(settingsMenuItems(false, true, op))).not.toContain("Access");
+    // The rest of the operator's tabs are unaffected.
+    expect(visibleSections(false, true, op).map((s) => s.id)).toContain("limits");
+  });
+
+  it("gives an admin every section and Users", () => {
+    expect(visibleSections(true, false, all)).toEqual(SECTIONS);
+    expect(labels(settingsMenuItems(true, false, all))).toContain("Users");
+  });
+
+  it("governs the Users link by the server's answer too", () => {
+    expect(labels(settingsMenuItems(false, true, { ...all, users: false }))).not.toContain("Users");
+    expect(labels(settingsMenuItems(false, false, { users: true }))).toContain("Users");
+  });
+
+  it("falls back to the role rule without a summary", () => {
+    expect(visibleSections(false, true, undefined)).toEqual(visibleSections(false, true));
+  });
+});
