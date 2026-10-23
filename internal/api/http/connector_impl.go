@@ -30,6 +30,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot/migrations"
@@ -561,7 +562,7 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
 		// The cancel is broadcast to every replica with its reason.
-		if run.Retention == store.RetentionNone {
+		if run.Retention == retentionmode.None {
 			reason = ""
 		}
 	}
@@ -830,6 +831,9 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if err := config.ValidateShellCredentials(req.ShellCredentials); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
+	if err := config.ValidateGitRemote(req.GitRemote); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	if _, collides := s.cfg().Agents[req.Name]; collides {
 		return connector.AgentDescriptor{}, errRegisterNameUnavailable(req.Name)
 	}
@@ -864,6 +868,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		Interruption:     req.Interruption,
 		CryptoScopes:     req.CryptoScopes,
 		ShellCredentials: req.ShellCredentials,
+		GitRemote:        req.GitRemote,
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {

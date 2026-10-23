@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -17591,26 +17592,26 @@ func testRetentionModeRoundTrip(t *testing.T, s store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := s.CreateRun(ctx, quiet.ID, store.RunIdentity{AgentID: "a_ret_none", Retention: store.RetentionNone})
+	run, err := s.CreateRun(ctx, quiet.ID, store.RunIdentity{AgentID: "a_ret_none", Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Retention != store.RetentionNone {
-		t.Errorf("CreateRun returned retention %q, want %q", run.Retention, store.RetentionNone)
+	if run.Retention != retentionmode.None {
+		t.Errorf("CreateRun returned retention %q, want %q", run.Retention, retentionmode.None)
 	}
-	if got, err := s.GetRun(ctx, run.ID); err != nil || got.Retention != store.RetentionNone {
-		t.Errorf("GetRun retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
+	if got, err := s.GetRun(ctx, run.ID); err != nil || got.Retention != retentionmode.None {
+		t.Errorf("GetRun retention = %q (err %v), want %q", got.Retention, err, retentionmode.None)
 	}
-	if got, err := s.GetRunByAgentID(ctx, "a_ret_none"); err != nil || got.Retention != store.RetentionNone {
-		t.Errorf("GetRunByAgentID retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
+	if got, err := s.GetRunByAgentID(ctx, "a_ret_none"); err != nil || got.Retention != retentionmode.None {
+		t.Errorf("GetRunByAgentID retention = %q (err %v), want %q", got.Retention, err, retentionmode.None)
 	}
 	if got, _ := s.GetRun(ctx, plain.ID); got.Retention != "" {
 		t.Errorf("another run's retention = %q, want empty", got.Retention)
 	}
 
 	// The run's mode is on its session too, written with the run row.
-	if got, err := s.GetSession(ctx, quiet.ID); err != nil || got.Retention != store.RetentionNone {
-		t.Errorf("session retention = %q (err %v), want %q", got.Retention, err, store.RetentionNone)
+	if got, err := s.GetSession(ctx, quiet.ID); err != nil || got.Retention != retentionmode.None {
+		t.Errorf("session retention = %q (err %v), want %q", got.Retention, err, retentionmode.None)
 	}
 	if got, _ := s.GetSession(ctx, sess.ID); got.Retention != "" {
 		t.Errorf("another session's retention = %q, want empty", got.Retention)
@@ -17623,7 +17624,7 @@ func testRetentionModeRoundTrip(t *testing.T, s store.Store) {
 	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup", IdempotencyKey: "ret-dup"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup2", IdempotencyKey: "ret-dup", Retention: store.RetentionNone}); err == nil {
+	if _, err := s.CreateRun(ctx, other.ID, store.RunIdentity{AgentID: "a_ret_dup2", IdempotencyKey: "ret-dup", Retention: retentionmode.None}); err == nil {
 		t.Fatal("a duplicate idempotency key was accepted")
 	}
 	if got, _ := s.GetSession(ctx, other.ID); got.Retention != "" {
@@ -17650,13 +17651,13 @@ func testFailLostNoTraceRuns(t *testing.T, s store.Store) {
 		}
 		return run
 	}
-	lost := mk("a_lost", "k-lost", store.RetentionNone, "r1")
+	lost := mk("a_lost", "k-lost", retentionmode.None, "r1")
 	plain := mk("a_lost_plain", "k-plain", "", "r1")
-	other := mk("a_lost_other", "k-other", store.RetentionNone, "r2")
+	other := mk("a_lost_other", "k-other", retentionmode.None, "r2")
 	time.Sleep(20 * time.Millisecond)
 	boot := time.Now()
 	time.Sleep(20 * time.Millisecond)
-	fresh := mk("a_lost_fresh", "k-fresh", store.RetentionNone, "r1")
+	fresh := mk("a_lost_fresh", "k-fresh", retentionmode.None, "r1")
 
 	n, err := s.FailLostNoTraceRuns(ctx, "r1", boot)
 	if err != nil {

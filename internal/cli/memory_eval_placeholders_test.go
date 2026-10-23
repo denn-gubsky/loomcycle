@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/eval"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 )
 
 // TestExpandEvalPlaceholders_RendersTheOntology is the defect this exists for.
@@ -80,8 +80,8 @@ func TestExpandEvalPlaceholders_ConfirmedTenantTermsChangeThePrompt(t *testing.T
 // happened to `ontology` and cost a baseline's worth of meaning, so an unrenderable
 // variant fails loudly instead.
 func TestExpandEvalPlaceholders_RefusesWhatItCannotRender(t *testing.T) {
-	for _, v := range []meminject.Variant{
-		meminject.VariantUserInfo, meminject.VariantTenantInfo, meminject.VariantCoreBlocks,
+	for _, v := range []promptinject.Variant{
+		promptinject.VariantUserInfo, promptinject.VariantTenantInfo, promptinject.VariantCoreBlocks,
 	} {
 		_, err := expandEvalPlaceholders("prompt {{memory:"+string(v)+"}}", "")
 		if err == nil {

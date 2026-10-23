@@ -5,7 +5,7 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
 // RunPresets implements `loomcycle presets [show <name>]` (RFC AQ §2.3).

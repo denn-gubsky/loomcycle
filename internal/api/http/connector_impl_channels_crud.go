@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -126,8 +127,8 @@ func (s *Server) CreateChannel(ctx context.Context, req connector.ChannelCreateR
 	// Stated on its own, not left to the grammar below (which also refuses a
 	// "/"): the reservation is what keeps a team's own channels unreachable
 	// from outside it, and must hold if the grammar is ever widened.
-	if store.IsTeamChannelName(name) {
-		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", store.TeamChannelPrefix)
+	if teamspec.IsChannelName(name) {
+		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", teamspec.ChannelPrefix)
 	}
 	if !validChannelName(name) {
 		return connector.ChannelDescriptor{}, fmt.Errorf("create channel: name must match [A-Za-z0-9_-]{1,128}")

@@ -39,6 +39,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -185,7 +186,7 @@ func (it *Interruption) Execute(ctx context.Context, raw json.RawMessage) (tools
 
 	// A question and a notice are stored for the person they are for, and so
 	// is the answer. A no-trace run stores none of what it says.
-	if tools.RunIdentity(ctx).Retention == store.RetentionNone && (in.Op == "ask" || in.Op == "notify") {
+	if tools.RunIdentity(ctx).Retention == retentionmode.None && (in.Op == "ask" || in.Op == "notify") {
 		return errResult("Interruption tool: not available in a no-trace run — the " + in.Op + " would be stored, and this run's content is not"), nil
 	}
 

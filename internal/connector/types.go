@@ -504,6 +504,9 @@ type RegisterAgentRequest struct {
 	// Bash and Bashbox host commands receive (config.AgentDef.ShellCredentials,
 	// RFC EW). Absent = every credential the operator lists; [] = none.
 	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
+	// GitRemote is the Git tool's network grant (config.AgentDef.GitRemote,
+	// RFC FB): [fetch] or [fetch, push]. Absent or [] = none.
+	GitRemote []string `json:"git_remote,omitempty"`
 
 	// TTLSeconds is how long this dynamic agent should live. When
 	// 0, falls back to LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS

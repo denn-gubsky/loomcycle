@@ -11,7 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
-	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
+	"github.com/denn-gubsky/loomcycle/internal/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -167,6 +167,8 @@ func (b *boot) wireAuth() {
 		// RFC EP: every keyed Crypto op and every crypto-key change.
 		cryptoTool.Audit = tokenAudit
 		credentialDefTool.Audit = tokenAudit
+		// RFC FB: every Git network operation.
+		b.gitTool.Audit = tokenAudit
 	}
 	// Subject erasure shares the same sink — but NOT the same posture: with no audit
 	// path configured, erasure REFUSES rather than proceeding unrecorded. It is the one

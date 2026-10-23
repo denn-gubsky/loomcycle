@@ -623,6 +623,12 @@ type spawnRecord struct {
 	// which is also what a record written before the field means, since no
 	// run could narrow before it existed. `[]`: the parent allowed none.
 	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
+	// GitRemote is the parent run's Git network grant at spawn (RFC FB): the
+	// operations the child's own git_remote was narrowed to. A resume narrows
+	// again against it. Absent means the parent had none, which is also what
+	// a record written before the field means, since no run had a Git network
+	// grant before it existed.
+	GitRemote []string `json:"git_remote,omitempty"`
 	// OfferedOverrides is the override offer the child holds for its own
 	// children: its parent's, passed down unchanged (tools.RunPolicy.Inherit),
 	// so a grandchild of the offering run's definition takes that run's

@@ -91,6 +91,85 @@ loomcycle/
 
 Internal planning notes (RFCs, decision history, ground-truth PLAN.md) live OUT of this repo at `~/work/loomcycle-internal/doc-internal/` — migrated from the in-repo `doc-internal/` folder in PR #100 (v0.8.15).
 
+## Package layering (RFC EX)
+
+Every package in the module sits in a layer, and an import may only point down. **The layering is checked, not just described.** `internal/archtest` reads the module's import graph with one `go list` call and fails the build on an import that points the wrong way. Its `layers.go` is the authority for where each package belongs; the table below is a summary.
+
+**Why layers and not just packages.** A Go build compiles each package once, so cycles between directories cost nothing at build time. They cost later:
+- a test change in a low package re-runs everything above it;
+- a subsystem cannot be lifted into its own module while it imports the things that import it.
+
+The layer test makes the next cycle a red build, rather than something an audit finds.
+
+| Layer | Holds | Examples |
+|---|---|---|
+| L0 utilities | leaf packages that import nothing in the module except other L0 leaves | `errkind`, `netguard`, `redact`, `runident` (who is running), `promptinject` (the prompt placeholder grammar), `retentionmode`, `teamspec`, `embedded` (the presets and bundles the binary embeds) |
+| L1 providers | the provider interface and drivers, model resolution, and the decision-model client | `providers`, `resolve`, `decision` |
+| L2 schema | definitions: config, principals, credentials, agent and hook definitions | `config`, `auth`, `credential` (its row lives in the leaf `credential/credentialdef`), `agents`, `hooks` |
+| L3 storage | persistence and coordination | `store` (+ `sqlite`, `postgres`, `storetest`), `channels`, `limits`, `coord`, `sqlmem`, `snapshot` |
+| L4 memory | memory services and what reads documents | `memory`, `retention`, `docremote`, `directory`, `erasure` |
+| L5 runtime | the loop, the tools, orchestration, and wiring | `loop`, `tools`, `tools/builtin`, `runner`, `scheduler`, `teamrun`, `lanegate`, `errclassify`, `providerbuild`, `decisionbuild`, `wiring`, `codehook` |
+| L6 surfaces | the wire surfaces and the CLI | `api/http`, `api/grpc`, `api/mcp`, `cli`, `webui` |
+| L7 entry | the binary | `cmd/loomcycle` |
+| L8 tooling | nothing imports these | `bench`, `scripts`, `test`, `archtest` |
+
+**The rules:**
+- A package belongs to the listed directory that is the longest prefix of its path. A subpackage whose role sits higher than its parent's gets a directory of its own (`internal/codehook`, `internal/decisionbuild`) rather than a sublisting. The next phase splits modules along directories, so a subpackage left under a lower parent would close a cycle there.
+- An import within one subsystem is always allowed. An import into a lower layer is always allowed. An import into the same layer is allowed only for a subsystem pair in `allowedSideways`, a set checked to stay acyclic.
+- Test files (`_test.go`) are not checked: they are never compiled into the package they test.
+- Test-support packages (`storetest`, `credentialtest`, ...) follow the same rules as any other package.
+
+**Wiring lives in L5.** Code that turns the configuration into running services, such as resolving an endpoint, building a driver or putting it in its concurrency lane, belongs in `providerbuild`, `decisionbuild` or `wiring`. Memory and the other lower layers keep their domain types and constructors and take what they need as arguments.
+
+**A lower layer that needs something from the store declares it.** It names the methods it calls in its own interface, and the store satisfies it (`credential.Store`). A miss is recognised by behaviour (`errors.As` into `interface{ NotFound() bool }`), not by importing the store's error type.
+
+**Adding a package.** A new package that no layer places fails the test with a message naming the package. Add its directory to the layer its role puts it in.
+
+An import the test refuses is fixed, not allowlisted. `knownViolations` recorded the wrong-way imports that existed when the guard was introduced. The test also fails on an entry that no longer matches, so the list only shrinks; it is empty once the RFC EX Phase 2 cuts are merged.
+
+References: `internal/archtest/layers.go` (the map, its rules and their reasons), `internal/archtest/layers_test.go`.
+
+## How CI chooses what to run
+
+A pull request runs the jobs and the Go tests its change can reach; `main` runs everything. On `main` the CI wall time is about 9 minutes, set by the Postgres job. Before RFC EX Phase 1 it was about 20.
+
+**Which jobs run.** A first `changes` job (`scripts/ci/changes.sh`) classifies the pull request, and every other job waits for it and is skipped when its part of the tree is untouched:
+
+| Output | Jobs |
+|---|---|
+| `go` | Go checks, the race shards, the Postgres tiers |
+| `runtime` | the code-js runtime suites |
+| `web` | the Web UI build |
+| `ts` | the TypeScript adapter |
+| `python` | the Python adapter |
+| `bridges` | the bridges and their images |
+| `proto` | the generated-stubs check |
+
+`go` is not decided by file extension. Go tests read the TS adapter, the proto, `web/` and the bundles, so a change to one of those concerns Go too.
+
+**Which Go tests run.** `scripts/ci/affected` selects a package that has tests when:
+- a changed file belongs to it (embedded files, testdata and migrations belong to the package above them);
+- its test binary imports the changed package, test-only imports included;
+- its tests open the changed path through a relative literal (`"../../adapters/ts/src/types.ts"`, `filepath.Join("..", "..", "bundles")`). These paths are read from the test files' syntax, so there is no list to maintain.
+
+Further rules:
+- A change confined to `_test.go` files selects only its own package.
+- `go.mod`, `go.sum`, `ci.yml` and the selector itself select everything.
+- **The blind spot:** a test that builds a path into another directory at run time from anything other than literals. Write such paths as literals, or accept that `main`, not the pull request, catches that test failing.
+- `go run ./scripts/ci/affected -base "$(git merge-base origin/main HEAD)" -explain` shows what your commits select, and why.
+
+**How the race suite is spread.** The `go-race` job runs seven shards:
+- `internal/api/http` in thirds and `internal/tools/builtin` in halves. Each package is about 2,100 tests that run one after another, so only splitting them shortens them. `scripts/ci/split-tests.sh` deals the sorted `go test -list` names round-robin into a `-run` regexp, so every test lands in exactly one part.
+- `cmd`, the store and snapshot in one shard.
+- everything else in the last.
+
+The race step compiles `modernc.org/...` without race instrumentation: the SQLite engine's instrumented migrations were most of the suite's cost. Run it locally the same way:
+`go test -race -gcflags='modernc.org/...=-race=false' ./...`
+
+**The Postgres store contract** runs every contract test against a real Postgres. Its subtests borrow migrated schemas from a small pool and give them back emptied (TRUNCATE plus the rows the migrations seed), and up to six run at once. Migrating a fresh schema for each of about 1,000 subtests had been most of that job's length.
+
+References: `.github/workflows/ci.yml`, `scripts/README.md`, `scripts/ci/`, `internal/store/postgres/schema_pool_test.go`.
+
 ## Request flow (POST /v1/runs)
 
 ```
@@ -696,3 +775,4 @@ curl http://127.0.0.1:8787/healthz                 # {"ok":true}
 ```
 
 For an end-to-end smoke against a real provider, set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) and `LOOMCYCLE_AUTH_TOKEN` in `.env.local`, then POST to `/v1/runs` per the README quick-start.
+

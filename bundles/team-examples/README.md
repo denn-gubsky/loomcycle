@@ -33,6 +33,6 @@ marketing example"* and it creates the TeamDef from `team/examples` and drives i
   creates the shared ephemeral `work` volume; run standalone they have no volume
   and their file ops are denied (expected).
 - `loomcycle.yaml` mirrors the embedded copy at
-  `cmd/loomcycle/embedded/bundles/team-examples.yaml`; keep the two in sync.
+  `internal/embedded/bundles/team-examples.yaml`; keep the two in sync.
 - These are starters — fork them (`TeamDef op=fork`) or build your own with the
   `team/assistant` agent.

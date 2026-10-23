@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
 	"github.com/denn-gubsky/loomcycle/internal/memory/eval"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // RunMemoryCalibrate implements `loomcycle memory-calibrate`: it measures the
@@ -149,7 +149,7 @@ func calibrationEmbedder(kind string, dim int, cfg *config.Config) (providers.Em
 	case "stub":
 		return eval.NewDeterministicEmbedder(dim), nil
 	case "", "auto":
-		emb, err := embedders.Build(cfg)
+		emb, err := wiring.Embedder(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("embedder: %w", err)
 		}

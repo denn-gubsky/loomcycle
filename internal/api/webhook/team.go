@@ -12,7 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
-	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // verdictRejectedTeamStart is the triage verdict for a team delivery that
@@ -52,7 +52,7 @@ func buildTeamWalkInput(w config.Webhook, proj projectResult, body []byte) (runn
 		if val == "" {
 			continue
 		}
-		if verr := teamgraph.CheckVarValue(val); verr != nil {
+		if verr := teamspec.CheckVarValue(val); verr != nil {
 			return runner.TeamWalkInput{}, fmt.Errorf("%w: vars %q: %v", errTeamVarRefused, name, verr)
 		}
 		if vars == nil {

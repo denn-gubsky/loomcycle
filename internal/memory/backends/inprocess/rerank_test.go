@@ -384,11 +384,9 @@ func TestInProcessRerank_TheDecisionKindReordersASearch(t *testing.T) {
 		})
 	}))
 	defer srv.Close()
-	rr, err := reranker.BuildRanker(&config.Config{
-		Providers: map[string]config.ProviderConfig{"ollama-local": {Driver: "ollama", BaseURL: srv.URL}},
-		Memory: config.MemoryConfig{Reranker: config.RerankerConfig{
-			Kind: config.RerankerKindDecision, Provider: "ollama-local", Model: "nimble"}},
-	}, nil)
+	rr, err := reranker.NewDecision(config.RerankerConfig{
+		Kind: config.RerankerKindDecision, Provider: "ollama-local", Model: "nimble"},
+		"ollama", providers.DriverOptions{BaseURL: srv.URL}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

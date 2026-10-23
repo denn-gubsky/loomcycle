@@ -1,16 +1,16 @@
 // meminject.go — RFC BL P1 core-memory-block + {{memory:...}} injection wiring.
 //
-// The pure closed-set expander lives in internal/memory (meminject). This file
+// The pure closed-set expander lives in internal/promptinject. This file
 // is the SERVER side: it resolves the run's effective core-block set (own +
 // inherited), reads each block's value + the search_request retrieval from the
-// store, and calls meminject.Expand to fold them into the agent's system
+// store, and calls promptinject.Expand to fold them into the agent's system
 // prompt. It runs at every run-entry alongside resolveSkillBodiesForRun, so the
 // injection is re-derived at fresh run / HTTP / continue / sub-agent / resume —
 // and, because compaction only resets the MESSAGE list (never the system
 // prompt), it survives a compaction rebuild without re-running.
 //
 // Trust: the injected content is framed as reference DATA, not instructions
-// (meminject.frame). The tenant + scope are server-sourced (mi, never the
+// (promptinject.frame). The tenant + scope are server-sourced (mi, never the
 // wire); the model never chooses what memory is injected.
 package http
 
@@ -25,6 +25,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -38,7 +39,7 @@ const (
 	userRootReservationPct = 60
 	// userInfoStructuralHeadroom reserves bytes for the sub-section labels +
 	// truncation markers so the assembled user_info section stays under the
-	// meminject.Expand token budget (which frames + budgets only CONTENT), and
+	// promptinject.Expand token budget (which frames + budgets only CONTENT), and
 	// Expand never rune-truncates the line-truncated body back into a mid-line
 	// cut. Deliberately generous; only the memory CONTENT competes for the rest.
 	userInfoStructuralHeadroom = 160
@@ -83,14 +84,14 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// a no-op when the refs are already present, and is never called when off).
 	promptSrc := agentDef.SystemPrompt
 	if agentDef.InjectToolGuide {
-		promptSrc = meminject.AppendToolGuideRefs(promptSrc)
+		promptSrc = promptinject.AppendToolGuideRefs(promptSrc)
 	}
 
 	forceRoots := agentDef.MemoryRoots == "force"
 	suppressRoots := agentDef.MemoryRoots == "suppress"
-	wantUserInfo := meminject.ReferencesVariant(promptSrc, meminject.VariantUserInfo)
-	toolRefs := meminject.ReferencesToolRefs(promptSrc)
-	docRefs := meminject.ReferencesDocRefs(promptSrc)
+	wantUserInfo := promptinject.ReferencesVariant(promptSrc, promptinject.VariantUserInfo)
+	toolRefs := promptinject.ReferencesToolRefs(promptSrc)
+	docRefs := promptinject.ReferencesDocRefs(promptSrc)
 	// The WIDENED families are COLLECTED only for a def an operator wrote. The
 	// expander's guard is what refuses them and says why; this is what stops a
 	// def that may not use them from causing the store reads and the network
@@ -98,11 +99,11 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// because ctx is not stamped yet on every assembly path — the sub-agent
 	// path stamps it after this call — and a guard that reads an unstamped
 	// value is a guard that fails open.
-	var memRefs []meminject.MemoryRef
-	var toolCalls []meminject.ToolCall
+	var memRefs []promptinject.MemoryRef
+	var toolCalls []promptinject.ToolCall
 	if agentDef.OperatorAuthored {
-		memRefs = meminject.ReferencesMemoryRefs(promptSrc, nil)
-		toolCalls = meminject.ReferencesToolCalls(promptSrc, nil)
+		memRefs = promptinject.ReferencesMemoryRefs(promptSrc, nil)
+		toolCalls = promptinject.ReferencesToolCalls(promptSrc, nil)
 	}
 
 	// Fast path: no core blocks, no placeholder of any family, no protocol, no
@@ -113,8 +114,8 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// those are authorship-gated, so a non-operator def whose only placeholder
 	// is a widened one would take the fast path and leave the placeholder in the
 	// prompt as literal text. Refused and removed is the intended outcome.
-	if len(blocks) == 0 && !meminject.References(promptSrc) && len(toolRefs) == 0 &&
-		len(docRefs) == 0 && !meminject.ReferencesWidened(promptSrc) &&
+	if len(blocks) == 0 && !promptinject.References(promptSrc) && len(toolRefs) == 0 &&
+		len(docRefs) == 0 && !promptinject.ReferencesWidened(promptSrc) &&
 		!agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
@@ -123,7 +124,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	if maxTokens <= 0 {
 		maxTokens = config.DefaultMemoryInjectMaxTokens
 	}
-	maxBytes := maxTokens * 4 // matches meminject.Expand's chars/4 estimator
+	maxBytes := maxTokens * 4 // matches promptinject.Expand's chars/4 estimator
 
 	// force: pre-provision the user-root document even with no {{memory:user_info}}
 	// reference, so the operator can fill it in before the first run that uses it.
@@ -131,15 +132,15 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 		s.ensureUserRootDoc(ctx, mi)
 	}
 
-	sections := make(map[meminject.Variant]string)
+	sections := make(map[promptinject.Variant]string)
 	if body := s.renderCoreBlocks(ctx, mi, blocks); body != "" {
-		sections[meminject.VariantCoreBlocks] = body
+		sections[promptinject.VariantCoreBlocks] = body
 	}
 	// user_info rendering lazily PROVISIONS the user-root doc — gate it on an
 	// actual reference so a prompt that never mentions user_info never creates it.
 	if wantUserInfo {
 		if body := s.renderUserInfo(ctx, mi, maxBytes, suppressRoots); body != "" {
-			sections[meminject.VariantUserInfo] = body
+			sections[promptinject.VariantUserInfo] = body
 		}
 	}
 	// tenant_info: gated on an actual reference for the same reason as user_info
@@ -147,28 +148,28 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// document, and a prompt that never mentions it must not create one.
 	// suppressRoots covers it too: `memory_roots: suppress` means an agent wants no
 	// root documents injected, and the tenant root is one.
-	if !suppressRoots && meminject.ReferencesVariant(promptSrc, meminject.VariantTenantInfo) {
+	if !suppressRoots && promptinject.ReferencesVariant(promptSrc, promptinject.VariantTenantInfo) {
 		if body := s.renderTenantInfo(ctx, mi); body != "" {
-			sections[meminject.VariantTenantInfo] = body
+			sections[promptinject.VariantTenantInfo] = body
 		}
 	}
 	if body := s.renderSearchRequest(ctx, mi); body != "" {
-		sections[meminject.VariantSearchRequest] = body
+		sections[promptinject.VariantSearchRequest] = body
 	}
 	// recalled_context: gated on an actual reference, because it costs TWO retrievals
 	// and an embedding of the run's initial input. A prompt that never places the
 	// placeholder must not pay for them.
-	if meminject.ReferencesVariant(promptSrc, meminject.VariantRecalledContext) {
+	if promptinject.ReferencesVariant(promptSrc, promptinject.VariantRecalledContext) {
 		if body := s.renderRecalledContext(ctx, mi); body != "" {
-			sections[meminject.VariantRecalledContext] = body
+			sections[promptinject.VariantRecalledContext] = body
 		}
 	}
 	// ontology: gated on an actual reference, like user_info, because rendering it
 	// PROVISIONS the tenant's ontology document. A prompt that never mentions the
 	// ontology must not create one as a side effect of being assembled.
-	if meminject.ReferencesVariant(promptSrc, meminject.VariantOntology) {
+	if promptinject.ReferencesVariant(promptSrc, promptinject.VariantOntology) {
 		if body := s.renderOntology(ctx, mi); body != "" {
-			sections[meminject.VariantOntology] = body
+			sections[promptinject.VariantOntology] = body
 		}
 	}
 	// consolidation_bands is pure config — no store read, no tenant scope, so
@@ -181,10 +182,10 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 		mergeBand = s.cfg().Memory.Consolidation.EffectiveMergeThreshold()
 		relatedBand = s.cfg().Memory.Consolidation.EffectiveRelatedThreshold()
 	}
-	sections[meminject.VariantConsolidationBands] = meminject.ConsolidationBands(mergeBand, relatedBand)
+	sections[promptinject.VariantConsolidationBands] = promptinject.ConsolidationBands(mergeBand, relatedBand)
 
 	out := agentDef
-	expanded, refused := meminject.ExpandWithRefusals(promptSrc, meminject.ExpandInput{
+	expanded, refused := promptinject.ExpandWithRefusals(promptSrc, promptinject.ExpandInput{
 		Sections:      sections,
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		Documents:     s.renderDocuments(ctx, mi, docRefs),
@@ -210,7 +211,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 		if idx <= 0 {
 			idx = config.DefaultMemoryIndexMaxBytes
 		}
-		protocol := meminject.MemoryProtocol(idx)
+		protocol := promptinject.MemoryProtocol(idx)
 		if out.SystemPrompt != "" {
 			out.SystemPrompt = protocol + "\n\n" + out.SystemPrompt
 		} else {
@@ -279,7 +280,7 @@ func (s *Server) renderCoreBlocks(ctx context.Context, mi memInject, blocks []co
 // renderUserInfo composes the {{memory:user_info}} section: the operator-authored
 // user-root DOCUMENT first, then the consolidated user-scope `human` core block,
 // each in its own labeled sub-section (the whole thing is DATA-framed by
-// meminject.Expand). The operator doc gets first claim on the content budget
+// promptinject.Expand). The operator doc gets first claim on the content budget
 // (userRootReservationPct); the block fills the remainder; either borrows the
 // other's unused headroom; truncation is boundary-aware. Lazily provisions the
 // user-root doc on this first reference unless suppressed. maxBytes is the total
@@ -471,13 +472,13 @@ func (s *Server) provisionUserRootDoc(ctx context.Context, mi memInject) {
 // A miss of any kind (absent, unreadable, empty, malformed) renders to nothing
 // rather than erroring. Prompt assembly runs at every run-entry, sub-agent
 // spawn and resume, and a run must not fail because a document moved.
-func (s *Server) renderDocuments(ctx context.Context, mi memInject, refs []meminject.DocRef) map[meminject.DocRef]string {
+func (s *Server) renderDocuments(ctx context.Context, mi memInject, refs []promptinject.DocRef) map[promptinject.DocRef]string {
 	if len(refs) == 0 || s.store == nil || s.sqlMem == nil {
 		return nil
 	}
 	dctx := s.docToolCtx(ctx, mi)
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	out := make(map[meminject.DocRef]string, len(refs))
+	out := make(map[promptinject.DocRef]string, len(refs))
 	for _, ref := range refs {
 		if ref.IsWholeDocument() {
 			// Renders an instruction, not content — no read, so it is not
@@ -503,7 +504,7 @@ func (s *Server) renderDocuments(ctx context.Context, mi memInject, refs []memin
 // resolved prompt, but the model still answers confidently from half a spec —
 // and a half-spec is indistinguishable from a complete one to it. An outline is
 // an accurate map instead of a confident half-answer.
-func resolveDocRef(ctx context.Context, doc *builtin.Document, ref meminject.DocRef) string {
+func resolveDocRef(ctx context.Context, doc *builtin.Document, ref promptinject.DocRef) string {
 	if ref.IsID() {
 		if body, ok := readChunkByID(ctx, doc, ref.Path); ok {
 			return body
@@ -549,7 +550,7 @@ func readChunkByID(ctx context.Context, doc *builtin.Document, id string) (strin
 }
 
 // exportDocument renders a document to markdown, addressed by path or id.
-func exportDocument(ctx context.Context, doc *builtin.Document, ref meminject.DocRef) (md, title string) {
+func exportDocument(ctx context.Context, doc *builtin.Document, ref promptinject.DocRef) (md, title string) {
 	arg := map[string]any{"op": "export_md", "scope": "user", "include_metadata": false}
 	if ref.IsID() {
 		arg["id"] = ref.Path
@@ -657,7 +658,7 @@ func userRootCacheKey(tenant, userID string) string {
 // directly on the store — it needs no embedder and takes the tenant explicitly
 // (RunIdentity is not on ctx yet at prompt-assembly time). Blending the vector
 // leg via RRF is a later-phase enrichment. Empty input / no store / no user →
-// nothing; the token budget is applied by meminject.Expand.
+// nothing; the token budget is applied by promptinject.Expand.
 func (s *Server) renderSearchRequest(ctx context.Context, mi memInject) string {
 	if s.store == nil || mi.UserID == "" || strings.TrimSpace(mi.InitialInput) == "" {
 		return ""
@@ -882,8 +883,8 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 		return system, user
 	}
 	combined := system + "\n" + user
-	docRefs := meminject.ReferencesDocRefs(combined)
-	toolRefs := meminject.ReferencesToolRefs(combined)
+	docRefs := promptinject.ReferencesDocRefs(combined)
+	toolRefs := promptinject.ReferencesToolRefs(combined)
 	// The WIDENED families, collected PER SEGMENT from the segments allowed to
 	// use them — the same two-cost gate the agent-prompt path applies: a
 	// segment that may not use them causes neither the store reads nor the
@@ -900,11 +901,11 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	if inputAuthored {
 		authored += "\n" + user
 	}
-	var memRefs []meminject.MemoryRef
-	var toolCalls []meminject.ToolCall
+	var memRefs []promptinject.MemoryRef
+	var toolCalls []promptinject.ToolCall
 	if authored != "" {
-		memRefs = meminject.ReferencesMemoryRefs(authored, values)
-		toolCalls = meminject.ReferencesToolCalls(authored, values)
+		memRefs = promptinject.ReferencesMemoryRefs(authored, values)
+		toolCalls = promptinject.ReferencesToolCalls(authored, values)
 	}
 	// ReferencesWidened is checked here for the same reason the agent-prompt
 	// fast path checks it: a segment whose ONLY placeholder is a widened one has
@@ -913,11 +914,11 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	// on this path EVERY widened reference is refused (see OperatorAuthored
 	// below), so this is the only thing that makes the refusal visible at all.
 	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 &&
-		!meminject.References(combined) && !meminject.ReferencesWidened(combined) {
+		!promptinject.References(combined) && !promptinject.ReferencesWidened(combined) {
 		return system, user
 	}
 
-	in := meminject.ExpandInput{
+	in := promptinject.ExpandInput{
 		Values:        values,
 		Documents:     s.renderDocuments(ctx, mi, docRefs),
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
@@ -943,8 +944,8 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	sysIn, userIn := in, in
 	sysIn.OperatorAuthored = systemAuthored
 	userIn.OperatorAuthored = inputAuthored
-	outSystem, sysRefused := meminject.ExpandWithRefusals(system, sysIn)
-	outUser, userRefused := meminject.ExpandWithRefusals(user, userIn)
+	outSystem, sysRefused := promptinject.ExpandWithRefusals(system, sysIn)
+	outUser, userRefused := promptinject.ExpandWithRefusals(user, userIn)
 	noteRefusedValues(mi.AgentName, append(sysRefused, userRefused...))
 	return outSystem, outUser
 }
@@ -976,14 +977,14 @@ func noteRefusedValues(agent string, refused []string) {
 // A ref that resolves to nothing is simply absent from the map, and the
 // expander renders it as nothing. Prompt assembly runs at every run entry,
 // sub-agent spawn and resume, so a deleted key must never fail a run.
-func (s *Server) renderMemoryRefs(ctx context.Context, mi memInject, refs []meminject.MemoryRef) map[meminject.MemoryRef]string {
+func (s *Server) renderMemoryRefs(ctx context.Context, mi memInject, refs []promptinject.MemoryRef) map[promptinject.MemoryRef]string {
 	if len(refs) == 0 || s.store == nil || mi.UserID == "" {
 		return nil
 	}
-	out := make(map[meminject.MemoryRef]string, len(refs))
+	out := make(map[promptinject.MemoryRef]string, len(refs))
 	for _, ref := range refs {
 		switch ref.Kind {
-		case meminject.MemoryKindKey:
+		case promptinject.MemoryKindKey:
 			entry, err := s.store.MemoryGet(ctx, mi.Tenant, store.MemoryScopeUser, mi.UserID, ref.Arg)
 			if err != nil {
 				continue
@@ -991,7 +992,7 @@ func (s *Server) renderMemoryRefs(ctx context.Context, mi memInject, refs []memi
 			if body := strings.TrimSpace(renderMemoryValue(entry.Value)); body != "" {
 				out[ref] = body
 			}
-		case meminject.MemoryKindSearch:
+		case promptinject.MemoryKindSearch:
 			const topK = 5
 			entries, err := s.store.MemoryFullTextSearch(ctx, mi.Tenant, store.MemoryScopeUser, mi.UserID,
 				store.MemorySearchFilter{}, ref.Arg, topK)

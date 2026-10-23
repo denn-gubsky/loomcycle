@@ -29,6 +29,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/runident"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // MintChannelMessageID returns a fresh channel-message id that's
@@ -200,8 +203,8 @@ type Session struct {
 	// creation; sub-agent sessions inherit the parent's value.
 	UserID string `json:"user_id,omitempty"`
 
-	// Retention is the session's retention mode: "" or RetentionNone. A
-	// RetentionNone session holds one no-trace run and is never continued.
+	// Retention is the session's retention mode: "" or retentionmode.None. A
+	// retentionmode.None session holds one no-trace run and is never continued.
 	// Written by CreateRun, with the run row, when the run has a mode; read
 	// by GetSession only.
 	Retention string `json:"retention,omitempty"`
@@ -626,7 +629,7 @@ type Run struct {
 	CredentialsNoUserScope bool `json:"credentials_no_user_scope,omitempty"`
 
 	// Retention is the run's retention mode: "" (everything is stored) or
-	// RetentionNone (content is delivered and stored nowhere). Persisted to
+	// retentionmode.None (content is delivered and stored nowhere). Persisted to
 	// runs.retention at creation and never changed.
 	Retention string `json:"retention,omitempty"`
 
@@ -842,24 +845,6 @@ type RetentionOverrideRow struct {
 	Until     time.Time `json:"until"`
 	SetBy     string    `json:"set_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-// RetentionNone is the retention mode of a run whose content is never stored.
-// The default mode is the empty string.
-const RetentionNone = "none"
-
-// ParseRetention reads a retention mode as a caller wrote it: "none", or the
-// default spelled "default" or left empty. It returns the stored form
-// (RetentionNone or ""). Anything else is an error — a misspelled "none" must
-// not become a run that stores everything.
-func ParseRetention(s string) (string, error) {
-	switch s {
-	case "", "default":
-		return "", nil
-	case RetentionNone:
-		return RetentionNone, nil
-	}
-	return "", fmt.Errorf("retention must be %q or %q, not %q", RetentionNone, "default", s)
 }
 
 // UsageCarryRow is month-to-date token usage a snapshot restore carried in
@@ -1094,7 +1079,7 @@ type RunIdentity struct {
 	// creation from the run identity that starts it.
 	CredentialsNoUserScope bool
 	// Retention is the run's retention mode, persisted to runs.retention: ""
-	// or RetentionNone. Decided before the row is written; nothing sets it
+	// or retentionmode.None. Decided before the row is written; nothing sets it
 	// afterwards. A run with a mode stamps it on its session in the same
 	// write.
 	Retention string
@@ -1127,82 +1112,13 @@ const (
 	RunUserSlotUnrecorded
 )
 
-// ParentContext is the typed caller-tracking lineage attached to a run
-// and propagated to all its sub-agents. The runtime stores and echoes
-// these fields verbatim and never branches on their values — they are
-// consumer-domain concepts (a deliberate, operator-requested exception
-// to loomcycle's usual domain-agnostic posture).
-//
-// It lives in the store package — the lowest layer, importing no other
-// internal package — so runner, tools, connector, and the wire surfaces
-// can all reference one type without an import cycle (the same reason
-// store.RunIdentity and tools.RunIdentityValue are kept separate: loop
-// imports tools, so tools cannot import runner).
-//
-// Unlike UserBearer/UserCredentials this is NOT a secret: safe to
-// persist, log, and emit in events. All fields optional; an all-empty
-// struct is treated as absent (nil) at wire entry.
-//
-// Two owners share this struct. The CALLER sets RootAgentRunID, FunctionKey
-// and TierAtRun. The RUNTIME alone sets the Board*, Walk/Wave and State fields, on the
-// runs a team walk spawns — consumers group runs by them, so a caller must not
-// be able to claim them. Every ingress clears the runtime-owned fields through
-// connector.StripRuntimeParentContext; a field added here must be classified
-// there (TestStripRuntimeParentContext_ClassifiesEveryField fails until it is).
-type ParentContext struct {
-	// RootAgentRunID is the consumer's identifier for the user-
-	// initiated run at the root of the spawn tree. Echoed on every
-	// descendant so the consumer can attribute child costs to it.
-	RootAgentRunID string `json:"root_agent_run_id,omitempty"`
-	// FunctionKey is the consumer's logical-operation key for the root
-	// request (e.g. its cost-aggregation bucket).
-	FunctionKey string `json:"function_key,omitempty"`
-	// TierAtRun is the consumer's tier marker captured at root-run time.
-	// Distinct from UserTier (loomcycle's resolver policy) — this is the
-	// consumer's own snapshot, carried verbatim.
-	TierAtRun string `json:"tier_at_run,omitempty"`
-	// RUNTIME-OWNED from here down: cleared from caller input at every ingress.
-	//
-	// Board{Scope,ChunkID,DocumentID} correlate a run to a workflow-board task
-	// (a Document chunk) for loomboard (RFC BT P4). A board-bound `TeamDef
-	// op=run` stamps these onto each handler run it spawns, so a client folding
-	// the run-state stream can pin a live agent to its kanban card. Empty for
-	// non-board runs. Not secret — safe to persist and emit like the rest.
-	BoardScope      string `json:"board_scope,omitempty"`
-	BoardChunkID    string `json:"board_chunk_id,omitempty"`
-	BoardDocumentID string `json:"board_document_id,omitempty"`
-	// Walk/Wave correlate a run to the TeamDef walk and the Starter WAVE that
-	// spawned it. A wave is N runs dispatched together from one channel read;
-	// these three are the join that recovers it.
-	//
-	// It is a JOIN, not a copy: the prompt, transcript, tokens, cost and error
-	// of every run in a wave already exist: what was missing was the key that
-	// groups them. A canvas reviewing a wave reads the runs; a Starter that
-	// restarted mid-wave rebuilds the wave the same way, which is what lets the
-	// deferred sink publish stay a deferral rather than a second copy of the
-	// results. Empty for every non-wave run.
-	WalkID string `json:"walk_id,omitempty"`
-	WaveID string `json:"wave_id,omitempty"`
-	// No omitempty: index 0 is a REAL position in a wave, and dropping it
-	// makes the first run of every wave indistinguishable from a run with no
-	// index at all. It is only ever written alongside WalkID/WaveID, so this
-	// adds a field to an object that was already being stored rather than
-	// creating new rows.
-	WaveIndex int `json:"wave_index"`
-	// State and StateVisit say which state of the walk ran this member, and
-	// which time: every member a walk spawns carries them (agent, parallel,
-	// consolidator and Starter alike), where the wave fields are a Starter's
-	// alone. State is the state id.
-	//
-	// StateVisit is the walk's own count of state visits — 1 for the first
-	// state it ran, +1 for every one after — so the members of ONE visit share
-	// it and a revisit of the same state gets a new one. It is deliberately not
-	// the per-state iteration count: an operator's `continue` on a cap resets
-	// that to 1, and a reroute to 0, so two different visits could carry the
-	// same number. 0 = not a walk member.
-	State      string `json:"state,omitempty"`
-	StateVisit int    `json:"state_visit,omitempty"`
-}
+// ParentContext is the typed caller-tracking lineage attached to a run and
+// propagated to all its sub-agents. It is an ALIAS for runident.ParentContext,
+// not a copy: the type lives in that leaf package so the run identity carried
+// on a context can hold it without importing store. Store keeps its encoding
+// (EncodeParentContext / DecodeParentContext). See runident.ParentContext for
+// the fields and for who owns which of them.
+type ParentContext = runident.ParentContext
 
 // WaveTask is the Starter wave a spawned run belongs to, carried on ctx from
 // the walk to the run-creation seam — the same shape and the same propagation
@@ -1287,29 +1203,16 @@ func WithTeamScope(ctx context.Context, sc TeamScope) context.Context {
 	return context.WithValue(ctx, teamScopeCtxKey{}, sc)
 }
 
-// TeamChannelPrefix is the reserved prefix a team's own channels are stored
-// under: local channel n of team T keeps its messages and cursors as
-// "_team/T/n". Nothing else may declare a channel under it or address one by
-// that spelling — the operator's config, runtime ChannelDefs and the Channel
-// tool all refuse it — so the one way to such a channel is from inside the
-// team, and deleting the team can drop everything under its prefix.
-const TeamChannelPrefix = "_team/"
-
 // TeamChannelName is the name local channel `local` of team `team` is stored
 // under.
 func TeamChannelName(team, local string) string {
-	return TeamChannelPrefix + team + "/" + local
-}
-
-// IsTeamChannelName reports whether name is under the reserved team prefix.
-func IsTeamChannelName(name string) bool {
-	return strings.HasPrefix(name, TeamChannelPrefix)
+	return teamspec.ChannelPrefix + team + "/" + local
 }
 
 // SplitTeamChannelName is TeamChannelName's inverse: "_team/T/n" → (T, n).
 // ok=false for any other name, including one with an empty or extra segment.
 func SplitTeamChannelName(name string) (team, local string, ok bool) {
-	rest, found := strings.CutPrefix(name, TeamChannelPrefix)
+	rest, found := strings.CutPrefix(name, teamspec.ChannelPrefix)
 	if !found {
 		return "", "", false
 	}
@@ -1323,7 +1226,7 @@ func SplitTeamChannelName(name string) (team, local string, ok bool) {
 // TeamChannelDisplayName is how events and logs show a stored channel name:
 // "_team/T/n" as "T/n", any other name unchanged.
 func TeamChannelDisplayName(name string) string {
-	if rest, ok := strings.CutPrefix(name, TeamChannelPrefix); ok {
+	if rest, ok := strings.CutPrefix(name, teamspec.ChannelPrefix); ok {
 		return rest
 	}
 	return name
@@ -1337,35 +1240,6 @@ func TeamScopeFromContext(ctx context.Context) (TeamScope, bool) {
 		return TeamScope{}, false
 	}
 	return sc, true
-}
-
-// IsZero reports whether every field is empty (no meaningful tracking
-// context). Wire entry points normalise a zero struct to nil so
-// back-compat decode paths stay clean.
-// EVERY field must be listed. A field added to ParentContext and not added
-// here makes a context carrying ONLY that field encode as zero — the column is
-// written NULL and the value is dropped silently, on every run, with nothing
-// to point at.
-//
-// That is not hypothetical: the wave correlation (WalkID/WaveID/WaveIndex)
-// was added without being listed, so every run a Starter spawned stored a NULL
-// parent_context and the join the design was built on never existed. It looked
-// correct everywhere except in the database.
-func (p *ParentContext) IsZero() bool {
-	return p == nil || (p.RootAgentRunID == "" && p.FunctionKey == "" && p.TierAtRun == "" &&
-		p.BoardScope == "" && p.BoardChunkID == "" && p.BoardDocumentID == "" &&
-		p.WalkID == "" && p.WaveID == "" && p.WaveIndex == 0 &&
-		p.State == "" && p.StateVisit == 0)
-}
-
-// Clone returns a deep copy (nil-safe) so a parent's ParentContext can
-// be handed to a child run without aliasing.
-func (p *ParentContext) Clone() *ParentContext {
-	if p == nil {
-		return nil
-	}
-	cp := *p
-	return &cp
 }
 
 // WalkLineage is the walk state a run descends from, carried on that run's own
@@ -2035,7 +1909,7 @@ type RunStore interface {
 	// Used by internal/heartbeat for the periodic sweep goroutine.
 	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
 
-	// FailLostNoTraceRuns fails the RetentionNone runs a restart lost: rows
+	// FailLostNoTraceRuns fails the retentionmode.None runs a restart lost: rows
 	// still "running" that started before startedBefore — the moment this
 	// process began — and that this process owned. replicaID is the
 	// process's replica id; "" means it is the only one, and owns them all.

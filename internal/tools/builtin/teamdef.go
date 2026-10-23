@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -638,7 +639,7 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 // the grammar existed, so a team named outside it must stay writable — a new
 // version under the name it already has — while no new such name is admitted.
 func (t *TeamDef) checkNewName(ctx context.Context, name string) error {
-	nameErr := teamgraph.ValidateName(name)
+	nameErr := teamspec.ValidateName(name)
 	if nameErr == nil {
 		return nil
 	}

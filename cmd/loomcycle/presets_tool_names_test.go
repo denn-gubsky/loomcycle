@@ -32,7 +32,7 @@ func TestBundlePrompts_NameToolsExactly(t *testing.T) {
 	// The backticked call form the bundles use to teach a tool call.
 	callForm := regexp.MustCompile("`([A-Za-z_][A-Za-z0-9_]*)` op=")
 
-	roots := []string{filepath.Join("..", "..", "bundles"), filepath.Join("embedded", "bundles")}
+	roots := []string{filepath.Join("..", "..", "bundles"), filepath.Join("..", "..", "internal", "embedded", "bundles")}
 	checked := 0
 	for _, root := range roots {
 		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
