@@ -180,5 +180,5 @@ func recordDefOp(ctx context.Context, eff *authz.Effective, event string, s auth
 		tenant, subject = eff.Subject.TenantID, eff.Subject.ID
 	}
 	slog.Warn("authz: "+event, "tenant", tenant, "subject", subject, "action", s.Action,
-		"resource", s.Type+":"+s.Name, "outcome", d.Outcome.String(), "transport", authz.TransportFrom(ctx))
+		"resource", s.Type+":"+s.Name, "outcome", d.Outcome.String())
 }
