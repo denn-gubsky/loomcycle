@@ -6,17 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/decision"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
-	// Registered so Build's refusal of a decision block is what fails, not a missing
-	// driver: unguarded, Build would happily build an Ollama chat driver for nimble.
-	_ "github.com/denn-gubsky/loomcycle/internal/providers/ollama"
 )
 
 // fakeSystemOne is an Ollama /v1/systemone double: it records every request and
@@ -74,8 +73,12 @@ func status(code int, body string) func(http.ResponseWriter, systemOneRequest) {
 	}
 }
 
-// decisionConfig declares a decision reranker on an Ollama provider served by url.
-func decisionConfig(url string, rc config.RerankerConfig) *config.Config {
+// newDecision builds a decision reranker on an Ollama endpoint at url, with the
+// options internal/wiring resolves for one: the keyless ollama-local by default,
+// or the keyed ollama, answering to OLLAMA_API_KEY, when rc names it. How a block
+// resolves to these is wiring's to test; what is tested here is the reranker.
+func newDecision(t *testing.T, url string, rc config.RerankerConfig) *Decision {
+	t.Helper()
 	rc.Kind = config.RerankerKindDecision
 	if rc.Provider == "" {
 		rc.Provider = "ollama-local"
@@ -83,25 +86,13 @@ func decisionConfig(url string, rc config.RerankerConfig) *config.Config {
 	if rc.Model == "" {
 		rc.Model = "nimble"
 	}
-	return &config.Config{
-		Providers: map[string]config.ProviderConfig{
-			"ollama-local": {Driver: "ollama", BaseURL: url},
-			"ollama":       {Driver: "ollama", BaseURL: url, APIKeyEnv: "OLLAMA_API_KEY"},
-			"openai":       {Driver: "openai", APIKeyEnv: "OPENAI_API_KEY"},
-		},
-		Memory: config.MemoryConfig{Reranker: rc},
+	opts := providers.DriverOptions{BaseURL: url}
+	if rc.Provider == "ollama" {
+		opts.APIKey, opts.KeyEnvName = os.Getenv("OLLAMA_API_KEY"), "OLLAMA_API_KEY"
 	}
-}
-
-func newDecision(t *testing.T, url string, rc config.RerankerConfig) *Decision {
-	t.Helper()
-	r, err := BuildRanker(decisionConfig(url, rc), nil)
+	d, err := NewDecision(rc, "ollama", opts, nil)
 	if err != nil {
-		t.Fatalf("BuildRanker: %v", err)
-	}
-	d, ok := r.(*Decision)
-	if !ok {
-		t.Fatalf("BuildRanker built %T, want *Decision", r)
+		t.Fatalf("NewDecision: %v", err)
 	}
 	return d
 }
@@ -298,57 +289,62 @@ func TestDecision_ARestrictedRunCannotSpendTheOperatorsKey(t *testing.T) {
 	})
 }
 
-// TestBuildRanker_TheDefaultPoolFollowsTheKind — the crossing from config to the
-// pool a search shows: a listwise block is shown 40 candidates by default and a
-// decision block 20 (it names at most 26 options, so more would only be clamped).
-// An agent's own candidates win over either.
-func TestBuildRanker_TheDefaultPoolFollowsTheKind(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "test-operator-key")
-	listwise, err := BuildRanker(openAIConfig(config.RerankerConfig{}), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decision := newDecision(t, "http://ollama.test:11434", config.RerankerConfig{})
-	var o memory.RerankOptions
-	if n := o.EffectiveCandidates(listwise); n != 40 {
-		t.Errorf("listwise default = %d, want 40", n)
-	}
-	if n := o.EffectiveCandidates(decision); n != 20 {
-		t.Errorf("decision default = %d, want 20", n)
-	}
-	o.Candidates = 12
-	if o.EffectiveCandidates(listwise) != 12 || o.EffectiveCandidates(decision) != 12 {
-		t.Errorf("explicit candidates = %d/%d, want 12 for both kinds",
-			o.EffectiveCandidates(listwise), o.EffectiveCandidates(decision))
-	}
-}
-
-// TestBuildRanker_BuildsTheDeclaredKind — the default kind is listwise; decision
-// needs an Ollama provider and calls its endpoint, or the block's own base_url; no
-// block is an untyped nil, so main never holds a Reranker that would be called.
-func TestBuildRanker_BuildsTheDeclaredKind(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "test-operator-key")
-	if r, err := BuildRanker(&config.Config{}, nil); err != nil || r != nil {
-		t.Fatalf("no block: %v, %v; want nil, nil", r, err)
-	}
-	r, err := BuildRanker(openAIConfig(config.RerankerConfig{}), nil)
-	if err != nil || r.Kind() != config.RerankerKindListwise {
-		t.Fatalf("default kind: %v, %v; want a listwise reranker", r, err)
-	}
-	if _, err := BuildRanker(decisionConfig("http://ollama.test:11434", config.RerankerConfig{Provider: "openai"}), nil); err == nil ||
+// TestNewDecision_TakesAnOllamaEndpointAsResolved — the decision kind needs an
+// Ollama driver and a base URL; the endpoint is called without a trailing slash,
+// and the key name resolved for it is the one kept.
+func TestNewDecision_TakesAnOllamaEndpointAsResolved(t *testing.T) {
+	rc := config.RerankerConfig{Kind: config.RerankerKindDecision, Provider: "openai", Model: "nimble"}
+	if _, err := NewDecision(rc, "openai", providers.DriverOptions{BaseURL: "http://ollama.test:11434"}, nil); err == nil ||
 		!strings.Contains(err.Error(), "Ollama provider") {
 		t.Errorf("decision on openai: err = %v, want an Ollama-provider refusal", err)
 	}
+	rc.Provider = "ollama-local"
+	if _, err := NewDecision(rc, "ollama", providers.DriverOptions{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "no base URL") {
+		t.Errorf("no base URL: err = %v, want a refusal", err)
+	}
 	d := newDecision(t, "http://ollama.test:11434/", config.RerankerConfig{})
 	if d.baseURL != "http://ollama.test:11434" || d.Kind() != config.RerankerKindDecision {
-		t.Errorf("decision: base %q kind %q, want the provider's endpoint and kind decision", d.baseURL, d.Kind())
+		t.Errorf("decision: base %q kind %q, want the endpoint without its slash and kind decision", d.baseURL, d.Kind())
 	}
-	d = newDecision(t, "http://ollama.test:11434", config.RerankerConfig{BaseURL: "http://gpu.test:11434"})
-	if d.baseURL != "http://gpu.test:11434" || d.keyEnvName != rerankerKeyEnvName {
-		t.Errorf("override: base %q key name %q, want the block's endpoint answering only to %s",
-			d.baseURL, d.keyEnvName, rerankerKeyEnvName)
+	d, err := NewDecision(rc, "ollama", providers.DriverOptions{BaseURL: "http://gpu.test:11434", KeyEnvName: "LOOMCYCLE_RERANKER_API_KEY"}, nil)
+	if err != nil || d.keyEnvName != "LOOMCYCLE_RERANKER_API_KEY" || d.ProviderID() != "ollama-local" || d.ModelID() != "nimble" {
+		t.Errorf("NewDecision = %+v, %v; want ollama-local/nimble answering to the resolved key name", d, err)
 	}
-	if _, err := Build(decisionConfig("http://ollama.test:11434", config.RerankerConfig{}), nil); err == nil {
-		t.Error("Build (listwise) accepted a decision block; it must refuse rather than build a chat driver for it")
+}
+
+// TestNewDecision_TheGateWrapsTheDriver — the driver a rerank calls is the one
+// the gate returned: that is how wiring puts it in its provider's decision lane.
+func TestNewDecision_TheGateWrapsTheDriver(t *testing.T) {
+	f := &fakeSystemOne{replies: []func(http.ResponseWriter, systemOneRequest){
+		probabilities(map[string]float64{"A": 0.1, "B": 0.9}),
+	}}
+	srv := httptest.NewServer(f.handler(t))
+	defer srv.Close()
+	var wrapped *countingDriver
+	d, err := NewDecision(config.RerankerConfig{Provider: "ollama-local", Model: "nimble"}, "ollama",
+		providers.DriverOptions{BaseURL: srv.URL}, func(inner decision.Driver) decision.Driver {
+			wrapped = &countingDriver{Driver: inner}
+			return wrapped
+		})
+	if err != nil {
+		t.Fatalf("NewDecision: %v", err)
 	}
+	if _, rep := d.Rank(context.Background(), "q", fiveTexts[:2], 0); !rep.Applied {
+		t.Fatalf("report = %+v, want applied", rep)
+	}
+	if wrapped == nil || wrapped.calls != 1 || f.calls() != 1 {
+		t.Errorf("gate saw %v, endpoint %d calls; want the one call through the gate's driver", wrapped, f.calls())
+	}
+}
+
+// countingDriver counts the decisions asked through it.
+type countingDriver struct {
+	decision.Driver
+	calls int
+}
+
+func (c *countingDriver) Decide(ctx context.Context, req decision.Request) (*decision.Response, error) {
+	c.calls++
+	return c.Driver.Decide(ctx, req)
 }

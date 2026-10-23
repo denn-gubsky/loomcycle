@@ -179,6 +179,7 @@ var layers = []layer{
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",
+			"internal/wiring",
 		},
 	},
 	{
@@ -291,6 +292,8 @@ var allowedSideways = []subsystemEdge{
 	{"internal/tools/builtin", "internal/teamrun"},
 	{"internal/tools/builtin", "internal/throughput"},
 	{"internal/tools/builtin", "internal/tools"},
+	{"internal/wiring", "internal/lanegate"},
+	{"internal/wiring", "internal/providerbuild"},
 
 	// L6
 	{"internal/api", "internal/webui"},
@@ -301,7 +304,6 @@ var allowedSideways = []subsystemEdge{
 const (
 	cutEmbedded    = "move cmd/loomcycle/embedded under internal/ (cmd<->api<->cli cycle)"
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
-	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
 	cutRunIdentity = "run identity moves below tools"
 )
 
@@ -321,13 +323,6 @@ var knownViolations = []knownViolation{
 
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
-
-	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
-	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/reranker", "internal/lanegate", cutMemWiring},
-	{"internal/memory/reranker", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/unitgen", "internal/lanegate", cutMemWiring},
-	{"internal/memory/unitgen", "internal/providerbuild", cutMemWiring},
 
 	// tools.RunIdentity / tools.RunID.
 	{"internal/docremote", "internal/tools", cutRunIdentity},
