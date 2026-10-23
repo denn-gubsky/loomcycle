@@ -484,6 +484,62 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_by   TEXT,
 			PRIMARY KEY (tenant_id, subject)
 		)`,
+		// RFC EY access control — see internal/store/postgres/migrations/
+		// 0109_acl.up.sql for the design. Flat (tenant_id, name) rows with
+		// a version bumped on every write; retire is reversible; groups
+		// nest via member_kind='group'; one acl_version row per tenant is
+		// bumped in the same transaction as every write.
+		`CREATE TABLE IF NOT EXISTS acl_defs (
+			tenant_id       TEXT    NOT NULL DEFAULT '',
+			name            TEXT    NOT NULL,
+			version         INTEGER NOT NULL DEFAULT 1,
+			content_sha256  TEXT    NOT NULL,
+			catalog_version INTEGER NOT NULL,
+			rules           TEXT    NOT NULL,
+			description     TEXT    NOT NULL DEFAULT '',
+			created_at      INTEGER NOT NULL,
+			updated_at      INTEGER NOT NULL,
+			created_by      TEXT    NOT NULL DEFAULT '',
+			retired_at      INTEGER,
+			PRIMARY KEY (tenant_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_groups (
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			name        TEXT    NOT NULL,
+			description TEXT    NOT NULL DEFAULT '',
+			external_id TEXT    NOT NULL DEFAULT '',
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			created_by  TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_group_members (
+			tenant_id   TEXT    NOT NULL DEFAULT '',
+			group_name  TEXT    NOT NULL,
+			member_kind TEXT    NOT NULL,
+			member_id   TEXT    NOT NULL,
+			added_at    INTEGER NOT NULL,
+			added_by    TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, group_name, member_kind, member_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS user_group_members_by_member ON user_group_members(tenant_id, member_kind, member_id)`,
+		`CREATE TABLE IF NOT EXISTS acl_bindings (
+			binding_id   TEXT    PRIMARY KEY,
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			acl_name     TEXT    NOT NULL,
+			subject_kind TEXT    NOT NULL,
+			subject_id   TEXT    NOT NULL DEFAULT '',
+			expires_at   INTEGER,
+			created_at   INTEGER NOT NULL,
+			created_by   TEXT    NOT NULL DEFAULT '',
+			retired_at   INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS acl_bindings_by_subject ON acl_bindings(tenant_id, subject_kind, subject_id) WHERE retired_at IS NULL`,
+		`CREATE TABLE IF NOT EXISTS acl_version (
+			tenant_id  TEXT    PRIMARY KEY,
+			version    INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER
