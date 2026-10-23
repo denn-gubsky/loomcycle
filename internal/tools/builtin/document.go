@@ -2881,7 +2881,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			}
 			// chunk_edges is the one that matches on EITHER endpoint, so it takes the
 			// id list twice.
-			edgeArgs := append(append(make([]any, 0, len(batch)*2), args...), args...)
+			edgeArgs := append(append([]any(nil), args...), args...)
 			if err := d.execTxn(ctx, txnID,
 				`DELETE FROM chunk_edges WHERE from_id IN (`+marks+`) OR to_id IN (`+marks+`)`,
 				edgeArgs...); err != nil {
@@ -4252,6 +4252,9 @@ type mdChunk struct {
 	// source in body (fence stripped) with typ="mermaid".
 	assetMediaType string
 	assetData      string
+	// assetRef is a volume image reference (RFC FF) the runtime reads into
+	// assetData before the chunk is created; body holds its alt text.
+	assetRef string
 }
 
 type mdEdge struct{ from, to, kind string }
@@ -4343,6 +4346,11 @@ func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
 					cur.typ = typ
 				}
 				cur.body, cur.assetMediaType, cur.assetData = nb, mt, ad
+			} else if alt, ref, ok := classifyVolumeImage(cur.body); ok {
+				if cur.typ == "" {
+					cur.typ = "image"
+				}
+				cur.body, cur.assetRef = alt, ref
 			}
 			chunks = append(chunks, *cur)
 		}
@@ -4431,11 +4439,13 @@ func resultField(r tools.Result, field string) string {
 // importAsset re-attaches an image chunk's bytes during import_md (RFC BO) by
 // reusing setAsset — which validates the media_type + size and marks the chunk
 // type=image. Best-effort: a bad/oversized data-URL is skipped (the chunk stays,
-// just without its image) rather than aborting the whole import.
-func (d *Document) importAsset(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, chunkID string, c mdChunk) {
-	_, _ = d.setAsset(ctx, key, mscope, docInput{
+// just without its image) rather than aborting the whole import. It reports
+// whether the image was attached.
+func (d *Document) importAsset(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, chunkID string, c mdChunk) bool {
+	res, err := d.setAsset(ctx, key, mscope, docInput{
 		ID: chunkID, MediaType: c.assetMediaType, Data: c.assetData,
 	})
+	return err == nil && !res.IsError
 }
 
 // importMD builds a document from export_md-shaped Markdown (RFC AK §4.5 / RFC
@@ -4463,10 +4473,40 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	var docID, rootID string
 	created := 0
 	start := 0
+	// RFC FF: image chunks attached, and images that stayed links (a volume
+	// reference that could not be read, or a data-URL setAsset refused).
+	imageChunks, skipped := 0, 0
+	var skippedWhy []string
+	skip := func(why string) {
+		skipped++
+		if len(skippedWhy) < 20 {
+			skippedWhy = append(skippedWhy, why)
+		}
+	}
+	attach := func(id string, c mdChunk) {
+		if d.importAsset(ctx, key, mscope, id, c) {
+			imageChunks++
+		} else {
+			skip("an image the store refused (type or size)")
+		}
+	}
+	// A volume image is read just before its chunk is created and attached,
+	// so the import holds one image's bytes at a time (a file named again
+	// later is kept until its last use); see newVolumeImageLoader for the caps.
+	images := newVolumeImageLoader(chunks)
+	load := func(c *mdChunk) {
+		if c.assetRef == "" {
+			return
+		}
+		if why, ok := d.loadVolumeImage(ctx, c, images); !ok {
+			skip(why)
+		}
+	}
 
 	if in.DocumentID == "" {
 		// New document: the first heading is the root chunk.
 		first := chunks[0]
+		load(&first)
 		cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: titleOrUntitled(first.title), Path: in.Path})
 		if cd.IsError {
 			return cd, nil
@@ -4487,7 +4527,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			}
 		}
 		if first.assetData != "" {
-			d.importAsset(ctx, key, mscope, rootID, first)
+			attach(rootID, first)
 		}
 		if first.oldID != "" {
 			oldToNew[first.oldID] = rootID
@@ -4516,6 +4556,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 
 	for _, c := range chunks[start:] {
+		load(&c)
 		// Pop to the nearest ancestor whose heading level is shallower.
 		for len(stack) > 1 && stack[len(stack)-1].level >= c.level {
 			stack = stack[:len(stack)-1]
@@ -4530,7 +4571,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 		newID := resultField(cc, "id")
 		if c.assetData != "" {
-			d.importAsset(ctx, key, mscope, newID, c)
+			attach(newID, c)
 		}
 		if c.oldID != "" {
 			oldToNew[c.oldID] = newID
@@ -4550,7 +4591,12 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		_, _ = d.linkChunks(ctx, key, docInput{FromID: nf, ToID: nt, Kind: e.kind})
 	}
 
-	return jsonResult(map[string]any{"document_id": docID, "root_chunk_id": rootID, "chunks_created": created})
+	out := map[string]any{"document_id": docID, "root_chunk_id": rootID, "chunks_created": created,
+		"image_chunks": imageChunks, "skipped": skipped}
+	if len(skippedWhy) > 0 {
+		out["skipped_images"] = skippedWhy
+	}
+	return jsonResult(out)
 }
 
 func titleOrUntitled(s string) string {
@@ -5010,7 +5056,7 @@ func (d *Document) addTagRows(ctx context.Context, key sqlmem.ScopeKey, table, k
 			continue
 		}
 		vals := make([]string, 0, len(batch))
-		args := make([]any, 0, len(batch)*2)
+		args := make([]any, 0, len(batch))
 		for _, t := range batch {
 			vals = append(vals, "(?, ?)")
 			args = append(args, id, t)
@@ -5034,7 +5080,7 @@ func (d *Document) removeTagRows(ctx context.Context, key sqlmem.ScopeKey, table
 		if len(batch) == 0 {
 			continue
 		}
-		args := make([]any, 0, len(batch)+1)
+		args := make([]any, 0, len(batch))
 		args = append(args, id)
 		for _, t := range batch {
 			args = append(args, t)

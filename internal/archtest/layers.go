@@ -96,6 +96,7 @@ var layers = []layer{
 			"internal/embedded",
 			"internal/errkind",
 			"internal/fence",
+			"internal/files/extract",
 			"internal/gitsource",
 			"internal/jsonpath",
 			"internal/kms",
