@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -41,4 +43,42 @@ func jsonEqual(a, b any) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+// A time that was never set is left out, rather than written as year 1; a
+// set one keeps its RFC 3339 form. "" asks for no expiry.
+func TestACLRows_LeaveUnsetTimesOut(t *testing.T) {
+	srv, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	rules := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"no-shell","rules":`+rules+`}`)
+	if code != 201 || strings.Contains(body, "0001-01-01") || strings.Contains(body, "retired_at") {
+		t.Errorf("a live list: %d %s, want no retired_at", code, body)
+	}
+	code, body = bearerCall(t, ts, operatorBearer, "POST", "/v1/_aclbinding", `{"acl":"no-shell","subject_kind":"user","subject_id":"alice","expires_at":""}`)
+	if code != 201 || strings.Contains(body, "0001-01-01") || strings.Contains(body, "expires_at") || strings.Contains(body, "retired_at") {
+		t.Fatalf("a binding with expires_at \"\": %d %s, want 201 and no times it does not have", code, body)
+	}
+	id, _ := jsonField(t, body, "binding_id").(string)
+	until := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)
+	code, body = bearerCall(t, ts, operatorBearer, "POST", "/v1/_aclbinding", `{"acl":"no-shell","subject_kind":"user","subject_id":"bob","expires_at":"`+until+`"}`)
+	got, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(jsonField(t, body, "expires_at")))
+	want, _ := time.Parse(time.RFC3339, until)
+	if code != 201 || !got.Equal(want) {
+		t.Errorf("a binding with an expiry: %d %s, want expires_at %s", code, body, until)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "GET", "/v1/_aclbinding", ""); code != 200 || strings.Contains(body, "0001-01-01") {
+		t.Errorf("binding list: %d %s", code, body)
+	}
+	if code, _ := bearerCall(t, ts, operatorBearer, "DELETE", "/v1/_aclbinding/"+id, ""); code != 200 {
+		t.Fatalf("retire: %d", code)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "GET", "/v1/_aclbinding?include_retired=1", ""); code != 200 || !strings.Contains(body, `"retired_at":"`) || strings.Contains(body, "0001-01-01") {
+		t.Errorf("binding list with the retired one: %d %s", code, body)
+	}
+	// The twin takes "" too.
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	res := twinCall(t, srv, op, "aclbinding", `{"op":"create","acl":"no-shell","subject_kind":"user","subject_id":"carol","expires_at":""}`)
+	if res.IsError || strings.Contains(res.Text, "expires_at") {
+		t.Errorf("twin binding with expires_at \"\": %s", res.Text)
+	}
 }

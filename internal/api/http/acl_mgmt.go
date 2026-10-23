@@ -629,10 +629,23 @@ func (s *Server) aclDefNames(ctx context.Context, focus string) aclReply {
 // ---- bindings ----
 
 type bindingRequest struct {
-	ACL         string    `json:"acl"`
-	SubjectKind string    `json:"subject_kind"`
-	SubjectID   string    `json:"subject_id,omitempty"`
-	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+	ACL         string          `json:"acl"`
+	SubjectKind string          `json:"subject_kind"`
+	SubjectID   string          `json:"subject_id,omitempty"`
+	ExpiresAt   aclOptionalTime `json:"expires_at,omitempty"`
+}
+
+// aclOptionalTime is a request time that may be left empty: "" and null
+// mean "not set" (a binding with no expiry), which time.Time refuses to
+// decode. Any other value is RFC 3339, as before.
+type aclOptionalTime struct{ time.Time }
+
+func (t *aclOptionalTime) UnmarshalJSON(b []byte) error {
+	if s := string(b); s == `""` || s == "null" {
+		t.Time = time.Time{}
+		return nil
+	}
+	return t.Time.UnmarshalJSON(b)
 }
 
 func (s *Server) handleListBindings(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +699,7 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	row, err := s.store.AclBindingPut(ctx, store.AclBindingRow{TenantID: tenant, ACLName: req.ACL, SubjectKind: req.SubjectKind,
-		SubjectID: req.SubjectID, ExpiresAt: req.ExpiresAt, CreatedBy: principalSubject(ctx)})
+		SubjectID: req.SubjectID, ExpiresAt: req.ExpiresAt.Time, CreatedBy: principalSubject(ctx)})
 	if err != nil {
 		return aclStoreError(err, "acl_binding")
 	}
