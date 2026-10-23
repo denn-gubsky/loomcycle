@@ -24,6 +24,7 @@ var aclRouteOps = []struct {
 	{"GET", "/v1/_groups", "groupdef", "list", aclReadGroups},
 	{"POST", "/v1/_groups", "groupdef", "create", aclManageGroups},
 	{"GET", "/v1/_groups/{name}", "groupdef", "get", aclReadGroups},
+	{"GET", "/v1/_groups/{name}/effective", "groupdef", "effective", aclReadGroups},
 	{"DELETE", "/v1/_groups/{name}", "groupdef", "delete", aclManageGroups},
 	{"POST", "/v1/_groups/{name}/members", "groupdef", "add_member", aclManageGroups},
 	{"DELETE", "/v1/_groups/{name}/members/{kind}/{id}", "groupdef", "remove_member", aclManageGroups},

@@ -60,6 +60,7 @@ func TestRunACL_EachVerbCallsItsRoute(t *testing.T) {
 	}{
 		{args: []string{"groups", "list"}, method: "GET", path: "/v1/_groups"},
 		{args: []string{"groups", "get", "--name", "support"}, method: "GET", path: "/v1/_groups/support"},
+		{args: []string{"groups", "effective", "--name", "support"}, method: "GET", path: "/v1/_groups/support/effective"},
 		{args: []string{"groups", "create", "--name", "support", "--description", "tier 1"}, method: "POST", path: "/v1/_groups", bodyHas: map[string]any{"name": "support", "description": "tier 1"}},
 		{args: []string{"groups", "delete", "--name", "a b"}, method: "DELETE", path: "/v1/_groups/a%20b"},
 		{args: []string{"groups", "add-member", "--name", "support", "--kind", "user", "--id", "alice"}, method: "POST", path: "/v1/_groups/support/members", bodyHas: map[string]any{"kind": "user", "id": "alice"}},

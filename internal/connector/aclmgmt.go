@@ -23,7 +23,7 @@ func ACLManagementFamilies() []string {
 func ACLManagementOps(family string) []string {
 	switch family {
 	case ACLFamilyGroupDef:
-		return []string{"list", "get", "create", "delete", "add_member", "remove_member"}
+		return []string{"list", "get", "effective", "create", "delete", "add_member", "remove_member"}
 	case ACLFamilyAclDef:
 		// create, update and put are one upsert, as on POST /v1/_acldef;
 		// names is GET /v1/_acldef/names.

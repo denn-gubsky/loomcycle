@@ -127,7 +127,7 @@ func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "  restore <file.json>              POST /v1/_snapshots/inline/restore — import")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "ACCESS CONTROL (groups, lists, bindings — a tenant operator's; --tenant is an admin's focus)")
-	fmt.Fprintln(w, "  acl groups   list|get|create|delete|add-member|remove-member   /v1/_groups")
+	fmt.Fprintln(w, "  acl groups   list|get|effective|create|delete|add-member|remove-member  /v1/_groups")
 	fmt.Fprintln(w, "  acl policies list|names|catalog|get|create|retire|validate     /v1/_acldef (-f rules.yaml)")
 	fmt.Fprintln(w, "  acl bindings list|create|delete                                /v1/_aclbinding")
 	fmt.Fprintln(w, "  acl check    --action A --resource type[:id] [--subject S]     /v1/_authz/evaluation")

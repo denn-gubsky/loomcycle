@@ -142,3 +142,43 @@ func TestACLGroups_AnIdPGroupIsReadOnlyLocally(t *testing.T) {
 		t.Errorf("twin add_member on an IdP group: %s", res.Text)
 	}
 }
+
+// effective lists everyone a group holds, through the groups nested in it,
+// config-declared members included.
+func TestACLGroups_EffectiveListsTransitiveMembers(t *testing.T) {
+	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		c.ResolvedACL = &authz.Static{Groups: []authz.StaticGroup{{Tenant: "acme", Name: "support-l2", Members: []string{"dave"}}}}
+	})
+	for _, c := range []struct{ path, body string }{
+		{"/v1/_groups", `{"name":"support"}`},
+		{"/v1/_groups", `{"name":"support-l2"}`},
+		{"/v1/_groups", `{"name":"support-l3"}`},
+		{"/v1/_groups/support/members", `{"kind":"user","id":"bob"}`},
+		{"/v1/_groups/support/members", `{"kind":"group","id":"support-l2"}`},
+		{"/v1/_groups/support-l2/members", `{"kind":"user","id":"alice"}`},
+		{"/v1/_groups/support-l2/members", `{"kind":"group","id":"support-l3"}`},
+		{"/v1/_groups/support-l3/members", `{"kind":"user","id":"carol"}`},
+	} {
+		if code, body := bearerCall(t, ts, operatorBearer, "POST", c.path, c.body); code != 201 {
+			t.Fatalf("%s %s: %d %s", c.path, c.body, code, body)
+		}
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "GET", "/v1/_groups/support/effective", "")
+	if code != 200 || !strings.Contains(body, `"users":["alice","bob","carol","dave"]`) || !strings.Contains(body, `"groups":["support-l2","support-l3"]`) {
+		t.Errorf("effective: %d %s", code, body)
+	}
+	if code, _ := bearerCall(t, ts, operatorBearer, "GET", "/v1/_groups/nobody/effective", ""); code != 404 {
+		t.Errorf("effective of a missing group: %d, want 404", code)
+	}
+	if code, _ := bearerCall(t, ts, aliceBearer, "GET", "/v1/_groups/support/effective", ""); code != 403 {
+		t.Errorf("effective as a member: %d, want 403", code)
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	res := twinCall(t, srv, op, "groupdef", `{"op":"effective","name":"support"}`)
+	var twin, route any
+	_ = json.Unmarshal([]byte(res.Text), &twin)
+	_ = json.Unmarshal([]byte(body), &route)
+	if res.IsError || !jsonEqual(twin, route) {
+		t.Errorf("twin effective: %s, route %s", res.Text, body)
+	}
+}

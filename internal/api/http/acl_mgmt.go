@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -283,6 +284,13 @@ func (s *Server) handleGetGroup(w http.ResponseWriter, r *http.Request) {
 	writeACLReply(w, s.aclGroupGet(r.Context(), r.URL.Query().Get("tenant"), r.PathValue("name")))
 }
 
+func (s *Server) handleGroupEffective(w http.ResponseWriter, r *http.Request) {
+	if !s.aclStoreReady(w) {
+		return
+	}
+	writeACLReply(w, s.aclGroupEffective(r.Context(), r.URL.Query().Get("tenant"), r.PathValue("name")))
+}
+
 func (s *Server) handleDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	if !s.aclStoreReady(w) {
 		return
@@ -368,6 +376,95 @@ func (s *Server) aclGroupGet(ctx context.Context, focus, name string) aclReply {
 	}
 	// contained_in: every group a member of this one is also in.
 	return aclOK(map[string]any{"group": row, "members": members, "contained_in": authz.Closure(graph, []string{name})})
+}
+
+// aclGroupEffective lists everyone the group holds: its user members and
+// those of every group nested in it, at any depth, config-declared members
+// included — the resolver merges the config's groups and nesting with the
+// store's, so this does too. "groups" is the nested groups walked.
+func (s *Server) aclGroupEffective(ctx context.Context, focus, name string) aclReply {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
+	if r := s.aclNoStore(); r != nil {
+		return *r
+	}
+	tenant := s.adminFocusedTenant(ctx, focus)
+	static := s.aclStatic()
+	staticMembers := map[string][]string{}
+	if static != nil {
+		for _, g := range static.Groups {
+			if g.Tenant == tenant {
+				staticMembers[g.Name] = append(staticMembers[g.Name], g.Members...)
+			}
+		}
+	}
+	if _, err := s.store.GroupGet(ctx, tenant, name); err != nil {
+		var nf *store.ErrNotFound
+		if !errors.As(err, &nf) {
+			return aclFail(http.StatusInternalServerError, "group_get_failed", err.Error())
+		}
+		if _, declared := staticMembers[name]; !declared {
+			return aclFail(http.StatusNotFound, "group_not_found", "group not found")
+		}
+	}
+	graph, err := s.store.GroupGraph(ctx, tenant)
+	if err != nil {
+		return aclFail(http.StatusInternalServerError, "group_graph_failed", err.Error())
+	}
+	_, staticGraph := static.GroupsOf(tenant, "")
+	graph = authz.MergeGraph(graph, staticGraph)
+	// Walk parent → child. The store refuses cycles at write time; the
+	// visited set and the depth cap hold the walk if a graph has one anyway.
+	seen := map[string]bool{name: true}
+	frontier := []string{name}
+	for depth := 0; depth < authz.MaxGroupNestingDepth && len(frontier) > 0; depth++ {
+		var next []string
+		for _, g := range frontier {
+			for _, child := range graph[g] {
+				if !seen[child] {
+					seen[child] = true
+					next = append(next, child)
+				}
+			}
+		}
+		frontier = next
+	}
+	users := map[string]bool{}
+	nested := make([]string, 0, len(seen))
+	for g := range seen {
+		if g != name {
+			nested = append(nested, g)
+		}
+		members, err := s.store.GroupMembers(ctx, tenant, g)
+		if err != nil {
+			return aclFail(http.StatusInternalServerError, "group_members_failed", err.Error())
+		}
+		for _, m := range members {
+			if m.MemberKind == store.GroupMemberUser {
+				users[m.MemberID] = true
+			}
+		}
+		for _, u := range staticMembers[g] {
+			users[u] = true
+		}
+	}
+	userList := make([]string, 0, len(users))
+	for u := range users {
+		userList = append(userList, u)
+	}
+	sort.Strings(userList)
+	sort.Strings(nested)
+	return aclOK(map[string]any{"group": name, "users": userList, "groups": nested})
+}
+
+// aclStatic is the config-declared access control of the live config (nil
+// when none is declared).
+func (s *Server) aclStatic() *authz.Static {
+	if c := s.cfg(); c != nil {
+		return c.ResolvedACL
+	}
+	return nil
 }
 
 func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclReply {

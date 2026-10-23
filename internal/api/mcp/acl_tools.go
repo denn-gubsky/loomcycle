@@ -21,8 +21,8 @@ func aclToolDescriptors() []loommcp.ToolDescriptor {
 	return []loommcp.ToolDescriptor{
 		{
 			Name: connector.ACLFamilyGroupDef,
-			Description: "Manage USER GROUPS in your tenant — the sets access-control lists are bound to. Ops: list, get, create, delete, add_member, remove_member. " +
-				"create writes a group (name, description, external_id) and rewrites one of that name; get returns its members and every group it is nested in (contained_in). " +
+			Description: "Manage USER GROUPS in your tenant — the sets access-control lists are bound to. Ops: list, get, effective, create, delete, add_member, remove_member. " +
+				"create writes a group (name, description, external_id) and rewrites one of that name; get returns its members and every group it is nested in (contained_in); effective returns every user it holds through the groups nested in it, config-declared members included. " +
 				"add_member / remove_member take the group's name plus kind (user or group) and id; nesting a group inside itself is refused. " +
 				"You cannot add yourself to a group unless you hold the tenant's whole authority. " +
 				"Needs substrate:tenant — a tenant's members do not see this tool. Confined to your own tenant; an admin may focus another with tenant. " +

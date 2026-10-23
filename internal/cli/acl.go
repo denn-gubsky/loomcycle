@@ -18,7 +18,7 @@ import (
 // authz questions, as a thin HTTP client to the management routes of a
 // running instance, like `loomcycle operator-token`.
 //
-//	loomcycle acl groups   list | get --name G | create --name G [--description D] [--external-id X] | delete --name G
+//	loomcycle acl groups   list | get --name G | effective --name G | create --name G [--description D] [--external-id X] | delete --name G
 //	                       | add-member --name G --kind user|group --id ID | remove-member --name G --kind K --id ID
 //	loomcycle acl policies list [--include-retired] | names | catalog | get --name L | retire --name L
 //	                       | create --name L -f rules.yaml [--description D] | validate -f rules.yaml
@@ -126,6 +126,11 @@ func aclBuild(noun, verb string, args []string, stderr io.Writer) (aclRequest, a
 		}
 		return aclRequest{method: http.MethodPost, path: "/v1/_groups",
 			body: map[string]string{"name": *name, "description": *description, "external_id": *externalID}}, common, 0
+	case "groups effective":
+		if !need("name") {
+			return aclRequest{}, common, 2
+		}
+		return aclRequest{method: http.MethodGet, path: "/v1/_groups/" + esc(*name) + "/effective"}, common, 0
 	case "groups delete":
 		if !need("name") {
 			return aclRequest{}, common, 2

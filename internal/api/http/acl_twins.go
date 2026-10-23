@@ -98,7 +98,7 @@ func (s *Server) aclTwin(ctx context.Context, family string, input json.RawMessa
 			return *r
 		}
 		return s.aclGroupList(ctx, in.Tenant)
-	case "groupdef.get", "groupdef.delete":
+	case "groupdef.get", "groupdef.effective", "groupdef.delete":
 		var in struct {
 			aclTwinHead
 			Name string `json:"name"`
@@ -109,8 +109,11 @@ func (s *Server) aclTwin(ctx context.Context, family string, input json.RawMessa
 		if r := aclRequire("name", in.Name); r != nil {
 			return *r
 		}
-		if head.Op == "get" {
+		switch head.Op {
+		case "get":
 			return s.aclGroupGet(ctx, in.Tenant, in.Name)
+		case "effective":
+			return s.aclGroupEffective(ctx, in.Tenant, in.Name)
 		}
 		return s.aclGroupDelete(ctx, in.Tenant, in.Name)
 	case "groupdef.create":
