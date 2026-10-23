@@ -47,11 +47,12 @@ const (
 	// fileRegisterLimit caps the secrets one run tree's downloads and
 	// uploads hand the redactor.
 	fileRegisterLimit = 32
-	// fileRegisterMinLen is the shortest query or user information handed
-	// to the redactor. A registered value is masked in every transcript the
-	// server writes, so an ordinary query ("page=2", "lang=uk") must not
-	// become one; the tokens a pre-authenticated URL carries are far longer.
-	fileRegisterMinLen = 16
+	// fileRegisterMinLen is the shortest query VALUE handed to the
+	// redactor. A registered value is masked in every transcript the server
+	// writes, so an ordinary parameter ("page=2", "lang=uk") must not become
+	// one; a signature, a SAS token or a tempauth value is far longer. User
+	// information is a credential at any length and has no floor.
+	fileRegisterMinLen = 8
 )
 
 type fileTransferInput struct {
@@ -136,16 +137,18 @@ func (f *File) registerURL(ctx context.Context, u *url.URL) {
 		return
 	}
 	var parts []string
-	if u.RawQuery != "" {
-		parts = append(parts, u.RawQuery)
-	}
 	if u.User != nil {
 		parts = append(parts, u.User.String())
 	}
-	for _, p := range parts {
-		if len(p) < fileRegisterMinLen {
-			continue
+	// Each value as it is written in the URL, since that is the form a
+	// transcript repeats; judged one by one, so a short secret beside a
+	// long harmless parameter is not missed.
+	for _, kv := range strings.Split(u.RawQuery, "&") {
+		if _, v, ok := strings.Cut(kv, "="); ok && len(v) >= fileRegisterMinLen {
+			parts = append(parts, v)
 		}
+	}
+	for _, p := range parts {
 		if !inbox.ClaimRegistration(ctx, fileRegisterLimit) {
 			return
 		}

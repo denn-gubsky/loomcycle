@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -263,8 +264,9 @@ func TestFileDownload_RedactsQueryInResult(t *testing.T) {
 	if out["url"] != srv.URL+"/_layouts/15/download.aspx/board.pdf?…" || out["origin"] != "download:127.0.0.1" {
 		t.Errorf("result = %v", out)
 	}
-	if !slices.Contains(tf.registered, "UniqueId=7&tempauth="+secret) {
-		t.Errorf("the redactor was not given the URL's query: %v", tf.registered)
+	// The token is registered; the short UniqueId=7 is not (it would mask "7"-ish text everywhere).
+	if !slices.Contains(tf.registered, secret) || slices.Contains(tf.registered, "7") {
+		t.Errorf("the redactor was not given the URL's token alone: %v", tf.registered)
 	}
 	rec, ok := inbox.Lookup(r.Ctx, "documents/board.pdf")
 	if b, _ := json.Marshal(rec); !ok || strings.Contains(string(b), secret) || strings.Contains(string(b), "UniqueId") {
@@ -539,7 +541,7 @@ func TestFileTransfer_RegistersOnlyCredentialPartsWithinALimit(t *testing.T) {
 	for i := range 40 {
 		tf.exec(t, ctx, map[string]any{"op": "download", "url": fmt.Sprintf("%s/f%d?sig=signature-token-%d", srv.URL, i, i)})
 	}
-	if len(tf.registered) != fileRegisterLimit || tf.registered[0] != "sig=signature-token-0" {
+	if len(tf.registered) != fileRegisterLimit || tf.registered[0] != "signature-token-0" {
 		t.Errorf("registered %d: %v", len(tf.registered), tf.registered)
 	}
 	for _, v := range tf.registered {
@@ -564,7 +566,7 @@ func TestFileDownload_RefusedRedirectMasksItsLocation(t *testing.T) {
 	if !res.IsError || strings.Contains(res.Text, secret) || !strings.Contains(res.Text, `"http://localhost:1/a.pdf?…"`) {
 		t.Errorf("error = %q", res.Text)
 	}
-	if !slices.Contains(tf.registered, "sig="+secret) {
+	if !slices.Contains(tf.registered, secret) {
 		t.Errorf("registered = %v", tf.registered)
 	}
 }
@@ -583,8 +585,20 @@ func TestFileTransfer_ShortQueryIsNotRegistered(t *testing.T) {
 	if len(tf.registered) != 0 {
 		t.Fatalf("a short query was registered: %v", tf.registered)
 	}
-	tf.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/a?tempauth=eyJ0eXAiOiJKV1Qi"})
-	if len(tf.registered) != 1 || tf.registered[0] != "tempauth=eyJ0eXAiOiJKV1Qi" {
+	// Judged per value: the 8-byte token beside a short parameter is kept.
+	tf.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/a?page=2&sig=k3Y9xQ2z"})
+	if len(tf.registered) != 1 || tf.registered[0] != "k3Y9xQ2z" {
+		t.Errorf("registered = %v", tf.registered)
+	}
+}
+
+// User information is a credential at any length.
+func TestFileTransfer_UserInfoAlwaysRegistered(t *testing.T) {
+	tf := newTransferFile(&HTTP{HostAllowlist: []string{"127.0.0.1"}, AllowPrivateIPs: true})
+	_, ctx, _ := transferRun(t, inbox.Service{})
+	u, _ := url.Parse("https://ab:cd@127.0.0.1/x")
+	tf.File.registerURL(ctx, u)
+	if len(tf.registered) != 1 || tf.registered[0] != "ab:cd" {
 		t.Errorf("registered = %v", tf.registered)
 	}
 }
