@@ -56,6 +56,10 @@ export type EventType =
   // context, or unavailable. Nothing is emitted for a call a hook passed.
   | "hook_decision"
   | "limit"
+  // A file a tool returned was kept in the run tree's inbox volume instead of
+  // reaching the model as bytes; the model saw a one-line stub. The payload
+  // rides `AgentEvent.file`.
+  | "file_captured"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
   // retuned it. Distinct from a provider fallback on purpose: a fallback means
@@ -599,6 +603,24 @@ export interface AdmissionInfo {
   kind?: string;
 }
 
+/** Payload on `event: file_captured`: a file a tool returned, as the runtime
+ *  kept it in the run's inbox volume. Never the bytes, never a URL's query. */
+export interface FileCapturedInfo {
+  /** The file's reference, `volume:inbox:<dir>/<name>`. */
+  ref: string;
+  media_type: string;
+  /** Length in bytes. */
+  size: number;
+  /** Hex SHA-256 of the bytes. */
+  sha256: string;
+  /** Which producer returned it: `mcp:<server>/<tool>`, `http`, `webfetch` or
+   *  `download:<host>`. */
+  origin: string;
+  /** The run whose tool call returned it (a sub-agent's capture is reported
+   *  on the tree's stream). */
+  run_id?: string;
+}
+
 export interface LimitInfo {
   /** Which axis tripped: "operator" | "tenant" | "user". */
   scope: string;
@@ -830,6 +852,9 @@ export interface AgentEvent {
   /** Payload on `event: limit` (RFC AW) — a per-scope token-budget crossing.
    *  Nil on all other event types. */
   limit?: LimitInfo;
+  /** Payload on `event: file_captured` — a file a tool returned, kept in the
+   *  run's inbox. Nil on all other event types. */
+  file?: FileCapturedInfo;
   /** Payload on `event: queued` (why the run waits, and its place) and
    *  `event: admitted` (how long it waited), and on `event: call_queued` /
    *  `event: call_admitted` (the same for one model call, with its provider

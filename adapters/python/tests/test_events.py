@@ -7,7 +7,7 @@ through ``AgentEvent._from_proto``.
 
 from __future__ import annotations
 
-from loomcycle.events import AgentEvent, ToolUse, Usage, Retry, LimitInfo, AdmissionInfo
+from loomcycle.events import AgentEvent, ToolUse, Usage, Retry, LimitInfo, AdmissionInfo, FileCapturedInfo
 from loomcycle._generated import loomcycle_pb2 as pb
 
 
@@ -104,6 +104,32 @@ def test_limit_event_unwraps_budget_payload():
     assert ev.limit.used == 1200
     assert ev.limit.limit == 1000
     assert ev.limit.message == "tenant acme soft budget reached"
+
+
+def test_file_captured_event_unwraps_the_record():
+    # A file a tool returned was kept in the run's inbox; the frame names it.
+    proto = pb.Event(
+        type="file_captured",
+        file=pb.FileCapturedInfo(
+            ref="volume:inbox:documents/a.pdf",
+            media_type="application/pdf",
+            size=1234,
+            sha256="ab12",
+            origin="mcp:ms365/get",
+            run_id="run-2",
+        ),
+    )
+    ev = AgentEvent._from_proto(proto)
+    assert ev.type == "file_captured"
+    assert ev.file == FileCapturedInfo(
+        ref="volume:inbox:documents/a.pdf",
+        media_type="application/pdf",
+        size=1234,
+        sha256="ab12",
+        origin="mcp:ms365/get",
+        run_id="run-2",
+    )
+    assert AgentEvent._from_proto(pb.Event(type="text", text="hi")).file is None
 
 
 def test_queued_and_admitted_events_unwrap_the_admission_payload():

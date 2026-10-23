@@ -2092,6 +2092,11 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Message:  ev.Limit.Message,
 		}
 	}
+	if f := ev.File; f != nil {
+		out.File = &loomcyclepb.FileCapturedInfo{
+			Ref: f.Ref, MediaType: f.MediaType, Size: f.Size, Sha256: f.SHA256, Origin: f.Origin, RunId: f.RunID,
+		}
+	}
 	if hd := ev.HookDecision; hd != nil {
 		out.HookDecision = &loomcyclepb.HookDecision{
 			Hook: hd.Hook, Phase: hd.Phase, ToolUseId: hd.ToolUseID, ToolName: hd.ToolName,
