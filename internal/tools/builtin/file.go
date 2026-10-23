@@ -352,9 +352,6 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 		return errValidation(fmt.Sprintf("keep: %s is not a file", from.raw), ""), nil
 	}
 
-	if res, ok := checkRefGrant(ctx, to, true, FileToolName, "Leave it in the inbox"); !ok {
-		return res, nil
-	}
 	root, fence, err := effectiveRoot(ctx, to.volume, true)
 	if err != nil {
 		return errPermission("keep: "+err.Error(), "Name a read-write volume you are bound to."), nil
@@ -395,6 +392,13 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 			defer sub.Close()
 			dir, name, rel = sub, filepath.Base(srcRel), filepath.Join(rel, filepath.Base(srcRel))
 		}
+	}
+	// Judged on the file that will be written, after a folder target was
+	// expanded to the name inside it: a Write hook allowing "board/" must
+	// not be what decides a write to "board/minutes.pdf".
+	final := dataRef{raw: refPrefix(to) + filepath.ToSlash(rel), kind: refVolume, volume: to.volume, path: filepath.ToSlash(rel)}
+	if res, ok := checkRefGrant(ctx, final, true, FileToolName, "Leave it in the inbox"); !ok {
+		return res, nil
 	}
 	if fi, err := dir.Lstat(name); err == nil {
 		if !fi.Mode().IsRegular() || !in.Overwrite {

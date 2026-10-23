@@ -293,3 +293,32 @@ func TestFile_ChangedFileLosesItsRecord(t *testing.T) {
 		t.Error("keep did not copy the file as it is")
 	}
 }
+
+// keep is judged by Write's hooks on the file it will write: a folder target
+// is expanded to the name inside it before the hook is asked.
+func TestFile_KeepAsksWritesHooksAboutTheFinalPath(t *testing.T) {
+	r, ctx, docs := fileRun(t, inbox.Service{}, false)
+	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "minutes.pdf", Origin: "o"}, filePDF)
+	_ = os.Mkdir(filepath.Join(docs, "board"), 0o700)
+	var asked []string
+	hooked := tools.WithHookPreCheck(ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		asked = append(asked, name+" "+string(input))
+		if name == "Write" && strings.Contains(string(input), "minutes.pdf") {
+			return tools.Result{Text: "no minutes on this volume", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	for _, to := range []string{"volume:docs:board/", "volume:docs:board"} {
+		if _, res := fileExec(t, hooked, map[string]any{"op": "keep", "from": kept.Record.Ref, "to": to}); !res.IsError || !strings.Contains(res.Text, "no minutes") {
+			t.Errorf("keep to %s: %q", to, res.Text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(docs, "board", "minutes.pdf")); err == nil {
+		t.Error("a hook-denied keep wrote the file")
+	}
+	for _, a := range asked {
+		if !strings.Contains(a, `"path":"board/minutes.pdf"`) || !strings.Contains(a, `"via":"File"`) {
+			t.Errorf("the hook was asked %s", a)
+		}
+	}
+}
