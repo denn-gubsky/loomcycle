@@ -19,6 +19,14 @@ volumes:
     path: /mnt/work        # ← matches the compose mount: /mnt/tank/loomcycle/work:/mnt/work
     mode: rw
     default: true
+  # The dynamic root: the runtime makes volumes under it — a run's `inbox`
+  # (where files tools return are kept), a run's ephemeral volumes, and
+  # VolumeDef volumes. Without it a file a tool returns is refused. Not bound
+  # to agents; at most one volume may set dynamic_root.
+  dynamic:
+    path: /mnt/dynamic     # ← matches the compose mount: /mnt/tank/loomcycle/dynamic:/mnt/dynamic
+    mode: rw
+    dynamic_root: true
   # Add a row here AND a compose mount per additional dataset, e.g.:
   # reference:
   #   path: /mnt/reference
