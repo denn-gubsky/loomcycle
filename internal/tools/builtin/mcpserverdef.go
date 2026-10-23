@@ -100,12 +100,13 @@ const mcpServerDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset for create/fork: transport, url, headers, description.",
+      "description": "Mutable subset for create/fork: transport, url, headers, description, binary_results.",
       "properties": {
         "transport": {"type": "string", "enum": ["http","streamable-http"]},
         "url":       {"type": "string", "format": "uri"},
         "headers":   {"type": "object", "additionalProperties": {"type": "string"}},
-        "description": {"type": "string"}
+        "description": {"type": "string"},
+        "binary_results": {"type": "string", "enum": ["passthrough","capture"], "description": "passthrough (default) hands the server's text to the model as it came. capture keeps a file the server returns as base64 inside a text block (whole, or as a JSON string field) in the run's inbox and hands the model a one-line reference instead. Opt in only for a server that returns files that way: a long opaque token could otherwise look like one."}
       }
     },
     "description":   {"type": "string"},
@@ -142,6 +143,11 @@ type mcpServerOverlay struct {
 	Env             map[string]string `json:"env,omitempty"`     // stdio (F31)
 	Description     string            `json:"description,omitempty"`
 	DiscoveredTools []toolDescriptor  `json:"discovered_tools,omitempty"`
+	// BinaryResults: "passthrough" (default) or "capture" — keep a file the
+	// server returns as base64 inside a text block in the run's inbox
+	// (RFC FF). Content: part of content_sha256. Mirrored on
+	// lookup.SubstrateMCPServer.
+	BinaryResults string `json:"binary_results,omitempty"`
 	// OperatorAuthored is server authority, set by bindOperatorEnv on every
 	// create and fork; applyOverlay never copies it, so an overlay can neither
 	// set nor clear it. Excluded from content_sha256 (signFromMCPServerOverlay
@@ -178,6 +184,9 @@ func (a *mcpServerOverlay) applyOverlay(ov mcpServerOverlay) {
 	}
 	if ov.Description != "" {
 		a.Description = ov.Description
+	}
+	if ov.BinaryResults != "" {
+		a.BinaryResults = ov.BinaryResults
 	}
 	// DiscoveredTools is never overlaid — refreshed only via rediscover.
 }
@@ -651,6 +660,7 @@ func specFromOverlay(tenantID, name string, ov mcpServerOverlay) loommcp.Dynamic
 		Env:       ov.Env,
 
 		OperatorAuthored: ov.OperatorAuthored,
+		BinaryResults:    ov.BinaryResults,
 	}
 }
 
@@ -902,6 +912,9 @@ func definitionOperatorAuthored(raw json.RawMessage) bool {
 // hostname allowlist. Called by create + fork before the row hits the
 // store.
 func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
+	if err := config.ValidateBinaryResults(ov.BinaryResults); err != nil {
+		return err
+	}
 	switch ov.Transport {
 	case "http", "streamable-http":
 		// ok — validated against the URL + host allowlist below.
@@ -1046,6 +1059,8 @@ func signFromMCPServerOverlay(name string, ov mcpServerOverlay) string {
 		Transport:   ov.Transport,
 		URL:         ov.URL,
 		Headers:     ov.Headers,
+
+		BinaryResults: ov.BinaryResults,
 	})
 }
 
