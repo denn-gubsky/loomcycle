@@ -164,13 +164,24 @@ func HTTPSurface(method, path string) (Surface, bool) {
 				return instance("read", "def", "mcpserver/*"), true
 			}
 		}
+	// Names that end in "def" but ask a different question than the generic
+	// `_<family>def` case below must come first: a switch takes the first
+	// matching case, and below it these were unreachable.
+	case name == "credentialdef":
+		return typeLevel("use", "credential"), true
 	case name == "acldef":
 		// Every op of POST /v1/_acldef — get and list as well as create and
 		// retire — is a POST with the op in the body, so the route asks the
-		// weakest verb the family has. The handler asks author or retire of
-		// the named list per op (aclListOpSurface). This arm comes before the
-		// generic _<x>def one, which would otherwise take the name.
+		// weakest verb the family has, and a principal that may only read
+		// lists can still get and list them. The handler asks author, retire
+		// or read of the named list per op, failing closed to author
+		// (aclListOpSurface in internal/api/http).
 		return instance("read", "def", "acl/*"), true
+	case name == "aclbinding":
+		if get {
+			return instance("read", "def", "acl/*"), true
+		}
+		return instance("author", "def", "acl/*"), true
 	case strings.HasSuffix(name, "def") && name != "operatortokendef":
 		fam := defFamily(strings.TrimSuffix(name, "def"))
 		if len(rest) >= 3 && rest[2] == "overridable" {
@@ -226,8 +237,6 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return typeLevel("read", "document"), true
 	case name == "volumes":
 		return typeLevel("read", "volume"), true
-	case name == "credentialdef":
-		return typeLevel("use", "credential"), true
 	case name == "crypto":
 		return typeLevel("use", "crypto"), true
 	case name == "usage":
@@ -283,11 +292,6 @@ func HTTPSurface(method, path string) (Surface, bool) {
 			return instance("read", "principal", "group:*"), true
 		}
 		return instance("manage", "principal", "group:*"), true
-	case name == "aclbinding":
-		if get {
-			return instance("read", "def", "acl/*"), true
-		}
-		return instance("author", "def", "acl/*"), true
 	case name == "authz":
 		return Surface{}, false
 	}
