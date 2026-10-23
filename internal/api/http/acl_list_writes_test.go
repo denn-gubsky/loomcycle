@@ -58,6 +58,9 @@ func aclDefWritesNeedAuthor(t *testing.T, mode authz.Mode) {
 		{`{"op":"put","name":"no-shell","rules":` + other + `}`, "author"},
 		{`{"op":"update","name":"no-shell","rules":` + other + `}`, "author"},
 		{`{"op":"retire","name":"no-shell"}`, "retire"},
+		// An op the handler does not know is asked author, not let through:
+		// the check fails closed for a write op added later.
+		{`{"op":"fork","name":"no-shell"}`, "author"},
 	} {
 		code, body := call(delegateBearer, tc.body)
 		if code != 403 || !strings.Contains(body, `"acl_denied"`) || !strings.Contains(body, `"action":"`+tc.action+`"`) {

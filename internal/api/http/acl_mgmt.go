@@ -328,20 +328,23 @@ func (s *Server) handleAclDef(w http.ResponseWriter, r *http.Request) {
 }
 
 // aclListOpSurface is the question an op of POST /v1/_acldef asks of the list
-// it names: author for a write, retire for a retire, read for a get. The other
-// ops name no list (list, validate, catalog) and the route's type-level read
-// answers them; nil means there is nothing more to ask.
+// it names: read for a get, retire for a retire, and author for every other op
+// — fail closed, so a write op added to the handler later is checked even if
+// nobody adds it here. The three ops that name no list and write nothing
+// (list, validate, catalog) return nil: the route's type-level read answered
+// them.
 func aclListOpSurface(op, name string) *authz.Surface {
-	var action string
+	action := "author"
 	switch op {
-	case "create", "update", "put":
-		action = "author"
-	case "retire":
-		action = "retire"
+	case "list", "validate", "catalog":
+		return nil
 	case "get":
 		action = "read"
-	default:
-		return nil
+	case "retire":
+		action = "retire"
+	}
+	if name == "" {
+		name = "*"
 	}
 	return &authz.Surface{Action: action, Type: "def", Name: "acl/" + name}
 }
