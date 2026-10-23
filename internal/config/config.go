@@ -3843,6 +3843,30 @@ type MCPServer struct {
 	// advertises via tools/list. Use this to opt out of expensive or
 	// unwanted tools without forking the MCP server itself.
 	Tools []string `yaml:"tools"`
+	// BinaryResults is how the server's text blocks are treated:
+	// "passthrough" (the default, also "") hands them to the model as they
+	// came; "capture" keeps a file the server returns as base64 inside a
+	// text block in the run's inbox and hands the model a one-line stub.
+	// Opt-in because a server may return a long opaque token that looks
+	// like base64. See ValidateBinaryResults.
+	BinaryResults string `yaml:"binary_results"`
+}
+
+// The values of an MCP server's binary_results.
+const (
+	BinaryResultsPassthrough = "passthrough"
+	BinaryResultsCapture     = "capture"
+)
+
+// ValidateBinaryResults refuses a binary_results value that is neither
+// passthrough nor capture. "" is passthrough. Shared by the yaml loader and
+// the MCPServerDef substrate, so both refuse the same values.
+func ValidateBinaryResults(v string) error {
+	switch v {
+	case "", BinaryResultsPassthrough, BinaryResultsCapture:
+		return nil
+	}
+	return fmt.Errorf("binary_results %q is not one of %q, %q", v, BinaryResultsPassthrough, BinaryResultsCapture)
 }
 
 // Concurrency caps for the runtime.
@@ -4297,6 +4321,10 @@ type Env struct {
 	// LOOMCYCLE_FILE_INBOX_MAX_BYTES (default 1 GiB).
 	FileMaxBytes      int64
 	FileInboxMaxBytes int64
+	// FileBase64MinBytes is the shortest string the base64-in-text capture
+	// of an MCP server with binary_results: capture considers a file.
+	// Sourced from LOOMCYCLE_FILE_BASE64_MIN_BYTES (default 4 KiB).
+	FileBase64MinBytes int64
 	// MCPMaxFrameBytes caps one MCP response: a stdio JSON-RPC line and an
 	// HTTP response body alike. Sourced from LOOMCYCLE_MCP_MAX_FRAME_BYTES;
 	// default MCPMaxFrameBytesDefault.
@@ -6013,6 +6041,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	}{
 		{"LOOMCYCLE_FILE_MAX_BYTES", &cfg.Env.FileMaxBytes, FileMaxBytesDefault},
 		{"LOOMCYCLE_FILE_INBOX_MAX_BYTES", &cfg.Env.FileInboxMaxBytes, FileInboxMaxBytesDefault},
+		{"LOOMCYCLE_FILE_BASE64_MIN_BYTES", &cfg.Env.FileBase64MinBytes, FileBase64MinBytesDefault},
 		{"LOOMCYCLE_MCP_MAX_FRAME_BYTES", &cfg.Env.MCPMaxFrameBytes, MCPMaxFrameBytesDefault},
 	} {
 		*c.dst = c.def
@@ -7569,6 +7598,10 @@ const GitPushMaxBytesDefault = 100 << 20
 const (
 	FileMaxBytesDefault      = 64 << 20
 	FileInboxMaxBytesDefault = 1 << 30
+	// FileBase64MinBytesDefault is the shortest base64 string in an MCP text
+	// block that capture considers a file: short enough for a small scan,
+	// long enough that an ordinary id or hash is never a candidate.
+	FileBase64MinBytesDefault = 4 << 10
 )
 
 // MCPMaxFrameBytesDefault caps one MCP response. 16 MiB was the stdio line
@@ -9324,6 +9357,9 @@ func validate(c *Config) error {
 			}
 		default:
 			return fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
+		}
+		if err := ValidateBinaryResults(srv.BinaryResults); err != nil {
+			return fmt.Errorf("mcp_servers.%s: %w", name, err)
 		}
 	}
 	// v1.x RFC E scheduled_runs validation. Cron syntax parses,
