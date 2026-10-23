@@ -46,6 +46,13 @@ export default function PoliciesTab({
   const [includeRetired, setIncludeRetired] = useState(false);
   const [err, setErr] = useState<unknown>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
+  // Bumped each time a list is opened or started, and NOT on save: the editor
+  // keeps its state (and its "saved" note) across a save that bumps the version.
+  const [openSeq, setOpenSeq] = useState(0);
+  const startEditing = (e: Editing) => {
+    setOpenSeq((n) => n + 1);
+    setEditing(e);
+  };
 
   const refresh = useCallback(async () => {
     setErr(null);
@@ -68,7 +75,7 @@ export default function PoliciesTab({
     setErr(null);
     try {
       const row = await getAclDef(name, tenant);
-      setEditing({
+      startEditing({
         name: row.name,
         description: row.description ?? "",
         isNew: false,
@@ -91,7 +98,7 @@ export default function PoliciesTab({
           disabled={!catalog}
           onClick={() =>
             catalog &&
-            setEditing({ name: "", description: "", isNew: true, builtin: false, retired: false, slots: [{ kind: "draft", draft: emptyRuleDraft(catalog) }] })
+            startEditing({ name: "", description: "", isNew: true, builtin: false, retired: false, slots: [{ kind: "draft", draft: emptyRuleDraft(catalog) }] })
           }
         >
           <Plus size={14} /> new list
@@ -112,13 +119,13 @@ export default function PoliciesTab({
         onOpen={(n) => void open(n)}
         onOpenBuiltin={(b) =>
           catalog &&
-          setEditing({ name: b.name, description: b.description ?? "", isNew: false, builtin: true, retired: false, slots: slotsFromRules(catalog, b.rules ?? []) })
+          startEditing({ name: b.name, description: b.description ?? "", isNew: false, builtin: true, retired: false, slots: slotsFromRules(catalog, b.rules ?? []) })
         }
       />
 
       {editing && catalog && (
         <PolicyEditor
-          key={(editing.isNew ? "new:" : "") + editing.name + ":" + (editing.version ?? 0)}
+          key={openSeq}
           catalog={catalog}
           initial={editing}
           tenant={tenant}

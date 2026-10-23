@@ -64,7 +64,20 @@ export function RuleEditor({
   const setWhen = (patch: Partial<ConditionDraft>) => onChange({ ...draft, when: { ...draft.when, ...patch } });
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
   const toggleAction = (v: string) => onChange({ ...draft, actions: verbs.filter((x) => (x === v ? !draft.actions.includes(v) : draft.actions.includes(x))) });
-  const whenCount = Object.values(draft.when).filter((v) => (Array.isArray(v) ? v.length > 0 : v !== "")).length;
+  // How many conditions are set, as the saved rule's `when` keys count them
+  // (days, the window and tz are one `time` condition).
+  const w = draft.when;
+  const whenCount = [
+    w.transport.length > 0,
+    w.days.length > 0 || !!w.from || !!w.to || !!w.tz,
+    w.interactive !== "",
+    !!w.tier.trim(),
+    !!w.userTier.trim(),
+    !!w.sourceCidr.trim(),
+    w.ownerIsSelf !== "",
+    !!w.agent.trim(),
+    w.depthMax.trim() !== "",
+  ].filter(Boolean).length;
 
   return (
     <fieldset className={"acl-rule acl-rule-" + draft.effect} disabled={readOnly}>

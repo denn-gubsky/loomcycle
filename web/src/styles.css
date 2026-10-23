@@ -5989,6 +5989,7 @@ button.primary:disabled {
 }
 .settings-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--lc-space-1);
   border-bottom: 1px solid var(--lc-rule);
   margin-bottom: var(--lc-space-3);
@@ -8009,4 +8010,8 @@ button.doc-ref-target.external {
   color: var(--lc-text-muted);
   background: var(--lc-surface-2);
   border-left: 3px solid var(--lc-running);
+}
+.acl-when-grid > select,
+.acl-when-grid > input {
+  max-width: 320px;
 }
