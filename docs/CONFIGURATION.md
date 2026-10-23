@@ -2343,6 +2343,12 @@ decision:
 - The embedded `local` preset (§9f) ships a `local-decide` alias (`ollama-local` / `nimble`) and no block: add `decision: { default: local-decide }` to your own config to turn it on.
 - An agent narrows its own list with `agents.<name>.decision: {default, models}`; it can only narrow.
 
+**Seeing them at run time.** `GET /v1/_routing` and the Web UI's routing page show both kinds under "service models":
+
+- **The embedder**, with the alias `memory.embedder` names and what its calls have done since boot: `untried` (nothing embedded yet, so unknown), `ok` or `failing`, with counts. This is observed, not probed, because the embedder may call a host other than its provider's.
+- **Each decision model**, with its provider's reachability and whether the provider lists the model. For Ollama, listed means pulled; a bare name also matches its `:latest` tag.
+- Under `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` a tenant sees only the decision models it can key.
+
 See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
 
 ---
