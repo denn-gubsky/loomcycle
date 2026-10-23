@@ -288,7 +288,9 @@ func (b *boot) buildTools() {
 	// RFC FF — the File tool: the files a run's tools returned, kept in the
 	// run tree's inbox volume, inspected and copied out without their bytes
 	// reaching the model. Capture itself needs no grant; this tool does.
-	b.allTools = append(b.allTools, &builtin.File{})
+	// download and upload go out on the HTTP tool's host policy, and hand
+	// each URL (a pre-authenticated one is a credential) to the redactor.
+	b.allTools = append(b.allTools, &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.register})
 
 	// RFC FB — the Git tool: repository work inside bound volumes through
 	// go-git, in process. Local ops need only the tool; the network is late-
