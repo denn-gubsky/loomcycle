@@ -43,8 +43,11 @@ RUN npm run build
 # ---- Stage 2: build the Go binary -------------------------------------------
 FROM golang:1.26-alpine AS go-builder
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
+# No `COPY go.mod go.sum` + `go mod download` layer: the root go.mod replaces
+# in-tree modules with their directories (./internal/errkind, ...), and Go
+# reads each one's go.mod before it downloads anything, so that layer would
+# need every nested go.mod copied in by name. The cache mounts on the build
+# below keep the module and build caches across builds instead, with no list.
 # Bring in the freshly-built web/dist via the symlink the embed walks.
 COPY . .
 COPY --from=web-builder /src/internal/webui/dist/ ./internal/webui/dist/
@@ -53,7 +56,9 @@ COPY --from=web-builder /src/internal/webui/dist/ ./internal/webui/dist/
 ARG BUILD_VERSION=docker
 ARG BUILD_COMMIT=docker
 ARG BUILD_TIME=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags "-s -w \
       -X main.buildVersion=${BUILD_VERSION} \

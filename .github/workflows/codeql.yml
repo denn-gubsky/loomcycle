@@ -33,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Both Go modules are pure Go (releases build with CGO_ENABLED=0),
+          # Every Go module is pure Go (releases build with CGO_ENABLED=0),
           # so `go build ./...` in each is the whole build. Manual mode makes
           # that the build CodeQL traces, rather than whatever the autobuilder
           # infers from the repo (the Makefile's build-all also runs npm).
@@ -69,10 +69,11 @@ jobs:
 
       - if: matrix.build-mode == 'manual'
         name: Build
-        # deploy/builder is its own module (the loomcycle-builder image);
-        # `./...` from the root does not reach it.
+        # `./...` from the root reaches no other module: in-modules.sh builds
+        # the root and each in-tree module the root go.mod replaces (RFC FE),
+        # and deploy/builder is its own module (the loomcycle-builder image).
         run: |
-          go build ./...
+          scripts/ci/in-modules.sh go build ./...
           (cd deploy/builder && go build ./...)
 
       # No fork guard: code scanning accepts uploads from a run triggered by
