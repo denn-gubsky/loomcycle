@@ -266,6 +266,11 @@ func TestFileDownload_RedactsQueryInResult(t *testing.T) {
 	if _, res := tf.exec(t, ctx, map[string]any{"op": "download", "url": gone.URL + "/x?tempauth=" + secret}); !res.IsError || strings.Contains(res.Text, secret) || !strings.Contains(res.Text, "?…") {
 		t.Errorf("error = %q", res.Text)
 	}
+	// Nor does a request that fails outright: net/http's error quotes the URL.
+	guarded := newTransferFile(&HTTP{HostAllowlist: []string{"127.0.0.1"}})
+	if _, res := guarded.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/x?tempauth=" + secret}); !res.IsError || !strings.Contains(res.Text, "blocked") || strings.Contains(res.Text, secret) {
+		t.Errorf("dial error = %q", res.Text)
+	}
 }
 
 func TestFileDownload_RefusesCredentialHeaders(t *testing.T) {
