@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/scripts/ci/gomodules"
 )
 
 // model is the layering a graph is checked against: the package-level tables
@@ -28,10 +30,56 @@ func TestLayerMap_IsConsistent(t *testing.T) {
 }
 
 func TestImportGraph_FollowsTheLayers(t *testing.T) {
-	graph := importGraph(t, moduleRoot(t))
+	root := moduleRoot(t)
+	mods := inTreeModules(t, root)
+	graph, moduleOf := importGraph(t, root, mods)
 	for _, p := range checkGraph(repoModel, graph) {
 		t.Error(p)
 	}
+	for _, p := range checkModuleLayers(repoModel, moduleOf, nestedDirs(mods)) {
+		t.Error(p)
+	}
+}
+
+// TestGoModules_AreWiredOrDeclared fails on a go.mod that would take its
+// directory out of the root module without the tooling knowing: one the root
+// does not replace and standaloneModules does not list.
+func TestGoModules_AreWiredOrDeclared(t *testing.T) {
+	root := moduleRoot(t)
+	mods := inTreeModules(t, root)
+	// -co --exclude-standard: tracked files plus new ones not yet added, so a
+	// go.mod created locally fails here before it is committed; ignored trees
+	// (node_modules) are skipped.
+	cmd := exec.Command("git", "ls-files", "-co", "--exclude-standard", "--", ":(glob)**/go.mod")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Skipf("git ls-files (not a git checkout?): %v", err)
+	}
+	var dirs []string
+	for _, f := range strings.Fields(string(out)) {
+		dirs = append(dirs, filepath.ToSlash(filepath.Dir(f)))
+	}
+	for _, p := range checkModuleCensus(dirs, nestedDirs(mods), standaloneModules) {
+		t.Error(p)
+	}
+}
+
+func inTreeModules(t *testing.T, root string) []gomodules.Module {
+	t.Helper()
+	mods, err := gomodules.InTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mods
+}
+
+func nestedDirs(mods []gomodules.Module) []string {
+	var dirs []string
+	for _, m := range mods[1:] {
+		dirs = append(dirs, m.Dir)
+	}
+	return dirs
 }
 
 // moduleRoot is the directory holding go.mod. go test runs a package's tests in
@@ -49,44 +97,49 @@ func moduleRoot(t *testing.T) string {
 	return root
 }
 
-// importGraph maps every package of the module to its non-test imports within
-// the module. Paths are relative to the module root. One go list call: the
-// whole check costs about as much as listing the packages.
-func importGraph(t *testing.T, root string) map[string][]string {
+// importGraph maps every package of the in-tree modules to its non-test
+// imports within them, and each package to the directory of its module.
+// Paths are relative to the root module: a nested module's path extends the
+// root's, so its packages and the imports of them read like any other. One go
+// list call per module, from the module's directory, since go list ./... from
+// the root does not enter a nested module.
+func importGraph(t *testing.T, root string, mods []gomodules.Module) (map[string][]string, map[string]string) {
 	t.Helper()
-	cmd := exec.Command("go", "list", "-f",
-		`{{.Module.Path}} {{.ImportPath}} {{join .Imports " "}}`, "./...")
-	cmd.Dir = root
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v\n%s", err, stderr.String())
-	}
-
+	rootPath := mods[0].Path
 	graph := map[string][]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 2 {
-			t.Fatalf("go list: unexpected line %q", line)
+	moduleOf := map[string]string{}
+	for _, m := range mods {
+		cmd := exec.Command("go", "list", "-f", `{{.ImportPath}} {{join .Imports " "}}`, "./...")
+		cmd.Dir = filepath.Join(root, filepath.FromSlash(m.Dir))
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("go list in %s: %v\n%s", m.Dir, err, stderr.String())
 		}
-		mod := f[0]
-		from, ok := relativeTo(mod, f[1])
-		if !ok {
-			t.Fatalf("go list: package %s is not in module %s", f[1], mod)
-		}
-		imports := []string{}
-		for _, ip := range f[2:] {
-			if rel, ok := relativeTo(mod, ip); ok {
-				imports = append(imports, rel)
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			f := strings.Fields(line)
+			if len(f) < 1 {
+				t.Fatalf("go list in %s: unexpected line %q", m.Dir, line)
 			}
+			from, ok := relativeTo(rootPath, f[0])
+			if !ok {
+				t.Fatalf("go list in %s: package %s is not under %s", m.Dir, f[0], rootPath)
+			}
+			imports := []string{}
+			for _, ip := range f[1:] {
+				if rel, ok := relativeTo(rootPath, ip); ok {
+					imports = append(imports, rel)
+				}
+			}
+			graph[from] = imports
+			moduleOf[from] = m.Dir
 		}
-		graph[from] = imports
 	}
 	if len(graph) == 0 {
 		t.Fatal("go list: no packages")
 	}
-	return graph
+	return graph, moduleOf
 }
 
 func relativeTo(mod, importPath string) (string, bool) {
@@ -221,6 +274,116 @@ func checkGraph(m model, graph map[string][]string) []string {
 	return problems
 }
 
+// checkModuleLayers returns one message per breach of the module rule: every
+// nested module (nested, by directory) is listed in exactly one layer's
+// modules, no listed module is missing, and every package of a nested module
+// (moduleOf maps a package to its module's directory) sits in that layer or
+// below.
+func checkModuleLayers(m model, moduleOf map[string]string, nested []string) []string {
+	var problems []string
+	ceiling := map[string]int{}
+	for i, l := range m.layers {
+		for _, mod := range l.modules {
+			ceiling[mod] = i
+		}
+	}
+	isNested := map[string]bool{}
+	for _, dir := range nested {
+		isNested[dir] = true
+		if _, ok := ceiling[dir]; !ok {
+			problems = append(problems, fmt.Sprintf(
+				"module %s is in no layer: add it to the modules of the layer in "+
+					"internal/archtest/layers.go that its packages sit in (the highest of them).", dir))
+		}
+	}
+	for _, mod := range sortedKeys(boolSet(ceiling)) {
+		if !isNested[mod] {
+			problems = append(problems, fmt.Sprintf(
+				"layer %s lists module %s, which the root go.mod does not replace with a "+
+					"directory in the tree: wire it (require + replace => ./%s) or remove the entry.",
+				m.layers[ceiling[mod]].name, mod, mod))
+		}
+	}
+
+	pkgs := sortedKeys(boolSet(moduleOf))
+	for _, pkg := range pkgs {
+		mod := moduleOf[pkg]
+		top, ok := ceiling[mod]
+		if !ok || !isNested[mod] {
+			continue
+		}
+		p, ok := place(m.layers, pkg)
+		if !ok || p.layer <= top {
+			continue
+		}
+		problems = append(problems, fmt.Sprintf(
+			"package %s [%s, subsystem %s] is in module %s, which is declared in %s: a "+
+				"module's packages sit in its layer or below. Move the package out of the "+
+				"module, or declare the module in the higher layer if that is its role.",
+			pkg, m.layers[p.layer].name, p.subsystem, mod, m.layers[top].name))
+	}
+	return problems
+}
+
+// checkModuleCensus returns one message per go.mod directory (goModDirs,
+// slash-separated, "." for the root) that is neither the root, an in-tree
+// module (nested) nor a standalone module, and per standalone entry with no
+// go.mod. A go.mod under a directory Go ignores (testdata, or a name starting
+// with "." or "_") takes nothing out of the root module and is skipped.
+func checkModuleCensus(goModDirs, nested, standalone []string) []string {
+	var problems []string
+	known := map[string]bool{".": true}
+	for _, d := range nested {
+		known[d] = true
+	}
+	isStandalone := map[string]bool{}
+	for _, d := range standalone {
+		known[d] = true
+		isStandalone[d] = true
+	}
+	found := map[string]bool{}
+	dirs := append([]string(nil), goModDirs...)
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		if ignoredByGo(d) {
+			continue
+		}
+		found[d] = true
+		if !known[d] {
+			problems = append(problems, fmt.Sprintf(
+				"%s/go.mod makes %s a module the build does not know: go list, go test and go vet "+
+					"run from the root stop at it, so its packages would drop out of CI without a "+
+					"word. Wire it into the root go.mod (require + replace => ./%s) and declare its "+
+					"layer, or, if it builds on its own, add it to standaloneModules in "+
+					"internal/archtest/layers.go.", d, d, d))
+		}
+	}
+	for _, d := range standalone {
+		if !found[d] {
+			problems = append(problems, fmt.Sprintf(
+				"standaloneModules lists %s, which has no go.mod: remove the entry.", d))
+		}
+	}
+	return problems
+}
+
+func ignoredByGo(dir string) bool {
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == "testdata" || (seg != "." && (strings.HasPrefix(seg, ".") || strings.HasPrefix(seg, "_"))) {
+			return true
+		}
+	}
+	return false
+}
+
+func boolSet[V any](m map[string]V) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
 // checkModel returns one message per inconsistency in the tables themselves.
 func checkModel(m model) []string {
 	var problems []string
@@ -260,6 +423,18 @@ func checkModel(m model) []string {
 		problems = append(problems, fmt.Sprintf(
 			"allowedSideways permits the cycle %s: remove one of its pairs",
 			strings.Join(cycle, " -> ")))
+	}
+
+	moduleIn := map[string]string{}
+	for _, l := range m.layers {
+		for _, mod := range l.modules {
+			if prev, dup := moduleIn[mod]; dup {
+				problems = append(problems, fmt.Sprintf(
+					"module %s is listed twice (%s, %s)", mod, prev, l.name))
+				continue
+			}
+			moduleIn[mod] = l.name
+		}
 	}
 
 	seen := map[packageEdge]bool{}
@@ -435,6 +610,14 @@ func TestCheckModel_RejectsInconsistentTables(t *testing.T) {
 			want: []string{"subsystem a is listed twice (L0, L1)"},
 		},
 		{
+			name: "module listed twice",
+			m: model{layers: []layer{
+				{name: "L0", subsystems: []string{"a"}, modules: []string{"a"}},
+				{name: "L1", subsystems: []string{"b"}, modules: []string{"a"}},
+			}},
+			want: []string{"module a is listed twice (L0, L1)"},
+		},
+		{
 			name: "known violation without a cut",
 			m:    model{layers: toyLayers, known: []knownViolation{{"a", "c", ""}}},
 			want: []string{"names no Phase 2 cut"},
@@ -443,6 +626,108 @@ func TestCheckModel_RejectsInconsistentTables(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assertProblems(t, checkModel(tc.m), tc.want)
+		})
+	}
+}
+
+// toyModuleLayers is toyLayers with module a declared in L0 and module b in
+// L1. b's directory holds b/top, which the layers put in L2.
+var toyModuleLayers = []layer{
+	{name: "L0 low", subsystems: []string{"a"}, modules: []string{"a"}},
+	{name: "L1 mid", subsystems: []string{"b", "c"}, modules: []string{"b"}},
+	{name: "L2 high", subsystems: []string{"b/top"}},
+}
+
+func TestCheckModuleLayers_ReportsEachKindOfProblem(t *testing.T) {
+	cases := []struct {
+		name     string
+		layers   []layer
+		moduleOf map[string]string
+		nested   []string
+		want     []string
+	}{
+		{
+			name:     "no nested module is vacuous",
+			layers:   toyLayers,
+			moduleOf: map[string]string{"a": ".", "b": ".", "b/top": "."},
+		},
+		{
+			name:     "packages at or below the declared layer",
+			layers:   toyModuleLayers,
+			moduleOf: map[string]string{"a": "a", "a/x": "a", "b": "b", "b/y": "b", "c": "."},
+			nested:   []string{"a", "b"},
+		},
+		{
+			name:     "a package above its module's layer",
+			layers:   toyModuleLayers,
+			moduleOf: map[string]string{"a": "a", "b": "b", "b/top": "b"},
+			nested:   []string{"a", "b"},
+			want: []string{"package b/top [L2 high, subsystem b/top] is in module b, which is declared in L1 mid: " +
+				"a module's packages sit in its layer or below"},
+		},
+		{
+			name:     "a nested module no layer declares",
+			layers:   toyLayers,
+			moduleOf: map[string]string{"c": "c"},
+			nested:   []string{"c"},
+			want:     []string{"module c is in no layer"},
+		},
+		{
+			name:     "a declared module the root does not wire",
+			layers:   toyModuleLayers,
+			moduleOf: map[string]string{"a": "a", "b": "."},
+			nested:   []string{"a"},
+			want:     []string{"layer L1 mid lists module b, which the root go.mod does not replace"},
+		},
+		{
+			// The root's packages are never held to a module's ceiling, even
+			// when the root's directory listing would match one by name.
+			name:     "root packages are not checked against a module",
+			layers:   toyModuleLayers,
+			moduleOf: map[string]string{"a": "a", "b": "b", "b/top": "."},
+			nested:   []string{"a", "b"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkModuleLayers(model{layers: tc.layers}, tc.moduleOf, tc.nested)
+			assertProblems(t, got, tc.want)
+		})
+	}
+}
+
+func TestCheckModuleCensus_EveryGoModIsWiredOrDeclared(t *testing.T) {
+	cases := []struct {
+		name                     string
+		dirs, nested, standalone []string
+		want                     []string
+	}{
+		{name: "root only", dirs: []string{"."}},
+		{
+			name:       "root, wired and standalone",
+			dirs:       []string{".", "internal/errkind", "deploy/builder"},
+			nested:     []string{"internal/errkind"},
+			standalone: []string{"deploy/builder"},
+		},
+		{
+			name: "a go.mod nobody wired or declared",
+			dirs: []string{".", "internal/store"},
+			want: []string{"internal/store/go.mod makes internal/store a module the build does not know"},
+		},
+		{
+			name: "directories Go ignores are skipped",
+			dirs: []string{".", "internal/x/testdata/mod", "web/.cache/y", "_scratch"},
+		},
+		{
+			name:       "a standalone entry with no go.mod is stale",
+			dirs:       []string{"."},
+			standalone: []string{"deploy/builder"},
+			want:       []string{"standaloneModules lists deploy/builder, which has no go.mod"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertProblems(t, checkModuleCensus(tc.dirs, tc.nested, tc.standalone), tc.want)
 		})
 	}
 }
