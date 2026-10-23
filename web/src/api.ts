@@ -2,6 +2,12 @@
 // `loomcycle_session` HttpOnly cookie set by the server when the
 // operator visits `/ui?token=...` — fetch() includes it
 // automatically because we're same-origin. No bearer header needed.
+//
+// Every failed response is thrown through apiError (lib/apiError), so an
+// access-control refusal (403 acl_denied / insufficient_scope /
+// acl_self_elevation) renders the same readable message on every page.
+
+import { apiError } from "./lib/apiError";
 
 export interface UserSummary {
   user_id: string;
@@ -103,7 +109,7 @@ export async function deleteUser(subject: string): Promise<void> {
   if (!resp.ok) {
     if (redirectToLoginOn401(resp.status)) return;
     const b = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, b);
   }
 }
 
@@ -529,7 +535,7 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
       return new Promise<T>(() => {});
     }
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
   return resp.json() as Promise<T>;
 }
@@ -602,7 +608,7 @@ async function jsonFetchAllowing<T>(
     return { ok: false, status: resp.status, body };
   }
   const text = await resp.text();
-  throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+  throw apiError(resp.status, resp.statusText, text);
 }
 
 export function listAgents(userId: string, status?: string, tenant?: string): Promise<ListAgentsResponse> {
@@ -811,7 +817,7 @@ export async function cancelAgent(agentId: string, reason?: string): Promise<unk
   });
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
   return resp.json();
 }
@@ -851,7 +857,7 @@ async function residentAction(runId: string, op: "close" | "cancel"): Promise<un
   });
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
   return resp.json();
 }
@@ -960,7 +966,7 @@ export async function streamWalkRunStates(
       return new Promise<void>(() => {});
     }
     const text = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, text);
   }
   if (!resp.body) {
     throw new Error("stream response had no body");
@@ -1169,7 +1175,7 @@ export async function deleteSnapshot(id: string): Promise<void> {
   });
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
 }
 
@@ -1208,7 +1214,7 @@ async function postJSON<T>(path: string, body: string | undefined): Promise<T> {
   });
   if (!resp.ok) {
     const raw = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, raw);
   }
   return resp.json() as Promise<T>;
 }
@@ -1273,15 +1279,7 @@ async function substratePost<T>(path: string, body: unknown, browse?: BrowseScop
   });
   if (resp.ok) return resp.json() as Promise<T>;
   if (redirectToLoginOn401(resp.status)) return new Promise<T>(() => {});
-  const raw = await resp.text();
-  let msg = `${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`;
-  try {
-    const j = JSON.parse(raw) as { error?: string };
-    if (j && typeof j.error === "string") msg = j.error;
-  } catch {
-    /* non-JSON body — keep the status-line message */
-  }
-  throw new Error(msg);
+  throw apiError(resp.status, resp.statusText, await resp.text(), { serverMessage: true });
 }
 
 // pathLs lists a path (recursive: the subtree, flat). The runtime pages every
@@ -1592,7 +1590,7 @@ export async function resolveInterrupt(
   );
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
   return resp.json();
 }
@@ -2748,7 +2746,7 @@ export async function deleteChannel(name: string): Promise<void> {
   });
   if (!resp.ok && resp.status !== 204) {
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
 }
 
@@ -2799,7 +2797,7 @@ export async function deleteMemoryEntry(
   );
   if (!resp.ok && resp.status !== 204) {
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
 }
 
@@ -2848,7 +2846,7 @@ async function streamSSE(
       return new Promise<void>(() => {});
     }
     const text = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, text);
   }
   if (!resp.body) {
     throw new Error("stream response had no body");
@@ -2881,7 +2879,7 @@ export async function streamRunByID(
       return new Promise<void>(() => {});
     }
     const text = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, text);
   }
   if (!resp.body) {
     throw new Error("stream response had no body");
@@ -3023,7 +3021,7 @@ export async function deleteConfiguredRun(runID: string): Promise<void> {
   if (!resp.ok) {
     if (redirectToLoginOn401(resp.status)) return new Promise<void>(() => {});
     const text = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, text);
   }
 }
 
@@ -3047,7 +3045,7 @@ export async function sendRunInput(runID: string, text: string): Promise<void> {
   });
   if (!resp.ok) {
     const b = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, b);
   }
 }
 
@@ -3073,7 +3071,7 @@ export async function compactRun(runID: string): Promise<CompactResult> {
   });
   if (!resp.ok) {
     const b = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${b.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, b);
   }
   return resp.json() as Promise<CompactResult>;
 }
@@ -3204,15 +3202,7 @@ async function postOperatorToken<T>(input: Record<string, unknown>): Promise<T> 
   });
   if (!resp.ok) {
     if (redirectToLoginOn401(resp.status)) return new Promise<T>(() => {});
-    const raw = await resp.text();
-    let msg = `${resp.status} ${resp.statusText}: ${raw.slice(0, 200)}`;
-    try {
-      const env = JSON.parse(raw);
-      if (env && typeof env.error === "string") msg = env.error;
-    } catch {
-      // non-JSON body — keep the status-line message
-    }
-    throw new Error(msg);
+    throw apiError(resp.status, resp.statusText, await resp.text(), { serverMessage: true });
   }
   return resp.json() as Promise<T>;
 }
@@ -3790,6 +3780,6 @@ export async function deleteLimit(
   if (!resp.ok) {
     if (redirectToLoginOn401(resp.status)) return;
     const body = await resp.text();
-    throw new Error(`${resp.status} ${resp.statusText}: ${body.slice(0, 200)}`);
+    throw apiError(resp.status, resp.statusText, body);
   }
 }
