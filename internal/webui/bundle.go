@@ -184,15 +184,9 @@ func loadDir(dir string, level int, lim limits) (*Bundle, error) {
 		return nil, err
 	}
 
-	// Read in a fixed order so a refusal names the same file every time.
-	names := make([]string, 0, len(m.Files))
-	for name := range m.Files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	files := make(map[string][]byte, len(names))
+	files := make(map[string][]byte, len(m.Files))
 	remaining := lim.bundleBytes
-	for _, name := range names {
+	for _, name := range sortedNames(m.Files) {
 		data, err := readListed(root, name, remaining)
 		if err != nil {
 			return nil, err
@@ -248,7 +242,8 @@ func readManifest(root *os.Root, lim limits) (*Manifest, error) {
 	if len(m.Files) > lim.files {
 		return nil, refuse(ReasonBundleTooLarge, "manifest lists %d files, the limit is %d", len(m.Files), lim.files)
 	}
-	for name, sum := range m.Files {
+	for _, name := range sortedNames(m.Files) {
+		sum := m.Files[name]
 		if err := validPath(name); err != nil {
 			return nil, refuse(ReasonPathInvalid, "%q: %v", name, err)
 		}
@@ -313,6 +308,18 @@ func readListed(root *os.Root, name string, remaining int64) ([]byte, error) {
 		return nil, refuse(ReasonDirUnreadable, "read %s: %v", name, err)
 	}
 	return data, nil
+}
+
+// sortedNames returns the manifest's paths in a fixed order, so a bundle with
+// several defects is refused for the same one, naming the same file, every
+// time.
+func sortedNames(files map[string]string) []string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 var errOverCap = errors.New("over the size cap")
