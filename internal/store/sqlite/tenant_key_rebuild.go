@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"slices"
 	"strings"
 )
@@ -203,7 +203,7 @@ func rebuildTables(ctx context.Context, conn *sql.Conn, tables, schema []string)
 		return err
 	}
 	for i, t := range tables {
-		log.Printf("sqlite migrate: rebuilt %s with its tenant-scoped key (%d rows kept)", t, kept[i])
+		slog.Info("sqlite migrate: rebuilt a table with its tenant-scoped key", "table", t, "rows_kept", kept[i])
 	}
 	return nil
 }

@@ -28,7 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -6930,8 +6930,7 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// commit-visibility race shouldn't apply, but logging here
 		// lets us A/B the same load against both backends and
 		// confirm the race is Postgres-specific.
-		log.Printf("channel %q publish: id=%s commit_us=%d",
-			msg.Channel, msg.ID, time.Since(commitStart).Microseconds())
+		slog.Info("channel publish", "channel", msg.Channel, "id", msg.ID, "commit_us", time.Since(commitStart).Microseconds())
 	}
 	return msg.ID, dropped, nil
 }
@@ -7115,7 +7114,7 @@ func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, erro
 			// internal/lookup will still fill SystemPromptBase at runtime,
 			// but this log line is the operator's only signal that a row
 			// was left untouched.
-			log.Printf("agent_defs: backfill system_prompt_base: def_id=%s: JSON parse failed, skipping: %v", p.DefID, err)
+			slog.Warn("agent_defs: backfill system_prompt_base: JSON parse failed, skipping", "def_id", p.DefID, "err", err)
 			continue
 		}
 		if !ok {
@@ -11404,7 +11403,7 @@ func (s *Store) scanEvaluation(row *sql.Row) (store.EvaluationRow, error) {
 		if err := json.Unmarshal([]byte(dimensions), &out.Dimensions); err != nil {
 			// Malformed dimensions JSON (e.g. a hand-edited row) — log + leave
 			// Dimensions nil rather than silently dropping the parse error.
-			log.Printf("evaluations: scan eval_id=%s: dimensions JSON parse failed, skipping: %v", out.EvalID, err)
+			slog.Warn("evaluations: dimensions JSON parse failed, skipping", "eval_id", out.EvalID, "err", err)
 		}
 	}
 	if judgement != "" {
@@ -11432,7 +11431,7 @@ func (s *Store) scanEvaluationRows(rows *sql.Rows) ([]store.EvaluationRow, error
 		}
 		if dimensions != "" {
 			if err := json.Unmarshal([]byte(dimensions), &r.Dimensions); err != nil {
-				log.Printf("evaluations: scan eval_id=%s: dimensions JSON parse failed, skipping: %v", r.EvalID, err)
+				slog.Warn("evaluations: dimensions JSON parse failed, skipping", "eval_id", r.EvalID, "err", err)
 			}
 		}
 		if judgement != "" {
