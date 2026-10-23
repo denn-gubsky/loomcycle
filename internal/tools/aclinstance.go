@@ -66,8 +66,7 @@ func gateAllows(ctx context.Context, eff *authz.Effective, action string, res au
 			event = "acl_shadow_diverged"
 		}
 		slog.Warn("authz: "+event, "tenant", eff.Subject.TenantID, "subject", eff.Subject.ID,
-			"action", action, "resource", res.Type+":"+res.Name, "outcome", r.Decision.Outcome.String(),
-			"transport", authz.TransportFrom(ctx))
+			"action", action, "resource", res.Type+":"+res.Name, "outcome", r.Decision.Outcome.String())
 	}
 	return ok
 }
