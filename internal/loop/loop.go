@@ -5220,6 +5220,7 @@ var allowedUntrustedKinds = map[string]bool{
 	"tool_output":   true,
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
+	"file_content":  true, // text extracted from a file a tool returned (File op=extract)
 	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
 }
 
