@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, apiError, denyingReasons, describeAclDenial, forbiddenKind } from "./apiError";
+import { ApiError, accessRefusalText, apiError, denyingReasons, describeAclDenial, forbiddenKind } from "./apiError";
 
 const aclBody = JSON.stringify({
   code: "acl_denied",
@@ -147,5 +147,45 @@ describe("apiError — the management refusals", () => {
   it("keeps the server's sentence without the status line when asked to", () => {
     const body = JSON.stringify({ code: "group_external", error: "managed there" });
     expect(apiError(409, "Conflict", body, { serverMessage: true }).message).toBe("read-only group — managed there");
+  });
+});
+
+// A @loomcycle/client error: the status and the raw body, no statusText.
+const clientError = (status: number, body: string) =>
+  Object.assign(new Error(body), { status, bodyText: body });
+
+describe("accessRefusalText", () => {
+  it("words a client's acl_denied as the Web UI does, without the status line", () => {
+    expect(accessRefusalText(clientError(403, aclBody))).toBe(
+      'access denied — may not run agent:secret: denied by list "interns" rule 2',
+    );
+  });
+
+  it("words every access-control refusal apiError knows", () => {
+    const cases: Array<[number, Record<string, unknown>, string]> = [
+      [403, { code: "insufficient_scope", error: "needs a scope", required_scope: "substrate:tenant" }, "not permitted — needs a scope (needs the substrate:tenant scope)"],
+      [403, { code: "acl_self_elevation", error: "refused: it widens you" }, "refused — it widens you"],
+      [403, { code: "authz_subject", error: "only yourself" }, "not permitted — only yourself"],
+      [400, { code: "acl_binding_invalid", error: "never in force" }, "binding not saved — never in force"],
+      [409, { code: "group_external", error: "managed by the IdP" }, "read-only group — managed by the IdP"],
+      [503, { code: "acl_unavailable", error: "x" }, "access control is unavailable right now — try again in a moment"],
+    ];
+    for (const [status, body, want] of cases) {
+      expect(accessRefusalText(clientError(status, JSON.stringify(body)))).toBe(want);
+    }
+  });
+
+  // Undefined keeps the Library's own wording (its substrate-refusal
+  // explanations) for everything that is not an access refusal.
+  it("has nothing to say about any other error", () => {
+    expect(accessRefusalText(clientError(422, JSON.stringify({ code: "tool_refused", error: "matches a static cfg.Agents entry" })))).toBeUndefined();
+    expect(accessRefusalText(clientError(403, JSON.stringify({ code: "restricted_token", error: "no" })))).toBeUndefined();
+    expect(accessRefusalText(clientError(503, JSON.stringify({ code: "store_unavailable" })))).toBeUndefined();
+    // A code on the wrong status is not the refusal it names.
+    expect(accessRefusalText(clientError(500, aclBody))).toBeUndefined();
+    expect(accessRefusalText(clientError(403, "not json"))).toBeUndefined();
+    expect(accessRefusalText(new Error("network down"))).toBeUndefined();
+    expect(accessRefusalText("boom")).toBeUndefined();
+    expect(accessRefusalText(null)).toBeUndefined();
   });
 });
