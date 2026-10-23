@@ -22,6 +22,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -976,7 +977,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 
 	heartbeat := s.makeHeartbeat(run.ID)
 	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, runCfg.Routing)
-	gate, deregGate := s.newPauseGate(run.ID, run.Retention == store.RetentionNone)
+	gate, deregGate := s.newPauseGate(run.ID, run.Retention == retentionmode.None)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 
@@ -1432,6 +1433,23 @@ func resumedShellCreds(run store.Run, rec *spawnRecord, def config.AgentDef) *to
 		return &own
 	}
 	v := tools.NarrowShellCreds(tools.ShellCredsFor(rec.ShellCredentials), own)
+	return &v
+}
+
+// resumedGitRemote is the Git network grant a resumed run gets back (RFC FB):
+// a top-level run its definition's (nil: agentRunPolicy reads it), and a
+// sub-run its definition's narrowed again to its recorded parent's, as
+// Inherit narrowed it live. A sub-run with no record fails CLOSED with no
+// network, as resumedCryptoPolicy does: its parent's grant is unknown, and its
+// own definition's is exactly the widening the narrowing exists to prevent.
+func resumedGitRemote(run store.Run, rec *spawnRecord, def config.AgentDef) *tools.GitRemotePolicyValue {
+	if !isSubRun(run) {
+		return nil
+	}
+	v := tools.GitRemotePolicyValue{}
+	if rec != nil {
+		v = tools.NarrowGitRemote(tools.GitRemoteFor(rec.GitRemote), tools.GitRemoteFor(def.GitRemote))
+	}
 	return &v
 }
 
@@ -2337,6 +2355,7 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		EphemeralReadOnly: runCfg.EphemeralReadOnly || (runCfg.Spawn == nil && isSubRun(run)),
 		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
 		ShellCreds:        resumedShellCreds(run, runCfg.Spawn, agentDef),
+		GitRemote:         resumedGitRemote(run, runCfg.Spawn, agentDef),
 		// Restored from the run's own record, for sub-agent inheritance. The
 		// context policy too: every non-resume run path stamps it, so without
 		// it a resumed run's children inherited a different retention mode

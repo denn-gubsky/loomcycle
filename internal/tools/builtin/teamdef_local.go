@@ -10,6 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -64,7 +65,7 @@ func (t *TeamDef) localAgentIssues(ctx context.Context, op, team string, def tea
 	// named before the one-segment rule may hold a "/" or ":" and keeps
 	// working as it did, but cannot declare agents of its own. Nothing below
 	// can be judged under a name that does not split.
-	if err := teamgraph.ValidateName(team); err != nil {
+	if err := teamspec.ValidateName(team); err != nil {
 		return append(issues, refused(teamIssueNameInvalid, "local.agents", fmt.Sprintf(
 			"local: a team that declares its own agents needs a name of one segment "+
 				"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %v", err)))
@@ -167,7 +168,7 @@ func (t *TeamDef) localSkillIssues(ctx context.Context, op, team string, def tea
 	if len(names) == 0 {
 		return nil
 	}
-	if err := teamgraph.ValidateName(team); err != nil {
+	if err := teamspec.ValidateName(team); err != nil {
 		return []teamIssue{refused(teamIssueNameInvalid, "local.skills", fmt.Sprintf(
 			"local: a team that declares its own skills needs a name of one segment "+
 				"(A-Z a-z 0-9 _ -), because each is named \"<team>/<name>\": %v", err))}

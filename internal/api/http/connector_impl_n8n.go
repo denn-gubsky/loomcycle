@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // ListChannels returns the operator-declared channels joined with
@@ -118,7 +119,7 @@ func (s *Server) ListChannels(ctx context.Context) (connector.ListChannelsRespon
 		}
 		// A team's own channel has messages and no declaration by design: it is
 		// the team's, listed by nobody — for every caller, admin included.
-		if store.IsTeamChannelName(name) {
+		if teamspec.IsChannelName(name) {
 			continue
 		}
 		if !all && st.TenantID != tenantID {

@@ -1185,6 +1185,30 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_GIT_PUSH_HOSTS
+            label: LOOMCYCLE_GIT_PUSH_HOSTS
+            description: '(example: github.com)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_PUSH_MAX_BYTES
+            label: LOOMCYCLE_GIT_PUSH_MAX_BYTES
+            description: '(example: 104857600)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_AUTHOR_NAME
+            label: LOOMCYCLE_GIT_AUTHOR_NAME
+            description: '(example: loomcycle-bot)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_GIT_AUTHOR_EMAIL
+            label: LOOMCYCLE_GIT_AUTHOR_EMAIL
+            description: '(example: bot@example.com)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             label: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             description: 'Children one run has alive at once, across every Agent op that starts one; a spawn past it is refused. Per run, not per tree: a child''s children count against the child. Default 32. (example: 32)'

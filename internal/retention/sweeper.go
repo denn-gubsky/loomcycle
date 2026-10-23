@@ -45,6 +45,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -872,7 +873,7 @@ func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match
 				s.logf("retention: read chat session %s failed, skipping: %v", sid, err)
 				continue
 			}
-			doExport = sess.Retention != store.RetentionNone
+			doExport = sess.Retention != retentionmode.None
 		}
 		if doExport {
 			if err := s.exportSession(ctx, sid); err != nil {

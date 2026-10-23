@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"io"
 	"os"
 	"regexp"
@@ -493,7 +494,7 @@ func expandEvalPlaceholders(prompt, tenantTerms string) (string, error) {
 	// the "this deployment has confirmed additions" wording over the bare seed.
 	body := meminject.RenderOntology(
 		meminject.EffectiveOntology(extra, len(extra) > 0), len(extra) > 0)
-	out := strings.ReplaceAll(prompt, "{{memory:"+string(meminject.VariantOntology)+"}}", body)
+	out := strings.ReplaceAll(prompt, "{{memory:"+string(promptinject.VariantOntology)+"}}", body)
 
 	// Anything left is a variant this harness cannot render. Refusing is the point:
 	// sending it verbatim scores a prompt the runtime never produces, and the score

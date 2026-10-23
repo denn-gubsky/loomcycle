@@ -33,6 +33,10 @@ type runPolicySource struct {
 	// outside its definition (a resumed sub-run's, narrowed again against its
 	// recorded parent). nil: its definition's shell_credentials (RFC EW).
 	ShellCreds *tools.ShellCredsPolicyValue
+	// GitRemote, when set, is the run's Git network grant from outside its
+	// definition (a resumed sub-run's, narrowed again against its recorded
+	// parent). nil: its definition's git_remote (RFC FB).
+	GitRemote *tools.GitRemotePolicyValue
 	// Compaction and Context are the run's resolved compaction and
 	// layered-context settings.
 	Compaction *config.Compaction
@@ -97,6 +101,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		Evaluation:       evPolicy,
 		Crypto:           src.Crypto,
 		ShellCreds:       shellCredsOf(def, src.ShellCreds),
+		GitRemote:        gitRemoteOf(def, src.GitRemote),
 		OperatorAuthored: def.OperatorAuthored,
 		FanoutCap:        max(src.FanoutCap, 0),
 		Overrides:        overridesOffer(src.Overrides),
@@ -137,4 +142,13 @@ func shellCredsOf(def config.AgentDef, given *tools.ShellCredsPolicyValue) tools
 		return *given
 	}
 	return tools.ShellCredsFor(def.ShellCredentials)
+}
+
+// gitRemoteOf is a run's Git network grant: the one given from outside its
+// definition when there is one, else its definition's own.
+func gitRemoteOf(def config.AgentDef, given *tools.GitRemotePolicyValue) tools.GitRemotePolicyValue {
+	if given != nil {
+		return *given
+	}
+	return tools.GitRemoteFor(def.GitRemote)
 }

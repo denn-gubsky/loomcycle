@@ -31,7 +31,6 @@ var convertedPackages = []string{
 	"internal/lookup",
 	"internal/memory",
 	"internal/memory/backends/inprocess",
-	"internal/memory/embedders",
 	"internal/metrics",
 	"internal/pause",
 	"internal/providerbuild",
@@ -46,6 +45,7 @@ var convertedPackages = []string{
 	"internal/sqlmem",
 	"internal/teamrun",
 	"internal/tools/mcp/http",
+	"internal/wiring",
 }
 
 // stdlibLogCalls returns the positions of log.Printf/Print/Println calls in f,

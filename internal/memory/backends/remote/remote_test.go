@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/runident"
 	"github.com/denn-gubsky/loomcycle/internal/store"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // stubPeer is a minimal in-memory loomcycle /v1/_memory/* surface for testing
@@ -188,7 +188,7 @@ func TestRemoteBackend_KeyPerTenantAuth(t *testing.T) {
 		EnvPattern:  "LOOMCYCLE_PEER_{tenant_id}_KEY",
 		KeyResolver: func(_ context.Context, name string) (string, error) { askedFor = name; return "tok-" + name, nil },
 	})
-	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme"})
+	ctx := runident.With(context.Background(), runident.Identity{TenantID: "acme"})
 
 	if _, err := b.Set(ctx, store.MemoryScopeAgent, "a1", "k", json.RawMessage(`1`), memory.SetOptions{}); err != nil {
 		t.Fatalf("Set: %v", err)

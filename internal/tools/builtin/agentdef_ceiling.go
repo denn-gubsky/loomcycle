@@ -105,6 +105,7 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 		func() error { return ceilEvaluation(ctx, def, base, held) },
 		func() error { return ceilCrypto(ctx, def, base, held) },
 		func() error { return ceilShellCreds(ctx, def, base, held) },
+		func() error { return ceilGitRemote(ctx, def, base, held) },
 		func() error { return ceilSkills(ctx, def, base, held) },
 		func() error { return ceilDefScopes(ctx, name, def, base, held) },
 	}
@@ -471,6 +472,27 @@ func ceilShellCreds(ctx context.Context, def mergedDef, base *mergedDef, held st
 		return refuseCapability("shell_credentials", "every credential the operator lists", true, held, ceiling)
 	}
 	return subsetCeiling("shell_credentials", *def.ShellCredentials, false, held, ceiling)
+}
+
+// ---- git remote ----
+
+// ceilGitRemote holds git_remote to the Git network operations the author's
+// own run may perform (RFC FB). Unset and [] grant nothing, so like crypto
+// there is no default to wave through: an empty list is within every
+// ceiling, and each operation listed must be one the author's run may
+// perform (already narrowed by its parent's, for a sub-agent) or the forked
+// version already had. The ceiling is that union, as for crypto_scopes and
+// shell_credentials (RFC EW D7). An author that cannot fetch may list
+// nothing; one that can fetch but not push may not list push.
+func ceilGitRemote(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
+	if len(def.GitRemote) == 0 {
+		return nil
+	}
+	ceiling := tools.PolicyOf(ctx).GitRemote.Ops()
+	if base != nil {
+		ceiling = scopeUnion(ceiling, tools.GitRemoteFor(base.GitRemote).Ops())
+	}
+	return subsetCeiling("git_remote", def.GitRemote, false, held, ceiling)
 }
 
 // ---- skills ----

@@ -199,6 +199,18 @@ var narrowAtMost = map[string]struct {
 		widerOfParent:       RunPolicy{ShellCreds: ShellCredsPolicyValue{Set: true, Names: []string{"A"}}},
 		zeroParentUnbounded: true,
 	},
+	"GitRemote": {
+		// Zero is "no network", not "unbounded": a parent that may not fetch
+		// passes no fetch on, so this comparator does not set
+		// zeroParentUnbounded (unlike ShellCreds, whose zero is every
+		// credential).
+		atMost: func(c, p RunPolicy) bool {
+			return (!c.GitRemote.Fetch || p.GitRemote.Fetch) && (!c.GitRemote.Push || p.GitRemote.Push)
+		},
+		wideOwn:       RunPolicy{GitRemote: GitRemotePolicyValue{Fetch: true, Push: true}},
+		widerChild:    RunPolicy{GitRemote: GitRemotePolicyValue{Fetch: true, Push: true}},
+		widerOfParent: RunPolicy{GitRemote: GitRemotePolicyValue{Fetch: true}},
+	},
 	"FanoutCap": {
 		// A capped parent's child is capped no wider (0 would hand the
 		// width to a by-name lookup); an uncapped parent bounds nothing.
@@ -404,6 +416,67 @@ func TestShellCredsPolicy_FilterNeverWidens(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := c.v.Filter(operator); !reflect.DeepEqual(got, c.want) {
 				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// RFC FB: a child's Git tool may perform a network operation only when both
+// its parent run and its own definition allow it; a parent with no network
+// passes none on, whatever the child's definition lists.
+func TestRunPolicy_GitRemoteNarrowsForAChild(t *testing.T) {
+	none := GitRemotePolicyValue{}
+	fetch := GitRemotePolicyValue{Fetch: true}
+	push := GitRemotePolicyValue{Fetch: true, Push: true}
+	for _, c := range []struct {
+		name        string
+		parent, own GitRemotePolicyValue
+		want        GitRemotePolicyValue
+	}{
+		{"neither allows", none, none, none},
+		{"a parent with no network passes none on", none, push, none},
+		{"a child that lists none takes none", push, none, none},
+		{"a fetch-only parent withholds push", fetch, push, fetch},
+		{"a fetch-only child does not gain push", push, fetch, fetch},
+		{"both allow push", push, push, push},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := RunPolicy{GitRemote: c.parent}.Inherit(ChildGrant{Own: RunPolicy{GitRemote: c.own}}).GitRemote
+			if got != c.want {
+				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+// GitRemoteFor reads a definition's list: push counts only with fetch (a
+// push-only list, refused at validation, grants nothing to push), unknown
+// values grant nothing, and Ops reports the result as a non-nil list.
+func TestGitRemoteFor_PushRequiresFetchAndOpsIsNeverNil(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		in      []string
+		want    GitRemotePolicyValue
+		wantOps []string
+	}{
+		{"absent", nil, GitRemotePolicyValue{}, []string{}},
+		{"empty", []string{}, GitRemotePolicyValue{}, []string{}},
+		{"fetch", []string{"fetch"}, GitRemotePolicyValue{Fetch: true}, []string{"fetch"}},
+		{"fetch and push", []string{"push", "fetch"}, GitRemotePolicyValue{Fetch: true, Push: true}, []string{"fetch", "push"}},
+		{"push alone", []string{"push"}, GitRemotePolicyValue{}, []string{}},
+		{"unknown", []string{"clone"}, GitRemotePolicyValue{}, []string{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := GitRemoteFor(c.in)
+			if got != c.want {
+				t.Fatalf("GitRemoteFor(%v) = %+v, want %+v", c.in, got, c.want)
+			}
+			ops := got.Ops()
+			if ops == nil || !reflect.DeepEqual(ops, c.wantOps) {
+				t.Errorf("Ops() = %#v, want %#v", ops, c.wantOps)
+			}
+			if got.Allows("fetch") != c.want.Fetch || got.Allows("push") != c.want.Push || got.Allows("clone") {
+				t.Errorf("Allows disagrees with %+v", got)
 			}
 		})
 	}

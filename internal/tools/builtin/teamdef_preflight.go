@@ -20,8 +20,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -47,7 +47,7 @@ func (t *TeamDef) preflightChannelIssues(ctx context.Context, def teamgraph.Defi
 	// for it too would send the author to fix the wrong thing.
 	var refs []teamgraph.ChannelRef
 	for _, ref := range teamgraph.ChannelRefs(def) {
-		if _, isLocal := teamgraph.LocalRef(ref.Channel); isLocal || store.IsTeamChannelName(ref.Channel) {
+		if _, isLocal := teamgraph.LocalRef(ref.Channel); isLocal || teamspec.IsChannelName(ref.Channel) {
 			continue
 		}
 		refs = append(refs, ref)

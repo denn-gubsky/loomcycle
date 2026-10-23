@@ -21,8 +21,8 @@ import (
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/runident"
 	"github.com/denn-gubsky/loomcycle/internal/store"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // runTenant is the RFC BL isolation axis for base memory: the run's authoritative
@@ -31,7 +31,7 @@ import (
 // the base k/v ops key on (scope, scopeID) — so the impl pulls it from ctx here,
 // deriving the tenant from the authoritative run identity, never tool input. An
 // empty tenant ("" — open mode / legacy) is the shared/legacy partition.
-func runTenant(ctx context.Context) string { return tools.RunIdentity(ctx).TenantID }
+func runTenant(ctx context.Context) string { return runident.From(ctx).TenantID }
 
 // Backend implements memory.Backend over a store.Store + Embedder.
 //
@@ -545,8 +545,8 @@ func (b *Backend) Add(ctx context.Context, scope store.MemoryScope, scopeID stri
 			// source, measured at 8 of 215 on a benchmark store — and those 8 came
 			// from the harness's own agents rather than the corpus. Empty for an
 			// off-run caller, which is honest: there is no conversation behind it.
-			SourceSessionID: tools.RunIdentity(ctx).SessionID,
-			SourceRunID:     tools.RunID(ctx),
+			SourceSessionID: runident.From(ctx).SessionID,
+			SourceRunID:     runident.RunID(ctx),
 			CreatedAt:       time.Now().UTC(),
 		}
 		if err := b.store.MemoryPendingEnqueue(ctx, row); err != nil {

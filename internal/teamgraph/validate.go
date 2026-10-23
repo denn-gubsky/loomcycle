@@ -3,19 +3,14 @@ package teamgraph
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
-
-// varNameRe is the variable-name charset, the same [a-zA-Z0-9_-]{1,64} the
-// credentials validator enforces and the expander matches — so a name that
-// validates here is a name the expander can actually resolve.
-var varNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // Validate checks a TeamDef definition graph for the invariants RFC AP requires
 // at create/fork time. It is imperative (mirroring how AgentDef validates code
@@ -368,45 +363,18 @@ func validatePromptSlots(out *issues, at stateAt, h Handler) {
 	}
 }
 
-// secretNamespaces are the ${…} namespaces a `vars` state may never bind from.
-//
-// ${run.credentials.*} and ${run.user_bearer} are FAIL-CLOSED by design:
-// unresolved, they drop the whole header rather than emit a placeholder. A vars
-// state that could copy one into ${var.x} would convert a fail-closed secret
-// into a fail-open plaintext string — and that string is then a legitimate
-// Memory key, a prompt fragment, and a value in every transcript, snapshot and
-// prompt-cache entry downstream.
-//
-// Secrets keep their own namespace and their own posture. Variables are
-// non-secret BY CONSTRUCTION, which is what lets the expander substitute an
-// unresolved one to empty instead of dropping its container.
-var secretNamespaces = []string{"${run.credentials.", "${run.user_bearer"}
-
 func validateSet(out *issues, at stateAt, set map[string]string) {
 	for _, name := range sortedKeys(set) {
 		field := PathKey("set", name)
-		if !varNameRe.MatchString(name) {
+		if teamspec.ValidateVarName(name) != nil {
 			out.in(at, field, "team definition: state %q set key %q must match [a-zA-Z0-9_-]{1,64}", at.id, name)
 		}
-		if readsSecretNamespace(set[name]) {
+		if teamspec.ReadsSecretNamespace(set[name]) {
 			out.in(at, field, "team definition: state %q set %q reads the credentials namespace — "+
 				"variables are non-secret by construction; a secret copied into one becomes a plaintext "+
 				"value in every transcript, snapshot and prompt-cache entry downstream", at.id, name)
 		}
 	}
-}
-
-// readsSecretNamespace reports whether a variable's value names a secret
-// namespace. One reader for every place a variable is given a value by the
-// author or the caller — a vars state's `set`, a declared default, a value
-// supplied at start — so the three cannot disagree about what a secret is.
-func readsSecretNamespace(value string) bool {
-	for _, ns := range secretNamespaces {
-		if strings.Contains(value, ns) {
-			return true
-		}
-	}
-	return false
 }
 
 // validateCapture is captureIssues' first finding for a state with no
@@ -423,7 +391,7 @@ func validateCapture(stateID string, capture map[string]string) error {
 func captureIssues(out *issues, at stateAt, key string, capture map[string]string) {
 	for _, name := range sortedKeys(capture) {
 		field := PathKey(key, name)
-		if !varNameRe.MatchString(name) {
+		if teamspec.ValidateVarName(name) != nil {
 			out.in(at, field, "team definition: state %q capture key %q must match [a-zA-Z0-9_-]{1,64}", at.id, name)
 		}
 		if _, err := jsonpath.Parse(capture[name]); err != nil {

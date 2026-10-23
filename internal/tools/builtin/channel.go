@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -260,9 +261,9 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	}
 	// The spelling a team's own channels are stored under is never an address:
 	// a team's own agent names one as "./<name>", and nobody else can.
-	if store.IsTeamChannelName(name) {
+	if teamspec.IsChannelName(name) {
 		return tools.ChannelDef{}, "", "", refuseChannel(errPermission, "A team's own channel is named \"./<name>\", and only that team's own agents may use one.",
-			"Channel tool: channel names under %q are reserved", store.TeamChannelPrefix)
+			"Channel tool: channel names under %q are reserved", teamspec.ChannelPrefix)
 	}
 	def, ok := policy.Channels[name]
 	if !ok {
@@ -280,7 +281,7 @@ func (c *Channel) resolveChannel(ctx context.Context, policy tools.ChannelPolicy
 	// write, and its entry carries the reserved name its messages are stored
 	// under; every op reads and writes def.Name, never the spelling.
 	if _, isLocal := teamgraph.LocalRef(name); isLocal {
-		if !store.IsTeamChannelName(def.Name) {
+		if !teamspec.IsChannelName(def.Name) {
 			return tools.ChannelDef{}, "", "", refuseChannel(errBusiness, "Use another channel.", "Channel tool: channel %q has no stored name (runtime bug)", name)
 		}
 	} else {

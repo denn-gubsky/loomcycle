@@ -548,6 +548,10 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if sc := shellCredentialsReport(c.Cfg, tools.PolicyOf(ctx).ShellCreds); sc != nil {
 		out["shell_credentials"] = sc
 	}
+	// The Git network operations this run may perform (RFC FB), so an agent
+	// can tell a refused clone or push from a broken remote. Always present:
+	// an empty list is the answer "local repository work only".
+	out["git_remote"] = tools.PolicyOf(ctx).GitRemote.Ops()
 	// principal: the resolved auth identity (RFC L) — WHO this run acts as and
 	// what its credential may do. Non-secret: subject + tenant + scopes + the
 	// token DEF id and the 6-char log-correlation suffix; NEVER the bearer
