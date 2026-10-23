@@ -4030,8 +4030,16 @@ type Env struct {
 	// embedded UI. Read once at startup; operator-set only, because a bundle
 	// runs same-origin with the session cookie. A bundle that fails
 	// verification falls back to the embedded UI (internal/webui). Non-secret.
-	WebUIDir  string
-	AuthToken string
+	WebUIDir string
+	// WebUIBundleURL (LOOMCYCLE_WEBUI_BUNDLE_URL) and WebUIBundleSHA256
+	// (LOOMCYCLE_WEBUI_BUNDLE_SHA256) name a Web UI bundle archive (.tar.gz) to
+	// fetch once over https, verify against the pinned digest, unpack under
+	// <DataDir>/webui/<sha256>/ and serve instead of the embedded UI. Set both
+	// or neither, and not with WebUIDir; validate refuses the rest at load. The
+	// URL is not logged beyond its host: a query string may carry a token.
+	WebUIBundleURL    string
+	WebUIBundleSHA256 string
+	AuthToken         string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
@@ -5328,6 +5336,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
 		UILoginOrigins:              splitCommaTrim(os.Getenv("LOOMCYCLE_UI_LOGIN_ORIGINS")),
 		WebUIDir:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),
+		WebUIBundleURL:              strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_URL")),
+		WebUIBundleSHA256:           strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_SHA256")),
 		AuthToken:                   os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		OperatorTokenPepper:         os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),
@@ -8588,6 +8598,9 @@ func validate(c *Config) error {
 	if err := netguard.ValidatePrivateHostAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
 		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
 	}
+	if err := validateWebUIBundleSource(c.Env); err != nil {
+		return err
+	}
 	// RFC BA: inline skill names (top-level `skills:` map keys) share the
 	// `/`-grouped grammar with SkillsRoot dir names + SkillDef create/fork
 	// targets. Validate here so a malformed inline key (glob char, `..`,
@@ -9608,6 +9621,43 @@ var replicaIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 // coord package can call it without re-implementing the regex.
 func ValidateReplicaID(id string) error {
 	return validateReplicaID(id)
+}
+
+// validateWebUIBundleSource checks LOOMCYCLE_WEBUI_BUNDLE_URL and
+// LOOMCYCLE_WEBUI_BUNDLE_SHA256 at load. Only an operator sets them, so a
+// mistake is refused here, where the operator sees it, rather than discovered
+// as a fallback to the embedded UI after a boot; a failed DOWNLOAD still only
+// falls back (internal/webui). With LOOMCYCLE_WEBUI_DIR as well there is no
+// obvious winner, so that is refused too rather than given a silent
+// precedence. User info is refused because these variables are not handled as
+// secrets; a signed URL's query string is accepted and kept out of the logs.
+// No error quotes the URL.
+func validateWebUIBundleSource(e Env) error {
+	const urlVar, shaVar = "LOOMCYCLE_WEBUI_BUNDLE_URL", "LOOMCYCLE_WEBUI_BUNDLE_SHA256"
+	if e.WebUIBundleURL == "" && e.WebUIBundleSHA256 == "" {
+		return nil
+	}
+	if e.WebUIBundleURL == "" || e.WebUIBundleSHA256 == "" {
+		return fmt.Errorf("%s and %s must be set together", urlVar, shaVar)
+	}
+	if e.WebUIDir != "" {
+		return fmt.Errorf("%s and LOOMCYCLE_WEBUI_DIR are both set; set one of them", urlVar)
+	}
+	u, err := url.Parse(e.WebUIBundleURL)
+	switch {
+	case err != nil:
+		return fmt.Errorf("%s is not a valid URL", urlVar)
+	case u.Scheme != "https":
+		return fmt.Errorf("%s must be an https URL", urlVar)
+	case u.Host == "":
+		return fmt.Errorf("%s has no host", urlVar)
+	case u.User != nil:
+		return fmt.Errorf("%s must not carry user info; use a signed query string or a public URL", urlVar)
+	}
+	if len(e.WebUIBundleSHA256) != 64 || strings.Trim(e.WebUIBundleSHA256, "0123456789abcdef") != "" {
+		return fmt.Errorf("%s must be the archive's SHA-256 as 64 lowercase hex characters", shaVar)
+	}
+	return nil
 }
 
 func validateReplicaID(id string) error {

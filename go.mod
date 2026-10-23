@@ -10,6 +10,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.3
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4
 	github.com/coder/websocket v1.8.15
+	github.com/denn-gubsky/loomcycle/internal/errkind v0.0.0
+	github.com/denn-gubsky/loomcycle/internal/otel v0.0.0
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	// gbash is Bashbox's sandbox and pre-1.0. A PR that bumps it runs
 	// `make bashbox-escape` and quotes the upstream changes to path resolution,
@@ -26,8 +28,8 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sergi/go-diff v1.4.0
 	go.opentelemetry.io/otel v1.47.0
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/crypto v0.58.0
@@ -94,4 +96,13 @@ require (
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
+)
+
+// In-tree modules (RFC FE). Each is built from its directory here; the root
+// is the only module that requires them, and none is ever tagged. These
+// directives are what scripts/ci/gomodules reads to find every module CI and
+// the Makefile must visit.
+replace (
+	github.com/denn-gubsky/loomcycle/internal/errkind => ./internal/errkind
+	github.com/denn-gubsky/loomcycle/internal/otel => ./internal/otel
 )

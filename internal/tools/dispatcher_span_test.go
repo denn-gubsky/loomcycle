@@ -1,4 +1,8 @@
-package otel_test
+package tools_test
+
+// These tests lived in internal/otel until it became its own Go module (RFC
+// FE): that module cannot import this one, and the code under test is the
+// dispatcher's span wire-up, so they belong here.
 
 import (
 	"context"
@@ -7,9 +11,26 @@ import (
 	"strings"
 	"testing"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// withInMemoryExporter installs a synchronous in-memory tracer provider for
+// the test and restores the previous one when it ends.
+func withInMemoryExporter(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	cleanup := lcotel.SetTracerProviderForTest(tp)
+	t.Cleanup(func() {
+		cleanup()
+		_ = tp.Shutdown(context.Background())
+	})
+	return exp
+}
 
 // TestDispatcherExecute_EmitsToolCallSpan integration-tests the wire-up
 // in internal/tools/tool.go:Dispatcher.Execute. A registered tool's

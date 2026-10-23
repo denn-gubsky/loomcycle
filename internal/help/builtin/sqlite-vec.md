@@ -79,11 +79,13 @@ export LOOMCYCLE_SQLITE_VEC_PATH=$(brew --prefix sqlite-vec)/lib/vec0
 apt install libsqlite3-mod-vec  # check distro for exact package name
 export LOOMCYCLE_SQLITE_VEC_PATH=/usr/lib/sqlite3/vec0
 
-# Then build loomcycle with the tag
-CGO_ENABLED=1 go install -tags=sqlite_vec github.com/denn-gubsky/loomcycle/cmd/loomcycle@v0.10.2
+# Then build loomcycle with the tag, from a clone of the repository
+# (`go install …@version` is not supported; see `help installation`)
+make build-ui
+CGO_ENABLED=1 go build -tags=sqlite_vec -o bin/loomcycle ./cmd/loomcycle
 
 # Run as usual — the build will load the extension at every Open()
-loomcycle --config loomcycle.yaml
+./bin/loomcycle --config loomcycle.yaml
 ```
 
 You'll see this boot log confirming the tag is active:

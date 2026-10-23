@@ -466,6 +466,35 @@ func (b *boot) buildModelResolver() {
 	b.resolver = resolver
 }
 
+// loadWebUI picks the Web UI to serve and logs the outcome. The bundle URL is
+// logged by host only: its path or query string can carry a token.
+func loadWebUI(cfg *config.Config) (*webui.Bundle, webui.Status) {
+	if cfg.Env.WebUIBundleURL == "" {
+		b, st, err := webui.LoadConfigured(cfg.Env.WebUIDir)
+		switch {
+		case err != nil:
+			log.Printf("webui: LOOMCYCLE_WEBUI_DIR=%s refused, serving the embedded UI: %v", cfg.Env.WebUIDir, err)
+		case b != nil:
+			log.Printf("webui: serving UI %s from LOOMCYCLE_WEBUI_DIR=%s", b.UIVersion(), cfg.Env.WebUIDir)
+		}
+		return b, st
+	}
+	host := webui.RedactedURL(cfg.Env.WebUIBundleURL)
+	b, st, err := webui.LoadFromURL(webui.URLSource{
+		URL:                  cfg.Env.WebUIBundleURL,
+		SHA256:               cfg.Env.WebUIBundleSHA256,
+		DataDir:              cfg.Env.DataDir,
+		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
+		Logf:                 log.Printf,
+	})
+	if err != nil {
+		log.Printf("webui: LOOMCYCLE_WEBUI_BUNDLE_URL (%s) refused, serving the embedded UI: %v", host, err)
+		return b, st
+	}
+	log.Printf("webui: serving UI %s from LOOMCYCLE_WEBUI_BUNDLE_URL (%s, sha256 %s)", b.UIVersion(), host, cfg.Env.WebUIBundleSHA256)
+	return b, st
+}
+
 // buildHTTPServer builds the *http.Server around the server's mux. It is
 // not started here; startListeners does that.
 func (b *boot) buildHTTPServer() {
@@ -474,15 +503,10 @@ func (b *boot) buildHTTPServer() {
 	a2aServer := b.a2aServer
 
 	// The Web UI is chosen once, before the mux is built: a verified bundle
-	// from LOOMCYCLE_WEBUI_DIR, else the embedded UI. A refused bundle is
-	// logged and never fails the boot — the operator still gets a working UI.
-	uiBundle, uiStatus, err := webui.LoadConfigured(cfg.Env.WebUIDir)
-	switch {
-	case err != nil:
-		log.Printf("webui: LOOMCYCLE_WEBUI_DIR=%s refused, serving the embedded UI: %v", cfg.Env.WebUIDir, err)
-	case uiBundle != nil:
-		log.Printf("webui: serving UI %s from LOOMCYCLE_WEBUI_DIR=%s", uiBundle.UIVersion(), cfg.Env.WebUIDir)
-	}
+	// from LOOMCYCLE_WEBUI_DIR or LOOMCYCLE_WEBUI_BUNDLE_URL (config refuses
+	// both at once), else the embedded UI. A refused bundle is logged and
+	// never fails the boot — the operator still gets a working UI.
+	uiBundle, uiStatus := loadWebUI(cfg)
 	srv.SetWebUIBundle(uiBundle, uiStatus)
 
 	// In path-mode A2A tenancy, the leading /{tenant} segment is stripped

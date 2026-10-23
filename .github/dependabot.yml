@@ -54,6 +54,27 @@ updates:
         applies-to: version-updates
         update-types: [minor, patch]
 
+  # The in-tree modules the root go.mod replaces (RFC FE). Each go.mod lists its
+  # own requirements, so each needs an entry. The root builds with the highest
+  # version any of them requires: a bump here that passes the root's version
+  # also changes what root `go mod tidy` writes, so CI's tidy check fails until
+  # the same PR runs `make tidy-all`. A root bump leaves these behind, which
+  # builds, but their own tests then run on the older version until this entry
+  # catches up.
+  - package-ecosystem: gomod
+    directories:
+      - /internal/errkind
+      - /internal/otel
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      go-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
   # --- npm: every tracked package-lock.json, one entry --------------------
   # One entry over all 13 directories (each keeps its own lockfile; there is no
   # workspace), grouped by dependency name: a bump of one package arrives as ONE
