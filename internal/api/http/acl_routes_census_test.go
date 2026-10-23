@@ -131,3 +131,33 @@ func TestACLRouteOps_EveryTwinOpHasARoute(t *testing.T) {
 		}
 	}
 }
+
+// POST /v1/_acldef takes every acldef op the twins take: the op table is
+// the one list both read, so an op the table has and the route's body
+// dispatch lacks fails here. An unknown op's refusal names the table's ops.
+func TestACLDefRoute_DispatchesEveryOpInTheTable(t *testing.T) {
+	_, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	rules := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	for _, op := range connector.ACLManagementOps(connector.ACLFamilyAclDef) {
+		code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"`+op+`","name":"probe","rules":`+rules+`}`)
+		if code >= 500 || strings.Contains(body, "unknown_op") {
+			t.Errorf("POST /v1/_acldef op=%s: %d %s", op, code, body)
+		}
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"no_such_op"}`)
+	if code != 400 || !strings.Contains(body, "unknown_op") {
+		t.Fatalf("unknown op: %d %s", code, body)
+	}
+	for _, op := range connector.ACLManagementOps(connector.ACLFamilyAclDef) {
+		if !strings.Contains(body, op) {
+			t.Errorf("the unknown-op refusal does not name %q: %s", op, body)
+		}
+	}
+	// The loop retired the probe list; bring it back and ask for the names.
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"put","name":"probe","rules":`+rules+`}`); code != 201 {
+		t.Fatalf("put: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"names"}`); code != 200 || !strings.Contains(body, `"names":["probe"]`) {
+		t.Errorf("op=names: %d %s", code, body)
+	}
+}

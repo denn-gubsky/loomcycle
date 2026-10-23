@@ -69,8 +69,8 @@ func (s *Server) aclTwin(ctx context.Context, family string, input json.RawMessa
 	}
 	// acldef asks its per-op question before it looks at the op, so an op it
 	// does not know is asked author and then refused (aclDefOp): the twin
-	// hands every op but names straight through.
-	if family == connector.ACLFamilyAclDef && head.Op != "names" {
+	// hands every op straight through, as the route does.
+	if family == connector.ACLFamilyAclDef {
 		var in struct {
 			Tenant string `json:"tenant,omitempty"`
 			aclDefRequest
@@ -85,13 +85,6 @@ func (s *Server) aclTwin(ctx context.Context, family string, input json.RawMessa
 		return aclFail(http.StatusBadRequest, "unknown_op", fmt.Sprintf("op must be one of %s", strings.Join(ops, ", ")))
 	}
 	switch family + "." + head.Op {
-	case "acldef.names":
-		var in aclTwinHead
-		if r := aclDecodeStrict(input, &in); r != nil {
-			return *r
-		}
-		return s.aclDefNames(ctx, in.Tenant)
-
 	case "groupdef.list":
 		var in aclTwinHead
 		if r := aclDecodeStrict(input, &in); r != nil {
