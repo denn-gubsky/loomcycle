@@ -698,6 +698,9 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 		return aclFail(http.StatusForbidden, "acl_self_elevation", "refused: "+err.Error()+" would change your own authority")
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	if r := s.aclBindingTargetCheck(ctx, tenant, req); r != nil {
+		return *r
+	}
 	row, err := s.store.AclBindingPut(ctx, store.AclBindingRow{TenantID: tenant, ACLName: req.ACL, SubjectKind: req.SubjectKind,
 		SubjectID: req.SubjectID, ExpiresAt: req.ExpiresAt.Time, CreatedBy: principalSubject(ctx)})
 	if err != nil {
@@ -705,6 +708,33 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 	}
 	s.aclChanged(ctx, tenant, "binding_written", row.BindingID)
 	return aclCreated(row)
+}
+
+// aclBindingTargetCheck refuses a binding that could never be in force: one
+// whose expiry has passed, and one to a list no layer has — not stored live
+// in the tenant or the shared tenant, not declared in config — which the
+// resolver would report as missing and match nothing. The lookup is the
+// resolver's own (ACLSource), so "missing" here and there cannot differ.
+// With no resolver wired no binding is evaluated, and there is nothing to
+// check against.
+func (s *Server) aclBindingTargetCheck(ctx context.Context, tenant string, req bindingRequest) *aclReply {
+	if !req.ExpiresAt.IsZero() && !req.ExpiresAt.After(time.Now()) {
+		r := aclFail(http.StatusBadRequest, "acl_binding_invalid", fmt.Sprintf("expires_at %s is in the past: the binding would never be in force", req.ExpiresAt.Format(time.RFC3339)))
+		return &r
+	}
+	if s.aclResolver == nil {
+		return nil
+	}
+	src, err := s.aclResolver.ACLSource(ctx, tenant, strings.TrimSpace(req.ACL))
+	if err != nil {
+		r := aclFail(http.StatusServiceUnavailable, "acl_unavailable", "the list could not be looked up; retry")
+		return &r
+	}
+	if src == "" {
+		r := aclFail(http.StatusBadRequest, "acl_binding_invalid", fmt.Sprintf("list %q does not exist (or is retired): a binding to it would match nothing — create the list first", req.ACL))
+		return &r
+	}
+	return nil
 }
 
 func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclReply {

@@ -90,3 +90,39 @@ func TestResolve_StaticLayerUnderTheStore(t *testing.T) {
 		t.Errorf("without the static source alice's groups = %v", alice.Groups)
 	}
 }
+
+// ACLSource answers in the resolver's own order: the tenant's live row, the
+// shared tenant's, then config; a retired row and a built-in name are not
+// there.
+func TestACLSource_FollowsTheResolversLookupOrder(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	r := New(st, authz.ModeCompat, 0)
+	r.SetStatic(staticFixture)
+	rules := json.RawMessage(`[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`)
+	for _, row := range []store.AclDefRow{
+		{TenantID: "acme", Name: "own", Rules: rules},
+		{TenantID: "", Name: "shared", Rules: rules},
+		{TenantID: "acme", Name: "no-shell", Rules: rules}, // shadows the config list
+		{TenantID: "acme", Name: "gone", Rules: rules},
+	} {
+		if _, err := st.AclDefPut(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.AclDefRetire(ctx, "acme", "gone"); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"own": SourceStore, "shared": SourceStore, "no-shell": SourceStore, "no-admin": SourceConfig,
+		"gone": "", "missing": "", authz.BaselineAdmin: "",
+	} {
+		got, err := r.ACLSource(ctx, "acme", name)
+		if err != nil || got != want {
+			t.Errorf("ACLSource(acme, %s) = %q, %v; want %q", name, got, err, want)
+		}
+	}
+	if got, _ := r.ACLSource(ctx, "other", "own"); got != "" {
+		t.Errorf("another tenant's list is visible: %q", got)
+	}
+}

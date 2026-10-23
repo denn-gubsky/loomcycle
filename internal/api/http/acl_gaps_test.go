@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -80,5 +81,41 @@ func TestACLRows_LeaveUnsetTimesOut(t *testing.T) {
 	res := twinCall(t, srv, op, "aclbinding", `{"op":"create","acl":"no-shell","subject_kind":"user","subject_id":"carol","expires_at":""}`)
 	if res.IsError || strings.Contains(res.Text, "expires_at") {
 		t.Errorf("twin binding with expires_at \"\": %s", res.Text)
+	}
+}
+
+// A binding to a list that no layer has (stored, shared or config-declared)
+// applies nothing, and one that has already expired is never in force:
+// both are refused rather than stored.
+func TestACLBindings_RefuseAMissingListAndAPastExpiry(t *testing.T) {
+	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		c.ResolvedACL = &authz.Static{ACLs: map[string]authz.ACL{"from-config": {Name: "from-config",
+			Rules: []authz.Rule{{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}}}}}}
+	})
+	rules := `[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"create","name":"retired-one","rules":`+rules+`}`); code != 201 {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	if code, _ := bearerCall(t, ts, operatorBearer, "POST", "/v1/_acldef", `{"op":"retire","name":"retired-one"}`); code != 200 {
+		t.Fatal("retire")
+	}
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct{ body, want string }{
+		{`{"acl":"nope","subject_kind":"user","subject_id":"alice"}`, "does not exist"},
+		{`{"acl":"retired-one","subject_kind":"user","subject_id":"alice"}`, "does not exist"},
+		{`{"acl":"builtin:admin","subject_kind":"user","subject_id":"alice"}`, "does not exist"},
+		{`{"acl":"from-config","subject_kind":"user","subject_id":"alice","expires_at":"` + past + `"}`, "in the past"},
+	} {
+		code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_aclbinding", c.body)
+		if code != 400 || !strings.Contains(body, c.want) {
+			t.Errorf("%s: %d %s, want 400 %q", c.body, code, body, c.want)
+		}
+	}
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_aclbinding", `{"acl":"from-config","subject_kind":"user","subject_id":"alice"}`); code != 201 {
+		t.Errorf("a binding to a config-declared list: %d %s", code, body)
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	if res := twinCall(t, srv, op, "aclbinding", `{"op":"create","acl":"nope","subject_kind":"user","subject_id":"alice"}`); !res.IsError || !strings.Contains(res.Text, "does not exist") {
+		t.Errorf("twin binding to a missing list: %s", res.Text)
 	}
 }
