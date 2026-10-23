@@ -831,6 +831,9 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if err := config.ValidateShellCredentials(req.ShellCredentials); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
+	if err := config.ValidateGitRemote(req.GitRemote); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	if _, collides := s.cfg().Agents[req.Name]; collides {
 		return connector.AgentDescriptor{}, errRegisterNameUnavailable(req.Name)
 	}
@@ -865,6 +868,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		Interruption:     req.Interruption,
 		CryptoScopes:     req.CryptoScopes,
 		ShellCredentials: req.ShellCredentials,
+		GitRemote:        req.GitRemote,
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {

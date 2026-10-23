@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 )
@@ -28,6 +29,13 @@ type call struct {
 	max  int64
 	read atomic.Int64
 	over atomic.Bool
+	// maxWrite bounds the request-body bytes of the whole call (a push's
+	// pack, a fetch's wants and haves). Zero leaves them uncounted, as a
+	// one-commit Fetch has always run.
+	maxWrite int64
+	wrote    atomic.Int64
+	// writeOver is set when a request body passed maxWrite.
+	writeOver atomic.Bool
 	// status is the last error status (400 and up) a response of the fetch
 	// had, for the detail of a refusal (refusalDetail).
 	status atomic.Int32
@@ -36,14 +44,27 @@ type call struct {
 	packRefused *atomic.Bool
 }
 
-var errOverLimit = errors.New("gitsource: fetch passed its byte limit")
+var (
+	errOverLimit      = errors.New("gitsource: fetch passed its byte limit")
+	errWriteOverLimit = errors.New("gitsource: the request passed its upload byte limit")
+)
 
 var installOnce sync.Once
 
-// installTransport makes this package's dispatcher the process's client for
-// git over https. Nothing else in loomcycle uses the library's client.
+// InstallTransport makes this package's dispatcher the process's client for
+// git over https, and replaces the library's clients for every other scheme
+// (http, file, git, ssh) with one that refuses. The library installs those
+// process-wide by default; a repository's own config names its remotes, so
+// a URL from it must not be able to reach a local path, a plain-text
+// protocol or an ssh agent. Nothing else in loomcycle uses the library's
+// clients. Idempotent.
+func InstallTransport() { installTransport() }
+
 func installTransport() {
 	installOnce.Do(func() {
+		for _, scheme := range []string{"http", "file", "git", "ssh"} {
+			client.InstallProtocol(scheme, refusingTransport{scheme: scheme})
+		}
 		client.InstallProtocol("https", githttp.NewClient(&http.Client{
 			Transport: dispatcher{},
 			// No redirect is followed, not even to the same host. A forge
@@ -66,6 +87,10 @@ func (dispatcher) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	if r.URL.Scheme != "https" || hostKey(r.URL) != st.host {
 		return nil, fmt.Errorf("gitsource: request to %q refused; this fetch talks to %q over https only", r.URL.Host, st.host)
+	}
+	if st.maxWrite > 0 && r.Body != nil && r.Body != http.NoBody {
+		r = r.Clone(r.Context())
+		r.Body = &countedUpload{ReadCloser: r.Body, st: st}
 	}
 	resp, err := st.rt.RoundTrip(r)
 	if err != nil {
@@ -99,6 +124,36 @@ func (b *countedBody) Read(p []byte) (int, error) {
 		return 0, errOverLimit
 	}
 	return n, err
+}
+
+// countedUpload counts a request body against the call's upload limit and
+// fails the read that passes it, which stops the request.
+type countedUpload struct {
+	io.ReadCloser
+	st *call
+}
+
+func (b *countedUpload) Read(p []byte) (int, error) {
+	if b.st.writeOver.Load() {
+		return 0, errWriteOverLimit
+	}
+	n, err := b.ReadCloser.Read(p)
+	if b.st.wrote.Add(int64(n)) > b.st.maxWrite {
+		b.st.writeOver.Store(true)
+		return 0, errWriteOverLimit
+	}
+	return n, err
+}
+
+// refusingTransport is the client for a scheme loomcycle does not speak.
+type refusingTransport struct{ scheme string }
+
+func (t refusingTransport) NewUploadPackSession(*transport.Endpoint, transport.AuthMethod) (transport.UploadPackSession, error) {
+	return nil, fmt.Errorf("gitsource: %s:// is not allowed; only https is", t.scheme)
+}
+
+func (t refusingTransport) NewReceivePackSession(*transport.Endpoint, transport.AuthMethod) (transport.ReceivePackSession, error) {
+	return nil, fmt.Errorf("gitsource: %s:// is not allowed; only https is", t.scheme)
 }
 
 // withCall is for tests of the dispatcher alone.

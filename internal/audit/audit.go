@@ -99,6 +99,19 @@ type Event struct {
 	CryptoOutcome string `json:"crypto_outcome,omitempty"` // ok | refused | failed
 	CryptoRunID   string `json:"crypto_run_id,omitempty"`
 	CryptoAgent   string `json:"crypto_agent,omitempty"`
+
+	// --- Git network operation (Action = "git_clone" | "git_fetch" |
+	// "git_pull" | "git_push" | "git_ls_remote") ---
+	//
+	// Which run reached which repository, with which credential, and what it
+	// changed: the credential's reference ("$cred:<name>"), never its value.
+	GitHost       string   `json:"git_host,omitempty"`
+	GitRepository string   `json:"git_repository,omitempty"` // host + path
+	GitRunID      string   `json:"git_run_id,omitempty"`
+	GitAgent      string   `json:"git_agent,omitempty"`
+	GitCredential string   `json:"git_credential,omitempty"`
+	GitRefs       []string `json:"git_refs,omitempty"`    // refs updated
+	GitOutcome    string   `json:"git_outcome,omitempty"` // ok | a failure class
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
+	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
@@ -113,6 +114,7 @@ func (b *boot) wireCredentials() {
 	memoryTool := b.memoryTool
 	teamDefTool := b.teamDefTool
 	volumeDefTool := b.volumeDefTool
+	gitTool := b.gitTool
 	credentialDefTool := b.credentialDefTool
 	cryptoTool := b.cryptoTool
 	documentTool := b.documentTool
@@ -188,7 +190,20 @@ func (b *boot) wireCredentials() {
 		volumeDefTool.Git = gitSource
 		log.Printf("git source: enabled for %s (max %d MiB fetched, %d MiB per object, %d at once)",
 			strings.Join(gitSource.Hosts, ", "), gitSource.MaxBytes>>20, gitSource.MaxObjectBytes>>20, cap(gitSource.Slots))
+		// RFC FB: the Git tool's clone, fetch and pull share these hosts,
+		// limits and slots; push has its own host list and a resolver whose
+		// $ghapp: tokens may write.
+		gitTool.Source = gitSource
+		gitTool.PushCredential = builtin.GitPushCredentialResolver(credEngine, ghAppMinter.TokenForRepositoryWrite, registerSecret)
+		if len(gitTool.PushHosts) > 0 {
+			log.Printf("git: push enabled for %s (max %d MiB per push)", strings.Join(gitTool.PushHosts, ", "), gitTool.PushMaxBytes>>20)
+		}
+	} else if len(gitTool.PushHosts) > 0 {
+		log.Printf("git: LOOMCYCLE_GIT_PUSH_HOSTS is set but LOOMCYCLE_GIT_SOURCE_HOSTS is not; the Git tool has no network, push included")
 	}
+	// go-git installs file, git, ssh and plain-http clients process-wide;
+	// replace them with refusing ones now, before any repository is read.
+	gitsource.InstallTransport()
 	// A remote memory backend or document source may name its peer bearer as
 	// api_key_env "$cred:<name>": a tenant-level credential resolved, through
 	// this same engine, in the tenant the def was read in.

@@ -419,3 +419,62 @@ func TestMinter_AnUnexpectedAnswerIsReportedWithoutItsBody(t *testing.T) {
 		t.Errorf("err = %v, want the status and GitHub's message alone", err)
 	}
 }
+
+// A token for a push (RFC FB D6) is narrowed to the one repository with
+// write access to its contents and nothing else, is never the read token
+// cached for a clone of the same repository, and is refused, without asking
+// GitHub, when the stored config grants contents less than write.
+func TestMinter_TokenForRepositoryWriteAsksForOneRepositoryContentsWrite(t *testing.T) {
+	_, keyPEM := testKeyPEM(t)
+	var bodies []string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_minted_%d","expires_at":%q}`, len(bodies), time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	}))
+	defer srv.Close()
+	m := NewGitHubAppMinter(nil, srv.Client())
+	wide := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":{"contents":"write","issues":"write"}}`, keyPEM, srv.URL)
+
+	read, err := m.TokenForRepository(context.Background(), "t", wide, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write, err := m.TokenForRepositoryWrite(context.Background(), "t", wide, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if write == read {
+		t.Fatal("the push token is the clone's cached read token")
+	}
+	var asked struct {
+		Repositories []string          `json:"repositories"`
+		Permissions  map[string]string `json:"permissions"`
+	}
+	if err := json.Unmarshal([]byte(bodies[len(bodies)-1]), &asked); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked.Repositories) != 1 || asked.Repositories[0] != "app" ||
+		len(asked.Permissions) != 1 || asked.Permissions["contents"] != "write" {
+		t.Errorf("asked GitHub for %s, want repository app with contents:write and nothing else", bodies[len(bodies)-1])
+	}
+	if again, _ := m.TokenForRepository(context.Background(), "t", wide, "app"); again != read {
+		t.Error("a clone after a push was handed a different token than its cached read one")
+	}
+
+	for _, perms := range []string{`{"contents":"read"}`, `{"issues":"write"}`, `{"contents":""}`} {
+		cfg := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"permissions":%s}`, keyPEM, srv.URL, perms)
+		before := len(bodies)
+		if _, err := m.TokenForRepositoryWrite(context.Background(), "t", cfg, "app"); err == nil {
+			t.Errorf("permissions %s: a push token was given", perms)
+		}
+		if len(bodies) != before {
+			t.Errorf("permissions %s: GitHub was asked", perms)
+		}
+	}
+	listed := fmt.Sprintf(`{"app_id":"1","installation_id":"2","private_key":%q,"base_url":%q,"repositories":["web"]}`, keyPEM, srv.URL)
+	if _, err := m.TokenForRepositoryWrite(context.Background(), "t", listed, "app"); err == nil {
+		t.Error("a repository the config does not list was given a push token")
+	}
+}
