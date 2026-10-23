@@ -33,6 +33,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
@@ -871,6 +872,9 @@ func (s *Server) UnaryAuthInterceptor() googlegrpc.UnaryServerInterceptor {
 		if err := enforceScope(authedCtx, info.FullMethod); err != nil {
 			return nil, err
 		}
+		if err := enforceOp(authedCtx, info.FullMethod, req); err != nil {
+			return nil, err
+		}
 		return handler(authedCtx, req)
 	}
 }
@@ -942,6 +946,10 @@ const grpcMethodPrefix = "/loomcycle.v1.Loomcycle/"
 // intent: run create/cancel/continue need runs:create; reads need runs:read;
 // the channel surface uses the channel scopes. Health is handled before this
 // check (it bypasses auth entirely).
+//
+// A substrate:tenant entry is also the member path (RFC CB, RFC EZ Q1): a
+// non-isolated principal without the scope reaches the RPC when its HTTP twin
+// is on the HTTP member path — see enforceScope and internal/api/memberpath.
 var grpcConsumerScopes = map[string]string{
 	"Run":              auth.ScopeRunsCreate,
 	"Continue":         auth.ScopeRunsCreate,
@@ -982,6 +990,13 @@ var grpcConsumerScopes = map[string]string{
 	"SubscribeChannel":    auth.ScopeChannelRead,
 	"PeekChannel":         auth.ScopeChannelRead,
 	"ListChannels":        auth.ScopeChannelRead,
+	// The fan-in / fan-out twins of POST /v1/_channels/_await and _broadcast.
+	// They hold a non-admin caller to its own user-scoped channels exactly as
+	// the per-channel RPCs above do (principalMayUseChannelScope), so they take
+	// the same scopes. Unmapped, they defaulted to substrate:admin while their
+	// HTTP routes admitted a tenant operator and a member.
+	"AwaitChannels":     auth.ScopeChannelRead,
+	"BroadcastChannels": auth.ScopeChannelPublish,
 	// RFC AV: the usage/cost report is tenant-readable (the handler tenant-scopes
 	// the aggregation), mirroring the HTTP /v1/_usage ScopeTenant gate.
 	"UsageReport": auth.ScopeTenant,
@@ -997,8 +1012,9 @@ var grpcConsumerScopes = map[string]string{
 	// admin-only), mirroring the HTTP /v1/_limits ScopeTenant gate.
 	"TokenLimit": auth.ScopeTenant,
 	// The timed override of an agent's no-trace mode: an admin for any tenant,
-	// a tenant operator for its own. gRPC has no member bypass, so this gate
-	// alone keeps a member out; the connector checks the caller again.
+	// a tenant operator for its own. Its HTTP routes are carved out of the
+	// member path, so a member is refused here too; the connector checks the
+	// caller again.
 	"RetentionOverride": auth.ScopeTenant,
 
 	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
@@ -1052,23 +1068,30 @@ var grpcConsumerScopes = map[string]string{
 	// RFC CN additionally admits an isolated substrate:user caller via the
 	// enforceScope self-service carve-out, confined to scope=user by the handler.
 	"CredentialDef": auth.ScopeTenant,
-	// RFC EP Crypto outside a run, mirroring POST /v1/_crypto. ScopeTenant
-	// alone gates it: gRPC has no member bypass, and it is deliberately NOT in
+	// RFC EP Crypto outside a run, mirroring POST /v1/_crypto. ScopeTenant,
+	// and its route is carved out of the member path; it is deliberately NOT in
 	// the credential self-service carve-out (a caller who can decrypt with the
 	// tenant's keys reads whatever the tenant sealed) nor on the run plane.
 	"Crypto": auth.ScopeTenant,
 	// RFC BE History — scope-aware chat browse/annotate. ScopeTenant route
-	// floor (a tenant operator may call it); the cross-tenant `global` scope is
-	// admin-gated inside the tool. Same posture as the HTTP /v1/_history route.
+	// floor (a tenant operator may call it; a member on the member path); the
+	// cross-tenant `global` scope is admin-gated inside the tool, and a member
+	// is capped to its own chats (substrateGRPCCtx). The HTTP /v1/_history
+	// route also admits an isolated user (runs:read); this RPC does not.
 	"History": auth.ScopeTenant,
+	// The Memory tool outside a run (RFC CD Part D), tenant-confined like the
+	// /v1/_memory/* routes it parallels: scope and tenant come from the
+	// principal (substrateGRPCUserCtx), never the wire. Unmapped, it defaulted
+	// to substrate:admin, against its proto contract.
+	"Memory": auth.ScopeTenant,
 	// Evaluation outside a run: runs:read, as POST /v1/_evaluation and the MCP
 	// `evaluation` tool. The floor admits an isolated user; which ops it may use
 	// is tools.OffRunEvaluationPolicy (substrateGRPCCtx), not this gate.
 	"Evaluation": auth.ScopeRunsRead,
 	// RFC EZ access-control management, gated as the HTTP routes are: groups,
 	// lists and bindings are the tenant operator's (the routes' ScopeTenant +
-	// member carve-out — gRPC has no member path, so the scope alone does
-	// it), and any authenticated principal may ask the authz questions about
+	// member carve-out, which the member path here reads through the twins),
+	// and any authenticated principal may ask the authz questions about
 	// itself ("" — the shared implementation confines a non-operator to its
 	// own subject). The shared implementation re-checks every one of these.
 	"GroupDef":   auth.ScopeTenant,
@@ -1125,12 +1148,20 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
+		// RFC CB member path, as on HTTP (RFC EZ Q1): a NON-ISOLATED principal
+		// without substrate:tenant reaches the RPC when its HTTP twin is on the
+		// HTTP member path. The answer comes from the twin route through the
+		// one carve-out list both transports read (memberpath), so the two
+		// cannot drift; an RPC whose operations differ there is held to each
+		// call's own operation by enforceOp. Every handler behind it confines
+		// the caller to its own tenant, as the HTTP handlers do.
+		memberOK := memberpath.RPC(strings.TrimPrefix(fullMethod, grpcMethodPrefix), required) && !auth.IsIsolated(p, ok)
 		// RFC CN: the credential-store RPC admits an isolated substrate:user caller
 		// for self-service of its OWN scope=user tokens — the handler
 		// (credential.ConstrainToUserScope) confines it to scope=user before the
-		// tool. tenant/agent scope still needs substrate:tenant. (gRPC has no RFC CB
-		// member bypass, so a plain member still uses the HTTP surface.)
-		if !(isCredentialSelfServiceRPC(fullMethod) && auth.IsIsolated(p, ok)) {
+		// tool. tenant/agent scope still needs substrate:tenant.
+		selfOK := isCredentialSelfServiceRPC(fullMethod) && auth.IsIsolated(p, ok)
+		if !(memberOK || selfOK) {
 			return status.Errorf(codes.PermissionDenied, "insufficient scope: %s required", required)
 		}
 	}
@@ -1147,6 +1178,47 @@ func enforceACL(ctx context.Context, p auth.Principal, fullMethod string) error 
 	if !governed {
 		return nil
 	}
+	return enforceACLSurface(ctx, p, surface)
+}
+
+// enforceOp holds a call of an RPC that carries its operation in the request
+// (memberpath.ByOp — TokenLimit's list/set/delete) to that operation's own HTTP
+// twin: a member admitted to the RPC because one operation is on the member
+// path is refused the others, and every caller is asked the twin route's own
+// ACL question (the RPC-level question is the family's weakest verb). An op
+// the twin table does not know is refused to a member and left to the handler
+// for anyone else. Streaming RPCs carry no op and are never op-keyed.
+func enforceOp(ctx context.Context, fullMethod string, req any) error {
+	rpc := strings.TrimPrefix(fullMethod, grpcMethodPrefix)
+	if !memberpath.ByOp(rpc) {
+		return nil
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	op := ""
+	if r, isOp := req.(interface{ GetOp() string }); isOp {
+		op = r.GetOp()
+	}
+	twin, known := memberpath.OpTwin(rpc, op)
+	if required := requiredScopeForRPC(fullMethod); !auth.HasScope(p.Scopes, required) {
+		if !known || !memberpath.Route(required, twin.Method, twin.Path) {
+			return status.Errorf(codes.PermissionDenied, "insufficient scope: %s required", required)
+		}
+	}
+	if !known {
+		return nil
+	}
+	surface, governed := authz.HTTPSurface(twin.Method, twin.Path)
+	if !governed {
+		return nil
+	}
+	return enforceACLSurface(ctx, p, surface)
+}
+
+// enforceACLSurface asks the engine one surface's question for p.
+func enforceACLSurface(ctx context.Context, p auth.Principal, surface authz.Surface) error {
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
 	switch {
 	case res.Unavailable:
@@ -1161,6 +1233,28 @@ func enforceACL(ctx context.Context, p auth.Principal, fullMethod string) error 
 	}
 	return nil
 }
+
+// RPCAdmits reports whether an authenticated principal p gets past the legacy
+// gates of rpc for a call of operation op ("" for an RPC that carries none):
+// the scope gate with its member and self-service paths, the run-plane
+// restriction and enforceOp — under compat with no access-control rows, so the
+// ACL adds nothing. It is what the cross-transport parity test
+// (internal/api/acltest) compares with the HTTP twin's http.RouteAdmits; the
+// interceptors run the same functions.
+func RPCAdmits(p auth.Principal, rpc, op string) bool {
+	p.Effective = nil
+	ctx := authz.WithMode(auth.WithPrincipal(context.Background(), p), authz.ModeCompat)
+	fullMethod := grpcMethodPrefix + rpc
+	if enforceScope(ctx, fullMethod) != nil {
+		return false
+	}
+	return enforceOp(ctx, fullMethod, opRequest(op)) == nil
+}
+
+// opRequest is a request carrying only an op, for RPCAdmits.
+type opRequest string
+
+func (o opRequest) GetOp() string { return string(o) }
 
 // isCredentialSelfServiceRPC reports whether fullMethod is the RFC AR credential
 // store RPC — the one RFC CN opens to an isolated substrate:user caller (see

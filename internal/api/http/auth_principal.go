@@ -131,6 +131,18 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	return required, memberOK || selfOK || gatewayMemberOK
 }
 
+// RouteAdmits reports whether an authenticated principal p gets past the
+// legacy gates of the route — its scope (with the member, self-service and
+// gateway paths) and the run-plane restriction — before any ACL question. It
+// is what the cross-transport parity test (internal/api/acltest) asks of every
+// gRPC RPC's HTTP twin; authMiddleware runs the same two functions.
+func RouteAdmits(p auth.Principal, method, path string) bool {
+	if _, admitted := scopeGate(p, method, path); !admitted {
+		return false
+	}
+	return !p.Restrictions.RunPlaneOnly() || runPlaneRoute(method, path)
+}
+
 // admitPrincipalAgent refuses a top-level run of an agent the caller's token
 // is not limited to. EVERY place that creates a top-level run row calls it
 // (TestRunRowCreators_AllAdmitThePrincipal holds that), before it looks the
