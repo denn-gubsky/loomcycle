@@ -164,6 +164,17 @@ func HTTPSurface(method, path string) (Surface, bool) {
 				return instance("read", "def", "mcpserver/*"), true
 			}
 		}
+	// Names that end in "def" but ask a STRONGER question than the generic
+	// `_<family>def` case below must come first: a switch takes the first
+	// matching case, and these two sat below it unreachable, so a POST to
+	// /v1/_acldef was gated as `read def:acl/*` instead of `author`.
+	case name == "credentialdef":
+		return typeLevel("use", "credential"), true
+	case name == "acldef", name == "aclbinding":
+		if get {
+			return instance("read", "def", "acl/*"), true
+		}
+		return instance("author", "def", "acl/*"), true
 	case strings.HasSuffix(name, "def") && name != "operatortokendef":
 		fam := defFamily(strings.TrimSuffix(name, "def"))
 		if len(rest) >= 3 && rest[2] == "overridable" {
@@ -219,8 +230,6 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return typeLevel("read", "document"), true
 	case name == "volumes":
 		return typeLevel("read", "volume"), true
-	case name == "credentialdef":
-		return typeLevel("use", "credential"), true
 	case name == "crypto":
 		return typeLevel("use", "crypto"), true
 	case name == "usage":
@@ -276,11 +285,6 @@ func HTTPSurface(method, path string) (Surface, bool) {
 			return instance("read", "principal", "group:*"), true
 		}
 		return instance("manage", "principal", "group:*"), true
-	case name == "acldef", name == "aclbinding":
-		if get {
-			return instance("read", "def", "acl/*"), true
-		}
-		return instance("author", "def", "acl/*"), true
 	case name == "authz":
 		return Surface{}, false
 	}
