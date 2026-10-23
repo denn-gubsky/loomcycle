@@ -160,6 +160,21 @@ var handlersByName = map[string]toolHandler{
 	// keys and own user keys (never an agent's). Identity from the principal
 	// ctx, never the wire; see handleCrypto.
 	"crypto": handleCrypto,
+	// RFC EZ — access-control management: groups, lists, bindings and the
+	// authz questions, through the implementation the HTTP routes share
+	// (acl_tools.go). ctx is passed as authenticated; nothing is stamped.
+	"groupdef": wrapACL("groupdef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.GroupDef(ctx, in)
+	}),
+	"acldef": wrapACL("acldef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.AclDef(ctx, in)
+	}),
+	"aclbinding": wrapACL("aclbinding", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.AclBinding(ctx, in)
+	}),
+	"authz": wrapACL("authz", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.Authz(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),
