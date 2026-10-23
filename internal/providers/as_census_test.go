@@ -68,22 +68,22 @@ const asFile = "internal/providers/as.go"
 
 var censusSkipDirs = map[string]bool{".git": true, "web": true, "node_modules": true, "adapters": true, "packages": true, "vendor": true, "testdata": true, "bin": true}
 
-func moduleRoot(t *testing.T) string {
+// repoRoot is the repository root, two levels above this package. The census
+// walks the root module's callers, so it cannot use the nearest go.mod: once
+// internal/providers is a module of its own (RFC FE), that is this package's.
+// A literal path also lets scripts/ci/affected see these tests read the whole
+// tree, so every change selects them.
+func repoRoot(t *testing.T) string {
 	t.Helper()
-	dir, err := os.Getwd()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("go.mod not found above the test's directory")
-		}
-		dir = parent
+	mod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil || !strings.HasPrefix(string(mod), "module "+modulePath+"\n") {
+		t.Fatalf("%s is not the root of %s (go.mod: %v)", root, modulePath, err)
 	}
+	return root
 }
 
 // declaredInterfaces returns the interface types declared in one parsed file.
@@ -190,7 +190,7 @@ func censusViolation(typ ast.Expr, rel string, inProviders bool, imports map[str
 // TestOptionalInterfaces_AllClassified — every interface declared in this
 // package is in ifaceKinds, and ifaceKinds names nothing that is gone.
 func TestOptionalInterfaces_AllClassified(t *testing.T) {
-	root := moduleRoot(t)
+	root := repoRoot(t)
 	dir := filepath.Join(root, "internal", "providers")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -226,7 +226,7 @@ func TestOptionalInterfaces_AllClassified(t *testing.T) {
 // sources and fails on a type assertion (or type-switch case) to an optional
 // provider interface or to a concrete driver type.
 func TestOptionalInterfaces_ReachedOnlyThroughAs(t *testing.T) {
-	root := moduleRoot(t)
+	root := repoRoot(t)
 	fset := token.NewFileSet()
 	var violations []string
 	files := 0

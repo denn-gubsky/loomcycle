@@ -3334,6 +3334,46 @@ export interface RoutingResponse {
    * when no search providers are configured.
    */
   search?: SearchRoutingProvider[];
+  /** The memory embedder and its observed health. Omitted when none is configured. */
+  embedder?: RoutingEmbedder;
+  /** The decision models a caller may name. Omitted when none are configured. */
+  decision?: RoutingDecision;
+}
+
+// RoutingEmbedder is the memory embedder. Its state is what its calls did since
+// boot, not a probe: "untried" means nothing has been embedded yet, so nobody
+// knows whether it works.
+export interface RoutingEmbedder {
+  state: "untried" | "ok" | "failing";
+  provider?: string;
+  model?: string;
+  alias?: string; // the models: alias memory.embedder names
+  dimension?: number; // absent until the embedder has learned it
+  calls: number;
+  failures: number;
+  last_failure_kind?: string;
+  last_ok_unix?: number;
+  last_failure_unix?: number;
+}
+
+// RoutingDecision is the decision block: the default and each allowed model.
+export interface RoutingDecision {
+  default: string;
+  models: RoutingDecisionModel[];
+}
+
+// RoutingDecisionModel carries its provider's probe: reachable, and whether the
+// provider lists the model (for Ollama, that it is pulled). All three state
+// fields are absent when the provider was never probed; listed is also absent
+// while the provider is unreachable.
+export interface RoutingDecisionModel {
+  name: string; // what a caller names: an alias or a model name
+  provider: string;
+  model: string;
+  default?: boolean;
+  available?: boolean;
+  reachable?: boolean;
+  listed?: boolean;
 }
 
 // SearchRoutingProvider is one entry in the RFC BB search cascade: the ordered

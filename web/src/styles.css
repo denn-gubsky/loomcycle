@@ -6688,6 +6688,9 @@ button.primary:disabled {
 .routing-dot.down {
   background: var(--lc-failed);
 }
+.routing-dot.warn {
+  background: var(--lc-running);
+}
 
 .routing-legend {
   display: flex;
@@ -6786,6 +6789,15 @@ button.primary:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The line under a service-model card: alias, status, vector width. */
+.routing-service-note code {
+  font-family: var(--lc-font-mono);
+}
+.routing-service-note {
+  margin-top: var(--lc-space-1);
+  font-size: var(--lc-text-xs);
+  color: var(--lc-text-muted);
 }
 .routing-selected-badge {
   margin-left: auto;

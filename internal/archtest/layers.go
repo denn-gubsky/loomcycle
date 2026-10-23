@@ -136,6 +136,11 @@ var layers = []layer{
 			"internal/recall",
 			"internal/resolve",
 		},
+		// RFC FE P3: the provider interface and every driver, requiring only
+		// the L0 leaf modules errkind and otel.
+		modules: []string{
+			"internal/providers",
+		},
 	},
 	{
 		// Definitions: config, principals, credentials, and the content-

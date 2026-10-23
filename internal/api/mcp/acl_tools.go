@@ -86,17 +86,28 @@ func aclToolDescriptors() []loommcp.ToolDescriptor {
 }
 
 // aclToolSchema is a family's input schema: the op enum from the table, the
-// admin's tenant focus, and the family's own fields.
+// admin's tenant focus, and the family's own fields. It is built as a value
+// and marshalled, never spliced into a format string, so nothing in it can
+// break out of its quoting. properties is the family's fixed fragment from
+// this file; TestACLToolSchemas_AreValidWithTheOpTable holds each one to
+// parsing and to carrying the op table's enum.
 func aclToolSchema(family, properties string) json.RawMessage {
-	ops, _ := json.Marshal(connector.ACLManagementOps(family))
-	return rawJSON(fmt.Sprintf(`{
-			"type": "object",
-			"properties": {
-				"op":     {"type": "string", "enum": %s, "description": "Operation to perform."},
-				"tenant": {"type": "string", "description": "ADMIN ONLY: the tenant to act in. Anyone else always acts in their own tenant, whatever this says."},%s
-			},
-			"required": ["op"]
-		}`, ops, properties))
+	props := map[string]json.RawMessage{}
+	if err := json.Unmarshal([]byte("{"+properties+"}"), &props); err != nil {
+		props = map[string]json.RawMessage{}
+	}
+	op, _ := json.Marshal(map[string]any{
+		"type":        "string",
+		"enum":        connector.ACLManagementOps(family),
+		"description": "Operation to perform.",
+	})
+	tenant, _ := json.Marshal(map[string]any{
+		"type":        "string",
+		"description": "ADMIN ONLY: the tenant to act in. Anyone else always acts in their own tenant, whatever this says.",
+	})
+	props["op"], props["tenant"] = op, tenant
+	out, _ := json.Marshal(map[string]any{"type": "object", "properties": props, "required": []string{"op"}})
+	return out
 }
 
 // wrapACL dispatches an access-control tool with ctx as the transport

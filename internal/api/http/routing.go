@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
 )
 
@@ -43,6 +45,52 @@ type routingResponse struct {
 	// (search has no tier/model dimension), each with keyability + live
 	// availability. Omitted when no search providers are configured.
 	Search []searchRoutingProvider `json:"search,omitempty"`
+
+	// Embedder is the memory embedder (memory.embedder) and what its calls have
+	// done since boot. Omitted when no embedder is configured.
+	Embedder *routingEmbedder `json:"embedder,omitempty"`
+
+	// Decision is the decision block: its default and the models a caller may
+	// name, each with its provider's live state. Omitted when no decision models
+	// are configured.
+	Decision *routingDecision `json:"decision,omitempty"`
+}
+
+// routingEmbedder is the memory embedder for the routing view. Its status is
+// the embedder's observed health, not the provider probe: the embedder may call
+// an endpoint other than its provider's (Voyage behind the anthropic slot, a
+// base_url override, Bedrock's runtime host), so the provider's reachability
+// can describe the wrong host. The health carries no error text or address.
+type routingEmbedder struct {
+	providers.EmbedderHealth
+	// Alias is the models: alias memory.embedder names, when it names one.
+	Alias string `json:"alias,omitempty"`
+	// Dimension is the vector width; 0 until the embedder has learned it.
+	Dimension int `json:"dimension,omitempty"`
+}
+
+// routingDecision is the decision block for the routing view.
+type routingDecision struct {
+	// Default is the model a call that names none is asked.
+	Default string                 `json:"default"`
+	Models  []routingDecisionModel `json:"models"`
+}
+
+// routingDecisionModel is one decision model. A decision call goes to the
+// provider's own endpoint, so the provider probe applies to it: Reachable is
+// the provider's state and Listed says the provider's model list carries the
+// model (for Ollama, the one decision driver, that it is pulled). Both, and
+// Available, are omitted when the provider has not been probed; Listed is also
+// omitted while the provider is unreachable, because there is no list to read.
+type routingDecisionModel struct {
+	// Name is what a caller names: a models: alias or a plain model name.
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Default   bool   `json:"default,omitempty"`
+	Available *bool  `json:"available,omitempty"`
+	Reachable *bool  `json:"reachable,omitempty"`
+	Listed    *bool  `json:"listed,omitempty"`
 }
 
 // searchRoutingProvider is one entry in the search cascade for the routing view.
@@ -322,11 +370,89 @@ func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp.Embedder = s.routingEmbedder()
+	resp.Decision = s.routingDecision(r.Context(), snap, restricted, restrictTenant, restrictUser)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(resp)
+}
+
+// routingEmbedder reports the configured embedder, or nil when there is none.
+func (s *Server) routingEmbedder() *routingEmbedder {
+	h := s.embedderHealth()
+	if h.State == providers.EmbedderAbsent {
+		return nil
+	}
+	e := &routingEmbedder{EmbedderHealth: h, Dimension: s.embedder.Dimension()}
+	if m := s.cfg().Memory.Embedder.Model; m != "" {
+		if _, ok := s.cfg().Models[m]; ok {
+			e.Alias = m
+		}
+	}
+	return e
+}
+
+// routingDecision reports the decision models the server built at boot, or nil
+// when there are none. A restricted tenant sees only the models whose provider
+// it can key, as with the LLM and search cascades: a decision call that would
+// spend the operator's key is refused for it.
+func (s *Server) routingDecision(ctx context.Context, snap map[string]resolve.Availability, restricted bool, tenantID, userID string) *routingDecision {
+	list, ok := s.DecisionModels(ctx)
+	if !ok {
+		return nil
+	}
+	out := &routingDecision{Default: list.Default, Models: []routingDecisionModel{}}
+	for _, m := range list.Models {
+		if restricted && !s.providerKeyable(ctx, m.Provider, tenantID, userID) {
+			continue
+		}
+		dm := routingDecisionModel{Name: m.Name, Provider: m.Provider, Model: m.Model, Default: m.Name == list.Default}
+		if a, probed := snap[m.Provider]; probed {
+			reachable := a.Reachable && !a.Excluded
+			available := false
+			dm.Reachable = &reachable
+			if reachable {
+				listed := modelListed(a.Models, m.Model)
+				dm.Listed = &listed
+				available = listed
+			}
+			dm.Available = &available
+		}
+		out.Models = append(out.Models, dm)
+	}
+	return out
+}
+
+// providerKeyable reports whether the caller can key provider itself: the
+// provider takes no key, or the caller holds its own credential under the
+// provider's key name (agent="" — the routing view has no agent).
+// keyableProvidersFor answers the same question for a whole cascade.
+func (s *Server) providerKeyable(ctx context.Context, provider, tenantID, userID string) bool {
+	env := ""
+	if p, err := s.providers.Get(provider); err == nil {
+		if kp, ok := providers.As[providers.KeyedProvider](p); ok {
+			env = kp.KeyEnvName()
+		}
+	}
+	return env == "" || (s.credKeyable != nil && s.credKeyable(ctx, tenantID, "", userID, env))
+}
+
+// modelListed reports whether a provider's probed model list carries model. A
+// name without a tag also matches its ":latest": Ollama lists every pulled model
+// with its tag, and a config usually writes the bare name.
+func modelListed(models map[string]resolve.ModelStatus, model string) bool {
+	if ms, ok := models[model]; ok && ms.Listed {
+		return true
+	}
+	if !strings.Contains(model, ":") {
+		if ms, ok := models[model+":latest"]; ok && ms.Listed {
+			return true
+		}
+	}
+	return false
 }
 
 // searchProviderKeyable reports whether this caller can supply a key for a

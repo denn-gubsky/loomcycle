@@ -93,17 +93,17 @@ Internal planning notes (RFCs, decision history, ground-truth PLAN.md) live OUT 
 
 ## Package layering (RFC EX)
 
-Every package in the module sits in a layer, and an import may only point down. **The layering is checked, not just described.** `internal/archtest` reads the module's import graph with one `go list` call and fails the build on an import that points the wrong way. Its `layers.go` is the authority for where each package belongs; the table below is a summary.
+Every package sits in a layer, and an import may only point down. **The layering is checked, not just described.** `internal/archtest` reads the import graph of every in-tree module with `go list` and fails the build on an import that points the wrong way. Its `layers.go` is the authority for where each package belongs; the table below is a summary.
 
 **Why layers and not just packages.** A Go build compiles each package once, so cycles between directories cost nothing at build time. They cost later:
 - a test change in a low package re-runs everything above it;
-- a subsystem cannot be lifted into its own module while it imports the things that import it.
+- a subsystem cannot be its own module while it imports the things that import it.
 
 The layer test makes the next cycle a red build, rather than something an audit finds.
 
 | Layer | Holds | Examples |
 |---|---|---|
-| L0 utilities | leaf packages that import nothing in the module except other L0 leaves | `errkind`, `netguard`, `redact`, `runident` (who is running), `promptinject` (the prompt placeholder grammar), `retentionmode`, `teamspec`, `embedded` (the presets and bundles the binary embeds) |
+| L0 utilities | leaf packages that import nothing in the repository except other L0 leaves | `errkind`, `otel`, `netguard`, `redact`, `runident` (who is running), `promptinject` (the prompt placeholder grammar), `retentionmode`, `teamspec`, `embedded` (the presets and bundles the binary embeds) |
 | L1 providers | the provider interface and drivers, model resolution, and the decision-model client | `providers`, `resolve`, `decision` |
 | L2 schema | definitions: config, principals, credentials, agent and hook definitions | `config`, `auth`, `credential` (its row lives in the leaf `credential/credentialdef`), `agents`, `hooks` |
 | L3 storage | persistence and coordination | `store` (+ `sqlite`, `postgres`, `storetest`), `channels`, `limits`, `coord`, `sqlmem`, `snapshot` |
@@ -114,10 +114,17 @@ The layer test makes the next cycle a red build, rather than something an audit 
 | L8 tooling | nothing imports these | `bench`, `scripts`, `test`, `archtest` |
 
 **The rules:**
-- A package belongs to the listed directory that is the longest prefix of its path. A subpackage whose role sits higher than its parent's gets a directory of its own (`internal/codehook`, `internal/decisionbuild`) rather than a sublisting. The next phase splits modules along directories, so a subpackage left under a lower parent would close a cycle there.
+- A package belongs to the listed directory that is the longest prefix of its path. A subpackage whose role sits higher than its parent's gets a directory of its own (`internal/codehook`, `internal/decisionbuild`) rather than a sublisting. Modules follow directories, so a subpackage left under a lower parent would close a cycle there.
 - An import within one subsystem is always allowed. An import into a lower layer is always allowed. An import into the same layer is allowed only for a subsystem pair in `allowedSideways`, a set checked to stay acyclic.
 - Test files (`_test.go`) are not checked: they are never compiled into the package they test.
 - Test-support packages (`storetest`, `credentialtest`, ...) follow the same rules as any other package.
+
+**In-tree modules.** `internal/errkind` and `internal/otel` (L0) and `internal/providers` (L1) are nested Go modules. The root module requires each at `v0.0.0` and `replace`s it with its directory, so import paths are unchanged and nothing is tagged.
+- A nested module's `go.mod` requires nothing from the root, so an import back into the root fails to compile **when Go runs inside that module**. From the root, the same import would build: the root supplies the package. That is why CI builds, vets, tidies and tests every module from its own directory (see "How CI chooses what to run").
+- Each nested module also has a guard test that fails if it imports anything from the root.
+- `layers.go` declares each nested module's layer. A package above its module's layer fails, and so does a `go.mod` that is neither the root's, a wired module's, nor a declared standalone module (`deploy/builder`).
+- A module's own tests cannot import the root either, so a test that drives a provider through the loop lives with the loop (`internal/loop/codejs_*_test.go`).
+- `scripts/ci/modules.sh` lists the modules, derived from the root `go.mod`'s `replace` lines, and `scripts/ci/in-modules.sh` runs a command in each.
 
 **Wiring lives in L5.** Code that turns the configuration into running services, such as resolving an endpoint, building a driver or putting it in its concurrency lane, belongs in `providerbuild`, `decisionbuild` or `wiring`. Memory and the other lower layers keep their domain types and constructors and take what they need as arguments.
 
@@ -125,19 +132,19 @@ The layer test makes the next cycle a red build, rather than something an audit 
 
 **Adding a package.** A new package that no layer places fails the test with a message naming the package. Add its directory to the layer its role puts it in.
 
-An import the test refuses is fixed, not allowlisted. `knownViolations` recorded the wrong-way imports that existed when the guard was introduced. The test also fails on an entry that no longer matches, so the list only shrinks; it is empty once the RFC EX Phase 2 cuts are merged.
+An import the test refuses is fixed, not allowlisted. `knownViolations` recorded the wrong-way imports that existed when the guard was introduced, and it is now empty.
 
-References: `internal/archtest/layers.go` (the map, its rules and their reasons), `internal/archtest/layers_test.go`.
+References: `internal/archtest/layers.go` (the map, its rules and their reasons), `internal/archtest/layers_test.go`, `scripts/ci/gomodules`.
 
 ## How CI chooses what to run
 
-A pull request runs the jobs and the Go tests its change can reach; `main` runs everything. On `main` the CI wall time is about 9 minutes, set by the Postgres job. Before RFC EX Phase 1 it was about 20.
+A pull request runs the jobs and the Go tests its change can reach; `main` runs everything. On `main` the CI wall time is about 6 minutes, set by the slowest race shard. Before RFC EX Phase 1 it was about 20.
 
 **Which jobs run.** A first `changes` job (`scripts/ci/changes.sh`) classifies the pull request, and every other job waits for it and is skipped when its part of the tree is untouched:
 
 | Output | Jobs |
 |---|---|
-| `go` | Go checks, the race shards, the Postgres tiers |
+| `go` | Go checks, the race shards, the Postgres legs |
 | `runtime` | the code-js runtime suites |
 | `web` | the Web UI build |
 | `ts` | the TypeScript adapter |
@@ -147,26 +154,39 @@ A pull request runs the jobs and the Go tests its change can reach; `main` runs 
 
 `go` is not decided by file extension. Go tests read the TS adapter, the proto, `web/` and the bundles, so a change to one of those concerns Go too.
 
-**Which Go tests run.** `scripts/ci/affected` selects a package that has tests when:
-- a changed file belongs to it (embedded files, testdata and migrations belong to the package above them);
-- its test binary imports the changed package, test-only imports included;
+**Every in-tree module.** The repository has several Go modules (see "Package layering"), and a Go command run from the root sees only the root module. So:
+- the Go checks job runs tidy (failing on any diff or new file), `go mod verify`, vet and build in every module;
+- each test step runs its packages from the module that owns them, through `scripts/ci/in-modules.sh`.
+
+That per-module run is also what enforces the module boundary, which a root build alone would not.
+
+**Which Go tests run.** `scripts/ci/affected` reads the package graph of every module and selects a package that has tests when:
+- a changed file belongs to it (embedded files, testdata and migrations belong to the package above them, within the same module);
+- its test binary imports the changed package, test-only imports included, across modules;
 - its tests open the changed path through a relative literal (`"../../adapters/ts/src/types.ts"`, `filepath.Join("..", "..", "bundles")`). These paths are read from the test files' syntax, so there is no list to maintain.
 
 Further rules:
 - A change confined to `_test.go` files selects only its own package.
-- `go.mod`, `go.sum`, `ci.yml` and the selector itself select everything.
+- Every module's `go.mod` and `go.sum`, `ci.yml` and the selector itself select everything.
 - **The blind spot:** a test that builds a path into another directory at run time from anything other than literals. Write such paths as literals, or accept that `main`, not the pull request, catches that test failing.
 - `go run ./scripts/ci/affected -base "$(git merge-base origin/main HEAD)" -explain` shows what your commits select, and why.
 
 **How the race suite is spread.** The `go-race` job runs seven shards:
 - `internal/api/http` in thirds and `internal/tools/builtin` in halves. Each package is about 2,100 tests that run one after another, so only splitting them shortens them. `scripts/ci/split-tests.sh` deals the sorted `go test -list` names round-robin into a `-run` regexp, so every test lands in exactly one part.
 - `cmd`, the store and snapshot in one shard.
-- everything else in the last.
+- everything else, in every module, in the last.
 
-The race step compiles `modernc.org/...` without race instrumentation: the SQLite engine's instrumented migrations were most of the suite's cost. Run it locally the same way:
-`go test -race -gcflags='modernc.org/...=-race=false' ./...`
+The race step compiles `modernc.org/...` without race instrumentation: the SQLite engine's instrumented migrations were most of the suite's cost. Run the whole suite locally the way CI does, across every module:
+`scripts/ci/in-modules.sh go test -race -gcflags='modernc.org/...=-race=false' ./...`
 
-**The Postgres store contract** runs every contract test against a real Postgres. Its subtests borrow migrated schemas from a small pool and give them back emptied (TRUNCATE plus the rows the migrations seed), and up to six run at once. Migrating a fresh schema for each of about 1,000 subtests had been most of that job's length.
+`make test` runs every module without `-race`. `go test ./...` from the root alone skips the nested modules.
+
+**The Postgres tiers** run as three parallel legs, each with its own Postgres container:
+- the store contract;
+- snapshot, the no-trace canary and the replicas boot;
+- coordination and SQL Memory.
+
+The store contract's subtests borrow migrated schemas from a small pool and give them back emptied (TRUNCATE plus the rows the migrations seed), and up to six run at once. Migrating a fresh schema for each of about 1,000 subtests had been most of that job's length.
 
 References: `.github/workflows/ci.yml`, `scripts/README.md`, `scripts/ci/`, `internal/store/postgres/schema_pool_test.go`.
 
@@ -767,11 +787,11 @@ See `docs/PLAN.md` for the public roadmap.
 ## Verifying the runtime
 
 ```bash
-go test ./...                                      # all green (run `make runtime-mock` for the live-binary suites; stress/soak are local-only)
-go build -o bin/loomcycle ./cmd/loomcycle
+make test                                          # every in-tree module, all green (`go test ./...` from the root alone skips the nested modules; run `make runtime-mock` for the live-binary suites; stress/soak are local-only)
+make build-all                                     # embeds the Web UI → ./bin/loomcycle
 ./bin/loomcycle --config loomcycle.example.yaml
 # in another terminal:
-curl http://127.0.0.1:8787/healthz                 # {"ok":true}
+curl http://127.0.0.1:8787/healthz                 # {"ok":true, ...}
 ```
 
 For an end-to-end smoke against a real provider, set `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) and `LOOMCYCLE_AUTH_TOKEN` in `.env.local`, then POST to `/v1/runs` per the README quick-start.
