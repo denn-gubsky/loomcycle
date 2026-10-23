@@ -164,6 +164,13 @@ func HTTPSurface(method, path string) (Surface, bool) {
 				return instance("read", "def", "mcpserver/*"), true
 			}
 		}
+	case name == "acldef":
+		// Every op of POST /v1/_acldef — get and list as well as create and
+		// retire — is a POST with the op in the body, so the route asks the
+		// weakest verb the family has. The handler asks author or retire of
+		// the named list per op (aclListOpSurface). This arm comes before the
+		// generic _<x>def one, which would otherwise take the name.
+		return instance("read", "def", "acl/*"), true
 	case strings.HasSuffix(name, "def") && name != "operatortokendef":
 		fam := defFamily(strings.TrimSuffix(name, "def"))
 		if len(rest) >= 3 && rest[2] == "overridable" {
@@ -276,7 +283,7 @@ func HTTPSurface(method, path string) (Surface, bool) {
 			return instance("read", "principal", "group:*"), true
 		}
 		return instance("manage", "principal", "group:*"), true
-	case name == "acldef", name == "aclbinding":
+	case name == "aclbinding":
 		if get {
 			return instance("read", "def", "acl/*"), true
 		}

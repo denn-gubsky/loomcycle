@@ -27,6 +27,13 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/chat/completions", instance("use", "gateway", "chat"), true},
 		{"POST", "/v1/embeddings", instance("use", "gateway", "embeddings"), true},
 		{"POST", "/v1/_agentdef", instance("read", "def", "agent/*"), true},
+		// Every acldef op is a POST with the op in the body: the route asks
+		// read, and the handler asks author or retire of the named list.
+		{"POST", "/v1/_acldef", instance("read", "def", "acl/*"), true},
+		{"GET", "/v1/_acldef/names", instance("read", "def", "acl/*"), true},
+		{"GET", "/v1/_aclbinding", instance("read", "def", "acl/*"), true},
+		{"POST", "/v1/_aclbinding", instance("author", "def", "acl/*"), true},
+		{"DELETE", "/v1/_aclbinding/b1", instance("author", "def", "acl/*"), true},
 		{"GET", "/v1/_a2aservercarddef/names", instance("read", "def", "a2aserver/*"), true},
 		{"GET", "/v1/_agentdef/chat/overridable", typeLevel("read", "agent"), true},
 		{"GET", "/v1/_teamdef/t1/channels", typeLevel("subscribe", "channel"), true},
