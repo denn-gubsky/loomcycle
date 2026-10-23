@@ -26,7 +26,7 @@ bundles/sandbox/
 ```
 
 The binary ships an **embedded** copy at
-[`cmd/loomcycle/embedded/bundles/sandbox.yaml`](../../cmd/loomcycle/embedded/bundles/sandbox.yaml)
+[`internal/embedded/bundles/sandbox.yaml`](../../internal/embedded/bundles/sandbox.yaml)
 (`go:embed`). `bundles/sandbox/loomcycle.yaml` is the in-repo source mirror — keep
 the two byte-for-byte identical.
 

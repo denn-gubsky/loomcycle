@@ -34,7 +34,7 @@ func TestShippedConfigs_NameOnlyDeepSeekModelsTheProviderLists(t *testing.T) {
 	for _, u := range Units() {
 		sources["embedded/"+u.Kind+"/"+u.Name] = u.Data
 	}
-	root := filepath.Join("..", "..", "..")
+	root := filepath.Join("..", "..")
 	for _, dir := range []string{"bundles", "examples", "deploy"} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
