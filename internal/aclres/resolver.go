@@ -57,6 +57,29 @@ type Resolver struct {
 	mu       sync.Mutex
 	entries  map[key]entry
 	versions map[string]versionEntry
+	// static reads the operator's config-declared lists, groups and
+	// bindings (RFC EY §9) at compile time, so a config reload is seen by
+	// the next compile. nil: none declared.
+	static func() *authz.Static
+}
+
+// SetStatic wires the config-declared access control. It is read on every
+// compile (never cached by the resolver), so a reload needs no call here;
+// the caller drops the cached sets when the static source changes.
+func (r *Resolver) SetStatic(src func() *authz.Static) {
+	r.mu.Lock()
+	r.static = src
+	r.mu.Unlock()
+}
+
+func (r *Resolver) staticNow() *authz.Static {
+	r.mu.Lock()
+	src := r.static
+	r.mu.Unlock()
+	if src == nil {
+		return nil
+	}
+	return src()
 }
 
 // New builds a resolver. ttl bounds how long a compiled set is trusted
@@ -188,17 +211,20 @@ func (r *Resolver) compile(ctx context.Context, p auth.Principal, version int64)
 }
 
 func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (authz.Input, error) {
+	static := r.staticNow()
 	direct, err := r.st.GroupsOfSubject(ctx, p.TenantID, p.Subject)
 	if err != nil {
 		return authz.Input{}, fmt.Errorf("groups: %w", err)
 	}
+	staticDirect, staticGraph := static.GroupsOf(p.TenantID, p.Subject)
+	direct = append(direct, staticDirect...)
 	var groups []string
 	if len(direct) > 0 {
 		graph, err := r.st.GroupGraph(ctx, p.TenantID)
 		if err != nil {
 			return authz.Input{}, fmt.Errorf("group graph: %w", err)
 		}
-		groups = authz.Closure(graph, direct)
+		groups = authz.Closure(authz.MergeGraph(graph, staticGraph), direct)
 	}
 	rows, err := r.st.AclBindingsFor(ctx, p.TenantID, p.Subject, groups, p.TokenDefID)
 	if err != nil {
@@ -222,15 +248,41 @@ func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (
 	}
 	for _, row := range rows {
 		in.Bindings = append(in.Bindings, authz.Binding{ID: row.BindingID, ACL: row.ACLName, SubjectKind: authz.SubjectKind(row.SubjectKind), SubjectID: row.SubjectID, ExpiresAt: row.ExpiresAt})
-		if _, seen := in.ACLs[row.ACLName]; seen || authz.IsBuiltin(row.ACLName) {
+	}
+	// Config-declared bindings of the tenant apply beside the stored ones;
+	// AppliesTo filters them to this principal at compile.
+	in.Bindings = append(in.Bindings, static.BindingsIn(p.TenantID)...)
+	for _, b := range in.Bindings {
+		if _, seen := in.ACLs[b.ACL]; seen || authz.IsBuiltin(b.ACL) || !b.AppliesTo(in.Subject) {
 			continue
 		}
-		def, err := r.st.AclDefGet(ctx, p.TenantID, row.ACLName)
+		av, found, err := r.lookupACL(ctx, p.TenantID, b.ACL, static)
+		if err != nil {
+			return authz.Input{}, err
+		}
+		if found {
+			in.ACLs[b.ACL] = av
+		}
+	}
+	return in, nil
+}
+
+// lookupACL resolves a list by name: the tenant's stored row, then the
+// shared tenant's, then the config-declared one — the dynamic-over-static
+// order of internal/lookup. A retired row is absent (the next layer may
+// still answer); a missing name is reported by Compile and matches nothing.
+func (r *Resolver) lookupACL(ctx context.Context, tenant, name string, static *authz.Static) (authz.ACLVersion, bool, error) {
+	tenants := []string{tenant}
+	if tenant != "" {
+		tenants = append(tenants, "")
+	}
+	for _, t := range tenants {
+		def, err := r.st.AclDefGet(ctx, t, name)
 		if err != nil {
 			if isNotFound(err) {
-				continue // Compile reports it as missing; it matches nothing
+				continue
 			}
-			return authz.Input{}, fmt.Errorf("acl %s: %w", row.ACLName, err)
+			return authz.ACLVersion{}, false, fmt.Errorf("acl %s: %w", name, err)
 		}
 		if def.Retired() {
 			continue
@@ -240,11 +292,16 @@ func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (
 			// A stored list this build cannot read is refused as a whole:
 			// the principal's set is unavailable (enforce refuses, compat
 			// falls back), never partially applied.
-			return authz.Input{}, fmt.Errorf("acl %s (version %d): %w", def.Name, def.Version, err)
+			return authz.ACLVersion{}, false, fmt.Errorf("acl %s (version %d): %w", def.Name, def.Version, err)
 		}
-		in.ACLs[row.ACLName] = authz.ACLVersion{ACL: authz.ACL{Name: def.Name, Description: def.Description, Rules: rules}, Version: def.Version}
+		return authz.ACLVersion{ACL: authz.ACL{Name: def.Name, Description: def.Description, Rules: rules}, Version: def.Version}, true, nil
 	}
-	return in, nil
+	if static != nil {
+		if a, ok := static.ACLs[name]; ok {
+			return authz.ACLVersion{ACL: a}, true, nil
+		}
+	}
+	return authz.ACLVersion{}, false, nil
 }
 
 func isNotFound(err error) bool {
