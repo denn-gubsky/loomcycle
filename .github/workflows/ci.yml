@@ -63,21 +63,43 @@ jobs:
           check-latest: true
           cache: true
 
+      # Tidy, verify, vet, build and gofmt cover each in-tree Go module (RFC
+      # FE): the root and every module the root go.mod replaces with a
+      # directory in the tree (scripts/ci/modules.sh). Run from the root,
+      # go vet ./... and friends stop at a nested go.mod and skip that module
+      # without a word.
+      #
+      # Tidy may create a go.sum a module never had, which git diff does not
+      # show, so untracked module files fail the check too.
       - name: Tidy check
         run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+          scripts/ci/in-modules.sh go mod tidy
+          git diff --exit-code -- '*go.mod' '*go.sum'
+          untracked=$(git ls-files --others --exclude-standard -- '*go.mod' '*go.sum')
+          if [ -n "$untracked" ]; then
+            echo "::error::go mod tidy created files that are not committed:"
+            echo "$untracked"
+            exit 1
+          fi
 
       # The module cache the build uses matches go.sum: a tampered or
       # corrupted download in the cache fails here instead of being built.
       - name: Verify modules
-        run: go mod verify
+        run: scripts/ci/in-modules.sh go mod verify
 
       - name: Vet
-        run: go vet ./...
+        run: scripts/ci/in-modules.sh go vet ./...
 
+      # The binary links every package it imports, nested modules' included;
+      # each nested module is also compiled whole, for its packages the
+      # binary does not import.
       - name: Build
-        run: go build -o bin/loomcycle ./cmd/loomcycle
+        run: |
+          go build -o bin/loomcycle ./cmd/loomcycle
+          nested=$(scripts/ci/modules.sh | tail -n +2)
+          for dir in $nested; do
+            (cd "$dir" && go build ./...)
+          done
 
       - name: Bashbox escape suite
         # Bashbox's isolation is gbash's, and gbash is pre-1.0, so its escape
@@ -90,6 +112,7 @@ jobs:
         # same tests again under -race.
         run: make bashbox-escape
 
+      # gofmt walks files, not modules, so `.` already covers every module.
       - name: gofmt check
         run: |
           unformatted=$(gofmt -l .)
@@ -231,8 +254,9 @@ jobs:
             # shellcheck disable=SC2086 # one package in a split shard
             run=(-run "$(scripts/ci/split-tests.sh $PKGS "$SPLIT" "${flags[@]}")")
           fi
+          # in-modules.sh runs each package from its own module's directory.
           # shellcheck disable=SC2086 # PKGS is a space-separated list
-          go test "${flags[@]}" -timeout 3600s "${run[@]}" $PKGS
+          scripts/ci/in-modules.sh go test "${flags[@]}" -timeout 3600s "${run[@]}" -- $PKGS
 
 
   go-postgres:
@@ -372,7 +396,7 @@ jobs:
         # same names and dies on "schema already exists" — a timeout does not just
         # fail, it poisons the database for the following run in a way that looks
         # like an unrelated bug.
-        run: go test -count=1 -timeout 3600s $PKGS
+        run: scripts/ci/in-modules.sh go test -count=1 -timeout 3600s -- $PKGS
 
       # SNAPSHOT COVERAGE, postgres half. The snapshot guards read the table set
       # from a freshly migrated schema on EACH backend (every table classified,
@@ -392,7 +416,7 @@ jobs:
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
           PKGS: ${{ steps.sel.outputs.snapshot }}
-        run: go test -count=1 -timeout 600s $PKGS
+        run: scripts/ci/in-modules.sh go test -count=1 -timeout 600s -- $PKGS
 
       # NO-TRACE CANARY (Postgres). A no-trace run must leave its content in no
       # table. The canary suite runs on both store backends, and without a DSN
@@ -475,7 +499,7 @@ jobs:
         env:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/coord_test?sslmode=disable
           PKGS: ${{ steps.sel.outputs.coord }}
-        run: go test -count=1 -race -timeout 600s $PKGS
+        run: scripts/ci/in-modules.sh go test -count=1 -race -timeout 600s -- $PKGS
 
       # RFC AA SQL Memory postgres tier: provision a SEPARATE aux DB reached by a
       # NON-superuser CREATEROLE admin (exactly the production provisioning), so
@@ -504,7 +528,7 @@ jobs:
           BUILTIN_PKGS: ${{ steps.sel.outputs.builtin }}
         run: |
           if [ -n "$SQLMEM_PKGS" ]; then
-            go test -count=1 -race $SQLMEM_PKGS
+            scripts/ci/in-modules.sh go test -count=1 -race -- $SQLMEM_PKGS
           fi
           # BUILTIN_PKGS only gates this line; the path stays literal because
           # ci_pgtier_filter_test reads the filter off it.
