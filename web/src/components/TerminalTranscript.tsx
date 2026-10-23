@@ -5,6 +5,7 @@ import type {
   SystemPromptPayload,
   TranscriptEvent,
 } from "../api";
+import { fileCapturedLine } from "../lib/fileCaptured";
 import { toolResultId } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
 
@@ -303,6 +304,15 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
         key, ts, kind, cls: `limit-banner ${sev}`,
         payload: `${icon} token budget (${sev}): ${who} used ${used}/${limit} ${when}`.trimEnd(),
       };
+    }
+    case "file_captured": {
+      // A file a tool returned, kept in the run's inbox in place of its
+      // bytes. One line; the full record (sha256, the run) when expanded.
+      const f = ev.file;
+      if (!f) return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
+      const full = [`ref: ${f.ref}`, `media_type: ${f.media_type}`, `size: ${f.size}`, `sha256: ${f.sha256}`, `origin: ${f.origin}`];
+      if (f.run_id) full.push(`run_id: ${f.run_id}`);
+      return { key, ts, kind, cls: "tl-tool", collapsible: true, payload: fileCapturedLine(f), full: full.join("\n") };
     }
     case "hook_decision": {
       // Collapsed to a one-line "who did what to which call" summary; the
