@@ -351,7 +351,7 @@ func batchIDs(ids []string, size int) [][]string {
 	if size <= 0 || len(ids) <= size {
 		return [][]string{ids}
 	}
-	out := make([][]string, 0, (len(ids)+size-1)/size)
+	out := make([][]string, 0, len(ids)/size+1)
 	for start := 0; start < len(ids); start += size {
 		end := start + size
 		if end > len(ids) {

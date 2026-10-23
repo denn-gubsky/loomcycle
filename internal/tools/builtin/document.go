@@ -2881,7 +2881,7 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			}
 			// chunk_edges is the one that matches on EITHER endpoint, so it takes the
 			// id list twice.
-			edgeArgs := append(append(make([]any, 0, len(batch)*2), args...), args...)
+			edgeArgs := append(append([]any(nil), args...), args...)
 			if err := d.execTxn(ctx, txnID,
 				`DELETE FROM chunk_edges WHERE from_id IN (`+marks+`) OR to_id IN (`+marks+`)`,
 				edgeArgs...); err != nil {
@@ -5056,7 +5056,7 @@ func (d *Document) addTagRows(ctx context.Context, key sqlmem.ScopeKey, table, k
 			continue
 		}
 		vals := make([]string, 0, len(batch))
-		args := make([]any, 0, len(batch)*2)
+		args := make([]any, 0, len(batch))
 		for _, t := range batch {
 			vals = append(vals, "(?, ?)")
 			args = append(args, id, t)
@@ -5080,7 +5080,7 @@ func (d *Document) removeTagRows(ctx context.Context, key sqlmem.ScopeKey, table
 		if len(batch) == 0 {
 			continue
 		}
-		args := make([]any, 0, len(batch)+1)
+		args := make([]any, 0, len(batch))
 		args = append(args, id)
 		for _, t := range batch {
 			args = append(args, t)
