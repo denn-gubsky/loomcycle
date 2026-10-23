@@ -518,3 +518,15 @@ func sourceTag(origin string) string {
 	}
 	return "source/file"
 }
+
+// ScopeGrants implements tools.ScopedTool: op=import writes a document, so
+// its scope is the Document tool's, judged by the Document tool's own check.
+func (f *File) ScopeGrants(ctx context.Context) []tools.ScopeField {
+	return []tools.ScopeField{{Applies: "import", Grants: scopeGrants(f.InputSchema(), func(s string) error {
+		if f.Docs == nil {
+			return errors.New("documents are not available here")
+		}
+		_, _, err := f.Docs.resolveScope(ctx, s)
+		return err
+	})}}
+}
