@@ -8144,7 +8144,7 @@ func (s *Server) singleRunResponse(ctx context.Context, run store.Run, live bool
 		resp = single[0]
 	}
 	resp.Result = run.Result
-	resp.Spec = run.RunConfig
+	resp.Spec = connector.ServedRunSpec(run.RunConfig)
 	if run.Status == store.RunConfigured {
 		if d, err := s.store.GetRunDraft(ctx, run.ID); err == nil {
 			resp.Draft = d

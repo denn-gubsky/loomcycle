@@ -327,7 +327,7 @@ func (s *Server) singleRunProto(ctx context.Context, run store.Run, live bool) *
 	s.fillAwaitedState(ctx, out)
 	s.fillQueuePosition(out)
 	out.Result = run.Result
-	out.Spec = run.RunConfig
+	out.Spec = connector.ServedRunSpec(run.RunConfig)
 	if run.Status == store.RunConfigured {
 		if d, err := s.store.GetRunDraft(ctx, run.ID); err == nil {
 			out.Draft = d

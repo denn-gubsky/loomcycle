@@ -1671,18 +1671,6 @@ export interface RunSpec {
   interruption?: Record<string, unknown>;
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
-  /** Whose access-control rules bound the run: its caller's, or the
-   *  originating caller's a sub-run inherited — the subject, its token and
-   *  token class, and the transport the request came on. A resume narrows
-   *  the run by that subject's CURRENT rules. Ids only, never a credential.
-   *  Absent when no rules applied. Written by the server only. */
-  acl_origin?: {
-    tenant_id: string;
-    subject: string;
-    token_def_id?: string;
-    class: string;
-    transport?: string;
-  };
   /** Hooks the run added to its agent's own (its request's, and a
    *  sub-agent's inherited ones). */
   hooks?: { hooks?: EventHooks; tool_hooks?: ToolHooksByTool };

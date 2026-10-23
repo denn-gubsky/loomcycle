@@ -791,7 +791,7 @@ func (s *Server) handleGetRunConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// A run that was never retuned has no record, and that is a 200 with an
 	// empty config — not a 404. "This run overrides nothing" is an answer.
-	cfg, _ := decodeRunConfig(run.RunConfig)
+	cfg, _ := decodeRunConfig(connector.ServedRunSpec(run.RunConfig))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_id": runID,
 		"agent":  run.Agent,
