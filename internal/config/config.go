@@ -23,6 +23,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -274,6 +275,15 @@ type Config struct {
 	// both authenticate as the same (tenant, subject). The secret never appears
 	// in yaml — only `token_env` (the env-var name) does.
 	Principals map[string]PrincipalDef `yaml:"principals,omitempty"`
+	// RFC EY §9: config-declared ACL rule lists, groups and bindings. The
+	// resolver merges them under the store's rows (a stored list shadows a
+	// static one of the same name). Validated at load into ResolvedACL.
+	ACLs        map[string]ACLDefConfig `yaml:"acls,omitempty"`
+	Groups      map[string]GroupConfig  `yaml:"groups,omitempty"`
+	ACLBindings []ACLBindingConfig      `yaml:"acl_bindings,omitempty"`
+	// ResolvedACL is the validated form of the three blocks above; nil when
+	// none is declared.
+	ResolvedACL *authz.Static `yaml:"-"`
 
 	// ResolvedPrincipals is the boot-resolved token→Principal table built from
 	// Principals during validate (each token_env read from the environment).
@@ -8790,6 +8800,11 @@ func validate(c *Config) error {
 	// table (reads each token_env from the environment). A bad scope/env-name
 	// fails load; an empty token_env makes that principal inert + warns.
 	if err := resolvePrincipals(c); err != nil {
+		return err
+	}
+	// RFC EY §9: validate the acls / groups / acl_bindings blocks with the
+	// engine's own strict parser, so an unenforceable entry fails the load.
+	if err := ResolveACLConfig(c); err != nil {
 		return err
 	}
 	for name, agent := range c.Agents {

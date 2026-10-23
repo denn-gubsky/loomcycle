@@ -24,7 +24,19 @@ import (
 
 // SetACLResolver wires the RFC EY resolver. Nil leaves every gate on the
 // scope answer alone (the pre-EY behaviour).
-func (s *Server) SetACLResolver(r *aclres.Resolver) { s.aclResolver = r }
+func (s *Server) SetACLResolver(r *aclres.Resolver) {
+	s.aclResolver = r
+	if r != nil {
+		// The config-declared lists, groups and bindings (RFC EY §9), read
+		// from the live config on every compile so a reload is honoured.
+		r.SetStatic(func() *authz.Static {
+			if c := s.cfg(); c != nil {
+				return c.ResolvedACL
+			}
+			return nil
+		})
+	}
+}
 
 // ACLResolver returns the wired resolver (nil when none).
 func (s *Server) ACLResolver() *aclres.Resolver { return s.aclResolver }
