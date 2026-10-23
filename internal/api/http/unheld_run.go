@@ -2,7 +2,7 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -87,7 +87,7 @@ func (s *Server) FinishRunOwnerGone(ctx context.Context, run store.Run, reason s
 	}
 	unheld, err := s.runUnheld(ctx, run)
 	if err != nil {
-		log.Printf("cancel: run %s is left as it is: %v", run.ID, err)
+		slog.Warn("cancel: run is left as it is", "run_id", run.ID, "err", err)
 		return false, nil
 	}
 	if !unheld {
@@ -112,7 +112,7 @@ func (s *Server) finishUnheldDescendants(ctx context.Context, parent store.Run, 
 	// run id as their parent.
 	children, err := s.store.ListRunsByParentRunID(ctx, parent.ID)
 	if err != nil {
-		log.Printf("cancel: list run %s's children: %v", parent.ID, err)
+		slog.Warn("cancel: list the run's children failed", "run_id", parent.ID, "err", err)
 		return
 	}
 	for _, child := range children {

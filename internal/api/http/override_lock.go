@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"sort"
@@ -72,7 +72,7 @@ func (s *Server) admitPrincipalOverrides(ctx context.Context, set []string) erro
 	p, ok := auth.PrincipalFromContext(ctx)
 	for _, field := range set {
 		if tokenLocksOverride(p, ok, field) {
-			log.Printf("auth: override_not_allowed field=%q subject=%q token_def=%q", field, p.Subject, p.TokenDefID)
+			slog.Warn("auth: override_not_allowed", "field", field, "subject", p.Subject, "token_def", p.TokenDefID)
 			return fmt.Errorf("%w for this token: %q", runner.ErrOverrideNotAllowed, field)
 		}
 	}

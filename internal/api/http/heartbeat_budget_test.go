@@ -86,6 +86,17 @@ func captureLog(t *testing.T) (func() string, func()) {
 	}
 }
 
+// loggedHeartbeatFailure reports whether out holds a failed-heartbeat line for
+// runID: the message and this run's run_id attribute on the same line.
+func loggedHeartbeatFailure(out, runID string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "store: UpdateHeartbeat failed") && strings.Contains(line, "run_id="+runID+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 // syncBuffer is a strings.Builder that survives concurrent writers, which the
 // process-wide logger always has.
 type syncBuffer struct {
@@ -137,10 +148,11 @@ func TestMakeHeartbeat_TolerantOfPoolSaturation(t *testing.T) {
 	// Scoped to THIS run's id, not any "UpdateHeartbeat" mention. The logger
 	// is process-wide, and sibling tests in this package leave heartbeat
 	// ticker closures running past their own cleanup — those fire against a
-	// closed DB and log `UpdateHeartbeat(r_other) failed: sql: database is
-	// closed` into whichever capture happens to be installed. An unscoped
+	// closed DB and log `store: UpdateHeartbeat failed run_id=r_other
+	// err="sql: database is closed"` into whichever capture happens to be
+	// installed. An unscoped
 	// substring check reads another test's noise as this test's failure.
-	if got := logOf(); strings.Contains(got, "UpdateHeartbeat("+runID+")") {
+	if got := logOf(); loggedHeartbeatFailure(got, runID) {
 		t.Errorf("unexpected log output for %s (deadline shouldn't have fired): %q", runID, got)
 	}
 }
@@ -172,8 +184,7 @@ func TestMakeHeartbeat_LogsOnDeadlineExceeded(t *testing.T) {
 	// Same reason as the sibling test above, pointed the other way: an
 	// unscoped check here could be SATISFIED by another test's leaked
 	// heartbeat line and pass without this run ever logging anything.
-	want := "UpdateHeartbeat(" + runID + ")"
-	if got := logOf(); !strings.Contains(got, want) {
+	if got := logOf(); !loggedHeartbeatFailure(got, runID) {
 		t.Errorf("expected timeout log line for %s, got: %q", runID, got)
 	}
 	if got := logOf(); !strings.Contains(got, "context deadline exceeded") {

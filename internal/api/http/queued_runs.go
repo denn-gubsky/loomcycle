@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -170,7 +170,7 @@ func (s *Server) endQueuedRun(runID string, cause error) {
 	if err := s.store.EndQueuedRun(ctx, runID, status, "", msg); err != nil {
 		// Not queued any more: whoever ended or started it reports that.
 		if !errors.Is(err, store.ErrRunNotQueued) {
-			log.Printf("queue: could not end queued run %s: %v", runID, err)
+			slog.Warn("queue: could not end queued run", "run_id", runID, "err", err)
 		}
 		return
 	}
@@ -198,7 +198,7 @@ func (s *Server) publishQueuedRunEnd(ctx context.Context, runID string, status s
 	}
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
-		log.Printf("queue: could not report the end of queued run %s: %v", runID, err)
+		slog.Warn("queue: could not report the end of queued run", "run_id", runID, "err", err)
 		return
 	}
 	s.publishRunState(runStateMeta{
@@ -214,7 +214,7 @@ func (s *Server) emitAdmissionEvent(ctx context.Context, runID string, forward f
 	if s.store != nil && runID != "" {
 		if payload, err := json.Marshal(ev); err == nil {
 			if err := s.store.AppendEvent(context.WithoutCancel(ctx), runID, string(ev.Type), payload); err != nil {
-				log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+				slog.Error("store: AppendEvent failed", "run_id", runID, "type", ev.Type, "err", err)
 			}
 		}
 	}
@@ -347,12 +347,12 @@ func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retenti
 		}
 		pt, err := json.Marshal(queuedSecrets{UserBearer: in.UserBearer, UserCredentials: in.UserCredentials})
 		if err != nil {
-			log.Printf("queue: run %s: could not encode its secrets: %v", runID, err)
+			slog.Error("queue: could not encode the run's secrets", "run_id", runID, "err", err)
 			return
 		}
 		sealed, err := s.queueSealer.Seal(pt, queuedSecretsIdentity(tenantID, runID))
 		if err != nil {
-			log.Printf("queue: run %s: could not seal its secrets: %v", runID, err)
+			slog.Error("queue: could not seal the run's secrets", "run_id", runID, "err", err)
 			return
 		}
 		rec.Secrets = &sealed
@@ -364,11 +364,11 @@ func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retenti
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {
-		log.Printf("queue: run %s: could not encode its request: %v", runID, err)
+		slog.Error("queue: could not encode the run's request", "run_id", runID, "err", err)
 		return
 	}
 	if err := s.store.SetQueuedInput(context.WithoutCancel(ctx), runID, b); err != nil && !errors.Is(err, store.ErrRunNotQueued) {
-		log.Printf("queue: run %s: could not store its request: %v", runID, err)
+		slog.Error("queue: could not store the run's request", "run_id", runID, "err", err)
 	}
 }
 
@@ -518,7 +518,7 @@ func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (starte
 		in, why := s.restartInput(q)
 		if why != "" {
 			if ferr := s.failQueuedRun(ctx, q.Run.ID, why); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
-				log.Printf("queue: restart: could not fail run %s: %v", q.Run.ID, ferr)
+				slog.Warn("queue: restart: could not fail run", "run_id", q.Run.ID, "err", ferr)
 			}
 			failed = append(failed, [2]string{q.Run.ID, why})
 			continue
@@ -550,7 +550,7 @@ func (s *Server) startQueuedAgain(in runner.RunInput) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if ferr := s.failQueuedRun(ctx, in.QueuedRunID, "loomcycle restarted and the run could not be queued again: "+err.Error()); ferr != nil && !errors.Is(ferr, store.ErrRunNotQueued) {
-			log.Printf("queue: restart: could not fail run %s: %v", in.QueuedRunID, ferr)
+			slog.Warn("queue: restart: could not fail run", "run_id", in.QueuedRunID, "err", ferr)
 		}
 	}()
 	<-placed

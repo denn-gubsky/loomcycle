@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -180,7 +180,7 @@ func (s *Server) resumePausedRunsReport(ctx context.Context) resumeReport {
 		}
 	}
 	if r.Resumed > 0 || r.AlreadyLive > 0 || len(r.Warnings) > 0 {
-		log.Printf("resume: re-dispatched %d paused run(s); %d already live; %d flagged", r.Resumed, r.AlreadyLive, len(r.Warnings))
+		slog.Info("resume: re-dispatched paused runs", "resumed", r.Resumed, "already_live", r.AlreadyLive, "flagged", len(r.Warnings))
 	}
 	return r
 }
@@ -224,7 +224,7 @@ func (s *Server) orphanedBy(ctx context.Context, run store.Run) (string, bool) {
 			}
 			return "", false
 		}
-		log.Printf("resume: read run %s's parent %s: %v", run.ID, run.ParentRunID, err)
+		slog.Warn("resume: read the run's parent failed", "run_id", run.ID, "parent_run_id", run.ParentRunID, "err", err)
 		return "", false
 	}
 	if !isTerminalRunStatus(parent.Status) {
@@ -260,11 +260,11 @@ func (s *Server) cancelOrphanedRun(run store.Run, reason string) {
 	now, err := s.store.GetRun(ctx, run.ID)
 	ended := err == nil && now.Status == store.RunRunning
 	if err := s.store.FinishRun(ctx, run.ID, store.RunCancelled, reason, store.Usage{}, ""); err != nil {
-		log.Printf("resume: cancel orphaned run %s: %v", run.ID, err)
+		slog.Warn("resume: cancel orphaned run failed", "run_id", run.ID, "err", err)
 		ended = false
 	}
 	if err := s.store.SetRunPauseState(ctx, run.ID, store.PauseStateRunning); err != nil {
-		log.Printf("resume: clear orphaned run %s's pause: %v", run.ID, err)
+		slog.Warn("resume: clear orphaned run's pause failed", "run_id", run.ID, "err", err)
 	}
 	meta := runStateMeta{
 		RunID: run.ID, AgentID: run.AgentID, Agent: run.Agent, UserID: run.UserID, TenantID: run.TenantID,
@@ -299,7 +299,7 @@ func (s *Server) loadUnloopedRunHooks(run store.Run) {
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: run.UserID, AgentID: run.AgentID, TenantID: run.TenantID})
 	def, _, err := s.resumedAgentDef(ctx, run, rec.AgentVersion)
 	if err != nil {
-		log.Printf("hooks: run %s ended with no loop; its run_end hooks are not fired: %v", run.ID, err)
+		slog.Warn("hooks: run ended with no loop; its run_end hooks are not fired", "run_id", run.ID, "err", err)
 		return
 	}
 	if added := rec.additions(); !added.Empty() {
@@ -307,7 +307,7 @@ func (s *Server) loadUnloopedRunHooks(run store.Run) {
 	}
 	s.withResumedRunHooks(ctx, run, def, rec.PinnedHooks)
 	if err := s.runHookSet(run.ID).Err(); err != nil {
-		log.Printf("hooks: run %s ended with no loop; its run_end hooks are not fired: %v", run.ID, err)
+		slog.Warn("hooks: run ended with no loop; its run_end hooks are not fired", "run_id", run.ID, "err", err)
 	}
 }
 
@@ -403,7 +403,7 @@ func (s *Server) releaseStoppedOwnersSlot(run store.Run) {
 	defer cancel()
 	took, err := s.store.TakeRunUserSlot(ctx, run.ID)
 	if err != nil {
-		log.Printf("resume: read run %s's per-user slot: %v; not giving it back", run.ID, err)
+		slog.Warn("resume: read the run's per-user slot failed; not giving it back", "run_id", run.ID, "err", err)
 		return
 	}
 	switch took {
@@ -506,7 +506,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			own := slices.DeleteFunc(events, func(e store.Event) bool { return e.RunID != run.ID })
 			s.endInterruptedWalks(ctx, pollLedgerOf(own))
 		} else {
-			log.Printf("resume: read orphaned run %s's transcript for its walks: %v", run.ID, err)
+			slog.Warn("resume: read orphaned run's transcript for its walks failed", "run_id", run.ID, "err", err)
 		}
 		return fmt.Errorf("not resumed: %s", reason)
 	}
@@ -554,7 +554,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	}); oerr == nil {
 		agentDef = ed
 	} else {
-		log.Printf("resume: run %s had an override the definition no longer permits (%v); resolving from the definition", run.ID, oerr)
+		slog.Warn("resume: the run had an override the definition no longer permits; resolving from the definition", "run_id", run.ID, "err", oerr)
 	}
 	providerID, model, effort, rerr := s.resolveAgentDef(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted)
 	if rerr != nil {
@@ -579,10 +579,10 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// fallbacks on the row is a hot-path write and a separate decision.
 	if run.Model != "" && run.Model != model {
 		if pid, ok := s.providerForModel(ctx, agentDef, run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, run.Model); ok {
-			log.Printf("resume: run %s restoring its started model %q (definition now resolves %q)", run.ID, run.Model, model)
+			slog.Info("resume: restoring the run's started model", "run_id", run.ID, "model", run.Model, "definition_model", model)
 			providerID, model = pid, run.Model
 		} else {
-			log.Printf("resume: run %s started on model %q which the definition no longer permits; using %q", run.ID, run.Model, model)
+			slog.Warn("resume: the run started on a model the definition no longer permits; using the definition's", "run_id", run.ID, "started_model", run.Model, "model", model)
 		}
 	}
 	provider, perr := s.providers.Get(providerID)
@@ -619,7 +619,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// caller-authoritative mode. Its definition's reach is not a safe guess —
 	// the parent's may have been far narrower.
 	if !haveRunCfg && isSubRun(run) {
-		log.Printf("resume: sub-run %s has no configuration record; its parent's host narrowing is unknown, so it resumes allowed no caller hosts", run.ID)
+		slog.Warn("resume: sub-run has no configuration record; its parent's host narrowing is unknown, so it resumes allowed no caller hosts", "run_id", run.ID)
 		runCfg.Hosts = &runHostRecord{HasList: true}
 	}
 
@@ -794,7 +794,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// re-armed timeout_ms leaves the downtime out (runConfigRecord.Pauses).
 	if haveRunCfg && runCfg.pauseOpen() {
 		if err := recordRunPause(ctx, s.store, run.ID, time.Time{}, time.Now()); err != nil {
-			log.Printf("resume: end run %s's pause on its record: %v — a resumed timeout_ms on it counts the downtime", run.ID, err)
+			slog.Warn("resume: end the run's pause on its record failed — a resumed timeout_ms on it counts the downtime", "run_id", run.ID, "err", err)
 		}
 	}
 	// Stamp a fresh heartbeat NOW. The restored row carries an old started_at
@@ -804,7 +804,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// first OnHeartbeat. (The sweeper also skips pause_state='paused', which
 	// covers the pre-resume window.)
 	if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
-		log.Printf("resume: heartbeat stamp for %s failed: %v", run.ID, err)
+		slog.Warn("resume: heartbeat stamp failed", "run_id", run.ID, "err", err)
 	}
 	// This replica now owns the run's live state (its steer queue, its cancel).
 	// The row still names the replica it was created on, and a cross-replica
@@ -813,7 +813,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// and a verdict posted to this replica still reaches it.
 	if s.replicaID != "" && run.ReplicaID != s.replicaID {
 		if err := s.store.SetRunReplica(ctx, run.ID, s.replicaID); err != nil {
-			log.Printf("resume: replica stamp for %s failed: %v", run.ID, err)
+			slog.Warn("resume: replica stamp failed", "run_id", run.ID, "err", err)
 		}
 	}
 
@@ -827,7 +827,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// holds the parent; the tree's root is found by walking up from it.
 	rootRunID, rootErr := resumedRootRunID(ctx, s.store.GetRun, run)
 	if rootErr != nil {
-		log.Printf("resume: run %s: %v; it resumes as the root of its own tree", run.ID, rootErr)
+		slog.Warn("resume: the run resumes as the root of its own tree", "run_id", run.ID, "err", rootErr)
 	}
 	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
 		RunID:         run.ID,
@@ -1104,7 +1104,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		// never parks, so every future Pause times out on a ghost).
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("resumed run %s panicked: %v", run.ID, rec)
+				slog.Error("resumed run panicked", "run_id", run.ID, "panic", rec)
 				s.finishRunFailedReason(run.ID, fmt.Sprintf("panic: %v", rec), meta)
 			}
 			residentDone("failed", nil) // a no-op once the loop's end has filed it
@@ -1170,7 +1170,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 			// process stops gives this one back (RFC ES C4). Unwritten, the
 			// slot leaks rather than a later resume taking back another's.
 			if err := s.store.MarkRunUserSlot(context.WithoutCancel(runCtx), run.ID); err != nil {
-				log.Printf("resume: record run %s's per-user slot: %v", run.ID, err)
+				slog.Warn("resume: record the run's per-user slot failed", "run_id", run.ID, "err", err)
 			}
 		}
 
@@ -1254,7 +1254,7 @@ func (s *Server) resumedAgentDef(ctx context.Context, run store.Run, ver *agentV
 			return config.AgentDef{}, false, fmt.Errorf("agent %q: could not check that no other agent holds its name: %w", run.Agent, herr)
 		}
 		if held {
-			log.Printf("resume: run %s is team %q's own agent %q, and a global agent of that name exists now; they share agent-scoped state until one is renamed", run.ID, sc.Team, run.Agent)
+			slog.Warn("resume: the run is a team's own agent and a global agent of that name exists now; they share agent-scoped state until one is renamed", "run_id", run.ID, "team", sc.Team, "agent", run.Agent)
 		}
 		def = d
 	} else if ver != nil && ver.DefID != "" {
@@ -1397,7 +1397,7 @@ func (s *Server) resumedVolumePolicy(ctx context.Context, run store.Run, rec *sp
 		return s.volumePolicyForAgent(ctx, def)
 	}
 	if rec == nil {
-		log.Printf("resume: sub-run %s has no recorded volume ceiling; its parent's volumes are unknown, so it resumes with none", run.ID)
+		slog.Warn("resume: sub-run has no recorded volume ceiling; its parent's volumes are unknown, so it resumes with none", "run_id", run.ID)
 		return tools.VolumePolicyValue{Active: true}
 	}
 	return s.childVolumePolicy(ctx, s.recordedParentVolumes(ctx, rec.Volumes), def)
@@ -1540,7 +1540,7 @@ func (s *Server) unclaimPausedRun(runID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := s.store.UnclaimPausedRun(ctx, runID); err != nil {
-		log.Printf("resume: give run %s back as paused: %v — it stays running with no loop until the stale-run sweeper ends it", runID, err)
+		slog.Error("resume: give the run back as paused failed — it stays running with no loop until the stale-run sweeper ends it", "run_id", runID, "err", err)
 	}
 }
 
@@ -1569,7 +1569,7 @@ func (s *Server) appendResumeRefusal(run store.Run, reason string) {
 	bg, cancelFn := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFn()
 	if aerr := s.store.AppendEvent(bg, run.ID, string(providers.EventError), payload); aerr != nil {
-		log.Printf("resume: could not record the refusal on run %s's transcript: %v", run.ID, aerr)
+		slog.Warn("resume: could not record the refusal on the run's transcript", "run_id", run.ID, "err", aerr)
 	}
 }
 
@@ -1720,7 +1720,7 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 				return
 			case <-t.C:
 				if err := s.store.UpdateHeartbeat(ctx, run.ID); err != nil {
-					log.Printf("resume: fan-out parent %s heartbeat pump: %v", run.ID, err)
+					slog.Warn("resume: fan-out parent heartbeat pump failed", "run_id", run.ID, "err", err)
 				}
 			}
 		}
@@ -1979,7 +1979,7 @@ func (c *resumedChildClock) expired(ctx context.Context, st store.Store, child s
 	}
 	c.readPauses(child.RunConfig)
 	if err := c.readEvents(ctx, st, child.ID); err != nil && ctx.Err() == nil {
-		log.Printf("resume: read fan-out child %s's events: %v", child.ID, err)
+		slog.Warn("resume: read fan-out child's events failed", "run_id", child.ID, "err", err)
 	}
 	at, stopped := c.deadline(child.StartedAt)
 	return !stopped && !now.Before(at)
@@ -2327,7 +2327,7 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 	case runCfg.Spawn != nil:
 		fanoutCap = tools.NarrowFanoutCap(runCfg.Spawn.FanoutCap, agentDef.MaxConcurrentChildren)
 	case isSubRun(run):
-		log.Printf("resume: sub-run %s has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", run.ID)
+		slog.Warn("resume: sub-run has no recorded fan-out width; its ancestors' width is unknown, so it resumes serial", "run_id", run.ID)
 		fanoutCap = 1
 	}
 	// RFC DC P5: the offer this run makes its children. A sub-run's is the one

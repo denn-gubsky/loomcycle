@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -125,7 +125,8 @@ func (s *Server) handleClientTools(w http.ResponseWriter, r *http.Request) {
 	accepted := make([]string, 0, len(hello.Tools))
 	for _, t := range hello.Tools {
 		if !clienttools.ValidBareName(t.Name) {
-			log.Printf("client-tools: skipping tool %q from %s — name must be [a-zA-Z0-9_-] and short enough for the client__ prefix (<=%d total)", t.Name, key.Subject, clienttools.MaxToolNameLen)
+			slog.Warn("client-tools: skipping tool — name must be [a-zA-Z0-9_-] and short enough for the client__ prefix",
+				"tool", t.Name, "subject", key.Subject, "max_len", clienttools.MaxToolNameLen)
 			continue
 		}
 		valid = append(valid, t)

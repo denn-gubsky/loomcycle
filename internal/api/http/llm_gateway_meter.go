@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -121,8 +121,8 @@ func (s *Server) settleGatewayCall(ctx context.Context, wireUser, providerID, mo
 	if est == 0 {
 		return
 	}
-	log.Printf("llm_gateway: no usage report (call ended early or failed) provider=%s model=%s user_id=%q — counted %d estimated tokens against the budget (%s), not written to the usage ledger",
-		providerID, modelID, user, est, kept)
+	slog.Warn("llm_gateway: no usage report (call ended early or failed) — counted estimated tokens against the budget, not written to the usage ledger",
+		"provider", providerID, "model", modelID, "user_id", user, "estimated_tokens", est, "persisted", kept)
 }
 
 // chargeEstimate counts a call that reported no usage against its caller's

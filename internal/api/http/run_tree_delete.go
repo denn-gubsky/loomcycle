@@ -15,7 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -454,14 +454,14 @@ func (s *Server) recordRunTreeDelete(ctx context.Context, req connector.DeleteRu
 	default:
 		ev.DeleteCounts = res.Counts
 	}
-	log.Printf("run tree delete: run=%q session=%q tenant=%q actor=%s/%s refused=%q counts=%v",
-		req.RunID, req.SessionID, tenant, ev.ActorTenant, ev.ActorSubject, ev.DeleteRefused, ev.DeleteCounts)
+	slog.Info("run tree delete", "run_id", req.RunID, "session_id", req.SessionID, "tenant", tenant,
+		"actor", ev.ActorTenant+"/"+ev.ActorSubject, "refused", ev.DeleteRefused, "counts", ev.DeleteCounts)
 	if s.runDeleteAudit == nil {
 		return
 	}
 	if err := s.runDeleteAudit.Record(ev); err != nil {
 		// Logged, not returned: the rows are gone either way.
-		log.Printf("audit: run_tree_delete record failed (run=%q session=%q): %v", req.RunID, req.SessionID, err)
+		slog.Error("audit: run_tree_delete record failed", "run_id", req.RunID, "session_id", req.SessionID, "err", err)
 	}
 }
 

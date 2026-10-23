@@ -133,10 +133,13 @@ Each request emits the same structured log line as the native
 gateway:
 
 ```
-llm_gateway: request_id=req_abc provider=anthropic model=claude-sonnet-4-6 \
-  tier="" user_id="alice" input_tokens=1234 output_tokens=56 \
-  stop_reason=end_turn latency_ms=842 status=ok err=""
+llm_gateway: request request_id=req_abc provider=anthropic \
+  model=claude-sonnet-4-6 tier="" user_id=alice input_tokens=1234 \
+  output_tokens=56 stop_reason=end_turn latency_ms=842 status=ok err=""
 ```
+
+With `LOOMCYCLE_LOG_FORMAT=json` the same fields arrive as JSON keys
+(`"msg":"llm_gateway: request"`).
 
 OTEL spans (when configured) carry the same attributes — operators
 graphing per-provider / per-user metrics see openai-compat calls

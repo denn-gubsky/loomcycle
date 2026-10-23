@@ -5,7 +5,7 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 )
 
 // ProvisionIdentityDocs creates the tenant-root and user-root Documents for a principal
@@ -90,6 +90,6 @@ func (s *Server) ProvisionDeclaredPrincipalDocs(ctx context.Context) {
 		n++
 	}
 	if n > 0 {
-		log.Printf("memory: provisioned identity documents for %d declared principal(s)", n)
+		slog.Info("memory: provisioned identity documents for declared principals", "principals", n)
 	}
 }

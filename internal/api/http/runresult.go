@@ -2,7 +2,7 @@ package http
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
@@ -42,7 +42,7 @@ func runResultJSON(r *redact.Redactor, res loop.RunResult) json.RawMessage {
 		// State and Structured are model-produced JSON that already
 		// round-tripped once; a marshal failure here means a value the encoder
 		// cannot represent. Keep the text rather than lose the whole answer.
-		log.Printf("run result: state/structured not encodable (%v); persisting final text only", err)
+		slog.Warn("run result: state/structured not encodable; persisting final text only", "err", err)
 		b, err = json.Marshal(runResultRecord{FinalText: res.FinalText})
 		if err != nil {
 			return nil

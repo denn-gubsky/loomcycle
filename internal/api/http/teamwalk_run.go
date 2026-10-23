@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -217,7 +217,7 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 		}
 		usage := store.Usage{Result: walkResultJSON(s.redactor, end.FinalText, terminal)}
 		if ferr := s.store.FinishRun(context.WithoutCancel(walkCtx), runID, status, stopReason, usage, msg); ferr != nil {
-			log.Printf("teamdef: finish walk run %s: %v", runID, ferr)
+			slog.Warn("teamdef: finish walk run failed", "run_id", runID, "err", ferr)
 		}
 		// A walk is a run, and ends like one.
 		s.publishRunState(meta, string(status), stopReason, msg)

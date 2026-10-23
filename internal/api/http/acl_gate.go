@@ -3,9 +3,8 @@ package http
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -58,7 +57,7 @@ func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Pri
 	}
 	out, err := s.aclResolver.Resolve(ctx, p)
 	if err != nil {
-		log.Printf("authz: resolving the set for tenant=%q subject=%q failed (mode %s): %v", p.TenantID, p.Subject, s.aclMode(), err)
+		slog.Error("authz: resolving the set failed", "tenant", p.TenantID, "subject", p.Subject, "mode", s.aclMode(), "err", err)
 		return p
 	}
 	return out
@@ -183,8 +182,8 @@ func (s *Server) recordACLEvent(ctx context.Context, p auth.Principal, action st
 	for _, r := range d.Reasons {
 		reasons = append(reasons, fmt.Sprintf("%s#%d:%s", r.ACL, r.RuleIndex, r.Effect))
 	}
-	log.Printf("authz: %s tenant=%q subject=%q action=%s resource=%s:%s outcome=%s rules=[%s] transport=%s",
-		action, p.TenantID, p.Subject, surface.Action, surface.Type, surface.Name, d.Outcome, strings.Join(reasons, ","), authz.TransportFrom(ctx))
+	slog.Warn("authz: "+action, "tenant", p.TenantID, "subject", p.Subject, "action", surface.Action,
+		"resource", surface.Type+":"+surface.Name, "outcome", d.Outcome.String(), "rules", reasons, "transport", authz.TransportFrom(ctx))
 	if s.tokenAudit == nil {
 		return
 	}
@@ -193,7 +192,7 @@ func (s *Server) recordACLEvent(ctx context.Context, p auth.Principal, action st
 		TargetName: surface.Type + ":" + surface.Name, AclAction: surface.Action, AclOutcome: d.Outcome.String(), AclRules: reasons,
 	}
 	if err := s.tokenAudit.Record(ev); err != nil {
-		log.Printf("authz: audit write failed: %v", err)
+		slog.Error("authz: audit write failed", "err", err)
 	}
 }
 
