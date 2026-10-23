@@ -194,6 +194,21 @@ type Binding struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
+// MarshalJSON leaves an unset ExpiresAt out: `omitempty` does nothing for a
+// time.Time, so a binding with no expiry was written as year 1. A set time
+// marshals exactly as before; decoding is unchanged.
+func (b Binding) MarshalJSON() ([]byte, error) {
+	type plain Binding
+	var exp *time.Time
+	if !b.ExpiresAt.IsZero() {
+		exp = &b.ExpiresAt
+	}
+	return json.Marshal(struct {
+		plain
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}{plain(b), exp})
+}
+
 // Validate checks a binding as a caller supplied it.
 func (b Binding) Validate() error {
 	if !ValidName(b.ACL) {
