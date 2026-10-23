@@ -58,7 +58,7 @@ func (s *Scheduler) admitOverlap(ctx context.Context, row store.ScheduleDueRow, 
 	active, err := s.store.ScheduleActiveRunsList(ctx, row.DefID)
 	if err != nil {
 		// Unknown is not "nothing running": starting could overlap.
-		s.logf("scheduler: schedule %q: list its running runs: %v — skipping this slot", row.Name, err)
+		s.logger.Warn("scheduler: schedule: list its running runs failed — skipping this slot", "schedule", row.Name, "err", err)
 		s.recordSkip(ctx, row.DefID, "skipped_overlap", now)
 		return false
 	}
@@ -68,8 +68,8 @@ func (s *Scheduler) admitOverlap(ctx context.Context, row store.ScheduleDueRow, 
 	if policy == policyReplace && s.replaceActive(ctx, row, active) {
 		return true
 	}
-	s.logf("scheduler: schedule %q: its run %s is still going — skipping this slot (concurrency_policy %s)",
-		row.Name, active[len(active)-1].RunID, policyOrDefault(policy))
+	s.logger.Info("scheduler: schedule: its run is still going — skipping this slot per its concurrency_policy",
+		"schedule", row.Name, "run_id", active[len(active)-1].RunID, "policy", policyOrDefault(policy))
 	s.recordSkip(ctx, row.DefID, "skipped_overlap", now)
 	return false
 }
@@ -78,17 +78,17 @@ func (s *Scheduler) admitOverlap(ctx context.Context, row store.ScheduleDueRow, 
 // whether every one was stopped.
 func (s *Scheduler) replaceActive(ctx context.Context, row store.ScheduleDueRow, active []store.ScheduleActiveRun) bool {
 	if s.canceller == nil {
-		s.logf("scheduler: schedule %q: concurrency_policy replace has no canceller wired", row.Name)
+		s.logger.Warn("scheduler: schedule: concurrency_policy replace has no canceller wired", "schedule", row.Name)
 		return false
 	}
 	for _, a := range active {
 		stopped, err := s.canceller.CancelScheduledRun(ctx, a.RunID, replacedReason)
 		if err != nil {
-			s.logf("scheduler: schedule %q: replace run %s: %v", row.Name, a.RunID, err)
+			s.logger.Warn("scheduler: schedule: replace its run failed", "schedule", row.Name, "run_id", a.RunID, "err", err)
 			return false
 		}
 		if !stopped {
-			s.logf("scheduler: schedule %q: replace: run %s could not be stopped (its replica did not answer)", row.Name, a.RunID)
+			s.logger.Warn("scheduler: schedule: replace: its run could not be stopped (its replica did not answer)", "schedule", row.Name, "run_id", a.RunID)
 			return false
 		}
 	}

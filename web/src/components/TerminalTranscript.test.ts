@@ -138,3 +138,29 @@ describe("no-trace rows", () => {
     expect(l.payload).toBe("");
   });
 });
+
+describe("capability_inert rows", () => {
+  const inert = (tool: string, gate: string, message?: string): TranscriptEvent => ({
+    seq: 3,
+    run_id: "run-1",
+    ts_ns: 0,
+    type: "capability_inert",
+    event: { type: "capability_inert", capability_inert: { tool, gate, ...(message ? { message } : {}) } },
+  });
+
+  // The pane's notice already names the tool and why; the line is a short
+  // marker in the stream rather than the raw event a second time.
+  it("condenses a tool the caller's access rules withheld", () => {
+    const l = formatLine(inert("Bash", "acl", "removed by the caller's access-control rules"));
+    expect(l.payload).toBe("Bash withheld by your access rules");
+    expect(l.cls).toBe("tl-meta");
+    expect(l.payload).not.toContain("{");
+  });
+
+  it("keeps the raw line for every other gate", () => {
+    const l = formatLine(inert("AgentDef", "agent_def_scopes"));
+    expect(l.payload).toContain('"gate":"agent_def_scopes"');
+    expect(l.payload).toContain('"tool":"AgentDef"');
+    expect(l.cls).toBe("tl-other");
+  });
+});

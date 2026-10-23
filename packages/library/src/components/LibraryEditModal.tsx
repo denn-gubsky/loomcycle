@@ -12,6 +12,7 @@ import {
 } from "@loomcycle/def-fields";
 import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
+import { useErrorText } from "../lib/errorText";
 import { keepHookRemovals } from "../lib/hookDefOverlay";
 
 // LibraryEditModal — Library admin UI.
@@ -105,6 +106,7 @@ export default function LibraryEditModal({
   onSaved,
 }: LibraryEditModalProps) {
   const data = useLibraryData();
+  const errorText = useErrorText();
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
 
@@ -678,7 +680,7 @@ export default function LibraryEditModal({
       }
       onSaved(row);
     } catch (e) {
-      setSubmitErr(explainServerError(e));
+      setSubmitErr(errorText(e, explainServerError));
     } finally {
       setSubmitting(false);
     }

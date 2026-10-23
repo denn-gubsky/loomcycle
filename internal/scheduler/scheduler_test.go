@@ -141,7 +141,7 @@ func schedulerFixture(t *testing.T, def scheduleDef, nextRunAt time.Time) (*Sche
 	fr := &fakeRunner{}
 	fm := &fakeMCP{}
 	cfg := Config{TickInterval: 10 * time.Millisecond}
-	sched := New(cfg, st, fr, nil, fm, t.Logf)
+	sched := New(cfg, st, fr, nil, fm, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 	// The channel writer main.go wires, with no channel held.
 	sched.SetChannelWriter(&channels.StorePublisher{Store: st})
@@ -641,7 +641,7 @@ func TestScheduler_DecodeFailureRecordedAsFailed(t *testing.T) {
 	_ = st.ScheduleDefSetActive(ctx, "", "sched-malformed", "sd-malformed", "test")
 	_ = st.ScheduleRunStateSeed(ctx, "sd-malformed", time.Now().Add(-1*time.Minute))
 
-	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, &fakeRunner{}, nil, nil, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, st, &fakeRunner{}, nil, nil, testLogger(t))
 	fireT(t, sched)
 
 	got, _ := st.ScheduleRunStateGet(ctx, "sd-malformed")
@@ -684,7 +684,7 @@ func TestScheduler_TickFiresInParallel(t *testing.T) {
 	}
 	const perFireDelay = 100 * time.Millisecond
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
-	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 
 	start := time.Now()
@@ -726,7 +726,7 @@ func TestScheduler_TickRespectsMaxConcurrentFires(t *testing.T) {
 		_ = st.ScheduleRunStateSeed(ctx, defID, time.Now().Add(-time.Minute))
 	}
 	fr := &fakeRunner{onRun: func(_ runner.RunInput) { time.Sleep(perFireDelay) }}
-	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: cap}, st, fr, nil, nil, t.Logf)
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: cap}, st, fr, nil, nil, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 
 	start := time.Now()
@@ -769,7 +769,7 @@ func TestScheduler_PanicInFireOneIsRecovered(t *testing.T) {
 			panic("test panic — should be recovered")
 		}
 	}}
-	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 
 	// The tick should return without panicking even though one
@@ -824,7 +824,7 @@ func TestScheduler_SlotClaimSuppressesDoubleFire(t *testing.T) {
 		calls.Add(1)
 		time.Sleep(perFireDelay)
 	}}
-	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, t.Logf)
+	sched := New(Config{TickInterval: time.Hour, MaxConcurrentFires: 8}, st, fr, nil, nil, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 
 	// First tick fires the schedule asynchronously (via the goroutine
@@ -874,26 +874,16 @@ func TestScheduler_RecordSkip_LogsDroppedResultWriteError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = real.Close() })
 
-	var mu sync.Mutex
-	var logged strings.Builder
-	logf := func(format string, args ...any) {
-		mu.Lock()
-		defer mu.Unlock()
-		fmt.Fprintf(&logged, format, args...)
-		logged.WriteByte('\n')
-	}
+	logs := &logCapture{}
 
 	st := recordResultErrStore{Store: real, err: errors.New("boom-write-failed")}
-	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logf)
+	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logs.logger())
 
 	// The record-result write fails and must be logged (not swallowed).
 	sched.recordSkip(context.Background(), "sd-x", "skipped", time.Now())
 
-	mu.Lock()
-	out := logged.String()
-	mu.Unlock()
-	if !strings.Contains(out, "record-result failed") || !strings.Contains(out, "boom-write-failed") {
-		t.Errorf("recordSkip did not log the dropped result-write error; captured log:\n%s", out)
+	if !logs.containsLine("level=ERROR", "record-result failed", "err=boom-write-failed") {
+		t.Errorf("recordSkip did not log the dropped result-write error; captured log:\n%s", logs.all())
 	}
 }
 
@@ -906,25 +896,15 @@ func TestScheduler_RecordFireFailure_LogsDroppedResultWriteError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = real.Close() })
 
-	var mu sync.Mutex
-	var logged strings.Builder
-	logf := func(format string, args ...any) {
-		mu.Lock()
-		defer mu.Unlock()
-		fmt.Fprintf(&logged, format, args...)
-		logged.WriteByte('\n')
-	}
+	logs := &logCapture{}
 
 	st := recordResultErrStore{Store: real, err: errors.New("boom-write-failed")}
-	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logf)
+	sched := New(Config{TickInterval: time.Hour}, st, &fakeRunner{}, nil, nil, logs.logger())
 
 	sched.recordFireFailure(context.Background(), "sd-y", "r1", "failed", errors.New("decode"), time.Now())
 
-	mu.Lock()
-	out := logged.String()
-	mu.Unlock()
-	if !strings.Contains(out, "record fire-failure result failed") || !strings.Contains(out, "boom-write-failed") {
-		t.Errorf("recordFireFailure did not log the dropped result-write error; captured log:\n%s", out)
+	if !logs.containsLine("level=ERROR", "record fire-failure result failed", "err=boom-write-failed") {
+		t.Errorf("recordFireFailure did not log the dropped result-write error; captured log:\n%s", logs.all())
 	}
 }
 
