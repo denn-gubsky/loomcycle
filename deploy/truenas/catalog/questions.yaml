@@ -1239,6 +1239,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_FILE_BASE64_MIN_BYTES
+            label: LOOMCYCLE_FILE_BASE64_MIN_BYTES
+            description: '(example: 4096)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MCP_MAX_FRAME_BYTES
             label: LOOMCYCLE_MCP_MAX_FRAME_BYTES
             description: '(example: 16777216)'

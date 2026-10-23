@@ -9,9 +9,9 @@ import (
 )
 
 // NarrowHosts returns a copy of the tool slice where every HTTP,
-// WebFetch, and WebSearch instance is value-copied with its host
-// allowlist resolved per callerAllowed and the policy mode. Other
-// tools pass through unchanged.
+// WebFetch, File (its download/upload backend) and WebSearch instance is
+// value-copied with its host allowlist resolved per callerAllowed and the
+// policy mode. Other tools pass through unchanged.
 //
 // Two policy modes (callerAuthoritative selects):
 //
@@ -106,6 +106,14 @@ func NarrowHosts(in []tools.Tool, callerAllowed []string, wsFilterMode string, c
 				wf.HTTP = narrowHTTP(wf.HTTP, callerAllowed)
 			}
 			out = append(out, &wf)
+		case *File:
+			// File's download and upload go out on an HTTP backend too:
+			// left unnarrowed it would reach hosts the caller withheld.
+			fc := *v
+			if fc.HTTP != nil {
+				fc.HTTP = narrowHTTP(fc.HTTP, callerAllowed)
+			}
+			out = append(out, &fc)
 		case *WebSearch:
 			ws := *v
 			// WebSearch's floor is HTTP's allowlist (see comment above).
@@ -144,6 +152,14 @@ func replaceHostsInTools(in []tools.Tool, hosts []string, wsFilterMode string) [
 				wf.HTTP = &h
 			}
 			out = append(out, &wf)
+		case *File:
+			fc := *v
+			if fc.HTTP != nil {
+				h := *fc.HTTP
+				h.HostAllowlist = append([]string(nil), hosts...)
+				fc.HTTP = &h
+			}
+			out = append(out, &fc)
 		case *WebSearch:
 			ws := *v
 			ws.AllowedHosts = append([]string(nil), hosts...)
@@ -258,6 +274,10 @@ func findHTTPPrivateAllowlist(in []tools.Tool) []string {
 		case *HTTP:
 			return v.PrivateHostAllowlist
 		case *WebFetch:
+			if v.HTTP != nil {
+				return v.HTTP.PrivateHostAllowlist
+			}
+		case *File:
 			if v.HTTP != nil {
 				return v.HTTP.PrivateHostAllowlist
 			}

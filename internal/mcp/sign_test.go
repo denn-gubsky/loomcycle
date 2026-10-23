@@ -156,3 +156,18 @@ func TestSign_KnownVector(t *testing.T) {
 		t.Errorf("canonical encoding drift: got %s, want %s — update only with intent (bump every existing row + re-backfill)", got, want)
 	}
 }
+
+// binary_results is content (it changes what the model is handed), and its
+// default spelled out hashes as its absence, so every row stored before the
+// field keeps its hash.
+func TestSign_BinaryResults(t *testing.T) {
+	base := MCPServerContent{Name: "ms365", Transport: "http", URL: "https://a.example/mcp"}
+	pass, capture := base, base
+	pass.BinaryResults, capture.BinaryResults = "passthrough", "capture"
+	if Sign(pass) != Sign(base) {
+		t.Error("binary_results: passthrough hashes differently from absent")
+	}
+	if Sign(capture) == Sign(base) {
+		t.Error("binary_results: capture hashes the same as absent")
+	}
+}

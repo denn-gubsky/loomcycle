@@ -70,6 +70,9 @@ type DynamicMCPServerSpec struct {
 	// (create's discovery handshake).
 	DefID   string
 	Version int
+	// BinaryResults is the def's binary_results ("", passthrough or
+	// capture), read by the pool's result policy at each call.
+	BinaryResults string
 }
 
 // DynamicRegistry holds runtime-registered MCP server specs. One
