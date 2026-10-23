@@ -160,22 +160,49 @@ func (r *Resolver) version(ctx context.Context, tenant string) (int64, error) {
 	return cur, nil
 }
 
+// Input returns what Compile would be given for a subject right now — its
+// closed groups, applicable bindings, the lists they name and the class
+// baseline — so a simulation can add a draft to it. The class is read as
+// the subject's token class would be; subj.Groups is recomputed.
+func (r *Resolver) Input(ctx context.Context, subj authz.Subject) (authz.Input, error) {
+	p := auth.Principal{TenantID: subj.TenantID, Subject: subj.ID, TokenDefID: subj.TokenDefID, Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}}
+	version, err := r.version(ctx, subj.TenantID)
+	if err != nil {
+		return authz.Input{}, err
+	}
+	return r.input(ctx, p, version)
+}
+
 func (r *Resolver) compile(ctx context.Context, p auth.Principal, version int64) (auth.Principal, error) {
+	in, err := r.input(ctx, p, version)
+	if err != nil {
+		return p, err
+	}
+	eff, err := authz.Compile(in)
+	if err != nil {
+		return p, err
+	}
+	out := p
+	out.Groups, out.Effective = in.Subject.Groups, eff
+	return out, nil
+}
+
+func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (authz.Input, error) {
 	direct, err := r.st.GroupsOfSubject(ctx, p.TenantID, p.Subject)
 	if err != nil {
-		return p, fmt.Errorf("groups: %w", err)
+		return authz.Input{}, fmt.Errorf("groups: %w", err)
 	}
 	var groups []string
 	if len(direct) > 0 {
 		graph, err := r.st.GroupGraph(ctx, p.TenantID)
 		if err != nil {
-			return p, fmt.Errorf("group graph: %w", err)
+			return authz.Input{}, fmt.Errorf("group graph: %w", err)
 		}
 		groups = authz.Closure(graph, direct)
 	}
 	rows, err := r.st.AclBindingsFor(ctx, p.TenantID, p.Subject, groups, p.TokenDefID)
 	if err != nil {
-		return p, fmt.Errorf("bindings: %w", err)
+		return authz.Input{}, fmt.Errorf("bindings: %w", err)
 	}
 	in := authz.Input{
 		Subject: authz.Subject{TenantID: p.TenantID, ID: p.Subject, Groups: groups, TokenDefID: p.TokenDefID},
@@ -203,7 +230,7 @@ func (r *Resolver) compile(ctx context.Context, p auth.Principal, version int64)
 			if isNotFound(err) {
 				continue // Compile reports it as missing; it matches nothing
 			}
-			return p, fmt.Errorf("acl %s: %w", row.ACLName, err)
+			return authz.Input{}, fmt.Errorf("acl %s: %w", row.ACLName, err)
 		}
 		if def.Retired() {
 			continue
@@ -213,17 +240,11 @@ func (r *Resolver) compile(ctx context.Context, p auth.Principal, version int64)
 			// A stored list this build cannot read is refused as a whole:
 			// the principal's set is unavailable (enforce refuses, compat
 			// falls back), never partially applied.
-			return p, fmt.Errorf("acl %s (version %d): %w", def.Name, def.Version, err)
+			return authz.Input{}, fmt.Errorf("acl %s (version %d): %w", def.Name, def.Version, err)
 		}
 		in.ACLs[row.ACLName] = authz.ACLVersion{ACL: authz.ACL{Name: def.Name, Description: def.Description, Rules: rules}, Version: def.Version}
 	}
-	eff, err := authz.Compile(in)
-	if err != nil {
-		return p, err
-	}
-	out := p
-	out.Groups, out.Effective = groups, eff
-	return out, nil
+	return in, nil
 }
 
 func isNotFound(err error) bool {

@@ -4172,6 +4172,24 @@ func (s *Server) Mux() http.Handler {
 	// user_ids that have runs in the store. Bearer-authed; drives
 	// the Web UI's run-list user dropdown.
 	mux.Handle("GET /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUsers))))
+	// RFC EY P4: user groups, ACL rule lists, bindings, and the AuthZEN-shaped
+	// evaluate / explain / simulate questions. Tenant-confined by the handlers
+	// (adminFocusedTenant); operator-only for members (memberCarveOut).
+	mux.Handle("GET /v1/_groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListGroups))))
+	mux.Handle("POST /v1/_groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpsertGroup))))
+	mux.Handle("GET /v1/_groups/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetGroup))))
+	mux.Handle("DELETE /v1/_groups/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteGroup))))
+	mux.Handle("POST /v1/_groups/{name}/members", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAddGroupMember))))
+	mux.Handle("DELETE /v1/_groups/{name}/members/{kind}/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRemoveGroupMember))))
+	mux.Handle("POST /v1/_acldef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAclDef))))
+	mux.Handle("GET /v1/_acldef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListAclDefNames))))
+	mux.Handle("GET /v1/_aclbinding", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListBindings))))
+	mux.Handle("POST /v1/_aclbinding", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateBinding))))
+	mux.Handle("DELETE /v1/_aclbinding/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetireBinding))))
+	mux.Handle("POST /v1/_authz/evaluation", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthzEvaluation))))
+	mux.Handle("POST /v1/_authz/evaluations", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthzEvaluations))))
+	mux.Handle("POST /v1/_authz/explain", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthzExplain))))
+	mux.Handle("POST /v1/_authz/simulate", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthzSimulate))))
 	// RFC BX P2a — the tenant-owned first-class users table. Create /
 	// update / delete are tenant-operator actions (substrate:tenant, admin
 	// also satisfies); the handlers derive the authoritative tenant from the
