@@ -382,3 +382,58 @@ export function evaluationRequest(in_: EvaluationInput): EvaluationRequest {
   if (Object.keys(ctx).length) out.context = ctx;
   return out;
 }
+
+// ─── the simulator's draft ──────────────────────────────────────────────────
+
+export interface DraftList {
+  name: string;
+  description?: string;
+  rules: Rule[];
+}
+
+export interface DraftBinding {
+  acl: string;
+  subject_kind: string;
+  subject_id?: string;
+  expires_at?: string;
+}
+
+// draftDocFor writes an unsaved list (and any draft bindings) as the YAML the
+// simulator's draft box edits: `{acls: [...], bindings: [...]}` — the shape
+// POST /v1/_authz/simulate takes.
+export function draftDocFor(list: DraftList | null, bindings: DraftBinding[] = []): string {
+  return yamlDump({ acls: list ? [list] : [], bindings });
+}
+
+// parseDraftDoc reads the draft box. Blank = no draft. Each list and binding
+// is checked for shape only; the server validates them against the catalog.
+export function parseDraftDoc(
+  text: string,
+): { ok: true; acls: DraftList[]; bindings: DraftBinding[] } | { ok: false; error: string } {
+  if (!text.trim()) return { ok: true, acls: [], bindings: [] };
+  let parsed: unknown;
+  try {
+    parsed = yamlLoad(text);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, error: "the draft is an object with `acls` and/or `bindings` lists" };
+  }
+  const doc = parsed as { acls?: unknown; bindings?: unknown };
+  const acls = doc.acls ?? [];
+  const bindings = doc.bindings ?? [];
+  if (!Array.isArray(acls)) return { ok: false, error: "acls must be a list" };
+  if (!Array.isArray(bindings)) return { ok: false, error: "bindings must be a list" };
+  for (let i = 0; i < acls.length; i++) {
+    const a = acls[i] as Partial<DraftList> | null;
+    if (!a || typeof a.name !== "string" || !Array.isArray(a.rules)) return { ok: false, error: `acls[${i}]: needs a name and a rules list` };
+  }
+  for (let i = 0; i < bindings.length; i++) {
+    const b = bindings[i] as Partial<DraftBinding> | null;
+    if (!b || typeof b.acl !== "string" || typeof b.subject_kind !== "string") {
+      return { ok: false, error: `bindings[${i}]: needs acl and subject_kind` };
+    }
+  }
+  return { ok: true, acls: acls as DraftList[], bindings: bindings as DraftBinding[] };
+}

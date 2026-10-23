@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSelector,
+  draftDocFor,
+  parseDraftDoc,
   draftFromRule,
   emptyRuleDraft,
   evaluationRequest,
@@ -195,5 +197,33 @@ describe("evaluationRequest", () => {
       resource: { type: "tool", id: "Bash", owner: "alice" },
       context: { transport: "webui", interactive: true, agent: "ci/build", depth: 2, user_tier: "pro" },
     });
+  });
+});
+
+describe("simulator draft document", () => {
+  it("reads draft lists and bindings, and writes a list back as a draft", () => {
+    const list = { name: "interns", description: "no shell", rules: [{ effect: "deny" as const, actions: ["invoke"], resources: ["tool:Bash"] }] };
+    const text = draftDocFor(list, [{ acl: "interns", subject_kind: "user", subject_id: "alice" }]);
+    expect(parseDraftDoc(text)).toEqual({
+      ok: true,
+      acls: [list],
+      bindings: [{ acl: "interns", subject_kind: "user", subject_id: "alice" }],
+    });
+  });
+
+  it("takes either half alone, and nothing as nothing", () => {
+    expect(parseDraftDoc("bindings:\n  - acl: x\n    subject_kind: tenant\n")).toEqual({
+      ok: true,
+      acls: [],
+      bindings: [{ acl: "x", subject_kind: "tenant" }],
+    });
+    expect(parseDraftDoc("  ")).toEqual({ ok: true, acls: [], bindings: [] });
+  });
+
+  it("explains a malformed draft", () => {
+    expect(parseDraftDoc("- 1")).toEqual({ ok: false, error: "the draft is an object with `acls` and/or `bindings` lists" });
+    expect(parseDraftDoc("acls: [{rules: []}]")).toEqual({ ok: false, error: "acls[0]: needs a name and a rules list" });
+    expect(parseDraftDoc("bindings: [{acl: x}]")).toEqual({ ok: false, error: "bindings[0]: needs acl and subject_kind" });
+    expect(parseDraftDoc("acls: {}")).toEqual({ ok: false, error: "acls must be a list" });
   });
 });
