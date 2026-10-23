@@ -20,12 +20,21 @@
 // is not seen. That is the residual the full suite on main exists for: a pull
 // request may miss such a failure, main does not.
 //
-// Some changes reach everything and select every package: go.mod, go.sum, the
-// CI workflow, and this command itself.
+// Some changes reach everything and select every package: any in-tree module's
+// go.mod or go.sum, the CI workflow, and this command itself.
+//
+// The graph spans every in-tree module (scripts/ci/gomodules: the root module
+// and each module the root go.mod replaces with a directory in the tree). Each
+// module's packages are listed from its own directory, because `go list ./...`
+// from the root does not enter a nested module; import paths are the same
+// either way, so the graphs union into one. A changed file belongs to a
+// package of the module whose directory holds it, never to one of an
+// enclosing module.
 //
 // Usage:
 //
 //	affected [-base REV] [-head REV] [-within PATTERNS] [-exclude PATTERNS] [-explain] [-no-walkers]
+//	affected -all [-within PATTERNS] [-exclude PATTERNS]
 //
 // -no-walkers ignores tests that walk the whole repository (a root read). Those
 // census tests look at every file, so every change selects them; CI uses this
@@ -35,8 +44,17 @@
 // -within restricts the output to the packages that space-separated go list
 // patterns name, for the CI steps that test a fixed subset (the Postgres
 // tiers, one race shard); -exclude removes the packages its patterns name.
+// The patterns are matched as go list matches them, against the packages of
+// every in-tree module: a relative pattern ("./internal/store/...") by
+// directory, any other by import path. The go list keywords (all, std, cmd, ...)
+// are refused.
 // -explain writes to stderr why each package was selected. The output is one
 // import path per line, sorted; no output means no test can see the change.
+//
+// -all prints, with no diff, every package -within names less what -exclude
+// names, tests or not, in the order go list would print it: by pattern, each
+// pattern's packages sorted, or all of them sorted when -exclude is set. It is
+// what a CI step runs outside a pull request.
 package main
 
 import (
@@ -51,25 +69,34 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/scripts/ci/gomodules"
 )
 
-// fullRunFiles select every package when they change. The module files change
-// what every package compiles against; the workflow and this command change
-// how the selection itself is made, so they must be proven on everything.
-var fullRunFiles = []string{
-	"go.mod",
-	"go.sum",
-	".github/workflows/ci.yml",
+// fullRunFiles select every package when they change. A module's go.mod and
+// go.sum change what its packages, and everything importing them, compile
+// against; the workflow and this command change how the selection itself is
+// made, so they must be proven on everything.
+func fullRunFiles(mods []gomodules.Module) []string {
+	files := []string{".github/workflows/ci.yml"}
+	for _, m := range mods {
+		files = append(files, path.Join(m.Dir, "go.mod"), path.Join(m.Dir, "go.sum"))
+	}
+	return files
 }
 
-const selfDir = "scripts/ci/affected"
+// selfDirs hold this command and the module discovery it is built on.
+var selfDirs = []string{"scripts/ci/affected", "scripts/ci/gomodules"}
 
 type pkg struct {
 	importPath string
+	module     string // directory of the in-tree module it belongs to
 	dir        string // repo-relative, slash-separated
 	hasTests   bool
 	testDeps   map[string]bool // import paths the test binary links
@@ -83,27 +110,43 @@ func main() {
 	exclude := flag.String("exclude", "", "space-separated go list patterns removed from the output")
 	explain := flag.Bool("explain", false, "write to stderr why each package was selected")
 	noWalkers := flag.Bool("no-walkers", false, "ignore tests that walk the whole repository")
+	all := flag.Bool("all", false, "print every package the patterns name, with no diff")
 	flag.Parse()
 
 	var why io.Writer
 	if *explain {
 		why = os.Stderr
 	}
-	if err := run(*base, *head, *within, *exclude, *noWalkers, os.Stdout, why); err != nil {
+	var err error
+	if *all {
+		err = runAll(*within, *exclude, os.Stdout)
+	} else {
+		err = run(*base, *head, *within, *exclude, *noWalkers, os.Stdout, why)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "affected:", err)
 		os.Exit(1)
 	}
+}
+
+func repoModules() (string, []gomodules.Module, error) {
+	root, err := gitOutput("rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", nil, err
+	}
+	root = strings.TrimSpace(root)
+	mods, err := gomodules.InTree(root)
+	return root, mods, err
 }
 
 func run(base, head, within, exclude string, noWalkers bool, out, why io.Writer) error {
 	if err := checkArgs(base, head, within, exclude); err != nil {
 		return err
 	}
-	root, err := gitOutput("rev-parse", "--show-toplevel")
+	root, mods, err := repoModules()
 	if err != nil {
 		return err
 	}
-	root = strings.TrimSpace(root)
 
 	diff, err := gitOutput("diff", "--name-only", "--no-renames", base, head)
 	if err != nil {
@@ -111,28 +154,23 @@ func run(base, head, within, exclude string, noWalkers bool, out, why io.Writer)
 	}
 	changed := nonEmptyLines(diff)
 
-	pkgs, err := loadPackages(root, "./...")
-	if err != nil {
-		return err
+	var pkgs []pkg
+	for _, m := range mods {
+		ps, err := loadPackages(root, m, "./...")
+		if err != nil {
+			return err
+		}
+		pkgs = append(pkgs, ps...)
 	}
 	if noWalkers {
 		pkgs = withoutWalkers(pkgs)
 	}
-	scope, err := listImportPaths(root, within)
+	scope, err := inScope(pkgs, within, exclude)
 	if err != nil {
 		return err
 	}
-	if exclude != "" {
-		drop, err := listImportPaths(root, exclude)
-		if err != nil {
-			return err
-		}
-		for ip := range drop {
-			delete(scope, ip)
-		}
-	}
 
-	for _, s := range selectPackages(pkgs, changed) {
+	for _, s := range selectPackages(mods, pkgs, changed) {
 		if !scope[s.importPath] {
 			continue
 		}
@@ -169,19 +207,21 @@ func checkArgs(base, head, within, exclude string) error {
 }
 
 // selectPackages returns, sorted by import path, the packages with tests that
-// the changed files (repo-relative, slash-separated) can reach.
-func selectPackages(pkgs []pkg, changed []string) []selection {
+// the changed files (repo-relative, slash-separated) can reach. mods are the
+// in-tree modules pkgs come from.
+func selectPackages(mods []gomodules.Module, pkgs []pkg, changed []string) []selection {
+	full := fullRunFiles(mods)
 	fullBy := ""
 	for _, f := range changed {
-		if isFullRunFile(f) {
+		if isFullRunFile(full, f) {
 			fullBy = f
 			break
 		}
 	}
 
-	byDir := make(map[string]string, len(pkgs))
+	byDir := make(map[string]pkg, len(pkgs))
 	for _, p := range pkgs {
-		byDir[p.dir] = p.importPath
+		byDir[p.dir] = p
 	}
 	// owners maps a package with a changed file to whether the change can reach
 	// its importers. A _test.go file is compiled only into its own package's
@@ -189,7 +229,7 @@ func selectPackages(pkgs []pkg, changed []string) []selection {
 	// nothing that imports it.
 	owners := map[string]bool{}
 	for _, f := range changed {
-		if ip, ok := owningPackage(byDir, f); ok {
+		if ip, ok := owningPackage(mods, byDir, f); ok {
 			owners[ip] = owners[ip] || !strings.HasSuffix(f, "_test.go")
 		}
 	}
@@ -213,13 +253,18 @@ func selectPackages(pkgs []pkg, changed []string) []selection {
 	return sel
 }
 
-func isFullRunFile(f string) bool {
-	for _, full := range fullRunFiles {
-		if f == full {
+func isFullRunFile(full []string, f string) bool {
+	for _, ff := range full {
+		if f == ff {
 			return true
 		}
 	}
-	return strings.HasPrefix(f, selfDir+"/")
+	for _, d := range selfDirs {
+		if strings.HasPrefix(f, d+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // reaches says why p's tests can see the change, or "" when they cannot.
@@ -265,13 +310,19 @@ func withoutWalkers(pkgs []pkg) []pkg {
 }
 
 // owningPackage returns the package whose directory is the nearest ancestor of
-// f: a migration or testdata file belongs to the package above it.
-func owningPackage(byDir map[string]string, f string) (string, bool) {
-	for d := filepath.ToSlash(filepath.Dir(f)); ; d = filepath.ToSlash(filepath.Dir(d)) {
-		if ip, ok := byDir[d]; ok {
-			return ip, true
+// f: a migration or testdata file belongs to the package above it. The search
+// stays inside the module whose directory holds f, so a file of a nested
+// module is never charged to a package of the module around it.
+func owningPackage(mods []gomodules.Module, byDir map[string]pkg, f string) (string, bool) {
+	mod, ok := gomodules.DirOwner(mods, f)
+	if !ok {
+		return "", false
+	}
+	for d := path.Dir(f); ; d = path.Dir(d) {
+		if p, ok := byDir[d]; ok && p.module == mod.Dir {
+			return p.importPath, true
 		}
-		if d == "." || d == "/" {
+		if d == mod.Dir || d == "." || d == "/" {
 			return "", false
 		}
 	}
@@ -287,16 +338,19 @@ type listEntry struct {
 	XTestGoFiles []string
 }
 
-func loadPackages(root, pattern string) ([]pkg, error) {
+// loadPackages lists the packages pattern names in module m, run from m's
+// directory; root is the repository root that package directories are made
+// relative to.
+func loadPackages(root string, m gomodules.Module, pattern string) ([]pkg, error) {
 	// #nosec G204 -- fixed command and flags; pattern is "./..." or a pattern checkArgs refused to let start with "-".
 	cmd := exec.Command("go", "list", "-test", "-e",
 		"-json=ImportPath,Dir,ForTest,Deps,TestGoFiles,XTestGoFiles", pattern)
-	cmd.Dir = root
+	cmd.Dir = filepath.Join(root, filepath.FromSlash(m.Dir))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go list: %v: %s", err, stderr.String())
+		return nil, fmt.Errorf("go list in %s: %v: %s", m.Dir, err, stderr.String())
 	}
 
 	var bases []listEntry
@@ -326,7 +380,7 @@ func loadPackages(root, pattern string) ([]pkg, error) {
 			return nil, err
 		}
 		rel = filepath.ToSlash(rel)
-		p := pkg{importPath: e.ImportPath, dir: rel, testDeps: testDeps[e.ImportPath]}
+		p := pkg{importPath: e.ImportPath, module: m.Dir, dir: rel, testDeps: testDeps[e.ImportPath]}
 		files := append(append([]string{}, e.TestGoFiles...), e.XTestGoFiles...)
 		p.hasTests = len(files) > 0
 		for _, f := range files {
@@ -419,21 +473,149 @@ func stringLit(e ast.Expr) (string, bool) {
 	return s, err == nil
 }
 
-func listImportPaths(root, patterns string) (map[string]bool, error) {
-	// #nosec G204 -- fixed command; the patterns passed checkArgs, so none is read as a flag.
-	cmd := exec.Command("go", append([]string{"list", "-e"}, strings.Fields(patterns)...)...)
-	cmd.Dir = root
+// runAll prints every package within names less those exclude names, across
+// the in-tree modules, in the order go list prints them.
+func runAll(within, exclude string, out io.Writer) error {
+	if err := checkArgs("HEAD", "HEAD", within, exclude); err != nil {
+		return err
+	}
+	root, mods, err := repoModules()
+	if err != nil {
+		return err
+	}
+	var pkgs []pkg
+	for _, m := range mods {
+		ps, err := listPackages(root, m)
+		if err != nil {
+			return err
+		}
+		pkgs = append(pkgs, ps...)
+	}
+	list, err := matchAll(pkgs, within, exclude)
+	if err != nil {
+		return err
+	}
+	for _, ip := range list {
+		fmt.Fprintln(out, ip)
+	}
+	return nil
+}
+
+// matchAll returns the import paths within names less those exclude names.
+// Without exclude the order is go list's for the same patterns: pattern by
+// pattern, each one's packages sorted, a package named twice listed once.
+// With exclude it is sorted, as the comm(1) of two sorted lists it replaces.
+func matchAll(pkgs []pkg, within, exclude string) ([]string, error) {
+	sorted := append([]pkg(nil), pkgs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].importPath < sorted[j].importPath })
+
+	drop := map[string]bool{}
+	for _, pattern := range strings.Fields(exclude) {
+		match, err := compilePattern(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range sorted {
+			if match(p) {
+				drop[p.importPath] = true
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, pattern := range strings.Fields(within) {
+		match, err := compilePattern(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range sorted {
+			if match(p) && !seen[p.importPath] && !drop[p.importPath] {
+				seen[p.importPath] = true
+				out = append(out, p.importPath)
+			}
+		}
+	}
+	if exclude != "" {
+		sort.Strings(out)
+	}
+	return out, nil
+}
+
+// inScope is the set of import paths among pkgs that within names less those
+// exclude names.
+func inScope(pkgs []pkg, within, exclude string) (map[string]bool, error) {
+	list, err := matchAll(pkgs, within, exclude)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(list))
+	for _, ip := range list {
+		set[ip] = true
+	}
+	return set, nil
+}
+
+// goListKeywords are the patterns go list reads as a package set rather than a
+// path. None names a set of this repository's packages a CI step wants.
+var goListKeywords = map[string]bool{"all": true, "std": true, "cmd": true, "main": true, "tool": true, "work": true}
+
+// compilePattern returns a matcher for one go list pattern, as go list run in
+// the repository root would apply it if every in-tree module were the root
+// module: a relative pattern ("./x/...", "./x/", ".") against the package's
+// directory, anything else against its import path. "..." matches any
+// string, and a trailing "/..." also matches the path before it.
+func compilePattern(pattern string) (func(pkg) bool, error) {
+	if goListKeywords[pattern] {
+		return nil, fmt.Errorf("package pattern %q: a go list keyword, want a path pattern", pattern)
+	}
+	if !strings.HasPrefix(pattern, ".") {
+		re := patternRegexp(pattern)
+		return func(p pkg) bool { return re.MatchString(p.importPath) }, nil
+	}
+	rel := path.Clean(filepath.ToSlash(pattern))
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return nil, fmt.Errorf("package pattern %q leaves the repository", pattern)
+	}
+	re := patternRegexp(rel)
+	return func(p pkg) bool { return re.MatchString(p.dir) }, nil
+}
+
+// patternRegexp is cmd/go's pattern match (internal/pkgpattern.MatchPattern)
+// without its vendor rule; this repository vendors nothing.
+func patternRegexp(pattern string) *regexp.Regexp {
+	re := strings.ReplaceAll(regexp.QuoteMeta(pattern), `\.\.\.`, `.*`)
+	if strings.HasSuffix(re, `/.*`) {
+		re = strings.TrimSuffix(re, `/.*`) + `(/.*)?`
+	}
+	return regexp.MustCompile(`^` + re + `$`)
+}
+
+// listPackages lists every package of module m (import path and directory
+// only), run from m's directory.
+func listPackages(root string, m gomodules.Module) ([]pkg, error) {
+	cmd := exec.Command("go", "list", "-e", "-json=ImportPath,Dir", "./...")
+	cmd.Dir = filepath.Join(root, filepath.FromSlash(m.Dir))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go list %s: %v: %s", patterns, err, stderr.String())
+		return nil, fmt.Errorf("go list in %s: %v: %s", m.Dir, err, stderr.String())
 	}
-	set := map[string]bool{}
-	for _, l := range nonEmptyLines(string(raw)) {
-		set[l] = true
+	var pkgs []pkg
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for dec.More() {
+		var e listEntry
+		if err := dec.Decode(&e); err != nil {
+			return nil, fmt.Errorf("decode go list output: %v", err)
+		}
+		rel, err := filepath.Rel(root, e.Dir)
+		if err != nil {
+			return nil, err
+		}
+		pkgs = append(pkgs, pkg{importPath: e.ImportPath, module: m.Dir, dir: filepath.ToSlash(rel)})
 	}
-	return set, nil
+	return pkgs, nil
 }
 
 func gitOutput(args ...string) (string, error) {

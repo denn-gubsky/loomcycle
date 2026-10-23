@@ -44,14 +44,32 @@
 // The graph is read for the host GOOS/GOARCH. The in-module edges are identical
 // on linux, darwin and windows today; should a build-tagged file ever add an
 // edge on one platform only, CI's linux run is the authority.
+//
+// Modules (RFC FE). The graph covers every in-tree module: the root and each
+// module the root go.mod replaces with a directory in the tree
+// (scripts/ci/gomodules). Paths stay relative to the root module, so a
+// package of a nested module is placed and checked like any other. Two rules
+// apply on top of the layers:
+//
+//   - Every nested module is listed in exactly one layer's modules, and each of
+//     its packages sits in that layer or below. A module's go.mod makes the
+//     compiler refuse imports of anything it does not require, so a module
+//     that never requires the root cannot sit above what imports it; the
+//     declared layer says where it is meant to be, and this rule keeps it there.
+//   - Every go.mod in the tree belongs to the root module, an in-tree module
+//     or standaloneModules. A go.mod anywhere else would silently take its
+//     directory out of the root module, and out of every tool that runs from
+//     the root, so a module is wired or declared on purpose.
 package archtest
 
 // layer is one rung of the layering. subsystems are directories relative to the
 // module root; each covers itself and every package below it that a longer
-// listed directory does not cover.
+// listed directory does not cover. modules are the directories of the nested
+// modules whose packages all sit in this layer or below.
 type layer struct {
 	name       string
 	subsystems []string
+	modules    []string
 }
 
 // layers is ordered from the bottom (index 0) up. An import may point down.
@@ -304,6 +322,14 @@ var allowedSideways = []subsystemEdge{
 
 	// L6
 	{"internal/api", "internal/webui"},
+}
+
+// standaloneModules are directories holding a go.mod the root module does not
+// replace: separate builds that ship on their own and are not part of the
+// binary. They are outside the layering. deploy/builder is the
+// loomcycle-builder image (security.yml scans it as its own module).
+var standaloneModules = []string{
+	"deploy/builder",
 }
 
 // knownViolation is one wrong-way import that exists today, as an exact
