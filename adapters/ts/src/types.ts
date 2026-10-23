@@ -6683,6 +6683,52 @@ export interface RoutingResponse {
   throughput_mode?: string;
   /** Absent when no search providers are configured. */
   search?: SearchRoutingProvider[];
+  /** The memory embedder. Absent when none is configured. */
+  embedder?: RoutingEmbedder;
+  /** The decision models. Absent when none are configured. */
+  decision?: RoutingDecision;
+}
+
+/** The memory embedder in {@link RoutingResponse}. `state` is what its calls
+ *  did since boot, not a probe: `untried` means nothing has been embedded yet.
+ *  No error text or address is reported. */
+export interface RoutingEmbedder {
+  state: "untried" | "ok" | "failing";
+  provider?: string;
+  model?: string;
+  /** The `models:` alias `memory.embedder` names, when it names one. */
+  alias?: string;
+  /** Absent until the embedder has learned it. */
+  dimension?: number;
+  calls: number;
+  failures: number;
+  last_failure_kind?: string;
+  last_ok_unix?: number;
+  last_failure_unix?: number;
+}
+
+/** The decision block in {@link RoutingResponse}. */
+export interface RoutingDecision {
+  /** The model a call that names none is asked. */
+  default: string;
+  models: RoutingDecisionModel[];
+}
+
+/** One decision model. The state fields are its provider's probe; all three are
+ *  absent when the provider was never probed, and `listed` is also absent while
+ *  the provider is unreachable. Under the operator-key gate a tenant sees only
+ *  the models it can key. */
+export interface RoutingDecisionModel {
+  /** What a caller names: a `models:` alias or a model name. */
+  name: string;
+  provider: string;
+  model: string;
+  default?: boolean;
+  /** Reachable and listed. */
+  available?: boolean;
+  reachable?: boolean;
+  /** The provider's model list carries the model (for Ollama: it is pulled). */
+  listed?: boolean;
 }
 
 /** Response of {@link LoomcycleClient.listProviderModels}: a live listing from
