@@ -83,6 +83,14 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "mcp:*", "a2a:*", "client:*", "localapi:*"}},
 				{Effect: Allow, Actions: []string{"invoke", "read"}, Resources: []string{"skill:*"}},
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"search:*", "model:*", "tier:*"}},
+				// The loomcycle-as-MCP-server session an isolated user is let in
+				// for (RFC CN credential self-service), and the self-service
+				// tools its scope gate admits there (userSelfServiceTools in
+				// internal/api/mcp), by name — not mcp-tool:*, which would let
+				// enforce mode reach tools the scope gate refuses. Without these
+				// enforce refused the session and every tool on it.
+				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"transport:mcp"}},
+				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"mcp-tool:credentialdef", "mcp-tool:evaluation", "mcp-tool:authz"}},
 				{Effect: Allow, Actions: []string{"read", "write", "recall"}, Resources: []string{"memory:user", "memory:agent"}},
 				{Effect: Allow, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:user", "sqlmem:agent"}},
 				{Effect: Allow, Actions: []string{"read", "write", "delete", "link"}, Resources: []string{"document:user", "document:agent"}},
