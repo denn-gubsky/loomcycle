@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -283,7 +283,7 @@ func Publish(ctx context.Context, bp coord.Backplane, r *Resolver, tenant string
 	}
 	payload, _ := json.Marshal(map[string]string{"tenant": tenant})
 	if err := bp.Publish(ctx, InvalidateTopic, payload); err != nil {
-		log.Printf("authz: invalidation publish failed: %v", err)
+		slog.Warn("authz: invalidation publish failed", "err", err)
 	}
 }
 

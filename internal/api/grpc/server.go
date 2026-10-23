@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"log"
 	"log/slog"
 	nethttp "net/http"
 	"slices"
@@ -1143,11 +1142,11 @@ func enforceACL(ctx context.Context, p auth.Principal, fullMethod string) error 
 	case res.Unavailable:
 		return status.Error(codes.Unavailable, "acl_unavailable: access control could not be evaluated; retry")
 	case res.Diverged:
-		log.Printf("authz: acl_shadow_diverged tenant=%q subject=%q action=%s resource=%s:%s outcome=%s transport=grpc",
-			p.TenantID, p.Subject, surface.Action, surface.Type, surface.Name, res.Decision.Outcome)
+		slog.Warn("authz: acl_shadow_diverged", "tenant", p.TenantID, "subject", p.Subject, "action", surface.Action,
+			"resource", surface.Type+":"+surface.Name, "outcome", res.Decision.Outcome.String(), "transport", "grpc")
 	case !res.Allowed:
-		log.Printf("authz: acl_denied tenant=%q subject=%q action=%s resource=%s:%s outcome=%s transport=grpc",
-			p.TenantID, p.Subject, surface.Action, surface.Type, surface.Name, res.Decision.Outcome)
+		slog.Warn("authz: acl_denied", "tenant", p.TenantID, "subject", p.Subject, "action", surface.Action,
+			"resource", surface.Type+":"+surface.Name, "outcome", res.Decision.Outcome.String(), "transport", "grpc")
 		return status.Errorf(codes.PermissionDenied, "acl_denied: %s %s:%s", surface.Action, surface.Type, surface.Name)
 	}
 	return nil
