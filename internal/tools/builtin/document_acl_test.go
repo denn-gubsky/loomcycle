@@ -293,3 +293,22 @@ func TestDocumentACL_EveryOpIsMapped(t *testing.T) {
 		}
 	}
 }
+
+// A deny under a condition only an instance can answer (owner_is_self) is
+// not settled by the bare scope: whole-scope ops are refused, and listings
+// fall back to asking each document, which here (tenant documents have no
+// owner) leaves them all readable.
+func TestDocumentACL_ConditionalDenyFallsBackToEachDocument(t *testing.T) {
+	d, _, base := mermaidDocFixture(t, "savepoint", "nesting", "secret", "public")
+	s := seedACLDocs(t, d, tenantDocCtx(base, nil))
+	self := true
+	ctx := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
+		Resources: []string{"document:tenant:/**"}, When: &authz.Condition{OwnerIsSelf: &self}}))
+
+	_, res := docExec(t, d, ctx, `{"op":"list_facts","scope":"tenant"}`)
+	refusedByACL(t, "list_facts under a conditional deny", res)
+	_, res = docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting"}`)
+	if res.IsError || !strings.Contains(res.Text, s.secretDoc) || !strings.Contains(res.Text, s.publicDoc) {
+		t.Errorf("search under an owner_is_self deny on unowned documents = %s", res.Text)
+	}
+}

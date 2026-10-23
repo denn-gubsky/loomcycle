@@ -68,3 +68,44 @@ func TestHasInstanceRules_OnlyARuleNamingPartOfTheScope(t *testing.T) {
 		t.Error("HasInstanceRules(memory, tenant) = true with no memory rule")
 	}
 }
+
+func askScopeOn(e *Effective, action, typ, scope, transport string) Outcome {
+	return e.DecideScope(Request{Subject: e.Subject, Action: action, Resource: Resource{Type: typ, Name: scope, TenantID: e.Subject.TenantID}, Context: Context{Transport: transport, Now: testNow}}).Outcome
+}
+
+// A condition the scope question cannot decide for every instance (whose
+// owner, which agent, how deep) is read the safe way round: a deny under it
+// may apply to some instance, so it holds; an allow under it may not cover
+// every instance, so it does not.
+func TestDecideScope_UndecidableConditionsReadTheSafeWay(t *testing.T) {
+	alice := Subject{TenantID: "acme", ID: "alice"}
+	ownDeny := mustACL(t, `{"name":"own-deny","rules":[
+		{"effect":"allow","actions":["read"],"resources":["document:tenant"]},
+		{"effect":"deny","actions":["read"],"resources":["document:tenant:/**"],"when":{"owner_is_self":true}}]}`)
+	e := compile(t, alice, []Binding{{ACL: "own-deny", SubjectKind: SubjectUser, SubjectID: "alice"}}, ownDeny)
+	if got := askScope(e, "read", "document", "tenant"); got == Allowed {
+		t.Error("an owner_is_self deny left the tenant scope wholly readable")
+	}
+	for _, c := range []string{`{"owner_is_self":true}`, `{"agent":"chat/*"}`, `{"depth":{"max":1}}`, `{"user_tier":["pro"]}`} {
+		ownAllow := mustACL(t, `{"name":"cond-allow","rules":[{"effect":"allow","actions":["read"],"resources":["document:tenant"],"when":`+c+`}]}`)
+		e2 := compile(t, alice, []Binding{{ACL: "cond-allow", SubjectKind: SubjectUser, SubjectID: "alice"}}, ownAllow)
+		if got := askScope(e2, "read", "document", "tenant"); got == Allowed {
+			t.Errorf("an allow under %s covered the whole tenant scope", c)
+		}
+		if !e2.HasInstanceRules("document", "tenant") {
+			t.Errorf("HasInstanceRules = false with a rule under %s on the scope", c)
+		}
+	}
+	// A condition the request does answer still decides: a transport deny
+	// holds on its transport and not on another.
+	mcpDeny := mustACL(t, `{"name":"mcp-deny","rules":[
+		{"effect":"allow","actions":["read"],"resources":["document:tenant"]},
+		{"effect":"deny","actions":["read"],"resources":["document:tenant:/kb/**"],"when":{"transport":["mcp"]}}]}`)
+	e3 := compile(t, alice, []Binding{{ACL: "mcp-deny", SubjectKind: SubjectUser, SubjectID: "alice"}}, mcpDeny)
+	if got := askScopeOn(e3, "read", "document", "tenant", "mcp"); got != Denied {
+		t.Errorf("mcp transport: %v, want deny", got)
+	}
+	if got := askScopeOn(e3, "read", "document", "tenant", "http"); got != Allowed {
+		t.Errorf("http transport: %v, want allow", got)
+	}
+}

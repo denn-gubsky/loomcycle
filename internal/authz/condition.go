@@ -235,6 +235,34 @@ func (cc *compiledCondition) holds(req *Request) bool {
 	return true
 }
 
+// holdsForScope is holds for a question about EVERY instance of a scope
+// (Effective.DecideScope). A field the scope request cannot decide for every
+// instance — the owner when the request names none, the agent, tier, user
+// tier, source address or clock when the surface supplied none, and the
+// interactive bit and spawn depth, which a zero Context cannot tell from
+// unknown — is read the safe way round: for a deny it holds (the deny may
+// apply to some instance), for an allow it does not (the allow may not cover
+// every instance). A field the request does answer is decided as holds does.
+func (cc *compiledCondition) holdsForScope(req *Request, deny bool) bool {
+	if cc == nil {
+		return true
+	}
+	c := cc.c
+	ctx := req.Context
+	undecided := (c.OwnerIsSelf != nil && req.Resource.Owner == "") ||
+		(len(c.Transport) > 0 && ctx.Transport == "") ||
+		(c.Time != nil && ctx.Now.IsZero()) ||
+		(len(c.Tier) > 0 && ctx.Tier == "") ||
+		(len(c.UserTier) > 0 && ctx.UserTier == "") ||
+		(len(c.SourceCIDR) > 0 && ctx.SourceIP == nil) ||
+		(c.Agent != "" && ctx.Agent == "") ||
+		c.Interactive != nil || c.Depth != nil
+	if undecided {
+		return deny
+	}
+	return cc.holds(req)
+}
+
 func (cc *compiledCondition) timeHolds(now time.Time) bool {
 	if now.IsZero() {
 		return false

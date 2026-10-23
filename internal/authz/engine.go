@@ -297,13 +297,13 @@ func (e *Effective) DecideScope(req Request) Decision {
 	var reasons []Reason
 	denied, allowed := false, false
 	for _, r := range tr.deny {
-		if r.actions[req.Action] && r.touchesScope(scope, false) && r.when.holds(&req) {
+		if r.actions[req.Action] && r.touchesScope(scope, false) && r.when.holdsForScope(&req, true) {
 			denied = true
 			reasons = append(reasons, Reason{ACL: r.acl, Version: r.version, RuleIndex: r.index, Effect: Deny})
 		}
 	}
 	for _, r := range tr.allow {
-		if r.actions[req.Action] && r.touchesScope(scope, true) && r.when.holds(&req) {
+		if r.actions[req.Action] && r.touchesScope(scope, true) && r.when.holdsForScope(&req, false) {
 			allowed = true
 			reasons = append(reasons, Reason{ACL: r.acl, Version: r.version, RuleIndex: r.index, Effect: Allow})
 		}
@@ -318,9 +318,13 @@ func (e *Effective) DecideScope(req Request) Decision {
 }
 
 // HasInstanceRules reports whether any rule on typ names only PART of scope
-// (a selector with a path under the scope). Without one, every instance of
-// the scope gets the answer the bare scope gets, so a caller need not look
-// up the instance's name to ask about it.
+// (a selector with a path under the scope) or carries a condition. Without
+// one, every instance of the scope gets the answer the bare scope gets, so a
+// caller need not look up the instance's name to ask about it. ANY condition
+// counts, not only the instance-dependent ones (owner_is_self): the per-
+// instance question is exact either way, and keeping one list of
+// "scope-decidable" fields in step with the condition set is a drift waiting
+// to happen for a saving only on sets that carry conditions.
 func (e *Effective) HasInstanceRules(typ, scope string) bool {
 	tr := e.byType[typ]
 	if tr == nil {
@@ -329,7 +333,7 @@ func (e *Effective) HasInstanceRules(typ, scope string) bool {
 	for _, rules := range [][]*compiledRule{tr.deny, tr.allow} {
 		for _, r := range rules {
 			for _, s := range r.sels {
-				if (s.scope == "*" || s.scope == scope) && !coversScope(s) {
+				if (s.scope == "*" || s.scope == scope) && (!coversScope(s) || r.when != nil) {
 					return true
 				}
 			}
