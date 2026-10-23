@@ -32,15 +32,20 @@ func escapeLine(s string) string {
 }
 
 // escapeInline escapes what would act inside a line: an image opener, and a
-// "<" that would start an HTML tag or comment.
+// "<" that would start an HTML tag or comment. Every backslash of the text is
+// doubled first: one left alone would escape the backslash added here and
+// leave the "<" or "[" after it live ("\<img>" is a backslash and a tag).
 func escapeInline(s string) string {
-	if !strings.ContainsAny(s, "!<") {
+	if !strings.ContainsAny(s, "!<\\") {
 		return s
 	}
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
+		case c == '\\':
+			b.WriteString(`\\`)
+			continue
 		case c == '!' && i+1 < len(s) && s[i+1] == '[':
 			b.WriteString(`!\`)
 			continue
@@ -83,14 +88,11 @@ func normalizeNewlines(s string) string {
 	return strings.NewReplacer("\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\u2028", "\n", "\u2029", "\n").Replace(s)
 }
 
-// cell renders text for one GFM table cell: one line, its backslashes and
-// pipes escaped (a "|" would split the cell), and nothing that opens HTML or
-// an image.
+// cell renders text for one GFM table cell: one line, escaped inline (its
+// backslashes doubled), then its pipes escaped (a "|" would split the cell).
+// The pipes go last so the backslash added before each is not doubled.
 func cell(s string) string {
-	s = oneLine(s)
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, "|", `\|`)
-	return escapeInline(s)
+	return strings.ReplaceAll(escapeInline(oneLine(s)), "|", `\|`)
 }
 
 // table renders rows as a GFM table, the first row as its header. Cells must
