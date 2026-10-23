@@ -64,10 +64,9 @@ type fileTransferInput struct {
 
 // transferURL checks the url and headers of a download or upload, and that
 // the run may make the request at all: a download or upload is an HTTP
-// request, so the run must hold the HTTP tool itself and HTTP's pre-hooks
-// judge it, as Read's and Write's judge a volume reached by reference. A run
-// narrowed to File alone gets no network.
-func (f *File) transferURL(ctx context.Context, op, method string, in fileTransferInput) (*url.URL, tools.Result, bool) {
+// request, so the run must hold the HTTP tool itself (httpHook then has
+// HTTP's pre-hooks judge it). A run narrowed to File alone gets no network.
+func (f *File) transferURL(ctx context.Context, op string, in fileTransferInput) (*url.URL, tools.Result, bool) {
 	if f.HTTP == nil {
 		return nil, errBusiness(op+": not available in this deployment", "Ask the operator to enable the HTTP tool's host allowlist."), false
 	}
@@ -87,21 +86,39 @@ func (f *File) transferURL(ctx context.Context, op, method string, in fileTransf
 	if !slices.Contains(tools.PolicyOf(ctx).Tools, "HTTP") {
 		return nil, errPermission(op+": needs the HTTP tool, which this run does not have", "Ask an operator to grant HTTP."), false
 	}
-	// The hook sees the URL as results show it, query masked: the input is
-	// recorded with the hook's verdict, and a pre-authenticated URL's query
-	// is its credential. Scheme, host and path are what a URL policy judges.
-	hookIn, _ := json.Marshal(map[string]any{"method": method, "url": displayURL(u), "via": FileToolName})
+	// Registered once the URL passed the checks a request needs (an allowed
+	// host, the HTTP grant) and before the hooks run: a hook decision is
+	// recorded with the input it judged, the full URL among it.
+	f.registerURL(ctx, u)
+	return u, tools.Result{}, true
+}
+
+// httpHook has HTTP's pre-hooks judge a download or upload as they would the
+// same request made with the HTTP tool: method, the full URL and the headers
+// — a hook is the operator's own, and one that filters on a query parameter
+// must see it — with body describing an upload's file (never its bytes) and
+// via naming File. What reaches the model, the logs and the results stays
+// masked.
+func (f *File) httpHook(ctx context.Context, op, method string, u *url.URL, headers map[string]string, body map[string]any) (tools.Result, bool) {
+	in := map[string]any{"method": method, "url": u.String(), "via": FileToolName}
+	if len(headers) > 0 {
+		in["headers"] = headers
+	}
+	if body != nil {
+		in["body"] = body
+	}
+	hookIn, _ := json.Marshal(in)
 	if res, ok := tools.HookPreCheck(ctx, "HTTP", hookIn); !ok {
-		return nil, classified(fmt.Sprintf("%s: refused by an HTTP hook: %s", op, res.Text), tools.CategoryPermission, false,
+		return classified(fmt.Sprintf("%s: refused by an HTTP hook: %s", op, redactURLQueries(res.Text)), tools.CategoryPermission, false,
 			"Ask the operator about the hook."), false
 	}
-	return u, tools.Result{}, true
+	return tools.Result{}, true
 }
 
 // registerURL hands a URL's credential material — its query and any user
 // information, never the whole URL — to the server's redactor, so a
 // transcript that repeats it is masked. Called only for a request that
-// passed every check and is being made, or a redirect it was sent.
+// passed the host and grant checks, or a redirect it was sent.
 //
 // The redactor is process-wide: redact.Register has no scope, and what one
 // run registers is masked in every run's transcripts and kept for the
@@ -146,8 +163,11 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errValidation("download: invalid input: "+err.Error(), ""), nil
 	}
-	u, res, ok := f.transferURL(ctx, "download", http.MethodGet, in)
+	u, res, ok := f.transferURL(ctx, "download", in)
 	if !ok {
+		return res, nil
+	}
+	if res, ok := f.httpHook(ctx, "download", http.MethodGet, u, in.Headers, nil); !ok {
 		return res, nil
 	}
 	shown := displayURL(u)
@@ -192,7 +212,6 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	if err != nil {
 		return errValidation("download: "+err.Error(), ""), nil
 	}
-	f.registerURL(ctx, u)
 	resp, err := client.Do(req)
 	if err != nil {
 		return errBusiness(fmt.Sprintf("download: %s: %s", shown, transferError(err)), "Check that the URL's host is allowed and reachable."), nil
@@ -359,7 +378,7 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 	if err != nil {
 		return errValidation("upload: from: "+err.Error(), "Pass from, e.g. volume:inbox:documents/a.pdf."), nil
 	}
-	u, res, ok := f.transferURL(ctx, "upload", method, in)
+	u, res, ok := f.transferURL(ctx, "upload", in)
 	if !ok {
 		return res, nil
 	}
@@ -379,12 +398,19 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 		return errValidation(fmt.Sprintf("upload: %s is not a file", from.raw), ""), nil
 	}
 	size := info.Size()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, size)); err != nil {
+		return errTransient(fmt.Sprintf("upload: reading %s failed", from.raw), "Try again."), nil
+	}
+	body := map[string]any{"from": from.raw, "size": size, "sha256": hex.EncodeToString(sum.Sum(nil))}
+	if res, ok := f.httpHook(ctx, "upload", method, u, in.Headers, body); !ok {
+		return res, nil
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, fileTransferTimeout)
 	defer cancel()
 	client := f.HTTP.transferClient(ctx, redirectNone, func(r *url.URL) { f.registerURL(ctx, r) })
 	defer client.CloseIdleConnections()
-	f.registerURL(ctx, u)
 	up := &uploader{f: f, client: client, u: u, method: method, headers: in.Headers, contentType: in.ContentType, shown: shown}
 	var status int
 	var sent int64

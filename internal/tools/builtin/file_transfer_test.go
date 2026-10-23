@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -454,7 +455,9 @@ func TestFileTransfer_NeedsTheHTTPTool(t *testing.T) {
 }
 
 // TestFileTransfer_HTTPHookJudgesTheRequest: HTTP's pre-hooks see the request
-// (query masked) and a denial stops it before it is made.
+// as an HTTP call would give it — method, the full URL, the headers, and for
+// an upload a description of the file — and a denial stops it before it is
+// made.
 func TestFileTransfer_HTTPHookJudgesTheRequest(t *testing.T) {
 	r, ctx, _ := transferRun(t, inbox.Service{})
 	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "o"}, binaryPDF)
@@ -469,8 +472,8 @@ func TestFileTransfer_HTTPHookJudgesTheRequest(t *testing.T) {
 	})
 	tf := newTransferFile(localHTTP())
 	for _, in := range []map[string]any{
-		{"op": "download", "url": srv.URL + "/a.pdf?sig=hook-secret"},
-		{"op": "upload", "from": kept.Record.Ref, "url": srv.URL + "/up?sig=hook-secret", "method": "POST"},
+		{"op": "download", "url": srv.URL + "/a.pdf?sig=abc", "headers": map[string]string{"Accept": "application/pdf"}},
+		{"op": "upload", "from": kept.Record.Ref, "url": srv.URL + "/up?sig=abc", "method": "POST"},
 	} {
 		if _, res := tf.exec(t, hooked, in); !res.IsError || !strings.Contains(res.Text, "no egress from File") {
 			t.Errorf("%v: %q", in["op"], res.Text)
@@ -480,9 +483,40 @@ func TestFileTransfer_HTTPHookJudgesTheRequest(t *testing.T) {
 		t.Errorf("requests made = %d", hits.Load())
 	}
 	joined := strings.Join(asked, "\n")
-	if !strings.Contains(joined, `HTTP {"method":"GET","url":"`+srv.URL+`/a.pdf?…","via":"File"}`) ||
-		!strings.Contains(joined, `"method":"POST"`) || strings.Contains(joined, "hook-secret") {
-		t.Errorf("hook inputs = %s", joined)
+	for _, want := range []string{
+		`HTTP {"headers":{"Accept":"application/pdf"},"method":"GET","url":"` + srv.URL + `/a.pdf?sig=abc","via":"File"}`,
+		`HTTP {"body":{"from":"` + kept.Record.Ref + `","sha256":"` + kept.Record.SHA256 + `","size":` + strconv.Itoa(len(binaryPDF)) + `},"method":"POST","url":"` + srv.URL + `/up?sig=abc","via":"File"}`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("hook inputs lack %s:\n%s", want, joined)
+		}
+	}
+}
+
+// TestFileDownload_HTTPHookFiltersOnTheQuery: a hook that refuses URLs whose
+// query carries sig= refuses a File download of one, as it would an HTTP
+// call; masking the query from the hook would let it through.
+func TestFileDownload_HTTPHookFiltersOnTheQuery(t *testing.T) {
+	_, ctx, _ := transferRun(t, inbox.Service{})
+	srv, hits := countingServer(t, nil, binaryPDF)
+	hooked := tools.WithHookPreCheck(ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		var in struct {
+			URL string `json:"url"`
+		}
+		_ = json.Unmarshal(input, &in)
+		if name == "HTTP" && strings.Contains(in.URL, "sig=") {
+			return tools.Result{Text: "signed URLs are not fetched", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	tf := newTransferFile(&HTTP{HostAllowlist: []string{"allowed.example", "127.0.0.1"}, AllowPrivateIPs: true})
+	for _, u := range []string{"https://allowed.example/f?sig=x", srv.URL + "/f?sig=x"} {
+		if _, res := tf.exec(t, hooked, map[string]any{"op": "download", "url": u}); !res.IsError || !strings.Contains(res.Text, "signed URLs are not fetched") {
+			t.Errorf("%s: %q", u, res.Text)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Errorf("requests made = %d", hits.Load())
 	}
 }
 
