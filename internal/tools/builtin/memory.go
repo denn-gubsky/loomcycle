@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -190,7 +191,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 		// fallback_on_error: inprocess wraps the remote so an unreachable peer
 		// degrades to local memory per-op instead of failing the run.
 		if def.FallbackOnError == "inprocess" {
-			return fallback.New(rb, m.defaultBackend(), log.Printf)
+			return fallback.New(rb, m.defaultBackend(), slog.Default())
 		}
 		return rb
 	default:

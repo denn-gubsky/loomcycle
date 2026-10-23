@@ -2,6 +2,7 @@ package anthropic_oauth_dev
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -34,7 +35,7 @@ func TestRefresh_AdoptsNewerOnDiskTokenWithoutPost(t *testing.T) {
 	if err := store.Save(stale); err != nil {
 		t.Fatalf("Save stale: %v", err)
 	}
-	refresher := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	refresher := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 
 	// Another process rotated the file to a NEWER token after we loaded.
 	newer := NewToken("newer-at", "newer-rt", "user:inference", 3600)
@@ -66,7 +67,7 @@ func TestRefresh_PostsWhenNoNewerOnDiskToken(t *testing.T) {
 	if err := store.Save(stale); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	refresher := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	refresher := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 
 	var hits atomic.Int32
 	refresher.httpClient = ExchangeOptions{Endpoint: countingTokenServer(t, &hits).URL}
@@ -89,7 +90,7 @@ func TestRefresh_PostsWhenNoNewerOnDiskToken(t *testing.T) {
 // second loop panics during Stop's teardown.
 func TestRefresher_StartIsIdempotent(t *testing.T) {
 	store := NewTokenStore(t.TempDir() + "/tokens.json")
-	r := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	r := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -113,7 +114,7 @@ func TestRefresher_StartIsIdempotent(t *testing.T) {
 // gate this Stop() never returns and the test times out.
 func TestRefresher_StopBeforeStartDoesNotDeadlock(t *testing.T) {
 	store := NewTokenStore(t.TempDir() + "/tokens.json")
-	r := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	r := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 
 	done := make(chan struct{})
 	go func() {

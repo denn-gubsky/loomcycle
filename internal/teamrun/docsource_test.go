@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -257,12 +258,12 @@ func TestDocumentStarter_ReadErrorFailsTheWalk(t *testing.T) {
 // Unwired collaborators are refused at the state, never skipped: a workflow
 // whose source never fires looks identical to one whose source is empty.
 func TestDocumentStarter_UnwiredReaderOrSinkIsRefused(t *testing.T) {
-	r := &agentRunner{spawn: (&docSpawn{}).spawn(), channels: &fakeChannels{}, logf: func(string, ...any) {}}
+	r := &agentRunner{spawn: (&docSpawn{}).spawn(), channels: &fakeChannels{}, logger: slog.New(slog.DiscardHandler)}
 	if _, err := r.RunHandler(context.Background(), docStarterState(teamgraph.FanoutPerChunk, 4), &Task{}); err == nil ||
 		!strings.Contains(err.Error(), "no document reader is wired") {
 		t.Errorf("no reader: err = %v", err)
 	}
-	r = &agentRunner{spawn: (&docSpawn{}).spawn(), documents: &fakeDocuments{sections: threeSections()}, logf: func(string, ...any) {}}
+	r = &agentRunner{spawn: (&docSpawn{}).spawn(), documents: &fakeDocuments{sections: threeSections()}, logger: slog.New(slog.DiscardHandler)}
 	if _, err := r.RunHandler(context.Background(), docStarterState(teamgraph.FanoutPerChunk, 4), &Task{}); err == nil ||
 		!strings.Contains(err.Error(), "no channel executor is wired") {
 		t.Errorf("sink without channels: err = %v", err)

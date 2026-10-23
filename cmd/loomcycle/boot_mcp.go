@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -37,7 +38,7 @@ func (b *boot) buildMCP() {
 	// resolved straight from cfg (lookup.MCPServerSpec omits stdio fields).
 	mcpDynView := mcpLookupView{dynamicMCPRegistry}
 	mcpPool := mcp.NewPool(
-		mcpPoolBuild(cfg, mcpDynView, &b.credSubstitute, log.Printf),
+		mcpPoolBuild(cfg, mcpDynView, &b.credSubstitute, slog.Default()),
 		func(c mcp.Caller) {
 			// Both stdio.Client and http.Client implement Close() error.
 			// A future transport that doesn't gets logged so the leak is
@@ -122,7 +123,7 @@ func (b *boot) buildMCP() {
 	} else {
 		mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		for name, srv := range cfg.MCPServers {
-			_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, log.Printf)
+			_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, slog.Default())
 			if err != nil {
 				log.Printf("mcp[%s]: skipped — %v — run-start re-probe will retry when a run references it", name, err)
 				skippedStaticMCP[name] = true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -187,7 +188,7 @@ func TestMCPPool_CredentialRefusalIsNotRetried(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, _, err = pool.GetWithRetry(ctx, "jobs", func(string, ...any) {})
+	_, _, err = pool.GetWithRetry(ctx, "jobs", slog.New(slog.DiscardHandler))
 	elapsed := time.Since(start)
 
 	if err == nil {

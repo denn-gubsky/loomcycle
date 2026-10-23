@@ -40,6 +40,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,9 +65,9 @@ type URLSource struct {
 	// mirror). Without an entry, a URL resolving to a private address is
 	// refused.
 	PrivateHostAllowlist []string
-	// Logf, when set, receives progress lines. They name the URL's host,
-	// never its path or query string.
-	Logf func(format string, args ...any)
+	// Logger, when set, receives progress lines at Info. They name the URL's
+	// host, never its path or query string. Nil discards them.
+	Logger *slog.Logger
 }
 
 // fetchOptions bound the download.
@@ -124,9 +125,9 @@ func loadFromURL(src URLSource, level int, lim limits, f fetchOptions) (*Bundle,
 }
 
 func fetchAndLoad(src URLSource, level int, lim limits, f fetchOptions) (*Bundle, error) {
-	logf := src.Logf
-	if logf == nil {
-		logf = func(string, ...any) {}
+	logger := src.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	// Config validation refuses these at load; checked again here because
 	// this is the function that would otherwise send the request.
@@ -147,12 +148,12 @@ func fetchAndLoad(src URLSource, level int, lim limits, f fetchOptions) (*Bundle
 
 	if b, found, err := loadCached(cache, src.SHA256, level, lim); found {
 		if err == nil {
-			logf("webui: using the cached UI bundle %s", src.SHA256)
+			logger.Info("webui: using the cached UI bundle", "sha256", src.SHA256)
 		}
 		return b, err
 	}
 
-	logf("webui: fetching the UI bundle from %s", origin)
+	logger.Info("webui: fetching the UI bundle", "host", u.Host)
 	archive, err := download(u, src.PrivateHostAllowlist, f)
 	if err != nil {
 		return nil, err
@@ -165,7 +166,7 @@ func fetchAndLoad(src URLSource, level int, lim limits, f fetchOptions) (*Bundle
 	if err != nil {
 		return nil, err
 	}
-	logf("webui: cached the UI bundle %s (%d bytes from %s)", src.SHA256, len(archive), origin)
+	logger.Info("webui: cached the UI bundle", "sha256", src.SHA256, "bytes", len(archive), "host", u.Host)
 	return b, nil
 }
 

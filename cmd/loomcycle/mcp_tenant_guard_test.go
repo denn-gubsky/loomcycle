@@ -25,7 +25,7 @@ func TestMCPPoolBuild_TenantDefAlwaysDialsThroughTheGuard(t *testing.T) {
 	}
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
-	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, (&warnLog{}).logf)
+	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, (&warnLog{}).logger())
 	call := func(name string) error {
 		c, err := build("acme", name)
 		if err != nil {

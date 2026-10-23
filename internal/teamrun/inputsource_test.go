@@ -3,6 +3,7 @@ package teamrun
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -209,7 +210,7 @@ func TestInputStarter_WalkFeedsTheEntryTheWalkInput(t *testing.T) {
 // sink, none is needed.
 func TestInputStarter_SinkWithoutChannelsIsRefused(t *testing.T) {
 	rec := &docSpawn{}
-	r := &agentRunner{spawn: rec.spawn(), logf: func(string, ...any) {}}
+	r := &agentRunner{spawn: rec.spawn(), logger: slog.New(slog.DiscardHandler)}
 	if _, err := r.RunHandler(context.Background(), inputStarterState(teamgraph.FanoutPerMessage, 1), &Task{Input: `{}`}); err == nil ||
 		!strings.Contains(err.Error(), "no channel executor is wired") {
 		t.Errorf("sink without channels: err = %v", err)

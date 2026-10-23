@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -68,7 +69,8 @@ type ActiveDefReader interface {
 //
 // Best-effort throughout: a store miss, an unmarshal error, or a failed
 // handshake drops that one server and continues; the run still gets every other
-// server's tools. logf may be nil.
+// server's tools. logger may be nil (silent); pass slog.Default() for
+// production.
 func DynamicToolsForRun(
 	ctx context.Context,
 	pool *Pool,
@@ -77,10 +79,13 @@ func DynamicToolsForRun(
 	tenant string,
 	wantServers map[string]bool,
 	handshakeTimeout time.Duration,
-	logf func(string, ...any),
+	logger *slog.Logger,
 ) []tools.Tool {
 	if pool == nil || reg == nil || reader == nil {
 		return nil
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	var out []tools.Tool
 	for _, name := range reg.NamesForTenant(tenant) {
@@ -116,17 +121,15 @@ func DynamicToolsForRun(
 		_, descs, err := pool.Get(hsCtx, name)
 		cancel()
 		if err != nil {
-			if logf != nil {
-				logf("mcp[%s]: run-start discovery failed: %v — agent references it but no tools advertised this run (lazy first-call fallback still applies)", name, err)
-			}
+			logger.Warn("mcp: run-start discovery failed — agent references it but no tools advertised this run (lazy first-call fallback still applies)",
+				"server", name, "tenant", tenant, "err", err)
 			continue
 		}
 		for _, d := range descs {
 			out = append(out, NewTool(pool, name, d))
 		}
-		if logf != nil {
-			logf("mcp[%s]: run-start discovery advertised %d tool(s) (F33: referenced server had no cached tools)", name, len(descs))
-		}
+		logger.Info("mcp: run-start discovery advertised tools (F33: referenced server had no cached tools)",
+			"server", name, "tenant", tenant, "tools", len(descs))
 	}
 	return out
 }
@@ -161,7 +164,8 @@ func DynamicToolsForRun(
 //
 // A server the run does NOT reference is never handshaked, so a single down peer
 // can't slow every run. The operator's per-server tools filter (srv.Tools) is
-// applied exactly as the boot loop does. Best-effort throughout; logf may be nil.
+// applied exactly as the boot loop does. Best-effort throughout; logger may be
+// nil (silent).
 func StaticToolsForRun(
 	ctx context.Context,
 	pool *Pool,
@@ -170,10 +174,13 @@ func StaticToolsForRun(
 	tenant string,
 	wantServers map[string]bool,
 	handshakeTimeout time.Duration,
-	logf func(string, ...any),
+	logger *slog.Logger,
 ) []tools.Tool {
 	if pool == nil || len(skipped) == 0 {
 		return nil
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	var out []tools.Tool
 	for name := range skipped {
@@ -199,17 +206,15 @@ func StaticToolsForRun(
 		_, descs, err := pool.Get(hsCtx, name)
 		cancel()
 		if err != nil {
-			if logf != nil {
-				logf("mcp[%s]: run-start re-probe failed (skipped at boot): %v — lazy first-call fallback still applies", name, err)
-			}
+			logger.Warn("mcp: run-start re-probe failed (skipped at boot) — lazy first-call fallback still applies",
+				"server", name, "tenant", tenant, "err", err)
 			continue
 		}
 		for _, d := range ApplyToolsFilter(descs, srv.Tools) {
 			out = append(out, NewTool(pool, name, d))
 		}
-		if logf != nil {
-			logf("mcp[%s]: run-start re-probe advertised %d tool(s) (recovered a server skipped at boot)", name, len(descs))
-		}
+		logger.Info("mcp: run-start re-probe advertised tools (recovered a server skipped at boot)",
+			"server", name, "tenant", tenant, "tools", len(descs))
 	}
 	return out
 }

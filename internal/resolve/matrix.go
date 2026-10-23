@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"strings"
 	"sync"
@@ -271,14 +272,14 @@ type Resolver struct {
 	// reads under the read lock.
 	forceProbe func(ctx context.Context)
 
-	// logf is the RFC BG change-log sink (nil = no logging, preserving the
-	// resolver's no-log-dependency shape). Written once via SetLogf under the
+	// logger is the RFC BG change-log sink (nil = no logging, so a resolver
+	// built without one stays silent). Written once via SetLogger under the
 	// write lock; read by noteResolved under the read lock Resolve already holds.
-	logf func(string, ...any)
+	logger *slog.Logger
 
 	// lastResolved records the last concrete model a (provider, pattern) resolved
-	// to, so noteResolved can WARN when a pattern silently moves to a new model.
-	// A sync.Map (not the matrix mutex) so the WARN path never upgrades the RLock
+	// to, so noteResolved can log when a pattern silently moves to a new model.
+	// A sync.Map (not the matrix mutex) so the log path never upgrades the RLock
 	// Resolve holds. Key: provider + "\x00" + pattern; value: string (model).
 	lastResolved sync.Map
 }
@@ -555,7 +556,7 @@ func (r *Resolver) Resolve(req AgentRequest) (Decision, error) {
 					}
 				}
 				// Log a silent model bump only for the candidate we actually
-				// select (not merely one that matched) — so the WARN maps 1:1 to
+				// select (not merely one that matched) — so the log line maps 1:1 to
 				// what runs.
 				if cand.ModelPattern != "" {
 					r.noteResolved(cand.Provider, cand.ModelPattern, model)
@@ -862,27 +863,28 @@ func (r *Resolver) newestMatching(provider, glob string) (string, bool) {
 }
 
 // noteResolved records that (provider, pattern) resolved to model and logs a
-// WARN via logf when the resolution MOVED (a different concrete model than the
+// change-log line via logger when the resolution MOVED (a different concrete model than the
 // last time it resolved) — so an operator sees a silent model bump (RFC BG
 // §4.3). Uses lastResolved (a sync.Map), never the matrix mutex, so it is safe
 // to call while Resolve holds the RLock (upgrading to the write lock would
-// deadlock). No-op logging when logf is nil.
+// deadlock). No-op logging when logger is nil.
 func (r *Resolver) noteResolved(provider, pattern, model string) {
 	key := provider + "\x00" + pattern
 	prev, loaded := r.lastResolved.Swap(key, model)
-	if loaded && prev.(string) != model && r.logf != nil {
-		r.logf("model-pattern: %s %q moved %s → %s", provider, pattern, prev.(string), model)
+	if loaded && prev.(string) != model && r.logger != nil {
+		r.logger.Warn("model-pattern: resolution moved to a new model",
+			"provider", provider, "pattern", pattern, "previous_model", prev.(string), "model", model)
 	}
 }
 
-// SetLogf wires the RFC BG change-log sink (typically log.Printf). Nil disables
-// logging. Written under the write lock, mirroring SetForceProbeCallback;
+// SetLogger wires the RFC BG change-log sink (typically slog.Default()). Nil
+// disables logging. Written under the write lock, mirroring SetForceProbeCallback;
 // noteResolved reads it under the RLock Resolve holds, so the field access is
-// race-free without the WARN path ever taking the write lock.
-func (r *Resolver) SetLogf(fn func(string, ...any)) {
+// race-free without the logging path ever taking the write lock.
+func (r *Resolver) SetLogger(logger *slog.Logger) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.logf = fn
+	r.logger = logger
 }
 
 // SetReachable updates the matrix for a probe outcome. PR 1 calls

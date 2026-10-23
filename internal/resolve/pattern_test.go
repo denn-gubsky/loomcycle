@@ -1,7 +1,10 @@
 package resolve
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -133,10 +136,15 @@ func TestResolve_PatternNoMatchOnlyCandidateIsTierUnavailable(t *testing.T) {
 
 func TestResolve_PatternMoveLogsWarn(t *testing.T) {
 	r := NewResolver([]string{"anthropic"}, nil)
-	var logs []string
-	r.SetLogf(func(format string, args ...any) {
-		logs = append(logs, format)
-	})
+	var buf bytes.Buffer
+	r.SetLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	logLines := func() []string {
+		out := strings.TrimSpace(buf.String())
+		if out == "" {
+			return nil
+		}
+		return strings.Split(out, "\n")
+	}
 	r.SetReachable("anthropic", true, []string{"claude-haiku-4-5-20251001"}, "")
 
 	// First resolution records the concrete model — nothing to compare against,
@@ -144,12 +152,12 @@ func TestResolve_PatternMoveLogsWarn(t *testing.T) {
 	if _, err := r.Resolve(patternReq("doc-agent", "anthropic", "claude-haiku-*")); err != nil {
 		t.Fatalf("Resolve #1: %v", err)
 	}
-	if len(logs) != 0 {
-		t.Fatalf("first-seen resolution logged %d line(s), want 0", len(logs))
+	if logs := logLines(); len(logs) != 0 {
+		t.Fatalf("first-seen resolution logged %d line(s), want 0: %q", len(logs), logs)
 	}
 
 	// A newer snapshot appears in the catalog — the pattern now resolves to a
-	// DIFFERENT concrete model, which must WARN so the operator sees the bump.
+	// DIFFERENT concrete model, which must be logged so the operator sees the bump.
 	r.SetReachable("anthropic", true, []string{
 		"claude-haiku-4-5-20251001",
 		"claude-haiku-5-20260101",
@@ -161,8 +169,21 @@ func TestResolve_PatternMoveLogsWarn(t *testing.T) {
 	if dec.Model != "claude-haiku-5-20260101" {
 		t.Errorf("resolved model = %q, want claude-haiku-5-20260101", dec.Model)
 	}
+	logs := logLines()
 	if len(logs) != 1 {
-		t.Fatalf("moved resolution logged %d line(s), want 1", len(logs))
+		t.Fatalf("moved resolution logged %d line(s), want 1: %q", len(logs), logs)
+	}
+	for _, want := range []string{
+		"level=WARN",
+		"model-pattern: resolution moved to a new model",
+		"provider=anthropic",
+		`pattern=claude-haiku-*`,
+		"previous_model=claude-haiku-4-5-20251001",
+		"model=claude-haiku-5-20260101",
+	} {
+		if !strings.Contains(logs[0], want) {
+			t.Errorf("change-log line missing %q: %s", want, logs[0])
+		}
 	}
 }
 
