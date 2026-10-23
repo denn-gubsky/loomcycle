@@ -65,16 +65,22 @@ func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Pri
 }
 
 // aclGateHTTP asks the route's type-level question. It returns false after
-// writing the refusal. legacyAllowed is always true here: the scope gate
-// already admitted the request.
-func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Principal) bool {
+// writing the refusal, else the ctx the handler runs under, which records
+// the question it answered (withRouteGate) so an operation behind the route
+// that holds the same question itself does not ask it twice.
+// legacyAllowed is always true here: the scope gate already admitted the
+// request.
+func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Principal) (context.Context, bool) {
+	ctx := r.Context()
 	surface, governed := authz.HTTPSurface(r.Method, r.URL.Path)
 	if !governed {
-		return true
+		return ctx, true
 	}
-	ctx := r.Context()
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
-	return s.applyGate(ctx, w, p, surface, res)
+	if !s.applyGate(ctx, w, p, surface, res) {
+		return ctx, false
+	}
+	return withRouteGate(ctx, surface), true
 }
 
 // applyGate turns a gate result into a response. It is shared by the route

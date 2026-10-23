@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RFC EY P4 — the HTTP management surfaces: user groups, ACL rule lists,
@@ -73,6 +74,83 @@ func (s *Server) aclStoreReady(w http.ResponseWriter) bool {
 		return false
 	}
 	return true
+}
+
+// aclEnter is the gate every management and authz operation passes first,
+// whichever transport called it — the route, RPC and MCP-tool gates in front
+// are not what holds these lines, because a transport that forgot one would
+// otherwise reach the logic. It returns the refusal, or nil.
+//
+//   - Never from inside a run: this is an operator plane, not an agent's
+//     tool, and a run's ctx carries the principal that started it.
+//   - A credential limited to certain agents is held to the run plane.
+//   - Groups, lists and bindings are the tenant operator's (admin and the
+//     legacy token included); a member or an isolated user is refused. The
+//     authz questions are open to any principal, which the operation then
+//     confines to its own subject (authzSubjectSet).
+//   - surface, when set, is the operation's own type-level question — the
+//     one its HTTP route asks — so the gRPC and MCP twins answer it too.
+//
+// No principal is open mode (or the stdio MCP launcher): the operator.
+func (s *Server) aclEnter(ctx context.Context, management bool, surface *authz.Surface) *aclReply {
+	if tools.RunID(ctx) != "" {
+		r := aclFail(http.StatusForbidden, "operator_plane", "access-control management is an operator plane; it is not reachable from inside a run")
+		return &r
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if p.Restrictions.RunPlaneOnly() {
+		r := aclFail(http.StatusForbidden, "restricted_token", "this token is limited to starting and following runs of its allowed agents")
+		return &r
+	}
+	if management && !p.Legacy && !auth.HasScope(p.Scopes, auth.ScopeTenant) {
+		r := aclReply{http.StatusForbidden, aclScopeBody{Code: "insufficient_scope",
+			Error: "groups, access-control lists and bindings are the tenant operator's", RequiredScope: auth.ScopeTenant}}
+		return &r
+	}
+	if surface == nil || routeGateAnswered(ctx, *surface) {
+		return nil
+	}
+	return s.gateReply(ctx, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true))
+}
+
+// aclScopeBody is writeScopeError's body, field for field.
+type aclScopeBody struct {
+	Code          string `json:"code"`
+	Error         string `json:"error"`
+	RequiredScope string `json:"required_scope"`
+}
+
+// The operations' type-level questions: what the HTTP route of each asks
+// (authz.HTTPSurface), so a twin is held to the same answer.
+// TestACLRouteSurfaces_MatchTheRoutes holds them equal.
+func aclReadGroups() *authz.Surface {
+	return &authz.Surface{Action: "read", Type: "principal", Name: "group:*"}
+}
+func aclManageGroups() *authz.Surface {
+	return &authz.Surface{Action: "manage", Type: "principal", Name: "group:*"}
+}
+func aclReadLists() *authz.Surface { return &authz.Surface{Action: "read", Type: "def", Name: "acl/*"} }
+func aclAuthorLists() *authz.Surface {
+	return &authz.Surface{Action: "author", Type: "def", Name: "acl/*"}
+}
+
+// routeGateKey marks the question the HTTP route gate asked and admitted.
+type routeGateKey struct{}
+
+// withRouteGate records that the route gate asked surface and let the
+// request through, so an operation behind it does not ask the identical
+// question twice (one engine call, and one audit row for a shadow
+// divergence). Set only by aclGateHTTP, after it admitted.
+func withRouteGate(ctx context.Context, surface authz.Surface) context.Context {
+	return context.WithValue(ctx, routeGateKey{}, surface)
+}
+
+func routeGateAnswered(ctx context.Context, surface authz.Surface) bool {
+	asked, ok := ctx.Value(routeGateKey{}).(authz.Surface)
+	return ok && asked == surface
 }
 
 // aclNoStore is the refusal when no store is wired, or nil.
@@ -235,6 +313,9 @@ func (s *Server) handleRemoveGroupMember(w http.ResponseWriter, r *http.Request)
 // only, so every transport confines the same way.
 
 func (s *Server) aclGroupList(ctx context.Context, focus string) aclReply {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -246,6 +327,9 @@ func (s *Server) aclGroupList(ctx context.Context, focus string) aclReply {
 }
 
 func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest) aclReply {
+	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -260,6 +344,9 @@ func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest
 }
 
 func (s *Server) aclGroupGet(ctx context.Context, focus, name string) aclReply {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -281,6 +368,9 @@ func (s *Server) aclGroupGet(ctx context.Context, focus, name string) aclReply {
 }
 
 func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclReply {
+	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -297,6 +387,9 @@ func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclRepl
 }
 
 func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req groupMemberRequest) aclReply {
+	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -316,6 +409,9 @@ func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req 
 }
 
 func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id string) aclReply {
+	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -356,6 +452,9 @@ func (s *Server) handleAclDef(w http.ResponseWriter, r *http.Request) {
 // first and fails closed, so an op it does not know is asked author before
 // it is refused as unknown.
 func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) aclReply {
+	if r := s.aclEnter(ctx, true, aclReadLists()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -510,6 +609,9 @@ func (s *Server) handleListAclDefNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) aclDefNames(ctx context.Context, focus string) aclReply {
+	if r := s.aclEnter(ctx, true, aclReadLists()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -559,6 +661,9 @@ func (s *Server) handleRetireBinding(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) aclBindingList(ctx context.Context, focus string, includeRetired bool) aclReply {
+	if r := s.aclEnter(ctx, true, aclReadLists()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -570,6 +675,9 @@ func (s *Server) aclBindingList(ctx context.Context, focus string, includeRetire
 }
 
 func (s *Server) aclBindingCreate(ctx context.Context, focus string, req bindingRequest) aclReply {
+	if r := s.aclEnter(ctx, true, aclAuthorLists()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -587,6 +695,9 @@ func (s *Server) aclBindingCreate(ctx context.Context, focus string, req binding
 }
 
 func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclReply {
+	if r := s.aclEnter(ctx, true, aclAuthorLists()); r != nil {
+		return *r
+	}
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
@@ -749,6 +860,9 @@ func (s *Server) handleAuthzSimulate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authzEvaluation(ctx context.Context, focus string, req authzEvaluationRequest) aclReply {
+	if r := s.aclEnter(ctx, false, nil); r != nil {
+		return *r
+	}
 	eff, code, msg := s.authzSubjectSet(ctx, s.adminFocusedTenant(ctx, focus), req.Subject)
 	if code != 0 {
 		return aclFail(code, "authz_subject", msg)
@@ -761,6 +875,9 @@ func (s *Server) authzEvaluation(ctx context.Context, focus string, req authzEva
 }
 
 func (s *Server) authzEvaluations(ctx context.Context, focus string, req authzEvaluationsRequest) aclReply {
+	if r := s.aclEnter(ctx, false, nil); r != nil {
+		return *r
+	}
 	eff, code, msg := s.authzSubjectSet(ctx, s.adminFocusedTenant(ctx, focus), req.Subject)
 	if code != 0 {
 		return aclFail(code, "authz_subject", msg)
@@ -797,6 +914,9 @@ func (s *Server) authzEvaluations(ctx context.Context, focus string, req authzEv
 }
 
 func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvaluationRequest) aclReply {
+	if r := s.aclEnter(ctx, false, nil); r != nil {
+		return *r
+	}
 	eff, code, msg := s.authzSubjectSet(ctx, s.adminFocusedTenant(ctx, focus), req.Subject)
 	if code != 0 {
 		return aclFail(code, "authz_subject", msg)
@@ -813,6 +933,9 @@ func (s *Server) authzExplain(ctx context.Context, focus string, req authzEvalua
 // subject has now, with the draft's lists added or replaced by name and its
 // bindings added. Nothing is written.
 func (s *Server) authzSimulate(ctx context.Context, focus string, req authzSimulateRequest) aclReply {
+	if r := s.aclEnter(ctx, false, nil); r != nil {
+		return *r
+	}
 	tenant := s.adminFocusedTenant(ctx, focus)
 	eff, code, msg := s.authzSubjectSet(ctx, tenant, req.Subject)
 	if code != 0 {
@@ -820,6 +943,9 @@ func (s *Server) authzSimulate(ctx context.Context, focus string, req authzSimul
 	}
 	if len(req.Requests) == 0 || len(req.Requests) > 256 {
 		return aclFail(http.StatusBadRequest, "invalid_request", "requests must list 1 to 256 entries")
+	}
+	if s.aclResolver == nil {
+		return aclFail(http.StatusServiceUnavailable, "authz_subject", "no access-control resolver is wired")
 	}
 	in, err := s.aclResolver.Input(ctx, eff.Subject)
 	if err != nil {

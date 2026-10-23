@@ -111,7 +111,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// gate behind /v1/_mcp) evaluate under the same rules.
 		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.aclMode()), "http")
 		r = r.WithContext(ctx)
-		if !s.aclGateHTTP(w, r, p) {
+		ctx, ok = s.aclGateHTTP(w, r, p)
+		if !ok {
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))

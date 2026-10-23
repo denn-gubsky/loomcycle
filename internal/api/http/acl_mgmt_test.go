@@ -30,6 +30,14 @@ const (
 // acme, an operator of tenant other, and the resolver in the given mode.
 func aclMgmtFixture(t *testing.T, mode authz.Mode) (*httptest.Server, store.Store) {
 	t.Helper()
+	_, ts, st := aclMgmtServer(t, mode)
+	return ts, st
+}
+
+// aclMgmtServer is aclMgmtFixture with the server itself, for tests that
+// call the shared management operations directly.
+func aclMgmtServer(t *testing.T, mode authz.Mode) (*Server, *httptest.Server, store.Store) {
+	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
 	cfg.Env.AuthToken = "legacy-admin-secret"
@@ -60,7 +68,7 @@ func aclMgmtFixture(t *testing.T, mode authz.Mode) (*httptest.Server, store.Stor
 	srv.SetACLResolver(aclres.New(st, mode, 0))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
-	return ts, st
+	return srv, ts, st
 }
 
 func jsonField(t *testing.T, body, field string) any {
