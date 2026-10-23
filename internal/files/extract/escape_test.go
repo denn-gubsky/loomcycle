@@ -5,25 +5,15 @@ import (
 	"testing"
 )
 
-// liveAt reports whether the byte at i is unescaped: preceded by an even
-// number of backslashes.
-func liveAt(s string, i int) bool {
-	n := 0
-	for j := i - 1; j >= 0 && s[j] == '\\'; j-- {
-		n++
-	}
-	return n%2 == 0
-}
-
 // assertInert fails when md holds a live "<" before a tag character or a
 // live image opener.
 func assertInert(t *testing.T, md string) {
 	t.Helper()
 	for i := 0; i < len(md); i++ {
 		switch {
-		case md[i] == '<' && i+1 < len(md) && tagStart(md[i+1]) && liveAt(md, i):
+		case md[i] == '<' && i+1 < len(md) && tagStart(md[i+1]) && unescaped(md, i):
 			t.Errorf("live tag at %d in %q", i, md)
-		case md[i] == '[' && i > 0 && md[i-1] == '!' && liveAt(md, i) && liveAt(md, i-1):
+		case md[i] == '[' && i > 0 && md[i-1] == '!' && unescaped(md, i) && unescaped(md, i-1):
 			t.Errorf("live image opener at %d in %q", i, md)
 		}
 	}

@@ -95,8 +95,9 @@ func tabSeparated(data []byte) bool {
 
 // Text reads plain text and Markdown. Plain text is escaped line by line
 // under a "#" heading, so nothing in it reads as Markdown structure; a
-// Markdown file passes through as written, with a "#" heading added when it
-// does not open with one.
+// Markdown file keeps its structure, with a "#" heading added when it does
+// not open with one, and is Neutralized: no raw HTML, no loom metadata, no
+// image embed of a volume reference.
 type Text struct{}
 
 func (Text) Match(mediaType, name string) bool {
@@ -119,7 +120,7 @@ func (Text) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 	lower := strings.ToLower(opts.Name)
 	if strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown") {
 		rep.Format = "markdown"
-		out = strings.TrimLeft(text, "\n")
+		out = Neutralize(strings.TrimLeft(text, "\n"), true)
 		if !strings.HasPrefix(out, "# ") {
 			out = heading(1, title(opts.Name, "Document")) + "\n\n" + out
 		}
