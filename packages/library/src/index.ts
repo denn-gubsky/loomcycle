@@ -26,3 +26,7 @@ export type { Connection } from "./lib/createClient";
 // @loomcycle/client instance.
 export { dataLayerFromClient, dataLayerFromConnection } from "./lib/dataLayer";
 export type { LibraryDataLayer } from "./lib/dataLayer";
+
+// The error-wording seam: a host that already words the runtime's refusals
+// (access-control denials and the like) hands its formatter to <Library formatError>.
+export type { ErrorFormatter } from "./lib/errorText";
