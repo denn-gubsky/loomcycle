@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
@@ -2340,10 +2339,23 @@ func toolResultText(m providers.Message) string {
 // is an error, never no set: the caller leaves the run paused, and the refusal
 // is logged and audited as acl_unavailable, in every mode.
 func (s *Server) resumedACL(ctx context.Context, run store.Run, runCfg runConfigRecord) (context.Context, *authz.Effective, error) {
-	o := runCfg.ACLOrigin
-	if o == nil {
+	if runCfg.ACLOrigin == nil {
 		return ctx, nil, nil
 	}
+	ctx, eff, err := s.recordedCallerACL(ctx, runCfg.ACLOrigin, run.Agent)
+	if err != nil {
+		return ctx, nil, fmt.Errorf("acl_unavailable: the access-control rules of the caller that started run %s could not be read (%v); it stays paused rather than resume with its agent's full grants", run.ID, err)
+	}
+	return ctx, eff, nil
+}
+
+// recordedCallerACL compiles the CURRENT set of the caller o records, for a
+// run that outlived its request (a resume, a queued run started after a
+// restart), and returns ctx carrying the operator's current rollout mode and
+// the transport the request arrived on. A set that cannot be compiled — no
+// resolver wired, a store fault — is an error, never no set; it is logged and
+// audited as acl_unavailable against `run agent:<agent>`.
+func (s *Server) recordedCallerACL(ctx context.Context, o *aclOriginRecord, agent string) (context.Context, *authz.Effective, error) {
 	ctx = authz.WithMode(ctx, s.aclMode())
 	if o.Transport != "" {
 		ctx = authz.WithTransport(ctx, o.Transport)
@@ -2354,9 +2366,8 @@ func (s *Server) resumedACL(ctx context.Context, run store.Run, runCfg runConfig
 		eff, err = s.aclResolver.ResolveSubject(ctx, o.subject())
 	}
 	if err != nil {
-		p := auth.Principal{TenantID: o.TenantID, Subject: o.Subject, TokenDefID: o.TokenDefID}
-		s.recordACLEvent(ctx, p, "acl_unavailable", authz.Surface{Action: "run", Type: "agent", Name: run.Agent}, authz.Decision{})
-		return ctx, nil, fmt.Errorf("acl_unavailable: the access-control rules of the caller that started run %s could not be read (%v); it stays paused rather than resume with its agent's full grants", run.ID, err)
+		s.recordACLEvent(ctx, o.principal(), "acl_unavailable", authz.Surface{Action: "run", Type: "agent", Name: agent}, authz.Decision{})
+		return ctx, nil, err
 	}
 	return ctx, eff, nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
@@ -747,6 +748,12 @@ func aclOriginOf(ctx context.Context, eff *authz.Effective) *aclOriginRecord {
 		TenantID: eff.Subject.TenantID, Subject: eff.Subject.ID, TokenDefID: eff.Subject.TokenDefID,
 		Class: eff.Subject.Class, Transport: authz.TransportFrom(ctx),
 	}
+}
+
+// principal names the recorded caller for an audit record or a gate's
+// refusal: ids only, no scopes.
+func (o *aclOriginRecord) principal() auth.Principal {
+	return auth.Principal{TenantID: o.TenantID, Subject: o.Subject, TokenDefID: o.TokenDefID}
 }
 
 // subject is the record as the resolver reads it.

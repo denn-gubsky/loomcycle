@@ -3429,7 +3429,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, in.Context))
 	// RFC EY §3.7: the caller's ACL removes what it may not invoke, from
 	// the schema the model sees and not only on call (owner decision D6).
-	callerACL := principalACL(ctx)
+	callerACL := runCallerACL(ctx)
 	allowedTools, aclRemovedTools := tools.NarrowToolsByACL(ctx, callerACL, allowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
