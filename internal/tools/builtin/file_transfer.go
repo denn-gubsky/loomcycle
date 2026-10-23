@@ -47,6 +47,11 @@ const (
 	// fileRegisterLimit caps the secrets one run tree's downloads and
 	// uploads hand the redactor.
 	fileRegisterLimit = 32
+	// fileRegisterMinLen is the shortest query or user information handed
+	// to the redactor. A registered value is masked in every transcript the
+	// server writes, so an ordinary query ("page=2", "lang=uk") must not
+	// become one; the tokens a pre-authenticated URL carries are far longer.
+	fileRegisterMinLen = 16
 )
 
 type fileTransferInput struct {
@@ -138,6 +143,9 @@ func (f *File) registerURL(ctx context.Context, u *url.URL) {
 		parts = append(parts, u.User.String())
 	}
 	for _, p := range parts {
+		if len(p) < fileRegisterMinLen {
+			continue
+		}
 		if !inbox.ClaimRegistration(ctx, fileRegisterLimit) {
 			return
 		}

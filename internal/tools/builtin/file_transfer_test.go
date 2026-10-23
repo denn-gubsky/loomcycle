@@ -537,9 +537,9 @@ func TestFileTransfer_RegistersOnlyCredentialPartsWithinALimit(t *testing.T) {
 		t.Fatalf("registered %v", tf.registered)
 	}
 	for i := range 40 {
-		tf.exec(t, ctx, map[string]any{"op": "download", "url": fmt.Sprintf("%s/f%d?sig=s-%d", srv.URL, i, i)})
+		tf.exec(t, ctx, map[string]any{"op": "download", "url": fmt.Sprintf("%s/f%d?sig=signature-token-%d", srv.URL, i, i)})
 	}
-	if len(tf.registered) != fileRegisterLimit || tf.registered[0] != "sig=s-0" {
+	if len(tf.registered) != fileRegisterLimit || tf.registered[0] != "sig=signature-token-0" {
 		t.Errorf("registered %d: %v", len(tf.registered), tf.registered)
 	}
 	for _, v := range tf.registered {
@@ -565,6 +565,26 @@ func TestFileDownload_RefusedRedirectMasksItsLocation(t *testing.T) {
 		t.Errorf("error = %q", res.Text)
 	}
 	if !slices.Contains(tf.registered, "sig="+secret) {
+		t.Errorf("registered = %v", tf.registered)
+	}
+}
+
+// A registered value is masked in every transcript the server writes, so an
+// ordinary short query is not registered — and does not use up the run's
+// allowance — while a token-length one is.
+func TestFileTransfer_ShortQueryIsNotRegistered(t *testing.T) {
+	_, ctx, _ := transferRun(t, inbox.Service{})
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	tf := newTransferFile(&HTTP{HostAllowlist: []string{"127.0.0.1"}, AllowPrivateIPs: true})
+	for range fileRegisterLimit + 1 {
+		tf.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/a?page=2"})
+	}
+	if len(tf.registered) != 0 {
+		t.Fatalf("a short query was registered: %v", tf.registered)
+	}
+	tf.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/a?tempauth=eyJ0eXAiOiJKV1Qi"})
+	if len(tf.registered) != 1 || tf.registered[0] != "tempauth=eyJ0eXAiOiJKV1Qi" {
 		t.Errorf("registered = %v", tf.registered)
 	}
 }
