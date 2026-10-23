@@ -3,6 +3,7 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -196,27 +197,27 @@ func buildTeamWalkInput(def scheduleDef) runner.TeamWalkInput {
 // (default) means UserCredentialsFromEnv is ignored entirely — a
 // safe-by-default posture that requires opt-in to surface env-var
 // values to scheduled runs.
-func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(format string, args ...any)) runner.RunInput {
+func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logger *slog.Logger) runner.RunInput {
 	creds := make(map[string]string)
 	for k, envName := range def.UserCredentialsFromEnv {
 		if !envAllowlist[envName] {
-			if logf != nil {
-				logf("scheduler: env var %q for credential key %q not in allowlist — skipping", envName, k)
+			if logger != nil {
+				logger.Warn("scheduler: env var for credential key not in allowlist — skipping", "env_var", envName, "credential_key", k)
 			}
 			continue
 		}
 		v := os.Getenv(envName)
 		if v == "" {
-			if logf != nil {
-				logf("scheduler: env var %q for credential key %q is empty — skipping", envName, k)
+			if logger != nil {
+				logger.Warn("scheduler: env var for credential key is empty — skipping", "env_var", envName, "credential_key", k)
 			}
 			continue
 		}
 		creds[k] = v
 	}
 	for k, v := range def.UserCredentials {
-		if _, hadEnv := creds[k]; hadEnv && logf != nil {
-			logf("scheduler: credential key %q has both explicit + env source — explicit value wins", k)
+		if _, hadEnv := creds[k]; hadEnv && logger != nil {
+			logger.Warn("scheduler: credential key has both explicit + env source — explicit value wins", "credential_key", k)
 		}
 		creds[k] = v
 	}

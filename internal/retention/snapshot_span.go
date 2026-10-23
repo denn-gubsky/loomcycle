@@ -50,7 +50,7 @@ func (s *Sweeper) snapshotSpansBeforeArchive(ctx context.Context, sessionID stri
 	runs, err := s.store.RunsForSession(ctx, sessionID)
 	if err != nil || len(runs) == 0 {
 		if err != nil {
-			s.logf("retention: snapshot spans: runs for session %s: %v", sessionID, err)
+			s.logger.Warn("retention: snapshot spans: runs for session", "session_id", sessionID, "err", err)
 		}
 		return
 	}
@@ -66,7 +66,7 @@ func (s *Sweeper) snapshotSpansBeforeArchive(ctx context.Context, sessionID stri
 
 	events, err := s.store.GetTranscript(ctx, sessionID)
 	if err != nil {
-		s.logf("retention: snapshot spans: transcript for session %s: %v", sessionID, err)
+		s.logger.Warn("retention: snapshot spans: transcript for session", "session_id", sessionID, "err", err)
 		return
 	}
 	// The whole conversation, rendered once. A fact points at a RUN rather than
@@ -80,7 +80,7 @@ func (s *Sweeper) snapshotSpansBeforeArchive(ctx context.Context, sessionID stri
 
 	scopes, err := s.sqlMem.ListScopes(ctx)
 	if err != nil {
-		s.logf("retention: snapshot spans: list scopes: %v", err)
+		s.logger.Warn("retention: snapshot spans: list scopes", "err", err)
 		return
 	}
 	filled := 0
@@ -96,7 +96,7 @@ func (s *Sweeper) snapshotSpansBeforeArchive(ctx context.Context, sessionID stri
 		filled += n
 	}
 	if filled > 0 {
-		s.logf("retention: snapshot spans: session %s leaving, %d fact(s) kept their source span", sessionID, filled)
+		s.logger.Info("retention: snapshot spans: session leaving, facts kept their source span", "session_id", sessionID, "facts", filled)
 	}
 }
 

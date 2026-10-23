@@ -1,8 +1,11 @@
 package heartbeat
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,7 +57,7 @@ func TestSweeperOnce_MarksStale(t *testing.T) {
 	sw := New(st, Config{
 		Interval:   1 * time.Hour, // unused — we drive sweepOnce directly
 		StaleAfter: staleWindow,
-		Logger:     func(format string, args ...any) {},              // silence
+		Logger:     slog.New(slog.DiscardHandler),                    // silence
 		Now:        func() time.Time { return mid.Add(staleWindow) }, // cutoff == mid
 	})
 	n, err := sw.sweepOnce(ctx)
@@ -84,7 +87,7 @@ func TestSweeperRun_StopsOnContextDone(t *testing.T) {
 	sw := New(st, Config{
 		Interval:   10 * time.Millisecond,
 		StaleAfter: 1 * time.Hour,
-		Logger:     func(format string, args ...any) {},
+		Logger:     slog.New(slog.DiscardHandler),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -113,7 +116,7 @@ func TestSweeperRun_NilStoreNoOp(t *testing.T) {
 	sw := New(nil, Config{
 		Interval:   1 * time.Millisecond,
 		StaleAfter: 1 * time.Millisecond,
-		Logger:     func(format string, args ...any) {},
+		Logger:     slog.New(slog.DiscardHandler),
 	})
 	done := make(chan struct{})
 	go func() {
@@ -129,8 +132,8 @@ func TestSweeperRun_NilStoreNoOp(t *testing.T) {
 }
 
 // TestSweeperRun_LogsResults captures sweep log output and asserts the
-// "marked N stale run(s)" line fires when a stale row is present, and
-// the "0 stale runs" no-op line fires when nothing is stale.
+// "marked stale runs as failed" line fires, with its count attribute,
+// when a stale row is present.
 func TestSweeperRun_LogsResults(t *testing.T) {
 	st := newTestStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,18 +148,11 @@ func TestSweeperRun_LogsResults(t *testing.T) {
 	// budget — the polling loop tolerates extra latency.
 	time.Sleep(100 * time.Millisecond)
 
-	var (
-		mu   sync.Mutex
-		logs []string
-	)
+	logs := &syncBuffer{}
 	sw := New(st, Config{
 		Interval:   20 * time.Millisecond,
 		StaleAfter: 50 * time.Millisecond,
-		Logger: func(format string, args ...any) {
-			mu.Lock()
-			logs = append(logs, format)
-			mu.Unlock()
-		},
+		Logger:     slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	go sw.Run(ctx)
 
@@ -167,7 +163,7 @@ func TestSweeperRun_LogsResults(t *testing.T) {
 	// poll-until-condition removes that dependency on wall-clock
 	// timing. Same poll-until-condition pattern as PR #195's
 	// waitForActive helper.
-	waitForLogContaining(t, &mu, &logs, "heartbeat: marked %d stale run(s) as failed", 2*time.Second)
+	waitForLogContaining(t, logs, `msg="heartbeat: marked stale runs as failed" stale=1`, 2*time.Second)
 
 	cancel()
 	// Brief settle so the sweeper goroutine returns cleanly before
@@ -177,29 +173,37 @@ func TestSweeperRun_LogsResults(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 }
 
-// waitForLogContaining polls the captured-log slice under the mutex
-// until any entry equals the wanted format string OR the deadline
-// elapses. Fails the test with the full log buffer for diagnosis when
-// the deadline fires. The format string (not the formatted message)
-// is what gets captured by the test's Logger closure — sweeper.go's
-// log lines come through as the raw fmt template before any args are
-// substituted.
-func waitForLogContaining(t *testing.T, mu *sync.Mutex, logs *[]string, want string, deadline time.Duration) {
+// syncBuffer is a mutex-guarded log sink: the sweeper goroutine writes
+// while the test goroutine polls.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// waitForLogContaining polls the captured log output until it contains
+// want OR the deadline elapses. Fails the test with the full log buffer
+// for diagnosis when the deadline fires.
+func waitForLogContaining(t *testing.T, logs *syncBuffer, want string, deadline time.Duration) {
 	t.Helper()
 	end := time.Now().Add(deadline)
 	for time.Now().Before(end) {
-		mu.Lock()
-		for _, line := range *logs {
-			if line == want {
-				mu.Unlock()
-				return
-			}
+		if strings.Contains(logs.String(), want) {
+			return
 		}
-		mu.Unlock()
 		time.Sleep(5 * time.Millisecond)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	t.Fatalf("waitForLogContaining: timed out after %s waiting for %q; captured: %v",
-		deadline, want, *logs)
+	t.Fatalf("waitForLogContaining: timed out after %s waiting for %q; captured:\n%s",
+		deadline, want, logs.String())
 }

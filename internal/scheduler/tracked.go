@@ -124,7 +124,7 @@ func (s *Scheduler) fireRun(ctx context.Context, row store.ScheduleDueRow, def s
 func (s *Scheduler) runOnceRecovered(ctx context.Context, row store.ScheduleDueRow, in runner.RunInput, cb runner.RunCallbacks) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logf("scheduler: PANIC in the run of schedule %q (def_id=%s): %v", row.Name, row.DefID, r)
+			s.logger.Error("scheduler: panic in the run of a schedule", "schedule", row.Name, "def_id", row.DefID, "panic", r)
 			err = fmt.Errorf("panic in run: %v", r)
 		}
 	}()
@@ -143,7 +143,7 @@ func (s *Scheduler) trackRun(ctx context.Context, row store.ScheduleDueRow, runI
 		StartedAt: now,
 		ClaimedBy: s.cfg.ReplicaID,
 	}); err != nil {
-		s.logf("scheduler: schedule %q run %s: track: %v — recording its outcome when it ends", row.Name, runID, err)
+		s.logger.Warn("scheduler: schedule run: track failed — recording its outcome when it ends", "schedule", row.Name, "run_id", runID, "err", err)
 		return false
 	}
 	return true
@@ -156,13 +156,13 @@ func (s *Scheduler) trackRun(ctx context.Context, row store.ScheduleDueRow, runI
 func (s *Scheduler) recordRefusal(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time, runErr error) (retry bool) {
 	if errors.Is(runErr, store.ErrDuplicateIdempotencyKey) {
 		// This slot already has its run. Whoever started it records it.
-		s.logf("scheduler: schedule %q slot %s already has a run — not firing it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
+		s.logger.Info("scheduler: schedule slot already has a run — not firing it twice", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339Nano))
 		return false
 	}
 	if ctx.Err() != nil {
 		// Withdrawn while waiting for admission because the scheduler is
 		// stopping. Nothing ran, and the claimed slot is not retried.
-		s.logf("scheduler: schedule %q: the scheduler stopped before its run was admitted — slot %s not run", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
+		s.logger.Info("scheduler: schedule: the scheduler stopped before its run was admitted — the slot is not run", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339Nano))
 		return false
 	}
 	out := fireOutcome{Status: "failed", CountAsFire: true}
@@ -175,16 +175,16 @@ func (s *Scheduler) recordRefusal(ctx context.Context, row store.ScheduleDueRow,
 		retry = class.retried()
 		switch class {
 		case fireUnknownAgent:
-			s.logf("scheduler: schedule %q could not resolve agent %q in tenant %q — not counting toward max_fires; check the agent exists in this tenant (F38)",
-				row.Name, def.Agent, def.TenantID)
+			s.logger.Warn("scheduler: schedule could not resolve its agent in its tenant — not counting toward max_fires; check the agent exists in this tenant (F38)",
+				"schedule", row.Name, "agent", def.Agent, "tenant", def.TenantID)
 		case firePaused:
-			s.logf("scheduler: schedule %q was refused because the runtime paused after this tick began — not counting toward max_fires", row.Name)
+			s.logger.Warn("scheduler: schedule was refused because the runtime paused after this tick began — not counting toward max_fires", "schedule", row.Name)
 		case fireBackpressure:
 			out.Err += retriedNote
-			s.logf("scheduler: schedule %q: the run queue is full — slot %s is fired again on the next tick", row.Name, row.NextRunAt.UTC().Format(time.RFC3339))
+			s.logger.Warn("scheduler: schedule: the run queue is full — the slot is fired again on the next tick", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339))
 		case fireACLUnavailable:
 			out.Err += retriedNote
-			s.logf("scheduler: schedule %q: its owner's access-control rules could not be read — slot %s is fired again on the next tick", row.Name, row.NextRunAt.UTC().Format(time.RFC3339))
+			s.logger.Warn("scheduler: schedule: its owner's access-control rules could not be read — the slot is fired again on the next tick", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339))
 		}
 	}
 	_, done := s.recordFireOutcome(ctx, row, def, now, out)
@@ -221,7 +221,7 @@ func (s *Scheduler) finalOutcome(ctx context.Context, st startedRun, runErr erro
 	if err == nil {
 		if !store.IsTerminalRunStatus(run.Status) {
 			if !st.tracked {
-				s.logf("scheduler: run %s returned while its row reads %q and it is not tracked — its schedule's outcome is not recorded", st.runID, run.Status)
+				s.logger.Error("scheduler: run returned while its row is not terminal and it is not tracked — its schedule's outcome is not recorded", "run_id", st.runID, "status", run.Status)
 			}
 			return "", "", false
 		}
@@ -230,7 +230,7 @@ func (s *Scheduler) finalOutcome(ctx context.Context, st startedRun, runErr erro
 	var nf *store.ErrNotFound
 	if !errors.As(err, &nf) && st.tracked {
 		// A store fault, not an answer. The reconciler reads it again.
-		s.logf("scheduler: run %s: read its outcome: %v — the reconciler finishes it", st.runID, err)
+		s.logger.Warn("scheduler: run: read its outcome failed — the reconciler finishes it", "run_id", st.runID, "err", err)
 		return "", "", false
 	}
 	// No run row to read: what RunOnce returned is all there is.
@@ -254,7 +254,7 @@ func (s *Scheduler) finishTracked(ctx context.Context, defID, name string, def s
 		FinishedAt: time.Now(),
 	})
 	if err != nil {
-		s.logf("scheduler: schedule %q run %s: finish: %v — the reconciler retries", name, runID, err)
+		s.logger.Warn("scheduler: schedule run: finish failed — the reconciler retries", "schedule", name, "run_id", runID, "err", err)
 		return
 	}
 	if !won {
@@ -275,17 +275,17 @@ func (s *Scheduler) retireIfSpent(ctx context.Context, defID, name string, def s
 	}
 	st, err := s.store.ScheduleRunStateGet(ctx, defID)
 	if err != nil {
-		s.logf("scheduler: max_fires read state for %q: %v", name, err)
+		s.logger.Warn("scheduler: max_fires read state failed", "schedule", name, "err", err)
 		return
 	}
 	if st.FireCount < def.MaxFires {
 		return
 	}
 	if err := s.store.ScheduleDefSetRetired(ctx, defID, true); err != nil {
-		s.logf("scheduler: max_fires retire %q (def %s) after %d fires: %v", name, defID, st.FireCount, err)
+		s.logger.Error("scheduler: max_fires retire failed", "schedule", name, "def_id", defID, "fire_count", st.FireCount, "err", err)
 		return
 	}
-	s.logf("scheduler: %q reached max_fires=%d — retired def %s", name, def.MaxFires, defID)
+	s.logger.Info("scheduler: schedule reached max_fires — retired its def", "schedule", name, "max_fires", def.MaxFires, "def_id", defID)
 }
 
 // spentWhileRunning reports whether a def's max_fires is already used up by
@@ -328,14 +328,14 @@ func (s *Scheduler) reconcile(ctx context.Context) {
 		s.reconcileOnce(ctx)
 		return nil
 	}); err != nil {
-		s.logf("scheduler: reconcile lock: %v", err)
+		s.logger.Warn("scheduler: reconcile lock failed", "err", err)
 	}
 }
 
 func (s *Scheduler) reconcileOnce(ctx context.Context) {
 	ended, err := s.store.ScheduleActiveRunsListEnded(ctx, reconcileBatch)
 	if err != nil {
-		s.logf("scheduler: reconcile: list ended runs: %v", err)
+		s.logger.Warn("scheduler: reconcile: list ended runs failed", "err", err)
 		return
 	}
 	for _, e := range ended {
@@ -353,12 +353,12 @@ func (s *Scheduler) reconcileOnce(ctx context.Context) {
 func (s *Scheduler) loadDef(ctx context.Context, defID string) (string, scheduleDef) {
 	row, err := s.store.ScheduleDefGet(ctx, defID)
 	if err != nil {
-		s.logf("scheduler: reconcile: read def %s: %v — finishing its run without hooks", defID, err)
+		s.logger.Warn("scheduler: reconcile: read def failed — finishing its run without hooks", "def_id", defID, "err", err)
 		return "", scheduleDef{}
 	}
 	def, err := unmarshalDef(row.Definition)
 	if err != nil {
-		s.logf("scheduler: reconcile: decode def %s: %v — finishing its run without hooks", defID, err)
+		s.logger.Warn("scheduler: reconcile: decode def failed — finishing its run without hooks", "def_id", defID, "err", err)
 		return row.Name, scheduleDef{}
 	}
 	if rehomed, ok := rehomeToOwningTenant(store.ScheduleDueRow{
