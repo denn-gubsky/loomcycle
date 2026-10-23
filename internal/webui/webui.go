@@ -64,6 +64,7 @@ var uiAssets embed.FS
 func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handler {
 	prefix = strings.TrimRight(prefix, "/")
 	mux := http.NewServeMux()
+	var src source = embeddedSource{}
 
 	setSession := func(w http.ResponseWriter, r *http.Request, token string) {
 		http.SetCookie(w, &http.Cookie{
@@ -85,7 +86,7 @@ func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handl
 			http.Redirect(w, r, prefix, http.StatusFound)
 			return
 		}
-		serveFile(w, "index.html")
+		serveFile(w, src, "index.html")
 	})
 
 	// POST <prefix>/session — set the session cookie from an Authorization: Bearer
@@ -152,7 +153,7 @@ func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handl
 	mux.HandleFunc(fmt.Sprintf("GET %s/", prefix), func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, prefix+"/")
 		if rel == "" {
-			serveFile(w, "index.html")
+			serveFile(w, src, "index.html")
 			return
 		}
 		// Path traversal guard. embed.FS would resolve safely, but
@@ -161,13 +162,13 @@ func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handl
 			http.Error(w, "bad path", http.StatusBadRequest)
 			return
 		}
-		// Try the embedded file; on miss, fall back to index.html so
-		// React Router takes over (deep links to /ui/agents/{id}).
-		if info, err := fs.Stat(uiAssets, "dist/"+rel); err == nil && !info.IsDir() {
-			serveFile(w, rel)
+		// Try the file; on miss, fall back to index.html so React
+		// Router takes over (deep links to /ui/agents/{id}).
+		if data, ok := src.file(rel); ok {
+			writeFile(w, rel, data)
 			return
 		}
-		serveFile(w, "index.html")
+		serveFile(w, src, "index.html")
 	})
 
 	return mux
@@ -191,17 +192,41 @@ func writeJSONErr(w http.ResponseWriter, status int, code, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": msg})
 }
 
-// serveFile reads a file from the embedded fs and writes it with a
-// sensible content-type. Returns 503 with a diagnostic code when
-// dist/ is empty (UI not built).
-func serveFile(w http.ResponseWriter, name string) {
+// source is where the handler reads SPA files from. Every source is served by
+// the same handler, so the routes and response headers cannot differ between
+// them.
+type source interface {
+	// file returns the bytes of the named regular file (slash-separated,
+	// relative to the SPA root); ok is false when there is none.
+	file(name string) (data []byte, ok bool)
+}
+
+// embeddedSource serves the SPA compiled into the binary.
+type embeddedSource struct{}
+
+func (embeddedSource) file(name string) ([]byte, bool) {
+	// ReadFile refuses a directory, so a directory name is a miss.
 	data, err := fs.ReadFile(uiAssets, "dist/"+name)
-	if err != nil {
+	return data, err == nil
+}
+
+// serveFile writes the named file from src. Returns 503 with a diagnostic
+// code when the file is absent — for index.html that means dist/ is empty
+// (UI not built).
+func serveFile(w http.ResponseWriter, src source, name string) {
+	data, ok := src.file(name)
+	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, `{"code":"ui_not_built","error":"web UI not built; run \"make build-ui\" (or \"cd web && npm install && npm run build\") before starting loomcycle"}`)
 		return
 	}
+	writeFile(w, name, data)
+}
+
+// writeFile writes a file's bytes with the content-type and caching rules
+// every source shares.
+func writeFile(w http.ResponseWriter, name string, data []byte) {
 	if ct := contentType(name); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
