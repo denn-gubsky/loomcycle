@@ -38,11 +38,21 @@ func aclMgmtFixture(t *testing.T, mode authz.Mode) (*httptest.Server, store.Stor
 // call the shared management operations directly.
 func aclMgmtServer(t *testing.T, mode authz.Mode) (*Server, *httptest.Server, store.Store) {
 	t.Helper()
+	return aclMgmtServerWith(t, mode, nil)
+}
+
+// aclMgmtServerWith is aclMgmtServer with a hook on the config before the
+// server is built (config-declared lists, groups and bindings).
+func aclMgmtServerWith(t *testing.T, mode authz.Mode, edit func(*config.Config)) (*Server, *httptest.Server, store.Store) {
+	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
 	cfg.Env.AuthToken = "legacy-admin-secret"
 	cfg.Env.OperatorTokenPepper = testTokenPepper
 	cfg.Agents = map[string]config.AgentDef{"chat": {Model: "stub-model", Tools: []string{}, SystemPrompt: "chat"}}
+	if edit != nil {
+		edit(cfg)
+	}
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "aclmgmt.db"))
 	if err != nil {
 		t.Fatal(err)
