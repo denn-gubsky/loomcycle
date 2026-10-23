@@ -96,6 +96,9 @@ func main() {
 }
 
 func run(base, head, within, exclude string, noWalkers bool, out, why io.Writer) error {
+	if err := checkArgs(base, head, within, exclude); err != nil {
+		return err
+	}
 	root, err := gitOutput("rev-parse", "--show-toplevel")
 	if err != nil {
 		return err
@@ -144,6 +147,25 @@ func run(base, head, within, exclude string, noWalkers bool, out, why io.Writer)
 type selection struct {
 	importPath string
 	reason     string
+}
+
+// checkArgs refuses a revision or a package pattern that starts with "-".
+// They are handed to git and go list as arguments, with no shell, so nothing
+// can run; but a leading dash would be read as an option (git diff
+// --output=FILE writes wherever it is told). A revision or a go list pattern
+// never needs one.
+func checkArgs(base, head, within, exclude string) error {
+	for _, rev := range []string{base, head} {
+		if rev == "" || strings.HasPrefix(rev, "-") {
+			return fmt.Errorf("revision %q: want a commit, not an option", rev)
+		}
+	}
+	for _, pattern := range append(strings.Fields(within), strings.Fields(exclude)...) {
+		if strings.HasPrefix(pattern, "-") {
+			return fmt.Errorf("package pattern %q: want a go list pattern, not an option", pattern)
+		}
+	}
+	return nil
 }
 
 // selectPackages returns, sorted by import path, the packages with tests that
@@ -266,6 +288,7 @@ type listEntry struct {
 }
 
 func loadPackages(root, pattern string) ([]pkg, error) {
+	// #nosec G204 -- fixed command and flags; pattern is "./..." or a pattern checkArgs refused to let start with "-".
 	cmd := exec.Command("go", "list", "-test", "-e",
 		"-json=ImportPath,Dir,ForTest,Deps,TestGoFiles,XTestGoFiles", pattern)
 	cmd.Dir = root
@@ -397,6 +420,7 @@ func stringLit(e ast.Expr) (string, bool) {
 }
 
 func listImportPaths(root, patterns string) (map[string]bool, error) {
+	// #nosec G204 -- fixed command; the patterns passed checkArgs, so none is read as a flag.
 	cmd := exec.Command("go", append([]string{"list", "-e"}, strings.Fields(patterns)...)...)
 	cmd.Dir = root
 	var stderr bytes.Buffer
@@ -414,6 +438,7 @@ func listImportPaths(root, patterns string) (map[string]bool, error) {
 
 func gitOutput(args ...string) (string, error) {
 	var stderr bytes.Buffer
+	// #nosec G204 -- the callers pass fixed subcommands and flags plus revisions checkArgs vetted.
 	cmd := exec.Command("git", args...)
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

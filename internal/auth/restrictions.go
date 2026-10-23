@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 )
 
 // Restrictions narrows what one credential may do, below what its scopes
@@ -35,20 +37,16 @@ type Restrictions struct {
 	Retention string `json:"retention,omitempty"`
 }
 
-// RetentionNone is the retention mode of a credential whose runs store no
-// content. The same value as retentionmode.None.
-const RetentionNone = "none"
-
 // ParseRetention reads a retention setting as written on a mint surface:
 // "none", or no setting spelled "default" or left empty.
 func ParseRetention(s string) (string, error) {
 	switch s {
 	case "", "default":
 		return "", nil
-	case RetentionNone:
-		return RetentionNone, nil
+	case retentionmode.None:
+		return retentionmode.None, nil
 	}
-	return "", fmt.Errorf("retention: %q is not a mode (use %q or %q)", s, RetentionNone, "default")
+	return "", fmt.Errorf("retention: %q is not a mode (use %q or %q)", s, retentionmode.None, "default")
 }
 
 // RateLimit is a token bucket for run creation: PerMinute runs a minute once
@@ -251,8 +249,8 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 	// The stored form only: a surface that takes "default" turns it into ""
 	// before it gets here (ParseRetention). An unknown value is refused, here
 	// and when a stored record is read: it must never read as "no setting".
-	if r.Retention != "" && r.Retention != RetentionNone {
-		return fmt.Errorf("retention: %q is not a mode (use %q)", r.Retention, RetentionNone)
+	if r.Retention != "" && r.Retention != retentionmode.None {
+		return fmt.Errorf("retention: %q is not a mode (use %q)", r.Retention, retentionmode.None)
 	}
 	if r.Overrides != nil {
 		lockable := make(map[string]bool, len(LockableOverrides))
@@ -281,8 +279,8 @@ func (r Restrictions) Validate(agentsWasSet bool) error {
 // in this record means "unrestricted", the opposite of what it would be.
 func (r Restrictions) Within(minter Restrictions) (Restrictions, error) {
 	out := r
-	if minter.Retention == RetentionNone {
-		out.Retention = RetentionNone
+	if minter.Retention == retentionmode.None {
+		out.Retention = retentionmode.None
 	}
 	if m := minter.Rate; m != nil {
 		if out.Rate == nil {
@@ -390,7 +388,7 @@ func ParseRestrictions(s string) (Restrictions, error) {
 	// A value this build does not know is refused like a key it does not
 	// know: read as "no setting", it would store what the token's holder was
 	// told is never stored.
-	if r.Retention != "" && r.Retention != RetentionNone {
+	if r.Retention != "" && r.Retention != retentionmode.None {
 		return Restrictions{}, fmt.Errorf("restrictions: retention %q is not a mode this build knows", r.Retention)
 	}
 	return r, nil

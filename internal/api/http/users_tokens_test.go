@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -836,7 +837,7 @@ func TestHandleMintUserToken_InheritsTheMintersRestrictions(t *testing.T) {
 	ctx := context.Background()
 	seedUser(t, st, "acme", "alice", "isolated", "active")
 	minter := auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}, Restrictions: auth.Restrictions{
-		Retention: auth.RetentionNone,
+		Retention: retentionmode.None,
 		Rate:      &auth.RateLimit{PerMinute: 6, Burst: 10},
 		Overrides: &auth.OverridePolicy{Allow: []string{"effort", "model"}},
 	}}
@@ -861,7 +862,7 @@ func TestHandleMintUserToken_InheritsTheMintersRestrictions(t *testing.T) {
 			t.Fatalf("%s: the minted token does not resolve", name)
 		}
 		r := p.Restrictions
-		if r.Retention != auth.RetentionNone {
+		if r.Retention != retentionmode.None {
 			t.Errorf("%s: retention = %q, want none: a no-trace token minted one whose runs are stored", name, r.Retention)
 		}
 		if r.Rate == nil || r.Rate.PerMinute != c.perMinute || r.Rate.EffectiveBurst() != c.burst {

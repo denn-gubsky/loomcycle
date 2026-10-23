@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -700,11 +701,11 @@ func TestOperatorTokenDef_RetentionIsStoredAndSurvivesRotation(t *testing.T) {
 		return r.Retention
 	}
 	out := mustOp(t, tool, ctx, `{"op":"create","name":"quiet","tenant_id":"acme","scopes":["runs:create"],"retention":"none"}`)
-	if got := retentionOf(out["def_id"].(string)); got != auth.RetentionNone {
+	if got := retentionOf(out["def_id"].(string)); got != retentionmode.None {
 		t.Errorf("stored retention = %q, want none", got)
 	}
 	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"quiet"}`)
-	if got := retentionOf(rotated["def_id"].(string)); got != auth.RetentionNone {
+	if got := retentionOf(rotated["def_id"].(string)); got != retentionmode.None {
 		t.Errorf("a rotation dropped the mode: %q", got)
 	}
 	plain := mustOp(t, tool, ctx, `{"op":"create","name":"plain","tenant_id":"acme","scopes":["runs:create"],"retention":"default"}`)

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 )
 
 func TestResolvePrincipals_Valid(t *testing.T) {
@@ -307,7 +308,7 @@ func TestResolvePrincipals_Retention(t *testing.T) {
 	if err := resolvePrincipals(c); err != nil {
 		t.Fatalf("resolvePrincipals: %v", err)
 	}
-	if got := c.ResolvedPrincipals[0].Principal.Restrictions.Retention; got != auth.RetentionNone {
+	if got := c.ResolvedPrincipals[0].Principal.Restrictions.Retention; got != retentionmode.None {
 		t.Errorf("resolved retention = %q, want none", got)
 	}
 	plain := &Config{Principals: map[string]PrincipalDef{"p": {Tenant: "acme", Subject: "s", Scopes: []string{auth.ScopeRunsCreate}, TokenEnv: "LOOMCYCLE_TOKEN_RET_DEF", Retention: "default"}}}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 )
 
 // TestFrontierAuthenticator_OperatorTokenOnlyIsGated is the regression for the
@@ -138,7 +139,7 @@ func TestFrontierAuthenticator_RefusesWhatThisPlaneCannotHold(t *testing.T) {
 	member := []string{auth.ScopeRunsCreate}
 	principals := map[string]auth.Principal{
 		"rated":     {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Rate: &auth.RateLimit{PerMinute: 1}}},
-		"quiet":     {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Retention: auth.RetentionNone}},
+		"quiet":     {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Retention: retentionmode.None}},
 		"readonly":  {TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeRunsRead, auth.ScopeChannelPublish}},
 		"locked":    {TenantID: "acme", Subject: "dev", Scopes: member, Restrictions: auth.Restrictions{Overrides: &auth.OverridePolicy{}}},
 		"isolated":  {TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeUser}},
