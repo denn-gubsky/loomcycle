@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/redact"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // The requests that move a file — File op=download and op=upload, WebFetch's
@@ -67,10 +66,10 @@ func (h *HTTP) transferClient(ctx context.Context, rule redirectRule) *http.Clie
 	}
 }
 
-// checkTransferURL parses an absolute http(s) URL and checks its host against
-// the HTTP tool's policy. A URL carrying a user and password is refused: a
-// credential goes in a pre-authenticated URL, not beside it.
-func (h *HTTP) checkTransferURL(ctx context.Context, raw string) (*url.URL, error) {
+// parseTransferURL parses an absolute http(s) URL. A URL carrying a user and
+// password is refused: a credential goes in a pre-authenticated URL, not
+// beside it. The host is checked by the caller, against hostPermitted.
+func parseTransferURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
 		return nil, errors.New("url must be an absolute http or https URL")
@@ -80,12 +79,6 @@ func (h *HTTP) checkTransferURL(ctx context.Context, raw string) (*url.URL, erro
 	}
 	if u.User != nil {
 		return nil, errors.New("url must not carry a user or password")
-	}
-	if len(h.HostAllowlist) == 0 && len(tools.ExtraAllowedHosts(ctx)) == 0 {
-		return nil, errors.New("no hosts are allowed for HTTP in this deployment")
-	}
-	if !h.hostPermitted(ctx, u.Hostname()) {
-		return nil, fmt.Errorf("host %q is not on the allowlist", u.Hostname())
 	}
 	return u, nil
 }
