@@ -1,10 +1,10 @@
 ---
 name: installation
-description: "Install loomcycle via Homebrew, Docker, go install, or direct tarball download."
+description: "Install loomcycle via Homebrew, Docker, or direct tarball download, or build it from a clone."
 ---
-Four supported install paths. Pick the one that matches your
-deployment model; all four ship the same single static binary plus
-the v0.11.1 `init` / `doctor` first-run flow.
+Three supported install paths, plus building from a clone. Pick the
+one that matches your deployment model; all ship the same single
+static binary plus the v0.11.1 `init` / `doctor` first-run flow.
 
 ## 1. Homebrew (macOS + Linux)
 
@@ -88,24 +88,29 @@ curl -L -O https://github.com/denn-gubsky/loomcycle/releases/latest/download/SHA
 shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
-## 4. `go install` from source
+## 4. Build from a clone
 
 For development or for platforms where the prebuilt tarballs don't
-fit (FreeBSD, Windows-via-WSL, custom musl libc builds):
+fit (FreeBSD, Windows-via-WSL, custom musl libc builds). Needs Go and
+Node.js:
 
 ```sh
-go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest
-loomcycle init
+git clone https://github.com/denn-gubsky/loomcycle
+cd loomcycle
+make build-all        # builds the Web UI, then ./bin/loomcycle with it embedded
+./bin/loomcycle init
 ```
 
-`go install` ships a binary WITHOUT the Web UI. The `internal/webui/
-dist/` tree is `.gitignored` in the repo (only `.gitkeep` is
-tracked); `go install` pulls source from the module proxy, which
-sees just the `.gitkeep`, so the `//go:embed` directive embeds an
-empty bundle and `/ui` returns 404. The Homebrew + Docker + direct-
-tarball paths all bundle the pre-built UI (CI runs `make build-ui`
-before goreleaser). For the full UI experience, use one of those
-three paths or build from a checkout with `make build-all`.
+`make build` alone skips the Web UI: `internal/webui/dist/` is not
+tracked in git, so the `//go:embed` directive embeds an empty bundle
+and `/ui` returns 404.
+
+`go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@<version>`
+does not work. The repository is split into several Go modules wired
+together with `replace` directives in the root `go.mod`, and Go
+refuses to install a module at a version when its `go.mod` has them.
+Homebrew, Docker and the release tarballs are the supported installs;
+building from a clone is the way to build from source.
 
 ## Auto-discovery
 

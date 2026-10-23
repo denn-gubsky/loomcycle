@@ -86,9 +86,10 @@ The trust boundary is **operator / caller**. The operator config is the floor; c
 
 ## Install
 
-Pick the path that fits. All four ship the same single static binary
-plus the v0.11.1 `init` / `doctor` first-run flow. `Context.help
-installation` covers each in detail.
+Pick the path that fits. Homebrew, Docker and the release tarballs are
+the supported installs; each ships the same single static binary with
+the Web UI embedded, plus the v0.11.1 `init` / `doctor` first-run flow.
+`Context.help installation` covers each in detail.
 
 ```sh
 # Homebrew (macOS + Linux)
@@ -103,8 +104,9 @@ docker pull denngubsky/loomcycle:latest
 # one network shares a quota. Swap the prefix on any loomcycle image.
 docker pull ghcr.io/denn-gubsky/loomcycle:latest
 
-# go install from source (skips Web UI embedding — for dev only)
-go install github.com/denn-gubsky/loomcycle/cmd/loomcycle@latest
+# Build from a clone (Go + Node; embeds the Web UI) → ./bin/loomcycle.
+# `go install …@version` does not work: the root go.mod has replace directives.
+git clone https://github.com/denn-gubsky/loomcycle && cd loomcycle && make build-all
 
 # Direct tarball (one of darwin-arm64 / darwin-amd64 / linux-arm64 / linux-amd64)
 curl -L https://github.com/denn-gubsky/loomcycle/releases/latest/download/loomcycle-darwin-arm64.tar.gz | tar xz
@@ -664,7 +666,7 @@ Repo-side docs (this directory):
 
 In-binary docs (bundled `Context.help` topics; agents read these directly, operators hit `GET /v1/_help/<topic>` against a running instance):
 
-- `installation`. All four install paths (Homebrew, Docker, `go install`, direct tarball) with verification + troubleshooting.
+- `installation`. The install paths (Homebrew, Docker, direct tarball, building from a clone) with verification + troubleshooting.
 - `getting-started`. First-run walkthrough: `init` → set env vars → `doctor` → run.
 - `llm-gateway`. Direct LLM routing endpoint (v0.11.0; for n8n + LangChain consumers).
 - `openai-compat`. Drop-in OpenAI SDK shims (v0.11.3 chat + v0.11.4 embeddings) with Python + TypeScript examples.
