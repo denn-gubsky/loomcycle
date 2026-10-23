@@ -61,10 +61,22 @@ var uiAssets embed.FS
 // The `secureCookie` flag forces the Secure attribute on the
 // session cookie. Operators behind TLS terminators that don't set
 // r.TLS should pass true.
-func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handler {
+//
+// The SPA files come from the embedded build unless WithBundle hands it a
+// verified bundle loaded from disk. Either way the routes above are the same
+// Go handlers: the session, login-config and logout routes are never read
+// from the SPA files, so a bundle cannot change cookie handling.
+func Handler(prefix string, secureCookie bool, loginOrigins []string, opts ...Option) http.Handler {
 	prefix = strings.TrimRight(prefix, "/")
 	mux := http.NewServeMux()
+	var o handlerOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var src source = embeddedSource{}
+	if o.bundle != nil {
+		src = o.bundle
+	}
 
 	setSession := func(w http.ResponseWriter, r *http.Request, token string) {
 		http.SetCookie(w, &http.Cookie{
