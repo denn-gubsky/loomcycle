@@ -33,12 +33,28 @@
 # in that file, but both produce identical runtime images.
 
 # ---- Stage 1: build the web UI ----------------------------------------------
+# The same installs as `make build-ui`: web/ compiles @loomcycle/library,
+# explorer, memory-view and def-fields from SOURCE (Vite and tsconfig aliases
+# into ../packages/*), so each of those needs its own node_modules before the
+# web build, or it cannot resolve their react, js-yaml and client imports. The
+# lockfiles go in first so the npm ci layer is cached until one changes.
 FROM node:26-alpine AS web-builder
-WORKDIR /src/web
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-COPY web/ ./
-RUN npm run build
+WORKDIR /src
+COPY packages/library/package.json packages/library/package-lock.json packages/library/
+COPY packages/explorer/package.json packages/explorer/package-lock.json packages/explorer/
+COPY packages/memory-view/package.json packages/memory-view/package-lock.json packages/memory-view/
+COPY packages/def-fields/package.json packages/def-fields/package-lock.json packages/def-fields/
+COPY web/package.json web/package-lock.json web/
+RUN set -e; for d in packages/library packages/explorer packages/memory-view packages/def-fields web; do \
+      (cd "$d" && npm ci --silent); \
+    done
+COPY packages/library/ packages/library/
+COPY packages/explorer/ packages/explorer/
+COPY packages/memory-view/ packages/memory-view/
+COPY packages/def-fields/ packages/def-fields/
+COPY web/ web/
+# Vite writes to ../internal/webui/dist, i.e. /src/internal/webui/dist.
+RUN cd web && npm run build
 
 # ---- Stage 2: build the Go binary -------------------------------------------
 FROM golang:1.26-alpine AS go-builder
