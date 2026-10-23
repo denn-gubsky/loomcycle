@@ -1737,6 +1737,7 @@ type Store interface {
 	MCPServerDefStore
 	VolumeDefStore
 	CredentialDefStore
+	AclStore
 	DirentStore
 	EphemeralVolumeStore
 	ScheduleDefStore
