@@ -85,7 +85,7 @@ func (e *aclResumeEnv) createScheduleAsDev(t *testing.T, name, agent string) str
 // returned stop is called (or the test ends). Stop waits for its runs.
 func (e *aclResumeEnv) startScheduler(t *testing.T) (stop func()) {
 	t.Helper()
-	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, e.st, e.srv, nil, nil, t.Logf)
+	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, e.st, e.srv, nil, nil, schedulerTestLogger(t, nil))
 	sched.Start(context.Background())
 	var stopped bool
 	stop = func() {
