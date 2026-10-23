@@ -81,14 +81,17 @@ var layers = []layer{
 			"internal/netguard",
 			"internal/otel",
 			"internal/procgroup",
+			"internal/promptinject",
 			"internal/recipes",
 			"internal/redact",
+			"internal/retentionmode",
 			"internal/runident",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
 			"internal/statepatch",
 			"internal/steer",
+			"internal/teamspec",
 			"internal/turncancel",
 		},
 	},
@@ -298,7 +301,6 @@ var allowedSideways = []subsystemEdge{
 // change, so a failure message says which work an entry is waiting on.
 const (
 	cutEmbedded    = "move cmd/loomcycle/embedded under internal/ (cmd<->api<->cli cycle)"
-	cutConfig      = "config's validators move down to config's layer (config hub)"
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
 	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
 )
@@ -316,12 +318,6 @@ type knownViolation struct {
 var knownViolations = []knownViolation{
 	{"internal/api/http", "cmd/loomcycle/embedded", cutEmbedded},
 	{"internal/cli", "cmd/loomcycle/embedded", cutEmbedded},
-
-	// memory's grammar, store.ParseRetention and the team-channel names,
-	// teamgraph's name/var validators.
-	{"internal/config", "internal/memory", cutConfig},
-	{"internal/config", "internal/store", cutConfig},
-	{"internal/config", "internal/teamgraph", cutConfig},
 
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},

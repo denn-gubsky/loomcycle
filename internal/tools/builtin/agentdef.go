@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -255,7 +256,7 @@ func noTraceLineage(ctx context.Context, st store.Store, tenant, name string) (n
 			Retention string `json:"retention"`
 		}
 		// A definition that does not parse cannot be shown to be ordinary.
-		return json.Unmarshal(def, &d) != nil || d.Retention == store.RetentionNone
+		return json.Unmarshal(def, &d) != nil || d.Retention == retentionmode.None
 	}
 	var nf *store.ErrNotFound
 	active, err := st.AgentDefGetActive(ctx, tenant, name)
@@ -298,7 +299,7 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 		return nil
 	}
 	var actions []string
-	if def.Retention != store.RetentionNone {
+	if def.Retention != retentionmode.None {
 		actions = append(actions, "retention_none_removed")
 	}
 	if !sameHooks(def, current) {
@@ -1074,8 +1075,8 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// The retention mode works the same way: a fork may make an agent
 		// no-trace and may not undo it. "default" on an agent that is "none"
 		// is the attempt; saying nothing keeps the parent's.
-		noTraceBase := base.Retention == store.RetentionNone
-		if static, ok := a.Cfg.Agents[name]; ok && static.Retention == store.RetentionNone {
+		noTraceBase := base.Retention == retentionmode.None
+		if static, ok := a.Cfg.Agents[name]; ok && static.Retention == retentionmode.None {
 			noTraceBase = true
 		}
 		if noTraceBase && ov.Retention == "default" {
@@ -1124,7 +1125,7 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	// Left as written ("none" or "default") so a fork can tell "say nothing"
 	// from "ask for the default"; buildDefinition turns it into the stored
 	// form.
-	if _, err := store.ParseRetention(ov.Retention); err != nil {
+	if _, err := retentionmode.Parse(ov.Retention); err != nil {
 		return mergedDef{}, err
 	}
 	if err := config.ValidateEphemeralVolumes(ov.EphemeralVolumes); err != nil {

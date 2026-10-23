@@ -22,6 +22,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -976,7 +977,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 
 	heartbeat := s.makeHeartbeat(run.ID)
 	fbPolicy, fbReResolve := s.fallbackForRun(run.TenantID, run.UserID, run.Agent, run.UserTier, run.OperatorKeyRestricted, runCfg.Routing)
-	gate, deregGate := s.newPauseGate(run.ID, run.Retention == store.RetentionNone)
+	gate, deregGate := s.newPauseGate(run.ID, run.Retention == retentionmode.None)
 	// RFC X Phase 3: a re-dispatched run that itself fans out can park too.
 	loopCtx = tools.WithPauseGate(loopCtx, gate)
 

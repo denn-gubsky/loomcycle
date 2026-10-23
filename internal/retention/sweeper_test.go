@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -1267,7 +1268,7 @@ func TestSweeper_ANoTraceChatIsDeletedAndNeverExported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "exp-quiet", Retention: store.RetentionNone})
+	run, err := st.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "exp-quiet", Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}

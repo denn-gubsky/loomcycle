@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runident"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -1830,7 +1831,7 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 // RunIsNoTrace reports whether ctx belongs to a no-trace run: one whose
 // content is stored nowhere, and so written into no trace, log or span.
 func RunIsNoTrace(ctx context.Context) bool {
-	return RunIdentity(ctx).Retention == store.RetentionNone
+	return RunIdentity(ctx).Retention == retentionmode.None
 }
 
 // execute is Execute without the span: the call, the refusals ahead of it,

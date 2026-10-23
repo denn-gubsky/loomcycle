@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -865,7 +866,7 @@ func (h *History) loadSessionInScope(ctx context.Context, scope, op, sessionID s
 	// put words on it is allowed — a title, a note, a summary — and there is
 	// nothing in it to resume from. Reading it (get, window) shows the
 	// markers; pinning and archiving it store no text.
-	if sess.Retention == store.RetentionNone {
+	if sess.Retention == retentionmode.None {
 		switch op {
 		case "rename", "annotate", "recap", "resume":
 			return store.Session{}, fmt.Errorf("history: %s is not available for chat %q: its content was not retained", op, sessionID)

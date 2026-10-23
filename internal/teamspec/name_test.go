@@ -1,4 +1,4 @@
-package teamgraph
+package teamspec
 
 import (
 	"strings"

@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -602,7 +603,7 @@ func TestStoreSentinelErrCheck(t *testing.T) {
 func TestInterruption_ANoTraceRunMayNotAskOrNotify(t *testing.T) {
 	tool, ctx, runID, cleanup := interruptionFixture(t)
 	defer cleanup()
-	quiet := tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test", Retention: store.RetentionNone})
+	quiet := tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", AgentID: "a_test", Retention: retentionmode.None})
 
 	for _, call := range []string{
 		`{"op":"ask","question":"a secret question?","timeout_ms":50}`,

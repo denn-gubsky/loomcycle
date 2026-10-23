@@ -61,6 +61,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -148,8 +149,8 @@ func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDe
 	// The operator's retention mode holds over the tenant's version the same
 	// way, and for the same reason: "none" written in the config must not
 	// stop applying because a tenant forked the agent.
-	if static.Retention == store.RetentionNone {
-		def.Retention = store.RetentionNone
+	if static.Retention == retentionmode.None {
+		def.Retention = retentionmode.None
 	}
 }
 

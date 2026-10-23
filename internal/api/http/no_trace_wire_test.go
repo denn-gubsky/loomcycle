@@ -11,9 +11,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // The mode reaches a run from four places, and the strictest wins: the
@@ -36,14 +36,14 @@ func TestNoTraceWire_TheRequestFieldMakesANoTraceRun(t *testing.T) {
 	if code != 200 || !strings.Contains(body, "answer "+canary) {
 		t.Fatalf("status %d, or the caller did not get its answer: %s", code, body)
 	}
-	if run := runOfAgent(t, srv, "a_req"); run.Retention != store.RetentionNone {
+	if run := runOfAgent(t, srv, "a_req"); run.Retention != retentionmode.None {
 		t.Errorf("retention = %q, want none", run.Retention)
 	}
 	if onDisk(t, srv, dbPath) {
 		t.Error("the canary is on disk after a run that asked for retention none")
 	}
 	// The run's own response says what it is.
-	if got := runToAgentResponse(runOfAgent(t, srv, "a_req"), false); got.Retention != store.RetentionNone {
+	if got := runToAgentResponse(runOfAgent(t, srv, "a_req"), false); got.Retention != retentionmode.None {
 		t.Errorf("the run's response carries retention %q", got.Retention)
 	}
 
@@ -89,7 +89,7 @@ func TestNoTraceWire_TheConnectorAndABatchChildCarryIt(t *testing.T) {
 	if err != nil || len(batch.Results) != 2 {
 		t.Fatalf("batch: %v %+v", err, batch)
 	}
-	for id, want := range map[string]string{"a_conn": store.RetentionNone, "a_b0": store.RetentionNone, "a_b1": ""} {
+	for id, want := range map[string]string{"a_conn": retentionmode.None, "a_b0": retentionmode.None, "a_b1": ""} {
 		if run := runOfAgent(t, srv, id); run.Retention != want {
 			t.Errorf("%s: retention = %q, want %q", id, run.Retention, want)
 		}
@@ -119,7 +119,7 @@ func TestNoTraceWire_ATokenMakesEveryRunItStartsNoTrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Retention != store.RetentionNone {
+	if run.Retention != retentionmode.None {
 		t.Errorf("a run started by a retention-none token has retention %q", run.Retention)
 	}
 	events, _ := st.GetTranscript(ctx, run.SessionID)
@@ -229,16 +229,16 @@ func TestNoTraceWire_TheAgentDefinitionField(t *testing.T) {
 	if code, body := postStrictRun(t, srv, canaryBody("child", "a_def", `,"retention":"default"`)); code != 200 {
 		t.Fatalf("status %d: %s", code, body)
 	}
-	if run := runOfAgent(t, srv, "a_def"); run.Retention != store.RetentionNone {
+	if run := runOfAgent(t, srv, "a_def"); run.Retention != retentionmode.None {
 		t.Errorf("a run of a retention-none agent has retention %q; a request cannot loosen it", run.Retention)
 	}
 	if onDisk(t, srv, dbPath) {
 		t.Error("the canary is on disk")
 	}
-	if got := applyAgentDefOverlay(config.AgentDef{}, []byte(`{"retention":"none"}`)); got.Retention != store.RetentionNone {
+	if got := applyAgentDefOverlay(config.AgentDef{}, []byte(`{"retention":"none"}`)); got.Retention != retentionmode.None {
 		t.Errorf("a pinned version's mode was dropped: %q", got.Retention)
 	}
-	if got := applyAgentDefOverlay(config.AgentDef{Retention: store.RetentionNone}, []byte(`{"retention":"default"}`)); got.Retention != store.RetentionNone {
+	if got := applyAgentDefOverlay(config.AgentDef{Retention: retentionmode.None}, []byte(`{"retention":"default"}`)); got.Retention != retentionmode.None {
 		t.Errorf("a pinned version loosened its base: %q", got.Retention)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/memory/eval"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -896,7 +897,7 @@ func TestHistory_ANoTraceChatTakesNoTitleNoteOrSummary(t *testing.T) {
 	h, s := historyFixture(t)
 	ctx := context.Background()
 	id := seedChat(t, s, "acme", "helper", "alice")
-	if _, err := s.CreateRun(ctx, id, store.RunIdentity{AgentID: "a_quiet", Retention: store.RetentionNone}); err != nil {
+	if _, err := s.CreateRun(ctx, id, store.RunIdentity{AgentID: "a_quiet", Retention: retentionmode.None}); err != nil {
 		t.Fatal(err)
 	}
 	plain := seedChat(t, s, "acme", "helper", "alice")

@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -337,7 +338,7 @@ func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retenti
 	}
 	var rec queuedRecord
 	switch {
-	case retention == store.RetentionNone:
+	case retention == retentionmode.None:
 		rec.Lost = lostNoTrace
 	case in.UserBearer != "" || len(in.UserCredentials) > 0:
 		if s.queueSealer == nil || !s.queueSealer.Enabled() {

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/runident"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // MintChannelMessageID returns a fresh channel-message id that's
@@ -202,8 +203,8 @@ type Session struct {
 	// creation; sub-agent sessions inherit the parent's value.
 	UserID string `json:"user_id,omitempty"`
 
-	// Retention is the session's retention mode: "" or RetentionNone. A
-	// RetentionNone session holds one no-trace run and is never continued.
+	// Retention is the session's retention mode: "" or retentionmode.None. A
+	// retentionmode.None session holds one no-trace run and is never continued.
 	// Written by CreateRun, with the run row, when the run has a mode; read
 	// by GetSession only.
 	Retention string `json:"retention,omitempty"`
@@ -628,7 +629,7 @@ type Run struct {
 	CredentialsNoUserScope bool `json:"credentials_no_user_scope,omitempty"`
 
 	// Retention is the run's retention mode: "" (everything is stored) or
-	// RetentionNone (content is delivered and stored nowhere). Persisted to
+	// retentionmode.None (content is delivered and stored nowhere). Persisted to
 	// runs.retention at creation and never changed.
 	Retention string `json:"retention,omitempty"`
 
@@ -844,24 +845,6 @@ type RetentionOverrideRow struct {
 	Until     time.Time `json:"until"`
 	SetBy     string    `json:"set_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
-}
-
-// RetentionNone is the retention mode of a run whose content is never stored.
-// The default mode is the empty string.
-const RetentionNone = "none"
-
-// ParseRetention reads a retention mode as a caller wrote it: "none", or the
-// default spelled "default" or left empty. It returns the stored form
-// (RetentionNone or ""). Anything else is an error — a misspelled "none" must
-// not become a run that stores everything.
-func ParseRetention(s string) (string, error) {
-	switch s {
-	case "", "default":
-		return "", nil
-	case RetentionNone:
-		return RetentionNone, nil
-	}
-	return "", fmt.Errorf("retention must be %q or %q, not %q", RetentionNone, "default", s)
 }
 
 // UsageCarryRow is month-to-date token usage a snapshot restore carried in
@@ -1096,7 +1079,7 @@ type RunIdentity struct {
 	// creation from the run identity that starts it.
 	CredentialsNoUserScope bool
 	// Retention is the run's retention mode, persisted to runs.retention: ""
-	// or RetentionNone. Decided before the row is written; nothing sets it
+	// or retentionmode.None. Decided before the row is written; nothing sets it
 	// afterwards. A run with a mode stamps it on its session in the same
 	// write.
 	Retention string
@@ -1220,29 +1203,16 @@ func WithTeamScope(ctx context.Context, sc TeamScope) context.Context {
 	return context.WithValue(ctx, teamScopeCtxKey{}, sc)
 }
 
-// TeamChannelPrefix is the reserved prefix a team's own channels are stored
-// under: local channel n of team T keeps its messages and cursors as
-// "_team/T/n". Nothing else may declare a channel under it or address one by
-// that spelling — the operator's config, runtime ChannelDefs and the Channel
-// tool all refuse it — so the one way to such a channel is from inside the
-// team, and deleting the team can drop everything under its prefix.
-const TeamChannelPrefix = "_team/"
-
 // TeamChannelName is the name local channel `local` of team `team` is stored
 // under.
 func TeamChannelName(team, local string) string {
-	return TeamChannelPrefix + team + "/" + local
-}
-
-// IsTeamChannelName reports whether name is under the reserved team prefix.
-func IsTeamChannelName(name string) bool {
-	return strings.HasPrefix(name, TeamChannelPrefix)
+	return teamspec.ChannelPrefix + team + "/" + local
 }
 
 // SplitTeamChannelName is TeamChannelName's inverse: "_team/T/n" → (T, n).
 // ok=false for any other name, including one with an empty or extra segment.
 func SplitTeamChannelName(name string) (team, local string, ok bool) {
-	rest, found := strings.CutPrefix(name, TeamChannelPrefix)
+	rest, found := strings.CutPrefix(name, teamspec.ChannelPrefix)
 	if !found {
 		return "", "", false
 	}
@@ -1256,7 +1226,7 @@ func SplitTeamChannelName(name string) (team, local string, ok bool) {
 // TeamChannelDisplayName is how events and logs show a stored channel name:
 // "_team/T/n" as "T/n", any other name unchanged.
 func TeamChannelDisplayName(name string) string {
-	if rest, ok := strings.CutPrefix(name, TeamChannelPrefix); ok {
+	if rest, ok := strings.CutPrefix(name, teamspec.ChannelPrefix); ok {
 		return rest
 	}
 	return name
@@ -1938,7 +1908,7 @@ type RunStore interface {
 	// Used by internal/heartbeat for the periodic sweep goroutine.
 	SweepStaleRuns(ctx context.Context, cutoff time.Time) (int, error)
 
-	// FailLostNoTraceRuns fails the RetentionNone runs a restart lost: rows
+	// FailLostNoTraceRuns fails the retentionmode.None runs a restart lost: rows
 	// still "running" that started before startedBefore — the moment this
 	// process began — and that this process owned. replicaID is the
 	// process's replica id; "" means it is the only one, and owns them all.
