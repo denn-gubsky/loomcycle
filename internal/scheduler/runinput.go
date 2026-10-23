@@ -258,5 +258,9 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logf func(form
 		// RFC BX P2b: carry the captured isolation bit into the run — same
 		// no-principal-at-fire-time rationale as OperatorKeyRestricted.
 		Isolated: def.Isolated,
+		// RFC EZ §1.5: the author's access-control set, compiled as it stands
+		// at this fire, narrows the run; the two bits above stay as the
+		// fallback for a def that records no owner.
+		ACLOwner: def.ACLOwner,
 	}
 }

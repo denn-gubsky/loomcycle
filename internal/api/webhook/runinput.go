@@ -246,6 +246,10 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 		// RFC BX P2b: the captured isolation bit — same anti-bypass rationale as
 		// OperatorKeyRestricted (no principal at delivery time).
 		Isolated: w.Isolated,
+		// RFC EZ §1.5: the def author's access-control set, compiled as it
+		// stands at this delivery, narrows the run; the two bits above stay as
+		// the fallback for a def that records no owner (a yaml webhook).
+		ACLOwner: w.ACLOwner,
 		// IdempotencyKey is set by the caller (deliverSpawn) to the
 		// webhook-scoped delivery key (dedupKey), keeping this builder's
 		// signature focused on the Def + projected payload. See RFC H Decision 10 "Layer 2".

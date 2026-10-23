@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -392,6 +393,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 // dispatched — when it ends (see tracked.go). Errors are logged but never
 // bubble out — one failed schedule shouldn't block the rest of the tick.
 func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now time.Time) {
+	// The surface a fire arrives on, for an access-control rule's `transport`
+	// condition, evaluated under the def owner's set (RFC EZ §1.5).
+	ctx = authz.WithTransport(ctx, "schedule")
 	def, err := unmarshalDef(row.Definition)
 	if err != nil {
 		// No cron to compute the next slot from: park this one an hour out

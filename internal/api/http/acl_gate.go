@@ -242,6 +242,37 @@ func runCallerACL(ctx context.Context) *authz.Effective {
 	return nil
 }
 
+// triggerOwnerCtx is ctx for a run a trigger fires (RFC EZ §1.5): with owner
+// set and no caller on ctx, the owner's CURRENT set compiled and carried as a
+// recorded caller — so RunOnce narrows the run by it (runCallerACL), records
+// it on the run for a resume (acl_origin), and asks `run agent:<agent>` for
+// the owner (admitPrincipalAgent), exactly as for a queued run restarted
+// after a restart. The transport is the trigger's own, stamped on ctx by the
+// surface that fired it.
+//
+// No owner (a yaml trigger, a definition written with no set in force), or a
+// principal or recorded caller already on ctx: ctx as it is. A set that
+// cannot be compiled refuses the run with ErrACLUnavailable — logged and
+// audited by recordedCallerACL — never runs it without the set.
+func (s *Server) triggerOwnerCtx(ctx context.Context, owner *authz.SubjectRef, agent string) (context.Context, error) {
+	if owner == nil {
+		return ctx, nil
+	}
+	if _, ok := auth.PrincipalFromContext(ctx); ok {
+		return ctx, nil
+	}
+	if _, ok := recordedCallerFrom(ctx); ok {
+		return ctx, nil
+	}
+	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx)}
+	ctx, eff, err := s.recordedCallerACL(ctx, &o, agent)
+	if err != nil {
+		return ctx, fmt.Errorf("%w: the access-control rules of the owner of the trigger that fired %q (tenant %q, subject %q) could not be read (%v); the run is refused rather than run without them",
+			runner.ErrACLUnavailable, agent, owner.TenantID, owner.Subject, err)
+	}
+	return withRecordedCaller(ctx, o, eff), nil
+}
+
 // aclAdmitSpawn is the `spawn agent:<name>` question a parent asks before it
 // starts a child, against the ORIGINATING principal's set the parent policy
 // carries. No set (open mode, a trigger's run): nothing to ask.

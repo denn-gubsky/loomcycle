@@ -3129,6 +3129,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// The agent is final here (a continuation has taken its session's, a
 	// started draft its row's), so this covers all three.
 	// (A continuation's agent was checked with its session, above.)
+	ctx, err := s.triggerOwnerCtx(ctx, in.ACLOwner, effectiveAgentName)
+	if err != nil {
+		return err
+	}
 	if err := s.admitPrincipalAgent(ctx, effectiveAgentName); err != nil {
 		return err
 	}
