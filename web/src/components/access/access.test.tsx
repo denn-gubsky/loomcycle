@@ -101,8 +101,7 @@ describe("PolicyList and PolicyEditor", () => {
 });
 
 describe("BindingTable", () => {
-  const zero = "0001-01-01T00:00:00Z";
-  const b = (over: Partial<AclBinding>): AclBinding => ({ binding_id: "1", acl: "l", subject_kind: "user", subject_id: "alice", created_at: "", expires_at: zero, retired_at: zero, ...over });
+  const b = (over: Partial<AclBinding>): AclBinding => ({ binding_id: "1", acl: "l", subject_kind: "user", subject_id: "alice", created_at: "", ...over });
 
   it("shows never for no expiry, marks an expired binding, and names a tenant-wide one", () => {
     const now = Date.parse("2026-10-23T12:00:00Z");

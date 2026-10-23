@@ -7,7 +7,6 @@ import {
   bindingsForUser,
   effectiveMembers,
   groupsOfSubject,
-  isSetTime,
   membershipTree,
   type MembersIndex,
 } from "./aclAccess";
@@ -33,19 +32,11 @@ const b = (over: Partial<AclBinding>): AclBinding => ({
   acl: "x",
   subject_kind: "user",
   created_at: "2026-10-23T00:00:00Z",
-  expires_at: "0001-01-01T00:00:00Z",
-  retired_at: "0001-01-01T00:00:00Z",
+  // An unset expiry and retirement are absent on the wire.
   ...over,
 });
 
 describe("time fields", () => {
-  it("reads Go's zero time as unset", () => {
-    expect(isSetTime("0001-01-01T00:00:00Z")).toBe(false);
-    expect(isSetTime(undefined)).toBe(false);
-    expect(isSetTime("")).toBe(false);
-    expect(isSetTime("2027-01-01T00:00:00Z")).toBe(true);
-  });
-
   it("says a binding is active, expired or retired", () => {
     const now = Date.parse("2026-10-23T12:00:00Z");
     expect(bindingState(b({}), now)).toBe("active");

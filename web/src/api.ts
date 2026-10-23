@@ -3800,15 +3800,27 @@ export async function deleteLimit(
 // the management routes (403) and may only ask the decision routes about
 // themselves.
 
+// AclSource marks an entry the config declares (`acls:` / `groups:` /
+// `acl_bindings:`): listed beside the stored rows, never writable here. A
+// stored row has no source.
+export type AclSource = "config";
+
 export interface GroupRow {
   tenant_id?: string;
   name: string;
   description?: string;
-  // Set on a group an identity provider pushes; read-only locally.
+  // Set on a group an identity provider pushes; the server refuses member
+  // writes to it (409 group_external).
   external_id?: string;
-  created_at: string;
+  // Absent on a config group, which has no stored row.
+  created_at?: string;
   updated_at?: string;
   created_by?: string;
+  source?: AclSource;
+  // A config group's direct members (subjects) and member groups; a stored
+  // group's members come from GET /v1/_groups/{name}.
+  members?: string[];
+  groups?: string[];
 }
 
 export interface GroupMember {
@@ -3827,20 +3839,23 @@ export interface GroupDetail {
   contained_in: string[] | null;
 }
 
-// AclDefRow is one stored rule list. `rules` is the wire rule array.
+// AclDefRow is one rule list: a stored one, or (source "config") one the
+// config declares, which has only a name, a description and its rules.
+// `rules` is the wire rule array.
 export interface AclDefRow {
   tenant_id?: string;
   name: string;
-  version: number;
-  content_sha256: string;
-  catalog_version: number;
+  version?: number;
+  content_sha256?: string;
+  catalog_version?: number;
   rules: Rule[];
   description?: string;
-  created_at: string;
-  updated_at: string;
+  created_at?: string;
+  updated_at?: string;
   created_by?: string;
-  // Go zero time ("0001-01-01T00:00:00Z") while live — see lib/aclAccess isSetTime.
+  // Absent while the list is live.
   retired_at?: string;
+  source?: AclSource;
 }
 
 // AclList is a built-in baseline list (code constant, read-only).
@@ -3850,17 +3865,20 @@ export interface AclList {
   rules: Rule[];
 }
 
+// AclBinding is one binding. A config binding (source "config") has no
+// binding_id and no created_at; key it with bindingKey (BindingsTab).
 export interface AclBinding {
-  binding_id: string;
+  binding_id?: string;
   tenant_id?: string;
   acl: string;
   subject_kind: "user" | "group" | "token" | "tenant";
   subject_id?: string;
-  // Go zero time when unset — see lib/aclAccess isSetTime.
+  // Absent when the binding has no expiry / is not retired.
   expires_at?: string;
-  created_at: string;
+  created_at?: string;
   created_by?: string;
   retired_at?: string;
+  source?: AclSource;
 }
 
 export interface AuthzReason {
@@ -3982,8 +4000,8 @@ export function listAclBindings(includeRetired: boolean, tenant?: string): Promi
   return jsonFetch(withTenant("/v1/_aclbinding", tenant, includeRetired ? { include_retired: "1" } : undefined));
 }
 
-// createAclBinding omits an empty expires_at: the server decodes it into a Go
-// time.Time, which refuses "".
+// createAclBinding omits an empty expires_at (the server reads "" as no
+// expiry too; leaving it out keeps the request minimal).
 export function createAclBinding(
   body: { acl: string; subject_kind: string; subject_id?: string; expires_at?: string },
   tenant?: string,

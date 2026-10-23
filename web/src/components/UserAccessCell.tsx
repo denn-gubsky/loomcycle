@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { listAclBindings, listGroups, type AclBinding } from "../api";
 import { bindingsForUser, groupsOfSubject, type MembersIndex } from "../lib/aclAccess";
 import { loadMembersIndex } from "./access/GroupsTab";
+import { bindingKey } from "./access/BindingsTab";
 
 // The Users page's access column: each user's groups and the rule lists bound
 // to it, read from the same routes the Access console uses. Loaded once per
@@ -65,7 +66,7 @@ export default function UserAccessCell({ subject, snap, now }: { subject: string
         ) : (
           bindings.map((b) => (
             <span
-              key={b.binding.binding_id}
+              key={bindingKey(b.binding)}
               className={"user-access-chip user-access-binding" + (b.state === "expired" ? " user-access-expired" : "")}
               title={b.state === "expired" ? "expired" : undefined}
             >

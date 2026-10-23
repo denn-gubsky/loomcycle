@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { createAclBinding, listAclBindings, listAclDefs, listGroups, retireAclBinding, type AclBinding } from "../../api";
-import { bindingState, isSetTime } from "../../lib/aclAccess";
+import { bindingState } from "../../lib/aclAccess";
 import ErrorNotice from "../ErrorNotice";
 
 // BindingsTab — who gets which rule list: a user, a group, a token definition
 // or the whole tenant, optionally until an expiry. Deleting retires the
-// binding (the server keeps the row for the audit trail).
+// binding (the server keeps the row for the audit trail). Bindings the config
+// declares are listed beside the stored ones, read-only.
 
 const KINDS = ["user", "group", "token", "tenant"] as const;
 type Kind = (typeof KINDS)[number];
@@ -46,6 +47,7 @@ export default function BindingsTab({ tenant }: { tenant?: string }) {
   }, [tenant]);
 
   const retire = async (b: AclBinding) => {
+    if (!b.binding_id || b.source === "config") return;
     if (!confirm(`Remove the binding of "${b.acl}" to ${describeSubject(b)}?`)) return;
     try {
       await retireAclBinding(b.binding_id, tenant);
@@ -70,6 +72,13 @@ export default function BindingsTab({ tenant }: { tenant?: string }) {
       <BindingTable bindings={bindings} onRetire={(b) => void retire(b)} />
     </div>
   );
+}
+
+// bindingKey identifies a binding in a list. A config binding has no
+// binding_id, so it is keyed on what it binds; two config bindings differ in
+// at least one of these (the config validator refuses an exact duplicate).
+export function bindingKey(b: AclBinding): string {
+  return b.binding_id ?? [b.source ?? "store", b.acl, b.subject_kind, b.subject_id ?? ""].join("|");
 }
 
 export function describeSubject(b: Pick<AclBinding, "subject_kind" | "subject_id">): string {
@@ -190,31 +199,47 @@ export function BindingTable({ bindings, onRetire, now = Date.now() }: { binding
       <tbody>
         {bindings.map((b) => {
           const state = bindingState(b, now);
+          const config = b.source === "config";
           return (
-            <tr key={b.binding_id}>
+            <tr key={bindingKey(b)} className={config ? "acl-row-builtin" : undefined}>
               <td>
                 <code>{b.acl}</code>
+                {config && <ConfigPill what="binding" />}
               </td>
               <td>
                 <span className={"acl-kind acl-kind-" + b.subject_kind}>{b.subject_kind}</span>{" "}
                 {b.subject_kind === "tenant" ? <span className="settings-muted">whole tenant</span> : <code>{b.subject_id}</code>}
               </td>
-              <td className="settings-muted">{isSetTime(b.expires_at) ? new Date(b.expires_at).toLocaleString() : "never"}</td>
+              <td className="settings-muted">{b.expires_at ? new Date(b.expires_at).toLocaleString() : "never"}</td>
               <td>
                 <span className={"status-pill " + (state === "active" ? "status-ok" : state === "expired" ? "status-warn" : "status-retired")}>
                   {state === "retired" ? "removed" : state}
                 </span>
               </td>
-              <td className="settings-muted">{b.created_by || "—"}</td>
+              <td className="settings-muted">{config ? "config" : b.created_by || "—"}</td>
               <td className="settings-row-actions">
-                <button type="button" className="ghost-btn danger" disabled={state === "retired"} onClick={() => onRetire(b)}>
-                  remove
-                </button>
+                {!config && (
+                  <button type="button" className="ghost-btn danger" disabled={state === "retired"} onClick={() => onRetire(b)}>
+                    remove
+                  </button>
+                )}
               </td>
             </tr>
           );
         })}
       </tbody>
     </table>
+  );
+}
+
+// ConfigPill marks an entry the config declares: listed, never written here.
+export function ConfigPill({ what }: { what: "list" | "group" | "binding" }) {
+  return (
+    <span
+      className="status-pill acl-pill-builtin"
+      title={`Declared in the server's config (acls: / groups: / acl_bindings:); change the ${what} there. Read-only here.`}
+    >
+      config · read-only
+    </span>
   );
 }
