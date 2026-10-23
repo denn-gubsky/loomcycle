@@ -334,6 +334,9 @@ func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	if r := s.aclGroupExternal(ctx, tenant, strings.TrimSpace(req.Name)); r != nil {
+		return *r
+	}
 	row, err := s.store.GroupPut(ctx, store.GroupRow{TenantID: tenant, Name: strings.TrimSpace(req.Name),
 		Description: req.Description, ExternalID: req.ExternalID, CreatedBy: principalSubject(ctx)})
 	if err != nil {
@@ -394,6 +397,9 @@ func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req 
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
+		return *r
+	}
 	if req.Kind == store.GroupMemberUser {
 		if err := aclNoSelfElevation(ctx, string(authz.SubjectUser), req.ID); err != nil {
 			// Adding yourself to a group is the membership form of self-binding.
@@ -408,6 +414,29 @@ func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req 
 	return aclCreated(map[string]any{"group": name, "kind": req.Kind, "id": req.ID})
 }
 
+// aclGroupExternal refuses a write to a group an identity provider owns
+// (external_id set): its members are managed at the provider, and the store
+// documents such a group as read-only locally. The refusal covers the
+// membership writes and an upsert over the group, which could otherwise
+// clear the mark and then edit the members. A group that does not exist is
+// left to the operation, which reports it in its own words.
+func (s *Server) aclGroupExternal(ctx context.Context, tenant, name string) *aclReply {
+	row, err := s.store.GroupGet(ctx, tenant, name)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return nil
+		}
+		r := aclFail(http.StatusInternalServerError, "group_get_failed", err.Error())
+		return &r
+	}
+	if row.ExternalID != "" {
+		r := aclFail(http.StatusConflict, "group_external", fmt.Sprintf("group %q is synced from an identity provider (external_id %q); manage its members there", name, row.ExternalID))
+		return &r
+	}
+	return nil
+}
+
 func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id string) aclReply {
 	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
 		return *r
@@ -416,6 +445,9 @@ func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id
 		return *r
 	}
 	tenant := s.adminFocusedTenant(ctx, focus)
+	if r := s.aclGroupExternal(ctx, tenant, name); r != nil {
+		return *r
+	}
 	ok, err := s.store.GroupMemberRemove(ctx, tenant, name, kind, id)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "group_member_remove_failed", err.Error())

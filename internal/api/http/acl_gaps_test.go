@@ -119,3 +119,26 @@ func TestACLBindings_RefuseAMissingListAndAPastExpiry(t *testing.T) {
 		t.Errorf("twin binding to a missing list: %s", res.Text)
 	}
 }
+
+// A group an identity provider owns (external_id set) is read-only on the
+// management surfaces: its members are managed at the provider, and an
+// upsert that could clear the mark is refused too.
+func TestACLGroups_AnIdPGroupIsReadOnlyLocally(t *testing.T) {
+	srv, ts, _ := aclMgmtServer(t, authz.ModeCompat)
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_groups", `{"name":"okta-eng","external_id":"00g1"}`); code != 201 {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	for _, c := range []struct{ method, path, body string }{
+		{"POST", "/v1/_groups/okta-eng/members", `{"kind":"user","id":"alice"}`},
+		{"DELETE", "/v1/_groups/okta-eng/members/user/alice", ""},
+		{"POST", "/v1/_groups", `{"name":"okta-eng"}`},
+	} {
+		if code, body := bearerCall(t, ts, operatorBearer, c.method, c.path, c.body); code != 409 || !strings.Contains(body, "group_external") {
+			t.Errorf("%s %s on an IdP group: %d %s, want 409 group_external", c.method, c.path, code, body)
+		}
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	if res := twinCall(t, srv, op, "groupdef", `{"op":"add_member","name":"okta-eng","kind":"user","id":"alice"}`); !strings.Contains(res.Text, "group_external") {
+		t.Errorf("twin add_member on an IdP group: %s", res.Text)
+	}
+}
