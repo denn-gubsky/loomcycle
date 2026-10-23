@@ -9,6 +9,10 @@
 # test lands in exactly one part: the parts together are the whole package,
 # and a test added later joins a part with no list to update. Examples and
 # fuzz seed corpora run as tests too, so they are dealt out the same way.
+#
+# PACKAGE is an import path (what select-packages.sh prints), listed from the
+# directory of the in-tree module that owns it (scripts/ci/in-modules.sh), or a
+# relative path, listed from the current directory.
 set -euo pipefail
 
 pkg="${1:?usage: split-tests.sh PACKAGE I/N [build flags...]}"
@@ -21,7 +25,12 @@ if ! [[ "$i" =~ ^[0-9]+$ && "$n" =~ ^[0-9]+$ ]] || [ "$i" -lt 1 ] || [ "$i" -gt 
   exit 2
 fi
 
-names=$(go test "$@" -list '.*' "$pkg" | grep -E '^(Test|Example|Fuzz)[A-Za-z0-9_]*$' | sort)
+if [[ "$pkg" == .* ]]; then
+  list=(go test "$@" -list '.*' "$pkg")
+else
+  list=("$(dirname "$0")/in-modules.sh" go test "$@" -list '.*' -- "$pkg")
+fi
+names=$("${list[@]}" | grep -E '^(Test|Example|Fuzz)[A-Za-z0-9_]*$' | sort)
 if [ -z "$names" ]; then
   echo "split-tests.sh: $pkg lists no tests" >&2
   exit 1
