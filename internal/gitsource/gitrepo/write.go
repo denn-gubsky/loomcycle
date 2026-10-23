@@ -31,6 +31,10 @@ type CommitOptions struct {
 	All               bool // stage modified and deleted tracked files first
 	AllowEmpty        bool
 	Amend             bool
+	// Signer signs the commit; nil leaves it unsigned. It is handed the
+	// commit's encoding without a signature and returns the signature
+	// stored in its gpgsig header.
+	Signer git.Signer
 }
 
 // CheckoutOptions are Checkout's. Exactly one of Branch, or Rev without
@@ -45,6 +49,10 @@ type CheckoutOptions struct {
 	// are and moves HEAD only.
 	Force bool
 	Keep  bool
+	// SparseDirs, when set, makes the checkout sparse: only the files under
+	// these directories (or these paths themselves) are in the worktree;
+	// the index keeps every file, the rest marked skip-worktree.
+	SparseDirs []string
 }
 
 func (r *Repo) worktree() (*git.Worktree, error) {
@@ -237,6 +245,9 @@ func (r *Repo) resetIndexPaths(src side, specs []string) (int, error) {
 		return 0, fmt.Errorf("read the index: %w", err)
 	}
 	matched := map[string]bool{}
+	// A path a sparse checkout left out stays out: its new entry keeps the
+	// mark, or the missing file would read as deleted.
+	skipped := map[string]bool{}
 	entries := idx.Entries[:0:0]
 	for _, e := range idx.Entries {
 		if !matchPaths(specs, e.Name) {
@@ -244,6 +255,7 @@ func (r *Repo) resetIndexPaths(src side, specs []string) (int, error) {
 			continue
 		}
 		matched[e.Name] = true
+		skipped[e.Name] = skipped[e.Name] || e.SkipWorktree
 		if s, ok := src[e.Name]; ok && e.Stage == mergedStage && s.hash == e.Hash && s.mode == e.Mode {
 			entries = append(entries, e)
 			delete(src, e.Name) // already there; not to be added again
@@ -257,7 +269,7 @@ func (r *Repo) resetIndexPaths(src side, specs []string) (int, error) {
 		if s.mode == filemode.Dir {
 			continue
 		}
-		entries = append(entries, &index.Entry{Name: name, Hash: s.hash, Mode: s.mode})
+		entries = append(entries, &index.Entry{Name: name, Hash: s.hash, Mode: s.mode, SkipWorktree: skipped[name]})
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].Name != entries[j].Name {
@@ -419,7 +431,10 @@ func (r *Repo) Reset(mode, rev string, paths []string) error {
 		if err := w.Reset(&git.ResetOptions{Commit: c.Hash, Mode: m}); err != nil {
 			return fmt.Errorf("reset: %w", err)
 		}
-		return nil
+		if m == git.SoftReset {
+			return nil
+		}
+		return r.syncSkipped(c)
 	})
 }
 
@@ -429,7 +444,12 @@ func (r *Repo) Reset(mode, rev string, paths []string) error {
 // git never does and which would lose an agent's new work; so this is a
 // mixed reset, then the files tracked before and not now are removed and
 // the tracked ones are written from the index. An untracked file at a path
-// the commit has is written over, as git does. The caller has checked the
+// the commit has is written over, as git does. A directory left at a path
+// no longer tracked, a submodule's checkout above all, is left where it is,
+// as git leaves it; a file of the commit where a submodule's checkout is
+// refuses the reset (ErrWorktreeDirty), as writing it would delete the
+// submodule's files. What is removed is decided before anything is, so a
+// refusal leaves the files as they were. The caller has checked the
 // commit's tree and restores HEAD if this fails (keepHead).
 func (r *Repo) hardReset(commit plumbing.Hash) error {
 	before, err := r.indexSide()
@@ -443,17 +463,40 @@ func (r *Repo) hardReset(commit plumbing.Hash) error {
 	if err := w.Reset(&git.ResetOptions{Commit: commit, Mode: git.MixedReset}); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
+	target, err := r.repo.CommitObject(commit)
+	if err != nil {
+		return fmt.Errorf("reset: %w", err)
+	}
+	if err := r.syncSkipped(target); err != nil {
+		return err
+	}
 	after, err := r.indexSide()
 	if err != nil {
 		return err
 	}
-	for p := range before {
-		if _, ok := after[p]; ok {
+	var gone []string
+	for p, e := range before {
+		a, kept := after[p]
+		if kept && (e.mode != filemode.Submodule || a.mode == filemode.Submodule) {
 			continue
 		}
 		if err := treePath(p); err != nil {
 			return err
 		}
+		full, err := r.nonEmptyDir(p)
+		if err != nil {
+			return err
+		}
+		switch {
+		case full && kept:
+			return fmt.Errorf("%w: %s holds a submodule's files, where the commit has a file", ErrWorktreeDirty, p)
+		case full, kept:
+			continue
+		}
+		gone = append(gone, p)
+	}
+	sort.Strings(gone)
+	for _, p := range gone {
 		if err := r.wt.Remove(p); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", p, err)
 		}
@@ -461,6 +504,26 @@ func (r *Repo) hardReset(commit plumbing.Hash) error {
 	}
 	_, err = r.restoreWorktree(nil)
 	return err
+}
+
+// nonEmptyDir reports whether p is a directory, not a link, with anything
+// in it.
+func (r *Repo) nonEmptyDir(p string) (bool, error) {
+	fi, err := r.wt.Lstat(p)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("stat %s: %w", p, err)
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return false, nil
+	}
+	entries, err := r.wt.ReadDir(p)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", p, err)
+	}
+	return len(entries) > 0, nil
 }
 
 func signature(s Signature, role string) (*object.Signature, error) {
@@ -527,6 +590,7 @@ func (r *Repo) Commit(o CommitOptions) (string, error) {
 		// Amending only the message is a commit with the parent's tree.
 		AllowEmptyCommits: o.AllowEmpty || o.Amend,
 		Amend:             o.Amend,
+		Signer:            o.Signer,
 	})
 	if errors.Is(err, git.ErrEmptyCommit) {
 		return "", fmt.Errorf("%w: no changes are staged", ErrNothingToCommit)
@@ -606,6 +670,26 @@ func (r *Repo) Checkout(o CheckoutOptions) error {
 	if (o.Branch == "") == (o.Rev == "" || o.Create) {
 		return fmt.Errorf("%w: name a branch, or a revision without create", ErrInvalidArgument)
 	}
+	var sparse []string
+	var before side
+	if len(o.SparseDirs) > 0 {
+		if o.Keep {
+			return fmt.Errorf("%w: a sparse checkout does not go with keep", ErrInvalidArgument)
+		}
+		for _, d := range o.SparseDirs {
+			c, err := cleanPath(d)
+			if err != nil {
+				return err
+			}
+			sparse = append(sparse, c)
+		}
+		// What the index held before, to tell a file the checkout leaves
+		// stale from one with local changes; see applySparse.
+		var err error
+		if before, err = r.indexSide(); err != nil {
+			return err
+		}
+	}
 	var target *object.Commit
 	var branch plumbing.ReferenceName
 	var err error
@@ -668,9 +752,17 @@ func (r *Repo) Checkout(o CheckoutOptions) error {
 			if err := r.repo.Storer.SetReference(head); err != nil {
 				return fmt.Errorf("checkout: %w", err)
 			}
-			return r.hardReset(target.Hash)
+			if err := r.hardReset(target.Hash); err != nil {
+				return err
+			}
+			return r.applySparse(sparse, before)
 		}
 		opts := &git.CheckoutOptions{Keep: o.Keep}
+		for _, d := range sparse {
+			// The library keeps an entry when its name starts with a pattern,
+			// so "src" alone would keep "src2/x".
+			opts.SparseCheckoutDirectories = append(opts.SparseCheckoutDirectories, d+"/")
+		}
 		if branch != "" {
 			opts.Branch = branch
 		} else {
@@ -679,13 +771,127 @@ func (r *Repo) Checkout(o CheckoutOptions) error {
 		if err := w.Checkout(opts); err != nil {
 			return fmt.Errorf("checkout: %w", err)
 		}
-		return nil
+		if err := r.syncSkipped(target); err != nil {
+			return err
+		}
+		return r.applySparse(sparse, before)
 	})
 	if err != nil && branch != "" && o.Create {
 		// The branch did not exist before (checked above).
 		_ = r.repo.Storer.RemoveReference(branch)
 	}
 	return err
+}
+
+// syncSkipped makes the index's skip-worktree entries those of target. The
+// library leaves such an entry out of every comparison, so a reset or a
+// checkout keeps its old content (or keeps it when target has none), and
+// the index would then hold changes nobody staged. Every path here that
+// resets the index to a commit calls this after the library has.
+//
+// A sparse checkout's directories are not remembered, as git remembers them
+// in .git/info/sparse-checkout: a later checkout, reset or merge keeps the
+// marks of the entries it leaves, but writes a file it adds wherever it is.
+func (r *Repo) syncSkipped(target *object.Commit) error {
+	idx, err := r.repo.Storer.Index()
+	if err != nil {
+		return fmt.Errorf("read the index: %w", err)
+	}
+	var tree *object.Tree
+	changed := false
+	kept := idx.Entries[:0:0]
+	for _, e := range idx.Entries {
+		if !e.SkipWorktree || e.Stage != mergedStage {
+			kept = append(kept, e)
+			continue
+		}
+		if tree == nil {
+			if tree, err = target.Tree(); err != nil {
+				return fmt.Errorf("read the tree of %s: %w", target.Hash, err)
+			}
+		}
+		te, err := tree.FindEntry(e.Name)
+		if err != nil || te.Mode == filemode.Dir {
+			changed = true // target has no file there: the entry goes
+			continue
+		}
+		if te.Hash != e.Hash || te.Mode != e.Mode {
+			e.Hash, e.Mode = te.Hash, te.Mode
+			changed = true
+		}
+		kept = append(kept, e)
+	}
+	if !changed {
+		return nil
+	}
+	idx.Entries = kept
+	if err := r.repo.Storer.SetIndex(idx); err != nil {
+		return fmt.Errorf("write the index: %w", err)
+	}
+	return nil
+}
+
+// applySparse makes the worktree hold only the tracked files under dirs
+// (nothing to do when dirs is empty). The library marks the other index
+// entries skip-worktree but writes and removes only what the checkout
+// changed, so a file it left in place is removed here, and a file under
+// dirs that an earlier sparse checkout skipped is written. A file at a
+// skipped path is removed only when its content is the index's, or the
+// index's before the checkout: anything else is someone's work, and stays.
+// A submodule's entry is left alone.
+func (r *Repo) applySparse(dirs []string, before side) error {
+	if len(dirs) == 0 {
+		return nil
+	}
+	idx, err := r.repo.Storer.Index()
+	if err != nil {
+		return fmt.Errorf("read the index: %w", err)
+	}
+	var write, remove []*index.Entry
+	for _, e := range idx.Entries {
+		if e.Mode == filemode.Submodule || e.Stage != mergedStage {
+			continue
+		}
+		keep := matchPaths(dirs, e.Name)
+		if keep && e.SkipWorktree {
+			write = append(write, e)
+		}
+		if !keep {
+			remove = append(remove, e)
+		}
+		e.SkipWorktree = !keep
+	}
+	if err := r.repo.Storer.SetIndex(idx); err != nil {
+		return fmt.Errorf("write the index: %w", err)
+	}
+	for _, e := range remove {
+		if err := treePath(e.Name); err != nil {
+			return err
+		}
+		we, err := r.readWorktreeFile(e.Name)
+		if err != nil {
+			return err
+		}
+		if we == nil {
+			continue
+		}
+		if old := before[e.Name]; we.hash != e.Hash && (old == nil || we.hash != old.hash) {
+			continue
+		}
+		if err := r.wt.Remove(e.Name); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", e.Name, err)
+		}
+		r.removeEmptyParents(e.Name)
+	}
+	for _, e := range write {
+		if _, err := r.wt.Lstat(e.Name); err == nil {
+			continue // something is there already; status shows how it differs
+		}
+		if err := r.writeBlob(e.Name, &sideEntry{hash: e.Hash, mode: e.Mode}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // BranchCreate creates a branch at rev ("" is HEAD).
@@ -821,7 +1027,8 @@ func (r *Repo) mergeFF(target *object.Commit) (string, error) {
 		if err := w.Reset(&git.ResetOptions{Commit: target.Hash, Mode: git.MergeReset}); err != nil {
 			return fmt.Errorf("merge: %w", err)
 		}
-		return nil
+		// Inside keepHead: a failure here must not leave HEAD moved.
+		return r.syncSkipped(target)
 	})
 	if err != nil {
 		return "", err

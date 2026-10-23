@@ -212,6 +212,12 @@ func Clone(ctx context.Context, wt billy.Filesystem, n Network, o CloneOptions) 
 	if err != nil {
 		return nil, err
 	}
+	return cloneBound(ctx, sess, auth, wt, n, remote, o)
+}
+
+// cloneBound is Clone's work once the operation is bound, so a caller can
+// clone and fetch within one session's limits.
+func cloneBound(ctx context.Context, sess *gitsource.Session, auth transport.AuthMethod, wt billy.Filesystem, n Network, remote string, o CloneOptions) (_ *Repo, err error) {
 	before := map[string]bool{}
 	entries, err := wt.ReadDir(".")
 	if err != nil {
