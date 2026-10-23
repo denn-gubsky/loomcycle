@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -211,6 +212,8 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the webhook receiver stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// RFC EZ §1.5: whose rules bind each delivery's run — this author's.
+	def.ACLOwner = tools.AuthorACLOwner(ctx)
 	// A create on a name whose current def was restored without its literal
 	// credentials writes a new version of it: the marker carries over unless
 	// this create supplies every stripped key, as a fork's would.
@@ -441,6 +444,8 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the webhook receiver stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// RFC EZ §1.5: whose rules bind each delivery's run — this author's.
+	def.ACLOwner = tools.AuthorACLOwner(ctx)
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: marshal: %s", err)), nil
@@ -1107,6 +1112,13 @@ type mergedWebhookDef struct {
 	// confinement. Mirrors OperatorKeyRestricted; omitempty keeps pre-P2b bodies
 	// byte-identical. Drift-tested against config.Webhook / SubstrateWebhookDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// ACLOwner is whose access-control set (RFC EY) binds each delivery's run
+	// (RFC EZ §1.5): the author's, captured at create/fork (server authority —
+	// applyOverlay never copies it). The receiver's run is narrowed by that
+	// subject's CURRENT set. Absent on a yaml-bootstrapped def and on one
+	// written with no set in force: those fire as before. Drift-tested against
+	// config.Webhook / SubstrateWebhookDef.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
 	// Team / Vars are the delivery=team target: the team whose walk a delivery
 	// starts (detached, the raw body as its input), and the walk's variables
 	// as strict-subset JSONPaths into that body. Whether the team exists and

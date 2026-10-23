@@ -3716,6 +3716,12 @@ type Webhook struct {
 	// Flows write→read→consumer alongside OperatorKeyRestricted; drift-tested
 	// against mergedWebhookDef / SubstrateWebhookDef.
 	Isolated bool `json:"isolated,omitempty" yaml:"isolated"`
+	// ACLOwner is, for a DYNAMIC WebhookDef, the author whose access-control set
+	// (RFC EY) binds each delivery's run (RFC EZ §1.5), captured at create/fork
+	// (server authority). Never operator yaml (yaml:"-"): a static webhook has
+	// no owner and fires as before. Drift-tested against mergedWebhookDef /
+	// SubstrateWebhookDef.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty" yaml:"-"`
 	// CaptureDisabled is set only on a DYNAMIC WebhookDef that a snapshot
 	// restore brought back without its literal user_credentials (they never
 	// travel). Server authority, never operator yaml (yaml:"-"): the receiver
