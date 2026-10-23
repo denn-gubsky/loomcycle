@@ -145,3 +145,67 @@ A docs-only pull request runs nothing but this job. On `main` every job runs.
 ```sh
 GITHUB_EVENT_NAME=pull_request CI_DIFF_BASE=abc123^ CI_DIFF_HEAD=abc123 scripts/ci/changes.sh
 ```
+
+## `webui-bundle` — releasing a Web UI bundle
+
+The Web UI can ship without a new binary (RFC FE). A server keeps the UI it was
+built with and serves a newer **bundle** when the operator points it at one; if
+the bundle is missing, fails verification or does not fit the server, it
+serves its built-in UI and `/healthz` reports why (`ui_bundle`).
+
+A bundle is the built SPA plus a `manifest.json` that lists every file with
+its SHA-256 and declares the range of server UI API levels it works with
+(`api_level_min`, `api_level_max`). A server serves it only when its own level
+(`ui_api_level` in `/healthz`, `webui.APILevel` in the code) is inside that
+range. The tool defaults the range to this tree's `webui.APILevel`; `-api-min`
+and `-api-max` widen it, and a range that leaves this tree's level out is
+refused.
+
+### Cutting a release
+
+```sh
+git tag -a webui-v1.2.3 -m "Web UI 1.2.3"
+git push origin webui-v1.2.3
+```
+
+`.github/workflows/publish-webui.yml` runs `make webui-bundle
+VERSION=1.2.3` and creates the GitHub release `webui-v1.2.3` (not marked as the
+latest release) with two assets:
+
+- `loomcycle-webui-1.2.3.tar.gz` — the bundle. Its top level is the bundle
+  itself (`manifest.json`, `index.html`, `assets/`, ...), with no leading
+  directory.
+- `loomcycle-webui-1.2.3.tar.gz.sha256` — `<hex>  <archive name>`, for
+  `shasum -a 256 -c`.
+
+The release notes give the digest, the API level range and the settings below.
+A version is 1-64 characters of letters, digits and `. _ -`. An existing
+release is never overwritten: to fix a published bundle, cut a new version.
+Running the workflow by hand (workflow_dispatch, with a version) is a dry run
+that uploads the bundle as an artifact and creates no release.
+
+To build one locally exactly as the workflow does:
+
+```sh
+make webui-bundle VERSION=0.0.0-test   # writes bin/webui/ (WEBUI_OUT=... to change)
+```
+
+The archive is deterministic: entries in sorted order after `manifest.json`,
+regular files and directories only, a fixed mtime, owner and mode, and an
+empty gzip header, so the same build gives byte-identical archives with the
+same Go toolchain. Before writing anything the tool unpacks its own archive and
+loads it with the server's loader (`webui.LoadDir`), so it never writes a bundle
+a server would refuse. A symlink in the build output is refused.
+
+### Pointing a server at a bundle
+
+Either let the server fetch it (it verifies the digest before use):
+
+```sh
+LOOMCYCLE_WEBUI_BUNDLE_URL=https://github.com/denn-gubsky/loomcycle/releases/download/webui-v1.2.3/loomcycle-webui-1.2.3.tar.gz
+LOOMCYCLE_WEBUI_BUNDLE_SHA256=<the digest from the release notes>
+```
+
+or unpack the archive into a directory only the operator can write and set
+`LOOMCYCLE_WEBUI_DIR` to it. Both are read at startup; restart the server to
+change the UI. See `docs/CONFIGURATION.md` for the full rules.
