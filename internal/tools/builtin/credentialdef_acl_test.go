@@ -68,3 +68,22 @@ func TestCredentialDefACL_UseDenyRefusesGetAndHidesFromList(t *testing.T) {
 		t.Errorf("list with no set = %s", res.Text)
 	}
 }
+
+// A key held in an external KMS reaches it with credentials named as
+// $cred:<name>; creating one sends those credentials, so each must be one the
+// caller may use.
+func TestCredentialDefACL_ExternalKeyRefusesACredentialRefTheCallerMayNotUse(t *testing.T) {
+	c, base := credFixture(t, "u1", testKEK())
+	create := `{"op":"create","usage":"crypto","key_type":"aes-256-gcm","scope":"tenant","name":"K","backend":"aws_kms",` +
+		`"external":{"region":"us-east-1","key_id":"alias/k","access_key_id":"$cred:AK","secret_access_key":"$cred:SECRET"}}`
+	deny := aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"use"}, Resources: []string{"credential:tenant:SECRET"}})
+	_, res := credExec(t, c, auth.WithPrincipal(base, auth.Principal{TenantID: "tnt", Subject: "u1", Effective: deny}), create)
+	refusedByACL(t, "create referencing a use-denied credential", res)
+
+	// Without the deny the call gets past the check (and stops later, at the
+	// deployment having no KMS access, which is not an access-control refusal).
+	_, res = credExec(t, c, base, create)
+	if strings.Contains(res.Text, "access-control") {
+		t.Errorf("create with no set refused by access control: %s", res.Text)
+	}
+}

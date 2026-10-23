@@ -508,12 +508,45 @@ func externalRef(backend string, raw json.RawMessage) (kms.Ref, error) {
 	return ref, nil
 }
 
+// refuseUnusableCredRefs asks the caller's access-control set `use` of each
+// $cred:<name> the external reference names: creating the key sends those
+// credentials to the KMS (to describe the key) and stores them as the key's
+// way in, so a caller denied a credential must not reach it through a key
+// (RFC EZ §1.5 seam 5). A field that is not a $cred: reference is left to
+// the reference's own validation; a malformed external object too.
+func refuseUnusableCredRefs(ctx context.Context, id credential.Identity, backend string, raw json.RawMessage) *tools.Result {
+	acl := tools.CallerACL(ctx)
+	if acl == nil {
+		return nil
+	}
+	ref, err := externalRef(backend, raw)
+	if err != nil {
+		return nil
+	}
+	for _, field := range []string{ref.TokenCred, ref.AccessKeyIDCred, ref.SecretAccessKeyCred, ref.SessionTokenCred, ref.ServiceAccountCred} {
+		name, ok := credential.ParseRef(field)
+		if !ok {
+			continue
+		}
+		res := credentialACLResource(id.Scope, id.ScopeID, name)
+		if !tools.ACLAllowsInstance(ctx, acl, "use", res) {
+			r := errPermission(fmt.Sprintf("create: the caller's access-control rules do not allow use on %s:%s, which external names", res.Type, res.Name),
+				"Name a credential the caller may use.")
+			return &r
+		}
+	}
+	return nil
+}
+
 // execCreateExternal stores a reference to a key an external KMS holds, after
 // asking the KMS that the key exists, is enabled and is of key_type.
 func (c *CredentialDef) execCreateExternal(ctx context.Context, id credential.Identity, in credentialDefInput) (tools.Result, error) {
 	if callInRun(ctx) {
 		return errPermission("create: a key held in an external KMS is added by an operator or its user, outside a run",
 			"Use op generate for a key in agent scope."), nil
+	}
+	if refused := refuseUnusableCredRefs(ctx, id, in.Backend, in.External); refused != nil {
+		return *refused, nil
 	}
 	if c.KMS == nil {
 		return errBusiness("create: keys held in an external KMS are not available on this deployment", ""), nil
