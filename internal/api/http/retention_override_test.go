@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -72,7 +73,7 @@ func TestRetentionOverride_StoresTheRunsOfOneAgentUntilItRunsOut(t *testing.T) {
 	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runWithID("other", "a_before", "")); code != 200 {
 		t.Fatalf("before: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_before"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_before"); got != retentionmode.None {
 		t.Fatalf("before any override: retention = %q, want none", got)
 	}
 
@@ -108,7 +109,7 @@ func TestRetentionOverride_StoresTheRunsOfOneAgentUntilItRunsOut(t *testing.T) {
 	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runWithID("allowed", "a_else", `,"retention":"none"`)); code != 200 {
 		t.Fatalf("another agent: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_else"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_else"); got != retentionmode.None {
 		t.Errorf("another agent's run: retention = %q, want none — the override is for one agent", got)
 	}
 
@@ -119,7 +120,7 @@ func TestRetentionOverride_StoresTheRunsOfOneAgentUntilItRunsOut(t *testing.T) {
 	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runWithID("other", "a_after", "")); code != 200 {
 		t.Fatalf("after: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_after"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_after"); got != retentionmode.None {
 		t.Errorf("after the override was cleared: retention = %q, want none", got)
 	}
 	// One that has run out is the same as none at all.
@@ -129,7 +130,7 @@ func TestRetentionOverride_StoresTheRunsOfOneAgentUntilItRunsOut(t *testing.T) {
 	if code, body := bearerCall(t, ts, freeBearer, "POST", "/v1/runs", runWithID("other", "a_expired", "")); code != 200 {
 		t.Fatalf("expired: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_expired"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_expired"); got != retentionmode.None {
 		t.Errorf("under an expired override: retention = %q, want none", got)
 	}
 }
@@ -146,19 +147,19 @@ func TestRetentionOverride_NeverLiftsATokensModeOrAnotherTenants(t *testing.T) {
 	if code, body := bearerCall(t, ts, quietBearer, "POST", "/v1/runs", runWithID("other", "a_quiet_tok", "")); code != 200 {
 		t.Fatalf("no-trace token: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_quiet_tok"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_quiet_tok"); got != retentionmode.None {
 		t.Errorf("a no-trace token's run under an override: retention = %q, want none", got)
 	}
 	// Another tenant's run of an agent of the same name.
 	if code, body := bearerCall(t, ts, globexBearer, "POST", "/v1/runs", runWithID("other", "a_globex", "")); code != 200 {
 		t.Fatalf("other tenant: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_globex"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_globex"); got != retentionmode.None {
 		t.Errorf("another tenant's run: retention = %q, want none — the override is for one tenant", got)
 	}
 	// A child of a no-trace run stays no-trace even when ITS agent is lifted.
-	inside := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", AgentID: "a_parent", Retention: store.RetentionNone})
-	if got := s.resolveRetention(inside, "acme", "other", s.cfg().Agents["other"], ""); got != store.RetentionNone {
+	inside := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", AgentID: "a_parent", Retention: retentionmode.None})
+	if got := s.resolveRetention(inside, "acme", "other", s.cfg().Agents["other"], ""); got != retentionmode.None {
 		t.Errorf("a lifted agent spawned by a no-trace parent: retention = %q, want none", got)
 	}
 	// The same agent started on its own in that tenant is lifted.
@@ -322,7 +323,7 @@ func TestRetentionOverride_TheSharedTokensOverrideAppliesToItsOwnRuns(t *testing
 	if code, body := bearerCall(t, ts, legacyAdminBearer, "POST", "/v1/runs", runWithID("other", "a_legacy2", "")); code != 200 {
 		t.Fatalf("run after clear: %d %s", code, body)
 	}
-	if got := retentionOfAgentID(t, st, "a_legacy2"); got != store.RetentionNone {
+	if got := retentionOfAgentID(t, st, "a_legacy2"); got != retentionmode.None {
 		t.Errorf("after the clear: retention = %q, want none", got)
 	}
 }

@@ -18,7 +18,7 @@
 // ReplaceAllStringFunc, so a variable cannot produce a placeholder and a
 // placeholder body cannot produce a variable — by construction, not by charset
 // checks that the next person to touch this could relax.
-package memory
+package promptinject
 
 import (
 	"regexp"

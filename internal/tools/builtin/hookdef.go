@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -562,11 +563,11 @@ func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) 
 			return false
 		}
 		a, ok := h.Cfg.Agents[agent]
-		return ok && a.Retention == store.RetentionNone
+		return ok && a.Retention == retentionmode.None
 	}
 	if tenant == "" && h.Cfg != nil {
 		for agent, def := range h.Cfg.Agents {
-			if def.Retention == store.RetentionNone && namesUnpinned(def.Hooks, def.ToolHooks, name) {
+			if def.Retention == retentionmode.None && namesUnpinned(def.Hooks, def.ToolHooks, name) {
 				out = append(out, agent)
 			}
 		}

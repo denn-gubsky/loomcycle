@@ -56,7 +56,7 @@
 // package can import it for boot validation without a cycle. The caller supplies
 // already-rendered bodies; this half does recognition, escape handling, framing
 // and the per-placeholder cap.
-package memory
+package promptinject
 
 import (
 	"regexp"

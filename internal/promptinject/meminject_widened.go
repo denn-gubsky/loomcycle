@@ -1,4 +1,4 @@
-package memory
+package promptinject
 
 // meminject_widened.go — the {{memory:key:…}} / {{memory:search:…}} sub-forms,
 // the shared argument resolver the widened families use, and the authorship

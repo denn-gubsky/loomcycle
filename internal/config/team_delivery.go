@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/jsonpath"
-	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // A schedule or a webhook with `delivery: team` starts a walk of the named
@@ -26,7 +26,7 @@ func CheckScheduleTeamDelivery(team string, vars map[string]string) error {
 		return err
 	}
 	for _, name := range sortedVarNames(vars) {
-		if err := teamgraph.CheckVarValue(vars[name]); err != nil {
+		if err := teamspec.CheckVarValue(vars[name]); err != nil {
 			return fmt.Errorf("vars %q: %w", name, err)
 		}
 	}
@@ -53,14 +53,14 @@ func checkTeamTarget(team string, vars map[string]string) error {
 	if team == "" {
 		return fmt.Errorf("delivery=team requires team")
 	}
-	if err := teamgraph.ValidateName(team); err != nil {
+	if err := teamspec.ValidateName(team); err != nil {
 		return fmt.Errorf("team: %w", err)
 	}
-	if len(vars) > teamgraph.MaxVars {
-		return fmt.Errorf("vars sets %d variables, more than the maximum %d", len(vars), teamgraph.MaxVars)
+	if len(vars) > teamspec.MaxVars {
+		return fmt.Errorf("vars sets %d variables, more than the maximum %d", len(vars), teamspec.MaxVars)
 	}
 	for _, name := range sortedVarNames(vars) {
-		if err := teamgraph.ValidateVarName(name); err != nil {
+		if err := teamspec.ValidateVarName(name); err != nil {
 			return fmt.Errorf("vars: %w", err)
 		}
 	}

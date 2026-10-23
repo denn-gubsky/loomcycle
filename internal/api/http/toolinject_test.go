@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -170,8 +170,8 @@ func TestToolInject_CarriesNoSecretAdjacentField(t *testing.T) {
 func TestAllowedToolRefs_AllHaveRenderer(t *testing.T) {
 	s := &Server{}
 	mi := memInject{Tenant: "t1", UserID: "u1", AgentName: "a", Tools: toolFixtures()}
-	for _, raw := range meminject.AllToolRefs() {
-		ref, ok := meminject.ParseToolRef(raw)
+	for _, raw := range promptinject.AllToolRefs() {
+		ref, ok := promptinject.ParseToolRef(raw)
 		if !ok {
 			t.Fatalf("AllToolRefs returned %q, which ParseToolRef rejects", raw)
 		}

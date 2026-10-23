@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
-	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -17,10 +17,10 @@ import (
 // definition is refused.
 func noTraceCtxs(base context.Context) map[string]context.Context {
 	run := tools.RunIdentity(base)
-	run.Retention = store.RetentionNone
+	run.Retention = retentionmode.None
 	return map[string]context.Context{
 		"a no-trace token": auth.WithPrincipal(base, auth.Principal{Subject: "dev", Scopes: []string{auth.ScopeAdmin},
-			Restrictions: auth.Restrictions{Retention: store.RetentionNone}}),
+			Restrictions: auth.Restrictions{Retention: retentionmode.None}}),
 		"a no-trace run": tools.WithRunIdentity(base, run),
 	}
 }

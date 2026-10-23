@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/decisionq"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // decision.go — a state that asks a decision model.
@@ -119,7 +120,7 @@ func validateAbout(out *issues, at stateAt, about json.RawMessage) {
 		return
 	}
 	walkStrings(obj, "about", func(path, s string) {
-		if readsSecretNamespace(s) {
+		if teamspec.ReadsSecretNamespace(s) {
 			out.in(at, path, "team definition: state %q `%s` reads the credentials namespace — what a decision model is "+
 				"asked about is recorded on the walk, so a secret must not be put there", stateID, path)
 		}

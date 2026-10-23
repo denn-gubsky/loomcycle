@@ -49,6 +49,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/recall"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/search"
@@ -59,6 +60,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/teamrun"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -1291,12 +1293,12 @@ func (s *Server) admitTeamRun(ctx context.Context) (context.Context, error) {
 	}
 	// A walk records its input and each decision it takes. A no-trace run
 	// that started one would be storing its content through it.
-	if tools.RunIdentity(ctx).Retention == store.RetentionNone {
+	if tools.RunIdentity(ctx).Retention == retentionmode.None {
 		return nil, &noTraceRefusal{Status: 403, Msg: "a no-trace run cannot start a team walk: a walk records its input and its decisions"}
 	}
 	// The same for a caller whose token makes its runs no-trace: the walk
 	// would store what the token says is never stored.
-	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == store.RetentionNone {
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Restrictions.Retention == retentionmode.None {
 		return nil, &noTraceRefusal{Status: 403, Msg: "this token's runs are no-trace, so it cannot start a team walk: a walk records its input and its decisions"}
 	}
 	// A walk started directly is a run start. One started by an agent's own
@@ -2546,8 +2548,8 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		locked := false
 		out.AllowOverrides = &locked
 	}
-	if ov.Retention == store.RetentionNone {
-		out.Retention = store.RetentionNone
+	if ov.Retention == retentionmode.None {
+		out.Retention = retentionmode.None
 	}
 	if ov.EphemeralVolumes == config.EphemeralVolumesReadOnly {
 		out.EphemeralVolumes = config.EphemeralVolumesReadOnly
@@ -2685,10 +2687,10 @@ func (s *Server) ChannelWriteDef(ctx context.Context, tenantID, channel string) 
 	}
 	// The reserved prefix holds only team channels: a name under it that is
 	// not one is refused, not written as an undeclared channel.
-	if store.IsTeamChannelName(channel) {
+	if teamspec.IsChannelName(channel) {
 		team, local, ok := store.SplitTeamChannelName(channel)
 		if !ok {
-			return channels.WriteDef{}, fmt.Errorf("channel %q is under the reserved %q prefix and names no team's channel", channel, store.TeamChannelPrefix)
+			return channels.WriteDef{}, fmt.Errorf("channel %q is under the reserved %q prefix and names no team's channel", channel, teamspec.ChannelPrefix)
 		}
 		return s.teamChannelWriteDef(ctx, tenantID, team, local)
 	}
@@ -2900,7 +2902,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := in.OutputFormat.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
-	if _, err := store.ParseRetention(in.Retention); err != nil {
+	if _, err := retentionmode.Parse(in.Retention); err != nil {
 		return fmt.Errorf("%w: %v", runner.ErrInvalidArgument, err)
 	}
 	if msg, ok := connector.ValidateMaxWallSeconds(in.MaxWallSeconds); !ok {
@@ -3042,7 +3044,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// A no-trace session has no transcript to continue from. Refused here,
 		// before any slot or lock, with its own answer; it used to reach the row
 		// creation and come back as an internal error.
-		if sess.Retention == store.RetentionNone {
+		if sess.Retention == retentionmode.None {
 			return errNoTraceSession
 		}
 		effectiveAgentName = sess.Agent
@@ -3124,7 +3126,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	if err := admitNoTraceStart(retention, in.Interactive, in.Review, in.SessionID); err != nil {
 		return err
 	}
-	if retention == store.RetentionNone && startingDraft {
+	if retention == retentionmode.None && startingDraft {
 		// A draft's row, and the prompt in it, were stored when it was made.
 		return &noTraceRefusal{Status: 409, Msg: "a configured run cannot be started as a no-trace run: its draft is already stored"}
 	}
@@ -3758,7 +3760,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 
 	// Cooperative pause quiesce (RFC X / F41): park at an iteration boundary
 	// while paused. Deregistered here, or by the detached goroutine.
-	gate, deregGate := s.newPauseGate(runID, retention == store.RetentionNone)
+	gate, deregGate := s.newPauseGate(runID, retention == retentionmode.None)
 	defer func() {
 		if !handOff {
 			deregGate()
@@ -5289,7 +5291,7 @@ func (s *Server) runsShapeError(req runRequest) (string, bool) {
 	if err := loop.ValidateSegmentTypes(req.Segments); err != nil {
 		return err.Error(), false
 	}
-	if _, err := store.ParseRetention(req.Retention); err != nil {
+	if _, err := retentionmode.Parse(req.Retention); err != nil {
 		return err.Error(), false
 	}
 	if msg, ok := connector.ValidateMaxWallSeconds(req.MaxWallSeconds); !ok {
@@ -5972,7 +5974,7 @@ func (s *Server) openOrCreateSessionWith(ctx context.Context, requestedSessionID
 		// A no-trace run opens its own session, and nothing joins one.
 		// Checked here as well as at the intakes, because this is where
 		// every run row of every path is created.
-		if identity.Retention == store.RetentionNone || sess.Retention == store.RetentionNone {
+		if identity.Retention == retentionmode.None || sess.Retention == retentionmode.None {
 			return "", "", errNoTraceSession
 		}
 	} else {
@@ -7191,7 +7193,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if err := admitNoTraceStart(subRetention, interactive, false, ""); err != nil {
 		return nil, fmt.Errorf("sub-agent %q: %w", name, err)
 	}
-	if subRetention == store.RetentionNone {
+	if subRetention == retentionmode.None {
 		// A walk records each member's answer for the states after it, so a
 		// no-trace member would be stored through the walk (as a no-trace run
 		// cannot start one, admitTeamRun).
@@ -7695,7 +7697,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// Cooperative pause quiesce (RFC X / F41): a sub-agent parks at its own
 	// boundary while paused (so a fan-out tree quiesces). NOT admission-gated —
 	// it's a child of an already-admitted run, not new top-level work.
-	subGate, deregSubGate := s.newPauseGate(subRunID, subRetention == store.RetentionNone)
+	subGate, deregSubGate := s.newPauseGate(subRunID, subRetention == retentionmode.None)
 	defer func() {
 		if !prepOK {
 			deregSubGate()
@@ -8132,7 +8134,7 @@ func (s *Server) handleCancelAgent(w http.ResponseWriter, r *http.Request) {
 		if err == nil && (!runOwnershipOK(r.Context(), run) || !s.allowlistReachesRun(r.Context(), run.ID)) {
 			err = &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
-		if err == nil && run.Retention == store.RetentionNone {
+		if err == nil && run.Retention == retentionmode.None {
 			reason = ""
 		}
 		if err != nil {
@@ -8684,7 +8686,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 		return connector.CompactResult{}, &compactErr{status: http.StatusNotFound, msg: "no run for that run_id"}
 	}
 
-	if run.Retention == store.RetentionNone {
+	if run.Retention == retentionmode.None {
 		return connector.CompactResult{}, &compactErr{status: http.StatusConflict, code: "retention_none_unsupported",
 			msg: "the run is a no-trace run: there is no stored conversation to compact"}
 	}
@@ -8974,7 +8976,7 @@ func (s *Server) RecapSession(ctx context.Context, sessionID string) (string, er
 	if err != nil {
 		return "", errors.New("no chat for that session_id")
 	}
-	if sess.Retention == store.RetentionNone {
+	if sess.Retention == retentionmode.None {
 		return "", errNoTraceSession
 	}
 	events, err := s.store.GetTranscript(ctx, sessionID)
@@ -9823,7 +9825,7 @@ func (s *Server) withHookRun(ctx context.Context, ident hooks.Identity) context.
 	// have to know it is one, here as inside its loop: a question asked from
 	// a run_end hook would be stored like any other.
 	if s.runIsNoTrace(ctx, ident.RunID) {
-		rid.Retention = store.RetentionNone
+		rid.Retention = retentionmode.None
 	}
 	// So do its webhook headers' $cred: references, which resolve no more
 	// widely than the run's own: a trigger's run may not take its user's own

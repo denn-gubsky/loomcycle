@@ -6,6 +6,8 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // A team's own channel keeps its messages and cursors under
@@ -45,7 +47,7 @@ func newTeamChannelGate(s store.Store) *teamChannelGate {
 // is unreachable by any spelling and never does. A store fault refuses the
 // row (a re-restore brings it back) and is reported.
 func (g *teamChannelGate) admit(ctx context.Context, tenantID, channel string) bool {
-	if !store.IsTeamChannelName(channel) {
+	if !teamspec.IsChannelName(channel) {
 		return true
 	}
 	team, _, ok := store.SplitTeamChannelName(channel)

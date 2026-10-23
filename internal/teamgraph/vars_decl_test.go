@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 func declaring(vars map[string]string) Definition {
@@ -14,11 +16,11 @@ func declaring(vars map[string]string) Definition {
 
 func TestValidate_VarsBlockRefusesWhatAVariableMayNotBe(t *testing.T) {
 	tooMany := map[string]string{}
-	for i := 0; i <= MaxVars; i++ {
+	for i := 0; i <= teamspec.MaxVars; i++ {
 		tooMany[fmt.Sprintf("v%d", i)] = ""
 	}
 	atTheCap := map[string]string{}
-	for i := 0; i < MaxVars; i++ {
+	for i := 0; i < teamspec.MaxVars; i++ {
 		atTheCap[fmt.Sprintf("v%d", i)] = ""
 	}
 	for name, tc := range map[string]struct {
@@ -31,7 +33,7 @@ func TestValidate_VarsBlockRefusesWhatAVariableMayNotBe(t *testing.T) {
 		"a ${…} is literal text":        {map[string]string{"x": "${var.other} on ${now.date}"}, ""},
 		"a single brace":                {map[string]string{"x": "{not a placeholder}"}, ""},
 		"the most variables":            {atTheCap, ""},
-		"the longest value":             {map[string]string{"x": strings.Repeat("a", MaxVarValueBytes)}, ""},
+		"the longest value":             {map[string]string{"x": strings.Repeat("a", teamspec.MaxVarValueBytes)}, ""},
 		"a name with a dot":             {map[string]string{"a.b": "x"}, `vars key "a.b" must match`},
 		"a name with a space":           {map[string]string{"a b": "x"}, `vars key "a b" must match`},
 		"an empty name":                 {map[string]string{"": "x"}, `vars key "" must match`},
@@ -41,7 +43,7 @@ func TestValidate_VarsBlockRefusesWhatAVariableMayNotBe(t *testing.T) {
 		"a credential":                  {map[string]string{"x": "${run.credentials.GITHUB_TOKEN}"}, "credentials namespace"},
 		"the user bearer":               {map[string]string{"x": "Bearer ${run.user_bearer}"}, "credentials namespace"},
 		"one variable over the cap":     {tooMany, "more than the maximum 64"},
-		"one byte over the value cap":   {map[string]string{"x": strings.Repeat("a", MaxVarValueBytes+1)}, "more than the maximum 4096"},
+		"one byte over the value cap":   {map[string]string{"x": strings.Repeat("a", teamspec.MaxVarValueBytes+1)}, "more than the maximum 4096"},
 		"the bad entry among good ones": {map[string]string{"a": "ok", "b": "{{x}}", "c": "ok"}, `vars "b"`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -112,7 +114,7 @@ func TestCheckStartVars_AcceptsOnlyDeclaredNamesAndWritableValues(t *testing.T) 
 		"a team that declares none": {declaring(nil), map[string]string{"tone": "x"}, `"tone" is not a variable of this team — it declares none`},
 		"a placeholder":             {d, map[string]string{"tone": "{{document:/secret}}"}, `vars "tone": the value contains {{ or }}`},
 		"a credential":              {d, map[string]string{"tone": "${run.credentials.K}"}, "credentials namespace"},
-		"a value over the cap":      {d, map[string]string{"tone": strings.Repeat("a", MaxVarValueBytes+1)}, "more than the maximum"},
+		"a value over the cap":      {d, map[string]string{"tone": strings.Repeat("a", teamspec.MaxVarValueBytes+1)}, "more than the maximum"},
 		"a ${…} is literal text":    {d, map[string]string{"tone": "${var.lang}"}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
