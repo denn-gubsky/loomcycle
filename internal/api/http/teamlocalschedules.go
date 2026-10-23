@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"strings"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -140,14 +139,14 @@ func (s *Server) armTeamSchedules(ctx context.Context, def teamgraph.Definition)
 		}()
 	}
 	walkID := tools.RunID(ctx)
-	log.Printf("team %q (version %s) walk %s: armed its own schedules: %s", sc.Team, sc.DefID, walkID, strings.Join(names, ", "))
+	slog.Info("team: walk armed its own schedules", "team", sc.Team, "def_id", sc.DefID, "walk_id", walkID, "schedules", names)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			stop()
 			wg.Wait()
-			log.Printf("team %q (version %s) walk %s: disarmed its own schedules (%d tick(s) published, %d skipped while paused, %d failed)",
-				sc.Team, sc.DefID, walkID, counts.published.Load(), counts.paused.Load(), counts.failed.Load())
+			slog.Info("team: walk disarmed its own schedules", "team", sc.Team, "def_id", sc.DefID, "walk_id", walkID,
+				"published", counts.published.Load(), "skipped_paused", counts.paused.Load(), "failed", counts.failed.Load())
 		})
 	}, nil
 }
@@ -163,7 +162,7 @@ func (s *Server) runTeamSchedule(ctx context.Context, sc store.TeamScope, tenant
 		if next.IsZero() {
 			// The parser's answer for a cadence with no time left to fire at;
 			// waiting on it would spin.
-			log.Printf("team %q: its schedule %q will not fire again", sc.Team, a.name)
+			slog.Info("team: its schedule will not fire again", "team", sc.Team, "schedule", a.name)
 			return
 		}
 		select {
@@ -202,8 +201,8 @@ func (s *Server) runTeamSchedule(ctx context.Context, sc store.TeamScope, tenant
 			// refuse the next the same way.
 			if !reported {
 				reported = true
-				log.Printf("team %q walk %s: its schedule %q could not publish to %q (logged once; counted at disarm): %v",
-					sc.Team, tools.RunID(ctx), a.name, teamgraph.LocalRefPrefix+a.channel, err)
+				slog.Warn("team: its schedule could not publish (logged once; counted at disarm)",
+					"team", sc.Team, "walk_id", tools.RunID(ctx), "schedule", a.name, "channel", teamgraph.LocalRefPrefix+a.channel, "err", err)
 			}
 			continue
 		}

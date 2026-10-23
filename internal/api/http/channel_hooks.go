@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/channelhooks"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
@@ -87,7 +87,7 @@ func (r channelHookRuns) Open(ctx context.Context, tenant, agent, runID string) 
 			return
 		}
 		if err := s.store.AppendEvent(context.WithoutCancel(ctx), id, string(ev.Type), payload); err != nil {
-			log.Printf("channel hooks: record %s on run %s: %v", ev.Type, id, err)
+			slog.Warn("channel hooks: record event on run failed", "run_id", id, "type", ev.Type, "err", err)
 		}
 	})
 	return rctx, runID, nil
@@ -98,6 +98,6 @@ func (r channelHookRuns) Finish(runID string, status store.RunStatus, reason str
 		return
 	}
 	if err := r.s.store.FinishRun(context.Background(), runID, status, reason, store.Usage{}, ""); err != nil {
-		log.Printf("channel hooks: finish hook run %s: %v", runID, err)
+		slog.Warn("channel hooks: finish hook run failed", "run_id", runID, "err", err)
 	}
 }

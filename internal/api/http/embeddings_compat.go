@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"time"
@@ -143,7 +143,7 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 		inBytes += len(t)
 	}
 	if est, kept := s.chargeEstimate(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.User), inBytes); est > 0 {
-		log.Printf("embeddings: no usage report — counted %d estimated tokens against the budget (%s), not written to the usage ledger", est, kept)
+		slog.Warn("embeddings: no usage report — counted estimated tokens against the budget, not written to the usage ledger", "estimated_tokens", est, "persisted", kept)
 	}
 	if err != nil {
 		logEmbeddingsRequest(req.Model, s.embedder.Model(), req.User, len(texts), 0, time.Since(startedAt), err)
@@ -271,13 +271,12 @@ func logEmbeddingsRequest(
 	if runErr != nil {
 		status = "error"
 	}
-	log.Printf(
-		"embeddings: model=%q served_model=%q user_id=%q input_count=%d output_dim=%d latency_ms=%d status=%s err=%q",
-		requestedModel, servedModel, userID,
-		inputCount, outputDim,
-		latency.Milliseconds(),
-		status,
-		errStringForLog(runErr),
+	slog.Info("embeddings: request",
+		"model", requestedModel, "served_model", servedModel, "user_id", userID,
+		"input_count", inputCount, "output_dim", outputDim,
+		"latency_ms", latency.Milliseconds(),
+		"status", status,
+		"err", errStringForLog(runErr),
 	)
 }
 

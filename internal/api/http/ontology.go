@@ -23,7 +23,7 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -139,7 +139,7 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 		// filesystem path, and this note renders in a tenant operator's browser — the
 		// operator needs to know their subclasses are not in force, not where the
 		// database lives.
-		log.Printf("ontology: chunk-tree read failed for tenant %q, falling back to flat markdown: %v", mi.Tenant, terr)
+		slog.Warn("ontology: chunk-tree read failed, falling back to flat markdown", "tenant", mi.Tenant, "err", terr)
 		return flat, confirmed, []string{"The document's chunk structure could not be read, so " +
 			"it was read as flat Markdown — subclasses are not in force until this " +
 			"resolves. See the server log for the cause."}

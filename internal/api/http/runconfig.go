@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -345,7 +345,7 @@ func recordRunPause(ctx context.Context, st store.Store, runID string, since, un
 	foldable := false
 	if rec, ok := decodeRunConfig(run.RunConfig); ok && until.IsZero() && len(rec.Pauses) >= maxRunPauses {
 		if err := held.readEvents(ctx, st, runID); err != nil {
-			log.Printf("pause: read run %s's holds to fold its pauses: %v — folded at its next pause", runID, err)
+			slog.Warn("pause: read the run's holds to fold its pauses failed — folded at its next pause", "run_id", runID, "err", err)
 		} else {
 			foldable = true
 		}
@@ -660,7 +660,7 @@ func offeredOverridesRecordOf(v tools.RunOverridesValue) *offeredOverridesRecord
 	rec := &offeredOverridesRecord{DefID: v.DefID, AgentName: v.AgentName, RunID: v.RunID}
 	if len(v.Record) > 0 {
 		if !json.Valid(v.Record) {
-			log.Printf("run_config: the override offer of run %q is not JSON; recording it without its record", v.RunID)
+			slog.Warn("run_config: the run's override offer is not JSON; recording it without its record", "run_id", v.RunID)
 		} else {
 			rec.Record = json.RawMessage(v.Record)
 		}
@@ -781,7 +781,7 @@ func (rc runConfigRecord) hostPolicy() tools.HostPolicyValue {
 func (rc runConfigRecord) marshal() json.RawMessage {
 	b, err := json.Marshal(rc)
 	if err != nil {
-		log.Printf("run_config: marshal failed; this run will resume from its definition: %v", err)
+		slog.Warn("run_config: marshal failed; this run will resume from its definition", "err", err)
 		return nil
 	}
 	return b
@@ -797,7 +797,7 @@ func decodeRunConfig(raw json.RawMessage) (runConfigRecord, bool) {
 	}
 	var rc runConfigRecord
 	if err := json.Unmarshal(raw, &rc); err != nil {
-		log.Printf("run_config: decode failed; resuming from the agent definition instead: %v", err)
+		slog.Warn("run_config: decode failed; resuming from the agent definition instead", "err", err)
 		return runConfigRecord{}, false
 	}
 	return rc, true

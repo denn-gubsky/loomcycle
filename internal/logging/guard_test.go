@@ -19,6 +19,7 @@ import (
 var convertedPackages = []string{
 	"internal/api/a2a",
 	"internal/api/grpc",
+	"internal/api/http",
 	"internal/api/mcp",
 	"internal/awaited",
 	"internal/channelhooks",

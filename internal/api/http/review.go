@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -152,7 +152,7 @@ func (s *Server) releaseHeldRun(ctx context.Context, runID string) {
 	if _, err := s.pushVerdict(ctx, runID, steer.Message{
 		Kind: steer.KindApprove, Source: "retune", EnqueuedAt: time.Now(),
 	}); err != nil {
-		log.Printf("review: releasing held run %s after its review was disarmed: %v", runID, err)
+		slog.Warn("review: releasing a held run after its review was disarmed failed", "run_id", runID, "err", err)
 	}
 }
 

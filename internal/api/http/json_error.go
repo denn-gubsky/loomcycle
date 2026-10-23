@@ -3,7 +3,7 @@ package http
 import (
 	"bytes"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 )
 
@@ -28,7 +28,7 @@ func writeJSONErrorBody(w http.ResponseWriter, status int, body any) {
 	if err := enc.Encode(body); err != nil {
 		// Unreachable for the string/int structs the callers pass; the
 		// status still goes out so the caller's error is not turned into 200.
-		log.Printf("writeJSONErrorBody encode failed: %v", err)
+		slog.Warn("writeJSONErrorBody encode failed", "err", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

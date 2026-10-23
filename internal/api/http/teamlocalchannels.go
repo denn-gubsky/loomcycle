@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
@@ -161,7 +161,7 @@ func (s *Server) withTeamLocalChannels(ctx context.Context, agentDef config.Agen
 	// keyed by the team's tenant, which is what deleting the team purges.
 	_, def, err := s.teamVersion(ctx, tools.RunIdentity(ctx).TenantID, sc)
 	if err != nil {
-		log.Printf("team %q (version %s): its own channels are not available to this run: %v", sc.Team, sc.DefID, err)
+		slog.Warn("team: its own channels are not available to this run", "team", sc.Team, "def_id", sc.DefID, "err", err)
 		return p
 	}
 	catalog := make(map[string]tools.ChannelDef, len(p.Channels)+len(granted))
@@ -175,7 +175,7 @@ func (s *Server) withTeamLocalChannels(ctx context.Context, agentDef config.Agen
 		}
 		cd, err := builtin.LocalChannelDefinition(sc.Team, name, body)
 		if err != nil {
-			log.Printf("team %q (version %s): its channel %q is unreadable: %v", sc.Team, sc.DefID, name, err)
+			slog.Warn("team: its channel is unreadable", "team", sc.Team, "def_id", sc.DefID, "channel", name, "err", err)
 			continue
 		}
 		catalog[teamgraph.LocalRefPrefix+name] = cd

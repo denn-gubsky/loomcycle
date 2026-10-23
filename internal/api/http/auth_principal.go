@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -62,7 +62,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			// Opaque — never distinguish "unknown" from "expired" from
 			// "wrong" (no oracle). Detail only under LOOMCYCLE_AUTH_VERBOSE.
 			if s.authVerbose() {
-				log.Printf("auth: rejected bearer (no matching token / expired / wrong secret)")
+				slog.Info("auth: rejected bearer (no matching token / expired / wrong secret)")
 			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -131,7 +131,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 func (s *Server) admitPrincipalAgent(ctx context.Context, agent string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !auth.MayStartAgent(p, ok, agent) {
-		log.Printf("auth: agent_not_allowed agent=%q subject=%q token_def=%q", agent, p.Subject, p.TokenDefID)
+		slog.Warn("auth: agent_not_allowed", "agent", agent, "subject", p.Subject, "token_def", p.TokenDefID)
 		return fmt.Errorf("%w: %q", runner.ErrAgentNotAllowed, agent)
 	}
 	// RFC EY: the ACL's instance question, `run agent:<name>`, after the
@@ -249,7 +249,7 @@ func (s *Server) invalidateTokenCache(ctx context.Context) {
 		// Payload is a sentinel — subscribers flush their whole cache
 		// (a mutation can change any resolution, incl. the legacy gate).
 		if err := s.backplane.Publish(ctx, tokenInvalidateTopic, []byte("flush")); err != nil {
-			log.Printf("auth: token-cache invalidation publish failed: %v", err)
+			slog.Warn("auth: token-cache invalidation publish failed", "err", err)
 		}
 	}
 }
@@ -358,7 +358,7 @@ func (s *Server) authConfigured(ctx context.Context) bool {
 // LOOMCYCLE_AUTH_VERBOSE), because a client can cancel its own request at will.
 func (s *Server) logAdminCountErr(ctx context.Context, err error) {
 	if ctx.Err() == nil || s.authVerbose() {
-		log.Printf("auth: admin-token count failed (%v); failing closed", err)
+		slog.Error("auth: admin-token count failed; failing closed", "err", err)
 	}
 }
 
@@ -379,7 +379,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if err != nil {
 		// Unreachable past boot (a malformed key is fatal there); never fall
 		// back to an unpeppered lookup.
-		log.Printf("auth: token hashing unavailable (failing closed): %v", err)
+		slog.Error("auth: token hashing unavailable (failing closed)", "err", err)
 		return auth.Principal{}, false
 	}
 	hash := h.Hash(bearer)
@@ -442,7 +442,7 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 				// credential the whole of its scopes.
 				restrictions, rerr := auth.ParseRestrictions(row.RestrictionsJSON)
 				if rerr != nil {
-					log.Printf("auth: token_def=%q refused: %v", row.DefID, rerr)
+					slog.Warn("auth: token refused", "token_def", row.DefID, "err", rerr)
 					return auth.Principal{}, false, true, never
 				}
 				validUntil := never
@@ -464,7 +464,7 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 		// do not reach the legacy branch with a usable substrate state).
 		if !isNotFound(err) {
 			if s.authVerbose() {
-				log.Printf("auth: token-substrate lookup error (failing closed): %v", err)
+				slog.Error("auth: token-substrate lookup error (failing closed)", "err", err)
 			}
 			return auth.Principal{}, false, false, never
 		}
@@ -552,10 +552,10 @@ func (s *Server) applyPrincipal(ctx context.Context, wireTenant, wireUser string
 	// auth.ResolveWireIdentity, the rule shared with the MCP transport.
 	if ok && !p.Legacy {
 		if wireTenant != "" && wireTenant != p.TenantID {
-			log.Printf("auth: identity_overridden kind=tenant wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
+			slog.Warn("auth: identity_overridden", "kind", "tenant", "wire", wireTenant, "principal", p.TenantID, "token_def", p.TokenDefID)
 		}
 		if wireUser != "" && wireUser != p.Subject {
-			log.Printf("auth: identity_overridden kind=subject wire=%q principal=%q token_def=%q", wireUser, p.Subject, p.TokenDefID)
+			slog.Warn("auth: identity_overridden", "kind", "subject", "wire", wireUser, "principal", p.Subject, "token_def", p.TokenDefID)
 		}
 	}
 	return tenant, subject
@@ -864,7 +864,7 @@ func (s *Server) principalTenantScope(ctx context.Context, wireTenant string) (t
 		return wireTenant, wireTenant == ""
 	}
 	if wireTenant != "" && wireTenant != p.TenantID {
-		log.Printf("auth: tenant_scope_overridden wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
+		slog.Warn("auth: tenant_scope_overridden", "wire", wireTenant, "principal", p.TenantID, "token_def", p.TokenDefID)
 	}
 	return p.TenantID, false
 }
@@ -922,7 +922,7 @@ func (s *Server) adminFocusedTenant(ctx context.Context, wireTenant string) stri
 		return wireTenant
 	}
 	if wireTenant != p.TenantID {
-		log.Printf("auth: tenant_focus_ignored wire=%q principal=%q token_def=%q", wireTenant, p.TenantID, p.TokenDefID)
+		slog.Info("auth: tenant_focus_ignored", "wire", wireTenant, "principal", p.TenantID, "token_def", p.TokenDefID)
 	}
 	return tenantFromCtx(ctx)
 }

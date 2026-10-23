@@ -15,7 +15,7 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -78,7 +78,7 @@ func (s *Server) persistUserInput(ctx context.Context, runID, sessionID, tenantI
 		return
 	}
 	if err := s.store.AppendEvent(ctx, runID, "user_input", inputJSON); err != nil {
-		log.Printf("store: AppendEvent(user_input) failed: %v", err)
+		slog.Error("store: AppendEvent(user_input) failed", "run_id", runID, "err", err)
 	}
 	s.indexUserTurn(ctx, runID, sessionID, tenantID, userID, segments)
 }
@@ -136,7 +136,7 @@ func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, 
 		ttl = defaultTraceMaxAge
 	}
 	if err := s.store.MemorySet(ctx, tenantID, store.MemoryScopeUser, userID, key, value, ttl); err != nil {
-		log.Printf("trace index: set %s failed: %v", key, err)
+		slog.Warn("trace index: set failed", "key", key, "err", err)
 		return
 	}
 	// The embedding is a SEPARATE, best-effort step, exactly as document bodies treat
@@ -155,7 +155,7 @@ func (s *Server) embedTraceTurn(ctx context.Context, tenantID, userID, key, text
 	}
 	vec, err := s.embedder.Embed(ctx, []string{text})
 	if err != nil || len(vec) == 0 {
-		log.Printf("trace index: embed %s failed (searchable after a backfill): %v", key, err)
+		slog.Warn("trace index: embed failed (searchable after a backfill)", "key", key, "err", err)
 		return
 	}
 	if err := s.store.MemoryEmbedSet(ctx, tenantID, store.MemoryScopeUser, userID, key, store.MemoryEmbedding{
@@ -166,7 +166,7 @@ func (s *Server) embedTraceTurn(ctx context.Context, tenantID, userID, key, text
 		EmbedText: text,
 		CreatedAt: time.Now().UTC(),
 	}); err != nil {
-		log.Printf("trace index: store embedding for %s failed: %v", key, err)
+		slog.Warn("trace index: store embedding failed", "key", key, "err", err)
 	}
 }
 
@@ -318,7 +318,7 @@ func (s *Server) indexAssistantTurns(ctx context.Context, runID string, meta run
 			ttl = defaultTraceMaxAge
 		}
 		if err := s.store.MemorySet(ctx, meta.TenantID, store.MemoryScopeUser, meta.UserID, key, value, ttl); err != nil {
-			log.Printf("trace index: assistant turn %s: %v", key, err)
+			slog.Warn("trace index: assistant turn failed", "key", key, "err", err)
 			continue
 		}
 		s.embedTraceTurn(ctx, meta.TenantID, meta.UserID, key, text)

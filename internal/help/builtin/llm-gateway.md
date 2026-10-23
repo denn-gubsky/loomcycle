@@ -170,10 +170,13 @@ global semaphore.
 Every gateway request logs a structured line at completion:
 
 ```
-llm_gateway: request_id=req_abc provider=anthropic model=claude-sonnet-4-6 \
-  tier="default" user_id="alice" input_tokens=1234 output_tokens=56 \
-  stop_reason=end_turn latency_ms=842 status=ok err=""
+llm_gateway: request request_id=req_abc provider=anthropic \
+  model=claude-sonnet-4-6 tier=default user_id=alice input_tokens=1234 \
+  output_tokens=56 stop_reason=end_turn latency_ms=842 status=ok err=""
 ```
+
+With `LOOMCYCLE_LOG_FORMAT=json` the same fields arrive as JSON keys
+(`"msg":"llm_gateway: request"`).
 
 Scrape these via stdout / `journalctl` / a log shipper. v0.11.1
 follow-up adds a dedicated `gateway_events` table queryable via a new

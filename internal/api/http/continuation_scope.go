@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync/atomic"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -30,7 +30,7 @@ func (s *Server) sessionNoUserScope(ctx context.Context, sessionID string) bool 
 	}
 	runs, err := s.store.RunsForSession(ctx, sessionID)
 	if err != nil {
-		log.Printf("continuation: read session %s's runs for its credential scope: %v; withholding the user's scope", sessionID, err)
+		slog.Warn("continuation: read the session's runs for its credential scope failed; withholding the user's scope", "session_id", sessionID, "err", err)
 		return true
 	}
 	for _, r := range runs {
@@ -126,7 +126,7 @@ func (s *Server) adoptWithheldUserScope(ctx context.Context, runID string, latch
 	}
 	run, err := s.store.GetRun(ctx, runID)
 	if err != nil {
-		log.Printf("steer: read run %s for its credential scope: %v; withholding the user's scope", runID, err)
+		slog.Warn("steer: read the run for its credential scope failed; withholding the user's scope", "run_id", runID, "err", err)
 		latch.Store(true)
 		return
 	}

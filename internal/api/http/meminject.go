@@ -18,7 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -961,10 +961,10 @@ func noteRefusedValues(agent string, refused []string) {
 	if len(refused) == 0 {
 		return
 	}
-	log.Printf("prompt: agent %q: refused %v — a resolved value contained {{ or }} or left its argument's "+
+	slog.Warn("prompt: refused template values — a resolved value contained {{ or }} or left its argument's "+
 		"charset, a widened family was named by a def no operator authored, or a network target was not on "+
 		"the operator's static http_host_allowlist",
-		agent, refused)
+		"agent", agent, "refused", refused)
 }
 
 // renderMemoryRefs resolves the widened {{memory:key|search:…}} references.

@@ -39,7 +39,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"sort"
@@ -155,7 +155,7 @@ func (s *Server) recordTokenAudit(ctx context.Context, action string, row store.
 		ev.ScopesAfter = row.AllowedScopes
 	}
 	if err := s.tokenAudit.Record(ev); err != nil {
-		log.Printf("users: token audit write failed: %v", err)
+		slog.Error("users: token audit write failed", "err", err)
 	}
 }
 
@@ -569,8 +569,9 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 
 	// Non-secret correlation only — NEVER the plaintext. The suffix + def_id are
 	// safe to log; the minting operator is attributed via principalSubject.
-	log.Printf("users: minted token tenant=%q subject=%q def_id=%q suffix=%q scopes=%v expires=%v restrictions=%s retired=%d by=%q",
-		tenant, subject, created.DefID, suffix, scopes, !created.ExpiresAt.IsZero(), restrictions.Describe(), len(retired), principalSubject(r.Context()))
+	slog.Info("users: minted token", "tenant", tenant, "subject", subject, "def_id", created.DefID, "suffix", suffix,
+		"scopes", scopes, "expires", !created.ExpiresAt.IsZero(), "restrictions", restrictions.Describe(),
+		"retired", len(retired), "by", principalSubject(r.Context()))
 
 	resp := mintUserTokenResponse{
 		DefID:       created.DefID,
@@ -691,8 +692,7 @@ func (s *Server) handleRevokeUserToken(w http.ResponseWriter, r *http.Request) {
 	// Stop the revoked token authenticating within one backplane round-trip.
 	s.invalidateTokenCache(r.Context())
 	s.recordTokenAudit(r.Context(), "retire", row)
-	log.Printf("users: revoked token tenant=%q subject=%q def_id=%q by=%q",
-		tenant, subject, defID, principalSubject(r.Context()))
+	slog.Info("users: revoked token", "tenant", tenant, "subject", subject, "def_id", defID, "by", principalSubject(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"def_id":     defID,
 		"retired_at": now.Format(time.RFC3339Nano),

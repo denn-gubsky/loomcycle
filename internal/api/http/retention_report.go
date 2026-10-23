@@ -2,7 +2,7 @@ package http
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -152,7 +152,7 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if !retentionOverrideOperator(r.Context()) {
 		resp.NoTraceOverrides = []retentionOverrideResponse{}
 	} else if list, err := s.activeRetentionOverrides(r.Context(), r.URL.Query().Get("tenant")); err != nil {
-		log.Printf("retention report: listing no-trace overrides: %v", err)
+		slog.Warn("retention report: listing no-trace overrides failed", "err", err)
 		resp.NoTraceOverrides = []retentionOverrideResponse{}
 	} else {
 		resp.NoTraceOverrides = list

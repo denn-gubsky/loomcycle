@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"sort"
 	"strconv"
@@ -417,9 +417,9 @@ func (s *Server) lookupOlderTokenForm(ctx context.Context, h auth.TokenHasher, b
 		changed, rerr := s.store.OperatorTokenRehash(ctx, row.DefID, old, currentHash)
 		switch {
 		case rerr != nil:
-			log.Printf("auth: token_def=%q: rehash onto the current pepper failed: %v", row.DefID, rerr)
+			slog.Warn("auth: token rehash onto the current pepper failed", "token_def", row.DefID, "err", rerr)
 		case changed && s.authVerbose():
-			log.Printf("auth: token_def=%q rehashed onto the current pepper", row.DefID)
+			slog.Info("auth: token rehashed onto the current pepper", "token_def", row.DefID)
 		}
 		return row, nil
 	}
