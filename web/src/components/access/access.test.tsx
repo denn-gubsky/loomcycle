@@ -180,12 +180,22 @@ describe("simulator answers", () => {
         result: {
           request: {},
           now: { decision: false, outcome: "no_match", mode: "compat" },
-          with_draft: { decision: false, outcome: "deny", mode: "compat", reasons: [{ acl: "interns", rule: 0, effect: "deny" }] },
+          with_draft: {
+            decision: false,
+            outcome: "deny",
+            mode: "compat",
+            reasons: [
+              { acl: "interns", rule: 0, effect: "deny" },
+              { acl: "builtin:member", rule: 2, effect: "allow" },
+            ],
+          },
           changed: true,
         },
       }),
     );
     expect(out).toContain("the draft changes the answer");
     expect(out).toContain("<code>interns</code> rule 0 (deny)");
+    // The allow the deny overrode is not presented as deciding it.
+    expect(out).not.toContain("builtin:member");
   });
 });

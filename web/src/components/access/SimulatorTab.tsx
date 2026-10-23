@@ -174,6 +174,13 @@ export default function SimulatorTab({
   );
 }
 
+// decidingReasons is the rules that made the outcome: the denies of a deny,
+// the allows of an allow. The server lists every matching rule, so a deny's
+// reasons also carry the allows it overrode.
+export function decidingReasons(d: AuthzDecision) {
+  return (d.reasons ?? []).filter((r) => r.effect === d.outcome);
+}
+
 export function OutcomePill({ d }: { d: AuthzDecision }) {
   const cls = d.outcome === "allow" ? "status-ok" : d.outcome === "deny" ? "acl-pill-deny" : "status-warn";
   return <span className={"status-pill " + cls}>{d.outcome === "no_match" ? "no rule matched" : d.outcome}</span>;
@@ -199,10 +206,10 @@ export function SavedAnswer({ decision, explain }: { decision: AuthzDecision; ex
         <OutcomePill d={decision} /> <span className="settings-muted">mode {decision.mode}</span>
       </div>
       <p className="settings-help">{outcomeNote(decision)}</p>
-      {(decision.reasons ?? []).length > 0 && (
+      {decidingReasons(decision).length > 0 && (
         <div>
           decided by{" "}
-          {(decision.reasons ?? []).map((r, i) => (
+          {decidingReasons(decision).map((r, i) => (
             <span key={i} className="acl-reason">
               <code>{r.acl}</code> rule {r.rule} ({r.effect})
             </span>
@@ -269,10 +276,10 @@ export function DraftAnswer({ result, missing }: { result: AuthzSimulateResult; 
         <span className={result.changed ? "acl-changed" : "settings-muted"}>{result.changed ? "the draft changes the answer" : "no change"}</span>
       </div>
       <p className="settings-help">{outcomeNote(result.with_draft)}</p>
-      {(result.with_draft.reasons ?? []).length > 0 && (
+      {decidingReasons(result.with_draft).length > 0 && (
         <div>
           with the draft, decided by{" "}
-          {(result.with_draft.reasons ?? []).map((r, i) => (
+          {decidingReasons(result.with_draft).map((r, i) => (
             <span key={i} className="acl-reason">
               <code>{r.acl}</code> rule {r.rule} ({r.effect})
             </span>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, apiError, describeAclDenial, forbiddenKind } from "./apiError";
+import { ApiError, apiError, denyingReasons, describeAclDenial, forbiddenKind } from "./apiError";
 
 const aclBody = JSON.stringify({
   code: "acl_denied",
@@ -90,5 +90,33 @@ describe("apiError", () => {
   it("classifies a plain Error by nothing", () => {
     expect(forbiddenKind(new Error("403 Forbidden: x"))).toBeNull();
     expect(forbiddenKind("boom")).toBeNull();
+  });
+});
+
+describe("apiError — what the server actually sends", () => {
+  it("names only the denying rules: the reasons also carry the allows that matched", () => {
+    // Verbatim shape from a compat-mode refusal of a tenant operator.
+    const body = JSON.stringify({
+      code: "acl_denied",
+      error: "author def:acl/locked-x is denied by no-locked rule 0",
+      action: "author",
+      resource: "def:acl/locked-x",
+      reasons: [
+        { acl: "no-locked", version: 1, rule: 0, effect: "deny" },
+        { acl: "builtin:tenant-operator", rule: 15, effect: "allow" },
+      ],
+    });
+    const e = apiError(403, "Forbidden", body);
+    expect(e.message).toBe('403 Forbidden: access denied — may not author def:acl/locked-x: denied by list "no-locked" rule 0');
+    expect(denyingReasons(e.acl!)).toEqual([{ acl: "no-locked", version: 1, rule: 0, effect: "deny" }]);
+  });
+
+  it("treats a simulator refusal to name another subject as a refusal", () => {
+    const body = JSON.stringify({ code: "authz_subject", error: "naming another subject needs a tenant operator" });
+    const e = apiError(403, "Forbidden", body);
+    expect(e.message).toBe("403 Forbidden: not permitted — naming another subject needs a tenant operator");
+    expect(forbiddenKind(e)).toBe("authz_subject");
+    // The same code on a 503 is an outage, not a refusal.
+    expect(forbiddenKind(apiError(503, "Service Unavailable", JSON.stringify({ code: "authz_subject", error: "x" })))).toBeNull();
   });
 });

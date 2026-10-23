@@ -23,10 +23,20 @@ export interface AclDenialReason {
 export interface AclDenial {
   action: string;
   resource: string;
+  // Every rule that matched, as the server reports them — including the
+  // ALLOWS a deny overrode. denyingReasons picks the ones that decided.
   reasons: AclDenialReason[];
 }
 
-export type ForbiddenKind = "acl_denied" | "insufficient_scope" | "acl_self_elevation";
+// denyingReasons is the rules that refused: the matching denies. Empty when
+// nothing denied (the refusal is "no rule allows it", enforce mode).
+export function denyingReasons(d: AclDenial): AclDenialReason[] {
+  return d.reasons.filter((r) => r.effect === "deny");
+}
+
+// authz_subject is the 403 the decision routes give a non-operator that names
+// another subject (on a 503 the same code is an outage, not a refusal).
+export type ForbiddenKind = "acl_denied" | "insufficient_scope" | "acl_self_elevation" | "authz_subject";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -76,8 +86,9 @@ function reasonsOf(v: unknown): AclDenialReason[] {
 // describeAclDenial is the human sentence for a denial, without the status.
 export function describeAclDenial(d: AclDenial): string {
   const head = `may not ${d.action || "?"} ${d.resource || "?"}`;
-  if (d.reasons.length === 0) return `${head}: no rule allows it`;
-  const rules = d.reasons.map((r) => `list "${r.acl}" rule ${r.rule}`).join("; ");
+  const denies = denyingReasons(d);
+  if (denies.length === 0) return `${head}: no rule allows it`;
+  const rules = denies.map((r) => `list "${r.acl}" rule ${r.rule}`).join("; ");
   return `${head}: denied by ${rules}`;
 }
 
@@ -107,6 +118,9 @@ export function apiError(status: number, statusText: string, raw: string, opts: 
     const why = serverText ?? "this needs a scope your token does not hold";
     return new ApiError(prefixed(`not permitted — ${why}${scope ? ` (needs the ${scope} scope)` : ""}`), status, code, undefined, scope);
   }
+  if (status === 403 && code === "authz_subject") {
+    return new ApiError(prefixed(`not permitted — ${serverText ?? "you may only ask about yourself"}`), status, code);
+  }
   if (status === 403 && code === "acl_self_elevation") {
     const why = (serverText ?? "the change would widen your own access").replace(/^refused:\s*/, "");
     return new ApiError(prefixed(`refused — ${why}`), status, code);
@@ -122,6 +136,7 @@ export function forbiddenKind(e: unknown): ForbiddenKind | null {
     case "acl_denied":
     case "insufficient_scope":
     case "acl_self_elevation":
+    case "authz_subject":
       return e.code;
     default:
       return null;

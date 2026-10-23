@@ -34,3 +34,24 @@ describe("ErrorNotice", () => {
     expect(render(null)).toBe("");
   });
 });
+
+describe("ErrorNotice — matched allows", () => {
+  it("lists only the denying rule, not the allows the deny overrode", () => {
+    const e = apiError(
+      403,
+      "Forbidden",
+      JSON.stringify({
+        code: "acl_denied",
+        action: "author",
+        resource: "def:acl/locked-x",
+        reasons: [
+          { acl: "no-locked", version: 1, rule: 0, effect: "deny" },
+          { acl: "builtin:tenant-operator", rule: 15, effect: "allow" },
+        ],
+      }),
+    );
+    const html = render(e);
+    expect(html).toContain("<code>no-locked</code>");
+    expect(html).not.toContain("builtin:tenant-operator");
+  });
+});

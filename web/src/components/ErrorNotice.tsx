@@ -1,4 +1,4 @@
-import { ApiError, forbiddenKind } from "../lib/apiError";
+import { ApiError, denyingReasons, forbiddenKind } from "../lib/apiError";
 
 // ErrorNotice renders a thrown API error. A "you may not" refusal (403
 // acl_denied / insufficient_scope / acl_self_elevation) reads as a refusal —
@@ -11,15 +11,16 @@ export default function ErrorNotice({ error }: { error: unknown }) {
   const kind = forbiddenKind(error);
   if (kind === "acl_denied" && error instanceof ApiError && error.acl) {
     const d = error.acl;
+    const denies = denyingReasons(d);
     return (
       <div className="acl-denied" role="alert">
         <div className="acl-denied-head">Access denied</div>
         <div>
           You may not <code>{d.action || "?"}</code> <code>{d.resource || "?"}</code>.
         </div>
-        {d.reasons.length > 0 ? (
+        {denies.length > 0 ? (
           <ul className="acl-denied-reasons">
-            {d.reasons.map((r, i) => (
+            {denies.map((r, i) => (
               <li key={i}>
                 denied by list <code>{r.acl}</code>
                 {r.version ? <span className="settings-muted"> v{r.version}</span> : null}, rule {r.rule}
