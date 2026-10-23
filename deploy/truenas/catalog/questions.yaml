@@ -433,7 +433,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
             label: LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS
-            description: 'The model CAN read these too (see above). PER-TENANT credentials (CredentialDef names) injected into fallback commands, resolved for each run''s own tenant/user/agent. `cmd:NAME` hands a credential to that one allowlisted command only (git:GITHUB_TOKEN,gh:GH_TOKEN); a bare NAME reaches every one. Overrides a same-named ALLOWED_ENV var. Requires LOOMCYCLE_SECRET_KEY (the credential KEK). Comma-sepa…'
+            description: The model CAN read these too (see above). PER-TENANT credentials (CredentialDef names) injected into fallback commands, resolved for each run's own tenant/user/agent. `cmd:NAME` hands a credential to that one allowlisted command only (git:GITHUB_TOKEN,gh:GH_TOKEN); a bare NAME reaches every one. Overrides a same-named ALLOWED_ENV var. Requires LOOMCYCLE_SECRET_KEY (the credential KEK). Comma-sepa…
             schema:
               type: string
               default: ""
@@ -954,6 +954,18 @@ questions:
           - variable: LOOMCYCLE_AUTH_CACHE_TTL_SECONDS
             label: LOOMCYCLE_AUTH_CACHE_TTL_SECONDS
             description: '(example: 60)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_ACL
+            label: LOOMCYCLE_ACL
+            description: '(example: compat)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_ACL_CACHE_TTL_SECONDS
+            label: LOOMCYCLE_ACL_CACHE_TTL_SECONDS
+            description: '(example: 5)'
             schema:
               type: string
               default: ""
