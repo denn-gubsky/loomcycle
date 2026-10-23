@@ -11,12 +11,12 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/help"
-	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // buildTools is boot phase 3: every built-in tool, plus the skill and help
@@ -174,7 +174,7 @@ func (b *boot) buildTools() {
 	//
 	// Built inside its provider's embedder lane (pr.sched), as every model call
 	// this process makes is counted in a lane: providers.<id>.lanes.embedder.
-	embedder, err := embedders.BuildGated(cfg, pr.sched)
+	embedder, err := wiring.GatedEmbedder(cfg, pr.sched)
 	if err != nil {
 		log.Fatalf("embedder: %v", err)
 	}

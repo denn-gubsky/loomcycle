@@ -5,7 +5,7 @@
 // memory extraction eval (`loomcycle memory-eval-live`) has to score a model
 // through the SAME construction the running server uses, and a second copy of
 // the per-provider base-URL / auth / options switch would drift. The embedder
-// side already learned that lesson twice — see internal/memory/embedders, and
+// side already learned that lesson twice — see internal/wiring (the embedder), and
 // internal/cli.loadLayeredConfig before it.
 //
 // For this harness the drift would not be cosmetic. `ollama-local` takes its

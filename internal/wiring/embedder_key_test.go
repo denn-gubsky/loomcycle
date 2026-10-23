@@ -1,4 +1,4 @@
-package embedders
+package wiring
 
 import (
 	"context"
@@ -33,11 +33,11 @@ func openAIEmbedSrv(t *testing.T) (*httptest.Server, func() []string) {
 	}
 }
 
-// TestBuild_CustomIDOpenAIProviderEmbedsAtItsOwnEndpoint — RFC EV's side
+// TestEmbedder_CustomIDOpenAIProviderEmbedsAtItsOwnEndpoint — RFC EV's side
 // finding: a provider declared under its own id with driver: openai can be the
 // embedder, and it embeds at that provider's endpoint with that provider's key.
 // It failed before: the factory looked the constructor up by provider id only.
-func TestBuild_CustomIDOpenAIProviderEmbedsAtItsOwnEndpoint(t *testing.T) {
+func TestEmbedder_CustomIDOpenAIProviderEmbedsAtItsOwnEndpoint(t *testing.T) {
 	srv, auths := openAIEmbedSrv(t)
 	t.Setenv("LOOMCYCLE_TEST_GATEWAY_KEY", "gateway-key")
 	cfg := &config.Config{
@@ -47,9 +47,9 @@ func TestBuild_CustomIDOpenAIProviderEmbedsAtItsOwnEndpoint(t *testing.T) {
 		Models: map[string]config.ModelRef{"gw-embed": {Provider: "my-gateway", Model: "gateway-embed", Kind: config.ModelKindEmbedder}},
 		Memory: config.MemoryConfig{Embedder: config.EmbedderConfig{Model: "gw-embed"}},
 	}
-	e, provider, err := build(cfg)
+	e, provider, err := buildEmbedder(cfg)
 	if err != nil || e == nil {
-		t.Fatalf("build = %v, %v", e, err)
+		t.Fatalf("buildEmbedder = %v, %v", e, err)
 	}
 	// The lane is the provider's, whatever constructor serves it.
 	if provider != "my-gateway" {
@@ -63,11 +63,11 @@ func TestBuild_CustomIDOpenAIProviderEmbedsAtItsOwnEndpoint(t *testing.T) {
 	}
 }
 
-// TestBuild_TheVoyageEmbedderNeverInheritsAnotherProvidersEndpointOrKey — the
+// TestEmbedder_TheVoyageEmbedderNeverInheritsAnotherProvidersEndpointOrKey — the
 // Voyage exception follows the embedder chosen, not the provider id: with
 // api: anthropic over another provider, neither that provider's base_url nor
 // its key may travel to Voyage.
-func TestBuild_TheVoyageEmbedderNeverInheritsAnotherProvidersEndpointOrKey(t *testing.T) {
+func TestEmbedder_TheVoyageEmbedderNeverInheritsAnotherProvidersEndpointOrKey(t *testing.T) {
 	providerSrv, providerAuths := openAIEmbedSrv(t)
 	voyageSrv, voyageAuths := openAIEmbedSrv(t)
 	t.Setenv("LOOMCYCLE_TEST_GATEWAY_KEY", "gateway-key-must-not-reach-voyage")
@@ -82,9 +82,9 @@ func TestBuild_TheVoyageEmbedderNeverInheritsAnotherProvidersEndpointOrKey(t *te
 		}},
 	}
 	cfg.Env.VoyageAPIKey = "voyage-key"
-	e, err := Build(cfg)
+	e, err := Embedder(cfg)
 	if err != nil || e == nil {
-		t.Fatalf("Build = %v, %v", e, err)
+		t.Fatalf("Embedder = %v, %v", e, err)
 	}
 	_, _ = e.Embed(context.Background(), []string{"x"})
 	if got := providerAuths(); len(got) != 0 {
@@ -95,10 +95,10 @@ func TestBuild_TheVoyageEmbedderNeverInheritsAnotherProvidersEndpointOrKey(t *te
 	}
 }
 
-// TestBuild_RefusesWhatConfigRefuses — the factory resolves the constructor
+// TestEmbedder_RefusesWhatConfigRefuses — the factory resolves the constructor
 // with the same function config validation does, so a config that could not
 // load cannot build either.
-func TestBuild_RefusesWhatConfigRefuses(t *testing.T) {
+func TestEmbedder_RefusesWhatConfigRefuses(t *testing.T) {
 	cfg := &config.Config{
 		Providers: map[string]config.ProviderConfig{"my-claude": {Driver: "anthropic"}},
 		Memory:    config.MemoryConfig{Embedder: config.EmbedderConfig{Provider: "my-claude", Model: "voyage-3"}},
@@ -107,7 +107,7 @@ func TestBuild_RefusesWhatConfigRefuses(t *testing.T) {
 	if wantErr == nil {
 		t.Fatalf("EmbedderKey(my-claude) = %q, want a refusal", want)
 	}
-	if _, err := Build(cfg); err == nil || err.Error() != wantErr.Error() {
-		t.Fatalf("Build = %v, want config's refusal %q", err, wantErr)
+	if _, err := Embedder(cfg); err == nil || err.Error() != wantErr.Error() {
+		t.Fatalf("Embedder = %v, want config's refusal %q", err, wantErr)
 	}
 }

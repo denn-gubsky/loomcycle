@@ -12,12 +12,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
-	"github.com/denn-gubsky/loomcycle/internal/memory/reranker"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // wireMemory is boot phase 6, first part: hand the open store to the
@@ -62,7 +62,7 @@ func (b *boot) wireMemory() {
 	// then an agent that enables memory_rerank reports not_configured. A declared
 	// one that cannot be built fails boot, as the embedder does. Only a non-nil
 	// model is handed on: a typed-nil in the interface fields would be called.
-	rerankModel, rrErr := reranker.BuildRanker(cfg, pr.sched)
+	rerankModel, rrErr := wiring.Reranker(cfg, pr.sched)
 	if rrErr != nil {
 		log.Fatalf("reranker: %v", rrErr)
 	}

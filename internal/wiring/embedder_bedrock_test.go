@@ -1,4 +1,4 @@
-package embedders
+package wiring
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 )
 
 // These tests stand a capturing constructor in for the bedrock embedder, so
-// they read exactly what build hands it, and nothing reaches AWS. The real
+// they read exactly what buildEmbedder hands it, and nothing reaches AWS. The real
 // package is not imported in this test binary.
 
 var (
@@ -74,10 +74,10 @@ func bedrockCfg(route string) *config.Config {
 	}
 }
 
-// TestBuild_BedrockGetsTheProvidersAWSAuthAtItsHostOnly — RFC EV §5.2: the
+// TestEmbedder_BedrockGetsTheProvidersAWSAuthAtItsHostOnly — RFC EV §5.2: the
 // bedrock embedder gets the provider's AWS auth, the scheme and host of the
 // provider's base_url (its chat route dropped), and no key.
-func TestBuild_BedrockGetsTheProvidersAWSAuthAtItsHostOnly(t *testing.T) {
+func TestEmbedder_BedrockGetsTheProvidersAWSAuthAtItsHostOnly(t *testing.T) {
 	isolatedAWSEnv(t)
 	t.Setenv("ANTHROPIC_API_KEY", "anthropic-key-must-not-reach-aws")
 	registerCapture(config.EmbedderAPIBedrock)
@@ -85,9 +85,9 @@ func TestBuild_BedrockGetsTheProvidersAWSAuthAtItsHostOnly(t *testing.T) {
 		cfg := bedrockCfg(route)
 		var sunk []string
 		cfg.SecretSink = func(v string) { sunk = append(sunk, v) }
-		_, provider, err := build(cfg)
+		_, provider, err := buildEmbedder(cfg)
 		if err != nil {
-			t.Fatalf("%q: build: %v", route, err)
+			t.Fatalf("%q: buildEmbedder: %v", route, err)
 		}
 		if provider != "bedrock-claude" {
 			t.Errorf("lane provider = %q, want bedrock-claude", provider)
@@ -119,9 +119,9 @@ func TestBuild_BedrockGetsTheProvidersAWSAuthAtItsHostOnly(t *testing.T) {
 	}
 }
 
-// TestBuild_OnlyTheBedrockEmbedderGetsAnAuth — every other embedder keeps
+// TestEmbedder_OnlyTheBedrockEmbedderGetsAnAuth — every other embedder keeps
 // getting a key and never an Auth.
-func TestBuild_OnlyTheBedrockEmbedderGetsAnAuth(t *testing.T) {
+func TestEmbedder_OnlyTheBedrockEmbedderGetsAnAuth(t *testing.T) {
 	const key = "ev-capture-plain"
 	registerCapture(key)
 	t.Setenv("LOOMCYCLE_TEST_GATEWAY_KEY", "gateway-key")
@@ -131,8 +131,8 @@ func TestBuild_OnlyTheBedrockEmbedderGetsAnAuth(t *testing.T) {
 		},
 		Memory: config.MemoryConfig{Embedder: config.EmbedderConfig{Provider: "my-gateway", Model: "m", API: key}},
 	}
-	if _, _, err := build(cfg); err != nil {
-		t.Fatalf("build: %v", err)
+	if _, _, err := buildEmbedder(cfg); err != nil {
+		t.Fatalf("buildEmbedder: %v", err)
 	}
 	o := capturedOpts(t, key)
 	if o.Auth != nil || o.APIKey != "gateway-key" || o.BaseURL != "https://gateway.example/v1" {
@@ -140,9 +140,9 @@ func TestBuild_OnlyTheBedrockEmbedderGetsAnAuth(t *testing.T) {
 	}
 }
 
-// TestBuild_BedrockRefusesAnEndpointOrKeyOfItsOwn — the embedder block cannot
+// TestEmbedder_BedrockRefusesAnEndpointOrKeyOfItsOwn — the embedder block cannot
 // send the provider's AWS credentials anywhere but the provider's own host.
-func TestBuild_BedrockRefusesAnEndpointOrKeyOfItsOwn(t *testing.T) {
+func TestEmbedder_BedrockRefusesAnEndpointOrKeyOfItsOwn(t *testing.T) {
 	isolatedAWSEnv(t)
 	registerCapture(config.EmbedderAPIBedrock)
 	for name, mod := range map[string]func(*config.EmbedderConfig){
@@ -151,23 +151,23 @@ func TestBuild_BedrockRefusesAnEndpointOrKeyOfItsOwn(t *testing.T) {
 	} {
 		cfg := bedrockCfg("/anthropic")
 		mod(&cfg.Memory.Embedder)
-		if _, _, err := build(cfg); err == nil {
-			t.Errorf("%s: build accepted it", name)
+		if _, _, err := buildEmbedder(cfg); err == nil {
+			t.Errorf("%s: buildEmbedder accepted it", name)
 		}
 	}
 }
 
-// TestBuild_BedrockWithNoUsableCredentialsStillBuilds — boot treats an
+// TestEmbedder_BedrockWithNoUsableCredentialsStillBuilds — boot treats an
 // embedder construction error as fatal, so missing credentials must surface
 // on the first call, not at build.
-func TestBuild_BedrockWithNoUsableCredentialsStillBuilds(t *testing.T) {
+func TestEmbedder_BedrockWithNoUsableCredentialsStillBuilds(t *testing.T) {
 	isolatedAWSEnv(t)
 	t.Setenv("AWS_ACCESS_KEY_ID", "")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	t.Setenv("AWS_PROFILE", "no-such-profile")
 	registerCapture(config.EmbedderAPIBedrock)
-	if _, _, err := build(bedrockCfg("/anthropic")); err != nil {
-		t.Fatalf("build: %v", err)
+	if _, _, err := buildEmbedder(bedrockCfg("/anthropic")); err != nil {
+		t.Fatalf("buildEmbedder: %v", err)
 	}
 	o := capturedOpts(t, config.EmbedderAPIBedrock)
 	if o.Auth == nil {
