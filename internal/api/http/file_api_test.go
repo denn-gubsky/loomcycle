@@ -487,3 +487,38 @@ func TestFileTwin_FieldsAreTheArgs(t *testing.T) {
 		t.Errorf("fileTwinArgs fields %v, connector.FileTwinFields %v", got, connector.FileTwinFields)
 	}
 }
+
+// A run the caller may not read is the same not-found as a missing run, for
+// the reading ops and for import alike: whether it is another tenant's, or a
+// colleague's run seen by an isolated member of the same tenant (who may read
+// only its own). The isolated member's own run stays reachable.
+func TestFileTwin_UnreadableRunIsNotFoundForEveryOp(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	rec := f.capture(t, runID, "acme", "notes.md", "http", []byte("# Notes\n\nBody.\n"), true)
+	isolated := auth.Principal{TenantID: "acme", Subject: "carol", Scopes: []string{auth.ScopeUser, auth.ScopeRunsRead}}
+
+	for _, c := range []struct {
+		name string
+		p    auth.Principal
+	}{{"another tenant", twinOutsider}, {"an isolated member who does not own the run", isolated}} {
+		for _, in := range []map[string]any{
+			{"op": "ls"},
+			{"op": "stat", "path": rec.Ref},
+			{"op": "import", "path": rec.Ref},
+		} {
+			in["run_id"] = runID
+			_, got, isErr := f.call(t, c.p, in)
+			in["run_id"] = "run_nosuch"
+			_, missing, _ := f.call(t, c.p, in)
+			if !isErr || strings.Replace(got, runID, "X", 1) != strings.Replace(missing, "run_nosuch", "X", 1) {
+				t.Errorf("%s, %v: %q, want the missing run's %q", c.name, in["op"], got, missing)
+			}
+		}
+	}
+	own := f.run(t, "acme", "carol", "")
+	f.capture(t, own, "acme", "mine.txt", "http", []byte("mine\n"), true)
+	if _, text, isErr := f.call(t, isolated, map[string]any{"run_id": own, "op": "ls"}); isErr {
+		t.Errorf("the isolated member's own run: %s", text)
+	}
+}
