@@ -8,6 +8,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
@@ -194,7 +195,7 @@ func TestRestartQueuedRuns_PublishesTheEndOfARunItCannotStart(t *testing.T) {
 	s.SetRunStateBus(bus)
 	sub := bus.Subscribe("alice")
 	defer sub.Close()
-	noTrace := queuedFixture(t, s, "a_qlostpub", "", runner.RunInput{Agent: "r", Segments: oneUserSeg("x")}, store.RetentionNone)
+	noTrace := queuedFixture(t, s, "a_qlostpub", "", runner.RunInput{Agent: "r", Segments: oneUserSeg("x")}, retentionmode.None)
 
 	if _, failed, err := s.RestartQueuedRuns(context.Background(), time.Now().Add(time.Second)); err != nil || failed != 1 {
 		t.Fatalf("RestartQueuedRuns failed %d (%v), want 1", failed, err)

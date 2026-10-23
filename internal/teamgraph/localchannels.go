@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // localchannels.go — the channels a team declares for itself.
@@ -60,7 +62,7 @@ func validateLocalChannels(out *issues, d Definition) {
 	for _, name := range d.LocalChannelNames() {
 		// The variable-name grammar: one segment of [A-Za-z0-9_-], 1..64 —
 		// the channel is stored under a name of which this is the last segment.
-		if !varNameRe.MatchString(name) {
+		if teamspec.ValidateVarName(name) != nil {
 			out.top(PathKey("local.channels", name), "team definition: local.channels: name %q must be one segment of A-Z a-z 0-9 _ -, at most 64 characters", name)
 		}
 	}

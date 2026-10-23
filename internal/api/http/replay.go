@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -81,7 +82,7 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	}
 	// A no-trace session holds markers, not a conversation; and a replay
 	// writes the conversation it copies, so it cannot produce a no-trace run.
-	if src.Retention == store.RetentionNone {
+	if src.Retention == retentionmode.None {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "retention_none_unsupported", msg: errNoTraceSession.Error()}
 	}
 
@@ -99,7 +100,7 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 	if !ok {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "agent_gone", msg: "target agent not found: " + req.Agent}
 	}
-	if s.resolveRetention(ctx, tenant, req.Agent, agentDef, "") == store.RetentionNone {
+	if s.resolveRetention(ctx, tenant, req.Agent, agentDef, "") == retentionmode.None {
 		return connector.ReplaySessionResult{}, &replayErr{status: http.StatusConflict, code: "retention_none_unsupported", msg: errNoTraceSession.Error()}
 	}
 

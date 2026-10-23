@@ -9,6 +9,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -38,7 +39,7 @@ func TestHookDef_ChangingOneANoTraceAgentRunsIsTheOperators(t *testing.T) {
 	sink := &noTraceAuditSink{}
 	tool.Audit = sink
 	tool.Cfg = &config.Config{Agents: map[string]config.AgentDef{
-		"static-quiet": {Retention: store.RetentionNone, Hooks: hooks.EventHooks{hooks.PhaseAgentStop: {{Ref: "shared/gate"}}}},
+		"static-quiet": {Retention: retentionmode.None, Hooks: hooks.EventHooks{hooks.PhaseAgentStop: {{Ref: "shared/gate"}}}},
 	}}
 	as := func(tenant string, p auth.Principal) context.Context {
 		return auth.WithPrincipal(hookTenantCtx(tenant), p)

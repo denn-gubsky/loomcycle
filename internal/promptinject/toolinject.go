@@ -32,7 +32,7 @@
 // can import it for boot validation without a cycle. The caller (api/http)
 // supplies already-rendered bodies; this half does placeholder recognition,
 // escape handling, framing and the budget.
-package memory
+package promptinject
 
 import (
 	"regexp"

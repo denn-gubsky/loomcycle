@@ -83,13 +83,16 @@ var layers = []layer{
 			"internal/netguard",
 			"internal/otel",
 			"internal/procgroup",
+			"internal/promptinject",
 			"internal/recipes",
 			"internal/redact",
+			"internal/retentionmode",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
 			"internal/statepatch",
 			"internal/steer",
+			"internal/teamspec",
 			"internal/turncancel",
 		},
 	},
@@ -298,7 +301,6 @@ var allowedSideways = []subsystemEdge{
 // The RFC EX Phase 2 cuts that remove the known violations. Each names the
 // change, so a failure message says which work an entry is waiting on.
 const (
-	cutConfig      = "config's validators move down to config's layer (config hub)"
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
 	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
 	cutRunIdentity = "run identity moves below tools"
@@ -315,12 +317,6 @@ type knownViolation struct {
 // here: the test fails on an entry that no longer matches, so when a cut lands
 // its entries go with it.
 var knownViolations = []knownViolation{
-
-	// memory's grammar, store.ParseRetention and the team-channel names,
-	// teamgraph's name/var validators.
-	{"internal/config", "internal/memory", cutConfig},
-	{"internal/config", "internal/store", cutConfig},
-	{"internal/config", "internal/teamgraph", cutConfig},
 
 	{"internal/credential", "internal/store", cutStoreIfaces},
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},

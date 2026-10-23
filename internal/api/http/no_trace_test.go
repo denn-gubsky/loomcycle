@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -132,7 +133,7 @@ func TestNoTrace_ARunTreeLeavesItsContentNowhereOnDisk(t *testing.T) {
 		// What IS kept: the rows, their links, their usage, and a marker for
 		// every event.
 		parent := runOfAgent(t, srv, "a_parent")
-		if parent.Retention != store.RetentionNone || parent.Status != store.RunCompleted || parent.StopReason != "end_turn" {
+		if parent.Retention != retentionmode.None || parent.Status != store.RunCompleted || parent.StopReason != "end_turn" {
 			t.Errorf("parent row: retention=%q status=%q stop=%q", parent.Retention, parent.Status, parent.StopReason)
 		}
 		if parent.InputTokens != 18 || !strings.Contains(string(parent.Result), `"content_retained":false`) {
@@ -144,11 +145,11 @@ func TestNoTrace_ARunTreeLeavesItsContentNowhereOnDisk(t *testing.T) {
 		}
 		// The child's own agent is not a no-trace agent: it is one because
 		// its parent is.
-		if children[0].Retention != store.RetentionNone || children[0].SessionID == parent.SessionID {
+		if children[0].Retention != retentionmode.None || children[0].SessionID == parent.SessionID {
 			t.Errorf("child row: retention=%q, session shared with parent=%v", children[0].Retention, children[0].SessionID == parent.SessionID)
 		}
 		for _, sid := range []string{parent.SessionID, children[0].SessionID} {
-			if sess, err := srv.store.GetSession(context.Background(), sid); err != nil || sess.Retention != store.RetentionNone {
+			if sess, err := srv.store.GetSession(context.Background(), sid); err != nil || sess.Retention != retentionmode.None {
 				t.Errorf("session %s retention = %q (err %v)", sid, sess.Retention, err)
 			}
 		}
@@ -259,7 +260,7 @@ func TestNoTrace_WhatANoTraceRunCannotDo(t *testing.T) {
 	for what, in := range map[string]runner.RunInput{
 		"RunOnce interactive":                   {Agent: "parent", Interactive: true, Segments: segs},
 		"RunOnce into a session":                {SessionID: quiet.SessionID, Segments: segs},
-		"RunOnce asked for none into a session": {Agent: "child", Retention: store.RetentionNone, SessionID: plain.SessionID, Segments: segs},
+		"RunOnce asked for none into a session": {Agent: "child", Retention: retentionmode.None, SessionID: plain.SessionID, Segments: segs},
 	} {
 		if err := srv.RunOnce(ctx, in, runner.RunCallbacks{}); !errors.Is(err, runner.ErrRetentionUnsupported) {
 			t.Errorf("%s: err = %v, want ErrRetentionUnsupported", what, err)
@@ -292,7 +293,7 @@ func TestNoTrace_WhatANoTraceRunCannotDo(t *testing.T) {
 	}
 
 	// From inside a no-trace run: a team walk, and a resident child.
-	inside := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_quiet", UserID: "alice", Retention: store.RetentionNone})
+	inside := tools.WithRunIdentity(ctx, tools.RunIdentityValue{AgentID: "a_quiet", UserID: "alice", Retention: retentionmode.None})
 	if _, err := srv.admitTeamRun(inside); !errors.Is(err, runner.ErrRetentionUnsupported) {
 		t.Errorf("a team walk from a no-trace run: err = %v, want ErrRetentionUnsupported", err)
 	}
@@ -310,7 +311,7 @@ func TestNoTrace_ARunStartedOffHTTPIsNoTraceWhenAskedOrWhenItsAgentIs(t *testing
 	srv, dbPath := makeServer(t, prov, noTraceConfig())
 	segs := []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "q " + canary}}}}
 	var live strings.Builder
-	err := srv.RunOnce(context.Background(), runner.RunInput{Agent: "child", AgentID: "a_asked", UserID: "alice", Retention: store.RetentionNone, Segments: segs},
+	err := srv.RunOnce(context.Background(), runner.RunInput{Agent: "child", AgentID: "a_asked", UserID: "alice", Retention: retentionmode.None, Segments: segs},
 		runner.RunCallbacks{OnEvent: func(ev providers.Event) { live.WriteString(ev.Text) }})
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +319,7 @@ func TestNoTrace_ARunStartedOffHTTPIsNoTraceWhenAskedOrWhenItsAgentIs(t *testing
 	if !strings.Contains(live.String(), "answer "+canary) {
 		t.Errorf("the caller's stream is missing the answer: %q", live.String())
 	}
-	if run := runOfAgent(t, srv, "a_asked"); run.Retention != store.RetentionNone {
+	if run := runOfAgent(t, srv, "a_asked"); run.Retention != retentionmode.None {
 		t.Errorf("retention = %q, want none", run.Retention)
 	}
 	if onDisk(t, srv, dbPath) {
@@ -398,7 +399,7 @@ func TestNoTraceFilter_ReducesTheFinishAndFailsClosed(t *testing.T) {
 	}
 	// A run of another process (nothing noted it here) is read from its row.
 	sess, _ := f.Store.CreateSession(context.Background(), "", "default", "")
-	run, err := f.Store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_elsewhere", Retention: store.RetentionNone})
+	run, err := f.Store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_elsewhere", Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +562,7 @@ func TestNoTrace_TheRunStateBusCarriesNoText(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
 	f := srv.store.(*traceFilterStore)
 	sess, _ := f.Store.CreateSession(context.Background(), "", "parent", "alice")
-	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_bus", Retention: store.RetentionNone})
+	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_bus", Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +616,7 @@ func TestNoTrace_ADistillationBanksNothing(t *testing.T) {
 		}
 		return id
 	}
-	if id := bank(store.RetentionNone); id != "" || onDisk(t, srv, dbPath) {
+	if id := bank(retentionmode.None); id != "" || onDisk(t, srv, dbPath) {
 		t.Errorf("a no-trace run banked a span (id %q, canary on disk: %v)", id, onDisk(t, srv, dbPath))
 	}
 	// The same call for an ordinary run does bank, so the check above means something.
@@ -666,7 +667,7 @@ func TestNoTrace_TheSpanCarriesTheErrorClassOnly(t *testing.T) {
 	}
 	boom := fmt.Errorf("%w: prompt was %s", runner.ErrTokenLimitExceeded, canary)
 
-	for _, retention := range []string{store.RetentionNone, ""} {
+	for _, retention := range []string{retentionmode.None, ""} {
 		a := finish("finish-"+retention, func(meta runStateMeta) {
 			srv.finishRun(context.Background(), newRun("a_span_f"+retention, retention), loop.RunResult{}, boom, meta)
 		})
@@ -675,7 +676,7 @@ func TestNoTrace_TheSpanCarriesTheErrorClassOnly(t *testing.T) {
 		})
 		for what, got := range map[string]string{"finishRun": a, "finishRunFailedReason": b} {
 			has := strings.Contains(got, canary)
-			if retention == store.RetentionNone && (has || !strings.Contains(got, "error class: ")) {
+			if retention == retentionmode.None && (has || !strings.Contains(got, "error class: ")) {
 				t.Errorf("%s: a no-trace run's span carries %q, want its class and no text", what, got)
 			}
 			// An ordinary run's span has the text, so the check above can fail.
@@ -691,7 +692,7 @@ func TestNoTrace_TheSpanCarriesTheErrorClassOnly(t *testing.T) {
 func TestNoTrace_ALaterWriteToTheRunsRecordStoresNoSettings(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
 	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")
-	run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_cfg", Retention: store.RetentionNone,
+	run, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_cfg", Retention: retentionmode.None,
 		RunConfig: json.RawMessage(`{"hooks":{"run_end":["` + canary + `"]}}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -717,7 +718,7 @@ func TestNoTrace_ALaterWriteToTheRunsRecordStoresNoSettings(t *testing.T) {
 func TestNoTrace_AHookFiredOutsideTheLoopStillRunsAsANoTraceRun(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
 	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")
-	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_hook", Retention: store.RetentionNone})
+	quiet, err := srv.store.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_hook", Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +726,7 @@ func TestNoTrace_AHookFiredOutsideTheLoopStillRunsAsANoTraceRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: quiet.ID, AgentID: "a_hook"})).Retention; got != store.RetentionNone {
+	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: quiet.ID, AgentID: "a_hook"})).Retention; got != retentionmode.None {
 		t.Errorf("a no-trace run's hook context has retention %q", got)
 	}
 	if got := tools.RunIdentity(srv.withHookRun(context.Background(), hooks.Identity{RunID: plain.ID, AgentID: "a_hook_plain"})).Retention; got != "" {
@@ -737,6 +738,6 @@ func TestNoTrace_AHookFiredOutsideTheLoopStillRunsAsANoTraceRun(t *testing.T) {
 // `retention: none` on its definition does.
 func markNoTrace(srv *Server, agent string) {
 	def := srv.cfg().Agents[agent]
-	def.Retention = store.RetentionNone
+	def.Retention = retentionmode.None
 	srv.cfg().Agents[agent] = def
 }
