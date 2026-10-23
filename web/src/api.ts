@@ -8,6 +8,7 @@
 // acl_self_elevation) renders the same readable message on every page.
 
 import { apiError } from "./lib/apiError";
+import type { AclCatalog, EvaluationRequest, Rule } from "./lib/aclRules";
 
 export interface UserSummary {
   user_id: string;
@@ -392,6 +393,9 @@ export interface EventPayload {
     priority?: string;
     expires_at?: string;
   };
+  // "capability_inert" sidecar — a tool the agent holds but cannot use this
+  // run. gate "acl" = the caller's access-control rules withheld it (RFC EY).
+  capability_inert?: { tool: string; gate: string; message?: string };
   // "steer" sidecar — an operator-injected steering message drained mid-turn.
   user_input?: { text: string; source?: string; seen_at?: string };
   // "awaiting_input" sidecar — a persistent interactive run parked at end_turn.
@@ -557,6 +561,11 @@ export interface Principal {
    * false (safe default). NEVER carries allowlist contents or any secret.
    */
   capabilities?: ServerCapabilities;
+  /** RFC EY access-control rollout mode: compat | shadow | enforce. Absent in open mode. */
+  acl_mode?: string;
+  /** The caller's groups (transitive); absent when none were resolved. */
+  groups?: string[];
+  acl_version?: number;
 }
 
 export interface ServerCapabilities {
@@ -3782,4 +3791,229 @@ export async function deleteLimit(
     const body = await resp.text();
     throw apiError(resp.status, resp.statusText, body);
   }
+}
+
+// ─── RFC EY / EZ — access control: groups, rule lists, bindings, decisions ───
+//
+// Every call is confined to the caller's tenant server-side; `tenant` is the
+// admin's ?tenant= focus (ignored for a tenant operator). Members are refused
+// the management routes (403) and may only ask the decision routes about
+// themselves.
+
+export interface GroupRow {
+  tenant_id?: string;
+  name: string;
+  description?: string;
+  // Set on a group an identity provider pushes; read-only locally.
+  external_id?: string;
+  created_at: string;
+  updated_at?: string;
+  created_by?: string;
+}
+
+export interface GroupMember {
+  tenant_id?: string;
+  group: string;
+  member_kind: "user" | "group";
+  member_id: string;
+  added_at: string;
+  added_by?: string;
+}
+
+export interface GroupDetail {
+  group: GroupRow;
+  members: GroupMember[] | null;
+  // Every group this one is (transitively) inside of, itself included.
+  contained_in: string[] | null;
+}
+
+// AclDefRow is one stored rule list. `rules` is the wire rule array.
+export interface AclDefRow {
+  tenant_id?: string;
+  name: string;
+  version: number;
+  content_sha256: string;
+  catalog_version: number;
+  rules: Rule[];
+  description?: string;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+  // Go zero time ("0001-01-01T00:00:00Z") while live — see lib/aclAccess isSetTime.
+  retired_at?: string;
+}
+
+// AclList is a built-in baseline list (code constant, read-only).
+export interface AclList {
+  name: string;
+  description?: string;
+  rules: Rule[];
+}
+
+export interface AclBinding {
+  binding_id: string;
+  tenant_id?: string;
+  acl: string;
+  subject_kind: "user" | "group" | "token" | "tenant";
+  subject_id?: string;
+  // Go zero time when unset — see lib/aclAccess isSetTime.
+  expires_at?: string;
+  created_at: string;
+  created_by?: string;
+  retired_at?: string;
+}
+
+export interface AuthzReason {
+  acl: string;
+  version?: number;
+  rule: number;
+  effect: string;
+}
+
+export interface AuthzDecision {
+  decision: boolean;
+  outcome: string; // allow | deny | no_match
+  reasons?: AuthzReason[];
+  tenant_floor?: boolean;
+  mode: string;
+}
+
+export interface AuthzTrace {
+  acl: string;
+  version?: number;
+  rule: number;
+  effect: string;
+  matched: boolean;
+  why: string;
+}
+
+export interface AuthzExplain {
+  decision: AuthzDecision;
+  traces: AuthzTrace[] | null;
+  missing_acls?: string[] | null;
+  applied_bindings: { id?: string; acl: string; subject_kind: string; subject_id?: string; expires_at?: string }[] | null;
+  groups?: string[] | null;
+}
+
+export interface AuthzSimulateResult {
+  request: unknown;
+  now: AuthzDecision;
+  with_draft: AuthzDecision;
+  changed: boolean;
+}
+
+function withTenant(path: string, tenant?: string, extra?: Record<string, string>): string {
+  const q = new URLSearchParams(extra);
+  if (tenant) q.set("tenant", tenant);
+  const qs = q.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+function postJSONBody<T>(path: string, body: unknown, tenant?: string): Promise<T> {
+  return jsonFetch<T>(withTenant(path, tenant), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function listGroups(tenant?: string): Promise<{ groups: GroupRow[] | null }> {
+  return jsonFetch(withTenant("/v1/_groups", tenant));
+}
+
+export function getGroup(name: string, tenant?: string): Promise<GroupDetail> {
+  return jsonFetch(withTenant(`/v1/_groups/${encodeURIComponent(name)}`, tenant));
+}
+
+export function upsertGroup(body: { name: string; description?: string }, tenant?: string): Promise<GroupRow> {
+  return postJSONBody("/v1/_groups", body, tenant);
+}
+
+export function deleteGroup(name: string, tenant?: string): Promise<{ deleted: string }> {
+  return jsonFetch(withTenant(`/v1/_groups/${encodeURIComponent(name)}`, tenant), { method: "DELETE" });
+}
+
+export function addGroupMember(group: string, kind: "user" | "group", id: string, tenant?: string): Promise<unknown> {
+  return postJSONBody(`/v1/_groups/${encodeURIComponent(group)}/members`, { kind, id }, tenant);
+}
+
+export function removeGroupMember(group: string, kind: string, id: string, tenant?: string): Promise<unknown> {
+  return jsonFetch(
+    withTenant(`/v1/_groups/${encodeURIComponent(group)}/members/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, tenant),
+    { method: "DELETE" },
+  );
+}
+
+function aclDefOp<T>(body: Record<string, unknown>, tenant?: string): Promise<T> {
+  return postJSONBody<T>("/v1/_acldef", body, tenant);
+}
+
+export function listAclDefs(includeRetired: boolean, tenant?: string): Promise<{ acls: AclDefRow[] | null; builtin: AclList[] | null }> {
+  return aclDefOp({ op: "list", include_retired: includeRetired }, tenant);
+}
+
+export function getAclDef(name: string, tenant?: string): Promise<AclDefRow> {
+  return aclDefOp({ op: "get", name }, tenant);
+}
+
+export function putAclDef(
+  body: { name: string; description?: string; rules: Rule[] },
+  tenant?: string,
+): Promise<AclDefRow> {
+  return aclDefOp({ op: "create", ...body }, tenant);
+}
+
+export function retireAclDef(name: string, tenant?: string): Promise<{ retired: string }> {
+  return aclDefOp({ op: "retire", name }, tenant);
+}
+
+export function validateAclRules(
+  rules: Rule[],
+  tenant?: string,
+): Promise<{ valid: boolean; rules: number; catalog_version: number }> {
+  return aclDefOp({ op: "validate", rules }, tenant);
+}
+
+export function getAclCatalog(tenant?: string): Promise<AclCatalog> {
+  return aclDefOp({ op: "catalog" }, tenant);
+}
+
+export function listAclBindings(includeRetired: boolean, tenant?: string): Promise<{ bindings: AclBinding[] | null }> {
+  return jsonFetch(withTenant("/v1/_aclbinding", tenant, includeRetired ? { include_retired: "1" } : undefined));
+}
+
+// createAclBinding omits an empty expires_at: the server decodes it into a Go
+// time.Time, which refuses "".
+export function createAclBinding(
+  body: { acl: string; subject_kind: string; subject_id?: string; expires_at?: string },
+  tenant?: string,
+): Promise<AclBinding> {
+  const out: Record<string, string> = { acl: body.acl, subject_kind: body.subject_kind };
+  if (body.subject_id) out.subject_id = body.subject_id;
+  if (body.expires_at) out.expires_at = body.expires_at;
+  return postJSONBody("/v1/_aclbinding", out, tenant);
+}
+
+export function retireAclBinding(id: string, tenant?: string): Promise<{ retired: string }> {
+  return jsonFetch(withTenant(`/v1/_aclbinding/${encodeURIComponent(id)}`, tenant), { method: "DELETE" });
+}
+
+export function authzEvaluate(req: EvaluationRequest, tenant?: string): Promise<AuthzDecision> {
+  return postJSONBody("/v1/_authz/evaluation", req, tenant);
+}
+
+export function authzExplain(req: EvaluationRequest, tenant?: string): Promise<AuthzExplain> {
+  return postJSONBody("/v1/_authz/explain", req, tenant);
+}
+
+export function authzSimulate(
+  body: {
+    subject?: { type: string; id: string };
+    acls?: AclList[];
+    bindings?: { acl: string; subject_kind: string; subject_id?: string; expires_at?: string }[];
+    requests: EvaluationRequest[];
+  },
+  tenant?: string,
+): Promise<{ results: AuthzSimulateResult[] | null; missing_acls?: string[] | null }> {
+  return postJSONBody("/v1/_authz/simulate", body, tenant);
 }
