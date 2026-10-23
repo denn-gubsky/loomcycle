@@ -107,6 +107,17 @@ var tenantConfinableTools = map[string]bool{
 	// (toolRequiredScope): it uses the tenant's keys.
 	"crypto": true,
 
+	// RFC EZ access-control management. The shared implementation stamps the
+	// tenant from the principal (an admin alone may focus another) and holds
+	// every gate itself; groupdef/acldef/aclbinding also need substrate:tenant
+	// by name (toolRequiredScope), as their HTTP routes keep members out.
+	"groupdef":   true,
+	"acldef":     true,
+	"aclbinding": true,
+	// authz: the questions a principal asks about itself; naming another
+	// subject needs a tenant operator, which the implementation checks.
+	"authz": true,
+
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
 	"channel":    true,
@@ -173,6 +184,9 @@ var adminOnlyTools = map[string]bool{
 // session's surface); the drift test asserts that.
 var userSelfServiceTools = map[string]bool{
 	"credentialdef": true, // RFC CN — a user's own scope=user credential store.
+	// authz: an isolated user may ask about itself on HTTP and gRPC, so here
+	// too; it is confined to its own subject by the implementation.
+	"authz": true,
 	// evaluation: reachable by an isolated user on HTTP and gRPC, so here too.
 	// The grant, not this list, holds it to submit_self
 	// (tools.OffRunEvaluationPolicy), and the tool to its own runs.
@@ -231,6 +245,11 @@ var toolRequiredScope = map[string]string{
 	"decision": auth.ScopeRunsCreate,
 	// Evaluation: the floor POST /v1/_evaluation and the Evaluation RPC gate on.
 	"evaluation": auth.ScopeRunsRead,
+	// Groups, lists and bindings are the tenant operator's: the scope their
+	// HTTP routes and RPCs require, which keeps a member out here too.
+	"groupdef":   auth.ScopeTenant,
+	"acldef":     auth.ScopeTenant,
+	"aclbinding": auth.ScopeTenant,
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke

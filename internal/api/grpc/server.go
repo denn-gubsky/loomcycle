@@ -1065,6 +1065,16 @@ var grpcConsumerScopes = map[string]string{
 	// `evaluation` tool. The floor admits an isolated user; which ops it may use
 	// is tools.OffRunEvaluationPolicy (substrateGRPCCtx), not this gate.
 	"Evaluation": auth.ScopeRunsRead,
+	// RFC EZ access-control management, gated as the HTTP routes are: groups,
+	// lists and bindings are the tenant operator's (the routes' ScopeTenant +
+	// member carve-out — gRPC has no member path, so the scope alone does
+	// it), and any authenticated principal may ask the authz questions about
+	// itself ("" — the shared implementation confines a non-operator to its
+	// own subject). The shared implementation re-checks every one of these.
+	"GroupDef":   auth.ScopeTenant,
+	"AclDef":     auth.ScopeTenant,
+	"AclBinding": auth.ScopeTenant,
+	"Authz":      "",
 }
 
 // requiredScopeForRPC returns the scope a caller must hold for fullMethod.

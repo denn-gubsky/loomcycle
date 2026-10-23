@@ -111,7 +111,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// gate behind /v1/_mcp) evaluate under the same rules.
 		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.aclMode()), "http")
 		r = r.WithContext(ctx)
-		if !s.aclGateHTTP(w, r, p) {
+		ctx, ok = s.aclGateHTTP(w, r, p)
+		if !ok {
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
@@ -783,6 +784,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			"scopes": []string{auth.ScopeAdmin}, "is_admin": true,
 			"legacy": false, "open_mode": true,
 			"capabilities": s.serverCapabilities(),
+			// The rollout mode is the deployment's, not the principal's: an
+			// open-mode console shows it like any other.
+			"acl_mode": string(s.aclMode()),
 		})
 		return
 	}

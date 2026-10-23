@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -119,5 +120,21 @@ func TestBinding_ValidateAndAppliesTo(t *testing.T) {
 	}
 	if !(Binding{ExpiresAt: now.Add(time.Second)}).Active(now) || !(Binding{}).Active(now) {
 		t.Error("a live or unbounded binding is inactive")
+	}
+}
+
+// A binding with no expiry marshals without one, as the store rows do: the
+// explain and simulate answers carry bindings, and an unset time.Time used
+// to read 0001-01-01T00:00:00Z.
+func TestBinding_MarshalLeavesAnUnsetExpiryOut(t *testing.T) {
+	raw, err := json.Marshal(Binding{ACL: "x", SubjectKind: SubjectUser, SubjectID: "u"})
+	if err != nil || strings.Contains(string(raw), "expires_at") {
+		t.Errorf("unset expiry: %s %v", raw, err)
+	}
+	at := time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)
+	raw, _ = json.Marshal(Binding{ACL: "x", SubjectKind: SubjectUser, SubjectID: "u", ExpiresAt: at})
+	var back Binding
+	if err := json.Unmarshal(raw, &back); err != nil || !back.ExpiresAt.Equal(at) || !strings.Contains(string(raw), `"expires_at":"2027-01-02T03:04:05Z"`) {
+		t.Errorf("set expiry: %s → %+v %v", raw, back, err)
 	}
 }

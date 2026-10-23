@@ -405,6 +405,23 @@ type Connector interface {
 	// RPC and the MCP meta-tool `crypto`.
 	Crypto(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// --- Access-control management (RFC EZ §3) ---
+	//
+	// GroupDef, AclDef, AclBinding and Authz are the op-dispatched twins of
+	// the HTTP routes /v1/_groups*, /v1/_acldef*, /v1/_aclbinding* and
+	// /v1/_authz/*. The input is the route's JSON body plus "op" (one of
+	// ACLManagementOps) and, for an admin, a "tenant" focus; the result
+	// text is the route's JSON body. One implementation serves every
+	// transport, and it holds every gate itself — tenant confinement,
+	// operator-only management, the per-op list check, the self-elevation
+	// guards, audit and cache invalidation — so no transport can reach the
+	// logic around them. A call made from inside a run is refused: this is
+	// an operator plane, never an agent's tool.
+	GroupDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	AclDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	AclBinding(ctx context.Context, input json.RawMessage) (ToolResult, error)
+	Authz(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Pause/Resume/Snapshot (real in v0.8.18) ---
 	//
 	// Wire shapes finalised v0.8.15. Real implementations landed in

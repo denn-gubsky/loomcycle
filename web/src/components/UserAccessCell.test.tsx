@@ -3,17 +3,16 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import UserAccessCell, { type AccessSnapshot } from "./UserAccessCell";
 
-const zero = "0001-01-01T00:00:00Z";
 const snap: AccessSnapshot = {
   idx: {
     support: [{ group: "support", member_kind: "group", member_id: "temps", added_at: "" }],
     temps: [{ group: "temps", member_kind: "user", member_id: "carol", added_at: "" }],
   },
   bindings: [
-    { binding_id: "1", acl: "mine", subject_kind: "user", subject_id: "carol", created_at: "", expires_at: zero, retired_at: zero },
-    { binding_id: "2", acl: "support-rules", subject_kind: "group", subject_id: "support", created_at: "", expires_at: zero, retired_at: zero },
-    { binding_id: "3", acl: "baseline", subject_kind: "tenant", created_at: "", expires_at: zero, retired_at: zero },
-    { binding_id: "4", acl: "someone-else", subject_kind: "user", subject_id: "dave", created_at: "", expires_at: zero, retired_at: zero },
+    { binding_id: "1", acl: "mine", subject_kind: "user", subject_id: "carol", created_at: "" },
+    { binding_id: "2", acl: "support-rules", subject_kind: "group", subject_id: "support", created_at: "" },
+    { binding_id: "3", acl: "baseline", subject_kind: "tenant", created_at: "" },
+    { binding_id: "4", acl: "someone-else", subject_kind: "user", subject_id: "dave", created_at: "" },
   ],
 };
 

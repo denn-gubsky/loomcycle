@@ -4196,6 +4196,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListGroups))))
 	mux.Handle("POST /v1/_groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpsertGroup))))
 	mux.Handle("GET /v1/_groups/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetGroup))))
+	mux.Handle("GET /v1/_groups/{name}/effective", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGroupEffective))))
 	mux.Handle("DELETE /v1/_groups/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteGroup))))
 	mux.Handle("POST /v1/_groups/{name}/members", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAddGroupMember))))
 	mux.Handle("DELETE /v1/_groups/{name}/members/{kind}/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRemoveGroupMember))))

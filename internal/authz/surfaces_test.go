@@ -32,8 +32,11 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_acldef", instance("read", "def", "acl/*"), true},
 		{"GET", "/v1/_acldef/names", instance("read", "def", "acl/*"), true},
 		{"GET", "/v1/_aclbinding", instance("read", "def", "acl/*"), true},
-		{"POST", "/v1/_aclbinding", instance("author", "def", "acl/*"), true},
-		{"DELETE", "/v1/_aclbinding/b1", instance("author", "def", "acl/*"), true},
+		// Writes ask read at the route, like acldef and the RPCs; the operation
+		// asks author.
+		{"POST", "/v1/_aclbinding", instance("read", "def", "acl/*"), true},
+		{"DELETE", "/v1/_aclbinding/b1", instance("read", "def", "acl/*"), true},
+		{"POST", "/v1/_groups", instance("read", "principal", "group:*"), true},
 		{"GET", "/v1/_a2aservercarddef/names", instance("read", "def", "a2aserver/*"), true},
 		// A name that ends in "def" but has its own question must not fall into
 		// the generic `_<family>def` → read case (a switch takes the first
@@ -104,13 +107,13 @@ func TestSurfaces_EveryMappedPairIsInTheCatalog(t *testing.T) {
 			}
 		}
 	}
-	for _, rpc := range []string{"Run", "Continue", "StreamRun", "DeleteRunTree", "Decide", "PublishChannel", "AgentDef", "Memory", "OperatorTokenDef", "RestoreSnapshot", "UsageReport", "DirectoryTenants", "History", "Crypto", "TeamDef", "VolumeDef", "AwaitChannels"} {
+	for _, rpc := range []string{"Run", "Continue", "StreamRun", "DeleteRunTree", "Decide", "PublishChannel", "AgentDef", "Memory", "OperatorTokenDef", "RestoreSnapshot", "UsageReport", "DirectoryTenants", "History", "Crypto", "TeamDef", "VolumeDef", "AwaitChannels", "GroupDef", "AclDef", "AclBinding"} {
 		s, ok := GRPCSurface(rpc)
 		if !ok || !ValidVerb(s.Type, s.Action) {
 			t.Errorf("GRPCSurface(%s) = %+v, %v", rpc, s, ok)
 		}
 	}
-	for _, rpc := range []string{"Health", "Config", "NoSuchRPC"} {
+	for _, rpc := range []string{"Health", "Config", "Authz", "NoSuchRPC"} {
 		if _, ok := GRPCSurface(rpc); ok {
 			t.Errorf("GRPCSurface(%s) should be ungoverned", rpc)
 		}

@@ -162,3 +162,33 @@ type AclStore interface {
 	// cached Effective set is current.
 	AclVersion(ctx context.Context, tenantID string) (int64, error)
 }
+
+// optTime is a time the JSON form leaves out when it was never set:
+// `omitempty` does nothing for a time.Time (a struct is never "empty"), so
+// an unset expiry or retirement was written as 0001-01-01T00:00:00Z. A set
+// time marshals exactly as before.
+func optTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+// MarshalJSON leaves RetiredAt out while the list is live.
+func (r AclDefRow) MarshalJSON() ([]byte, error) {
+	type plain AclDefRow
+	return json.Marshal(struct {
+		plain
+		RetiredAt *time.Time `json:"retired_at,omitempty"`
+	}{plain(r), optTime(r.RetiredAt)})
+}
+
+// MarshalJSON leaves ExpiresAt and RetiredAt out when they are unset.
+func (r AclBindingRow) MarshalJSON() ([]byte, error) {
+	type plain AclBindingRow
+	return json.Marshal(struct {
+		plain
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+		RetiredAt *time.Time `json:"retired_at,omitempty"`
+	}{plain(r), optTime(r.ExpiresAt), optTime(r.RetiredAt)})
+}

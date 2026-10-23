@@ -100,6 +100,10 @@ const (
 	Loomcycle_Document_FullMethodName            = "/loomcycle.v1.Loomcycle/Document"
 	Loomcycle_CredentialDef_FullMethodName       = "/loomcycle.v1.Loomcycle/CredentialDef"
 	Loomcycle_Crypto_FullMethodName              = "/loomcycle.v1.Loomcycle/Crypto"
+	Loomcycle_GroupDef_FullMethodName            = "/loomcycle.v1.Loomcycle/GroupDef"
+	Loomcycle_AclDef_FullMethodName              = "/loomcycle.v1.Loomcycle/AclDef"
+	Loomcycle_AclBinding_FullMethodName          = "/loomcycle.v1.Loomcycle/AclBinding"
+	Loomcycle_Authz_FullMethodName               = "/loomcycle.v1.Loomcycle/Authz"
 	Loomcycle_History_FullMethodName             = "/loomcycle.v1.Loomcycle/History"
 	Loomcycle_Evaluation_FullMethodName          = "/loomcycle.v1.Loomcycle/Evaluation"
 	Loomcycle_Memory_FullMethodName              = "/loomcycle.v1.Loomcycle/Memory"
@@ -553,6 +557,28 @@ type LoomcycleClient interface {
 	// ResourceExhausted with RetryInfo. Op-discriminated input_json; same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	Crypto(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// Access-control management (RFC EZ §3), op-dispatched like
+	// OperatorTokenDef. input_json is the HTTP route's JSON body plus "op"
+	// and, for an admin, a "tenant" focus; output_json is the route's JSON
+	// body; is_error + error_info carry a refusal. Every gate the HTTP route
+	// holds is in the shared implementation: tenant confinement, the
+	// substrate:tenant floor for the three management families, the per-op
+	// access-control question, the self-elevation guards, audit and cache
+	// invalidation across replicas.
+	//
+	// GroupDef mirrors /v1/_groups*: list / get / create / delete /
+	// add_member / remove_member. ScopeTenant.
+	GroupDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// AclDef mirrors POST /v1/_acldef and GET /v1/_acldef/names: create /
+	// update / put / get / list / retire / validate / catalog / names.
+	// ScopeTenant.
+	AclDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// AclBinding mirrors /v1/_aclbinding*: list / create / delete. ScopeTenant.
+	AclBinding(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// Authz mirrors /v1/_authz/*: evaluation / evaluations / explain /
+	// simulate. Any authenticated principal, about ITSELF; naming another
+	// subject needs a tenant operator.
+	Authz(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// History dispatches to the RFC BE History tool (browse/search/annotate
 	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
 	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
@@ -1297,6 +1323,46 @@ func (c *loomcycleClient) Crypto(ctx context.Context, in *SubstrateRequest, opts
 	return out, nil
 }
 
+func (c *loomcycleClient) GroupDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_GroupDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) AclDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_AclDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) AclBinding(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_AclBinding_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) Authz(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Authz_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) History(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -1883,6 +1949,28 @@ type LoomcycleServer interface {
 	// ResourceExhausted with RetryInfo. Op-discriminated input_json; same
 	// SubstrateRequest/Response body shape (is_error carries tool refusals).
 	Crypto(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// Access-control management (RFC EZ §3), op-dispatched like
+	// OperatorTokenDef. input_json is the HTTP route's JSON body plus "op"
+	// and, for an admin, a "tenant" focus; output_json is the route's JSON
+	// body; is_error + error_info carry a refusal. Every gate the HTTP route
+	// holds is in the shared implementation: tenant confinement, the
+	// substrate:tenant floor for the three management families, the per-op
+	// access-control question, the self-elevation guards, audit and cache
+	// invalidation across replicas.
+	//
+	// GroupDef mirrors /v1/_groups*: list / get / create / delete /
+	// add_member / remove_member. ScopeTenant.
+	GroupDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// AclDef mirrors POST /v1/_acldef and GET /v1/_acldef/names: create /
+	// update / put / get / list / retire / validate / catalog / names.
+	// ScopeTenant.
+	AclDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// AclBinding mirrors /v1/_aclbinding*: list / create / delete. ScopeTenant.
+	AclBinding(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// Authz mirrors /v1/_authz/*: evaluation / evaluations / explain /
+	// simulate. Any authenticated principal, about ITSELF; naming another
+	// subject needs a tenant operator.
+	Authz(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// History dispatches to the RFC BE History tool (browse/search/annotate
 	// past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
 	// (ScopeTenant): the owner is resolved from the operator-trust ctx +
@@ -2156,6 +2244,18 @@ func (UnimplementedLoomcycleServer) CredentialDef(context.Context, *SubstrateReq
 }
 func (UnimplementedLoomcycleServer) Crypto(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Crypto not implemented")
+}
+func (UnimplementedLoomcycleServer) GroupDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GroupDef not implemented")
+}
+func (UnimplementedLoomcycleServer) AclDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AclDef not implemented")
+}
+func (UnimplementedLoomcycleServer) AclBinding(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AclBinding not implemented")
+}
+func (UnimplementedLoomcycleServer) Authz(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Authz not implemented")
 }
 func (UnimplementedLoomcycleServer) History(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method History not implemented")
@@ -3308,6 +3408,78 @@ func _Loomcycle_Crypto_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_GroupDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).GroupDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_GroupDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).GroupDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_AclDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).AclDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_AclDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).AclDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_AclBinding_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).AclBinding(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_AclBinding_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).AclBinding(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_Authz_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Authz(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Authz_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Authz(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_History_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -3791,6 +3963,22 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Crypto",
 			Handler:    _Loomcycle_Crypto_Handler,
+		},
+		{
+			MethodName: "GroupDef",
+			Handler:    _Loomcycle_GroupDef_Handler,
+		},
+		{
+			MethodName: "AclDef",
+			Handler:    _Loomcycle_AclDef_Handler,
+		},
+		{
+			MethodName: "AclBinding",
+			Handler:    _Loomcycle_AclBinding_Handler,
+		},
+		{
+			MethodName: "Authz",
+			Handler:    _Loomcycle_Authz_Handler,
 		},
 		{
 			MethodName: "History",

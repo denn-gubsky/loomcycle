@@ -3,20 +3,34 @@ import { Plus, Trash2, X } from "lucide-react";
 import { addGroupMember, deleteGroup, getGroup, listGroups, removeGroupMember, upsertGroup, type GroupRow } from "../../api";
 import { effectiveMembers, membershipTree, type MembersIndex, type TreeNode } from "../../lib/aclAccess";
 import ErrorNotice from "../ErrorNotice";
+import { ConfigPill } from "./BindingsTab";
 
 // GroupsTab — the tenant's user groups: create / delete, direct members (users
 // and nested groups) with add / remove, the nested-membership tree and the
 // effective (transitive) members. The server returns direct members only, so
 // the closure is computed here from every group's members (one GET per group;
 // a tenant's group count is small, and the list is what the operator is
-// looking at anyway).
+// looking at anyway). GET /v1/_groups/{name}/effective answers the same
+// question server-side, but without the chain each user comes through, and
+// the tree and the Users page need every group's members anyway.
+//
+// A group the config declares has no stored row to fetch: its members come
+// with the list entry.
 
 export async function loadMembersIndex(groups: GroupRow[], tenant?: string): Promise<MembersIndex> {
-  const details = await Promise.all(groups.map((g) => getGroup(g.name, tenant)));
+  const stored = groups.filter((g) => g.source !== "config");
+  const details = await Promise.all(stored.map((g) => getGroup(g.name, tenant)));
   const idx: MembersIndex = {};
   details.forEach((d, i) => {
-    idx[groups[i].name] = d.members ?? [];
+    idx[stored[i].name] = d.members ?? [];
   });
+  for (const g of groups) {
+    if (g.source !== "config") continue;
+    idx[g.name] = [
+      ...(g.members ?? []).map((id) => ({ group: g.name, member_kind: "user" as const, member_id: id, added_at: "" })),
+      ...(g.groups ?? []).map((id) => ({ group: g.name, member_kind: "group" as const, member_id: id, added_at: "" })),
+    ];
+  }
   return idx;
 }
 
@@ -152,6 +166,7 @@ export function GroupTable({
                     external
                   </span>
                 )}
+                {g.source === "config" && <ConfigPill what="group" />}
               </td>
               <td className="settings-muted">{g.description || "—"}</td>
               <td>
@@ -162,9 +177,11 @@ export function GroupTable({
                 <button type="button" className="ghost-btn" onClick={() => onToggle(g.name)}>
                   {open === g.name ? "close" : "members"}
                 </button>
-                <button type="button" className="ghost-btn danger" title="Delete group" onClick={() => onDelete(g.name)}>
-                  <Trash2 size={14} />
-                </button>
+                {g.source !== "config" && (
+                  <button type="button" className="ghost-btn danger" title="Delete group" onClick={() => onDelete(g.name)}>
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </td>
             </tr>
           );
@@ -192,9 +209,12 @@ export function GroupPanel({
   const [err, setErr] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const members = idx[group.name] ?? [];
-  // An IdP-synced group is read-only to local writers (RFC EY §5); the
-  // server does not refuse it yet, so the console holds the line.
+  // An IdP-synced group's members are managed at the provider (the server
+  // refuses member writes, 409 group_external), and a config group has no
+  // stored row to write: both are read-only here.
   const external = !!group.external_id;
+  const config = group.source === "config";
+  const readOnly = external || config;
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -226,6 +246,7 @@ export function GroupPanel({
       <h3>
         <code>{group.name}</code>
         {external && <span className="settings-muted"> — managed by an identity provider; members are read-only here</span>}
+        {config && <span className="settings-muted"> — declared in the config; change it there</span>}
       </h3>
       <div className="acl-panel-cols">
         <div>
@@ -235,7 +256,7 @@ export function GroupPanel({
             {members.map((m) => (
               <li key={m.member_kind + ":" + m.member_id}>
                 <span className={"acl-kind acl-kind-" + m.member_kind}>{m.member_kind}</span> <code>{m.member_id}</code>
-                {!external && (
+                {!readOnly && (
                   <button type="button" className="ghost-btn acl-inline-btn" title="Remove member" onClick={() => void drop(m.member_kind, m.member_id)}>
                     <X size={12} />
                   </button>
@@ -243,7 +264,7 @@ export function GroupPanel({
               </li>
             ))}
           </ul>
-          {!external && (
+          {!readOnly && (
             <form className="acl-form-row" onSubmit={add}>
               <select aria-label="member kind" value={kind} onChange={(e) => setKind(e.target.value as "user" | "group")}>
                 <option value="user">user</option>

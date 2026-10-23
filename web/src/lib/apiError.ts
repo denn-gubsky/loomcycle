@@ -125,6 +125,18 @@ export function apiError(status: number, statusText: string, raw: string, opts: 
     const why = (serverText ?? "the change would widen your own access").replace(/^refused:\s*/, "");
     return new ApiError(prefixed(`refused — ${why}`), status, code);
   }
+  // The access-control management refusals that are not "you may not": the
+  // server's sentence already says what to do, so it is kept, after a short
+  // lead naming the kind of refusal.
+  if (status === 400 && code === "acl_binding_invalid") {
+    return new ApiError(prefixed(`binding not saved — ${serverText ?? "it could never be in force"}`), status, code);
+  }
+  if (status === 409 && code === "group_external") {
+    return new ApiError(prefixed(`read-only group — ${serverText ?? "its members are managed by an identity provider"}`), status, code);
+  }
+  if (status === 503 && code === "acl_unavailable") {
+    return new ApiError(prefixed("access control is unavailable right now — try again in a moment"), status, code);
+  }
   if (opts.serverMessage && serverText) return new ApiError(serverText, status, code);
   return new ApiError(`${statusLine}: ${raw.slice(0, 200)}`, status, code);
 }

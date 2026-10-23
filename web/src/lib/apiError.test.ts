@@ -120,3 +120,32 @@ describe("apiError — what the server actually sends", () => {
     expect(forbiddenKind(apiError(503, "Service Unavailable", JSON.stringify({ code: "authz_subject", error: "x" })))).toBeNull();
   });
 });
+
+describe("apiError — the management refusals", () => {
+  it("says why a binding was not saved (400 acl_binding_invalid)", () => {
+    const body = JSON.stringify({ code: "acl_binding_invalid", error: 'list "nope" does not exist (or is retired): a binding to it would match nothing — create the list first' });
+    const e = apiError(400, "Bad Request", body);
+    expect(e.message).toBe('400 Bad Request: binding not saved — list "nope" does not exist (or is retired): a binding to it would match nothing — create the list first');
+    expect(e.code).toBe("acl_binding_invalid");
+    expect(e.message).not.toContain("{");
+  });
+
+  it("says a synced group is managed at its identity provider (409 group_external)", () => {
+    const body = JSON.stringify({ code: "group_external", error: 'group "okta-eng" is synced from an identity provider (external_id "00g1"); manage its members there' });
+    const e = apiError(409, "Conflict", body);
+    expect(e.message).toBe('409 Conflict: read-only group — group "okta-eng" is synced from an identity provider (external_id "00g1"); manage its members there');
+    expect(e.message).not.toContain("{");
+  });
+
+  it("says access control is briefly unavailable (503 acl_unavailable)", () => {
+    const body = JSON.stringify({ code: "acl_unavailable", error: "access control could not be evaluated; retry" });
+    const e = apiError(503, "Service Unavailable", body);
+    expect(e.message).toBe("503 Service Unavailable: access control is unavailable right now — try again in a moment");
+    expect(e.status).toBe(503);
+  });
+
+  it("keeps the server's sentence without the status line when asked to", () => {
+    const body = JSON.stringify({ code: "group_external", error: "managed there" });
+    expect(apiError(409, "Conflict", body, { serverMessage: true }).message).toBe("read-only group — managed there");
+  });
+});
