@@ -34,7 +34,13 @@ type Config struct {
 	// stderr. Useful for surfacing server-side logs in test output.
 	// The default behaviour is to discard stderr.
 	OnStderr func(string)
+	// MaxFrameBytes caps one JSON-RPC line from the child (the operator's
+	// LOOMCYCLE_MCP_MAX_FRAME_BYTES). Zero takes DefaultMaxFrameBytes.
+	MaxFrameBytes int64
 }
+
+// DefaultMaxFrameBytes is the line cap when none is configured.
+const DefaultMaxFrameBytes = 16 << 20
 
 // Client is one connection to a stdio MCP server. Spawn() spawns the child
 // and starts the reader goroutine; Call sends a request and waits for the
@@ -304,13 +310,18 @@ func (c *Client) readLoop() {
 	defer close(c.doneCh)
 	defer c.failPending()
 
-	// 16 MiB per-line cap. Real-world MCP servers (brave-search, fetch,
-	// filesystem) routinely return single JSON-RPC frames > 4 MiB when a
-	// tool result includes raw HTML or a large file. Hitting the cap
-	// produces bufio.ErrTooLong, which kills the connection — we'd rather
-	// allocate up to 16 MiB once than mark the server permanently dead.
+	// Per-line cap, 16 MiB unless the operator set one. Real-world MCP
+	// servers (brave-search, fetch, filesystem) routinely return single
+	// JSON-RPC frames > 4 MiB when a tool result includes raw HTML or a
+	// large file. Hitting the cap produces bufio.ErrTooLong, which kills the
+	// connection — we'd rather allocate up to the cap once than mark the
+	// server permanently dead.
+	maxFrame := c.cfg.MaxFrameBytes
+	if maxFrame <= 0 {
+		maxFrame = DefaultMaxFrameBytes
+	}
 	scanner := bufio.NewScanner(c.stdout)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), int(maxFrame))
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {

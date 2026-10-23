@@ -1236,7 +1236,7 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 		// spec can't carry Command/Args/Env). A tenant never overrides
 		// a stdio server — resolve it directly at the shared base.
 		if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
-			return spawnStdioMCP(name, srv)
+			return spawnStdioMCP(name, srv, cfg.Env.MCPMaxFrameBytes)
 		}
 		// http / streamable-http: tenant-dynamic → static yaml →
 		// shared-dynamic, via the shared resolver.
@@ -1307,6 +1307,7 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				// private hosts the operator vouched for, under netguard's
 				// rules (a vouched name never reaches link-local or metadata).
 				BlockPrivateIPs:      !cfg.Env.MCPAllowPrivateIPs || !trusted,
+				MaxResponseBytes:     cfg.Env.MCPMaxFrameBytes,
 				PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 				// RFC AR — resolve $cred:<name> header tokens per-request from
 				// the tenant credential store (per-user tokens bind correctly on
@@ -1327,7 +1328,7 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 			// set, so reaching here already means the operator opted in.
 			// Spawned + lifecycle-managed (respawn on crash, teardown on
 			// retire) by the same pool path as a yaml stdio server.
-			return spawnStdio(name, spec.Command, spec.Args, spec.Env)
+			return spawnStdio(name, spec.Command, spec.Args, spec.Env, cfg.Env.MCPMaxFrameBytes)
 		default:
 			return nil, fmt.Errorf("mcp_servers.%s: invalid transport %q (data corruption?)", name, spec.Transport)
 		}
@@ -1368,8 +1369,8 @@ func (g guardedTenantMCP) explain(err error) error {
 		"to allow it, add its host to LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, or have an admin re-save the definition off-run: %w", g.name, g.tenant, err)
 }
 
-func spawnStdioMCP(name string, srv config.MCPServer) (mcp.Caller, error) {
-	return spawnStdio(name, srv.Command, srv.Args, srv.Env)
+func spawnStdioMCP(name string, srv config.MCPServer, maxFrame int64) (mcp.Caller, error) {
+	return spawnStdio(name, srv.Command, srv.Args, srv.Env, maxFrame)
 }
 
 // runStartMCPDiscoveryTimeout bounds the F33 run-start handshake of a referenced
@@ -1411,15 +1412,16 @@ func (r mcpActiveDefReader) ActiveMCPServerDef(ctx context.Context, tenant, name
 // not baking into the stored def — keeps the persisted content free of the
 // resolved secret (F32). Uses the same allowlisted expander as yaml-load;
 // ${run.*} late-binding tokens pass through verbatim as before.
-func spawnStdio(name, command string, args []string, envMap map[string]string) (mcp.Caller, error) {
+func spawnStdio(name, command string, args []string, envMap map[string]string, maxFrame int64) (mcp.Caller, error) {
 	expandedArgs := make([]string, len(args))
 	for i, a := range args {
 		expandedArgs[i] = config.ExpandEnv(a)
 	}
 	return mcpstdio.Spawn(mcpstdio.Config{
-		Command: config.ExpandEnv(command),
-		Args:    expandedArgs,
-		Env:     expandedStdioEnv(envMap),
+		Command:       config.ExpandEnv(command),
+		Args:          expandedArgs,
+		Env:           expandedStdioEnv(envMap),
+		MaxFrameBytes: maxFrame,
 		OnStderr: func(line string) {
 			log.Printf("mcp[%s]: %s", name, line)
 		},

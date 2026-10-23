@@ -224,3 +224,20 @@ func TestInbox_SetEntryOutsideTheDerivedPathRefuses(t *testing.T) {
 		t.Errorf("wrote into %s: %v", elsewhere, ents)
 	}
 }
+
+// A resumed tree starts a new process's inbox state; the cap counts the files
+// the tree already kept, or a resume would reset the allowance.
+func TestInbox_ResumedTreeCountsWhatItAlreadyHolds(t *testing.T) {
+	dyn := t.TempDir()
+	r := inboxtest.New(t, "root-1", inbox.Service{DynamicRoot: dyn, MaxTreeBytes: 3000})
+	if first := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "o"}, pdf); !first.Kept {
+		t.Fatal(first.Stub)
+	}
+	ref, _ := r.Set.Get(inbox.Name)
+
+	resumed := inboxtest.New(t, "root-1", inbox.Service{DynamicRoot: dyn, MaxTreeBytes: 3000, Store: r.Store})
+	resumed.Set.Add(inbox.Name, tools.EphemeralVolumeRef{Root: ref.Root})
+	if second := inbox.Capture(resumed.Ctx, inbox.Item{Name: "b.pdf", Origin: "o"}, pdf); second.Kept {
+		t.Errorf("a resumed tree kept past its cap: %q", second.Stub)
+	}
+}

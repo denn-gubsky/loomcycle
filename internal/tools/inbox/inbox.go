@@ -354,7 +354,7 @@ func (h handle) ensure(ctx context.Context) (string, error) {
 		if filepath.Clean(ref.Root) != filepath.Clean(derived) {
 			return "", fmt.Errorf("the run's volume named %q is not its inbox", Name)
 		}
-		h.tree.root = derived
+		h.adopt(derived)
 		return derived, nil
 	}
 	if slices.Contains(h.svc.StaticVolumeNames, Name) {
@@ -400,8 +400,41 @@ func (h handle) ensure(ctx context.Context) (string, error) {
 		}
 	}
 	set.Add(Name, tools.EphemeralVolumeRef{Root: dir})
-	h.tree.root = dir
+	if created {
+		h.tree.root = dir
+	} else {
+		h.adopt(dir)
+	}
 	return dir, nil
+}
+
+// adopt takes an inbox that already holds files (a resumed tree's, or one a
+// run of the tree made before this process's state existed) and counts what
+// is in it, so the tree's cap holds across a resume. The tree's lock is held.
+func (h handle) adopt(dir string) {
+	h.tree.root = dir
+	h.tree.used = max(h.tree.used, usedOnDisk(dir))
+}
+
+// usedOnDisk sums the regular files under dir, read through an os.Root so a
+// link inside cannot make it count, or reach, anything outside.
+func usedOnDisk(dir string) int64 {
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return 0
+	}
+	defer r.Close()
+	var n int64
+	_ = fs.WalkDir(r.FS(), ".", func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return nil
+		}
+		if fi, err := d.Info(); err == nil {
+			n += fi.Size()
+		}
+		return nil
+	})
+	return n
 }
 
 func dedupe(a, b string) []string {
