@@ -257,7 +257,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// import. Image references are left to the reader below, which follows
 	// only the ones op=extract wrote.
 	md := extract.Neutralize(string(b), false)
-	md = withRootHeading(md, in.Title, title(path.Base(rel)))
+	md = withRootHeading(md, in.Title, fileTitle(path.Base(rel)))
 	md = hoistExtractedImages(md)
 
 	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath})
@@ -372,8 +372,8 @@ func isExtractedRef(r dataRef) bool {
 	return p == r.path && strings.HasPrefix(p, inbox.DirExtracted+"/")
 }
 
-// title is a file name without its extension.
-func title(name string) string {
+// fileTitle is a file name without its extension.
+func fileTitle(name string) string {
 	t := strings.TrimSpace(strings.TrimSuffix(name, path.Ext(name)))
 	if t == "" {
 		return "Document"
