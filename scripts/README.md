@@ -46,6 +46,40 @@ published npm version, never its source. A workspace would symlink the
 siblings together, so local runs and CI would test a dependency graph that npm
 users never install.
 
+## `ci/modules.sh` and `ci/in-modules.sh` — every in-tree Go module
+
+Go commands run from the repository root see only the root module: `go list
+./...`, `go test ./...` and `go vet ./...` stop at a directory holding its own
+`go.mod`. RFC FE moves some packages into nested modules, so every Go tool here
+visits each module instead.
+
+The in-tree modules are the root module plus every module the root `go.mod`
+replaces with a directory inside the tree (`replace <path> => ./<dir>`). They
+are read from the root `go.mod` (`scripts/ci/gomodules`), so there is no list
+to keep: the directive that puts a module into the binary is the one that
+makes the tooling visit it. `deploy/builder` is a separate module the root does
+not replace; it is not one of them (`security.yml` scans it on its own).
+
+```sh
+scripts/ci/modules.sh                      # one directory per line, root (".") first
+scripts/ci/modules.sh -group PKG...        # "DIR PKG..." per module owning an import path
+scripts/ci/in-modules.sh go vet ./...      # run in every module
+scripts/ci/in-modules.sh go test -race -- PKG...   # each module with its own packages
+```
+
+`in-modules.sh` runs every module even when one fails, and exits non-zero if
+any did. A nested module's packages are run from that module's directory,
+where its own `go.mod` and `go.sum` apply. `make test`, `make test-pg`,
+`make vet`, `make tidy-all`, CI's Go checks (tidy, verify, vet, build) and its
+test steps go through it; `gofmt -l .` walks files, so it already covers every module.
+
+`internal/archtest` reads the import graph of every in-tree module and fails
+on a `go.mod` anywhere in the tree that is neither the root's, an in-tree
+module's, nor listed in its `standaloneModules`, so a module cannot be added
+without being wired or declared. Each nested module is also listed in one
+layer (`modules` in `internal/archtest/layers.go`), and its packages must sit
+in that layer or below.
+
 ## `ci/select-packages.sh` and `ci/affected` — which Go tests a pull request runs
 
 A pull request runs only the Go tests that can see its change. `main` runs
@@ -64,8 +98,16 @@ under a path its tests open with a relative literal such as
 `"../../adapters/ts/src/types.ts"` or `filepath.Join("..", "..", "bundles")`.
 Those paths are read from the test files, so there is no list to keep up to
 date. A change confined to `_test.go` files selects only its own package.
-`go.mod`, `go.sum`, `.github/workflows/ci.yml` and the selector itself select
-every package.
+Any in-tree module's `go.mod` or `go.sum`, `.github/workflows/ci.yml` and the
+selector itself (with `scripts/ci/gomodules`) select every package.
+
+The graph spans every in-tree module, each listed from its own directory; a
+change to a nested module selects its own tests and the root packages that
+import it. The `WITHIN` and `EXCLUDE` patterns are matched as `go list`
+matches them, but over every module's packages, so `./...` names a nested
+module's packages too. Outside a pull request, `select-packages.sh` prints
+everything the patterns name (`affected -all`). Run its output with
+`in-modules.sh`, as CI does.
 
 The blind spot is a test that builds a path to another directory at run time
 from something other than literals: write such paths as literals, or accept
@@ -80,6 +122,9 @@ each in parts on separate runners (`api/http` in thirds, `builtin` in halves):
 ```sh
 scripts/ci/split-tests.sh ./internal/api/http/ 1/2 -race   # prints a -run regexp
 ```
+
+The package may be an import path (what `select-packages.sh` prints), listed
+from the directory of the module that owns it, or a relative path.
 
 The names come from `go test -list` with the run's own build flags, sorted and
 dealt round-robin, so every test lands in exactly one half and a new test needs
