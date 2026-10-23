@@ -7,7 +7,8 @@ moves the bytes; you get the file's reference. Use it for a link a tool handed
 you — a pre-authenticated download URL from an MCP server, a document a page
 links to — instead of reading the file through HTTP or WebFetch.
 
-The request goes out on the HTTP tool's rules: the host must be on the
+The request is an HTTP request: you need the HTTP tool too, and its hooks
+judge the call. It goes out on the HTTP tool's rules: the host must be on the
 operator's allowlist, private and loopback addresses are refused unless the
 operator opted the host in, and a redirect is followed only to the same host.
 A URL with a query string may be a credential, so results show its query as
@@ -37,6 +38,7 @@ media_type}`.
 
 ## Errors
 
+- You do not hold the HTTP tool, or an HTTP hook refused the request.
 - The host is not on the allowlist, or resolves to a private address the
   operator did not exempt.
 - A redirect leads to another host, or from `https` to `http`.

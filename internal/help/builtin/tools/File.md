@@ -49,7 +49,8 @@ The inbox needs nothing but this tool. Another volume is reached with your own
 grants: `keep` writes only when you also hold Write, and `stat` or `ls` of a
 volume other than the inbox needs Read; both tools' hooks apply. `download`
 into a volume needs Write and `upload` from one needs Read in the same way;
-both reach only hosts on the HTTP allowlist.
+both are HTTP requests, so they need the HTTP tool as well (its hooks judge
+them) and reach only hosts on its allowlist.
 
 Do not use this tool to read a file's text: Read a text file, and do not ask
 for a file's base64.

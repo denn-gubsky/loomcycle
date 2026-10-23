@@ -7,7 +7,8 @@ runtime reads the file and makes the request. It is how a file reaches a
 service that hands out an upload URL — a Microsoft Graph upload session, a
 pre-signed storage URL.
 
-The request goes out on the HTTP tool's rules: the host must be on the
+The request is an HTTP request: you need the HTTP tool too, and its hooks
+judge the call. It goes out on the HTTP tool's rules: the host must be on the
 operator's allowlist, and private and loopback addresses are refused unless
 the operator opted the host in. A redirect is not followed. Results show the
 URL's query, and any URL's query in the server's reply, as `?…`.
@@ -36,6 +37,7 @@ range again.
 
 ## Errors
 
+- You do not hold the HTTP tool, or an HTTP hook refused the request.
 - The host is not on the allowlist, or resolves to a private address the
   operator did not exempt.
 - `from` is in a volume and you do not hold Read, or there is no file there.

@@ -19,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox/inboxtest"
 )
 
 // transferFile is a File tool on a loopback-reaching HTTP policy that records
@@ -84,12 +85,20 @@ func regularFiles(t *testing.T, dir string) []string {
 	return out
 }
 
+// transferRun is fileRun with the HTTP tool granted, as a download or upload
+// needs.
+func transferRun(t *testing.T, svc inbox.Service) (*inboxtest.Run, context.Context, string) {
+	t.Helper()
+	r, ctx, docs := fileRun(t, svc, false)
+	return r, withTools(ctx, "File", "Read", "Write", "HTTP"), docs
+}
+
 func withTools(ctx context.Context, names ...string) context.Context {
 	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Tools = names })
 }
 
 func TestFileDownload_RefusesDisallowedHost(t *testing.T) {
-	_, ctx, _ := fileRun(t, inbox.Service{}, false)
+	_, ctx, _ := transferRun(t, inbox.Service{})
 	srv, hits := countingServer(t, nil, binaryPDF)
 	tf := newTransferFile(&HTTP{HostAllowlist: []string{"example.com"}, AllowPrivateIPs: true})
 	_, res := tf.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/a.pdf"})
@@ -104,7 +113,7 @@ func TestFileDownload_RefusesDisallowedHost(t *testing.T) {
 }
 
 func TestFileDownload_RefusesPrivateAddressUnlessAllowlisted(t *testing.T) {
-	r, ctx, _ := fileRun(t, inbox.Service{}, false)
+	r, ctx, _ := transferRun(t, inbox.Service{})
 	srv, hits := countingServer(t, map[string]string{"Content-Type": "application/pdf"}, binaryPDF)
 	host := mustHost(t, srv.URL)
 
@@ -124,7 +133,7 @@ func TestFileDownload_RefusesPrivateAddressUnlessAllowlisted(t *testing.T) {
 }
 
 func TestFileDownload_RedirectToOtherHostRefused(t *testing.T) {
-	r, ctx, _ := fileRun(t, inbox.Service{}, false)
+	r, ctx, _ := transferRun(t, inbox.Service{})
 	other, otherHits := countingServer(t, nil, binaryPDF)
 	otherURL := strings.Replace(other.URL, "127.0.0.1", "localhost", 1)
 	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +170,7 @@ func TestFileDownload_RedirectToOtherHostRefused(t *testing.T) {
 }
 
 func TestFileDownload_OverCapLeavesNothing(t *testing.T) {
-	r, ctx, docs := fileRun(t, inbox.Service{MaxFileBytes: 1000}, false)
+	r, ctx, docs := transferRun(t, inbox.Service{MaxFileBytes: 1000})
 	big := bytes.Repeat([]byte{0xfe, 0x01}, 2500)
 	// Streamed without a Content-Length, so the cap is found while reading.
 	chunked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -204,11 +213,11 @@ func TestFileDownload_OverCapLeavesNothing(t *testing.T) {
 }
 
 func TestFileDownload_DurableTargetNeedsWrite(t *testing.T) {
-	_, ctx, docs := fileRun(t, inbox.Service{}, false)
+	_, ctx, docs := transferRun(t, inbox.Service{})
 	srv, hits := countingServer(t, map[string]string{"Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="minutes.pdf"`}, binaryPDF)
 	tf := newTransferFile(localHTTP())
 
-	_, res := tf.exec(t, withTools(ctx, "File", "Read"), map[string]any{"op": "download", "url": srv.URL + "/dl", "to": "volume:docs:minutes.pdf"})
+	_, res := tf.exec(t, withTools(ctx, "File", "Read", "HTTP"), map[string]any{"op": "download", "url": srv.URL + "/dl", "to": "volume:docs:minutes.pdf"})
 	if !res.IsError || !strings.Contains(res.Text, "needs the Write tool") || hits.Load() != 0 {
 		t.Fatalf("res = %q, hits = %d", res.Text, hits.Load())
 	}
@@ -237,7 +246,7 @@ func TestFileDownload_DurableTargetNeedsWrite(t *testing.T) {
 }
 
 func TestFileDownload_RedactsQueryInResult(t *testing.T) {
-	r, ctx, _ := fileRun(t, inbox.Service{}, false)
+	r, ctx, _ := transferRun(t, inbox.Service{})
 	srv, _ := countingServer(t, map[string]string{"Content-Type": "application/pdf"}, binaryPDF)
 	const secret = "tempauth-0123456789abcdef"
 	full := srv.URL + "/_layouts/15/download.aspx/board.pdf?UniqueId=7&tempauth=" + secret
@@ -274,7 +283,7 @@ func TestFileDownload_RedactsQueryInResult(t *testing.T) {
 }
 
 func TestFileDownload_RefusesCredentialHeaders(t *testing.T) {
-	_, ctx, _ := fileRun(t, inbox.Service{}, false)
+	_, ctx, _ := transferRun(t, inbox.Service{})
 	srv, hits := countingServer(t, nil, binaryPDF)
 	tf := newTransferFile(localHTTP())
 	for _, h := range []map[string]string{
@@ -307,7 +316,7 @@ type uploadSink struct {
 }
 
 func TestFileUpload_SinglePut(t *testing.T) {
-	r, ctx, _ := fileRun(t, inbox.Service{}, false)
+	r, ctx, _ := transferRun(t, inbox.Service{})
 	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "board.pdf", Origin: "o"}, binaryPDF)
 	var sink uploadSink
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +346,7 @@ func TestFileUpload_SinglePut(t *testing.T) {
 }
 
 func TestFileUpload_RangedFollowsNextExpectedRanges(t *testing.T) {
-	_, ctx, docs := fileRun(t, inbox.Service{}, false)
+	_, ctx, docs := transferRun(t, inbox.Service{})
 	data := make([]byte, 800<<10)
 	for i := range data {
 		data[i] = byte(i * 7)
@@ -393,13 +402,13 @@ func TestFileUpload_RangedFollowsNextExpectedRanges(t *testing.T) {
 }
 
 func TestFileUpload_NonInboxSourceNeedsRead(t *testing.T) {
-	_, ctx, docs := fileRun(t, inbox.Service{}, false)
+	_, ctx, docs := transferRun(t, inbox.Service{})
 	if err := os.WriteFile(filepath.Join(docs, "a.pdf"), binaryPDF, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	srv, hits := countingServer(t, nil, nil)
 	tf := newTransferFile(localHTTP())
-	_, res := tf.exec(t, withTools(ctx, "File", "Write"), map[string]any{"op": "upload", "from": "volume:docs:a.pdf", "url": srv.URL + "/up"})
+	_, res := tf.exec(t, withTools(ctx, "File", "Write", "HTTP"), map[string]any{"op": "upload", "from": "volume:docs:a.pdf", "url": srv.URL + "/up"})
 	if !res.IsError || !strings.Contains(res.Text, "needs the Read tool") || hits.Load() != 0 {
 		t.Errorf("res = %q, hits = %d", res.Text, hits.Load())
 	}
@@ -409,7 +418,7 @@ func TestFileUpload_NonInboxSourceNeedsRead(t *testing.T) {
 }
 
 func TestFileTransfer_NotAvailableWithoutHTTPPolicy(t *testing.T) {
-	_, ctx, _ := fileRun(t, inbox.Service{}, false)
+	_, ctx, _ := transferRun(t, inbox.Service{})
 	if _, res := fileExec(t, ctx, map[string]any{"op": "download", "url": "https://example.com/a.pdf"}); !res.IsError || !strings.Contains(res.Text, "not available") {
 		t.Errorf("res = %q", res.Text)
 	}
@@ -420,5 +429,59 @@ func TestClampChunk_RoundsToTheUnit(t *testing.T) {
 		if got := clampChunk(in); got != want {
 			t.Errorf("clampChunk(%d) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// TestFileTransfer_NeedsTheHTTPTool: a download or upload is an HTTP request,
+// so a run without HTTP — narrowed to File, say — makes none.
+func TestFileTransfer_NeedsTheHTTPTool(t *testing.T) {
+	r, ctx, _ := transferRun(t, inbox.Service{})
+	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "o"}, binaryPDF)
+	srv, hits := countingServer(t, nil, binaryPDF)
+	tf := newTransferFile(localHTTP())
+	noHTTP := withTools(ctx, "File", "Read", "Write")
+	for _, in := range []map[string]any{
+		{"op": "download", "url": srv.URL + "/a.pdf"},
+		{"op": "upload", "from": kept.Record.Ref, "url": srv.URL + "/up"},
+	} {
+		if _, res := tf.exec(t, noHTTP, in); !res.IsError || !strings.Contains(res.Text, "needs the HTTP tool") {
+			t.Errorf("%v: %q", in["op"], res.Text)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Errorf("requests made = %d", hits.Load())
+	}
+}
+
+// TestFileTransfer_HTTPHookJudgesTheRequest: HTTP's pre-hooks see the request
+// (query masked) and a denial stops it before it is made.
+func TestFileTransfer_HTTPHookJudgesTheRequest(t *testing.T) {
+	r, ctx, _ := transferRun(t, inbox.Service{})
+	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "o"}, binaryPDF)
+	srv, hits := countingServer(t, nil, binaryPDF)
+	var asked []string
+	hooked := tools.WithHookPreCheck(ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		asked = append(asked, name+" "+string(input))
+		if name == "HTTP" {
+			return tools.Result{Text: "no egress from File", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	tf := newTransferFile(localHTTP())
+	for _, in := range []map[string]any{
+		{"op": "download", "url": srv.URL + "/a.pdf?sig=hook-secret"},
+		{"op": "upload", "from": kept.Record.Ref, "url": srv.URL + "/up?sig=hook-secret", "method": "POST"},
+	} {
+		if _, res := tf.exec(t, hooked, in); !res.IsError || !strings.Contains(res.Text, "no egress from File") {
+			t.Errorf("%v: %q", in["op"], res.Text)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Errorf("requests made = %d", hits.Load())
+	}
+	joined := strings.Join(asked, "\n")
+	if !strings.Contains(joined, `HTTP {"method":"GET","url":"`+srv.URL+`/a.pdf?…","via":"File"}`) ||
+		!strings.Contains(joined, `"method":"POST"`) || strings.Contains(joined, "hook-secret") {
+		t.Errorf("hook inputs = %s", joined)
 	}
 }

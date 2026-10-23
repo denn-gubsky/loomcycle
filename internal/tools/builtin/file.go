@@ -55,7 +55,7 @@ func (f *File) Description() string {
 		"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of a volume), " +
 		"keep (copy a file out of the inbox into one of your read-write volumes, since the inbox is deleted when the run ends), " +
 		"rm (delete one inbox file), clear (empty the inbox, or one folder of it), " +
-		"download (GET a URL into the inbox, or a volume, on the HTTP allowlist), upload (PUT or POST a volume file to a URL, whole or in ranges for an upload session). " +
+		"download (GET a URL into the inbox, or a volume; needs the HTTP tool and its allowlist), upload (PUT or POST a volume file to a URL, whole or in ranges for an upload session). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:/path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }

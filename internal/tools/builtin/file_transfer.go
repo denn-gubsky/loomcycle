@@ -59,9 +59,12 @@ type fileTransferInput struct {
 	ChunkBytes  int64             `json:"chunk_bytes"`
 }
 
-// transferURL checks the url and headers of a download or upload and hands
-// the URL to the redactor.
-func (f *File) transferURL(ctx context.Context, op string, in fileTransferInput) (*url.URL, tools.Result, bool) {
+// transferURL checks the url and headers of a download or upload, and that
+// the run may make the request at all: a download or upload is an HTTP
+// request, so the run must hold the HTTP tool itself and HTTP's pre-hooks
+// judge it, as Read's and Write's judge a volume reached by reference. A run
+// narrowed to File alone gets no network.
+func (f *File) transferURL(ctx context.Context, op, method string, in fileTransferInput) (*url.URL, tools.Result, bool) {
 	if f.HTTP == nil {
 		return nil, errBusiness(op+": not available in this deployment", "Ask the operator to enable the HTTP tool's host allowlist."), false
 	}
@@ -79,6 +82,20 @@ func (f *File) transferURL(ctx context.Context, op string, in fileTransferInput)
 	}
 	if err := checkTransferHeaders(in.Headers); err != nil {
 		return nil, errValidation(op+": "+err.Error(), "A pre-authenticated URL carries its own authorisation; pass only non-secret headers."), false
+	}
+	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
+		return nil, errPermission(op+": not available outside a run", ""), false
+	}
+	if !slices.Contains(tools.PolicyOf(ctx).Tools, "HTTP") {
+		return nil, errPermission(op+": needs the HTTP tool, which this run does not have", "Ask an operator to grant HTTP."), false
+	}
+	// The hook sees the URL as results show it, query masked: the input is
+	// recorded with the hook's verdict, and a pre-authenticated URL's query
+	// is its credential. Scheme, host and path are what a URL policy judges.
+	hookIn, _ := json.Marshal(map[string]any{"method": method, "url": displayURL(u), "via": FileToolName})
+	if res, ok := tools.HookPreCheck(ctx, "HTTP", hookIn); !ok {
+		return nil, classified(fmt.Sprintf("%s: refused by an HTTP hook: %s", op, res.Text), tools.CategoryPermission, false,
+			"Ask the operator about the hook."), false
 	}
 	return u, tools.Result{}, true
 }
@@ -101,7 +118,7 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errValidation("download: invalid input: "+err.Error(), ""), nil
 	}
-	u, res, ok := f.transferURL(ctx, "download", in)
+	u, res, ok := f.transferURL(ctx, "download", http.MethodGet, in)
 	if !ok {
 		return res, nil
 	}
@@ -313,7 +330,7 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 	if err != nil {
 		return errValidation("upload: from: "+err.Error(), "Pass from, e.g. volume:inbox:documents/a.pdf."), nil
 	}
-	u, res, ok := f.transferURL(ctx, "upload", in)
+	u, res, ok := f.transferURL(ctx, "upload", method, in)
 	if !ok {
 		return res, nil
 	}
