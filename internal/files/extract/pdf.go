@@ -372,10 +372,6 @@ func (m mat) mul(n mat) mat {
 	}
 }
 
-func (m mat) apply(x, y float64) (float64, float64) {
-	return x*m[0] + y*m[2] + m[4], x*m[1] + y*m[3] + m[5]
-}
-
 func matOf(args []pdfVal) (mat, bool) {
 	if len(args) < 6 {
 		return mat{}, false
