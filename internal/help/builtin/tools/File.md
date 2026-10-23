@@ -43,5 +43,9 @@ A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
 volume you are bound to, or `volume:<path>` for your default volume. A bare
 path, with no `volume:`, names a file in the inbox.
 
+The inbox needs nothing but this tool. Another volume is reached with your own
+grants: `keep` writes only when you also hold Write, and `stat` or `ls` of a
+volume other than the inbox needs Read; both tools' hooks apply.
+
 Do not use this tool to read a file's text: Read a text file, and do not ask
 for a file's base64.

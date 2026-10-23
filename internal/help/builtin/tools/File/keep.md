@@ -17,10 +17,13 @@ bytes never pass through you.
 
 ## Returns
 
-`{from, ref, size, media_type, sha256}` — `ref` is the copy's reference.
+`{from, ref, size, sha256, media_type, origin}` — `ref` is the copy's
+reference and `sha256` the digest of the bytes copied. `media_type` and
+`origin` are given when the file is still the one the runtime kept.
 
 ## Errors
 
+- You do not hold the Write tool (keep writes into a volume as Write would).
 - `to` names a read-only volume, a volume you are not bound to, or the inbox.
 - `from` is not in the inbox: copy between your own volumes with Read and
   Write.
@@ -36,6 +39,6 @@ Keep the board papers in the `docs` volume's `board/2026` folder:
 
 ```json result
 {"from": "volume:inbox:documents/board-papers.pdf", "ref": "volume:docs:board/2026/board-papers.pdf",
- "size": 1887436, "media_type": "application/pdf",
- "sha256": "3f9a1c2b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8"}
+ "size": 1887436, "sha256": "3f9a1c2b4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8",
+ "media_type": "application/pdf", "origin": "mcp:ms365/get-attachment"}
 ```

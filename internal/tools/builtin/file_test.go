@@ -23,6 +23,7 @@ func fileRun(t *testing.T, svc inbox.Service, readOnly bool) (*inboxtest.Run, co
 	r := inboxtest.New(t, "root-1", svc)
 	docs, ref := t.TempDir(), t.TempDir()
 	ctx := tools.UpdateRunPolicy(r.Ctx, func(p *tools.RunPolicy) {
+		p.Tools = []string{"File", "Read", "Write"}
 		p.EphemeralWritable = !readOnly
 		p.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{
 			{Name: "docs", Root: docs, Default: true},
@@ -240,5 +241,55 @@ func TestFile_StubReferenceOpensWithRead(t *testing.T) {
 	res, err := (&Read{}).Execute(ctx, raw)
 	if err != nil || res.IsError || !strings.Contains(res.Text, "Agreed.") {
 		t.Errorf("Read %s: %q %v", raw, res.Text, err)
+	}
+}
+
+// Writing into a volume, or reading one that is not the inbox, needs the run
+// to hold Write or Read itself, as Crypto's references do: a run narrowed to
+// [File] reaches only the inbox.
+func TestFile_OtherVolumesNeedTheRunsOwnReadAndWrite(t *testing.T) {
+	r, ctx, docs := fileRun(t, inbox.Service{}, false)
+	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "o"}, filePDF)
+	_ = os.WriteFile(filepath.Join(docs, "b.pdf"), filePDF, 0o600)
+	narrowed := tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Tools = []string{"File"} })
+
+	if _, res := fileExec(t, narrowed, map[string]any{"op": "keep", "from": kept.Record.Ref, "to": "volume:docs:a.pdf"}); !res.IsError || !strings.Contains(res.Text, "needs the Write tool") {
+		t.Errorf("keep without Write: %q", res.Text)
+	}
+	if _, err := os.Stat(filepath.Join(docs, "a.pdf")); !os.IsNotExist(err) {
+		t.Error("keep wrote without Write")
+	}
+	for _, in := range []map[string]any{{"op": "stat", "path": "volume:docs:b.pdf"}, {"op": "ls", "path": "volume:docs:."}} {
+		if _, res := fileExec(t, narrowed, in); !res.IsError || !strings.Contains(res.Text, "needs the Read tool") {
+			t.Errorf("%v without Read: %q", in, res.Text)
+		}
+	}
+	if _, res := fileExec(t, narrowed, map[string]any{"op": "stat", "path": kept.Record.Ref}); res.IsError {
+		t.Errorf("the inbox needs no other tool: %q", res.Text)
+	}
+}
+
+// A record describes the bytes that were kept. Once the file changes (the
+// inbox is writable to the run) it is reported for what it is, not for
+// where the original came from — even at the same size.
+func TestFile_ChangedFileLosesItsRecord(t *testing.T) {
+	r, ctx, docs := fileRun(t, inbox.Service{}, false)
+	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "mcp:trusted/get"}, filePDF)
+	ref, _ := r.Set.Get(inbox.Name)
+	forged := bytes.Clone(filePDF)
+	forged[len(forged)-1] = 'X'
+	if err := os.WriteFile(filepath.Join(ref.Root, "documents", "a.pdf"), forged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := fileExec(t, ctx, map[string]any{"op": "stat", "path": kept.Record.Ref})
+	if out["origin"] != "unknown" || out["sha256"] == kept.Record.SHA256 {
+		t.Errorf("stat of a changed file = %v", out)
+	}
+	out, _ = fileExec(t, ctx, map[string]any{"op": "keep", "from": kept.Record.Ref, "to": "volume:docs:a.pdf"})
+	if out["origin"] != nil || out["sha256"] == kept.Record.SHA256 {
+		t.Errorf("keep of a changed file = %v", out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(docs, "a.pdf")); !bytes.Equal(b, forged) {
+		t.Error("keep did not copy the file as it is")
 	}
 }

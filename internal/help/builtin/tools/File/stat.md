@@ -2,10 +2,12 @@
 name: File/stat
 description: "File op=stat — the size, media type, sha256 and origin of one file, without its bytes."
 ---
-`stat` describes one file. For a file the runtime kept from a tool result it
-returns what was recorded when it was kept, including which tool returned it.
-For any other file it reads the bytes to compute the digest and type, and
-reports the origin as `unknown`.
+`stat` describes one file. It always reads the bytes for their digest. For a
+file the runtime kept from a tool result, and still unchanged, it returns what
+was recorded when it was kept, including which tool returned it. For any
+other file (one written since, or outside the inbox) it reports the type the
+bytes show and the origin as `unknown`. A volume other than the inbox needs
+the Read tool.
 
 ## Arguments
 

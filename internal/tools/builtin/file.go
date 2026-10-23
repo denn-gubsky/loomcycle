@@ -58,7 +58,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear"]},
 			"path":      {"type": "string", "description": "stat, rm: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy."},
-			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes. A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."},
+			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."},
 			"overwrite": {"type": "boolean", "description": "keep: replace an existing file at to. Default false."},
 			"recursive": {"type": "boolean", "description": "ls: list subfolders too."},
 			"prefix":    {"type": "string", "description": "clear: only this folder of the inbox (e.g. documents, web/example.com). Omit to empty the whole inbox."}
@@ -122,6 +122,14 @@ func openRef(ctx context.Context, r dataRef, write bool) (vfs *volumeFS, rel str
 	if inboxMissing(ctx, r) {
 		return nil, "", errNotFound("nothing has been kept in this run's inbox yet", "A file a tool returns lands there; until one does, the inbox does not exist."), false
 	}
+	// The inbox is this tool's own: the files in it are the run's tool
+	// results. Any other volume is reached as Crypto's from/to reach one: the
+	// run must hold Read (or Write) itself, and that tool's hooks judge it.
+	if r.volume != inbox.Name {
+		if res, ok := checkRefGrant(ctx, r, write, FileToolName, "Work in the inbox only"); !ok {
+			return nil, "", res, false
+		}
+	}
 	root, fence, err := effectiveRoot(ctx, r.volume, write)
 	if err != nil {
 		return nil, "", errPermission(err.Error(), "Name a volume you are bound to; Context op=self lists them."), false
@@ -172,13 +180,6 @@ func (f *File) stat(ctx context.Context, in fileInput) (tools.Result, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return errValidation(fmt.Sprintf("stat: %s is not a file", r.raw), "List a folder with op=ls."), nil
 	}
-	if r.volume == inbox.Name {
-		if rec, ok := inbox.Lookup(ctx, rel); ok && rec.Size == info.Size() {
-			return okJSON(rec)
-		}
-	}
-	// No record (a file the agent wrote, or one kept before a resume): what
-	// the bytes say, and an origin nobody recorded.
 	sum := sha256.New()
 	head := make([]byte, 512)
 	n, _ := io.ReadFull(fh, head)
@@ -186,16 +187,33 @@ func (f *File) stat(ctx context.Context, in fileInput) (tools.Result, error) {
 	if _, err := io.Copy(sum, fh); err != nil {
 		return errTransient(fmt.Sprintf("stat: reading %s failed", r.raw), "Try again."), nil
 	}
+	digest := hex.EncodeToString(sum.Sum(nil))
+	// The record is what was kept; it describes this file only while the
+	// bytes are still those bytes. A file changed since (the inbox is
+	// writable to the run) is reported for what it is now, origin unknown.
+	if rec, ok := recordFor(ctx, r, rel, digest); ok {
+		return okJSON(rec)
+	}
 	out := map[string]any{
 		"ref":        r.raw,
 		"path":       filepath.ToSlash(rel),
 		"media_type": inbox.Sniff("", head[:n], info.Name()),
 		"size":       info.Size(),
-		"sha256":     hex.EncodeToString(sum.Sum(nil)),
+		"sha256":     digest,
 		"origin":     "unknown",
 		"modified":   info.ModTime().UTC().Format(time.RFC3339),
 	}
 	return okJSON(out)
+}
+
+// recordFor returns the capture record of an inbox file whose bytes still
+// hash to what was recorded.
+func recordFor(ctx context.Context, r dataRef, rel, digest string) (inbox.Record, bool) {
+	if r.volume != inbox.Name {
+		return inbox.Record{}, false
+	}
+	rec, ok := inbox.Lookup(ctx, rel)
+	return rec, ok && rec.SHA256 == digest
 }
 
 // ---- ls ----
@@ -334,6 +352,9 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 		return errValidation(fmt.Sprintf("keep: %s is not a file", from.raw), ""), nil
 	}
 
+	if res, ok := checkRefGrant(ctx, to, true, FileToolName, "Leave it in the inbox"); !ok {
+		return res, nil
+	}
 	root, fence, err := effectiveRoot(ctx, to.volume, true)
 	if err != nil {
 		return errPermission("keep: "+err.Error(), "Name a read-write volume you are bound to."), nil
@@ -385,7 +406,8 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 		return errTransient("keep: "+err.Error(), "Try again."), nil
 	}
 	defer dir.Remove(tmpName)
-	if _, err := io.Copy(tmp, in1); err != nil {
+	sum := sha256.New()
+	if _, err := io.Copy(tmp, io.TeeReader(in1, sum)); err != nil {
 		tmp.Close()
 		return errTransient("keep: copying failed: "+err.Error(), "Try again."), nil
 	}
@@ -398,9 +420,10 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 	if err := dir.Rename(tmpName, name); err != nil {
 		return errTransient("keep: "+err.Error(), "Try again."), nil
 	}
-	out := map[string]any{"from": from.raw, "ref": refPrefix(to) + filepath.ToSlash(rel), "size": info.Size()}
-	if rec, ok := inbox.Lookup(ctx, srcRel); ok {
-		out["media_type"], out["sha256"] = rec.MediaType, rec.SHA256
+	digest := hex.EncodeToString(sum.Sum(nil))
+	out := map[string]any{"from": from.raw, "ref": refPrefix(to) + filepath.ToSlash(rel), "size": info.Size(), "sha256": digest}
+	if rec, ok := recordFor(ctx, from, srcRel, digest); ok {
+		out["media_type"], out["origin"] = rec.MediaType, rec.Origin
 	}
 	return okJSON(out)
 }
