@@ -20,7 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -254,7 +254,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		} else {
 			// The one state that would otherwise be silent-but-degraded, so
 			// say it loudly and actionably exactly once, at boot.
-			log.Printf("postgres: WARNING — pgvector is installed but the `memory_embeddings` table is missing, so Vector Memory and hybrid (full-text) memory recall are DISABLED (memory ops refuse with ErrVectorUnsupported; plain key/value memory is unaffected). Migration 0017 skipped the table because pgvector was not yet installed when it ran, and golang-migrate never re-applies an already-applied migration. Fix: upgrade to a loomcycle build whose migration set includes 0062_memory_embeddings_repair and run `loomcycle migrate up` (or restart with LOOMCYCLE_PG_AUTOMIGRATE=1).")
+			slog.Warn("postgres: pgvector is installed but the `memory_embeddings` table is missing, so Vector Memory and hybrid (full-text) memory recall are DISABLED (memory ops refuse with ErrVectorUnsupported; plain key/value memory is unaffected). Migration 0017 skipped the table because pgvector was not yet installed when it ran, and golang-migrate never re-applies an already-applied migration. Fix: upgrade to a loomcycle build whose migration set includes 0062_memory_embeddings_repair and run `loomcycle migrate up` (or restart with LOOMCYCLE_PG_AUTOMIGRATE=1).")
 		}
 	}
 
@@ -6234,9 +6234,8 @@ func (s *Store) ChannelPublish(ctx context.Context, msg store.ChannelMessage, ma
 		// because most commits land in the 200-800µs band at our
 		// concurrency level.
 		st := s.pool.Stat()
-		log.Printf("channel %q publish: id=%s commit_us=%d pool_total=%d pool_acquired=%d pool_idle=%d",
-			msg.Channel, msg.ID, time.Since(commitStart).Microseconds(),
-			st.TotalConns(), st.AcquiredConns(), st.IdleConns())
+		slog.Info("channel publish", "channel", msg.Channel, "id", msg.ID, "commit_us", time.Since(commitStart).Microseconds(),
+			"pool_total", st.TotalConns(), "pool_acquired", st.AcquiredConns(), "pool_idle", st.IdleConns())
 	}
 	return msg.ID, dropped, nil
 }
@@ -6409,7 +6408,7 @@ func (s *Store) BackfillAgentDefSystemPromptBase(ctx context.Context) (int, erro
 			// internal/lookup will still fill SystemPromptBase at runtime,
 			// but this log line is the operator's only signal that a row
 			// was left untouched.
-			log.Printf("agent_defs: backfill system_prompt_base: def_id=%s: JSON parse failed, skipping: %v", p.DefID, err)
+			slog.Warn("agent_defs: backfill system_prompt_base: JSON parse failed, skipping", "def_id", p.DefID, "err", err)
 			continue
 		}
 		if !ok {
@@ -10426,7 +10425,7 @@ func (s *Store) scanEvaluation(row pgx.Row) (store.EvaluationRow, error) {
 		if err := json.Unmarshal([]byte(dimensions), &out.Dimensions); err != nil {
 			// Malformed dimensions JSON (e.g. a hand-edited row) — log + leave
 			// Dimensions nil rather than silently dropping the parse error.
-			log.Printf("evaluations: scan eval_id=%s: dimensions JSON parse failed, skipping: %v", out.EvalID, err)
+			slog.Warn("evaluations: dimensions JSON parse failed, skipping", "eval_id", out.EvalID, "err", err)
 		}
 	}
 	if judgement != "" {
@@ -10452,7 +10451,7 @@ func (s *Store) scanEvaluationRows(rows pgx.Rows) ([]store.EvaluationRow, error)
 		}
 		if dimensions != "" {
 			if err := json.Unmarshal([]byte(dimensions), &r.Dimensions); err != nil {
-				log.Printf("evaluations: scan eval_id=%s: dimensions JSON parse failed, skipping: %v", r.EvalID, err)
+				slog.Warn("evaluations: dimensions JSON parse failed, skipping", "eval_id", r.EvalID, "err", err)
 			}
 		}
 		if judgement != "" {

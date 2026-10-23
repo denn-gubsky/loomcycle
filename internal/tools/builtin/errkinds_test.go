@@ -25,7 +25,7 @@ var classifiedToolFiles = []string{
 	"document_fact_home.go", "document_fact_index.go", "document_graph.go", "document_image.go", "document_index_text.go", "document_derive_units.go", "document_reindex.go", "document_units.go",
 	"document_labels.go", "document_mermaid.go", "document_ontology.go", "document_ontology_guard.go",
 	"document_prune.go", "document_remember.go", "document_sections.go", "document_subject_proposal.go", "document_subject_refs.go",
-	"document_sync.go", "document_verbatim.go", "document_verdict.go",
+	"document_sync.go", "document_verbatim.go", "document_verdict.go", "document_volume_asset.go",
 	// Memory
 	"memory.go", "memory_placement.go", "memory_recall_traces.go", "memory_recall_turns.go", "memory_rerank.go", "memory_source_span.go",
 	// History

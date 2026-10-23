@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -649,7 +649,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("resident child %s panicked: %v", prep.RunID, r)
+				slog.Error("resident child panicked", "run_id", prep.RunID, "panic", r)
 				rc.markDone("failed", nil)
 			}
 			deregSteer()
@@ -1026,7 +1026,7 @@ func (s *Server) sweepResidentChildren(now time.Time) {
 		if reason == "" {
 			continue
 		}
-		log.Printf("resident child %s reaped: %s", rc.runID, reason)
+		slog.Info("resident child reaped", "run_id", rc.runID, "reason", reason)
 		if _, found := s.cancelReg.Cancel(rc.agentID, reason+residentReasonSuffix); !found && rc.cancel != nil {
 			rc.cancel(cancel.CauseWithReason(reason + residentReasonSuffix))
 		}

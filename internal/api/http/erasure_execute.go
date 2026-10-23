@@ -15,7 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -135,7 +135,7 @@ func (s *Server) recordEraseResult(r *http.Request, tenant, subject string, res 
 	if err := s.eraseAudit.Record(ev); err != nil {
 		// Logged, not returned: the rows are gone either way, and the intent record
 		// already carries who and what.
-		log.Printf("audit: erase_result record failed (subject=%s tenant=%s): %v", subject, tenant, err)
+		slog.Error("audit: erase_result record failed", "subject", subject, "tenant", tenant, "err", err)
 	}
 }
 

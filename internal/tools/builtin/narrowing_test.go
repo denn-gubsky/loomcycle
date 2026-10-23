@@ -495,3 +495,22 @@ func TestNarrowHostsAuthoritativeAllLoopbackBecomesFallback(t *testing.T) {
 	out := NarrowHosts([]tools.Tool{op}, caller, "", true)
 	assertOperatorFallback(t, out[0], op, originalHosts)
 }
+
+// TestNarrowHosts_NarrowsFileTransferBackend: the File tool's download and
+// upload go out on an HTTP backend, which a run's caller narrows (or, when
+// caller-authoritative, replaces) like the HTTP tool's. Left alone, File
+// would reach hosts the caller withheld.
+func TestNarrowHosts_NarrowsFileTransferBackend(t *testing.T) {
+	orig := &File{HTTP: &HTTP{HostAllowlist: []string{"a.example", "b.example"}}}
+	got := NarrowHosts([]tools.Tool{orig}, []string{"a.example"}, "", false)[0].(*File)
+	if !reflect.DeepEqual(got.HTTP.HostAllowlist, []string{"a.example"}) {
+		t.Errorf("narrowed = %v", got.HTTP.HostAllowlist)
+	}
+	if len(orig.HTTP.HostAllowlist) != 2 {
+		t.Errorf("the shared instance was changed: %v", orig.HTTP.HostAllowlist)
+	}
+	got = NarrowHosts([]tools.Tool{orig}, []string{"c.example"}, "", true)[0].(*File)
+	if !reflect.DeepEqual(got.HTTP.HostAllowlist, []string{"c.example"}) {
+		t.Errorf("caller-authoritative = %v", got.HTTP.HostAllowlist)
+	}
+}

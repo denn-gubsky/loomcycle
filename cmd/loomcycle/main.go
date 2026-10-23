@@ -1176,6 +1176,7 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
 		OperatorAuthored: s.OperatorAuthored,
 		DefID:            s.DefID, Version: s.Version,
+		BinaryResults: s.BinaryResults,
 	}, true
 }
 
@@ -1216,6 +1217,25 @@ func lateCredSubstitute(ref *func(ctx context.Context, s, targetURL string) (str
 			return f(ctx, s, targetURL)
 		}
 		return s, append(credential.RefNames(s), credential.GHAppRefNames(s)...), nil
+	}
+}
+
+// mcpResultPolicy resolves a server's binary_results (RFC FF) the way
+// mcpPoolBuild resolves the server it dials, so the setting a call renders
+// with belongs to the server that answered it: a static stdio server from the
+// yaml, any other through lookup.MCPServer in the run's tenant.
+func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, name string) mcp.ResultPolicy {
+	return func(tenant, name string) mcp.ResultPolicy {
+		mode := ""
+		if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
+			mode = srv.BinaryResults
+		} else if spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name); ok {
+			mode = spec.BinaryResults
+		}
+		return mcp.ResultPolicy{
+			CaptureBase64:  mode == config.BinaryResultsCapture,
+			Base64MinBytes: cfg.Env.FileBase64MinBytes,
+		}
 	}
 }
 

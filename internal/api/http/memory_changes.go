@@ -2,7 +2,7 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -205,7 +205,7 @@ func (s *Server) tailMemoryChanges(ctx context.Context, stream *sse, tenantID st
 		if err != nil {
 			failures++
 			if failures == 1 {
-				log.Printf("change feed: store read failed (tenant=%q after_seq=%d), retrying with backoff: %v", tenantID, cursor, err)
+				slog.Warn("change feed: store read failed, retrying with backoff", "tenant", tenantID, "after_seq", cursor, "err", err)
 				// No `type` in the payload, like the feed frame: a client that backfills
 				// from the event name sees `error`.
 				stream.sendRaw("error", map[string]string{
@@ -218,7 +218,7 @@ func (s *Server) tailMemoryChanges(ctx context.Context, stream *sse, tenantID st
 			}
 		} else {
 			if failures > 0 {
-				log.Printf("change feed: store reads recovered (tenant=%q) after %d failed attempts", tenantID, failures)
+				slog.Info("change feed: store reads recovered", "tenant", tenantID, "failed_attempts", failures)
 				failures = 0
 			}
 			delay = p.base

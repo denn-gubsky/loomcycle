@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -234,7 +234,7 @@ func (s *Server) noteResidentAddressed(ctx context.Context, run store.Run) {
 		return nil
 	})
 	if err != nil && !errors.Is(err, errNothingToWrite) && ctx.Err() == nil {
-		log.Printf("resident child %s: mark it addressed: %v", run.ID, err)
+		slog.Warn("resident child: mark it addressed failed", "run_id", run.ID, "err", err)
 	}
 }
 

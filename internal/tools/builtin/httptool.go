@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
 // HTTP performs a single outbound HTTP request and returns the response body
@@ -80,6 +82,7 @@ func (h *HTTP) Description() string {
 		"Takes `method` (GET/POST/PUT/PATCH/DELETE/HEAD), `url` (absolute http(s)), optional `headers` and `body`. " +
 		"Returns the status line, response headers and body as text, truncated at 256 KiB, with a 30s timeout; " +
 		"the values of credential-bearing response headers (cookies, tokens, API keys) read [redacted]. " +
+		"A body that is a file (PDF, image, Office document, archive, audio, video) is not returned: it is kept in this run's inbox and a line `[file: volume:inbox:… ]` stands in for it (the File tool works with it). " +
 		"Use this to CALL an API — post a payload, authenticate, PATCH a record. " +
 		"Do NOT use it merely to read a web page: WebFetch does the same GET and strips HTML to readable text. " +
 		"The host allowlist is enforced on every redirect hop, so a redirect off-list is refused mid-chain; " +
@@ -109,7 +112,7 @@ func (h *HTTP) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
 	}
-	return h.do(ctx, args.Method, args.URL, args.Headers, args.Body, 0)
+	return h.do(ctx, args.Method, args.URL, args.Headers, args.Body, 0, "http", nil)
 }
 
 // do is split out so WebFetch can call it directly with GET defaults.
@@ -117,7 +120,10 @@ func (h *HTTP) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 // maxResp > 0 overrides the response-body cap for this one call; 0 keeps the
 // HTTP tool's own (MaxResponseBytes, else 256 KiB). WebFetch needs a larger raw
 // read than the text it returns, because it strips the page AFTER reading it.
-func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string]string, body string, maxResp int64) (tools.Result, error) {
+// The cap governs a text body only: a body that is a file is kept in the run's
+// inbox under the file caps, recorded as from origin, and its stub stands in
+// for it. out, when not nil, receives that capture and the final URL.
+func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string]string, body string, maxResp int64, origin string, out *httpOutcome) (tools.Result, error) {
 	// Refuse only when the operator floor is empty AND no permitted Pre-hook
 	// contributed a per-call host grant. A permitted host-widen grant
 	// (ExtraAllowedHosts — populated ONLY by operator-opted-in hooks via the
@@ -149,8 +155,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return tools.Result{Text: "url scheme must be http or https", IsError: true}, nil
 	}
-	if !hostAllowed(parsed.Hostname(), h.HostAllowlist) &&
-		!hostAllowedExtras(parsed.Hostname(), tools.ExtraAllowedHosts(ctx)) {
+	if !h.hostPermitted(ctx, parsed.Hostname()) {
 		// Operator floor + caller-narrowed list rejected, and no
 		// permitted Pre-hook contributed a per-call grant covering
 		// this hostname either. (Trust-boundary reminder: the
@@ -173,10 +178,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	if maxResp == 0 {
 		maxResp = 256 * 1024
 	}
-	timeout := h.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	timeout := h.timeout()
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -209,8 +211,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
-			if !hostAllowed(req.URL.Hostname(), h.HostAllowlist) &&
-				!hostAllowedExtras(req.URL.Hostname(), tools.ExtraAllowedHosts(ctx)) {
+			if !h.hostPermitted(ctx, req.URL.Hostname()) {
 				return fmt.Errorf("redirect host %q not in allowlist", req.URL.Hostname())
 			}
 			return nil
@@ -223,7 +224,28 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	}
 	defer resp.Body.Close()
 
-	limited := io.LimitReader(resp.Body, maxResp+1)
+	// Whether the body is a file is decided before the text path reads it.
+	// Peek waits for the first bytes, as the read below would have; the
+	// reader then hands them on, so a text body reads byte for byte as
+	// before.
+	br := bufio.NewReaderSize(resp.Body, 512)
+	head, _ := br.Peek(512)
+	name := responseFileName(resp)
+	if out != nil {
+		out.finalURL = resp.Request.URL.String()
+	}
+	if mt, ok := binaryResponse(method, resp, head, name); ok {
+		captured := inbox.CaptureReader(ctx, inbox.Item{Name: name, MediaType: mt, Origin: origin}, br, resp.ContentLength)
+		if out != nil {
+			out.captured = &captured
+		}
+		var b bytes.Buffer
+		writeResponseHead(&b, method, rawURL, resp)
+		b.WriteString(captured.Stub)
+		return tools.Result{Text: b.String()}, nil
+	}
+
+	limited := io.LimitReader(br, maxResp+1)
 	respBody, err := io.ReadAll(limited)
 	if err != nil {
 		return tools.Result{Text: "read response: " + err.Error(), IsError: true}, nil
@@ -235,20 +257,42 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	}
 
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "HTTP %s %s -> %d\n", method, rawURL, resp.StatusCode)
-	for _, k := range slices.Sorted(maps.Keys(resp.Header)) {
-		v := strings.Join(resp.Header[k], ", ")
-		if credentialHeader(k) {
-			v = "[redacted]"
-		}
-		fmt.Fprintf(&b, "%s: %s\n", k, v)
-	}
-	b.WriteString("\n")
+	writeResponseHead(&b, method, rawURL, resp)
 	b.Write(respBody)
 	if truncated {
 		b.WriteString(responseTruncatedMarker(maxResp))
 	}
 	return tools.Result{Text: b.String()}, nil
+}
+
+// hostPermitted is the HTTP tool's name-layer check: the operator's list (as
+// narrowed for this run) or a permitted Pre-hook's grant for this one call.
+// Every tool that sends a request on the HTTP tool's policy asks it, so the
+// floor cannot differ between them.
+func (h *HTTP) hostPermitted(ctx context.Context, host string) bool {
+	return hostAllowed(host, h.HostAllowlist) || hostAllowedExtras(host, tools.ExtraAllowedHosts(ctx))
+}
+
+// timeout is the per-request timeout, 30s unless the operator set one.
+func (h *HTTP) timeout() time.Duration {
+	if h.Timeout > 0 {
+		return h.Timeout
+	}
+	return 30 * time.Second
+}
+
+// writeResponseHead writes the status line, the response headers (credential
+// values redacted) and the blank line that ends them.
+func writeResponseHead(b *bytes.Buffer, method, rawURL string, resp *http.Response) {
+	fmt.Fprintf(b, "HTTP %s %s -> %d\n", method, rawURL, resp.StatusCode)
+	for _, k := range slices.Sorted(maps.Keys(resp.Header)) {
+		v := strings.Join(resp.Header[k], ", ")
+		if credentialHeader(k) {
+			v = "[redacted]"
+		}
+		fmt.Fprintf(b, "%s: %s\n", k, v)
+	}
+	b.WriteString("\n")
 }
 
 // credentialWords are the parts of a response header name that mark a value

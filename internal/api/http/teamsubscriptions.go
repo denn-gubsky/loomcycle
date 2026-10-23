@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -68,7 +68,7 @@ func (s *Server) SweepTeamSubscriptions(ctx context.Context) (started int, err e
 		if rerr != nil {
 			// Logged, not returned: a team whose channel is undeclared or
 			// whose def stopped parsing must not silence the rest.
-			log.Printf("team-subscriptions: %s/%s: %v", sub.TenantID, sub.Name, rerr)
+			slog.Warn("team-subscriptions: subscription failed", "tenant", sub.TenantID, "team", sub.Name, "err", rerr)
 			continue
 		}
 		if ran {
@@ -100,12 +100,12 @@ func (s *Server) listTeamSubscriptions(ctx context.Context) ([]teamSubscription,
 		}
 		row, err := s.store.TeamDefGet(ctx, n.ActiveDefID)
 		if err != nil {
-			log.Printf("team-subscriptions: %s/%s: read active def: %v", n.TenantID, n.Name, err)
+			slog.Warn("team-subscriptions: read active def failed", "tenant", n.TenantID, "team", n.Name, "err", err)
 			continue
 		}
 		def, err := teamgraph.Parse(row.Definition)
 		if err != nil {
-			log.Printf("team-subscriptions: %s/%s: parse: %v", n.TenantID, n.Name, err)
+			slog.Warn("team-subscriptions: parse failed", "tenant", n.TenantID, "team", n.Name, "err", err)
 			continue
 		}
 		entry, ok := teamgraph.StateByID(def, def.Entry)
@@ -262,9 +262,9 @@ func (s *Server) subscriptionCtx(ctx context.Context, sub teamSubscription) cont
 	if sub.Promoter != nil {
 		promoter = *sub.Promoter
 	} else if s.subUncaptured.first(sub.TenantID + "\x00" + sub.Name) {
-		log.Printf("team-subscriptions: %s/%s was promoted before its promoter's confinement was recorded, "+
+		slog.Warn("team-subscriptions: the team was promoted before its promoter's confinement was recorded, "+
 			"so its walks run isolated (and denied the operator's provider key while LOOMCYCLE_OPERATOR_KEY_RESTRICTION is on). "+
-			"Promote the team again (TeamDef op=promote) to run it with its promoter's access.", sub.TenantID, sub.Name)
+			"Promote the team again (TeamDef op=promote) to run it with its promoter's access.", "tenant", sub.TenantID, "team", sub.Name)
 	}
 	return tools.WithRunIdentity(ctx, tools.RunIdentityValue{
 		TenantID:              sub.TenantID,
@@ -384,7 +384,7 @@ func (s *Server) runSubscribedTeam(ctx context.Context, sub teamSubscription) er
 		// The walk ran and failed — the workflow's own outcome, not a sweep
 		// fault, and already recorded on its run. Logged so an operator
 		// watching the sweep sees it without reading the runs list.
-		log.Printf("team-subscriptions: %s/%s walk failed (backing off): %s", sub.TenantID, sub.Name, res.Text)
+		slog.Warn("team-subscriptions: walk failed (backing off)", "tenant", sub.TenantID, "team", sub.Name, "result", res.Text)
 		return nil
 	}
 	s.subBackoff.record(sub.DefID, nil)

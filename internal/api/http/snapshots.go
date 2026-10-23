@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -566,7 +566,7 @@ func (s *Server) refreshRestoredLimits(ctx context.Context, restored []store.Tok
 	type limitKey struct{ scope, tenantID, scopeID string }
 	rows, err := s.store.TokenLimitsAll(ctx)
 	if err != nil {
-		log.Printf("snapshot restore: re-reading token_limits for the refresh failed, pushing the restored rows as written: %v", err)
+		slog.Warn("snapshot restore: re-reading token_limits for the refresh failed, pushing the restored rows as written", "err", err)
 		for _, row := range restored {
 			s.limits.PutLimit(row)
 		}

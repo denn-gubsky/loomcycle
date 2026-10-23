@@ -4500,6 +4500,15 @@ export interface EnsureMcpServerOptions {
    *  loomcycle's idempotent create dedup the re-registration. */
   headers?: Record<string, string>;
   description?: string;
+  /** How the server's text results reach the model. `"passthrough"` (the
+   *  default) hands them over as they came. `"capture"` keeps a file the
+   *  server returns as base64 inside a text block — the whole block, or a
+   *  JSON string field such as Microsoft Graph's `contentBytes` — in the
+   *  run's inbox and hands the model a one-line reference instead. Opt in
+   *  only for a server that returns files that way: a long opaque token
+   *  could otherwise look like one. Part of the registration's content, so
+   *  changing it mints a new version. Sent as the overlay's `binary_results`. */
+  binaryResults?: "passthrough" | "capture";
   /** Force a `tools/list` refresh after registering. Default false.
    *
    *  You usually do NOT need this: registration auto-discovers the upstream's

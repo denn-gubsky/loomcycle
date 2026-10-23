@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -87,7 +87,7 @@ func (s *Server) recordWalkEvent(ctx context.Context, runID string, ev providers
 		return
 	}
 	if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
-		log.Printf("teamdef: record %s on walk run %s: %v", ev.Type, runID, err)
+		slog.Warn("teamdef: record event on walk run failed", "run_id", runID, "type", ev.Type, "err", err)
 	}
 }
 

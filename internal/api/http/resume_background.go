@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -244,7 +244,7 @@ func (s *Server) residentChildrenOf(ctx context.Context, parent store.Run) []sto
 	}
 	runs, err := s.store.ListRunsByParentAgentID(ctx, parent.AgentID)
 	if err != nil {
-		log.Printf("resume: list run %s's children: %v", parent.ID, err)
+		slog.Warn("resume: list the run's children failed", "run_id", parent.ID, "err", err)
 		return nil
 	}
 	var out []store.Run
@@ -424,7 +424,7 @@ func (s *Server) restoredClockExpired(ctx context.Context, runID string, clk *re
 		page, err := s.store.GetRunEventsSince(ctx, runID, clk.seq, resumedChildClockPage)
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("resume: read background child %s's events: %v", runID, err)
+				slog.Warn("resume: read background child's events failed", "run_id", runID, "err", err)
 			}
 			clk.backOff()
 			return false
@@ -459,7 +459,7 @@ func (s *Server) restoredChildEnd(ctx context.Context, spec tools.ChildSpec, mis
 		var nf *store.ErrNotFound
 		if !errors.As(err, &nf) {
 			if ctx.Err() == nil {
-				log.Printf("resume: read background child %s: %v", spec.RunID, err)
+				slog.Warn("resume: read background child failed", "run_id", spec.RunID, "err", err)
 			}
 			return "", tools.ChildResult{}, false
 		}

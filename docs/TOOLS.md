@@ -1030,7 +1030,7 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 `LOOMCYCLE_CHANNEL_DEBUG=1` enables structured per-publish + per-retry log lines used to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — these lines are noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The two log shapes are:
 
-- `channel "X" publish: id=... commit_us=N pool_total=A pool_acquired=B pool_idle=C` — fires on every successful publish. `commit_us` measures the postgres `tx.Commit` duration in microseconds; the pool fields capture pgxpool state at commit time.
+- `channel publish channel=X id=... commit_us=N pool_total=A pool_acquired=B pool_idle=C` — fires on every successful publish. `commit_us` measures the postgres `tx.Commit` duration in microseconds; the pool fields capture pgxpool state at commit time.
 
 - `channel "X" subscribe-race-recovered attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
 

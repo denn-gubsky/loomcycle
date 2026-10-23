@@ -3,7 +3,7 @@ package http
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -47,7 +47,7 @@ func (s *Server) startDetachedLoop(d detachedLoop) <-chan struct{} {
 		// parks, so every future Pause would time out waiting for a ghost.
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("interactive run %s panicked: %v", d.runID, rec)
+				slog.Error("interactive run panicked", "run_id", d.runID, "panic", rec)
 				s.finishRunFailedReason(d.runID, fmt.Sprintf("panic: %v", rec), d.meta)
 			}
 			d.teardown()

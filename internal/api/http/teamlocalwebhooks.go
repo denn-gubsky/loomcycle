@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"strings"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -120,7 +119,7 @@ func (s *Server) ResolveTeamWebhook(ctx context.Context, tenant, team, name stri
 	// No walk of the team armed it here; one on another replica may have.
 	a, err := s.leasedTeamWebhook(ctx, key)
 	if err != nil {
-		log.Printf("team webhook %s/%s: read its lease: %v", team, name, err)
+		slog.Warn("team webhook: read its lease failed", "team", team, "webhook", name, "err", err)
 	}
 	if a == nil {
 		return runner.TeamWebhook{}, false
@@ -236,7 +235,7 @@ func (s *Server) publishTeamWebhook(ctx context.Context, a *armedTeamWebhook, us
 	if _, err := s.publishTeamLocalChannel(ctx, a.sc.Tenant, a.sc, a.hook.Channel, userID, body); err != nil {
 		if s.store != nil && len(keys) > 0 {
 			if rerr := s.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), keys); rerr != nil {
-				log.Printf("team %q: release the dedup keys of a delivery that did not publish: %v", a.sc.Team, rerr)
+				slog.Warn("team: release the dedup keys of a delivery that did not publish failed", "team", a.sc.Team, "err", rerr)
 			}
 		}
 		return err
@@ -285,7 +284,7 @@ func (s *Server) armTeamWebhooks(ctx context.Context, def teamgraph.Definition) 
 	}
 	s.teamHooks.add(armed)
 	endLease := s.leaseTeamWebhooks(ctx, sc, walkID, ident.UserID, names)
-	log.Printf("team %q (version %s) walk %s: armed its own webhooks: %s", sc.Team, sc.DefID, walkID, strings.Join(names, ", "))
+	slog.Info("team: walk armed its own webhooks", "team", sc.Team, "def_id", sc.DefID, "walk_id", walkID, "webhooks", names)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -298,7 +297,7 @@ func (s *Server) armTeamWebhooks(ctx context.Context, def teamgraph.Definition) 
 				a.closed = true
 				a.mu.Unlock()
 			}
-			log.Printf("team %q (version %s) walk %s: disarmed its own webhooks", sc.Team, sc.DefID, walkID)
+			slog.Info("team: walk disarmed its own webhooks", "team", sc.Team, "def_id", sc.DefID, "walk_id", walkID)
 		})
 	}, nil
 }
@@ -342,7 +341,7 @@ func (s *Server) leaseTeamWebhooks(ctx context.Context, sc store.TeamScope, walk
 		wctx, cancel := context.WithTimeout(bg, 5*time.Second)
 		defer cancel()
 		if err := s.store.TeamWebhookArmPut(wctx, rows); err != nil {
-			log.Printf("team %q walk %s: record its webhooks' lease: %v", sc.Team, walkID, err)
+			slog.Warn("team: record the walk's webhooks' lease failed", "team", sc.Team, "walk_id", walkID, "err", err)
 		}
 	}
 	put()
@@ -374,7 +373,7 @@ func (s *Server) leaseTeamWebhooks(ctx context.Context, sc store.TeamScope, walk
 			if err := s.store.TeamWebhookArmDelete(dctx, sc.Tenant, sc.Team, walkID); err != nil {
 				// Not left open: the walk's run is recorded as over next, and
 				// a lease of a run no longer running is not read.
-				log.Printf("team %q walk %s: delete its webhooks' lease: %v", sc.Team, walkID, err)
+				slog.Warn("team: delete the walk's webhooks' lease failed", "team", sc.Team, "walk_id", walkID, "err", err)
 			}
 		})
 	}

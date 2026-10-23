@@ -13,7 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -721,7 +721,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// config.validate already rejected unknown names at load; a Build error
 	// here is defensive — log it loudly rather than silently drop a transform.
 	if cp, err := contextplugin.Build(cfg.ContextPlugins, secretEnvValues(os.Environ())); err != nil {
-		log.Printf("context_plugins: build failed (chain disabled): %v", err)
+		slog.Error("context_plugins: build failed (chain disabled)", "err", err)
 	} else {
 		s.contextPlugins = cp
 	}
@@ -1809,8 +1809,8 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 		// pin wins: it is the more specific and the cheaper intent, and the
 		// tier's cascade would fall back to providers the pin meant to avoid.
 		if s.pinTierWarned.first(tenantID + "\x00" + agentName + "\x00" + def.DefID) {
-			log.Printf("agent %q (def_id %q): definition sets both a provider/model pin and tier %q; resolving to the pin — fork it with only one to silence this",
-				agentName, def.DefID, def.Tier)
+			slog.Warn(fmt.Sprintf("agent %q (def_id %q): definition sets both a provider/model pin and tier %q; resolving to the pin — fork it with only one to silence this",
+				agentName, def.DefID, def.Tier), "agent", agentName, "def_id", def.DefID, "tier", def.Tier)
 		}
 	}
 
@@ -1864,8 +1864,9 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 			return "", "", "", rerr
 		}
 		if len(dec.PassedOver) > 0 {
-			log.Printf("queue-aware routing: agent %q runs on %s/%s, passing over %s (switch_after %s)",
-				agentName, dec.Provider, dec.Model, strings.Join(dec.PassedOver, ", "), req.SwitchAfter)
+			slog.Info(fmt.Sprintf("queue-aware routing: agent %q runs on %s/%s, passing over %s (switch_after %s)",
+				agentName, dec.Provider, dec.Model, strings.Join(dec.PassedOver, ", "), req.SwitchAfter),
+				"agent", agentName, "provider", dec.Provider, "model", dec.Model, "passed_over", dec.PassedOver, "switch_after", req.SwitchAfter)
 		}
 		return dec.Provider, dec.Model, dec.Effort, nil
 	}
@@ -1977,7 +1978,7 @@ func (s *Server) resolveAfterQueue(ctx context.Context, def config.AgentDef, ten
 	}
 	providerID, model, effort, err := s.resolveAgentDef(ctx, def, tenantID, userID, agentName, userTier, restricted)
 	if err != nil {
-		log.Printf("queue-aware routing: agent %q: resolving again after its wait in the run queue failed, keeping its first choice: %v", agentName, err)
+		slog.Warn("queue-aware routing: resolving again after its wait in the run queue failed, keeping its first choice", "agent", agentName, "err", err)
 		return "", nil, "", "", false
 	}
 	provider, err = s.providers.Get(providerID)
@@ -2266,11 +2267,11 @@ func (s *Server) emitSystemPromptEvent(
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("store: marshal system_prompt event for run %s: %v", runID, err)
+		slog.Error("store: marshal system_prompt event failed", "run_id", runID, "err", err)
 		return
 	}
 	if err := s.store.AppendEvent(ctx, runID, "system_prompt", b); err != nil {
-		log.Printf("store: AppendEvent(system_prompt) failed for run %s: %v", runID, err)
+		slog.Error("store: AppendEvent(system_prompt) failed", "run_id", runID, "err", err)
 	}
 }
 
@@ -2498,7 +2499,7 @@ func applyAgentDefOverlay(base config.AgentDef, definition json.RawMessage) conf
 		EphemeralVolumes string `json:"ephemeral_volumes,omitempty"`
 	}
 	if err := json.Unmarshal(definition, &ov); err != nil {
-		log.Printf("agent_def overlay: malformed definition JSON, falling back to static: %v", err)
+		slog.Warn("agent_def overlay: malformed definition JSON, falling back to static", "err", err)
 		return base
 	}
 	out := base
@@ -4699,7 +4700,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("panic recovered in %s %s: %v", r.Method, r.URL.Path, rec)
+				slog.Error("panic recovered in HTTP handler", "method", r.Method, "path", r.URL.Path, "panic", rec)
 				// Best-effort 500. If headers are already sent (SSE has
 				// started writing) the WriteHeader call is a no-op and the
 				// client sees the connection close, which is the cleanest
@@ -4786,7 +4787,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		replicas, err := s.replicaStore.ListReplicas(ctx)
 		if err != nil {
-			log.Printf("healthz: list replicas: %v", err)
+			slog.Warn("healthz: list replicas failed", "err", err)
 		} else {
 			resp.Replicas = replicas
 		}
@@ -5988,7 +5989,7 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("transcript: encode failed: %v", err)
+		slog.Warn("transcript: encode failed", "err", err)
 	}
 }
 
@@ -6191,7 +6192,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		lev := providers.Event{Type: providers.EventLimit, Limit: &info}
 		if payload, err := json.Marshal(lev); err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(providers.EventLimit), payload); err != nil {
-				log.Printf("store: AppendEvent failed (run=%s type=limit): %v", runID, err)
+				slog.Error("store: AppendEvent failed", "run_id", runID, "type", "limit", "err", err)
 			}
 		}
 		fwd(lev)
@@ -6248,7 +6249,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			}
 			if payload, err := json.Marshal(ev); err == nil {
 				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
-					log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+					slog.Error("store: AppendEvent failed", "run_id", runID, "type", ev.Type, "err", err)
 				}
 			}
 			return
@@ -6266,7 +6267,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			payload, err := json.Marshal(ev)
 			if err == nil {
 				if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
-					log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+					slog.Error("store: AppendEvent failed", "run_id", runID, "type", ev.Type, "err", err)
 				}
 			}
 			return
@@ -6336,7 +6337,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		}
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
-				log.Printf("store: AppendEvent failed (run=%s type=%s): %v", runID, ev.Type, err)
+				slog.Error("store: AppendEvent failed", "run_id", runID, "type", ev.Type, "err", err)
 			}
 		}
 		fwd(ev)
@@ -6430,7 +6431,7 @@ func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.Ru
 		row.PrefillMs, row.DecodeMs, row.QueueMs = tm.PrefillMs, tm.DecodeMs, tm.QueueMs
 	}
 	if err := s.store.RecordCallUsage(ctx, row); err != nil {
-		log.Printf("store: RecordCallUsage failed (run=%s iter=%d): %v", runID, iteration, err)
+		slog.Error("store: RecordCallUsage failed", "run_id", runID, "iteration", iteration, "err", err)
 	}
 	// RFC AW: increment the month-to-date budget counters + report any tier this
 	// call newly crossed (in-flight crossing). Nil-safe (no-op tracker → nil).
@@ -6958,7 +6959,7 @@ func (s *Server) writeReviewRecord(ctx context.Context, runID string, armed bool
 	case errors.Is(err, errRunConfigUnreadable):
 		return false
 	case err != nil:
-		log.Printf("review: could not record run %s's arming: %v", runID, err)
+		slog.Warn("review: could not record the run's arming", "run_id", runID, "err", err)
 		return false
 	}
 	return true
@@ -7562,7 +7563,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// A duplicate-active collision is essentially impossible here
 		// (subAgentID is freshly generated); log and continue without
 		// registering rather than fail the run for a registry hiccup.
-		log.Printf("cancel registry: sub-agent register failed (%s): %v", subAgentID, regErr)
+		slog.Warn("cancel registry: sub-agent register failed", "agent_id", subAgentID, "err", regErr)
 	} else {
 		registered = true
 	}
@@ -7679,7 +7680,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	if s.store != nil && subRunID != "" {
 		if inputJSON, err := json.Marshal(segs); err == nil {
 			if err := s.store.AppendEvent(ctx, subRunID, "user_input", inputJSON); err != nil {
-				log.Printf("store: AppendEvent(user_input) failed for sub-run %s: %v", subRunID, err)
+				slog.Error("store: AppendEvent(user_input) failed for sub-run", "run_id", subRunID, "err", err)
 			}
 		}
 	}
@@ -8910,7 +8911,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 				return
 			}
 			if aerr := s.store.AppendEvent(context.WithoutCancel(ctx), runID, string(ev.Type), payload); aerr != nil {
-				log.Printf("compact %s: hook decision not recorded: %v", runID, aerr)
+				slog.Warn("compact: hook decision not recorded", "run_id", runID, "err", aerr)
 			}
 		}, providers.ToolUse{}, gate.Decisions)
 		if gate.Denied {
@@ -8987,7 +8988,7 @@ func (s *Server) compactRunWithSource(ctx context.Context, runID, source string)
 	// to the consolidator — banking content that stays live in the history.
 	if bank := s.bankCompactedSpanFn(agentDef, config.HarvestToMemoryEnabled(agentDef.Context), run.TenantID, run.UserID, run.Agent, runID, run.SessionID); bank != nil {
 		if _, berr := bank(summCtx, msgs[firstIdx:cut]); berr != nil {
-			log.Printf("compact %s: memory_flush did not bank: %v", runID, berr)
+			slog.Warn("compact: memory_flush did not bank", "run_id", runID, "err", berr)
 		}
 	}
 
@@ -9261,7 +9262,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("writeJSON encode failed: %v", err)
+		slog.Warn("writeJSON encode failed", "err", err)
 	}
 }
 
@@ -9382,7 +9383,7 @@ func (s *Server) makeHeartbeat(runID string) func() {
 		defer cancel()
 		if err := s.store.UpdateHeartbeat(bg, runID); err != nil {
 			// Log only — never fail the run on a heartbeat hiccup.
-			log.Printf("store: UpdateHeartbeat(%s) failed: %v", runID, err)
+			slog.Warn("store: UpdateHeartbeat failed", "run_id", runID, "err", err)
 		}
 	}
 }
@@ -9537,7 +9538,7 @@ func (s *Server) finishRunFailedReason(runID, reason string, meta runStateMeta) 
 	// No result (RFC DI): the loop never ran, so there is no answer — the
 	// reason is the run's error, and it already has a column.
 	if err := s.store.FinishRun(bg, runID, store.RunFailed, "", store.Usage{}, stored); err != nil {
-		log.Printf("store: FinishRun(failed reason=%q) failed (run=%s): %v", stored, runID, err)
+		slog.Error("store: FinishRun(failed) failed", "run_id", runID, "reason", stored, "err", err)
 	}
 	s.publishRunState(meta, "failed", "", stored)
 	s.observeRunEnd(meta, store.RunFailed, "", reason, "")
@@ -9594,12 +9595,12 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 	// cancel. Authoritative over pricing cumulative tokens at the final model (which
 	// disagrees on a mid-run fallback). Error → leave NULL, never fail the write.
 	if cost, currency, _, err := s.store.RunCostSummary(bg, runID); err != nil {
-		log.Printf("store: RunCostSummary failed (run=%s): %v", runID, err)
+		slog.Warn("store: RunCostSummary failed", "run_id", runID, "err", err)
 	} else {
 		usage.Cost, usage.CostCurrency = cost, currency
 	}
 	if err := s.store.FinishRun(bg, runID, store.RunCancelled, reason, usage, ""); err != nil {
-		log.Printf("store: FinishRun(cancelled) failed (run=%s): %v", runID, err)
+		slog.Error("store: FinishRun(cancelled) failed", "run_id", runID, "err", err)
 	}
 	s.publishRunState(meta, "cancelled", reason, "")
 	s.observeRunEnd(meta, store.RunCancelled, reason, "", res.FinalText)
@@ -9622,11 +9623,11 @@ func (s *Server) releaseConsolidationLease(runID string) {
 	defer cancel()
 	n, err := s.store.MemoryCursorReleaseByOwner(bg, runID)
 	if err != nil {
-		log.Printf("consolidation lease release (run=%s): %v", runID, err)
+		slog.Warn("consolidation lease release failed", "run_id", runID, "err", err)
 		return
 	}
 	if n > 0 {
-		log.Printf("consolidation lease released on run end (run=%s targets=%d) — the pass did not release it itself", runID, n)
+		slog.Info("consolidation lease released on run end — the pass did not release it itself", "run_id", runID, "targets", n)
 	}
 }
 
@@ -9656,7 +9657,7 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if s.sqlMem != nil {
 		s.sqlMem.RollbackRunTxns(rootRunID)
 		if _, err := s.sqlMem.DropRunScope(rootRunID); err != nil {
-			log.Printf("sqlmem run-scope drop (run=%s): %v", rootRunID, err)
+			slog.Warn("sqlmem run-scope drop failed", "run_id", rootRunID, "err", err)
 		}
 	}
 	if s.store == nil {
@@ -9669,12 +9670,12 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	// FENCED RemoveAll of the per-run ephemeral subtree (re-derived; never a
 	// stored path). removed=false when it was already gone (nothing to do).
 	if _, err := builtin.PurgeEphemeralRunTree(dynRoot, rootRunID, "ephemeral inline purge"); err != nil {
-		log.Printf("ephemeral inline purge (run=%s): %v", rootRunID, err)
+		slog.Warn("ephemeral inline purge failed", "run_id", rootRunID, "err", err)
 	}
 	bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := s.store.EphemeralVolumeDeleteByRun(bg, rootRunID); err != nil {
-		log.Printf("ephemeral inline purge: delete rows (run=%s): %v", rootRunID, err)
+		slog.Warn("ephemeral inline purge: delete rows failed", "run_id", rootRunID, "err", err)
 	}
 }
 
@@ -9802,7 +9803,7 @@ func (s *Server) loadEphemeralVolumes(ctx context.Context, rootRunID string, set
 	}
 	recs, err := read(ctx)
 	if err != nil {
-		log.Printf("ephemeral rehydrate (run=%s): %v", rootRunID, err)
+		slog.Warn("ephemeral rehydrate failed", "run_id", rootRunID, "err", err)
 		return set
 	}
 	for _, r := range recs {
@@ -9885,12 +9886,12 @@ func (s *Server) finishRun(_ context.Context, runID string, res loop.RunResult, 
 	// summary error is logged, not fatal — leave the cost NULL rather than fail the
 	// terminal write; currency "" ⇒ unpriced (NULL), preserving NULL-vs-zero.
 	if cost, currency, _, err := s.store.RunCostSummary(bg, runID); err != nil {
-		log.Printf("store: RunCostSummary failed (run=%s): %v", runID, err)
+		slog.Warn("store: RunCostSummary failed", "run_id", runID, "err", err)
 	} else {
 		usage.Cost, usage.CostCurrency = cost, currency
 	}
 	if err := s.store.FinishRun(bg, runID, status, res.StopReason, usage, errMsg); err != nil {
-		log.Printf("store: FinishRun failed (run=%s): %v", runID, err)
+		slog.Error("store: FinishRun failed", "run_id", runID, "err", err)
 	}
 	s.publishRunState(meta, string(status), res.StopReason, errMsg)
 	s.observeRunEnd(meta, status, res.StopReason, hookErr, res.FinalText)
@@ -10044,9 +10045,6 @@ func filterTools(all []tools.Tool, agentAllowed, callerAllowed []string) []tools
 	}
 	return out
 }
-
-// Logger is the package-level logger; cmd/loomcycle may swap it out.
-var Logger = log.Default()
 
 // emitInertCapabilityWarnings reports every tool this agent holds and cannot
 // use, once, at run start.

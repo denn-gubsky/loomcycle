@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1517,7 +1517,7 @@ func reResolveForOperatorTurn(ctx context.Context, opts *RunOptions, emit func(p
 	if err != nil {
 		// Continue on the settings we have. A run that cannot re-read its own
 		// configuration should not stop mid-conversation over it.
-		log.Printf("loop: could not re-resolve routing for the operator's turn: %v", err)
+		slog.WarnContext(ctx, "loop: could not re-resolve routing for the operator's turn", "err", err)
 		return
 	}
 	if !changed || provider == nil {
@@ -1574,7 +1574,7 @@ func reReadShapeForOperatorTurn(ctx context.Context, opts *RunOptions) {
 	}
 	shape, err := opts.ReReadShapeOnOperatorTurn(ctx)
 	if err != nil {
-		log.Printf("loop: could not re-read tool_choice/output_format for the operator's turn: %v", err)
+		slog.WarnContext(ctx, "loop: could not re-read tool_choice/output_format for the operator's turn", "err", err)
 		return
 	}
 	if shape.ToolChoiceChanged {
@@ -3066,8 +3066,8 @@ func runLoop(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// every iteration of a Run; spamming on each iteration would
 	// just be noise.
 	if opts.Effort != "" && !opts.Provider.Capabilities().SupportsEffort {
-		log.Printf("loop: effort=%q dropped — provider %q does not translate effort to a wire param (model=%q)",
-			opts.Effort, opts.Provider.ID(), opts.Model)
+		slog.WarnContext(ctx, "loop: effort dropped — the provider does not translate effort to a wire param",
+			"effort", opts.Effort, "provider", opts.Provider.ID(), "model", opts.Model)
 	}
 
 	system, freshMessages := splitSegments(opts.Segments)
@@ -3610,7 +3610,8 @@ func (s *runState) finish() (RunResult, error) {
 		// That's a non-terminating tool-call loop (a code-agent bug), not a too-
 		// small cap; name it accordingly. (Capability-driven, not ID-coupled.)
 		if s.unboundedIters {
-			log.Printf("code agent %q hit the %d-call runaway ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates.", s.opts.AgentName, s.iterCap)
+			slog.Warn("code agent hit the runaway call ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates",
+				"agent", s.opts.AgentName, "ceiling", s.iterCap)
 		}
 	}
 
@@ -5220,6 +5221,7 @@ var allowedUntrustedKinds = map[string]bool{
 	"tool_output":   true,
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
+	"file_content":  true, // text extracted from a file a tool returned (File op=extract)
 	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
 }
 

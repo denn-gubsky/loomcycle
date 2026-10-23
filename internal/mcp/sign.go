@@ -8,7 +8,10 @@
 // What gets hashed (content-only — NOT metadata, identity, or cache):
 //
 //	name, description, transport ("http" | "streamable-http"), url,
-//	headers (map<string, string>)
+//	headers (map<string, string>), binary_results (RFC FF: it changes
+//	what the model is handed, so two defs differing in it are not the
+//	same server; "passthrough" normalises to absent, so every row stored
+//	before the field keeps its hash)
 //
 // Explicitly excluded:
 //   - def_id, version, parent_def_id, created_at, created_by_*,
@@ -42,11 +45,12 @@ import (
 // Tag order is load-bearing; do NOT reorder without bumping the hash-
 // format version on every existing row + re-running the backfill.
 type MCPServerContent struct {
-	Description string            `json:"description,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Name        string            `json:"name,omitempty"`
-	Transport   string            `json:"transport,omitempty"`
-	URL         string            `json:"url,omitempty"`
+	BinaryResults string            `json:"binary_results,omitempty"`
+	Description   string            `json:"description,omitempty"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	Name          string            `json:"name,omitempty"`
+	Transport     string            `json:"transport,omitempty"`
+	URL           string            `json:"url,omitempty"`
 }
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of the canonical
@@ -68,6 +72,9 @@ func normalize(c *MCPServerContent) {
 		c.Headers = nil
 	}
 	c.Description = normalizeText(c.Description)
+	if c.BinaryResults == "passthrough" {
+		c.BinaryResults = "" // the default, spelled out: the same behaviour
+	}
 }
 
 // normalizeText converts CRLF to LF and trims trailing whitespace.

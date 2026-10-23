@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -148,7 +148,7 @@ func (s *Server) RetentionOverride(ctx context.Context, req connector.RetentionO
 		}
 		if had {
 			s.recordRetentionOverrideAudit(ctx, "retention_override_clear", store.RetentionOverrideRow{TenantID: tenant, Agent: req.Agent})
-			log.Printf("retention: override cleared by %q: agent %q in tenant %q", principalSubject(ctx), req.Agent, tenant)
+			slog.Info("retention: override cleared", "by", principalSubject(ctx), "agent", req.Agent, "tenant", tenant)
 		}
 		return connector.RetentionOverrideResult{Overrides: []connector.RetentionOverride{}, Cleared: had}, nil
 	}
@@ -176,7 +176,7 @@ func (s *Server) RetentionOverride(ctx context.Context, req connector.RetentionO
 	if err := s.store.RetentionOverridePut(ctx, row, now); err != nil {
 		return none, err
 	}
-	log.Printf("retention: override set by %q: runs of agent %q in tenant %q are stored until %s", row.SetBy, row.Agent, row.TenantID, row.Until.Format(time.RFC3339))
+	slog.Info("retention: override set: runs of the agent are stored until the given time", "by", row.SetBy, "agent", row.Agent, "tenant", row.TenantID, "until", row.Until.Format(time.RFC3339))
 	return connector.RetentionOverrideResult{Overrides: []connector.RetentionOverride{retentionOverrideView(row)}}, nil
 }
 
@@ -251,7 +251,7 @@ func (s *Server) recordRetentionOverrideAudit(ctx context.Context, action string
 		ev.RetentionUntil = row.Until.UTC().Format(time.RFC3339)
 	}
 	if err := s.tokenAudit.Record(ev); err != nil {
-		log.Printf("retention: override audit write failed: %v", err)
+		slog.Error("retention: override audit write failed", "err", err)
 		return false
 	}
 	return true
@@ -266,7 +266,7 @@ func (s *Server) retentionLifted(ctx context.Context, tenant, agent string) bool
 	}
 	ok, err := s.store.RetentionOverrideActive(context.WithoutCancel(ctx), tenant, agent, time.Now())
 	if err != nil {
-		log.Printf("retention: could not read the override for agent %q in tenant %q (%v); the run stays no-trace", agent, tenant, err)
+		slog.Warn("retention: could not read the override; the run stays no-trace", "agent", agent, "tenant", tenant, "err", err)
 		return false
 	}
 	return ok

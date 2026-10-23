@@ -2,7 +2,7 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -93,7 +93,7 @@ func (g *pauseGate) Park(ctx context.Context) error {
 	// reports it as not-yet-parked (a warning), so the operator won't snapshot
 	// an inconsistent state.
 	if err := g.setPauseState(ctx, store.PauseStatePaused); err != nil {
-		log.Printf("pause: persist paused for run %s failed: %v — parking without barrier credit", g.runID, err)
+		slog.Warn("pause: persist paused for run failed — parking without barrier credit", "run_id", g.runID, "err", err)
 	} else {
 		g.mgr.MarkParked(g.runID)
 	}
@@ -124,7 +124,7 @@ func (g *pauseGate) recordClock(ctx context.Context) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseStatePersistTimeout)
 	defer cancel()
 	if err := g.saveClock(wctx, g.runID, clock.State()); err != nil {
-		log.Printf("pause: record the clock of run %s failed: %v — a resume elsewhere starts from its last recorded budget", g.runID, err)
+		slog.Warn("pause: record the run's clock failed — a resume elsewhere starts from its last recorded budget", "run_id", g.runID, "err", err)
 	}
 }
 
@@ -152,7 +152,7 @@ func (g *pauseGate) PauseIdle(ctx context.Context) (<-chan struct{}, func(), boo
 	g.recordClock(ctx)
 	since := g.openPause(ctx)
 	if err := g.setPauseState(context.Background(), store.PauseStatePaused); err != nil {
-		log.Printf("pause: persist paused for waiting run %s failed: %v — no barrier credit", g.runID, err)
+		slog.Warn("pause: persist paused for waiting run failed — no barrier credit", "run_id", g.runID, "err", err)
 	} else {
 		g.mgr.MarkParked(g.runID)
 	}
@@ -197,7 +197,7 @@ func (g *pauseGate) writePause(ctx context.Context, since, until time.Time) {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseStatePersistTimeout)
 	defer cancel()
 	if err := recordRunPause(wctx, g.store, g.runID, since, until); err != nil {
-		log.Printf("pause: record the pause of run %s failed: %v — a resumed timeout_ms on it counts this pause", g.runID, err)
+		slog.Warn("pause: record the run's pause failed — a resumed timeout_ms on it counts this pause", "run_id", g.runID, "err", err)
 	}
 }
 
