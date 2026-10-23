@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -430,5 +432,58 @@ func fileTwinPNG() []byte {
 		0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
 		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
 		0x42, 0x60, 0x82,
+	}
+}
+
+// The input is decoded strictly, and the File tool is handed the input that
+// was authorised, never the caller's bytes: a key that differs from a known
+// one only by case, a key given twice, or a key the twin does not take is
+// refused, so no call can be authorised as one op and run as another.
+func TestFileTwin_DecodesStrictly(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	rec := f.capture(t, runID, "acme", "a.txt", "http", []byte("first file\n"), true)
+	dir := dynvol.DerivedEphemeralPath(f.dynRoot, runID, inbox.Name)
+	raw := func(p auth.Principal, body string) (string, bool) {
+		t.Helper()
+		res, err := f.srv.File(sessionCtx(p), json.RawMessage(body))
+		if err != nil {
+			t.Fatalf("File(%s): %v", body, err)
+		}
+		return res.Text, res.IsError
+	}
+	for body, want := range map[string]string{
+		`{"run_id":"` + runID + `","op":"rm","OP":"stat","path":"` + rec.Ref + `"}`:   `"OP"`,
+		`{"run_id":"` + runID + `","op":"stat","OP":"rm","path":"` + rec.Ref + `"}`:   `"OP"`,
+		`{"run_id":"` + runID + `","op":"stat","op":"rm","path":"` + rec.Ref + `"}`:   `"op" more than once`,
+		`{"run_id":"` + runID + `","op":"ls","url":"https://example.com/"}`:           `"url"`,
+		`{"run_id":"` + runID + `","op":"ls","bogus":1}`:                              `"bogus"`,
+		`{"run_id":"` + runID + `","Run_ID":"other","op":"ls"}`:                       `"Run_ID"`,
+		`{"run_id":"` + runID + `","op":"stat","path":"` + rec.Ref + `"} {"op":"rm"}`: "trailing",
+	} {
+		if text, isErr := raw(twinOperator, body); !isErr || !strings.Contains(text, want) {
+			t.Errorf("%s = %s, want a refusal naming %s", body, text, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rec.Path))); err != nil {
+		t.Fatalf("a refused call removed the file: %v", err)
+	}
+	if text, isErr := raw(twinOperator, `{"run_id":"`+runID+`","op":"stat","path":"`+rec.Ref+`"}`); isErr || !strings.Contains(text, rec.SHA256) {
+		t.Errorf("a valid stat = %s", text)
+	}
+}
+
+// The keys the strict decoder admits are exactly the ones the struct it
+// authorises carries, so a field added to one cannot be dropped by the other.
+func TestFileTwin_FieldsAreTheArgs(t *testing.T) {
+	var got []string
+	ty := reflect.TypeOf(fileTwinArgs{})
+	got = append(got, "run_id")
+	for i := range ty.NumField() {
+		name, _, _ := strings.Cut(ty.Field(i).Tag.Get("json"), ",")
+		got = append(got, name)
+	}
+	if !reflect.DeepEqual(got, connector.FileTwinFields) {
+		t.Errorf("fileTwinArgs fields %v, connector.FileTwinFields %v", got, connector.FileTwinFields)
 	}
 }

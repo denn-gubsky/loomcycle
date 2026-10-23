@@ -1,11 +1,14 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
@@ -23,13 +26,6 @@ import (
 // context it runs in, which holds that inbox as the tree's only ephemeral
 // volume and nothing the caller did not earn.
 
-// fileTwinOps are the File ops the twin offers. download and upload are left
-// out: they go out on a run's HTTP host policy, which an operator session has
-// none of.
-var fileTwinOps = map[string]bool{
-	"stat": true, "ls": true, "extract": true, "import": true, "keep": true, "rm": true, "clear": true,
-}
-
 // fileTwinOwnerOps are the ops that write: extract, rm and clear change the
 // run's inbox, and keep writes into one of the tenant's volumes. Only the
 // run's owner or an admin may make them. Anyone else who may read the run
@@ -37,12 +33,76 @@ var fileTwinOps = map[string]bool{
 // (and with overwrite replace) files in volumes it has no write grant on.
 var fileTwinOwnerOps = map[string]bool{"extract": true, "rm": true, "clear": true, "keep": true}
 
+// fileTwinArgs is the part of a twin call the File tool receives: the File
+// tool's own input, less download and upload's fields. Its json names, with
+// run_id, are connector.FileTwinFields (TestFileTwin_FieldsAreTheArgs). It is what is
+// authorised and what is passed on, re-encoded from this struct, so the tool
+// never reads a byte of the caller's input that was not checked here.
+type fileTwinArgs struct {
+	Op           string   `json:"op"`
+	Path         string   `json:"path,omitempty"`
+	From         string   `json:"from,omitempty"`
+	To           string   `json:"to,omitempty"`
+	Overwrite    bool     `json:"overwrite,omitempty"`
+	Recursive    bool     `json:"recursive,omitempty"`
+	Prefix       string   `json:"prefix,omitempty"`
+	Images       *bool    `json:"images,omitempty"`
+	MaxRows      int      `json:"max_rows,omitempty"`
+	ExcerptChars int      `json:"excerpt_chars,omitempty"`
+	Title        string   `json:"title,omitempty"`
+	DocPath      string   `json:"doc_path,omitempty"`
+	Scope        string   `json:"scope,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+}
+
 type fileTwinInput struct {
 	RunID string `json:"run_id"`
-	Op    string `json:"op"`
-	Path  string `json:"path"`
-	From  string `json:"from"`
-	To    string `json:"to"`
+	fileTwinArgs
+}
+
+// decodeFileTwinInput decodes a call strictly. encoding/json matches a key
+// to a field whatever its case and lets a later duplicate win, so the struct
+// a lenient decode authorises and the bytes a second decode runs can name
+// different ops. Here every top-level key must be one of
+// connector.FileTwinFields,
+// spelled exactly, given once, with nothing after the object.
+func decodeFileTwinInput(input json.RawMessage) (fileTwinInput, error) {
+	var in fileTwinInput
+	dec := json.NewDecoder(bytes.NewReader(input))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return in, errors.New("the input must be a JSON object")
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return in, err
+		}
+		key, _ := tok.(string)
+		if !slices.Contains(connector.FileTwinFields, key) {
+			return in, fmt.Errorf("unknown field %q", key)
+		}
+		if seen[key] {
+			return in, fmt.Errorf("field %q more than once", key)
+		}
+		seen[key] = true
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return in, err
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return in, err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return in, errors.New("trailing data after the object")
+	}
+	// Every key is now an exact field name, given once, so this decode reads
+	// the same fields the scan above checked.
+	if err := json.Unmarshal(input, &in); err != nil {
+		return in, err
+	}
+	return in, nil
 }
 
 // File runs one File-tool op on the inbox of the run named by run_id. The
@@ -64,11 +124,11 @@ type fileTwinInput struct {
 //     rules. A configured volume is not reachable: the operator binds those
 //     to agents, not to sessions.
 func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
-	var in fileTwinInput
-	if err := json.Unmarshal(input, &in); err != nil {
-		return fileTwinRefusal(tools.CategoryValidation, "file: invalid input: "+err.Error(), "Pass a JSON object with run_id and op."), nil
+	in, err := decodeFileTwinInput(input)
+	if err != nil {
+		return fileTwinRefusal(tools.CategoryValidation, "file: invalid input: "+err.Error(), "Pass a JSON object with run_id, op and the op's own fields."), nil
 	}
-	if !fileTwinOps[in.Op] {
+	if !slices.Contains(connector.FileTwinOps, in.Op) {
 		if in.Op == "download" || in.Op == "upload" {
 			return fileTwinRefusal(tools.CategoryValidation, "file: "+in.Op+" is not available here: it needs a run's HTTP host policy",
 				"Give the agent the File and HTTP tools and let the run do it."), nil
@@ -130,9 +190,9 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 	if !ok {
 		return res, nil
 	}
-	body, err := withoutField(input, "run_id")
+	body, err := json.Marshal(in.fileTwinArgs)
 	if err != nil {
-		return fileTwinRefusal(tools.CategoryValidation, "file: invalid input: "+err.Error(), ""), nil
+		return connector.ToolResult{}, err
 	}
 	return s.dispatchBuiltin(tctx, builtin.FileToolName, body)
 }
@@ -306,17 +366,6 @@ func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot string, cal
 			"Ask an operator for write access to the volume, or name another.")
 	}
 	return binding, connector.ToolResult{}, true
-}
-
-// withoutField returns input with one top-level field removed, so what
-// reaches the File tool is exactly the tool's own input.
-func withoutField(input json.RawMessage, field string) (json.RawMessage, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(input, &fields); err != nil {
-		return nil, err
-	}
-	delete(fields, field)
-	return json.Marshal(fields)
 }
 
 func fileTwinNotFound(runID string) connector.ToolResult {
