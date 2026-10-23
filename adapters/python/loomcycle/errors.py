@@ -238,3 +238,80 @@ class SubstrateToolRefusedError(LoomcycleError):
         # retryability, next step, and the correct call format. None when the
         # runtime did not classify it.
         self.error_info = error_info
+
+
+class AclRefusedError(SubstrateToolRefusedError):
+    """Raised by ``group_def`` / ``acl_def`` / ``acl_binding`` / ``authz``
+    when the server refused the call. The refusal arrives as the HTTP route's
+    JSON error body (``{"code": ..., "error": ...}``), which this class reads:
+
+    * ``message`` is the body's ``error`` (the readable sentence);
+    * ``reason`` is the body's ``code`` — branch on it: ``insufficient_scope``
+      (not a tenant operator; ``required_scope`` names the scope),
+      ``acl_self_elevation`` (a delegated writer changing its own authority),
+      ``authz_subject`` (asking about another subject without being a tenant
+      operator, or the subject's set could not be read), ``acl_binding_invalid``
+      (the list does not exist, or the expiry has passed), ``acl_invalid``,
+      ``group_external`` (a group an identity provider owns), ``*_not_found``,
+      ``*_exists``, ``invalid_body``, ``unknown_op``, ``operator_plane``,
+      ``restricted_token``, ``store_unavailable``, ``acl_unavailable``;
+    * ``body`` is the whole decoded body (``{}`` when it was not JSON).
+
+    It is a ``SubstrateToolRefusedError``, so a caller that already catches
+    that class keeps catching these. ``retryable`` follows the server's own
+    classification of the refusal (``error_info.is_retryable``), False when
+    it sent none."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool: str = "",
+        error_info=None,
+        reason: Optional[str] = None,
+        body: Optional[dict] = None,
+    ) -> None:
+        super().__init__(message, tool=tool, error_info=error_info)
+        self.reason = reason
+        self.body: dict = body if body is not None else {}
+        rs = self.body.get("required_scope")
+        self.required_scope: Optional[str] = rs if isinstance(rs, str) and rs else None
+
+    @property
+    def retryable(self) -> bool:
+        return bool(self.error_info is not None and self.error_info.is_retryable)
+
+
+class AclDeniedError(AclRefusedError):
+    """An ``AclRefusedError`` with reason ``acl_denied``: an access-control
+    rule bound to the caller (its subject, a group it is in, its token or its
+    tenant) denies the call, or, where the deployment enforces lists, no rule
+    allows it. ``action`` is the verb asked (``read``, ``author``,
+    ``manage``…), ``resource`` the ``type:name`` asked about, and ``reasons``
+    the rules that decided, denies first — each ``{"acl", "rule", "effect"}``
+    and ``"version"`` when known; empty when no rule matched. The same call is
+    refused until a list or binding changes. The TypeScript client raises its
+    ``AclDeniedError`` for the same refusal."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool: str = "",
+        error_info=None,
+        body: Optional[dict] = None,
+    ) -> None:
+        super().__init__(message, tool=tool, error_info=error_info, reason="acl_denied", body=body)
+        action = self.body.get("action")
+        resource = self.body.get("resource")
+        self.action: Optional[str] = action if isinstance(action, str) and action else None
+        self.resource: Optional[str] = resource if isinstance(resource, str) and resource else None
+        self.reasons: list = [
+            r
+            for r in (self.body.get("reasons") or [])
+            if isinstance(r, dict)
+            and isinstance(r.get("acl"), str)
+            and isinstance(r.get("rule"), int)
+            and not isinstance(r.get("rule"), bool)
+            and r.get("effect") in ("allow", "deny")
+        ]

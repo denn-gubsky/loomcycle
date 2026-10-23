@@ -45,6 +45,8 @@ from ._generated import loomcycle_pb2_grpc as pb_grpc
 
 from .events import AgentEvent, error_info_from_pb
 from .errors import (
+    AclDeniedError,
+    AclRefusedError,
     AgentIDInUseError,
     AgentNotFoundError,
     AlreadyPausingError,
@@ -933,6 +935,89 @@ class LoomcycleClient:
         per-principal bearer tokens (RFC L multi-tenant auth). Mirror of
         :meth:`agent_def`."""
         return await self._dispatch_substrate("OperatorTokenDef", input)
+
+    # ---- Access control: groups, rule lists, bindings, decisions (RFC EY / EZ) ----
+    #
+    # Op-dispatched JSON over the GroupDef / AclDef / AclBinding / Authz RPCs,
+    # the same operations as the HTTP routes (/v1/_groups, /v1/_acldef,
+    # /v1/_aclbinding, /v1/_authz/*): ``input`` is the route's JSON body plus
+    # ``"op"`` and, for an admin, an optional ``"tenant"`` focus (ignored for
+    # a tenant operator). Each answer is the route's JSON body. A refusal
+    # raises AclRefusedError (AclDeniedError when a rule decided) with the
+    # body's ``code`` on ``reason``. Groups, lists and bindings need a tenant
+    # operator token (``substrate:tenant``, admin, or the legacy shared token);
+    # the ``authz`` questions are open to any principal about itself.
+
+    async def group_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """User groups. Ops: ``list``; ``get`` / ``effective`` / ``delete``
+        (``name``); ``create`` (``name``, ``description``, ``external_id`` —
+        an upsert by name); ``add_member`` (``name``, ``kind`` ``"user"`` |
+        ``"group"``, ``id``); ``remove_member`` (``name``, ``kind``, ``id``).
+        ``list`` includes config-declared groups, marked ``"source":
+        "config"``; ``effective`` lists every user the group holds through
+        nested groups. A write to a group an identity provider owns raises
+        AclRefusedError with reason ``group_external``."""
+        return await self._dispatch_acl("GroupDef", input)
+
+    async def acl_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Access-control rule lists. Ops: ``create`` / ``update`` / ``put``
+        (one upsert: ``name``, ``rules``, ``description``); ``get`` and
+        ``retire`` (``name``); ``list`` (``include_retired``; answers
+        ``{"acls": [...], "builtin": [...]}``, config lists marked
+        ``"source": "config"``); ``validate`` (``rules``); ``catalog`` (the
+        types, verbs and transports a rule may name); ``names`` (every live
+        list name a binding can reach). Rules the engine cannot enforce raise
+        AclRefusedError with reason ``acl_invalid``."""
+        return await self._dispatch_acl("AclDef", input)
+
+    async def acl_binding(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Bindings of a rule list to a subject. Ops: ``list``
+        (``include_retired``); ``create`` (``acl``, ``subject_kind``
+        ``"user"`` | ``"group"`` | ``"token"`` | ``"tenant"``,
+        ``subject_id``, ``expires_at`` RFC 3339 or omitted); ``delete``
+        (``id`` — the ``binding_id``; the binding is retired). A binding to a
+        list no layer has, or with an expiry in the past, raises
+        AclRefusedError with reason ``acl_binding_invalid``."""
+        return await self._dispatch_acl("AclBinding", input)
+
+    async def authz(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Access-control decisions, AuthZEN 1.0 shapes. Ops: ``evaluation``
+        and ``explain`` (``action: {"name"}``, ``resource: {"type", "id",
+        "owner"?}``, optional ``subject: {"type", "id"}`` and ``context``);
+        ``evaluations`` (1 to 256 ``evaluations``, each inheriting a
+        top-level ``action`` / ``resource`` / ``context`` it omits, and
+        ``options.evaluations_semantic``); ``simulate`` (draft ``acls`` and
+        ``bindings`` plus 1 to 256 ``requests``; nothing is written). Omit
+        ``subject`` to ask about yourself; naming another subject needs a
+        tenant operator (reason ``authz_subject`` otherwise). A decision's
+        ``decision`` is True only when a rule allowed; ``outcome``
+        ``no_match`` means no rule spoke."""
+        return await self._dispatch_acl("Authz", input)
+
+    async def _dispatch_acl(self, tool: str, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """``_dispatch_substrate`` for the access-control RPCs, whose refusal
+        text is the HTTP route's JSON error body: it is decoded onto
+        AclRefusedError (AclDeniedError for ``acl_denied``) instead of being
+        surfaced as raw JSON. A body that is not JSON keeps the raw text as
+        the message."""
+        try:
+            return await self._dispatch_substrate(tool, input)
+        except SubstrateToolRefusedError as e:
+            body: dict = {}
+            try:
+                parsed = json.loads(e.message)
+                if isinstance(parsed, dict):
+                    body = parsed
+            except ValueError:
+                pass
+            code = body.get("code") if isinstance(body.get("code"), str) else None
+            err = body.get("error")
+            message = err if isinstance(err, str) and err else e.message
+            if code == "acl_denied":
+                raise AclDeniedError(message, tool=tool, error_info=e.error_info, body=body) from e
+            raise AclRefusedError(
+                message, tool=tool, error_info=e.error_info, reason=code, body=body
+            ) from e
 
     async def volume_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the VolumeDef substrate tool — dynamic filesystem-volume
