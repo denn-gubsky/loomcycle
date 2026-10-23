@@ -149,8 +149,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return tools.Result{Text: "url scheme must be http or https", IsError: true}, nil
 	}
-	if !hostAllowed(parsed.Hostname(), h.HostAllowlist) &&
-		!hostAllowedExtras(parsed.Hostname(), tools.ExtraAllowedHosts(ctx)) {
+	if !h.hostPermitted(ctx, parsed.Hostname()) {
 		// Operator floor + caller-narrowed list rejected, and no
 		// permitted Pre-hook contributed a per-call grant covering
 		// this hostname either. (Trust-boundary reminder: the
@@ -173,10 +172,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 	if maxResp == 0 {
 		maxResp = 256 * 1024
 	}
-	timeout := h.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	timeout := h.timeout()
 
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -209,8 +205,7 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 			if len(via) >= 5 {
 				return errors.New("too many redirects")
 			}
-			if !hostAllowed(req.URL.Hostname(), h.HostAllowlist) &&
-				!hostAllowedExtras(req.URL.Hostname(), tools.ExtraAllowedHosts(ctx)) {
+			if !h.hostPermitted(ctx, req.URL.Hostname()) {
 				return fmt.Errorf("redirect host %q not in allowlist", req.URL.Hostname())
 			}
 			return nil
@@ -249,6 +244,22 @@ func (h *HTTP) do(ctx context.Context, method, rawURL string, headers map[string
 		b.WriteString(responseTruncatedMarker(maxResp))
 	}
 	return tools.Result{Text: b.String()}, nil
+}
+
+// hostPermitted is the HTTP tool's name-layer check: the operator's list (as
+// narrowed for this run) or a permitted Pre-hook's grant for this one call.
+// Every tool that sends a request on the HTTP tool's policy asks it, so the
+// floor cannot differ between them.
+func (h *HTTP) hostPermitted(ctx context.Context, host string) bool {
+	return hostAllowed(host, h.HostAllowlist) || hostAllowedExtras(host, tools.ExtraAllowedHosts(ctx))
+}
+
+// timeout is the per-request timeout, 30s unless the operator set one.
+func (h *HTTP) timeout() time.Duration {
+	if h.Timeout > 0 {
+		return h.Timeout
+	}
+	return 30 * time.Second
 }
 
 // credentialWords are the parts of a response header name that mark a value
