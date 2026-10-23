@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"os"
 	"strconv"
@@ -161,10 +160,10 @@ func (b *boot) wireAuth() {
 	if cfg.Env.AuditLogPath != "" {
 		fs, aerr := audit.NewFileSink(cfg.Env.AuditLogPath)
 		if aerr != nil {
-			log.Fatalf("audit: %v", aerr)
+			fatal("audit: opening the audit log failed", "path", cfg.Env.AuditLogPath, "err", aerr)
 		}
 		tokenAudit = fs
-		log.Printf("audit: OperatorTokenDef mutations → %s", cfg.Env.AuditLogPath)
+		slog.Info("audit: OperatorTokenDef mutations are recorded", "path", cfg.Env.AuditLogPath)
 		// RFC EP: every keyed Crypto op and every crypto-key change.
 		cryptoTool.Audit = tokenAudit
 		credentialDefTool.Audit = tokenAudit
@@ -178,9 +177,9 @@ func (b *boot) wireAuth() {
 	// nil when there is no file to write to.
 	if cfg.Env.AuditLogPath != "" {
 		srv.SetEraseAudit(tokenAudit)
-		log.Printf("audit: subject erasures → %s", cfg.Env.AuditLogPath)
+		slog.Info("audit: subject erasures are recorded", "path", cfg.Env.AuditLogPath)
 	} else {
-		log.Printf("audit: no LOOMCYCLE_AUDIT_LOG_PATH — subject erasure is DISABLED " +
+		slog.Warn("audit: no LOOMCYCLE_AUDIT_LOG_PATH — subject erasure is DISABLED " +
 			"(it will not delete without a durable record of who asked)")
 	}
 	// Run-tree deletes are recorded to the same file when there is one. With
@@ -205,19 +204,19 @@ func (b *boot) wireAuth() {
 	// Config load already compared principals with each other; the token side
 	// needs the store, so it is checked here, fatally, like a config error.
 	if err := builtin.CheckPrincipalTenantsAgainstTokens(context.Background(), storeIface, cfg.PrincipalTenants()); err != nil {
-		log.Fatalf("config: principals: %v", err)
+		fatal("config: principals: checking their tenants against the operator tokens failed", "err", err)
 	}
 	// RFC ES D2: the effective token pepper — explicit, else derived from
 	// LOOMCYCLE_SECRET_KEY, else none. One hasher for every mint and lookup.
 	tokenHasher, err := cfg.Env.TokenHasher()
 	if err != nil {
-		log.Fatalf("auth: token pepper: %v", err)
+		fatal("auth: token pepper: deriving it failed", "err", err)
 	}
 	srv.SetTokenHasher(tokenHasher)
 	switch tokenHasher.Source() {
 	case auth.PepperNone:
 		if srv.AuthConfigured(context.Background()) {
-			log.Printf("auth: WARNING: operator tokens are hashed with no pepper — anyone who can write the database can mint a working token. Set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER.")
+			slog.Warn("auth: operator tokens are hashed with no pepper — anyone who can write the database can mint a working token. Set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER.")
 		}
 	case auth.PepperDerived:
 		// Before serving: report the token rows on an older form (RFC ES
@@ -225,7 +224,7 @@ func (b *boot) wireAuth() {
 		// authenticates until `loomcycle tokens rewrap` wraps it.
 		rep, rerr := srv.ReportTokenHashes(context.Background())
 		if rerr != nil {
-			log.Printf("auth: WARNING: reading the token table to report older token hashes failed: %v", rerr)
+			slog.Warn("auth: reading the token table to report older token hashes failed", "err", rerr)
 			break
 		}
 		logTokenHashes(rep, tokenHasher.Fingerprint())
@@ -255,10 +254,10 @@ func (b *boot) wireAuth() {
 	// gates decide and an explicit deny is honoured on top).
 	aclMode, err := authz.ParseMode(cfg.Env.ACLMode)
 	if err != nil {
-		log.Fatalf("%v", err)
+		fatal("authz: invalid access control mode", "err", err)
 	}
 	srv.SetACLResolver(aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second))
-	log.Printf("authz: access control mode=%s (LOOMCYCLE_ACL), set cache ttl=%ds", aclMode, cfg.Env.ACLCacheTTLSeconds)
+	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds)
 	// Delegated user-token mints and revocations are recorded to the same
 	// sink as operator-token mutations. Not wired when there is no file: the
 	// handler treats a nil sink as "not recorded".
@@ -270,9 +269,9 @@ func (b *boot) wireAuth() {
 	if v := os.Getenv("LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS"); v != "" {
 		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
 			srv.SetUserTokenMaxTTL(time.Duration(n) * time.Second)
-			log.Printf("auth: user tokens live at most %ds", n)
+			slog.Info("auth: user tokens have a maximum lifetime", "max_ttl_seconds", n)
 		} else {
-			log.Fatalf("auth: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS=%q is not a positive number of seconds", v)
+			fatal("auth: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS is not a positive number of seconds", "value", v)
 		}
 	}
 	// A default rate for run starts, for a caller whose token carries none.
@@ -282,19 +281,19 @@ func (b *boot) wireAuth() {
 		rate := auth.RateLimit{}
 		n, perr := strconv.Atoi(v)
 		if perr != nil {
-			log.Fatalf("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE=%q is not a number", v)
+			fatal("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE is not a number", "value", v)
 		}
 		rate.PerMinute = n
 		if b := os.Getenv("LOOMCYCLE_RUN_RATE_BURST"); b != "" {
 			if rate.Burst, perr = strconv.Atoi(b); perr != nil {
-				log.Fatalf("auth: LOOMCYCLE_RUN_RATE_BURST=%q is not a number", b)
+				fatal("auth: LOOMCYCLE_RUN_RATE_BURST is not a number", "value", b)
 			}
 		}
 		if err := rate.Validate(); err != nil {
-			log.Fatalf("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE / _BURST: %v", err)
+			fatal("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE / _BURST is invalid", "err", err)
 		}
 		srv.SetDefaultRunRate(rate)
-		log.Printf("auth: default run rate %d/min, burst %d", rate.PerMinute, rate.EffectiveBurst())
+		slog.Info("auth: default run rate", "per_minute", rate.PerMinute, "burst", rate.EffectiveBurst())
 	}
 	// Strict token budgets: also check a hard budget before each model call
 	// and each sub-agent start, so a run in flight stops when the budget is
@@ -305,9 +304,9 @@ func (b *boot) wireAuth() {
 	case "":
 	case "strict":
 		srv.SetStrictLimits(true)
-		log.Printf("limits: strict enforcement (a hard budget stops runs in flight and refuses sub-agents)")
+		slog.Info("limits: strict enforcement (a hard budget stops runs in flight and refuses sub-agents)")
 	default:
-		log.Fatalf("limits: LOOMCYCLE_LIMITS_ENFORCE=%q is not a known value (strict, or unset)", v)
+		fatal("limits: LOOMCYCLE_LIMITS_ENFORCE is not a known value (strict, or unset)", "value", v)
 	}
 	// Expired token rows are removed once they have been dead for a while. A
 	// deployment minting short-lived tokens daily would otherwise keep every
@@ -318,7 +317,7 @@ func (b *boot) wireAuth() {
 		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n >= 0 {
 			expiredTokenRetention = time.Duration(n) * time.Second
 		} else {
-			log.Fatalf("auth: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS=%q is not a number of seconds (0 keeps expired rows)", v)
+			fatal("auth: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS is not a number of seconds (0 keeps expired rows)", "value", v)
 		}
 	}
 

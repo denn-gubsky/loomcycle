@@ -32,17 +32,27 @@ func TestLogTokenHashes_ListsUntaggedRowsCappedAndNamesTheRewrapCommand(t *testi
 	out := captureBootLog(t, func() {
 		logTokenHashes(lchttp.TokenHashReport{Untagged: many, Wrapped: 4, Previous: 2, OtherKey: 1, UntaggedDead: 3}, "0123456789abcdef")
 	})
-	for _, want := range []string{
-		fmt.Sprintf("WARNING: %d token row(s) carry an unpeppered hash", len(many)),
-		"`loomcycle tokens rewrap`",
-		"def_000", "and 3 more",
-		"4 wrapped, 2 under a previous LOOMCYCLE_SECRET_KEY",
-		"1 token(s) hashed under a LOOMCYCLE_SECRET_KEY that is neither",
-		"fingerprint 0123456789abcdef",
-		"3 retired or expired token row(s)",
+	// Each line is found by its message; its values are attributes of that
+	// same line.
+	for msg, wants := range map[string][]string{
+		"token rows carry an unpeppered hash": {
+			"WARN ", fmt.Sprintf("rows=%d", len(many)),
+			"`loomcycle tokens rewrap`",
+			"def_000", "more_def_ids=3",
+		},
+		"4 wrapped, 2 under a previous LOOMCYCLE_SECRET_KEY":  {"fingerprint 0123456789abcdef"},
+		"hashed under a LOOMCYCLE_SECRET_KEY that is neither": {"WARN ", "tokens=1"},
+		"retired or expired token rows":                       {"rows=3"},
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("boot log lacks %q:\n%s", want, out)
+		line := logLineWith(out, msg)
+		if line == "" {
+			t.Errorf("boot log has no line with %q:\n%s", msg, out)
+			continue
+		}
+		for _, want := range wants {
+			if !strings.Contains(line, want) {
+				t.Errorf("the %q line lacks %q:\n%s", msg, want, line)
+			}
 		}
 	}
 	if strings.Contains(out, many[len(many)-1]) {
@@ -50,7 +60,17 @@ func TestLogTokenHashes_ListsUntaggedRowsCappedAndNamesTheRewrapCommand(t *testi
 	}
 
 	quiet := captureBootLog(t, func() { logTokenHashes(lchttp.TokenHashReport{}, "0123456789abcdef") })
-	if strings.Contains(quiet, "WARNING") {
+	if strings.Contains(quiet, "WARN") || strings.Count(strings.TrimSpace(quiet), "\n") != 0 {
 		t.Errorf("an empty report logged more than the counts: %q", quiet)
 	}
+}
+
+// logLineWith returns the first line of log that contains substr, or "".
+func logLineWith(log, substr string) string {
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
 }

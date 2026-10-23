@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -57,10 +58,11 @@ func (b *boot) buildTools() {
 	// hot-reload of skills is a future enhancement.
 	skillSet, err := skills.LoadSet(cfg.Env.SkillsRoot)
 	if err != nil {
-		log.Fatalf("skills: %v", err)
+		fatal("skills: load failed", "err", err)
 	}
 	if cfg.Env.SkillsRoot != "" {
-		log.Printf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot)
+		// Message kept verbatim: examples/exp7-code-review-fanout/README.md quotes it.
+		slog.Info(fmt.Sprintf("skills: loaded %d from %s", len(skillSet.Names()), cfg.Env.SkillsRoot), "skills", len(skillSet.Names()), "dir", cfg.Env.SkillsRoot)
 	}
 	// RFC BA: fold inline `skills:` yaml defs into the runtime set so they are
 	// invokable + listable on demand via the Skill tool. Before RFC BA the
@@ -76,12 +78,13 @@ func (b *boot) buildTools() {
 	// load; bundled-only deployments get the default topic set.
 	helpSet, err := help.LoadSet(cfg.Env.HelpRoot)
 	if err != nil {
-		log.Fatalf("help: %v", err)
+		fatal("help: load failed", "err", err)
 	}
 	if cfg.Env.HelpRoot != "" {
-		log.Printf("help: loaded %d topics (filesystem overlay at %s)", len(helpSet.Names()), cfg.Env.HelpRoot)
+		// Messages kept verbatim: test/runtime/context-help/run.sh greps "help: loaded N".
+		slog.Info(fmt.Sprintf("help: loaded %d topics (filesystem overlay at %s)", len(helpSet.Names()), cfg.Env.HelpRoot), "topics", len(helpSet.Names()), "dir", cfg.Env.HelpRoot)
 	} else {
-		log.Printf("help: loaded %d bundled topics (no LOOMCYCLE_HELP_ROOT overlay)", len(helpSet.Names()))
+		slog.Info(fmt.Sprintf("help: loaded %d bundled topics (no LOOMCYCLE_HELP_ROOT overlay)", len(helpSet.Names())), "topics", len(helpSet.Names()))
 	}
 	if cfg.Env.AgentsRoot != "" {
 		// Agents-from-MD discovery happened inside config.Load (must run
@@ -89,7 +92,7 @@ func (b *boot) buildTools() {
 		// the existing pipeline). Log the count post-merge so operators
 		// see the final cfg.Agents size, which may include yaml-only
 		// entries on top of the discovered ones.
-		log.Printf("agents: discovered from %s — total in cfg.Agents (after yaml merge): %d", cfg.Env.AgentsRoot, len(cfg.Agents))
+		slog.Info("agents: discovered from the agents root", "dir", cfg.Env.AgentsRoot, "agents_after_yaml_merge", len(cfg.Agents))
 	}
 	if len(cfg.UserTiers) > 0 {
 		// v0.8.2 — log configured user_tier policies at boot so
@@ -106,7 +109,8 @@ func (b *boot) buildTools() {
 		if _, hasDefault := cfg.UserTiers["default"]; hasDefault {
 			names = append([]string{"default"}, names...)
 		}
-		log.Printf("user_tiers: configured %d — %s", len(names), strings.Join(names, " / "))
+		// Message kept verbatim: docs/PLAN.md quotes it.
+		slog.Info(fmt.Sprintf("user_tiers: configured %d — %s", len(names), strings.Join(names, " / ")), "user_tiers", len(names))
 	}
 
 	// RFC BB: build the search-provider registry + resolver + operator host-key
@@ -176,10 +180,12 @@ func (b *boot) buildTools() {
 	// this process makes is counted in a lane: providers.<id>.lanes.embedder.
 	embedder, err := wiring.GatedEmbedder(cfg, pr.sched)
 	if err != nil {
-		log.Fatalf("embedder: %v", err)
+		fatal("embedder: setup failed", "err", err)
 	}
 	if embedder != nil {
-		log.Printf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension())
+		// Message kept verbatim: test/runtime/memory-vector/run.sh greps "embedder: stub".
+		slog.Info(fmt.Sprintf("embedder: %s/%s (dim=%d)", embedder.Provider(), embedder.Model(), embedder.Dimension()),
+			"provider", embedder.Provider(), "model", embedder.Model(), "dim", embedder.Dimension())
 		// Wrapped ONCE, here, before any consumer takes a reference: the Memory
 		// tool, the Document tool and the HTTP server all share this instance, so
 		// the observed health covers every embedding the process performs rather
@@ -486,12 +492,12 @@ func (b *boot) addLocalAPITools() {
 			ToolNamePrefix: cfg.LocalAPI.ToolNamePrefix,
 		}, cfg.ConfigDir())
 		if err != nil {
-			log.Printf("local-api gateway disabled: %v", err)
+			slog.Error("local-api gateway disabled", "err", err)
 		} else {
 			for _, w := range laWarns {
-				log.Printf("local-api: %s", w)
+				slog.Warn("local-api: " + w)
 			}
-			log.Printf("local-api: registered %d tools from %s", len(laTools), cfg.LocalAPI.SpecPath)
+			slog.Info("local-api: registered tools from the spec", "tools", len(laTools), "path", cfg.LocalAPI.SpecPath)
 			b.allTools = append(b.allTools, laTools...)
 		}
 	}
@@ -506,41 +512,43 @@ func (b *boot) logToolPosture() {
 	searchResolver := b.searchResolver
 
 	if len(cfg.Volumes) == 0 {
-		log.Printf("note: file tools (Read/Write/Edit/Glob/Grep/Bash) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
+		slog.Info("note: file tools (Read/Write/Edit/Glob/Grep/Bash) require a `volumes:` binding — none configured; agents with no volume binding have no filesystem access")
 	}
 	if len(staticHosts) == 0 && !cfg.Env.HTTPCallerAuthoritative {
-		log.Printf("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (a comma-separated host list, or `*` for all public hosts; or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
+		slog.Info("note: HTTP + WebFetch tools are registered but disabled — set LOOMCYCLE_HTTP_HOST_ALLOWLIST to enable (a comma-separated host list, or `*` for all public hosts; or LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1 to delegate the allowlist to the caller)")
 	}
 	for _, h := range staticHosts {
 		if h == "*" {
-			log.Printf("note: LOOMCYCLE_HTTP_HOST_ALLOWLIST=* — HTTP + WebFetch may reach ANY public host; the dial-time guard still blocks private/loopback/link-local/metadata IPs (add specific internal hosts via LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST)")
+			slog.Warn("note: LOOMCYCLE_HTTP_HOST_ALLOWLIST=* — HTTP + WebFetch may reach ANY public host; the dial-time guard still blocks private/loopback/link-local/metadata IPs (add specific internal hosts via LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST)")
 			break
 		}
 	}
 	if cfg.Env.HTTPCallerAuthoritative {
-		log.Printf("note: HTTP_CALLER_AUTHORITATIVE=1 — caller's allowed_hosts is the sole policy; operator's static list is fallback only")
+		slog.Warn("note: HTTP_CALLER_AUTHORITATIVE=1 — caller's allowed_hosts is the sole policy; operator's static list is fallback only")
 	}
 	if len(cfg.Env.HTTPPrivateHostAllowlist) > 0 {
-		log.Printf("note: HTTP_PRIVATE_HOST_ALLOWLIST=%v — these hosts may resolve to private IPs (e.g. localhost callbacks)", cfg.Env.HTTPPrivateHostAllowlist)
+		slog.Warn("note: HTTP_PRIVATE_HOST_ALLOWLIST is set — these hosts may resolve to private IPs (e.g. localhost callbacks)", "hosts", cfg.Env.HTTPPrivateHostAllowlist)
 	}
 	if searchRegistry == nil {
-		log.Printf("note: WebSearch tool is registered but disabled — configure search_providers (or set BRAVE_API_KEY for the default Brave provider)")
+		slog.Info("note: WebSearch tool is registered but disabled — configure search_providers (or set BRAVE_API_KEY for the default Brave provider)")
 	} else {
-		log.Printf("search: %d provider(s) configured; priority %v", len(searchRegistry.IDs()), searchResolver.Cascade(nil))
+		// Message kept verbatim: docs/SEARCH.md quotes it.
+		slog.Info(fmt.Sprintf("search: %d provider(s) configured; priority %v", len(searchRegistry.IDs()), searchResolver.Cascade(nil)),
+			"providers", len(searchRegistry.IDs()), "priority", searchResolver.Cascade(nil))
 	}
 	if cfg.Env.BashEnabled {
-		log.Printf("WARNING: Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
-		log.Printf("note: Bash requires a rw volume binding — it runs in the bound volume's root and refuses an agent with no rw volume")
+		slog.Warn("Bash tool is enabled (LOOMCYCLE_BASH_ENABLED=1). This is NOT a true sandbox — run loomcycle inside a container or VM if you expose this to untrusted prompts.")
+		slog.Info("note: Bash requires a rw volume binding — it runs in the bound volume's root and refuses an agent with no rw volume")
 		if len(cfg.Env.BashAllowedCreds) > 0 {
-			log.Printf("WARNING: Bash injects these credentials into every command (LOOMCYCLE_BASH_ALLOWED_CREDS=%s) — the model can read each one (a plain `env` prints it). Give Bash only credentials you would hand the model.", strings.Join(cfg.Env.BashAllowedCreds, ","))
+			slog.Warn("Bash injects these credentials into every command (LOOMCYCLE_BASH_ALLOWED_CREDS) — the model can read each one (a plain `env` prints it). Give Bash only credentials you would hand the model.", "credentials", strings.Join(cfg.Env.BashAllowedCreds, ","))
 		}
 	} else {
-		log.Printf("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
+		slog.Info("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
 	}
 	if cfg.Env.BashboxEnabled {
-		log.Printf("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha: gate per agent via tools, and for mutually hostile tenants on one process also run loomcycle in a container.")
+		slog.Info("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha: gate per agent via tools, and for mutually hostile tenants on one process also run loomcycle in a container.")
 		if len(cfg.Env.BashboxFallbackCommands) > 0 {
-			log.Printf("WARNING: Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS=%s). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
+			slog.Warn("Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", "commands", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
 			// RFC ES #9: the variables reach only the host child, but that
 			// child does what the model tells it, including printing them.
 			if len(cfg.Env.BashboxFallbackAllowedEnv) > 0 || len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
@@ -548,11 +556,12 @@ func (b *boot) logToolPosture() {
 				if len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
 					advice = "pass only credentials you would hand the model, and bind each stored credential to the one command that needs it (cmd:NAME in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS)."
 				}
-				log.Printf("WARNING: the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV=%s, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS=%s): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). So %s", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","), advice)
+				slog.Warn("the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). So "+advice,
+					"allowed_env", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), "allowed_creds", strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","))
 			}
 		}
 	} else {
-		log.Printf("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")
+		slog.Info("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")
 	}
 
 	// Per-agent tool policy is default-deny: an agent with no tools
@@ -562,7 +571,8 @@ func (b *boot) logToolPosture() {
 	// which definitions are affected.
 	for name, def := range cfg.Agents {
 		if len(def.Tools) == 0 {
-			log.Printf("note: agent %q has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)", name)
+			// Message kept verbatim: docs/TOOLS.md quotes it.
+			slog.Info(fmt.Sprintf("note: agent %q has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)", name), "agent", name)
 		}
 	}
 }
