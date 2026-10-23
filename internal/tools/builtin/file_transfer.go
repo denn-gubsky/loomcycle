@@ -47,11 +47,14 @@ const (
 	// fileRegisterLimit caps the secrets one run tree's downloads and
 	// uploads hand the redactor.
 	fileRegisterLimit = 32
-	// fileRegisterMinLen is the shortest query VALUE handed to the
-	// redactor. A registered value is masked in every transcript the server
-	// writes, so an ordinary parameter ("page=2", "lang=uk") must not become
-	// one; a signature, a SAS token or a tempauth value is far longer. User
-	// information is a credential at any length and has no floor.
+	// fileRegisterMinLen is the shortest part of a URL handed to the
+	// redactor, user information included. The redactor is process-wide: a
+	// registered value is masked in every transcript the server writes, for
+	// every tenant, so the floor is what stops a run turning an ordinary
+	// word or "page=2" into a mask for everyone. A signature, a SAS token or
+	// a tempauth value is far longer. A shorter part is still masked in this
+	// run's own results (displayURL); it is only not registered. A redactor
+	// scoped to the run or tenant would remove the trade-off.
 	fileRegisterMinLen = 8
 )
 
@@ -141,14 +144,20 @@ func (f *File) registerURL(ctx context.Context, u *url.URL) {
 		parts = append(parts, u.User.String())
 	}
 	// Each value as it is written in the URL, since that is the form a
-	// transcript repeats; judged one by one, so a short secret beside a
-	// long harmless parameter is not missed.
+	// transcript repeats; judged one by one, so a secret beside a harmless
+	// parameter is not missed. A component with no "=" (?<token>) is a
+	// value itself.
 	for _, kv := range strings.Split(u.RawQuery, "&") {
-		if _, v, ok := strings.Cut(kv, "="); ok && len(v) >= fileRegisterMinLen {
-			parts = append(parts, v)
+		v := kv
+		if _, after, ok := strings.Cut(kv, "="); ok {
+			v = after
 		}
+		parts = append(parts, v)
 	}
 	for _, p := range parts {
+		if len(p) < fileRegisterMinLen {
+			continue
+		}
 		if !inbox.ClaimRegistration(ctx, fileRegisterLimit) {
 			return
 		}

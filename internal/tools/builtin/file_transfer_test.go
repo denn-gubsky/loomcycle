@@ -592,13 +592,17 @@ func TestFileTransfer_ShortQueryIsNotRegistered(t *testing.T) {
 	}
 }
 
-// User information is a credential at any length.
-func TestFileTransfer_UserInfoAlwaysRegistered(t *testing.T) {
+// One floor for every part handed to the process-wide redactor: user
+// information and a bare ?<token> are registered when they reach it, and a
+// short one is not (it would become a mask in every tenant's transcripts).
+func TestFileTransfer_UserInfoAndBareTokenRegisteredAtTheFloor(t *testing.T) {
 	tf := newTransferFile(&HTTP{HostAllowlist: []string{"127.0.0.1"}, AllowPrivateIPs: true})
 	_, ctx, _ := transferRun(t, inbox.Service{})
-	u, _ := url.Parse("https://ab:cd@127.0.0.1/x")
-	tf.File.registerURL(ctx, u)
-	if len(tf.registered) != 1 || tf.registered[0] != "ab:cd" {
+	for _, raw := range []string{"https://ab:cd@127.0.0.1/x?the", "https://svc:p4ssw0rd@127.0.0.1/x?Zm9vYmFyYmF6"} {
+		u, _ := url.Parse(raw)
+		tf.File.registerURL(ctx, u)
+	}
+	if strings.Join(tf.registered, ",") != "svc:p4ssw0rd,Zm9vYmFyYmF6" {
 		t.Errorf("registered = %v", tf.registered)
 	}
 }
