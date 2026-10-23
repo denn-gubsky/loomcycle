@@ -2282,6 +2282,14 @@ export interface WhoamiResponse {
   is_admin: boolean;
   legacy: boolean;
   open_mode?: boolean;
+  /** The deployment's access-control rollout mode: `compat`, `shadow` or
+   *  `enforce`. Absent on a server that predates access-control lists. */
+  acl_mode?: AclMode;
+  /** The caller's groups, transitive. Absent when none were resolved. */
+  groups?: string[];
+  /** The version of the caller's compiled access-control set. Absent in open
+   *  mode and when the set could not be resolved. */
+  acl_version?: number;
 }
 
 // ---- Pause / Resume / State (v0.8.17 wire shape, v0.8.18 real impls) ----
@@ -6831,4 +6839,372 @@ export interface StreamChangesOptions {
   since?: number;
   /** Abort to close the stream; the iterator then throws an `AbortError`. */
   signal?: AbortSignal;
+}
+
+// ---- Access control: groups, rule lists, bindings, decisions (RFC EY / EZ) ----
+//
+// Every management call acts in the caller's own tenant, server-side; the
+// `tenant` option is an admin's focus on another tenant (?tenant=), ignored
+// for a tenant operator. Groups, lists and bindings are the tenant operator's
+// (`substrate:tenant`, admin, or the legacy shared token); any principal may
+// ask the decision routes, about itself. Lists and bindings the config
+// declares are listed beside the stored rows with `source: "config"` and are
+// read-only; they carry fewer fields (no version, no timestamps), so those
+// fields are optional here.
+
+/** The access-control rollout mode a deployment runs in. */
+export type AclMode = "compat" | "shadow" | "enforce";
+
+/** Marks an entry the config declares rather than the store holds. */
+export type AclSource = "config";
+
+export type AclEffect = "allow" | "deny";
+
+/** What a binding attaches a list to. `tenant` is everyone in the tenant. */
+export type AclSubjectKind = "user" | "group" | "token" | "tenant";
+
+/** The closed `when` set of a rule. Every present field narrows the rule; an
+ *  absent one does not. */
+export interface AclCondition {
+  /** The request arrived on one of these (see `AclCatalog.transports`). */
+  transport?: string[];
+  /** A wall-clock window: on one of `days` (`mon`…`sun`), inside
+   *  `between: [from, to)` (`HH:MM`), in `tz` (an IANA zone). */
+  time?: { days?: string[]; between?: string[]; tz?: string };
+  interactive?: boolean;
+  tier?: string[];
+  user_tier?: string[];
+  source_cidr?: string[];
+  owner_is_self?: boolean;
+  /** Inside a run: the run's agent matches this glob. */
+  agent?: string;
+  /** The run's spawn depth is at most `max`. */
+  depth?: { max: number };
+}
+
+/** One rule: `effect` on any of `actions` over any of `resources`
+ *  (`type:selector`, e.g. `agent:reviewer-*`), when `when` holds. */
+export interface AclRule {
+  effect: AclEffect;
+  actions: string[];
+  resources: string[];
+  when?: AclCondition;
+  description?: string;
+}
+
+/** A rule list as written: a built-in baseline, or a draft list for
+ *  {@link LoomcycleClient.authzSimulate}. */
+export interface AclList {
+  name: string;
+  description?: string;
+  rules: AclRule[];
+}
+
+/** One rule list: a stored one, or (`source: "config"`) one the config
+ *  declares, which has only a name, a description and its rules. */
+export interface AclDefRow {
+  tenant_id?: string;
+  name: string;
+  /** Bumped on every write. Absent on a config list. */
+  version?: number;
+  content_sha256?: string;
+  catalog_version?: number;
+  rules: AclRule[];
+  description?: string;
+  created_at?: string;
+  updated_at?: string;
+  created_by?: string;
+  /** Set once the list is retired; absent while it is live. */
+  retired_at?: string;
+  source?: AclSource;
+}
+
+/** `aclDef({op: "list"})`. `builtin` is the code-defined baselines, which no
+ *  call can change. */
+export interface AclDefListResponse {
+  acls: AclDefRow[];
+  builtin: AclList[];
+}
+
+/** `GET /v1/_acldef/names`: every live list name the tenant's bindings can
+ *  reach, stored and config, sorted. */
+export interface AclDefNamesResponse {
+  names: string[];
+}
+
+/** `aclDef({op: "validate"})` on rules the server accepts. Rules it refuses
+ *  are a 400 (`acl_invalid`) naming the fault. */
+export interface AclValidateResult {
+  valid: boolean;
+  /** How many rules were read. */
+  rules: number;
+  catalog_version: number;
+}
+
+/** One resource type of the catalog: its verbs, and for a scoped type the
+ *  scopes a selector may name (`separator` joins scope and name). */
+export interface AclCatalogType {
+  type: string;
+  verbs: string[];
+  scopes?: string[];
+  separator?: string;
+}
+
+/** `aclDef({op: "catalog"})`: what a rule may name. */
+export interface AclCatalog {
+  catalog_version: number;
+  types: AclCatalogType[];
+  transports: string[];
+}
+
+/** The ops of the AclDef family. `create`, `update` and `put` are the same
+ *  upsert. */
+export type AclDefOp =
+  | "create"
+  | "update"
+  | "put"
+  | "get"
+  | "list"
+  | "retire"
+  | "validate"
+  | "catalog"
+  | "names";
+
+/** The input of {@link LoomcycleClient.aclDef}. `name` is required by
+ *  create/update/put/get/retire, `rules` by create/update/put/validate,
+ *  `include_retired` is read by list. */
+export interface AclDefInput {
+  op: AclDefOp;
+  name?: string;
+  rules?: AclRule[];
+  description?: string;
+  include_retired?: boolean;
+}
+
+/** One group: a stored one, or (`source: "config"`) one the config declares,
+ *  which lists its direct `members` (subjects) and member `groups` inline and
+ *  has no timestamps. A stored group's members come from
+ *  {@link LoomcycleClient.getGroup}. */
+export interface GroupRow {
+  tenant_id?: string;
+  name: string;
+  description?: string;
+  /** Set on a group an identity provider owns: its members are managed there,
+   *  and a write here is refused (409 `group_external`). */
+  external_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  created_by?: string;
+  source?: AclSource;
+  members?: string[];
+  groups?: string[];
+}
+
+export type GroupMemberKind = "user" | "group";
+
+/** One direct membership edge of a stored group. */
+export interface GroupMember {
+  tenant_id?: string;
+  group: string;
+  member_kind: GroupMemberKind;
+  member_id: string;
+  added_at: string;
+  added_by?: string;
+}
+
+export interface GroupListResponse {
+  groups: GroupRow[];
+}
+
+/** `GET /v1/_groups/{name}`: a stored group with its direct members. */
+export interface GroupDetail {
+  group: GroupRow;
+  members: GroupMember[] | null;
+  /** Every group a member of this one is also in, transitively, this one
+   *  included. */
+  contained_in: string[] | null;
+}
+
+/** `GET /v1/_groups/{name}/effective`: everyone the group holds, at any
+ *  nesting depth, config-declared members included. */
+export interface GroupEffective {
+  group: string;
+  /** User subjects, sorted. */
+  users: string[];
+  /** The nested groups walked, sorted (the group itself excluded). */
+  groups: string[];
+}
+
+/** The body of {@link LoomcycleClient.createGroup}: an upsert by name. */
+export interface CreateGroupBody {
+  name: string;
+  description?: string;
+  external_id?: string;
+}
+
+/** What a membership write reports. `removed` is set by a removal. */
+export interface GroupMemberChange {
+  group: string;
+  kind: GroupMemberKind;
+  id: string;
+  removed?: boolean;
+}
+
+/** One binding of a list to a subject: a stored one, or (`source: "config"`)
+ *  one the config declares, which has no `binding_id` and no timestamps. */
+export interface AclBinding {
+  binding_id?: string;
+  tenant_id?: string;
+  acl: string;
+  subject_kind: AclSubjectKind;
+  /** Absent for a tenant-wide binding. */
+  subject_id?: string;
+  /** Absent when the binding never expires. */
+  expires_at?: string;
+  created_at?: string;
+  created_by?: string;
+  /** Set once retired; absent while live. */
+  retired_at?: string;
+  source?: AclSource;
+}
+
+export interface AclBindingListResponse {
+  bindings: AclBinding[];
+}
+
+/** The body of {@link LoomcycleClient.createAclBinding}. The list must exist
+ *  and `expires_at` (RFC 3339) must be in the future, or the server refuses
+ *  with 400 `acl_binding_invalid`. */
+export interface CreateAclBindingBody {
+  acl: string;
+  subject_kind: AclSubjectKind;
+  subject_id?: string;
+  expires_at?: string;
+}
+
+/** One rule that decided: list, its version, the rule's index, its effect. */
+export interface AuthzReason {
+  acl: string;
+  version?: number;
+  rule: number;
+  effect: AclEffect;
+}
+
+/** An access-control decision (AuthZEN 1.0 shape). `decision` is true only
+ *  when a rule allowed; `outcome` `no_match` means no rule spoke, which in
+ *  `compat` and `shadow` mode the scope gate then decides. */
+export interface AuthzDecision {
+  decision: boolean;
+  outcome: "allow" | "deny" | "no_match";
+  reasons?: AuthzReason[];
+  /** The request crossed a tenant and no rule was read. */
+  tenant_floor?: boolean;
+  mode: AclMode;
+}
+
+/** The request context a rule's `when` is judged against. Omitted fields take
+ *  the call's own (`transport` is the transport the call arrived on). */
+export interface AuthzRequestContext {
+  transport?: string;
+  interactive?: boolean;
+  tier?: string;
+  user_tier?: string;
+  agent?: string;
+  depth?: number;
+}
+
+/** One question: may `subject` do `action` to `resource`? An omitted
+ *  `subject` (or one naming the caller) asks about the caller; naming another
+ *  subject of the tenant needs a tenant operator. An empty `resource.id` asks
+ *  about any instance of the type. */
+export interface AuthzEvaluationRequest {
+  subject?: { type?: string; id?: string };
+  action: { name: string };
+  resource: { type: string; id: string; owner?: string };
+  context?: AuthzRequestContext;
+}
+
+/** How {@link LoomcycleClient.authzEvaluations} runs its batch. */
+export type AuthzEvaluationsSemantic =
+  | "execute_all"
+  | "deny_on_first_deny"
+  | "permit_on_first_permit";
+
+/** A batch of questions for one subject. A top-level `action`, `resource` or
+ *  `context` is the default each entry that omits its own inherits. 1 to 256
+ *  entries. */
+export interface AuthzEvaluationsRequest {
+  subject?: { type?: string; id?: string };
+  action?: { name: string };
+  resource?: { type: string; id: string; owner?: string };
+  context?: AuthzRequestContext;
+  evaluations: Array<Partial<Omit<AuthzEvaluationRequest, "subject">>>;
+  options?: { evaluations_semantic?: AuthzEvaluationsSemantic };
+}
+
+export interface AuthzEvaluationsResponse {
+  evaluations: AuthzDecision[];
+}
+
+/** One rule the engine read for an explanation, matching or not, and why. */
+export interface AuthzTrace {
+  acl: string;
+  version?: number;
+  rule: number;
+  effect: AclEffect;
+  matched: boolean;
+  why: string;
+}
+
+/** A binding as the engine applied it. */
+export interface AuthzAppliedBinding {
+  id?: string;
+  acl: string;
+  subject_kind: AclSubjectKind;
+  subject_id?: string;
+  expires_at?: string;
+}
+
+/** `POST /v1/_authz/explain`: the decision, every rule read for the resource's
+ *  type, the bound lists that do not exist, the bindings applied, and the
+ *  subject's groups. */
+export interface AuthzExplainResponse {
+  decision: AuthzDecision;
+  traces: AuthzTrace[] | null;
+  missing_acls: string[] | null;
+  applied_bindings: AuthzAppliedBinding[] | null;
+  groups: string[] | null;
+}
+
+/** A draft binding for {@link LoomcycleClient.authzSimulate}. */
+export interface AuthzDraftBinding {
+  acl: string;
+  subject_kind: AclSubjectKind;
+  subject_id?: string;
+  expires_at?: string;
+}
+
+/** Evaluate questions against a DRAFT: the subject's lists and bindings now,
+ *  with `acls` added or replaced by name and `bindings` added. Nothing is
+ *  written. 1 to 256 requests. */
+export interface AuthzSimulateRequest {
+  subject?: { type?: string; id?: string };
+  acls?: AclList[];
+  bindings?: AuthzDraftBinding[];
+  requests: AuthzEvaluationRequest[];
+}
+
+export interface AuthzSimulateResult {
+  /** The request, echoed. */
+  request: AuthzEvaluationRequest;
+  now: AuthzDecision;
+  with_draft: AuthzDecision;
+  /** The outcome differs between `now` and `with_draft`. */
+  changed: boolean;
+}
+
+export interface AuthzSimulateResponse {
+  results: AuthzSimulateResult[];
+  /** Lists the draft's bindings name that no layer has. */
+  missing_acls: string[] | null;
 }

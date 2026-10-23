@@ -94,6 +94,15 @@
  *       (opts?): Promise<DefNamesResponse>
  *     listOperatorTokenDefNames(opts?): Promise<OperatorTokenDefNamesResponse>   // admin token only
  *
+ *     // Access control (RFC EY / EZ; tenant operator; opts.tenant = admin focus)
+ *     listGroups / getGroup(name) / getGroupEffective(name) / createGroup(body) /
+ *     deleteGroup(name) / addGroupMember(name, {kind, id}) / removeGroupMember(name, kind, id)
+ *     aclDef(input): Promise<unknown>                             // op-dispatched; names → GET /v1/_acldef/names
+ *     listAclDefs / getAclDef(name) / putAclDef(body) / retireAclDef(name) /
+ *     validateAclRules(rules) / getAclCatalog() / listAclDefNames()
+ *     listAclBindings / createAclBinding(body) / deleteAclBinding(bindingId)
+ *     authzEvaluation(req) / authzEvaluations(req) / authzExplain(req) / authzSimulate(req)   // any principal, about itself
+ *
  *     // Schedules admin
  *     listAllSchedules(opts?): Promise<ScheduleListResponse>      // static yaml + ScheduleDefs, merged
  *     getScheduleState(defId): Promise<ScheduleStateView>
@@ -158,7 +167,9 @@
  *     SnapshotTooLargeError, RequestTooLargeError + PromptTooLargeError
  *     (both subclasses of SnapshotTooLargeError), TokenLimitExceededError
  *     (NOT a BackpressureError: a hard budget, not retryable),
- *     SnapshotVersionError, SubstrateToolRefusedError (v0.8.22).
+ *     SnapshotVersionError, SubstrateToolRefusedError (v0.8.22),
+ *     AclDeniedError (a 403 an access-control rule decided; action,
+ *     resource, reasons).
  *     Every one carries `retryable` (true only for a refusal that clears
  *     on its own).
  *
@@ -633,9 +644,51 @@ export type {
   DecisionScoreAnswer,
   DecisionModel,
   DecisionModelsResponse,
+  // Access control: groups, rule lists, bindings, decisions (RFC EY / EZ)
+  AclMode,
+  AclSource,
+  AclEffect,
+  AclSubjectKind,
+  AclCondition,
+  AclRule,
+  AclList,
+  AclDefRow,
+  AclDefListResponse,
+  AclDefNamesResponse,
+  AclValidateResult,
+  AclCatalogType,
+  AclCatalog,
+  AclDefOp,
+  AclDefInput,
+  GroupRow,
+  GroupMemberKind,
+  GroupMember,
+  GroupListResponse,
+  GroupDetail,
+  GroupEffective,
+  CreateGroupBody,
+  GroupMemberChange,
+  AclBinding,
+  AclBindingListResponse,
+  CreateAclBindingBody,
+  AuthzReason,
+  AuthzDecision,
+  AuthzRequestContext,
+  AuthzEvaluationRequest,
+  AuthzEvaluationsSemantic,
+  AuthzEvaluationsRequest,
+  AuthzEvaluationsResponse,
+  AuthzTrace,
+  AuthzAppliedBinding,
+  AuthzExplainResponse,
+  AuthzDraftBinding,
+  AuthzSimulateRequest,
+  AuthzSimulateResult,
+  AuthzSimulateResponse,
 } from "./types.js";
 
 export {
+  AclDeniedError,
   AgentIDInUseError,
   AgentNotFoundError,
   AlreadyPausingError,
