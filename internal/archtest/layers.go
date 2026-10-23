@@ -64,6 +64,7 @@ var layers = []layer{
 			"api",
 			"internal/a2a/sign",
 			"internal/audit",
+			"internal/authz",
 			"internal/awsauth",
 			"internal/breakpoints",
 			"internal/cancel",
