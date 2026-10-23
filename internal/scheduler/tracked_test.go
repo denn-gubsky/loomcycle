@@ -355,7 +355,7 @@ func TestScheduler_SlotKeyAloneKeepsASlotToOneRun(t *testing.T) {
 	}
 	due := store.ScheduleDueRow{DefID: defID, Name: "sched-test", NextRunAt: row.NextRunAt}
 	def := channelHookDef("done-hook")
-	in := buildRunInput(def, nil, t.Logf)
+	in := buildRunInput(def, nil, testLogger(t))
 	in.IdempotencyKey = slotRunKey(defID, row.NextRunAt)
 
 	// Two fires of one slot, neither claiming it.

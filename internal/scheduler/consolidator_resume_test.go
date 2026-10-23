@@ -53,7 +53,7 @@ func TestFanout_ATargetWithALivePassIsNotDispatchedAgain(t *testing.T) {
 				}
 				t.Fatalf("dispatched %v, want only bob: alice's pass is still live", users)
 			}
-			if !logs.contains(`user="alice"`) {
+			if !logs.containsLine("still has a pass live", "user=alice") {
 				t.Errorf("the skip is not logged; logs:\n%s", logs.all())
 			}
 		})
