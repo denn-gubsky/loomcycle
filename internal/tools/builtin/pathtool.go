@@ -189,6 +189,9 @@ func (p *Path) resolve(ctx context.Context, tenantID, scope, scopeID string, in 
 		}
 		return errFrom("resolve: "+err.Error(), err), nil
 	}
+	if r := newPathACL(ctx, scope, scopeID).allows(ctx, "resolve", row.Kind, canonical, row.ResourceRef, "read"); r != nil {
+		return *r, nil
+	}
 	return jsonResult(pathEntry{Name: name, Kind: row.Kind, FullPath: canonical, ResourceRef: row.ResourceRef})
 }
 
@@ -215,6 +218,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 		// A recursive listing is flat, so FULL PATH is its identity — names repeat
 		// across directories. Sorting here is not cosmetic: it is what makes the
 		// cursor a stable position rather than a bet on the store's row order.
+		entries = newPathACL(ctx, scope, scopeID).filter(ctx, entries)
 		sort.Slice(entries, func(i, j int) bool { return entries[i].FullPath < entries[j].FullPath })
 		return lsPage(canonical, entries, in, func(e pathEntry) string { return e.FullPath })
 	}
@@ -265,6 +269,7 @@ func (p *Path) ls(ctx context.Context, tenantID, scope, scopeID string, in pathI
 			entries = append(entries, pathEntry{Name: name, Kind: "directory", FullPath: prefix + name})
 		}
 	}
+	entries = newPathACL(ctx, scope, scopeID).filter(ctx, entries)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return lsPage(canonical, entries, in, func(e pathEntry) string { return e.Name })
 }
@@ -350,6 +355,9 @@ func (p *Path) stat(ctx context.Context, tenantID, scope, scopeID string, in pat
 		}
 		return errFrom("stat: "+err.Error(), err), nil
 	}
+	if r := newPathACL(ctx, scope, scopeID).allows(ctx, "stat", row.Kind, canonical, row.ResourceRef, "read"); r != nil {
+		return *r, nil
+	}
 	return jsonResult(map[string]any{
 		"full_path": canonical, "name": row.Name, "kind": row.Kind,
 		"scope": scope, "resource_ref": row.ResourceRef,
@@ -372,6 +380,9 @@ func (p *Path) mkdir(ctx context.Context, tenantID, scope, scopeID string, in pa
 	parent, name, isRoot := splitPath(canonical)
 	if isRoot {
 		return errValidation("cannot mkdir the root path (it always exists)", ""), nil
+	}
+	if r := newPathACL(ctx, scope, scopeID).allows(ctx, "mkdir", "directory", canonical, nil, "write"); r != nil {
+		return *r, nil
 	}
 	// Something already named here? ok if it's a directory; never overwrite a
 	// document / volume_mount / memory_entry with a directory.
@@ -431,6 +442,14 @@ func (p *Path) mv(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	if strings.HasPrefix(toC+"/", fromC+"/") {
 		return errValidation("cannot move a path into itself or its own subtree: "+fromC+" -> "+toC, "Pass a `to` outside the source path's subtree."), nil
 	}
+	if acl := newPathACL(ctx, scope, scopeID); acl != nil {
+		if r, err := p.aclSubtree(ctx, acl, "mv", "write", tenantID, scope, scopeID, fromC, toC); err != nil || r != nil {
+			if err != nil {
+				return errFrom("mv: "+err.Error(), err), nil
+			}
+			return *r, nil
+		}
+	}
 	// No-clobber: the destination must not already exist.
 	if _, err := p.Store.DirentGet(ctx, tenantID, scope, scopeID, toParent, toName); err == nil {
 		return errBusiness("destination already exists: "+toC, "Choose another destination, or remove it with op=rm first."), nil
@@ -465,6 +484,14 @@ func (p *Path) rm(ctx context.Context, tenantID, scope, scopeID string, in pathI
 	}
 	if len(descendants) > 0 && !in.Recursive {
 		return errBusiness(fmt.Sprintf("path %q has %d descendant(s); pass recursive:true to remove them", canonical, len(descendants)), ""), nil
+	}
+	if acl := newPathACL(ctx, scope, scopeID); acl != nil {
+		if r, err := p.aclSubtree(ctx, acl, "rm", "delete", tenantID, scope, scopeID, canonical, ""); err != nil || r != nil {
+			if err != nil {
+				return errFrom("rm: "+err.Error(), err), nil
+			}
+			return *r, nil
+		}
 	}
 	removed := 0
 	if in.Recursive && len(descendants) > 0 {
