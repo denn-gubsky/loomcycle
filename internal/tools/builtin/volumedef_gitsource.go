@@ -108,6 +108,26 @@ func GitCredentialResolver(
 	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
 	register func(string),
 ) GitCredentialFunc {
+	return gitCredentialResolver(engine, mintApp, register)
+}
+
+// GitPushCredentialResolver is GitCredentialResolver for a push (RFC FB):
+// the same rules, except that "$ghapp:<name>" mints a token that may write
+// the repository's contents (GitHubAppMinter.TokenForRepositoryWrite). It is
+// a separate resolver so no read path can ever be handed a write token.
+func GitPushCredentialResolver(
+	engine *credential.Engine,
+	mintAppWrite func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
+	register func(string),
+) GitCredentialFunc {
+	return gitCredentialResolver(engine, mintAppWrite, register)
+}
+
+func gitCredentialResolver(
+	engine *credential.Engine,
+	mintApp func(ctx context.Context, tenantID, cfgJSON, repository string) (string, error),
+	register func(string),
+) GitCredentialFunc {
 	return func(ctx context.Context, ref, targetURL string) (string, string, error) {
 		m := gitCredentialRefRe.FindStringSubmatch(ref)
 		if m == nil {

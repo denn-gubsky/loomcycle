@@ -220,6 +220,25 @@ No literal token is ever sent, and neither is a request without it: a peer that
 does not authenticate would otherwise serve it anonymously, which is the same
 request under a different identity with no error anywhere.
 
+### In the Git tool
+
+The `Git` tool takes the same references for `clone`, `fetch`, `pull`, `push`
+and `ls_remote`: `"credential": "$cred:<name>"` or `"$ghapp:<name>"`. The
+rules are those of a git-source volume:
+
+- The credential must be **restricted with `allowed_urls`** to URLs covering
+  the repository. An unrestricted one is refused: a repository's remote URL
+  can be changed by whoever can write its `.git/config`, and the restriction
+  is what keeps the token from following it.
+- The value is resolved for the run, sent as HTTP basic auth to that one host
+  over https, and masked in the transcript. It is never written into
+  `.git/config`, into a URL, or into the tool's result.
+- `$ghapp:` mints a token for the one repository: `contents: read` for clone,
+  fetch, pull and ls_remote, `contents: write` for push. A push is refused
+  without asking GitHub when the stored config's `permissions` grant contents
+  less than `write`; a config without `permissions` takes what the
+  installation was granted.
+
 ## Overriding a provider / tool API key by its env-var name
 
 Some credentials aren't referenced with `$cred:` — they **override the operator's

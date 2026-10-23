@@ -15,13 +15,13 @@ import (
 // ZERO MEANS DENY. A run whose entry point built no policy reads the zero
 // RunPolicy, and every grant in it is withheld: no tools ceiling, no volume,
 // no memory, SQL, history, channel, interruption, def-family, skill,
-// evaluation or key scope, no ephemeral write, not operator-authored. The
-// fields that NARROW something the operator configured rather than grant it
-// — Hosts, Decision, CoreBlocks, FanoutCap, Overrides, Compaction, Context,
-// ShellCreds — fall back to that floor when zero: the operator's host list
-// and decision models, no core blocks to guard, the definition's fan-out
-// width, no inherited override, no compaction or context setting, every
-// shell credential the operator lists.
+// evaluation or key scope, no ephemeral write, no Git network operation, not
+// operator-authored. The fields that NARROW something the operator configured
+// rather than grant it — Hosts, Decision, CoreBlocks, FanoutCap, Overrides,
+// Compaction, Context, ShellCreds — fall back to that floor when zero: the
+// operator's host list and decision models, no core blocks to guard, the
+// definition's fan-out width, no inherited override, no compaction or context
+// setting, every shell credential the operator lists.
 //
 // Before RunPolicy each of these rode its own ctx key with its own setter, and
 // a child inherited whatever its spawn path forgot to restamp: a per-spawn
@@ -78,6 +78,9 @@ type RunPolicy struct {
 	// ShellCreds narrows which operator-listed credentials the Bash tool and
 	// the Bashbox host-command fallback inject (RFC EW). Zero: all of them.
 	ShellCreds ShellCredsPolicyValue
+	// GitRemote is what the Git tool may do over the network (RFC FB). Zero:
+	// nothing, local repository work only.
+	GitRemote GitRemotePolicyValue
 	// OperatorAuthored is whether the run's agent definition was written by
 	// an operator rather than by an agent at runtime.
 	OperatorAuthored bool
@@ -213,6 +216,7 @@ var inheritRules = map[string]inheritRule{
 	"Evaluation":         ruleOwn,     //
 	"Crypto":             ruleNarrow,  // the child's own scopes its parent also holds
 	"ShellCreds":         ruleNarrow,  // the credential names both the parent and the child allow (RFC EW)
+	"GitRemote":          ruleNarrow,  // each network op only when both the parent and the child allow it (RFC FB)
 	"OperatorAuthored":   ruleOwn,     //
 	"ACL":                ruleInherit, // the originating principal's set binds the whole tree (RFC EY)
 	"ACLRemovedTools":    ruleOwn,     // what this hop's definition lost to the ACL
@@ -266,6 +270,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		Evaluation:        own.Evaluation,
 		Crypto:            CryptoPolicyValue{Scopes: NarrowCryptoScopes(p.Crypto.Scopes, own.Crypto.Scopes)},
 		ShellCreds:        NarrowShellCreds(p.ShellCreds, own.ShellCreds),
+		GitRemote:         NarrowGitRemote(p.GitRemote, own.GitRemote),
 		OperatorAuthored:  own.OperatorAuthored,
 		ACL:               p.ACL,
 		ACLRemovedTools:   own.ACLRemovedTools,

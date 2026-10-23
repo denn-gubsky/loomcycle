@@ -926,6 +926,7 @@ Parsed into the `frontmatter` struct by `parseAgent` in `internal/agents/loader.
 | `agent_def_scopes` | `[]string` | AgentDef tool scope | `self` / `descendants` / `named:<name>` / `any`. Empty = default-deny. |
 | `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / `submit_descendants` / `submit_any` / `read_any`. Unset = `[submit_self]`: the agent may evaluate its own run and nothing else. See "Unset scope gates" below. |
 | `shell_credentials` | `[]string` | Credentials a shell receives | Keeps only these names of the operator's `LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` for the agent's `Bash` and Bashbox host commands; never adds one, and a `cmd:NAME` binding stays its command's. Unset = every credential the operator lists. `[]` = none. A sub-agent gets only the names both it and its parent allow. A host variable admitted by `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` whose name the agent gave up is withheld too. Not per-run overridable. See [CREDENTIALS.md](CREDENTIALS.md), "Into a shell". |
+| `git_remote` | `[]string` | Git tool network operations | `fetch` (clone, fetch, pull, ls_remote) and `push`; `push` needs `fetch` alongside it, so `[push]` alone is refused, as is any other value. Unset or `[]` = none: the `Git` tool works on local repositories only. A push also needs its host in `LOOMCYCLE_GIT_PUSH_HOSTS` (a boot warning says so when that is empty). A sub-agent may perform an operation only when both it and its parent may. Not per-run overridable. |
 | `volume_def_scopes` | `[]string` | VolumeDef tool scope | `any` / `named:<volume>`. Empty = default-deny. Gates create/delete/purge of dynamic volumes; get/list are tenant-scoped reads. See §9d.1. |
 
 **Unset scope gates.** `memory_scopes` and `evaluation_scopes` used to deny everything when empty. They now resolve, at run time, to what the caller already owns: `memory_scopes` to `user` (plus `tenant` for a non-isolated tenant member) and `evaluation_scopes` to `[submit_self]`. Two yaml-only gates follow the same rule: unset `sql_scopes` resolves to `[user]` and unset `history_scope` to `[user]`. The three `user` defaults need a `user_id` on the run; a run without one gets nothing. `agent_def_scopes` and `volume_def_scopes` are unchanged: empty still denies.
@@ -1021,7 +1022,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`, `shell_credentials`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`, `shell_credentials`, `git_remote`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
 
 ### Operator-yaml `agents:` overlay
 
@@ -1873,6 +1874,17 @@ Off unless the operator lists the hosts a repository may be fetched from.
 | `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY` | 500 | commits deep a clone looks for its commit, a diff base, or a merge base |
 
 **Who may ask.** An agent needs `VolumeDef` in its tools, the usual grant for the volume's name, and `source:git` in `volume_def_scopes`. `any` does not include `source:git`.
+
+**The Git tool shares these hosts and limits.** Its `clone`, `fetch`, `pull` and `ls_remote` reach only `LOOMCYCLE_GIT_SOURCE_HOSTS`, under the same byte, object, time and concurrency limits; an agent needs `git_remote: [fetch]`. `LOOMCYCLE_GIT_SOURCE_MAX_FILES` also bounds how many entries a checkout, merge, pull or reset may write (with a 1 GiB byte bound); `MAX_FILE_BYTES` does not apply to the Git tool. Push and commit identity have their own settings:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LOOMCYCLE_GIT_PUSH_HOSTS` | unset: no push | hosts a push may reach, comma-separated, as `host` or `host:port`. An agent also needs `git_remote: [fetch, push]` |
+| `LOOMCYCLE_GIT_PUSH_MAX_BYTES` | 100 MiB | bytes one push may send. A malformed or non-positive value refuses the boot |
+| `LOOMCYCLE_GIT_AUTHOR_NAME` | the agent's name | author and committer name of every commit the Git tool makes |
+| `LOOMCYCLE_GIT_AUTHOR_EMAIL` | `<agent>@loomcycle.invalid` | their email |
+
+Every commit also carries a `Loomcycle-Run: <run id>` trailer. See `docs/TOOLS.md`, "The `Git` tool".
 
 **The credential.** `$cred:<name>` or `$ghapp:<name>`, resolved for the run. It must carry `allowed_urls` covering the repository's URL (`docs/CREDENTIALS.md`): the URL of a clone can come from untrusted text, and the restriction is what stops the token following it. A credential with no `allowed_urls` is refused. The token is sent as HTTP basic auth. The user name is the credential's own `username` when it has one (`docs/CREDENTIALS.md`); otherwise `oauth2` for a host whose name has a `gitlab` label and `x-access-token` for any other. A `$ghapp:` token always goes with `x-access-token`.
 

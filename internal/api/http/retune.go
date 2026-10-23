@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -264,7 +265,7 @@ func (s *Server) retuneRun(ctx context.Context, run store.Run, in *runOverridesW
 	}
 	// A retune is recorded on the run's row and, for another replica, relayed
 	// to it. A no-trace run's row holds its mode and nothing else.
-	if run.Retention == store.RetentionNone {
+	if run.Retention == retentionmode.None {
 		return runConfigRecord{}, &noTraceRefusal{Status: 409, Msg: "a no-trace run cannot be retuned: its settings are not stored"}
 	}
 	agentDef, ok := s.lookupAgent(runTeamScopeCtx(ctx, run), run.TenantID, run.Agent)

@@ -72,6 +72,7 @@ type boot struct {
 	skillDefTool      *builtin.SkillDef
 	teamDefTool       *builtin.TeamDef
 	volumeDefTool     *builtin.VolumeDef
+	gitTool           *builtin.Git
 	credentialDefTool *builtin.CredentialDef
 	cryptoTool        *builtin.Crypto
 	pathTool          *builtin.Path

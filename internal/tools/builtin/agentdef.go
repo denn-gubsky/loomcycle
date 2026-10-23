@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -84,7 +85,7 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED — operator-blessed root is the permanent capability ceiling. ` +
 	`Every other grant is held to what you hold yourself: memory_scopes, sql_scopes, history_scope, ` +
-	`core_blocks, volumes, channels, interruption, evaluation_scopes, crypto_scopes, skills and the *_def_scopes must be within ` +
+	`core_blocks, volumes, channels, interruption, evaluation_scopes, crypto_scopes, git_remote, skills and the *_def_scopes must be within ` +
 	`your own (a fork may also keep what the forked version has). An unset memory_scopes or sql_scopes takes the ` +
 	`ordinary memory default; any other unset field is judged at its default (the operator's default volume, ` +
 	`the user's history, the question interruption kind, every skill), so set it explicitly when yours is narrower. ` +
@@ -255,7 +256,7 @@ func noTraceLineage(ctx context.Context, st store.Store, tenant, name string) (n
 			Retention string `json:"retention"`
 		}
 		// A definition that does not parse cannot be shown to be ordinary.
-		return json.Unmarshal(def, &d) != nil || d.Retention == store.RetentionNone
+		return json.Unmarshal(def, &d) != nil || d.Retention == retentionmode.None
 	}
 	var nf *store.ErrNotFound
 	active, err := st.AgentDefGetActive(ctx, tenant, name)
@@ -298,7 +299,7 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 		return nil
 	}
 	var actions []string
-	if def.Retention != store.RetentionNone {
+	if def.Retention != retentionmode.None {
 		actions = append(actions, "retention_none_removed")
 	}
 	if !sameHooks(def, current) {
@@ -1074,8 +1075,8 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// The retention mode works the same way: a fork may make an agent
 		// no-trace and may not undo it. "default" on an agent that is "none"
 		// is the attempt; saying nothing keeps the parent's.
-		noTraceBase := base.Retention == store.RetentionNone
-		if static, ok := a.Cfg.Agents[name]; ok && static.Retention == store.RetentionNone {
+		noTraceBase := base.Retention == retentionmode.None
+		if static, ok := a.Cfg.Agents[name]; ok && static.Retention == retentionmode.None {
 			noTraceBase = true
 		}
 		if noTraceBase && ov.Retention == "default" {
@@ -1121,10 +1122,13 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := config.ValidateShellCredentials(ov.ShellCredentials); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
+	if err := config.ValidateGitRemote(ov.GitRemote); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// Left as written ("none" or "default") so a fork can tell "say nothing"
 	// from "ask for the default"; buildDefinition turns it into the stored
 	// form.
-	if _, err := store.ParseRetention(ov.Retention); err != nil {
+	if _, err := retentionmode.Parse(ov.Retention); err != nil {
 		return mergedDef{}, err
 	}
 	if err := config.ValidateEphemeralVolumes(ov.EphemeralVolumes); err != nil {
@@ -1474,6 +1478,12 @@ type mergedDef struct {
 	// from content_sha256, held to the author's own narrowing by
 	// ceilShellCreds, and a fork that does not send it keeps its parent's.
 	ShellCredentials *config.CredentialNames `json:"shell_credentials,omitempty"`
+	// GitRemote is the Git tool's network grant (config.AgentDef.GitRemote,
+	// RFC FB). Absent and [] both mean none, so a plain omitempty list is
+	// enough. Authority, not content: excluded from content_sha256, held to
+	// the author's own grant by ceilGitRemote, and a fork that does not send
+	// it keeps its parent's.
+	GitRemote []string `json:"git_remote,omitempty"`
 	// The *_def_scopes capability gates (F40) — the substrate-def slice of the
 	// F14 closure. Without these a runtime-authored meta-agent (one that
 	// forks/promotes/schedules other agents) comes back default-deny and can't
@@ -1700,6 +1710,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.ShellCredentials != nil {
 		d.ShellCredentials = ov.ShellCredentials
 	}
+	if ov.GitRemote != nil {
+		d.GitRemote = ov.GitRemote
+	}
 	// Interruption: any non-zero field signals the operator set the block
 	// (Enabled true, or kinds/max_pending supplied). A fork that wants to
 	// DISABLE an inherited interruption block is an edge the create path
@@ -1778,6 +1791,7 @@ var unhashedCapabilityTags = []string{
 	"allow_overrides",
 	"crypto_scopes",
 	"ephemeral_volumes",
+	"git_remote", // RFC FB: the Git tool's network grant is authority, not content
 	"retention",
 	"a2a_agent_def_scopes",
 	"a2a_server_card_def_scopes",
@@ -1893,6 +1907,9 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		// credentials keeps the narrowing; without this copy the fork came
 		// back holding every credential the operator lists.
 		ShellCredentials: s.ShellCredentials,
+		// RFC FB: a fork of a static agent keeps its Git network grant; it is
+		// authority the operator gave, not something the fork asks for.
+		GitRemote: s.GitRemote,
 		// F40: a static meta-agent bootstrapped into the substrate keeps its
 		// capability gates, so a fork of it inherits them.
 		AgentDefScopes:         s.AgentDefScopes,

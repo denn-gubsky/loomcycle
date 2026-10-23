@@ -104,7 +104,7 @@ with one revision retry). Point `subtree` at wherever new documents live.
 ## Where it lives
 
 The shipped artifact is the embedded copy at
-`cmd/loomcycle/embedded/bundles/doc-colorizer.yaml` (auto-embedded, selectable
+`internal/embedded/bundles/doc-colorizer.yaml` (auto-embedded, selectable
 via `LOOMCYCLE_PRESETS`). This directory is the human-facing source of record;
 the two YAMLs carry identical agent + `code` content (only the leading comment
 header differs, for the preset description).

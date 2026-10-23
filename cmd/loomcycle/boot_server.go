@@ -14,9 +14,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/clienttools"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/decision/decisionbuild"
+	"github.com/denn-gubsky/loomcycle/internal/decisionbuild"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
-	"github.com/denn-gubsky/loomcycle/internal/memory/unitgen"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -24,6 +23,7 @@ import (
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // buildServer is boot phase 7: the decision models, the HTTP server
@@ -96,7 +96,7 @@ func (b *boot) buildServer() {
 	}
 	// The Document derived-unit writer (memory.unit_generator): a declared one that
 	// cannot be built fails boot, as the embedder and the reranker do.
-	unitGenerator, ugErr := unitgen.Build(cfg, pr.sched)
+	unitGenerator, ugErr := wiring.UnitGenerator(cfg, pr.sched)
 	if ugErr != nil {
 		log.Fatalf("unit generator: %v", ugErr)
 	}

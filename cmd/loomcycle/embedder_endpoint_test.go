@@ -9,17 +9,17 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // TestEmbedderConfig_BaseURLAndKeyEnvThreadThrough — the composition-root
-// contract for the self-hostable embedder. embedders.Build's per-provider switch
+// contract for the self-hostable embedder. wiring.Embedder's per-provider switch
 // pins `openai` to the vendor endpoint and the OPENAI_API_KEY-derived host
 // key; an operator's explicit yaml must WIN over both, otherwise an
 // OpenAI-compatible self-hosted embedder is unreachable no matter what the
 // driver supports.
 //
-// Asserted end-to-end (config → embedders.Build → driver → wire) because that is
+// Asserted end-to-end (config → wiring.Embedder → driver → wire) because that is
 // the only place the override is observable: the driver keeps its endpoint and
 // key unexported.
 func TestEmbedderConfig_BaseURLAndKeyEnvThreadThrough(t *testing.T) {
@@ -53,12 +53,12 @@ func TestEmbedderConfig_BaseURLAndKeyEnvThreadThrough(t *testing.T) {
 		APIKeyEnv: "LOOMCYCLE_TEST_EMBED_KEY",
 	}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if e == nil {
-		t.Fatal("embedders.Build returned nil for a configured embedder")
+		t.Fatal("wiring.Embedder returned nil for a configured embedder")
 	}
 	if _, err := e.Embed(context.Background(), []string{"hello"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -99,9 +99,9 @@ func TestEmbedderConfig_OllamaLocalIsKeylessAndSendsDimensions(t *testing.T) {
 		Dimensions: 1024,
 	}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"hello"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -128,7 +128,7 @@ func TestEmbedderConfig_OllamaLocalIsKeylessAndSendsDimensions(t *testing.T) {
 
 // TestEmbedderConfig_OllamaLocalInheritsTheChatBaseURLEnv — an operator who
 // already set OLLAMA_BASE_URL for chat must not have to restate it for the
-// embedder. embedders.Build's `ollama-local` case reads the SAME resolved env
+// embedder. wiring.Embedder's `ollama-local` case reads the SAME resolved env
 // value the chat driver does.
 func TestEmbedderConfig_OllamaLocalInheritsTheChatBaseURLEnv(t *testing.T) {
 	var hits int
@@ -143,9 +143,9 @@ func TestEmbedderConfig_OllamaLocalInheritsTheChatBaseURLEnv(t *testing.T) {
 	cfg.Env.OllamaBaseURL = srv.URL // what OLLAMA_BASE_URL resolves to
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "ollama-local", Model: "nomic-embed-text"}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -182,9 +182,9 @@ func TestEmbedderConfig_YamlBaseURLBeatsTheEnv(t *testing.T) {
 		BaseURL:  yamlSrv.URL,
 	}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -203,9 +203,9 @@ func TestEmbedderConfig_OllamaLocalIgnoresTheDisabledSentinel(t *testing.T) {
 	cfg.Env.OllamaBaseURL = "disabled"
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "ollama-local", Model: "m"}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	// The endpoint is unexported; observe it through the dial error, which
 	// must name the driver default host, never "disabled".
@@ -238,9 +238,9 @@ func TestEmbedderConfig_UnsetKeyEnvKeepsTheHostKey(t *testing.T) {
 	cfg.Env.OpenAIAPIKey = "host-key-placeholder"
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "openai", Model: "bge-m3", BaseURL: srv.URL}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)

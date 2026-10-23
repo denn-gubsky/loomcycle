@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -329,7 +331,7 @@ func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 				s.logf("usage: read session %s failed, skipping: %v", sid, err)
 				continue
 			}
-			doExport = sess.Retention != store.RetentionNone
+			doExport = sess.Retention != retentionmode.None
 		}
 		if doExport {
 			if err := s.exportSession(ctx, sid); err != nil {

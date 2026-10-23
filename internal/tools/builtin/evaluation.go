@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -184,7 +186,7 @@ func (e *Evaluation) execSubmit(ctx context.Context, policy tools.EvaluationPoli
 	// A judgement and its rationale describe what the run said, and outlive
 	// the run. A no-trace run has nothing stored to judge and may have
 	// nothing stored about it.
-	if target.Retention == store.RetentionNone {
+	if target.Retention == retentionmode.None {
 		return errResult(fmt.Sprintf("submit: run_id %q is a no-trace run: its content was not retained, and an evaluation of it would be", in.RunID)), nil
 	}
 	emitter := tools.RunIdentity(ctx)

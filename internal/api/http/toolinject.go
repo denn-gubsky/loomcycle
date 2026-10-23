@@ -1,5 +1,5 @@
 // toolinject.go — the SERVER side of the {{tool:<Tool>.<op>}} system-prompt
-// expander. The pure allowlist half lives in internal/memory (meminject); this
+// expander. The pure allowlist half lives in internal/promptinject; this
 // file dispatches each allowlisted ref through the REAL tool and projects its
 // JSON into compact prompt text.
 //
@@ -10,7 +10,7 @@
 // by readUserRootMarkdown, which calls the Document tool at assembly time.
 //
 // Trust: the injected body is framed as tool-result DATA, not instructions
-// (meminject.frameToolResult). Every input is server-sourced — the ref comes from
+// (promptinject.frameToolResult). Every input is server-sourced — the ref comes from
 // the operator's prompt, validated against a closed allowlist at boot, and the
 // inventory comes from the run's already-resolved tool list. The model never
 // chooses what is dispatched.
@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -34,8 +34,8 @@ const (
 	// toolInjectMaxTokens caps the TOTAL injected tool-result content across ALL
 	// {{tool:...}} refs a prompt names (inventory + guide + capabilities). It is
 	// separate from the memory budget so the two FAMILIES cannot starve each other
-	// by prompt ORDER (see meminject.ExpandInput); WITHIN the tool family the refs
-	// still share it, consumed in prompt order (meminject.takeBudget).
+	// by prompt ORDER (see promptinject.ExpandInput); WITHIN the tool family the refs
+	// still share it, consumed in prompt order (promptinject.takeBudget).
 	//
 	// The shared total is generous enough to carry all three at once because each
 	// renderer already self-bounds (toolSummaryMaxDesc / toolGuideMaxHint per line;
@@ -65,11 +65,11 @@ const (
 // the rendered body per ref. Best-effort per ref: a dispatch that fails or returns
 // an unexpected shape yields no entry, so the placeholder renders to nothing and
 // the run proceeds — a prompt-assembly fault must not fail a run.
-func (s *Server) renderToolResults(ctx context.Context, mi memInject, refs []meminject.ToolRef) map[meminject.ToolRef]string {
+func (s *Server) renderToolResults(ctx context.Context, mi memInject, refs []promptinject.ToolRef) map[promptinject.ToolRef]string {
 	if len(refs) == 0 {
 		return nil
 	}
-	out := make(map[meminject.ToolRef]string, len(refs))
+	out := make(map[promptinject.ToolRef]string, len(refs))
 	for _, ref := range refs {
 		if body := s.renderToolResult(ctx, mi, ref); body != "" {
 			out[ref] = body
@@ -82,13 +82,13 @@ func (s *Server) renderToolResults(ctx context.Context, mi memInject, refs []mem
 // panicking, so widening the allowlist without wiring a renderer degrades to
 // "renders nothing" instead of taking down every run;
 // TestAllowedToolRefs_AllHaveRenderer pins the pairing so the gap is caught in CI.
-func (s *Server) renderToolResult(ctx context.Context, mi memInject, ref meminject.ToolRef) string {
+func (s *Server) renderToolResult(ctx context.Context, mi memInject, ref promptinject.ToolRef) string {
 	switch ref {
-	case meminject.ToolRef{Tool: "Context", Op: "tools"}:
+	case promptinject.ToolRef{Tool: "Context", Op: "tools"}:
 		return s.renderContextTools(ctx, mi)
-	case meminject.ToolRef{Tool: "Context", Op: "guide"}:
+	case promptinject.ToolRef{Tool: "Context", Op: "guide"}:
 		return s.renderContextGuide(ctx, mi)
-	case meminject.ToolRef{Tool: "Context", Op: "capabilities"}:
+	case promptinject.ToolRef{Tool: "Context", Op: "capabilities"}:
 		return s.renderContextCapabilities(ctx, mi)
 	default:
 		return ""
@@ -528,13 +528,13 @@ func (s *Server) staticHostAllowed(host string) bool {
 // allowed on the condition it be paid here: prompt assembly runs at every run
 // entry, sub-agent spawn and resume, and a page being down must never be the
 // reason a run fails.
-func (s *Server) renderToolCalls(ctx context.Context, mi memInject, calls []meminject.ToolCall) map[meminject.ToolCall]string {
+func (s *Server) renderToolCalls(ctx context.Context, mi memInject, calls []promptinject.ToolCall) map[promptinject.ToolCall]string {
 	if len(calls) == 0 {
 		return nil
 	}
 	fctx, cancel := context.WithTimeout(ctx, promptFetchTimeout)
 	defer cancel()
-	out := make(map[meminject.ToolCall]string, len(calls))
+	out := make(map[promptinject.ToolCall]string, len(calls))
 	for _, call := range calls {
 		body, handled := s.renderToolCall(fctx, mi, call)
 		if !handled {
@@ -552,7 +552,7 @@ func (s *Server) renderToolCalls(ctx context.Context, mi memInject, calls []memi
 // TestWidenedToolCalls_AllHaveRenderer, because the symptom otherwise reads
 // exactly like a page that would not load, which is the one failure this family
 // is designed to be indistinguishable from.
-func (s *Server) renderToolCall(ctx context.Context, mi memInject, call meminject.ToolCall) (string, bool) {
+func (s *Server) renderToolCall(ctx context.Context, mi memInject, call promptinject.ToolCall) (string, bool) {
 	switch call.Tool {
 	case "WebFetch":
 		return s.renderWebFetch(ctx, call.Arg), true

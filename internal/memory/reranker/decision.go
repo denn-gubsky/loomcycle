@@ -9,12 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decision"
-	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -63,17 +60,16 @@ type Decision struct {
 	onUsage    func(ctx context.Context, u *providers.Usage)
 }
 
-// buildDecision builds the decision reranker rc declares. The endpoint and key
-// resolve exactly as a listwise reranker's (providerbuild.ServiceDriverOptions);
-// the provider must be an Ollama one: the option letters, the 26-option clamp
+// NewDecision builds the decision reranker rc declares on an endpoint already
+// resolved (internal/wiring resolves it exactly as a listwise reranker's): rc
+// names the provider and model the block resolved to, driver is that provider's
+// driver, and opts carries its endpoint, key and key name. gate, when not nil,
+// wraps the built driver in its provider's decision lane.
+//
+// The provider must be an Ollama one: the option letters, the 26-option clamp
 // and the shrink-and-retry below were measured against Ollama's decision models.
-func buildDecision(cfg *config.Config, rc config.RerankerConfig, sched *concurrency.CallScheduler) (*Decision, error) {
-	opts, provider, model, driver, err := providerbuild.ServiceDriverOptions(cfg, "memory.reranker", providerbuild.ServiceEndpoint{
-		Provider: rc.Provider, Model: rc.Model, BaseURL: rc.BaseURL, APIKeyEnv: rc.APIKeyEnv,
-	}, rerankerKeyEnvName)
-	if err != nil {
-		return nil, err
-	}
+func NewDecision(rc config.RerankerConfig, driver string, opts providers.DriverOptions, gate func(decision.Driver) decision.Driver) (*Decision, error) {
+	provider, model := rc.Provider, rc.Model
 	if driver != "ollama" {
 		return nil, fmt.Errorf("memory.reranker: kind: decision needs an Ollama provider (Ollama serves /v1/systemone); %q uses the %q driver", provider, driver)
 	}
@@ -93,8 +89,11 @@ func buildDecision(cfg *config.Config, rc config.RerankerConfig, sched *concurre
 	if err != nil {
 		return nil, fmt.Errorf("memory.reranker: %w", err)
 	}
+	if gate != nil {
+		drv = gate(drv)
+	}
 	return &Decision{
-		driver: lanegate.WrapDecision(provider, drv, sched), model: model, providerID: provider,
+		driver: drv, model: model, providerID: provider,
 		timeout: timeout,
 		baseURL: baseURL, keyEnvName: opts.KeyEnvName,
 	}, nil

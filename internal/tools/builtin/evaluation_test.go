@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -337,7 +339,7 @@ func TestEvaluationTool_ANoTraceRunCannotBeEvaluated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	quiet, err := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_target", Retention: store.RetentionNone})
+	quiet, err := s.CreateRun(context.Background(), sess.ID, store.RunIdentity{AgentID: "a_target", Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}

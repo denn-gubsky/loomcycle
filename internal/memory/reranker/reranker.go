@@ -1,5 +1,5 @@
-// Package reranker builds the model the opt-in search rerank calls, from the
-// operator's memory.reranker block.
+// Package reranker is the model the opt-in search rerank calls. internal/wiring
+// builds it from the operator's memory.reranker block.
 //
 // It is the model half only: the prompt the model is asked and the repair of its
 // reply live in internal/memory (RerankTexts), so every configured model is asked
@@ -13,20 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
 const (
 	defaultTimeout       = 30 * time.Second
 	defaultContextTokens = 16384
-	// rerankerKeyEnvName is the credential name a reranker answers to when the
-	// operator pointed it at its own endpoint without naming a key. See Build.
-	rerankerKeyEnvName = "LOOMCYCLE_RERANKER_API_KEY"
 	// A ranking of twenty numbers is well under a hundred tokens; this is a
 	// ceiling against a model that keeps talking, not a budget.
 	maxOutputTokens = 256
@@ -45,8 +39,8 @@ type Model struct {
 	// A RERANK IS A CHAT CALL ON ITS PROVIDER'S LANE. Each one is a ~6,000-token
 	// prompt, and they arrive per SEARCH: a fan-out of agents, each searching
 	// several times a turn, sends many at once. The reranker makes its calls on
-	// a driver of its own (providerbuild.ServiceProvider), so Build wraps that
-	// driver in the provider's chat lane (lanegate.WrapWithFloor): the
+	// a driver of its own (providerbuild.ServiceProvider), so internal/wiring
+	// wraps that driver in the provider's chat lane (lanegate.WrapWithFloor): the
 	// provider's max_concurrent counts a rerank like any other chat call. While
 	// the operator has set no cap on that provider, the wrapper's built-in floor
 	// (lanegate.FloorCap in flight) keeps a fan-out from sending every rerank at
@@ -69,58 +63,9 @@ type Reranker interface {
 	SetOnUsage(func(ctx context.Context, u *providers.Usage))
 }
 
-// BuildRanker constructs the reranker cfg.Memory.Reranker declares, of its kind,
-// or returns nil (an untyped nil) when none is declared. A declared reranker that
-// cannot be built is an error: an operator who configured one expects it to run,
-// and would otherwise learn otherwise only from `reranked: false` on every search.
-//
-// sched is the server's call scheduler: the reranker's calls take the lane of
-// their kind on the provider the block resolved to (chat for listwise, decision
-// for the decision kind). nil gates nothing — a caller with no server
-// scheduler, such as a bench command.
-func BuildRanker(cfg *config.Config, sched *concurrency.CallScheduler) (Reranker, error) {
-	rc := cfg.Memory.Reranker
-	if !rc.Configured() {
-		return nil, nil
-	}
-	if rc.EffectiveKind() == config.RerankerKindDecision {
-		d, err := buildDecision(cfg, rc, sched)
-		if err != nil {
-			return nil, err
-		}
-		return d, nil
-	}
-	m, err := Build(cfg, sched)
-	if err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-// Build constructs the listwise reranker cfg.Memory.Reranker declares, or nil when
-// none is declared. BuildRanker is the production path, for either kind.
-func Build(cfg *config.Config, sched *concurrency.CallScheduler) (*Model, error) {
-	rc := cfg.Memory.Reranker
-	if !rc.Configured() {
-		return nil, nil
-	}
-	if rc.EffectiveKind() != config.RerankerKindListwise {
-		return nil, fmt.Errorf("memory.reranker: kind %q is not built as a listwise model (use BuildRanker)", rc.Kind)
-	}
-	p, provider, model, err := providerbuild.ServiceProvider(cfg, "memory.reranker", providerbuild.ServiceEndpoint{
-		Provider: rc.Provider, Model: rc.Model, BaseURL: rc.BaseURL, APIKeyEnv: rc.APIKeyEnv,
-	}, rerankerKeyEnvName)
-	if err != nil {
-		return nil, err
-	}
-	rc.Provider, rc.Model = provider, model
-	// Under the id the block RESOLVED to: an alias may have supplied it. With a
-	// floor: while that provider has no chat lane, reranks are still bounded.
-	return New(lanegate.WrapWithFloor(provider, p, sched), rc), nil
-}
-
-// New wraps an already-constructed provider with the reranker settings. Build
-// is the production path; New is how a test supplies a stub provider.
+// New wraps an already-constructed provider with the reranker settings. In
+// production internal/wiring builds the provider, in its chat lane, and rc with
+// the provider and model the block resolved to; a test supplies a stub.
 func New(p providers.Provider, rc config.RerankerConfig) *Model {
 	m := &Model{
 		provider:      p,
