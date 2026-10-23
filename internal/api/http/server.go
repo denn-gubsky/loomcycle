@@ -7626,8 +7626,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// renders this list. Safe to hoist: applyMemoryInjection rewrites only
 	// SystemPrompt, so def.Tools is the same value it was below.
 	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
-	subTools, subACLRemoved := tools.NarrowToolsByACL(ctx, parentPolicy.ACL, subTools)
 	subTools = s.grantRecallTool(subTools, def.Context) // RFC CT: recall-enabled sub-agent gets Recall
+	// After the Recall grant, as a top-level run and a resume narrow: an
+	// auto-granted tool is still one the caller's rules must allow.
+	subTools, subACLRemoved := tools.NarrowToolsByACL(ctx, parentPolicy.ACL, subTools)
 	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
 	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
 	// up the parent's user/tenant blocks here (agent-scope never crosses).

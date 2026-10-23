@@ -164,6 +164,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	// Likewise it may push by its definition while its parent may only fetch:
 	// live it only fetches, and a resume must not hand push back.
 	childShellCreds := config.CredentialNames{"DEPLOY_KEY", "NPM_TOKEN"}
+	recallOn := true
 	def := config.AgentDef{
 		Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent", "Interruption"},
 		AllowOverrides:        &locked,
@@ -173,7 +174,12 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		ShellCredentials:      &childShellCreds,
 		GitRemote:             []string{"fetch", "push"},
 		Compaction:            &config.Compaction{TargetPercentage: &target},
+		// Recall is granted by the setting, not listed in tools, and the
+		// caller's rules deny it: live and resumed must both withhold it.
+		Context: &config.Context{Recall: &recallOn},
 	}
+	h.srv.SetEmbedder(&fakeEmbedder{provider: "openai", model: "text-embedding-3-small", dim: 4})
+	h.srv.tools = append(h.srv.tools, namedStubTool{"Recall"})
 	h.srv.cfg().Agents["child"] = def
 	keep := 3
 	// RFC EY: the originating caller's set, which binds the child live — it
@@ -225,7 +231,9 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	}
 	src := h.srv.resumedPolicySource(resumeCtx, run, runCfg, resolved)
 	// Resume re-derives these from the definition, as the spawn did.
-	src.Tools, src.ACLRemovedTools = tools.NarrowToolsByACL(resumeCtx, acl, filterTools(h.srv.candidateTools(resumeCtx, run.TenantID, resolved.Tools), resolved.Tools, nil))
+	resumedTools := filterTools(h.srv.candidateTools(resumeCtx, run.TenantID, resolved.Tools), resolved.Tools, nil)
+	resumedTools = h.srv.grantRecallTool(resumedTools, runCfg.Context)
+	src.Tools, src.ACLRemovedTools = tools.NarrowToolsByACL(resumeCtx, acl, resumedTools)
 	src.ACL = acl
 	src.CoreBlocks = live.CoreBlocks.Blocks
 	resumed, _ := h.srv.agentRunPolicy(resumeCtx, resolved, run.Agent, src)
@@ -237,7 +245,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		!live.ShellCreds.Set || !slices.Equal(live.ShellCreds.Names, []string{"NPM_TOKEN"}) ||
 		live.GitRemote != (tools.GitRemotePolicyValue{Fetch: true}) ||
 		live.Compaction == nil || live.Compaction.KeepLastN != nil ||
-		live.ACL == nil || !slices.Equal(live.ACLRemovedTools, []string{"Agent"}) || len(live.Memory.AllowedScopes) != 0 {
+		live.ACL == nil || !slices.Equal(live.ACLRemovedTools, []string{"Agent", "Recall"}) || len(live.Memory.AllowedScopes) != 0 {
 		t.Fatalf("fixture: the live child's policy is not the one this test is built around: %+v", live)
 	}
 	if got, want := resumed.Interruption.Load(), live.Interruption.Load(); !reflect.DeepEqual(got, want) {
@@ -259,13 +267,14 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 }
 
 // subRunParityCallerACL is the set of member u1 (tenant ""), compiled by the
-// server's resolver and bound to a list that denies the child's Agent
+// server's resolver and bound to a list that denies the child's Agent and
+// its auto-granted Recall
 // tool and its user keyspace.
 func subRunParityCallerACL(t *testing.T, h *reviewHarness) *authz.Effective {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := h.st.AclDefPut(ctx, store.AclDefRow{Name: "u1-limits", Rules: json.RawMessage(`[
-		{"effect":"deny","actions":["invoke"],"resources":["tool:Agent"]},
+		{"effect":"deny","actions":["invoke"],"resources":["tool:Agent","tool:Recall"]},
 		{"effect":"deny","actions":["read"],"resources":["memory:user"]}]`)}); err != nil {
 		t.Fatal(err)
 	}
