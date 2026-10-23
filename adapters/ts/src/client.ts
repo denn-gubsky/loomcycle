@@ -2130,6 +2130,7 @@ export class LoomcycleClient {
       url: opts.url,
     };
     if (opts.headers) overlay.headers = opts.headers;
+    if (opts.binaryResults) overlay.binary_results = opts.binaryResults;
     const createInput: SubstrateToolInput = { op: "create", name: opts.name, overlay };
     if (opts.description) createInput.description = opts.description;
 
