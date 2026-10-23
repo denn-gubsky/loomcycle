@@ -183,3 +183,18 @@ func TestImport_VolumeRefJudgedByReadHooks(t *testing.T) {
 		t.Errorf("a hook-denied read was stored: %v", out)
 	}
 }
+
+// A volume image is the single-line form only: alt text spanning lines is
+// not a reference import_md follows, so a neutraliser that works on lines
+// and the parser agree on what is an image.
+func TestImport_MultiLineAltTextIsNotAVolumeImage(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx, _, _ := volumeDocCtx(t, base, []string{"Document", "Read"})
+	out := importMarkdown(t, d, ctx, "# Doc\n\n## Pic\n\n![a\nb](volume:docs:logo.png)\n")
+	if c, _, asset := importedChunk(t, d, ctx, asStr(out["document_id"]), "Pic"); c["type"] == "image" || asset != nil {
+		t.Errorf("multi-line alt text was read as an image: %v %v", c, asset)
+	}
+	if asInt(out["image_chunks"]) != 0 {
+		t.Errorf("import result = %v", out)
+	}
+}

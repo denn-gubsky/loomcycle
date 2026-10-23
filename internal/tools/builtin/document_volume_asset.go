@@ -24,7 +24,10 @@ import (
 // that cannot be read, is not an image, or is over the asset cap is imported as
 // a plain Markdown link and counted as skipped; it never fails the import.
 
-var mdVolumeImageRe = regexp.MustCompile(`^!\[([^\]]*)\]\((volume:[^\s()<>]+)\)$`)
+// The alt text is one line. An embed whose alt spans lines is not followed:
+// it is not the form File op=extract writes, and a check of untrusted text
+// that reads it line by line would see no embed where this parser saw one.
+var mdVolumeImageRe = regexp.MustCompile(`^!\[([^\]\n\r]*)\]\((volume:[^\s()<>]+)\)$`)
 
 // classifyVolumeImage reports a body that is entirely a volume image
 // reference, with its alt text and reference.
