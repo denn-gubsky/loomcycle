@@ -31,6 +31,14 @@ type Event struct {
 	ScopesAfter      []string  `json:"scopes_after,omitempty"`
 	SourceAddr       string    `json:"source_addr,omitempty"`
 
+	// --- RFC EY access control (Action = "acl_denied" | "acl_unavailable" |
+	// "acl_shadow_diverged") --- the resource travels in TargetName as
+	// `<type>:<name>`; these add the verb, the engine's outcome and the
+	// rules that decided (`<acl>#<index>:<effect>`). Never a bearer.
+	AclAction  string   `json:"acl_action,omitempty"`
+	AclOutcome string   `json:"acl_outcome,omitempty"`
+	AclRules   []string `json:"acl_rules,omitempty"`
+
 	// --- RFC AA SQL Memory (Action = "sql_query" | "sql_exec") ---
 	// All omitempty so a non-SQL audit record is byte-identical to before.
 	// SqlStatement is the REDACTED statement; it is omitted entirely when the

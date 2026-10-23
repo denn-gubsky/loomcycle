@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -265,6 +266,13 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	// Before the admin shortcut: a credential limited to certain agents is
 	// held to the run plane however wide its scopes.
 	if p.Restrictions.RunPlaneOnly() && !runPlaneTools[toolName] {
+		return false
+	}
+	// RFC EY: an explicit ACL deny on the meta-tool holds for every class,
+	// admin included (deny overrides); in enforce mode an unmatched tool is
+	// refused and an unavailable set refuses everything.
+	res := authz.EvaluateSurface(ctx, p.Effective, authz.MCPToolSurface(toolName), true)
+	if res.Unavailable || !res.Allowed {
 		return false
 	}
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {

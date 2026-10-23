@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"log"
 	"math"
 	"net/http"
@@ -576,6 +577,9 @@ type Server struct {
 	replicaStore replicaLister
 	replicaID    string
 
+	// aclResolver is the RFC EY groups + compiled-set resolver; nil leaves
+	// every gate on the scope answer alone.
+	aclResolver *aclres.Resolver
 	// tokenCache is the RFC L per-replica auth-token resolution cache.
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.

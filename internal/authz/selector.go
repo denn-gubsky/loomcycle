@@ -127,8 +127,16 @@ func splitName(spec TypeSpec, name string) (scope string, segs []string) {
 	}
 }
 
-// matches reports whether the selector names the resource name.
+// matches reports whether the selector names the resource name. The
+// type-level name AnyInstance is matched only by a selector that covers
+// every instance of the type.
 func (s selector) matches(spec TypeSpec, name string) bool {
+	if name == AnyInstance {
+		if len(spec.Scopes) > 0 {
+			return s.scope == "*" && s.glob == nil
+		}
+		return s.all
+	}
 	scope, segs := splitName(spec, name)
 	if len(spec.Scopes) > 0 {
 		if s.scope != "*" && s.scope != scope {

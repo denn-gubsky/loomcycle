@@ -4037,6 +4037,16 @@ type Env struct {
 	// when a bearer is rejected. Off by default; the wire 401 stays
 	// opaque regardless (no oracle) — this only affects local logs.
 	AuthVerbose bool
+	// ACLMode (LOOMCYCLE_ACL) is the RFC EY rollout mode: compat (the
+	// default: the scope gates decide, an explicit ACL deny is honoured on
+	// top), shadow (the scope gates decide, the engine's divergences are
+	// logged) or enforce (the engine decides; no matching rule is a
+	// refusal). Parsed by authz.ParseMode at boot.
+	ACLMode string
+	// ACLCacheTTLSeconds (LOOMCYCLE_ACL_CACHE_TTL_SECONDS, default 5) bounds
+	// how long a replica trusts a compiled ACL set before re-reading the
+	// tenant's acl_version; a bus message drops it sooner.
+	ACLCacheTTLSeconds int
 	// OperatorKeyRestriction (LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1) is the
 	// RFC AX deployment gate. Default OFF ⇒ byte-identical behavior for every
 	// existing token (a granular token minted before providers:operator-key
@@ -5308,6 +5318,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
 		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
+		ACLMode:                     os.Getenv("LOOMCYCLE_ACL"),
+		ACLCacheTTLSeconds:          getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),
 		PublicConfig:                os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
 		AllowOpenMode:               os.Getenv("LOOMCYCLE_ALLOW_OPEN_MODE") == "1",
 		DataDir:                     getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),

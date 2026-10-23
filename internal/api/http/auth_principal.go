@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -104,7 +105,16 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				"this token is limited to starting and following runs of its allowed agents")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+		// RFC EY: the route's type-level ACL question, after every legacy
+		// gate admitted the request. The mode and transport ride the ctx so
+		// the instance checks downstream (the run intakes, the MCP per-tool
+		// gate behind /v1/_mcp) evaluate under the same rules.
+		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.aclMode()), "http")
+		r = r.WithContext(ctx)
+		if !s.aclGateHTTP(w, r, p) {
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
 	})
 }
 
@@ -119,11 +129,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 // which never comes this way.
 func (s *Server) admitPrincipalAgent(ctx context.Context, agent string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if auth.MayStartAgent(p, ok, agent) {
-		return nil
+	if !auth.MayStartAgent(p, ok, agent) {
+		log.Printf("auth: agent_not_allowed agent=%q subject=%q token_def=%q", agent, p.Subject, p.TokenDefID)
+		return fmt.Errorf("%w: %q", runner.ErrAgentNotAllowed, agent)
 	}
-	log.Printf("auth: agent_not_allowed agent=%q subject=%q token_def=%q", agent, p.Subject, p.TokenDefID)
-	return fmt.Errorf("%w: %q", runner.ErrAgentNotAllowed, agent)
+	// RFC EY: the ACL's instance question, `run agent:<name>`, after the
+	// token's own allowlist.
+	return s.aclAdmitAgent(ctx, p, ok, agent)
 }
 
 // refuseAgentlessCall refuses a call that reaches a model or starts agents
@@ -147,6 +159,11 @@ func (s *Server) refuseAgentlessCall(ctx context.Context, what string) error {
 
 // writeAgentNotAllowed is the HTTP form of that refusal.
 func writeAgentNotAllowed(w http.ResponseWriter, err error) {
+	var denied *errACLDenied
+	if errors.As(err, &denied) {
+		writeACLDenied(w, denied.surface, denied.decision)
+		return
+	}
 	writeJSONError(w, http.StatusForbidden, "agent_not_allowed", err.Error())
 }
 
@@ -366,6 +383,9 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	}
 	hash := h.Hash(bearer)
 	if p, found, ok := s.tokenCache.get(hash); ok {
+		if found {
+			p = s.enrichPrincipal(ctx, p)
+		}
 		return p, found
 	}
 	p, found, cacheable, validUntil := s.resolvePrincipalUncached(ctx, h, bearer, hash)
@@ -376,6 +396,12 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	// lockout. On an outage we fail closed for THIS request only and re-probe.
 	if cacheable {
 		s.tokenCache.put(hash, p, found, validUntil)
+	}
+	if found {
+		// The RFC EY set is resolved OUTSIDE the token cache: it has its own
+		// cache keyed on the tenant's acl_version, so a binding change reaches
+		// the next request without a token-cache flush.
+		p = s.enrichPrincipal(ctx, p)
 	}
 	return p, found
 }
@@ -770,6 +796,15 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	if !p.Restrictions.IsZero() {
 		out["restrictions"] = p.Restrictions
+	}
+	// RFC EY: the principal's groups and the rollout mode, so a UI can show
+	// why a surface is missing; the compiled set itself is not serialised.
+	out["acl_mode"] = string(s.aclMode())
+	if p.Groups != nil {
+		out["groups"] = p.Groups
+	}
+	if p.Effective != nil {
+		out["acl_version"] = p.Effective.Version
 	}
 	writeJSONOK(w, out)
 }

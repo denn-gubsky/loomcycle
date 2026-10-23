@@ -304,15 +304,26 @@ func (e *Effective) Quick(typ, action, name string) Outcome {
 	return NoMatch
 }
 
+// matches reports whether the rule applies to the request. At the type
+// level (Name == AnyInstance) the two effects read differently, on purpose:
+// an ALLOW matches when it names any instance of the type ("the principal
+// may do this on something, so the route is reachable; the instance check
+// decides which"), a DENY only when it covers every instance ("nothing of
+// this type is permitted"). A deny on some instances is therefore neither at
+// the type level, and the handler's instance question settles it.
 func (r *compiledRule) matches(spec TypeSpec, req *Request) bool {
 	if !r.actions[req.Action] {
 		return false
 	}
 	hit := false
-	for _, s := range r.sels {
-		if s.matches(spec, req.Resource.Name) {
-			hit = true
-			break
+	if req.Resource.Name == AnyInstance && r.effect == Allow {
+		hit = len(r.sels) > 0
+	} else {
+		for _, s := range r.sels {
+			if s.matches(spec, req.Resource.Name) {
+				hit = true
+				break
+			}
 		}
 	}
 	if !hit {
@@ -410,7 +421,7 @@ func (e *Effective) Explain(req Request) Explanation {
 		switch {
 		case !r.actions[req.Action]:
 			t.Why = "action not listed"
-		case !selectorsHit(r.sels, spec, req.Resource.Name):
+		case !(req.Resource.Name == AnyInstance && r.effect == Allow) && !selectorsHit(r.sels, spec, req.Resource.Name):
 			t.Why = "no selector matches the resource"
 		case !r.when.holds(&req):
 			t.Why = "condition does not hold"

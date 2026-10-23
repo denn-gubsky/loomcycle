@@ -233,6 +233,13 @@ func (b *boot) startCluster() {
 		if err := srv.SubscribeTokenInvalidations(bgCtx, bp); err != nil {
 			log.Fatalf("coord: token-cache invalidation subscribe: %v", err)
 		}
+		// RFC EY: drop a tenant's compiled ACL sets when a peer replica
+		// changed its rules, groups or bindings.
+		if r := srv.ACLResolver(); r != nil {
+			if err := r.Subscribe(bgCtx, bp); err != nil {
+				log.Fatalf("coord: acl invalidation subscribe: %v", err)
+			}
+		}
 
 		// v0.12.4 Phase 5: advisory-lock helper + replicas TTL sweeper.
 		// AdvisoryLock gates the other sweepers below; ReplicasSweeper

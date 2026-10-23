@@ -957,6 +957,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_ACL
+            label: LOOMCYCLE_ACL
+            description: '(example: compat)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_ACL_CACHE_TTL_SECONDS
+            label: LOOMCYCLE_ACL_CACHE_TTL_SECONDS
+            description: '(example: 5)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS
             label: LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS
             description: '(example: 300)'
