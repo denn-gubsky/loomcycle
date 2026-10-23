@@ -250,11 +250,13 @@ func runCallerACL(ctx context.Context) *authz.Effective {
 // surface that fired it.
 //
 // No owner (a yaml trigger, a definition written with no set in force), or a
-// principal or recorded caller already on ctx: ctx as it is. A set that
-// cannot be compiled refuses the run with ErrACLUnavailable — logged and
+// principal or recorded caller already on ctx: ctx as it is. No resolver
+// wired: ctx as it is too — access control is not configured, so a live
+// request carries no set either (enrichPrincipal); every boot wires one. A set
+// that cannot be compiled refuses the run with ErrACLUnavailable — logged and
 // audited by recordedCallerACL — never runs it without the set.
 func (s *Server) triggerOwnerCtx(ctx context.Context, owner *authz.SubjectRef, agent string) (context.Context, error) {
-	if owner == nil {
+	if owner == nil || s.aclResolver == nil {
 		return ctx, nil
 	}
 	if _, ok := auth.PrincipalFromContext(ctx); ok {
