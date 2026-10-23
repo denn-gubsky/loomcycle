@@ -15,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -403,6 +404,12 @@ func (s *Server) aclGroupGet(ctx context.Context, focus, name string) aclReply {
 	tenant := s.adminFocusedTenant(ctx, focus)
 	row, err := s.store.GroupGet(ctx, tenant, name)
 	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			if r := s.aclConfigGroupGet(ctx, tenant, name); r != nil {
+				return *r
+			}
+		}
 		return aclStoreError(err, "group")
 	}
 	members, err := s.store.GroupMembers(ctx, tenant, name)
@@ -502,6 +509,50 @@ func (s *Server) aclGroupEffective(ctx context.Context, focus, name string) aclR
 func (s *Server) aclStatic() *authz.Static {
 	if c := s.cfg(); c != nil {
 		return c.ResolvedACL
+	}
+	return nil
+}
+
+// aclConfigMember is one direct member of a config-declared group: the
+// shape of a stored membership, without the store's added_at / added_by.
+type aclConfigMember struct {
+	TenantID   string `json:"tenant_id,omitempty"`
+	GroupName  string `json:"group"`
+	MemberKind string `json:"member_kind"`
+	MemberID   string `json:"member_id"`
+	Source     string `json:"source"`
+}
+
+// aclConfigGroupGet answers a get for a group only the config declares in
+// tenant (nil when it declares none): the group, its direct members and the
+// groups it is nested in, over the store's and the config's nesting merged
+// as the resolver merges them.
+func (s *Server) aclConfigGroupGet(ctx context.Context, tenant, name string) *aclReply {
+	static := s.aclStatic()
+	if static == nil {
+		return nil
+	}
+	for _, g := range static.Groups {
+		if g.Tenant != tenant || g.Name != name {
+			continue
+		}
+		members := make([]aclConfigMember, 0, len(g.Members)+len(g.Groups))
+		for _, m := range g.Members {
+			members = append(members, aclConfigMember{TenantID: tenant, GroupName: name, MemberKind: store.GroupMemberUser, MemberID: m, Source: aclres.SourceConfig})
+		}
+		for _, m := range g.Groups {
+			members = append(members, aclConfigMember{TenantID: tenant, GroupName: name, MemberKind: store.GroupMemberGroup, MemberID: m, Source: aclres.SourceConfig})
+		}
+		graph, err := s.store.GroupGraph(ctx, tenant)
+		if err != nil {
+			r := aclFail(http.StatusInternalServerError, "group_graph_failed", err.Error())
+			return &r
+		}
+		_, staticGraph := static.GroupsOf(tenant, "")
+		group := aclConfigGroup{TenantID: g.Tenant, Name: g.Name, Description: g.Description, ExternalID: g.ExternalID,
+			Members: g.Members, Groups: g.Groups, Source: aclres.SourceConfig}
+		r := aclOK(map[string]any{"group": group, "members": members, "contained_in": authz.Closure(authz.MergeGraph(graph, staticGraph), []string{name})})
+		return &r
 	}
 	return nil
 }
@@ -695,8 +746,13 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 		return aclOK(map[string]any{"retired": req.Name})
 	case "catalog":
 		return aclOK(map[string]any{"catalog_version": authz.CatalogVersion, "types": catalogTypes(), "transports": authz.Transports})
+	case "names":
+		return s.aclDefNamesIn(ctx, tenant)
 	default:
-		return aclFail(http.StatusBadRequest, "unknown_op", "op must be one of create, get, list, retire, validate, catalog")
+		// The refusal names the op table, the one list every transport
+		// dispatches on (TestACLDefRoute_DispatchesEveryOpInTheTable holds
+		// the cases above to it).
+		return aclFail(http.StatusBadRequest, "unknown_op", "op must be one of "+strings.Join(connector.ACLManagementOps(connector.ACLFamilyAclDef), ", "))
 	}
 }
 
@@ -704,12 +760,12 @@ func (s *Server) aclDefOp(ctx context.Context, focus string, req aclDefRequest) 
 // it names: read for a get, retire for a retire, and author for every other op
 // — fail closed, so a write op added to the handler later is checked even if
 // nobody adds it here. The three ops that name no list and write nothing
-// (list, validate, catalog) return nil: the route's type-level read answered
-// them.
+// (list, validate, catalog, names) return nil: the route's type-level read
+// answered them.
 func aclListOpSurface(op, name string) *authz.Surface {
 	action := "author"
 	switch op {
-	case "list", "validate", "catalog":
+	case "list", "validate", "catalog", "names":
 		return nil
 	case "get":
 		action = "read"
@@ -894,7 +950,12 @@ func (s *Server) aclDefNames(ctx context.Context, focus string) aclReply {
 	if r := s.aclNoStore(); r != nil {
 		return *r
 	}
-	tenant := s.adminFocusedTenant(ctx, focus)
+	return s.aclDefNamesIn(ctx, s.adminFocusedTenant(ctx, focus))
+}
+
+// aclDefNamesIn is the live lists' names in tenant, config-declared ones
+// included: GET /v1/_acldef/names and the acldef op names.
+func (s *Server) aclDefNamesIn(ctx context.Context, tenant string) aclReply {
 	rows, err := s.store.AclDefList(ctx, tenant, false)
 	if err != nil {
 		return aclFail(http.StatusInternalServerError, "acl_list_failed", err.Error())
@@ -982,7 +1043,7 @@ func (s *Server) aclBindingList(ctx context.Context, focus string, includeRetire
 	for _, b := range s.aclStatic().BindingsIn(tenant) {
 		entry := aclConfigBinding{TenantID: tenant, ACL: b.ACL, SubjectKind: string(b.SubjectKind), SubjectID: b.SubjectID, Source: aclres.SourceConfig}
 		if !b.ExpiresAt.IsZero() {
-			t := b.ExpiresAt
+			t := b.ExpiresAt.UTC()
 			entry.ExpiresAt = &t
 		}
 		out = append(out, entry)

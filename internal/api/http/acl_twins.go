@@ -69,8 +69,8 @@ func (s *Server) aclTwin(ctx context.Context, family string, input json.RawMessa
 	}
 	// acldef asks its per-op question before it looks at the op, so an op it
 	// does not know is asked author and then refused (aclDefOp): the twin
-	// hands every op but names straight through.
-	if family == connector.ACLFamilyAclDef && head.Op != "names" {
+	// hands every op straight through, as the route does.
+	if family == connector.ACLFamilyAclDef {
 		var in struct {
 			Tenant string `json:"tenant,omitempty"`
 			aclDefRequest
@@ -85,13 +85,6 @@ func (s *Server) aclTwin(ctx context.Context, family string, input json.RawMessa
 		return aclFail(http.StatusBadRequest, "unknown_op", fmt.Sprintf("op must be one of %s", strings.Join(ops, ", ")))
 	}
 	switch family + "." + head.Op {
-	case "acldef.names":
-		var in aclTwinHead
-		if r := aclDecodeStrict(input, &in); r != nil {
-			return *r
-		}
-		return s.aclDefNames(ctx, in.Tenant)
-
 	case "groupdef.list":
 		var in aclTwinHead
 		if r := aclDecodeStrict(input, &in); r != nil {
@@ -264,10 +257,31 @@ func aclToolResult(r aclReply) connector.ToolResult {
 		info.Category = tools.CategoryPermission
 	case r.status == http.StatusNotFound || r.status == http.StatusConflict:
 		info.Category = tools.CategoryBusiness
+	case aclReplyCode(r) == "store_unavailable":
+		// No store is configured, which no retry changes: the deployment is
+		// not configured for this capability (internal/errclassify files
+		// those as Business, not retryable).
+		info.Category = tools.CategoryBusiness
+		info.Description = "This deployment has no persistent store, so access control cannot be managed here. Retrying will not help; an operator must configure a store."
 	case r.status >= http.StatusInternalServerError:
+		// A store fault, or access control that could not be evaluated just
+		// now (acl_unavailable): the same call may succeed later.
 		info.Category, info.Retryable = tools.CategoryTransient, true
 	}
 	return connector.ToolResult{Text: text, IsError: true, ErrorInfo: info}
+}
+
+// aclReplyCode is a refusal's code.
+func aclReplyCode(r aclReply) string {
+	switch b := r.body.(type) {
+	case aclErrorBody:
+		return b.Code
+	case aclScopeBody:
+		return b.Code
+	case aclDeniedReply:
+		return b.Code
+	}
+	return ""
 }
 
 // aclReplyError is a refusal's message.

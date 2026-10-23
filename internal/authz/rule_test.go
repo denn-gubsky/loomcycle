@@ -138,3 +138,12 @@ func TestBinding_MarshalLeavesAnUnsetExpiryOut(t *testing.T) {
 		t.Errorf("set expiry: %s → %+v %v", raw, back, err)
 	}
 }
+
+// A set expiry is written in UTC whatever zone it was read in.
+func TestBinding_MarshalWritesTheExpiryInUTC(t *testing.T) {
+	at := time.Date(2027, 1, 2, 6, 4, 5, 0, time.FixedZone("UTC+3", 3*3600))
+	raw, _ := json.Marshal(Binding{ACL: "x", SubjectKind: SubjectUser, SubjectID: "u", ExpiresAt: at})
+	if !strings.Contains(string(raw), `"expires_at":"2027-01-02T03:04:05Z"`) {
+		t.Errorf("expiry not in UTC: %s", raw)
+	}
+}
