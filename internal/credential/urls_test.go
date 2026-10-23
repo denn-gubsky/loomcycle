@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 func urls(u ...string) *[]string { return &u }
@@ -276,7 +276,7 @@ func TestEngine_ACredentialStoredBeforeTheFieldStillOpens(t *testing.T) {
 		t.Fatal(err)
 	}
 	def, _ := json.Marshal(map[string]any{"value": sealed}) // the pre-field stored shape
-	if _, err := e.store.CredentialDefPut(ctx, store.CredentialDefRow{TenantID: "t", Scope: "tenant", Name: "old", Backend: BackendInline, Definition: def}); err != nil {
+	if _, err := e.store.CredentialDefPut(ctx, credentialdef.Row{TenantID: "t", Scope: "tenant", Name: "old", Backend: BackendInline, Definition: def}); err != nil {
 		t.Fatal(err)
 	}
 	if res, found, err := e.Resolve(ctx, "t", "", "", "old"); err != nil || !found || res.Value != "old-secret" {

@@ -306,12 +306,6 @@ var allowedSideways = []subsystemEdge{
 	{"internal/api", "internal/webui"},
 }
 
-// The RFC EX Phase 2 cuts that remove the known violations. Each names the
-// change, so a failure message says which work an entry is waiting on.
-const (
-	cutStoreIfaces = "consumer-declared store interfaces (D4)"
-)
-
 // knownViolation is one wrong-way import that exists today, as an exact
 // package edge (paths relative to the module root).
 type knownViolation struct {
@@ -323,9 +317,6 @@ type knownViolation struct {
 // here: the test fails on an entry that no longer matches, so when a cut lands
 // its entries go with it.
 var knownViolations = []knownViolation{
-
-	{"internal/credential", "internal/store", cutStoreIfaces},
-	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
 
 	// tools.RunIdentity / tools.RunID.
 }
