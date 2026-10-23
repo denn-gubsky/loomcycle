@@ -3496,6 +3496,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
+		ACLOrigin:         aclOriginOf(ctx, callerACL), // whose rules a resume narrows it by again
 		Review:            reviewRecord(in.Review),
 		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks}),
@@ -7349,6 +7350,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	}
 	childPolicy := parentPolicy.Inherit(childGrant)
 	subRunCfg.Hosts = hostRecordOf(childPolicy.Hosts)
+	// The originating caller's set binds the child as it binds the parent;
+	// a resume compiles that caller's set again.
+	subRunCfg.ACLOrigin = aclOriginOf(ctx, parentPolicy.ACL)
 	subRunCfg.Compaction = childPolicy.Compaction
 	subRunCfg.Context = childPolicy.Context
 	subRunCfg.EphemeralReadOnly = !childPolicy.EphemeralWritable

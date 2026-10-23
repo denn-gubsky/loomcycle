@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -623,6 +625,16 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		runCfg.Hosts = &runHostRecord{HasList: true}
 	}
 
+	// RFC EY: the access-control rules that bound the run at its start — its
+	// caller's, or the originating caller's a sub-run inherited — compiled
+	// again now and applied below as its start applied them. A set the record
+	// names but that cannot be compiled leaves the run paused: resuming it on
+	// its agent's full grants is the widening this exists to prevent.
+	ctx, acl, aerr := s.resumedACL(ctx, run, runCfg)
+	if aerr != nil {
+		return aerr // not settled: the row goes back to paused for a later pass
+	}
+
 	// Tools + dispatcher, narrowed by the caller's own allowed_hosts when the
 	// run recorded one (RFC DD Gap 2). Restoring a narrowing can only SUBTRACT:
 	// the operator's static floor still applies inside the tools, so this makes
@@ -642,6 +654,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		allowedTools = builtin.NarrowHosts(allowedTools, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative && !hostPolicy.NarrowOnly)
 	}
 	allowedTools = s.grantRecallTool(allowedTools, runCfg.Context) // RFC CT: keep Recall on a resumed recall run
+	// What the caller may not invoke is withheld from the schema again, as
+	// at the run's start.
+	allowedTools, aclRemovedTools := tools.NarrowToolsByACL(ctx, acl, allowedTools)
 	dispatcher := s.newDispatcher(allowedTools)
 
 	// Re-derive the system prompt (skill bodies baked in) from the current
@@ -943,6 +958,9 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	loopCtx = tools.WithAgentName(loopCtx, run.Agent)
 	src := s.resumedPolicySource(loopCtx, run, runCfg, agentDef)
 	src.Tools = allowedTools
+	// The set narrows the volumes, keyspaces and skills in agentRunPolicy and
+	// rides the policy to the run's children, as a live run's does.
+	src.ACL, src.ACLRemovedTools = acl, aclRemovedTools
 	// RFC BL P1: re-stamp the run's core blocks (Memory-tool enforcement +
 	// sub-agent inherit) — lost across pause/snapshot/resume otherwise.
 	src.CoreBlocks = coreBlocks
@@ -2303,6 +2321,44 @@ func toolResultText(m providers.Message) string {
 		}
 	}
 	return b.String()
+}
+
+// resumedACL is the RFC EY set that binds a resumed run, and ctx carrying the
+// rollout mode and the transport it is evaluated under: the set of the subject
+// its record names (runConfigRecord.ACLOrigin), compiled again now, so a rule
+// revoked or added while the run was paused holds — as its definition is read
+// again rather than restored. The mode is the operator's current one, as a
+// fresh request's is; the transport is the one the run's request arrived on,
+// which a rule's condition may name.
+//
+// No record: the run started with no set in force (no principal, or a store
+// fault in compat or shadow mode), or before the record existed. It resumes
+// unnarrowed, as every resumed run did before — so a run paused before this
+// was recorded comes back on its agent's full grants one last time.
+//
+// A record whose set cannot be compiled — no resolver wired, a store fault —
+// is an error, never no set: the caller leaves the run paused, and the refusal
+// is logged and audited as acl_unavailable, in every mode.
+func (s *Server) resumedACL(ctx context.Context, run store.Run, runCfg runConfigRecord) (context.Context, *authz.Effective, error) {
+	o := runCfg.ACLOrigin
+	if o == nil {
+		return ctx, nil, nil
+	}
+	ctx = authz.WithMode(ctx, s.aclMode())
+	if o.Transport != "" {
+		ctx = authz.WithTransport(ctx, o.Transport)
+	}
+	var eff *authz.Effective
+	err := errors.New("no access-control resolver is wired")
+	if s.aclResolver != nil {
+		eff, err = s.aclResolver.ResolveSubject(ctx, o.subject())
+	}
+	if err != nil {
+		p := auth.Principal{TenantID: o.TenantID, Subject: o.Subject, TokenDefID: o.TokenDefID}
+		s.recordACLEvent(ctx, p, "acl_unavailable", authz.Surface{Action: "run", Type: "agent", Name: run.Agent}, authz.Decision{})
+		return ctx, nil, fmt.Errorf("acl_unavailable: the access-control rules of the caller that started run %s could not be read (%v); it stays paused rather than resume with its agent's full grants", run.ID, err)
+	}
+	return ctx, eff, nil
 }
 
 // resumedPolicySource is what a resumed run's policy is rebuilt from beyond its
