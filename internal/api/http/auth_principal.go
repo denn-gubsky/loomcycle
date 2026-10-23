@@ -67,36 +67,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if required := requiredScopeFor(r.Method, r.URL.Path); required != "" && !auth.HasScope(p.Scopes, required) {
-			// RFC CB: the scope check failed, but a NON-ISOLATED user token (a
-			// tenant member — runs:*/channel:*, no substrate:tenant) may still
-			// reach a member-accessible tenant surface. Such a token already has
-			// whole-tenant DATA access inside a run (it is not isolated — see
-			// auth/grants.go), so this admits the matching HTTP surfaces for
-			// read+write. Isolated tokens (substrate:user) fail !IsIsolated and
-			// stay 403; the operator-control carve-outs (minting / roster /
-			// budget-write / erasure / hooks) are excluded by
-			// tenantMemberAccessible; and every such handler still confines a
-			// member to its own tenant via principalTenantScope / tenantFromCtx.
-			memberOK := tenantMemberAccessible(r.Method, r.URL.Path) && !auth.IsIsolated(p, ok)
-			// RFC CN: the user self-service surfaces (the credential store + the MCP
-			// transport) admit ANY authenticated principal that carries a subject —
-			// INCLUDING an isolated substrate:user user, who is otherwise held at the
-			// tenant-member isolation floor — so a user can store its OWN scope=user
-			// API tokens (a personal Slack/Telegram bot token, a per-user webhook
-			// secret). The handler / MCP per-tool gate then confine a non-tenant caller
-			// to scope=user on its own subject; tenant/agent scope still requires
-			// substrate:tenant.
-			selfOK := userSelfServiceRoute(r.Method, r.URL.Path) && p.Subject != ""
-			// The raw model endpoints stay open to every principal that is
-			// not an isolated user: a member token holds no llm:gateway scope
-			// of its own, and requiring one would have broken every member
-			// token minted before the scope existed.
-			gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, ok)
-			if !(memberOK || selfOK || gatewayMemberOK) {
-				writeScopeError(w, required, "insufficient scope")
-				return
-			}
+		if required, admitted := scopeGateAdmits(p, r.Method, r.URL.Path); !admitted {
+			writeScopeError(w, required, "insufficient scope")
+			return
 		}
 		// After the scope check, and independent of it: a credential limited
 		// to certain agents is held to the run plane however wide its scopes.
@@ -117,6 +90,44 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
 	})
+}
+
+// scopeGateAdmits is authMiddleware's scope gate for a resolved principal:
+// the route's required scope, or one of the three admissions that let a
+// principal without it through. It returns the required scope for the
+// refusal. GET /v1/_me's capability summary asks it too, so the two answers
+// cannot drift apart.
+func scopeGateAdmits(p auth.Principal, method, path string) (required string, admitted bool) {
+	required = requiredScopeFor(method, path)
+	if required == "" || auth.HasScope(p.Scopes, required) {
+		return required, true
+	}
+	// RFC CB: the scope check failed, but a NON-ISOLATED user token (a
+	// tenant member — runs:*/channel:*, no substrate:tenant) may still
+	// reach a member-accessible tenant surface. Such a token already has
+	// whole-tenant DATA access inside a run (it is not isolated — see
+	// auth/grants.go), so this admits the matching HTTP surfaces for
+	// read+write. Isolated tokens (substrate:user) fail !IsIsolated and
+	// stay 403; the operator-control carve-outs (minting / roster /
+	// budget-write / erasure / hooks) are excluded by
+	// tenantMemberAccessible; and every such handler still confines a
+	// member to its own tenant via principalTenantScope / tenantFromCtx.
+	memberOK := tenantMemberAccessible(method, path) && !auth.IsIsolated(p, true)
+	// RFC CN: the user self-service surfaces (the credential store + the MCP
+	// transport) admit ANY authenticated principal that carries a subject —
+	// INCLUDING an isolated substrate:user user, who is otherwise held at the
+	// tenant-member isolation floor — so a user can store its OWN scope=user
+	// API tokens (a personal Slack/Telegram bot token, a per-user webhook
+	// secret). The handler / MCP per-tool gate then confine a non-tenant caller
+	// to scope=user on its own subject; tenant/agent scope still requires
+	// substrate:tenant.
+	selfOK := userSelfServiceRoute(method, path) && p.Subject != ""
+	// The raw model endpoints stay open to every principal that is
+	// not an isolated user: a member token holds no llm:gateway scope
+	// of its own, and requiring one would have broken every member
+	// token minted before the scope existed.
+	gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, true)
+	return required, memberOK || selfOK || gatewayMemberOK
 }
 
 // admitPrincipalAgent refuses a top-level run of an agent the caller's token
