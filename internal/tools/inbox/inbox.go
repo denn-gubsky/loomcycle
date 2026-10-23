@@ -343,12 +343,19 @@ func (h handle) ensure(ctx context.Context) (string, error) {
 	}
 	// A resumed tree whose inbox was made before the pause finds it in the
 	// set the resume rebuilt from the rows.
-	if ref, ok := set.Get(Name); ok {
-		h.tree.root = ref.Root
-		return ref.Root, nil
-	}
 	if h.svc.DynamicRoot == "" {
 		return "", errors.New("no dynamic_root volume is configured, so tool results cannot be kept as files — see docs/VOLUMES.md")
+	}
+	derived := dynvol.DerivedEphemeralPath(h.svc.DynamicRoot, ident.RootRunID, Name)
+	if ref, ok := set.Get(Name); ok {
+		// Taken only at the path the runtime derives for this tree. The set
+		// is built from rows; whatever a row says, the files are written
+		// nowhere else.
+		if filepath.Clean(ref.Root) != filepath.Clean(derived) {
+			return "", fmt.Errorf("the run's volume named %q is not its inbox", Name)
+		}
+		h.tree.root = derived
+		return derived, nil
 	}
 	if slices.Contains(h.svc.StaticVolumeNames, Name) {
 		return "", fmt.Errorf("a configured volume is named %q, which is reserved for the run's inbox", Name)

@@ -903,3 +903,26 @@ func TestEffectiveRoot_EphemeralStillContains(t *testing.T) {
 		t.Errorf("escape under ephemeral volume was NOT rejected")
 	}
 }
+
+// RFC FF D9: "inbox" is the name of the runtime's run inbox. An agent's own
+// volume by it would be resolved as the inbox, ephemeral or persistent.
+func TestVolumeDefTool_CreateRefusesTheReservedInboxName(t *testing.T) {
+	tool, base, root, cleanup := volumeDefFixture(t)
+	defer cleanup()
+	ctx, set := ephemeralCtx(base, "run-xyz")
+	for _, body := range []string{
+		`{"op":"create","name":"inbox"}`,
+		`{"op":"create","name":"inbox","ephemeral":true}`,
+	} {
+		_, res := vdExec(t, tool, ctx, body)
+		if !res.IsError || !strings.Contains(res.Text, "reserved") {
+			t.Errorf("%s: %q", body, res.Text)
+		}
+	}
+	if set.Has("inbox") {
+		t.Error("the refused create still registered the volume")
+	}
+	if _, err := os.Stat(filepath.Join(root, "_ephemeral", "run-xyz", "inbox")); !os.IsNotExist(err) {
+		t.Errorf("the refused create made a directory: %v", err)
+	}
+}

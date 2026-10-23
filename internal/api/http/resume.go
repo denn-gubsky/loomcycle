@@ -27,6 +27,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
 // resume.go — F42 / RFC X Phase 2: re-dispatch snapshotted paused runs.
@@ -960,6 +961,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	// hold for the others too.
 	ephSet, releaseEphSet := s.treeSets.acquire(rootRunID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, s.loadEphemeralVolumes(loopCtx, rootRunID, ephSet))
+	loopCtx = inbox.With(loopCtx, s.inboxService(), s.treeSets.inbox(rootRunID))
 	loopCtx = s.withEphemeralRecord(loopCtx, rootRunID)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).

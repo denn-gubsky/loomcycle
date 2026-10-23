@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
 // runTreeHolds keeps a run tree's ephemeral state — its ephemeral volumes and
@@ -122,8 +123,11 @@ type treeVolumeSets struct {
 }
 
 type treeVolumeSet struct {
-	set  *tools.EphemeralVolumeSet
-	refs int
+	set *tools.EphemeralVolumeSet
+	// inbox is the tree's inbox state (RFC FF), shared by its runs as the set
+	// is; made on first use.
+	inbox *inbox.Tree
+	refs  int
 }
 
 // acquire returns the tree's set, creating it when no run of the tree holds
@@ -154,6 +158,21 @@ func (r *treeVolumeSets) acquire(root string) (*tools.EphemeralVolumeSet, func()
 			}
 		})
 	}
+}
+
+// inbox returns the inbox state of a tree a caller has acquired. A tree with
+// no entry (an empty root, or one already purged) gets a private state.
+func (r *treeVolumeSets) inbox(root string) *inbox.Tree {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.sets[root]
+	if root == "" || e == nil {
+		return inbox.NewTree()
+	}
+	if e.inbox == nil {
+		e.inbox = inbox.NewTree()
+	}
+	return e.inbox
 }
 
 // drop forgets the tree's set. Called when the tree's volumes are purged:

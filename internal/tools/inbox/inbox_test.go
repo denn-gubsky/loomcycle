@@ -209,3 +209,18 @@ func TestSanitizeName(t *testing.T) {
 		t.Errorf("long name = %q (%d)", got, len(got))
 	}
 }
+
+// The inbox is only ever the path the runtime derives for the tree; a set
+// entry by the name pointing anywhere else is not written to.
+func TestInbox_SetEntryOutsideTheDerivedPathRefuses(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	elsewhere := t.TempDir()
+	r.Set.Add(inbox.Name, tools.EphemeralVolumeRef{Root: elsewhere})
+	res := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "o"}, pdf)
+	if res.Kept || !strings.Contains(res.Stub, "not its inbox") {
+		t.Errorf("stub = %q", res.Stub)
+	}
+	if ents, _ := os.ReadDir(elsewhere); len(ents) != 0 {
+		t.Errorf("wrote into %s: %v", elsewhere, ents)
+	}
+}

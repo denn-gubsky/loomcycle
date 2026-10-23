@@ -65,6 +65,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
@@ -3774,6 +3775,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// tree's purge.
 	treeSet, _ := s.treeSets.acquire(runID)
 	loopCtx = tools.WithEphemeralVolumes(loopCtx, treeSet)
+	// RFC FF: the tree's inbox, where files its tools return are kept.
+	loopCtx = inbox.With(loopCtx, s.inboxService(), s.treeSets.inbox(runID))
 	loopCtx = s.withEphemeralRecord(loopCtx, runID)
 	loopCtx = tools.WithEventEmitter(loopCtx, emit)
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
@@ -9666,6 +9669,26 @@ func (s *Server) purgeEphemeralVolumesForRun(rootRunID string) {
 	if _, err := s.store.EphemeralVolumeDeleteByRun(bg, rootRunID); err != nil {
 		log.Printf("ephemeral inline purge: delete rows (run=%s): %v", rootRunID, err)
 	}
+}
+
+// inboxService is the deployment's side of the run inbox (RFC FF): where it
+// may be made, what records it, and its caps.
+func (s *Server) inboxService() inbox.Service {
+	svc := inbox.Service{}
+	if s.store != nil {
+		svc.Store = s.store
+	}
+	cfg := s.cfg()
+	if cfg == nil {
+		return svc
+	}
+	svc.DynamicRoot, _ = builtin.DynamicVolumeRoot(cfg)
+	svc.MaxFileBytes = cfg.Env.FileMaxBytes
+	svc.MaxTreeBytes = cfg.Env.FileInboxMaxBytes
+	for name := range cfg.Volumes {
+		svc.StaticVolumeNames = append(svc.StaticVolumeNames, name)
+	}
+	return svc
 }
 
 // withEphemeralRecord attaches what a run reads of its tree's recorded

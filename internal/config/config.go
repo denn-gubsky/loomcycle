@@ -4291,6 +4291,16 @@ type Env struct {
 	// GitPushMaxBytes caps the pack one Git push may upload (RFC FB). Sourced
 	// from LOOMCYCLE_GIT_PUSH_MAX_BYTES; default GitPushMaxBytesDefault.
 	GitPushMaxBytes int64
+	// FileMaxBytes caps one file a tool returns that the runtime keeps in the
+	// run's inbox (RFC FF); FileInboxMaxBytes caps the run tree's inbox.
+	// Sourced from LOOMCYCLE_FILE_MAX_BYTES (default 64 MiB) and
+	// LOOMCYCLE_FILE_INBOX_MAX_BYTES (default 1 GiB).
+	FileMaxBytes      int64
+	FileInboxMaxBytes int64
+	// MCPMaxFrameBytes caps one MCP response: a stdio JSON-RPC line and an
+	// HTTP response body alike. Sourced from LOOMCYCLE_MCP_MAX_FRAME_BYTES;
+	// default MCPMaxFrameBytesDefault.
+	MCPMaxFrameBytes int64
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -5993,6 +6003,27 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		}
 		cfg.Env.GitPushMaxBytes = n
 	}
+	// Inbox and MCP frame caps (RFC FF). Refused rather than defaulted when
+	// they do not parse, as the push cap is: a cap meant to be lowered and
+	// read as the default would keep more than the operator allowed.
+	for _, c := range []struct {
+		env string
+		dst *int64
+		def int64
+	}{
+		{"LOOMCYCLE_FILE_MAX_BYTES", &cfg.Env.FileMaxBytes, FileMaxBytesDefault},
+		{"LOOMCYCLE_FILE_INBOX_MAX_BYTES", &cfg.Env.FileInboxMaxBytes, FileInboxMaxBytesDefault},
+		{"LOOMCYCLE_MCP_MAX_FRAME_BYTES", &cfg.Env.MCPMaxFrameBytes, MCPMaxFrameBytesDefault},
+	} {
+		*c.dst = c.def
+		if v := strings.TrimSpace(os.Getenv(c.env)); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("%s: %q is not a positive number of bytes", c.env, v)
+			}
+			*c.dst = n
+		}
+	}
 	// Crypto tool limits (RFC EP): a positive override tunes each; a
 	// non-positive or malformed value keeps the default.
 	cfg.Env.CryptoMaxBytes = 1 << 20
@@ -7533,6 +7564,16 @@ const BashboxOverlayMaxBytesDefault = 64 << 20
 // GitPushMaxBytesDefault is the cap on one Git push's upload when
 // LOOMCYCLE_GIT_PUSH_MAX_BYTES is unset (RFC FB).
 const GitPushMaxBytesDefault = 100 << 20
+
+// The inbox caps (RFC FF): one kept file, and a run tree's whole inbox.
+const (
+	FileMaxBytesDefault      = 64 << 20
+	FileInboxMaxBytesDefault = 1 << 30
+)
+
+// MCPMaxFrameBytesDefault caps one MCP response. 16 MiB was the stdio line
+// cap before it was configurable; the HTTP body had none.
+const MCPMaxFrameBytesDefault = 16 << 20
 
 // splitCSV trims whitespace and drops empties from a comma-separated env value.
 func splitCSV(s string) []string {

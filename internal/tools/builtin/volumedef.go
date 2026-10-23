@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
 // VolumeDef is the RFC AH Phase 2a substrate primitive for runtime-mutable,
@@ -164,6 +165,12 @@ func (v *VolumeDef) execCreate(ctx context.Context, in volumeDefInput) (tools.Re
 	}
 	if err := v.validateName(in.Name); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
+	}
+	// RFC FF D9: the run inbox is an ephemeral volume the runtime makes under
+	// this name. One an agent made would be resolved as the inbox (and a
+	// persistent one would refuse every capture), so no create may take it.
+	if in.Name == inbox.Name {
+		return errResult(fmt.Sprintf("create: the name %q is reserved for the run's inbox, where the runtime keeps files your tools return", inbox.Name)), nil
 	}
 	mode := in.Mode
 	if mode == "" {
