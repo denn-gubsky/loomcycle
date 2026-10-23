@@ -42,12 +42,7 @@ func TestScheduler_ReplaceCancelsTheRunningRunThroughTheServer(t *testing.T) {
 	// The replacing run outlives the test body: it is cancelled in cleanup,
 	// and the goroutine finishing it may log after the test returns.
 	var over atomic.Bool
-	logf := func(format string, args ...any) {
-		if !over.Load() {
-			t.Logf(format, args...)
-		}
-	}
-	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, st, srv, nil, nil, logf)
+	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, st, srv, nil, nil, schedulerTestLogger(t, &over))
 	sched.SetRunCanceller(srv)
 	sched.Start(ctx)
 	t.Cleanup(sched.Stop)

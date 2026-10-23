@@ -633,7 +633,7 @@ func (s *Server) GetRunByRunID(ctx context.Context, runID string) (connector.Run
 func (s *Server) singleRunToConnector(ctx context.Context, r store.Run) connector.Run {
 	out := storeRunToConnector(r)
 	out.Result = r.Result
-	out.Spec = r.RunConfig
+	out.Spec = connector.ServedRunSpec(r.RunConfig)
 	if r.Status == store.RunConfigured {
 		if d, err := s.store.GetRunDraft(ctx, r.ID); err == nil {
 			out.Draft = d

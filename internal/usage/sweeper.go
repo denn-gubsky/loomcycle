@@ -17,7 +17,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -76,10 +76,10 @@ type Config struct {
 	DisableRunArchiver bool
 
 	// Logger is the structured logger used for sweep results. Defaults
-	// to log.Printf when nil. Errors are logged at every tick;
+	// to slog.Default() when nil. Errors are logged at every tick;
 	// successful sweeps with zero rows are logged only periodically
 	// (the runtime is fine; chattering would just be noise).
-	Logger func(format string, args ...any)
+	Logger *slog.Logger
 
 	// AdvisoryLock is the singleton-sweeper gate. When set, each tick
 	// acquires the lock before calling sweepOnce — only one replica per
@@ -128,7 +128,7 @@ type Sweeper struct {
 	runMode            string
 	exportDir          string
 	disableRunArchiver bool
-	logf               func(format string, args ...any)
+	logger             *slog.Logger
 	lock               AdvisoryLocker
 	lockKey            int64
 	now                func() time.Time
@@ -145,7 +145,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		cfg.DetailRetention = defaultDetailRetention
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = log.Printf
+		cfg.Logger = slog.Default()
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -162,7 +162,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		runMode:            mode,
 		exportDir:          cfg.ExportDir,
 		disableRunArchiver: cfg.DisableRunArchiver,
-		logf:               cfg.Logger,
+		logger:             cfg.Logger,
 		lock:               cfg.AdvisoryLock,
 		lockKey:            cfg.AdvisoryLockKey,
 		now:                cfg.Now,
@@ -199,11 +199,11 @@ func (s *Sweeper) Run(ctx context.Context) {
 	if s.store == nil {
 		return
 	}
-	s.logf("usage: sweeper starting (interval=%s, detail_retention=%s)", s.interval, s.detailRetention)
+	s.logger.Info("usage: sweeper starting", "interval", s.interval, "detail_retention", s.detailRetention)
 	if s.runArchivalEnabled() {
-		s.logf("usage: old-run archiver ON (mode=%s, run_retention=%s, export_dir=%q)", s.runMode, s.runRetention, s.exportDir)
+		s.logger.Info("usage: old-run archiver ON", "mode", s.runMode, "run_retention", s.runRetention, "export_dir", s.exportDir)
 	} else if s.runRetention > 0 && s.runMode == "export+prune" && s.exportDir == "" {
-		s.logf("usage: old-run archiver DISABLED — mode=export+prune requires LOOMCYCLE_USAGE_EXPORT_DIR")
+		s.logger.Warn("usage: old-run archiver DISABLED — mode=export+prune requires LOOMCYCLE_USAGE_EXPORT_DIR")
 	}
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
@@ -218,7 +218,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.logf("usage: sweeper stopping (ctx done)")
+			s.logger.Info("usage: sweeper stopping (ctx done)")
 			return
 		case <-t.C:
 			// When an AdvisoryLock is wired (cluster mode), gate the whole
@@ -246,7 +246,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 					return nil
 				})
 				if lockErr != nil {
-					s.logf("usage: advisory lock infra error: %v", lockErr)
+					s.logger.Warn("usage: advisory lock infra error", "err", lockErr)
 					continue
 				}
 				if !acquired {
@@ -258,22 +258,22 @@ func (s *Sweeper) Run(ctx context.Context) {
 			}
 			// Usage rollup-prune result.
 			if err != nil {
-				s.logf("usage: sweep failed: %v", err)
+				s.logger.Warn("usage: sweep failed", "err", err)
 			} else if n > 0 {
-				s.logf("usage: rolled up + pruned %d detail row(s)", n)
+				s.logger.Info("usage: rolled up + pruned detail rows", "pruned", n)
 				noOpStreak = 0
 			} else {
 				if noOpStreak == 0 || noOpStreak%noOpHeartbeatEvery == 0 {
-					s.logf("usage: sweep tick — 0 detail rows to prune (streak=%d)", noOpStreak)
+					s.logger.Info("usage: sweep tick — 0 detail rows to prune", "streak", noOpStreak)
 				}
 				noOpStreak++
 			}
 			// Old-session archival result (only when enabled).
 			if ranArchival {
 				if archErr != nil {
-					s.logf("usage: session archival failed: %v", archErr)
+					s.logger.Warn("usage: session archival failed", "err", archErr)
 				} else if archived > 0 {
-					s.logf("usage: archived + pruned %d completed session(s) (mode=%s)", archived, s.runMode)
+					s.logger.Info("usage: archived + pruned completed sessions", "archived", archived, "mode", s.runMode)
 				}
 			}
 		}
@@ -328,7 +328,7 @@ func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 			// that cannot be read is left for the next tick.
 			sess, err := s.store.GetSession(ctx, sid)
 			if err != nil {
-				s.logf("usage: read session %s failed, skipping: %v", sid, err)
+				s.logger.Warn("usage: read session failed, skipping", "session_id", sid, "err", err)
 				continue
 			}
 			doExport = sess.Retention != retentionmode.None
@@ -336,12 +336,12 @@ func (s *Sweeper) archiveSessionsOnce(parent context.Context) (int, error) {
 		if doExport {
 			if err := s.exportSession(ctx, sid); err != nil {
 				// Never delete a session we failed to export — retry next tick.
-				s.logf("usage: export session %s failed, skipping delete: %v", sid, err)
+				s.logger.Warn("usage: export session failed, skipping delete", "session_id", sid, "err", err)
 				continue
 			}
 		}
 		if err := s.store.DeleteSessionCascade(ctx, sid); err != nil {
-			s.logf("usage: delete session %s failed: %v", sid, err)
+			s.logger.Warn("usage: delete session failed", "session_id", sid, "err", err)
 			continue
 		}
 		deleted++

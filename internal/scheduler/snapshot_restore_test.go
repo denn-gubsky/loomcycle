@@ -75,7 +75,7 @@ func TestScheduler_RestoredScheduleFiresOnItsCarriedCountAndStopsAtMaxFires(t *t
 	snapshotInto(t, src, dst)
 
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond}, dst, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, dst, fr, nil, &fakeMCP{}, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 
 	sched.tick(ctx)
@@ -116,7 +116,7 @@ func TestScheduler_RestoredCredentialStrippedScheduleAdvancesWithoutFiring(t *te
 	}
 
 	fr := &fakeRunner{}
-	sched := New(Config{TickInterval: 10 * time.Millisecond}, dst, fr, nil, &fakeMCP{}, t.Logf)
+	sched := New(Config{TickInterval: 10 * time.Millisecond}, dst, fr, nil, &fakeMCP{}, testLogger(t))
 	waitFiresOnCleanup(t, sched)
 	sched.tick(ctx)
 	if got := len(fr.Calls()); got != 0 {

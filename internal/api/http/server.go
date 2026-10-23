@@ -3430,7 +3430,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, in.Context))
 	// RFC EY §3.7: the caller's ACL removes what it may not invoke, from
 	// the schema the model sees and not only on call (owner decision D6).
-	callerACL := principalACL(ctx)
+	callerACL := runCallerACL(ctx)
 	allowedTools, aclRemovedTools := tools.NarrowToolsByACL(ctx, callerACL, allowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
@@ -3497,6 +3497,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Resources:         persistedResources(runResources),
 		Tuning:            persistedTuning(runTuning),
 		Hosts:             hostRecordOf(hostPolicy),
+		ACLOrigin:         aclOriginOf(ctx, callerACL), // whose rules a resume narrows it by again
 		Review:            reviewRecord(in.Review),
 		ReviewTTLSeconds:  positiveOrZero(in.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks}),
@@ -7353,6 +7354,9 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	}
 	childPolicy := parentPolicy.Inherit(childGrant)
 	subRunCfg.Hosts = hostRecordOf(childPolicy.Hosts)
+	// The originating caller's set binds the child as it binds the parent;
+	// a resume compiles that caller's set again.
+	subRunCfg.ACLOrigin = aclOriginOf(ctx, parentPolicy.ACL)
 	subRunCfg.Compaction = childPolicy.Compaction
 	subRunCfg.Context = childPolicy.Context
 	subRunCfg.EphemeralReadOnly = !childPolicy.EphemeralWritable
@@ -7626,8 +7630,10 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// renders this list. Safe to hoist: applyMemoryInjection rewrites only
 	// SystemPrompt, so def.Tools is the same value it was below.
 	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
-	subTools, subACLRemoved := tools.NarrowToolsByACL(ctx, parentPolicy.ACL, subTools)
 	subTools = s.grantRecallTool(subTools, def.Context) // RFC CT: recall-enabled sub-agent gets Recall
+	// After the Recall grant, as a top-level run and a resume narrow: an
+	// auto-granted tool is still one the caller's rules must allow.
+	subTools, subACLRemoved := tools.NarrowToolsByACL(ctx, parentPolicy.ACL, subTools)
 	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
 	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
 	// up the parent's user/tenant blocks here (agent-scope never crosses).
@@ -8142,7 +8148,7 @@ func (s *Server) singleRunResponse(ctx context.Context, run store.Run, live bool
 		resp = single[0]
 	}
 	resp.Result = run.Result
-	resp.Spec = run.RunConfig
+	resp.Spec = connector.ServedRunSpec(run.RunConfig)
 	if run.Status == store.RunConfigured {
 		if d, err := s.store.GetRunDraft(ctx, run.ID); err == nil {
 			resp.Draft = d

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,20 +140,63 @@ func fanoutFixture(t *testing.T, def scheduleDef, cfgMut func(*Config)) (*Schedu
 		cfgMut(&cfg)
 		sched.cfg = cfg.defaults()
 	}
-	sched.logf = logs.logf
+	sched.logger = logs.logger()
 	return sched, fr, st, logs
 }
 
-// logCapture records the scheduler's log lines for assertion.
+// logCapture records the scheduler's log lines for assertion. It is the
+// io.Writer behind logger(): each record is one text-handler line, so a line
+// reads `... msg="scheduler: …" key=value …`.
 type logCapture struct {
 	mu    sync.Mutex
 	lines []string
 }
 
-func (l *logCapture) logf(format string, args ...any) {
+func (l *logCapture) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		l.lines = append(l.lines, line)
+	}
+	return len(p), nil
+}
+
+// logger is a *slog.Logger that records every level into l.
+func (l *logCapture) logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// containsLine reports whether a single line holds every substring — a
+// message and its key=value attrs must come from the same record.
+func (l *logCapture) containsLine(substrs ...string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, line := range l.lines {
+		all := true
+		for _, sub := range substrs {
+			if !strings.Contains(line, sub) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// testLogger routes the scheduler's log through t.Log, for tests that only
+// want the lines visible on failure.
+func testLogger(t *testing.T) *slog.Logger {
+	return slog.New(slog.NewTextHandler(tLogWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+type tLogWriter struct{ t *testing.T }
+
+func (w tLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
 }
 
 func (l *logCapture) contains(substr string) bool {
@@ -475,10 +519,10 @@ func TestFanout_LogsCappedTargets(t *testing.T) {
 	if got := len(fr.Calls()); got != 2 {
 		t.Fatalf("RunOnce calls = %d, want 2 (the cap); logs:\n%s", got, logs.all())
 	}
-	if !logs.contains("capped at 2 targets") {
+	if !logs.containsLine("fan-out capped", "targets=2") {
 		t.Errorf("the cap must be logged; logs:\n%s", logs.all())
 	}
-	if !logs.contains("3 target(s) with new work deferred") {
+	if !logs.containsLine("target(s) with new work deferred", "dropped=3") {
 		t.Errorf("the log must report HOW MANY targets were deferred; logs:\n%s", logs.all())
 	}
 }
@@ -1001,7 +1045,7 @@ func TestFanout_MarkerIsAnnouncedOnEveryFire(t *testing.T) {
 
 	fireT(t, sched)
 
-	for _, want := range []string{"consolidation fan-out marker", "sd-test", "up to 7 run(s)", "discovered user"} {
+	for _, want := range []string{"consolidation fan-out marker", "def_id=sd-test", "max_targets=7", "discovered user"} {
 		if !logs.contains(want) {
 			t.Errorf("the fan-out announcement is missing %q; logs:\n%s", want, logs.all())
 		}

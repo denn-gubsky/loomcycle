@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"time"
@@ -152,7 +153,7 @@ type Scheduler struct {
 	chScope ChannelScopeResolver
 	chWrite channels.Writer
 	teams   runner.TeamWalkStarter
-	logf    func(format string, args ...any)
+	logger  *slog.Logger
 
 	// Consolidation fan-out dependencies (RFC BL P2), both optional and both
 	// wired by a setter before Start. fanoutLock is the cluster singleton gate
@@ -267,11 +268,11 @@ func (s *Scheduler) writeChannel(ctx context.Context, req channels.WriteRequest)
 
 // New constructs a Scheduler. All four runtime dependencies are
 // required; mcp is optional (nil disables mcp.call hooks with a
-// clear error on attempted dispatch). logf may be nil for silent
+// clear error on attempted dispatch). logger may be nil for silent
 // operation (tests + small embeds).
-func New(cfg Config, st store.Store, r runner.Runner, p *pause.Manager, mcp MCPCaller, logf func(string, ...any)) *Scheduler {
-	if logf == nil {
-		logf = func(string, ...any) {}
+func New(cfg Config, st store.Store, r runner.Runner, p *pause.Manager, mcp MCPCaller, logger *slog.Logger) *Scheduler {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Scheduler{
 		cfg:    cfg.defaults(),
@@ -279,7 +280,7 @@ func New(cfg Config, st store.Store, r runner.Runner, p *pause.Manager, mcp MCPC
 		runner: r,
 		pause:  p,
 		mcp:    mcp,
-		logf:   logf,
+		logger: logger,
 		stopCh: make(chan struct{}),
 	}
 }
@@ -308,8 +309,8 @@ func (s *Scheduler) run(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.TickInterval)
 	defer ticker.Stop()
 
-	s.logf("scheduler: started (tick=%s)", s.cfg.TickInterval)
-	defer s.logf("scheduler: stopped")
+	s.logger.Info("scheduler: started", "tick", s.cfg.TickInterval)
+	defer s.logger.Info("scheduler: stopped")
 
 	for {
 		select {
@@ -344,7 +345,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 	now := time.Now()
 	due, err := s.store.ScheduleRunStateListDue(ctx, now)
 	if err != nil {
-		s.logf("scheduler: list due: %v", err)
+		s.logger.Warn("scheduler: list due failed", "err", err)
 		return
 	}
 	if len(due) == 0 {
@@ -376,7 +377,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 			// sweeper goroutine.
 			defer func() {
 				if r := recover(); r != nil {
-					s.logf("scheduler: PANIC in fireOne(def_id=%s): %v", row.DefID, r)
+					s.logger.Error("scheduler: panic in fireOne", "def_id", row.DefID, "panic", r)
 					s.parkAfterPanic(row)
 				}
 			}()
@@ -403,8 +404,8 @@ func (s *Scheduler) fireOne(ctx context.Context, row store.ScheduleDueRow, now t
 	}
 	def.staticRow = row.BootstrappedFromStatic
 	if rehomed, ok := rehomeToOwningTenant(row, def); ok {
-		s.logf("scheduler: schedule %q (def %s) names no tenant in its definition but is owned by tenant %q — executing in %q; re-save it to record the tenant",
-			row.Name, row.DefID, row.OwnerTenantID, row.OwnerTenantID)
+		s.logger.Warn("scheduler: schedule names no tenant in its definition but is owned by a tenant — executing in that tenant; re-save it to record the tenant",
+			"schedule", row.Name, "def_id", row.DefID, "tenant", row.OwnerTenantID)
 		def = rehomed
 	}
 	// One slot per call, except while an `allow` schedule drains a backlog:
@@ -437,7 +438,7 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 		// Without a valid next_run_at, the sweeper would re-fire this
 		// def every tick. Park it 1 hour in the future so the operator
 		// gets a breathing window to fix the def before re-firing.
-		s.logf("scheduler: schedule %q cron-resolve failed: %v — parking 1h", row.Name, err)
+		s.logger.Warn("scheduler: schedule cron-resolve failed — parking 1h", "schedule", row.Name, "err", err)
 		plan = slotPlan{slot: row.NextRunAt, next: now.Add(time.Hour)}
 	}
 	// A catch-up slot that has to wait for the schedule's running runs is
@@ -454,8 +455,8 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 		return row, false
 	}
 	if plan.dropped > 0 {
-		s.logf("scheduler: schedule %q: %d missed slot(s) dropped (catch_up_max %d) — firing slot %s",
-			row.Name, plan.dropped, keep, plan.slot.UTC().Format(time.RFC3339))
+		s.logger.Info("scheduler: schedule missed slot(s) dropped by its catch_up_max — firing the newest slot",
+			"schedule", row.Name, "dropped", plan.dropped, "catch_up_max", keep, "slot", plan.slot.UTC().Format(time.RFC3339))
 	}
 	// The run's key is the CLAIM's: the next_run_at this claim moved, which no
 	// other claim can take. Not the fired slot — a collapse fires the newest
@@ -523,10 +524,10 @@ func (s *Scheduler) fireSlot(ctx context.Context, row store.ScheduleDueRow, def 
 		return row, false
 	}
 
-	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
+	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logger)
 	if in.CredentialsNoUserScope && def.UserID != "" && namesStoredCredential(def.UserCredentials) {
-		s.logf("scheduler: schedule %q (def %s) runs as user %q, but was not written by an operator or by that user — its $cred: values resolve for its agent and tenant only, never in %q's own scope; re-save it as an operator or as %q to restore that",
-			row.Name, row.DefID, def.UserID, def.UserID, def.UserID)
+		s.logger.Warn("scheduler: schedule runs as a user, but was not written by an operator or by that user — its $cred: values resolve for its agent and tenant only, never in that user's own scope; re-save it as an operator or as that user to restore that",
+			"schedule", row.Name, "def_id", row.DefID, "user", def.UserID)
 	}
 	// The claim's key on the run: a second run for the same claim is refused
 	// by the runs table before its loop starts, whatever went wrong with it.
@@ -561,11 +562,11 @@ func (s *Scheduler) releaseSlot(ctx context.Context, listed store.ScheduleDueRow
 	})
 	switch {
 	case err != nil:
-		s.logf("scheduler: schedule %q: giving back slot %s after a full run queue failed: %v — the slot is not run",
-			listed.Name, listed.NextRunAt.UTC().Format(time.RFC3339), err)
+		s.logger.Warn("scheduler: schedule: giving back its slot after a full run queue failed — the slot is not run",
+			"schedule", listed.Name, "slot", listed.NextRunAt.UTC().Format(time.RFC3339), "err", err)
 	case !won:
-		s.logf("scheduler: schedule %q: next_run_at moved before slot %s could be given back — the slot is not run",
-			listed.Name, listed.NextRunAt.UTC().Format(time.RFC3339))
+		s.logger.Warn("scheduler: schedule: next_run_at moved before its slot could be given back — the slot is not run",
+			"schedule", listed.Name, "slot", listed.NextRunAt.UTC().Format(time.RFC3339))
 	}
 }
 
@@ -628,7 +629,7 @@ func (s *Scheduler) fireChannelDelivery(ctx context.Context, row store.ScheduleD
 	if err := s.publishTick(ctx, row.Name, def, now); err != nil {
 		status = "failed"
 		errStr = err.Error()
-		s.logf("scheduler: schedule %q channel delivery to %q failed: %v", row.Name, def.Channel, err)
+		s.logger.Warn("scheduler: schedule channel delivery failed", "schedule", row.Name, "channel", def.Channel, "err", err)
 	}
 	_, done := s.recordFireOutcome(ctx, row, def, now, fireOutcome{
 		Status:      status,
@@ -711,7 +712,7 @@ func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueR
 	runID, err := s.startTeamWalk(ctx, def, key)
 	if errors.Is(err, store.ErrDuplicateIdempotencyKey) {
 		// This slot already has its walk. Whoever started it records it.
-		s.logf("scheduler: schedule %q slot %s already has a walk — not starting it twice", row.Name, row.NextRunAt.UTC().Format(time.RFC3339Nano))
+		s.logger.Info("scheduler: schedule slot already has a walk — not starting it twice", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339Nano))
 		return false
 	}
 	if err == nil && s.trackRun(ctx, row, runID, now) {
@@ -726,12 +727,12 @@ func (s *Scheduler) fireTeamDelivery(ctx context.Context, row store.ScheduleDueR
 		}
 		switch class {
 		case fireTeamNotStartable:
-			s.logf("scheduler: schedule %q could not start team %q in tenant %q — not counting toward max_fires; fix the schedule or the team: %v",
-				row.Name, def.Team, def.TenantID, err)
+			s.logger.Warn("scheduler: schedule could not start team in its tenant — not counting toward max_fires; fix the schedule or the team",
+				"schedule", row.Name, "team", def.Team, "tenant", def.TenantID, "err", err)
 		case firePaused:
-			s.logf("scheduler: schedule %q was refused because the runtime paused after this tick began — not counting toward max_fires", row.Name)
+			s.logger.Warn("scheduler: schedule was refused because the runtime paused after this tick began — not counting toward max_fires", "schedule", row.Name)
 		default:
-			s.logf("scheduler: schedule %q team delivery to %q failed: %v", row.Name, def.Team, err)
+			s.logger.Warn("scheduler: schedule team delivery failed", "schedule", row.Name, "team", def.Team, "err", err)
 		}
 	}
 	out.RunID = runID
@@ -780,7 +781,7 @@ func (s *Scheduler) claimSlot(ctx context.Context, row store.ScheduleDueRow, pla
 	})
 	if err != nil {
 		// Not claimed is the safe reading: the slot stays due and is retried.
-		s.logf("scheduler: schedule %q claim slot: %v", row.Name, err)
+		s.logger.Warn("scheduler: schedule claim slot failed", "schedule", row.Name, "err", err)
 		return false
 	}
 	return won
@@ -802,7 +803,7 @@ func (s *Scheduler) parkAfterPanic(row store.ScheduleDueRow) {
 		LastRunAt:  now,
 	}); err != nil {
 		// exp7 I3: a dropped write is otherwise silent.
-		s.logf("scheduler: def %q panic record-result failed: %v", row.DefID, err)
+		s.logger.Error("scheduler: panic record-result failed", "def_id", row.DefID, "err", err)
 	}
 }
 
@@ -842,7 +843,7 @@ func (s *Scheduler) recordFireOutcome(ctx context.Context, row store.ScheduleDue
 		// unresolved-agent config error.
 		CountAsFire: out.CountAsFire,
 	}); err != nil {
-		s.logf("scheduler: record result for %q: %v", row.Name, err)
+		s.logger.Error("scheduler: record result failed", "schedule", row.Name, "err", err)
 	}
 
 	// RFC S / F36: auto-retire after the Nth fire. Uses recordCtx so it still
@@ -863,14 +864,14 @@ func (s *Scheduler) recordSkip(ctx context.Context, defID, reason string, now ti
 		LastStatus: reason,
 		LastRunAt:  now,
 	}); err != nil {
-		s.logf("scheduler: def %q skip (%s) record-result failed: %v", defID, reason, err)
+		s.logger.Error("scheduler: skip record-result failed", "def_id", defID, "reason", reason, "err", err)
 	}
 }
 
 // recordFireFailure records an outcome when we never reached the
 // runner (decode failure, etc.). The caller has claimed the slot.
 func (s *Scheduler) recordFireFailure(ctx context.Context, defID, runID, status string, err error, now time.Time) {
-	s.logf("scheduler: def %q fire-failed (%s): %v", defID, status, err)
+	s.logger.Warn("scheduler: def fire-failed", "def_id", defID, "status", status, "err", err)
 	// exp7 I3: surface a dropped result-write — see recordSkip above.
 	if rerr := s.store.ScheduleRunStateRecordResult(ctx, store.ScheduleRunResult{
 		DefID:      defID,
@@ -879,6 +880,6 @@ func (s *Scheduler) recordFireFailure(ctx context.Context, defID, runID, status 
 		LastError:  err.Error(),
 		LastRunAt:  now,
 	}); rerr != nil {
-		s.logf("scheduler: def %q record fire-failure result failed: %v", defID, rerr)
+		s.logger.Error("scheduler: record fire-failure result failed", "def_id", defID, "err", rerr)
 	}
 }

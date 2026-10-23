@@ -307,6 +307,11 @@ type queuedRecord struct {
 	Secrets *credential.Sealed `json:"secrets,omitempty"`
 	// Lost says why the run cannot be started after a restart.
 	Lost string `json:"lost,omitempty"`
+	// ACLOrigin names whose access-control rules the run was accepted under
+	// (RFC EY), so a restart starts it under that caller's CURRENT set — and
+	// asks `run agent:` for that caller again — rather than under none. Absent
+	// when no set applied, which starts it as before.
+	ACLOrigin *aclOriginRecord `json:"acl_origin,omitempty"`
 }
 
 type queuedSecrets struct {
@@ -361,6 +366,7 @@ func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retenti
 		stored := in
 		stored.UserBearer, stored.UserCredentials = "", nil
 		rec.Input = &stored
+		rec.ACLOrigin = aclOriginOf(ctx, principalACL(ctx))
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {
@@ -479,7 +485,7 @@ func (s *Server) RestartQueuedRuns(ctx context.Context, bootedAt time.Time) (res
 	if err != nil {
 		return 0, 0, err
 	}
-	restarted, failedIDs := s.queueAgain(ctx, rows)
+	restarted, failedIDs, _ := s.queueAgain(ctx, rows) // a held run is logged and audited; it waits for the next restart
 	return restarted, len(failedIDs), nil
 }
 
@@ -504,16 +510,24 @@ func (s *Server) requeueRestoredRuns(ctx context.Context, ids []string) (requeue
 			restored = append(restored, q)
 		}
 	}
-	requeued, failed := s.queueAgain(ctx, restored)
+	requeued, failed, held := s.queueAgain(ctx, restored)
 	for _, f := range failed {
 		warnings = append(warnings, fmt.Sprintf("queued_run %s: not queued again and failed: %s", f[0], f[1]))
+	}
+	for _, h := range held {
+		warnings = append(warnings, fmt.Sprintf("queued_run %s: not queued again, left queued: %s", h[0], h[1]))
 	}
 	return requeued, warnings
 }
 
 // queueAgain starts each of rows again, in order, or fails it with the reason
 // it cannot be. failed holds (run id, reason) pairs.
-func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (started int, failed [][2]string) {
+//
+// A run accepted under a caller's access-control set starts under that
+// caller's set as it is now (queuedRunCtx). One whose set cannot be read is
+// neither started nor failed: it stays queued, named in held, for a later
+// restart.
+func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (started int, failed, held [][2]string) {
 	for _, q := range rows {
 		in, why := s.restartInput(q)
 		if why != "" {
@@ -523,10 +537,34 @@ func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (starte
 			failed = append(failed, [2]string{q.Run.ID, why})
 			continue
 		}
-		s.startQueuedAgain(in)
+		runCtx, err := s.queuedRunCtx(q, in.Agent)
+		if err != nil {
+			why := fmt.Sprintf("acl_unavailable: the access-control rules of the caller that queued it could not be read (%v); it stays queued rather than start without them", err)
+			slog.Warn("queue: restart: run stays queued", "run_id", q.Run.ID, "reason", why)
+			held = append(held, [2]string{q.Run.ID, why})
+			continue
+		}
+		s.startQueuedAgain(runCtx, in)
 		started++
 	}
-	return started, failed
+	return started, failed, held
+}
+
+// queuedRunCtx is the ctx a queued run starts on after a restart: with no
+// record of a caller's set, a bare one, as before; with one, the caller's set
+// compiled again now, for RunOnce to narrow the run by and to ask
+// `run agent:<agent>` against (runCallerACL, admitPrincipalAgent).
+func (s *Server) queuedRunCtx(q store.QueuedRun, agent string) (context.Context, error) {
+	ctx := context.Background()
+	var rec queuedRecord
+	if json.Unmarshal(q.Input, &rec) != nil || rec.ACLOrigin == nil {
+		return ctx, nil
+	}
+	ctx, eff, err := s.recordedCallerACL(ctx, rec.ACLOrigin, agent)
+	if err != nil {
+		return nil, err
+	}
+	return withRecordedCaller(ctx, *rec.ACLOrigin, eff), nil
 }
 
 // startQueuedAgain runs a restarted queued run in its own goroutine, and
@@ -534,13 +572,13 @@ func (s *Server) queueAgain(ctx context.Context, rows []store.QueuedRun) (starte
 // the runs re-queue in their original order. A run RunOnce refuses before it
 // reaches the queue is failed here: its row would otherwise stay queued with
 // nothing to start it.
-func (s *Server) startQueuedAgain(in runner.RunInput) {
+func (s *Server) startQueuedAgain(runCtx context.Context, in runner.RunInput) {
 	placed := make(chan struct{})
 	var once sync.Once
 	mark := func() { once.Do(func() { close(placed) }) }
 	go func() {
 		defer mark()
-		err := s.RunOnce(context.Background(), in, runner.RunCallbacks{
+		err := s.RunOnce(runCtx, in, runner.RunCallbacks{
 			OnQueued:     mark,
 			OnRegistered: func(string, string, string, string) { mark() },
 		})

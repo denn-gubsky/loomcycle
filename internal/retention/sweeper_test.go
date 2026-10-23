@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -56,7 +57,7 @@ func agentRefs(ids ...string) []store.RetiredDefRef {
 	return out
 }
 
-func quietLogger(string, ...any) {}
+var quietLogger = slog.New(slog.DiscardHandler)
 
 // TestSweeper_DryRunDeletesNothing: DryRun counts purgeable versions but never
 // calls DeleteDefVersions.
