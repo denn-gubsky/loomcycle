@@ -129,6 +129,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `agent_def(input)` / `skill_def(input)` | `dict` | Substrate AgentDef / SkillDef tool; op-discriminated body. |
 | `mcp_server_def` / `schedule_def` / `a2a_server_card_def` / `a2a_agent_def` / `webhook_def` / `memory_backend_def` / `operator_token_def` `(input)` | `dict` | v0.8.0 — the rest of the substrate-def family; same shape + `SubstrateToolRefusedError` contract. |
 | `volume_def(input)` | `dict` | v0.9.0 — RFC AH dynamic filesystem-volume substrate; op-discriminated (create / get / list / delete / purge), tenant-confined, same `SubstrateToolRefusedError` contract. |
+| `group_def(input)` / `acl_def(input)` / `acl_binding(input)` / `authz(input)` | `dict` | Access control (RFC EY / EZ) over the `GroupDef` / `AclDef` / `AclBinding` / `Authz` RPCs. `input` is the HTTP route's JSON body plus `op` (and an admin's `tenant` focus); the answer is the route's body. Ops: groups `list` / `get` / `effective` / `create` / `delete` / `add_member` / `remove_member`; lists `create` / `update` / `put` (one upsert) / `get` / `list` / `retire` / `validate` / `catalog` / `names`; bindings `list` / `create` / `delete`; decisions `evaluation` / `evaluations` / `explain` / `simulate`. Groups, lists and bindings need a tenant operator token; the decisions are open to any principal about itself. Config-declared rows carry `"source": "config"` and are read-only. A refusal raises `AclRefusedError` (`AclDeniedError` when a rule decided) — see [Errors](#errors). |
 | `evaluation(input)` | `dict` | The Evaluation tool outside a run — score runs and read the scores back; op-discriminated (submit / get / list_for_run / list_for_def / aggregate). `substrate:tenant` may use every op in its own tenant, admin in every tenant; any other token only `submit_self`, which a call from outside a run cannot use, so each op raises `SubstrateToolRefusedError`. Another tenant's id reads like a missing one. |
 | `submit_evaluation(run_id, score, dimensions=None, judgement=None, rationale=None)` / `get_evaluation(eval_id)` / `list_evaluations_for_run(run_id, limit=None)` / `list_evaluations_for_def(def_id, limit=None)` / `aggregate_evaluations(def_id, include_lineage=False)` | `dict` | `evaluation` with keyword arguments; each sends only the options given. |
 | `crypto(input)` | `dict` | The Crypto tool outside a run — encrypt / decrypt / rewrap / mac / verify_mac / sign / verify / public_key / totp / hash / random with keys the runtime holds; op-discriminated, and key material is never returned. Needs `substrate:tenant`; uses your tenant's keys and your own user keys, never an agent's. An admin may add `tenant` to use another tenant's keys. A refusal (including a failed decrypt, which never says why) raises `SubstrateToolRefusedError`; a spent token rate raises `BackpressureError` (`reason == "rate_limited"`, retryable). |
@@ -248,6 +249,31 @@ Every method translates gRPC error codes to typed Python exceptions:
 
 All exceptions inherit from `LoomcycleError` and preserve the
 original `grpc.StatusCode` on `.code` for log correlation.
+
+**Access-control refusals.** `group_def` / `acl_def` / `acl_binding` /
+`authz` answer a refusal as a tool result, not a gRPC status, and the client
+raises `AclRefusedError` (a `SubstrateToolRefusedError`): `.message` is the
+server's sentence, `.reason` its code (`insufficient_scope` with
+`.required_scope`, `acl_self_elevation`, `authz_subject`,
+`acl_binding_invalid`, `acl_invalid`, `group_external`, `*_not_found`,
+`*_exists`, `unknown_op`, …) and `.body` the whole error body; `.retryable`
+follows the server's `error_info`. A rule's refusal (`acl_denied`) is the
+subclass `AclDeniedError`, with `.action`, `.resource` and `.reasons` (the
+rules that decided, denies first; empty when none matched) — the same class
+name the TypeScript client raises. A bearer the RPC's own gate refuses is a
+gRPC status as for any RPC (`AuthError`, or a `LoomcycleError` with
+`PERMISSION_DENIED`).
+
+```python
+from loomcycle import AclDeniedError, AclRefusedError
+
+try:
+    await client.acl_def({"op": "put", "name": "ops", "rules": rules})
+except AclDeniedError as e:
+    print(f"{e.action} {e.resource} denied by", [(r["acl"], r["rule"]) for r in e.reasons])
+except AclRefusedError as e:
+    print(e.reason, e.message)
+```
 
 One gRPC code covers several conditions (`RESOURCE_EXHAUSTED` is a full queue,
 a per-user quota or a token budget), so when the server says which one it is,
