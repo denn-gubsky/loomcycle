@@ -174,3 +174,25 @@ func TestACLTwins_ARefusalIsClassified(t *testing.T) {
 		t.Errorf("a missing group: %+v, want a business refusal", res)
 	}
 }
+
+// Only a failure that can clear is retryable, as internal/errclassify
+// classifies them: no store configured never clears (Business, as a
+// capability the deployment is not configured for), access control that
+// could not be evaluated may (Transient).
+func TestACLTwins_OnlyATransientFailureIsRetryable(t *testing.T) {
+	noStore := &Server{}
+	res := twinCall(t, noStore, context.Background(), "groupdef", `{"op":"list"}`)
+	if !res.IsError || textCode(res.Text) != "store_unavailable" || res.ErrorInfo == nil ||
+		res.ErrorInfo.Retryable || res.ErrorInfo.Category != tools.CategoryBusiness {
+		t.Errorf("no store: %s %+v, want a non-retryable business refusal", res.Text, res.ErrorInfo)
+	}
+	srv, _, _ := aclMgmtServer(t, authz.ModeEnforce)
+	// An enforce-mode principal whose set could not be compiled.
+	ctx := auth.WithPrincipal(authz.WithMode(context.Background(), authz.ModeEnforce),
+		auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	res = twinCall(t, srv, ctx, "groupdef", `{"op":"list"}`)
+	if !res.IsError || textCode(res.Text) != "acl_unavailable" || res.ErrorInfo == nil ||
+		!res.ErrorInfo.Retryable || res.ErrorInfo.Category != tools.CategoryTransient {
+		t.Errorf("unavailable set: %s %+v, want a retryable transient failure", res.Text, res.ErrorInfo)
+	}
+}
