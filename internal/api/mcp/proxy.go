@@ -150,6 +150,10 @@ var longRunTools = map[string]bool{
 	// sequence — a single-shot response held open for minutes. Without this a
 	// header timeout would reconnect-retry and re-execute the whole team.
 	"teamdef": true,
+	// file op=extract may take its whole extraction timeout (60s, the
+	// default header timeout) and op=import builds a Document. A retry would
+	// extract twice (a second .md) or import a second copy of the document.
+	"file": true,
 }
 
 // newProxyTransport builds the thin client's HTTP transport. headerTimeout=0

@@ -160,6 +160,12 @@ var handlersByName = map[string]toolHandler{
 	// keys and own user keys (never an agent's). Identity from the principal
 	// ctx, never the wire; see handleCrypto.
 	"crypto": handleCrypto,
+	// The File tool on a run's inbox, from outside the run (file.go). The
+	// connector reads the run through get_run's gate and takes the caller's
+	// scopes and tenant volumes from the principal, never the wire.
+	"file": wrapBuiltin("file", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.File(ctx, in)
+	}),
 	// RFC EZ — access-control management: groups, lists, bindings and the
 	// authz questions, through the implementation the HTTP routes share
 	// (acl_tools.go). ctx is passed as authenticated; nothing is stamped.
