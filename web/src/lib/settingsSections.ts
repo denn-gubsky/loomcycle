@@ -14,6 +14,7 @@ export type Section =
   | "ontology"
   | "retention"
   | "erasure"
+  | "access"
   | "tokens"
   | "presets"
   | "runtime"
@@ -49,6 +50,10 @@ export const SECTIONS: SectionDef[] = [
   { id: "ontology", label: "Ontology", vis: "tenant" },
   { id: "retention", label: "Retention", vis: "tenant" },
   { id: "erasure", label: "Erasure", vis: "tenant" },
+  // RFC EY/EZ access control: /v1/_groups*, /v1/_acldef, /v1/_aclbinding* are
+  // operator-only for members and tenant-confined (substrate:tenant reaches
+  // them; admin focuses a tenant with ?tenant=).
+  { id: "access", label: "Access", vis: "tenant" },
   // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
   // the tenant-confined def set; presets/runtime/lanes/health fall through to the
   // /v1/_* catch-all; and repair-tenant is explicitly admin because it rewrites rows

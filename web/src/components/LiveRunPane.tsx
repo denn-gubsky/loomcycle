@@ -9,6 +9,7 @@ import { type TranscriptEvent } from "../api";
 import { settledToolIds } from "../lib/toolSettlement";
 import { metricsFromEvents } from "../lib/runMetrics";
 import RunMetricsBar from "./RunMetricsBar";
+import AclRemovedNotice from "./AclRemovedNotice";
 import ContextMethodBadge, { useRunContextMethod } from "./ContextMethodBadge";
 
 // LiveRunPane renders one run's live transcript + controls. Decoupled
@@ -176,6 +177,8 @@ export default function LiveRunPane({
       <RunMetricsBar metrics={metrics} running={running} knownWindow={contextWindow} />
 
       {error && <div className="error-banner">{error}</div>}
+
+      <AclRemovedNotice events={events} />
 
       {events.length === 0 && status === "idle" ? (
         <div className="empty-state">No run yet.</div>
