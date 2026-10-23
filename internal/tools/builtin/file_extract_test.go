@@ -314,3 +314,22 @@ func TestSourceTag(t *testing.T) {
 		}
 	}
 }
+
+// The inbox needs only File: a run holding File and Document, and not Read,
+// still gets the pictures op=extract wrote attached as image chunks.
+func TestFileImport_ExtractedImagesNeedNoReadGrant(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.Tools = []string{"File", "Document"} })
+	kept := inbox.Capture(ctx, inbox.Item{Name: "minutes.docx", Origin: "mcp:ms365/get-attachment"}, minutesDOCX(t, testPNG(t)))
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": ex["ref"]})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if asInt(out["image_chunks"]) != 1 || asInt(out["skipped"]) != 0 {
+		t.Errorf("import without Read = %v", out)
+	}
+}

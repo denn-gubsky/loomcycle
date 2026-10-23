@@ -6,7 +6,9 @@ description: "File op=import — build a Document from a Markdown file in a volu
 tool's `import_md` does: headings become the chunk hierarchy. The runtime
 reads the file, so its text never passes through you, and each picture that
 `extract` wrote (`volume:inbox:extracted/…`) becomes an image chunk holding
-the picture's bytes.
+the picture's bytes. An image chunk is a chunk of its own, so each picture
+is placed under its own sub-heading after the text of the section it was in;
+a picture inside a table cell stays a link.
 
 The file is treated as someone else's text. A link in it to any other file —
 in the inbox or in your own volumes — stays a link and is counted in
