@@ -1124,6 +1124,15 @@ func requiredScopeFor(method, path string) string {
 	// without granting new reach. principalTenantScope confines it.
 	case strings.HasPrefix(path, "/v1/_users/"):
 		return auth.ScopeTenant
+	// RFC EY P4: groups, ACL rule lists and bindings are the tenant
+	// operator's (admin focuses another tenant with ?tenant=); members are
+	// carved out below. The evaluate / explain / simulate questions are
+	// open to any authenticated principal: the handler confines a
+	// non-operator to its OWN subject's decisions.
+	case isACLManagementPath(path):
+		return auth.ScopeTenant
+	case strings.HasPrefix(path, "/v1/_authz/"):
+		return ""
 	// Tenant enumeration. ScopeAdmin, and the HANDLER re-checks: the counts are
 	// unremarkable but the LIST ITSELF is cross-tenant information, which is
 	// exactly what a tenant-confined principal must not learn.
@@ -1405,6 +1414,10 @@ func memberCarveOut(method, path string) bool {
 		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
+	// RFC EY: who may do what is the operator's to write and to read; a
+	// member learns its own reach from /v1/_me and /v1/_authz/explain.
+	case isACLManagementPath(path):
+		return true
 	// Switching storage back on for a no-trace agent is the operator's call:
 	// a member who could do it could read what its colleagues' runs said.
 	// Reading the list stays operator-only too; it names what is being
@@ -1549,6 +1562,17 @@ func isTenantConfinedDefPath(path string) bool {
 		"/v1/_crypto",
 	} {
 		if path == fam || path == fam+"/names" {
+			return true
+		}
+	}
+	return false
+}
+
+// isACLManagementPath matches the RFC EY management routes: groups, ACL
+// rule lists and bindings.
+func isACLManagementPath(path string) bool {
+	for _, fam := range []string{"/v1/_groups", "/v1/_acldef", "/v1/_aclbinding"} {
+		if path == fam || strings.HasPrefix(path, fam+"/") {
 			return true
 		}
 	}

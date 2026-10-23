@@ -24,6 +24,9 @@ var aclUngovernedRoutes = map[string]bool{
 	"GET /v1/openapi.json": true, "GET /v1/openapi.yaml": true, "GET /v1/docs": true, "GET /v1/docs/": true, "GET /v1/docs/{file}": true,
 	"GET /ui": true, "GET /ui/": true, "POST /ui/session": true, "GET /ui/login-config.json": true, "GET /ui/logout": true, "POST /ui/logout": true,
 	"GET /.well-known/agent-card.json/extended": true,
+	// The evaluate / explain / simulate questions are answered FOR a subject
+	// and confined to it by the handler; they are not themselves governed.
+	"POST /v1/_authz/evaluation": true, "POST /v1/_authz/evaluations": true, "POST /v1/_authz/explain": true, "POST /v1/_authz/simulate": true,
 }
 
 var muxPatternRe = regexp.MustCompile(`mux\.(?:Handle|HandleFunc)\("([A-Z]+ )?([^"]+)"`)
