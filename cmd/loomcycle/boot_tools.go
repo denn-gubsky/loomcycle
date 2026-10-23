@@ -11,12 +11,12 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/help"
-	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/localapi"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // buildTools is boot phase 3: every built-in tool, plus the skill and help
@@ -174,7 +174,7 @@ func (b *boot) buildTools() {
 	//
 	// Built inside its provider's embedder lane (pr.sched), as every model call
 	// this process makes is counted in a lane: providers.<id>.lanes.embedder.
-	embedder, err := embedders.BuildGated(cfg, pr.sched)
+	embedder, err := wiring.GatedEmbedder(cfg, pr.sched)
 	if err != nil {
 		log.Fatalf("embedder: %v", err)
 	}
@@ -284,6 +284,18 @@ func (b *boot) buildTools() {
 		MaxNameLen: 64,
 	}
 	b.allTools = append(b.allTools, volumeDefTool)
+
+	// RFC FB — the Git tool: repository work inside bound volumes through
+	// go-git, in process. Local ops need only the tool; the network is late-
+	// bound below with the git-source settings (off unless the operator
+	// lists hosts) and gated per agent by git_remote.
+	gitTool := &builtin.Git{
+		PushHosts:    cfg.Env.GitPushHosts,
+		PushMaxBytes: cfg.Env.GitPushMaxBytes,
+		AuthorName:   cfg.Env.GitAuthorName,
+		AuthorEmail:  cfg.Env.GitAuthorEmail,
+	}
+	b.allTools = append(b.allTools, gitTool)
 
 	// RFC AR — the CredentialDef tool (secure per-tenant credential store).
 	// Engine (store + Sealer) is late-bound below, once the store + the master
@@ -430,6 +442,7 @@ func (b *boot) buildTools() {
 	b.skillDefTool = skillDefTool
 	b.teamDefTool = teamDefTool
 	b.volumeDefTool = volumeDefTool
+	b.gitTool = gitTool
 	b.credentialDefTool = credentialDefTool
 	b.cryptoTool = cryptoTool
 	b.pathTool = pathTool

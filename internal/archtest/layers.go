@@ -179,6 +179,7 @@ var layers = []layer{
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",
+			"internal/wiring",
 		},
 	},
 	{
@@ -291,6 +292,8 @@ var allowedSideways = []subsystemEdge{
 	{"internal/tools/builtin", "internal/teamrun"},
 	{"internal/tools/builtin", "internal/throughput"},
 	{"internal/tools/builtin", "internal/tools"},
+	{"internal/wiring", "internal/lanegate"},
+	{"internal/wiring", "internal/providerbuild"},
 
 	// L6
 	{"internal/api", "internal/webui"},
@@ -300,7 +303,6 @@ var allowedSideways = []subsystemEdge{
 // change, so a failure message says which work an entry is waiting on.
 const (
 	cutEmbedded    = "move cmd/loomcycle/embedded under internal/ (cmd<->api<->cli cycle)"
-	cutMemWiring   = "memory services' drivers built by the wiring layer and passed in (D3)"
 	cutRunIdentity = "run identity moves below tools"
 )
 
@@ -317,13 +319,6 @@ type knownViolation struct {
 var knownViolations = []knownViolation{
 	{"internal/api/http", "cmd/loomcycle/embedded", cutEmbedded},
 	{"internal/cli", "cmd/loomcycle/embedded", cutEmbedded},
-
-	{"internal/memory/embedders", "internal/lanegate", cutMemWiring},
-	{"internal/memory/embedders", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/reranker", "internal/lanegate", cutMemWiring},
-	{"internal/memory/reranker", "internal/providerbuild", cutMemWiring},
-	{"internal/memory/unitgen", "internal/lanegate", cutMemWiring},
-	{"internal/memory/unitgen", "internal/providerbuild", cutMemWiring},
 
 	// tools.RunIdentity / tools.RunID.
 	{"internal/docremote", "internal/tools", cutRunIdentity},

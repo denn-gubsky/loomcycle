@@ -12,11 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
@@ -24,9 +21,6 @@ const (
 	defaultTimeout       = 120 * time.Second
 	defaultContextTokens = 16384
 	defaultMaxOutput     = 2000
-	// keyEnvName is the credential a generator answers to when its endpoint is
-	// overridden without a named key — see providerbuild.ServiceProvider.
-	keyEnvName = "LOOMCYCLE_UNIT_GENERATOR_API_KEY"
 	// Each list is asked for as "3 to 6"; a model that writes more is trimmed so
 	// one chunk cannot flood the shared search pool.
 	maxPerList = 6
@@ -75,29 +69,9 @@ type Generator struct {
 	ObserveCall providers.CallObserver
 }
 
-// Build constructs the generator declared in cfg.Memory.UnitGenerator, or returns
-// nil when none is declared. A declared one that cannot be built is an error.
-//
-// The generator makes its calls on a driver of its own, so that driver is
-// wrapped in the chat lane of the provider the block resolved to (sched, the
-// server's call scheduler): a generation call is counted by the provider's
-// max_concurrent like any other chat call. nil gates nothing.
-func Build(cfg *config.Config, sched *concurrency.CallScheduler) (*Generator, error) {
-	gc := cfg.Memory.UnitGenerator
-	if !gc.Configured() {
-		return nil, nil
-	}
-	p, provider, model, err := providerbuild.ServiceProvider(cfg, "memory.unit_generator", providerbuild.ServiceEndpoint{
-		Provider: gc.Provider, Model: gc.Model, BaseURL: gc.BaseURL, APIKeyEnv: gc.APIKeyEnv,
-	}, keyEnvName)
-	if err != nil {
-		return nil, err
-	}
-	gc.Provider, gc.Model = provider, model
-	return New(lanegate.Wrap(provider, p, sched), gc), nil
-}
-
-// New wraps a constructed provider; Build is the production path.
+// New wraps a constructed provider. In production internal/wiring builds it, in
+// its provider's chat lane, with gc naming the provider and model the block
+// resolved to.
 func New(p providers.Provider, gc config.UnitGeneratorConfig) *Generator {
 	g := &Generator{
 		provider: p, providerID: gc.Provider, model: gc.Model, effort: gc.Effort,

@@ -151,6 +151,10 @@ type Agent struct {
 	// inject (see config.AgentDef.ShellCredentials, RFC EW). nil = absent.
 	// Authority, not content: not part of the content hash.
 	ShellCredentials *[]string
+	// GitRemote is the Git tool's network grant (see
+	// config.AgentDef.GitRemote, RFC FB). Authority, not content: not part
+	// of the content hash.
+	GitRemote []string
 	// Interruption is the v0.8.16 Interruption-tool ACL (enabled / kinds /
 	// max_pending). Mirrors config.AgentDef.Interruption. Carried here (F14)
 	// so an MD-declared `interruption:` block round-trips to config at boot
@@ -444,6 +448,7 @@ type frontmatter struct {
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	CryptoScopes          []string                   `yaml:"crypto_scopes"`
 	ShellCredentials      *[]string                  `yaml:"shell_credentials"`
+	GitRemote             []string                   `yaml:"git_remote"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
@@ -532,6 +537,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.CryptoScopes = fm.CryptoScopes
 	a.ShellCredentials = fm.ShellCredentials
+	a.GitRemote = fm.GitRemote
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body
