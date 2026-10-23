@@ -265,23 +265,25 @@ func readManifest(root *os.Root, lim limits) (*Manifest, error) {
 // checkOnDisk walks the bundle through root and refuses anything that is not a
 // directory or a listed regular file, so a link or a stray file cannot hide in
 // a bundle that otherwise verifies. WalkDir does not follow symlinks; it
-// reports them as entries, which is what lets this refuse them.
+// reports them as entries, which is what lets this refuse them. Names found on
+// disk have passed no validation, so the details quote them (%q): a file name
+// with a newline cannot forge a log line.
 func checkOnDisk(root *os.Root, m *Manifest) error {
 	return fs.WalkDir(root.FS(), ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return refuse(ReasonDirUnreadable, "walk %s: %v", name, err)
+			return refuse(ReasonDirUnreadable, "walk %q: %v", name, err)
 		}
 		if d.IsDir() {
 			return nil
 		}
 		if !d.Type().IsRegular() {
-			return refuse(ReasonFileNotRegular, "%s is not a regular file (%s)", name, d.Type())
+			return refuse(ReasonFileNotRegular, "%q is not a regular file (%s)", name, d.Type())
 		}
 		if name == manifestName {
 			return nil
 		}
 		if _, ok := m.Files[name]; !ok {
-			return refuse(ReasonFileUnlisted, "%s is not listed in the manifest", name)
+			return refuse(ReasonFileUnlisted, "%q is not listed in the manifest", name)
 		}
 		return nil
 	})
