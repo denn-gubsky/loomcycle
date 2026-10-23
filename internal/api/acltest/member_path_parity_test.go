@@ -31,6 +31,9 @@ func TestMemberPath_GRPCAdmitsExactlyWhatItsHTTPTwinAdmits(t *testing.T) {
 		"tenant operator": {TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}},
 		"admin":           {TenantID: "acme", Subject: "root", Scopes: []string{auth.ScopeAdmin}},
 		"isolated user":   {TenantID: "acme", Subject: "ivy", Scopes: []string{auth.ScopeUser}},
+		// An isolated user holding every scope a member may: a route the
+		// member scopes admit must not let it past the isolation floor.
+		"isolated user, member scopes": {TenantID: "acme", Subject: "ivy", Scopes: []string{auth.ScopeUser, auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeChannelPublish, auth.ScopeChannelRead}},
 	}
 	// Where an isolated user is admitted on HTTP and not on gRPC. RFC EZ Q1
 	// gives gRPC the MEMBER path and leaves isolated users where they were;
@@ -40,7 +43,18 @@ func TestMemberPath_GRPCAdmitsExactlyWhatItsHTTPTwinAdmits(t *testing.T) {
 		"DirectoryUsers": "GET /v1/_users is open to any authenticated principal; the RPC asks substrate:tenant",
 		"History":        "POST /v1/_history asks runs:read, which substrate:user implies; the RPC asks substrate:tenant",
 	}
+	// Where an isolated user holding the channel scopes is admitted on gRPC and
+	// not by the twin listed here. Each RPC confines a non-admin caller to its
+	// own user-scoped channels; this predates the member path.
+	isolatedOnlyOnGRPC := map[string]string{
+		"PublishChannel":   "also the twin of POST /v1/users/{user_id}/channels/{name}/publish, which admits an isolated user",
+		"SubscribeChannel": "also the twin of POST /v1/users/{user_id}/channels/{name}/subscribe, which admits an isolated user",
+		"PeekChannel":      "also the twin of GET /v1/users/{user_id}/channels/{name}/peek, which admits an isolated user",
+		"AckChannel":       "also the twin of POST /v1/users/{user_id}/channels/{name}/ack, which admits an isolated user",
+		"ListChannels":     "lists only the caller's own user-scoped channels for a non-admin; HTTP has no per-user list route",
+	}
 	diverged := map[string]bool{}
+	grpcOnly := map[string]bool{}
 	var unary, streams []string
 	for _, m := range loomcyclepb.Loomcycle_ServiceDesc.Methods {
 		unary = append(unary, m.MethodName)
@@ -66,9 +80,15 @@ func TestMemberPath_GRPCAdmitsExactlyWhatItsHTTPTwinAdmits(t *testing.T) {
 			for _, tw := range twins {
 				h := lchttp.RouteAdmits(p, tw.Method, tw.Path)
 				g := lcgrpc.RPCAdmits(p, rpc, tw.Op)
-				if class == "isolated user" && h && !g {
+				if strings.HasPrefix(class, "isolated user") && h && !g {
 					if _, known := isolatedOnlyOnHTTP[rpc]; known {
 						diverged[rpc] = true
+						continue
+					}
+				}
+				if strings.HasPrefix(class, "isolated user") && g && !h {
+					if _, known := isolatedOnlyOnGRPC[rpc]; known {
+						grpcOnly[rpc] = true
 						continue
 					}
 				}
@@ -82,6 +102,11 @@ func TestMemberPath_GRPCAdmitsExactlyWhatItsHTTPTwinAdmits(t *testing.T) {
 	for rpc := range isolatedOnlyOnHTTP {
 		if !diverged[rpc] {
 			t.Errorf("%s no longer admits an isolated user only on HTTP; drop it from isolatedOnlyOnHTTP", rpc)
+		}
+	}
+	for rpc := range isolatedOnlyOnGRPC {
+		if !grpcOnly[rpc] {
+			t.Errorf("%s no longer admits an isolated user only on gRPC; drop it from isolatedOnlyOnGRPC", rpc)
 		}
 	}
 	for _, rpc := range memberpath.TwinnedRPCs() {

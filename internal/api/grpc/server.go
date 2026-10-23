@@ -990,13 +990,13 @@ var grpcConsumerScopes = map[string]string{
 	"SubscribeChannel":    auth.ScopeChannelRead,
 	"PeekChannel":         auth.ScopeChannelRead,
 	"ListChannels":        auth.ScopeChannelRead,
-	// The fan-in / fan-out twins of POST /v1/_channels/_await and _broadcast.
-	// They hold a non-admin caller to its own user-scoped channels exactly as
-	// the per-channel RPCs above do (principalMayUseChannelScope), so they take
-	// the same scopes. Unmapped, they defaulted to substrate:admin while their
-	// HTTP routes admitted a tenant operator and a member.
-	"AwaitChannels":     auth.ScopeChannelRead,
-	"BroadcastChannels": auth.ScopeChannelPublish,
+	// The fan-in / fan-out twins of POST /v1/_channels/_await and _broadcast,
+	// which ask substrate:tenant (the member path admits a member). Unlike the
+	// per-channel RPCs above they have no /v1/users/{user_id}/channels twin, so
+	// an isolated user is refused them on HTTP; a channel scope here would let
+	// it through on gRPC. Unmapped, they defaulted to substrate:admin.
+	"AwaitChannels":     auth.ScopeTenant,
+	"BroadcastChannels": auth.ScopeTenant,
 	// RFC AV: the usage/cost report is tenant-readable (the handler tenant-scopes
 	// the aggregation), mirroring the HTTP /v1/_usage ScopeTenant gate.
 	"UsageReport": auth.ScopeTenant,
