@@ -74,6 +74,15 @@ func graphAttachment() (prefix, suffix string) {
 		`","isInline":false}`
 }
 
+// short bounds a block quoted in a failure message: the blocks here are
+// kilobytes of base64.
+func short(s string) string {
+	if len(s) <= 240 {
+		return s
+	}
+	return s[:120] + " … " + s[len(s)-120:]
+}
+
 func keptFile(t *testing.T, r *inboxtest.Run, rel string) []byte {
 	t.Helper()
 	ref, ok := r.Set.Get(inbox.Name)
@@ -120,17 +129,17 @@ func TestMCPCapture_Base64DecodedWhenOptedIn(t *testing.T) {
 		t.Fatal("the base64 reached the model")
 	}
 	if !strings.HasPrefix(got, pre) || !strings.HasSuffix(got, suf) {
-		t.Fatalf("the rest of the block changed: %q", got)
+		t.Fatalf("the rest of the block changed: %q", short(got))
 	}
 	var stub string
 	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(got, pre[:len(pre)-1]), suf[1:])), &stub); err != nil {
-		t.Fatalf("the field is not a JSON string: %v (%q)", err, got)
+		t.Fatalf("the field is not a JSON string: %v (%q)", err, short(got))
 	}
 	if !strings.HasPrefix(stub, "[file: volume:inbox:documents/Board-papers.pdf · application/pdf · 5.9 KiB") || !strings.HasSuffix(stub, "from mcp:ms365/get]") {
 		t.Errorf("stub = %q", stub)
 	}
 	if !json.Valid([]byte(got)) {
-		t.Errorf("the block is no longer JSON: %q", got)
+		t.Errorf("the block is no longer JSON: %q", short(got))
 	}
 	if kept := keptFile(t, r, "documents/Board-papers.pdf"); !bytes.Equal(kept, body) {
 		t.Errorf("kept %d bytes, want the decoded %d", len(kept), len(body))
@@ -151,7 +160,7 @@ func TestMCPCapture_OpaqueTokenNotCaptured(t *testing.T) {
 		token,
 	} {
 		if got := runTextUnder(t, r.Ctx, capturePolicy, block); got != block {
-			t.Errorf("an opaque token was replaced: %q", got)
+			t.Errorf("an opaque token was replaced: %q", short(got))
 		}
 	}
 	if evs := r.Events(); len(evs) != 0 {
@@ -167,7 +176,7 @@ func TestMCPCapture_ShortBase64Untouched(t *testing.T) {
 	pre, suf := graphAttachment()
 	block := pre + b64 + suf
 	if got := runTextUnder(t, r.Ctx, capturePolicy, block); got != block {
-		t.Errorf("a base64 under the minimum was replaced: %q", got)
+		t.Errorf("a base64 under the minimum was replaced: %q", short(got))
 	}
 	// The same string over a lowered minimum is kept: the knob is what decides.
 	lowered := mcp.ResultPolicy{CaptureBase64: true, Base64MinBytes: 1024}
@@ -184,7 +193,7 @@ func TestMCPCapture_PlainTextBlockUntouched(t *testing.T) {
 	reply, _ := json.Marshal(map[string]any{"subject": "Minutes", "body": map[string]string{"contentType": "text", "content": prose}})
 	for _, block := range []string{prose, string(reply)} {
 		if got := runTextUnder(t, r.Ctx, capturePolicy, block); got != block {
-			t.Errorf("a text block was changed: %q", got[:min(len(got), 200)])
+			t.Errorf("a text block was changed: %q", short(got))
 		}
 	}
 	if evs := r.Events(); len(evs) != 0 {
@@ -201,7 +210,7 @@ func TestMCPCapture_WholeBlockBase64(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString(png)
 	got := runTextUnder(t, r.Ctx, capturePolicy, "\n"+b64+"\n")
 	if !strings.HasPrefix(got, "\n[file: volume:inbox:images/get.png · image/png") || !strings.HasSuffix(got, "from mcp:ms365/get]\n") {
-		t.Fatalf("model text = %q", got)
+		t.Fatalf("model text = %q", short(got))
 	}
 	if kept := keptFile(t, r, "images/get.png"); !bytes.Equal(kept, png) {
 		t.Errorf("kept %d bytes, want %d", len(kept), len(png))
@@ -216,7 +225,7 @@ func TestMCPCapture_Base64OfTextKeptAsTxt(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString(text)
 	got := runTextUnder(t, r.Ctx, capturePolicy, `{"name":"minutes","contentBytes":"`+b64+`"}`)
 	if !strings.Contains(got, `"[file: volume:inbox:documents/minutes.txt · text/plain`) {
-		t.Fatalf("model text = %q", got)
+		t.Fatalf("model text = %q", short(got))
 	}
 	if kept := keptFile(t, r, "documents/minutes.txt"); !bytes.Equal(kept, text) {
 		t.Errorf("kept %d bytes, want %d", len(kept), len(text))
@@ -228,8 +237,12 @@ func TestMCPCapture_Base64OfTextKeptAsTxt(t *testing.T) {
 // own quoted span is replaced: the escapes elsewhere in the block survive.
 func TestMCPCapture_WrappedBase64InNestedJSONIsKept(t *testing.T) {
 	r := inboxtest.New(t, "root-1", inbox.Service{})
-	body := pdfOf(6000)
+	// High bytes so the encoding uses the URL alphabet's '-' and '_'.
+	body := append(pdfOf(6000), bytes.Repeat([]byte{0xfb, 0xff, 0xbf}, 100)...)
 	raw := base64.RawURLEncoding.EncodeToString(body)
+	if !strings.ContainsAny(raw, "-_") {
+		t.Fatal("fixture does not exercise the URL alphabet")
+	}
 	var wrapped strings.Builder
 	for i := 0; i < len(raw); i += 76 {
 		wrapped.WriteString(raw[i:min(i+76, len(raw))])
@@ -239,7 +252,7 @@ func TestMCPCapture_WrappedBase64InNestedJSONIsKept(t *testing.T) {
 	suf := `"}}],"count":1}`
 	got := runTextUnder(t, r.Ctx, capturePolicy, pre+wrapped.String()+suf)
 	if !strings.HasPrefix(got, pre[:len(pre)-1]+`"[file: volume:inbox:documents/Zvit.pdf · application/pdf`) || !strings.HasSuffix(got, suf) {
-		t.Fatalf("model text = %q", got)
+		t.Fatalf("model text = %q", short(got))
 	}
 	if kept := keptFile(t, r, "documents/Zvit.pdf"); !bytes.Equal(kept, body) {
 		t.Errorf("kept %d bytes, want %d", len(kept), len(body))
