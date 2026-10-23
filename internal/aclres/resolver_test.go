@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -196,5 +197,73 @@ func TestResolve_StoreFaultReturnsTheErrorAndLeavesThePrincipal(t *testing.T) {
 	p, err := r.Resolve(context.Background(), member("alice"))
 	if err == nil || p.Effective != nil || p.Groups != nil {
 		t.Errorf("want an error and an untouched principal, got %+v, %v", p, err)
+	}
+}
+
+// A set compiled from a principal names its subject and class, and compiling
+// that subject again with no principal gives the same set — for each class,
+// the run-plane list included — so a run that outlives its request is held
+// to its caller's rules. A binding added in between holds on the second
+// compile: it is the rules as they stand now, not a copy.
+func TestResolveSubject_RecompilesThePrincipalsSetFromItsSubject(t *testing.T) {
+	st := newStore(t)
+	ctx := context.Background()
+	r := New(st, authz.ModeCompat, 0)
+	for name, p := range map[string]auth.Principal{
+		"member":   member("alice"),
+		"isolated": {TenantID: "acme", Subject: "sandboxed", Scopes: []string{auth.ScopeUser}},
+		"runplane": {TenantID: "acme", Subject: "ci", Scopes: []string{auth.ScopeTenant}, TokenDefID: "def-ci", Restrictions: auth.Restrictions{Agents: []string{"ci"}}},
+		"admin":    {TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}},
+	} {
+		live, err := r.Resolve(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if live.Effective.Subject.Class != ClassKey(p) {
+			t.Errorf("%s: compiled set's class = %q, want %q", name, live.Effective.Subject.Class, ClassKey(p))
+		}
+		r.Invalidate("") // compile again rather than read the cached set
+		again, err := r.ResolveSubject(ctx, live.Effective.Subject)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(again, live.Effective) {
+			t.Errorf("%s: recompiled set differs:\n again %+v\n live  %+v", name, again, live.Effective)
+		}
+	}
+
+	alice, _ := r.Resolve(ctx, member("alice"))
+	if _, err := st.AclDefPut(ctx, store.AclDefRow{TenantID: "acme", Name: "no-shell", Rules: json.RawMessage(`[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AclBindingPut(ctx, store.AclBindingRow{TenantID: "acme", ACLName: "no-shell", SubjectKind: "user", SubjectID: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	now, err := r.ResolveSubject(ctx, alice.Effective.Subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decide(now, "invoke", "tool", "Bash") != authz.Denied {
+		t.Error("a deny bound after the first compile does not hold on the second")
+	}
+}
+
+// A subject that does not name a class the resolver compiles — none, or one
+// it never writes — is refused, never compiled on a guessed baseline.
+func TestResolveSubject_RefusesASubjectWithNoKnownClass(t *testing.T) {
+	r := New(newStore(t), authz.ModeCompat, 0)
+	for _, subj := range []authz.Subject{
+		{TenantID: "acme", ID: "alice"},
+		{TenantID: "acme", ID: "alice", Class: "superuser"},
+		{TenantID: "acme", ID: "alice", Class: "+runplane"},
+		{TenantID: "acme", Class: "member"},
+	} {
+		if eff, err := r.ResolveSubject(context.Background(), subj); err == nil {
+			t.Errorf("ResolveSubject(%+v) = %v, want an error", subj, eff)
+		}
+	}
+	var none *Resolver
+	if _, err := none.ResolveSubject(context.Background(), authz.Subject{ID: "alice", Class: "member"}); err == nil {
+		t.Error("a nil resolver resolved a subject")
 	}
 }

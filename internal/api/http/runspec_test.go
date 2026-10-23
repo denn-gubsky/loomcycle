@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -122,6 +123,14 @@ func TestRunSpec_TSMirrorDeclaresEveryRecordField(t *testing.T) {
 		declared[string(f[1])] = true
 	}
 	for _, f := range goFields {
+		// A storage-only key is stripped from every served record, so the
+		// client type must not declare it.
+		if connector.IsStorageOnlySpecKey(f) {
+			if declared[f] {
+				t.Errorf("TS RunSpec declares %q, which the server never serves", f)
+			}
+			continue
+		}
 		if !declared[f] {
 			t.Errorf("runConfigRecord persists %q but TS RunSpec does not declare it", f)
 		}

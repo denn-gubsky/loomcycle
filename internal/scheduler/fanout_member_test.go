@@ -78,7 +78,7 @@ func TestFanout_SubRunOperatorKeyRefusalIsDeferred(t *testing.T) {
 					tenantLines = append(tenantLines, line)
 				}
 			}
-			if len(tenantLines) != 1 || !strings.Contains(tenantLines[0], `tenant "acme": 2 pass(es) deferred`) {
+			if len(tenantLines) != 1 || !strings.Contains(tenantLines[0], "tenant=acme") || !strings.Contains(tenantLines[0], "deferred=2") {
 				t.Errorf("want exactly one line naming tenant acme and its 2 deferred passes, got %q", tenantLines)
 			}
 		})

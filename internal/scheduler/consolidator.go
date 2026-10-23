@@ -161,7 +161,7 @@ func fanoutScope(def scheduleDef) (store.MemoryScope, error) {
 // as a sweep running on another replica (the fan-out lock) is.
 func (s *Scheduler) startConsolidationFanout(ctx context.Context, row store.ScheduleDueRow, def scheduleDef, now time.Time) {
 	if _, running := s.fanoutRunning.LoadOrStore(row.DefID, struct{}{}); running {
-		s.logf("scheduler: consolidation fan-out %q: its previous sweep is still running — skipping this slot", row.Name)
+		s.logger.Info("scheduler: consolidation fan-out: its previous sweep is still running — skipping this slot", "schedule", row.Name)
 		s.recordSkip(ctx, row.DefID, "skipped", now)
 		return
 	}
@@ -171,7 +171,7 @@ func (s *Scheduler) startConsolidationFanout(ctx context.Context, row store.Sche
 		defer s.fanoutRunning.Delete(row.DefID)
 		defer func() {
 			if r := recover(); r != nil {
-				s.logf("scheduler: PANIC in consolidation fan-out (def_id=%s): %v", row.DefID, r)
+				s.logger.Error("scheduler: panic in consolidation fan-out", "def_id", row.DefID, "panic", r)
 				s.recordFireFailure(context.WithoutCancel(ctx), row.DefID, "", "failed", fmt.Errorf("panic in consolidation fan-out"), now)
 			}
 		}()
@@ -219,8 +219,8 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 	if allTenants {
 		reach = "across every tenant, each run in its target's own tenant"
 	}
-	s.logf("scheduler: schedule %q (def %s) carries the consolidation fan-out marker — dispatching up to %d run(s) per tick %s, each under a discovered user's identity; retire the def if you did not author this",
-		row.Name, row.DefID, s.cfg.MaxConsolidationTargets, reach)
+	s.logger.Warn("scheduler: schedule carries the consolidation fan-out marker — dispatching up to max_targets run(s) per tick, each under a discovered user's identity; retire the def if you did not author this",
+		"schedule", row.Name, "def_id", row.DefID, "max_targets", s.cfg.MaxConsolidationTargets, "reach", reach)
 
 	// The cause is how a pass tells "the sweep budget ran out" from "my own
 	// slice of it ran out" (see notePassBudget).
@@ -249,7 +249,7 @@ func (s *Scheduler) fireConsolidationFanout(ctx context.Context, row store.Sched
 			return
 		}
 		if lockErr != nil {
-			s.logf("scheduler: consolidation fan-out %q advisory lock infra error: %v — skipping this tick", row.Name, lockErr)
+			s.logger.Warn("scheduler: consolidation fan-out advisory lock infra error — skipping this tick", "schedule", row.Name, "err", lockErr)
 			s.recordSkip(ctx, row.DefID, "skipped", now)
 			return
 		}
@@ -295,8 +295,8 @@ func (s *Scheduler) operatorLayerFanout(row store.ScheduleDueRow, def scheduleDe
 	if def.OperatorLayer || row.BootstrappedFromStatic {
 		return true
 	}
-	s.logf("scheduler: consolidation fan-out %q (def %s) has no tenant but was not authored with operator authority — confining it to tenant \"\" instead of sweeping every tenant; re-save it as an admin to sweep",
-		row.Name, row.DefID)
+	s.logger.Warn("scheduler: consolidation fan-out has no tenant but was not authored with operator authority — confining it to tenant \"\" instead of sweeping every tenant; re-save it as an admin to sweep",
+		"schedule", row.Name, "def_id", row.DefID)
 	return false
 }
 
@@ -314,8 +314,8 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		// A silent truncation reads as "everything was covered". The watermark
 		// makes the remainder resumable, so this is deferral, not loss — but the
 		// operator needs to see it to widen the cap or the cadence.
-		s.logf("scheduler: consolidation fan-out %q capped at %d targets — %d target(s) with new work deferred to the next tick",
-			row.Name, len(targets), dropped)
+		s.logger.Warn("scheduler: consolidation fan-out capped — target(s) with new work deferred to the next tick",
+			"schedule", row.Name, "targets", len(targets), "dropped", dropped)
 	}
 	if len(targets) == 0 {
 		// Skip-but-advance: an idle deployment must cost nothing. No run, no
@@ -336,8 +336,8 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 	if len(def.UserCredentials)+len(def.UserCredentialsFromEnv) > 0 || def.UserBearer != "" {
 		for _, target := range targets {
 			if target.TenantID != def.TenantID {
-				s.logf("scheduler: consolidation fan-out %q: runs dispatched outside tenant %q carry none of this schedule's credentials — see runConsolidationTarget",
-					row.Name, def.TenantID)
+				s.logger.Warn("scheduler: consolidation fan-out: runs dispatched outside its tenant carry none of this schedule's credentials — see runConsolidationTarget",
+					"schedule", row.Name, "tenant", def.TenantID)
 				break
 			}
 		}
@@ -347,9 +347,9 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 	concurrency, _ := s.cfg.consolidationConcurrency()
 	if serial {
 		concurrency = 1
-		s.logf("scheduler: consolidation fan-out %q running SERIALLY over %d target(s): %s", row.Name, len(targets), reason)
+		s.logger.Info("scheduler: consolidation fan-out running SERIALLY", "schedule", row.Name, "targets", len(targets), "reason", reason)
 	} else if reason != "" {
-		s.logf("scheduler: consolidation fan-out %q running up to %d-wide over %d target(s): %s", row.Name, concurrency, len(targets), reason)
+		s.logger.Info("scheduler: consolidation fan-out running up to concurrency-wide", "schedule", row.Name, "concurrency", concurrency, "targets", len(targets), "reason", reason)
 	}
 	perTarget := targetBudget(s.cfg.fanoutSweepBudget, len(targets))
 
@@ -439,20 +439,20 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 				// Per-target failures are logged and counted, never fatal to
 				// the batch: one user's wedged consolidation must not stop
 				// everyone else's.
-				s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): %v",
-					row.Name, target.TenantID, target.UserID, runErr)
+				s.logger.Warn("scheduler: consolidation fan-out target failed",
+					"schedule", row.Name, "tenant", target.TenantID, "user", target.UserID, "err", runErr)
 			}
 		}(target)
 	}
 	wg.Wait()
 
 	if skipped > 0 {
-		s.logf("scheduler: consolidation fan-out %q ran out of its %s budget — %d target(s) not dispatched this tick",
-			row.Name, s.cfg.fanoutSweepBudget, skipped)
+		s.logger.Warn("scheduler: consolidation fan-out ran out of its budget — target(s) not dispatched this tick",
+			"schedule", row.Name, "budget", s.cfg.fanoutSweepBudget, "skipped", skipped)
 	}
 	if stoppedPaused > 0 {
-		s.logf("scheduler: consolidation fan-out %q stopped: the runtime paused mid-sweep — %d target(s) not dispatched this tick, and this tick does not count toward max_fires",
-			row.Name, stoppedPaused)
+		s.logger.Warn("scheduler: consolidation fan-out stopped: the runtime paused mid-sweep — target(s) not dispatched this tick, and this tick does not count toward max_fires",
+			"schedule", row.Name, "skipped", stoppedPaused)
 	}
 	s.logOperatorKeyDeferrals(row.Name, byTenant)
 
@@ -462,12 +462,11 @@ func (s *Scheduler) dispatchConsolidationTargets(ctx context.Context, row store.
 		// started. That is one config error repeating, not N fires — counting it
 		// would burn max_fires and retire the schedule, hiding the misconfig
 		// behind a retired def. Log it as loudly as fireOne does.
-		where := fmt.Sprintf("tenant %q", def.TenantID)
+		msg := "scheduler: consolidation fan-out could not resolve its agent in its tenant for any target — not counting toward max_fires; check the agent exists in this tenant (F38)"
 		if allTenants {
-			where = "any target's tenant"
+			msg = "scheduler: consolidation fan-out could not resolve its agent in any target's tenant for any target — not counting toward max_fires; check the agent exists in this tenant (F38)"
 		}
-		s.logf("scheduler: consolidation fan-out %q could not resolve agent %q in %s for any of %d target(s) — not counting toward max_fires; check the agent exists in this tenant (F38)",
-			row.Name, def.Agent, where, tally.dispatched)
+		s.logger.Warn(msg, "schedule", row.Name, "agent", def.Agent, "tenant", def.TenantID, "targets", tally.dispatched)
 	}
 	s.recordFanoutResult(ctx, row, def, now, status, errStr, lastRunID, countAsFire)
 	s.dispatchFanoutHooks(ctx, row.Name, def, byTenant)
@@ -496,8 +495,8 @@ func (s *Scheduler) logOperatorKeyDeferrals(scheduleName string, byTenant map[st
 	}
 	sort.Strings(tenants)
 	for _, tenant := range tenants {
-		s.logf("scheduler: consolidation fan-out %q: tenant %q: %d pass(es) deferred (operator_key_restricted) — the operator's provider key is restricted and the tenant has no key of its own for the agents a pass runs; it is not consolidated until it adds one, or an admin gives it its own schedule",
-			scheduleName, tenant, byTenant[tenant].operatorKey)
+		s.logger.Warn("scheduler: consolidation fan-out: a tenant's pass(es) deferred (operator_key_restricted) — the operator's provider key is restricted and the tenant has no key of its own for the agents a pass runs; it is not consolidated until it adds one, or an admin gives it its own schedule",
+			"schedule", scheduleName, "tenant", tenant, "deferred", byTenant[tenant].operatorKey)
 	}
 }
 
@@ -729,7 +728,7 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 			if err != nil {
 				// A per-candidate read fault must not abort the whole fan-out;
 				// log it and let the next tick retry that candidate.
-				s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q): %v", c.TenantID, c.UserID, err)
+				s.logger.Warn("scheduler: consolidation fan-out: check target failed", "tenant", c.TenantID, "user", c.UserID, "err", err)
 				continue
 			}
 			if hasWork {
@@ -749,7 +748,7 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 			return out, len(ordered) - i, nil
 		}
 		if runID, live := s.livePass(ctx, c, def.Agent); live {
-			s.logf("scheduler: consolidation fan-out: target (tenant=%q user=%q) still has pass %s live — skipping it this tick", c.TenantID, c.UserID, runID)
+			s.logger.Info("scheduler: consolidation fan-out: target still has a pass live — skipping it this tick", "tenant", c.TenantID, "user", c.UserID, "run_id", runID)
 			continue
 		}
 		out = append(out, c)
@@ -783,7 +782,7 @@ func (s *Scheduler) consolidationTargets(ctx context.Context, def scheduleDef, s
 func (s *Scheduler) livePass(ctx context.Context, target consolidationTarget, selfAgent string) (string, bool) {
 	run, found, err := s.store.FindLiveAgentRun(ctx, target.TenantID, target.UserID, selfAgent)
 	if err != nil {
-		s.logf("scheduler: consolidation fan-out: check target (tenant=%q user=%q) for a live pass: %v", target.TenantID, target.UserID, err)
+		s.logger.Warn("scheduler: consolidation fan-out: check target for a live pass failed", "tenant", target.TenantID, "user", target.UserID, "err", err)
 		return "", false
 	}
 	if !found {
@@ -792,8 +791,8 @@ func (s *Scheduler) livePass(ctx context.Context, target consolidationTarget, se
 	// A paused row comes after any that is not, so this one being stale
 	// means every row of the agent's for the target is.
 	if run.PauseState == store.PauseStatePaused && time.Since(run.LastActiveAt) > s.cfg.stalePausedPassAfter {
-		s.logf("scheduler: WARNING: consolidation fan-out: pass %s for target (tenant=%q user=%q) has been parked since %s without a resume — no longer holding the target for it",
-			run.ID, target.TenantID, target.UserID, run.LastActiveAt.UTC().Format(time.RFC3339))
+		s.logger.Warn("scheduler: consolidation fan-out: a target's pass has been parked without a resume — no longer holding the target for it",
+			"run_id", run.ID, "tenant", target.TenantID, "user", target.UserID, "parked_since", run.LastActiveAt.UTC().Format(time.RFC3339))
 		return "", false
 	}
 	return run.ID, true
@@ -1000,18 +999,18 @@ func (s *Scheduler) notePassBudget(row store.ScheduleDueRow, target consolidatio
 	switch {
 	case !wasEscalated && errors.Is(cause, errPassBudgetCut):
 		if s.setEscalated(row.DefID, target, true) {
-			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass cut by its %s share of the %s fire budget before it finished — it goes first next tick with the whole remaining budget",
-				row.Name, target.TenantID, target.UserID, slice, s.cfg.fanoutSweepBudget)
+			s.logger.Info("scheduler: consolidation fan-out target: pass cut by its share of the fire budget before it finished — it goes first next tick with the whole remaining budget",
+				"schedule", row.Name, "tenant", target.TenantID, "user", target.UserID, "slice", slice, "budget", s.cfg.fanoutSweepBudget)
 		}
 	case wasEscalated && runErr == nil && cause == nil:
 		if s.setEscalated(row.DefID, target, false) {
-			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): completed on its whole-budget turn — back to normal budgeting",
-				row.Name, target.TenantID, target.UserID)
+			s.logger.Info("scheduler: consolidation fan-out target: completed on its whole-budget turn — back to normal budgeting",
+				"schedule", row.Name, "tenant", target.TenantID, "user", target.UserID)
 		}
 	case wasEscalated && errors.Is(cause, errBatchBudgetCut):
 		if s.setEscalated(row.DefID, target, false) {
-			s.logf("scheduler: consolidation fan-out %q target (tenant=%q user=%q): pass did not finish even with the whole %s sweep budget — dropping it back to normal budgeting so it cannot hold every sweep",
-				row.Name, target.TenantID, target.UserID, s.cfg.fanoutSweepBudget)
+			s.logger.Warn("scheduler: consolidation fan-out target: pass did not finish even with the whole sweep budget — dropping it back to normal budgeting so it cannot hold every sweep",
+				"schedule", row.Name, "tenant", target.TenantID, "user", target.UserID, "budget", s.cfg.fanoutSweepBudget)
 		}
 	}
 }
@@ -1282,7 +1281,7 @@ func (s *Scheduler) runConsolidationTarget(ctx context.Context, def scheduleDef,
 	// of live runs. Marked on the pass's ROOT ctx, which the run and everything
 	// it spawns inherit.
 	ctx = lanegate.WithBackground(ctx)
-	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logf)
+	in := buildRunInput(def, s.cfg.EnvAllowlist, s.logger)
 	// Each pass runs as its target's user, whom the schedule's author did not
 	// write it for: only an operator-written schedule resolves $cred: in that
 	// user's own scope.
@@ -1596,16 +1595,16 @@ func (s *Scheduler) recordFanoutResult(ctx context.Context, row store.ScheduleDu
 		LastRunAt:   now,
 		CountAsFire: countAsFire,
 	}); err != nil {
-		s.logf("scheduler: record fan-out result for %q: %v", row.Name, err)
+		s.logger.Error("scheduler: record fan-out result failed", "schedule", row.Name, "err", err)
 	}
 	if def.MaxFires > 0 {
 		if st, gerr := s.store.ScheduleRunStateGet(recordCtx, row.DefID); gerr != nil {
-			s.logf("scheduler: max_fires read state for %q: %v", row.Name, gerr)
+			s.logger.Warn("scheduler: max_fires read state failed", "schedule", row.Name, "err", gerr)
 		} else if st.FireCount >= def.MaxFires {
 			if rerr := s.store.ScheduleDefSetRetired(recordCtx, row.DefID, true); rerr != nil {
-				s.logf("scheduler: max_fires retire %q (def %s) after %d fires: %v", row.Name, row.DefID, st.FireCount, rerr)
+				s.logger.Error("scheduler: max_fires retire failed", "schedule", row.Name, "def_id", row.DefID, "fire_count", st.FireCount, "err", rerr)
 			} else {
-				s.logf("scheduler: %q reached max_fires=%d — retired def %s", row.Name, def.MaxFires, row.DefID)
+				s.logger.Info("scheduler: schedule reached max_fires — retired its def", "schedule", row.Name, "max_fires", def.MaxFires, "def_id", row.DefID)
 			}
 		}
 	}

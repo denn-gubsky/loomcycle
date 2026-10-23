@@ -159,7 +159,13 @@ func (s *Server) admitPrincipalAgent(ctx context.Context, agent string) error {
 		return fmt.Errorf("%w: %q", runner.ErrAgentNotAllowed, agent)
 	}
 	// RFC EY: the ACL's instance question, `run agent:<name>`, after the
-	// token's own allowlist.
+	// token's own allowlist. A queued run started after a restart has no
+	// principal but its recorded caller's set, compiled again: it is asked
+	// for that caller, so a deny bound while it waited refuses it.
+	if rc, has := recordedCallerFrom(ctx); !ok && has {
+		p = rc.origin.principal()
+		p.Effective, ok = rc.eff, true
+	}
 	return s.aclAdmitAgent(ctx, p, ok, agent)
 }
 
