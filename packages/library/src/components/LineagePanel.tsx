@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
+import { useErrorText } from "../lib/errorText";
 import Splitter from "./Splitter";
 import LineageTree, { buildLineageTree } from "./LineageTree";
 import { contextWindowLabel } from "../lib/contextWindow";
@@ -78,6 +79,7 @@ export default function LineagePanel({
   defaultHideRetired,
 }: LineagePanelProps) {
   const data = useLibraryData();
+  const errorText = useErrorText();
   const [selectedName, setSelectedName] = useState<string>(() =>
     entries.length > 0 ? entries[0]!.name : "",
   );
@@ -194,14 +196,14 @@ export default function LineagePanel({
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        setVersionsErr(e instanceof Error ? e.message : String(e));
+        setVersionsErr(errorText(e));
         setVersionsLoading(false);
         onError?.(e);
       });
     return () => {
       cancelled = true;
     };
-  }, [data, kind, selectedName, selectedEntry, onError]);
+  }, [data, kind, selectedName, selectedEntry, onError, errorText]);
 
   const tree = useMemo(() => buildLineageTree(versions), [versions]);
   const activeDefID = selectedEntry?.active_def_id ?? "";
