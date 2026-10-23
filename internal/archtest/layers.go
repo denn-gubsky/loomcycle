@@ -313,10 +313,8 @@ type knownViolation struct {
 	cut      string
 }
 
-// knownViolations only shrinks. A new wrong-way import is fixed, not added
-// here: the test fails on an entry that no longer matches, so when a cut lands
-// its entries go with it.
-var knownViolations = []knownViolation{
-
-	// tools.RunIdentity / tools.RunID.
-}
+// knownViolations only shrinks, and RFC EX Phase 2 emptied it. A new wrong-way
+// import is fixed, not added here: the list recorded the imports that already
+// pointed the wrong way when this guard arrived, and the test fails on an
+// entry that no longer matches, so each cut deleted its own.
+var knownViolations = []knownViolation{}
