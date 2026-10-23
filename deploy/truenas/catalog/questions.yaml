@@ -395,6 +395,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_WEBUI_BUNDLE_URL
+            label: LOOMCYCLE_WEBUI_BUNDLE_URL
+            description: 'Instead of a directory: an https URL of a Web UI release archive (.tar.gz), fetched once through the egress guard, verified against LOOMCYCLE_WEBUI_BUNDLE_SHA256 and cached in LOOMCYCLE_DATA_DIR/webui. Not with LOOMCYCLE_WEBUI_DIR. A failed fetch is logged; the built-in UI is served. (example: https://example.com/loomcycle-webui-1.0.0.tar.gz)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_WEBUI_BUNDLE_SHA256
+            label: LOOMCYCLE_WEBUI_BUNDLE_SHA256
+            description: 'SHA-256 of that .tar.gz, 64 lowercase hex (from its .sha256 release asset). Required with LOOMCYCLE_WEBUI_BUNDLE_URL; nothing is unpacked unless it matches. (example: <64 lowercase hex characters>)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             label: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             description: HTTP + WebFetch tools — comma-separated suffix-match host allowlist. Entry "example.com" matches "example.com" and "api.example.com" but not "evilexample.com". Private IPs (RFC1918, loopback, link-local incl. 169.254.169.254, CGNAT 100.64.0.0/10 and other non-public ranges) are HARD-blocked at connect regardless of allowlist. Loopback aliases on the list (localhost, 127.0.0.1, ::1, *.localhost)…
