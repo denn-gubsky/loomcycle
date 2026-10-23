@@ -982,7 +982,7 @@ func (s *Server) aclBindingList(ctx context.Context, focus string, includeRetire
 	for _, b := range s.aclStatic().BindingsIn(tenant) {
 		entry := aclConfigBinding{TenantID: tenant, ACL: b.ACL, SubjectKind: string(b.SubjectKind), SubjectID: b.SubjectID, Source: aclres.SourceConfig}
 		if !b.ExpiresAt.IsZero() {
-			t := b.ExpiresAt
+			t := b.ExpiresAt.UTC()
 			entry.ExpiresAt = &t
 		}
 		out = append(out, entry)

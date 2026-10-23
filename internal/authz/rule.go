@@ -194,14 +194,15 @@ type Binding struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-// MarshalJSON leaves an unset ExpiresAt out: `omitempty` does nothing for a
-// time.Time, so a binding with no expiry was written as year 1. A set time
-// marshals exactly as before; decoding is unchanged.
+// MarshalJSON leaves an unset ExpiresAt out (`omitempty` does nothing for a
+// time.Time, so a binding with no expiry was written as year 1) and writes a
+// set one in UTC, as the ACL store rows do. Decoding is unchanged.
 func (b Binding) MarshalJSON() ([]byte, error) {
 	type plain Binding
 	var exp *time.Time
 	if !b.ExpiresAt.IsZero() {
-		exp = &b.ExpiresAt
+		u := b.ExpiresAt.UTC()
+		exp = &u
 	}
 	return json.Marshal(struct {
 		plain

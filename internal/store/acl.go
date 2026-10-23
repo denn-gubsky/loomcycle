@@ -163,32 +163,63 @@ type AclStore interface {
 	AclVersion(ctx context.Context, tenantID string) (int64, error)
 }
 
-// optTime is a time the JSON form leaves out when it was never set:
-// `omitempty` does nothing for a time.Time (a struct is never "empty"), so
-// an unset expiry or retirement was written as 0001-01-01T00:00:00Z. A set
-// time marshals exactly as before.
+// The ACL rows' JSON form. Two things differ from the default encoding:
+//
+//   - An unset time is left out: `omitempty` does nothing for a time.Time (a
+//     struct is never "empty"), so an unset expiry or retirement was written
+//     as 0001-01-01T00:00:00Z.
+//   - Every time is written in UTC. A read comes back in the local zone (the
+//     stores decode with time.Unix), and the API writes its times in UTC;
+//     the instant is unchanged.
+
+// optTime is t in UTC, or nil when it was never set.
 func optTime(t time.Time) *time.Time {
 	if t.IsZero() {
 		return nil
 	}
-	return &t
+	u := t.UTC()
+	return &u
 }
 
-// MarshalJSON leaves RetiredAt out while the list is live.
+// MarshalJSON writes the list's times in UTC and leaves RetiredAt out while
+// the list is live.
 func (r AclDefRow) MarshalJSON() ([]byte, error) {
 	type plain AclDefRow
 	return json.Marshal(struct {
 		plain
+		CreatedAt time.Time  `json:"created_at"`
+		UpdatedAt time.Time  `json:"updated_at"`
 		RetiredAt *time.Time `json:"retired_at,omitempty"`
-	}{plain(r), optTime(r.RetiredAt)})
+	}{plain(r), r.CreatedAt.UTC(), r.UpdatedAt.UTC(), optTime(r.RetiredAt)})
 }
 
-// MarshalJSON leaves ExpiresAt and RetiredAt out when they are unset.
+// MarshalJSON writes the binding's times in UTC and leaves ExpiresAt and
+// RetiredAt out when they are unset.
 func (r AclBindingRow) MarshalJSON() ([]byte, error) {
 	type plain AclBindingRow
 	return json.Marshal(struct {
 		plain
+		CreatedAt time.Time  `json:"created_at"`
 		ExpiresAt *time.Time `json:"expires_at,omitempty"`
 		RetiredAt *time.Time `json:"retired_at,omitempty"`
-	}{plain(r), optTime(r.ExpiresAt), optTime(r.RetiredAt)})
+	}{plain(r), r.CreatedAt.UTC(), optTime(r.ExpiresAt), optTime(r.RetiredAt)})
+}
+
+// MarshalJSON writes the group's times in UTC.
+func (r GroupRow) MarshalJSON() ([]byte, error) {
+	type plain GroupRow
+	return json.Marshal(struct {
+		plain
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}{plain(r), r.CreatedAt.UTC(), r.UpdatedAt.UTC()})
+}
+
+// MarshalJSON writes the membership's time in UTC.
+func (r GroupMemberRow) MarshalJSON() ([]byte, error) {
+	type plain GroupMemberRow
+	return json.Marshal(struct {
+		plain
+		AddedAt time.Time `json:"added_at"`
+	}{plain(r), r.AddedAt.UTC()})
 }
