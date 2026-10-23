@@ -3,12 +3,15 @@ package http
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +27,7 @@ import (
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/webui"
 )
 
 // stubProvider replays a fixed event sequence, ignoring the request entirely.
@@ -245,6 +249,147 @@ func TestHealthz_ClusterViewOmittedWhenCoordUnset(t *testing.T) {
 	}
 	if _, found := raw["replicas"]; found {
 		t.Errorf("replicas present when coord is unset: %v", raw)
+	}
+}
+
+// TestHealthz_ReportsUIAPILevel: /healthz carries the API level the Web UI is
+// built against, so a deployer can check a UI bundle's manifest range against
+// the running binary before pointing LOOMCYCLE_WEBUI_DIR at it.
+func TestHealthz_ReportsUIAPILevel(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	var body struct {
+		UIAPILevel *int `json:"ui_api_level"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if body.UIAPILevel == nil || *body.UIAPILevel != webui.APILevel {
+		t.Fatalf("ui_api_level = %v, want %d; body=%s", body.UIAPILevel, webui.APILevel, rec.Body.String())
+	}
+}
+
+// TestHealthz_ReportsEmbeddedUIByDefault: with no bundle configured /healthz
+// says the embedded UI is served, with no version and no fallback reason.
+func TestHealthz_ReportsEmbeddedUIByDefault(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	var body struct {
+		UIBundle map[string]any `json:"ui_bundle"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.UIBundle) != 1 || body.UIBundle["source"] != webui.SourceEmbedded {
+		t.Fatalf("ui_bundle = %v, want only source=embedded", body.UIBundle)
+	}
+}
+
+// writeWebUIBundle writes a two-file Web UI bundle with a correct manifest
+// for the binary's API level.
+func writeWebUIBundle(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	digests := map[string]string{}
+	for name, body := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256([]byte(body))
+		digests[name] = hex.EncodeToString(sum[:])
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"ui_version": "9.9.9", "api_level_min": webui.APILevel, "api_level_max": webui.APILevel, "files": digests,
+	})
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestHealthz_UIBundleFromDirIsServedAndReported: a verified bundle handed to
+// the server is what /ui serves, and /healthz reports its source and version
+// but never the directory it came from.
+func TestHealthz_UIBundleFromDirIsServedAndReported(t *testing.T) {
+	dir := writeWebUIBundle(t, map[string]string{
+		"index.html":      "<!doctype html><title>from-dir</title>",
+		"assets/app-1.js": "dir()",
+	})
+	b, st, err := webui.LoadConfigured(dir)
+	if err != nil {
+		t.Fatalf("LoadConfigured: %v", err)
+	}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	srv.SetWebUIBundle(b, st)
+	mux := srv.Mux()
+
+	for target, want := range map[string]string{
+		"/ui":                 "<!doctype html><title>from-dir</title>",
+		"/ui/assets/app-1.js": "dir()",
+		"/ui/agents/deep":     "<!doctype html><title>from-dir</title>",
+	} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		if rec.Code != http.StatusOK || rec.Body.String() != want {
+			t.Errorf("%s: %d %q, want 200 %q", target, rec.Code, rec.Body.String(), want)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	if strings.Contains(rec.Body.String(), dir) {
+		t.Errorf("/healthz leaks the bundle directory: %s", rec.Body.String())
+	}
+	var body struct {
+		UIBundle webui.Status `json:"ui_bundle"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.UIBundle != (webui.Status{Source: webui.SourceDir, UIVersion: "9.9.9"}) {
+		t.Errorf("ui_bundle = %+v, want dir 9.9.9", body.UIBundle)
+	}
+}
+
+// TestHealthz_RefusedUIBundleReportsReasonWithoutPath: a bundle that fails
+// verification leaves the embedded UI in place, and /healthz names the reason
+// code — not the path, not the offending file.
+func TestHealthz_RefusedUIBundleReportsReasonWithoutPath(t *testing.T) {
+	dir := writeWebUIBundle(t, map[string]string{"index.html": "ok"})
+	if err := os.WriteFile(filepath.Join(dir, "stray-file.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, st, err := webui.LoadConfigured(dir)
+	if err == nil || b != nil {
+		t.Fatalf("stray file accepted: b=%v err=%v", b, err)
+	}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	srv.SetWebUIBundle(b, st)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	for _, leak := range []string{dir, "stray-file"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("/healthz leaks %q: %s", leak, rec.Body.String())
+		}
+	}
+	var body struct {
+		UIBundle webui.Status `json:"ui_bundle"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.UIBundle != (webui.Status{Source: webui.SourceEmbedded, FallbackReason: webui.ReasonFileUnlisted}) {
+		t.Errorf("ui_bundle = %+v, want embedded + %s", body.UIBundle, webui.ReasonFileUnlisted)
 	}
 }
 

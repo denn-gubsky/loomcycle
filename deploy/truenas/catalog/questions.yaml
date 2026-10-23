@@ -389,6 +389,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_WEBUI_DIR
+            label: LOOMCYCLE_WEBUI_DIR
+            description: 'Serve the Web UI from an unpacked UI bundle here (built SPA + manifest.json with each file''s SHA-256 and supported API levels) instead of the built-in UI. Read at startup; a bundle failing verification is logged and the built-in UI served. Keep it operator-writable only: the UI runs with the operator''s session. (example: /srv/loomcycle/webui)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             label: LOOMCYCLE_HTTP_HOST_ALLOWLIST
             description: HTTP + WebFetch tools — comma-separated suffix-match host allowlist. Entry "example.com" matches "example.com" and "api.example.com" but not "evilexample.com". Private IPs (RFC1918, loopback, link-local incl. 169.254.169.254, CGNAT 100.64.0.0/10 and other non-public ranges) are HARD-blocked at connect regardless of allowlist. Loopback aliases on the list (localhost, 127.0.0.1, ::1, *.localhost)…

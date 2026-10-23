@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,5 +209,22 @@ func TestLoginConfig_ServesConfiguredOrigins(t *testing.T) {
 	h2.ServeHTTP(rec2, httptest.NewRequest("GET", "/ui/login-config.json", nil))
 	if body := strings.TrimSpace(rec2.Body.String()); !strings.Contains(body, "[]") {
 		t.Errorf("unconfigured login-config = %s, want an empty [] list", body)
+	}
+}
+
+// TestLoginConfig_ReportsAPILevel: the unauthenticated UI config carries the
+// server's UI API level, so a UI can tell which API it is talking to before
+// the operator signs in.
+func TestLoginConfig_ReportsAPILevel(t *testing.T) {
+	rec := httptest.NewRecorder()
+	Handler("/ui", false, nil).ServeHTTP(rec, httptest.NewRequest("GET", "/ui/login-config.json", nil))
+	var body struct {
+		APILevel *int `json:"api_level"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if body.APILevel == nil || *body.APILevel != APILevel {
+		t.Fatalf("api_level = %v, want %d; body=%s", body.APILevel, APILevel, rec.Body.String())
 	}
 }

@@ -23,6 +23,7 @@ import (
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+	"github.com/denn-gubsky/loomcycle/internal/webui"
 	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
@@ -471,6 +472,18 @@ func (b *boot) buildHTTPServer() {
 	cfg := b.cfg
 	srv := b.srv
 	a2aServer := b.a2aServer
+
+	// The Web UI is chosen once, before the mux is built: a verified bundle
+	// from LOOMCYCLE_WEBUI_DIR, else the embedded UI. A refused bundle is
+	// logged and never fails the boot — the operator still gets a working UI.
+	uiBundle, uiStatus, err := webui.LoadConfigured(cfg.Env.WebUIDir)
+	switch {
+	case err != nil:
+		log.Printf("webui: LOOMCYCLE_WEBUI_DIR=%s refused, serving the embedded UI: %v", cfg.Env.WebUIDir, err)
+	case uiBundle != nil:
+		log.Printf("webui: serving UI %s from LOOMCYCLE_WEBUI_DIR=%s", uiBundle.UIVersion(), cfg.Env.WebUIDir)
+	}
+	srv.SetWebUIBundle(uiBundle, uiStatus)
 
 	// In path-mode A2A tenancy, the leading /{tenant} segment is stripped
 	// before the mux sees the request (an open first-segment wildcard
