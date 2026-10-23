@@ -54,7 +54,7 @@ jobs:
       # Same toolchain as the Go job in ci.yml. govulncheck reports standard
       # library vulnerabilities against the Go version that runs it, so this
       # must track the version releases are built with.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.x"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
