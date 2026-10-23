@@ -38,6 +38,7 @@ import LanesView from "./LanesView";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
 import TokenManager from "../components/TokenManager";
+import AccessConsole from "../components/access/AccessConsole";
 
 // SettingsView is the Settings hub (top-bar gear). It web-reaches the critical
 // `loomcycle` CLI + tenant surfaces so a no-shell deployment (TrueNAS — RFC AR)
@@ -108,6 +109,7 @@ export default function SettingsView() {
         {active === "ontology" && <OntologySection />}
         {active === "retention" && <RetentionSection />}
         {active === "erasure" && <ErasureSection />}
+        {active === "access" && <AccessConsole />}
         {active === "tokens" && <TokenManager />}
         {active === "presets" && <PresetsSection />}
         {active === "runtime" && <RuntimeSection />}

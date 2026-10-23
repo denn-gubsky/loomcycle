@@ -20,6 +20,7 @@ describe("settingsMenuItems", () => {
       "Ontology",
       "Retention",
       "Erasure",
+      "Access",
       "Tokens",
       "Presets",
       "Runtime",
@@ -39,6 +40,7 @@ describe("settingsMenuItems", () => {
       "Ontology",
       "Retention",
       "Erasure",
+      "Access",
       "Users",
       "Log out",
     ]);

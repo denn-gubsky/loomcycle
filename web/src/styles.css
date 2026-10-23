@@ -5989,6 +5989,7 @@ button.primary:disabled {
 }
 .settings-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--lc-space-1);
   border-bottom: 1px solid var(--lc-rule);
   margin-bottom: var(--lc-space-3);
@@ -7654,4 +7655,363 @@ button.doc-ref-target.external {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+
+/* ============================================================
+ * RFC EZ — the Access console (Settings → Access), the shared
+ * access-refusal notice, the Users page's access column and the
+ * /run notice of ACL-withheld tools. Themed via the --lc-* tokens
+ * only, so light and dark both follow tokens.css.
+ * ============================================================ */
+.acl-console .acl-tabs {
+  margin-top: var(--lc-space-2);
+}
+.acl-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--lc-space-1);
+  align-items: baseline;
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-muted);
+  background: var(--lc-surface-2);
+  border: 1px solid var(--lc-rule);
+  border-left: 3px solid var(--lc-accent);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+}
+.acl-mode-label {
+  color: var(--lc-text);
+  font-weight: 600;
+}
+.acl-tenant {
+  margin-top: 4px;
+}
+.acl-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-1);
+}
+.acl-toolbar,
+.acl-form-row,
+.acl-editor-actions,
+.acl-text-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lc-space-1);
+}
+.acl-form-row input[type="text"] {
+  min-width: 180px;
+}
+.acl-check,
+.acl-inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-muted);
+}
+.acl-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--lc-link);
+  cursor: pointer;
+  font: inherit;
+}
+.acl-link:hover {
+  text-decoration: underline;
+}
+.acl-table td {
+  vertical-align: top;
+}
+.acl-row-selected td {
+  background: var(--lc-accent-soft);
+}
+.acl-row-builtin td {
+  color: var(--lc-text-muted);
+}
+.acl-pill-builtin {
+  background: var(--lc-surface-3);
+  color: var(--lc-text-muted);
+  margin-left: 6px;
+}
+.acl-pill-deny {
+  background: rgba(255, 93, 104, 0.16);
+  color: var(--lc-failed);
+}
+.acl-kind {
+  display: inline-block;
+  font-size: var(--lc-text-xs);
+  padding: 0 6px;
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface-3);
+  color: var(--lc-text-muted);
+}
+.acl-kind-group {
+  color: var(--lc-accent);
+}
+.acl-inline-btn {
+  padding: 1px 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.acl-panel,
+.acl-editor,
+.acl-answer {
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius);
+  background: var(--lc-surface-2);
+  padding: var(--lc-space-2);
+  margin-top: var(--lc-space-1);
+}
+.acl-panel h3,
+.acl-editor h3 {
+  margin: 0 0 var(--lc-space-1);
+  font-size: var(--lc-text-md);
+}
+.acl-panel h4,
+.acl-answer h4 {
+  margin: var(--lc-space-1) 0 4px;
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-muted);
+}
+.acl-panel-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--lc-space-2);
+}
+.acl-members,
+.acl-tree,
+.acl-tree ul,
+.acl-denied-reasons,
+.acl-rule-errors {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: var(--lc-text-sm);
+}
+.acl-members li {
+  padding: 2px 0;
+}
+.acl-tree ul {
+  padding-left: var(--lc-space-2);
+  border-left: 1px dashed var(--lc-rule-strong);
+  margin-left: 6px;
+}
+.acl-tree li {
+  padding: 2px 0;
+}
+.acl-editor-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--lc-space-1);
+}
+.acl-editor-head h3 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.acl-rule {
+  border: 1px solid var(--lc-rule);
+  border-left: 3px solid var(--lc-completed);
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  margin: var(--lc-space-1) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.acl-rule-deny {
+  border-left-color: var(--lc-failed);
+}
+.acl-rule-raw {
+  border-left-color: var(--lc-rule-strong);
+}
+.acl-rule-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lc-space-1);
+}
+.acl-rule-index {
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-xs);
+  color: var(--lc-text-faint);
+}
+.acl-rule-desc {
+  flex: 1;
+  min-width: 160px;
+}
+.acl-rule-tools {
+  display: inline-flex;
+  gap: 4px;
+}
+.acl-rule-tools .ghost-btn {
+  padding: 2px 6px;
+}
+.acl-rule-section,
+.acl-when-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px var(--lc-space-1);
+  align-items: start;
+}
+.acl-rule-label {
+  font-size: var(--lc-text-xs);
+  color: var(--lc-text-muted);
+  padding-top: 4px;
+}
+.acl-rule-resources {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+.acl-rule-resource,
+.acl-rule-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.acl-rule-resource input[type="text"] {
+  min-width: 220px;
+}
+.acl-rule-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--lc-space-1);
+}
+.acl-rule-when summary,
+.acl-text-view summary,
+.acl-sim-context summary {
+  cursor: pointer;
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text-muted);
+}
+.acl-rule-when .acl-when-grid {
+  margin-top: 6px;
+}
+.acl-rule-errors {
+  color: var(--lc-failed);
+}
+.acl-rule-errors li::before {
+  content: "• ";
+}
+.acl-raw,
+.acl-text {
+  font-family: var(--lc-font-mono);
+  font-size: var(--lc-text-xs);
+  background: var(--lc-input-bg);
+  color: var(--lc-text);
+  border: 1px solid var(--lc-rule);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1);
+  margin: 4px 0 0;
+  overflow-x: auto;
+}
+.acl-text {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.acl-text-view {
+  margin: var(--lc-space-1) 0;
+}
+.acl-editor-actions {
+  margin-top: var(--lc-space-1);
+}
+.acl-sim-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lc-space-1);
+}
+.acl-sim-question {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--lc-text-base);
+}
+.acl-sim-question input[type="text"] {
+  min-width: 160px;
+}
+.acl-answer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.acl-answer-meta {
+  margin-top: var(--lc-space-1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--lc-text-sm);
+}
+.acl-reason {
+  display: inline-block;
+  margin-right: var(--lc-space-1);
+  font-size: var(--lc-text-sm);
+}
+.acl-trace-matched td {
+  background: var(--lc-accent-soft);
+}
+.acl-changed {
+  color: var(--lc-running);
+  font-weight: 600;
+  font-size: var(--lc-text-sm);
+}
+/* A "you may not" refusal (acl_denied / insufficient_scope /
+   acl_self_elevation): a refusal, not a crash. */
+.acl-denied {
+  border: 1px solid rgba(255, 93, 104, 0.35);
+  border-left: 3px solid var(--lc-failed);
+  background: rgba(255, 93, 104, 0.08);
+  border-radius: var(--lc-radius-sm);
+  padding: var(--lc-space-1) var(--lc-space-2);
+  font-size: var(--lc-text-sm);
+  color: var(--lc-text);
+  margin: var(--lc-space-1) 0;
+}
+.acl-denied-head {
+  font-weight: 600;
+  color: var(--lc-failed);
+}
+.acl-denied-reasons {
+  margin-top: 4px;
+}
+.user-access {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--lc-text-xs);
+}
+.user-access-chip {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 0 6px;
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface-2);
+  border: 1px solid var(--lc-rule);
+}
+.user-access-expired {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+.live-run-acl-notice {
+  padding: 6px 12px;
+  font-size: var(--lc-text-xs);
+  color: var(--lc-text-muted);
+  background: var(--lc-surface-2);
+  border-left: 3px solid var(--lc-running);
+}
+.acl-when-grid > select,
+.acl-when-grid > input {
+  max-width: 320px;
 }
