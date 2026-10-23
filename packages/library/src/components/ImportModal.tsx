@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import type { LibraryEntry, ServerCapabilities } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
+import { useErrorText } from "../lib/errorText";
 import {
   detectKind,
   parseSource,
@@ -45,6 +46,7 @@ interface RowResult {
 // (claudeImport.ts); the server 422s remain authoritative.
 export default function ImportModal(props: ImportModalProps) {
   const data = useLibraryData();
+  const errorText = useErrorText();
   const [step, setStep] = useState<Step>("source");
   const [text, setText] = useState("");
   const [filename, setFilename] = useState<string | undefined>(undefined);
@@ -123,7 +125,7 @@ export default function ImportModal(props: ImportModalProps) {
         }
         next[i] = { status: "ok" };
       } catch (e) {
-        next[i] = { status: "error", message: explainServerError(e) };
+        next[i] = { status: "error", message: errorText(e, explainServerError) };
       }
       setResults({ ...next });
     }

@@ -162,7 +162,12 @@ export function dataLayerFromConnection(conn: Connection, client: LoomcycleClien
       if (conn.token) headers.Authorization = `Bearer ${conn.token}`;
       const doFetch = conn.fetch ?? ((i: RequestInfo | URL, init?: RequestInit) => fetch(i, init));
       const r = await doFetch(`${conn.baseUrl}/v1/_hookdef/names`, { headers });
-      if (!r.ok) throw new Error(`GET /v1/_hookdef/names: HTTP ${r.status}`);
+      if (!r.ok) {
+        // status + bodyText, as the client's errors carry them, so a host
+        // formatter reads this refusal as it reads every other one.
+        const bodyText = (await r.text().catch(() => "")).slice(0, 1024);
+        throw Object.assign(new Error(`GET /v1/_hookdef/names: HTTP ${r.status}`), { status: r.status, bodyText });
+      }
       const body = (await r.json()) as { names?: HookDefNameSummary[] | null };
       return { entries: hookEntriesFromNames(body.names) };
     },

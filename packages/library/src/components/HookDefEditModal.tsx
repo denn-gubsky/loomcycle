@@ -8,6 +8,7 @@ import {
 } from "@loomcycle/def-fields";
 import type { DefRow } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
+import { useErrorText } from "../lib/errorText";
 import { forkOverlay, sourceHookOverlay } from "../lib/hookDefOverlay";
 import { explainServerError } from "./LibraryEditModal";
 
@@ -44,6 +45,7 @@ export function hookDefProblem(name: string, v: DefValue): string | null {
 
 export default function HookDefEditModal({ mode, forkSource, onClose, onSaved }: HookDefEditModalProps) {
   const data = useLibraryData();
+  const errorText = useErrorText();
   const [name, setName] = useState(forkSource?.name ?? "");
   const source = sourceHookOverlay(forkSource?.definition);
   const [value, setValue] = useState<DefValue>(source);
@@ -66,7 +68,7 @@ export default function HookDefEditModal({ mode, forkSource, onClose, onSaved }:
           : await data.forkDef("hookdef", name.trim(), forkOverlay(source, value), promote, forkSource?.def_id);
       onSaved(row);
     } catch (e) {
-      setErr(explainServerError(e));
+      setErr(errorText(e, explainServerError));
     } finally {
       setSubmitting(false);
     }
