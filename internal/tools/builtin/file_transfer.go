@@ -44,6 +44,9 @@ const (
 	uploadChunkCeiling = 192 * uploadChunkUnit // 60 MiB, Graph's largest
 	// uploadExcerptBytes is how much of an upload's reply is returned.
 	uploadExcerptBytes = 1024
+	// fileRegisterLimit caps the secrets one run tree's downloads and
+	// uploads hand the redactor.
+	fileRegisterLimit = 32
 )
 
 type fileTransferInput struct {
@@ -72,11 +75,6 @@ func (f *File) transferURL(ctx context.Context, op, method string, in fileTransf
 	if err != nil {
 		return nil, errValidation(op+": "+err.Error(), "Pass url, e.g. https://example.com/files/report.pdf."), false
 	}
-	// The whole URL, query and all: a transcript that repeats it is masked
-	// from here on, whether or not the request is made.
-	if f.RegisterSecret != nil {
-		f.RegisterSecret(u.String())
-	}
 	if !f.HTTP.hostPermitted(ctx, u.Hostname()) {
 		return nil, errPermission(fmt.Sprintf("%s: host %q is not on the allowlist", op, u.Hostname()), "Use a host the operator allows."), false
 	}
@@ -98,6 +96,36 @@ func (f *File) transferURL(ctx context.Context, op, method string, in fileTransf
 			"Ask the operator about the hook."), false
 	}
 	return u, tools.Result{}, true
+}
+
+// registerURL hands a URL's credential material — its query and any user
+// information, never the whole URL — to the server's redactor, so a
+// transcript that repeats it is masked. Called only for a request that
+// passed every check and is being made, or a redirect it was sent.
+//
+// The redactor is process-wide: redact.Register has no scope, and what one
+// run registers is masked in every run's transcripts and kept for the
+// server's life. So a run may register at most fileRegisterLimit values, and
+// only the parts of a URL that carry a credential: an arbitrary string a
+// model wrote into a URL cannot become a mask for everyone. Past the limit a
+// URL is still shown masked in results; it is only not registered.
+func (f *File) registerURL(ctx context.Context, u *url.URL) {
+	if f.RegisterSecret == nil || u == nil {
+		return
+	}
+	var parts []string
+	if u.RawQuery != "" {
+		parts = append(parts, u.RawQuery)
+	}
+	if u.User != nil {
+		parts = append(parts, u.User.String())
+	}
+	for _, p := range parts {
+		if !inbox.ClaimRegistration(ctx, fileRegisterLimit) {
+			return
+		}
+		f.RegisterSecret(p)
+	}
 }
 
 func (f *File) transferRequest(ctx context.Context, method string, u *url.URL, headers map[string]string, body io.Reader) (*http.Request, error) {
@@ -164,6 +192,7 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	if err != nil {
 		return errValidation("download: "+err.Error(), ""), nil
 	}
+	f.registerURL(ctx, u)
 	resp, err := client.Do(req)
 	if err != nil {
 		return errBusiness(fmt.Sprintf("download: %s: %s", shown, transferError(err)), "Check that the URL's host is allowed and reachable."), nil
@@ -355,6 +384,7 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 	defer cancel()
 	client := f.HTTP.transferClient(ctx, redirectNone)
 	defer client.CloseIdleConnections()
+	f.registerURL(ctx, u)
 	up := &uploader{f: f, client: client, u: u, method: method, headers: in.Headers, contentType: in.ContentType, shown: shown}
 	var status int
 	var sent int64

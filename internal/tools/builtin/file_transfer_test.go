@@ -262,8 +262,8 @@ func TestFileDownload_RedactsQueryInResult(t *testing.T) {
 	if out["url"] != srv.URL+"/_layouts/15/download.aspx/board.pdf?…" || out["origin"] != "download:127.0.0.1" {
 		t.Errorf("result = %v", out)
 	}
-	if !slices.Contains(tf.registered, full) {
-		t.Errorf("the redactor was not given the URL: %v", tf.registered)
+	if !slices.Contains(tf.registered, "UniqueId=7&tempauth="+secret) {
+		t.Errorf("the redactor was not given the URL's query: %v", tf.registered)
 	}
 	rec, ok := inbox.Lookup(r.Ctx, "documents/board.pdf")
 	if b, _ := json.Marshal(rec); !ok || strings.Contains(string(b), secret) || strings.Contains(string(b), "UniqueId") {
@@ -483,5 +483,34 @@ func TestFileTransfer_HTTPHookJudgesTheRequest(t *testing.T) {
 	if !strings.Contains(joined, `HTTP {"method":"GET","url":"`+srv.URL+`/a.pdf?…","via":"File"}`) ||
 		!strings.Contains(joined, `"method":"POST"`) || strings.Contains(joined, "hook-secret") {
 		t.Errorf("hook inputs = %s", joined)
+	}
+}
+
+// TestFileTransfer_RegistersOnlyCredentialPartsWithinALimit: the redactor is
+// server-wide, so a run hands it only the query of a URL it actually
+// requested, and at most fileRegisterLimit of them. A refused URL, a URL with
+// no query and the whole URL are never registered.
+func TestFileTransfer_RegistersOnlyCredentialPartsWithinALimit(t *testing.T) {
+	_, ctx, _ := transferRun(t, inbox.Service{})
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+	tf := newTransferFile(&HTTP{HostAllowlist: []string{"127.0.0.1"}, AllowPrivateIPs: true})
+
+	tf.exec(t, ctx, map[string]any{"op": "download", "url": "https://elsewhere.example/a?token=refused-host"})
+	tf.exec(t, withTools(ctx, "File"), map[string]any{"op": "download", "url": srv.URL + "/a?token=no-grant"})
+	tf.exec(t, ctx, map[string]any{"op": "download", "url": srv.URL + "/no-query"})
+	if len(tf.registered) != 0 {
+		t.Fatalf("registered %v", tf.registered)
+	}
+	for i := range 40 {
+		tf.exec(t, ctx, map[string]any{"op": "download", "url": fmt.Sprintf("%s/f%d?sig=s-%d", srv.URL, i, i)})
+	}
+	if len(tf.registered) != fileRegisterLimit || tf.registered[0] != "sig=s-0" {
+		t.Errorf("registered %d: %v", len(tf.registered), tf.registered)
+	}
+	for _, v := range tf.registered {
+		if strings.Contains(v, "://") {
+			t.Errorf("a whole URL was registered: %q", v)
+		}
 	}
 }
