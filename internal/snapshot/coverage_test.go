@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -284,7 +285,7 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 
 	// A credential whose name no definition references: the name itself must
 	// not travel (there is no credential manifest), nor its ciphertext.
-	_, err := s.CredentialDefPut(ctx, store.CredentialDefRow{
+	_, err := s.CredentialDefPut(ctx, credentialdef.Row{
 		TenantID: "acme", Scope: "tenant", Name: markCredName, Backend: "inline",
 		Definition: json.RawMessage(`{"value":{"key_id":"k1","nonce":"bm9uY2U=","ciphertext":"` + markCredCipher + `"}}`),
 		CreatedAt:  now, UpdatedAt: now,

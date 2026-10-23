@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -14,7 +15,7 @@ import (
 // ciphertext (inline backend) or an external-backend pointer — never a
 // plaintext secret. See internal/store/store.go for the contract.
 
-func (s *Store) CredentialDefPut(ctx context.Context, row store.CredentialDefRow) (store.CredentialDefRow, error) {
+func (s *Store) CredentialDefPut(ctx context.Context, row credentialdef.Row) (credentialdef.Row, error) {
 	now := time.Now()
 	var expires sql.NullInt64
 	if row.ExpiresAt != nil {
@@ -31,15 +32,15 @@ func (s *Store) CredentialDefPut(ctx context.Context, row store.CredentialDefRow
 		row.TenantID, row.Scope, row.ScopeID, row.Name, row.Backend, string(row.Definition),
 		expires, now.UnixNano(), now.UnixNano(),
 	); err != nil {
-		return store.CredentialDefRow{}, err
+		return credentialdef.Row{}, err
 	}
 	// Re-read so created_at reflects the original insert on an update.
 	return s.CredentialDefGet(ctx, row.TenantID, row.Scope, row.ScopeID, row.Name)
 }
 
-func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (store.CredentialDefRow, error) {
+func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error) {
 	var (
-		out        store.CredentialDefRow
+		out        credentialdef.Row
 		definition string
 		expires    sql.NullInt64
 		createdAt  int64
@@ -51,10 +52,10 @@ func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, 
 		tenantID, scope, scopeID, name,
 	).Scan(&out.TenantID, &out.Scope, &out.ScopeID, &out.Name, &out.Backend, &definition, &expires, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
-		return store.CredentialDefRow{}, &store.ErrNotFound{Kind: "credential_def", ID: name}
+		return credentialdef.Row{}, &store.ErrNotFound{Kind: "credential_def", ID: name}
 	}
 	if err != nil {
-		return store.CredentialDefRow{}, err
+		return credentialdef.Row{}, err
 	}
 	out.Definition = json.RawMessage(definition)
 	if expires.Valid {
@@ -66,7 +67,7 @@ func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, 
 	return out, nil
 }
 
-func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]store.CredentialDefRow, error) {
+func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tenant_id, scope, scope_id, name, backend, definition, expires_at, created_at, updated_at
 		 FROM credential_defs WHERE tenant_id = ? AND scope = ? AND scope_id = ? ORDER BY name`,
@@ -76,10 +77,10 @@ func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID 
 	}
 	defer rows.Close()
 
-	var out []store.CredentialDefRow
+	var out []credentialdef.Row
 	for rows.Next() {
 		var (
-			r          store.CredentialDefRow
+			r          credentialdef.Row
 			definition string
 			expires    sql.NullInt64
 			createdAt  int64

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -16,7 +17,7 @@ import (
 // ciphertext (inline backend) or an external-backend pointer — never a
 // plaintext secret. See internal/store/store.go for the contract.
 
-func (s *Store) CredentialDefPut(ctx context.Context, row store.CredentialDefRow) (store.CredentialDefRow, error) {
+func (s *Store) CredentialDefPut(ctx context.Context, row credentialdef.Row) (credentialdef.Row, error) {
 	now := time.Now().UTC()
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO credential_defs (tenant_id, scope, scope_id, name, backend, definition, expires_at, created_at, updated_at)
@@ -29,14 +30,14 @@ func (s *Store) CredentialDefPut(ctx context.Context, row store.CredentialDefRow
 		row.TenantID, row.Scope, row.ScopeID, row.Name, row.Backend, string(row.Definition),
 		row.ExpiresAt, now, now,
 	); err != nil {
-		return store.CredentialDefRow{}, err
+		return credentialdef.Row{}, err
 	}
 	return s.CredentialDefGet(ctx, row.TenantID, row.Scope, row.ScopeID, row.Name)
 }
 
-func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (store.CredentialDefRow, error) {
+func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, name string) (credentialdef.Row, error) {
 	var (
-		out        store.CredentialDefRow
+		out        credentialdef.Row
 		definition string
 	)
 	err := s.pool.QueryRow(ctx,
@@ -45,16 +46,16 @@ func (s *Store) CredentialDefGet(ctx context.Context, tenantID, scope, scopeID, 
 		tenantID, scope, scopeID, name,
 	).Scan(&out.TenantID, &out.Scope, &out.ScopeID, &out.Name, &out.Backend, &definition, &out.ExpiresAt, &out.CreatedAt, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return store.CredentialDefRow{}, &store.ErrNotFound{Kind: "credential_def", ID: name}
+		return credentialdef.Row{}, &store.ErrNotFound{Kind: "credential_def", ID: name}
 	}
 	if err != nil {
-		return store.CredentialDefRow{}, err
+		return credentialdef.Row{}, err
 	}
 	out.Definition = json.RawMessage(definition)
 	return out, nil
 }
 
-func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]store.CredentialDefRow, error) {
+func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID string) ([]credentialdef.Row, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT tenant_id, scope, scope_id, name, backend, definition::text, expires_at, created_at, updated_at
 		 FROM credential_defs WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 ORDER BY name`,
@@ -64,10 +65,10 @@ func (s *Store) CredentialDefList(ctx context.Context, tenantID, scope, scopeID 
 	}
 	defer rows.Close()
 
-	var out []store.CredentialDefRow
+	var out []credentialdef.Row
 	for rows.Next() {
 		var (
-			r          store.CredentialDefRow
+			r          credentialdef.Row
 			definition string
 		)
 		if err := rows.Scan(&r.TenantID, &r.Scope, &r.ScopeID, &r.Name, &r.Backend, &definition, &r.ExpiresAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
