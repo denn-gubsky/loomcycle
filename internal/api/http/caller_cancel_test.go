@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,7 +96,7 @@ func TestRuns_ClientDisconnectMidTurnRecordsCancelled(t *testing.T) {
 // timeout, and the row agrees the run did not complete.
 func TestMCPSpawnRun_TransportTimeoutMidTurnRecordsCancelled(t *testing.T) {
 	s, _ := newGatedBatchServer(t, 8)
-	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logf: func(string, ...any) {}})
+	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logger: slog.New(slog.DiscardHandler)})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"r","user_id":"u1","timeout_ms":300,"segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}}}` + "\n"
 	var stdout bytes.Buffer
 	if err := mcpSrv.Serve(context.Background(), strings.NewReader(in), &stdout); err != nil {

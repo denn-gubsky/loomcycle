@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -143,7 +144,7 @@ func envSecretName(a config.WebhookAuth) string {
 // whoever wrote the definition, which the authoring check made sure holds
 // it. A previous secret that does not resolve is left out: a rotation ends by
 // deleting it, and leaving it out can only refuse more, never accept more.
-func verificationSecrets(ctx context.Context, a config.WebhookAuth, tenant string, creds CredentialResolver, allowlist map[string]bool, getenv func(string) string, logf func(string, ...any)) ([]string, error) {
+func verificationSecrets(ctx context.Context, a config.WebhookAuth, tenant string, creds CredentialResolver, allowlist map[string]bool, getenv func(string) string, logger *slog.Logger) ([]string, error) {
 	if a.Secret == "" {
 		v, err := resolveSecret(envSecretName(a), allowlist, getenv)
 		if err != nil {
@@ -159,7 +160,7 @@ func verificationSecrets(ctx context.Context, a config.WebhookAuth, tenant strin
 	if a.PreviousSecret != "" {
 		previous, err := storedSecret(ctx, a.PreviousSecret, tenant, creds)
 		if err != nil {
-			logf("webhook: previous secret %s not used: %v", a.PreviousSecret, err)
+			logger.Warn("webhook: previous secret not used", "credential", a.PreviousSecret, "err", err)
 		} else {
 			out = append(out, previous)
 		}

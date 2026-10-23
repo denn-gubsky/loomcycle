@@ -90,7 +90,7 @@ func TestRestoreSnapshotTool_ResumesTheRestoredPausedRun(t *testing.T) {
 	}
 	prov := &endTurnProvider{}
 	httpSrv := lchttp.New(cfg, singleProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
-	srv := New(Config{Connector: httpSrv, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: httpSrv, Logger: discardLogger()})
 
 	runID, raw := capturePausedRunEnvelope(t, "resumer")
 	res := callTool(t, srv, "restore_snapshot", map[string]any{"raw_json": json.RawMessage(raw)})

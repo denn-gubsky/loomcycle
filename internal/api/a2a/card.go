@@ -9,6 +9,7 @@
 package a2a
 
 import (
+	"log/slog"
 	"os"
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
@@ -149,33 +150,37 @@ func securitySchemesFor(in []config.A2ASecurityScheme) a2asdk.NamedSecuritySchem
 // operator's allowlist AND holds a usable ECDSA P-256 PEM key. Any
 // problem — no key configured, env var not allowlisted, var unset, or a
 // malformed/wrong-type key — leaves the card UNSIGNED and emits a single
-// tracing line via logf. Card serving NEVER fails on a signing problem
+// WARN line via logger (nil → silent). Card serving NEVER fails on a signing problem
 // (slice contract: serve unsigned + trace, don't 500).
 //
 // allowlist is the same operator-configured env-var gate the scheduler /
 // RFC F credentials use (cfg.Env.SchedulerEnvAllowlist), so a signing key
 // is subject to the identical "operator must opt this var in" floor — a
 // substrate-authored card cannot name an arbitrary env var and exfiltrate
-// it into a signature. logf must never receive the key VALUE.
-func signCardIfConfigured(generated *a2asdk.AgentCard, cardCfg config.A2AServerCard, allowlist map[string]bool, logf func(string, ...any)) {
+// it into a signature. logger must never receive the key VALUE — only the
+// env var's NAME.
+func signCardIfConfigured(generated *a2asdk.AgentCard, cardCfg config.A2AServerCard, allowlist map[string]bool, logger *slog.Logger) {
 	envName := cardCfg.SignWithKeyEnv
 	if envName == "" {
 		return // unsigned by design — no signing key configured
 	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	if !allowlist[envName] {
-		trace(logf, "a2a card: signing key env %q not in allowlist — serving card unsigned", envName)
+		logger.Warn("a2a card: signing key env not in allowlist — serving card unsigned", "env", envName)
 		return
 	}
 	pem := os.Getenv(envName)
 	if pem == "" {
-		trace(logf, "a2a card: signing key env %q is unset/empty — serving card unsigned", envName)
+		logger.Warn("a2a card: signing key env is unset/empty — serving card unsigned", "env", envName)
 		return
 	}
 	key, err := sign.ParseECPrivateKey([]byte(pem))
 	if err != nil {
 		// err carries no key material (it describes the parse failure),
 		// so logging it is safe.
-		trace(logf, "a2a card: signing key env %q failed to parse (%v) — serving card unsigned", envName, err)
+		logger.Warn("a2a card: signing key env failed to parse — serving card unsigned", "env", envName, "err", err)
 		return
 	}
 	// Self-contained signing embeds the matching public key in the JWS
@@ -183,14 +188,7 @@ func signCardIfConfigured(generated *a2asdk.AgentCard, cardCfg config.A2AServerC
 	// verify_signed_card=true) can verify without separately fetching
 	// the key — see internal/a2a/sign.SignCardSelfContained.
 	if err := sign.SignCardSelfContained(generated, key); err != nil {
-		trace(logf, "a2a card: signing failed (%v) — serving card unsigned", err)
+		logger.Warn("a2a card: signing failed — serving card unsigned", "env", envName, "err", err)
 		return
-	}
-}
-
-// trace is a nil-safe logf invocation.
-func trace(logf func(string, ...any), format string, args ...any) {
-	if logf != nil {
-		logf(format, args...)
 	}
 }

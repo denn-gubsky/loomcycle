@@ -35,7 +35,7 @@ const decisionCallFrame = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params
 
 func listedTools(t *testing.T, ctx context.Context) map[string]loommcp.ToolDescriptor {
 	t.Helper()
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	resps, _ := driveServerCtx(t, srv, ctx, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n")
 	if len(resps) != 1 {
 		t.Fatalf("got %d responses, want 1", len(resps))
@@ -76,7 +76,7 @@ func TestDecisionMCP_NeedsTheScopeThatCreatesARun(t *testing.T) {
 				t.Errorf("decision listed = %v, want %v", listed, c.allowed)
 			}
 			cc := &decisionCapturingConnector{mockConnector: &mockConnector{}, result: connector.ToolResult{Text: `{"model":"decide","answers":{}}`}}
-			srv := New(Config{Connector: cc, Logf: func(string, ...any) {}})
+			srv := New(Config{Connector: cc, Logger: discardLogger()})
 			resps, _ := driveServerCtx(t, srv, ctx, decisionCallFrame)
 			if len(resps) != 1 {
 				t.Fatalf("got %d responses, want 1", len(resps))
@@ -115,7 +115,7 @@ func TestDecisionMCP_NoPrincipalIsTheOperator(t *testing.T) {
 // connector's run-less path as sent, and its answer is the tool's result.
 func TestDecisionMCP_PassesTheCallToTheConnector(t *testing.T) {
 	cc := &decisionCapturingConnector{mockConnector: &mockConnector{}, result: connector.ToolResult{Text: `{"model":"decide","answers":{}}`}}
-	srv := New(Config{Connector: cc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: cc, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeTenant}})
 	resps, _ := driveServerCtx(t, srv, ctx, decisionCallFrame)
 	if len(resps) != 1 || resps[0].Error != nil {
@@ -138,7 +138,7 @@ func TestDecisionMCP_PassesTheCallToTheConnector(t *testing.T) {
 func TestDecisionMCP_ABudgetRefusalIsAToolError(t *testing.T) {
 	cc := &decisionCapturingConnector{mockConnector: &mockConnector{},
 		err: &connector.TokenLimitError{Info: providers.LimitInfo{Scope: "user", ScopeID: "alice", Severity: "hard", Used: 120, Limit: 100, Message: "user alice is over its monthly token budget"}}}
-	srv := New(Config{Connector: cc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: cc, Logger: discardLogger()})
 	resps, _ := driveServerCtx(t, srv, context.Background(), decisionCallFrame)
 	if len(resps) != 1 || resps[0].Error != nil {
 		t.Fatalf("responses = %+v, want one tool result", resps)

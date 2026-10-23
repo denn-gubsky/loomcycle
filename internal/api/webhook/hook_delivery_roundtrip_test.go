@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -61,7 +62,7 @@ func TestVerifySignature_AcceptsASignedHookDelivery(t *testing.T) {
 	sent := time.Now()
 	// The receiver's own path: resolve the def's secrets, then verify.
 	verifyBody := func(a config.WebhookAuth, body []byte, at time.Time) error {
-		secrets, err := verificationSecrets(context.Background(), a, "", nil, nil, getenv, t.Logf)
+		secrets, err := verificationSecrets(context.Background(), a, "", nil, nil, getenv, slog.New(slog.NewTextHandler(t.Output(), nil)))
 		if err != nil {
 			return err
 		}

@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 )
@@ -53,11 +54,11 @@ type HTTPHandler struct {
 // NewHTTPHandler constructs the handler with a fresh session store
 // using the default 30-min inactivity TTL. cfg should be the same
 // Config passed to New() for the stdio Server — both transports
-// share the Connector / Runner / Store / Logf so they dispatch
+// share the Connector / Runner / Store / Logger so they dispatch
 // through identical business logic.
 func NewHTTPHandler(cfg Config) *HTTPHandler {
-	if cfg.Logf == nil {
-		cfg.Logf = defaultLogf
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
 	if cfg.ServerName == "" {
 		cfg.ServerName = "loomcycle"

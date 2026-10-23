@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestSpawnRun_OnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 // the MCP session never cancels, so only the server's bound ends the wait.
 func TestMCPSpawnRun_OnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 	s, held, _ := heldRunServer(t, 300*time.Millisecond)
-	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logf: func(string, ...any) {}})
+	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logger: slog.New(slog.DiscardHandler)})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"r","user_id":"u1","idempotency_key":"held","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}}}` + "\n"
 	res, _ := spawnWithin(t, func() connector.SpawnRunResult {
 		var stdout bytes.Buffer

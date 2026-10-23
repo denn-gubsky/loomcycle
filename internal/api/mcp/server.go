@@ -53,8 +53,9 @@ type Config struct {
 	// the caller via main.go's worker block). The MCP server itself
 	// doesn't write to Store directly — Connector handles that.
 	Store store.Store
-	// Logf is the log sink. nil → slog, at INFO.
-	Logf func(format string, v ...any)
+	// Logger is the structured log sink. nil → slog.Default(), which
+	// writes to stderr — never stdout, the stdio JSON-RPC wire.
+	Logger *slog.Logger
 	// ServerName / ServerVersion are surfaced in the initialize
 	// response so adapters can log which loomcycle they're talking
 	// to. Empty fallbacks are fine.
@@ -117,8 +118,8 @@ const defaultMaxConcurrentCalls = 16
 
 // New constructs an MCP Server. Caller drives it by calling Serve.
 func New(cfg Config) *Server {
-	if cfg.Logf == nil {
-		cfg.Logf = defaultLogf
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
 	if cfg.ServerName == "" {
 		cfg.ServerName = "loomcycle"
@@ -297,7 +298,7 @@ func (s *Server) handleFrame(ctx context.Context, frame []byte, stdout io.Writer
 		// instead of waiting forever for a request that never resolves.
 		// Without this, a single bad frame from a buggy client stalls
 		// the session permanently.
-		s.cfg.Logf("mcp: decode probe: %v", err)
+		s.cfg.Logger.Warn("mcp: decode probe: malformed frame", "err", err)
 		s.writeError(stdout, 0, -32700, "parse error: "+err.Error())
 		return
 	}
@@ -307,7 +308,7 @@ func (s *Server) handleFrame(ctx context.Context, frame []byte, stdout io.Writer
 		// — most loomcycle can safely ignore.)
 		var n loommcp.Notification
 		if err := json.Unmarshal(frame, &n); err != nil {
-			s.cfg.Logf("mcp: decode notification: %v", err)
+			s.cfg.Logger.Warn("mcp: decode notification failed", "err", err)
 			return
 		}
 		if n.Method == "notifications/initialized" {
@@ -444,7 +445,7 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 		runner:            s.cfg.Runner,
 		session:           s.session,
 		notify:            s.makeNotifier(stdout, req.ID),
-		logf:              s.cfg.Logf,
+		logger:            s.cfg.Logger,
 		spawnRunTimeoutMS: s.cfg.SpawnRunTimeoutMS,
 	}, params.Arguments)
 	if err != nil {
@@ -483,17 +484,17 @@ func (s *Server) writeError(stdout io.Writer, id int64, code int, message string
 func (s *Server) writeFrame(stdout io.Writer, v any) {
 	raw, err := json.Marshal(v)
 	if err != nil {
-		s.cfg.Logf("mcp: marshal frame: %v", err)
+		s.cfg.Logger.Error("mcp: marshal frame failed — frame dropped", "err", err)
 		return
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if _, err := stdout.Write(raw); err != nil {
-		s.cfg.Logf("mcp: write stdout: %v", err)
+		s.cfg.Logger.Warn("mcp: write stdout failed", "err", err)
 		return
 	}
 	if _, err := stdout.Write([]byte("\n")); err != nil {
-		s.cfg.Logf("mcp: write newline: %v", err)
+		s.cfg.Logger.Warn("mcp: write newline failed", "err", err)
 	}
 }
 
@@ -504,7 +505,7 @@ func (s *Server) makeNotifier(stdout io.Writer, _ int64) NotifyFunc {
 	return func(method string, params any) {
 		n, err := loommcp.NewNotification(method, params)
 		if err != nil {
-			s.cfg.Logf("mcp: notify build: %v", err)
+			s.cfg.Logger.Error("mcp: notify build failed — notification dropped", "method", method, "err", err)
 			return
 		}
 		s.writeFrame(stdout, n)
@@ -523,12 +524,8 @@ type handlerEnv struct {
 	runner    runner.Runner
 	session   *Session
 	notify    NotifyFunc
-	logf      func(format string, v ...any)
+	logger    *slog.Logger
 	// spawnRunTimeoutMS is the operator-default transport timeout for
 	// spawn_run (Config.SpawnRunTimeoutMS); 0 = disabled.
 	spawnRunTimeoutMS int
-}
-
-func defaultLogf(format string, v ...any) {
-	slog.Info(fmt.Sprintf("mcp: "+format, v...))
 }

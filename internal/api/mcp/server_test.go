@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -460,7 +461,7 @@ func driveServerCtx(t *testing.T, srv *Server, base context.Context, input strin
 func TestServer_Handshake(t *testing.T) {
 	srv := New(Config{
 		Connector:     &mockConnector{},
-		Logf:          func(string, ...any) {},
+		Logger:        discardLogger(),
 		ServerName:    "loomcycle-test",
 		ServerVersion: "v0.8.15-test",
 	})
@@ -490,7 +491,7 @@ func TestServer_Handshake(t *testing.T) {
 }
 
 func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -531,7 +532,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 // are absent while the tenant-confinable ones remain (RFC AG §3.3). Contrast
 // with TestServer_ToolsList_ReturnsFullCatalogue (no principal → full set).
 func TestServer_ToolsList_FiltersAdminToolsForTenant(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}` + "\n"
@@ -565,7 +566,7 @@ func TestServer_ToolsList_FiltersAdminToolsForTenant(t *testing.T) {
 // drop the principalMayCallTool check in handleToolsCall and the call dispatches
 // (pause_runtime returns a tool result instead of mcpErrForbidden).
 func TestServer_ToolsCall_GatesAdminToolForTenant(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{"substrate:tenant"}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{}}}` + "\n"
@@ -586,7 +587,7 @@ func TestServer_ToolsCall_GatesAdminToolForTenant(t *testing.T) {
 // it is NOT a forbidden error. (It may surface a tool-level error from the mock
 // connector, but never mcpErrForbidden.)
 func TestServer_ToolsCall_AdminToolAllowedForNoPrincipal(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -660,7 +661,7 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 			FinalText: "hello world",
 		},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	// No runEvents capability → blocking path via Connector.SpawnRun.
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
@@ -706,7 +707,7 @@ func TestServer_SpawnRun_BlockingPath(t *testing.T) {
 func TestServer_SpawnRun_CarriesImageSegment(t *testing.T) {
 	const b64 = "iVBORw0KGgo="
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"vision","segments":[{"role":"user","content":[{"type":"trusted-text","text":"what is this"},{"type":"image","media_type":"image/png","data":"` + b64 + `"}]}]}}}`,
@@ -733,7 +734,7 @@ func TestServer_SpawnRun_CarriesImageSegment(t *testing.T) {
 // handleSpawnRun and the connector sees the forged "evil"/"mallory".
 func TestServer_SpawnRun_AppliesPrincipalOverWireIdentity(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}}) // real (non-legacy) principal
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil","user_id":"mallory"}}}` + "\n"
@@ -749,7 +750,7 @@ func TestServer_SpawnRun_AppliesPrincipalOverWireIdentity(t *testing.T) {
 // the legacy default. Mirrors HTTP's applyPrincipal via the shared rule.
 func TestServer_SpawnRun_LegacyHonorsWireUserID(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "default", Subject: "default", Scopes: []string{auth.ScopeAdmin}, Legacy: true})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"ignored","user_id":"exp1"}}}` + "\n"
@@ -764,7 +765,7 @@ func TestServer_SpawnRun_LegacyHonorsWireUserID(t *testing.T) {
 // (no principal) the caller-supplied identity passes through unchanged.
 func TestServer_SpawnRun_NoPrincipalPassesWireThrough(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"wire-t","user_id":"wire-u"}}}` + "\n"
 	driveServer(t, srv, in)
 	stored, _ := mc.spawnReq.Load().(connector.SpawnRunRequest)
@@ -779,7 +780,7 @@ func TestServer_SpawnRun_NoPrincipalPassesWireThrough(t *testing.T) {
 // session_id call. So applyPrincipalToSpawn is a deliberate no-op here.
 func TestServer_SpawnRun_ContinuationSkipsOverride(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_run","arguments":{"session_id":"s_prior","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"wire-t"}}}` + "\n"
@@ -795,7 +796,7 @@ func TestServer_SpawnRun_ContinuationSkipsOverride(t *testing.T) {
 // tenant_id in any child spec can't cross the tenant boundary (RFC AG §3.2).
 func TestServer_SpawnRuns_AppliesPrincipalToEachChild(t *testing.T) {
 	mc := &mockConnector{batchResult: connector.BatchSpawnResult{}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate}})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"a","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil"},{"agent":"b","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"tenant_id":"evil2","user_id":"mallory"}]}}}` + "\n"
@@ -813,7 +814,7 @@ func TestServer_SpawnRuns_AppliesPrincipalToEachChild(t *testing.T) {
 
 func TestServer_SpawnRun_CarriesCompaction(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{AgentID: "a", RunID: "r", Status: "completed"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa","segments":[{"role":"user","content":[{"type":"trusted-text","text":"hi"}]}],"compaction":{"enabled":true,"keep_last_n":6,"autocompact_at_pct":75}}}}`,
@@ -842,7 +843,7 @@ func TestServer_CompactRun_ResolvesAgentIDThenCompacts(t *testing.T) {
 		getRunResult:  connector.Run{AgentID: "a_x", RunID: "r_x", Status: "awaiting_input"},
 		compactResult: connector.CompactResult{RunID: "r_x", Compacted: true, BeforeTokens: 900, AfterTokens: 120, Applied: "live"},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compact_run","arguments":{"agent_id":"a_x"}}}`,
@@ -871,7 +872,7 @@ func TestServer_CompactRun_ResolvesAgentIDThenCompacts(t *testing.T) {
 // circuits before any connector call.
 func TestServer_CompactRun_RequiresAgentID(t *testing.T) {
 	mc := &mockConnector{}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"compact_run","arguments":{}}}`,
@@ -902,7 +903,7 @@ func TestServer_SpawnRuns_DispatchesBatch(t *testing.T) {
 			},
 		},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"rev"},{"agent":"rev"}]}}}`,
@@ -949,7 +950,7 @@ func TestServer_SpawnRuns_DetachIsAdvertisedAndReachesTheConnector(t *testing.T)
 		Spawned: 1,
 		Results: []connector.SpawnRunResult{{AgentID: "a_0", RunID: "r_0", Status: "running"}},
 	}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"mode":"detach","spawns":[{"agent":"rev"}]}}}`,
@@ -967,7 +968,7 @@ func TestServer_SpawnRuns_DetachIsAdvertisedAndReachesTheConnector(t *testing.T)
 // a spawn with no agent is a tool error, never reaches the connector.
 func TestServer_SpawnRuns_RejectsChildMissingAgent(t *testing.T) {
 	mc := &mockConnector{}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":""}]}}}`,
@@ -989,7 +990,7 @@ func TestServer_SpawnRuns_RejectsChildMissingAgent(t *testing.T) {
 // resolve_probe meta-tool dispatches to Connector.ResolveProbe and
 // returns the matrix as the tool result payload (issue #88).
 func TestServer_ResolveProbe_DispatchesThroughConnector(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"resolve_probe","arguments":{}}}`,
@@ -1056,7 +1057,7 @@ func TestServer_SpawnRun_StreamingPath(t *testing.T) {
 		},
 	}
 	mc := &mockConnector{}
-	srv := New(Config{Connector: mc, Runner: fr, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Runner: fr, Logger: discardLogger()})
 
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"1"}}}`,
@@ -1118,7 +1119,7 @@ func TestServer_SpawnRun_NotificationsArriveBeforeResponse(t *testing.T) {
 		},
 	}
 	mc := &mockConnector{}
-	srv := New(Config{Connector: mc, Runner: fr, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Runner: fr, Logger: discardLogger()})
 
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"1"}}}`,
@@ -1171,7 +1172,7 @@ func TestServer_RegisterAgent_DispatchesThroughConnector(t *testing.T) {
 	mc := &mockConnector{
 		regResult: connector.AgentDescriptor{Name: "x", Source: "dynamic"},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"register_agent","arguments":{"name":"x","system_prompt":"p","tools":["Memory"]}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1196,7 +1197,7 @@ func TestServer_ChannelDef_DispatchesThroughConnector(t *testing.T) {
 	} {
 		t.Run(tc.op, func(t *testing.T) {
 			mc := &mockConnector{}
-			srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+			srv := New(Config{Connector: mc, Logger: discardLogger()})
 			in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"channeldef","arguments":` + tc.args + `}}` + "\n"
 			resps, _ := driveServer(t, srv, in)
 			if len(resps) != 1 {
@@ -1215,7 +1216,7 @@ func TestServer_ChannelDef_DispatchesThroughConnector(t *testing.T) {
 // A channeldef op with no name is refused before reaching the Connector.
 func TestServer_ChannelDef_RequiresName(t *testing.T) {
 	mc := &mockConnector{}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"channeldef","arguments":{"op":"create"}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1227,7 +1228,7 @@ func TestServer_ChannelDef_RequiresName(t *testing.T) {
 }
 
 func TestServer_UnknownTool_Returns32601(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1255,7 +1256,7 @@ func TestServer_PauseRuntime_DispatchesToConnector(t *testing.T) {
 			PausedRunsCount:     2,
 		},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pause_runtime","arguments":{"timeout_ms":5000}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1298,7 +1299,7 @@ func TestServer_SequentialDispatch_AllResponsesPresent(t *testing.T) {
 		listCalls.Add(1)
 		time.Sleep(5 * time.Millisecond)
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 
 	var sb strings.Builder
 	for i := 1; i <= 5; i++ {
@@ -1333,7 +1334,7 @@ func TestServer_ListChannels_DispatchesToConnector(t *testing.T) {
 			},
 		},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_channels","arguments":{}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1359,7 +1360,7 @@ func TestServer_StreamUserRunStates_BlockingPath_CollectsEvents(t *testing.T) {
 			{RunID: "r2", UserID: "user-a", Status: "completed"},
 		},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{"user_id":"user-a","max_events":2,"timeout_ms":500}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1391,7 +1392,7 @@ func TestServer_StreamUserRunStates_StreamingPath_EmitsNotifications(t *testing.
 			{RunID: "r2", UserID: "user-a", Status: "completed"},
 		},
 	}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	// First initialize with runEvents=true so the streaming path engages.
 	in := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"v"}}}` + "\n" +
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{"user_id":"user-a","max_events":2,"timeout_ms":500}}}` + "\n"
@@ -1412,7 +1413,7 @@ func TestServer_StreamUserRunStates_StreamingPath_EmitsNotifications(t *testing.
 }
 
 func TestServer_StreamUserRunStates_RequiresUserID(t *testing.T) {
-	srv := New(Config{Connector: &mockConnector{}, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: &mockConnector{}, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{}}}` + "\n"
 	resps, _ := driveServer(t, srv, in)
 	if len(resps) != 1 {
@@ -1562,7 +1563,7 @@ func (ls *liveServer) handshake() {
 func TestServer_LongCallDoesNotBlockSubsequent(t *testing.T) {
 	gate := make(chan struct{})
 	mc := &mockConnector{spawnGate: gate}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ls := newLiveServer(t, srv)
 	defer ls.close()
 
@@ -1586,7 +1587,7 @@ func TestServer_LongCallDoesNotBlockSubsequent(t *testing.T) {
 func TestServer_CancelRunBypassesCapDuringSaturation(t *testing.T) {
 	gate := make(chan struct{})
 	mc := &mockConnector{spawnGate: gate}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}, MaxConcurrentCalls: 1})
+	srv := New(Config{Connector: mc, Logger: discardLogger(), MaxConcurrentCalls: 1})
 	ls := newLiveServer(t, srv)
 	defer ls.close()
 
@@ -1608,7 +1609,7 @@ func TestServer_CancelRunBypassesCapDuringSaturation(t *testing.T) {
 func TestServer_LongCallsRespectConcurrencyCap(t *testing.T) {
 	gate := make(chan struct{})
 	mc := &mockConnector{spawnGate: gate}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}, MaxConcurrentCalls: 2})
+	srv := New(Config{Connector: mc, Logger: discardLogger(), MaxConcurrentCalls: 2})
 	ls := newLiveServer(t, srv)
 	defer ls.close()
 
@@ -1646,7 +1647,7 @@ func TestServer_LongCallsRespectConcurrencyCap(t *testing.T) {
 // deterministically parks until the context is cancelled.
 func TestServer_QueuedCallErrorsOnShutdown(t *testing.T) {
 	mc := &mockConnector{}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	srv.sem = make(chan struct{}) // unbuffered: a bounded call can never acquire → parks until shutdown
 	ls := newLiveServer(t, srv)
 	defer ls.close()
@@ -1702,7 +1703,7 @@ func TestEffectiveSpawnTimeoutMS(t *testing.T) {
 // so this is also the fail-before regression.
 func TestServer_SpawnRunTimesOut(t *testing.T) {
 	mc := &mockConnector{spawnGate: make(chan struct{})} // never closed
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ls := newLiveServer(t, srv)
 	defer ls.close()
 
@@ -1718,7 +1719,7 @@ func TestServer_SpawnRunTimesOut(t *testing.T) {
 // (Config.SpawnRunTimeoutMS) bounds a call that supplies no timeout_ms.
 func TestServer_SpawnRunOperatorTimeout(t *testing.T) {
 	mc := &mockConnector{spawnGate: make(chan struct{})} // never closed
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}, SpawnRunTimeoutMS: 120})
+	srv := New(Config{Connector: mc, Logger: discardLogger(), SpawnRunTimeoutMS: 120})
 	ls := newLiveServer(t, srv)
 	defer ls.close()
 
@@ -1735,7 +1736,7 @@ func TestServer_SpawnRunOperatorTimeout(t *testing.T) {
 // transport cap).
 func TestServer_SpawnRunNoTimeoutByDefault(t *testing.T) {
 	mc := &mockConnector{spawnResult: connector.SpawnRunResult{Status: "completed", FinalText: "ok"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	ls := newLiveServer(t, srv)
 	defer ls.close()
 
@@ -1782,7 +1783,7 @@ func (m *mockConnector) DeleteConfiguredRun(context.Context, string) error { ret
 // is reached.
 func TestServer_AReadOnlyMemberCannotStartARun(t *testing.T) {
 	conn := &mockConnector{}
-	srv := New(Config{Connector: conn, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: conn, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsRead}})
 
@@ -1895,4 +1896,48 @@ func TestRetentionOverrideTool_IsOperatorOnly(t *testing.T) {
 			t.Errorf("%s may call retention_override = %v, want %v", what, got, tc.want)
 		}
 	}
+}
+
+// discardLogger is the silent sink tests inject where they don't assert
+// on log output.
+func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// syncBuffer is a mutex-guarded log sink: the proxy and server log from
+// per-request goroutines while the test reads.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// captureLogger returns a text-format logger writing every level to w.
+func captureLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// logLine returns the single captured line containing msg, failing the test
+// when no line or more than one line matches.
+func logLine(t *testing.T, logs, msg string) string {
+	t.Helper()
+	var hits []string
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, msg) {
+			hits = append(hits, line)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one log line containing %q, got %d; logs:\n%s", msg, len(hits), logs)
+	}
+	return hits[0]
 }
