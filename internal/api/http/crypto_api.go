@@ -17,7 +17,7 @@ import (
 // backend that encrypts a field before writing it to its own database.
 
 // handleSubstrateCrypto serves POST /v1/_crypto. The route is substrate:tenant
-// and stays closed to a tenant's members (memberCarveOut): a member who could
+// and stays closed to a tenant's members (memberpath.CarvedOut): a member who could
 // decrypt with the tenant's keys could read whatever the tenant sealed.
 func (s *Server) handleSubstrateCrypto(w http.ResponseWriter, r *http.Request) {
 	s.dispatchSubstrateCtx(w, r, "Crypto", s.Crypto, substrateAdminUserCtx)

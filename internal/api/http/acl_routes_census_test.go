@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
@@ -53,7 +54,7 @@ func TestACLRouteOps_CoverEveryRegisteredManagementRoute(t *testing.T) {
 	registered := map[string]bool{}
 	for _, m := range muxPatternRe.FindAllStringSubmatch(string(src), -1) {
 		pattern := m[2]
-		if isACLManagementPath(pattern) || strings.HasPrefix(pattern, "/v1/_authz/") {
+		if memberpath.IsACLManagementPath(pattern) || strings.HasPrefix(pattern, "/v1/_authz/") {
 			registered[strings.TrimSpace(m[1])+" "+pattern] = true
 		}
 	}
