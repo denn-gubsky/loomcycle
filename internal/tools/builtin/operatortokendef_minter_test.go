@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 )
 
 // A restricted admin token cannot mint, or rotate, its way out of its
@@ -16,7 +17,7 @@ func TestOperatorTokenDef_AMintedTokenIsHeldToTheMintersRestrictions(t *testing.
 	tool, base, st, cleanup := operatorTokenDefFixture(t)
 	defer cleanup()
 	restricted := auth.WithPrincipal(base, auth.Principal{Subject: "ops", Scopes: []string{auth.ScopeAdmin}, Restrictions: auth.Restrictions{
-		Retention: auth.RetentionNone,
+		Retention: retentionmode.None,
 		Rate:      &auth.RateLimit{PerMinute: 6, Burst: 10},
 		Overrides: &auth.OverridePolicy{Allow: []string{"effort", "model"}},
 	}})
@@ -35,7 +36,7 @@ func TestOperatorTokenDef_AMintedTokenIsHeldToTheMintersRestrictions(t *testing.
 	}
 	held := func(what string, r auth.Restrictions, perMinute, burst int, allowed, refused []string) {
 		t.Helper()
-		if r.Retention != auth.RetentionNone {
+		if r.Retention != retentionmode.None {
 			t.Errorf("%s: retention = %q, want none", what, r.Retention)
 		}
 		if r.Rate == nil || r.Rate.PerMinute != perMinute || r.Rate.EffectiveBurst() != burst {

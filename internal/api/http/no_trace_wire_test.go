@@ -144,7 +144,7 @@ func TestNoTraceWire_ATokenMakesEveryRunItStartsNoTrace(t *testing.T) {
 		t.Errorf("a draft: status %d, want 409 retention_none_unsupported: %s", code, resp)
 	}
 	quiet := auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant},
-		Restrictions: auth.Restrictions{Retention: auth.RetentionNone}})
+		Restrictions: auth.Restrictions{Retention: retentionmode.None}})
 	// It cannot write its words into what is stored by another road either:
 	// an edit of somebody's draft, a message into somebody's ordinary run.
 	free := auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "dev", Scopes: []string{auth.ScopeTenant}})
@@ -191,7 +191,7 @@ func TestNoTraceWire_ATokenMakesEveryRunItStartsNoTrace(t *testing.T) {
 func TestNoTraceWire_MintingATokenWithTheMode(t *testing.T) {
 	var req mintUserTokenRequest
 	req.Retention = "none"
-	if r, err := req.restrictions(); err != nil || r.Retention != auth.RetentionNone {
+	if r, err := req.restrictions(); err != nil || r.Retention != retentionmode.None {
 		t.Errorf("mint with retention none: %+v, %v", r, err)
 	}
 	req.Retention = "default"
@@ -203,17 +203,17 @@ func TestNoTraceWire_MintingATokenWithTheMode(t *testing.T) {
 		t.Error("a misspelled retention was accepted at mint")
 	}
 
-	stored, err := auth.MarshalRestrictions(auth.Restrictions{Retention: auth.RetentionNone})
+	stored, err := auth.MarshalRestrictions(auth.Restrictions{Retention: retentionmode.None})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back, err := auth.ParseRestrictions(stored); err != nil || back.Retention != auth.RetentionNone {
+	if back, err := auth.ParseRestrictions(stored); err != nil || back.Retention != retentionmode.None {
 		t.Errorf("round trip: %+v, %v", back, err)
 	}
 	if _, err := auth.ParseRestrictions(`{"retention":"none-ish"}`); err == nil {
 		t.Error("a stored record with an unknown retention was read as usable")
 	}
-	if (auth.Restrictions{Retention: auth.RetentionNone}).IsZero() {
+	if (auth.Restrictions{Retention: retentionmode.None}).IsZero() {
 		t.Error("a retention-only record reads as no restriction: it would not be stored")
 	}
 }
