@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { FlaskConical, Plus } from "lucide-react";
 import { getAclDef, listAclDefs, putAclDef, retireAclDef, validateAclRules, type AclDefRow, type AclList } from "../../api";
-import { isSetTime } from "../../lib/aclAccess";
 import {
   emptyRuleDraft,
   listNameError,
@@ -16,17 +15,21 @@ import {
 } from "../../lib/aclRules";
 import ErrorNotice from "../ErrorNotice";
 import { RuleEditor } from "./RuleEditor";
+import { ConfigPill } from "./BindingsTab";
 
 // PoliciesTab — ACL rule lists: the tenant's stored lists and the built-in
 // baselines (code constants, read-only), and an editor whose rules are
 // authored either in the structured editor (catalog-driven pickers) or in the
 // JSON/YAML view. Save validates with op=validate first, then op=create.
+// Lists the config declares are listed and open read-only, like the built-ins.
 
 export interface Editing {
   name: string;
   description: string;
   isNew: boolean;
   builtin: boolean;
+  // Declared in the config: no stored row to save or retire.
+  config?: boolean;
   retired: boolean;
   version?: number;
   slots: Slot[];
@@ -80,7 +83,8 @@ export default function PoliciesTab({
         description: row.description ?? "",
         isNew: false,
         builtin: false,
-        retired: isSetTime(row.retired_at),
+        config: row.source === "config",
+        retired: !!row.retired_at,
         version: row.version,
         slots: slotsFromRules(catalog, row.rules ?? []),
       });
@@ -178,23 +182,28 @@ export function PolicyList({
             </td>
           </tr>
         )}
-        {rows.map((r) => (
-          <tr key={r.name} className={selected === r.name ? "acl-row-selected" : undefined}>
-            <td>
-              <button type="button" className="acl-link" onClick={() => onOpen(r.name)}>
-                <code>{r.name}</code>
-              </button>
-            </td>
-            <td>{(r.rules ?? []).length}</td>
-            <td className="settings-muted">v{r.version}</td>
-            <td className="settings-muted">{r.description || "—"}</td>
-            <td>
-              <span className={"status-pill " + (isSetTime(r.retired_at) ? "status-retired" : "status-ok")}>
-                {isSetTime(r.retired_at) ? "retired" : "live"}
-              </span>
-            </td>
-          </tr>
-        ))}
+        {rows.map((r) => {
+          const config = r.source === "config";
+          return (
+            <tr key={(r.source ?? "store") + ":" + r.name} className={(config ? "acl-row-builtin" : "") + (selected === r.name ? " acl-row-selected" : "") || undefined}>
+              <td>
+                <button type="button" className="acl-link" onClick={() => onOpen(r.name)}>
+                  <code>{r.name}</code>
+                </button>
+              </td>
+              <td>{(r.rules ?? []).length}</td>
+              <td className="settings-muted">{r.version ? `v${r.version}` : "—"}</td>
+              <td className="settings-muted">{r.description || "—"}</td>
+              <td>
+                {config ? (
+                  <ConfigPill what="list" />
+                ) : (
+                  <span className={"status-pill " + (r.retired_at ? "status-retired" : "status-ok")}>{r.retired_at ? "retired" : "live"}</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
         {builtin.map((b) => (
           <tr key={b.name} className={"acl-row-builtin" + (selected === b.name ? " acl-row-selected" : "")}>
             <td>
@@ -245,7 +254,7 @@ export function PolicyEditor({
   const [status, setStatus] = useState<{ ok: boolean; msg: string } | null>(null);
   const [err, setErr] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
-  const readOnly = initial.builtin;
+  const readOnly = initial.builtin || !!initial.config;
 
   const rules = rulesFromSlots(catalog, slots);
   const shownText = text ?? rulesToText(rules, format);
@@ -318,7 +327,8 @@ export function PolicyEditor({
         <h3>
           {initial.isNew ? "new rule list" : <code>{initial.name}</code>}
           {initial.version ? <span className="settings-muted"> v{initial.version}</span> : null}
-          {readOnly && <span className="status-pill acl-pill-builtin">built-in · read-only</span>}
+          {initial.builtin && <span className="status-pill acl-pill-builtin">built-in · read-only</span>}
+          {initial.config && <ConfigPill what="list" />}
           {initial.retired && <span className="status-pill status-retired">retired — saving brings it back</span>}
         </h3>
         <button type="button" className="ghost-btn" onClick={onClose}>

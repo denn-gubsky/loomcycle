@@ -3,18 +3,11 @@ import type { AclBinding, GroupMember, TranscriptEvent } from "../api";
 // Group closure, binding labelling, the rollout-mode sentence and the /run
 // notice's tool list for the Access console, the Users page and the terminal.
 
-// The server encodes an unset time.Time field as Go's zero time (a struct
-// `omitempty` is a no-op), so `expires_at` / `retired_at` arrive as
-// "0001-01-01T00:00:00Z" when they mean "none".
-export function isSetTime(t: string | undefined | null): t is string {
-  return !!t && !t.startsWith("0001-01-01");
-}
-
 export type BindingState = "active" | "expired" | "retired";
 
 export function bindingState(b: AclBinding, now: number = Date.now()): BindingState {
-  if (isSetTime(b.retired_at)) return "retired";
-  if (isSetTime(b.expires_at) && Date.parse(b.expires_at) <= now) return "expired";
+  if (b.retired_at) return "retired";
+  if (b.expires_at && Date.parse(b.expires_at) <= now) return "expired";
   return "active";
 }
 

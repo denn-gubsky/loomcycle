@@ -65,47 +65,72 @@ func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Pri
 }
 
 // aclGateHTTP asks the route's type-level question. It returns false after
-// writing the refusal. legacyAllowed is always true here: the scope gate
-// already admitted the request.
-func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Principal) bool {
+// writing the refusal, else the ctx the handler runs under, which records
+// the question it answered (withRouteGate) so an operation behind the route
+// that holds the same question itself does not ask it twice.
+// legacyAllowed is always true here: the scope gate already admitted the
+// request.
+func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Principal) (context.Context, bool) {
+	ctx := r.Context()
 	surface, governed := authz.HTTPSurface(r.Method, r.URL.Path)
 	if !governed {
-		return true
+		return ctx, true
 	}
-	ctx := r.Context()
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
-	return s.applyGate(ctx, w, p, surface, res)
+	if !s.applyGate(ctx, w, p, surface, res) {
+		return ctx, false
+	}
+	return withRouteGate(ctx, surface), true
 }
 
 // applyGate turns a gate result into a response. It is shared by the route
 // gate and the instance checks that can write their own refusal.
 func (s *Server) applyGate(ctx context.Context, w http.ResponseWriter, p auth.Principal, surface authz.Surface, res authz.GateResult) bool {
-	switch {
-	case res.Unavailable:
-		s.recordACLEvent(ctx, p, "acl_unavailable", surface, res.Decision)
-		writeJSONError(w, http.StatusServiceUnavailable, "acl_unavailable", "access control could not be evaluated; retry")
-		return false
-	case res.Diverged:
-		s.recordACLEvent(ctx, p, "acl_shadow_diverged", surface, res.Decision)
-		return true
-	case !res.Allowed:
-		s.recordACLEvent(ctx, p, "acl_denied", surface, res.Decision)
-		writeACLDenied(w, surface, res.Decision)
+	if r := s.gateReply(ctx, p, surface, res); r != nil {
+		writeACLReply(w, *r)
 		return false
 	}
 	return true
 }
 
-// writeACLDenied is the refusal: the action, the resource and the rules that
-// decided. The reasons are the caller's own decision, so they are shown.
+// gateReply is applyGate's decision as a reply, for a caller that answers
+// on a transport other than HTTP: the refusal (after recording it), or nil
+// when the request may proceed (a shadow divergence is recorded and let
+// through).
+func (s *Server) gateReply(ctx context.Context, p auth.Principal, surface authz.Surface, res authz.GateResult) *aclReply {
+	switch {
+	case res.Unavailable:
+		s.recordACLEvent(ctx, p, "acl_unavailable", surface, res.Decision)
+		r := aclFail(http.StatusServiceUnavailable, "acl_unavailable", "access control could not be evaluated; retry")
+		return &r
+	case res.Diverged:
+		s.recordACLEvent(ctx, p, "acl_shadow_diverged", surface, res.Decision)
+		return nil
+	case !res.Allowed:
+		s.recordACLEvent(ctx, p, "acl_denied", surface, res.Decision)
+		r := aclReply{http.StatusForbidden, aclDeniedBody(surface, res.Decision)}
+		return &r
+	}
+	return nil
+}
+
+// aclDeniedReply is the refusal body: the action, the resource and the rules
+// that decided. The reasons are the caller's own decision, so they are shown.
+type aclDeniedReply struct {
+	Code     string         `json:"code"`
+	Error    string         `json:"error"`
+	Action   string         `json:"action"`
+	Resource string         `json:"resource"`
+	Reasons  []authz.Reason `json:"reasons,omitempty"`
+}
+
+func aclDeniedBody(surface authz.Surface, d authz.Decision) aclDeniedReply {
+	return aclDeniedReply{"acl_denied", aclDeniedText(surface, d), surface.Action, surface.Type + ":" + surface.Name, d.Reasons}
+}
+
+// writeACLDenied writes the refusal.
 func writeACLDenied(w http.ResponseWriter, surface authz.Surface, d authz.Decision) {
-	writeJSONErrorBody(w, http.StatusForbidden, struct {
-		Code     string         `json:"code"`
-		Error    string         `json:"error"`
-		Action   string         `json:"action"`
-		Resource string         `json:"resource"`
-		Reasons  []authz.Reason `json:"reasons,omitempty"`
-	}{"acl_denied", aclDeniedText(surface, d), surface.Action, surface.Type + ":" + surface.Name, d.Reasons})
+	writeJSONErrorBody(w, http.StatusForbidden, aclDeniedBody(surface, d))
 }
 
 func aclDeniedText(surface authz.Surface, d authz.Decision) string {

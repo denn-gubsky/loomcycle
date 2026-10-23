@@ -125,6 +125,30 @@ semantics from the HTTP API:
 filled in by a model. See [TOOLS.md](TOOLS.md#host-policy) for the
 underlying policy layer.
 
+## Access-control management RPCs
+
+Groups, access-control lists, bindings and the authz questions have four op-dispatched RPCs, shaped like `OperatorTokenDef`: `rpc X(SubstrateRequest) returns (SubstrateResponse)`. `input_json` is the HTTP route's JSON body plus `"op"` and, for an admin, a `"tenant"` focus (the route's `?tenant=`); `output_json` is the route's JSON body. A refusal is `is_error: true` with the route's error body (`{"code": …, "error": …}`) and `error_info` carrying its category — the gRPC status stays `OK`, as for every substrate RPC.
+
+| RPC | Ops | HTTP routes | Scope |
+|---|---|---|---|
+| `GroupDef` | `list`, `get`, `effective`, `create`, `delete`, `add_member`, `remove_member` | `/v1/_groups*` | `substrate:tenant` |
+| `AclDef` | `create`, `update`, `put`, `get`, `list`, `retire`, `validate`, `catalog`, `names` | `POST /v1/_acldef`, `GET /v1/_acldef/names` | `substrate:tenant` |
+| `AclBinding` | `list`, `create`, `delete` | `/v1/_aclbinding*` | `substrate:tenant` |
+| `Authz` | `evaluation`, `evaluations`, `explain`, `simulate` | `POST /v1/_authz/*` | any principal, about itself |
+
+The four RPCs and the HTTP routes call one implementation, and that implementation holds every gate: tenant confinement (an admin alone may focus another tenant), the tenant-operator floor for groups, lists and bindings (a member is refused; gRPC has no member path), each op's own access-control question (a list write asks `author def:acl/<name>`, a retire `retire`, a binding write `author def:acl/*`, a group write `manage principal:group:*`), the self-elevation guards, the audit events and cache invalidation on every replica. `Authz` answers about the caller; naming another `subject` needs a tenant operator. None of them is reachable from inside a run. What each op returns and refuses is the HTTP route's; see the configuration guide's *Managing groups, ACL lists and bindings*.
+
+```sh
+# input_json is bytes, so grpcurl takes it base64-encoded; there is no
+# reflection service, so point grpcurl at the proto.
+grpcurl -plaintext -import-path proto -proto loomcycle.proto \
+  -H "authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  -d '{"input_json":"'"$(printf '%s' '{"op":"create","name":"support"}' | base64)"'"}' \
+  127.0.0.1:8788 loomcycle.v1.Loomcycle/GroupDef
+```
+
+The Python adapter's dispatch methods for these four RPCs ship separately.
+
 ## Streaming model
 
 `Run` and `Continue` are server-streaming. The proto `Event` message

@@ -84,6 +84,10 @@ func dispatchSubcommand() (mcpMode, done bool) {
 			// RFC L — mint / rotate / retire / show / list auth tokens
 			// against the running instance's admin endpoint.
 			os.Exit(cli.RunOperatorToken(os.Args[2:], os.Stdout, os.Stderr))
+		case "acl":
+			// RFC EZ — groups, access-control lists, bindings and the authz
+			// questions against the running instance's management routes.
+			os.Exit(cli.RunACL(os.Args[2:], os.Stdout, os.Stderr))
 		case "tokens":
 			// RFC ES C2 — `tokens rewrap`: move tokens minted before the
 			// derived pepper onto it. Opens the store directly, like the

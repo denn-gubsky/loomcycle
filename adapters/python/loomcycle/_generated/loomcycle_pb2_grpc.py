@@ -348,6 +348,26 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.GroupDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/GroupDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.AclDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/AclDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.AclBinding = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/AclBinding',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
+        self.Authz = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Authz',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.History = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/History',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -1197,6 +1217,48 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GroupDef(self, request, context):
+        """Access-control management (RFC EZ §3), op-dispatched like
+        OperatorTokenDef. input_json is the HTTP route's JSON body plus "op"
+        and, for an admin, a "tenant" focus; output_json is the route's JSON
+        body; is_error + error_info carry a refusal. Every gate the HTTP route
+        holds is in the shared implementation: tenant confinement, the
+        substrate:tenant floor for the three management families, the per-op
+        access-control question, the self-elevation guards, audit and cache
+        invalidation across replicas.
+
+        GroupDef mirrors /v1/_groups*: list / get / create / delete /
+        add_member / remove_member. ScopeTenant.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AclDef(self, request, context):
+        """AclDef mirrors POST /v1/_acldef and GET /v1/_acldef/names: create /
+        update / put / get / list / retire / validate / catalog / names.
+        ScopeTenant.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AclBinding(self, request, context):
+        """AclBinding mirrors /v1/_aclbinding*: list / create / delete. ScopeTenant.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Authz(self, request, context):
+        """Authz mirrors /v1/_authz/*: evaluation / evaluations / explain /
+        simulate. Any authenticated principal, about ITSELF; naming another
+        subject needs a tenant operator.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def History(self, request, context):
         """History dispatches to the RFC BE History tool (browse/search/annotate
         past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
@@ -1654,6 +1716,26 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'Crypto': grpc.unary_unary_rpc_method_handler(
                     servicer.Crypto,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'GroupDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.GroupDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'AclDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.AclDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'AclBinding': grpc.unary_unary_rpc_method_handler(
+                    servicer.AclBinding,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'Authz': grpc.unary_unary_rpc_method_handler(
+                    servicer.Authz,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -3404,6 +3486,114 @@ class Loomcycle:
             request,
             target,
             '/loomcycle.v1.Loomcycle/Crypto',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GroupDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/GroupDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AclDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/AclDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AclBinding(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/AclBinding',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Authz(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Authz',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

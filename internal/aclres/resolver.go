@@ -272,21 +272,11 @@ func (r *Resolver) input(ctx context.Context, p auth.Principal, version int64) (
 // order of internal/lookup. A retired row is absent (the next layer may
 // still answer); a missing name is reported by Compile and matches nothing.
 func (r *Resolver) lookupACL(ctx context.Context, tenant, name string, static *authz.Static) (authz.ACLVersion, bool, error) {
-	tenants := []string{tenant}
-	if tenant != "" {
-		tenants = append(tenants, "")
+	def, found, err := r.storedACL(ctx, tenant, name)
+	if err != nil {
+		return authz.ACLVersion{}, false, err
 	}
-	for _, t := range tenants {
-		def, err := r.st.AclDefGet(ctx, t, name)
-		if err != nil {
-			if isNotFound(err) {
-				continue
-			}
-			return authz.ACLVersion{}, false, fmt.Errorf("acl %s: %w", name, err)
-		}
-		if def.Retired() {
-			continue
-		}
+	if found {
 		rules, err := authz.ParseRules(def.Rules)
 		if err != nil {
 			// A stored list this build cannot read is refused as a whole:
@@ -303,6 +293,64 @@ func (r *Resolver) lookupACL(ctx context.Context, tenant, name string, static *a
 	}
 	return authz.ACLVersion{}, false, nil
 }
+
+// storedACL is the live stored list a binding in tenant resolves to: the
+// tenant's own row, else the shared tenant's. A retired row is absent.
+func (r *Resolver) storedACL(ctx context.Context, tenant, name string) (store.AclDefRow, bool, error) {
+	tenants := []string{tenant}
+	if tenant != "" {
+		tenants = append(tenants, "")
+	}
+	for _, t := range tenants {
+		def, err := r.st.AclDefGet(ctx, t, name)
+		if err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			return store.AclDefRow{}, false, fmt.Errorf("acl %s: %w", name, err)
+		}
+		if def.Retired() {
+			continue
+		}
+		return def, true, nil
+	}
+	return store.AclDefRow{}, false, nil
+}
+
+// ACL sources, as ACLSource reports them.
+const (
+	SourceStore  = "store"
+	SourceConfig = "config"
+)
+
+// ACLSource reports where a binding to name in tenant finds its list, in
+// the order the resolver looks: SourceStore for a live stored row (the
+// tenant's, then the shared tenant's), SourceConfig for a config-declared
+// list no stored row shadows, "" when no layer has it — a binding to such a
+// name matches nothing. A built-in name is "": the resolver never applies a
+// built-in through a binding.
+func (r *Resolver) ACLSource(ctx context.Context, tenant, name string) (string, error) {
+	if authz.IsBuiltin(name) {
+		return "", nil
+	}
+	_, found, err := r.storedACL(ctx, tenant, name)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		return SourceStore, nil
+	}
+	if static := r.staticNow(); static != nil {
+		if _, ok := static.ACLs[name]; ok {
+			return SourceConfig, nil
+		}
+	}
+	return "", nil
+}
+
+// Static returns the config-declared lists, groups and bindings the
+// resolver merges under the store's rows (nil when none are declared).
+func (r *Resolver) Static() *authz.Static { return r.staticNow() }
 
 func isNotFound(err error) bool {
 	var nf *store.ErrNotFound
