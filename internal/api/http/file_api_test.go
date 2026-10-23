@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
@@ -273,6 +274,20 @@ func TestFileTwin_FinishedRunsInboxIsGone(t *testing.T) {
 	}
 }
 
+// mkTwinVolume records a dynamic volume of tenant and makes its directory.
+func (f *fileTwinFixture) mkVolume(t *testing.T, tenant, name, mode string) string {
+	t.Helper()
+	dir, _, err := dynvol.Provision(f.dynRoot, tenant, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"path": dir, "mode": mode})
+	if _, err := f.st.VolumeDefCreate(context.Background(), store.VolumeDefRow{TenantID: tenant, Name: name, Definition: body}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // keep copies into a read-write dynamic volume of the CALLER's tenant, at the
 // path the runtime derives for it. A read-only one, a configured one and
 // another tenant's are refused.
@@ -280,26 +295,14 @@ func TestFileTwin_KeepCopiesIntoTheCallersDynamicVolume(t *testing.T) {
 	f := newFileTwinFixture(t)
 	runID := f.run(t, "acme", "alice", "")
 	rec := f.capture(t, runID, "acme", "minutes.txt", "http", []byte("the minutes\n"), true)
-	ctx := context.Background()
-	mkVol := func(tenant, name, mode string) string {
-		dir, _, err := dynvol.Provision(f.dynRoot, tenant, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, _ := json.Marshal(map[string]string{"path": dir, "mode": mode})
-		if _, err := f.st.VolumeDefCreate(ctx, store.VolumeDefRow{TenantID: tenant, Name: name, Definition: body}); err != nil {
-			t.Fatal(err)
-		}
-		return dir
-	}
-	docs := mkVol("acme", "docs", "rw")
-	mkVol("acme", "archive", "ro")
-	mkVol("other", "theirs", "rw")
+	docs := f.mkVolume(t, "acme", "docs", "rw")
+	f.mkVolume(t, "acme", "archive", "ro")
+	f.mkVolume(t, "other", "theirs", "rw")
 
 	if err := os.MkdirAll(filepath.Join(docs, "board"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, text, isErr := f.call(t, twinOperator, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:board/"})
+	out, text, isErr := f.call(t, twinOwner, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:board/"})
 	if isErr {
 		t.Fatalf("keep: %s", text)
 	}
@@ -313,9 +316,60 @@ func TestFileTwin_KeepCopiesIntoTheCallersDynamicVolume(t *testing.T) {
 		"volume:inbox:x.txt":   "deleted with the run",
 		"volume:x.txt":         "must name a volume",
 	} {
-		if _, text, isErr := f.call(t, twinOperator, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": to}); !isErr || !strings.Contains(text, want) {
+		if _, text, isErr := f.call(t, twinOwner, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": to}); !isErr || !strings.Contains(text, want) {
 			t.Errorf("keep to %s = %s, want %q", to, text, want)
 		}
+	}
+}
+
+// keep writes into the tenant's volumes, so a principal that only reads the
+// run may not: not even with overwrite, and nothing is written. The owner's
+// access rules apply too: a volume its rules let it only read is refused.
+func TestFileTwin_KeepNeedsTheOwnerOrAnAdmin(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	rec := f.capture(t, runID, "acme", "minutes.txt", "http", []byte("the minutes\n"), true)
+	docs := f.mkVolume(t, "acme", "docs", "rw")
+	target := filepath.Join(docs, "minutes.txt")
+	if err := os.WriteFile(target, []byte("theirs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, in := range []map[string]any{
+		{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:new.txt"},
+		{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:minutes.txt", "overwrite": true},
+	} {
+		if _, text, isErr := f.call(t, twinOperator, in); !isErr || !strings.Contains(text, "owner or an admin") {
+			t.Errorf("keep %v by a reader = %s", in, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(docs, "new.txt")); !os.IsNotExist(err) {
+		t.Errorf("a refused keep wrote a file: %v", err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "theirs\n" {
+		t.Errorf("a refused overwrite replaced the file: %q", b)
+	}
+
+	// The owner whose rules deny writing to the volume.
+	eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: "acme", ID: "alice"},
+		Bindings: []authz.Binding{{ACL: "a", SubjectKind: authz.SubjectTenant}},
+		ACLs: map[string]authz.ACLVersion{"a": {ACL: authz.ACL{Name: "a", Rules: []authz.Rule{
+			{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"volume:docs"}},
+		}}}}, Now: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruled := twinOwner
+	ruled.Effective = eff
+	if _, text, isErr := f.call(t, ruled, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:new.txt"}); !isErr || !strings.Contains(text, "access rules") {
+		t.Errorf("keep against a write deny = %s", text)
+	}
+	if _, err := os.Stat(filepath.Join(docs, "new.txt")); !os.IsNotExist(err) {
+		t.Errorf("a keep the rules deny wrote a file: %v", err)
+	}
+	// The admin may.
+	if _, text, isErr := f.call(t, twinAdmin, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:shared:new.txt"}); isErr && !strings.Contains(text, "no volume named") {
+		t.Errorf("admin keep = %s", text)
 	}
 }
 

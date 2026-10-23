@@ -30,10 +30,12 @@ var fileTwinOps = map[string]bool{
 	"stat": true, "ls": true, "extract": true, "import": true, "keep": true, "rm": true, "clear": true,
 }
 
-// fileTwinChangesInbox are the ops that change the run's inbox. Only the
-// run's owner or an admin may make them: anyone else who may read the run
-// could otherwise empty, or fill, an inbox its run is still using.
-var fileTwinChangesInbox = map[string]bool{"extract": true, "rm": true, "clear": true}
+// fileTwinOwnerOps are the ops that write: extract, rm and clear change the
+// run's inbox, and keep writes into one of the tenant's volumes. Only the
+// run's owner or an admin may make them. Anyone else who may read the run
+// could otherwise empty, or fill, an inbox its run is still using, or write
+// (and with overwrite replace) files in volumes it has no write grant on.
+var fileTwinOwnerOps = map[string]bool{"extract": true, "rm": true, "clear": true, "keep": true}
 
 type fileTwinInput struct {
 	RunID string `json:"run_id"`
@@ -53,13 +55,14 @@ type fileTwinInput struct {
 //     dynamic root and the tree's root run id, and it is used only while the
 //     tree's record still names it. A finished tree's inbox was deleted with
 //     it, and the answer says so.
-//   - extract, rm and clear need the run's owner (the principal whose subject
-//     is the run's user, in its tenant) or an admin.
+//   - extract, rm, clear and keep need the run's owner (the principal whose
+//     subject is the run's user, in its tenant) or an admin.
 //   - import builds the Document in the caller's own scopes, the ones the MCP
 //     document tool writes for this principal.
 //   - keep copies into a dynamic volume of the caller's tenant, by name, which
-//     must exist and be read-write. A configured volume is not reachable: the
-//     operator binds those to agents, not to sessions.
+//     must exist, be read-write, and be writable under the caller's access
+//     rules. A configured volume is not reachable: the operator binds those
+//     to agents, not to sessions.
 func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
 	var in fileTwinInput
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -98,7 +101,7 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
 	admin := !hasPrincipal || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
 	owner := hasPrincipal && p.Subject != "" && p.Subject == run.UserID && p.TenantID == run.TenantID
-	if fileTwinChangesInbox[in.Op] && !admin && !owner {
+	if fileTwinOwnerOps[in.Op] && !admin && !owner {
 		return fileTwinRefusal(tools.CategoryPermission, "file: only the run's owner or an admin may "+in.Op+" in its inbox",
 			"Read it with stat or ls, or copy a file out with keep."), nil
 	}
@@ -123,7 +126,7 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 		return res, nil
 	}
 
-	tctx, res, ok := s.fileTwinCtx(ctx, in, root, dir, dynRoot, p.TenantID, admin || owner)
+	tctx, res, ok := s.fileTwinCtx(ctx, in, root, dir, dynRoot, p, admin || owner)
 	if !ok {
 		return res, nil
 	}
@@ -210,7 +213,7 @@ func (s *Server) fileTwinInboxPresent(ctx context.Context, run store.Run, root, 
 //   - the tools the op needs and nothing else: File, plus Document for import
 //     (the Document tool builds it, with its own scope checks) and Write for
 //     keep, whose only volume is the named target.
-func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, dynRoot, callerTenant string, mayChange bool) (context.Context, connector.ToolResult, bool) {
+func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, dynRoot string, caller auth.Principal, mayChange bool) (context.Context, connector.ToolResult, bool) {
 	ident := tools.RunIdentity(ctx)
 	ident.RootRunID = root
 	ctx = tools.WithRunIdentity(ctx, ident)
@@ -235,7 +238,7 @@ func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, d
 	case "import":
 		granted = append(granted, "Document")
 	case "keep":
-		binding, res, ok := s.fileTwinKeepTarget(ctx, in.To, dynRoot, callerTenant)
+		binding, res, ok := s.fileTwinKeepTarget(ctx, in.To, dynRoot, caller)
 		if !ok {
 			return nil, res, false
 		}
@@ -252,8 +255,13 @@ func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, d
 
 // fileTwinKeepTarget resolves keep's "to" to a dynamic volume of the caller's
 // tenant: named, recorded, read-write, at the path the runtime derives for it
-// (never the one a row says).
-func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot, tenant string) (tools.VolumeBinding, connector.ToolResult, bool) {
+// (never the one a row says), and writable under the caller's access rules —
+// the narrowing a run of the caller gets (tools.NarrowVolumesByACL), so a
+// rule that lets the caller only read the volume refuses the copy here too.
+// The auth model has no scope for writing a volume; the rules are where that
+// grant lives.
+func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot string, caller auth.Principal) (tools.VolumeBinding, connector.ToolResult, bool) {
+	tenant := caller.TenantID
 	refuse := func(cat tools.ErrorCategory, msg, next string) (tools.VolumeBinding, connector.ToolResult, bool) {
 		return tools.VolumeBinding{}, fileTwinRefusal(cat, msg, next), false
 	}
@@ -291,7 +299,13 @@ func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot, tenant str
 	if body.Mode == "ro" {
 		return refuse(tools.CategoryPermission, fmt.Sprintf("file: keep: volume %q is read-only", name), "Name a read-write volume.")
 	}
-	return tools.VolumeBinding{Name: name, Root: dynvol.DerivedPath(dynRoot, tenant, name)}, connector.ToolResult{}, true
+	binding := tools.VolumeBinding{Name: name, Root: dynvol.DerivedPath(dynRoot, tenant, name)}
+	narrowed := tools.NarrowVolumesByACL(ctx, caller.Effective, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{binding}})
+	if len(narrowed.Bindings) != 1 || narrowed.Bindings[0].ReadOnly {
+		return refuse(tools.CategoryPermission, fmt.Sprintf("file: keep: your access rules do not let you write to volume %q", name),
+			"Ask an operator for write access to the volume, or name another.")
+	}
+	return binding, connector.ToolResult{}, true
 }
 
 // withoutField returns input with one top-level field removed, so what
