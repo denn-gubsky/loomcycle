@@ -64,8 +64,8 @@ type fileTwinInput struct {
 // to a field whatever its case and lets a later duplicate win, so the struct
 // a lenient decode authorises and the bytes a second decode runs can name
 // different ops. Here every top-level key must be one of
-// connector.FileTwinFields,
-// spelled exactly, given once, with nothing after the object.
+// connector.FileTwinFields, spelled exactly, given once, with nothing after
+// the object.
 func decodeFileTwinInput(input json.RawMessage) (fileTwinInput, error) {
 	var in fileTwinInput
 	dec := json.NewDecoder(bytes.NewReader(input))
@@ -163,7 +163,7 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 	owner := hasPrincipal && p.Subject != "" && p.Subject == run.UserID && p.TenantID == run.TenantID
 	if fileTwinOwnerOps[in.Op] && !admin && !owner {
 		return fileTwinRefusal(tools.CategoryPermission, "file: only the run's owner or an admin may "+in.Op+" in its inbox",
-			"Read it with stat or ls, or copy a file out with keep."), nil
+			"Read it with stat or ls, or import a Markdown file of it into your own documents."), nil
 	}
 
 	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg())
