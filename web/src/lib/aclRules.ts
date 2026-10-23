@@ -437,3 +437,31 @@ export function parseDraftDoc(
   }
   return { ok: true, acls: acls as DraftList[], bindings: bindings as DraftBinding[] };
 }
+
+// ─── the list editor ────────────────────────────────────────────────────────
+
+// A Slot is one rule in the list editor: a structured draft, or — for a rule
+// the structured editor cannot show faithfully — the rule as stored, edited
+// only in the JSON/YAML view. A raw rule saves back byte-for-byte.
+export type Slot = { kind: "draft"; draft: RuleDraft } | { kind: "raw"; rule: Rule; why: string };
+
+export function slotsFromRules(cat: AclCatalog, rules: Rule[]): Slot[] {
+  return rules.map((rule) => {
+    const res = draftFromRule(cat, rule);
+    return res.ok ? { kind: "draft", draft: res.draft } : { kind: "raw", rule, why: res.error };
+  });
+}
+
+export function rulesFromSlots(cat: AclCatalog, slots: Slot[]): Rule[] {
+  return slots.map((s) => (s.kind === "draft" ? ruleFromDraft(cat, s.draft) : s.rule));
+}
+
+// The server's name shape (authz.ValidName) and its reserved prefix.
+const LIST_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,63}$/;
+
+export function listNameError(name: string): string | null {
+  if (!name.trim()) return "a list needs a name";
+  if (name.startsWith("builtin:")) return "builtin: names are reserved for the built-in lists";
+  if (!LIST_NAME.test(name)) return "names start with a letter or digit and use letters, digits and _ . : / - (64 at most)";
+  return null;
+}

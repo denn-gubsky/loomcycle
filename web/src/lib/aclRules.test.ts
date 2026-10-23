@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildSelector,
   draftDocFor,
+  listNameError,
+  rulesFromSlots,
+  slotsFromRules,
   parseDraftDoc,
   draftFromRule,
   emptyRuleDraft,
@@ -225,5 +228,24 @@ describe("simulator draft document", () => {
     expect(parseDraftDoc("acls: [{rules: []}]")).toEqual({ ok: false, error: "acls[0]: needs a name and a rules list" });
     expect(parseDraftDoc("bindings: [{acl: x}]")).toEqual({ ok: false, error: "bindings[0]: needs acl and subject_kind" });
     expect(parseDraftDoc("acls: {}")).toEqual({ ok: false, error: "acls must be a list" });
+  });
+});
+
+describe("editor slots", () => {
+  it("opens representable rules as drafts and keeps the rest raw, giving the same rules back", () => {
+    const rules: Rule[] = [
+      { effect: "deny", actions: ["invoke"], resources: ["tool:Bash"] },
+      { effect: "allow", actions: ["use"], resources: ["gateway:chat"] },
+    ];
+    const slots = slotsFromRules(catalog, rules);
+    expect(slots.map((s) => s.kind)).toEqual(["draft", "raw"]);
+    expect(rulesFromSlots(catalog, slots)).toEqual(rules);
+  });
+
+  it("checks a list name the way the server does", () => {
+    expect(listNameError("support/tier-1")).toBeNull();
+    expect(listNameError("")).toBe("a list needs a name");
+    expect(listNameError("-x")).toBe("names start with a letter or digit and use letters, digits and _ . : / - (64 at most)");
+    expect(listNameError("builtin:member")).toBe("builtin: names are reserved for the built-in lists");
   });
 });
