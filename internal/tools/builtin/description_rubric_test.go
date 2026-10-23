@@ -32,7 +32,7 @@ func rubricTools(t *testing.T) []tools.Tool {
 	t.Helper()
 	return []tools.Tool{
 		&Read{}, &Write{}, &Edit{}, &Grep{}, &Glob{}, &NotebookEdit{},
-		&HTTP{}, &WebFetch{}, &WebSearch{}, &Bash{}, &Recall{}, &Path{},
+		&HTTP{}, &WebFetch{}, &WebSearch{}, &Bash{}, &Recall{}, &Path{}, &File{},
 	}
 }
 

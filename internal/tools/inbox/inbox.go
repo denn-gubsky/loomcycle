@@ -480,8 +480,15 @@ func cleanRel(rel string) string {
 	return strings.TrimPrefix(rel, "/")
 }
 
-// Ref is the reference for a path relative to the inbox root.
-func Ref(rel string) string { return "volume:" + Name + ":/" + cleanRel(rel) }
+// Ref is the reference for a path relative to the inbox root, in the grammar
+// Crypto's from/to and the File tool take: the path is relative to the
+// volume's root, as Read's is (a leading "/" would name a host path).
+func Ref(rel string) string {
+	if rel = cleanRel(rel); rel == "" {
+		rel = "."
+	}
+	return "volume:" + Name + ":" + rel
+}
 
 // Stub is the one line the model sees in place of a kept file.
 func Stub(r Record) string {

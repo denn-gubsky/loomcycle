@@ -1788,7 +1788,7 @@ type LimitInfo struct {
 // FileCapturedInfo is the structured payload on EventFileCaptured (RFC FF):
 // one file a tool returned, as the runtime kept it.
 type FileCapturedInfo struct {
-	// Ref is the file's reference, volume:inbox:/<dir>/<name>.
+	// Ref is the file's reference, volume:inbox:<dir>/<name>.
 	Ref string `json:"ref"`
 	// MediaType is the type the runtime settled on (declared, else sniffed).
 	MediaType string `json:"media_type"`

@@ -40,7 +40,7 @@ func TestInbox_CaptureKeepsBytesAndReturnsStub(t *testing.T) {
 	if res.Record.MediaType != "application/pdf" {
 		t.Errorf("media type = %q", res.Record.MediaType)
 	}
-	for _, want := range []string{"[file: volume:inbox:/documents/10.pdf", "application/pdf", "from mcp:ms365/get", "sha256:"} {
+	for _, want := range []string{"[file: volume:inbox:documents/10.pdf", "application/pdf", "from mcp:ms365/get", "sha256:"} {
 		if !strings.Contains(res.Stub, want) {
 			t.Errorf("stub %q lacks %q", res.Stub, want)
 		}

@@ -48,7 +48,7 @@ var pngBytes = []byte("\x89PNG\r\n\x1a\n-not-really-an-image-")
 func TestMCPResult_ImageOnlyResultIsNotEmpty(t *testing.T) {
 	r := inboxtest.New(t, "root-1", inbox.Service{})
 	got := runContent(t, r.Ctx, map[string]any{"type": "image", "mimeType": "image/png", "data": base64.StdEncoding.EncodeToString(pngBytes)})
-	if !strings.HasPrefix(got, "[file: volume:inbox:/images/get.png · image/png") || !strings.Contains(got, "from mcp:ms365/get") {
+	if !strings.HasPrefix(got, "[file: volume:inbox:images/get.png · image/png") || !strings.Contains(got, "from mcp:ms365/get") {
 		t.Fatalf("model text = %q", got)
 	}
 	ref, _ := r.Set.Get(inbox.Name)
@@ -68,7 +68,7 @@ func TestMCPResult_BlobBlockLandsInInboxAsStub(t *testing.T) {
 		map[string]any{"type": "text", "text": "Downloaded:"},
 		map[string]any{"type": "resource", "resource": map[string]any{"uri": "file:///drive/Board%20papers.pdf", "mimeType": "application/pdf", "blob": blob}},
 	)
-	want := "Downloaded:\n[file: volume:inbox:/documents/Board-papers.pdf · application/pdf"
+	want := "Downloaded:\n[file: volume:inbox:documents/Board-papers.pdf · application/pdf"
 	if !strings.HasPrefix(got, want) {
 		t.Fatalf("model text = %q, want prefix %q", got, want)
 	}
