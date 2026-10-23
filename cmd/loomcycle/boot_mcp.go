@@ -59,6 +59,7 @@ func (b *boot) buildMCP() {
 			return tools.RunIdentity(ctx).TenantID
 		},
 	)
+	mcpPool.SetResultPolicy(mcpResultPolicy(cfg, mcpDynView))
 	b.addCleanup(mcpPool.Close)
 
 	// v0.9.x MCPServerDef tool — operator-admin-only. NOT appended to

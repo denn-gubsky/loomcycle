@@ -17,7 +17,7 @@ import (
 // so an image-only result reached the model as an empty string. A resource
 // that carries text is text, and a resource link is shown as one line the
 // agent can act on.
-func renderResult(ctx context.Context, server, tool string, res *CallToolResult) string {
+func renderResult(ctx context.Context, server, tool string, res *CallToolResult, pol ResultPolicy) string {
 	if res == nil {
 		return ""
 	}
@@ -29,15 +29,18 @@ func renderResult(ctx context.Context, server, tool string, res *CallToolResult)
 		if i > 0 && out.Len() > 0 {
 			out.WriteString("\n")
 		}
-		out.WriteString(renderBlock(ctx, origin, tool, b))
+		out.WriteString(renderBlock(ctx, origin, tool, b, pol))
 	}
 	return out.String()
 }
 
 // renderBlock is one block's text.
-func renderBlock(ctx context.Context, origin, tool string, b ContentBlock) string {
+func renderBlock(ctx context.Context, origin, tool string, b ContentBlock, pol ResultPolicy) string {
 	switch b.Type {
 	case "text":
+		if pol.CaptureBase64 {
+			return captureTextBase64(ctx, origin, tool, b.Text, pol.minBytes())
+		}
 		return b.Text
 	case "image", "audio":
 		var blk struct {

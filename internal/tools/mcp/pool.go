@@ -44,6 +44,10 @@ type Pool struct {
 	// direction). Nil-safe: a nil tenantOf treats every call as the
 	// shared "" tenant (legacy single-tenant behaviour).
 	tenantOf func(ctx context.Context) string
+	// resultPolicy resolves how a (tenant, server)'s results are rendered;
+	// nil renders every server's text as it came. Set at boot with
+	// SetResultPolicy, read under mu.
+	resultPolicy func(tenant, name string) ResultPolicy
 }
 
 // poolKey is the RFC N composite cache key: a server name within a
@@ -78,6 +82,29 @@ func NewPool(build func(tenant, name string) (Caller, error), teardown func(c Ca
 		teardown: teardown,
 		tenantOf: tenantOf,
 	}
+}
+
+// SetResultPolicy installs how each server's results are rendered (RFC FF
+// binary_results). It is a resolver rather than a value captured at build
+// because the setting is per (tenant, server) and comes from the same
+// tenant-aware lookup the build callback dials through; resolving at each
+// call keeps a promoted def's setting live without touching the cached
+// client. Call it at boot, before the pool serves calls.
+func (p *Pool) SetResultPolicy(fn func(tenant, name string) ResultPolicy) {
+	p.mu.Lock()
+	p.resultPolicy = fn
+	p.mu.Unlock()
+}
+
+// policyFor is the result policy for a server in the run ctx's tenant.
+func (p *Pool) policyFor(ctx context.Context, name string) ResultPolicy {
+	p.mu.Lock()
+	fn := p.resultPolicy
+	p.mu.Unlock()
+	if fn == nil {
+		return ResultPolicy{}
+	}
+	return fn(p.tenantFor(ctx), name)
 }
 
 // tenantFor derives the cache tenant for a run ctx. Nil-safe.
@@ -449,7 +476,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		lcotel.SetSpanErrorMessage(span, "mcp tool returned isError=true")
 	}
 	return tools.Result{
-		Text:    withUpstreamStructured(renderResult(ctx, t.server, t.toolName, res), res.StructuredContent),
+		Text:    withUpstreamStructured(renderResult(ctx, t.server, t.toolName, res, t.pool.policyFor(ctx, t.server)), res.StructuredContent),
 		IsError: res.IsError,
 	}, nil
 }

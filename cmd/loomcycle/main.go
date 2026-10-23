@@ -1220,6 +1220,25 @@ func lateCredSubstitute(ref *func(ctx context.Context, s, targetURL string) (str
 	}
 }
 
+// mcpResultPolicy resolves a server's binary_results (RFC FF) the way
+// mcpPoolBuild resolves the server it dials, so the setting a call renders
+// with belongs to the server that answered it: a static stdio server from the
+// yaml, any other through lookup.MCPServer in the run's tenant.
+func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, name string) mcp.ResultPolicy {
+	return func(tenant, name string) mcp.ResultPolicy {
+		mode := ""
+		if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
+			mode = srv.BinaryResults
+		} else if spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name); ok {
+			mode = spec.BinaryResults
+		}
+		return mcp.ResultPolicy{
+			CaptureBase64:  mode == config.BinaryResultsCapture,
+			Base64MinBytes: cfg.Env.FileBase64MinBytes,
+		}
+	}
+}
+
 // mcpPoolBuild returns the MCP pool's build callback: it resolves a server
 // NAME for a tenant (static stdio first, then lookup.MCPServer's tenant-dynamic
 // → static yaml → shared-dynamic order) and builds its client. credSubstitute
