@@ -154,3 +154,31 @@ export function forbiddenKind(e: unknown): ForbiddenKind | null {
       return null;
   }
 }
+
+// The access-control refusals apiError words, by the status each comes on.
+const ACCESS_REFUSALS: Readonly<Record<string, number>> = {
+  acl_denied: 403,
+  insufficient_scope: 403,
+  acl_self_elevation: 403,
+  authz_subject: 403,
+  acl_binding_invalid: 400,
+  group_external: 409,
+  acl_unavailable: 503,
+};
+
+// accessRefusalText words an access-control refusal carried by a
+// @loomcycle/client error (its `status` and raw `bodyText`) as the Web UI's own
+// pages word it, without the status line; undefined for anything else. It is
+// the formatter the Web UI hands @loomcycle/library, whose calls go through
+// the client rather than api.ts, so the Library keeps its own wording (the
+// substrate refusals it explains) for every other error.
+//
+// The client keeps the first 1 KiB of the body: a denial whose reasons run
+// past that no longer parses, and keeps the Library's wording.
+export function accessRefusalText(e: unknown): string | undefined {
+  if (!(e instanceof Error)) return undefined;
+  const { status, bodyText } = e as { status?: unknown; bodyText?: unknown };
+  if (typeof status !== "number" || typeof bodyText !== "string") return undefined;
+  const a = apiError(status, "", bodyText, { serverMessage: true });
+  return a.code !== undefined && ACCESS_REFUSALS[a.code] === status ? a.message : undefined;
+}
