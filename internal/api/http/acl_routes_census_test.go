@@ -3,11 +3,13 @@ package http
 import (
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
 // aclRouteOps is every HTTP route of the access-control management surface,
@@ -95,6 +97,33 @@ func TestACLRouteSurfaces_MatchTheRoutes(t *testing.T) {
 		}
 		if !governed || *r.surface() != route {
 			t.Errorf("%s %s: the route asks %+v (governed=%v), the operation asks %+v", r.method, r.pattern, route, governed, *r.surface())
+		}
+	}
+}
+
+// The twins' op table and the HTTP routes describe one surface: every op a
+// route is listed under is in the table, and every op in the table has a
+// route — the acldef ops other than names all ride POST /v1/_acldef, whose
+// body carries the op.
+func TestACLRouteOps_EveryTwinOpHasARoute(t *testing.T) {
+	routed := map[string]bool{}
+	for _, r := range aclRouteOps {
+		ops := connector.ACLManagementOps(r.family)
+		if ops == nil {
+			t.Errorf("%s %s names family %q, which the op table does not have", r.method, r.pattern, r.family)
+			continue
+		}
+		if !slices.Contains(ops, r.op) {
+			t.Errorf("%s %s is op %s.%s, which the op table does not list", r.method, r.pattern, r.family, r.op)
+		}
+		routed[r.family+"."+r.op] = true
+	}
+	for _, family := range connector.ACLManagementFamilies() {
+		for _, op := range connector.ACLManagementOps(family) {
+			if routed[family+"."+op] || family == connector.ACLFamilyAclDef && op != "names" {
+				continue
+			}
+			t.Errorf("op %s.%s has no HTTP route: a twin may not carry an operation HTTP does not", family, op)
 		}
 	}
 }
