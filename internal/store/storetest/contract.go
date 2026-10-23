@@ -34,6 +34,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -14690,8 +14691,8 @@ func testVolumeDefTenantIsolation(t *testing.T, s store.Store) {
 	}
 }
 
-func mkCredentialDef(tenant, scope, scopeID, name, value string) store.CredentialDefRow {
-	return store.CredentialDefRow{
+func mkCredentialDef(tenant, scope, scopeID, name, value string) credentialdef.Row {
+	return credentialdef.Row{
 		TenantID: tenant, Scope: scope, ScopeID: scopeID, Name: name,
 		Backend:    "inline",
 		Definition: json.RawMessage(fmt.Sprintf(`{"value":%q}`, value)),
