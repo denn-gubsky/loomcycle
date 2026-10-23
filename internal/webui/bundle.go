@@ -171,7 +171,11 @@ func loadDir(dir string, level int, lim limits) (*Bundle, error) {
 		return nil, refuse(ReasonDirUnreadable, "open: %v", err)
 	}
 	defer root.Close()
+	return loadRoot(root, level, lim)
+}
 
+// loadRoot verifies the bundle under root, which the caller opened and closes.
+func loadRoot(root *os.Root, level int, lim limits) (*Bundle, error) {
 	m, err := readManifest(root, lim)
 	if err != nil {
 		return nil, err
