@@ -107,6 +107,8 @@ type Tree struct {
 	// relative to the inbox root. A file it has no entry for (one the agent
 	// wrote, or one kept before a resume) is still a file; stat recomputes.
 	index map[string]Record
+	// registered counts the secrets the tree's tools handed the redactor.
+	registered int
 }
 
 // NewTree returns an empty tree state.
