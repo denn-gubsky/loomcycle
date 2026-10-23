@@ -274,6 +274,28 @@ func (e *Effective) Decide(req Request) Decision {
 	return Decision{Outcome: NoMatch}
 }
 
+// DenyPatterns returns the names of every UNCONDITIONAL deny selector on
+// typ for action, as written (`support/**`, `Bash`), for a consumer that
+// enforces with its own pattern list — the `skills:` allowlist takes `-glob`
+// entries in the same `/`-segmented syntax. A conditional deny cannot be
+// expressed as a pattern and is left to the per-call check.
+func (e *Effective) DenyPatterns(typ, action string) []string {
+	tr := e.byType[typ]
+	if tr == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range tr.deny {
+		if r.when != nil || !r.actions[action] {
+			continue
+		}
+		for _, s := range r.sels {
+			out = append(out, s.raw)
+		}
+	}
+	return out
+}
+
 // Quick is the hot-path form of Decide for a condition-free question about
 // an exact name (a tool call, a volume binding): a map read when every rule
 // that could match is a literal, else a full Decide. It returns the same

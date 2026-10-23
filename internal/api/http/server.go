@@ -3411,6 +3411,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC CT: context.recall auto-grants the Recall tool so enabling recall works
 	// without also listing Recall in tools:.
 	allowedTools = s.grantRecallTool(allowedTools, config.MergeContext(agentDef.Context, in.Context))
+	// RFC EY §3.7: the caller's ACL removes what it may not invoke, from
+	// the schema the model sees and not only on call (owner decision D6).
+	callerACL := principalACL(ctx)
+	allowedTools, aclRemovedTools := tools.NarrowToolsByACL(ctx, callerACL, allowedTools)
 	var hostPolicy tools.HostPolicyValue
 	if in.AllowedHosts != nil || s.cfg().Env.HTTPCallerAuthoritative {
 		var caller []string
@@ -3690,6 +3694,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// A tool the agent holds and cannot use, said once here rather than
 	// discovered by the model being refused mid-task.
 	emitInertCapabilityWarnings(agentDef, emit)
+	emitACLRemovedTools(aclRemovedTools, emit)
 	emitInertInterruption(holdsInterruptionTool(allowedTools), in.Interruption, emit)
 
 	// PR 2: operator steering queue for this run (in-flight input injection).
@@ -3717,8 +3722,10 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// defaults resolve from the user, tenant and isolation on ctx.
 	mergedContext := runCfg.Context // per-run > per-agent (RFC CR); resolved once, above
 	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, effectiveAgentName, runPolicySource{
-		Tools: allowedTools,
-		Hosts: hostPolicy,
+		Tools:           allowedTools,
+		Hosts:           hostPolicy,
+		ACL:             callerACL,
+		ACLRemovedTools: aclRemovedTools,
 		// RFC AH: the run's filesystem-volume bindings. Unbound agents get an
 		// inactive policy (every file tool refuses); sub-agents inherit and
 		// narrow this.
@@ -7268,6 +7275,12 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// (resolveSkillBodiesForRun / applyMemoryInjection): both return a copy
 	// with only SystemPrompt changed, which
 	// TestSubRunConfig_DefRewritesLeaveTuningUntouched pins.
+	// RFC EY §3.7: the originating principal's set binds every hop. May it
+	// spawn this agent at all, and what of the child's own definition may
+	// it reach. The set is the parent policy's (inherited), never re-read.
+	if err := s.aclAdmitSpawn(ctx, parentPolicy.ACL, name); err != nil {
+		return nil, err
+	}
 	childOwn, _ := s.agentRunPolicy(ctx, def, name, runPolicySource{
 		Volumes:      s.volumePolicyForAgent(ctx, def),
 		Crypto:       cryptoPolicyForAgent(def),
@@ -7275,6 +7288,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Context:      def.Context,
 		FanoutCap:    def.MaxConcurrentChildren,
 		Interruption: subRunCfg.Interruption,
+		ACL:          parentPolicy.ACL,
 	})
 	childGrant := tools.ChildGrant{
 		Own:             childOwn,
@@ -7557,6 +7571,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// renders this list. Safe to hoist: applyMemoryInjection rewrites only
 	// SystemPrompt, so def.Tools is the same value it was below.
 	subTools := filterTools(s.candidateTools(ctx, tenantFromCtx(ctx), def.Tools), def.Tools, nil)
+	subTools, subACLRemoved := tools.NarrowToolsByACL(ctx, parentPolicy.ACL, subTools)
 	subTools = s.grantRecallTool(subTools, def.Context) // RFC CT: recall-enabled sub-agent gets Recall
 	// RFC BL P1: memory injection for the sub-agent. ctx still carries the
 	// PARENT run's core-block policy, so an inherit_core_blocks sub-agent picks
@@ -7672,6 +7687,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// record above was written from. It REPLACES the parent's: whatever the
 	// parent held reaches the child only where Inherit says it does.
 	childGrant.Own.Tools = toolNames(subTools)
+	childGrant.Own.ACLRemovedTools = subACLRemoved
 	// RFC BL P1: the child's effective core blocks (its own + any inherited
 	// user/tenant blocks), so the Memory tool enforces THIS agent's blocks and
 	// a grandchild inherits from here.

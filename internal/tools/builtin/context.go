@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -469,6 +470,24 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		}
 	} else {
 		out["filesystem"] = "none — no volume bound; Read/Write/Edit/Glob/Grep/Bash refuse. Bind a volume via the agent's `volumes:` list (operator declares the universe in the top-level `volumes:` config)."
+	}
+	// RFC EY: the access-control set the run's tree runs under — the
+	// originating principal's groups, the rollout mode, and what this hop's
+	// definition lost to it — so an agent plans around its ceiling rather
+	// than discovering it mid-task.
+	if rp := tools.PolicyOf(ctx); rp.ACL != nil || len(rp.ACLRemovedTools) > 0 {
+		acl := map[string]any{"mode": string(authz.ModeFrom(ctx))}
+		if rp.ACL != nil {
+			acl["version"] = rp.ACL.Version
+			acl["groups"] = rp.ACL.Subject.Groups
+			if m := rp.ACL.Missing(); len(m) > 0 {
+				acl["missing_acls"] = m
+			}
+		}
+		if len(rp.ACLRemovedTools) > 0 {
+			acl["removed_tools"] = rp.ACLRemovedTools
+		}
+		out["acl"] = acl
 	}
 	// The run's ephemeral volumes are not bindings: any agent of the run
 	// reaches one by naming it in the `volume` argument, whatever its own

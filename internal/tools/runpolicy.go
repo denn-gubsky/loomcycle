@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -83,6 +84,16 @@ type RunPolicy struct {
 	// OperatorAuthored is whether the run's agent definition was written by
 	// an operator rather than by an agent at runtime.
 	OperatorAuthored bool
+	// ACL is the compiled access-control set of the principal that started
+	// the run's tree (RFC EY). It is inherited unchanged by every sub-agent —
+	// the originating user's authority binds every hop — and each hop's own
+	// definition is intersected with it again (NarrowToolsByACL and the
+	// scope narrowings in the entry points). nil: no principal (open mode,
+	// a trigger firing under a definition) or no resolver.
+	ACL *authz.Effective
+	// ACLRemovedTools names the tools this run's definition granted and its
+	// ACL removed, for Context op=self; each hop's own.
+	ACLRemovedTools []string
 
 	// FanoutCap is the run's own parallel_spawn width; 0 lets the calling
 	// agent's definition decide, by name, at spawn time.
@@ -207,6 +218,8 @@ var inheritRules = map[string]inheritRule{
 	"ShellCreds":         ruleNarrow,  // the credential names both the parent and the child allow (RFC EW)
 	"GitRemote":          ruleNarrow,  // each network op only when both the parent and the child allow it (RFC FB)
 	"OperatorAuthored":   ruleOwn,     //
+	"ACL":                ruleInherit, // the originating principal's set binds the whole tree (RFC EY)
+	"ACLRemovedTools":    ruleOwn,     // what this hop's definition lost to the ACL
 	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set, else the one set
 	"Overrides":          ruleInherit, // only a child of the same definition takes them
 	"Compaction":         ruleMerge,   // parent wins per field, then this spawn's override
@@ -259,6 +272,8 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		ShellCreds:        NarrowShellCreds(p.ShellCreds, own.ShellCreds),
 		GitRemote:         NarrowGitRemote(p.GitRemote, own.GitRemote),
 		OperatorAuthored:  own.OperatorAuthored,
+		ACL:               p.ACL,
+		ACLRemovedTools:   own.ACLRemovedTools,
 		FanoutCap:         NarrowFanoutCap(p.FanoutCap, own.FanoutCap),
 		Overrides:         p.Overrides,
 		// A child's own settings fill what its parent left unset; a per-spawn
