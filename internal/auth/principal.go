@@ -1,6 +1,10 @@
 package auth
 
-import "context"
+import (
+	"context"
+
+	"github.com/denn-gubsky/loomcycle/internal/authz"
+)
 
 // RFC L OSS multi-tenant authorization — the authoritative principal.
 //
@@ -35,6 +39,16 @@ type Principal struct {
 	// Restrictions narrows the principal below its scopes. Zero for a token
 	// minted without any, a legacy principal, and open mode.
 	Restrictions Restrictions
+	// Groups is the principal's transitively closed group membership in its
+	// tenant (RFC EY), resolved server-side after the bearer; nil when no
+	// ACL resolver is wired.
+	Groups []string
+	// Effective is the principal's compiled ACL set (RFC EY), resolved after
+	// the bearer and cached per (tenant, subject, acl_version). nil when no
+	// resolver is wired or the store could not be read: the gates then fall
+	// back to the scope answer in compat and shadow mode and refuse in
+	// enforce mode.
+	Effective *authz.Effective
 }
 
 type ctxKeyPrincipal struct{}

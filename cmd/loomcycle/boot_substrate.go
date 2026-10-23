@@ -7,8 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/hooks/codehook"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -245,6 +247,15 @@ func (b *boot) wireAuth() {
 		}
 	}
 	srv.EnableTokenCache(time.Duration(authCacheTTL) * time.Second)
+	// RFC EY: groups + ACL rule lists. The resolver is always wired; the
+	// mode decides what a decision means (compat by default: the scope
+	// gates decide and an explicit deny is honoured on top).
+	aclMode, err := authz.ParseMode(cfg.Env.ACLMode)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	srv.SetACLResolver(aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second))
+	log.Printf("authz: access control mode=%s (LOOMCYCLE_ACL), set cache ttl=%ds", aclMode, cfg.Env.ACLCacheTTLSeconds)
 	// Delegated user-token mints and revocations are recorded to the same
 	// sink as operator-token mutations. Not wired when there is no file: the
 	// handler treats a nil sink as "not recorded".

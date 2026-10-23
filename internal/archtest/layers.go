@@ -144,6 +144,7 @@ var layers = []layer{
 		// internal/sqlmem (L3) and the Document/Path tools (L5).
 		name: "L4 memory",
 		subsystems: []string{
+			"internal/aclres",
 			"internal/changesub",
 			"internal/directory",
 			"internal/docremote",

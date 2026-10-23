@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"log/slog"
 	nethttp "net/http"
 	"slices"
@@ -34,6 +35,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/awaited"
 	"github.com/denn-gubsky/loomcycle/internal/cancel"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -100,6 +102,7 @@ type Server struct {
 	// principalResolver (RFC L) resolves a bearer → auth.Principal. Nil
 	// = legacy-token-only auth with no principal stamping.
 	principalResolver func(context.Context, string) (auth.Principal, bool)
+	aclMode           authz.Mode
 	// authConfigured reports whether auth is active (open-mode decision).
 	authConfigured func(context.Context) bool
 
@@ -134,6 +137,9 @@ type Config struct {
 	// post-write reload (the store row is still persisted).
 	Limits    tokenLimitTracker
 	AuthToken string
+	// ACLMode is the RFC EY rollout mode the gate evaluates under (compat
+	// when unset); it mirrors the HTTP server's.
+	ACLMode authz.Mode
 	// PrincipalResolver resolves a raw bearer to an auth.Principal (RFC
 	// L). Wired in main.go to the HTTP server's resolver so gRPC reuses
 	// the identical token-substrate + legacy-fallback logic. When set,
@@ -174,6 +180,7 @@ func New(cfg Config) *Server {
 		queuePosition:     cfg.QueuePosition,
 		authToken:         cfg.AuthToken,
 		principalResolver: cfg.PrincipalResolver,
+		aclMode:           cfg.ACLMode,
 		authConfigured:    cfg.AuthConfigured,
 		buildCommit:       cfg.BuildCommit,
 		buildTime:         cfg.BuildTime,
@@ -914,6 +921,7 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 		}
+		ctx = authz.WithTransport(authz.WithMode(ctx, s.aclMode), "grpc")
 		return auth.WithPrincipal(ctx, p), nil
 	}
 	// Legacy-only fallback (no resolver wired — e.g. test harnesses).
@@ -1113,10 +1121,34 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 		// (credential.ConstrainToUserScope) confines it to scope=user before the
 		// tool. tenant/agent scope still needs substrate:tenant. (gRPC has no RFC CB
 		// member bypass, so a plain member still uses the HTTP surface.)
-		if isCredentialSelfServiceRPC(fullMethod) && auth.IsIsolated(p, ok) {
-			return nil
+		if !(isCredentialSelfServiceRPC(fullMethod) && auth.IsIsolated(p, ok)) {
+			return status.Errorf(codes.PermissionDenied, "insufficient scope: %s required", required)
 		}
-		return status.Errorf(codes.PermissionDenied, "insufficient scope: %s required", required)
+	}
+	// RFC EY: the RPC's type-level ACL question, after the scope gate.
+	return enforceACL(ctx, p, fullMethod)
+}
+
+// enforceACL asks the engine the RPC's type-level question under the mode
+// stamped on ctx (authz.Evaluate). A refusal is PermissionDenied with the
+// `acl_denied` text; an enforce-mode request with no compiled set is
+// Unavailable, so the client retries rather than reads it as forbidden.
+func enforceACL(ctx context.Context, p auth.Principal, fullMethod string) error {
+	surface, governed := authz.GRPCSurface(strings.TrimPrefix(fullMethod, grpcMethodPrefix))
+	if !governed {
+		return nil
+	}
+	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
+	switch {
+	case res.Unavailable:
+		return status.Error(codes.Unavailable, "acl_unavailable: access control could not be evaluated; retry")
+	case res.Diverged:
+		log.Printf("authz: acl_shadow_diverged tenant=%q subject=%q action=%s resource=%s:%s outcome=%s transport=grpc",
+			p.TenantID, p.Subject, surface.Action, surface.Type, surface.Name, res.Decision.Outcome)
+	case !res.Allowed:
+		log.Printf("authz: acl_denied tenant=%q subject=%q action=%s resource=%s:%s outcome=%s transport=grpc",
+			p.TenantID, p.Subject, surface.Action, surface.Type, surface.Name, res.Decision.Outcome)
+		return status.Errorf(codes.PermissionDenied, "acl_denied: %s %s:%s", surface.Action, surface.Type, surface.Name)
 	}
 	return nil
 }
