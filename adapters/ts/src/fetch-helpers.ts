@@ -10,7 +10,9 @@
  * the boring fetch + error-translation machinery lives here.
  */
 
+import type { AuthzReason } from "./types.js";
 import {
+  AclDeniedError,
   AgentIDInUseError,
   AgentNotFoundError,
   AlreadyPausingError,
@@ -234,6 +236,7 @@ export async function deleteJSON<T>(
  *   401         → AuthError
  *   403 + code "insufficient_scope" (or an older server's
  *         WWW-Authenticate scope hint) → InsufficientScopeError
+ *   403 + code "acl_denied" → AclDeniedError (action, resource, reasons)
  *   403 (other) → LoomcycleError (base)
  *   404 + "snapshot"   → SnapshotNotFoundError ────────┐
  *   404 + "session"    → SessionNotFoundError          │  All extend
@@ -241,6 +244,7 @@ export async function deleteJSON<T>(
  *   404 + (other)      → NotFoundError (base)          │  catch any 404
  *                                                      │  with one
  *                                                      │  instanceof.
+ *   409 + an access-control code (group_external, *_exists) → LoomcycleError
  *   409 + "already_pausing" / "already paused" → AlreadyPausingError
  *   409 + "not_paused" / "not paused"          → NotPausedError
  *   409 + "session"                            → SessionBusyError
@@ -305,6 +309,15 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
           requiredScope: stringField(bodyObject(bodyText)?.required_scope) ?? hinted,
         });
       }
+      if (opts.code === "acl_denied") {
+        const body = bodyObject(bodyText) ?? {};
+        throw new AclDeniedError(msg, {
+          ...opts,
+          action: stringField(body.action),
+          resource: stringField(body.resource),
+          reasons: aclReasons(body.reasons),
+        });
+      }
       throw new LoomcycleError(msg, opts);
     }
     case 404:
@@ -320,6 +333,11 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       if (bodyLower.includes("agent")) throw new AgentNotFoundError(msg, opts);
       throw new NotFoundError(msg, opts);
     case 409:
+      // The access-control conflicts carry a code, and their messages quote
+      // caller-chosen names (a group called "session-ops"), which the
+      // keyword matches below would misread.
+      if (opts.code !== undefined && ACL_CONFLICT_CODES.has(opts.code))
+        throw new LoomcycleError(msg, opts);
       if (bodyLower.includes("already_pausing") || bodyLower.includes("already paused"))
         throw new AlreadyPausingError(msg, opts);
       if (bodyLower.includes("not_paused") || bodyLower.includes("not paused"))
@@ -410,6 +428,37 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     default:
       throw new LoomcycleError(msg, opts);
   }
+}
+
+/** The 409 codes of the access-control management routes: a group an
+ *  identity provider owns, and a row or membership that already exists. */
+const ACL_CONFLICT_CODES: ReadonlySet<string> = new Set([
+  "group_external",
+  "group_exists",
+  "group_member_exists",
+  "acl_exists",
+  "acl_binding_exists",
+]);
+
+/** aclReasons reads an `acl_denied` body's `reasons`, keeping only entries
+ *  with the fields a reason always has: a proxy's or an older server's
+ *  stray value must not surface as a rule. */
+function aclReasons(v: unknown): AuthzReason[] {
+  if (!Array.isArray(v)) return [];
+  const out: AuthzReason[] = [];
+  for (const r of v) {
+    if (r === null || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const acl = stringField(o.acl);
+    const rule = numberField(o.rule);
+    const effect = o.effect;
+    if (acl === undefined || rule === undefined || (effect !== "allow" && effect !== "deny")) continue;
+    const reason: AuthzReason = { acl, rule, effect };
+    const version = numberField(o.version);
+    if (version !== undefined) reason.version = version;
+    out.push(reason);
+  }
+  return out;
 }
 
 /** retryAfterMs reads a `Retry-After` header given in seconds, as the server

@@ -106,6 +106,8 @@ from .errors import (
     SnapshotVersionError,
     SubstrateToolRefusedError,
     InvalidArgumentError,
+    AclRefusedError,
+    AclDeniedError,
 )
 from .signature import verify_loomcycle_delivery, verify_loomcycle_signature
 
@@ -150,6 +152,9 @@ __all__ = [
     "InvalidArgumentError",
     # v0.8.22 substrate admin
     "SubstrateToolRefusedError",
+    # Access control (RFC EY / EZ)
+    "AclRefusedError",
+    "AclDeniedError",
     "verify_loomcycle_signature",
     "verify_loomcycle_delivery",
 ]

@@ -241,6 +241,30 @@ import type {
   TokenLimitsResponse,
   ConfigResponse,
   SetTokenLimitRequest,
+  AclBinding,
+  AclBindingListResponse,
+  AclCatalog,
+  AclDefInput,
+  AclDefListResponse,
+  AclDefNamesResponse,
+  AclDefRow,
+  AclRule,
+  AclValidateResult,
+  AuthzDecision,
+  AuthzEvaluationRequest,
+  AuthzEvaluationsRequest,
+  AuthzEvaluationsResponse,
+  AuthzExplainResponse,
+  AuthzSimulateRequest,
+  AuthzSimulateResponse,
+  CreateAclBindingBody,
+  CreateGroupBody,
+  GroupDetail,
+  GroupEffective,
+  GroupListResponse,
+  GroupMemberChange,
+  GroupMemberKind,
+  GroupRow,
 } from "./types.js";
 
 /** samplingToWire maps the camelCase SamplingOptions to the snake_case wire
@@ -2553,6 +2577,275 @@ export class LoomcycleClient {
     opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<OperatorTokenDefNamesResponse> {
     return this.listDefNames<OperatorTokenDefNamesResponse>("operatortokendef", opts);
+  }
+
+  // ---- Access control: groups, rule lists, bindings, decisions (RFC EY / EZ) ----
+  //
+  // Groups, lists and bindings are the tenant operator's: a `substrate:tenant`
+  // token, an admin, or the legacy shared token. Any other principal is
+  // refused with 403 (InsufficientScopeError). Every call acts in the caller's
+  // own tenant; `tenant` is an admin's focus on another one and is ignored for
+  // a tenant operator. Rows the config declares are listed beside the stored
+  // ones with `source: "config"`; they cannot be written here. Every write
+  // takes effect on every replica at once. A rule that refuses a call throws
+  // AclDeniedError (403 `acl_denied`) naming the rules that decided.
+  //
+  // The decision questions (authzEvaluation / authzEvaluations / authzExplain
+  // / authzSimulate) are open to any principal about itself; naming another
+  // subject of the tenant needs a tenant operator (403 `authz_subject`).
+  // Every call here needs a persistent store (503 otherwise) and is refused
+  // from inside a run.
+
+  /** `path` with the admin tenant focus and any extra query parameters. */
+  private aclPath(path: string, tenant?: string, extra?: Record<string, string>): string {
+    const q = new URLSearchParams(extra);
+    if (tenant) q.set("tenant", tenant);
+    const qs = q.toString();
+    return qs ? `${path}?${qs}` : path;
+  }
+
+  /** Every group of the tenant, stored and config-declared, sorted by name
+   *  (`GET /v1/_groups`). */
+  async listGroups(opts?: { tenant?: string; signal?: AbortSignal }): Promise<GroupListResponse> {
+    return jsonFetch<GroupListResponse>(this.ctx, this.aclPath("/v1/_groups", opts?.tenant), opts);
+  }
+
+  /** One stored group with its direct members and the groups it is inside of
+   *  (`GET /v1/_groups/{name}`). A config-only group is not stored and raises
+   *  NotFoundError; {@link LoomcycleClient.getGroupEffective} covers it. */
+  async getGroup(name: string, opts?: { tenant?: string; signal?: AbortSignal }): Promise<GroupDetail> {
+    return jsonFetch<GroupDetail>(
+      this.ctx,
+      this.aclPath(`/v1/_groups/${encodeURIComponent(name)}`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** Every user the group holds, through nested groups at any depth and
+   *  config-declared members included (`GET /v1/_groups/{name}/effective`). */
+  async getGroupEffective(
+    name: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GroupEffective> {
+    return jsonFetch<GroupEffective>(
+      this.ctx,
+      this.aclPath(`/v1/_groups/${encodeURIComponent(name)}/effective`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** Create a group, or update its description and `external_id` if the name
+   *  exists (`POST /v1/_groups`). A group with an `external_id` is owned by an
+   *  identity provider: a later write to it raises a 409 LoomcycleError with
+   *  code `group_external`. */
+  async createGroup(
+    body: CreateGroupBody,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GroupRow> {
+    return postJSON<GroupRow>(this.ctx, this.aclPath("/v1/_groups", opts?.tenant), body, opts);
+  }
+
+  /** Delete a group and every membership edge naming it
+   *  (`DELETE /v1/_groups/{name}`). Bindings to it stay and apply to no one.
+   *  NotFoundError when there is no such group. */
+  async deleteGroup(
+    name: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<{ deleted: string }> {
+    return deleteJSON<{ deleted: string }>(
+      this.ctx,
+      this.aclPath(`/v1/_groups/${encodeURIComponent(name)}`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** Add a user or a group to a group (`POST /v1/_groups/{name}/members`). A
+   *  group member nests: its members are in this group too. The server
+   *  refuses an edge that would close a cycle or nest too deep (400), one
+   *  that exists (409 `group_member_exists`), and a delegated writer adding
+   *  itself (403 `acl_self_elevation`). */
+  async addGroupMember(
+    name: string,
+    member: { kind: GroupMemberKind; id: string },
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GroupMemberChange> {
+    return postJSON<GroupMemberChange>(
+      this.ctx,
+      this.aclPath(`/v1/_groups/${encodeURIComponent(name)}/members`, opts?.tenant),
+      { kind: member.kind, id: member.id },
+      opts,
+    );
+  }
+
+  /** Remove one membership edge
+   *  (`DELETE /v1/_groups/{name}/members/{kind}/{id}`). NotFoundError when
+   *  there is no such edge. */
+  async removeGroupMember(
+    name: string,
+    kind: GroupMemberKind,
+    id: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GroupMemberChange> {
+    const path = `/v1/_groups/${encodeURIComponent(name)}/members/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`;
+    return deleteJSON<GroupMemberChange>(this.ctx, this.aclPath(path, opts?.tenant), opts);
+  }
+
+  /** The AclDef family, op-dispatched — the same ops the gRPC `AclDef` RPC
+   *  and the MCP `acldef` tool take. Every op but `names` posts to
+   *  `POST /v1/_acldef`; `names` reads `GET /v1/_acldef/names`, which is
+   *  where that op lives on HTTP. The response varies by op; the typed
+   *  helpers below return each op's shape. */
+  async aclDef(
+    input: AclDefInput,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<unknown> {
+    if (input.op === "names") return this.listAclDefNames(opts);
+    return postJSON<unknown>(this.ctx, this.aclPath("/v1/_acldef", opts?.tenant), input, opts);
+  }
+
+  /** Every rule list of the tenant, stored and config-declared, plus the
+   *  built-in baselines (`aclDef` op `list`). Retired lists only with
+   *  `includeRetired`. */
+  async listAclDefs(opts?: {
+    includeRetired?: boolean;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<AclDefListResponse> {
+    const input: AclDefInput = { op: "list" };
+    if (opts?.includeRetired) input.include_retired = true;
+    return (await this.aclDef(input, opts)) as AclDefListResponse;
+  }
+
+  /** One rule list, retired or not (`aclDef` op `get`). A config-declared
+   *  list is returned with `source: "config"`. NotFoundError when absent. */
+  async getAclDef(name: string, opts?: { tenant?: string; signal?: AbortSignal }): Promise<AclDefRow> {
+    return (await this.aclDef({ op: "get", name }, opts)) as AclDefRow;
+  }
+
+  /** Create or replace a rule list by name (`aclDef` op `put`): bumps its
+   *  version and un-retires it. The rules are validated first; a list the
+   *  engine could not enforce is refused with 400. A delegated writer may
+   *  not rewrite a list bound to itself (403 `acl_self_elevation`). */
+  async putAclDef(
+    body: { name: string; rules: AclRule[]; description?: string },
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AclDefRow> {
+    const input: AclDefInput = { op: "put", name: body.name, rules: body.rules };
+    if (body.description !== undefined) input.description = body.description;
+    return (await this.aclDef(input, opts)) as AclDefRow;
+  }
+
+  /** Retire a rule list (`aclDef` op `retire`). Bindings to it stay and match
+   *  nothing; a later `putAclDef` of the name brings it back. NotFoundError
+   *  when there is no live list of that name. */
+  async retireAclDef(
+    name: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<{ retired: string }> {
+    return (await this.aclDef({ op: "retire", name }, opts)) as { retired: string };
+  }
+
+  /** Check rules without storing them (`aclDef` op `validate`). Rules the
+   *  engine refuses raise InvalidArgumentError (code `acl_invalid`) naming
+   *  the fault. */
+  async validateAclRules(
+    rules: AclRule[],
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AclValidateResult> {
+    return (await this.aclDef({ op: "validate", rules }, opts)) as AclValidateResult;
+  }
+
+  /** The resource types, verbs and transports a rule may name (`aclDef` op
+   *  `catalog`). */
+  async getAclCatalog(opts?: { tenant?: string; signal?: AbortSignal }): Promise<AclCatalog> {
+    return (await this.aclDef({ op: "catalog" }, opts)) as AclCatalog;
+  }
+
+  /** Every live rule-list name a binding in the tenant can reach, stored and
+   *  config-declared, sorted (`GET /v1/_acldef/names`). */
+  async listAclDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<AclDefNamesResponse> {
+    return jsonFetch<AclDefNamesResponse>(this.ctx, this.aclPath("/v1/_acldef/names", opts?.tenant), opts);
+  }
+
+  /** Every binding of the tenant, stored and config-declared
+   *  (`GET /v1/_aclbinding`). Retired ones only with `includeRetired`. */
+  async listAclBindings(opts?: {
+    includeRetired?: boolean;
+    tenant?: string;
+    signal?: AbortSignal;
+  }): Promise<AclBindingListResponse> {
+    const extra = opts?.includeRetired ? { include_retired: "1" } : undefined;
+    return jsonFetch<AclBindingListResponse>(this.ctx, this.aclPath("/v1/_aclbinding", opts?.tenant, extra), opts);
+  }
+
+  /** Bind a rule list to a subject (`POST /v1/_aclbinding`). The list must
+   *  exist and `expires_at` must be in the future, or InvalidArgumentError
+   *  (code `acl_binding_invalid`). A delegated writer may not bind itself, a
+   *  group it is in, its token or its tenant (403 `acl_self_elevation`). An
+   *  empty `subject_id` / `expires_at` is left out of the request. */
+  async createAclBinding(
+    body: CreateAclBindingBody,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AclBinding> {
+    const out: CreateAclBindingBody = { acl: body.acl, subject_kind: body.subject_kind };
+    if (body.subject_id) out.subject_id = body.subject_id;
+    if (body.expires_at) out.expires_at = body.expires_at;
+    return postJSON<AclBinding>(this.ctx, this.aclPath("/v1/_aclbinding", opts?.tenant), out, opts);
+  }
+
+  /** Retire a binding by its `binding_id` (`DELETE /v1/_aclbinding/{id}`).
+   *  NotFoundError when there is no live binding of that id. A config
+   *  binding has no id and cannot be retired here. */
+  async deleteAclBinding(
+    bindingId: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<{ retired: string }> {
+    return deleteJSON<{ retired: string }>(
+      this.ctx,
+      this.aclPath(`/v1/_aclbinding/${encodeURIComponent(bindingId)}`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** May the subject do this? (`POST /v1/_authz/evaluation`, AuthZEN 1.0).
+   *  Omit `subject` to ask about yourself. */
+  async authzEvaluation(
+    req: AuthzEvaluationRequest,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AuthzDecision> {
+    return postJSON<AuthzDecision>(this.ctx, this.aclPath("/v1/_authz/evaluation", opts?.tenant), req, opts);
+  }
+
+  /** Up to 256 questions for one subject in one call
+   *  (`POST /v1/_authz/evaluations`); decisions come back in order. */
+  async authzEvaluations(
+    req: AuthzEvaluationsRequest,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AuthzEvaluationsResponse> {
+    return postJSON<AuthzEvaluationsResponse>(
+      this.ctx,
+      this.aclPath("/v1/_authz/evaluations", opts?.tenant),
+      req,
+      opts,
+    );
+  }
+
+  /** A decision with its working: every rule read for the resource's type
+   *  and why it did or did not match (`POST /v1/_authz/explain`). */
+  async authzExplain(
+    req: AuthzEvaluationRequest,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AuthzExplainResponse> {
+    return postJSON<AuthzExplainResponse>(this.ctx, this.aclPath("/v1/_authz/explain", opts?.tenant), req, opts);
+  }
+
+  /** What a draft of lists and bindings would decide, beside what is decided
+   *  now (`POST /v1/_authz/simulate`). Nothing is written. */
+  async authzSimulate(
+    req: AuthzSimulateRequest,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AuthzSimulateResponse> {
+    return postJSON<AuthzSimulateResponse>(this.ctx, this.aclPath("/v1/_authz/simulate", opts?.tenant), req, opts);
   }
 
   // ---- Schedules admin (GET/POST /v1/_schedules/...) ----

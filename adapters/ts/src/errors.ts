@@ -18,6 +18,8 @@
  * to raise typed errors via `raiseFromResponse`.
  */
 
+import type { AuthzReason } from "./types.js";
+
 export class LoomcycleError extends Error {
   readonly status?: number;
   readonly bodyText?: string;
@@ -315,6 +317,44 @@ export class InsufficientScopeError extends LoomcycleError {
     super(message, opts);
     this.name = "InsufficientScopeError";
     this.requiredScope = opts?.requiredScope ?? null;
+  }
+}
+
+/** An HTTP 403 because an access-control list refused the call: body code
+ *  `acl_denied`. The token's scopes would allow it, but a rule bound to the
+ *  caller (to its subject, a group it is in, its token or its tenant) denies
+ *  it, or, where the deployment enforces lists, no rule allows it.
+ *  `reasons` names the rules that decided — empty when none did — so an
+ *  operator can find the list to change with `authzExplain`. Not retryable:
+ *  the same call is refused until a list or binding changes.
+ *
+ *  Other access-control refusals (`acl_self_elevation`, `authz_subject`,
+ *  `operator_plane`, …) stay a plain LoomcycleError with that `code`. */
+export class AclDeniedError extends LoomcycleError {
+  /** The verb asked, e.g. `read`, `author`, `manage`. Null when the body did
+   *  not carry one. */
+  readonly action: string | null;
+  /** The resource asked about, `type:name` (e.g. `def:acl/ops`). Null when
+   *  the body did not carry one. */
+  readonly resource: string | null;
+  /** The rules that decided, denies first; empty when no rule matched. */
+  readonly reasons: AuthzReason[];
+  constructor(
+    message: string,
+    opts?: {
+      status?: number;
+      bodyText?: string;
+      code?: string;
+      action?: string;
+      resource?: string;
+      reasons?: AuthzReason[];
+    },
+  ) {
+    super(message, opts);
+    this.name = "AclDeniedError";
+    this.action = opts?.action ?? null;
+    this.resource = opts?.resource ?? null;
+    this.reasons = opts?.reasons ?? [];
   }
 }
 

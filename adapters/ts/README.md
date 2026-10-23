@@ -507,6 +507,52 @@ All but the last return `DefNamesResponse`; `live_version_count` / `active_retir
 
 Team options ride on existing methods: `createTeam(name, overlay, { promote, description })` sends the create's own fields (omitted, a create is promoted — the server default; `promote: false` authors it without putting it in force), `forkTeam(name, overlay, { promote, parentDefId, description })` sends the fork's (omitted, the fork is authored but not active — the server default for a fork), and `runTeam({ ..., interruptOnCap: true })` asks a human whether to continue, reroute or abort when a state hits its iteration cap, instead of ending with `iteration_cap`.
 
+### Access control (RFC EY / EZ)
+
+Groups, access-control rule lists, the bindings that attach a list to a subject, and the AuthZEN-shaped decision questions. Groups, lists and bindings are the tenant operator's (`substrate:tenant`, an admin, or the legacy shared token; any other principal gets an `InsufficientScopeError`); the decision questions are open to any principal about itself. Every call acts in your own tenant; `opts.tenant` focuses another for an admin and is ignored for a tenant token. Rows the config declares (`acls:` / `groups:` / `acl_bindings:`) are listed beside the stored ones with `source: "config"`, without versions or timestamps, and cannot be written here. Every call needs a persistent store and is refused from inside a run.
+
+| Method | Route | Returns |
+|---|---|---|
+| `listGroups(opts?)` | `GET /v1/_groups` | `GroupListResponse` — stored and config groups, by name |
+| `getGroup(name, opts?)` | `GET /v1/_groups/{name}` | `GroupDetail` — a stored group, its direct members, `contained_in`; a config-only group is a `NotFoundError` |
+| `getGroupEffective(name, opts?)` | `GET /v1/_groups/{name}/effective` | `GroupEffective` — every user through nested groups, config members included |
+| `createGroup({name, description?, external_id?}, opts?)` | `POST /v1/_groups` | `GroupRow` — an upsert by name |
+| `deleteGroup(name, opts?)` | `DELETE /v1/_groups/{name}` | `{deleted}` |
+| `addGroupMember(name, {kind, id}, opts?)` | `POST /v1/_groups/{name}/members` | `GroupMemberChange`; `kind` is `user` or `group` (nesting) |
+| `removeGroupMember(name, kind, id, opts?)` | `DELETE /v1/_groups/{name}/members/{kind}/{id}` | `GroupMemberChange` with `removed: true` |
+| `aclDef(input, opts?)` | `POST /v1/_acldef` | the op's body; `op: "names"` reads `GET /v1/_acldef/names` |
+| `listAclDefs({includeRetired?}?)` | `aclDef` op `list` | `AclDefListResponse` — `acls` plus the read-only `builtin` baselines |
+| `getAclDef(name, opts?)` | op `get` | `AclDefRow` |
+| `putAclDef({name, rules, description?}, opts?)` | op `put` | `AclDefRow` — creates or replaces, bumping `version` |
+| `retireAclDef(name, opts?)` | op `retire` | `{retired}` |
+| `validateAclRules(rules, opts?)` | op `validate` | `AclValidateResult`; bad rules are an `InvalidArgumentError` with code `acl_invalid` |
+| `getAclCatalog(opts?)` | op `catalog` | `AclCatalog` — types, verbs, scopes, transports |
+| `listAclDefNames(opts?)` | `GET /v1/_acldef/names` | `{names}` |
+| `listAclBindings({includeRetired?}?)` | `GET /v1/_aclbinding` | `AclBindingListResponse` |
+| `createAclBinding({acl, subject_kind, subject_id?, expires_at?}, opts?)` | `POST /v1/_aclbinding` | `AclBinding`; a missing list or a past expiry is an `InvalidArgumentError` with code `acl_binding_invalid` |
+| `deleteAclBinding(bindingId, opts?)` | `DELETE /v1/_aclbinding/{id}` | `{retired}` |
+| `authzEvaluation(req, opts?)` | `POST /v1/_authz/evaluation` | `AuthzDecision` — `decision` is true only when a rule allowed |
+| `authzEvaluations(req, opts?)` | `POST /v1/_authz/evaluations` | `{evaluations}` — up to 256, in order |
+| `authzExplain(req, opts?)` | `POST /v1/_authz/explain` | `AuthzExplainResponse` — every rule read and why |
+| `authzSimulate(req, opts?)` | `POST /v1/_authz/simulate` | `AuthzSimulateResponse` — `now` and `with_draft` per request; nothing is written |
+
+`whoami()` also reports `acl_mode` (`compat` / `shadow` / `enforce`), the caller's `groups` and `acl_version`, each absent when the server does not send it. A delegated writer changing its own authority is refused with code `acl_self_elevation`; a write to a group an identity provider owns (`external_id` set) with a 409 `group_external`. A rule that refuses any call — here or on any other route — throws `AclDeniedError` (see [Errors](#errors)).
+
+```ts
+const { names } = await client.listAclDefNames();
+await client.putAclDef({
+  name: "support-tier-1",
+  rules: [{ effect: "deny", actions: ["invoke"], resources: ["tool:Bash"] }],
+});
+await client.createAclBinding({ acl: "support-tier-1", subject_kind: "group", subject_id: "support" });
+const why = await client.authzExplain({
+  subject: { type: "user", id: "alice" },
+  action: { name: "invoke" },
+  resource: { type: "tool", id: "Bash" },
+});
+console.log(why.decision.outcome, why.traces);
+```
+
 ### Decision models
 
 Ask a **decision model** typed questions about a piece of text and get each answer with its probabilities. A decision model does not write: it reads the `state` you give it and answers a choice, a yes/no or a score, so there is no reply to parse and a call costs a few output tokens. Use it to route, gate, rank or grade text you already have. No run is involved; the tokens are charged to the caller and count against its token budget.
@@ -805,11 +851,13 @@ When the error body is JSON with a string `code` (`token_limit_exceeded`, `per_u
 | 400 | `InvalidArgumentError` |
 | 401 | `AuthError` |
 | 403 + code `insufficient_scope` | `InsufficientScopeError` (not retryable; `e.requiredScope` names the scope the token lacks — from the body's `required_scope`, or from `WWW-Authenticate` on an older server that sent plain text) |
-| 403 (other) | `LoomcycleError` (base; e.g. `restricted_token`, `operator_key_restricted` on `e.code`) |
+| 403 + code `acl_denied` | `AclDeniedError` (an access-control rule refused the call; `e.action`, `e.resource` and `e.reasons` — the rules that decided, denies first, empty when none matched; not retryable) |
+| 403 (other) | `LoomcycleError` (base; e.g. `restricted_token`, `operator_key_restricted`, `acl_self_elevation`, `authz_subject` on `e.code`) |
 | 404 + "snapshot" | `SnapshotNotFoundError` ⎫ |
 | 404 + "session" | `SessionNotFoundError` ⎬ all extend `NotFoundError` |
 | 404 + "agent" | `AgentNotFoundError` ⎬ |
 | 404 (other) | `NotFoundError` (base) ⎭ catch any 404 with one `instanceof` |
+| 409 + code `group_external` / `group_exists` / `group_member_exists` / `acl_exists` / `acl_binding_exists` | `LoomcycleError` (base; matched by code before the keywords below, which a group named e.g. `session-ops` would trip) |
 | 409 + "already_pausing" / "already paused" | `AlreadyPausingError` |
 | 409 + "not_paused" / "not paused" | `NotPausedError` |
 | 409 + "session" | `SessionBusyError` |
