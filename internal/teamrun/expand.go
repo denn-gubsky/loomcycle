@@ -66,7 +66,7 @@ type Env struct {
 // state's templates (Env.Now is read once per state, so two tokens in one
 // prompt cannot disagree by a millisecond).
 func (e Env) Values() map[string]string {
-	out := make(map[string]string, len(e.Vars)+5)
+	out := make(map[string]string, len(e.Vars))
 	for k, v := range e.Vars {
 		out["var."+k] = v
 	}
