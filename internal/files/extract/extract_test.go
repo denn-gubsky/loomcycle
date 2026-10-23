@@ -177,14 +177,13 @@ func TestRegistry_PicksBySniffedTypeThenExtension(t *testing.T) {
 		{"text/html; charset=utf-8", "x", "extract.HTML"},
 		{"text/csv", "x.txt", "extract.CSV"},
 		{"image/png", "x", "extract.ImageFile"},
+		{"application/pdf", "x.bin", "extract.PDF"},
+		{"", "x.pdf", "extract.PDF"},
 	} {
 		e, ok := g.For(tc.mt, tc.name)
 		if !ok || typeName(e) != tc.want {
 			t.Errorf("For(%q,%q) = %v, want %s", tc.mt, tc.name, e, tc.want)
 		}
-	}
-	if _, ok := g.For("application/pdf", "x.pdf"); ok {
-		t.Error("a PDF matched an extractor; P4b adds that one")
 	}
 	if _, err := g.Extract(context.Background(), "application/x-msdownload", bytes.NewReader(nil), 0, &memSink{}, Options{Name: "x.exe"}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("err = %v", err)
@@ -197,6 +196,8 @@ func typeName(e Extractor) string {
 		return "extract.DOCX"
 	case XLSX:
 		return "extract.XLSX"
+	case PDF:
+		return "extract.PDF"
 	case PPTX:
 		return "extract.PPTX"
 	case HTML:
