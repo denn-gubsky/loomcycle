@@ -5,7 +5,7 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -104,6 +104,6 @@ func registerVecDriverOnce(extPath string) {
 // don't spam the log.
 func logVecLoadOnce(extPath string) {
 	vecLogOnce.Do(func() {
-		log.Printf("sqlite: sqlite_vec build active — extension path=%s (MemoryEmbed* implementation lands in v0.10.3; SupportsVectors() still false until then)", extPath)
+		slog.Info("sqlite: sqlite_vec build active", "extension_path", extPath)
 	})
 }

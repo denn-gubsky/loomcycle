@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -149,7 +149,7 @@ func (s *Server) ReplaySession(ctx context.Context, req connector.ReplaySessionR
 			status, msg = store.RunCompleted, ""
 		}
 		if ferr := s.store.FinishRun(context.WithoutCancel(ctx), seedRunID, status, "", store.Usage{}, msg); ferr != nil {
-			log.Printf("replay: finish seed run %s: %v", seedRunID, ferr)
+			slog.Warn("replay: finish seed run failed", "run_id", seedRunID, "err", ferr)
 		}
 	}()
 

@@ -2,7 +2,7 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -25,7 +25,7 @@ func (s *Server) SeedThroughput(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("throughput: seeded %d timed call(s) from the usage ledger (mode=%s)", n, s.throughput.Mode())
+	slog.Info("throughput: seeded timed calls from the usage ledger", "calls", n, "mode", s.throughput.Mode())
 	return nil
 }
 

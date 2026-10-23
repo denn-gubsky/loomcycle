@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -704,8 +704,8 @@ func (s *Server) RunConfiguredRunSweeper(ctx context.Context) {
 func (s *Server) sweepConfiguredRuns(ctx context.Context, cutoff time.Time) {
 	n, err := s.store.SweepExpiredConfiguredRuns(ctx, cutoff)
 	if err != nil {
-		log.Printf("configured runs: expiry sweep: %v", err)
+		slog.Warn("configured runs: expiry sweep failed", "err", err)
 	} else if n > 0 {
-		log.Printf("configured runs: discarded %d draft(s) created before %s", n, cutoff.Format(time.RFC3339))
+		slog.Info("configured runs: discarded expired drafts", "drafts", n, "created_before", cutoff.Format(time.RFC3339))
 	}
 }

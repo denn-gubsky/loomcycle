@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -76,7 +76,7 @@ func (s *sse) send(ev providers.Event) {
 			"error": "marshal: " + err.Error(),
 		})
 		if mErr != nil {
-			log.Printf("sse: fallback marshal failed: %v (orig: %v)", mErr, err)
+			slog.Error("sse: fallback marshal failed", "err", mErr, "original_err", err)
 			return
 		}
 		s.mu.Lock()
@@ -110,7 +110,7 @@ func (s *sse) send(ev providers.Event) {
 func (s *sse) sendRaw(eventName string, data any) {
 	payload, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("sse: sendRaw marshal failed for %q: %v", eventName, err)
+		slog.Error("sse: sendRaw marshal failed", "event", eventName, "err", err)
 		return
 	}
 	s.mu.Lock()
@@ -129,7 +129,7 @@ func (s *sse) sendRaw(eventName string, data any) {
 func (s *sse) sendOpenAIData(data any) {
 	payload, err := json.Marshal(data)
 	if err != nil {
-		log.Printf("sse: sendOpenAIData marshal failed: %v", err)
+		slog.Error("sse: sendOpenAIData marshal failed", "err", err)
 		return
 	}
 	s.mu.Lock()

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -499,13 +499,12 @@ func logGatewayRequest(
 	if runErr != nil {
 		status = "error"
 	}
-	log.Printf(
-		"llm_gateway: request_id=%s provider=%s model=%s tier=%q user_id=%q input_tokens=%d output_tokens=%d stop_reason=%s latency_ms=%d status=%s err=%q",
-		requestID, providerID, modelID, tier, userID,
-		inputTokens, outputTokens, stopReason,
-		latency.Milliseconds(),
-		status,
-		errString(runErr),
+	slog.Info("llm_gateway: request",
+		"request_id", requestID, "provider", providerID, "model", modelID, "tier", tier, "user_id", userID,
+		"input_tokens", inputTokens, "output_tokens", outputTokens, "stop_reason", stopReason,
+		"latency_ms", latency.Milliseconds(),
+		"status", status,
+		"err", errString(runErr),
 	)
 }
 

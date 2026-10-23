@@ -145,6 +145,7 @@ func TestMCPServer_DriftDetection(t *testing.T) {
 		"args":              true, // stdio (F31)
 		"env":               true, // stdio (F31)
 		"description":       true,
+		"binary_results":    true, // RFC FF base64-in-text capture opt-in
 		"discovered_tools":  true,
 		"operator_authored": true, // server-stamped authority, not content
 	}

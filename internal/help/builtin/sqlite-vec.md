@@ -91,7 +91,7 @@ CGO_ENABLED=1 go build -tags=sqlite_vec -o bin/loomcycle ./cmd/loomcycle
 You'll see this boot log confirming the tag is active:
 
 ```
-sqlite: sqlite_vec build active — extension path=/opt/homebrew/opt/sqlite-vec/lib/vec0 (MemoryEmbed* implementation lands in v0.10.3; SupportsVectors() still false until then)
+sqlite: sqlite_vec build active extension_path=/opt/homebrew/opt/sqlite-vec/lib/vec0
 ```
 
 If `LOOMCYCLE_SQLITE_VEC_PATH` is empty, the binary refuses to start

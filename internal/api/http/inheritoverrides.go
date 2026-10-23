@@ -2,7 +2,7 @@ package http
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -68,7 +68,7 @@ func (s *Server) inheritOverridesForChild(
 	// parent's overrides were legal when it began, and are not for a run that
 	// begins now. Dropped like any inherited override that no longer holds.
 	if def.AllowOverrides != nil && !*def.AllowOverrides {
-		log.Printf("spawn: %q does not inherit its parent's overrides — its definition no longer allows them", childName)
+		slog.Warn("spawn: child does not inherit its parent's overrides — its definition no longer allows them", "agent", childName)
 		return def, childCfg
 	}
 	ov := runOverrides{Routing: rec.Routing, Resources: rec.Resources, Tuning: rec.Tuning, QueueRouting: rec.QueueRouting}
@@ -78,8 +78,8 @@ func (s *Server) inheritOverridesForChild(
 
 	inherited, err := s.effectiveDef(ctx, def, ov)
 	if err != nil {
-		log.Printf("spawn: %q does not inherit its parent's overrides — they no longer validate "+
-			"against the definition (%v); the child runs on its own settings", childName, err)
+		slog.Warn("spawn: child does not inherit its parent's overrides — they no longer validate "+
+			"against the definition; the child runs on its own settings", "agent", childName, "err", err)
 		return def, childCfg
 	}
 

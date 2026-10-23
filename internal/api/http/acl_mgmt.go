@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -198,14 +198,14 @@ func (s *Server) aclChanged(ctx context.Context, tenant, action, targetName stri
 		aclres.Publish(ctx, s.backplane, s.aclResolver, tenant)
 	}
 	p, _ := auth.PrincipalFromContext(ctx)
-	log.Printf("authz: %s tenant=%q target=%q by=%q", action, tenant, targetName, p.Subject)
+	slog.Info("authz: "+action, "tenant", tenant, "target", targetName, "by", p.Subject)
 	if s.tokenAudit == nil {
 		return
 	}
 	ev := audit.Event{Action: action, ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix,
 		TargetTenant: tenant, TargetName: targetName}
 	if err := s.tokenAudit.Record(ev); err != nil {
-		log.Printf("authz: audit write failed: %v", err)
+		slog.Error("authz: audit write failed", "err", err)
 	}
 }
 

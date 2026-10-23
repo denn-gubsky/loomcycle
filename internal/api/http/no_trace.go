@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"sync"
@@ -80,7 +80,7 @@ func (m *runModes) noTrace(ctx context.Context, st store.Store, runID string) bo
 	// events often are); the lookup must not fail for that reason.
 	run, err := st.GetRun(context.WithoutCancel(ctx), runID)
 	if err != nil {
-		log.Printf("no-trace: could not read the retention mode of run %s (%v); storing a marker", runID, err)
+		slog.Warn("no-trace: could not read the run's retention mode; storing a marker", "run_id", runID, "err", err)
 		return true
 	}
 	none := run.Retention == retentionmode.None

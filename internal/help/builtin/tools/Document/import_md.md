@@ -38,11 +38,20 @@ Markdown written by `export_md` with metadata also carries:
 
 A body that is only a ```` ```mermaid ```` fence becomes a mermaid chunk; a
 body that is only a `![caption](data:image/png;base64,…)` becomes an image
-chunk. Tags are not read from Markdown; add them afterwards with `add_tags`.
+chunk. So does a body that is only `![caption](volume:<name>:<path>)` (or
+`volume:<path>` for your default volume), on one line: the runtime reads the
+file, so its bytes never pass through you. That read is yours: it needs the
+Read tool and a volume you are bound to, and Read's hooks apply. One import
+reads at most 64 such pictures and 64 MiB of them; a picture that cannot be
+read, is not a PNG, JPEG, GIF or WebP, or is over the size limit stays a
+plain link. Tags are not read from Markdown; add them afterwards with
+`add_tags`.
 
 ## Returns
 
-`{document_id, root_chunk_id, chunks_created}`. For an import into an existing
+`{document_id, root_chunk_id, chunks_created, image_chunks, skipped,
+skipped_images}` — `skipped` counts the pictures that stayed links and
+`skipped_images` says why for the first of them. For an import into an existing
 document, `root_chunk_id` is the chunk you imported under. The new document's
 path is not in the result; use `get_document` or `Path` `ls` to see it.
 

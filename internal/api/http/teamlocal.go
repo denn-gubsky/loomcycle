@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -216,8 +216,8 @@ func (s *Server) refuseSharedName(ctx context.Context, tenantID string, sc store
 	if !held {
 		return nil
 	}
-	log.Printf("team %q (version %s): refusing to run its own agent %q — a global agent of the same name exists in tenant %q; rename one",
-		sc.Team, sc.DefID, runName, tenantID)
+	slog.Warn("team: refusing to run its own agent — a global agent of the same name exists in the tenant; rename one",
+		"team", sc.Team, "def_id", sc.DefID, "agent", runName, "tenant", tenantID)
 	return fmt.Errorf("team %q's own agent %q cannot run: another agent named %q exists, and the two would share "+
 		"agent-scoped memory and channel cursors. Rename one of them", sc.Team, runName, runName)
 }
@@ -447,7 +447,7 @@ func (s *Server) sessionTeamScope(ctx context.Context, sessionID string) (store.
 func (s *Server) sessionTeamScopeCtx(ctx context.Context, sessionID string) context.Context {
 	sc, _, err := s.sessionTeamScope(ctx, sessionID)
 	if err != nil {
-		log.Printf("team scope: session %s: could not read its runs, reading it outside any team: %v", sessionID, err)
+		slog.Warn("team scope: could not read the session's runs, reading it outside any team", "session_id", sessionID, "err", err)
 	}
 	return store.WithTeamScope(ctx, sc) // the zero scope clears
 }
@@ -508,13 +508,13 @@ func (s *Server) LogTeamLocalNameClashes(ctx context.Context) int {
 	}
 	names, err := s.store.TeamDefListNames(ctx)
 	if err != nil {
-		log.Printf("team local agents: could not list teams to check their agents' names: %v", err)
+		slog.Warn("team local agents: could not list teams to check their agents' names", "err", err)
 		return 0
 	}
 	found := 0
 	for _, n := range names {
 		if ctx.Err() != nil {
-			log.Printf("team local agents: name check stopped early: %v", ctx.Err())
+			slog.Warn("team local agents: name check stopped early", "err", ctx.Err())
 			return found
 		}
 		if n.ActiveDefID == "" || n.ActiveRetired {
@@ -534,8 +534,8 @@ func (s *Server) LogTeamLocalNameClashes(ctx context.Context) int {
 				continue
 			}
 			found++
-			log.Printf("team %q (tenant %q): its own agent %q and a global agent of the same name both exist. "+
-				"The team's agent will be refused when a walk starts it — rename one of them", row.Name, row.TenantID, full)
+			slog.Warn("team: its own agent and a global agent of the same name both exist. "+
+				"The team's agent will be refused when a walk starts it — rename one of them", "team", row.Name, "tenant", row.TenantID, "agent", full)
 		}
 	}
 	return found

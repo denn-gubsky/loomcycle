@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -501,8 +501,8 @@ func (s *Server) reResolveOnOperatorTurnFn(runID, tenantID, userID, agentName, u
 		// reached is tried again at the next turn rather than forgotten.
 		lastRouting = routingKey
 		if uerr := s.store.SetRunModel(ctx, runID, providerID, model); uerr != nil {
-			log.Printf("retune: run %s adopted %s/%s but the row still says %q: %v",
-				runID, providerID, model, run.Model, uerr)
+			slog.Warn("retune: the run adopted a model but its row still names the old one",
+				"run_id", runID, "provider", providerID, "model", model, "row_model", run.Model, "err", uerr)
 		}
 		return provider, model, effort, true, nil
 	}
@@ -753,11 +753,11 @@ func (s *Server) appendRetuneEvent(ctx context.Context, runID string, fields []s
 	}
 	payload, err := json.Marshal(ev)
 	if err != nil {
-		log.Printf("retune: could not encode the override event for run %s: %v", runID, err)
+		slog.Error("retune: could not encode the override event", "run_id", runID, "err", err)
 		return
 	}
 	if aerr := s.store.AppendEvent(ctx, runID, string(providers.EventOverride), payload); aerr != nil {
-		log.Printf("retune: run %s was retuned but the transcript line was not written: %v", runID, aerr)
+		slog.Error("retune: the run was retuned but the transcript line was not written", "run_id", runID, "err", aerr)
 	}
 }
 
@@ -791,7 +791,7 @@ func (s *Server) handleGetRunConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	// A run that was never retuned has no record, and that is a 200 with an
 	// empty config — not a 404. "This run overrides nothing" is an answer.
-	cfg, _ := decodeRunConfig(run.RunConfig)
+	cfg, _ := decodeRunConfig(connector.ServedRunSpec(run.RunConfig))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"run_id": runID,
 		"agent":  run.Agent,

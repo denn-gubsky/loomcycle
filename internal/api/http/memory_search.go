@@ -14,7 +14,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -185,7 +185,7 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "search_unavailable", err.Error())
 			return
 		}
-		log.Printf("memory search failed (scope=%s scope_id=%s): %v", body.Scope, body.ScopeID, err)
+		slog.Warn("memory search failed", "scope", body.Scope, "scope_id", body.ScopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "search failed")
 		return
 	}
