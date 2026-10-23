@@ -36,7 +36,11 @@ const fileMaxListed = 1000
 // tools. Changing the inbox needs it writable to this run, as for any
 // ephemeral volume: a sub-agent given the tree's volumes read-only can look,
 // not remove.
-type File struct{}
+type File struct {
+	// Docs is the Document tool op=import builds a document through, so its
+	// scope checks hold; nil leaves import unavailable.
+	Docs *Document
+}
 
 func (f *File) Name() string { return FileToolName }
 
@@ -46,7 +50,9 @@ func (f *File) Description() string {
 		"`[file: volume:inbox:documents/report.pdf · application/pdf · 1.8 MiB · sha256:… · from …]` instead of its bytes. " +
 		"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of a volume), " +
 		"keep (copy a file out of the inbox into one of your read-write volumes, since the inbox is deleted when the run ends), " +
-		"rm (delete one inbox file), clear (empty the inbox, or one folder of it). " +
+		"rm (delete one inbox file), clear (empty the inbox, or one folder of it), " +
+		"extract (turn a DOCX, XLSX, PPTX, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt), " +
+		"import (build a Document from such a Markdown file, its pictures attached as image chunks). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:/path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
@@ -55,13 +61,20 @@ func (f *File) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear"]},
-			"path":      {"type": "string", "description": "stat, rm: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox."},
+			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "extract", "import"]},
+			"path":      {"type": "string", "description": "stat, rm, extract, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy."},
 			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."},
 			"overwrite": {"type": "boolean", "description": "keep: replace an existing file at to. Default false."},
 			"recursive": {"type": "boolean", "description": "ls: list subfolders too."},
-			"prefix":    {"type": "string", "description": "clear: only this folder of the inbox (e.g. documents, web/example.com). Omit to empty the whole inbox."}
+			"prefix":    {"type": "string", "description": "clear: only this folder of the inbox (e.g. documents, web/example.com). Omit to empty the whole inbox."},
+			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
+			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000."},
+			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
+			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
+			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes."},
+			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import: the document store. Default user."},
+			"tags":          {"type": "array", "items": {"type": "string"}, "description": "import: tags for the document, besides the source/... and untrusted tags it always gets."}
 		},
 		"required": ["op"]
 	}`)
@@ -75,6 +88,15 @@ type fileInput struct {
 	Overwrite bool   `json:"overwrite"`
 	Recursive bool   `json:"recursive"`
 	Prefix    string `json:"prefix"`
+	// extract
+	Images       *bool `json:"images"`
+	MaxRows      int   `json:"max_rows"`
+	ExcerptChars int   `json:"excerpt_chars"`
+	// import
+	Title   string   `json:"title"`
+	DocPath string   `json:"doc_path"`
+	Scope   string   `json:"scope"`
+	Tags    []string `json:"tags"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
@@ -93,10 +115,14 @@ func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return f.rm(ctx, in)
 	case "clear":
 		return f.clear(ctx, in)
+	case "extract":
+		return f.extract(ctx, in)
+	case "import":
+		return f.importDoc(ctx, in)
 	case "":
-		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear."), nil
+		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, extract, import."), nil
 	}
-	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear."), nil
+	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, extract, import."), nil
 }
 
 // fileRef parses a path argument: a volume reference, or a bare path that

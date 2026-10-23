@@ -38,6 +38,8 @@ When a file could not be kept, the line says why instead
 | `keep` | copy an inbox file into one of your read-write volumes | `from`, `to`, `overwrite` |
 | `rm` | delete one inbox file | `path` |
 | `clear` | empty the inbox, or one folder of it | `prefix` |
+| `extract` | turn a DOCX, XLSX, PPTX, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files | `path`, `images`, `max_rows`, `excerpt_chars` |
+| `import` | build a Document from a Markdown file, the pictures `extract` kept attached as image chunks | `path`, `title`, `doc_path`, `scope`, `tags` |
 
 A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
 volume you are bound to, or `volume:<path>` for your default volume. A bare
