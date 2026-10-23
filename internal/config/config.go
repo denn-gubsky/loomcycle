@@ -4025,6 +4025,12 @@ type Env struct {
 	// handoff), so a deployment without a configured landing can't be handed a
 	// token by any page. Non-secret.
 	UILoginOrigins []string
+	// WebUIDir (LOOMCYCLE_WEBUI_DIR) names a directory holding an unpacked Web
+	// UI bundle (the built SPA plus manifest.json) to serve instead of the
+	// embedded UI. Read once at startup; operator-set only, because a bundle
+	// runs same-origin with the session cookie. A bundle that fails
+	// verification falls back to the embedded UI (internal/webui). Non-secret.
+	WebUIDir       string
 	AuthToken      string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
@@ -5321,6 +5327,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ListenAddr:                  getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
 		UILoginOrigins:              splitCommaTrim(os.Getenv("LOOMCYCLE_UI_LOGIN_ORIGINS")),
+		WebUIDir:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),
 		AuthToken:                   os.Getenv("LOOMCYCLE_AUTH_TOKEN"),
 		OperatorTokenPepper:         os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_PEPPER"),
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),

@@ -114,6 +114,12 @@ type Server struct {
 	// reload it. nil ⇒ nothing is capped; its methods are nil-safe. Wired at
 	// boot via SetCallScheduler.
 	callSched *concurrency.CallScheduler
+
+	// uiBundle is the verified Web UI bundle served at /ui (nil = the embedded
+	// UI) and uiStatus what /healthz reports about it. Set once at boot by
+	// SetWebUIBundle, before Mux() and before serving; read-only after.
+	uiBundle *webui.Bundle
+	uiStatus webui.Status
 	// queueSealer seals a queued run's per-run secrets so a restart can start
 	// it again (queued_runs.go). nil or disabled ⇒ such a run stores none and
 	// is failed at the restart. Wired at boot via SetQueueSealer.
@@ -1451,6 +1457,15 @@ func (s *Server) cfg() *config.Config {
 // call goes through and a reload would reconfigure them. Call from
 // cmd/loomcycle/main.go before serving. Optional: nil means nothing is capped.
 func (s *Server) SetCallScheduler(cs *concurrency.CallScheduler) { s.callSched = cs }
+
+// SetWebUIBundle hands the server the Web UI to serve at /ui and the status
+// /healthz reports for it — webui.LoadConfigured's result. A nil bundle serves
+// the embedded UI. Call from cmd/loomcycle before Mux(); the bundle is fixed
+// for the life of the process.
+func (s *Server) SetWebUIBundle(b *webui.Bundle, st webui.Status) {
+	s.uiBundle = b
+	s.uiStatus = st
+}
 
 // SetCredentialResolver wires the RFC AR credential resolver (env-var-name →
 // tenant/user credential value, scope agent>user>tenant). The Server stamps it
@@ -4596,7 +4611,7 @@ func (s *Server) Mux() http.Handler {
 	// — the SPA shell is public; it pulls protected data from
 	// /v1/* which DOES go through authMiddleware. Standard SPA-on-
 	// API split.
-	uiHandler := webui.Handler("/ui", false, s.cfg().Env.UILoginOrigins)
+	uiHandler := webui.Handler("/ui", false, s.cfg().Env.UILoginOrigins, webui.WithBundle(s.uiBundle))
 	mux.Handle("GET /ui", recoveryMiddleware(uiHandler))
 	mux.Handle("GET /ui/", recoveryMiddleware(uiHandler))
 	// POST /ui/session — the URL-free login (Authorization: Bearer -> session
@@ -4723,6 +4738,10 @@ type healthzResponse struct {
 	// UIAPILevel is the API level the Web UI must be built for (webui.APILevel).
 	// A deployer checks it before pointing LOOMCYCLE_WEBUI_DIR at a bundle.
 	UIAPILevel int `json:"ui_api_level"`
+	// UIBundle says which Web UI is served — the embedded one or a bundle from
+	// LOOMCYCLE_WEBUI_DIR — and, after a refused bundle, the reason code.
+	// Never a filesystem path: this route is unauthenticated.
+	UIBundle webui.Status `json:"ui_bundle"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -4742,6 +4761,12 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds:  uptime,
 		MetricsEnabled: s.metricsSampler != nil,
 		UIAPILevel:     webui.APILevel,
+		UIBundle:       s.uiStatus,
+	}
+	if resp.UIBundle.Source == "" {
+		// SetWebUIBundle never called (tests, or a server built without the
+		// boot path): the embedded UI is what Mux serves.
+		resp.UIBundle.Source = webui.SourceEmbedded
 	}
 	// v0.12.0 cluster view. replica_id is the in-memory identity of
 	// THIS replica and is always populated when coord is wired —
