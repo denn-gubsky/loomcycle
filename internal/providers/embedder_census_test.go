@@ -87,7 +87,7 @@ func embedderAssertionsIn(f *ast.File) []string {
 }
 
 func TestEmbedderAssertions_AllClassified(t *testing.T) {
-	root := moduleRoot(t)
+	root := repoRoot(t)
 	fset := token.NewFileSet()
 	found := map[string]string{}
 	var violations []string
@@ -279,7 +279,7 @@ func embedderWrappersMissingEmbedQuery(t *testing.T, root string) (missing []str
 // TestEmbedderWrappers_AllImplementEmbedQuery — every type that unwraps to an
 // embedder forwards query mode itself.
 func TestEmbedderWrappers_AllImplementEmbedQuery(t *testing.T) {
-	missing, wrappers := embedderWrappersMissingEmbedQuery(t, moduleRoot(t))
+	missing, wrappers := embedderWrappersMissingEmbedQuery(t, repoRoot(t))
 	// Today: lanegate.Embedder and providers.ObservedEmbedder. A count below that
 	// means the walk stopped finding them, not that they are gone.
 	if wrappers < 2 {
