@@ -184,6 +184,21 @@ class LimitInfo:
 
 
 @dataclass(frozen=True)
+class FileCapturedInfo:
+    """Structured payload on ``file_captured`` events: a file a tool returned,
+    kept in the run tree's inbox volume instead of reaching the model as bytes.
+    Never the bytes, never a URL's query string. Mirrors
+    ``providers.FileCapturedInfo`` on the Go side."""
+
+    ref: str  # volume:inbox:<dir>/<name>
+    media_type: str
+    size: int
+    sha256: str  # hex
+    origin: str  # mcp:<server>/<tool> | http | webfetch | download:<host>
+    run_id: str = ""  # the run whose tool call returned it
+
+
+@dataclass(frozen=True)
 class AdmissionInfo:
     """Structured payload on ``queued`` and ``admitted`` events, and on
     ``call_queued`` and ``call_admitted``.
@@ -371,6 +386,7 @@ class AgentEvent:
     team_decision: Optional[TeamDecision] = None
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
+    file: Optional[FileCapturedInfo] = None
     admission: Optional[AdmissionInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
     override: Optional[OverrideInfo] = None
@@ -497,6 +513,16 @@ class AgentEvent:
                 limit=ev.limit.limit,
                 message=ev.limit.message,
             )
+        fc: Optional[FileCapturedInfo] = None
+        if ev.HasField("file"):
+            fc = FileCapturedInfo(
+                ref=ev.file.ref,
+                media_type=ev.file.media_type,
+                size=ev.file.size,
+                sha256=ev.file.sha256,
+                origin=ev.file.origin,
+                run_id=ev.file.run_id,
+            )
         adm: Optional[AdmissionInfo] = None
         if ev.HasField("admission"):
             adm = AdmissionInfo(
@@ -540,6 +566,7 @@ class AgentEvent:
             team_decision=td,
             user_input=ui,
             limit=li,
+            file=fc,
             admission=adm,
             capability_inert=ci,
             override=ov,

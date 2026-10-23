@@ -123,17 +123,24 @@ func (r dataRef) refTool(write bool) string {
 // raw patterns, which can be wider: a run narrowed to tools [Crypto] must not
 // write files because its definition grants Write.
 func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, bool) {
+	return checkRefGrant(ctx, r, write, CryptoToolName, "Pass the data inline")
+}
+
+// checkRefGrant is checkRefAllowed for any tool that reaches a store by
+// reference: via names the asking tool (its hooks see it), and instead is
+// the alternative the refusal offers.
+func checkRefGrant(ctx context.Context, r dataRef, write bool, via, instead string) (tools.Result, bool) {
 	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
-		return errPermission("from and to are not available outside a run", "Pass the data inline."), false
+		return errPermission("from and to are not available outside a run", instead+"."), false
 	}
 	need := r.refTool(write)
 	if !slices.Contains(tools.PolicyOf(ctx).Tools, need) {
 		return errPermission(fmt.Sprintf("%s needs the %s tool, which this run does not have", r.raw, need),
-			"Pass the data inline, or ask an operator to grant the tool."), false
+			instead+", or ask an operator to grant the tool."), false
 	}
-	if res, ok := tools.HookPreCheck(ctx, need, r.hookInput(write)); !ok {
+	if res, ok := tools.HookPreCheck(ctx, need, r.hookInput(write, via)); !ok {
 		return classified(fmt.Sprintf("%s: refused by a %s hook: %s", r.raw, need, res.Text), tools.CategoryPermission, false,
-			"Pass the data inline, or ask the operator about the hook."), false
+			instead+", or ask the operator about the hook."), false
 	}
 	return tools.Result{}, true
 }
@@ -141,7 +148,7 @@ func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, 
 // hookInput is the call the reference stands for, in the referenced tool's
 // own input shape, for its hooks to judge. The data itself is not in it: a
 // hook sees where, not what. "via" says which tool is asking.
-func (r dataRef) hookInput(write bool) json.RawMessage {
+func (r dataRef) hookInput(write bool, via string) json.RawMessage {
 	var in map[string]any
 	switch r.kind {
 	case refVolume:
@@ -162,7 +169,7 @@ func (r dataRef) hookInput(write bool) json.RawMessage {
 		}
 		in = map[string]any{"op": op, "scope": r.scope, "id": r.chunkID}
 	}
-	in["via"] = CryptoToolName
+	in["via"] = via
 	b, _ := json.Marshal(in)
 	return b
 }

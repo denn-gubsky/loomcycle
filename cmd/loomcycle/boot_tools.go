@@ -285,6 +285,11 @@ func (b *boot) buildTools() {
 	}
 	b.allTools = append(b.allTools, volumeDefTool)
 
+	// RFC FF — the File tool: the files a run's tools returned, kept in the
+	// run tree's inbox volume, inspected and copied out without their bytes
+	// reaching the model. Capture itself needs no grant; this tool does.
+	b.allTools = append(b.allTools, &builtin.File{})
+
 	// RFC FB — the Git tool: repository work inside bound volumes through
 	// go-git, in process. Local ops need only the tool; the network is late-
 	// bound below with the git-source settings (off unless the operator

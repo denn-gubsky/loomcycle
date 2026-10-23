@@ -1577,6 +1577,11 @@ message Event {
   // one model call of a running run, with its provider and lane kind. Nil on
   // every other event type.
   AdmissionInfo admission = 22;
+
+  // file carries the payload on type=file_captured frames: a file a tool
+  // returned, kept in the run tree's inbox volume instead of reaching the
+  // model as bytes (RFC FF). SERVER-generated. Nil on every other event type.
+  FileCapturedInfo file = 23;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1736,6 +1741,17 @@ message LimitInfo {
   int64 used = 5;        // scope's month-to-date token total at the crossing
   int64 limit = 6;       // the tier that was crossed (the soft or hard ceiling)
   string message = 7;    // human-readable banner (optional)
+}
+
+// FileCapturedInfo is the payload on type=file_captured frames. Mirrors
+// providers.FileCapturedInfo. Never the bytes, never a URL's query string.
+message FileCapturedInfo {
+  string ref = 1;          // volume:inbox:<dir>/<name>
+  string media_type = 2;
+  int64 size = 3;
+  string sha256 = 4;       // hex
+  string origin = 5;       // mcp:<server>/<tool> | http | webfetch | download:<host>
+  string run_id = 6;       // the run whose tool call returned it
 }
 
 // AdmissionInfo is the payload on type=queued and type=admitted frames. Mirrors

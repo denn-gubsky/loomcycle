@@ -1227,6 +1227,24 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_FILE_MAX_BYTES
+            label: LOOMCYCLE_FILE_MAX_BYTES
+            description: 'A file a tool returns (an MCP attachment or image) is kept in the run tree''s inbox volume, under the dynamic_root volume, and the model is handed a one-line reference instead of the bytes. Deleted with the run. Needs a volume marked dynamic_root: true; without one a file is refused, not passed through. A bad value refuses the boot. (example: 67108864)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_FILE_INBOX_MAX_BYTES
+            label: LOOMCYCLE_FILE_INBOX_MAX_BYTES
+            description: '(example: 1073741824)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_MCP_MAX_FRAME_BYTES
+            label: LOOMCYCLE_MCP_MAX_FRAME_BYTES
+            description: '(example: 16777216)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             label: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN
             description: 'Children one run has alive at once, across every Agent op that starts one; a spawn past it is refused. Per run, not per tree: a child''s children count against the child. Default 32. (example: 32)'

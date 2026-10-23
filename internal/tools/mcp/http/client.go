@@ -68,7 +68,16 @@ type Config struct {
 	// disabled. A func-typed field keeps this package free of an
 	// internal/credential import.
 	CredSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
+	// MaxResponseBytes caps one response body (the operator's
+	// LOOMCYCLE_MCP_MAX_FRAME_BYTES, which caps a stdio line too). Zero
+	// takes DefaultMaxResponseBytes.
+	MaxResponseBytes int64
 }
+
+// DefaultMaxResponseBytes is the body cap when none is configured. The
+// body was read unbounded before; a server could make the runtime hold
+// whatever it chose to send.
+const DefaultMaxResponseBytes = 16 << 20
 
 // Client speaks MCP over HTTP. Implements mcp.Caller.
 type Client struct {
@@ -81,6 +90,8 @@ type Client struct {
 
 	sessMu    sync.Mutex
 	sessionID string // populated after first response that carries one
+
+	maxBody int64
 
 	// credSubstitute resolves $cred:<name> header tokens per-request (RFC AR).
 	credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
@@ -102,6 +113,10 @@ func New(cfg Config) (*Client, error) {
 			hc = &http.Client{Timeout: defaultTimeout}
 		}
 	}
+	maxBody := cfg.MaxResponseBytes
+	if maxBody <= 0 {
+		maxBody = DefaultMaxResponseBytes
+	}
 	return &Client{
 		url:     cfg.URL,
 		headers: cfg.Headers,
@@ -109,6 +124,7 @@ func New(cfg Config) (*Client, error) {
 		// (do) and follows no redirect, whichever client was chosen.
 		http:           netguard.HonorPins(hc),
 		credSubstitute: cfg.CredSubstitute,
+		maxBody:        maxBody,
 	}, nil
 }
 
@@ -137,9 +153,12 @@ func (c *Client) Call(ctx context.Context, method string, params any) (json.RawM
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(respBody)) > c.maxBody {
+		return nil, fmt.Errorf("mcp http: the response passed the %d-byte limit (LOOMCYCLE_MCP_MAX_FRAME_BYTES); a large file is better fetched by URL", c.maxBody)
 	}
 
 	if sid := resp.Header.Get(sessionHeader); sid != "" {

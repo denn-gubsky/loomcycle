@@ -449,7 +449,7 @@ func (t *mcpTool) Execute(ctx context.Context, input json.RawMessage) (tools.Res
 		lcotel.SetSpanErrorMessage(span, "mcp tool returned isError=true")
 	}
 	return tools.Result{
-		Text:    withUpstreamStructured(JoinTextContent(res), res.StructuredContent),
+		Text:    withUpstreamStructured(renderResult(ctx, t.server, t.toolName, res), res.StructuredContent),
 		IsError: res.IsError,
 	}, nil
 }
