@@ -1,4 +1,4 @@
-package memory
+package promptinject
 
 // toolinject_widened.go — the {{tool:<Tool>:<argument>}} form, which is how the
 // tool family gained an argument and, with it, WebFetch and WebSearch.

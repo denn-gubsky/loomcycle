@@ -36,7 +36,7 @@ type Restrictions struct {
 }
 
 // RetentionNone is the retention mode of a credential whose runs store no
-// content. The same value as store.RetentionNone.
+// content. The same value as retentionmode.None.
 const RetentionNone = "none"
 
 // ParseRetention reads a retention setting as written on a mint surface:

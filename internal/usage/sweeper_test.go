@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -359,7 +361,7 @@ func TestArchiveSessionsOnce_ANoTraceChatIsNeverExported(t *testing.T) {
 		}
 		return sess.ID
 	}
-	plain, quiet := seed("arch-plain", ""), seed("arch-quiet", store.RetentionNone)
+	plain, quiet := seed("arch-plain", ""), seed("arch-quiet", retentionmode.None)
 	sw := New(st, Config{
 		RunRetention: 24 * time.Hour, RunRetentionMode: "export+prune", ExportDir: exportDir,
 		Logger: func(string, ...any) {}, Now: func() time.Time { return time.Now().Add(48 * time.Hour) },

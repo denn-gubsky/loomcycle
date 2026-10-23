@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
+
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -66,7 +68,7 @@ func TestRestorableQueuedInput_RefusesWhatCaptureNeverWrites(t *testing.T) {
 	if !ok || strings.Contains(string(got), "ciphertext") || !strings.Contains(string(got), `"Agent":"r"`) {
 		t.Errorf("an envelope with sealed secrets restored %s (%v), want the request without them", got, ok)
 	}
-	if _, ok := restorableQueuedInput(QueuedRunEntry{QueuedInput: json.RawMessage(`{"input":{}}`), Retention: store.RetentionNone}); ok {
+	if _, ok := restorableQueuedInput(QueuedRunEntry{QueuedInput: json.RawMessage(`{"input":{}}`), Retention: retentionmode.None}); ok {
 		t.Error("a no-trace run's request was restored")
 	}
 	for _, bad := range []string{`"a string"`, `[1,2]`, `not json`} {
