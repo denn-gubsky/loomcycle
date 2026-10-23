@@ -546,6 +546,29 @@ service Loomcycle {
   // SubstrateRequest/Response body shape (is_error carries tool refusals).
   rpc Crypto(SubstrateRequest) returns (SubstrateResponse);
 
+  // Access-control management (RFC EZ §3), op-dispatched like
+  // OperatorTokenDef. input_json is the HTTP route's JSON body plus "op"
+  // and, for an admin, a "tenant" focus; output_json is the route's JSON
+  // body; is_error + error_info carry a refusal. Every gate the HTTP route
+  // holds is in the shared implementation: tenant confinement, the
+  // substrate:tenant floor for the three management families, the per-op
+  // access-control question, the self-elevation guards, audit and cache
+  // invalidation across replicas.
+  //
+  // GroupDef mirrors /v1/_groups*: list / get / create / delete /
+  // add_member / remove_member. ScopeTenant.
+  rpc GroupDef(SubstrateRequest) returns (SubstrateResponse);
+  // AclDef mirrors POST /v1/_acldef and GET /v1/_acldef/names: create /
+  // update / put / get / list / retire / validate / catalog / names.
+  // ScopeTenant.
+  rpc AclDef(SubstrateRequest) returns (SubstrateResponse);
+  // AclBinding mirrors /v1/_aclbinding*: list / create / delete. ScopeTenant.
+  rpc AclBinding(SubstrateRequest) returns (SubstrateResponse);
+  // Authz mirrors /v1/_authz/*: evaluation / evaluations / explain /
+  // simulate. Any authenticated principal, about ITSELF; naming another
+  // subject needs a tenant operator.
+  rpc Authz(SubstrateRequest) returns (SubstrateResponse);
+
   // History dispatches to the RFC BE History tool (browse/search/annotate
   // past chats; a chat = a session). Mirrors POST /v1/_history. TENANT-CONFINED
   // (ScopeTenant): the owner is resolved from the operator-trust ctx +

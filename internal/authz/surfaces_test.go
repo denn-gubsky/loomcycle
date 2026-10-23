@@ -104,13 +104,13 @@ func TestSurfaces_EveryMappedPairIsInTheCatalog(t *testing.T) {
 			}
 		}
 	}
-	for _, rpc := range []string{"Run", "Continue", "StreamRun", "DeleteRunTree", "Decide", "PublishChannel", "AgentDef", "Memory", "OperatorTokenDef", "RestoreSnapshot", "UsageReport", "DirectoryTenants", "History", "Crypto", "TeamDef", "VolumeDef", "AwaitChannels"} {
+	for _, rpc := range []string{"Run", "Continue", "StreamRun", "DeleteRunTree", "Decide", "PublishChannel", "AgentDef", "Memory", "OperatorTokenDef", "RestoreSnapshot", "UsageReport", "DirectoryTenants", "History", "Crypto", "TeamDef", "VolumeDef", "AwaitChannels", "GroupDef", "AclDef", "AclBinding"} {
 		s, ok := GRPCSurface(rpc)
 		if !ok || !ValidVerb(s.Type, s.Action) {
 			t.Errorf("GRPCSurface(%s) = %+v, %v", rpc, s, ok)
 		}
 	}
-	for _, rpc := range []string{"Health", "Config", "NoSuchRPC"} {
+	for _, rpc := range []string{"Health", "Config", "Authz", "NoSuchRPC"} {
 		if _, ok := GRPCSurface(rpc); ok {
 			t.Errorf("GRPCSurface(%s) should be ungoverned", rpc)
 		}

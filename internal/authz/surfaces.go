@@ -333,7 +333,7 @@ func defFamily(route string) string {
 }
 
 // GRPCSurface maps a gRPC RPC name (without the service prefix) to its
-// question. The second result is false for Health and Config.
+// question. The second result is false for Health, Config and Authz.
 func GRPCSurface(rpc string) (Surface, bool) {
 	switch rpc {
 	case "Run", "Continue", "SpawnRunBatch", "CreateConfiguredRun", "UpdateConfiguredRun", "StartConfiguredRun", "DeleteConfiguredRun", "ReplaySession":
@@ -418,6 +418,14 @@ func GRPCSurface(rpc string) (Surface, bool) {
 		return typeLevel("read", "evaluation"), true
 	case "OperatorTokenDef":
 		return instance("mint", "principal", "token:*"), true
+	// The access-control management RPCs (RFC EZ §3) carry the op in their
+	// input, like a def family: the RPC asks the family's weakest verb and the
+	// shared implementation asks each op's own question (the one its HTTP
+	// route asks). Authz is ungoverned, as POST /v1/_authz/* is.
+	case "GroupDef":
+		return instance("read", "principal", "group:*"), true
+	case "AclDef", "AclBinding":
+		return instance("read", "def", "acl/*"), true
 	case "PauseRuntime", "ResumeRuntime":
 		return instance("manage", "runtime", "pause"), true
 	case "GetRuntimeState":

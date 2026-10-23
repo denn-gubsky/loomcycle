@@ -324,6 +324,44 @@ func (s *Server) OperatorTokenDef(ctx context.Context, req *loomcyclepb.Substrat
 	})
 }
 
+// The access-control management RPCs (RFC EZ §3): op-dispatched JSON, like
+// OperatorTokenDef, through the one implementation the HTTP routes call. The
+// ctx is passed as the interceptor left it — the authenticated principal and
+// the access-control mode — and stamps none of the operator-plane tool
+// policies substrateGRPCCtx grants: the implementation authorizes from the
+// principal alone, so there is nothing here a run could inherit.
+
+// GroupDef serves the GroupDef RPC (mirrors /v1/_groups*).
+func (s *Server) GroupDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "GroupDef", req, aclPlaneCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return s.connector.GroupDef(ctx, in)
+	})
+}
+
+// AclDef serves the AclDef RPC (mirrors /v1/_acldef and /v1/_acldef/names).
+func (s *Server) AclDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "AclDef", req, aclPlaneCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return s.connector.AclDef(ctx, in)
+	})
+}
+
+// AclBinding serves the AclBinding RPC (mirrors /v1/_aclbinding*).
+func (s *Server) AclBinding(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "AclBinding", req, aclPlaneCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return s.connector.AclBinding(ctx, in)
+	})
+}
+
+// Authz serves the Authz RPC (mirrors /v1/_authz/*).
+func (s *Server) Authz(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "Authz", req, aclPlaneCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return s.connector.Authz(ctx, in)
+	})
+}
+
+// aclPlaneCtx leaves ctx as the interceptor built it.
+func aclPlaneCtx(ctx context.Context) context.Context { return ctx }
+
 // VolumeDef serves the RFC AH VolumeDef gRPC RPC — dynamic filesystem-volume
 // substrate. Same shape as the other substrate RPCs; op-discriminated
 // input_json (create / get / list / delete / purge) routes via the Connector
