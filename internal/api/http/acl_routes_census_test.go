@@ -14,7 +14,10 @@ import (
 
 // aclRouteOps is every HTTP route of the access-control management surface,
 // the family and op its gRPC / MCP twin calls it by, and the type-level
-// question the shared operation asks itself (aclEnter). For acldef every op
+// question the shared operation asks itself (aclEnter) — the family's
+// weakest verb, which the route and the RPC ask too; a write then asks its
+// own verb (manage / author / retire) inside the operation, which
+// TestACLOperations_AskTheRouteQuestionThemselves holds. For acldef every op
 // rides POST /v1/_acldef, so the route lists one representative op.
 var aclRouteOps = []struct {
 	method, pattern string
@@ -22,17 +25,17 @@ var aclRouteOps = []struct {
 	surface         func() *authz.Surface
 }{
 	{"GET", "/v1/_groups", "groupdef", "list", aclReadGroups},
-	{"POST", "/v1/_groups", "groupdef", "create", aclManageGroups},
+	{"POST", "/v1/_groups", "groupdef", "create", aclReadGroups},
 	{"GET", "/v1/_groups/{name}", "groupdef", "get", aclReadGroups},
 	{"GET", "/v1/_groups/{name}/effective", "groupdef", "effective", aclReadGroups},
-	{"DELETE", "/v1/_groups/{name}", "groupdef", "delete", aclManageGroups},
-	{"POST", "/v1/_groups/{name}/members", "groupdef", "add_member", aclManageGroups},
-	{"DELETE", "/v1/_groups/{name}/members/{kind}/{id}", "groupdef", "remove_member", aclManageGroups},
+	{"DELETE", "/v1/_groups/{name}", "groupdef", "delete", aclReadGroups},
+	{"POST", "/v1/_groups/{name}/members", "groupdef", "add_member", aclReadGroups},
+	{"DELETE", "/v1/_groups/{name}/members/{kind}/{id}", "groupdef", "remove_member", aclReadGroups},
 	{"POST", "/v1/_acldef", "acldef", "create", aclReadLists},
 	{"GET", "/v1/_acldef/names", "acldef", "names", aclReadLists},
 	{"GET", "/v1/_aclbinding", "aclbinding", "list", aclReadLists},
-	{"POST", "/v1/_aclbinding", "aclbinding", "create", aclAuthorLists},
-	{"DELETE", "/v1/_aclbinding/{id}", "aclbinding", "delete", aclAuthorLists},
+	{"POST", "/v1/_aclbinding", "aclbinding", "create", aclReadLists},
+	{"DELETE", "/v1/_aclbinding/{id}", "aclbinding", "delete", aclReadLists},
 	{"POST", "/v1/_authz/evaluation", "authz", "evaluation", nil},
 	{"POST", "/v1/_authz/evaluations", "authz", "evaluations", nil},
 	{"POST", "/v1/_authz/explain", "authz", "explain", nil},

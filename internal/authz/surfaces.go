@@ -178,10 +178,11 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		// (aclListOpSurface in internal/api/http).
 		return instance("read", "def", "acl/*"), true
 	case name == "aclbinding":
-		if get {
-			return instance("read", "def", "acl/*"), true
-		}
-		return instance("author", "def", "acl/*"), true
+		// The family's weakest verb for every method, as acldef asks and as
+		// the AclBinding RPC asks: the operation asks author of a write
+		// itself, so a principal allowed author but denied read gets one
+		// answer on every transport.
+		return instance("read", "def", "acl/*"), true
 	case strings.HasSuffix(name, "def") && name != "operatortokendef":
 		fam := defFamily(strings.TrimSuffix(name, "def"))
 		if len(rest) >= 3 && rest[2] == "overridable" {
@@ -288,10 +289,10 @@ func HTTPSurface(method, path string) (Surface, bool) {
 	case name == "teams":
 		return typeLevel("run", "team"), true
 	case name == "groups":
-		if get {
-			return instance("read", "principal", "group:*"), true
-		}
-		return instance("manage", "principal", "group:*"), true
+		// The weakest verb, as for aclbinding: the operation asks manage of
+		// a write itself (the GroupDef RPC carries the op in its body and
+		// can ask nothing stronger at the RPC).
+		return instance("read", "principal", "group:*"), true
 	case name == "authz":
 		return Surface{}, false
 	}

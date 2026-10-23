@@ -32,8 +32,11 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_acldef", instance("read", "def", "acl/*"), true},
 		{"GET", "/v1/_acldef/names", instance("read", "def", "acl/*"), true},
 		{"GET", "/v1/_aclbinding", instance("read", "def", "acl/*"), true},
-		{"POST", "/v1/_aclbinding", instance("author", "def", "acl/*"), true},
-		{"DELETE", "/v1/_aclbinding/b1", instance("author", "def", "acl/*"), true},
+		// Writes ask read at the route, like acldef and the RPCs; the operation
+		// asks author.
+		{"POST", "/v1/_aclbinding", instance("read", "def", "acl/*"), true},
+		{"DELETE", "/v1/_aclbinding/b1", instance("read", "def", "acl/*"), true},
+		{"POST", "/v1/_groups", instance("read", "principal", "group:*"), true},
 		{"GET", "/v1/_a2aservercarddef/names", instance("read", "def", "a2aserver/*"), true},
 		// A name that ends in "def" but has its own question must not fall into
 		// the generic `_<family>def` → read case (a switch takes the first

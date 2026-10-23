@@ -89,8 +89,9 @@ func (s *Server) aclStoreReady(w http.ResponseWriter) bool {
 //     legacy token included); a member or an isolated user is refused. The
 //     authz questions are open to any principal, which the operation then
 //     confines to its own subject (authzSubjectSet).
-//   - surface, when set, is the operation's own type-level question — the
-//     one its HTTP route asks — so the gRPC and MCP twins answer it too.
+//   - surface, when set, is the family's type-level question — the one its
+//     HTTP route and its RPC ask — so the MCP twin answers it too. A write
+//     then asks its own verb (aclAsk).
 //
 // No principal is open mode (or the stdio MCP launcher): the operator.
 func (s *Server) aclEnter(ctx context.Context, management bool, surface *authz.Surface) *aclReply {
@@ -111,10 +112,25 @@ func (s *Server) aclEnter(ctx context.Context, management bool, surface *authz.S
 			Error: "groups, access-control lists and bindings are the tenant operator's", RequiredScope: auth.ScopeTenant}}
 		return &r
 	}
-	if surface == nil || routeGateAnswered(ctx, *surface) {
+	if surface == nil {
 		return nil
 	}
-	return s.gateReply(ctx, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true))
+	return s.aclAsk(ctx, *surface)
+}
+
+// aclAsk asks the principal's set one question and returns the refusal, or
+// nil. A question the HTTP route gate already asked and admitted is not
+// asked again. No principal (open mode) has no set to ask.
+//
+// A write asks two: aclEnter the family's weakest verb (what the route and
+// the RPC ask), then the write's own verb here, so a principal allowed the
+// write but denied the read gets the same answer on every transport.
+func (s *Server) aclAsk(ctx context.Context, surface authz.Surface) *aclReply {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || routeGateAnswered(ctx, surface) {
+		return nil
+	}
+	return s.gateReply(ctx, p, surface, authz.EvaluateSurface(ctx, p.Effective, surface, true))
 }
 
 // aclScopeBody is writeScopeError's body, field for field.
@@ -355,7 +371,10 @@ func (s *Server) aclGroupList(ctx context.Context, focus string) aclReply {
 }
 
 func (s *Server) aclGroupPut(ctx context.Context, focus string, req groupRequest) aclReply {
-	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
+	if r := s.aclAsk(ctx, *aclManageGroups()); r != nil {
 		return *r
 	}
 	if r := s.aclNoStore(); r != nil {
@@ -488,7 +507,10 @@ func (s *Server) aclStatic() *authz.Static {
 }
 
 func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclReply {
-	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
+	if r := s.aclAsk(ctx, *aclManageGroups()); r != nil {
 		return *r
 	}
 	if r := s.aclNoStore(); r != nil {
@@ -507,7 +529,10 @@ func (s *Server) aclGroupDelete(ctx context.Context, focus, name string) aclRepl
 }
 
 func (s *Server) aclGroupAddMember(ctx context.Context, focus, name string, req groupMemberRequest) aclReply {
-	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
+	if r := s.aclAsk(ctx, *aclManageGroups()); r != nil {
 		return *r
 	}
 	if r := s.aclNoStore(); r != nil {
@@ -555,7 +580,10 @@ func (s *Server) aclGroupExternal(ctx context.Context, tenant, name string) *acl
 }
 
 func (s *Server) aclGroupRemoveMember(ctx context.Context, focus, name, kind, id string) aclReply {
-	if r := s.aclEnter(ctx, true, aclManageGroups()); r != nil {
+	if r := s.aclEnter(ctx, true, aclReadGroups()); r != nil {
+		return *r
+	}
+	if r := s.aclAsk(ctx, *aclManageGroups()); r != nil {
 		return *r
 	}
 	if r := s.aclNoStore(); r != nil {
@@ -963,7 +991,10 @@ func (s *Server) aclBindingList(ctx context.Context, focus string, includeRetire
 }
 
 func (s *Server) aclBindingCreate(ctx context.Context, focus string, req bindingRequest) aclReply {
-	if r := s.aclEnter(ctx, true, aclAuthorLists()); r != nil {
+	if r := s.aclEnter(ctx, true, aclReadLists()); r != nil {
+		return *r
+	}
+	if r := s.aclAsk(ctx, *aclAuthorLists()); r != nil {
 		return *r
 	}
 	if r := s.aclNoStore(); r != nil {
@@ -1013,7 +1044,10 @@ func (s *Server) aclBindingTargetCheck(ctx context.Context, tenant string, req b
 }
 
 func (s *Server) aclBindingRetire(ctx context.Context, focus, id string) aclReply {
-	if r := s.aclEnter(ctx, true, aclAuthorLists()); r != nil {
+	if r := s.aclEnter(ctx, true, aclReadLists()); r != nil {
+		return *r
+	}
+	if r := s.aclAsk(ctx, *aclAuthorLists()); r != nil {
 		return *r
 	}
 	if r := s.aclNoStore(); r != nil {

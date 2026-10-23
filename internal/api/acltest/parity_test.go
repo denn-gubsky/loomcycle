@@ -50,6 +50,7 @@ const (
 	operator = "lct_acme_ops"
 	member   = "lct_acme_alice"
 	delegate = "lct_acme_delegate"
+	readless = "lct_acme_readless" // a tenant operator denied reading groups and lists
 )
 
 type noProviders struct{}
@@ -82,6 +83,7 @@ func newEnv(t *testing.T, mode authz.Mode) *env {
 		{operator, "ops", []string{auth.ScopeTenant}},
 		{member, "alice", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeChannelPublish, auth.ScopeChannelRead}},
 		{delegate, "delegate", []string{auth.ScopeTenant}},
+		{readless, "readless", []string{auth.ScopeTenant}},
 	} {
 		if _, err := st.OperatorTokenDefCreate(context.Background(), store.OperatorTokenDefRow{
 			DefID: "def_" + tok.subject, Name: "acme-" + tok.subject, TenantID: "acme", Subject: tok.subject,
@@ -266,9 +268,12 @@ func authzRPC(c loomcyclepb.LoomcycleClient) func(context.Context, *loomcyclepb.
 func (e *env) setup() {
 	e.t.Helper()
 	deny := `[{"effect":"deny","actions":["author"],"resources":["def:acl/*"]}]`
+	noRead := `[{"effect":"deny","actions":["read"],"resources":["principal:group:*","def:acl/*"]}]`
 	for _, s := range []struct{ path, body string }{
 		{"/v1/_acldef", `{"op":"create","name":"no-acl-authoring","rules":` + deny + `}`},
 		{"/v1/_aclbinding", `{"acl":"no-acl-authoring","subject_kind":"user","subject_id":"delegate"}`},
+		{"/v1/_acldef", `{"op":"create","name":"no-read","rules":` + noRead + `}`},
+		{"/v1/_aclbinding", `{"acl":"no-read","subject_kind":"user","subject_id":"readless"}`},
 	} {
 		if resp, raw := e.do(http.MethodPost, s.path, operator, s.body, nil); resp.StatusCode != http.StatusCreated {
 			e.t.Fatalf("setup %s: %d %s", s.path, resp.StatusCode, raw)
@@ -320,6 +325,14 @@ func TestACLManagement_OneAnswerOnEveryTransport(t *testing.T) {
 		{"a member may not ask about another subject", member,
 			call{"authz", `{"op":"evaluation","subject":{"id":"ops"},` + ask + `}`, "POST", "/v1/_authz/evaluation", `{"subject":{"id":"ops"},` + ask + `}`, authzRPC},
 			false, "authz_subject", false},
+		// Write without read: every transport asks the family's read first
+		// (the RPC and the route), then the op's own verb, as acldef does.
+		{"manage without read is refused a group write", readless,
+			call{"groupdef", `{"op":"create","name":"by-readless"}`, "POST", "/v1/_groups", `{"name":"by-readless"}`, groupDef},
+			false, "acl_denied", false},
+		{"author without read is refused a binding", readless,
+			call{"aclbinding", `{"op":"create","acl":"no-acl-authoring","subject_kind":"user","subject_id":"bob"}`, "POST", "/v1/_aclbinding", `{"acl":"no-acl-authoring","subject_kind":"user","subject_id":"bob"}`, aclBinding},
+			false, "acl_denied", false},
 		{"an operator asks about a member", operator,
 			call{"authz", `{"op":"evaluation","subject":{"id":"alice"},` + ask + `}`, "POST", "/v1/_authz/evaluation", `{"subject":{"id":"alice"},` + ask + `}`, authzRPC},
 			true, "", true},
