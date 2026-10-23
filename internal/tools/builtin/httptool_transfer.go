@@ -35,14 +35,18 @@ const (
 
 // transferClient is an http.Client on the HTTP tool's dialer. Its response
 // header timeout is the HTTP tool's; the body may take longer, bounded by the
-// caller's context.
-func (h *HTTP) transferClient(ctx context.Context, rule redirectRule) *http.Client {
+// caller's context. seen, when not nil, is shown every redirect target before
+// it is judged: a Location often carries a token of its own.
+func (h *HTTP) transferClient(ctx context.Context, rule redirectRule, seen func(*url.URL)) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext:           h.dialContext,
 			ResponseHeaderTimeout: h.timeout(),
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if seen != nil {
+				seen(req.URL)
+			}
 			if rule == redirectNone {
 				return http.ErrUseLastResponse
 			}
@@ -83,15 +87,18 @@ func parseTransferURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// transferError is a request error without its URL. net/http's *url.Error
-// quotes the whole URL, query and all, and a pre-authenticated URL's query
-// is its credential.
+// transferError renders a request error with its URL masked. net/http's
+// *url.Error quotes the whole URL, query and all — the request's, or a
+// redirect target's — and a pre-authenticated URL's query is its credential.
 func transferError(err error) string {
 	var ue *url.Error
-	if errors.As(err, &ue) {
-		err = ue.Err
+	if !errors.As(err, &ue) {
+		return err.Error()
 	}
-	return err.Error()
+	if u, perr := url.Parse(ue.URL); perr == nil && u.Host != "" {
+		return fmt.Sprintf("%s %q: %v", ue.Op, displayURL(u), ue.Err)
+	}
+	return fmt.Sprintf("%s: %v", ue.Op, ue.Err)
 }
 
 // displayURL is a URL as results and logs show it: the query, which in a

@@ -186,7 +186,7 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 
 	ctx, cancel := context.WithTimeout(ctx, fileTransferTimeout)
 	defer cancel()
-	client := f.HTTP.transferClient(ctx, redirectSameHost)
+	client := f.HTTP.transferClient(ctx, redirectSameHost, func(r *url.URL) { f.registerURL(ctx, r) })
 	defer client.CloseIdleConnections()
 	req, err := f.transferRequest(ctx, http.MethodGet, u, in.Headers, nil)
 	if err != nil {
@@ -382,7 +382,7 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 
 	ctx, cancel := context.WithTimeout(ctx, fileTransferTimeout)
 	defer cancel()
-	client := f.HTTP.transferClient(ctx, redirectNone)
+	client := f.HTTP.transferClient(ctx, redirectNone, func(r *url.URL) { f.registerURL(ctx, r) })
 	defer client.CloseIdleConnections()
 	f.registerURL(ctx, u)
 	up := &uploader{f: f, client: client, u: u, method: method, headers: in.Headers, contentType: in.ContentType, shown: shown}

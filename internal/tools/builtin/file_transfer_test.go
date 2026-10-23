@@ -514,3 +514,23 @@ func TestFileTransfer_RegistersOnlyCredentialPartsWithinALimit(t *testing.T) {
 		}
 	}
 }
+
+// TestFileDownload_RefusedRedirectMasksItsLocation: a redirect target's query
+// is a credential too. The refusal names the target with its query masked,
+// and the query is handed to the redactor.
+func TestFileDownload_RefusedRedirectMasksItsLocation(t *testing.T) {
+	_, ctx, _ := transferRun(t, inbox.Service{})
+	const secret = "SECRET-in-the-location"
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://localhost:1/a.pdf?sig="+secret, http.StatusFound)
+	}))
+	t.Cleanup(src.Close)
+	tf := newTransferFile(&HTTP{HostAllowlist: []string{"127.0.0.1", "localhost"}, AllowPrivateIPs: true})
+	_, res := tf.exec(t, ctx, map[string]any{"op": "download", "url": src.URL + "/away"})
+	if !res.IsError || strings.Contains(res.Text, secret) || !strings.Contains(res.Text, `"http://localhost:1/a.pdf?…"`) {
+		t.Errorf("error = %q", res.Text)
+	}
+	if !slices.Contains(tf.registered, "sig="+secret) {
+		t.Errorf("registered = %v", tf.registered)
+	}
+}

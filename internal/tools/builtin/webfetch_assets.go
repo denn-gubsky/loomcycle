@@ -88,7 +88,7 @@ func (f *WebFetch) fetchAssets(ctx context.Context, page, pageURL string, max in
 	if err != nil {
 		return page, nil
 	}
-	client := f.HTTP.transferClient(ctx, redirectAllowlisted)
+	client := f.HTTP.transferClient(ctx, redirectAllowlisted, nil)
 	defer client.CloseIdleConnections()
 	a := &assetFetcher{f: f, ctx: ctx, client: client, base: base, max: max, byURL: map[string]*webAsset{}, noInbox: !inbox.Available(ctx)}
 	// Script and style blocks are dropped by the strip; a URL inside one is
