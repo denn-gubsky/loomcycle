@@ -48,7 +48,9 @@ func (f *WebFetch) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"url": {"type": "string", "description": "Absolute URL (http or https). Host must be allowlisted."},
-			"max_chars": {"type": "integer", "minimum": 1, "description": "Most text to return, counted in bytes of UTF-8 (a non-ASCII character counts more than once). Default: about a quarter of this run's context window. Never more than 262144 (256 KiB)."}
+			"max_chars": {"type": "integer", "minimum": 1, "description": "Most text to return, counted in bytes of UTF-8 (a non-ASCII character counts more than once). Default: about a quarter of this run's context window. Never more than 262144 (256 KiB)."},
+			"assets": {"type": "boolean", "description": "Also download the page's images and the PDF, Office and image files it links to into this run's inbox (folder web/<host>/), on the same host allowlist as the page. Each link in the text becomes a Markdown link to its volume:inbox: reference; one not fetched keeps its URL and says why. A last line [assets] lists them as JSON. Default false."},
+			"assets_max": {"type": "integer", "minimum": 1, "maximum": 100, "description": "With assets: the most files to download. Default 20."}
 		},
 		"required": ["url"]
 	}`)
@@ -56,8 +58,10 @@ func (f *WebFetch) InputSchema() json.RawMessage {
 
 func (f *WebFetch) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
 	var args struct {
-		URL      string `json:"url"`
-		MaxChars *int   `json:"max_chars"`
+		URL       string `json:"url"`
+		MaxChars  *int   `json:"max_chars"`
+		Assets    bool   `json:"assets"`
+		AssetsMax *int   `json:"assets_max"`
 	}
 	if err := json.Unmarshal(input, &args); err != nil {
 		return tools.Result{Text: "invalid input: " + err.Error(), IsError: true}, nil
@@ -97,9 +101,20 @@ func (f *WebFetch) Execute(ctx context.Context, input json.RawMessage) (tools.Re
 		body = strings.TrimSuffix(body, m)
 		rawCut = true
 	}
+	var assets []webAsset
+	if args.Assets {
+		n := webFetchAssetsDefault
+		if args.AssetsMax != nil {
+			n = min(max(*args.AssetsMax, 1), webFetchAssetsCeiling)
+		}
+		body, assets = f.fetchAssets(ctx, body, got.finalURL, n)
+	}
 	out, cut := cutOnRune(stripHTML(body), f.outputLimit(ctx, args.MaxChars))
 	if cut || rawCut {
 		out += "\n[truncated]"
+	}
+	if args.Assets {
+		out += assetsSection(assets)
 	}
 	return tools.Result{Text: out}, nil
 }
