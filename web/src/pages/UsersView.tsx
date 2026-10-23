@@ -15,6 +15,7 @@ import {
   updateUser,
 } from "../api";
 import { useFocusTenant } from "../components/Layout";
+import UserAccessCell, { useAccessSnapshot, type AccessSnapshot } from "../components/UserAccessCell";
 
 // UsersView — RFC BX P2c: the tenant-operator Users console. Manage the
 // first-class users table (create / edit / delete) and mint / list / revoke each
@@ -51,10 +52,14 @@ export default function UsersView() {
   const [users, setUsers] = useState<UserSummary[] | null>(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  // Groups and bindings for the access column; re-read on every refresh.
+  const [accessKey, setAccessKey] = useState(0);
+  const access = useAccessSnapshot(focusTenant || undefined, accessKey);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     setErr("");
+    setAccessKey((k) => k + 1);
     try {
       const resp = await listUsers(focusTenant || undefined);
       setUsers(resp.users ?? []);
@@ -93,6 +98,7 @@ export default function UsersView() {
       </div>
 
       {err && <div className="settings-error">{err}</div>}
+      {access.err && <div className="settings-muted">groups and bindings unavailable: {access.err}</div>}
 
       <CreateUserForm onCreated={fetchUsers} />
 
@@ -105,12 +111,13 @@ export default function UsersView() {
               <th>access mode</th>
               <th>status</th>
               <th>activity</th>
+              <th title="Groups the user is in, and the rule lists bound to it: its own, through a group, or tenant-wide">groups · access</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {users.map((u) => (
-              <UserRow key={u.user_id} user={u} onChanged={fetchUsers} />
+              <UserRow key={u.user_id} user={u} access={access.snap} onChanged={fetchUsers} />
             ))}
           </tbody>
         </table>
@@ -193,7 +200,15 @@ function CreateUserForm({ onCreated }: { onCreated: () => Promise<void> }) {
 
 // UserRow renders one user with inline edit (registered users) or a register
 // affordance (a subject seen only in runs), plus an expandable token panel.
-function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => Promise<void> }) {
+function UserRow({
+  user,
+  access,
+  onChanged,
+}: {
+  user: UserSummary;
+  access: AccessSnapshot | null;
+  onChanged: () => Promise<void>;
+}) {
   const registered = user.registered === true;
   const [editing, setEditing] = useState(false);
   const [showTokens, setShowTokens] = useState(false);
@@ -300,6 +315,9 @@ function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => Prom
           )}
         </td>
         <td className="settings-muted">{activityLabel(user)}</td>
+        <td>
+          <UserAccessCell subject={user.user_id} snap={access} />
+        </td>
         <td className="settings-row-actions">
           {registered ? (
             editing ? (
@@ -333,14 +351,14 @@ function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => Prom
       </tr>
       {err && (
         <tr>
-          <td colSpan={6}>
+          <td colSpan={7}>
             <div className="settings-error">{err}</div>
           </td>
         </tr>
       )}
       {showTokens && registered && (
         <tr>
-          <td colSpan={6}>
+          <td colSpan={7}>
             <UserTokensPanel subject={user.user_id} disabled={user.status !== "active"} />
           </td>
         </tr>

@@ -7985,3 +7985,21 @@ button.doc-ref-target.external {
 .acl-denied-reasons {
   margin-top: 4px;
 }
+.user-access {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--lc-text-xs);
+}
+.user-access-chip {
+  display: inline-block;
+  margin: 0 4px 2px 0;
+  padding: 0 6px;
+  border-radius: var(--lc-radius-sm);
+  background: var(--lc-surface-2);
+  border: 1px solid var(--lc-rule);
+}
+.user-access-expired {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
