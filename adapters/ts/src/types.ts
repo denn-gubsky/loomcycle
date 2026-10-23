@@ -1688,6 +1688,10 @@ export interface RunSpec {
      *  narrowed to again on resume. Absent: the parent narrowed nothing. `[]`:
      *  the parent allowed none. */
     shell_credentials?: string[];
+    /** The parent run's Git network grant at spawn (RFC FB): the operations
+     *  the child's own `git_remote` was narrowed to, and is narrowed to again
+     *  on resume. Absent: the parent had none. */
+    git_remote?: Array<'fetch' | 'push'>;
     /** The override offer the child passes on to its own children: its
      *  parent's, unchanged, so a resume offers what the live child did. Only
      *  a child of the offering run's definition (`def_id`, else `agent_name`)
@@ -4749,6 +4753,12 @@ export interface AgentDefOverlay {
    *  Held to the author's own narrowing; a sub-agent gets only the names its
    *  parent run also allows. */
   shell_credentials?: string[];
+  /** Which network operations the agent's `Git` tool may perform (RFC FB):
+   *  `['fetch']` (clone, fetch, pull, ls_remote) or `['fetch', 'push']`.
+   *  Unset or `[]` = none, local repositories only; `push` needs `fetch`.
+   *  Held to the author's own grant; a sub-agent may perform an operation
+   *  only when its parent run also may. */
+  git_remote?: Array<'fetch' | 'push'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

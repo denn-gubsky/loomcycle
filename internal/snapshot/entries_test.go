@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"path"
 	"reflect"
 	"testing"
 
@@ -15,7 +16,9 @@ var storePkgPath = reflect.TypeOf(store.Run{}).PkgPath()
 
 // allowedStoreTypes are store types an entry may hold, each reviewed. A
 // store row type is not here: a column added to it would flow into every
-// envelope without anyone deciding it is safe to.
+// envelope without anyone deciding it is safe to. store.ParentContext is an
+// alias: the type is defined in internal/runident, so it is named
+// "runident.ParentContext" below.
 var allowedStoreTypes = map[reflect.Type]bool{
 	reflect.TypeOf(store.ParentContext{}): true,
 }
@@ -53,9 +56,11 @@ func envelopeStructs() map[string]reflect.Type {
 	return out
 }
 
+// typeName qualifies a type from outside this package with its package name,
+// so an allowlisted type keeps a distinct, stable pin name wherever it lives.
 func typeName(rt reflect.Type) string {
-	if rt.PkgPath() == storePkgPath {
-		return "store." + rt.Name()
+	if pkg := rt.PkgPath(); pkg != reflect.TypeOf(Sections{}).PkgPath() {
+		return path.Base(pkg) + "." + rt.Name()
 	}
 	return rt.Name()
 }
@@ -252,7 +257,7 @@ var pinnedEntryKeys = map[string][]string{
 		"tenant_id", "interactive", "operator_key_restricted", "isolated", "credentials_no_user_scope", "retention", "parent_context",
 		"idempotency_key", "delivery_alt_key", "queued_input", "secrets_dropped", "transcript_events"},
 	"TranscriptEvent": {"seq", "ts_ns", "type", "payload"},
-	"store.ParentContext": {"root_agent_run_id", "function_key", "tier_at_run", "board_scope", "board_chunk_id",
+	"runident.ParentContext": {"root_agent_run_id", "function_key", "tier_at_run", "board_scope", "board_chunk_id",
 		"board_document_id", "walk_id", "wave_id", "wave_index", "state", "state_visit"},
 
 	"SqlMemScope":        {"tenant", "scope", "scope_id", "ddl", "post_ddl", "tables"},

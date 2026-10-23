@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/memory/embedders"
+	"github.com/denn-gubsky/loomcycle/internal/wiring"
 )
 
 // embedSrv is an Ollama-shaped /api/embed stub that counts what reached it.
@@ -45,9 +45,9 @@ func TestEmbedderConfig_OllamaLocalResolvesTheProvidersMapBaseURL(t *testing.T) 
 	}
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "ollama-local", Model: "bge-m3"}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -74,9 +74,9 @@ func TestEmbedderConfig_EmbedderYamlBeatsTheProvidersMap(t *testing.T) {
 		Provider: "ollama-local", Model: "bge-m3", BaseURL: embedderSrv.URL,
 	}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -108,9 +108,9 @@ func TestEmbedderConfig_ProvidersMapApiKeyEnvIsHonoured(t *testing.T) {
 	}
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "openai", Model: "m"}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -138,9 +138,9 @@ func TestEmbedderConfig_NoProvidersBlockStillUsesTheEnvKey(t *testing.T) {
 	cfg.Env.OpenAIAPIKey = "env-key-placeholder"
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "openai", Model: "m", BaseURL: srv.URL}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -172,9 +172,9 @@ func TestEmbedderConfig_AnthropicDoesNotInheritTheChatProviderEntry(t *testing.T
 	}
 	cfg.Memory.Embedder = config.EmbedderConfig{Provider: "anthropic", Model: "voyage-3"}
 
-	e, err := embedders.Build(cfg)
+	e, err := wiring.Embedder(cfg)
 	if err != nil {
-		t.Fatalf("embedders.Build: %v", err)
+		t.Fatalf("wiring.Embedder: %v", err)
 	}
 	// Not asserting on a successful Embed: the point is that the Voyage driver
 	// never adopted the Anthropic endpoint, so the anthropic stub sees nothing.

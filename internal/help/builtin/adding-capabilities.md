@@ -55,7 +55,7 @@ create and fork agents — but **you still can't escalate**:
   lacks.
 - **Every other grant follows the same rule.** `memory_scopes`,
   `sql_scopes`, `history_scope`, `core_blocks`, `volumes`, `channels`,
-  `interruption`, `evaluation_scopes`, `crypto_scopes`, `shell_credentials`, `skills` and the `*_def_scopes`
+  `interruption`, `evaluation_scopes`, `crypto_scopes`, `shell_credentials`, `git_remote`, `skills` and the `*_def_scopes`
   of an agent you create must be within your own (`Context op=self`
   shows them). A fork may also keep what the version it forks already
   has. An unset `memory_scopes` or `sql_scopes` takes the ordinary

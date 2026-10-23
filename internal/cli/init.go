@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
 // RunInit creates a default loomcycle.yaml + README.md in the

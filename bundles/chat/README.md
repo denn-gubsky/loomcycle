@@ -17,7 +17,7 @@ bundles/chat/
 ```
 
 The binary ships an **embedded** copy at
-[`cmd/loomcycle/embedded/bundles/chat.yaml`](../../cmd/loomcycle/embedded/bundles/chat.yaml)
+[`internal/embedded/bundles/chat.yaml`](../../internal/embedded/bundles/chat.yaml)
 (`go:embed`). `bundles/chat/loomcycle.yaml` is the in-repo source mirror — keep the
 two identical (`chat` has no split-out skills, so they are byte-for-byte the same).
 

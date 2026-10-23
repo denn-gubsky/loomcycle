@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -138,7 +139,7 @@ func TestRestartQueuedRuns_FailsARunItCannotStartWithTheReason(t *testing.T) {
 	withSecrets := queuedFixture(t, s, "a_qsecret", "key-secret",
 		runner.RunInput{Agent: "r", Segments: oneUserSeg("x"), UserBearer: testQueueBearer}, "")
 	noTrace := queuedFixture(t, s, "a_qnotrace", "key-notrace",
-		runner.RunInput{Agent: "r", Segments: oneUserSeg("never stored")}, store.RetentionNone)
+		runner.RunInput{Agent: "r", Segments: oneUserSeg("never stored")}, retentionmode.None)
 	if raw := queuedRowInput(t, s, withSecrets.ID); strings.Contains(string(raw), testQueueBearer) || strings.Contains(string(raw), `"input"`) {
 		t.Fatalf("a run with secrets and no key stored = %s, want only the reason", raw)
 	}

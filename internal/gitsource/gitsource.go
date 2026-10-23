@@ -155,22 +155,11 @@ func (r Request) validate() (host string, err error) {
 		return "", fmt.Errorf("%w: "+format, append([]any{ErrInvalidRequest}, a...)...)
 	}
 	// The URL is checked here and then used, as text, by the library. So
-	// only text that every URL parser reads the same way is let through:
-	// nothing encoded, no backslash, no space or control character.
-	for _, c := range r.URL {
-		if c <= 0x20 || c == 0x7f || c == '\\' || c == '%' {
-			return bad("the repository URL has a space, a control character, a backslash or a percent-encoding")
-		}
-	}
-	u, perr := url.Parse(r.URL)
-	if perr != nil || u.Scheme != "https" || u.Host == "" {
-		return bad("the repository URL must be an https URL")
-	}
-	if u.User != nil {
-		return bad("the repository URL must not carry a user or a password")
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return bad("the repository URL must not carry a query or a fragment")
+	// only text that every URL parser reads the same way is let through
+	// (ValidateURL).
+	host, err = ValidateURL(r.URL)
+	if err != nil {
+		return "", err
 	}
 	if !shaRe.MatchString(r.Commit) {
 		return bad("commit must be a full sha-1: 40 lower-case hex digits")
@@ -184,7 +173,7 @@ func (r Request) validate() (host string, err error) {
 	if r.StoreDir == "" || r.Transport == nil || r.MaxFetchBytes <= 0 || r.MaxObjectBytes <= 0 {
 		return bad("a store directory, a transport, a fetch limit and an object limit are required")
 	}
-	return hostKey(u), nil
+	return host, nil
 }
 
 // hostKey is a URL's host as the dispatcher compares it: lower case, and

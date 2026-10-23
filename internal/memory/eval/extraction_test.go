@@ -558,7 +558,7 @@ func TestExtractionFixture_ValidateCatchesAVacuousCorpus(t *testing.T) {
 func TestExtractionPrompt_MatchesBundle(t *testing.T) {
 	// The embedded copy is the one that ships (see TestChatBundle_SourceMatchesEmbedded
 	// for the same reasoning), so pin against that.
-	path := filepath.Join("..", "..", "..", "cmd", "loomcycle", "embedded", "bundles", "memory.yaml")
+	path := filepath.Join("..", "..", "embedded", "bundles", "memory.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read embedded memory bundle: %v", err)
@@ -607,7 +607,7 @@ func TestExtractionPrompt_MatchesBundle(t *testing.T) {
 // against. A class production accepts but the harness drops would show up as a
 // phantom recall failure.
 func TestExtractorClasses_MatchBundle(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "cmd", "loomcycle", "embedded", "bundles", "memory.yaml")
+	path := filepath.Join("..", "..", "embedded", "bundles", "memory.yaml")
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read embedded memory bundle: %v", err)

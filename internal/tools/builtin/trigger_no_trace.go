@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
-	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -22,7 +22,7 @@ import (
 // one that stored them until something had been kept.
 func refuseNoTraceTriggerAuthor(ctx context.Context, kind, op string) (tools.Result, bool) {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !(ok && p.Restrictions.Retention == store.RetentionNone) && tools.RunIdentity(ctx).Retention != store.RetentionNone {
+	if !(ok && p.Restrictions.Retention == retentionmode.None) && tools.RunIdentity(ctx).Retention != retentionmode.None {
 		return tools.Result{}, false
 	}
 	return errValidation(

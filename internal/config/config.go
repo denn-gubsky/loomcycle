@@ -26,12 +26,13 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
-	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
-	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // Config is the top-level YAML structure plus env-derived fields.
@@ -2165,6 +2166,18 @@ type AgentDef struct {
 	// content_sha256.
 	ShellCredentials *CredentialNames `yaml:"shell_credentials"`
 
+	// GitRemote says which network operations the agent's Git tool may
+	// perform (RFC FB): "fetch" (clone, fetch, pull, ls_remote) and "push".
+	// Absent and `[]` both mean none: the tool works on local repositories
+	// only. "push" needs "fetch" alongside it, since a push without the
+	// fetch it rests on is not a workflow; ["push"] alone is refused at load,
+	// as is any other value.
+	//
+	// A sub-agent may perform an operation only when both it and its parent
+	// run may. Not per-run overridable. Authority, not content: not part of
+	// content_sha256.
+	GitRemote []string `yaml:"git_remote"`
+
 	// HistoryScope gates the RFC BE History tool (browse/search/annotate
 	// past chats). Owner-scope vocabulary:
 	//
@@ -4242,6 +4255,18 @@ type Env struct {
 	// write past it fails with "no space left on device". Sourced from
 	// LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES; default BashboxOverlayMaxBytesDefault.
 	BashboxOverlayMaxBytes int64
+	// GitPushHosts is the operator's allowlist of hosts the Git tool may push
+	// to (RFC FB). Empty (default): no push anywhere, whatever an agent's
+	// git_remote says. Sourced from LOOMCYCLE_GIT_PUSH_HOSTS (comma-separated).
+	GitPushHosts []string
+	// GitAuthorName and GitAuthorEmail are the author and committer the Git
+	// tool writes on the commits it makes (RFC FB). Sourced from
+	// LOOMCYCLE_GIT_AUTHOR_NAME and LOOMCYCLE_GIT_AUTHOR_EMAIL.
+	GitAuthorName  string
+	GitAuthorEmail string
+	// GitPushMaxBytes caps the pack one Git push may upload (RFC FB). Sourced
+	// from LOOMCYCLE_GIT_PUSH_MAX_BYTES; default GitPushMaxBytesDefault.
+	GitPushMaxBytes int64
 	// SkillsRoot points at a directory holding subdirectories of the
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
@@ -5325,6 +5350,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
 		BashboxFallbackAllowedEnv:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
 		BashboxFallbackAllowedCreds: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS")),
+		GitPushHosts:                splitCSV(os.Getenv("LOOMCYCLE_GIT_PUSH_HOSTS")),
+		GitAuthorName:               strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_NAME")),
+		GitAuthorEmail:              strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_EMAIL")),
 		SkillsRoot:                  os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:                  os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		HelpRoot:                    os.Getenv("LOOMCYCLE_HELP_ROOT"),
@@ -5926,6 +5954,17 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.Env.BashboxOverlayMaxBytes = max(n, 1<<20)
 		}
+	}
+	// Git push upload cap (RFC FB). Refused rather than defaulted when it
+	// does not parse: a cap the operator meant to lower, read as the default,
+	// would let a push send more than they allowed.
+	cfg.Env.GitPushMaxBytes = GitPushMaxBytesDefault
+	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_PUSH_MAX_BYTES")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("LOOMCYCLE_GIT_PUSH_MAX_BYTES: %q is not a positive number of bytes", v)
+		}
+		cfg.Env.GitPushMaxBytes = n
 	}
 	// Crypto tool limits (RFC EP): a positive override tunes each; a
 	// non-positive or malformed value keeps the default.
@@ -7095,6 +7134,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		EvaluationScopes: d.EvaluationScopes,
 		CryptoScopes:     d.CryptoScopes,
 		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
+		GitRemote:        d.GitRemote,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
 		// content hash matches the substrate.
@@ -7317,6 +7357,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if override.ShellCredentials != nil {
 		out.ShellCredentials = override.ShellCredentials
 	}
+	if override.GitRemote != nil {
+		out.GitRemote = override.GitRemote
+	}
 	if override.HistoryScope != nil {
 		out.HistoryScope = override.HistoryScope
 	}
@@ -7460,6 +7503,10 @@ const DefaultShutdownPauseTimeoutMs = 7000
 // in-memory files cost about 2-2.6x the bytes written in heap.
 const BashboxOverlayMaxBytesDefault = 64 << 20
 
+// GitPushMaxBytesDefault is the cap on one Git push's upload when
+// LOOMCYCLE_GIT_PUSH_MAX_BYTES is unset (RFC FB).
+const GitPushMaxBytesDefault = 100 << 20
+
 // splitCSV trims whitespace and drops empties from a comma-separated env value.
 func splitCSV(s string) []string {
 	if s == "" {
@@ -7484,7 +7531,7 @@ func splitCSV(s string) []string {
 //
 // This floor is deliberate and permanent — NOT transitional scaffolding. The
 // hardcoded provider *construction/registration* was removed under RFC BF (the
-// embedded default-providers layer, cmd/loomcycle/embedded/providers.default.yaml,
+// embedded default-providers layer, internal/embedded/providers.default.yaml,
 // is the sole source of the built-ins at runtime, and both the server and the CLI
 // prepend it). This set exists only so validate() stays a total function that does
 // not depend on that layer having been applied first — it still runs on configs
@@ -7587,7 +7634,7 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 	}
 	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
 		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0 ||
-		a.ShellCredentials != nil
+		a.ShellCredentials != nil || len(a.GitRemote) > 0
 }
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
@@ -7753,6 +7800,28 @@ func ValidateShellCredentials(names *CredentialNames) error {
 		if !bashboxFallbackCredNameRe.MatchString(n) {
 			return fmt.Errorf("shell_credentials[%d]: %q is not a credential name (want ^[A-Za-z0-9_-]{1,128}$)", i, n)
 		}
+	}
+	return nil
+}
+
+// ValidateGitRemote refuses a git_remote list (RFC FB) holding a value other
+// than "fetch" or "push", a duplicate, or "push" without "fetch". One function
+// for every place a definition is authored — operator yaml, the AgentDef
+// substrate overlay, register_agent — so a value refused at boot is not
+// quietly kept by a runtime write.
+func ValidateGitRemote(ops []string) error {
+	seen := map[string]bool{}
+	for i, op := range ops {
+		if op != "fetch" && op != "push" {
+			return fmt.Errorf("git_remote[%d]: unknown operation %q (want fetch, or fetch and push)", i, op)
+		}
+		if seen[op] {
+			return fmt.Errorf("git_remote[%d]: %q is listed twice", i, op)
+		}
+		seen[op] = true
+	}
+	if seen["push"] && !seen["fetch"] {
+		return fmt.Errorf("git_remote: push needs fetch too (a push starts from what was fetched); write [fetch, push]")
 	}
 	return nil
 }
@@ -8935,9 +9004,9 @@ func validate(c *Config) error {
 		// RFC BL P1: a {{memory:<variant>}} placeholder in the system prompt must
 		// reference a recognised variant — a typo is caught here, at boot, rather
 		// than silently rendering nothing at run time.
-		if unknown := meminject.UnknownVariants(agent.SystemPrompt); len(unknown) > 0 {
+		if unknown := promptinject.UnknownVariants(agent.SystemPrompt); len(unknown) > 0 {
 			return fmt.Errorf("agent %q: unknown {{memory:%s}} placeholder in system prompt (recognised: %s)",
-				name, unknown[0], strings.Join(meminject.AllVariants(), ", "))
+				name, unknown[0], strings.Join(promptinject.AllVariants(), ", "))
 		}
 		// A {{tool:<Tool>.<op>}} placeholder must name a ref on the read-only
 		// ALLOWLIST. Rejecting here is the whole reason the allowlist is safe to
@@ -8945,18 +9014,18 @@ func validate(c *Config) error {
 		// that it is not callable, instead of shipping a prompt that silently
 		// expands to nothing (or, in a design without the allowlist, one that runs
 		// a mutating tool on every run-entry, sub-agent spawn and resume).
-		if unknown := meminject.UnknownToolRefs(agent.SystemPrompt); len(unknown) > 0 {
+		if unknown := promptinject.UnknownToolRefs(agent.SystemPrompt); len(unknown) > 0 {
 			return fmt.Errorf("agent %q: {{tool:%s}} in system prompt is not an allowlisted read-only tool call (allowed: %s)",
-				name, unknown[0], strings.Join(meminject.AllToolRefs(), ", "))
+				name, unknown[0], strings.Join(promptinject.AllToolRefs(), ", "))
 		}
 		// The ARGUMENT form — {{tool:<Tool>:<argument>}} — has its own, smaller
 		// set, because it is the one family that can reach the network. Same
 		// reason to reject at boot, one step sharper: {{tool:Bash:rm -rf /}}
 		// matches the family's pattern on purpose so it is REFUSED here rather
 		// than sitting in a prompt that looks wired and is not.
-		if unknown := meminject.UnknownToolCalls(agent.SystemPrompt); len(unknown) > 0 {
+		if unknown := promptinject.UnknownToolCalls(agent.SystemPrompt); len(unknown) > 0 {
 			return fmt.Errorf("agent %q: {{tool:%s:...}} in system prompt is not a tool the argument form may name (allowed: %s)",
-				name, unknown[0], strings.Join(meminject.AllToolCalls(), ", "))
+				name, unknown[0], strings.Join(promptinject.AllToolCalls(), ", "))
 		}
 		// Same posture for a document ref: the placeholder pattern matches
 		// loosely on purpose, so a ref with no path is REFUSED loudly here rather
@@ -8964,7 +9033,7 @@ func validate(c *Config) error {
 		// Whether the document EXISTS is deliberately not checked — it can be
 		// created, moved or removed after config load, so a boot-time check would
 		// be a false guarantee; a missing document renders nothing at run time.
-		if bad := meminject.MalformedDocRefs(agent.SystemPrompt); len(bad) > 0 {
+		if bad := promptinject.MalformedDocRefs(agent.SystemPrompt); len(bad) > 0 {
 			return fmt.Errorf("agent %q: {{document:%s}} in system prompt is not a usable reference "+
 				"(want a path or id, optionally #heading — e.g. {{document:/specs/launch#Risks}})", name, bad[0])
 		}
@@ -8996,6 +9065,7 @@ func validate(c *Config) error {
 		// tool they haven't gated yet.
 		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 		c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
+		c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env)...)
 		if !c.Decision.Configured() {
 			for _, tool := range agent.Tools {
 				if tool == "Decision" {
@@ -9078,7 +9148,7 @@ func validate(c *Config) error {
 		if err := ValidateAgentHooks(agent); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
-		if _, err := store.ParseRetention(agent.Retention); err != nil {
+		if _, err := retentionmode.Parse(agent.Retention); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := ValidateEphemeralVolumes(agent.EphemeralVolumes); err != nil {
@@ -9107,6 +9177,9 @@ func validate(c *Config) error {
 		if err := ValidateShellCredentials(agent.ShellCredentials); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
+		if err := ValidateGitRemote(agent.GitRemote); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
 		// History tool (RFC BE): validate history_scope entries against the
 		// owner-scope vocabulary. "any" is accepted (legacy alias for
 		// "global"); the retired "siblings"/"descendants"/"named:<n>" values
@@ -9125,8 +9198,8 @@ func validate(c *Config) error {
 		}
 		// A team's own channels are stored under this prefix; one declared
 		// here would read and write a team's messages from outside it.
-		if store.IsTeamChannelName(name) {
-			return fmt.Errorf("channels.%s: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", name, store.TeamChannelPrefix)
+		if teamspec.IsChannelName(name) {
+			return fmt.Errorf("channels.%s: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", name, teamspec.ChannelPrefix)
 		}
 		if !validChannelScopes[ch.Scope] {
 			return fmt.Errorf("channels.%s: unknown scope %q (want one of: agent, user, global)", name, ch.Scope)
@@ -9626,6 +9699,24 @@ func shellCredentialWarnings(name string, a AgentDef, env Env) []string {
 	}
 	if !slices.Contains(a.Tools, "Bash") && !slices.Contains(a.Tools, "Bashbox") {
 		out = append(out, fmt.Sprintf("agent %q: shell_credentials is set but neither Bash nor Bashbox is in tools, so it narrows nothing", name))
+	}
+	return out
+}
+
+// gitRemoteWarnings advises on an agent's git_remote (RFC FB), never fatally:
+// it reaches nothing on an agent without the Git tool, and a push needs a
+// host in LOOMCYCLE_GIT_PUSH_HOSTS, so with that list empty every push is
+// refused whatever the agent lists.
+func gitRemoteWarnings(name string, a AgentDef, env Env) []string {
+	if len(a.GitRemote) == 0 {
+		return nil
+	}
+	var out []string
+	if !slices.Contains(a.Tools, "Git") {
+		out = append(out, fmt.Sprintf("agent %q: git_remote is set but Git is not in tools, so it allows nothing", name))
+	}
+	if slices.Contains(a.GitRemote, "push") && len(env.GitPushHosts) == 0 {
+		out = append(out, fmt.Sprintf("agent %q: git_remote lists push but LOOMCYCLE_GIT_PUSH_HOSTS is empty, so every push will be refused", name))
 	}
 	return out
 }

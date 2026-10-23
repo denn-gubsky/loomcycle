@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 )
 
 // get calls one of the team-channel routes as `as`, through the mux so the
@@ -93,7 +94,7 @@ func TestTeamChannels_AnOperatorReadsWhatAWalkPublished(t *testing.T) {
 		t.Errorf("listed channel = %v, want its definition and one message", ch)
 	}
 	// The stored name is the runtime's own; a caller is never shown it.
-	if raw, _ := json.Marshal(out); strings.Contains(string(raw), store.TeamChannelPrefix) {
+	if raw, _ := json.Marshal(out); strings.Contains(string(raw), teamspec.ChannelPrefix) {
 		t.Errorf("the list shows the stored name: %s", raw)
 	}
 }
