@@ -97,7 +97,7 @@ func tabSeparated(data []byte) bool {
 // under a "#" heading, so nothing in it reads as Markdown structure; a
 // Markdown file keeps its structure, with a "#" heading added when it does
 // not open with one, and is Neutralized: no raw HTML, no loom metadata, no
-// image embed of a volume reference.
+// image embed.
 type Text struct{}
 
 func (Text) Match(mediaType, name string) bool {

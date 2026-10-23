@@ -1,21 +1,17 @@
 package extract
 
-import (
-	"regexp"
-	"strings"
-)
-
-// volumeEmbedRe finds an inline image whose target is a volume reference,
-// bare or in angle brackets.
-var volumeEmbedRe = regexp.MustCompile(`(?i)!\[[^\]]*\]\(\s*<?\s*volume:`)
+import "strings"
 
 // Neutralize makes Markdown written by someone else safe to import as
 // text: outside code fences, every live "<" that would open a tag or a
 // comment is escaped (raw HTML, and the loom metadata and edge comments
-// import_md acts on), and, when embeds is true, an image whose target is a
-// volume reference loses its "!" and stays a link. Without that an importer
-// reading the reference would copy one of the reader's own files into the
-// document. Fenced code is left exactly as written.
+// import_md acts on), and, when embeds is true, every live image opener "!["
+// is escaped, so no image of any kind survives. Without that an importer
+// resolving a volume reference would copy one of the reader's own files into
+// the document. The rule is per opener, not per embed: an embed's alt text
+// may span lines, and a check that looked for a whole embed on one line
+// would pass one the importer still reads. Fenced code is left exactly as
+// written.
 func Neutralize(md string, embeds bool) string {
 	lines := strings.Split(md, "\n")
 	var fenceChar byte
@@ -34,7 +30,7 @@ func Neutralize(md string, embeds bool) string {
 			continue
 		}
 		if embeds {
-			l = unembedVolumeImages(l)
+			l = defuseImageOpeners(l)
 		}
 		lines[i] = escapeLiveTags(l)
 	}
@@ -62,22 +58,18 @@ func fenceDelim(line string) (byte, int) {
 	return c, run
 }
 
-// unembedVolumeImages drops the "!" of each live volume image embed.
-func unembedVolumeImages(l string) string {
-	locs := volumeEmbedRe.FindAllStringIndex(l, -1)
-	if locs == nil {
+// defuseImageOpeners escapes the "[" of each live "![".
+func defuseImageOpeners(l string) string {
+	if !strings.Contains(l, "![") {
 		return l
 	}
 	var b strings.Builder
-	last := 0
-	for _, loc := range locs {
-		if !unescaped(l, loc[0]) {
-			continue
+	for i := 0; i < len(l); i++ {
+		if l[i] == '[' && i > 0 && l[i-1] == '!' && unescaped(l, i-1) && unescaped(l, i) {
+			b.WriteByte('\\')
 		}
-		b.WriteString(l[last:loc[0]])
-		last = loc[0] + 1 // skip the "!"
+		b.WriteByte(l[i])
 	}
-	b.WriteString(l[last:])
 	return b.String()
 }
 

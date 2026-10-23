@@ -42,12 +42,8 @@ func TestExtractText_MarkdownIsNeutralised(t *testing.T) {
 	}
 	outside := strings.Join(append(append([]string{}, lines[:fenceAt]...), lines[fenceAt+3:]...), "\n")
 	assertNoLiveTag(t, outside)
-	for _, bad := range []string{"![секрет](volume:", "![also](<volume:"} {
-		if strings.Contains(outside, bad) {
-			t.Errorf("a volume image embed survived (%q):\n%s", bad, got)
-		}
-	}
-	for _, want := range []string{"[секрет](volume:docs:secret.png)", "![ок](data:image/png;base64,iVBORw0KGgo=)", "Текст."} {
+	assertNoLiveImage(t, outside)
+	for _, want := range []string{"[секрет](volume:docs:secret.png)", "[ок](data:image/png;base64,iVBORw0KGgo=)", "Текст."} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)
 		}
@@ -55,6 +51,27 @@ func TestExtractText_MarkdownIsNeutralised(t *testing.T) {
 	for _, l := range lines {
 		if strings.HasPrefix(strings.TrimSpace(l), "<!-- loom") {
 			t.Errorf("a loom comment survived: %q", l)
+		}
+	}
+}
+
+// An image's alt text may span lines, so a check per line misses it: no
+// live "![" may be left at all.
+func TestNeutralize_MultiLineAltTextIsDefused(t *testing.T) {
+	for _, md := range []string{
+		"# D\n\n![a\nb](volume:docs:secret.png)\n",
+		"# D\n\n![\n](volume:docs:secret.png)",
+		"# D\n\nтекст ![a\nb\nc](<volume:docs:secret.png>) далі",
+	} {
+		assertNoLiveImage(t, Neutralize(md, true))
+	}
+}
+
+func assertNoLiveImage(t *testing.T, md string) {
+	t.Helper()
+	for i := 1; i < len(md); i++ {
+		if md[i] == '[' && md[i-1] == '!' && unescaped(md, i) && unescaped(md, i-1) {
+			t.Errorf("live image opener at %d: %q", i, md[max(0, i-10):min(len(md), i+30)])
 		}
 	}
 }
