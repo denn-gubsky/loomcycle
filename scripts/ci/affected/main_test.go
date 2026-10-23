@@ -188,3 +188,20 @@ func TestLoadPackages_FindsTheReadsOfThisRepository(t *testing.T) {
 	}
 	t.Fatal("internal/api/grpc not listed")
 }
+
+func TestCheckArgs_RefusesWhatGitOrGoListWouldReadAsAnOption(t *testing.T) {
+	if err := checkArgs("HEAD^1", "HEAD", "./... ./internal/store/...", "./internal/api/http/"); err != nil {
+		t.Fatalf("ordinary arguments refused: %v", err)
+	}
+	for _, c := range []struct{ base, head, within, exclude string }{
+		{"--output=/tmp/x", "HEAD", "./...", ""},
+		{"HEAD^1", "-p", "./...", ""},
+		{"", "HEAD", "./...", ""},
+		{"HEAD^1", "HEAD", "./... -toolexec=x", ""},
+		{"HEAD^1", "HEAD", "./...", "-exec=x"},
+	} {
+		if err := checkArgs(c.base, c.head, c.within, c.exclude); err == nil {
+			t.Errorf("checkArgs(%q, %q, %q, %q) = nil; want an error", c.base, c.head, c.within, c.exclude)
+		}
+	}
+}
