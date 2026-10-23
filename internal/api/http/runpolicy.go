@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -42,6 +43,12 @@ type runPolicySource struct {
 	FanoutCap int
 	// Overrides is the override record the run offers its children.
 	Overrides tools.RunOverridesValue
+	// ACL is the originating principal's compiled set (RFC EY): a
+	// top-level run's caller, a sub-agent's parent policy. nil: none.
+	ACL *authz.Effective
+	// ACLRemovedTools names what the ACL removed from the definition's tool
+	// grant at this entry point, for Context op=self.
+	ACLRemovedTools []string
 	// Interruption is the run's own interruption block (its record's), which
 	// narrows the definition's.
 	Interruption *config.AgentInterruptionACL
@@ -63,15 +70,20 @@ type runPolicySource struct {
 func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name string, src runPolicySource) (tools.RunPolicy, *runInterruption) {
 	adPolicy, evPolicy := s.substratePoliciesForAgent(def, name)
 	live := &runInterruption{holder: tools.NewInterruptionPolicyHolder(s.interruptionPolicyForRun(def, src.Interruption))}
+	// RFC EY §3.7: the definition's grants, intersected with the originating
+	// principal's ACL. Each keyspace, the volumes and the skills are narrowed
+	// here, after the definition's own defaults resolved; the tool set was
+	// narrowed by the entry point that built src.Tools.
+	acl := src.ACL
 	return tools.RunPolicy{
 		Tools:             toolNames(src.Tools),
 		ToolPatterns:      def.Tools, // raw globs for the Skill subset check
 		Hosts:             src.Hosts,
-		Volumes:           src.Volumes,
+		Volumes:           tools.NarrowVolumesByACL(ctx, acl, src.Volumes),
 		EphemeralWritable: !src.EphemeralReadOnly && def.EphemeralVolumes != config.EphemeralVolumesReadOnly,
 		VolumeDef:         s.volumeDefPolicyForAgent(def),
 		Memory: tools.MemoryPolicyValue{
-			AllowedScopes:      tools.EffectiveMemoryScopes(ctx, def.MemoryScopes),
+			AllowedScopes:      tools.NarrowScopesByACL(ctx, acl, "memory", tools.EffectiveMemoryScopes(ctx, def.MemoryScopes)),
 			QuotaBytes:         def.MemoryQuotaBytes,
 			Backend:            def.MemoryBackend,
 			Consolidation:      def.MemoryConsolidation,
@@ -82,22 +94,24 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		},
 		// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 		SqlMem: tools.SqlMemPolicyValue{
-			AllowedScopes: tools.EffectiveSqlScopes(ctx, def.SqlScopes),
+			AllowedScopes: tools.NarrowScopesByACL(ctx, acl, "sqlmem", tools.EffectiveSqlScopes(ctx, def.SqlScopes)),
 			QuotaBytes:    def.SqlQuotaBytes,
 		},
 		// RFC BL P1: read by the Memory tool to enforce read_only/limit_bytes,
 		// and the parent blocks an inherit_core_blocks child picks up.
 		CoreBlocks:       tools.CoreBlocksPolicyValue{Blocks: src.CoreBlocks},
 		Decision:         def.Decision,
-		History:          s.historyPolicyForAgent(ctx, def),
+		History:          narrowHistoryByACL(ctx, acl, s.historyPolicyForAgent(ctx, def)),
 		Channel:          s.channelPolicyForAgent(ctx, def),
 		Interruption:     live.holder,
 		AgentDef:         adPolicy,
-		Skill:            s.skillPolicyForAgent(def),
+		Skill:            tools.NarrowSkillsByACL(ctx, acl, s.skillPolicyForAgent(def)),
 		Evaluation:       evPolicy,
 		Crypto:           src.Crypto,
 		ShellCreds:       shellCredsOf(def, src.ShellCreds),
 		OperatorAuthored: def.OperatorAuthored,
+		ACL:              acl,
+		ACLRemovedTools:  src.ACLRemovedTools,
 		FanoutCap:        max(src.FanoutCap, 0),
 		Overrides:        overridesOffer(src.Overrides),
 		// A setting with no field set is no setting: nil, as the per-value
@@ -137,4 +151,10 @@ func shellCredsOf(def config.AgentDef, given *tools.ShellCredsPolicyValue) tools
 		return *given
 	}
 	return tools.ShellCredsFor(def.ShellCredentials)
+}
+
+// narrowHistoryByACL drops the history scopes the principal may not read.
+func narrowHistoryByACL(ctx context.Context, acl *authz.Effective, h tools.HistoryPolicyValue) tools.HistoryPolicyValue {
+	h.Scopes = tools.NarrowScopesByACL(ctx, acl, "history", h.Scopes)
+	return h
 }

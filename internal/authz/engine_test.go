@@ -450,3 +450,21 @@ func BenchmarkDecide_GlobsAndConditions(b *testing.B) {
 		}
 	}
 }
+
+func TestDenyPatterns_UnconditionalDeniesOnly(t *testing.T) {
+	a := mustACL(t, `{"name":"a","rules":[
+		{"effect":"deny","actions":["invoke"],"resources":["skill:support/**","skill:seo","tool:Bash"]},
+		{"effect":"deny","actions":["invoke"],"resources":["skill:marketing/*"],"when":{"transport":["grpc"]}},
+		{"effect":"deny","actions":["read"],"resources":["skill:*"]},
+		{"effect":"allow","actions":["invoke"],"resources":["skill:*"]}]}`)
+	e := compile(t, Subject{TenantID: "t", ID: "u"}, []Binding{{ACL: "a", SubjectKind: SubjectTenant}}, a)
+	if got := e.DenyPatterns("skill", "invoke"); !reflect.DeepEqual(got, []string{"support/**", "seo"}) {
+		t.Errorf("DenyPatterns(skill, invoke) = %v", got)
+	}
+	if got := e.DenyPatterns("tool", "invoke"); !reflect.DeepEqual(got, []string{"Bash"}) {
+		t.Errorf("DenyPatterns(tool, invoke) = %v", got)
+	}
+	if got := e.DenyPatterns("volume", "read"); got != nil {
+		t.Errorf("DenyPatterns(volume) = %v", got)
+	}
+}

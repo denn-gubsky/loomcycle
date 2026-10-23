@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
 
@@ -156,5 +157,46 @@ func (s *Server) recordACLEvent(ctx context.Context, p auth.Principal, action st
 	}
 	if err := s.tokenAudit.Record(ev); err != nil {
 		log.Printf("authz: audit write failed: %v", err)
+	}
+}
+
+// principalACL is the compiled set of the principal on ctx, or nil.
+func principalACL(ctx context.Context) *authz.Effective {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return p.Effective
+}
+
+// aclAdmitSpawn is the `spawn agent:<name>` question a parent asks before it
+// starts a child, against the ORIGINATING principal's set the parent policy
+// carries. No set (open mode, a trigger's run): nothing to ask.
+func (s *Server) aclAdmitSpawn(ctx context.Context, eff *authz.Effective, child string) error {
+	surface := authz.Surface{Action: "spawn", Type: "agent", Name: child}
+	res := authz.EvaluateSurface(ctx, eff, surface, true)
+	if res.Unavailable || !res.Allowed {
+		p, _ := auth.PrincipalFromContext(ctx)
+		if eff != nil {
+			p.TenantID, p.Subject = eff.Subject.TenantID, eff.Subject.ID
+		}
+		s.recordACLEvent(ctx, p, "acl_denied", surface, res.Decision)
+		return &errACLDenied{surface: surface, decision: res.Decision}
+	}
+	return nil
+}
+
+// emitACLRemovedTools reports, once at run start, each tool the definition
+// granted and the caller's ACL removed — the RFC DE inert-grant event with
+// the gate named `acl`, so "the agent didn't use Bash" reads as "the caller
+// may not".
+func emitACLRemovedTools(removed []string, emit func(providers.Event)) {
+	for _, name := range removed {
+		msg := fmt.Sprintf("tool %s is granted by the agent definition but the caller's access-control rules do not allow invoking it; it is withheld from this run", name)
+		emit(providers.Event{
+			Type:            providers.EventCapabilityInert,
+			Text:            msg,
+			CapabilityInert: &providers.CapabilityInertInfo{Tool: name, Gate: "acl", Message: msg},
+		})
 	}
 }

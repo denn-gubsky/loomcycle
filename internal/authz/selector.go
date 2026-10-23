@@ -17,6 +17,7 @@ const MaxSelectorBytes = 256
 // has no metacharacters, so an exact name can be matched by a map lookup.
 type selector struct {
 	typ     string
+	raw     string // the name half of the selector, as written
 	scope   string
 	glob    []string
 	all     bool // the name is `*` or `**` on a glob type: every instance
@@ -35,7 +36,7 @@ func parseSelector(sel string) (selector, error) {
 		return selector{}, err
 	}
 	spec := catalogByName[typ]
-	s := selector{typ: typ}
+	s := selector{typ: typ, raw: name}
 	switch {
 	case spec.isEnum():
 		if !spec.validSelectorScope(name) {
