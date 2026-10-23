@@ -12,6 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RFC EY P2 — the HTTP transport's access-control gate. It runs AFTER the
@@ -194,6 +195,17 @@ func (s *Server) recordACLEvent(ctx context.Context, p auth.Principal, action st
 	if err := s.tokenAudit.Record(ev); err != nil {
 		slog.Error("authz: audit write failed", "err", err)
 	}
+}
+
+// recordToolACLEvent is the audit sink of a question a tool asked
+// (tools.WithACLRecorder): the principal on ctx, named by the set the
+// question was judged by when the ctx is a run's, as aclAdmitSpawn does.
+func (s *Server) recordToolACLEvent(ctx context.Context, event string, surface authz.Surface, d authz.Decision) {
+	p, _ := auth.PrincipalFromContext(ctx)
+	if eff := tools.PolicyOf(ctx).ACL; tools.RunID(ctx) != "" && eff != nil {
+		p.TenantID, p.Subject = eff.Subject.TenantID, eff.Subject.ID
+	}
+	s.recordACLEvent(ctx, p, event, surface, d)
 }
 
 // principalACL is the compiled set of the principal on ctx, or nil.
