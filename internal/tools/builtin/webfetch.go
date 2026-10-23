@@ -36,6 +36,7 @@ func (f *WebFetch) Description() string {
 		"Takes `url` (absolute; the host must be on the operator's allowlist). " +
 		"Returns extracted text, cut by default to about a quarter of this run's context window and never more than 256 KiB, ending in [truncated] when cut; " +
 		"pass `max_chars` to ask for less, or for more up to that 256 KiB ceiling. " +
+		"A URL that serves a file (PDF, image, Office document) returns only a line `[file: volume:inbox:… ]` naming where it was kept for this run. " +
 		"Use this when you already have a URL and want the page's content — documentation, an article, a JSON endpoint you only need to read. " +
 		"Do NOT use it to FIND pages: use WebSearch to discover URLs first. " +
 		"Do NOT use it when you need a method other than GET, custom headers, or a request body — that is the HTTP tool. " +
@@ -72,9 +73,15 @@ func (f *WebFetch) Execute(ctx context.Context, input json.RawMessage) (tools.Re
 	if f.HTTP.MaxResponseBytes > 0 {
 		rawCap = f.HTTP.MaxResponseBytes
 	}
-	res, err := f.HTTP.do(ctx, "GET", args.URL, nil, "", rawCap)
+	var got httpOutcome
+	res, err := f.HTTP.do(ctx, "GET", args.URL, nil, "", rawCap, "webfetch", &got)
 	if err != nil || res.IsError {
 		return res, err
+	}
+	// A file is not a page: it was kept in the run's inbox, and the line
+	// naming it is the whole answer.
+	if got.captured != nil {
+		return tools.Result{Text: got.captured.Stub}, nil
 	}
 	// res.Text starts with status + headers + blank line + body. Split on
 	// the first blank line to keep only body text for extraction.
