@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -520,5 +521,30 @@ func TestFileTwin_UnreadableRunIsNotFoundForEveryOp(t *testing.T) {
 	f.capture(t, own, "acme", "mine.txt", "http", []byte("mine\n"), true)
 	if _, text, isErr := f.call(t, isolated, map[string]any{"run_id": own, "op": "ls"}); isErr {
 		t.Errorf("the isolated member's own run: %s", text)
+	}
+}
+
+// A run's inbox is listed on the Volumes page like any ephemeral volume, to
+// its tenant and not to another: the row the first capture writes carries the
+// run's tenant, which is what the listing filters on.
+func TestFileTwin_InboxIsListedAsTheTenantsEphemeralVolume(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	f.capture(t, runID, "acme", "a.txt", "http", []byte("first file\n"), true)
+	list := func(tenant string) []ephemeralVolumeEntry {
+		rec := httptest.NewRecorder()
+		f.srv.handleListEphemeralVolumes(rec, reqWithTenant("/v1/_volumes/ephemeral", tenant))
+		var resp ephemeralVolumesResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode %s: %v", rec.Body.String(), err)
+		}
+		return resp.Entries
+	}
+	got := list("acme")
+	if len(got) != 1 || got[0].Name != inbox.Name || got[0].RootRunID != runID || got[0].Mode != "rw" {
+		t.Errorf("acme's ephemeral volumes = %+v, want the run's inbox", got)
+	}
+	if other := list("evil"); len(other) != 0 {
+		t.Errorf("another tenant sees %+v", other)
 	}
 }
