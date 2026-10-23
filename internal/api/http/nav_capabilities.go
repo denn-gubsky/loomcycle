@@ -117,7 +117,7 @@ func navEffective(ctx context.Context, p auth.Principal) whoamiEffective {
 // here must not write an acl_denied audit row. An ACL set enforce mode
 // could not evaluate is a "no", as the request would be refused.
 func routeGatesAdmit(ctx context.Context, p auth.Principal, method, path string) bool {
-	if _, ok := scopeGateAdmits(p, method, path); !ok {
+	if _, ok := scopeGate(p, method, path); !ok {
 		return false
 	}
 	if p.Restrictions.RunPlaneOnly() && !runPlaneRoute(method, path) {

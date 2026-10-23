@@ -67,7 +67,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if required, admitted := scopeGateAdmits(p, r.Method, r.URL.Path); !admitted {
+		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
 			writeScopeError(w, required, "insufficient scope")
 			return
 		}
@@ -92,12 +92,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// scopeGateAdmits is authMiddleware's scope gate for a resolved principal:
-// the route's required scope, or one of the three admissions that let a
-// principal without it through. It returns the required scope for the
-// refusal. GET /v1/_me's capability summary asks it too, so the two answers
-// cannot drift apart.
-func scopeGateAdmits(p auth.Principal, method, path string) (required string, admitted bool) {
+// scopeGate is the route's scope gate for an authenticated principal p: the
+// scope the route requires, and whether p is admitted — by holding it, or on
+// one of the paths below that admit a principal without it. It returns the
+// scope so the refusal can name it.
+func scopeGate(p auth.Principal, method, path string) (required string, admitted bool) {
 	required = requiredScopeFor(method, path)
 	if required == "" || auth.HasScope(p.Scopes, required) {
 		return required, true
