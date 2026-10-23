@@ -86,6 +86,7 @@ var layers = []layer{
 			"internal/recipes",
 			"internal/redact",
 			"internal/retentionmode",
+			"internal/runident",
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
@@ -305,7 +306,6 @@ var allowedSideways = []subsystemEdge{
 const (
 	cutEmbedded    = "move cmd/loomcycle/embedded under internal/ (cmd<->api<->cli cycle)"
 	cutStoreIfaces = "consumer-declared store interfaces (D4)"
-	cutRunIdentity = "run identity moves below tools"
 )
 
 // knownViolation is one wrong-way import that exists today, as an exact
@@ -326,7 +326,4 @@ var knownViolations = []knownViolation{
 	{"internal/credential/credentialtest", "internal/store", cutStoreIfaces},
 
 	// tools.RunIdentity / tools.RunID.
-	{"internal/docremote", "internal/tools", cutRunIdentity},
-	{"internal/memory/backends/inprocess", "internal/tools", cutRunIdentity},
-	{"internal/memory/backends/remote", "internal/tools", cutRunIdentity},
 }
