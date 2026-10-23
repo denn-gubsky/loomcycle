@@ -12,6 +12,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/denn-gubsky/loomcycle/internal/errkind v0.0.0
 	github.com/denn-gubsky/loomcycle/internal/otel v0.0.0
+	github.com/denn-gubsky/loomcycle/internal/providers v0.0.0
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	// gbash is Bashbox's sandbox and pre-1.0. A PR that bumps it runs
 	// `make bashbox-escape` and quotes the upstream changes to path resolution,
@@ -105,4 +106,5 @@ require (
 replace (
 	github.com/denn-gubsky/loomcycle/internal/errkind => ./internal/errkind
 	github.com/denn-gubsky/loomcycle/internal/otel => ./internal/otel
+	github.com/denn-gubsky/loomcycle/internal/providers => ./internal/providers
 )
