@@ -4490,17 +4490,23 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			skip("an image the store refused (type or size)")
 		}
 	}
-	for i := range chunks {
-		if chunks[i].assetRef != "" {
-			if why, ok := d.loadVolumeImage(ctx, &chunks[i]); !ok {
-				skip(why)
-			}
+	// A volume image is read just before its chunk is created and attached,
+	// so the import holds one image's bytes at a time (a file named again
+	// later is kept until its last use); see newVolumeImageLoader for the caps.
+	images := newVolumeImageLoader(chunks)
+	load := func(c *mdChunk) {
+		if c.assetRef == "" {
+			return
+		}
+		if why, ok := d.loadVolumeImage(ctx, c, images); !ok {
+			skip(why)
 		}
 	}
 
 	if in.DocumentID == "" {
 		// New document: the first heading is the root chunk.
 		first := chunks[0]
+		load(&first)
 		cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: titleOrUntitled(first.title), Path: in.Path})
 		if cd.IsError {
 			return cd, nil
@@ -4550,6 +4556,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 
 	for _, c := range chunks[start:] {
+		load(&c)
 		// Pop to the nearest ancestor whose heading level is shallower.
 		for len(stack) > 1 && stack[len(stack)-1].level >= c.level {
 			stack = stack[:len(stack)-1]

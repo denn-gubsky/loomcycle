@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -105,10 +106,58 @@ func readVolumeBytes(ctx context.Context, r dataRef, max int64) ([]byte, error) 
 	return b, nil
 }
 
+// The bounds on the volume images one import reads. Each image is capped
+// by the asset cap; these bound the import as a whole, so a document naming
+// many images cannot make the runtime read without end.
+const (
+	maxImportVolumeRefs       = 64
+	maxImportVolumeImageBytes = 64 << 20
+)
+
+// volumeImageLoader is one import's reads of volume images: how many
+// references it has taken, the bytes read so far, and the images named
+// again later, kept until their last use so a repeat is never read twice.
+type volumeImageLoader struct {
+	refs  int
+	bytes int64
+	uses  map[string]int // remaining uses of each file, among the references the import will take
+	kept  map[string]loadedImage
+}
+
+type loadedImage struct {
+	mediaType, data string // data is base64, as setAsset takes it
+	err             string
+}
+
+func newVolumeImageLoader(chunks []mdChunk) *volumeImageLoader {
+	l := &volumeImageLoader{uses: map[string]int{}, kept: map[string]loadedImage{}}
+	n := 0
+	for _, c := range chunks {
+		if c.assetRef == "" {
+			continue
+		}
+		if n++; n > maxImportVolumeRefs {
+			break
+		}
+		l.uses[volumeImageKey(c.assetRef)]++
+	}
+	return l
+}
+
+// volumeImageKey names the file a reference reads, so two spellings of one
+// path share a read.
+func volumeImageKey(ref string) string {
+	r, err := parseDataRef(ref)
+	if err != nil || r.kind != refVolume {
+		return ref
+	}
+	return r.volume + "\x00" + path.Clean("/"+r.path)
+}
+
 // loadVolumeImage resolves a chunk's volume image reference into the bytes
 // importAsset attaches. On any failure the chunk becomes a plain link to the
 // reference, and the reason is returned.
-func (d *Document) loadVolumeImage(ctx context.Context, c *mdChunk) (reason string, ok bool) {
+func (d *Document) loadVolumeImage(ctx context.Context, c *mdChunk, l *volumeImageLoader) (reason string, ok bool) {
 	ref := c.assetRef
 	c.assetRef = ""
 	fail := func(why string) (string, bool) {
@@ -118,23 +167,53 @@ func (d *Document) loadVolumeImage(ctx context.Context, c *mdChunk) (reason stri
 		c.body = "[" + c.body + "](" + ref + ")"
 		return ref + ": " + why, false
 	}
+	if l.refs++; l.refs > maxImportVolumeRefs {
+		return fail(fmt.Sprintf("an import attaches at most %d volume images", maxImportVolumeRefs))
+	}
+	key := volumeImageKey(ref)
+	img, ok := l.kept[key]
+	if !ok {
+		img = d.readVolumeImage(ctx, ref, l)
+	}
+	if l.uses[key]--; l.uses[key] > 0 {
+		l.kept[key] = img
+	} else {
+		delete(l.kept, key)
+	}
+	if img.err != "" {
+		return fail(img.err)
+	}
+	c.assetMediaType, c.assetData = img.mediaType, img.data
+	return "", true
+}
+
+// readVolumeImage reads one volume image within the import's byte budget.
+func (d *Document) readVolumeImage(ctx context.Context, ref string, l *volumeImageLoader) loadedImage {
 	r, err := parseDataRef(ref)
 	if err != nil || r.kind != refVolume {
-		return fail("not a volume reference")
+		return loadedImage{err: "not a volume reference"}
+	}
+	remaining := int64(maxImportVolumeImageBytes) - l.bytes
+	if remaining <= 0 {
+		return loadedImage{err: fmt.Sprintf("an import reads at most %d bytes of volume images", maxImportVolumeImageBytes)}
 	}
 	read := documentVolumeRead
 	if fn, ok := ctx.Value(volumeAssetReaderKey{}).(volumeAssetReader); ok && fn != nil {
 		read = fn
 	}
-	b, err := read(ctx, r, int64(d.maxAssetBytes()))
+	limit := int64(d.maxAssetBytes())
+	if remaining < limit {
+		limit = remaining
+	}
+	b, err := read(ctx, r, limit)
+	l.bytes += int64(len(b))
 	if err != nil {
-		return fail(err.Error())
+		return loadedImage{err: err.Error()}
 	}
 	// The type is what the bytes are, not what the name says.
 	mt := http.DetectContentType(b)
 	if !validImageMediaTypes[mt] {
-		return fail(fmt.Sprintf("%s is not a PNG, JPEG, GIF or WebP image", mt))
+		return loadedImage{err: fmt.Sprintf("%s is not a PNG, JPEG, GIF or WebP image", mt)}
 	}
-	c.assetMediaType, c.assetData = mt, base64.StdEncoding.EncodeToString(b)
-	return "", true
+	return loadedImage{mediaType: mt, data: base64.StdEncoding.EncodeToString(b)}
 }
