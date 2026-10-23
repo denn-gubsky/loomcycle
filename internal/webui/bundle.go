@@ -42,6 +42,7 @@ import (
 const (
 	SourceEmbedded = "embedded" // the SPA compiled into the binary
 	SourceDir      = "dir"      // a bundle loaded from LOOMCYCLE_WEBUI_DIR
+	SourceURL      = "url"      // a bundle fetched from LOOMCYCLE_WEBUI_BUNDLE_URL
 )
 
 // LoadError reasons. They are fixed codes because /healthz (unauthenticated)
@@ -59,6 +60,15 @@ const (
 	ReasonDigestMismatch   = "digest_mismatch"       // a file's SHA-256 differs from the manifest
 	ReasonIndexMissing     = "index_missing"         // the manifest does not list index.html
 	ReasonBundleTooLarge   = "bundle_too_large"      // over the total byte or file-count cap
+
+	// A bundle fetched by URL (bundle_url.go). These never carry the URL
+	// either: its path or query string can hold a token.
+	ReasonSourceInvalid         = "source_invalid"          // the URL is not https or the pinned digest is malformed
+	ReasonDownloadFailed        = "download_failed"         // refused by the egress guard, unreachable, timed out or not 200
+	ReasonArchiveTooLarge       = "archive_too_large"       // the response body is over the archive cap
+	ReasonArchiveDigestMismatch = "archive_digest_mismatch" // the archive's SHA-256 is not the pinned one
+	ReasonArchiveInvalid        = "archive_invalid"         // not a gzip tar, or a member that is unsafe or not a file or directory
+	ReasonCacheUnusable         = "cache_unusable"          // the cache under the data directory cannot be created, read or written
 )
 
 // manifestName is the bundle's manifest file. It is not part of the SPA: it is
@@ -358,6 +368,18 @@ func readCapped(root *os.Root, name string, capBytes int64) ([]byte, error) {
 // no "." or ".." element, no empty element, no backslash, no control
 // character, and not the manifest itself.
 func validPath(name string) error {
+	if err := validRelPath(name); err != nil {
+		return err
+	}
+	if name == manifestName {
+		return errors.New("the manifest cannot list itself")
+	}
+	return nil
+}
+
+// validRelPath is validPath without the manifest rule: the check an archive
+// member's name must pass before anything is written for it.
+func validRelPath(name string) error {
 	switch {
 	case name == "":
 		return errors.New("empty path")
@@ -371,8 +393,6 @@ func validPath(name string) error {
 		// fs.ValidPath refuses a leading or trailing slash, an empty element
 		// and any "." or ".." element.
 		return errors.New("not a clean relative path")
-	case name == manifestName:
-		return errors.New("the manifest cannot list itself")
 	}
 	return nil
 }
