@@ -37,6 +37,8 @@ const (
 	// how deep they may nest.
 	maxXMLNodes = 1_000_000
 	maxXMLDepth = 256
+	// maxXMLText caps the character data kept from one XML part.
+	maxXMLText = 64 << 20
 )
 
 // zipLimits are the bounds above; tests use smaller ones.
@@ -277,16 +279,26 @@ type node struct {
 // parseXML parses an XML part into a tree with encoding/xml in strict mode:
 // no DTD is read, an entity other than the five predefined ones is an error,
 // and a declared encoding other than UTF-8 is refused (no CharsetReader).
-// The element count and depth are capped.
+// The element count, the depth and the character data kept are capped.
 func parseXML(ctx context.Context, data []byte) (*node, error) {
+	return parseXMLCapped(ctx, data, maxXMLText)
+}
+
+// parseXMLCapped is parseXML with the character-data cap given. Each open
+// element collects its text in a builder of its own, so a part of many
+// small elements costs time in proportion to its size.
+func parseXMLCapped(ctx context.Context, data []byte, textCap int) (*node, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.Strict = true
+	type frame struct {
+		n    *node
+		text strings.Builder
+	}
 	root := &node{}
-	stack := []*node{root}
-	count := 0
-	var text strings.Builder
-	for {
-		if count%4096 == 0 {
+	stack := []*frame{{n: root}}
+	count, kept := 0, 0
+	for i := 0; ; i++ {
+		if i%4096 == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -308,21 +320,22 @@ func parseXML(ctx context.Context, data []byte) (*node, error) {
 			if len(stack) > maxXMLDepth {
 				return nil, refusedf("an XML part nests deeper than %d", maxXMLDepth)
 			}
-			cur.text += text.String()
-			text.Reset()
 			n := &node{name: t.Name.Local, space: t.Name.Space, attrs: t.Attr}
-			cur.kids = append(cur.kids, n)
-			stack = append(stack, n)
+			cur.n.kids = append(cur.n.kids, n)
+			stack = append(stack, &frame{n: n})
 		case xml.EndElement:
 			if len(stack) == 1 {
 				return nil, errors.New("extract: malformed XML: unbalanced end element")
 			}
-			cur.text += text.String()
-			text.Reset()
+			cur.n.text = cur.text.String()
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if len(stack) > 1 {
-				text.Write(t)
+				kept += len(t)
+				if kept > textCap {
+					return nil, refusedf("an XML part holds more than %d bytes of text", textCap)
+				}
+				cur.text.Write(t)
 			}
 		}
 	}
