@@ -114,8 +114,14 @@ func (e *aclResumeEnv) waitScheduleStatus(t *testing.T, defID, status string) st
 // the model hold what dev's list leaves.
 func (e *aclResumeEnv) assertNarrowedByDev(t *testing.T, p tools.RunPolicy) {
 	t.Helper()
+	e.assertNarrowedBy(t, p, "dev")
+}
+
+// assertNarrowedBy is assertNarrowedByDev for the subject bound to dev's list.
+func (e *aclResumeEnv) assertNarrowedBy(t *testing.T, p tools.RunPolicy, subject string) {
+	t.Helper()
 	got := aclNarrowingOf(p)
-	if p.ACL == nil || got.ACLSubject != "acme/dev" || slices.Contains(got.Tools, "Bash") || !slices.Equal(got.Removed, []string{"Bash"}) ||
+	if p.ACL == nil || got.ACLSubject != "acme/"+subject || slices.Contains(got.Tools, "Bash") || !slices.Equal(got.Removed, []string{"Bash"}) ||
 		len(got.Volumes) != 1 || !got.Volumes[0].ReadOnly || slices.Contains(got.Memory, "tenant") {
 		t.Errorf("the fired run is not narrowed by its owner's list: %+v", got)
 	}
@@ -404,4 +410,84 @@ func mustRunIDByAgent(t *testing.T, st store.Store, agentID string) string {
 		return err == nil
 	})
 	return id
+}
+
+// principalCtx is the ctx subject authors a definition under, with its set
+// compiled.
+func (e *aclResumeEnv) principalCtx(t *testing.T, subject string) context.Context {
+	t.Helper()
+	token := "def_" + subject
+	if subject == "dev" {
+		token = "def_worker" // dev's own token, as authorCtx presents it
+	}
+	p, err := e.srv.ACLResolver().Resolve(context.Background(), auth.Principal{TenantID: "acme", Subject: subject, TokenDefID: token, Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	if err != nil || p.Effective == nil {
+		t.Fatalf("resolve %s: %v", subject, err)
+	}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", UserID: subject})
+	return tools.WithScheduleDefPolicy(auth.WithPrincipal(ctx, p), tools.ScheduleDefPolicyValue{Scopes: []string{"any"}, SelfName: "author"})
+}
+
+// addHookAs edits defID's hooks as subject and returns the new version's id.
+func (e *aclResumeEnv) addHookAs(t *testing.T, subject, defID string) string {
+	t.Helper()
+	res, err := e.srv.ScheduleDef(e.principalCtx(t, subject), json.RawMessage(`{"op":"add_hook","def_id":"`+defID+`","hook":{"kind":"memory.set","scope":"user","key":"k"}}`))
+	if err != nil || res.IsError {
+		t.Fatalf("add_hook as %s: %v %s", subject, err, res.Text)
+	}
+	var out struct {
+		DefID string `json:"def_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &out); err != nil || out.DefID == "" || out.DefID == defID {
+		t.Fatalf("add_hook result %s: %v", res.Text, err)
+	}
+	return out.DefID
+}
+
+func scheduleOwnerOf(t *testing.T, st store.Store, defID string) *authz.SubjectRef {
+	t.Helper()
+	row, err := st.ScheduleDefGet(context.Background(), defID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		ACLOwner *authz.SubjectRef `json:"acl_owner"`
+	}
+	if err := json.Unmarshal(row.Definition, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.ACLOwner
+}
+
+// A version is bound to whoever wrote it. When a narrower principal edits a
+// schedule a broader one wrote, the new version fires under the EDITOR's
+// rules: keeping the original owner's would let the editor make the trigger
+// run with authority it does not hold itself.
+func TestScheduleDef_AHookEditBindsTheNextFireToTheEditorsACL(t *testing.T) {
+	e := aclResumeFixture(t, false, map[string][][]providers.Event{"worker": {probeTurn("tu_e"), endTurn()}})
+	defID := e.createScheduleAsDev(t, "edited", "worker") // dev: no list bound
+	if _, err := e.st.AclBindingPut(context.Background(), store.AclBindingRow{TenantID: "acme", ACLName: "dev-limits", SubjectKind: "user", SubjectID: "ed"}); err != nil {
+		t.Fatal(err)
+	}
+	edited := e.addHookAs(t, "ed", defID)
+	if o := scheduleOwnerOf(t, e.st, edited); o == nil || o.Subject != "ed" {
+		t.Fatalf("the edited version's owner = %+v, want ed", o)
+	}
+	if err := e.st.ScheduleRunStateSeed(context.Background(), edited, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	e.startScheduler(t)
+	e.waitScheduleStatus(t, edited, "completed")
+	e.assertNarrowedBy(t, e.waitProbes(t, 1)[0], "ed")
+}
+
+// The owner's own edit keeps the owner.
+func TestScheduleDef_TheOwnersHookEditKeepsItsOwner(t *testing.T) {
+	e := aclResumeFixture(t, true, nil)
+	defID := e.createScheduleAsDev(t, "self-edited", "worker")
+	edited := e.addHookAs(t, "dev", defID)
+	want := authz.SubjectRef{TenantID: "acme", Subject: "dev", TokenDefID: "def_worker", Class: "member"}
+	if o := scheduleOwnerOf(t, e.st, edited); o == nil || *o != want {
+		t.Errorf("the owner's own edit recorded owner %+v, want %+v", o, want)
+	}
 }

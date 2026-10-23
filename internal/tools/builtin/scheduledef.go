@@ -791,10 +791,13 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	// not widen a confined author's schedule by editing a hook.
 	def.OperatorKeyRestricted = def.OperatorKeyRestricted || operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	def.Isolated = def.Isolated || tools.AuthorIsolated(ctx)
-	// The author's rules keep binding the new version; an edit of a def that
-	// records none binds it to the editor's, so an edit never widens.
-	if def.ACLOwner == nil {
-		def.ACLOwner = tools.AuthorACLOwner(ctx)
+	// The new version is bound to whoever wrote it, as a fork is: keeping the
+	// parent author's rules would let a narrower editor make the trigger fire
+	// with authority the editor does not hold. An editor no set binds (open
+	// mode) leaves the recorded owner in place — dropping it would unnarrow
+	// the trigger.
+	if ed := tools.AuthorACLOwner(ctx); ed != nil {
+		def.ACLOwner = ed
 	}
 	def.UserScopeCredentials = def.UserScopeCredentials && authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, parent.TenantID)
