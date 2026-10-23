@@ -3,7 +3,7 @@ package coord
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -49,7 +49,7 @@ type ReplicasSweeper struct {
 	interval   time.Duration
 	staleAfter time.Duration
 	lock       *AdvisoryLock
-	logf       func(format string, args ...any)
+	logger     *slog.Logger
 }
 
 // ReplicasSweeperConfig is the constructor input.
@@ -69,8 +69,9 @@ type ReplicasSweeperConfig struct {
 	// the lock-holder sweeps per tick.
 	Lock *AdvisoryLock
 
-	// Logger. Defaults to log.Printf.
-	Logger func(format string, args ...any)
+	// Logger receives sweep results and failures. Defaults to
+	// slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 const (
@@ -88,14 +89,14 @@ func NewReplicasSweeper(pool *pgxpool.Pool, cfg ReplicasSweeperConfig) *Replicas
 		cfg.StaleAfter = defaultReplicasStaleAfter
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = log.Printf
+		cfg.Logger = slog.Default()
 	}
 	return &ReplicasSweeper{
 		pool:       pool,
 		interval:   cfg.Interval,
 		staleAfter: cfg.StaleAfter,
 		lock:       cfg.Lock,
-		logf:       cfg.Logger,
+		logger:     cfg.Logger,
 	}
 }
 
@@ -120,7 +121,7 @@ func (s *ReplicasSweeper) Run(ctx context.Context) {
 func (s *ReplicasSweeper) tick(ctx context.Context) {
 	if s.lock == nil {
 		if _, err := s.sweepOnce(ctx); err != nil {
-			s.logf("coord: replicas sweep: %v", err)
+			s.logger.Warn("coord: replicas sweep failed", "err", err)
 		}
 		return
 	}
@@ -129,7 +130,7 @@ func (s *ReplicasSweeper) tick(ctx context.Context) {
 		return swerr
 	})
 	if err != nil {
-		s.logf("coord: replicas sweep: advisory lock: %v", err)
+		s.logger.Warn("coord: replicas sweep: advisory lock failed", "err", err)
 	}
 	_ = acquired // silent on lost race
 }
@@ -171,7 +172,7 @@ func (s *ReplicasSweeper) sweepOnce(ctx context.Context) (int, error) {
 		if err := s.reapReplica(swctx, id); err != nil {
 			// Continue on per-replica failure — partial success is
 			// better than full abort. Next tick will retry the row.
-			s.logf("coord: replicas sweep: reap %s: %v", id, err)
+			s.logger.Warn("coord: replicas sweep: reap replica failed", "replica", id, "err", err)
 			continue
 		}
 		reaped++
@@ -208,7 +209,7 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 	}
 	markedRuns := markRes.RowsAffected()
 	if markedRuns > 0 {
-		s.logf("coord: replicas sweep: replica %s — marked %d run(s) failed", replicaID, markedRuns)
+		s.logger.Info("coord: replicas sweep: marked dead replica's runs failed", "replica", replicaID, "runs", markedRuns)
 	}
 
 	// Skip the quota reap when step 2a affected 0 rows. Why: if a
@@ -220,7 +221,7 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 	// (clamped at 0 by GREATEST, but still wrong). Review-1 #2.
 	if markedRuns > 0 {
 		if err := s.reapQuotas(ctx, replicaID); err != nil {
-			s.logf("coord: replicas sweep: quota reap for replica %s: %v", replicaID, err)
+			s.logger.Warn("coord: replicas sweep: quota reap for replica failed", "replica", replicaID, "err", err)
 			// fall through to step 2c — quota leak is bounded and
 			// recoverable; failing the whole reap would leave the
 			// replica row in place to retry forever
@@ -256,14 +257,14 @@ func (s *ReplicasSweeper) reapReplica(ctx context.Context, replicaID string) err
 		return fmt.Errorf("fail queued runs: %w", err)
 	}
 	if n := queuedRes.RowsAffected(); n > 0 {
-		s.logf("coord: replicas sweep: replica %s — failed %d queued run(s)", replicaID, n)
+		s.logger.Info("coord: replicas sweep: failed dead replica's queued runs", "replica", replicaID, "queued", n)
 	}
 
 	// Step 2c: delete the replica row.
 	if _, err := s.pool.Exec(ctx, `DELETE FROM replicas WHERE id = $1`, replicaID); err != nil {
 		return fmt.Errorf("delete replica row: %w", err)
 	}
-	s.logf("coord: replicas sweep: reaped replica %s", replicaID)
+	s.logger.Info("coord: replicas sweep: reaped replica", "replica", replicaID)
 	return nil
 }
 
@@ -326,10 +327,10 @@ func (s *ReplicasSweeper) reapQuotas(ctx context.Context, replicaID string) erro
 			 WHERE tenant_id = $1 AND user_id = $2
 		`, r.tenantID, r.userID, r.leaked)
 		if qerr != nil {
-			s.logf("coord: replicas sweep: quota decrement for user %s/%s by %d: %v", r.tenantID, r.userID, r.leaked, qerr)
+			s.logger.Warn("coord: replicas sweep: quota decrement for user failed", "tenant", r.tenantID, "user", r.userID, "leaked", r.leaked, "err", qerr)
 			continue
 		}
-		s.logf("coord: replicas sweep: quota reap for user %s/%s: decremented by %d", r.tenantID, r.userID, r.leaked)
+		s.logger.Info("coord: replicas sweep: quota reap for user", "tenant", r.tenantID, "user", r.userID, "decremented", r.leaked)
 	}
 	return nil
 }

@@ -38,7 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,8 +253,9 @@ type Config struct {
 	// it only counts what WOULD be purged. Lets an operator preview impact.
 	DryRun bool
 
-	// Logger is the structured logger for sweep results. Defaults to log.Printf.
-	Logger func(format string, args ...any)
+	// Logger is the structured logger for sweep results. Defaults to
+	// slog.Default().
+	Logger *slog.Logger
 
 	// AdvisoryLock is the singleton-sweeper gate. When set, each tick acquires
 	// the lock before sweeping — only one replica per cluster runs the purge per
@@ -347,7 +348,7 @@ type Sweeper struct {
 	sqlMem              SQLMemory
 	exportDir           string
 	dryRun              bool
-	logf                func(format string, args ...any)
+	logger              *slog.Logger
 	lock                AdvisoryLocker
 	lockKey             int64
 	now                 func() time.Time
@@ -360,7 +361,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		cfg.Interval = defaultInterval
 	}
 	if cfg.Logger == nil {
-		cfg.Logger = log.Printf
+		cfg.Logger = slog.Default()
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -410,7 +411,7 @@ func New(st store.Store, cfg Config) *Sweeper {
 		sqlMem:              cfg.SQLMem,
 		exportDir:           cfg.ExportDir,
 		dryRun:              cfg.DryRun,
-		logf:                cfg.Logger,
+		logger:              cfg.Logger,
 		lock:                cfg.AdvisoryLock,
 		lockKey:             cfg.AdvisoryLockKey,
 		now:                 cfg.Now,
@@ -499,7 +500,7 @@ func (s *Sweeper) sweepMemContentOnce(parent context.Context) (int, error) {
 		if perr != nil {
 			// One bad scope must not abort the sweep: the others are independent, and a
 			// scope whose prune failed is retried next interval.
-			s.logf("retention: mem_content: scope %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
+			s.logger.Error("retention: mem_content: scope prune failed", "tenant", key.Tenant, "scope", key.Scope, "scope_id", key.ScopeID, "err", perr)
 			continue
 		}
 		total += n
@@ -552,12 +553,12 @@ func (s *Sweeper) sweepEmptyDossiersOnce(parent context.Context) (int, error) {
 		if s.emptyDossierMode == "export+prune" && !s.dryRun {
 			n, record, perr := s.chunkPruner.PruneEmptyDossiers(ctx, key, mscope, cutoff, true)
 			if perr != nil {
-				s.logf("retention: empty_dossier: list %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
+				s.logger.Warn("retention: empty_dossier: list", "tenant", key.Tenant, "scope", key.Scope, "scope_id", key.ScopeID, "err", perr)
 				continue
 			}
 			if n > 0 {
 				if werr := s.writeMemExport("empty-dossiers", key.Tenant, key.Scope+"__"+key.ScopeID, record); werr != nil {
-					s.logf("retention: empty_dossier: export %s/%s/%s failed, skipping: %v", key.Tenant, key.Scope, key.ScopeID, werr)
+					s.logger.Error("retention: empty_dossier: export failed, skipping", "tenant", key.Tenant, "scope", key.Scope, "scope_id", key.ScopeID, "err", werr)
 					continue
 				}
 			}
@@ -565,7 +566,7 @@ func (s *Sweeper) sweepEmptyDossiersOnce(parent context.Context) (int, error) {
 		n, _, perr := s.chunkPruner.PruneEmptyDossiers(ctx, key, mscope, cutoff, s.dryRun)
 		if perr != nil {
 			// One bad scope must not abort the sweep; it is retried next interval.
-			s.logf("retention: empty_dossier: scope %s/%s/%s: %v", key.Tenant, key.Scope, key.ScopeID, perr)
+			s.logger.Error("retention: empty_dossier: scope prune failed", "tenant", key.Tenant, "scope", key.Scope, "scope_id", key.ScopeID, "err", perr)
 			continue
 		}
 		total += n
@@ -604,16 +605,19 @@ func (s *Sweeper) Run(ctx context.Context) {
 	if s.store == nil {
 		return
 	}
-	s.logf("retention: sweeper starting (interval=%s, defs_mode=%s, defs_max_age=%s, keep_last_n=%d, chats_mode=%s, chats_max_age=%s, chats_internal_max_age=%s, internal_agents=%d, mem_mode=%s, mem_max_age=%s, sqlmem=%v, dry_run=%v)",
-		s.interval, s.defsMode, s.defsMaxAge, s.defsKeepLastN, s.chatsMode, s.chatsMaxAge, s.chatsInternalMaxAge, len(s.internalAgents), s.memMode, s.memMaxAge, s.sqlMem != nil, s.dryRun)
+	s.logger.Info("retention: sweeper starting",
+		"interval", s.interval, "defs_mode", s.defsMode, "defs_max_age", s.defsMaxAge, "keep_last_n", s.defsKeepLastN,
+		"chats_mode", s.chatsMode, "chats_max_age", s.chatsMaxAge, "chats_internal_max_age", s.chatsInternalMaxAge,
+		"internal_agents", len(s.internalAgents), "mem_mode", s.memMode, "mem_max_age", s.memMaxAge,
+		"sqlmem", s.sqlMem != nil, "dry_run", s.dryRun)
 	if s.defsMode == "export+prune" && s.exportDir == "" {
-		s.logf("retention: defs purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+		s.logger.Warn("retention: defs purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
 	}
 	if s.chatsMode == "export+prune" && s.exportDir == "" {
-		s.logf("retention: chats purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+		s.logger.Warn("retention: chats purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
 	}
 	if s.memMode == "export+prune" && s.exportDir == "" {
-		s.logf("retention: mem reclaim DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+		s.logger.Warn("retention: mem reclaim DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
 	}
 	t := time.NewTicker(s.interval)
 	defer t.Stop()
@@ -627,7 +631,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.logf("retention: sweeper stopping (ctx done)")
+			s.logger.Info("retention: sweeper stopping (ctx done)")
 			return
 		case <-t.C:
 			var (
@@ -645,7 +649,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 					return nil
 				})
 				if lockErr != nil {
-					s.logf("retention: advisory lock infra error: %v", lockErr)
+					s.logger.Warn("retention: advisory lock infra error", "err", lockErr)
 					continue
 				}
 				if !acquired {
@@ -656,32 +660,32 @@ func (s *Sweeper) Run(ctx context.Context) {
 				doWork(ctx)
 			}
 			if err != nil {
-				s.logf("retention: sweep failed: %v", err)
+				s.logger.Error("retention: sweep failed", "err", err)
 			} else if res.Total > 0 || res.Chats > 0 || res.ChatsInternal > 0 || res.Mem > 0 {
-				verb := "purged"
+				msgPrefix := "retention: purged"
 				if s.dryRun {
-					verb = "would purge"
+					msgPrefix = "retention: would purge"
 				}
 				if res.Total > 0 {
-					s.logf("retention: %s %d retired def version(s) across %d type(s) (mode=%s)", verb, res.Total, len(res.PerType), s.defsMode)
+					s.logger.Info(msgPrefix+" retired def versions", "rows", res.Total, "def_types", len(res.PerType), "mode", s.defsMode)
 				}
 				if res.Chats > 0 {
-					s.logf("retention: %s %d aged chat session(s) (mode=%s)", verb, res.Chats, s.chatsMode)
+					s.logger.Info(msgPrefix+" aged chat sessions", "sessions", res.Chats, "mode", s.chatsMode)
 				}
 				if res.ChatsInternal > 0 {
 					// Reported apart from the chat count above: this is the runtime's
 					// own maintenance churn on its own cutoff, and folding ~15
 					// extractor sessions per consolidation pass into the chat number
 					// would make both unreadable.
-					s.logf("retention: %s %d internal chat session(s) (max_age=%s, delete-only)", verb, res.ChatsInternal, s.chatsInternalMaxAge)
+					s.logger.Info(msgPrefix+" internal chat sessions (delete-only)", "sessions", res.ChatsInternal, "max_age", s.chatsInternalMaxAge)
 				}
 				if res.Mem > 0 {
-					s.logf("retention: %s %d retired-agent memory reclamation unit(s) (mode=%s)", verb, res.Mem, s.memMode)
+					s.logger.Info(msgPrefix+" retired-agent memory reclamation units", "units", res.Mem, "mode", s.memMode)
 				}
 				noOpStreak = 0
 			} else {
 				if noOpStreak == 0 || noOpStreak%noOpHeartbeatEvery == 0 {
-					s.logf("retention: sweep tick — 0 purgeable def versions / chat sessions / agent memory (streak=%d)", noOpStreak)
+					s.logger.Info("retention: sweep tick — 0 purgeable def versions / chat sessions / agent memory", "streak", noOpStreak)
 				}
 				noOpStreak++
 			}
@@ -704,21 +708,21 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 	if s.memReclaimEnabled() {
 		n, err := s.sweepMemOnce(parent)
 		if err != nil {
-			s.logf("retention: mem sweep failed: %v", err)
+			s.logger.Warn("retention: mem sweep failed", "err", err)
 		}
 		res.Mem += n
 	}
 	if s.memContentEnabled() {
 		n, err := s.sweepMemContentOnce(parent)
 		if err != nil {
-			s.logf("retention: mem_content sweep: %v", err)
+			s.logger.Warn("retention: mem_content sweep", "err", err)
 		}
 		res.MemContent += n
 	}
 	if s.emptyDossierEnabled() {
 		n, err := s.sweepEmptyDossiersOnce(parent)
 		if err != nil {
-			s.logf("retention: empty_dossier sweep: %v", err)
+			s.logger.Warn("retention: empty_dossier sweep", "err", err)
 		}
 		res.EmptyDossiers += n
 	}
@@ -728,7 +732,7 @@ func (s *Sweeper) sweepOnce(parent context.Context) (Result, error) {
 	if s.chatsPruneEnabled() {
 		n, internal, err := s.sweepChatsOnce(parent)
 		if err != nil {
-			s.logf("retention: chats sweep failed: %v", err)
+			s.logger.Warn("retention: chats sweep failed", "err", err)
 		}
 		res.Chats += n
 		res.ChatsInternal += internal
@@ -749,7 +753,7 @@ func (s *Sweeper) sweepDefsOnce(parent context.Context, res *Result) {
 		}
 		refs, err := s.store.ListPurgeableRetiredDefVersions(ctx, defType, cutoff, s.defsKeepLastN, purgeBatch)
 		if err != nil {
-			s.logf("retention: list %s failed: %v", defType, err)
+			s.logger.Warn("retention: list def versions failed", "def_type", defType, "err", err)
 			continue
 		}
 		if len(refs) == 0 {
@@ -760,7 +764,7 @@ func (s *Sweeper) sweepDefsOnce(parent context.Context, res *Result) {
 			if s.defsMode == "export+prune" {
 				if err := s.exportDef(ref); err != nil {
 					// Never delete a version we failed to export — retry next tick.
-					s.logf("retention: export %s/%s failed, skipping delete: %v", defType, ref.DefID, err)
+					s.logger.Error("retention: export def version failed, skipping delete", "def_type", defType, "def_id", ref.DefID, "err", err)
 					continue
 				}
 			}
@@ -777,7 +781,7 @@ func (s *Sweeper) sweepDefsOnce(parent context.Context, res *Result) {
 		}
 		n, err := s.store.DeleteDefVersions(ctx, defType, ids)
 		if err != nil {
-			s.logf("retention: delete %s failed: %v", defType, err)
+			s.logger.Error("retention: delete def versions failed", "def_type", defType, "err", err)
 			continue
 		}
 		res.PerType[defType] += n
@@ -825,7 +829,7 @@ func (s *Sweeper) sweepChatsOnce(parent context.Context) (normal, internal int, 
 		if ierr != nil {
 			// Log + carry on to the normal pass: an internal-arm fault must not
 			// stop real chats being retained on their own schedule.
-			s.logf("retention: list internal chat sessions failed: %v", ierr)
+			s.logger.Warn("retention: list internal chat sessions failed", "err", ierr)
 			errs = append(errs, fmt.Errorf("internal chats: %w", ierr))
 		}
 	}
@@ -870,7 +874,7 @@ func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match
 			// chat, and exporting it could copy a no-trace one.
 			sess, err := s.store.GetSession(ctx, sid)
 			if err != nil {
-				s.logf("retention: read chat session %s failed, skipping: %v", sid, err)
+				s.logger.Warn("retention: read chat session failed, skipping", "session_id", sid, "err", err)
 				continue
 			}
 			doExport = sess.Retention != retentionmode.None
@@ -878,7 +882,7 @@ func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match
 		if doExport {
 			if err := s.exportSession(ctx, sid); err != nil {
 				// Never delete a session we failed to export — retry next tick.
-				s.logf("retention: export chat session %s failed, skipping delete: %v", sid, err)
+				s.logger.Error("retention: export chat session failed, skipping delete", "session_id", sid, "err", err)
 				continue
 			}
 		}
@@ -899,7 +903,7 @@ func (s *Sweeper) pruneSessionBatch(ctx context.Context, cutoff time.Time, match
 		// reason to keep every aged chat forever.
 		s.snapshotSpansBeforeArchive(ctx, sid)
 		if err := s.store.DeleteSessionCascade(ctx, sid); err != nil {
-			s.logf("retention: delete chat session %s failed: %v", sid, err)
+			s.logger.Error("retention: delete chat session failed", "session_id", sid, "err", err)
 			continue
 		}
 		pruned++
@@ -987,7 +991,7 @@ func (s *Sweeper) memEligible(ctx context.Context) (pass1 []memTarget, pass2 []s
 	if s.sqlMem != nil {
 		scopes, lerr := s.sqlMem.ListScopes(ctx)
 		if lerr != nil {
-			s.logf("retention: mem sweep — list sqlmem scopes failed: %v", lerr)
+			s.logger.Warn("retention: mem sweep — list sqlmem scopes failed", "err", lerr)
 		}
 		for _, k := range scopes {
 			if k.Scope == string(store.MemoryScopeAgent) {
@@ -1080,14 +1084,14 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 		key := sqlmem.ScopeKey{Tenant: tenant, Scope: string(store.MemoryScopeAgent), ScopeID: name}
 		if s.memMode == "export+prune" {
 			if err := s.exportSQLMemScope(ctx, tenant, name, key); err != nil {
-				s.logf("retention: export sqlmem scope %s/%s failed, skipping agent: %v", tenant, name, err)
+				s.logger.Error("retention: export sqlmem scope failed, skipping agent", "tenant", tenant, "agent", name, "err", err)
 				return false
 			}
 			// The scope dump carries the chunks and their sidecar; it does NOT carry the
 			// bodies, which live in the k/v plane. Exported separately so export+prune
 			// keeps meaning what it says for the half about to be deleted here.
 			if err := s.exportChunkBodies(ctx, tenant, name); err != nil {
-				s.logf("retention: export chunk bodies %s/%s failed, skipping agent: %v", tenant, name, err)
+				s.logger.Error("retention: export chunk bodies failed, skipping agent", "tenant", tenant, "agent", name, "err", err)
 				return false
 			}
 		}
@@ -1105,14 +1109,14 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 		// failing to remove the bodies is the exact leak this closes.
 		if s.chunkPruner != nil {
 			if _, err := s.chunkPruner.PruneScopeChunks(ctx, key, store.MemoryScopeAgent, false); err != nil {
-				s.logf("retention: prune chunk bodies %s/%s failed, skipping agent: %v", tenant, name, err)
+				s.logger.Error("retention: prune chunk bodies failed, skipping agent", "tenant", tenant, "agent", name, "err", err)
 				return false
 			}
 		}
 		removed, err := s.sqlMem.DropScope(ctx, key)
 		if err != nil {
 			// Don't drop the dirents out from under a still-present scope.
-			s.logf("retention: drop sqlmem scope %s/%s failed, skipping agent: %v", tenant, name, err)
+			s.logger.Error("retention: drop sqlmem scope failed, skipping agent", "tenant", tenant, "agent", name, "err", err)
 			return false
 		}
 		did = removed
@@ -1122,13 +1126,13 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 	// named entry in the scope.
 	if s.memMode == "export+prune" {
 		if err := s.exportDirents(ctx, tenant, name); err != nil {
-			s.logf("retention: export dirents %s/%s failed, skipping dirent delete: %v", tenant, name, err)
+			s.logger.Error("retention: export dirents failed, skipping dirent delete", "tenant", tenant, "agent", name, "err", err)
 			return did
 		}
 	}
 	n, err := s.store.DirentDeleteUnder(ctx, tenant, string(store.MemoryScopeAgent), name, "/")
 	if err != nil {
-		s.logf("retention: delete dirents %s/%s failed: %v", tenant, name, err)
+		s.logger.Error("retention: delete dirents failed", "tenant", tenant, "agent", name, "err", err)
 	} else if n > 0 {
 		did = true
 	}
@@ -1152,7 +1156,7 @@ func (s *Sweeper) reclaimAgentScope(ctx context.Context, tenant, name string, ha
 func (s *Sweeper) reclaimBaseMemory(ctx context.Context, name string) bool {
 	tenants, err := s.store.MemoryListTenantsForScope(ctx, store.MemoryScopeAgent, name)
 	if err != nil {
-		s.logf("retention: list memory tenants %q failed: %v", name, err)
+		s.logger.Warn("retention: list memory tenants failed", "agent", name, "err", err)
 		return false
 	}
 	if len(tenants) == 0 {
@@ -1165,13 +1169,13 @@ func (s *Sweeper) reclaimBaseMemory(ctx context.Context, name string) bool {
 	for _, tenant := range tenants {
 		if s.memMode == "export+prune" {
 			if err := s.exportBaseMemory(ctx, tenant, name); err != nil {
-				s.logf("retention: export agent memory %q (tenant %q) failed, skipping: %v", name, tenant, err)
+				s.logger.Error("retention: export agent memory failed, skipping", "agent", name, "tenant", tenant, "err", err)
 				continue
 			}
 		}
 		n, err := s.store.MemoryDeleteScope(ctx, tenant, store.MemoryScopeAgent, name)
 		if err != nil {
-			s.logf("retention: delete agent memory %q (tenant %q) failed: %v", name, tenant, err)
+			s.logger.Error("retention: delete agent memory failed", "agent", name, "tenant", tenant, "err", err)
 			continue
 		}
 		if n > 0 {

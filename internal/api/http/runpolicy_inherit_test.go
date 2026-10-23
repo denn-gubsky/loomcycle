@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,6 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -160,6 +164,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	// Likewise it may push by its definition while its parent may only fetch:
 	// live it only fetches, and a resume must not hand push back.
 	childShellCreds := config.CredentialNames{"DEPLOY_KEY", "NPM_TOKEN"}
+	recallOn := true
 	def := config.AgentDef{
 		Model: "stub-model", SystemPrompt: "c", Tools: []string{"Agent", "Interruption"},
 		AllowOverrides:        &locked,
@@ -169,12 +174,23 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		ShellCredentials:      &childShellCreds,
 		GitRemote:             []string{"fetch", "push"},
 		Compaction:            &config.Compaction{TargetPercentage: &target},
+		// Recall is granted by the setting, not listed in tools, and the
+		// caller's rules deny it: live and resumed must both withhold it.
+		Context: &config.Context{Recall: &recallOn},
 	}
+	h.srv.SetEmbedder(&fakeEmbedder{provider: "openai", model: "text-embedding-3-small", dim: 4})
+	h.srv.tools = append(h.srv.tools, namedStubTool{"Recall"})
 	h.srv.cfg().Agents["child"] = def
 	keep := 3
+	// RFC EY: the originating caller's set, which binds the child live — it
+	// withholds one of the child's tools and drops its keyspace — and must
+	// bind it the same once the child resumes with no parent to inherit from.
+	callerACL := subRunParityCallerACL(t, h)
 	parent := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{UserID: "u1", AgentID: "a_parent", RootRunID: "r_parent"})
+	parent = authz.WithTransport(authz.WithMode(parent, authz.ModeCompat), "http")
 	parent = tools.WithRunID(parent, "r_parent")
 	parent = tools.WithRunPolicy(parent, tools.RunPolicy{
+		ACL:               callerACL,
 		Hosts:             tools.HostPolicyValue{AllowedHosts: []string{"api.example.com"}, HasList: true},
 		FanoutCap:         8,
 		Crypto:            tools.CryptoPolicyValue{Scopes: []string{"run"}},
@@ -207,9 +223,18 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The caller's set, compiled again from the run's record, and the tool
+	// set narrowed by it as resume narrows the definition's.
+	resumeCtx, acl, err := h.srv.resumedACL(resumeCtx, run, runCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	src := h.srv.resumedPolicySource(resumeCtx, run, runCfg, resolved)
 	// Resume re-derives these from the definition, as the spawn did.
-	src.Tools = prep.Opts.Tools
+	resumedTools := filterTools(h.srv.candidateTools(resumeCtx, run.TenantID, resolved.Tools), resolved.Tools, nil)
+	resumedTools = h.srv.grantRecallTool(resumedTools, runCfg.Context)
+	src.Tools, src.ACLRemovedTools = tools.NarrowToolsByACL(resumeCtx, acl, resumedTools)
+	src.ACL = acl
 	src.CoreBlocks = live.CoreBlocks.Blocks
 	resumed, _ := h.srv.agentRunPolicy(resumeCtx, resolved, run.Agent, src)
 
@@ -219,7 +244,8 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		!slices.Equal(live.Crypto.Scopes, []string{"run"}) || live.EphemeralWritable ||
 		!live.ShellCreds.Set || !slices.Equal(live.ShellCreds.Names, []string{"NPM_TOKEN"}) ||
 		live.GitRemote != (tools.GitRemotePolicyValue{Fetch: true}) ||
-		live.Compaction == nil || live.Compaction.KeepLastN != nil {
+		live.Compaction == nil || live.Compaction.KeepLastN != nil ||
+		live.ACL == nil || !slices.Equal(live.ACLRemovedTools, []string{"Agent", "Recall"}) || len(live.Memory.AllowedScopes) != 0 {
 		t.Fatalf("fixture: the live child's policy is not the one this test is built around: %+v", live)
 	}
 	if got, want := resumed.Interruption.Load(), live.Interruption.Load(); !reflect.DeepEqual(got, want) {
@@ -238,6 +264,29 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	if !reflect.DeepEqual(resumed, live) {
 		t.Errorf("the resumed sub-run's policy differs from the one it ran with live:\n resumed %+v\n live    %+v", resumed, live)
 	}
+}
+
+// subRunParityCallerACL is the set of member u1 (tenant ""), compiled by the
+// server's resolver and bound to a list that denies the child's Agent and
+// its auto-granted Recall
+// tool and its user keyspace.
+func subRunParityCallerACL(t *testing.T, h *reviewHarness) *authz.Effective {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.st.AclDefPut(ctx, store.AclDefRow{Name: "u1-limits", Rules: json.RawMessage(`[
+		{"effect":"deny","actions":["invoke"],"resources":["tool:Agent","tool:Recall"]},
+		{"effect":"deny","actions":["read"],"resources":["memory:user"]}]`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.AclBindingPut(ctx, store.AclBindingRow{ACLName: "u1-limits", SubjectKind: "user", SubjectID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.SetACLResolver(aclres.New(h.st, authz.ModeCompat, 0))
+	p, err := h.srv.ACLResolver().Resolve(ctx, auth.Principal{Subject: "u1", TokenDefID: "def_u1", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
+	if err != nil || p.Effective == nil {
+		t.Fatalf("resolve u1's set: %v", err)
+	}
+	return p.Effective
 }
 
 // A child under a parent with no run cap of its own fans out at its OWN

@@ -23,7 +23,7 @@ func TestScheduler_UserScopeOnlyWhenTheAuthorCouldActAsTheUser(t *testing.T) {
 	}{{false, true}, {true, false}} {
 		sched, fr, _, _, _ := schedulerFixture(t, userSchedule(tc.userScope), time.Now().Add(-time.Minute))
 		logs := &logCapture{}
-		sched.logf = logs.logf
+		sched.logger = logs.logger()
 		fireT(t, sched)
 		calls := fr.Calls()
 		if len(calls) != 1 {
