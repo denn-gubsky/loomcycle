@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox/inboxtest"
 )
@@ -125,5 +127,28 @@ func TestWebFetch_AssetsWithoutInboxFetchNothing(t *testing.T) {
 	out := webFetchExec(t, r, map[string]any{"url": srv.URL + "/page", "assets": true})
 	if hits.Load() != 0 || !strings.Contains(out, "[not fetched: this run has no inbox to keep files in]") {
 		t.Errorf("hits = %d, text = %s", hits.Load(), out)
+	}
+}
+
+// TestWebFetch_AssetsAskWebFetchHooks: each asset is a fetch of its own URL,
+// so WebFetch's pre-hooks judge it; a refused one is left with the reason
+// and never requested.
+func TestWebFetch_AssetsAskWebFetchHooks(t *testing.T) {
+	var hits atomic.Int32
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	srv := assetSite(t, &hits)
+	ctx := tools.WithHookPreCheck(r.Ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		if name == "WebFetch" && strings.Contains(string(input), "papers.pdf") {
+			return tools.Result{Text: "no papers", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	raw, _ := json.Marshal(map[string]any{"url": srv.URL + "/page", "assets": true})
+	res, err := (&WebFetch{HTTP: localHTTP()}).Execute(ctx, raw)
+	if err != nil || res.IsError {
+		t.Fatalf("%v %q", err, res.Text)
+	}
+	if !strings.Contains(res.Text, "[the papers]("+srv.URL+"/files/papers.pdf) [not fetched: refused by a hook]") || hits.Load() != 3 {
+		t.Errorf("hits = %d, text = %s", hits.Load(), res.Text)
 	}
 }

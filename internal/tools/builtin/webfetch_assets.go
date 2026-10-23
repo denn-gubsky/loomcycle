@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
@@ -185,12 +186,24 @@ func (a *assetFetcher) fetch(u *url.URL) *webAsset {
 		w.Skipped = "URL carries a user or password"
 	case !a.f.HTTP.hostPermitted(a.ctx, u.Hostname()):
 		w.Skipped = "host not on the allowlist"
+	case !a.hookAllows(u):
+		w.Skipped = "refused by a hook"
 	default:
 		a.tried++
 		a.get(u, w)
 	}
 	a.list = append(a.list, w)
 	return w
+}
+
+// hookAllows asks WebFetch's pre-hooks about one asset, as the fetch of that
+// URL with WebFetch would be asked: the page's call was judged on the page's
+// URL alone, and a hook that refuses a path or a query must not be passed by
+// a link to it.
+func (a *assetFetcher) hookAllows(u *url.URL) bool {
+	in, _ := json.Marshal(map[string]any{"url": u.String(), "via": "WebFetch assets"})
+	_, ok := tools.HookPreCheck(a.ctx, "WebFetch", in)
+	return ok
 }
 
 func (a *assetFetcher) get(u *url.URL, w *webAsset) {
