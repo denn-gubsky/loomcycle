@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -139,7 +140,7 @@ func TestEngine_NoKeyWithAStoredRowIsUnopenableAndNoRowIsAMiss(t *testing.T) {
 func TestEngine_ACorruptOrUnreadableRowIsUnopenable(t *testing.T) {
 	st := sharedStore(t)
 	ctx := context.Background()
-	for name, row := range map[string]store.CredentialDefRow{
+	for name, row := range map[string]credentialdef.Row{
 		"garbled": {Backend: BackendInline, Definition: []byte(`{"value":"not-a-seal-zzqq"}`)},
 		"vaulted": {Backend: BackendVault, Definition: []byte(`{"path":"secret/x"}`)},
 	} {

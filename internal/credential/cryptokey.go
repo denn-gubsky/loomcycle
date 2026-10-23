@@ -13,7 +13,7 @@ package credential
 // HasKeyFor all refuse it with ErrCryptoKey, and the refusal does not fall
 // through to a same-named credential in a less specific scope.
 //
-// Stored definition (backend inline, in store.CredentialDefRow.Definition):
+// Stored definition (backend inline, in credentialdef.Row.Definition):
 //
 //	{"usage":"crypto","key_type":"ed25519","current":2,"min_version":1,
 //	 "versions":[{"version":1,"created_at":"…","value":{key_id,nonce,ciphertext}},
@@ -44,7 +44,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 )
 
 // UsageCrypto is the definition's usage for a crypto-key credential.
@@ -276,7 +276,7 @@ func (e *Engine) openVersion(id Identity, d cryptoDefinition, v cryptoVersion) (
 // getCryptoRow reads the row under id and parses it as a crypto key.
 // *store.ErrNotFound on a miss, ErrNotCryptoKey for an ordinary credential,
 // ErrUnopenable for a crypto row that does not parse.
-func (e *Engine) getCryptoRow(ctx context.Context, id Identity) (store.CredentialDefRow, cryptoDefinition, error) {
+func (e *Engine) getCryptoRow(ctx context.Context, id Identity) (credentialdef.Row, cryptoDefinition, error) {
 	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 	if err != nil {
 		return row, cryptoDefinition{}, err
@@ -292,7 +292,7 @@ func (e *Engine) getCryptoRow(ctx context.Context, id Identity) (store.Credentia
 }
 
 // putCryptoRow stores d under row's key, keeping the row's other fields.
-func (e *Engine) putCryptoRow(ctx context.Context, row store.CredentialDefRow, d cryptoDefinition) (Meta, error) {
+func (e *Engine) putCryptoRow(ctx context.Context, row credentialdef.Row, d cryptoDefinition) (Meta, error) {
 	def, err := json.Marshal(d)
 	if err != nil {
 		return Meta{}, err
@@ -336,7 +336,7 @@ func (e *Engine) PutCryptoKey(ctx context.Context, id Identity, keyType string, 
 	if err != nil {
 		return Meta{}, err
 	}
-	return e.putCryptoRow(ctx, store.CredentialDefRow{
+	return e.putCryptoRow(ctx, credentialdef.Row{
 		TenantID: id.TenantID, Scope: id.Scope, ScopeID: id.ScopeID, Name: id.Name, ExpiresAt: expiresAt,
 	}, cryptoDefinition{Usage: UsageCrypto, KeyType: keyType, Current: 1, MinVersion: 1, Versions: []cryptoVersion{v}})
 }
@@ -377,7 +377,7 @@ func (e *Engine) PutExternalCryptoKey(ctx context.Context, id Identity, keyType 
 	if err != nil {
 		return Meta{}, err
 	}
-	return e.putCryptoRow(ctx, store.CredentialDefRow{
+	return e.putCryptoRow(ctx, credentialdef.Row{
 		TenantID: id.TenantID, Scope: id.Scope, ScopeID: id.ScopeID, Name: id.Name, ExpiresAt: expiresAt,
 	}, cryptoDefinition{Usage: UsageCrypto, KeyType: keyType, Current: 1, MinVersion: 1, Backend: ext.Kind, External: &sealed})
 }
@@ -397,8 +397,7 @@ func (e *Engine) absent(ctx context.Context, id Identity) error {
 	if err == nil {
 		return fmt.Errorf("%w (%q in %s scope)", ErrKeyExists, id.Name, id.Scope)
 	}
-	var nf *store.ErrNotFound
-	if errors.As(err, &nf) {
+	if isNotFound(err) {
 		return nil
 	}
 	return err
@@ -511,7 +510,7 @@ func (e *Engine) DeleteCryptoKeyVersion(ctx context.Context, id Identity, versio
 // version >= min_version still protects data. nil only once every version is
 // retired (min_version > current, SetCryptoMinVersion to current+1). A crypto
 // row that does not parse is refused too: what it protects cannot be told.
-func cryptoDeleteRefusal(row store.CredentialDefRow) error {
+func cryptoDeleteRefusal(row credentialdef.Row) error {
 	var d cryptoDefinition
 	if err := json.Unmarshal(row.Definition, &d); err != nil {
 		return fmt.Errorf("%w (%q): its stored definition cannot be read", ErrKeyInUse, row.Name)
@@ -553,7 +552,7 @@ func cryptoDeleteRefusal(row store.CredentialDefRow) error {
 // reported in sawOther), so writing an ordinary credential cannot make a
 // crypto key ambiguous, nor the reverse. The decision is made from one read
 // of each scope, with no second look.
-func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes, crypto bool) (row store.CredentialDefRow, found, sawOther bool, err error) {
+func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name string, allowed Scopes, crypto bool) (row credentialdef.Row, found, sawOther bool, err error) {
 	if userID == systemUserID {
 		userID = ""
 	}
@@ -565,18 +564,17 @@ func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name 
 		{"user", userID, allowed.User && userID != ""},
 		{"agent", agentName, allowed.Agent && agentName != ""},
 	}
-	var hits []store.CredentialDefRow
+	var hits []credentialdef.Row
 	for _, b := range buckets {
 		if !b.ok {
 			continue
 		}
 		r, gerr := e.store.CredentialDefGet(ctx, tenantID, b.scope, b.id, name)
 		if gerr != nil {
-			var nf *store.ErrNotFound
-			if errors.As(gerr, &nf) {
+			if isNotFound(gerr) {
 				continue
 			}
-			return store.CredentialDefRow{}, false, sawOther, gerr
+			return credentialdef.Row{}, false, sawOther, gerr
 		}
 		if isCryptoDef(r.Definition) != crypto {
 			sawOther = true
@@ -586,7 +584,7 @@ func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name 
 	}
 	switch len(hits) {
 	case 0:
-		return store.CredentialDefRow{}, false, sawOther, nil
+		return credentialdef.Row{}, false, sawOther, nil
 	case 1:
 		if xerr := e.expiredErr(hits[0], name); xerr != nil {
 			return hits[0], true, sawOther, xerr
@@ -597,7 +595,7 @@ func (e *Engine) findOne(ctx context.Context, tenantID, agentName, userID, name 
 	if crypto {
 		kind = "a crypto key"
 	}
-	return store.CredentialDefRow{}, false, sawOther,
+	return credentialdef.Row{}, false, sawOther,
 		fmt.Errorf("%w (%q is %s in more than one scope; name the scope)", ErrAmbiguousKey, name, kind)
 }
 
@@ -666,8 +664,7 @@ func (e *Engine) ResolveCryptoKey(ctx context.Context, tenantID, agentName, user
 func (e *Engine) ResolveKMSSecret(ctx context.Context, id Identity) (string, bool, error) {
 	row, err := e.store.CredentialDefGet(ctx, id.TenantID, id.Scope, id.ScopeID, id.Name)
 	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
+		if isNotFound(err) {
 			return "", false, nil
 		}
 		return "", false, err
@@ -906,7 +903,7 @@ func (e *Engine) ImportCryptoKey(ctx context.Context, id Identity, blob, passphr
 		}
 		d.Versions = append(d.Versions, sv)
 	}
-	return e.putCryptoRow(ctx, store.CredentialDefRow{
+	return e.putCryptoRow(ctx, credentialdef.Row{
 		TenantID: id.TenantID, Scope: id.Scope, ScopeID: id.ScopeID, Name: id.Name, ExpiresAt: p.ExpiresAt,
 	}, d)
 }
