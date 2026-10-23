@@ -1,4 +1,4 @@
-package codejs_test
+package loop_test
 
 import (
 	"context"
