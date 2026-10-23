@@ -446,7 +446,7 @@ func glyphRune(name string) rune {
 	}
 	switch {
 	case len(name) == 7 && strings.HasPrefix(name, "uni"):
-		if v, err := strconv.ParseUint(name[3:], 16, 32); err == nil {
+		if v, err := strconv.ParseUint(name[3:], 16, 16); err == nil { // four hex digits
 			return rune(v)
 		}
 	case len(name) >= 5 && len(name) <= 7 && name[0] == 'u':
