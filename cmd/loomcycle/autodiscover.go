@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
 // autodiscover.go — v0.11.1 config auto-discovery.

@@ -4,8 +4,10 @@
 // present (Homebrew installs, go install from the tagged tarball,
 // container images).
 //
-// Lives in its own package (not in main) so internal/cli can import
-// it — internal packages can't import main packages.
+// Lives under internal/, not under cmd/loomcycle, because internal/cli and
+// internal/api/http import it: a surface package importing from the entry
+// layer is an upward edge (RFC EX), and internal packages can't import main
+// packages anyway.
 package embedded
 
 import _ "embed"

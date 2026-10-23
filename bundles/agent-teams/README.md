@@ -39,7 +39,7 @@ Memory, or external SQL/Excel via Bashbox/MCP).
 - `loomcycle.yaml` — the bundle config: the three agents + the inline
   `team/structure`, `team/workflow`, `team/orchestrate`, and `team/repo` skills.
   This mirrors the embedded copy at
-  `cmd/loomcycle/embedded/bundles/agent-teams.yaml` (the one the binary ships);
+  `internal/embedded/bundles/agent-teams.yaml` (the one the binary ships);
   keep the two in sync.
 
 ## The workflow model (RFC AP)

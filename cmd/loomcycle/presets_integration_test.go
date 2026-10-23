@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decisionbuild"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
 // layersFor resolves embedded unit names to config layers, the same mapping

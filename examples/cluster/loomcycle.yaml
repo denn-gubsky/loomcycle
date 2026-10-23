@@ -1,6 +1,6 @@
 # loomcycle cluster demo — minimal config.
 #
-# Trimmed-to-the-bone version of cmd/loomcycle/embedded/loomcycle.example.yaml.
+# Trimmed-to-the-bone version of internal/embedded/loomcycle.example.yaml.
 # Just enough to demonstrate cluster mode end-to-end: one agent, one
 # tier, no MCP servers, no skills, no channels. Once you've confirmed
 # the cluster boots and verify.sh passes, swap in your real
