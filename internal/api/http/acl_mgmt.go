@@ -404,6 +404,12 @@ func (s *Server) aclGroupGet(ctx context.Context, focus, name string) aclReply {
 	tenant := s.adminFocusedTenant(ctx, focus)
 	row, err := s.store.GroupGet(ctx, tenant, name)
 	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			if r := s.aclConfigGroupGet(ctx, tenant, name); r != nil {
+				return *r
+			}
+		}
 		return aclStoreError(err, "group")
 	}
 	members, err := s.store.GroupMembers(ctx, tenant, name)
@@ -503,6 +509,50 @@ func (s *Server) aclGroupEffective(ctx context.Context, focus, name string) aclR
 func (s *Server) aclStatic() *authz.Static {
 	if c := s.cfg(); c != nil {
 		return c.ResolvedACL
+	}
+	return nil
+}
+
+// aclConfigMember is one direct member of a config-declared group: the
+// shape of a stored membership, without the store's added_at / added_by.
+type aclConfigMember struct {
+	TenantID   string `json:"tenant_id,omitempty"`
+	GroupName  string `json:"group"`
+	MemberKind string `json:"member_kind"`
+	MemberID   string `json:"member_id"`
+	Source     string `json:"source"`
+}
+
+// aclConfigGroupGet answers a get for a group only the config declares in
+// tenant (nil when it declares none): the group, its direct members and the
+// groups it is nested in, over the store's and the config's nesting merged
+// as the resolver merges them.
+func (s *Server) aclConfigGroupGet(ctx context.Context, tenant, name string) *aclReply {
+	static := s.aclStatic()
+	if static == nil {
+		return nil
+	}
+	for _, g := range static.Groups {
+		if g.Tenant != tenant || g.Name != name {
+			continue
+		}
+		members := make([]aclConfigMember, 0, len(g.Members)+len(g.Groups))
+		for _, m := range g.Members {
+			members = append(members, aclConfigMember{TenantID: tenant, GroupName: name, MemberKind: store.GroupMemberUser, MemberID: m, Source: aclres.SourceConfig})
+		}
+		for _, m := range g.Groups {
+			members = append(members, aclConfigMember{TenantID: tenant, GroupName: name, MemberKind: store.GroupMemberGroup, MemberID: m, Source: aclres.SourceConfig})
+		}
+		graph, err := s.store.GroupGraph(ctx, tenant)
+		if err != nil {
+			r := aclFail(http.StatusInternalServerError, "group_graph_failed", err.Error())
+			return &r
+		}
+		_, staticGraph := static.GroupsOf(tenant, "")
+		group := aclConfigGroup{TenantID: g.Tenant, Name: g.Name, Description: g.Description, ExternalID: g.ExternalID,
+			Members: g.Members, Groups: g.Groups, Source: aclres.SourceConfig}
+		r := aclOK(map[string]any{"group": group, "members": members, "contained_in": authz.Closure(authz.MergeGraph(graph, staticGraph), []string{name})})
+		return &r
 	}
 	return nil
 }

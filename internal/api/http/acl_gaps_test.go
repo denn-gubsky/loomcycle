@@ -228,3 +228,35 @@ func TestACLLists_IncludeConfigDeclaredEntries(t *testing.T) {
 		t.Errorf("a member write to a config group: %d %s", code, body)
 	}
 }
+
+// A group only the config declares is returned by get, as list and
+// effective already show it: read-only, marked "source":"config", with its
+// members and the groups it is nested in. On HTTP and the twin alike.
+func TestACLGroups_GetReturnsAConfigGroup(t *testing.T) {
+	srv, ts, _ := aclMgmtServerWith(t, authz.ModeCompat, func(c *config.Config) {
+		c.ResolvedACL = &authz.Static{Groups: []authz.StaticGroup{
+			{Tenant: "acme", Name: "yaml-group", Description: "from yaml", Members: []string{"alice"}, Groups: []string{"support"}},
+			{Tenant: "acme", Name: "yaml-parent", Groups: []string{"yaml-group"}},
+		}}
+	})
+	if code, body := bearerCall(t, ts, operatorBearer, "POST", "/v1/_groups", `{"name":"support"}`); code != 201 {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	code, body := bearerCall(t, ts, operatorBearer, "GET", "/v1/_groups/yaml-group", "")
+	if code != 200 || !strings.Contains(body, `"source":"config"`) || !strings.Contains(body, `"member_id":"alice"`) ||
+		!strings.Contains(body, `"member_id":"support"`) || !strings.Contains(body, `"contained_in":["yaml-group","yaml-parent"]`) ||
+		strings.Contains(body, "0001-01-01") {
+		t.Errorf("get a config group: %d %s", code, body)
+	}
+	if code, _ := bearerCall(t, ts, operatorBearer, "GET", "/v1/_groups/nobody", ""); code != 404 {
+		t.Errorf("get a group nobody declares: %d, want 404", code)
+	}
+	op := aclCaller(t, srv, "acme", "ops", auth.ScopeTenant)
+	res := twinCall(t, srv, op, "groupdef", `{"op":"get","name":"yaml-group"}`)
+	var twin, route any
+	_ = json.Unmarshal([]byte(res.Text), &twin)
+	_ = json.Unmarshal([]byte(body), &route)
+	if res.IsError || !jsonEqual(twin, route) {
+		t.Errorf("twin get: %s, route %s", res.Text, body)
+	}
+}
