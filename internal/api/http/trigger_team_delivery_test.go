@@ -73,7 +73,7 @@ func (h *triggerWalkHarness) createDueTeamSchedule(overlay string) string {
 // sweep runs the real sweeper against the server until the test ends.
 func (h *triggerWalkHarness) sweep() {
 	h.t.Helper()
-	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, h.st, h.srv, nil, nil, h.t.Logf)
+	sched := scheduler.New(scheduler.Config{TickInterval: 20 * time.Millisecond}, h.st, h.srv, nil, nil, schedulerTestLogger(h.t, nil))
 	sched.SetTeamWalkStarter(h.srv)
 	sched.Start(context.Background())
 	h.t.Cleanup(sched.Stop)

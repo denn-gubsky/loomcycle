@@ -243,7 +243,7 @@ func TestSchedulerBearerCompound(t *testing.T) {
 	sched := scheduler.New(scheduler.Config{
 		TickInterval:       100 * time.Millisecond,
 		MaxConcurrentFires: 64,
-	}, st, srv, pauseMgr, nil, t.Logf)
+	}, st, srv, pauseMgr, nil, schedulerTestLogger(t, nil))
 
 	schedCtx, schedCancel := context.WithCancel(context.Background())
 	defer schedCancel()

@@ -99,8 +99,8 @@ func TestScheduler_TeamDeliveryStartsAWalkWithTheDefsVarsAndIdentity(t *testing.
 // one-shot. It must be logged and recorded, and must still advance.
 func TestScheduler_TeamDeliveryThatCannotStartIsLoggedAndDoesNotBurnMaxFires(t *testing.T) {
 	sched, fr, _, defID, st := schedulerFixture(t, teamTick(1), time.Now().Add(-1*time.Minute))
-	var logged []string
-	sched.logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	logs := &logCapture{}
+	sched.logger = logs.logger()
 	sched.SetTeamWalkStarter(&fakeTeams{err: fmt.Errorf("%w: no active team %q in tenant %q", runner.ErrTeamNotStartable, "weekly-report", "acme")})
 	ctx := context.Background()
 
@@ -126,14 +126,8 @@ func TestScheduler_TeamDeliveryThatCannotStartIsLoggedAndDoesNotBurnMaxFires(t *
 	if row.Retired {
 		t.Fatal("def retired after a team that could not start — max_fires must not have been reached")
 	}
-	found := false
-	for _, line := range logged {
-		if strings.Contains(line, "could not start team") && strings.Contains(line, "weekly-report") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("no log line names the team that could not start: %q", logged)
+	if !logs.containsLine("could not start team", "team=weekly-report") {
+		t.Errorf("no log line names the team that could not start:\n%s", logs.all())
 	}
 }
 

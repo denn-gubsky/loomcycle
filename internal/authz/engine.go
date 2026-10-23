@@ -16,6 +16,11 @@ type Subject struct {
 	ID         string
 	Groups     []string
 	TokenDefID string
+	// Class is the token class the set's baseline was chosen for
+	// (aclres.ClassKey), set by the resolver that compiled it. It takes no
+	// part in a decision; it lets a run that outlives its request — paused,
+	// restored, restarted — have its caller's set compiled again.
+	Class string
 }
 
 // Resource is the instance a decision is about. Name is in the type's

@@ -50,8 +50,8 @@ func TestScheduler_TwoReplicasFireEachSlotOnce(t *testing.T) {
 	// Each run takes long enough that both replicas have listed the rows
 	// before either run ends.
 	fr := &fakeRunner{onRun: func(runner.RunInput) { time.Sleep(50 * time.Millisecond) }}
-	a := New(Config{TickInterval: time.Hour, MaxConcurrentFires: slots, ReplicaID: "replica-a"}, st, fr, nil, nil, t.Logf)
-	b := New(Config{TickInterval: time.Hour, MaxConcurrentFires: slots, ReplicaID: "replica-b"}, st, fr, nil, nil, t.Logf)
+	a := New(Config{TickInterval: time.Hour, MaxConcurrentFires: slots, ReplicaID: "replica-a"}, st, fr, nil, nil, testLogger(t))
+	b := New(Config{TickInterval: time.Hour, MaxConcurrentFires: slots, ReplicaID: "replica-b"}, st, fr, nil, nil, testLogger(t))
 	waitFiresOnCleanup(t, a)
 	waitFiresOnCleanup(t, b)
 

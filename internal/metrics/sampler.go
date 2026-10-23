@@ -13,7 +13,6 @@ package metrics
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"runtime"
 	"time"
@@ -36,8 +35,8 @@ type Config struct {
 	// process_samples table can be split per replica. Empty in
 	// single-replica mode. Sourced from LOOMCYCLE_REPLICA_ID.
 	ReplicaID string
-	// Logf is the log sink. nil → log.Printf.
-	Logf func(string, ...any)
+	// Logger is the log sink. nil → slog.Default().
+	Logger *slog.Logger
 }
 
 // Sampler is the background-worker handle. Construct via New;
@@ -70,8 +69,8 @@ func New(st store.Store, sem *concurrency.Semaphore, cfg Config) *Sampler {
 	if cfg.Interval <= 0 {
 		cfg.Interval = 5 * time.Second
 	}
-	if cfg.Logf == nil {
-		cfg.Logf = log.Printf
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
 	return &Sampler{cfg: cfg, store: st, sem: sem}
 }
@@ -127,10 +126,10 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	//    row with the cheap fields, leaving RSS/CPU as zero. We log
 	//    ONCE per program lifetime on the first failure
 	//    (hardened-container /proc shapes fail every tick; logging
-	//    each one would flood). Goes through slog directly,
-	//    NOT cfg.Logf, so this environmental warning is decoupled
+	//    each one would flood). Goes to the default slog logger,
+	//    NOT cfg.Logger, so this environmental warning is decoupled
 	//    from the actionable store-write backoff signal that tests
-	//    drive via cfg.Logf.
+	//    capture via cfg.Logger.
 	if ProcMetricsAvailable {
 		pm, nextSnap, err := readProcMetrics(s.cfg.CollectSystem, s.prevCPU)
 		if err != nil {
@@ -159,7 +158,7 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 	// Successful write resets the failure counter — the sampler
 	// is back to a healthy state.
 	if s.failures > 0 {
-		s.cfg.Logf("metrics: write recovered after %d consecutive failures", s.failures)
+		s.cfg.Logger.Info("metrics: write recovered after consecutive failures", "failures", s.failures)
 		s.failures = 0
 	}
 	return nil
@@ -172,6 +171,6 @@ func (s *Sampler) sampleOnce(ctx context.Context, now time.Time) error {
 func (s *Sampler) recordFailure(err error) {
 	s.failures++
 	if s.failures == 1 || s.failures%10 == 0 {
-		s.cfg.Logf("metrics: write failed (consecutive=%d): %v", s.failures, err)
+		s.cfg.Logger.Error("metrics: write failed", "consecutive", s.failures, "err", err)
 	}
 }

@@ -27,6 +27,7 @@ var convertedPackages = []string{
 	"internal/concurrency",
 	"internal/coord",
 	"internal/decision",
+	"internal/heartbeat",
 	"internal/help",
 	"internal/hooks",
 	"internal/lookup",
@@ -41,8 +42,10 @@ var convertedPackages = []string{
 	"internal/providers/ollama",
 	"internal/providers/ratelimit",
 	"internal/recipes",
+	"internal/retention",
 	"internal/runner",
 	"internal/runstate",
+	"internal/scheduler",
 	"internal/snapshot",
 	"internal/sqlmem",
 	"internal/store",
@@ -53,6 +56,7 @@ var convertedPackages = []string{
 	"internal/store/storetest",
 	"internal/teamrun",
 	"internal/tools/mcp/http",
+	"internal/usage",
 	"internal/wiring",
 }
 

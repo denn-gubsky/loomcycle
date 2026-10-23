@@ -3,6 +3,7 @@ package usage
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -64,8 +65,8 @@ func TestSweeperOnce_PrunesOldDetail(t *testing.T) {
 	sw := New(st, Config{
 		Interval:        1 * time.Hour, // unused — we drive sweepOnce directly
 		DetailRetention: retention,
-		Logger:          func(format string, args ...any) {}, // silence
-		Now:             func() time.Time { return now },     // cutoff == now-24h
+		Logger:          slog.New(slog.DiscardHandler),   // silence
+		Now:             func() time.Time { return now }, // cutoff == now-24h
 	})
 
 	n, err := sw.sweepOnce(ctx)
@@ -127,7 +128,7 @@ func TestArchiveSessionsOnce(t *testing.T) {
 		sw := New(st, Config{
 			RunRetention:     24 * time.Hour,
 			RunRetentionMode: "prune",
-			Logger:           func(string, ...any) {},
+			Logger:           slog.New(slog.DiscardHandler),
 			Now:              future,
 		})
 		if !sw.runArchivalEnabled() {
@@ -153,7 +154,7 @@ func TestArchiveSessionsOnce(t *testing.T) {
 			RunRetention:     24 * time.Hour,
 			RunRetentionMode: "export+prune",
 			ExportDir:        exportDir,
-			Logger:           func(string, ...any) {},
+			Logger:           slog.New(slog.DiscardHandler),
 			Now:              future,
 		})
 		n, err := sw.archiveSessionsOnce(ctx)
@@ -193,7 +194,7 @@ func TestArchiveSessionsOnce(t *testing.T) {
 		sw := New(st, Config{
 			RunRetention:     24 * time.Hour,
 			RunRetentionMode: "prune",
-			Logger:           func(string, ...any) {},
+			Logger:           slog.New(slog.DiscardHandler),
 			Now:              future,
 		})
 		n, err := sw.archiveSessionsOnce(ctx)
@@ -213,7 +214,7 @@ func TestArchiveSessionsOnce(t *testing.T) {
 		sw := New(st, Config{
 			RunRetention:     24 * time.Hour,
 			RunRetentionMode: "export+prune", // no ExportDir
-			Logger:           func(string, ...any) {},
+			Logger:           slog.New(slog.DiscardHandler),
 			Now:              future,
 		})
 		if sw.runArchivalEnabled() {
@@ -272,7 +273,7 @@ func TestArchiveSessionsOnce_StopsOnExpiredDeadline(t *testing.T) {
 	sw := New(wrapped, Config{
 		RunRetention:     24 * time.Hour,
 		RunRetentionMode: "prune",
-		Logger:           func(string, ...any) {},
+		Logger:           slog.New(slog.DiscardHandler),
 		Now:              future,
 	})
 
@@ -296,7 +297,7 @@ func TestSweeperRun_StopsOnContextDone(t *testing.T) {
 	sw := New(st, Config{
 		Interval:        10 * time.Millisecond,
 		DetailRetention: 1 * time.Hour,
-		Logger:          func(format string, args ...any) {},
+		Logger:          slog.New(slog.DiscardHandler),
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -325,7 +326,7 @@ func TestSweeperRun_NilStoreNoOp(t *testing.T) {
 	sw := New(nil, Config{
 		Interval:        1 * time.Millisecond,
 		DetailRetention: 1 * time.Millisecond,
-		Logger:          func(format string, args ...any) {},
+		Logger:          slog.New(slog.DiscardHandler),
 	})
 	done := make(chan struct{})
 	go func() {
@@ -364,7 +365,7 @@ func TestArchiveSessionsOnce_ANoTraceChatIsNeverExported(t *testing.T) {
 	plain, quiet := seed("arch-plain", ""), seed("arch-quiet", retentionmode.None)
 	sw := New(st, Config{
 		RunRetention: 24 * time.Hour, RunRetentionMode: "export+prune", ExportDir: exportDir,
-		Logger: func(string, ...any) {}, Now: func() time.Time { return time.Now().Add(48 * time.Hour) },
+		Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return time.Now().Add(48 * time.Hour) },
 	})
 	if n, err := sw.archiveSessionsOnce(ctx); err != nil || n != 2 {
 		t.Fatalf("archiveSessionsOnce = (%d, %v), want (2, nil)", n, err)
