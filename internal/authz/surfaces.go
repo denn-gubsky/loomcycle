@@ -164,13 +164,20 @@ func HTTPSurface(method, path string) (Surface, bool) {
 				return instance("read", "def", "mcpserver/*"), true
 			}
 		}
-	// Names that end in "def" but ask a STRONGER question than the generic
+	// Names that end in "def" but ask a different question than the generic
 	// `_<family>def` case below must come first: a switch takes the first
-	// matching case, and these two sat below it unreachable, so a POST to
-	// /v1/_acldef was gated as `read def:acl/*` instead of `author`.
+	// matching case, and below it these were unreachable.
 	case name == "credentialdef":
 		return typeLevel("use", "credential"), true
-	case name == "acldef", name == "aclbinding":
+	case name == "acldef":
+		// Every op of POST /v1/_acldef — get and list as well as create and
+		// retire — is a POST with the op in the body, so the route asks the
+		// weakest verb the family has, and a principal that may only read
+		// lists can still get and list them. The handler asks author, retire
+		// or read of the named list per op, failing closed to author
+		// (aclListOpSurface in internal/api/http).
+		return instance("read", "def", "acl/*"), true
+	case name == "aclbinding":
 		if get {
 			return instance("read", "def", "acl/*"), true
 		}

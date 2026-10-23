@@ -76,7 +76,7 @@ func (s *Server) aclChanged(ctx context.Context, tenant, action, targetName stri
 // binding, which an operator alone may write.
 func aclNoSelfElevation(ctx context.Context, kind, id string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
-	if !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) || auth.HasScope(p.Scopes, auth.ScopeTenant) {
+	if !ok || aclWriterHoldsTenant(p) {
 		return nil
 	}
 	switch authz.SubjectKind(kind) {
@@ -98,6 +98,16 @@ func aclNoSelfElevation(ctx context.Context, kind, id string) error {
 		return fmt.Errorf("a tenant-wide binding")
 	}
 	return nil
+}
+
+// aclWriterHoldsTenant reports whether the writer already holds every
+// ACL, group and binding authority in its tenant (RFC EY §3.8): admin, the
+// legacy token and a tenant operator. The self-elevation guards bind the
+// writers that hold only what an ACL delegates to them. An admin who wants a
+// tenant operator unable to lift a list binds it a deny on `author
+// def:acl/<name>`, which the per-op check honours.
+func aclWriterHoldsTenant(p auth.Principal) bool {
+	return p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) || auth.HasScope(p.Scopes, auth.ScopeTenant)
 }
 
 func writeACLStoreError(w http.ResponseWriter, err error, kind string) {
@@ -261,6 +271,9 @@ func (s *Server) handleAclDef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, tenant := r.Context(), s.aclTenant(r)
+	if !s.aclListOpAllowed(ctx, w, req.Op, strings.TrimSpace(req.Name)) {
+		return
+	}
 	switch req.Op {
 	case "create", "update", "put":
 		if len(req.Rules) == 0 {
@@ -312,6 +325,74 @@ func (s *Server) handleAclDef(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONError(w, http.StatusBadRequest, "unknown_op", "op must be one of create, get, list, retire, validate, catalog")
 	}
+}
+
+// aclListOpSurface is the question an op of POST /v1/_acldef asks of the list
+// it names: read for a get, retire for a retire, and author for every other op
+// — fail closed, so a write op added to the handler later is checked even if
+// nobody adds it here. The three ops that name no list and write nothing
+// (list, validate, catalog) return nil: the route's type-level read answered
+// them.
+func aclListOpSurface(op, name string) *authz.Surface {
+	action := "author"
+	switch op {
+	case "list", "validate", "catalog":
+		return nil
+	case "get":
+		action = "read"
+	case "retire":
+		action = "retire"
+	}
+	if name == "" {
+		name = "*"
+	}
+	return &authz.Surface{Action: action, Type: "def", Name: "acl/" + name}
+}
+
+// aclListOpAllowed asks the op's question of the named list, then refuses a
+// write that would change the writer's own authority. It writes the refusal
+// and returns false. No principal (open mode) has no set to ask.
+func (s *Server) aclListOpAllowed(ctx context.Context, w http.ResponseWriter, op, name string) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	surface := aclListOpSurface(op, name)
+	if !ok || surface == nil {
+		return true
+	}
+	if !s.applyGate(ctx, w, p, *surface, authz.EvaluateSurface(ctx, p.Effective, *surface, true)) {
+		return false
+	}
+	if surface.Action == "read" {
+		return true
+	}
+	if err := aclListNotSelfBound(p, name); err != nil {
+		writeJSONError(w, http.StatusForbidden, "acl_self_elevation", "refused: "+err.Error()+" would change your own authority")
+		return false
+	}
+	return true
+}
+
+// aclListNotSelfBound refuses a delegated writer a write or retire of a list
+// that shapes its own set (RFC EY §10 invariant 4): one bound to its subject,
+// its token, a group it is in or its tenant, which is what the compiled set's
+// applied bindings are, and a name bound to it that no list has yet, which
+// creating would bring into force. Rewriting or retiring such a list could
+// drop the very denies that hold the writer back. Like the binding guard it
+// leaves a writer that holds the tenant's authority alone (§3.8).
+func aclListNotSelfBound(p auth.Principal, name string) error {
+	if aclWriterHoldsTenant(p) || p.Effective == nil {
+		return nil
+	}
+	for _, b := range p.Effective.Applied() {
+		if b.ACL == name {
+			return fmt.Errorf("list %q is bound to you (%s binding); changing it", name, b.SubjectKind)
+		}
+	}
+	for _, missing := range p.Effective.Missing() {
+		if missing == name {
+			return fmt.Errorf("list %q is bound to you and not yet created; creating it", name)
+		}
+	}
+	return nil
 }
 
 func builtinACLs() []authz.ACL {
