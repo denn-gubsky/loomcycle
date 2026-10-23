@@ -4030,8 +4030,8 @@ type Env struct {
 	// embedded UI. Read once at startup; operator-set only, because a bundle
 	// runs same-origin with the session cookie. A bundle that fails
 	// verification falls back to the embedded UI (internal/webui). Non-secret.
-	WebUIDir       string
-	AuthToken      string
+	WebUIDir  string
+	AuthToken string
 	// OperatorTokenPepper is prepended to a bearer before SHA-256 when
 	// hashing OperatorTokenDef tokens (RFC L). A stolen DB dump without
 	// the pepper yields no usable token lookup. Secret — never logged.
