@@ -20,15 +20,17 @@ PG_PASSWORD  ?= loomcycle
 
 PG_DSN := postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DATABASE)?sslmode=disable
 
-.PHONY: help build build-ui build-all test test-pg pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live bashbox-escape js-install js-build js-test js-typecheck js-audit
+.PHONY: help build build-ui build-all test test-pg vet tidy-all pg-up pg-down pg-logs proto proto-deps python-proto python-test memory-eval-mock memory-eval-live bashbox-escape js-install js-build js-test js-typecheck js-audit
 
 help:
 	@echo "loomcycle dev targets:"
 	@echo "  build       — go build -o bin/loomcycle ./cmd/loomcycle (the runnable binary)"
 	@echo "  build-ui    — npm ci + npm build for web/ (output → internal/webui/dist/)"
 	@echo "  build-all   — build-ui + build → ./bin/loomcycle with the latest UI embedded (use this to deploy)"
-	@echo "  test        — go test ./... (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
-	@echo "  test-pg     — go test ./... with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
+	@echo "  test        — go test ./... in every in-tree Go module (Postgres tests skip without LOOMCYCLE_TEST_PG_DSN)"
+	@echo "  test-pg     — the same, with LOOMCYCLE_TEST_PG_DSN set against the local fixture"
+	@echo "  vet         — go vet ./... in every in-tree Go module"
+	@echo "  tidy-all    — go mod tidy in every in-tree Go module"
 	@echo "  memory-eval-mock — the memory consolidation + retrieval eval gate (offline, no key)"
 	@echo "  memory-eval-live — the memory extraction eval against a REAL model (needs a provider; MEMEVAL_MODEL=…)"
 	@echo "  bashbox-escape — the Bashbox sandbox escape suite (run it on every gbash bump; CI runs it on every PR)"
@@ -110,12 +112,22 @@ js-typecheck:
 js-audit:
 	scripts/js-packages.sh audit $(JS_ARGS)
 
+# The Go targets below run in every in-tree module (scripts/ci/modules.sh):
+# the root and each module the root go.mod replaces with a directory in the
+# tree. `go test ./...` from the root stops at a nested go.mod, so it alone
+# would skip those modules' packages.
 test:
-	go test ./...
+	scripts/ci/in-modules.sh go test ./...
 
 test-pg:
 	@echo "Running tests with LOOMCYCLE_TEST_PG_DSN=$(PG_DSN)"
-	LOOMCYCLE_TEST_PG_DSN="$(PG_DSN)" go test ./...
+	LOOMCYCLE_TEST_PG_DSN="$(PG_DSN)" scripts/ci/in-modules.sh go test ./...
+
+vet:
+	scripts/ci/in-modules.sh go vet ./...
+
+tidy-all:
+	scripts/ci/in-modules.sh go mod tidy
 
 # memory-eval-mock: the memory eval gate — the consolidation pipeline's runtime
 # invariants plus the retrieval-quality harness. Offline and hermetic: mock
