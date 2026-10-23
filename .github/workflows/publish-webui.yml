@@ -1,0 +1,176 @@
+name: Publish Web UI bundle
+
+# RFC FE Part B: the Web UI releases on its own, as a bundle a server loads at
+# startup (LOOMCYCLE_WEBUI_BUNDLE_URL + LOOMCYCLE_WEBUI_BUNDLE_SHA256, or
+# unpacked into LOOMCYCLE_WEBUI_DIR), so a UI fix reaches operators without a
+# new binary. The binary's own release (release.yml, `v*`) keeps embedding the
+# UI current at its commit; this workflow does not touch it.
+#
+# A `webui-v<version>` tag builds web/ with `make webui-bundle` and publishes a
+# GitHub release for that tag with two assets: loomcycle-webui-<version>.tar.gz
+# and its .sha256. `webui-v*` cannot match the other tag filters: release.yml,
+# publish-ts-adapter.yml and publish-sandbox-images.yml take `v*` (a tag
+# starting with "v"), and the package workflows take `python-v*`, `library-v*`,
+# `explorer-v*`, `memory-view-v*`, `def-fields-v*`, `loomboard-v*` and
+# `bridge-*-v*`. ci.yml, codeql.yml and security.yml run on branch pushes,
+# which a tag push is not.
+#
+# workflow_dispatch is a dry run: it builds the bundle for the given version
+# and uploads it as a workflow artifact. It creates no tag and no release.
+#
+# The build runs third-party npm code, so it runs with a read-only token; only
+# the release job, which runs no repository code, can write.
+#
+# Inputs reaching `run` steps are the tag name and the dispatch input, both
+# routed through `env:` and checked against a fixed character set before use.
+on:
+  push:
+    tags:
+      - "webui-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "ui_version for a dry run, e.g. 1.2.3-rc.1 (uploads an artifact; no release)"
+        required: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build the bundle
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Resolve the version
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG_REF: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            VERSION="${TAG_REF#webui-v}"
+          else
+            VERSION="$INPUT_VERSION"
+          fi
+          # The loader also accepts "+", but GitHub may rename an asset whose
+          # name holds it, and the download URL in the notes and the name in
+          # the .sha256 file would then be wrong. Keep to what survives as-is.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[A-Za-z0-9._-]{1,64}$'; then
+            echo "::error::version '$VERSION' must be 1-64 characters of letters, digits and . _ -"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          # The runner caches an older patch; take the newest so a stdlib fix lands.
+          check-latest: true
+          cache: true
+
+      # make build-ui runs the same installs as ci.yml's web-ui job (npm ci in
+      # packages/{library,explorer,memory-view,def-fields}, which web/ compiles
+      # from source, then web/) and the same build release.yml embeds; the
+      # tool then refuses any bundle the server's own loader would refuse.
+      - name: Build and pack
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make webui-bundle VERSION="$VERSION" WEBUI_OUT=out
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Web UI bundle $VERSION"
+            echo
+            echo '```'
+            cat "out/loomcycle-webui-$VERSION.tar.gz.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: webui-bundle
+          path: out/
+          if-no-files-found: error
+
+  release:
+    name: Create the release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/webui-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: webui-bundle
+          path: out
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="loomcycle-webui-$VERSION.tar.gz"
+          (cd out && sha256sum -c "$ARCHIVE.sha256")
+          DIGEST="$(cut -d' ' -f1 "out/$ARCHIVE.sha256")"
+          MIN="$(tar -xzOf "out/$ARCHIVE" manifest.json | jq -r .api_level_min)"
+          MAX="$(tar -xzOf "out/$ARCHIVE" manifest.json | jq -r .api_level_max)"
+          URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$ARCHIVE"
+          cat > notes.md <<EOF
+          Web UI bundle **$VERSION** (\`ui_version\`) for servers whose UI API level is in **[$MIN, $MAX]**.
+
+          SHA-256 of \`$ARCHIVE\`: \`$DIGEST\`
+
+          To serve it, set these on the server and restart it:
+
+          \`\`\`sh
+          LOOMCYCLE_WEBUI_BUNDLE_URL=$URL
+          LOOMCYCLE_WEBUI_BUNDLE_SHA256=$DIGEST
+          \`\`\`
+
+          Or unpack the archive into a directory only the operator can write and set \`LOOMCYCLE_WEBUI_DIR\` to it.
+
+          The bundle declares the API levels it works with. A server whose level (\`ui_api_level\` in \`/healthz\`) is outside [$MIN, $MAX], or that cannot verify the bundle, serves the UI built into its binary and reports why in \`/healthz\` \`ui_bundle.fallback_reason\`.
+          EOF
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Operators pin a published bundle by its digest, so a re-run never
+          # replaces the assets of an existing release.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; cut a new webui-v* tag instead of replacing its assets."
+            exit 1
+          fi
+          # --latest=false: the repository's "latest release" stays the binary's.
+          gh release create "$TAG" "out/$ARCHIVE" "out/$ARCHIVE.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Web UI $VERSION" \
+            --notes-file notes.md \
+            --verify-tag \
+            --latest=false
