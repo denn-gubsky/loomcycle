@@ -117,6 +117,12 @@ var layers = []layer{
 			"internal/teamspec",
 			"internal/turncancel",
 		},
+		// RFC FE P2: the leaves internal/providers needs, as their own modules
+		// so the module that requires them can be one too (P3).
+		modules: []string{
+			"internal/errkind",
+			"internal/otel",
+		},
 	},
 	{
 		// The provider interface and its drivers, model resolution, and the
