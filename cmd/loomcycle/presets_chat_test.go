@@ -32,12 +32,12 @@ func TestChatBundle_SourceMatchesEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bundle source: %v", err)
 	}
-	embeddedCopy, err := os.ReadFile(filepath.Join("embedded", "bundles", "chat.yaml"))
+	embeddedCopy, err := os.ReadFile(filepath.Join("..", "..", "internal", "embedded", "bundles", "chat.yaml"))
 	if err != nil {
 		t.Fatalf("read embedded bundle: %v", err)
 	}
 	if !bytes.Equal(src, embeddedCopy) {
-		t.Error("bundles/chat/loomcycle.yaml and cmd/loomcycle/embedded/bundles/chat.yaml differ — only the embedded copy ships, so copy the source over it")
+		t.Error("bundles/chat/loomcycle.yaml and internal/embedded/bundles/chat.yaml differ — only the embedded copy ships, so copy the source over it")
 	}
 }
 

@@ -19,12 +19,12 @@ func TestSystemChannelsBundle_SourceMatchesEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bundle source: %v", err)
 	}
-	embeddedCopy, err := os.ReadFile(filepath.Join("embedded", "bundles", "system-channels.yaml"))
+	embeddedCopy, err := os.ReadFile(filepath.Join("..", "..", "internal", "embedded", "bundles", "system-channels.yaml"))
 	if err != nil {
 		t.Fatalf("read embedded bundle: %v", err)
 	}
 	if !bytes.Equal(src, embeddedCopy) {
-		t.Error("bundles/system-channels/loomcycle.yaml and cmd/loomcycle/embedded/bundles/system-channels.yaml differ — only the embedded copy ships, so copy the source over it")
+		t.Error("bundles/system-channels/loomcycle.yaml and internal/embedded/bundles/system-channels.yaml differ — only the embedded copy ships, so copy the source over it")
 	}
 }
 

@@ -140,7 +140,7 @@ agents:
         // Compatibility gaps vs GNU Bash documented here:
         //   1. find traversal: gbash's find calls EvalSymlinks on every path before
         //      applying type filters. A relative symlink at the repo root
-        //      (loomcycle.example.yaml -> cmd/loomcycle/embedded/...) triggers the
+        //      (loomcycle.example.yaml -> internal/embedded/...) triggers the
         //      containment check and ABORTS traversal, returning 0 files.
         //      Workaround: enumerate top-level dirs with `ls`, then `test -d`, then
         //      find each subdir — this bypasses the root-level symlink entirely.

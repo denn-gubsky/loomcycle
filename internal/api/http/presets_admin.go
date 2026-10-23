@@ -3,7 +3,7 @@ package http
 import (
 	"net/http"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
 // RFC AQ — read-only HTTP introspection of the embedded config presets/bundles

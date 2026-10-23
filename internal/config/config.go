@@ -7531,7 +7531,7 @@ func splitCSV(s string) []string {
 //
 // This floor is deliberate and permanent — NOT transitional scaffolding. The
 // hardcoded provider *construction/registration* was removed under RFC BF (the
-// embedded default-providers layer, cmd/loomcycle/embedded/providers.default.yaml,
+// embedded default-providers layer, internal/embedded/providers.default.yaml,
 // is the sole source of the built-ins at runtime, and both the server and the CLI
 // prepend it). This set exists only so validate() stays a total function that does
 // not depend on that layer having been applied first — it still runs on configs

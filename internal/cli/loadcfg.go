@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/denn-gubsky/loomcycle/cmd/loomcycle/embedded"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
 // loadLayeredConfig assembles the SAME layered configuration the server builds

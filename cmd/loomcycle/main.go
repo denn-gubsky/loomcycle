@@ -569,7 +569,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 // from cfg.Providers via the driver registry (providers.NewDriver) — a
 // config-driven flip of the pre-P2a hardcoded per-provider fields. It is
 // byte-identical when no operator `providers:` block is declared, because the
-// embedded default-providers layer (cmd/loomcycle/embedded/providers.default.yaml)
+// embedded default-providers layer (internal/embedded/providers.default.yaml)
 // supplies the built-ins. A provider whose enabling env is absent is simply not
 // in byID; Get reproduces the pre-P2a "not configured" error for it.
 type providerResolver struct {
@@ -832,7 +832,7 @@ func providerDisabledReason(id string, pc config.ProviderConfig) string {
 
 // logProviderSummary logs the config-sourced provider inventory at boot. Under
 // RFC BF providers are fully config-driven; the embedded default-providers layer
-// (cmd/loomcycle/embedded/providers.default.yaml) supplies the built-ins.
+// (internal/embedded/providers.default.yaml) supplies the built-ins.
 func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 	enabled := make([]string, 0, len(pr.byID))
 	for id := range pr.byID {
