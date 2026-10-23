@@ -8003,3 +8003,10 @@ button.doc-ref-target.external {
   opacity: 0.6;
   text-decoration: line-through;
 }
+.live-run-acl-notice {
+  padding: 6px 12px;
+  font-size: var(--lc-text-xs);
+  color: var(--lc-text-muted);
+  background: var(--lc-surface-2);
+  border-left: 3px solid var(--lc-running);
+}
