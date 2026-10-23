@@ -144,6 +144,21 @@ The remaining tenant-confinable tools have no scope of their own: the definition
 
 A tool the token may not call is left out of `tools/list`, and a call to it is refused with `-32001`, naming the scope it needs. `teamdef` stays listed for a member; an operation it may not run is refused the same way, naming the operation and the scope. So a tool that is "missing" from a session is usually a scope, not a broken runtime. A token minted with `runs:create` alone can start a run and cannot read it back; mint `runs:create` and `runs:read` together for day-to-day use.
 
+### Access-control management tools
+
+Four meta-tools manage access control — user groups, access-control lists (rule lists of allow and deny rules), the bindings that apply a list to a user, group, token or tenant, and the questions those rules answer. Each is the twin of an HTTP surface and of a gRPC RPC, and all three call one implementation, so a session gets exactly the answer the HTTP API gives.
+
+| Tool | Ops | HTTP twin | Who may call it |
+|---|---|---|---|
+| `groupdef` | `list`, `get`, `effective`, `create`, `delete`, `add_member`, `remove_member` | `/v1/_groups*` | `substrate:tenant` or admin |
+| `acldef` | `create`, `update`, `put`, `get`, `list`, `retire`, `validate`, `catalog`, `names` | `POST /v1/_acldef`, `GET /v1/_acldef/names` | `substrate:tenant` or admin |
+| `aclbinding` | `list`, `create`, `delete` | `/v1/_aclbinding*` | `substrate:tenant` or admin |
+| `authz` | `evaluation`, `evaluations`, `explain`, `simulate` | `POST /v1/_authz/*` | any token, about itself — a member and an isolated `substrate:user` token included |
+
+The arguments are the HTTP body plus `op`; `tenant` is an admin's focus on another tenant and is ignored for anyone else. A member session neither lists nor may call `groupdef`, `acldef` or `aclbinding` (`-32001`, naming `substrate:tenant`). Past the tool gate, each operation asks the caller's own access-control rules its question — a list write needs `author def:acl/<name>`, so a tenant operator bound to a deny on authoring lists is refused with `acl_denied` here as on HTTP and gRPC — and refuses a delegated writer a change to its own authority (`acl_self_elevation`). `authz` asks about the session's own principal; naming another `subject` needs a tenant operator. A refusal is `isError` with the HTTP error body (`{"code": …, "error": …}`). Every write is audited and takes effect on the next request on every replica. The lists include config-declared entries, marked `"source": "config"` and read-only; `effective` lists every user a group holds through its nested groups.
+
+The same operations are on the command line as `loomcycle acl` (groups, policies, bindings, check, explain, simulate).
+
 ## Quickest path — `loomcycle mcp install`
 
 `loomcycle mcp install` prints copy-paste-ready snippets for both Claude Code (CLI) and Claude Desktop (Mac app). It auto-detects whether you have Docker, Homebrew, or a direct binary installed and chooses the lowest-friction transport:
