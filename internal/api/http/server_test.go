@@ -24,6 +24,7 @@ import (
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/webui"
 )
 
 // stubProvider replays a fixed event sequence, ignoring the request entirely.
@@ -245,6 +246,25 @@ func TestHealthz_ClusterViewOmittedWhenCoordUnset(t *testing.T) {
 	}
 	if _, found := raw["replicas"]; found {
 		t.Errorf("replicas present when coord is unset: %v", raw)
+	}
+}
+
+// TestHealthz_ReportsUIAPILevel: /healthz carries the API level the Web UI is
+// built against, so a deployer can check a UI bundle's manifest range against
+// the running binary before pointing LOOMCYCLE_WEBUI_DIR at it.
+func TestHealthz_ReportsUIAPILevel(t *testing.T) {
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
+	srv := New(cfg, &stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
+	var body struct {
+		UIAPILevel *int `json:"ui_api_level"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if body.UIAPILevel == nil || *body.UIAPILevel != webui.APILevel {
+		t.Fatalf("ui_api_level = %v, want %d; body=%s", body.UIAPILevel, webui.APILevel, rec.Body.String())
 	}
 }
 

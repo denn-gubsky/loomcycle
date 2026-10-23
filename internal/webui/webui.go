@@ -30,6 +30,20 @@ import (
 // same-origin requests automatically.
 const SessionCookie = "loomcycle_session"
 
+// APILevel is the version of the server API the Web UI is written against.
+// The server reports it (in /healthz and in <prefix>/login-config.json), the
+// embedded UI is built for it, and a UI bundle loaded from disk declares the
+// range of levels it works with in its manifest, so a bundle built for another
+// API is refused instead of half-working.
+//
+// Bump it when a route, field or behaviour the Web UI relies on changes
+// incompatibly: a route removed or renamed, a response field removed, renamed or
+// retyped, a request field made required, or the meaning of a value changed.
+// Never bump it for an additive change — a new route, a new optional field, a
+// new enum value the UI can ignore — because every existing bundle would then be
+// refused for no reason.
+const APILevel = 1
+
 // uiAssets embeds the production build of the web/ React app.
 //
 //go:embed all:dist
@@ -111,7 +125,10 @@ func Handler(prefix string, secureCookie bool, loginOrigins []string) http.Handl
 		if origins == nil {
 			origins = []string{}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"login_origins": origins})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"login_origins": origins,
+			"api_level":     APILevel,
+		})
 	})
 
 	// Logout — clears the session cookie and bounces to the login page. The

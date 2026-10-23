@@ -4720,6 +4720,9 @@ type healthzResponse struct {
 	// responses byte-identical to v0.11.x.
 	ReplicaID string          `json:"replica_id,omitempty"`
 	Replicas  []coord.Replica `json:"replicas,omitempty"`
+	// UIAPILevel is the API level the Web UI must be built for (webui.APILevel).
+	// A deployer checks it before pointing LOOMCYCLE_WEBUI_DIR at a bundle.
+	UIAPILevel int `json:"ui_api_level"`
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -4738,6 +4741,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		Built:          s.buildTime,
 		UptimeSeconds:  uptime,
 		MetricsEnabled: s.metricsSampler != nil,
+		UIAPILevel:     webui.APILevel,
 	}
 	// v0.12.0 cluster view. replica_id is the in-memory identity of
 	// THIS replica and is always populated when coord is wired —
