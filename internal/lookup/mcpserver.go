@@ -51,6 +51,11 @@ type MCPServerSpec struct {
 	// only); empty / 0 for a static spec.
 	DefID   string
 	Version int
+	// BinaryResults is the server's binary_results ("", passthrough or
+	// capture): whether a file returned as base64 in a text block is kept
+	// in the run's inbox. Carried from the static yaml and from a dynamic
+	// def alike.
+	BinaryResults string
 }
 
 // MCPServer resolves an MCP server NAME to its effective runtime spec
@@ -113,6 +118,8 @@ func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, tenantID, name string
 				Headers:   srv.Headers,
 				Tools:     srv.Tools,
 				Source:    "static",
+
+				BinaryResults: srv.BinaryResults,
 			}, true
 		}
 	}
@@ -145,6 +152,7 @@ type SubstrateMCPServer struct {
 	Args            []string                 `json:"args,omitempty"`    // stdio (F31)
 	Env             map[string]string        `json:"env,omitempty"`     // stdio (F31)
 	Description     string                   `json:"description,omitempty"`
+	BinaryResults   string                   `json:"binary_results,omitempty"`
 	DiscoveredTools []SubstrateMCPServerTool `json:"discovered_tools,omitempty"`
 	// OperatorAuthored is server-stamped on create and fork, never taken from
 	// an overlay: true when the version was saved with operator authority, or

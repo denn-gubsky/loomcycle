@@ -1176,6 +1176,7 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
 		OperatorAuthored: s.OperatorAuthored,
 		DefID:            s.DefID, Version: s.Version,
+		BinaryResults: s.BinaryResults,
 	}, true
 }
 
