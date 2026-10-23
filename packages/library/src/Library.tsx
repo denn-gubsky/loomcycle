@@ -16,6 +16,7 @@ import LibraryEditModal, {
 } from "./components/LibraryEditModal";
 import ImportModal, { type LocalAgentSeed } from "./components/ImportModal";
 import HookDefEditModal from "./components/HookDefEditModal";
+import { ErrorFormatterProvider, useErrorText, type ErrorFormatter } from "./lib/errorText";
 
 // Library is the embeddable Introspection surface — three sub-tabs over the
 // AgentDef / SkillDef / MCPServerDef substrates. Each sub-tab uses the shared
@@ -87,6 +88,10 @@ export interface LibraryProps {
   // ---- Errors. Called on a load/mutation failure (in addition to the inline
   // banners). The component NEVER redirects on 401 — the host owns auth flow.
   onError?: (e: unknown) => void;
+  /** The host's wording for an error it recognizes (e.g. an access-control
+   *  refusal naming the rule that decided); return undefined to keep the
+   *  Library's own. Applies to every banner and modal error. */
+  formatError?: ErrorFormatter;
 }
 
 export default function Library({
@@ -102,6 +107,7 @@ export default function Library({
   tenantScope,
   serverCapabilities,
   onError,
+  formatError,
 }: LibraryProps) {
   // Resolve the data layer once per connection identity. Depending on the
   // connection's primitive fields (not the object) keeps an inline
@@ -131,17 +137,19 @@ export default function Library({
   return (
     <div className="loomcycle-library" {...(theme ? { "data-theme": theme } : {})}>
       <LibraryDataProvider value={resolvedDataLayer}>
-        <LibraryBody
-          theme={theme}
-          tab={tab}
-          onTabChange={onTabChange}
-          tabs={tabs}
-          principal={principal}
-          actions={actions}
-          tenantScope={tenantScope}
-          serverCapabilities={serverCapabilities}
-          onError={onError}
-        />
+        <ErrorFormatterProvider value={formatError}>
+          <LibraryBody
+            theme={theme}
+            tab={tab}
+            onTabChange={onTabChange}
+            tabs={tabs}
+            principal={principal}
+            actions={actions}
+            tenantScope={tenantScope}
+            serverCapabilities={serverCapabilities}
+            onError={onError}
+          />
+        </ErrorFormatterProvider>
       </LibraryDataProvider>
     </div>
   );
@@ -161,7 +169,7 @@ export function HooksLibrary(props: Omit<LibraryProps, "tabs">) {
   return <Library {...props} tabs={["hooks"]} />;
 }
 
-type LibraryBodyProps = Omit<LibraryProps, "connection" | "client" | "dataLayer">;
+type LibraryBodyProps = Omit<LibraryProps, "connection" | "client" | "dataLayer" | "formatError">;
 
 function LibraryBody({
   theme: _theme,
@@ -175,6 +183,7 @@ function LibraryBody({
   onError,
 }: LibraryBodyProps) {
   const data = useLibraryData();
+  const errorText = useErrorText();
 
   // Three independent unified entry lists. Polled in parallel.
   const [agents, setAgents] = useState<LibraryEntry[]>([]);
@@ -252,7 +261,7 @@ function LibraryBody({
         setErr(null);
       } catch (e) {
         if (!cancelled) {
-          setErr(e instanceof Error ? e.message : String(e));
+          setErr(errorText(e));
           onError?.(e);
         }
       }
@@ -263,7 +272,7 @@ function LibraryBody({
       cancelled = true;
       clearInterval(t);
     };
-  }, [data, refreshKey, onError]);
+  }, [data, refreshKey, onError, errorText]);
 
   // Map the active subtab → modal kind + substrate kind so "+ New" / Edit /
   // Retire handlers always target the right substrate.
@@ -319,7 +328,7 @@ function LibraryBody({
       await data.promoteDef(tabSubstrate, row.def_id);
       refreshNow();
     } catch (e) {
-      setErr(`Promote failed: ${e instanceof Error ? e.message : String(e)}`);
+      setErr(`Promote failed: ${errorText(e)}`);
       onError?.(e);
     }
   };
@@ -335,7 +344,7 @@ function LibraryBody({
       await data.retireDef(tabSubstrate, row.def_id);
       refreshNow();
     } catch (e) {
-      setErr(`Retire failed: ${e instanceof Error ? e.message : String(e)}`);
+      setErr(`Retire failed: ${errorText(e)}`);
       onError?.(e);
     }
   };
@@ -347,7 +356,7 @@ function LibraryBody({
       await data.rediscoverMcpServerDef(name);
       refreshNow();
     } catch (e) {
-      setErr(`Rediscover failed: ${e instanceof Error ? e.message : String(e)}`);
+      setErr(`Rediscover failed: ${errorText(e)}`);
       onError?.(e);
     }
   };

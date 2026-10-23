@@ -6,6 +6,7 @@ import { Library, type LibraryTab } from "@loomcycle/library";
 // imported, exactly as MemoryView imports @loomcycle/memory-view's.
 import "@loomcycle/def-fields/styles.css";
 import { usePrincipal } from "../components/Layout";
+import { accessRefusalText } from "../lib/apiError";
 
 // LibraryView is a thin wrapper around the standalone <Library> component from
 // @loomcycle/library (RFC AY step 3). The full substrate-browser implementation
@@ -60,6 +61,8 @@ export default function LibraryView() {
         serverCapabilities={principal?.capabilities}
         tenantScope={principal && !principal.is_admin ? "tenant" : "admin"}
         tab={pkgTab}
+        // An access-control refusal reads as it does on every other page.
+        formatError={accessRefusalText}
         onTabChange={(t) =>
           navigate("/library/" + (t === "mcp" ? "mcp-servers" : t))
         }
