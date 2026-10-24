@@ -80,6 +80,14 @@ func AuthorizeDefOp(ctx context.Context, family, op string, names ...string) (Re
 	if action == "" {
 		return Result{}, false
 	}
+	return authorizeInstances(ctx, action, "def", family+"/", names)
+}
+
+// authorizeInstances asks action of typ:<prefix><name> for each name, and of
+// typ:<prefix>* for a name that is "" or when none is given, against the set
+// defOpSet picks. It returns the first refusal and true, or a zero Result and
+// false when every question is admitted.
+func authorizeInstances(ctx context.Context, action, typ, prefix string, names []string) (Result, bool) {
 	eff, judged := defOpSet(ctx)
 	if !judged {
 		return Result{}, false
@@ -96,7 +104,7 @@ func AuthorizeDefOp(ctx context.Context, family, op string, names ...string) (Re
 			continue
 		}
 		asked[name] = true
-		surface := authz.Surface{Action: action, Type: "def", Name: family + "/" + name}
+		surface := authz.Surface{Action: action, Type: typ, Name: prefix + name}
 		if r, refused := judgeDefOp(ctx, eff, surface); refused {
 			return r, true
 		}
