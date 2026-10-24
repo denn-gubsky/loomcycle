@@ -848,32 +848,63 @@ paths:
   /v1/_auth/assert:
     post:
       tags: [auth]
-      summary: Exchange an external gate's assertion for an issued token.
+      summary: Exchange a gate's credential for an issued token (external gates, AWS IAM).
       description: |
-        Unauthenticated: the gate's signature under its pinned key is the
-        authentication. `assertion` is a JWT (`iss` = the gate, `aud` = this
-        server's issuer URL, `lc_use: assert`, `jti`, `iat`, `exp` at most 5
-        minutes later; `sub` the person's id at the gate; optional `name`,
+        Unauthenticated: the gate's own credential is the authentication. The
+        body names the gate; its kind decides the rest of the body.
+
+        **kind: external** — `assertion` is a JWT (`iss` = the gate, `aud` =
+        this server's issuer URL, `lc_use: assert`, `jti`, `iat`, `exp` at most
+        5 minutes later; `sub` the person's id at the gate; optional `name`,
         `email`, `email_verified`, `groups`, `tenant`, `access_mode` — honoured
         on a trusted gate only — and `token` {agents, overrides,
         rate_per_minute, rate_burst, ttl_seconds}, which can only narrow the
-        gate's `issued_token` ceiling). The user is provisioned per the gate's
-        identity_map; the token is the user's own member reach, short-lived,
-        tagged with the gate, and stops the moment the user is not active.
-        Refusals are throttled per client source.
-      operationId: externalAssert
+        gate's `issued_token` ceiling). The token is the user's own member
+        reach, short-lived, tagged with the gate.
+
+        **kind: awsiam** — an `sts:GetCallerIdentity` request the workload
+        SigV4-signed but did not send, in Vault's field names (so Vault's AWS
+        login helpers produce it). loomcycle sends it to the global or an
+        allowlisted regional STS endpoint (never to the URL the client names),
+        and maps the ARN STS answers with — an assumed role as its role ARN —
+        through `allowed_arns` and the gate's `identity_map`. The signed
+        headers must include `host` and `X-Loomcycle-AWS-Server-ID` equal to
+        the gate's `server_id`; `X-Amz-Date` must be within five minutes; a
+        signature is accepted once (on every replica). The token carries the
+        user's access_mode scopes, tagged with the gate, living at most an
+        hour (GetCallerIdentity does not say when the caller's credentials
+        expire) and never beyond the gate's `new_user.token_ttl` or
+        `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`.
+
+        Either way the user is provisioned per the gate's identity_map first,
+        a pending user gets no token, and the token stops the moment the user
+        is not active. Refusals are one opaque answer whatever the reason or
+        the gate (an unknown name included), audited, and throttled per client
+        source.
+      operationId: authAssert
       security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: false
-              required: [gate, assertion]
-              properties:
-                gate: { type: string }
-                assertion: { type: string }
+              oneOf:
+                - type: object
+                  title: ExternalAssertion
+                  additionalProperties: false
+                  required: [gate, assertion]
+                  properties:
+                    gate: { type: string }
+                    assertion: { type: string }
+                - type: object
+                  title: AWSIAMLogin
+                  required: [gate, iam_http_request_method, iam_request_url, iam_request_headers, iam_request_body]
+                  properties:
+                    gate: { type: string, description: The awsiam gate's name. }
+                    iam_http_request_method: { type: string, enum: [POST] }
+                    iam_request_url: { type: string, format: byte, description: "base64 of https://sts.amazonaws.com/ (or an allowed regional host)." }
+                    iam_request_headers: { type: string, format: byte, description: base64 of the signed request's headers as a JSON object. }
+                    iam_request_body: { type: string, format: byte, description: "base64 of Action=GetCallerIdentity&Version=2011-06-15." }
       responses:
         "200":
           description: The issued token, shown once.
@@ -886,11 +917,13 @@ paths:
                   expires_at: { type: string, format: date-time }
                   subject: { type: string }
                   tenant: { type: string }
-        "400": { description: "`invalid_token_request`: the token claim asks for more than the gate allows." }
-        "401": { description: "`invalid_assertion` (opaque, whatever the reason; audited)." }
+        "400": { description: "`invalid_token_request`: an external assertion's token claim asks for more than the gate allows." }
+        "401": { description: "`invalid_assertion` (opaque, whatever the reason or the gate; audited)." }
         "403": { description: "`awaiting_approval`: the user is pending." }
+        "409": { description: "`open_mode`: authentication is off on this server." }
+        "413": { description: "`body_too_large`: the body is over 64 KiB." }
         "429": { description: "`throttled`." }
-        "503": { description: "`gate_unavailable`: the gate's key or the replay cache cannot be read." }
+        "503": { description: "`gate_unavailable`: the gate's key or the replay cache cannot be read; `sts_unavailable`: AWS STS could not be reached." }
   /v1/_auth/revoke:
     post:
       tags: [auth]
@@ -1223,19 +1256,34 @@ paths:
         "429": { description: "`throttled` (external gates)." }
     post:
       tags: [auth]
-      summary: Sign in through a password gate (the login form's post).
+      summary: Sign in through a password gate or a header gate (the login page's post).
       description: |
         Unauthenticated; same-origin with `X-Loomcycle-UI: 1`. 204 sets the
-        session cookie. An unknown login, a wrong password, a locked account
-        and a disabled user all answer `401 invalid_credentials`; an account
-        with an authenticator answers `401 otp_required` once the password was
-        right. `429 too_many_attempts` when the client is throttled.
+        session cookie.
+
+        **Password gate:** the JSON body below. An unknown login, a wrong
+        password, a locked account and a disabled user all answer
+        `401 invalid_credentials`; an account with an authenticator answers
+        `401 otp_required` once the password was right. `429
+        too_many_attempts` when the client is throttled.
+
+        **Header gate** (`kind: header`): no body. The request must arrive
+        from the gate's `trusted_proxy_cidrs` carrying the proxy's signed
+        assertion (`Cf-Access-Jwt-Assertion`, `X-Amzn-Oidc-Data`, or
+        `X-Loomcycle-Identity` + `X-Loomcycle-Identity-Signature`). The
+        assertion is mapped through the gate's `identity_map` (and the user
+        provisioned per its `provision`), then a session is made. Every later
+        request the session authenticates must carry a valid assertion for
+        the same person, or the session ends. `401 no_assertion` when the
+        request did not come through the proxy; `401 invalid_credentials` for
+        a refused assertion, an untrusted peer or a refused identity.
       operationId: passwordSignIn
       security: []
       parameters:
         - { $ref: "#/components/parameters/Gate" }
       requestBody:
-        required: true
+        required: false
+        description: The password gate's form; a header gate takes no body.
         content:
           application/json:
             schema:

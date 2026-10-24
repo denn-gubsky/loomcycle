@@ -1666,7 +1666,7 @@ auth:
 
 - **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `LOOMCYCLE_UI_LOGIN_ORIGINS` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
 - **`auth.mode: strict`** offers only the listed gates. The paste box exists only if a `kind: token` gate is listed, the handoff is off, the old bearer cookie and the WebSocket subprotocol bearer are not read, and Web UI sessions need HTTPS (see below). Strict mode with no interactive gate fails the load (nobody could sign in); strict mode with no credential at all refuses to boot. A config reload cannot lower the mode (audited `auth_downgrade_refused`); that takes a restart. API bearers are unaffected.
-- **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)) `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)), `kind: oauth` (GitHub, GitLab, Gitea or a generic OAuth provider — see [OAuth gate](#oauth-gate--kind-oauth-rfc-fa-p5)) and `kind: external` (a separate process, such as a chat bridge, that signs who it is talking to — see [External gate](#external-gate--kind-external-rfc-fa-p4)); the other kinds the RFC names (`header`, `awsiam`, `device`) are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
+- **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)), `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)), `kind: oauth` (GitHub, GitLab, Gitea or a generic OAuth provider — see [OAuth gate](#oauth-gate--kind-oauth-rfc-fa-p5)), `kind: external` (a separate process, such as a chat bridge, that signs who it is talking to — see [External gate](#external-gate--kind-external-rfc-fa-p4)), `kind: header` (a signed assertion from a proxy in front: Cloudflare Access, an AWS ALB, a forward-auth proxy) and `kind: awsiam` (AWS workloads, API tokens only) — see [Header and AWS IAM gates](#header-and-aws-iam-gates--kind-header-kind-awsiam-rfc-fa-p3); the other kind the RFC names (`device`) is refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
 - **`auth.session`.** `idle` (default 8h) ends a session after that long without a request; `absolute` (default 7 days) caps it whatever the activity. Shortening either applies to sessions already issued. `reauth_window` (default 15m) is validated now and used once sensitive actions ask for a recent sign-in.
 - **A session never outlives or out-reaches its token.** A session made from a pasted token re-checks that token on every request: retiring or expiring a minted token, changing a principal's secret, removing it, or changing `LOOMCYCLE_AUTH_TOKEN` ends the session on its next request, and the session always carries the token's **current** scopes. A changed token pepper (`LOOMCYCLE_OPERATOR_TOKEN_PEPPER` / `LOOMCYCLE_SECRET_KEY`) ends every session. A browser that presents the cookie with a different User-Agent ends it too.
 
@@ -1866,6 +1866,48 @@ auth:
   **Disable** at once: sessions end, issued tokens retire, nothing is deleted. **Unbind** after `unbind_after`: gate-managed group memberships and the user's own ACL bindings go, and the login identities stay, so a returning person is recognised. **Erase** after `erase_after` (at least 24h): the subject erasure, by default never (an operator runs it), and only with `LOOMCYCLE_AUDIT_LOG_PATH` set. The due times are fixed when the removal starts. An operator who sets the user `active` again re-enables them at the new-user defaults, not their old groups.
 - **A bridge as a gate.** `@loomcycle/bridge-core` 0.3 and later can run a bridge this way: its README lists the `BRIDGE_GATE*` settings. A person is the loomcycle user `<gate>:<platform id>`.
 - **Keeping a bridge's existing users.** A bridge that ran with a loomcycle token made its users as `<platform>-<id>` (`telegram-42`, a group chat `telegram-conv-<hash>`). Set `identity_map.legacy_subject_prefix: telegram-` on its gate and a person's first login links that user instead of making `telegram:42`, so their runs, memory and documents stay theirs; the link is audited as `auth_identity_linked` with the reason `legacy subject`. The legacy subject is the prefix plus the platform id with `:` read as `-`. It links only a user in the gate's tenant that has no password and no identity at any gate, so a person's own account is never taken; such a user gets a new `<gate>:<id>` user instead. The prefix ends in `-` and holds no `:`, and only an external gate takes it. Once everyone has signed in through the gate, the prefix can go: the links stay.
+
+### Header and AWS IAM gates — `kind: header`, `kind: awsiam` (RFC FA P3)
+
+**Why a signed assertion, never an identity header.** A proxy in front of loomcycle (Cloudflare Access, an AWS ALB, Traefik/nginx forward-auth, oauth2-proxy) has often already signed the person in. Trusting a plain `X-Forwarded-User` from it is how the 2026 ForwardAuth header-smuggling CVEs happened: the proxy strips `X-Forwarded-User`, the client sends `X_Forwarded_User`, and a backend that merges the two believes the client. So a header gate believes only a **signed** assertion, only from the proxy's own addresses, and strips every alias of its header (any spelling that differs only in case, `-`, `_`, `.` or other punctuation) from every request before any handler runs.
+
+```yaml
+auth:
+  gates:
+    cloudflare:
+      kind: header
+      preset: cloudflare-access          # Cf-Access-Jwt-Assertion, RS256, the team's JWKS
+      team_domain: acme.cloudflareaccess.com
+      audience: 9f3c…                    # the Access application's AUD tag
+      trusted_proxy_cidrs: [172.18.0.0/16]   # the cloudflared container's network
+      identity_map: { tenant: acme, provision: known }
+    alb:
+      kind: header
+      preset: aws-alb                    # x-amzn-oidc-data, ES256, key per kid from AWS
+      alb_arn: arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/web/50dc6c495c0c9188
+      issuer: https://login.acme.com     # optional: the IdP the ALB is configured with
+      client_id: loomcycle-web           # optional: the ALB's OIDC client id
+      trusted_proxy_cidrs: [10.0.0.0/20] # the ALB's subnets
+      identity_map: { tenant: acme, provision: auto }
+    proxy:
+      kind: header
+      preset: forward-auth-hmac
+      secret_env: LOOMCYCLE_GATE_PROXY_SECRET   # or secret: "$cred:proxy-hmac" (the gate's tenant)
+      trusted_proxy_cidrs: [127.0.0.1]
+      identity_map: { tenant: acme, provision: auto }
+    ci:
+      kind: awsiam
+      server_id: loomcycle.acme.internal        # default: LOOMCYCLE_PUBLIC_URL's host
+      allowed_arns: ["arn:aws:iam::123456789012:role/ci-*"]
+      sts_regions: [eu-west-1]                  # regional STS hosts accepted besides sts.amazonaws.com
+      identity_map: { tenant: acme, subject: arn, provision: auto }
+```
+
+- **Every key is required where it guards something.** `trusted_proxy_cidrs` is required for every header preset (a header from any other peer is refused, and `0.0.0.0/0` is refused at load). `aws-alb` needs `alb_arn`: the regional key endpoint serves keys for **every** ALB in the region, so a valid signature from an ALB in someone else's account verifies unless its `signer` is checked (the "ALBeast" bypass). `awsiam` needs `allowed_arns` with a literal 12-digit account in each pattern, because STS answers for every AWS account in the world (`*` may appear only after the account). Both kinds need an `identity_map`: the gate says who someone is, never which tenant they belong to. An unknown preset, a key of another preset, and a literal secret are load errors (`loomcycle validate` reports them).
+- **forward-auth-hmac**, the format your proxy implements: on each request it sets `X-Loomcycle-Identity` to a JSON object (`sub` required; `email`, `email_verified`, `name`, `groups`, `tenant` optional) and `X-Loomcycle-Identity-Signature: t=<unix seconds>,n=<nonce>,v1=<hex>`, where `v1` is HMAC-SHA256 under the shared secret of `"loomcycle-identity-v1\n" + t + "\n" + n + "\n" + <the identity header, byte for byte>`, `n` is 16–128 random `[A-Za-z0-9_-]` characters, new per request, and `t` within five minutes of the server's clock. A nonce is accepted once. The secret is at least 32 bytes; `secret_env` must be a `LOOMCYCLE_*` (or allowlisted) name that is not one of loomcycle's own secrets; a `$cred:` secret is read from the gate's `identity_map.tenant` per request, so rotating it needs no restart (a gate whose tenant comes from a claim must use `secret_env`).
+- **How a browser signs in.** The login page shows "Continue as signed in by *label*" (the label defaults to "Cloudflare Access", "your AWS load balancer", or the gate's name). The button's same-origin `POST /v1/_auth/complete/<gate>` carries the proxy's assertion; a verified one is mapped through `identity_map` (provisioned per `provision`, with the `auth.lifecycle` defaults and group sync for a `trusted` gate) and becomes a session. The page never signs in by itself when it opens. **The session stays bound to the proxy:** every request it authenticates must carry a valid assertion of the same gate that maps to the same tenant and subject, or the session ends. Signing out of Cloudflare Access ends the loomcycle session on the next request, and a copied cookie does nothing without the person's edge session.
+- **How a machine gets a token (`kind: awsiam`).** The workload SigV4-signs an `sts:GetCallerIdentity` request (with `X-Loomcycle-AWS-Server-ID: <server_id>` among the signed headers) and posts it, unsent, to `POST /v1/_auth/assert` as `{"gate": "ci", "iam_http_request_method": "POST", "iam_request_url": b64, "iam_request_headers": b64(JSON), "iam_request_body": b64}` — Vault's AWS login field names, so its client helpers produce the body. loomcycle sends it only to `sts.amazonaws.com` or an `sts_regions` host (never to the URL the client names), accepts each signature once on every replica, and maps the answered ARN (an assumed role as its role ARN) through `allowed_arns` and `identity_map`. The answer is an issued token: the user's access_mode scopes, tagged with the gate, living at most an hour (GetCallerIdentity does not say when the caller's credentials expire, so it takes an assumed-role session's default), and never beyond `identity_map.new_user.token_ttl` or `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`. Refused attempts are throttled per client address (`429 too_many_attempts`). STS puts no authorization in front of GetCallerIdentity, so MFA cannot be required here: this gate is for machines, and it never appears on the login page.
+- **Restart, not reload.** Like the password gate, the edge gates are built at boot; a reload that adds one leaves it refusing until a restart.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
