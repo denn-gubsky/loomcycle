@@ -417,7 +417,7 @@ func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessi
 		return auth.Principal{}, false, true
 	}
 	if u.AccessMode == "tenant" {
-		owner, err := s.hasOwnerBinding(ctx, u.TenantID, u.Subject)
+		owner, err := s.hasOwnerBinding(ctx, u)
 		if err != nil {
 			return auth.Principal{}, false, false
 		}
@@ -442,16 +442,19 @@ func ownerBinding(tenant, subject, by string) store.AclBindingRow {
 // an access_mode tenant user's session gets substrate:tenant — confined to its
 // own tenant like every tenant operator — and retiring it in the Access console
 // takes that away on the next request. Nothing else derives operator scopes
-// for a session; a member's session is unchanged.
-func (s *Server) hasOwnerBinding(ctx context.Context, tenant, subject string) (bool, error) {
-	rows, err := s.store.AclBindingsFor(ctx, tenant, subject, nil, "")
+// for a session; a member's session is unchanged. A binding created before the
+// user row it names never counts: deleting a user retires its bindings, and
+// this keeps a stale one from passing to a later user of the same subject even
+// if a binding somehow survived.
+func (s *Server) hasOwnerBinding(ctx context.Context, u store.UserRow) (bool, error) {
+	rows, err := s.store.AclBindingsFor(ctx, u.TenantID, u.Subject, nil, "")
 	if err != nil {
 		return false, err
 	}
 	now := time.Now()
 	for _, r := range rows {
-		if r.SubjectKind == string(authz.SubjectUser) && r.SubjectID == subject && r.ACLName == authz.BaselineTenantOperator &&
-			r.RetiredAt.IsZero() && (r.ExpiresAt.IsZero() || now.Before(r.ExpiresAt)) {
+		if r.SubjectKind == string(authz.SubjectUser) && r.SubjectID == u.Subject && r.ACLName == authz.BaselineTenantOperator &&
+			r.RetiredAt.IsZero() && (r.ExpiresAt.IsZero() || now.Before(r.ExpiresAt)) && !r.CreatedAt.Before(u.CreatedAt) {
 			return true, nil
 		}
 	}

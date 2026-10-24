@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
 // users.go — RFC BX P2a tenant-owned user-identity CRUD against the `users`
@@ -174,13 +175,5 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 // UserDelete hard-deletes one identity row and reports whether a row was
 // removed. Owned data (runs / sessions / memory) has no FK here and stays.
 func (s *Store) UserDelete(ctx context.Context, tenantID, subject string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND subject = ?`, tenantID, subject)
-	if err != nil {
-		return false, fmt.Errorf("user delete: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("user delete rows-affected: %w", err)
-	}
-	return n > 0, nil
+	return sqlshared.UserDeleteUnbind(ctx, s.shared(), tenantID, subject)
 }

@@ -439,6 +439,43 @@ func AclEraseSubject(ctx context.Context, db DB, tenantID, subject string) (memb
 	return memberships, bindings, nil
 }
 
+// UserDeleteUnbind deletes one user row and, in the same transaction, unbinds
+// the subject (RFC FA §3.7c): every live user-kind binding to it in the tenant
+// is retired (kept, so the record of what it held stays) and its user-kind
+// group memberships are removed, with one acl_version bump. A user given the
+// same subject later — operator-chosen subjects repeat — then starts with none
+// of the deleted user's authority. Group-kind rows whose id equals the subject
+// are a group's, and stay. Reports whether a user row went.
+func UserDeleteUnbind(ctx context.Context, db DB, tenantID, subject string) (bool, error) {
+	var removed bool
+	err := db.InTx(ctx, func(tx Querier) error {
+		n, err := tx.Exec(ctx, `DELETE FROM users WHERE tenant_id = ? AND subject = ?`, tenantID, subject)
+		if err != nil || n == 0 {
+			return err
+		}
+		removed = true
+		b, err := tx.Exec(ctx, `UPDATE acl_bindings SET retired_at = ?
+			WHERE tenant_id = ? AND subject_kind = 'user' AND subject_id = ? AND retired_at IS NULL`,
+			tx.Dialect().TimeArg(time.Now().UTC()), tenantID, subject)
+		if err != nil {
+			return err
+		}
+		m, err := tx.Exec(ctx, `DELETE FROM user_group_members WHERE tenant_id = ? AND member_kind = 'user' AND member_id = ?`,
+			tenantID, subject)
+		if err != nil {
+			return err
+		}
+		if b+m == 0 {
+			return nil
+		}
+		return bumpAclVersion(ctx, tx, tenantID)
+	})
+	if err != nil {
+		return false, fmt.Errorf("user delete: %w", err)
+	}
+	return removed, nil
+}
+
 // AclEraseTokenBindings removes the token-kind bindings of defIDs.
 func AclEraseTokenBindings(ctx context.Context, db DB, tenantID string, defIDs []string) (int, error) {
 	if len(defIDs) == 0 {

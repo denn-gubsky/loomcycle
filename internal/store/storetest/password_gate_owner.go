@@ -90,3 +90,78 @@ func testAuthInviteRedeemWritesTheOwnerBindingOrNothing(t *testing.T, s store.St
 		t.Fatal("the redemption did not bind the owner")
 	}
 }
+
+// Deleting a user unbinds it (RFC FA §3.7c): its user-kind bindings are
+// retired and its group memberships removed in the same transaction, so a
+// later user given the same subject inherits none of its authority.
+func testUserDeleteRetiresTheUsersBindingsAndMemberships(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, sub := range []string{"gone", "stays"} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "ut", Subject: sub, AccessMode: "tenant", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.GroupPut(ctx, store.GroupRow{TenantID: "ut", Name: "ops"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"gone", "stays"} {
+		if err := s.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "ut", GroupName: "ops", MemberKind: store.GroupMemberUser, MemberID: m}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, b := range []store.AclBindingRow{pwgOwnerBinding("ut", "gone"), pwgOwnerBinding("ut", "stays"),
+		{TenantID: "ut", ACLName: "ops-list", SubjectKind: "group", SubjectID: "gone"}} {
+		if _, err := s.AclBindingPut(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v0, _ := s.AclVersion(ctx, "ut")
+	if removed, err := s.UserDelete(ctx, "ut", "gone"); err != nil || !removed {
+		t.Fatalf("delete = %v, %v", removed, err)
+	}
+	if pwgOwnerBound(t, s, "ut", "gone") != 0 {
+		t.Fatal("the deleted user's binding is still live")
+	}
+	all, err := s.AclBindingList(ctx, "ut", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, groupKind := false, false
+	for _, r := range all {
+		if r.SubjectKind == "user" && r.SubjectID == "gone" && !r.RetiredAt.IsZero() {
+			retired = true
+		}
+		if r.SubjectKind == "group" && r.SubjectID == "gone" && r.RetiredAt.IsZero() {
+			groupKind = true
+		}
+	}
+	if !retired {
+		t.Fatal("the binding row is not kept as retired")
+	}
+	if !groupKind {
+		t.Fatal("a group-kind binding whose id equals the subject was touched")
+	}
+	if pwgOwnerBound(t, s, "ut", "stays") != 1 {
+		t.Fatal("another user's binding was retired")
+	}
+	groups, _ := s.GroupsOfSubject(ctx, "ut", "gone")
+	if len(groups) != 0 {
+		t.Fatalf("the deleted user is still in %v", groups)
+	}
+	if g, _ := s.GroupsOfSubject(ctx, "ut", "stays"); len(g) != 1 {
+		t.Fatalf("another user's membership went: %v", g)
+	}
+	if v1, _ := s.AclVersion(ctx, "ut"); v1 <= v0 {
+		t.Fatal("acl_version did not move")
+	}
+	// The same subject again starts with nothing.
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "ut", Subject: "gone", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := s.AclBindingsFor(ctx, "ut", "gone", nil, ""); len(rows) != 0 {
+		t.Fatalf("a recreated subject inherits %+v", rows)
+	}
+	if removed, _ := s.UserDelete(ctx, "ut", "nobody"); removed {
+		t.Fatal("deleting a missing user reported a removal")
+	}
+}

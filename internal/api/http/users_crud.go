@@ -346,5 +346,8 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
 		return
 	}
+	// The store retired the user's bindings and dropped its memberships with
+	// the row: refresh the cached sets everywhere, and audit it.
+	s.aclChanged(r.Context(), tenant, "user_unbound", subject)
 	w.WriteHeader(http.StatusNoContent)
 }

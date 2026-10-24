@@ -533,6 +533,7 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthInviteRedeemAttachToMissingSubjectIsNotFound", testAuthInviteRedeemAttachToMissingSubjectIsNotFound},
 		{"UserCreateOwnerWritesUserBindingAndMarkerOrNothing", testUserCreateOwnerWritesUserBindingAndMarkerOrNothing},
 		{"AuthInviteRedeemWritesTheOwnerBindingOrNothing", testAuthInviteRedeemWritesTheOwnerBindingOrNothing},
+		{"UserDeleteRetiresTheUsersBindingsAndMemberships", testUserDeleteRetiresTheUsersBindingsAndMemberships},
 		{"AuthInviteLiveBootstrapReportsOnlyLiveBootstrap", testAuthInviteLiveBootstrapReportsOnlyLiveBootstrap},
 		{"AuthResetCreateSupersedesEarlierLiveReset", testAuthResetCreateSupersedesEarlierLiveReset},
 		{"AuthResetCompleteConsumesOnceAndReplacesCredential", testAuthResetCompleteConsumesOnceAndReplacesCredential},

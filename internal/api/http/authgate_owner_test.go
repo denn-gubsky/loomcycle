@@ -139,3 +139,38 @@ func TestPasswordGate_RetiringTheOwnerBindingEndsOperatorPower(t *testing.T) {
 		t.Fatalf("operator power survived the retired binding: %d", code)
 	}
 }
+
+// A deleted owner's subject given to a new access_mode tenant user carries no
+// operator power: deleting the user retired its binding.
+func TestPasswordGate_ARecreatedSubjectDoesNotInheritTheOwnerBinding(t *testing.T) {
+	f := newGateFixture(t)
+	owner := f.redeemed(t, "cloud", "first@newco.test", f.inviteCode(t, bSite, "cloud", `{"tenant":"newco","access_mode":"tenant"}`))
+	_, subject := owner.me()
+	if code, _ := f.call(t, bAdmin, "DELETE", "/v1/_users/"+subject+"?tenant=newco", ""); code != http.StatusNoContent {
+		t.Fatalf("admin delete: %d", code)
+	}
+	if len(f.ownerBindings(t, "newco", subject)) != 0 {
+		t.Fatal("the deleted owner's binding is still live")
+	}
+	if code, b := f.call(t, bAdmin, "POST", "/v1/_users?tenant=newco", `{"subject":"`+subject+`","access_mode":"tenant"}`); code != http.StatusCreated {
+		t.Fatalf("recreate: %d %v", code, b)
+	}
+	again := f.redeemed(t, "cloud", "second@newco.test", f.inviteCode(t, bAdmin, "cloud", `{"tenant":"newco","subject":"`+subject+`"}`))
+	if code, _ := again.do("POST", "/v1/_users", `{"subject":"x"}`); code != http.StatusForbidden {
+		t.Fatalf("the recreated subject has operator power: %d", code)
+	}
+}
+
+// Belt and braces: an owner binding older than the user row it names never
+// counts, however it got there.
+func TestPasswordGate_AnOwnerBindingOlderThanItsUserGrantsNothing(t *testing.T) {
+	f := newGateFixture(t)
+	if _, err := f.st.AclBindingPut(context.Background(), ownerBinding("acme", "late", "test")); err != nil {
+		t.Fatal(err)
+	}
+	f.addUser(t, "acme", "late", "tenant")
+	b := f.redeemed(t, "cloud", "late@acme.test", f.inviteCode(t, bAdmin, "cloud", `{"tenant":"acme","subject":"late"}`))
+	if code, _ := b.do("POST", "/v1/_users", `{"subject":"y"}`); code != http.StatusForbidden {
+		t.Fatalf("a binding older than its user granted operator power: %d", code)
+	}
+}
