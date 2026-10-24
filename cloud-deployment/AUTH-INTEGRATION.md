@@ -1,6 +1,6 @@
 # loomcycle.cloud — moving sign-in to the password gate and the `auth:manage` API
 
-**Status:** PLAN, 2026-10-24. Not started. It depends on loomcycle RFC FA P0 (sessions) and P2 (the password gate), which are being built now.
+**Status:** IN PROGRESS, 2026-10-24. Phases 2 and 3 (the landing's routes and the website) are **built**, behind `LOOMCYCLE_AUTH_MANAGE_TOKEN` — without it the landing behaves as before. Phases 0/1 (release + runtime config) and 4–7 are not started. Where the built code differs from this plan, the code follows loomcycle's API: see [What the build changed](#what-the-build-changed-phases-23).
 **Design source:** RFC FA "Auth gates" in the loomcycle document store (`/loomcycle/rfcs/external-authorization-gates`), §6.1 and decisions D15–D18.
 **Touches:** `cloud-deployment/landing/server.js`, `cloud-web/index.html`, `cloud-deployment/docker-compose.yaml`, `cloud-deployment/config/loomcycle.yaml`, `.env.insecure.example`, `INSTALL.md`, `README.md`.
 
@@ -126,8 +126,8 @@ The vault and the `postMessage` handoff stay **read-only for one release**. Exis
 |---|---|---|
 | 0 | loomcycle P0 + P2 released, and the cloud runtime on that version | `/v1/_authgate/cloud/invites` answers on the cloud host |
 | 1 | The runtime config above. Mint the `auth:manage` token into `.env.secure` (as `LOOMCYCLE_AUTH_MANAGE_TOKEN`), alongside the admin token for now. Set `LOOMCYCLE_PUBLIC_URL`. | `app.loomcycle.cloud/ui/login` shows both the token box and the password gate; the session cookie is `__Host-lc_session` |
-| 2 | Landing `POST /api/signup` + `/api/team/*`, with a fake-runtime unit suite and an extended `smoke.mjs` | Smoke passes against a local runtime (`MINT_DEV_ALLOW_UNVERIFIED=1`) |
-| 3 | `cloud-web` signup + Team UI; the vault becomes read-only | Manual: a fresh Google account → workspace → password → app; an owner invites a member, the member redeems, the owner resets and disables them |
+| 2 | **Built.** Landing `POST /api/signup` + `/api/team/*`, with a fake-runtime unit suite and an extended `smoke.mjs` | Smoke passes against a local runtime (`MINT_DEV_ALLOW_UNVERIFIED=1`) |
+| 3 | **Built.** `cloud-web` signup + Team UI; the vault becomes read-only | Manual: a fresh Google account → workspace → password → app; an owner invites a member, the member redeems, the owner resets and disables them |
 | 4 | Migrate the existing tenants (below) | Every existing owner can log in with a password |
 | 5 | Remove `/api/mint`, `LOOMCYCLE_ADMIN_TOKEN` from the landing and its compose env, and the vault UI. Retire the old minted tenant tokens on a published date. | `grep LOOMCYCLE_ADMIN_TOKEN cloud-deployment/` is empty, apart from the runtime's own `LOOMCYCLE_AUTH_TOKEN` |
 | 6 | `auth.mode: strict`; drop the `token` gate from the config; `require_mfa: true` | The paste box is gone, and a hand-minted user token is refused on the UI |
@@ -156,6 +156,40 @@ Existing cloud tenants were created by `/api/mint`: a tenant `t_<hash>`, a subje
 - **Invite and reset links are bearer-equivalent until redeemed.** They are single-use and short-lived, stored hashed by loomcycle, never logged by the landing, and shown only to the owner who asked for them.
 - **The landing still has no host port.** It is reachable only through the tunnel, with `/api/*` behind Cloudflare Access. Compared with today, its blast radius goes from "anything, anywhere" to "user records".
 - **Signup is a redirect, not an e-mail.** The person who proved the Google identity is the one who sets the password, in the same browser, within seconds. So no mailbox has to be trusted for the owner.
+- **Member invites are an existence oracle, bounded.** Logins are unique per gate across every tenant (D18), so inviting an address that already has an account anywhere fails where a fresh address gets a link: an owner learns that the address has a loomcycle.cloud account. The landing answers one generic `409 cannot_invite_address` for both causes (an account in another tenant, or one already here), which hides *which*, not *that*. It cannot be closed while the link is shown inline; e-mail delivery with an always-"sent" answer closes it (open question 2). Until then it is bounded: each refusal spends one of the tenant's 20 daily invites, and each verified Access identity may meet it 10 times a day.
+
+## What the build changed (phases 2–3)
+
+Building against loomcycle's actual `auth:manage` API (RFC FA P2) changed these details of the plan. The code follows the API.
+
+**Phase 1 must also do these:**
+- **`allowed_return_to` is an exact match**, query string included. The landing's `SIGNUP_RETURN_TO` defaults to `https://loomcycle.cloud/?welcome=1`, so the gate must list exactly that, not `https://loomcycle.cloud/`. Otherwise every signup fails, and the landing answers `502 invalid_return_to`.
+- **The gate's label key is `label:`**, not `display:`.
+- **Minting the `auth:manage` token needs `tenant_id` and `subject`.** `POST /v1/_operatortokendef {op: create, name: cloud-landing, tenant_id: <any>, subject: <any>, scopes: ["auth:manage"]}`. An `auth:manage` token ignores its own tenant.
+
+**Routes and checks:**
+- **The membership check reads the tenant's user list.** It calls `GET /v1/_users?tenant=` and looks for the subject there. `GET /v1/_users/{subject}` is not on the `auth:manage` route list; only `PATCH` and `DELETE` are.
+- **Logins are fetched one user at a time.** `GET /v1/_authgate/{gate}/identities` takes `?subject=`, so `GET /api/team` makes one identities call per user.
+- **Bootstrap is decided by `GET /v1/_authgate/{gate}/tenant-status`.** Its `bootstrapped` field means "ever had a user"; the users list doesn't answer that.
+- **An owner made by signup has a loomcycle-made subject** (`cloud:<random>`), not the e-mail. The landing identifies "you" by a gate login equal to the e-mail, or else by the legacy subject equal to the e-mail.
+- **`POST /api/team/invites` takes `{email}` only.** loomcycle's invite has no `display_name`. The login is pinned to the e-mail, so whoever opens the link can't choose another login (loomcycle answers `login_fixed`). Owner and attach invites pin it the same way.
+- **`DELETE /api/team/:subject` is one step in loomcycle.** It retires the user's tokens, drops its logins and password, and deletes the user row at once. There is no staged "disable, then unbind". The data stays.
+- **Answers:**
+  - A visitor who is already signed up gets `409 {error: "already_signed_up", signed_up: true, app}`.
+  - A signup whose e-mail is already a login elsewhere gets `409 cannot_sign_up`.
+  - Upstream "not found" codes become one `404 not_found`.
+  - `login_taken` and `credential_exists` never reach a client.
+
+**Limits.** All are in memory, with one landing process:
+- **Signups:** 10 an hour per source address and 10 an hour per verified e-mail. The source is `CF-Connecting-IP`, read only after the Access JWT has verified, since a container on the compose network can forge it. The e-mail key cannot be forged.
+- **Invites:** 20 a day per tenant, plus 10 "address can't be invited" refusals a day per identity. A slot is reserved before the first upstream call. It comes back only on a runtime fault: unreachable, a 5xx, or an answer outside the contract. A refusal the caller could repeat keeps it spent, and so does a signup that has already revoked a stale invite.
+- **Pending invites:** 50 live per tenant. The landing counts them from loomcycle's own list, under a per-tenant lock.
+
+**Stale invites.** A live owner invite left from an earlier signup attempt is revoked and a new one issued. The plan's alternative was telling the visitor to find their earlier link, but that link was only ever in their address bar. A legacy owner's stale attach invite is replaced the same way.
+
+**Phase 4 gap: legacy tenants that hold only tokens.** loomcycle counts only `users` rows toward "bootstrapped", and an `auth:manage` token cannot list a tenant's operator tokens. So a legacy tenant with tokens but no `users` row looks exactly like a new one. Its owner gets a bootstrap invite and a new `cloud:…` subject, not the legacy e-mail subject, so that subject's user-scoped data is not attached. The attach path works only when a `users` row with `subject` = e-mail exists. Phase 4 has to choose one of two ways:
+- **An admin pre-step.** Create those rows (`POST /v1/_users?tenant=` with `subject` = e-mail, `access_mode: tenant`). Note that an admin-created row does not get the `builtin:tenant-operator` binding a bootstrap gives.
+- **A landing switch.** For a never-bootstrapped tenant, the landing creates the owner itself (`POST /v1/_users`, which binds it) and then attaches. This needs `manager_may_recover_owners`.
 
 ## Open questions (with recommendations)
 

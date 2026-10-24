@@ -155,6 +155,7 @@ Create **`.env.secure`** (there is no committed template — repo policy forbids
 LOOMCYCLE_AUTH_TOKEN=REPLACE_ME              # openssl rand -hex 32
 LOOMCYCLE_OPERATOR_TOKEN_PEPPER=REPLACE_ME   # openssl rand -hex 32
 LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN     # the landing mints with this; set = LOOMCYCLE_AUTH_TOKEN
+# LOOMCYCLE_AUTH_MANAGE_TOKEN=               # accounts on the password gate — see "Enabling accounts" below; unset = off
 # LOOMCYCLE_SECRET_KEY=REPLACE_ME            # optional (encrypted tenant credentials); openssl rand -base64 32
 # ── Postgres (this password MUST equal the one in the two DSNs) ──
 POSTGRES_PASSWORD=REPLACE_ME_STRONG
@@ -244,6 +245,55 @@ make ps          # all services `running`/`healthy`; loomcycle-migrate `exited (
 7. **Functional**: run a `chat/medium` agent that uses WebSearch (proves SearXNG),
    a `dev/exec` run (proves the builder sidecar via `mcp__sandbox__*` — e.g.
    `{"commands":["uname -a"]}`), and a Document op (proves SQL Memory + pgvector).
+
+---
+
+## Enabling accounts (password gate; optional until phase 5)
+
+The landing can move sign-in from minted tokens to loomcycle's password gate
+([`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md)): **Create your workspace** sends a
+visitor to `app.loomcycle.cloud/ui/invite#…` to choose a password, and the owner
+gets a **Team** view to invite, reset, disable and remove people. It stays off —
+the site shows the token vault exactly as before — until
+`LOOMCYCLE_AUTH_MANAGE_TOKEN` is set. Turn it on only after the runtime has the
+password gate (plan **phase 0 + 1**):
+
+1. **Runtime** — a loomcycle release with RFC FA P0 + P2, and the phase-1 config
+   in `config/loomcycle.yaml`: a `kind: password` gate named as `AUTH_GATE`
+   (default `cloud`), `manager_may_recover_owners: true` (owner "Reset my
+   password" and the legacy-owner migration need it), and
+   **`allowed_return_to` listing `SIGNUP_RETURN_TO` verbatim** — the match is
+   exact, query string included (default `https://loomcycle.cloud/?welcome=1`).
+   `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` is already set and must
+   equal the landing's `APP_URL`; the landing refuses an invite link that points
+   anywhere else.
+2. **Mint the landing's token** with the admin bearer (it must be minted alone;
+   `tenant_id`/`subject` are required but mean nothing for this scope):
+
+   ```bash
+   curl -s -X POST https://app.loomcycle.cloud/v1/_operatortokendef \
+     -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"op":"create","name":"cloud-landing","tenant_id":"ops","subject":"cloud-landing","scopes":["auth:manage"]}'
+   ```
+
+   Put the returned `token` into `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN=…`
+   (by hand; don't paste it anywhere else). Keep `LOOMCYCLE_ADMIN_TOKEN` for now —
+   `/api/mint` stays until phase 5.
+3. **Non-secret settings** in `.env.insecure` (defaults shown in
+   `.env.insecure.example`): `AUTH_GATE`, `APP_URL`, `SIGNUP_RETURN_TO`.
+4. `make up` (recreates `landing`), then check:
+   `curl -s https://loomcycle.cloud/api/whoami` with your Access session reports
+   `"auth_gate":true`; without a session it is `401`. Then the manual pass: a fresh
+   Google account → **Create your workspace** → choose a password → back on
+   `loomcycle.cloud/?welcome=1` → **Manage team** → invite, redeem in a private
+   window, reset, disable.
+
+To test before deploying, run the landing suite and its smoke against a local
+runtime: `cd landing && npm ci && npm test`, then
+`SMOKE_RUNTIME_URL=http://127.0.0.1:8787 SMOKE_MANAGE_TOKEN=… node smoke.mjs`
+(the runtime's `LOOMCYCLE_PUBLIC_URL` must be that same URL).
+
+To turn accounts off again, remove the token from `.env.secure` and `make up`.
 
 ---
 
@@ -642,6 +692,12 @@ volumes:
 | `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN required` → set it in `.env.secure`. |
 | **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |
 | **Create token** → `502 upstream …` | The landing reached loomcycle but the mint failed: `LOOMCYCLE_ADMIN_TOKEN` isn't a valid admin bearer (must equal `LOOMCYCLE_AUTH_TOKEN`), or the runtime is down. Check `make logs S=landing`. |
+| **Create your workspace** → `Accounts are not enabled` (`503 auth_gate_not_configured`) | `LOOMCYCLE_AUTH_MANAGE_TOKEN` isn't reaching the landing — set it in `.env.secure` and `make up`. |
+| **Create your workspace** → error, `make logs S=landing` shows `account upstream signup: 400 invalid_return_to` | `SIGNUP_RETURN_TO` is not in the gate's `allowed_return_to` **verbatim** (exact match, query string included). |
+| landing logs `account upstream …: 404 gate_not_found` | `AUTH_GATE` doesn't name a `kind: password` gate in `config/loomcycle.yaml`, or the runtime predates the password gate. |
+| landing logs `account upstream …: 401 …` or `403 insufficient_scope` | `LOOMCYCLE_AUTH_MANAGE_TOKEN` is not a live `auth:manage` token (retired, or minted with another scope). |
+| site shows `link_mismatch` | The runtime's `LOOMCYCLE_PUBLIC_URL` differs from the landing's `APP_URL`; make them equal. |
+| **Reset my password** → "recovery for owners is turned off" | The gate lacks `manager_may_recover_owners: true`; the owner changes the password in the app (`/ui/account`) instead. |
 | Ollama unreachable from loomcycle | Use the **raw tailnet IP** in `OLLAMA_BASE_URL` (MagicDNS is unavailable in the shared netns); confirm `tailscale status` shows the peer. |
 | `tailscale` unhealthy | Bad/expired `TS_AUTHKEY`, or `/dev/net/tun` missing; check `make logs S=tailscale`. |
 | A tool's file shows as `[file not kept: …]` | No `dynamic_root` volume, or the runtime cannot write it: `./dynamic` must exist and be owned by 65532 (see *Upgrading to 1.122.0*). |

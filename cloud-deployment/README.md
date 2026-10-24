@@ -10,7 +10,7 @@ server** (static site + self-serve token minting), and a Cloudflare tunnel — o
 
 > **Step-by-step setup lives in [`INSTALL.md`](INSTALL.md).** This file is the map.
 >
-> **Planned:** sign-in moves from landing-minted tokens to loomcycle's password gate, managed by the landing through the `auth:manage` API — see [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md).
+> **In progress:** sign-in moves from landing-minted tokens to loomcycle's password gate, managed by the landing through the `auth:manage` API. The landing and site side (phases 2–3) is built and switches on with `LOOMCYCLE_AUTH_MANAGE_TOKEN`; see [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md).
 
 ## Architecture
 
@@ -34,13 +34,13 @@ compose network `loomnet`:
 | `builder-sidecar` | `denngubsky/loomcycle-builder-docker:${LOOMCYCLE_SIDECAR_VERSION}` | Sandboxed code exec (`mcp__sandbox__*`) via the host Docker socket. |
 | `loomcycle` | `denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION}` | The runtime, with the PinchTab MCP client binary. `network_mode: service:tailscale`. |
 | `searxng` | `searxng/searxng` | Keyless search backend (wired via `config/loomcycle.yaml`). |
-| `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), and mints `substrate:tenant` tokens behind Cloudflare Access. |
+| `landing` | Node (`./landing`, built) | Serves `cloud-web/`, proxies the public reads `/healthz` + `/v1/config` (inner links), mints `substrate:tenant` tokens behind Cloudflare Access, and — with `LOOMCYCLE_AUTH_MANAGE_TOKEN` — runs signup and team management on loomcycle's password gate. |
 | `cloudflared` | `cloudflare/cloudflared` | Outbound tunnel; routes managed in the Cloudflare dashboard (token method). |
 | `telegram-bridge` | `denngubsky/loomcycle-bridge-telegram:${BRIDGE_TELEGRAM_VERSION}` | **Optional** (compose profile `telegram`): a Telegram bot for one agent, its webhook at `telegram.loomcycle.cloud/telegram/webhook`. See INSTALL.md → "Telegram bridge". |
 
 ### The landing server + self-serve minting
 
-`landing/server.js` (Node) does three things:
+`landing/server.js` (Node) does three things, and a fourth when enabled:
 
 1. **Serves the static marketing site** (`cloud-web/`, bind-mounted at `/srv`, with
    HTTP range so the videos stream).
@@ -60,6 +60,21 @@ compose network `loomnet`:
    `op=create` + `MINT_SCOPES` (`substrate:tenant,runs:create`). The once-shown
    token is returned, vaulted client-side (IndexedDB AES-GCM), and handed to
    `app.loomcycle.cloud` over an origin-pinned `postMessage`.
+
+4. **Runs accounts on loomcycle's password gate** — only when
+   `LOOMCYCLE_AUTH_MANAGE_TOKEN` (an `auth:manage` operator token) is set; without
+   it these routes answer `503 auth_gate_not_configured` and the site keeps the
+   vault. `POST /api/signup` sends a new visitor to an owner invite on
+   `app.loomcycle.cloud/ui/invite#…` (they choose a password there; this site
+   never sees it), and `/api/team/*` lets the owner invite members (a link they
+   send themselves), issue reset links, disable/enable and remove them. The
+   tenant comes only from the verified Access identity; a subject outside it is a
+   `404`. Upstream paths are fixed, bodies are built field by field, errors reach
+   the browser only as whitelisted codes, and no invite/reset link or code is
+   ever logged. Limits: 10 signups/hour per source and per identity, 20
+   invites/day and 50 pending per tenant. Tests: `cd landing && npm test` (a fake
+   runtime) and `node smoke.mjs` (add `SMOKE_RUNTIME_URL` + `SMOKE_MANAGE_TOKEN`
+   to drive a real runtime). Design and status: [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md).
 
 > **Why a Node backend and not a Caddy header-inject:** a raw reverse-proxy that
 > injects the admin bearer onto `/v1/_operatortokendef` would forward the client's
@@ -105,7 +120,10 @@ file is kept in step with the TrueNAS deployment, which shares the Ollama host.
   the Access JWT (never a bare header) and forces `substrate:tenant` (never admin).
 - **The landing holds `LOOMCYCLE_ADMIN_TOKEN`** (= your `LOOMCYCLE_AUTH_TOKEN`) —
   server-side only, no host port, reachable only via the tunnel. Treat it as the
-  most sensitive component after loomcycle itself.
+  most sensitive component after loomcycle itself. Once accounts are on it also
+  holds `LOOMCYCLE_AUTH_MANAGE_TOKEN`, which reaches user records in every tenant
+  (and, with `manager_may_recover_owners`, can reset any owner's password); the
+  admin token leaves the landing in phase 5.
 - **loomcycle stays bearer-authed** (`LOOMCYCLE_AUTH_TOKEN`); the marketing landing
   is public but its `/api/*` is Access-gated. Consider Access over
   `app.loomcycle.cloud` too for defense-in-depth.
