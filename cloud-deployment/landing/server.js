@@ -231,7 +231,7 @@ app.post("/api/mint", async (req, res) => {
 //     it is redeemed a link is a credential.
 
 const UPSTREAM_TIMEOUT_MS = 10_000;
-// A subject is a loomcycle-made `<gate>:<base32>` or a legacy owner's e-mail.
+// A subject is a loomcycle-made `<gate>:<base32>` (members) or an owner's e-mail.
 // The first character is alphanumeric, so `.` and `..` can never be a segment.
 const SUBJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._+@:'-]{0,253}$/;
 const INVITE_ID_RE = /^inv_[a-z2-7]{1,64}$/;
@@ -440,9 +440,8 @@ async function tenantInvites(tenant) {
 }
 
 // findSelf finds the signed-in owner among the tenant's users: the user whose
-// login at the gate is their e-mail (an owner made by a signup invite has a
-// loomcycle-made subject), else the legacy owner whose subject IS the e-mail
-// (made by the old /api/mint path). Only access_mode tenant users and the
+// login at the gate is their e-mail, else the user whose subject IS the e-mail
+// (every owner since phase 4, and legacy /api/mint owners) without a login yet. Only access_mode tenant users and the
 // e-mail subject are looked at, so a large team costs no extra calls.
 // `ids` caches identity lookups for the caller.
 async function findSelf(p, users, ids = new Map()) {
@@ -462,7 +461,8 @@ async function findSelf(p, users, ids = new Map()) {
 }
 
 // signupState decides what /api/signup does for this visitor:
-//   new       — the tenant never had a user: a bootstrap owner invite;
+//   new       — the tenant never had a user: create the owner under the
+//               e-mail subject, then attach a password to it (as legacy);
 //   legacy    — the e-mail is a user without a login at the gate: an invite
 //               that attaches a password to that subject (phase 4);
 //   signed_up — the visitor already has a login: go to the app;
@@ -559,11 +559,19 @@ async function signup(res, p, ctx) {
   const wrote = () => { ctx.wrote = true; };
   let body;
   if (st.kind === "new") {
-    // A live owner invite (P2 allows one) is the visitor's own earlier attempt
-    // whose link they no longer have: revoke it and issue a fresh one rather
-    // than telling them to find a link that was only ever in their address bar.
+    // Phase 4: every owner's subject is their verified e-mail. That is the
+    // subject the old /api/mint tokens carried, so a tenant created that way
+    // (tokens and data, but no users row, so never "bootstrapped") keeps its
+    // owner's data; a brand-new tenant goes the same way. loomcycle's
+    // auth:manage create of a tenant's first user also binds it to
+    // builtin:tenant-operator. A live owner invite from an earlier attempt
+    // would block that create, so it goes first.
     if (st.inviteLive) await revokeLive(p.tenant, (inv) => inv.bootstrap === true, wrote);
-    body = { tenant: p.tenant, access_mode: "tenant", login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
+    const owner = await manage("POST", "/v1/_users", { query: { tenant: p.tenant }, body: { subject: p.subject, access_mode: "tenant" } });
+    if (owner.status !== 201) throw new UpstreamFailure("signup-owner", owner);
+    wrote();
+    // If the invite below fails, a retry finds this row and takes the legacy path.
+    body = { tenant: p.tenant, subject: p.subject, login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
   } else if (st.kind === "legacy") {
     await revokeLive(p.tenant, (inv) => inv.subject === st.subject, wrote);
     body = { tenant: p.tenant, subject: st.subject, login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };

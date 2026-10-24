@@ -1,6 +1,6 @@
 # loomcycle.cloud — moving sign-in to the password gate and the `auth:manage` API
 
-**Status:** IN PROGRESS, 2026-10-24. Phases 2 and 3 (the landing's routes and the website) are **built**, behind `LOOMCYCLE_AUTH_MANAGE_TOKEN` — without it the landing behaves as before. Phases 0/1 (release + runtime config) and 4–7 are not started. Where the built code differs from this plan, the code follows loomcycle's API: see [What the build changed](#what-the-build-changed-phases-23).
+**Status:** IN PROGRESS, 2026-10-24. Phase 1 (runtime config, #2125), phases 2 and 3 (the landing's routes and the website, #2126) and phase 4 (owners on their e-mail subject, so legacy tenants keep their data) are **built**; the account flow stays behind `LOOMCYCLE_AUTH_MANAGE_TOKEN`, and without it the landing behaves as before. Phase 0 (a release with P0 + P2, deployed) and the host steps are pending; phases 5–7 are not started. Where the built code differs from this plan, the code follows loomcycle's API: see [What the build changed](#what-the-build-changed-phases-23).
 **Design source:** RFC FA "Auth gates" in the loomcycle document store (`/loomcycle/rfcs/external-authorization-gates`), §6.1 and decisions D15–D18.
 **Touches:** `cloud-deployment/landing/server.js`, `cloud-web/index.html`, `cloud-deployment/docker-compose.yaml`, `cloud-deployment/config/loomcycle.yaml`, `.env.insecure.example`, `INSTALL.md`, `README.md`.
 
@@ -95,7 +95,7 @@ All the new routes follow the same rules:
 
 | Route | Does | Upstream |
 |---|---|---|
-| `POST /api/signup` | Creates the visitor's workspace, or re-enters it. **Empty tenant:** create a bootstrap owner invite (`access_mode: tenant`, `login` = e-mail, `return_to: https://loomcycle.cloud/?welcome=1`), then **redirect the browser straight to the invite link**. Redeeming it also binds the owner to `builtin:tenant-operator` in their tenant, so their app session can run the tenant's operator plane (RFC FA §6.1.2). The visitor sets a password at once, so no e-mail is needed. **Tenant has users, and the e-mail is a legacy subject with no password:** a migration invite that attaches to that subject (phase 4). **Otherwise:** `409 {signed_up: true, app: "https://app.loomcycle.cloud/ui/login"}`. | `GET /v1/_users?tenant=` (does the tenant have users?), `POST /v1/_authgate/cloud/invites` |
+| `POST /api/signup` | Creates the visitor's workspace, or re-enters it. **Never-bootstrapped tenant (new, or legacy with tokens only):** create the owner with `POST /v1/_users?tenant=` (`subject` = the verified e-mail, `access_mode: tenant`), which also binds them to `builtin:tenant-operator` (RFC FA §6.1.2), then create an attach invite for that subject (`login` = e-mail, `return_to: https://loomcycle.cloud/?welcome=1`) and **redirect the browser straight to the invite link**. The visitor sets a password at once, so no e-mail is needed. **Tenant has users, and the e-mail is a legacy subject with no password:** a migration invite that attaches to that subject (phase 4). **Otherwise:** `409 {signed_up: true, app: "https://app.loomcycle.cloud/ui/login"}`. | `GET …/tenant-status`, `POST /v1/_users?tenant=`, `POST /v1/_authgate/cloud/invites` |
 | `GET /api/team` | Lists the members, `{subject, display_name, login, access_mode, status}` | `GET /v1/_users?tenant=`, `GET /v1/_authgate/cloud/identities` |
 | `POST /api/team/invites` `{email, display_name?}` | Invites a member. The member gets the floor (`isolated`, `[everyone, new-users]`), the API's own rule (D16). The response is the link plus an expiry, for the owner to copy. | `POST /v1/_authgate/cloud/invites` |
 | `GET /api/team/invites`, `DELETE /api/team/invites/:id` | Lists pending invites (never the code), and revokes one | the matching routes |
@@ -135,19 +135,23 @@ The vault and the `postMessage` handoff stay **read-only for one release**. Exis
 
 The release automation (`loomcycle-cloud-deploy` on Gitea) overwrites the host's `docker-compose.yaml` and `config/loomcycle.yaml` from this repo on each release tag. So phases 1, 5 and 6 ship as commits here and take effect at the next tag. `.env.secure` changes stay manual, on the host.
 
-## Migrating existing tenants (phase 4)
+## Migrating existing tenants (phase 4) — built
 
-Existing cloud tenants were created by `/api/mint`: a tenant `t_<hash>`, a subject equal to the owner's e-mail, and operator tokens with `substrate:tenant,runs:create`. Most of them probably have no `users` row, because the mint path never created one. Check this once on the host with an admin call before phase 4.
+Existing cloud tenants were created by `/api/mint`: a tenant `t_<hash>`, a subject equal to the owner's lowercased e-mail, operator tokens with `substrate:tenant,runs:create`, and user-scoped data under that subject, but no `users` row. loomcycle counts only `users` rows as "bootstrapped", and an `auth:manage` token can't see operator tokens, so to the landing such a tenant looks new.
 
-**Steps:**
-1. When a legacy owner signs in on the website, `POST /api/signup` sees that the tenant has a subject (or tokens) but no password identity.
-2. If no `users` row exists, the landing creates one: `POST /v1/_users` with `subject` = the e-mail and `access_mode: tenant`. It is the tenant's first user, so the bootstrap rule allows it.
-3. The landing then creates an invite with `subject` = the e-mail. This is an invite that attaches to an existing user and keeps its subject, groups and data (RFC FA §6.1). The owner is above the floor, so this needs `manager_may_recover_owners: true`. The browser is redirected to that invite.
-4. Their old tokens keep working until phase 5.
+That's why **every** owner, new or legacy, is created the same way. Every owner's subject is their verified e-mail:
+1. `POST /api/signup` finds the tenant never bootstrapped and revokes any stale owner invite.
+2. The landing creates the owner: `POST /v1/_users?tenant=…` with `{subject: <e-mail>, access_mode: tenant}`. loomcycle allows that for a tenant's first user, writes the bootstrap marker, and binds the owner to `builtin:tenant-operator` in the same transaction.
+3. The landing creates an attach invite for that subject, with the login pinned to the e-mail, and redirects the browser to it. The owner is above the floor, so this relies on `manager_may_recover_owners: true`.
+4. If step 3 fails, a retry finds the owner row without a login and takes the legacy path: it revokes stale attach invites and issues a new one. Signup is safe to repeat.
+
+A legacy owner therefore lands on the subject their old tokens used, and their memory, documents and history stay theirs. Their old tokens keep working until phase 5.
+
+**What it costs.** An owner's subject is their e-mail address, not a random id, so it can't be renamed without moving data. The cloud's tenant id is already derived from that e-mail, so the identity was fixed either way. Members invited later get loomcycle-made `cloud:<random>` subjects.
 
 **Team members who were sharing a group token** have no subject of their own. The owner invites them as new members. Their old shared token stops at phase 5.
 
-**Owners who never return before phase 5** keep their tenant data. They lose token access at phase 5, and get back in by signing up again, which takes the same migration path.
+**Owners who never return before phase 5** keep their tenant data. They lose token access at phase 5, and get back in by signing up, which takes the same path.
 
 ## Security notes
 
@@ -171,7 +175,7 @@ Building against loomcycle's actual `auth:manage` API (RFC FA P2) changed these 
 - **The membership check reads the tenant's user list.** It calls `GET /v1/_users?tenant=` and looks for the subject there. `GET /v1/_users/{subject}` is not on the `auth:manage` route list; only `PATCH` and `DELETE` are.
 - **Logins are fetched one user at a time.** `GET /v1/_authgate/{gate}/identities` takes `?subject=`, so `GET /api/team` makes one identities call per user.
 - **Bootstrap is decided by `GET /v1/_authgate/{gate}/tenant-status`.** Its `bootstrapped` field means "ever had a user"; the users list doesn't answer that.
-- **An owner made by signup has a loomcycle-made subject** (`cloud:<random>`), not the e-mail. The landing identifies "you" by a gate login equal to the e-mail, or else by the legacy subject equal to the e-mail.
+- **Owners have their e-mail as subject (phase 4); members have a loomcycle-made subject** (`cloud:<random>`). The landing identifies "you" by a gate login equal to the e-mail, or else by the subject equal to the e-mail.
 - **`POST /api/team/invites` takes `{email}` only.** loomcycle's invite has no `display_name`. The login is pinned to the e-mail, so whoever opens the link can't choose another login (loomcycle answers `login_fixed`). Owner and attach invites pin it the same way.
 - **`DELETE /api/team/:subject` is one step in loomcycle.** It retires the user's tokens, drops its logins and password, and deletes the user row at once. There is no staged "disable, then unbind". The data stays.
 - **Answers:**
@@ -187,9 +191,7 @@ Building against loomcycle's actual `auth:manage` API (RFC FA P2) changed these 
 
 **Stale invites.** A live owner invite left from an earlier signup attempt is revoked and a new one issued. The plan's alternative was telling the visitor to find their earlier link, but that link was only ever in their address bar. A legacy owner's stale attach invite is replaced the same way.
 
-**Phase 4 gap: legacy tenants that hold only tokens.** loomcycle counts only `users` rows toward "bootstrapped", and an `auth:manage` token cannot list a tenant's operator tokens. So a legacy tenant with tokens but no `users` row looks exactly like a new one. Its owner gets a bootstrap invite and a new `cloud:…` subject, not the legacy e-mail subject, so that subject's user-scoped data is not attached. The attach path works only when a `users` row with `subject` = e-mail exists. Phase 4 has to choose one of two ways:
-- **An admin pre-step.** Create those rows (`POST /v1/_users?tenant=` with `subject` = e-mail, `access_mode: tenant`). Note that an admin-created row does not get the `builtin:tenant-operator` binding a bootstrap gives.
-- **A landing switch.** For a never-bootstrapped tenant, the landing creates the owner itself (`POST /v1/_users`, which binds it) and then attaches. This needs `manager_may_recover_owners`.
+**Phase 4: legacy tenants that hold only tokens.** loomcycle counts only `users` rows toward "bootstrapped", and an `auth:manage` token can't see operator tokens, so a legacy tenant looks new. Resolved by creating every owner under their e-mail subject (see "Migrating existing tenants"), rather than with an admin pre-step that would have left owners without the tenant-operator binding.
 
 ## Open questions (with recommendations)
 
