@@ -466,8 +466,11 @@ behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
    `http://loomcycle-edge:8787` after the deploy that adds the network. Until
    you do, the runtime sees every sign-in as coming from cloudflared's
    `loomnet` address: logins still work, but one attacker's failures slow
-   everyone's (never spoofable either way). If `10.253.253.0/29` collides
-   with a network on the host, change the subnet, the address and
+   everyone's (never spoofable either way). Make the change right after the
+   deploy: no one has a password yet at that point (accounts start with the
+   landing's signup, phases 2–3), so the window costs nothing if it's short.
+   If `10.253.253.0/29` collides with a network on the host, change the
+   subnet, cloudflared's `.2`, tailscale's `.3`, the `ip_range` and
    `auth.trusted_proxies` together.
 4. **After the deploy, mint the landing's credential**: one operator token
    with only `auth:manage`. The landing uses it from phase 2 on.

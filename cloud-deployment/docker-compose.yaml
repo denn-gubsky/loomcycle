@@ -37,6 +37,9 @@ networks:
     ipam:
       config:
         - subnet: 10.253.253.0/29
+          # Both members have fixed addresses; anything allocated dynamically
+          # lands in .4–.7, so no container but cloudflared can ever hold .2.
+          ip_range: 10.253.253.4/30
   # Dedicated network for serve-and-test sessions. A sandbox_open with `expose:<alias>`
   # attaches the (host-Docker-sibling) session container HERE under a --network-alias,
   # so a dev server it binds is reachable from the pinchtab sidecar at
@@ -105,6 +108,7 @@ services:
     networks:
       loomnet: {}
       edge:
+        ipv4_address: 10.253.253.3  # fixed, so it can never take cloudflared's .2
         aliases: [loomcycle-edge]   # resolves only on edge: the tunnel's target
     cap_add: [NET_ADMIN]
     devices:
