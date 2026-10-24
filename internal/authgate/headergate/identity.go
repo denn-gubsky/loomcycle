@@ -85,22 +85,6 @@ func checkTimes(claims map[string]any, now time.Time) (time.Time, error) {
 	return exp, nil
 }
 
-// audContains reports whether a JWT aud (a string or an array of strings)
-// names want.
-func audContains(v any, want string) bool {
-	switch a := v.(type) {
-	case string:
-		return a == want
-	case []any:
-		for _, x := range a {
-			if s, ok := x.(string); ok && s == want {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func stringClaim(claims map[string]any, k string) string {
 	s, _ := claims[k].(string)
 	return strings.TrimSpace(s)

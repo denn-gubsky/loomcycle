@@ -3,9 +3,14 @@ package headergate
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+
+	"github.com/denn-gubsky/loomcycle/internal/authgate/jwtverify"
 )
 
 // CloudflareHeader carries the Access application token to the origin.
@@ -13,28 +18,46 @@ import (
 // CF_Authorization cookie, which an origin is not guaranteed to receive.
 const CloudflareHeader = "Cf-Access-Jwt-Assertion"
 
-// SignatureVerifier checks a compact JWS against an issuer's published keys
-// and returns its payload. It owns the key handling — the JWKS fetch, the kid
-// cache, a refresh on an unknown kid at a bounded rate — and the algorithm
-// allowlist; the caller owns the claims. One implementation serves every gate
-// that verifies a JWKS-signed token (the OIDC gate builds it).
-type SignatureVerifier interface {
-	VerifySignature(ctx context.Context, compact string) (payload []byte, err error)
+// CloudflareAccess verifies Cloudflare Access application tokens through the
+// shared JWT verifier: RS256 only, keys by kid from the team's certs endpoint
+// (rotated every six weeks, the old key valid seven more days — a rotation
+// verifies after one refresh, and made-up kids cannot become a request
+// storm), iss = the team, aud = this application.
+type CloudflareAccess struct {
+	TeamDomain string
+	Audience   string
+	verifier   *jwtverify.Verifier
 }
 
-// CloudflareAccess verifies Cloudflare Access application tokens.
-type CloudflareAccess struct {
-	// TeamDomain is the Access team domain, e.g. "acme.cloudflareaccess.com"
-	// (a custom team domain works too). The token's iss must be
-	// "https://"+TeamDomain.
-	TeamDomain string
-	// Audience is the Access application's AUD tag; the token's aud must
-	// contain it, so a token for another application of the same team is
-	// refused.
-	Audience string
-	// Keys verifies the signature under the team's JWKS (CertsURL), RS256.
-	Keys SignatureVerifier
-	Now  func() time.Time
+// NewCloudflareAccess builds the verifier for one Access application.
+// teamDomain is e.g. "acme.cloudflareaccess.com" (a custom team domain works
+// too); audience is the application's AUD tag, so a token for another
+// application of the same team is refused. keys is nil for the team's live
+// JWKS (CertsURL), fetched with client (nil: a 5-second-timeout client).
+func NewCloudflareAccess(teamDomain, audience string, keys jwtverify.KeySource, client *http.Client, now func() time.Time) (*CloudflareAccess, error) {
+	if !ValidTeamDomain(teamDomain) || strings.TrimSpace(audience) == "" {
+		return nil, fmt.Errorf("cloudflare access: team_domain must be a host name and audience is required")
+	}
+	if keys == nil {
+		if client == nil {
+			client = &http.Client{
+				Timeout:       5 * time.Second,
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			}
+		}
+		keys = &jwtverify.RemoteJWKS{URL: CertsURL(teamDomain), Client: client, Now: now}
+	}
+	return &CloudflareAccess{
+		TeamDomain: teamDomain,
+		Audience:   audience,
+		verifier: &jwtverify.Verifier{
+			Keys:       keys,
+			Algorithms: []jose.SignatureAlgorithm{jose.RS256},
+			Issuer:     "https://" + teamDomain,
+			Audience:   audience,
+			Now:        now,
+		},
+	}, nil
 }
 
 var teamDomainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -57,42 +80,23 @@ func (c *CloudflareAccess) Verify(ctx context.Context, assertion string) (Identi
 	if assertion == "" || len(assertion) > maxAssertionBytes {
 		return Identity{}, invalid("cloudflare access: empty or oversized assertion")
 	}
-	if c.Keys == nil || c.Audience == "" || !ValidTeamDomain(c.TeamDomain) {
-		return Identity{}, fmt.Errorf("cloudflare access: gate is not configured")
-	}
-	payload, err := c.Keys.VerifySignature(ctx, assertion)
+	claims, err := c.verifier.Verify(ctx, assertion)
 	if err != nil {
 		return Identity{}, invalid("cloudflare access: %v", err)
 	}
-	claims, err := decodeClaims(payload)
-	if err != nil {
-		return Identity{}, err
-	}
-	// The verifier may or may not have checked these; they are this gate's
-	// binding to one team and one application, so it checks them itself.
-	if stringClaim(claims, "iss") != c.Issuer() {
-		return Identity{}, invalid("cloudflare access: wrong issuer")
-	}
-	if !audContains(claims["aud"], c.Audience) {
-		return Identity{}, invalid("cloudflare access: wrong audience")
-	}
-	now := time.Now()
-	if c.Now != nil {
-		now = c.Now()
-	}
-	exp, err := checkTimes(claims, now)
-	if err != nil {
-		return Identity{}, err
-	}
+	exp, _, _ := claims.Time("exp")
+	email, _ := claims.String("email")
+	sub, _ := claims.String("sub")
+	name, _ := claims.String("name")
 	id := Identity{
 		Issuer:  c.Issuer(),
-		Subject: stringClaim(claims, "sub"),
-		Email:   stringClaim(claims, "email"),
+		Subject: strings.TrimSpace(sub),
+		Email:   strings.TrimSpace(email),
 		// Access issues a token only after its identity provider (or its
 		// one-time PIN to that address) authenticated the person.
-		EmailVerified: stringClaim(claims, "email") != "",
-		Name:          stringClaim(claims, "name"),
-		Groups:        stringsClaim(claims, "groups"),
+		EmailVerified: strings.TrimSpace(email) != "",
+		Name:          strings.TrimSpace(name),
+		Groups:        claims.Strings("groups"),
 		ExpiresAt:     exp,
 		AMR:           []string{"cf-access"},
 		Claims:        claims,
@@ -101,11 +105,11 @@ func (c *CloudflareAccess) Verify(ctx context.Context, assertion string) (Identi
 	// common_name is the token's client id. It gets a subject of its own kind
 	// so it can never collide with a person's sub.
 	if id.Subject == "" {
-		cn := stringClaim(claims, "common_name")
-		if cn == "" {
+		cn, _ := claims.String("common_name")
+		if strings.TrimSpace(cn) == "" {
 			return Identity{}, invalid("cloudflare access: token names no subject")
 		}
-		id.Subject, id.Email, id.EmailVerified = "service:"+cn, "", false
+		id.Subject, id.Email, id.EmailVerified = "service:"+strings.TrimSpace(cn), "", false
 		id.AMR = []string{"cf-access-service-token"}
 	}
 	return id, nil
