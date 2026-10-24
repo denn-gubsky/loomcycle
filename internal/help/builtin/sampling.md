@@ -63,6 +63,12 @@ the driver **drops** temperature/top_p for that call (thinking wins) and
 logs it. Rule of thumb: set `effort` OR `temperature`, not both, on
 Anthropic reasoning models.
 
+**Anthropic models without sampling:** Claude Opus 4.7 and later, Sonnet
+5.x, Haiku 5.x, Fable and Mythos reject any non-default `temperature`,
+`top_p` or `top_k`, with or without thinking — directly or through
+Bedrock. The driver drops all three for these models and logs it; steer
+them with `effort` and the prompt instead.
+
 ## Introspection
 
 `Context op=self` reports the resolved sampling for the current run under a
