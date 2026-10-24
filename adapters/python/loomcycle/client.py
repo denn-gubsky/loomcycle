@@ -1397,7 +1397,9 @@ class LoomcycleClient:
         tiers separated by what they guarantee (RFC BL P5). Read-only.
 
         Returns ``{tenant, subject, tier1_covered, tier2_uncovered,
-        tier3_residue, notes, errors}``. A key's PRESENCE in a tier's
+        tier3_residue, access, notes, errors}``. ``access`` names what an
+        erasure would remove from the subject's authority:
+        ``{groups, lists, tokens: [{def_id, name}]}``. A key's PRESENCE in a tier's
         ``counts`` means the plane was examined; its value is the row
         count. Absence means NOT examined — a different statement from
         zero.
@@ -1419,6 +1421,7 @@ class LoomcycleClient:
             "tier1_covered": _erasure_tier(resp.tier1_covered),
             "tier2_uncovered": _erasure_tier(resp.tier2_uncovered),
             "tier3_residue": _erasure_residue(resp.tier3_residue),
+            "access": _erasure_access(resp.access),
             "notes": list(resp.notes),
             "errors": list(resp.errors),
         }
@@ -1440,6 +1443,10 @@ class LoomcycleClient:
         returned mapping is the only durable record of what was not
         reached; persist it.**
 
+        The subject's member bearer tokens are revoked and named under
+        ``access.tokens`` (def id and name, never the bearer), with the
+        groups and lists removed in ``access.groups`` / ``access.lists``.
+
         The usage/cost ledger is retained by design (accounting
         records) and is reported under ``retained``."""
         req = pb.ErasureExecuteRequest(subject=subject, dry_run=dry_run, confirm=confirm)
@@ -1454,6 +1461,7 @@ class LoomcycleClient:
             "deleted": dict(resp.deleted),
             "retained": dict(resp.retained),
             "residue": _erasure_residue(resp.residue),
+            "access": _erasure_access(resp.access),
             "errors": list(resp.errors),
             "notes": list(resp.notes),
         }
@@ -3418,6 +3426,17 @@ def _erasure_residue(r: Any) -> Mapping[str, Any]:
         "scopes": list(r.scopes),
         "sessions_examined": r.sessions_examined,
         "truncated": r.truncated,
+    }
+
+
+def _erasure_access(a: Any) -> Mapping[str, Any]:
+    """Flatten an ErasureAccess: the groups, lists and member tokens an
+    erasure removes (or would). Tokens are named by def id and name —
+    never the bearer."""
+    return {
+        "groups": list(a.groups),
+        "lists": list(a.lists),
+        "tokens": [{"def_id": t.def_id, "name": t.name} for t in a.tokens],
     }
 
 

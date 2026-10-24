@@ -302,7 +302,11 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 				"the subject living in scopes they do not own, found only by tracing provenance from their " +
 				"chats). op=execute removes tiers 1 and 2. " +
 				"Tier 2 includes the subject's group memberships and the access-control bindings to it " +
-				"(acl_memberships, acl_bindings; the notes name the groups and lists). Ones declared in the " +
+				"(acl_memberships, acl_bindings), and its member bearer tokens (operator_tokens), which " +
+				"execute revokes at once together with the bindings to them (acl_token_bindings). The " +
+				"`access` field names them: {groups, lists, tokens:[{def_id, name}]} — what a report or " +
+				"dry run would remove, or what execute did; never a token value. A token holding an " +
+				"operator scope is left and named under retained. Groups and bindings declared in the " +
 				"config file are reported but cannot be erased — they must be removed from the config. " +
 				"IT DEFAULTS TO A DRY RUN: pass dry_run:false AND confirm equal to the subject to actually " +
 				"delete, which is irreversible. " +

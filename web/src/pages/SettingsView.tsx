@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { resolveSection, settingsHref, visibleSections } from "../lib/settingsSections";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
-import { erasureGate, residueMeaning } from "../lib/erasure";
+import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
   HealthResponse,
@@ -938,6 +938,11 @@ function ErasureSection() {
               <dd className="settings-muted">{residueMeaning(report.tier3_residue)}</dd>
             </div>
           </dl>
+          {accessSummary(report.access) && (
+            <div className="settings-muted">
+              access removed with it: {accessSummary(report.access)}
+            </div>
+          )}
           {report.errors && report.errors.length > 0 && (
             <div className="settings-error">
               some planes could not be read, so this report is incomplete:{" "}
@@ -980,6 +985,11 @@ function ErasureSection() {
               .map(([k, n]) => `${k} ${n}`)
               .join(" · ")}
           </div>
+          {accessSummary(result.access) && (
+            <div className="settings-muted">
+              {result.dry_run ? "would remove" : "removed"} access: {accessSummary(result.access)}
+            </div>
+          )}
           {Object.keys(result.retained).length > 0 && (
             <div className="settings-muted">
               kept: {Object.entries(result.retained).map(([k, why]) => `${k} (${why})`).join("; ")}

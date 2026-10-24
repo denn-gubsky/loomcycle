@@ -439,6 +439,35 @@ func AclEraseSubject(ctx context.Context, db DB, tenantID, subject string) (memb
 	return memberships, bindings, nil
 }
 
+// AclEraseTokenBindings removes the token-kind bindings of defIDs.
+func AclEraseTokenBindings(ctx context.Context, db DB, tenantID string, defIDs []string) (int, error) {
+	if len(defIDs) == 0 {
+		return 0, nil
+	}
+	n := 0
+	// One DELETE per id rather than an IN list: a subject holds a handful of
+	// tokens, and this keeps the statement the same on both dialects.
+	err := db.InTx(ctx, func(tx Querier) error {
+		n = 0
+		for _, id := range defIDs {
+			res, err := tx.Exec(ctx, `DELETE FROM acl_bindings WHERE tenant_id = ? AND subject_kind = 'token' AND subject_id = ?`,
+				tenantID, id)
+			if err != nil {
+				return err
+			}
+			n += int(res)
+		}
+		if n == 0 {
+			return nil
+		}
+		return bumpAclVersion(ctx, tx, tenantID)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ---- bindings ----
 
 func mintBindingID() string {

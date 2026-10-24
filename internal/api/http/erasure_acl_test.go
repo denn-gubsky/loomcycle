@@ -86,3 +86,67 @@ func TestErasureExecute_DropsTheSubjectsCachedACLSet(t *testing.T) {
 		t.Errorf("groups after erasure = %v, want [yaml-team] — the cached set still carries the erased membership", p.Groups)
 	}
 }
+
+// TestErasure_NamesTheRemovedGroupsAndListsInAStructuredField: the groups and
+// lists an erasure removes (or a dry run / report would) travel as data under
+// `access`, not only inside a prose note a client would have to parse. The
+// config-declared ones are not the store's to remove and stay out of it.
+func TestErasure_NamesTheRemovedGroupsAndListsInAStructuredField(t *testing.T) {
+	cfg := makeBaseConfig()
+	cfg.ResolvedACL = &authz.Static{
+		Groups: []authz.StaticGroup{{Tenant: "acme", Name: "yaml-team", Members: []string{"alice"}}},
+	}
+	srv, _ := makeServer(t, completingProvider(), cfg)
+	srv.SetEraseAudit(&recordingSink{})
+	ctx := context.Background()
+	for _, g := range []string{"support", "ops"} {
+		if _, err := srv.store.GroupPut(ctx, store.GroupRow{TenantID: "acme", Name: g}); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: g, MemberKind: "user", MemberID: "alice"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, l := range []string{"reviewers", "readers", "reviewers"} {
+		if _, err := srv.store.AclBindingPut(ctx, store.AclBindingRow{TenantID: "acme", ACLName: l, SubjectKind: "user", SubjectID: "alice"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantGroups, wantLists := []string{"ops", "support"}, []string{"readers", "reviewers"}
+
+	rep, err := srv.ErasureReport(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rep.Access.Groups, wantGroups) || !reflect.DeepEqual(rep.Access.Lists, wantLists) {
+		t.Errorf("report access = %+v, want groups %v lists %v", rep.Access, wantGroups, wantLists)
+	}
+
+	rec, dry := erasePost(t, srv, "acme", map[string]any{"subject": "alice"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dry run status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !reflect.DeepEqual(dry.Access.Groups, wantGroups) || !reflect.DeepEqual(dry.Access.Lists, wantLists) {
+		t.Errorf("dry-run access = %+v", dry.Access)
+	}
+	if g, _ := srv.store.GroupsOfSubject(ctx, "acme", "alice"); len(g) != 2 {
+		t.Fatalf("a dry run removed memberships: %v", g)
+	}
+
+	rec, res := erasePost(t, srv, "acme", map[string]any{"subject": "alice", "dry_run": false, "confirm": "alice"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !reflect.DeepEqual(res.Access.Groups, wantGroups) || !reflect.DeepEqual(res.Access.Lists, wantLists) {
+		t.Errorf("execute access = %+v", res.Access)
+	}
+	// The wire carries `access` with arrays, never null: an empty footprint
+	// is [] so a client can iterate without a nil check.
+	if !strings.Contains(rec.Body.String(), `"access":{"groups":["ops","support"],"lists":["readers","reviewers"]`) {
+		t.Errorf("wire access field missing or misshapen: %s", rec.Body.String())
+	}
+	_, again := erasePost(t, srv, "acme", map[string]any{"subject": "alice", "dry_run": false, "confirm": "alice"})
+	if again.Access.Groups == nil || again.Access.Lists == nil || len(again.Access.Groups)+len(again.Access.Lists) != 0 {
+		t.Errorf("a repeat erasure's access = %+v, want empty non-nil lists", again.Access)
+	}
+}

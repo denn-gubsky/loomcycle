@@ -2015,6 +2015,24 @@ export interface ErasureResidue {
   truncated: boolean;
 }
 
+/** One bearer token an erasure names: its def id and name, never the bearer. */
+export interface ErasureTokenRef {
+  def_id: string;
+  name: string;
+}
+
+/**
+ * What an erasure removes from the subject's authority — in a report or a dry
+ * run, what it would: the groups the subject leaves, the lists its bindings
+ * (and its tokens' bindings) named, and the member tokens revoked.
+ * Config-declared rows are not listed; the store cannot remove them.
+ */
+export interface ErasureAccess {
+  groups: string[];
+  lists: string[];
+  tokens: ErasureTokenRef[];
+}
+
 /** Result of {@link LoomcycleClient.erasureReport} (RFC BL P5). */
 export interface ErasureReport {
   tenant: string;
@@ -2022,6 +2040,7 @@ export interface ErasureReport {
   tier1_covered: ErasureTier;
   tier2_uncovered: ErasureTier;
   tier3_residue: ErasureResidue;
+  access: ErasureAccess;
   notes: string[];
   /** Planes that could not be READ. Non-empty means every count is a lower bound. */
   errors?: string[];
@@ -2036,6 +2055,8 @@ export interface ErasureResult {
   /** Plane -> why it was kept. Never empty. */
   retained: Record<string, string>;
   residue: ErasureResidue;
+  /** The groups, lists and member tokens removed (or, in a dry run, that would be). */
+  access: ErasureAccess;
   errors?: string[];
   notes: string[];
 }

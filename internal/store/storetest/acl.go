@@ -495,3 +495,65 @@ func testAclEraseSubjectRemovesOnlyThatSubjectsRows(t *testing.T, s store.Store)
 		t.Error("an empty subject was accepted")
 	}
 }
+
+// testAclEraseTokenBindingsRemovesOnlyThoseTokensRows pins the token half of
+// subject erasure's ACL step: the token-kind bindings (retired ones too) of
+// the named token def ids go, in the tenant only, with one version bump. The
+// survivors are minimal pairs of a removed row — another token, a USER whose
+// id equals a removed def id, the same def id in another tenant.
+func testAclEraseTokenBindingsRemovesOnlyThoseTokensRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	bind := func(tenant, kind, id string) store.AclBindingRow {
+		t.Helper()
+		b, err := s.AclBindingPut(ctx, store.AclBindingRow{TenantID: tenant, ACLName: "l", SubjectKind: kind, SubjectID: id})
+		if err != nil {
+			t.Fatalf("bind %s %s:%s: %v", tenant, kind, id, err)
+		}
+		return b
+	}
+	bind("acme", "token", "tok_a")
+	retired := bind("acme", "token", "tok_b")
+	if ok, err := s.AclBindingRetire(ctx, "acme", retired.BindingID); !ok || err != nil {
+		t.Fatalf("retire = %v, %v", ok, err)
+	}
+	keep := map[string]bool{
+		bind("acme", "token", "tok_c").BindingID: true,
+		bind("acme", "user", "tok_a").BindingID:  true,
+	}
+	otherA := bind("other", "token", "tok_a")
+	before, _ := s.AclVersion(ctx, "acme")
+	otherBefore, _ := s.AclVersion(ctx, "other")
+
+	n, err := s.AclEraseTokenBindings(ctx, "acme", []string{"tok_a", "tok_b", "tok_unbound"})
+	if err != nil || n != 2 {
+		t.Fatalf("erase = (%d, %v), want (2, nil)", n, err)
+	}
+	all, _ := s.AclBindingList(ctx, "acme", true)
+	if len(all) != len(keep) {
+		t.Errorf("acme bindings after erase = %d, want %d", len(all), len(keep))
+	}
+	for _, r := range all {
+		if !keep[r.BindingID] {
+			t.Errorf("binding %s (%s:%s) survived the erasure", r.BindingID, r.SubjectKind, r.SubjectID)
+		}
+	}
+	if got, _ := s.AclBindingList(ctx, "other", true); len(got) != 1 || got[0].BindingID != otherA.BindingID {
+		t.Errorf("another tenant's bindings = %+v", got)
+	}
+	if v, _ := s.AclVersion(ctx, "acme"); v != before+1 {
+		t.Errorf("acme version = %d, want %d (one bump)", v, before+1)
+	}
+	if v, _ := s.AclVersion(ctx, "other"); v != otherBefore {
+		t.Errorf("other tenant's version moved: %d → %d", otherBefore, v)
+	}
+	// Repeating it, and an empty list, are no-ops that do not bump.
+	if n, err := s.AclEraseTokenBindings(ctx, "acme", []string{"tok_a", "tok_b"}); err != nil || n != 0 {
+		t.Errorf("second erase = (%d, %v), want (0, nil)", n, err)
+	}
+	if n, err := s.AclEraseTokenBindings(ctx, "acme", nil); err != nil || n != 0 {
+		t.Errorf("empty erase = (%d, %v), want (0, nil)", n, err)
+	}
+	if v, _ := s.AclVersion(ctx, "acme"); v != before+1 {
+		t.Errorf("a no-op erase bumped the version to %d", v)
+	}
+}

@@ -81,6 +81,10 @@ func (s *Store) AclEraseSubject(ctx context.Context, tenantID, subject string) (
 	return sqlshared.AclEraseSubject(ctx, s.shared(), tenantID, subject)
 }
 
+func (s *Store) AclEraseTokenBindings(ctx context.Context, tenantID string, defIDs []string) (int, error) {
+	return sqlshared.AclEraseTokenBindings(ctx, s.shared(), tenantID, defIDs)
+}
+
 func (s *Store) AclVersion(ctx context.Context, tenantID string) (int64, error) {
 	return sqlshared.AclVersion(ctx, s.shared(), tenantID)
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // erasureService builds the shared service from this server's stores. Every
@@ -32,6 +33,17 @@ func (s *Server) erasureService() *erasure.Service {
 		// sets on every replica and record the change in the ACL audit trail.
 		ACLChanged: func(ctx context.Context, tenant, subject string) {
 			s.aclChanged(ctx, tenant, "subject_access_erased", subject)
+		},
+		// The subject's member tokens, by the rule user delete/disable use;
+		// retiring flushes the auth cache on every replica, and each retire is
+		// recorded as a token retire would be.
+		ListTokens: s.erasureSubjectTokens,
+		RetireTokens: func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error) {
+			retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
+			for _, row := range retired {
+				s.recordTokenAudit(ctx, "retire", row)
+			}
+			return retired, err
 		},
 	}
 }
@@ -94,12 +106,4 @@ func (s *Server) ErasureReport(ctx context.Context, tenant, subject string) (era
 		return erasure.Report{}, errors.New("no store configured")
 	}
 	return s.erasureService().Report(ctx, tenant, subject)
-}
-
-// ErasureExecute implements connector.Connector.
-func (s *Server) ErasureExecute(ctx context.Context, req erasure.ExecuteRequest) (erasure.Result, error) {
-	if s.store == nil {
-		return erasure.Result{}, errors.New("no store configured")
-	}
-	return s.erasureService().Execute(ctx, req)
 }
