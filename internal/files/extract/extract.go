@@ -32,6 +32,10 @@ type Image struct {
 	Data      []byte
 	// Alt is the document's own description of the image, if it has one.
 	Alt string
+	// Page is the page (PDF) and Slide the slide (PPTX) the image is on,
+	// counted from 1; zero when the format has neither.
+	Page  int
+	Slide int
 }
 
 // Sink receives an extraction's output in document order.
@@ -62,8 +66,11 @@ type Options struct {
 	// Zero takes DefaultMaxRows.
 	MaxRows int
 
-	// limits overrides the archive bounds, for tests.
-	limits *zipLimits
+	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
+	// the PDF page and decode caps, for tests.
+	limits       *zipLimits
+	pdfMaxPages  int
+	pdfMaxDecode int64
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.
@@ -132,7 +139,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, HTML{}, CSV{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, PDF{}, HTML{}, CSV{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a
@@ -209,6 +216,7 @@ type writer struct {
 	ctx               context.Context
 	sink              Sink
 	keepImages        bool
+	page, slide       int // where the images handed over now are
 	chars             int
 	nImage            int // images handed to the sink, for their names
 	images            int // images kept
@@ -234,17 +242,25 @@ func (w *writer) image(data []byte, alt string) (string, error) {
 	if err := w.ctx.Err(); err != nil {
 		return "", err
 	}
-	alt = cleanAlt(alt)
 	mt, ext := imageType(data)
 	if mt == "" {
 		w.unsupportedImages++
-		return altOnly(alt), nil
+		return altOnly(cleanAlt(alt)), nil
 	}
+	return w.keep(data, mt, ext, alt)
+}
+
+// keep hands an image whose type the caller established to the sink.
+func (w *writer) keep(data []byte, mt, ext, alt string) (string, error) {
+	if err := w.ctx.Err(); err != nil {
+		return "", err
+	}
+	alt = cleanAlt(alt)
 	if !w.keepImages {
 		return altOnly(alt), nil
 	}
 	w.nImage++
-	ref, err := w.sink.Image(Image{Name: fmt.Sprintf("img-%d%s", w.nImage, ext), MediaType: mt, Data: data, Alt: alt})
+	ref, err := w.sink.Image(Image{Name: fmt.Sprintf("img-%d%s", w.nImage, ext), MediaType: mt, Data: data, Alt: alt, Page: w.page, Slide: w.slide})
 	if err != nil {
 		return "", err
 	}

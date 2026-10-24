@@ -103,6 +103,18 @@ func TestExtractPPTX_SlidesNotesImages(t *testing.T) {
 	}
 }
 
+func TestExtractPPTX_ImageCarriesItsSlide(t *testing.T) {
+	s, _ := run(t, PPTX{}, boardPPTX(t, tinyPNG(t)), Options{Name: "board.pptx", Images: true})
+	// The picture is on the second slide of the deck's order.
+	if len(s.images) != 1 || s.images[0].Slide != 2 || s.images[0].Page != 0 {
+		t.Fatalf("images = %+v, want one on slide 2", s.images)
+	}
+	d, _ := run(t, DOCX{}, boardDOCX(t, tinyPNG(t)), Options{Name: "p.docx", Images: true})
+	if len(d.images) != 1 || d.images[0].Slide != 0 || d.images[0].Page != 0 {
+		t.Errorf("a DOCX picture has a page or slide: %+v", d.images)
+	}
+}
+
 func TestExtractHTML_HeadingsKept(t *testing.T) {
 	page := `<!doctype html><html><head><title>Новини правління</title><script>steal()</script></head><body>
 <h1>Засідання</h1><p>Рішення: затвердити
@@ -177,14 +189,13 @@ func TestRegistry_PicksBySniffedTypeThenExtension(t *testing.T) {
 		{"text/html; charset=utf-8", "x", "extract.HTML"},
 		{"text/csv", "x.txt", "extract.CSV"},
 		{"image/png", "x", "extract.ImageFile"},
+		{"application/pdf", "x.bin", "extract.PDF"},
+		{"", "x.pdf", "extract.PDF"},
 	} {
 		e, ok := g.For(tc.mt, tc.name)
 		if !ok || typeName(e) != tc.want {
 			t.Errorf("For(%q,%q) = %v, want %s", tc.mt, tc.name, e, tc.want)
 		}
-	}
-	if _, ok := g.For("application/pdf", "x.pdf"); ok {
-		t.Error("a PDF matched an extractor; P4b adds that one")
 	}
 	if _, err := g.Extract(context.Background(), "application/x-msdownload", bytes.NewReader(nil), 0, &memSink{}, Options{Name: "x.exe"}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("err = %v", err)
@@ -197,6 +208,8 @@ func typeName(e Extractor) string {
 		return "extract.DOCX"
 	case XLSX:
 		return "extract.XLSX"
+	case PDF:
+		return "extract.PDF"
 	case PPTX:
 		return "extract.PPTX"
 	case HTML:
