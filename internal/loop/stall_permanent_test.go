@@ -91,3 +91,56 @@ func TestRecoverStatefulCall_StallsOnlyOnModelFaults(t *testing.T) {
 		}
 	}
 }
+
+// A refusal of the operator's own key is reported to the server (which
+// confirms it with a probe before taking the provider out) and does not stall
+// the one model. A tenant's key refused, or a 403 that is about the model
+// rather than the key, reports nothing.
+func TestRun_OperatorKeyRefusalIsReportedNotStalled(t *testing.T) {
+	for _, tc := range []struct {
+		source, msg string
+		unreachable int
+	}{
+		{"operator", "anthropic 401: invalid x-api-key", 1},
+		{"tenant", "anthropic 401: invalid x-api-key", 0},
+		{"user", "anthropic 401: invalid x-api-key", 0},
+		{"operator", `anthropic 403: {"message":"AccessDeniedException: You don't have access to the model"}`, 0},
+	} {
+		var stalls, down int
+		var downProvider string
+		_, err := Run(context.Background(), RunOptions{
+			Provider:    &erroringProvider{err: providers.WithKeySource(fmt.Errorf("%s", tc.msg), tc.source)},
+			Model:       "claude-haiku-5-5",
+			Segments:    []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+			MarkStalled: func(_, _, _ string) { stalls++ },
+			ReportOperatorKeyRefusal: func(p, _ string) {
+				down++
+				downProvider = p
+			},
+		})
+		if err == nil {
+			t.Fatalf("%s %s: Run should propagate the error", tc.source, tc.msg)
+		}
+		if down != tc.unreachable || stalls != 0 {
+			t.Errorf("%s key, %s: ReportOperatorKeyRefusal=%d MarkStalled=%d, want %d and 0", tc.source, tc.msg, down, stalls, tc.unreachable)
+		}
+		if tc.unreachable == 1 && downProvider != "erroring" {
+			t.Errorf("provider reported = %q, want erroring", downProvider)
+		}
+	}
+}
+
+// The stateful loop's recovery reports the operator-key refusal the same way.
+func TestRecoverStatefulCall_OperatorKeyRefusalIsReported(t *testing.T) {
+	down := 0
+	opts := &RunOptions{
+		Provider:                 &erroringProvider{},
+		Model:                    "claude-haiku-5-5",
+		ReportOperatorKeyRefusal: func(_, _ string) { down++ },
+	}
+	_ = recoverStatefulCall(context.Background(), opts, &statefulRecovery{},
+		providers.WithKeySource(fmt.Errorf("anthropic 401: authentication_error"), "operator"), func(providers.Event) {}, nil)
+	if down != 1 {
+		t.Errorf("ReportOperatorKeyRefusal calls = %d, want 1", down)
+	}
+}

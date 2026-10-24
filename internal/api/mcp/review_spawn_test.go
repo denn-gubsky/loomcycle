@@ -121,10 +121,10 @@ func TestReviewRunTool_RejectThenApprove(t *testing.T) {
 		t.Fatalf("reject: %v", res.Content)
 	}
 	heldRun(t, st, 2)
-	if prov.last == nil || len(prov.last.Messages) == 0 {
+	if prov.lastReq() == nil || len(prov.lastReq().Messages) == 0 {
 		t.Fatal("the revision never reached the provider")
 	}
-	if last := prov.last.Messages[len(prov.last.Messages)-1]; last.Content[0].Text != "cover the rollback" {
+	if last := prov.lastReq().Messages[len(prov.lastReq().Messages)-1]; last.Content[0].Text != "cover the rollback" {
 		t.Errorf("revision's last user turn = %q, want the feedback", last.Content[0].Text)
 	}
 	if res := callTool(t, reviewer, "review_run", map[string]any{"agent_id": run.AgentID, "decision": "approve"}); res.IsError {

@@ -602,6 +602,13 @@ type RunOptions struct {
 	// MarkRateLimited is the proper structural fix.
 	MarkRateLimited func(provider, model string, retryAfter time.Duration)
 
+	// ReportOperatorKeyRefusal reports a call refused in a way that names the
+	// operator's own key (providers.OperatorKeyRefused). The server confirms
+	// it with the provider's own probe before taking the provider out of
+	// routing — every model on it shares the key, but one refusal can still be
+	// about the one request. A tenant's or user's own key never reaches it.
+	ReportOperatorKeyRefusal func(provider, reason string)
+
 	// MaxSameProviderRetries caps retryable-error retries against the
 	// CURRENT (provider, model) before MarkRateLimited cools the
 	// matrix entry and ReResolve escalates to a different provider.
@@ -803,6 +810,30 @@ const (
 // switch, every assistant turn's Reasoning field is zeroed in place.
 // Slice-element write is required (not a range-copy) so the caller's
 // slice sees the update.
+// reportCallFault tells the resolver what a failed provider call says about
+// the shared routing matrix — one decision for every call site, so they
+// cannot drift. A 429 cools the (provider, model) briefly; the operator's own
+// key refused is reported for the server to confirm; a model fault stalls the
+// model; anything else (a request error, a model-access 403, a tenant's key
+// refused) touches nothing shared. The callers keep their own cancellation
+// and operator-key guards.
+func reportCallFault(opts *RunOptions, err error) {
+	switch {
+	case providers.IsRateLimit(err):
+		if opts.MarkRateLimited != nil {
+			opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
+		}
+	case providers.OperatorKeyRefused(err):
+		if opts.ReportOperatorKeyRefusal != nil {
+			opts.ReportOperatorKeyRefusal(opts.Provider.ID(), err.Error())
+		}
+	case providers.StallsModel(err):
+		if opts.MarkStalled != nil {
+			opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
+		}
+	}
+}
+
 func tryProviderFallback(
 	ctx context.Context,
 	opts *RunOptions,
@@ -3991,9 +4022,14 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 	//   5xx / model 404 / network → MarkStalled (15-min
 	//     probe-gated recovery; "model is broken for a
 	//     while, stop wasting calls")
-	//   400/401/403/422 → neither (providers.StallsModel): the
-	//     request was wrong, not the model, and the matrix is
-	//     shared by every run
+	//   the OPERATOR's own key refused (a 401, or a body naming
+	//     the key) → ReportOperatorKeyRefusal; the server takes the
+	//     provider out only if its own probe is refused too
+	//   400/403/422, or a tenant's/user's key refused → nothing
+	//     shared (providers.StallsModel): the request, the model's
+	//     access or the caller was wrong, not the model
+	//
+	// reportCallFault makes that decision for every call site.
 	//
 	// The split matters: pre-v0.12.7 MarkStalled treated 429
 	// the same as 5xx, which under the x1000 load test
@@ -4016,13 +4052,7 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 	// as the queue is, so an operator cancelling the turn of a queued run
 	// is an ordinary event — and must not mark a healthy model stalled.
 	if ctx.Err() == nil && turnCtx.Err() == nil && !errors.Is(err, providers.ErrOperatorKeyForbidden) {
-		if providers.IsRateLimit(err) {
-			if s.opts.MarkRateLimited != nil {
-				s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
-			}
-		} else if s.opts.MarkStalled != nil && providers.StallsModel(err) {
-			s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, err.Error())
-		}
+		reportCallFault(s.opts, err)
 	}
 	// v0.8.2: when the run carries a fallback policy and the
 	// error class is retryable, swap to the next provider
@@ -4217,13 +4247,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 			// MarkStalled based on whether it's a 429.
 			streamErr := errors.New(ev.Error)
 			if ctx.Err() == nil {
-				if providers.IsRateLimit(streamErr) {
-					if s.opts.MarkRateLimited != nil {
-						s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
-					}
-				} else if s.opts.MarkStalled != nil && providers.StallsModel(streamErr) {
-					s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, ev.Error)
-				}
+				reportCallFault(s.opts, streamErr)
 			}
 			if tryProviderFallback(ctx, s.opts, &s.fallbackAttempts, rawErr, s.emit, s.messages, s.firstTurnSucceeded) == fallbackOutcomeSwitched {
 				for range ch {

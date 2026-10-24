@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -208,7 +209,9 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		defer resp.Body.Close()
 		cancelStream()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
+		// The key source lets the loop tell the operator's refused key (the
+		// provider is down for every run) from a tenant's (this run only).
+		return nil, providers.WithKeySource(fmt.Errorf("anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody))), credSource)
 	}
 
 	resp.Body = streamhttp.WrapBody(resp.Body, d.idleTimeout, cancelStream)
@@ -464,6 +467,16 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		slog.Warn("anthropic: dropped tool_choice — the model does not accept a forced tool choice; "+
 			"the model is asked for the tool in the prompt instead", "tool_choice", w.ToolChoice.Type, "model", req.Model)
 		w.ToolChoice = nil
+	}
+	// The forced choice is kept here (the run asked for that tool) and thinking
+	// is turned off for this call only; a call that does not force a tool keeps
+	// its adaptive thinking and effort.
+	if rules.forcedChoiceNeedsThinkingOff && w.ToolChoice != nil && w.ToolChoice.Type != "none" {
+		if w.Thinking != nil {
+			slog.Warn("anthropic: dropped thinking (effort) — this model accepts a forced tool_choice only with thinking disabled",
+				"tool_choice", w.ToolChoice.Type, "model", req.Model)
+		}
+		w.Thinking = &wireThinking{Type: "disabled"}
 	}
 
 	for _, sb := range req.System {
@@ -838,7 +851,19 @@ type anthropicRules struct {
 	// noStructuredOutput: output_config.format is refused — the families that
 	// predate structured outputs (Claude 3.x and older, Sonnet 4 / Opus 4.0).
 	noStructuredOutput bool
+	// forcedChoiceNeedsThinkingOff: a forced tool_choice is accepted only with
+	// thinking explicitly disabled. Claude Sonnet 5 on Bedrock, which thinks
+	// adaptively when the field is omitted; its direct-API and Vertex ids
+	// accept a forced choice under thinking.
+	forcedChoiceNeedsThinkingOff bool
 }
+
+// bedrockSonnet5 matches Claude Sonnet 5's Bedrock ids — only Bedrock ids
+// carry the "anthropic." prefix, optionally behind a geography profile
+// (eu./us./global.), then an optional date and -vN:M version. Sonnet 5.5
+// ("claude-sonnet-5-5") does not match: the next token after "sonnet-5"
+// must be the end, a date or a version.
+var bedrockSonnet5 = regexp.MustCompile(`(^|\.)anthropic\.claude-sonnet-5(-\d{8})?(-v\d+(:\d+)?)?$`)
 
 // anthropicModelRules classifies a model id by family, matching on the name
 // the way anthropicEffortBudget does (ids may carry a date suffix or a
@@ -854,6 +879,7 @@ type anthropicRules struct {
 //     Preview. Sonnet 5, Opus 5, Fable 5 and Haiku 5.5 still accept it.
 //   - no structured output: Claude 3.x and older, Sonnet 4 and Opus 4.0
 //     (Opus 4.1 and every later family accept it).
+//   - forced choice needs thinking off: Sonnet 5 on Bedrock only.
 func anthropicModelRules(model string) anthropicRules {
 	m := strings.ToLower(model)
 	has := func(subs ...string) bool {
@@ -869,6 +895,7 @@ func anthropicModelRules(model string) anthropicRules {
 		noForcedChoice: has("opus-5-5", "sonnet-5-5", "fable-5-1", "mythos-5-1", "mythos-preview"),
 		noStructuredOutput: has("claude-2", "claude-instant", "claude-3",
 			"sonnet-4-0", "sonnet-4-2025", "opus-4-0", "opus-4-2025"),
+		forcedChoiceNeedsThinkingOff: bedrockSonnet5.MatchString(m),
 	}
 }
 

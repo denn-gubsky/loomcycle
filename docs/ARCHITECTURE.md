@@ -299,19 +299,19 @@ References: `internal/providers/`, `internal/providers/anthropic/driver.go`, `in
 
 State: `Availability` per provider, `ModelStatus` per model. Three orthogonal flags:
 - `Excluded` — operator chose not to enable this provider (no API key, base URL unset). Set at startup; cleared by `SetReachable`.
-- `Reachable` — most recent probe succeeded. Set/cleared by every probe sweep.
+- `Reachable` — most recent probe succeeded. Set/cleared by every probe sweep. Also cleared when a call is refused the operator's own key and the provider's own probe, started at once in the background, is refused the key too; the next successful probe sets it again.
 - per-model `Stalled` — runtime feedback from the loop on a 5xx-after-retry or in-stream error. Cleared by the next successful probe.
 
 Lifecycle:
 1. Startup: `cmd/loomcycle/main.go` builds the resolver, runs the first-round probe synchronously (parallel across providers, 5s deadline each), then starts a background goroutine that re-probes every `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS` (default 15 min, max 1 h).
 2. Per-request: HTTP / gRPC server calls `Server.resolveAgent(name)` which routes pin-vs-tier and returns `(provider, model, effort)` for the loop.
-3. On driver error: loop calls `MarkStalled(provider, model, reason)` (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix) — but only for a model fault (`providers.StallsModel`): a 5xx, a transport error, an in-stream error, a 404 for a missing or retired model. A request error (400/401/403/422) does not stall the model: the matrix is shared by every run, and one agent's malformed request must not take the model away from the rest. A 429 goes to `MarkRateLimited` instead.
+3. On driver error (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix), the loop reports the failure by class (`reportCallFault`): a 429 → `MarkRateLimited` (a short cooldown; the fallback re-resolve does the same); the operator's own key refused (a 401, or a body naming the key: `authentication_error`, `invalid_api_key`, `API_KEY_INVALID`, an AWS unknown/expired token or bad signature) → the server probes that provider in the background (one probe per provider at a time) and marks it unreachable only if the probe is refused the key too, since every model on it shares that key; a model fault (`providers.StallsModel`: a 5xx, a transport error, an in-stream error, a 404 for a missing or retired model) → `MarkStalled(provider, model, reason)`. A request error (400/422), a 403 about one model's access (no permission, no Marketplace subscription), or a tenant's or user's own key refused touches nothing shared: the matrix serves every run, and one caller's bad request or key must not take a model away from the rest.
 
 Effort flow: agent yaml `effort: low|medium|high` → `Decision.Effort` → `RunOptions.Effort` → `providers.Request.Effort`. Each driver translates per its `Capabilities.SupportsEffort`:
 
 | Driver | Translation |
 |---|---|
-| `anthropic` | `thinking.budget_tokens` (low → skip thinking; medium → 2048; high → 8192). Haiku always skips. Budget clamps to `max_tokens - 1024` if it would exceed `max_tokens`; drops below 1024 minimum. |
+| `anthropic` | Adaptive-only models (Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.x, Fable, Mythos): `output_config.effort` as given, plus `thinking: {type: adaptive}` for medium/high (low sends effort only); temperature/top_p/top_k are not sent. On Bedrock, Sonnet 5 with a forced `tool_choice` gets `thinking: {type: disabled}` for that call. Older models: `thinking.budget_tokens` (low → skip; medium → 2048; high → 8192), clamped to `max_tokens - 1024`, skipped below the 1024 minimum; Haiku 4.5 and earlier always skip. |
 | `openai` | `reasoning_effort` (pass-through). API rejects on non-reasoning models with 400. |
 | `deepseek` | Inherits OpenAI via the wrapper. |
 | `ollama`, `ollama-local` | Both share the same driver: `SupportsEffort=false`. Loop logs once per Run when effort is dropped. |

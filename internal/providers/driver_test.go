@@ -30,11 +30,19 @@ func fakeFactory(o providers.DriverOptions) (providers.Provider, error) {
 	return &fakeProvider{id: o.ID, dialect: o.Dialect}, nil
 }
 
+// registerTestDriver registers a synthetic driver for the length of one test,
+// so the test can be repeated under -count=N.
+func registerTestDriver(t *testing.T, name string, dialects []string) {
+	t.Helper()
+	providers.RegisterDriver(name, dialects, fakeFactory)
+	t.Cleanup(func() { providers.UnregisterDriver(name) })
+}
+
 // TestRegisterDriver_LookupAndUnknown covers the happy path (register → NewDriver
 // returns an instance the factory built) and the unknown-driver error, which
 // must name the registered set so an operator with a typo can self-correct.
 func TestRegisterDriver_LookupAndUnknown(t *testing.T) {
-	providers.RegisterDriver("test-basic", []string{"d1", "d2"}, fakeFactory)
+	registerTestDriver(t, "test-basic", []string{"d1", "d2"})
 
 	got, err := providers.NewDriver("test-basic", providers.DriverOptions{ID: "inst-a"})
 	if err != nil {
@@ -56,7 +64,7 @@ func TestRegisterDriver_LookupAndUnknown(t *testing.T) {
 // TestRegisterDriver_DuplicatePanics locks the build-time invariant: two
 // packages claiming one driver name is a programming error, not a fake seam.
 func TestRegisterDriver_DuplicatePanics(t *testing.T) {
-	providers.RegisterDriver("test-dup", []string{"d1"}, fakeFactory)
+	registerTestDriver(t, "test-dup", []string{"d1"})
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -84,7 +92,7 @@ func TestRegisterDriver_NoDialectsPanics(t *testing.T) {
 // defaults to the canonical (first) dialect; an explicit-but-unsupported dialect
 // errors; an explicit-and-supported dialect passes through.
 func TestNewDriver_DialectDefaultAndValidation(t *testing.T) {
-	providers.RegisterDriver("test-dialect", []string{"canon", "alt"}, fakeFactory)
+	registerTestDriver(t, "test-dialect", []string{"canon", "alt"})
 
 	// Empty dialect → canonical default reaches the factory.
 	got, err := providers.NewDriver("test-dialect", providers.DriverOptions{ID: "x"})
@@ -113,7 +121,7 @@ func TestNewDriver_DialectDefaultAndValidation(t *testing.T) {
 
 // TestDriverIntrospection covers the registry read helpers.
 func TestDriverIntrospection(t *testing.T) {
-	providers.RegisterDriver("test-introspect", []string{"first", "second"}, fakeFactory)
+	registerTestDriver(t, "test-introspect", []string{"first", "second"})
 
 	if d, ok := providers.DefaultDialect("test-introspect"); !ok || d != "first" {
 		t.Errorf("DefaultDialect = (%q,%v), want (first,true)", d, ok)

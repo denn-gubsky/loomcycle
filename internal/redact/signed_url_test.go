@@ -1,0 +1,375 @@
+package redact
+
+import (
+	"math/rand/v2"
+	"strings"
+	"testing"
+	"time"
+)
+
+const signedMarker = "[redacted:signed-url]"
+
+// jsonAmp is & as Go's JSON encoder writes it.
+const jsonAmp = "\\u0026"
+
+// A SharePoint upload session as ms365's create-upload-session returns it:
+// anyone holding the URL can write the file without signing in.
+const sharePointUploadURL = `https://contoso.sharepoint.com/sites/team/_api/v2.0/drives/b!FAKEdrive/items/01FAKEITEM/uploadSession?guid='0f1e2d3c-aaaa-bbbb-cccc-000000000000'&overwrite=False&rename=False&dc=0&tempauth=v1.eyJGAKEHEADER.eyJGAKEPAYLOADfake.FAKE_sig-0123`
+
+const sharePointTempauth = `v1.eyJGAKEHEADER.eyJGAKEPAYLOADfake.FAKE_sig-0123`
+
+// TestRedactor_SignedURLParamsMaskCredentialValues: the value of each
+// credential-bearing query parameter is masked in every encoding a stored
+// payload carries, and the rest of the URL is kept.
+func TestRedactor_SignedURLParamsMaskCredentialValues(t *testing.T) {
+	r := New(nil, false).WithSignedURLParams()
+	cases := []struct {
+		name   string
+		in     string
+		gone   []string
+		stay   []string
+		masked int
+	}{
+		{
+			name:   "sharepoint tempauth in JSON text",
+			in:     `{"uploadUrl":"` + sharePointUploadURL + `","expirationDateTime":"2026-10-24T12:15:00Z"}`,
+			gone:   []string{sharePointTempauth},
+			stay:   []string{`guid='0f1e2d3c-aaaa-bbbb-cccc-000000000000'&overwrite=False&rename=False&dc=0&tempauth=` + signedMarker + `","expirationDateTime"`},
+			masked: 1,
+		},
+		{
+			name:   "sharepoint tempauth with JSON-escaped separators",
+			in:     strings.ReplaceAll(`{"uploadUrl":"`+sharePointUploadURL+`"}`, "&", jsonAmp),
+			gone:   []string{sharePointTempauth},
+			stay:   []string{"overwrite=False" + jsonAmp + "rename=False" + jsonAmp + "dc=0" + jsonAmp + "tempauth=" + signedMarker + `"}`},
+			masked: 1,
+		},
+		{
+			name:   "sharepoint tempauth inside escaped nested JSON",
+			in:     `{\"uploadUrl\":\"` + sharePointUploadURL + `\",\"n\":1}`,
+			gone:   []string{sharePointTempauth},
+			stay:   []string{`&tempauth=` + signedMarker + `\",\"n\":1}`, `guid='0f1e2d3c`},
+			masked: 1,
+		},
+		{
+			name:   "html-escaped separators",
+			in:     `<a href="https://x.sharepoint.com/f?dc=0&amp;tempauth=v1.FAKEhtml&amp;rename=False">`,
+			gone:   []string{"v1.FAKEhtml"},
+			stay:   []string{`dc=0&amp;tempauth=` + signedMarker + `&amp;rename=False">`},
+			masked: 1,
+		},
+		{
+			name: "s3 presigned",
+			in:   `https://bucket.s3.amazonaws.com/k.txt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDFAKEEXAMPLE%2F20261024%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20261024T000000Z&X-Amz-Expires=900&X-Amz-Security-Token=FAKEsession%2Btoken%3D&X-Amz-SignedHeaders=host&X-Amz-Signature=fake0123456789abcdef`,
+			gone: []string{"AKIDFAKEEXAMPLE", "FAKEsession", "fake0123456789abcdef"},
+			stay: []string{"X-Amz-Algorithm=AWS4-HMAC-SHA256&", "X-Amz-Date=20261024T000000Z&X-Amz-Expires=900&",
+				"X-Amz-Security-Token=" + signedMarker + "&X-Amz-SignedHeaders=host&"},
+			masked: 3,
+		},
+		{
+			name:   "azure sas",
+			in:     `https://acct.blob.core.windows.net/c/b.txt?sv=2022-11-02&sp=rw&se=2026-10-24T12:00:00Z&spr=https&sig=FAKEsig%2Babc%2Fdef%3D`,
+			gone:   []string{"FAKEsig"},
+			stay:   []string{"sv=2022-11-02&sp=rw&se=2026-10-24T12:00:00Z&spr=https&sig=" + signedMarker},
+			masked: 1,
+		},
+		{
+			name:   "gcs signed",
+			in:     `https://storage.googleapis.com/b/o?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=fake%40proj.iam.gserviceaccount.com%2F20261024&X-Goog-Expires=900&X-Goog-Signature=fakeabcdef0123`,
+			gone:   []string{"fake%40proj", "fakeabcdef0123"},
+			stay:   []string{"X-Goog-Algorithm=GOOG4-RSA-SHA256&", "&X-Goog-Expires=900&"},
+			masked: 2,
+		},
+		{
+			name:   "cloudfront with key pair id",
+			in:     `https://d111111abcdef8.cloudfront.net/i.jpg?Expires=1700000000&Signature=FAKEcf~sig__&Key-Pair-Id=KFAKEPAIR`,
+			gone:   []string{"FAKEcf~sig__"},
+			stay:   []string{"Expires=1700000000&Signature=" + signedMarker + "&Key-Pair-Id=KFAKEPAIR"},
+			masked: 1,
+		},
+		{
+			name:   "cloudfront with policy",
+			in:     `https://d1.cloudfront.net/i.jpg?Policy=eyJGAKEpolicy&Signature=FAKEcfpolicysig`,
+			gone:   []string{"FAKEcfpolicysig"},
+			stay:   []string{"Policy=eyJGAKEpolicy&Signature=" + signedMarker},
+			masked: 1,
+		},
+		{
+			name:   "access_token in a query and a fragment",
+			in:     `https://graph.example.com/me?access_token=FAKEaccess1 then https://app.example.com/cb#access_token=FAKEaccess2&token_type=bearer`,
+			gone:   []string{"FAKEaccess1", "FAKEaccess2"},
+			stay:   []string{"&token_type=bearer"},
+			masked: 2,
+		},
+		{
+			name:   "token in a URL",
+			in:     `{"download":"https://dl.example.com/f?token=FAKEdl123&name=a.txt"}`,
+			gone:   []string{"FAKEdl123"},
+			stay:   []string{"?token=" + signedMarker + "&name=a.txt\"}"},
+			masked: 1,
+		},
+		{
+			name:   "oauth code beside state",
+			in:     `{"redirect":"https://app.example.com/callback?code=FAKEauthcode123&state=xyz789"}`,
+			gone:   []string{"FAKEauthcode123"},
+			stay:   []string{"?code=" + signedMarker + "&state=xyz789"},
+			masked: 1,
+		},
+		{
+			name:   "percent-encoded URL nested in another URL",
+			in:     `https://login.example.com/r?next=https%3A%2F%2Facct.blob.core.windows.net%2Fc%2Fb%3Fsv%3D2022%26sig%3DFAKEsig%252Babc%26se%3D2026`,
+			gone:   []string{"FAKEsig"},
+			stay:   []string{"%3Fsv%3D2022%26sig%3D" + signedMarker + "%26se%3D2026"},
+			masked: 1,
+		},
+		{
+			name:   "parameter names match case-insensitively",
+			in:     `https://x.example.com/f?TEMPAUTH=FAKEupper&x-amz-signature=fakelower`,
+			gone:   []string{"FAKEupper", "fakelower"},
+			masked: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := r.String(tc.in)
+			for _, g := range tc.gone {
+				if strings.Contains(got, g) {
+					t.Errorf("credential %q survived: %s", g, got)
+				}
+			}
+			for _, s := range tc.stay {
+				if !strings.Contains(got, s) {
+					t.Errorf("want %q kept; got %s", s, got)
+				}
+			}
+			if n := strings.Count(got, signedMarker); n != tc.masked {
+				t.Errorf("masked %d values, want %d: %s", n, tc.masked, got)
+			}
+			if again := r.String(got); again != got {
+				t.Errorf("not idempotent:\n first  %s\n second %s", got, again)
+			}
+		})
+	}
+}
+
+// TestRedactor_SignedURLParamsLeaveOrdinaryTextAlone: generic names are
+// judged in a URL query only, and code and Signature only beside the
+// parameter that makes them a credential.
+func TestRedactor_SignedURLParamsLeaveOrdinaryTextAlone(t *testing.T) {
+	r := New(nil, false).WithSignedURLParams()
+	for _, in := range []string{
+		`https://example.com/search?q=golang&page=2&sort=desc`,
+		`the token is refreshed hourly; pass the code to the reviewer`,
+		`set token=abc and sig=def in the form`,
+		`https://example.com/lookup?code=US&country=1`,
+		`https://example.com/verify?Signature=abc123&user=7`,
+		`https://example.com/a?signature_version=4&mysig=x&x-sig=y&tokens=3&codec=h264`,
+		`{"url":"https://example.com/a?b=c","code":"FAKE-not-a-url"}`,
+	} {
+		if got := r.String(in); got != in {
+			t.Errorf("changed ordinary text:\n in  %s\n got %s", in, got)
+		}
+	}
+}
+
+// TestRedactor_SignedURLParamsOffUnlessAsked: New never enables the tier, so
+// the outbound redact context plugin, which builds its redactor with New,
+// leaves a signed URL usable for the model that must pass it on.
+func TestRedactor_SignedURLParamsOffUnlessAsked(t *testing.T) {
+	if got := New(nil, true).String(sharePointUploadURL); !strings.Contains(got, sharePointTempauth) {
+		t.Errorf("New(nil, true) masked a signed URL: %s", got)
+	}
+	if !New(nil, false).WithSignedURLParams().Enabled() {
+		t.Error("a redactor with only the signed-URL tier reports disabled")
+	}
+	var nilR *Redactor
+	if nilR.WithSignedURLParams() != nil {
+		t.Error("WithSignedURLParams on nil must stay nil")
+	}
+}
+
+// TestRedactor_SignedURLParamsKeepFollowingParamsUnderPatterns: with the
+// pattern tier also on (the server's at-rest redactor), the key=value rule
+// does not swallow the parameters after a masked token.
+func TestRedactor_SignedURLParamsKeepFollowingParamsUnderPatterns(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	in := `https://b.s3.amazonaws.com/k?X-Amz-Security-Token=FAKEsess&X-Amz-SignedHeaders=host&X-Amz-Expires=900`
+	got := r.String(in)
+	if strings.Contains(got, "FAKEsess") {
+		t.Errorf("token survived: %s", got)
+	}
+	if !strings.Contains(got, "&X-Amz-SignedHeaders=host&X-Amz-Expires=900") {
+		t.Errorf("following params lost: %s", got)
+	}
+}
+
+func BenchmarkRedactor_StringNoURL(b *testing.B) {
+	r := New(map[string]string{"LOOMCYCLE_X_TOKEN": "abcdefgh12345678"}, true).WithSignedURLParams()
+	s := strings.Repeat("The agent read the file and summarised it for the user. ", 40)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = r.String(s)
+	}
+}
+
+func BenchmarkRedactor_StringSignedURL(b *testing.B) {
+	r := New(map[string]string{"LOOMCYCLE_X_TOKEN": "abcdefgh12345678"}, true).WithSignedURLParams()
+	s := strings.Repeat("The agent read the file and summarised it for the user. ", 20) +
+		`{"uploadUrl":"` + sharePointUploadURL + `"}` + strings.Repeat(" more prose here ", 20)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = r.String(s)
+	}
+}
+
+// TestRedactor_SignedURLParamsEveryNameInEveryEncoding: each listed name is
+// masked after each separator a stored payload carries, so the prefilter in
+// front of the regex never skips a string the regex would change.
+func TestRedactor_SignedURLParamsEveryNameInEveryEncoding(t *testing.T) {
+	r := New(nil, false).WithSignedURLParams()
+	companion := map[string]string{"signature": "Key-Pair-Id", "code": "state"}
+	for _, name := range signedNames {
+		for _, enc := range []struct{ sep, eq string }{
+			{"?", "="}, {"&", "="}, {"#", "="}, {"&amp;", "="}, {jsonAmp, "="}, {"%3F", "%3D"}, {"%26", "%3d"},
+		} {
+			for _, n := range []string{name, strings.ToUpper(name)} {
+				in := "https://h.example.com/p" + enc.sep + n + enc.eq + "FAKEvalue1"
+				if c, ok := companion[name]; ok {
+					in += enc.sep + c + enc.eq + "x"
+				}
+				if got := r.String(in); strings.Contains(got, "FAKEvalue1") || !strings.Contains(got, n+enc.eq+signedMarker) {
+					t.Errorf("%s after %q: got %s", n, enc.sep, got)
+				}
+			}
+		}
+	}
+}
+
+// TestRedactor_RegisteredValueMaskedWholeBeforeHeuristics: an exact
+// registered value is masked before any heuristic rewrites part of it, or
+// the exact match no longer finds it and the rest is stored in clear.
+func TestRedactor_RegisteredValueMaskedWholeBeforeHeuristics(t *testing.T) {
+	const secret = "https://x.example/p?token=AAAA1111&key=BBBB2222"
+	r := New(nil, true).WithSignedURLParams()
+	r.Register(secret)
+	got := r.String(`{"url":"` + secret + `"}`)
+	if want := `{"url":"` + dynamicMarker + `"}`; got != want {
+		t.Errorf("registered value not masked whole:\n got  %s\n want %s", got, want)
+	}
+
+	// The static tier, likewise.
+	r = New(map[string]string{"LOOMCYCLE_UPLOAD_URL": secret}, true).WithSignedURLParams()
+	if got, want := r.String("put "+secret), "put [redacted:LOOMCYCLE_UPLOAD_URL]"; got != want {
+		t.Errorf("env value not masked whole:\n got  %s\n want %s", got, want)
+	}
+}
+
+// TestRedactor_SignedURLValueMaskedToItsBoundary: the mask runs to the end
+// of the value — a query separator, the end of the string it sits in, or
+// whitespace — not to the first character that is merely unusual in one.
+func TestRedactor_SignedURLValueMaskedToItsBoundary(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	for _, tc := range []struct{ in, want string }{
+		{`https://h.example.com/p?token=1|secret`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?token=a|b`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?token=abc(def`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?token=ab;cd`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?sig=abc,def&x=1`, `https://h.example.com/p?sig=` + signedMarker + `&x=1`},
+		{`https://h.example.com/p?sig=a(b)[c]{d}` + "`e`" + `#frag`, `https://h.example.com/p?sig=` + signedMarker + `#frag`},
+		{`{\"u\":\"https://h.example.com/p?sig=ab,cd;ef\",\"n\":1}`, `{\"u\":\"https://h.example.com/p?sig=` + signedMarker + `\",\"n\":1}`},
+		{`{"u":"https://h.example.com/p?tempauth=ab}cd","n":1}`, `{"u":"https://h.example.com/p?tempauth=` + signedMarker + `","n":1}`},
+		{`see https://h.example.com/p?sig=ab'cd`, `see https://h.example.com/p?sig=` + signedMarker + `'cd`},
+		// A value another tier already masked keeps its marker.
+		{`https://h.example.com/p?tempauth=[redacted:credential]&dc=0`, `https://h.example.com/p?tempauth=[redacted:credential]&dc=0`},
+	} {
+		if got := r.String(tc.in); got != tc.want {
+			t.Errorf("\n in   %s\n got  %s\n want %s", tc.in, got, tc.want)
+		}
+	}
+	for _, in := range []string{
+		`https://example.com/a?q=a;b,c|d&page=(2)&filter=[x]`,
+		`{"url":"https://example.com/a?b=c;d","n":1}`,
+	} {
+		if got := r.String(in); got != in {
+			t.Errorf("changed an ordinary URL:\n in  %s\n got %s", in, got)
+		}
+	}
+}
+
+// TestRedactor_SignedURLValueStopsOnlyAtABoundary: for every printable ASCII
+// character, a value holding it is masked through to its end unless the
+// character is one where a query value or the string around it ends.
+func TestRedactor_SignedURLValueStopsOnlyAtABoundary(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	const boundary = "&#\"'<>\\ "
+	for c := byte(0x20); c < 0x7f; c++ {
+		got := r.String("https://h.example.com/p?token=FAKEa" + string(c) + "FAKEz")
+		if strings.Contains(got, "FAKEa") {
+			t.Errorf("%q: head survived: %s", c, got)
+		}
+		if survived, atBoundary := strings.Contains(got, "FAKEz"), strings.IndexByte(boundary, c) >= 0; survived != atBoundary {
+			t.Errorf("%q: tail survived=%v: %s", c, survived, got)
+		}
+	}
+	// Percent forms: only the escape %26 ends a value.
+	for _, v := range []string{"abc%%def", "abc%2%def", "abc%2", "abc%", "abc%2%", "a%%%2b"} {
+		for _, tail := range []string{"", "%26x=1", "&x=1"} {
+			in := "https://h.example.com/p?token=" + v + tail
+			if got, want := r.String(in), "https://h.example.com/p?token="+signedMarker+tail; got != want {
+				t.Errorf("\n in   %s\n got  %s\n want %s", in, got, want)
+			}
+		}
+	}
+}
+
+// TestRedactor_SignedURLRandomValuesMaskedWhole: a value drawn from every
+// non-boundary character class, the ones a regex class is likely to drop
+// included, is masked whole and the next parameter is kept.
+func TestRedactor_SignedURLRandomValuesMaskedWhole(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	const alphabet = "abcXYZ0129%%%26()|;,[]{}" + "`" + "-._~+/=?!*$@:"
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 5000; i++ {
+		b := make([]byte, 1+rng.IntN(24))
+		for j := range b {
+			b[j] = alphabet[rng.IntN(len(alphabet))]
+		}
+		v := string(b)
+		if strings.Contains(v, "%26") || strings.HasPrefix(v, "[redacted") {
+			continue // a real separator, or a value already masked
+		}
+		for _, sep := range []string{"&", jsonAmp} {
+			in := `{"u":"https://h.example.com/p?token=` + v + sep + `x=1"}`
+			want := `{"u":"https://h.example.com/p?token=` + signedMarker + sep + `x=1"}`
+			if got := r.String(in); got != want {
+				t.Fatalf("value %q:\n got  %s\n want %s", v, got, want)
+			}
+		}
+	}
+}
+
+// TestRedactor_SignedURLManyMatchesInOneValueStayLinear: matches inside one
+// long value (no boundary between them) must not each re-scan the value.
+// Judged by how the time grows, not by a wall-clock limit, which -race and a
+// loaded machine break: 4x the input costs ~4x when linear, ~16x when each
+// match re-scans (the draft that did took 37s on 60000 of these).
+func TestRedactor_SignedURLManyMatchesInOneValueStayLinear(t *testing.T) {
+	r := New(nil, false).WithSignedURLParams()
+	best := func(in string) time.Duration {
+		var min time.Duration
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			_ = r.String(in)
+			if d := time.Since(start); i == 0 || d < min {
+				min = d
+			}
+		}
+		return min
+	}
+	for _, unit := range []string{"?code=x", "?token=x"} {
+		small, large := best(strings.Repeat(unit, 5000)), best(strings.Repeat(unit, 20000))
+		if ratio := float64(large) / float64(small); ratio > 8 {
+			t.Errorf("%q: 4x the input took %.1fx the time (%v -> %v)", unit, ratio, small, large)
+		}
+	}
+}

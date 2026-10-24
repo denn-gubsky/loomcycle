@@ -295,6 +295,10 @@ type Server struct {
 	// dependency. See internal/resolve and the matrix RFC at
 	// doc-internal/rfcs/model-resolution-matrix.md.
 	resolver *resolve.Resolver
+	// keyProbes holds the providers with a confirming key probe in flight
+	// (provider id → struct{}): a burst of runs refused the same key probes
+	// that provider once.
+	keyProbes sync.Map
 
 	// credResolver resolves a tenant/user credential by its env-var NAME (RFC
 	// AR): a run whose tenant/user stored e.g. ANTHROPIC_API_KEY / BRAVE_API_KEY
@@ -721,7 +725,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// names only). Default-ON; LOOMCYCLE_REDACT_SECRETS=0 leaves s.redactor nil
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
 	if cfg.Env.RedactSecrets {
-		s.redactor = redact.New(secretEnvValues(os.Environ()), true)
+		s.redactor = newAtRestRedactor(os.Environ())
 	}
 	// RFC Z: build the runtime-wide context-transform chain once. The redact
 	// plugin masks the same operator env-secret values + the Tier-B heuristic
@@ -1567,6 +1571,46 @@ func (s *Server) markRateLimitedFn(tier string) func(p, m string, retryAfter tim
 			retryAfter = operatorCooldown
 		}
 		s.resolver.MarkRateLimited(p, m, retryAfter)
+	}
+}
+
+// operatorKeyRefusalFn returns a closure for
+// loop.RunOptions.ReportOperatorKeyRefusal: the loop calls it when a call sent
+// with the operator's own key was refused in a way that names the key. Every
+// model on the provider shares that key, so if the key really is dead the
+// provider is unusable for every run — but one refusal can still be about the
+// one request, and shared reachability must never flip on one run's say-so.
+//
+// So it only starts the provider's own probe — the request-independent check
+// the periodic loop runs with the operator's key — in the background, at most
+// one per provider at a time, and takes the provider out of routing
+// (SetReachable false, keeping its model list as a failed probe does) only if
+// that probe is refused the key too. A probe that succeeds changes nothing;
+// one that fails for another reason (network) is left to the periodic probe.
+// The periodic probe brings the provider back once the key works.
+//
+// Returns nil when no resolver or provider registry is wired.
+func (s *Server) operatorKeyRefusalFn() func(p, reason string) {
+	if s.resolver == nil || s.providers == nil {
+		return nil
+	}
+	return func(p, _ string) {
+		if _, busy := s.keyProbes.LoadOrStore(p, struct{}{}); busy {
+			return
+		}
+		go func() {
+			defer s.keyProbes.Delete(p)
+			prov, err := s.providers.Get(p)
+			if err != nil {
+				return
+			}
+			// Detached from the run, which is ending with its own error.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if perr := prov.Probe(ctx); perr != nil && providers.IsKeyRefusal(perr) {
+				s.resolver.SetReachable(p, false, nil, "operator key refused: "+perr.Error())
+			}
+		}()
 	}
 }
 
@@ -2794,6 +2838,7 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		UserTierName:    overlay.Name,
 		PinAfterSuccess: s.cfg().Env.FallbackPinAfterSuccess,
 	}
+	markRateLimited := s.markRateLimitedFn(overlay.Name)
 	reResolve := func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error) {
 		// Mark the failed pair stalled BEFORE re-resolving so the
 		// resolver's matrix walks past it. SetReachable=false on
@@ -2803,9 +2848,17 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		// Only for a model fault (providers.StallsModel): the matrix is shared
 		// by every run. The loop cascades only retryable and retired-model
 		// errors today, so a permanent request error never gets here; the
-		// check keeps this site from drifting from the loop's.
-		if s.resolver != nil && providers.StallsModel(cause) {
-			s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
+		// check keeps this site from drifting from the loop's. A 429 is
+		// retryable and does get here: it cools the pair for the tier's
+		// rate-limit window, as the loop's own 429 feedback does, instead of
+		// stalling it until the next probe.
+		if s.resolver != nil {
+			switch {
+			case providers.IsRateLimit(cause):
+				markRateLimited(failedProvider, failedModel, 0)
+			case providers.StallsModel(cause):
+				s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
+			}
 		}
 		// Re-resolve with the same agent + user_tier at the run's tenant
 		// (RFC N — captured tenantID, not a ctx-derived/empty tenant). The
@@ -3785,6 +3838,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interruption: in.Interruption,
 	})
 	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
+	// Shadow mode narrowed nothing above; record what enforce would have.
+	loopCtx = s.recordShadowNarrowing(loopCtx, runID, runPolicy)
 	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
@@ -3891,6 +3946,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// boundary; the baseline is what the run starts with.
 		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
+	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
+	runOpts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 	if sessHold != nil {
 		stateful := loop.StatefulMode(mergedContext, provider.Capabilities().Local, in.Interactive)
 		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, loopCtx, stateful,
@@ -6600,6 +6657,14 @@ func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawM
 	return out
 }
 
+// newAtRestRedactor builds the redactor for what the server PERSISTS. It adds
+// the signed-URL tier to what the outbound redact context plugin masks: a
+// pre-signed URL a tool returns must stay usable for the run that holds it,
+// so it is masked only in the stored copy.
+func newAtRestRedactor(environ []string) *redact.Redactor {
+	return redact.New(secretEnvValues(environ), true).WithSignedURLParams()
+}
+
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)
 // from an environ slice ("NAME=value" entries), for the F32 redactor's exact-
 // match tier. Empty values are skipped (nothing to mask).
@@ -7799,6 +7864,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	childGrant.Own.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: coreBlocks}
 	childPolicy = parentPolicy.Inherit(childGrant)
 	subCtx = tools.WithRunPolicy(subCtx, childPolicy)
+	subCtx = s.recordShadowNarrowing(subCtx, subRunID, childPolicy)
 	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
 	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
 	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down
@@ -7881,6 +7947,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}
+	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
+	opts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 
 	// cleanup fires the SAME releases as the guarded error-defers above, in the
 	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →

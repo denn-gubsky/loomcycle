@@ -123,6 +123,12 @@ const aclResumeLimits = `[
 // bind binds aclResumeLimits to dev before any run starts.
 func aclResumeFixture(t *testing.T, bind bool, scripts map[string][][]providers.Event) *aclResumeEnv {
 	t.Helper()
+	return aclResumeFixtureIn(t, authz.ModeCompat, bind, scripts)
+}
+
+// aclResumeFixtureIn is aclResumeFixture under the given rollout mode.
+func aclResumeFixtureIn(t *testing.T, mode authz.Mode, bind bool, scripts map[string][][]providers.Event) *aclResumeEnv {
+	t.Helper()
 	cfg := makeBaseConfig()
 	cfg.Defaults.Provider = "scripted"
 	cfg.Env.AuthToken = "legacy-admin-secret"
@@ -158,7 +164,7 @@ func aclResumeFixture(t *testing.T, bind bool, scripts map[string][][]providers.
 	}
 	probe := &policyProbe{}
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{namedStubTool{"Bash"}, probe}, concurrency.New(8, 8, 5*time.Second), st)
-	srv.SetACLResolver(aclres.New(st, authz.ModeCompat, 0))
+	srv.SetACLResolver(aclres.New(st, mode, 0))
 	sink := &recordingSink{}
 	srv.SetTokenAudit(sink)
 	ts := httptest.NewServer(srv.Mux())

@@ -89,12 +89,16 @@ func scopeResourceName(scope string) string { return scope }
 // NarrowSkillsByACL appends the principal's unconditional skill denies to
 // the agent's `skills:` pattern list as `-glob` entries, which the skill
 // matcher already honours. An enforce-mode principal with no skill allow
-// at all denies every skill.
+// at all denies every skill. Shadow mode appends nothing, as it narrows
+// nothing else; ShadowACLNarrowing names what enforce would append.
 func NarrowSkillsByACL(ctx context.Context, eff *authz.Effective, sp SkillPolicyValue) SkillPolicyValue {
 	if eff == nil {
 		if authz.ModeFrom(ctx) == authz.ModeEnforce {
 			return SkillPolicyValue{Patterns: []string{"-*"}, Granted: sp.Granted}
 		}
+		return sp
+	}
+	if authz.ModeFrom(ctx) == authz.ModeShadow {
 		return sp
 	}
 	out := SkillPolicyValue{Granted: sp.Granted, Patterns: append([]string(nil), sp.Patterns...)}
@@ -110,4 +114,98 @@ func NarrowSkillsByACL(ctx context.Context, eff *authz.Effective, sp SkillPolicy
 		out.Patterns = append(out.Patterns, "-"+pat)
 	}
 	return out
+}
+
+// ACLShadowDivergence is one narrowing enforce mode would apply to a run at
+// its start that shadow mode left in place: the question and the engine's
+// answer to it.
+type ACLShadowDivergence struct {
+	Surface  authz.Surface
+	Decision authz.Decision
+}
+
+// ShadowACLNarrowing names what the narrowing helpers above would take from
+// a run's policy under enforce — each tool withheld, each volume made
+// read-only or dropped, each memory, SQL-memory or history scope dropped, and
+// each skill deny it would append to the agent's patterns (every skill when
+// no rule allows one) — given the policy shadow mode built,
+// which took nothing. Outside shadow mode, or with no compiled set, it
+// returns nil: compat and enforce applied their answer already, and a run
+// with no set has none to compare.
+//
+// "Would take" is the enforce answer, so a question no rule allows counts
+// as well as a rule's deny (enforce treats both as a refusal).
+func ShadowACLNarrowing(ctx context.Context, p RunPolicy) []ACLShadowDivergence {
+	eff := p.ACL
+	if eff == nil || authz.ModeFrom(ctx) != authz.ModeShadow {
+		return nil
+	}
+	enforce := authz.WithMode(ctx, authz.ModeEnforce)
+	refused := func(action string, res authz.Resource) (authz.Decision, bool) {
+		r := authz.Evaluate(enforce, eff, action, res, true)
+		return r.Decision, !r.Allowed
+	}
+	var out []ACLShadowDivergence
+	add := func(action string, res authz.Resource, d authz.Decision) {
+		out = append(out, ACLShadowDivergence{Surface: authz.Surface{Action: action, Type: res.Type, Name: res.Name}, Decision: d})
+	}
+	for _, name := range p.Tools {
+		res := authz.ResourceForTool(name)
+		if d, no := refused("invoke", res); no {
+			add("invoke", res, d)
+		}
+	}
+	if p.Volumes.Active {
+		for _, b := range p.Volumes.Bindings {
+			res := authz.Resource{Type: "volume", Name: b.Name}
+			// As NarrowVolumesByACL: write implies read, so a binding goes
+			// only when neither is allowed (recorded as the read refused),
+			// and a read-write one becomes read-only when write is refused.
+			rd, readNo := refused("read", res)
+			wd, writeNo := refused("write", res)
+			switch {
+			case readNo && writeNo:
+				add("read", res, rd)
+			case writeNo && !b.ReadOnly:
+				add("write", res, wd)
+			}
+		}
+	}
+	for _, ks := range []struct {
+		typ    string
+		scopes []string
+	}{{"memory", p.Memory.AllowedScopes}, {"sqlmem", p.SqlMem.AllowedScopes}, {"history", p.History.Scopes}} {
+		for _, sc := range ks.scopes {
+			res := authz.Resource{Type: ks.typ, Name: scopeResourceName(sc)}
+			if d, no := refused("read", res); no {
+				add("read", res, d)
+			}
+		}
+	}
+	if p.Skill.Granted {
+		// As NarrowSkillsByACL under enforce: no skill allowed at all appends
+		// "-*" alone; otherwise each unconditional deny is appended as its
+		// own pattern, named here by its selector as written.
+		res := authz.Resource{Type: "skill", Name: authz.AnyInstance}
+		if d, no := refused("invoke", res); no {
+			add("invoke", res, d)
+		} else {
+			for _, pat := range eff.DenyPatterns("skill", "invoke") {
+				add("invoke", authz.Resource{Type: "skill", Name: pat}, skillDenyDecision(enforce, eff, pat))
+			}
+		}
+	}
+	return out
+}
+
+// skillDenyDecision is the engine's answer for a skill deny pattern asked as
+// a name: a selector matches its own text, so the unconditional deny that
+// wrote it decides, and its rule is named. Should the engine answer
+// otherwise, the deny is still reported, with no rule named.
+func skillDenyDecision(ctx context.Context, eff *authz.Effective, pat string) authz.Decision {
+	r := authz.Evaluate(ctx, eff, "invoke", authz.Resource{Type: "skill", Name: pat}, true)
+	if r.Decision.Outcome == authz.Denied {
+		return r.Decision
+	}
+	return authz.Decision{Outcome: authz.Denied}
 }

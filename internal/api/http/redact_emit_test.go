@@ -219,3 +219,65 @@ func TestRecordingEmit_RedactsSecretInContextState(t *testing.T) {
 		t.Error("the LIVE event was mutated — only the persisted copy is to be masked")
 	}
 }
+
+// A pre-signed upload URL an MCP tool returns is a credential: anyone holding
+// it can write the file, without signing in, until it expires. The stored
+// tool_result and the stored File call that uses it keep the URL but not the
+// signature, in the persisted blob itself (where Go escapes & as &); the
+// live stream keeps the URL whole so the run can still use it.
+func TestRecordingEmit_MasksSignedURLCredentialAtRest(t *testing.T) {
+	const tempauth = "v1.eyJGAKEHEADER.eyJGAKEPAYLOADfake.FAKE_sig-0123"
+	uploadURL := "https://contoso.sharepoint.com/sites/team/_api/v2.0/drives/b!FAKEdrive/items/01FAKEITEM/uploadSession" +
+		"?guid='0f1e2d3c-aaaa-bbbb-cccc-000000000000'&overwrite=False&rename=False&dc=0&tempauth=" + tempauth
+	srv, st, runID, ctx, cleanup := emitFixture(t, newAtRestRedactor(nil))
+	defer cleanup()
+
+	var forwarded []providers.Event
+	emit := srv.makeRecordingEmit(ctx, runID, tools.RunIdentityValue{}, "", runStateMeta{}, func(ev providers.Event) { forwarded = append(forwarded, ev) })
+
+	resultText := `{"uploadUrl":"` + uploadURL + `","expirationDateTime":"2026-10-24T12:15:00Z"}`
+	emit(providers.Event{
+		Type:    providers.EventToolResult,
+		ToolUse: &providers.ToolUse{ID: "t1", Name: "mcp__ms365__create-upload-session", Input: json.RawMessage(`{"itemPath":"/a.docx"}`)},
+		Text:    resultText,
+	})
+	fileInput, _ := json.Marshal(map[string]string{"op": "upload", "url": uploadURL, "path": "volume:inbox:/a.docx"})
+	emit(providers.Event{
+		Type:    providers.EventToolCall,
+		ToolUse: &providers.ToolUse{ID: "t2", Name: "File", Input: fileInput},
+	})
+
+	evs, _, err := st.ListEvents(ctx, store.EventFilter{}, 100, 0)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("want 2 stored events, got %d", len(evs))
+	}
+	for _, e := range evs {
+		raw := string(e.Payload)
+		if strings.Contains(raw, tempauth) {
+			t.Errorf("stored %s still holds the signature: %s", e.Type, raw)
+		}
+		var decoded providers.Event
+		if err := json.Unmarshal(e.Payload, &decoded); err != nil {
+			t.Fatalf("unmarshal %s: %v", e.Type, err)
+		}
+		holder := decoded.Text
+		if decoded.Type == providers.EventToolCall {
+			holder = string(decoded.ToolUse.Input)
+			if !json.Valid(decoded.ToolUse.Input) {
+				t.Errorf("stored File input is not valid JSON: %s", decoded.ToolUse.Input)
+			}
+		}
+		// The input went through json.Marshal again, so its & is & there.
+		holder = strings.ReplaceAll(holder, "\\u0026", "&")
+		if !strings.Contains(holder, "guid='0f1e2d3c-aaaa-bbbb-cccc-000000000000'&overwrite=False&rename=False&dc=0&tempauth=[redacted:signed-url]") {
+			t.Errorf("stored %s lost the URL around the signature: %s", e.Type, holder)
+		}
+	}
+
+	if len(forwarded) != 2 || forwarded[0].Text != resultText || string(forwarded[1].ToolUse.Input) != string(fileInput) {
+		t.Errorf("the live stream must carry the URL unchanged; got %+v", forwarded)
+	}
+}

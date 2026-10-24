@@ -965,6 +965,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	src.CoreBlocks = coreBlocks
 	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, run.Agent, src)
 	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
+	loopCtx = s.recordShadowNarrowing(loopCtx, run.ID, runPolicy)
 	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
 	// from any ephemeral_volume_defs rows this run created before it was
 	// paused/snapshotted (the sweeper skips paused runs, so the rows + on-disk
@@ -1083,6 +1084,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger, residents),
 		ResumeAwaitingChildren: resumeChildren,
 	}
+	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
+	runOpts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 	residentDone := func(string, *builtin.ChildCappedError) {}
 	if rc != nil {
 		// Its parent's op=cancel stops its current turn, as it did live.
