@@ -145,6 +145,8 @@ type Server struct {
 	// oauthGates caches the OAuth gates (RFC FA P5); they share oidcHTTP.
 	oauthGates oauthGateCache
 	oidcHTTP   *http.Client
+	// edgeGates are the kind: header and kind: awsiam gates (RFC FA P3).
+	edgeGates edgeGatesHolder
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration
@@ -4196,6 +4198,14 @@ func (s *Server) RunSessionLockGC(ctx context.Context, interval, maxIdle time.Du
 // of taking down the process. /healthz stays bare — it should never panic
 // and a panic there is a programmer error worth crashing on.
 func (s *Server) Mux() http.Handler {
+	// The header gates' filter runs before every route (RFC FA P3): it
+	// strips smuggled aliases of a gate's identity header before any
+	// handler can read one.
+	return s.edgeHeaderFilter(s.routes())
+}
+
+// routes is the route table Mux serves.
+func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.Handle("POST /v1/runs", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRuns))))
@@ -4747,8 +4757,10 @@ func (s *Server) Mux() http.Handler {
 	// (authgate_oidc.go, authgate_external.go).
 	mux.Handle("GET /v1/_auth/login/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleRedirectLogin)))
 	mux.Handle("GET /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleRedirectComplete)))
-	// RFC FA P4 — external gates' non-browser routes. No bearer: the gate's
-	// signature under its pinned key is the authentication.
+	// RFC FA P4 — external gates' non-browser routes, and P3's AWS IAM
+	// machine login on assert. No bearer: the gate's own credential (a
+	// signature under its pinned key, a signed GetCallerIdentity) is the
+	// authentication.
 	mux.Handle("POST /v1/_auth/assert", recoveryMiddleware(http.HandlerFunc(s.handleAuthAssert)))
 	mux.Handle("POST /v1/_auth/revoke", recoveryMiddleware(http.HandlerFunc(s.handleAuthRevoke)))
 	mux.Handle("POST /v1/_auth/sync", recoveryMiddleware(http.HandlerFunc(s.handleAuthSync)))

@@ -294,22 +294,6 @@ func TestGate_STSDownIsNotACredentialRefusal(t *testing.T) {
 	}
 }
 
-func TestValidPattern_RequiresALiteralAccount(t *testing.T) {
-	for _, p := range []string{
-		"arn:aws:iam::*:role/ci-*", "arn:aws:iam::12345678901*:role/x", "*", "arn:aws:iam:::role/x",
-		"arn:aws:sts::123456789012:assumed-role/ci/*", "arn:aws:s3:::bucket",
-	} {
-		if ValidPattern(p) == nil {
-			t.Errorf("ValidPattern(%q) accepted", p)
-		}
-	}
-	for _, p := range []string{"arn:aws:iam::123456789012:role/ci-*", "arn:aws:iam::123456789012:user/alice", "arn:aws-us-gov:iam::123456789012:role/*"} {
-		if err := ValidPattern(p); err != nil {
-			t.Errorf("ValidPattern(%q) = %v", p, err)
-		}
-	}
-}
-
 func TestMatchAny(t *testing.T) {
 	cases := []struct {
 		pat, arn string

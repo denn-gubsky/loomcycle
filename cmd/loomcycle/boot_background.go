@@ -541,6 +541,12 @@ func (b *boot) startStoreSweepers() {
 				if err == nil {
 					thr, err = storeIface.AuthThrottleDeleteExpired(ctx, now)
 				}
+				// RFC FA P3: one-time values (STS signatures) past their window.
+				if err == nil {
+					var rep int
+					rep, err = storeIface.AuthReplayDeleteExpired(ctx, now)
+					thr += rep
+				}
 				if err != nil {
 					slog.Error("auth-gate sweep: failed", "err", err)
 					return

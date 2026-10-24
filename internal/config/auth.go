@@ -62,8 +62,7 @@ const tokenGateLabel = "Access token"
 // refused with a message that says so, rather than as unknown, so an operator
 // who copied an example learns why it does not load yet.
 var laterGateKinds = map[string]bool{
-	"header": true,
-	"awsiam": true, "device": true,
+	"device": true,
 }
 
 var authGateNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
@@ -127,7 +126,8 @@ type AuthGateConfig struct {
 	// for the gate kinds that verify one (auth_identity.go).
 	IdentityMap *AuthIdentityMapConfig `yaml:"identity_map,omitempty"`
 
-	// The OIDC gate's keys (kind: oidc, auth_oidc.go).
+	// The OIDC gate's keys (kind: oidc, auth_oidc.go). preset, client_id and
+	// issuer are shared with the edge gates (kind: header, aws-alb preset).
 	Preset          string   `yaml:"preset,omitempty"`
 	ClientID        string   `yaml:"client_id,omitempty"`
 	ClientSecretEnv string   `yaml:"client_secret_env,omitempty"`
@@ -144,6 +144,17 @@ type AuthGateConfig struct {
 
 	// External holds the kind: external keys (auth_external.go).
 	External AuthExternalGateConfig `yaml:",inline"`
+
+	// The edge gates' own keys (kind: header and kind: awsiam, auth_edge.go).
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty"`
+	TeamDomain        string   `yaml:"team_domain,omitempty"`
+	Audience          string   `yaml:"audience,omitempty"`
+	ALBARN            string   `yaml:"alb_arn,omitempty"`
+	SecretEnv         string   `yaml:"secret_env,omitempty"`
+	Secret            string   `yaml:"secret,omitempty"`
+	ServerID          string   `yaml:"server_id,omitempty"`
+	AllowedARNs       []string `yaml:"allowed_arns,omitempty"`
+	STSRegions        []string `yaml:"sts_regions,omitempty"`
 }
 
 // AuthGateInvitesConfig holds Go durations.
@@ -189,6 +200,9 @@ type AuthGate struct {
 	OAuth *AuthOAuthGate
 	// External is set for kind: external.
 	External *AuthExternalGate
+	// Header is set for kind: header, AWSIAM for kind: awsiam.
+	Header *AuthHeaderGate
+	AWSIAM *AuthAWSIAMGate
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -433,18 +447,29 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindExternal:
 			// Interactive only with a callback_url; counted below.
+		case kind == AuthGateKindHeader:
+			// A person signs in to the Web UI through it (the proxy's
+			// assertion on the login request).
+			interactive++
+		case kind == AuthGateKindAWSIAM:
+			// Machines only: it issues API tokens, never a session.
 		case laterGateKinds[kind]:
-			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password, oidc, oauth and external are", name, kind)
+			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password, oidc, oauth, external, header and awsiam are", name, kind)
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc or external)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header or awsiam)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc or external)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header or awsiam)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
 				"(a bearer names its own tenant and subject; a password gate's users come from invites)", name, kind)
 		}
-		if kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && hasOIDCKeys(g) {
+		edge := kind == AuthGateKindHeader || kind == AuthGateKindAWSIAM
+		if edge && hasOIDCOnlyKeys(g) {
+			return fmt.Errorf("auth.gates.%s: client_secret_env, client_secret, discovery_url, allowed_domains, allowed_tids, "+
+				"scopes, end_session and token_auth apply only to kind: oidc", name)
+		}
+		if kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && !edge && hasOIDCKeys(g) {
 			return fmt.Errorf("auth.gates.%s: the OIDC gate's keys (preset, client_id, client_secret_env, issuer, "+
 				"discovery_url, allowed_domains, allowed_tids, scopes, end_session, token_auth) apply only to kind: oidc", name)
 		}
@@ -504,11 +529,22 @@ func resolveAuth(c *Config) error {
 			}
 		}
 		var pw *AuthPasswordGate
-		if kind == AuthGateKindPassword {
+		var hdr *AuthHeaderGate
+		var aws *AuthAWSIAMGate
+		if !edge && hasEdgeOnlyKeys(g) {
+			return fmt.Errorf("auth.gates.%s: trusted_proxy_cidrs, team_domain, audience, alb_arn, secret_env, secret, "+
+				"server_id, allowed_arns and sts_regions apply only to kind: header and kind: awsiam", name)
+		}
+		switch {
+		case edge:
+			if idm, hdr, aws, err = resolveEdgeGate(c, name, kind, g, p.NewUserFloor()); err != nil {
+				return err
+			}
+		case kind == AuthGateKindPassword:
 			if pw, err = resolvePasswordGate(c, name, g, p.Strict()); err != nil {
 				return err
 			}
-		} else if kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && hasPasswordKeys(g) {
+		case kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && hasPasswordKeys(g):
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
 		}
@@ -518,8 +554,12 @@ func resolveAuth(c *Config) error {
 			if kind == AuthGateKindToken {
 				label = tokenGateLabel
 			}
+			if hdr != nil {
+				label = headerPresetLabel(hdr.Preset, name)
+			}
 		}
-		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth, Identity: idm, External: ext})
+		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth,
+			Identity: idm, External: ext, Header: hdr, AWSIAM: aws})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)

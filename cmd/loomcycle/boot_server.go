@@ -102,6 +102,20 @@ func (b *boot) buildServer() {
 			slog.Warn(w)
 		}
 	}
+	// RFC FA P3: the header (trusted-proxy) and AWS IAM gates. Like the
+	// password gates, one that cannot run fails the boot.
+	edgeDeps := lchttp.EdgeGateDeps{SecretToCompare: credEngine.ResolveToCompare}
+	if storeIface != nil {
+		edgeDeps.Replay = storeIface
+	}
+	edgeGates, err := lchttp.EdgeGatesFromConfig(cfg, edgeDeps)
+	if err != nil {
+		fatal(fmt.Sprintf("auth: %v", err))
+	}
+	if edgeGates != nil {
+		srv.SetEdgeGates(edgeGates)
+		slog.Info("auth: edge gates", "gates", edgeGates.Names())
+	}
 	b.bootAuthConfigured = bootAuthConfigured
 	if bootAuthConfigured {
 		for _, w := range srv.AuthPostureWarnings(context.Background()) {

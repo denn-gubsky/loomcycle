@@ -94,7 +94,8 @@ type SharedAdmitter interface {
 type Gate struct {
 	// ServerID is the value the signed X-Loomcycle-AWS-Server-ID must carry.
 	ServerID string
-	// AllowedARNs are the patterns (ValidPattern) a canonical ARN must match.
+	// AllowedARNs are the patterns a canonical ARN must match, validated by
+	// the config load (a literal account; * only after it).
 	AllowedARNs []string
 	// Regions whose regional STS endpoints are accepted besides the global
 	// one.
@@ -413,7 +414,6 @@ func parseCallerIdentity(raw []byte) (arn, account, userID string, ok bool) {
 
 var (
 	callerARNRE = regexp.MustCompile(`^arn:(aws|aws-cn|aws-us-gov):(iam|sts)::([0-9]{12}):([A-Za-z0-9+=,.@_/-]{1,512})$`)
-	patternRE   = regexp.MustCompile(`^arn:(aws|aws-cn|aws-us-gov):(iam|sts)::[0-9]{12}:[A-Za-z0-9+=,.@_/*-]{1,512}$`)
 )
 
 // CanonicalARN maps an assumed-role session ARN to its role ARN (the path a
@@ -435,23 +435,6 @@ func CanonicalARN(arn string) (canon, account string, ok bool) {
 		}
 	}
 	return arn, account, true
-}
-
-// ValidPattern checks an allowed_arns entry: an ARN whose account is a
-// literal twelve digits, with `*` (any run of characters) only in the
-// resource. A pattern that leaves the account open would admit anyone with an
-// AWS account who names a role to match.
-func ValidPattern(p string) error {
-	if !patternRE.MatchString(p) {
-		return fmt.Errorf("%q must be an IAM ARN with a literal 12-digit account (e.g. arn:aws:iam::123456789012:role/ci-*); "+
-			"* is allowed only after the account", p)
-	}
-	if strings.Contains(p, ":sts::") && strings.Contains(p, ":assumed-role/") {
-		// Matching is against the role ARN, so this pattern would never match.
-		return fmt.Errorf("%q: name the role, arn:<partition>:iam::<account>:role/<name>; an assumed-role session ARN is "+
-			"matched as its role", p)
-	}
-	return nil
 }
 
 // MatchAny reports whether arn matches one of patterns.
