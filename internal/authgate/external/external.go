@@ -64,9 +64,13 @@ const (
 const (
 	// MaxLifetime is the longest exp − iat accepted (RFC FA D4).
 	MaxLifetime = 5 * time.Minute
-	// ClockSkew is how far a gate's clock may run ahead (iat in the future)
-	// or behind (exp just passed).
+	// ClockSkew is how far a gate's clock may run ahead: iat, nbf and
+	// auth_time may be this far in the future. exp gets no leeway — an
+	// assertion is refused at now >= exp.
 	ClockSkew = 30 * time.Second
+	// ReplayMargin is how long a used jti is kept past its exp, so the
+	// cache entry outlives every moment the assertion could still verify.
+	ReplayMargin = time.Minute
 	// MaxCompactBytes bounds the JWT itself; a sync of many users is the
 	// largest legitimate one.
 	MaxCompactBytes = 8 << 20
@@ -179,10 +183,13 @@ func HMACKey(secret []byte) (Key, error) {
 }
 
 // ReplayCache records jtis. UseOnce stores (gate, jti) until `until` and
-// reports whether it was new; false means the jti was already used. It must be
-// shared by every replica that accepts assertions for the gate.
+// reports whether it was new; false means the jti was already used. now is
+// the verifier's one clock reading, so an entry is judged expired by the
+// same clock that accepted the assertion. It must be shared by every replica
+// that accepts assertions for the gate, and the insert must be atomic per
+// (gate, jti) — a unique key, not a read then a write.
 type ReplayCache interface {
-	UseOnce(ctx context.Context, gate, jti string, until time.Time) (bool, error)
+	UseOnce(ctx context.Context, gate, jti string, until, now time.Time) (bool, error)
 }
 
 // Verifier checks one gate's assertions.
@@ -296,13 +303,18 @@ func (v *Verifier) Verify(ctx context.Context, compact string, use Use) (Claims,
 	if err := tok.Claims(v.Key.verify, &std, &wc); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
-	c, err := v.check(std, wc, use)
+	now := time.Now()
+	if v.Now != nil {
+		now = v.Now()
+	}
+	c, err := v.check(std, wc, use, now)
 	if err != nil {
 		return Claims{}, err
 	}
-	// Last: only an assertion this gate signed reaches the cache, so nobody
-	// else can fill it or burn a gate's jti.
-	fresh, err := v.Replay.UseOnce(ctx, v.Gate, c.JTI, c.Expiry.Add(ClockSkew))
+	// Last, after the signature, aud and exp held: only an assertion this
+	// gate signed reaches the cache, so nobody else can grow it or burn a
+	// gate's jti.
+	fresh, err := v.Replay.UseOnce(ctx, v.Gate, c.JTI, c.Expiry.Add(ReplayMargin), now)
 	if err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -312,13 +324,9 @@ func (v *Verifier) Verify(ctx context.Context, compact string, use Use) (Claims,
 	return c, nil
 }
 
-func (v *Verifier) check(std jwt.Claims, wc wireClaims, use Use) (Claims, error) {
+func (v *Verifier) check(std jwt.Claims, wc wireClaims, use Use, now time.Time) (Claims, error) {
 	bad := func(format string, args ...any) (Claims, error) {
 		return Claims{}, fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
-	}
-	now := time.Now()
-	if v.Now != nil {
-		now = v.Now()
 	}
 	if std.Issuer != v.Gate {
 		return bad("iss %q is not gate %q", std.Issuer, v.Gate)
@@ -339,7 +347,7 @@ func (v *Verifier) check(std jwt.Claims, wc wireClaims, use Use) (Claims, error)
 	if iat.After(now.Add(ClockSkew)) {
 		return bad("issued in the future")
 	}
-	if !now.Before(exp.Add(ClockSkew)) {
+	if !now.Before(exp) {
 		return bad("expired")
 	}
 	if std.NotBefore != nil && std.NotBefore.Time().After(now.Add(ClockSkew)) {

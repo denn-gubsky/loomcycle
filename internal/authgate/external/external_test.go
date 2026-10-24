@@ -26,12 +26,15 @@ type memReplay struct {
 	seen map[string]bool
 	err  error
 	n    int
+	// until and now are the last call's arguments.
+	until, now time.Time
 }
 
-func (m *memReplay) UseOnce(_ context.Context, gate, jti string, _ time.Time) (bool, error) {
+func (m *memReplay) UseOnce(_ context.Context, gate, jti string, until, now time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.n++
+	m.until, m.now = until, now
 	if m.err != nil {
 		return false, m.err
 	}
@@ -334,5 +337,29 @@ func TestParsePublicJWK_RefusesAPrivateKeyAndOtherCurves(t *testing.T) {
 	}
 	if _, err := HMACKey([]byte("short")); err == nil {
 		t.Fatal("a short HMAC secret was accepted")
+	}
+}
+
+// The replay entry outlives the assertion by ReplayMargin, and the cache is
+// judged by the same clock reading that accepted the assertion; at now >= exp
+// the assertion is refused with no leeway.
+func TestVerify_TheReplayEntryOutlivesExpAndExpHasNoLeeway(t *testing.T) {
+	s := edSigner(t)
+	now := time.Now().Truncate(time.Second)
+	rc := &memReplay{}
+	v := verifier("tg", s.pub, rc)
+	v.Now = func() time.Time { return now }
+	c := claimsFor("tg", now.Add(-time.Minute))
+	c.Expiry = jwt.NewNumericDate(now.Add(time.Minute))
+	if _, err := v.Verify(context.Background(), s.sign(t, c, map[string]any{"lc_use": "assert"}), UseAssert); err != nil {
+		t.Fatal(err)
+	}
+	if !rc.until.Equal(now.Add(time.Minute+ReplayMargin)) || !rc.now.Equal(now) {
+		t.Fatalf("cache kept until %v judged at %v; want exp+%s at the verifier's clock", rc.until, rc.now, ReplayMargin)
+	}
+	at := claimsFor("tg", now.Add(-time.Minute))
+	at.Expiry = jwt.NewNumericDate(now)
+	if _, err := v.Verify(context.Background(), s.sign(t, at, map[string]any{"lc_use": "assert"}), UseAssert); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an assertion at now == exp verified: %v", err)
 	}
 }
