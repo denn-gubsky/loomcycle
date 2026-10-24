@@ -2791,6 +2791,7 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		UserTierName:    overlay.Name,
 		PinAfterSuccess: s.cfg().Env.FallbackPinAfterSuccess,
 	}
+	markRateLimited := s.markRateLimitedFn(overlay.Name)
 	reResolve := func(ctx context.Context, failedProvider, failedModel string, cause error) (providers.Provider, string, string, error) {
 		// Mark the failed pair stalled BEFORE re-resolving so the
 		// resolver's matrix walks past it. SetReachable=false on
@@ -2800,9 +2801,17 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		// Only for a model fault (providers.StallsModel): the matrix is shared
 		// by every run. The loop cascades only retryable and retired-model
 		// errors today, so a permanent request error never gets here; the
-		// check keeps this site from drifting from the loop's.
-		if s.resolver != nil && providers.StallsModel(cause) {
-			s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
+		// check keeps this site from drifting from the loop's. A 429 is
+		// retryable and does get here: it cools the pair for the tier's
+		// rate-limit window, as the loop's own 429 feedback does, instead of
+		// stalling it until the next probe.
+		if s.resolver != nil {
+			switch {
+			case providers.IsRateLimit(cause):
+				markRateLimited(failedProvider, failedModel, 0)
+			case providers.StallsModel(cause):
+				s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
+			}
 		}
 		// Re-resolve with the same agent + user_tier at the run's tenant
 		// (RFC N — captured tenantID, not a ctx-derived/empty tenant). The
