@@ -334,6 +334,13 @@ func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot string, cal
 	if name == inbox.Name {
 		return refuse(tools.CategoryValidation, "file: keep: to is in the inbox, which is deleted with the run", "Name a dynamic volume of your tenant.")
 	}
+	// A dynamic volume is shared by the tenant, and an isolated user is held
+	// to its own scope. Its baseline allows writing volumes because inside a
+	// run the agent definition picks them; here the caller would pick any.
+	if auth.IsIsolated(caller, true) {
+		return refuse(tools.CategoryPermission, "file: keep: an isolated user may not write to its tenant's volumes",
+			"Import a Markdown file of it into your own documents, or run an agent bound to the volume.")
+	}
 	if _, static := s.cfg().Volumes[name]; static {
 		return refuse(tools.CategoryPermission, fmt.Sprintf("file: keep: %q is a configured volume; from here keep copies only into a dynamic volume of your tenant", name),
 			"Create one with volumedef, or have an agent bound to that volume keep the file.")
