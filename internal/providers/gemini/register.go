@@ -26,6 +26,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		d.SetKeyEnvName(o.KeyEnvName)
 	}
 	d.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "gemini", o.Options)
+	providers.WarnUnknownOptions(o.Logger, "gemini", o.Options)
 	return d, nil
 }

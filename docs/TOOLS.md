@@ -164,6 +164,58 @@ Without `tools` on the server entry, every tool the server advertises is registe
 - **Submodules.** `submodule_list` reads `.gitmodules` (a relative URL resolves against `origin`); `submodule_update` clones or fetches one submodule at the commit the superproject records, as a repository with its own `.git` in its path. Its URL is repository content, so it is checked like any remote: https, a host in `LOOMCYCLE_GIT_SOURCE_HOSTS`, the agent's `git_remote: [fetch]`. Not recursive.
 - **Identity and audit.** Commits use `LOOMCYCLE_GIT_AUTHOR_NAME` / `LOOMCYCLE_GIT_AUTHOR_EMAIL` (default: the agent's name at `loomcycle.invalid`) and carry a `Loomcycle-Run:` trailer. With `LOOMCYCLE_AUDIT_LOG_PATH` set, every network op writes an audit record (`git_clone`, `git_push`, …) with the host, repository, refs updated, outcome and the credential's reference, never its value.
 
+### Files tools return — the run inbox and the `File` tool
+
+A tool call is text, so a file cannot reach a model as one: base64 is too long to hold, too easy to corrupt, and unreadable anyway. When a tool returns a file, loomcycle keeps it as a file in the run's **inbox** and the model gets one line in its place:
+
+```
+[file: volume:inbox:documents/board-papers.pdf · application/pdf · 1.8 MiB · sha256:3f9a1c2b4d5e… · from mcp:ms365/get-attachment]
+```
+
+The reference is relative to the volume root, as every file tool's path is: Read opens it as `volume: "inbox"`, `path: "documents/board-papers.pdf"`, and Crypto's `from`/`to` take it as written. A file that cannot be kept gives `[file not kept: <why> · …]`; its bytes never reach the model either way.
+
+- **The inbox.** An ephemeral volume of the run tree named `inbox`, made on the first capture under the operator's `dynamic_root` volume and deleted with the tree (with the crash sweeper as a backstop). Folders: `documents/`, `images/`, `web/<host>/`, `extracted/`. Sub-agents see it; one given the tree's volumes read-only can still have its tool results kept (those writes are the runtime's) but cannot remove anything. The name `inbox` is reserved: `VolumeDef` refuses it, and a tenant volume or a configured volume already named `inbox` refuses every capture rather than being shadowed. **Without a `dynamic_root` volume nothing is kept**: every file becomes a refusal line.
+- **What is captured.**
+  - MCP results: `image`, `audio` and `resource` blob blocks, always. A `resource` with text is kept as text, a `resource_link` is shown as one line.
+  - Base64 inside an MCP text block, only for a server with `binary_results: capture` (yaml `mcp_servers.<name>` or `MCPServerDef`; default `passthrough`). Long strings (≥ `LOOMCYCLE_FILE_BASE64_MIN_BYTES`, default 4096) that decode to a recognisable file or to readable text are replaced by the stub. Opaque tokens are left alone, and the rest of the block is byte-identical. The setting is part of the def's content hash.
+  - HTTP and WebFetch responses whose body is binary (by Content-Type, then a sniff, then the URL extension). The text path is unchanged.
+  - WebFetch with `assets: true`: the page's images and its links to PDFs, images and Office files, under the page's own host policy and WebFetch's hooks, at most `assets_max` (default 20, ceiling 100).
+- **Names.** Only the last segment of the producer's name, %-unescaped, Cyrillic transliterated (`Протокол засідання №3.pdf` → `Protokol-zasidannya-3.pdf`), reduced to `[A-Za-z0-9._-]`, de-duplicated with a numeric suffix. Each capture emits a `file_captured` event (SSE, transcript, gRPC `Event.file`, the TS and Python clients, and one line in the Web UI's run views) with the ref, type, size, sha256 and origin, never the bytes or a URL's query.
+- **Caps.** `LOOMCYCLE_FILE_MAX_BYTES` (64 MiB, one file), `LOOMCYCLE_FILE_INBOX_MAX_BYTES` (1 GiB, the tree's inbox; a resumed tree counts what it already holds), `LOOMCYCLE_MCP_MAX_FRAME_BYTES` (16 MiB, one MCP response: a stdio line or an HTTP body). A bad value refuses the boot.
+
+**The `File` tool** (granted by name) handles these files without their bytes passing through the model:
+
+| op | What it does |
+|---|---|
+| `stat` | size, type, sha256, origin of one file (the capture record, while the bytes still hash to it; otherwise origin `unknown`); for a picture `extract` found, the PDF `page` or PPTX `slide` it was on |
+| `ls` | the inbox (default) or a folder of a bound volume |
+| `keep` | copy an inbox file into a read-write volume (the inbox dies with the run); never over an existing file unless `overwrite` |
+| `rm`, `clear` | delete one inbox file, or empty the inbox or one folder of it |
+| `download` | GET a URL into the inbox or a volume, under the HTTP tool's host policy (redirects same host only); credential headers refused |
+| `upload` | PUT/POST a file to a URL, whole or in ranges for an upload session (`Content-Range` chunks of 320 KiB multiples, following `nextExpectedRanges`) |
+| `extract` | turn DOCX, XLSX, PPTX, PDF, HTML, CSV/TSV, text or an image into Markdown in `extracted/`, pictures kept as files, plus a fenced excerpt |
+| `import` | build a Document from such Markdown, the pictures `extract` wrote attached as image chunks |
+
+- **Grants.** The inbox needs only `File`. Any other volume is reached with the run's own grants, as Crypto's references are: `keep` and `download` into a volume need `Write`, reading another volume needs `Read`, and that tool's pre-hooks judge the call on the final path. `download` and `upload` need `HTTP` and pass HTTP's pre-hooks, which see the full URL, the headers and, for an upload, `{from, size, sha256}`. `import` needs `Document` and its scope grants.
+- **Pre-authenticated URLs are credentials.** Results, errors and records show a URL's query as `?…`. Its credential parts (each query value and any user information of 8 bytes or more) are registered with the server's redactor, at most 32 per run tree, so a transcript that repeats them is masked. The redactor is process-wide, which is why short values are not registered.
+- **Extraction** is pure Go, in process. Zip formats go through one bounded reader: entry count, declared and actual total size, a per-entry ratio, and no entry name ever used as a path. XML is parsed strictly with no DTD entities, capped on elements, depth and text. Document text is escaped so it cannot become Markdown structure. The excerpt returned to the model is at most 30 000 characters, fenced as untrusted (`<file_content …>`), so the text cannot close its own fence. `yield_chars_per_page` is reported where pages are known: a near-zero yield marks a scan, the trigger for OCR (RFC FG).
+- **PDF.** The text layer is read page by page (ToUnicode maps, the standard and Differences encodings, Cyrillic glyph names), runs on one baseline joined left to right. Pictures stored as JPEG or JPEG 2000 are copied byte for byte; other image encodings are counted in a note, not re-encoded (a JPEG 2000 stays a link on import, as Document image chunks take PNG, JPEG, GIF and WebP). A page with little or no text is listed as likely scanned, so a scan returns its page pictures and that note rather than an empty file. Every encrypted PDF is refused, including one with only an owner password. Bounds: 2000 pages, 200 000 characters and 32 MiB of decoded content per page, form XObjects 4 deep, plus the parser's own stream and object limits; a malformed file is an error, never a crash.
+- **Import** treats the file as untrusted. Only the one-line `![alt](volume:inbox:extracted/…)` pictures `extract` wrote are followed; any other `volume:` reference, raw HTML or loom comment stays text and is counted in `skipped`. The document is tagged `untrusted` and `source/<origin>`. Each picture becomes an image chunk under its own sub-heading, with the `page` or `slide` it came from in its fields while the picture still hashes to its capture record. The Document tool's own `import_md` accepts one-line `volume:` image references too, read with the run's own `Read` grant and hooks, lazily, at most 64 per import and 64 MiB in total.
+
+**From outside a run — the MCP `file` tool.** An operator session (Claude Code over `loomcycle mcp`, or any `/v1/_mcp` client) has no inbox of its own, so `file` acts on the inbox of a run it may read, named by `run_id`. It runs the same `File` tool, on that inbox only:
+
+| op | who may |
+|---|---|
+| `stat`, `ls` | anyone who may read the run (the gate `get_run` uses) |
+| `import` | the same; the Document goes into the **caller's** own scopes |
+| `extract`, `rm`, `clear` | the run's owner (the principal whose subject and tenant are the run's) or an admin |
+| `keep` | the owner or an admin, into a read-write dynamic volume of the caller's tenant that the caller's access rules let it write |
+| `download`, `upload` | nobody: they need a run's HTTP host policy |
+
+A run the caller may not read answers exactly as a missing one does. A run that has ended answers that its inbox is gone, with the tree. The tool needs `runs:read`, like `get_run`, and is tenant-confined. Input is decoded strictly (exact field names, each once, nothing after the object).
+
+Since #2081, #2086, #2085, #2088, #2093 and #2097 (RFC FF Phases 1–5), `/loomcycle/rfcs/files-by-reference`.
+
 ## Layer 2 — agent-side: exposing tools
 
 Each agent definition lists which tools it can access. The list is **anchored**: anything not on it is invisible.
@@ -1028,13 +1080,13 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 ### Diagnostic logging (v0.12.7)
 
-`LOOMCYCLE_CHANNEL_DEBUG=1` enables structured per-publish + per-retry log lines used to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — these lines are noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The two log shapes are:
+`LOOMCYCLE_CHANNEL_DEBUG=1` enables a structured per-publish log line used, with the per-retry lines below, to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — the publish line is noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The retry lines are not gated by the flag: they fire whenever the bounded retry runs. The log shapes are:
 
 - `channel publish channel=X id=... commit_us=N pool_total=A pool_acquired=B pool_idle=C` — fires on every successful publish. `commit_us` measures the postgres `tx.Commit` duration in microseconds; the pool fields capture pgxpool state at commit time.
 
-- `channel "X" subscribe-race-recovered attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
+- `channel subscribe-race-recovered channel=X attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
 
-A complementary `subscribe-race-exhausted` log fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends. See `~/work/loomcycle-internal/doc-internal/channel-race-investigation.md` for the hypothesis table.
+A complementary `WARN channel subscribe-race-exhausted — silent miss; investigate channel=X attempts=3 …` line, with the same fields, fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends. See `~/work/loomcycle-internal/doc-internal/channel-race-investigation.md` for the hypothesis table.
 
 ### Quotas and overflow
 

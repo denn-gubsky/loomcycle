@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -264,16 +263,15 @@ func runThinClient(upstream string) {
 		ResponseHeaderTimeout: mcpProxyHeaderTimeout(),
 		ReconnectDelays:       mcpProxyReconnectDelays(),
 	})
-	log.Printf("mcp: thin-client mode → upstream %s (no local runtime)", upstream)
+	slog.Info("mcp: thin-client mode → upstream (no local runtime)", "url", upstream)
 	err := pc.Serve(proxyCtx, os.Stdin, os.Stdout)
 	switch {
 	case err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		// Clean stop: stdin EOF (client disconnect) or a received
 		// signal. Exit 0 so a supervisor doesn't treat a graceful
 		// stop as a crash and loop-restart.
-		log.Printf("mcp: proxy stopped")
+		slog.Info("mcp: proxy stopped")
 	default:
-		log.Printf("mcp: proxy ended: %v", err)
-		os.Exit(1)
+		fatal("mcp: proxy ended", "err", err)
 	}
 }

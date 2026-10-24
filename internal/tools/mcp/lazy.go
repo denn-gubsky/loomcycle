@@ -117,7 +117,7 @@ func (v lookupDynView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 // and dynamic-substrate membership sources; Resolve consults them through
 // the shared lookup.MCPServer resolver (so MCP uses the same static→dynamic
 // chain as every other primitive). Either may be nil (tests). onResolve is
-// optional; pass log.Printf for production. handshakeTimeout of 0 falls back
+// optional (production passes a closure that logs the server + tool count). handshakeTimeout of 0 falls back
 // to a sane default.
 func NewLazyResolver(pool *Pool, cfg *config.Config, dynamicReg *DynamicRegistry, onResolve func(string, int), handshakeTimeout time.Duration) *LazyResolver {
 	if handshakeTimeout <= 0 {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ func openModeRefusal(authConfigured bool, authErr error, env *config.Env) error 
 // the server stays in open mode. It returns when ctx ends, or once auth is
 // configured (an admin token minted at runtime): a running server does not move
 // back into open mode. A tick whose store read fails neither warns nor stops.
-func warnOpenMode(ctx context.Context, interval time.Duration, authConfigured func(context.Context) (bool, error), logf func(string, ...any)) {
+func warnOpenMode(ctx context.Context, interval time.Duration, authConfigured func(context.Context) (bool, error), logger *slog.Logger) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -60,7 +61,7 @@ func warnOpenMode(ctx context.Context, interval time.Duration, authConfigured fu
 			return
 		}
 		if err == nil {
-			logf("WARNING: open mode — no LOOMCYCLE_AUTH_TOKEN, no config principals and no admin " +
+			logger.Warn("open mode — no LOOMCYCLE_AUTH_TOKEN, no config principals and no admin " +
 				"operator token, so every HTTP and gRPC route is unauthenticated (dev only). Set " +
 				"LOOMCYCLE_AUTH_TOKEN, declare a principal, or mint an admin operator token.")
 		}

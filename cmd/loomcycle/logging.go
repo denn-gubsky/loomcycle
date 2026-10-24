@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -53,4 +54,12 @@ func logIdentity(ctx context.Context) logging.Identity {
 		Agent:  tools.AgentName(ctx),
 		User:   id.UserID,
 	}
+}
+
+// fatal logs msg at ERROR and exits 1, as log.Fatalf did: deferred calls do
+// not run. It goes through the slog default, so the line comes out in the
+// configured format with the configured redaction.
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
 }

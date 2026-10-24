@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -53,13 +54,13 @@ func (b *boot) buildServer() {
 	// in a warning). Built before the server so the tool is in its catalogue.
 	decisionService, dsErr := decisionbuild.Build(cfg, pr.sched)
 	if dsErr != nil {
-		log.Fatalf("decision: %v", dsErr)
+		fatal("decision: building the decision models failed", "err", dsErr)
 	}
 	if decisionService != nil {
 		for _, m := range decisionService.Models() {
-			log.Printf("decision: %s = %s/%s", m.Name, m.Provider, m.Model)
+			slog.Info("decision: model", "name", m.Name, "provider", m.Provider, "model", m.Model)
 		}
-		log.Printf("decision: default %s", decisionService.Default())
+		slog.Info("decision: default", "name", decisionService.Default())
 		decisionTool := &builtin.Decision{Service: decisionService}
 		b.allTools = append(b.allTools, decisionTool)
 		// A team's decision states ask through the same tool.
@@ -77,12 +78,13 @@ func (b *boot) buildServer() {
 	// with the server's own predicate, before the listeners start.
 	bootAuthConfigured, bootAuthErr := srv.AuthConfiguredErr(context.Background())
 	if err := openModeRefusal(bootAuthConfigured, bootAuthErr, &cfg.Env); err != nil {
-		log.Fatalf("auth: %v", err)
+		// The deployment guides quote this refusal's text; keep it.
+		fatal(fmt.Sprintf("auth: %v", err))
 	}
 	b.bootAuthConfigured = bootAuthConfigured
 	if bootAuthConfigured {
 		for _, w := range srv.AuthPostureWarnings(context.Background()) {
-			log.Printf("auth: WARNING: %s", w)
+			slog.Warn("auth: posture warning", "detail", w)
 		}
 	}
 	// The providers' call lanes (providers.<id>.max_concurrent / lanes). The
@@ -99,10 +101,10 @@ func (b *boot) buildServer() {
 	// cannot be built fails boot, as the embedder and the reranker do.
 	unitGenerator, ugErr := wiring.UnitGenerator(cfg, pr.sched)
 	if ugErr != nil {
-		log.Fatalf("unit generator: %v", ugErr)
+		fatal("unit generator: building it failed", "err", ugErr)
 	}
 	if unitGenerator != nil {
-		log.Printf("unit generator: %s", unitGenerator.ModelID())
+		slog.Info("unit generator: enabled", "model", unitGenerator.ModelID())
 		// RFC DT: its calls are the throughput samples of its model (not billed).
 		unitGenerator.ObserveCall = srv.ObserveCallTiming
 		srv.SetUnitGenerator(unitGenerator)
@@ -192,22 +194,22 @@ func (b *boot) openSQLMemory() {
 		)
 		if cfg.Storage.Backend == "postgres" {
 			if strings.TrimSpace(cfg.Storage.SqlMemPgDSN) == "" {
-				log.Fatalf("sqlmem: SQL Memory on a postgres backend requires a separate aux DSN — set LOOMCYCLE_SQLMEM_PG_DSN (a DIFFERENT database from the main store)")
+				fatal("sqlmem: SQL Memory on a postgres backend requires a separate aux DSN — set LOOMCYCLE_SQLMEM_PG_DSN (a DIFFERENT database from the main store)")
 			}
 			sqlMemMgr, smErr = sqlmem.NewPostgres(context.Background(), sqlMemCfg)
 			sqlMemTier = "postgres (schema-per-scope, aux DB)"
 		} else {
 			if strings.TrimSpace(cfg.Storage.SqlMemPgDSN) != "" {
-				log.Printf("sqlmem: LOOMCYCLE_SQLMEM_PG_DSN is set but the backend is sqlite — ignoring it (file-per-scope at %s)", sqlMemRoot)
+				slog.Warn("sqlmem: LOOMCYCLE_SQLMEM_PG_DSN is set but the backend is sqlite — ignoring it (file-per-scope)", "dir", sqlMemRoot)
 			}
 			if len(cfg.Storage.SqlMemSharedSchemas) > 0 {
-				log.Printf("sqlmem: sqlmem_shared_schemas is set but the backend is sqlite — ignoring it (read-only shared schemas are a postgres-tier feature, RFC AA Phase 3g)")
+				slog.Warn("sqlmem: sqlmem_shared_schemas is set but the backend is sqlite — ignoring it (read-only shared schemas are a postgres-tier feature, RFC AA Phase 3g)")
 			}
 			sqlMemMgr, smErr = sqlmem.New(sqlMemCfg)
 			sqlMemTier = "sqlite (file-per-scope, root=" + sqlMemRoot + ")"
 		}
 		if smErr != nil {
-			log.Fatalf("sqlmem: %v", smErr)
+			fatal("sqlmem: opening SQL Memory failed", "err", smErr)
 		}
 		// Audit sink: reuse the operator audit log file when configured (the
 		// records carry a distinct action=sql_query/sql_exec), else NopSink.
@@ -215,7 +217,7 @@ func (b *boot) openSQLMemory() {
 		if cfg.Env.AuditLogPath != "" {
 			fs, aerr := audit.NewFileSink(cfg.Env.AuditLogPath)
 			if aerr != nil {
-				log.Fatalf("sqlmem audit: %v", aerr)
+				fatal("sqlmem audit: opening the audit log failed", "path", cfg.Env.AuditLogPath, "err", aerr)
 			}
 			sqlAudit = fs
 		}
@@ -233,9 +235,9 @@ func (b *boot) openSQLMemory() {
 		// Close the manager (all open scope handles) on shutdown, after the
 		// store closer so an in-flight finish-path drop still has a live handle.
 		b.addCleanup(func() { _ = sqlMemMgr.Close() })
-		log.Printf("sqlmem: SQL Memory enabled (tier=%s, quota_bytes=%d, max_rows=%d, timeout_ms=%d, audit=%s)",
-			sqlMemTier, cfg.Storage.SqlMemQuotaBytes, cfg.Storage.SqlMemMaxRows,
-			cfg.Storage.SqlMemStatementTimeoutMS, cfg.Storage.SqlMemAuditMode)
+		slog.Info("sqlmem: SQL Memory enabled", "tier", sqlMemTier, "quota_bytes", cfg.Storage.SqlMemQuotaBytes,
+			"max_rows", cfg.Storage.SqlMemMaxRows, "timeout_ms", cfg.Storage.SqlMemStatementTimeoutMS,
+			"audit", cfg.Storage.SqlMemAuditMode)
 	}
 
 	b.sqlMemMgr = sqlMemMgr
@@ -313,12 +315,12 @@ func (b *boot) wireServerCatalog() {
 		// F33: dynamic MCP enumeration (cached tools for every server; a
 		// bounded run-start handshake for a REFERENCED server whose cache is
 		// empty) lives in the testable mcp.DynamicToolsForRun helper.
-		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)
+		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, slog.Default())
 		// Recover STATIC (yaml) MCP servers skipped at boot without a restart —
 		// the static sibling of the F33 dynamic re-probe above. Scoped to the
 		// servers this run references (wantServers) and to those that actually
 		// failed boot (skippedStaticMCP), so a healthy server is never re-dialed.
-		out = append(out, mcp.StaticToolsForRun(ctx, mcpPool, cfg.MCPServers, skippedStaticMCP, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)...)
+		out = append(out, mcp.StaticToolsForRun(ctx, mcpPool, cfg.MCPServers, skippedStaticMCP, tenant, wantServers, runStartMCPDiscoveryTimeout, slog.Default())...)
 		if cfg.Env.A2AServerEnabled {
 			resolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
 				// RFC N: the enumerator's `tenant` is authoritative (server
@@ -326,7 +328,7 @@ func (b *boot) wireServerCatalog() {
 				// per-run peer set under it rather than re-deriving from ctx.
 				return lookup.A2AAgent(ctx, storeIface, cfg, tenant, name)
 			}
-			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))...)
+			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, slog.Default(), toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))...)
 		}
 		return out
 	})
@@ -432,7 +434,7 @@ func (b *boot) wireBuses() {
 	}
 	heartbeatSpecs, err := channels.LoadHeartbeatSpecs(heartbeatChannels)
 	if err != nil {
-		log.Fatalf("heartbeat specs: %v", err)
+		fatal("heartbeat specs: loading them failed", "err", err)
 	}
 	var heartbeatRunner *channels.HeartbeatRunner
 	if len(heartbeatSpecs) > 0 {
@@ -473,9 +475,9 @@ func loadWebUI(cfg *config.Config) (*webui.Bundle, webui.Status) {
 		b, st, err := webui.LoadConfigured(cfg.Env.WebUIDir)
 		switch {
 		case err != nil:
-			log.Printf("webui: LOOMCYCLE_WEBUI_DIR=%s refused, serving the embedded UI: %v", cfg.Env.WebUIDir, err)
+			slog.Warn("webui: LOOMCYCLE_WEBUI_DIR refused, serving the embedded UI", "dir", cfg.Env.WebUIDir, "err", err)
 		case b != nil:
-			log.Printf("webui: serving UI %s from LOOMCYCLE_WEBUI_DIR=%s", b.UIVersion(), cfg.Env.WebUIDir)
+			slog.Info("webui: serving UI from LOOMCYCLE_WEBUI_DIR", "version", b.UIVersion(), "dir", cfg.Env.WebUIDir)
 		}
 		return b, st
 	}
@@ -485,13 +487,13 @@ func loadWebUI(cfg *config.Config) (*webui.Bundle, webui.Status) {
 		SHA256:               cfg.Env.WebUIBundleSHA256,
 		DataDir:              cfg.Env.DataDir,
 		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
-		Logf:                 log.Printf,
+		Logger:               slog.Default(),
 	})
 	if err != nil {
-		log.Printf("webui: LOOMCYCLE_WEBUI_BUNDLE_URL (%s) refused, serving the embedded UI: %v", host, err)
+		slog.Warn("webui: LOOMCYCLE_WEBUI_BUNDLE_URL refused, serving the embedded UI", "host", host, "err", err)
 		return b, st
 	}
-	log.Printf("webui: serving UI %s from LOOMCYCLE_WEBUI_BUNDLE_URL (%s, sha256 %s)", b.UIVersion(), host, cfg.Env.WebUIBundleSHA256)
+	slog.Info("webui: serving UI from LOOMCYCLE_WEBUI_BUNDLE_URL", "version", b.UIVersion(), "host", host, "sha256", cfg.Env.WebUIBundleSHA256)
 	return b, st
 }
 

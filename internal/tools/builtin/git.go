@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -955,7 +955,7 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		case errors.Is(err, errGitCredentialIsAppConfig):
 			return deny("credential_unresolvable", errGitCredentialIsAppConfig.Error())
 		case err != nil:
-			log.Printf("git: credential for host %s could not be resolved: %v", host, err)
+			slog.WarnContext(ctx, "git: credential for a host could not be resolved", "host", host, "err", err)
 			return deny("credential_unresolvable", "")
 		}
 	}
@@ -996,7 +996,7 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 		ev.GitOutcome = class
 		g.record(ev)
 		// The detail can hold a server's words: the operator's log only.
-		log.Printf("git: %s %s on %s failed: %v", in.Op, redactURLPath(rawURL), host, err)
+		slog.WarnContext(ctx, "git: network op failed", "op", in.Op, "url", redactURLPath(rawURL), "host", host, "err", err)
 		if class == gitrepo.ErrNotFastForward.Error() || class == gitrepo.ErrWorktreeDirty.Error() ||
 			class == gitrepo.ErrInvalidArgument.Error() || class == gitrepo.ErrAlreadyExists.Error() {
 			return gitRefusal(class, localDetail(err))
@@ -1125,7 +1125,7 @@ func (g *Git) record(ev audit.Event) {
 		return
 	}
 	if err := g.Audit.Record(ev); err != nil {
-		log.Printf("git: audit record failed: %v", err)
+		slog.Error("git: audit record failed", "err", err)
 	}
 }
 

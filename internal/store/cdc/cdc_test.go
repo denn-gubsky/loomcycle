@@ -1,8 +1,12 @@
 package cdc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,5 +117,35 @@ func TestCDC_CursorAndPrune(t *testing.T) {
 	}
 	if left, _ := c.GetMemoryChangesSince(ctx, "acme", 0, 100); len(left) != 0 {
 		t.Errorf("after prune %d rows remain, want 0", len(left))
+	}
+}
+
+// failingAppendStore fails every change-feed append; every other method is the
+// nil embedded interface, so the test touches only AppendMemoryChange.
+type failingAppendStore struct{ store.Store }
+
+func (failingAppendStore) AppendMemoryChange(context.Context, store.MemoryChange) error {
+	return errors.New("feed table locked")
+}
+
+// TestCDC_FailedAppendIsLoggedAsError pins that a change the feed could not
+// record is reported at Error with its type, tenant and cause — the write it
+// describes succeeded, so the log is the only trace of the lost feed row.
+func TestCDC_FailedAppendIsLoggedAsError(t *testing.T) {
+	var buf bytes.Buffer
+	c := Wrap(failingAppendStore{}, slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	c.emit(context.Background(), store.MemoryChange{TenantID: "acme", Type: store.MemoryChangeSet})
+
+	line := strings.TrimSpace(buf.String())
+	for _, want := range []string{
+		"level=ERROR",
+		"cdc: append change failed (feed lag, write succeeded)",
+		"change_type=memory.set",
+		"tenant=acme",
+		`err="feed table locked"`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log line missing %q: %s", want, line)
+		}
 	}
 }

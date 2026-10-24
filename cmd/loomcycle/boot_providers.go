@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 )
@@ -18,7 +18,7 @@ func (b *boot) buildProviders() {
 	cfg.SecretSink = secrets.register
 	pr, err := newProviderResolver(cfg)
 	if err != nil {
-		log.Fatalf("provider resolver: %v", err)
+		fatal("provider resolver: building the providers failed", "err", err)
 	}
 	validateCodeAgents(cfg, pr)
 	sem := concurrency.New(
@@ -28,8 +28,10 @@ func (b *boot) buildProviders() {
 	).WithPerUserCap(cfg.Concurrency.MaxConcurrentRunsPerUser).
 		WithQueuedPerUserCap(cfg.Concurrency.MaxQueuedRunsPerUser)
 	if cfg.Concurrency.MaxConcurrentRunsPerUser > 0 {
-		log.Printf("concurrency: per-user cap enabled — max_concurrent_runs_per_user=%d, max_queued_runs_per_user=%d (global cap=%d)",
-			cfg.Concurrency.MaxConcurrentRunsPerUser, cfg.Concurrency.MaxQueuedRunsPerUser, cfg.Concurrency.MaxConcurrentRuns)
+		slog.Info("concurrency: per-user cap enabled",
+			"max_concurrent_runs_per_user", cfg.Concurrency.MaxConcurrentRunsPerUser,
+			"max_queued_runs_per_user", cfg.Concurrency.MaxQueuedRunsPerUser,
+			"global_cap", cfg.Concurrency.MaxConcurrentRuns)
 	}
 
 	b.secrets = secrets

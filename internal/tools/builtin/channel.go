@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"reflect"
 	"sort"
 	"strings"
@@ -728,7 +728,8 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			// requesting longer waits re-subscribes every cap interval, burning
 			// the agent's max_iterations.
 			if c.shouldWarnTruncation(def.Name) {
-				log.Printf("channel %q: subscribe wait_ms=%d truncated to the operator cap %d ms (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS) — repeated truncation re-subscribes every cap interval and burns the agent's max_iterations; raise the cap if longer waits are intended", store.TeamChannelDisplayName(def.Name), in.WaitMS, c.LongPollCapMS)
+				slog.WarnContext(ctx, "channel: subscribe wait_ms truncated to the operator cap (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS) — repeated truncation re-subscribes every cap interval and burns the agent's max_iterations; raise the cap if longer waits are intended",
+					"channel", store.TeamChannelDisplayName(def.Name), "wait_ms", in.WaitMS, "cap_ms", c.LongPollCapMS)
 			}
 			wait = c.LongPollCapMS
 		}
@@ -843,7 +844,8 @@ func (c *Channel) execSubscribe(ctx context.Context, policy tools.ChannelPolicyV
 			// will re-receive this batch because the committed
 			// cursor didn't advance.
 			if !errors.Is(err, store.ErrChannelCursorRegression) {
-				log.Printf("channel %q: subscribe auto-ack failed (next double-delivery expected): %v", store.TeamChannelDisplayName(def.Name), err)
+				slog.WarnContext(ctx, "channel: subscribe auto-ack failed (next double-delivery expected)",
+					"channel", store.TeamChannelDisplayName(def.Name), "err", err)
 			}
 		}
 	}
@@ -929,12 +931,12 @@ func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel 
 				// Surface at scale so we can measure the residual rate.
 				// recovery_lag_ms = waker → eventually-non-empty read.
 				// first_read_lag_us = waker → the empty first read.
-				log.Printf("channel %q: subscribe-race-recovered attempt=%d msgs=%d recovery_lag_ms=%d first_read_lag_us=%d from_cursor=%q pool_total=%d pool_acquired=%d pool_idle=%d",
-					channel, attempt, len(msgs),
-					time.Since(diag.notifyAt).Milliseconds(),
-					firstEmptyAt.Sub(diag.notifyAt).Microseconds(),
-					diag.fromCursor,
-					diag.poolTotal, diag.poolAcquired, diag.poolIdle)
+				slog.Info("channel subscribe-race-recovered",
+					"channel", channel, "attempt", attempt, "msgs", len(msgs),
+					"recovery_lag_ms", time.Since(diag.notifyAt).Milliseconds(),
+					"first_read_lag_us", firstEmptyAt.Sub(diag.notifyAt).Microseconds(),
+					"from_cursor", diag.fromCursor,
+					"pool_total", diag.poolTotal, "pool_acquired", diag.poolAcquired, "pool_idle", diag.poolIdle)
 			}
 			return msgs, next, nil
 		}
@@ -950,12 +952,12 @@ func readWithRetry(read func() ([]store.ChannelMessage, string, error), channel 
 	// a publish we shouldn't have seen (cursor-past it), or there's
 	// a more pathological timing window we haven't yet diagnosed.
 	// Return empty and let the caller decide.
-	log.Printf("channel %q: subscribe-race-exhausted attempts=%d recovery_lag_ms=%d first_read_lag_us=%d from_cursor=%q pool_total=%d pool_acquired=%d pool_idle=%d — silent miss; investigate",
-		channel, maxAttempts,
-		time.Since(diag.notifyAt).Milliseconds(),
-		firstEmptyAt.Sub(diag.notifyAt).Microseconds(),
-		diag.fromCursor,
-		diag.poolTotal, diag.poolAcquired, diag.poolIdle)
+	slog.Warn("channel subscribe-race-exhausted — silent miss; investigate",
+		"channel", channel, "attempts", maxAttempts,
+		"recovery_lag_ms", time.Since(diag.notifyAt).Milliseconds(),
+		"first_read_lag_us", firstEmptyAt.Sub(diag.notifyAt).Microseconds(),
+		"from_cursor", diag.fromCursor,
+		"pool_total", diag.poolTotal, "pool_acquired", diag.poolAcquired, "pool_idle", diag.poolIdle)
 	return nil, "", nil
 }
 
@@ -1087,7 +1089,8 @@ func (c *Channel) execAwait(ctx context.Context, policy tools.ChannelPolicyValue
 		// F22: surface the cap once per channel-set so an operator notices
 		// the long-poll budget being clipped.
 		if c.shouldWarnTruncation("await:" + strings.Join(in.Channels, ",")) {
-			log.Printf("channel await: wait_ms=%d truncated to the operator cap %d ms (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS)", in.WaitMS, c.LongPollCapMS)
+			slog.WarnContext(ctx, "channel await: wait_ms truncated to the operator cap (LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS)",
+				"wait_ms", in.WaitMS, "cap_ms", c.LongPollCapMS)
 		}
 		wait = c.LongPollCapMS
 	}

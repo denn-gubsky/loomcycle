@@ -17,7 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -405,7 +405,7 @@ func main() {
 	// binary spots it immediately — before any "but my code says X"
 	// debugging spiral. Critical when development cycle is "git pull
 	// && restart" without a rebuild step in between.
-	log.Printf("loomcycle build: version=%s commit=%s time=%s", buildVersion, buildCommit, buildTime)
+	slog.Info("loomcycle build", "version", buildVersion, "commit", buildCommit, "built_at", buildTime)
 
 	// RFC R thin-client mode runs BEFORE any runtime boot — no config
 	// load, no providers, no store, no listener, no second runtime. The
@@ -474,7 +474,7 @@ func main() {
 // postgres opt-in via storage.backend or LOOMCYCLE_STORAGE_BACKEND) and
 // returns a ready Store + a Close-and-log closer.
 //
-// Errors propagate up to log.Fatalf in main; they cover both
+// Errors propagate up to a fatal boot error; they cover both
 // missing-config (postgres backend selected without a DSN) and
 // dial/migration failures (postgres unreachable, schema not initialised
 // when LOOMCYCLE_PG_AUTOMIGRATE=0).
@@ -507,14 +507,15 @@ func warnLegacyTenantMemory(st store.Store) {
 		// exact call rather than describing it.
 		target = tenants[0]
 	}
-	msg := fmt.Sprintf("memory: WARNING — %d memory row(s) are stranded at the legacy \"\" tenant and are UNREADABLE from a tenant-scoped session (tenants holding rows: %s). "+
-		"RFC BL added the tenant_id column without backfilling pre-existing rows. Symptoms: a Document created before the upgrade lists and exports as headings with EMPTY bodies (its structure lives in SQL Memory, which is partitioned differently), and an agent's pre-upgrade key/value memory reads as absent. "+
-		"Nothing is deleted. Fix: POST /v1/_memory/repair-tenant (substrate:admin) — it reports by default, and applies with {\"dry_run\":false}; the Settings hub exposes it as Maintenance for shell-less deployments.",
-		legacy, strings.Join(tenants, ", "))
+	args := []any{"rows", legacy, "tenants", strings.Join(tenants, ", ")}
 	if target != "" {
-		msg += fmt.Sprintf(" For this deployment: {\"tenant\":%q,\"dry_run\":false}.", target)
+		args = append(args, "repair_body", fmt.Sprintf("{\"tenant\":%q,\"dry_run\":false}", target))
 	}
-	log.Print(msg)
+	slog.Warn("memory: memory rows are stranded at the legacy \"\" tenant and are UNREADABLE from a tenant-scoped session. "+
+		"RFC BL added the tenant_id column without backfilling pre-existing rows. Symptoms: a Document created before the upgrade lists and exports as headings with EMPTY bodies (its structure lives in SQL Memory, which is partitioned differently), and an agent's pre-upgrade key/value memory reads as absent. "+
+		"Nothing is deleted. Fix: POST /v1/_memory/repair-tenant (substrate:admin) — it reports by default, and applies with {\"dry_run\":false}; the Settings hub exposes it as Maintenance for shell-less deployments. "+
+		"With one tenant holding rows, repair_body is the request body for this deployment.",
+		args...)
 }
 
 func openStore(cfg *config.Config) (store.Store, func(), error) {
@@ -536,7 +537,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 			return nil, nil, fmt.Errorf("sqlite open: %w", err)
 		}
 		st.SetChannelDebug(channelDebugEnabled())
-		log.Printf("store: sqlite at %s", dbPath)
+		slog.Info("store: sqlite", "path", dbPath)
 		warnLegacyTenantMemory(st)
 		return st, func() { _ = st.Close() }, nil
 
@@ -555,7 +556,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("postgres open: %w", err)
 		}
-		log.Printf("store: postgres (automigrate=%v pgvector=%v)", cfg.Storage.PgAutoMigrate, cfg.Env.PgvectorEnabled)
+		slog.Info("store: postgres", "automigrate", cfg.Storage.PgAutoMigrate, "pgvector", cfg.Env.PgvectorEnabled)
 		warnLegacyTenantMemory(st)
 		return st, func() { _ = st.Close() }, nil
 
@@ -649,18 +650,19 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 	// resolution logic) — kept id-keyed so the boot log is unchanged from pre-P2a
 	// for the mock/code-js paths. anthropic-oauth-dev logs its own below.
 	if _, ok := pr.byID["mock"]; ok {
-		log.Printf("mock provider: enabled (LATENCY_MS=%q LATENCY_JITTER_MS=%q 429_RATE=%q 500_RATE=%q)",
-			os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"),
-			os.Getenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS"),
-			os.Getenv("LOOMCYCLE_MOCK_429_RATE"),
-			os.Getenv("LOOMCYCLE_MOCK_500_RATE"))
+		slog.Info("mock provider: enabled",
+			"latency_ms", os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"),
+			"latency_jitter_ms", os.Getenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS"),
+			"rate_429", os.Getenv("LOOMCYCLE_MOCK_429_RATE"),
+			"rate_500", os.Getenv("LOOMCYCLE_MOCK_500_RATE"))
 	}
 	if _, ok := pr.byID["mock-stable"]; ok {
-		log.Printf("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
+		slog.Info("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
 	}
 	if _, ok := pr.byID["code-js"]; ok {
-		log.Printf("code-js provider: enabled (root=%q deterministic=%v run_timeout=%s max_wall=%s abi=%s)",
-			cfg.Env.CodeAgentsRoot, cfg.Env.CodeAgentsDeterministic, cfg.Env.CodeAgentsRunTimeout, cfg.Env.CodeAgentsMaxWall, codejs.ABIVersion)
+		slog.Info("code-js provider: enabled",
+			"dir", cfg.Env.CodeAgentsRoot, "deterministic", cfg.Env.CodeAgentsDeterministic,
+			"run_timeout", cfg.Env.CodeAgentsRunTimeout, "max_wall", cfg.Env.CodeAgentsMaxWall, "abi", codejs.ABIVersion)
 	}
 
 	// v0.11.9 — anthropic-oauth-dev stays a residual hardcoded path (main-owned
@@ -675,22 +677,22 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 		storePath, pathErr := anthropic_oauth_dev.DefaultTokenStorePath()
 		switch {
 		case pathErr != nil:
-			log.Printf("anthropic-oauth-dev: not registered — cannot resolve config dir: %v", pathErr)
+			slog.Warn("anthropic-oauth-dev: not registered — cannot resolve config dir", "err", pathErr)
 		default:
 			store := anthropic_oauth_dev.NewTokenStore(storePath)
 			if _, loadErr := store.Load(); loadErr != nil {
-				log.Printf("anthropic-oauth-dev: env var set but no tokens at %s — run `loomcycle anthropic login` to authorize", storePath)
+				slog.Warn("anthropic-oauth-dev: env var set but no tokens on disk — run `loomcycle anthropic login` to authorize", "path", storePath)
 			} else {
-				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, log.Printf)
+				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, slog.Default())
 				refresher.Start(context.Background())
 				pr.anthropicOAuthRefresher = refresher
 				pr.byID["anthropic-oauth-dev"] = lanegate.Wrap("anthropic-oauth-dev", anthropic_oauth_dev.New(
 					refresher, streamOpts, anthropic_oauth_dev.ResolveClaudeCodeVersion(), nil,
 				), sched)
-				log.Printf("anthropic-oauth-dev: registered (token expires %s; user-agent=claude-cli/%s)",
-					refresher.Token().ExpiresAt.Format(time.RFC3339),
-					anthropic_oauth_dev.ResolveClaudeCodeVersion())
-				log.Printf("anthropic-oauth-dev: WARNING — reverse-engineered OAuth flow (Pi reference + loomcycle replication); NOT officially endorsed by Anthropic; subscription terms historically restrict programmatic use; operator carries all risk including account flag/revocation; no warranty/SLA/liability from loomcycle; see docs/PROVIDERS.md")
+				slog.Info("anthropic-oauth-dev: registered",
+					"token_expires", refresher.Token().ExpiresAt.Format(time.RFC3339),
+					"user_agent", "claude-cli/"+anthropic_oauth_dev.ResolveClaudeCodeVersion())
+				slog.Warn("anthropic-oauth-dev: reverse-engineered OAuth flow (Pi reference + loomcycle replication); NOT officially endorsed by Anthropic; subscription terms historically restrict programmatic use; operator carries all risk including account flag/revocation; no warranty/SLA/liability from loomcycle; see docs/PROVIDERS.md")
 			}
 		}
 	}
@@ -750,8 +752,8 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 func newCallScheduler(cfg *config.Config) *concurrency.CallScheduler {
 	caps := lanegate.SchedulerConfig(cfg.Providers, cfg.Models)
 	if len(caps) > 0 {
-		log.Printf("providers: per-provider call caps enabled — %s (queue_depth=%d for requests that hold no run slot; a run's calls wait without timing out)",
-			describeCallCaps(caps), cfg.Concurrency.ProviderQueueDepthOrDefault())
+		slog.Info("providers: per-provider call caps enabled (queue_depth bounds requests that hold no run slot; a run's calls wait without timing out)",
+			"caps", describeCallCaps(caps), "queue_depth", cfg.Concurrency.ProviderQueueDepthOrDefault())
 	}
 	return concurrency.NewCallScheduler(caps)
 }
@@ -839,15 +841,15 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 		enabled = append(enabled, id)
 	}
 	sort.Strings(enabled)
-	log.Printf("providers: %d configured, %d enabled (%s)", len(cfg.Providers), len(pr.byID), strings.Join(enabled, ", "))
+	slog.Info("providers: configured and enabled", "configured", len(cfg.Providers), "enabled", len(pr.byID), "providers", strings.Join(enabled, ", "))
 }
 
 // validateCodeAgents fails loud at startup for any statically-configured
 // `provider: code-js` agent whose JS is missing or won't parse (RFC J
 // Deliverable 3) — so a broken code-agent fails the boot, NOT the first
 // scheduled fire. Two failure modes:
-//   - code-js used but disabled → log.Fatalf pointing at the enable flag.
-//   - code-js enabled but JS broken/missing → log.Fatalf naming the agent + path.
+//   - code-js used but disabled → a fatal error pointing at the enable flag.
+//   - code-js enabled but JS broken/missing → a fatal error naming the agent + path.
 //
 // Dynamic AgentDefs (created at runtime via the AgentDef tool) are not seen
 // here; their JS validates on first Call and surfaces as an EventError.
@@ -861,7 +863,7 @@ func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
 			continue
 		}
 		if cp == nil {
-			log.Fatalf("agent %q uses `provider: code-js` but code agents are disabled — set LOOMCYCLE_CODE_AGENTS_ENABLED=1", name)
+			fatal("agent uses `provider: code-js` but code agents are disabled — set LOOMCYCLE_CODE_AGENTS_ENABLED=1", "agent", name)
 		}
 		// An inline `code:` body has no filesystem file — validate the body
 		// itself (mirrors the run-time provider, which prefers the inline body
@@ -882,10 +884,10 @@ func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
 		}
 	}
 	if len(broken) > 0 {
-		log.Fatalf("code-js agents failed to load:\n  - %s", strings.Join(broken, "\n  - "))
+		fatal("code-js agents failed to load", "errors", strings.Join(broken, "; "))
 	}
 	if cp != nil {
-		log.Printf("code-js: validated %d static code-agent(s)", countCodeAgents(cfg))
+		slog.Info("code-js: validated static code-agents", "agents", countCodeAgents(cfg))
 	}
 }
 
@@ -971,7 +973,7 @@ func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
 	// RFC BG: surface a silent model-pattern bump (a pattern resolving to a new
 	// concrete model) in the operator log. Set before the first probe so an
 	// initial resolution is recorded (first-seen never warns; only a MOVE does).
-	r.SetLogf(log.Printf)
+	r.SetLogger(slog.Default())
 
 	// First-round probe — synchronous, so the matrix is hot before
 	// the listener accepts traffic.
@@ -1048,7 +1050,7 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 	for _, j := range jobs {
 		if j.excluded {
 			r.SetExcluded(j.id, j.exclReason)
-			log.Printf("resolve probe: %s excluded (%s)", j.id, j.exclReason)
+			slog.Info(fmt.Sprintf("resolve probe: %s excluded (%s)", j.id, j.exclReason), "provider", j.id, "reason", j.exclReason)
 			continue
 		}
 		wg.Add(1)
@@ -1059,11 +1061,11 @@ func runResolveProbeOnce(ctx context.Context, r *resolve.Resolver, pr *providerR
 			models, err := j.provider.ListModels(probeCtx)
 			if err != nil {
 				r.SetReachable(j.id, false, nil, err.Error())
-				log.Printf("resolve probe: %s unreachable (%v)", j.id, err)
+				slog.Warn(fmt.Sprintf("resolve probe: %s unreachable (%v)", j.id, err), "provider", j.id, "err", err)
 				return
 			}
 			r.SetReachable(j.id, true, models, "")
-			log.Printf("resolve probe: %s reachable (%d models listed)", j.id, len(models))
+			slog.Info(fmt.Sprintf("resolve probe: %s reachable (%d models listed)", j.id, len(models)), "provider", j.id, "models", len(models))
 		}(j)
 	}
 	wg.Wait()
@@ -1145,7 +1147,7 @@ func runAdvisoryGatedSweeper(
 				return nil
 			})
 			if err != nil {
-				log.Printf("%s sweeper: advisory lock infra error: %v", name, err)
+				slog.Warn("sweeper: advisory lock infra error", "sweeper", name, "err", err)
 				continue
 			}
 			_ = acquired // silent lost race
@@ -1246,7 +1248,7 @@ func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, 
 // credential engine exists, after static servers were already dialed.
 func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 	credSubstitute *func(ctx context.Context, s, targetURL string) (string, []string, error),
-	logf func(format string, args ...any)) func(tenant, name string) (mcp.Caller, error) {
+	logger *slog.Logger) func(tenant, name string) (mcp.Caller, error) {
 	// One warning per stored version per process: the pool rebuilds a client
 	// on every evict and respawn, and a line per dial would bury the log.
 	var warnedMu sync.Mutex
@@ -1289,9 +1291,9 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				warned[key] = true
 				warnedMu.Unlock()
 				if first {
-					logf("mcp_servers: WARNING: %q v%d (def_id %s, tenant %q) expands %s from the server environment but was not saved by an admin; "+
+					logger.Warn("mcp_servers: a server definition expands variables from the server environment but was not saved by an admin; "+
 						"dialing it only because LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 — have an admin acting in that tenant re-save it (create with the same overlay), then unset the variable",
-						name, spec.Version, spec.DefID, tenant, fields)
+						"server", name, "version", spec.Version, "def_id", spec.DefID, "tenant", tenant, "fields", fields)
 				}
 			}
 		}
@@ -1443,7 +1445,7 @@ func spawnStdio(name, command string, args []string, envMap map[string]string, m
 		Env:           expandedStdioEnv(envMap),
 		MaxFrameBytes: maxFrame,
 		OnStderr: func(line string) {
-			log.Printf("mcp[%s]: %s", name, line)
+			slog.Info("mcp: server stderr", "server", name, "line", line)
 		},
 	})
 }
@@ -1493,13 +1495,13 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 		switch scope {
 		case store.MemoryScopeGlobal, store.MemoryScopeAgent, store.MemoryScopeUser:
 		default:
-			log.Printf("memory.entries[%d]: skipping — invalid scope %q (must be global|agent|user)", i, e.Scope)
+			slog.Warn("memory.entries: skipping — invalid scope (must be global|agent|user)", "index", i, "scope", e.Scope)
 			failed++
 			continue
 		}
 		key := strings.TrimSpace(e.Key)
 		if key == "" {
-			log.Printf("memory.entries[%d]: skipping — empty key", i)
+			slog.Warn("memory.entries: skipping — empty key", "index", i)
 			failed++
 			continue
 		}
@@ -1523,14 +1525,14 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 		}
 		valBytes, marshalErr := json.Marshal(e.Value)
 		if marshalErr != nil {
-			log.Printf("memory.entries[%d] (%s/%s/%s): skipping — value marshal failed: %v",
-				i, scope, e.ScopeID, key, marshalErr)
+			slog.Warn("memory.entries: skipping — value marshal failed",
+				"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key, "err", marshalErr)
 			failed++
 			continue
 		}
 		if err := st.MemorySet(ctx, "", scope, e.ScopeID, key, valBytes, 0); err != nil {
-			log.Printf("memory.entries[%d] (%s/%s/%s): set failed: %v",
-				i, scope, e.ScopeID, key, err)
+			slog.Error("memory.entries: set failed",
+				"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key, "err", err)
 			failed++
 			continue
 		}
@@ -1541,20 +1543,20 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 		// embed:true is best-effort — the k/v row stays even if the
 		// embedding fails, matching the v0.9.0 Memory.set posture.
 		if embedder == nil {
-			log.Printf("memory.entries[%d] (%s/%s/%s): embed requested but memory.embedder is not configured — k/v written without embedding",
-				i, scope, e.ScopeID, key)
+			slog.Warn("memory.entries: embed requested but memory.embedder is not configured — k/v written without embedding",
+				"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key)
 			continue
 		}
 		if !st.SupportsVectors() {
-			log.Printf("memory.entries[%d] (%s/%s/%s): embed requested but store does not support vectors — k/v written without embedding",
-				i, scope, e.ScopeID, key)
+			slog.Warn("memory.entries: embed requested but store does not support vectors — k/v written without embedding",
+				"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key)
 			continue
 		}
 		te0 := time.Now()
 		vecs, embedErr := embedder.Embed(ctx, []string{string(valBytes)})
 		if embedErr != nil || len(vecs) != 1 {
-			log.Printf("memory.entries[%d] (%s/%s/%s): embed failed: %v",
-				i, scope, e.ScopeID, key, embedErr)
+			slog.Warn("memory.entries: embed failed",
+				"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key, "err", embedErr)
 			continue
 		}
 		// Dimension is the OBSERVED width, never embedder.Dimension(): a driver
@@ -1569,15 +1571,18 @@ func bootstrapMemoryEntries(ctx context.Context, cfg *config.Config, st store.St
 			EmbedText: string(valBytes),
 			CreatedAt: time.Now().UTC(),
 		}); err != nil {
-			log.Printf("memory.entries[%d] (%s/%s/%s): embed write failed: %v",
-				i, scope, e.ScopeID, key, err)
+			slog.Warn("memory.entries: embed write failed",
+				"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key, "err", err)
 			continue
 		}
-		log.Printf("memory.entries[%d] (%s/%s/%s): seeded + embedded (%s)",
-			i, scope, e.ScopeID, key, time.Since(te0).Round(time.Millisecond))
+		slog.Info("memory.entries: seeded + embedded",
+			"index", i, "scope", scope, "scope_id", e.ScopeID, "key", key, "elapsed", time.Since(te0).Round(time.Millisecond))
 	}
-	log.Printf("memory.entries: bootstrap complete — loaded=%d skipped=%d failed=%d elapsed=%s",
-		loaded, skipped, failed, time.Since(t0).Round(time.Millisecond))
+	// The vector-memory help page quotes this line's text; keep it.
+	elapsed := time.Since(t0).Round(time.Millisecond)
+	slog.Info(fmt.Sprintf("memory.entries: bootstrap complete — loaded=%d skipped=%d failed=%d elapsed=%s",
+		loaded, skipped, failed, elapsed),
+		"loaded", loaded, "skipped", skipped, "failed", failed, "elapsed", elapsed)
 }
 
 // buildSearchProviders assembles the RFC BB search catalog from config: the
@@ -1614,7 +1619,7 @@ func buildSearchProviders(cfg *config.Config) (*search.Registry, *search.Resolve
 	}
 	reg, err := search.BuildRegistry(specs)
 	if err != nil {
-		log.Printf("search: registry build error: %v (WebSearch disabled)", err)
+		slog.Error("search: registry build error (WebSearch disabled)", "err", err)
 		return nil, nil, nil
 	}
 	priority := cfg.SearchPriority

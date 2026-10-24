@@ -28,6 +28,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	d.auth = o.RequestAuth
 	// The openai driver has no driver-specific options today; surface any that
 	// were configured as an advisory warning rather than silently dropping them.
-	providers.WarnUnknownOptions(o.Logf, "openai", o.Options)
+	providers.WarnUnknownOptions(o.Logger, "openai", o.Options)
 	return d, nil
 }
