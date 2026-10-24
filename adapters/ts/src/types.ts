@@ -3556,8 +3556,33 @@ export type DocumentToolInput = {
   from_id?: string;
   to_id?: string;
   kind?: string;
-  /** query_chunks: restrict to documents at/under this Path-tree path. */
+  /** query_chunks / query_documents / documents_summary: restrict to documents
+   *  at/under this Path-tree path. search / related: return only chunks of
+   *  documents named at or under it — applied inside every retrieval leg before
+   *  its limit, so the best matches come from that part of the tree. */
   under_path?: string;
+  /** search / related: chunks of documents named at or under ANY of these paths
+   *  (with `under_path`, the union of both). */
+  under_paths?: string[];
+  /** search / related: never chunks of documents named at or under this path. */
+  exclude_under_path?: string;
+  /** search / related: never chunks of documents named at or under these paths. */
+  exclude_under_paths?: string[];
+  /** documents_summary: the documents to summarize. search / related: return
+   *  only chunks of these documents. */
+  document_ids?: string[];
+  /** search / related: never chunks of these documents (e.g. the document under
+   *  review, so its own text is not found as evidence for itself). */
+  exclude_document_ids?: string[];
+  /** search / related: chunk types, each including its ontology subtypes (with
+   *  `type`, the union of both). */
+  types?: string[];
+  /** search / related: exact chunk statuses; any matches (with `status`, the union). */
+  statuses?: string[];
+  /** graph_recall / list_facts: answer as of this instant (unix nanoseconds).
+   *  search / related: only chunks whose stated validity contains it; a chunk
+   *  with no stated validity always matches. */
+  as_of?: number;
   /** query_chunks: raw read-only SELECT (escape hatch; validator-gated). */
   sql?: string;
   /** Row/response bound. On `documents_summary` it defaults to 500 (max 5000) and
@@ -3632,6 +3657,62 @@ export type DocumentToolInput = {
  *  `create_document` returns `{document_id, root_chunk_id, ...}`). */
 export type PathToolResponse = unknown;
 export type DocumentToolResponse = unknown;
+
+/** What a filtered `document({op:"search"|"related", …})` call resolved its
+ *  structural filter to — present on the response ONLY when a filter argument
+ *  was passed (a filter-free response has no `filter` key). */
+export type DocumentSearchFilter = {
+  /** The filter as applied: singular fields folded into the plural ones, paths
+   *  canonicalised. Only the kinds that were passed appear. */
+  applied: {
+    under_paths?: string[];
+    exclude_under_paths?: string[];
+    document_ids?: string[];
+    exclude_document_ids?: string[];
+    types?: string[];
+    statuses?: string[];
+    tag?: string;
+    tag_prefix?: string;
+    as_of?: number;
+  };
+  /** Documents with at least one matching chunk. */
+  matched_documents: number;
+  /** Chunks the search could return. 0 = the filter matched nothing (the
+   *  response then has no hits and the query was never embedded). */
+  matched_chunks: number;
+  /** Present when a type was widened to its ontology subtypes. */
+  type_expanded_to?: string[];
+  /** True when the match was sent to the search as "everything except" its
+   *  complement (the smaller list). */
+  inverted: boolean;
+};
+
+/** One hit of `document({op:"search"})`. */
+export type DocumentSearchHit = {
+  chunk_id: string;
+  score: number;
+  rank_score: number;
+  title?: string;
+  type?: string;
+  document_id?: string;
+  matched_unit?: { kind: string; text: string };
+};
+
+/** Response of `document({op:"search"})` — narrow a {@link DocumentToolResponse}
+ *  to it. */
+export type DocumentSearchResult = {
+  chunks: DocumentSearchHit[];
+  filter?: DocumentSearchFilter;
+  reranked?: boolean;
+  rerank_reason?: string;
+};
+
+/** Response of `document({op:"related"})` — narrow a {@link DocumentToolResponse}
+ *  to it. */
+export type DocumentRelatedResult = {
+  related: Array<{ chunk_id: string; score: number; title?: string; type?: string; document_id?: string }>;
+  filter?: DocumentSearchFilter;
+};
 
 /** Input for {@link LoomcycleClient.history} — the RFC BE History tool
  *  (POST /v1/_history). Browse/search/annotate PAST CHATS (a chat = a session).

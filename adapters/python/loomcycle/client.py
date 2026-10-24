@@ -1062,7 +1062,21 @@ class LoomcycleClient:
         body) that agents and humans co-author (RFC AK). Op-discriminated (13
         ops: document/chunk lifecycle, edges, query_chunks, type defs). Scope
         agent/user (tenant deferred). Requires SQL Memory enabled on the
-        sidecar. Mirror of :meth:`agent_def`."""
+        sidecar. Mirror of :meth:`agent_def`.
+
+        ``op="search"`` and ``op="related"`` accept structural filters, applied
+        inside every retrieval leg before its limit so the best matches come
+        from the wanted corpus: ``under_path`` / ``under_paths``,
+        ``exclude_under_path`` / ``exclude_under_paths``, ``document_id`` /
+        ``document_ids``, ``exclude_document_ids``, ``type`` / ``types`` (each
+        widened to its ontology subtypes), ``status`` / ``statuses``, ``tag``,
+        ``tag_prefix`` and ``as_of`` (unix nanoseconds). Kinds combine with AND,
+        list values with OR. When any is passed the response carries ``filter``
+        — ``applied``, ``matched_documents``, ``matched_chunks``,
+        ``type_expanded_to`` (when a type widened) and ``inverted``; a
+        filter-free response has no ``filter`` key. A filter needing more ids
+        than the server's limit is refused (``filter_too_wide``) and raises
+        :class:`SubstrateToolRefusedError`."""
         return await self._dispatch_substrate("Document", input)
 
     async def credential_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:

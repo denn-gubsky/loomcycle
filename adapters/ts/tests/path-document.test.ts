@@ -12,6 +12,12 @@ import {
   SubstrateToolRefusedError,
   UnavailableError,
 } from "../src/index.js";
+import type {
+  DocumentRelatedResult,
+  DocumentSearchFilter,
+  DocumentSearchResult,
+  DocumentToolInput,
+} from "../src/index.js";
 
 describe("path", () => {
   it("posts JSON to /v1/_path and returns the ls envelope", async () => {
@@ -152,6 +158,48 @@ describe("document", () => {
     expect(body.document_id).toBe("d1");
     // An explicit false must survive (distinct from unset).
     expect(body.include_metadata).toBe(false);
+  });
+
+  it("types the search / related filter arguments and the filter echo", async () => {
+    const echo: DocumentSearchFilter = {
+      applied: { under_paths: ["/qg/norms"], types: ["norm.clause"], statuses: ["in_force"], as_of: 1747180800000000000 },
+      matched_documents: 14,
+      matched_chunks: 312,
+      type_expanded_to: ["norm.clause", "norm.clause.transitional"],
+      inverted: false,
+    };
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ chunks: [{ chunk_id: "c1", score: 0.8, rank_score: 0.03, document_id: "d1" }], filter: echo }),
+      jsonResponse({ related: [], filter: { ...echo, matched_chunks: 0 } }),
+    ]);
+    const input: DocumentToolInput = {
+      op: "search",
+      query: "minimum capital",
+      under_path: "/qg/norms",
+      under_paths: ["/qg/decisions"],
+      exclude_under_path: "/qg/reports",
+      exclude_under_paths: ["/qg/passports/source"],
+      document_ids: ["d1"],
+      exclude_document_ids: ["d9"],
+      type: "norm.clause",
+      types: ["norm.annex"],
+      status: "in_force",
+      statuses: ["transitional"],
+      tag: "regulator/nbu",
+      tag_prefix: "regulator",
+      as_of: 1747180800000000000,
+    };
+    const res = (await client.document(input)) as DocumentSearchResult;
+    expect(res.filter?.matched_chunks).toBe(312);
+    expect(res.chunks[0]!.chunk_id).toBe("c1");
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.under_paths).toEqual(["/qg/decisions"]);
+    expect(body.exclude_document_ids).toEqual(["d9"]);
+    expect(body.as_of).toBe(1747180800000000000);
+
+    const rel = (await client.document({ op: "related", id: "c1", exclude_document_ids: ["d1"] })) as DocumentRelatedResult;
+    expect(rel.related).toEqual([]);
+    expect(rel.filter?.matched_chunks).toBe(0);
   });
 
   it("appends scope_id + tenant as query params for browse-by-subject", async () => {
