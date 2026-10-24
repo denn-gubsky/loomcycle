@@ -969,7 +969,186 @@ paths:
                 properties:
                   tenant_id: { type: string }
                   has_users: { type: boolean }
+                  bootstrapped: { type: boolean, description: The tenant has ever had a user; an owner bootstrap needs false. }
                   bootstrap_invite_live: { type: boolean }
+  /v1/_auth/complete/{gate}:
+    post:
+      tags: [auth]
+      summary: Sign in through a password gate (the login form's post).
+      description: |
+        Unauthenticated; same-origin with `X-Loomcycle-UI: 1`. 204 sets the
+        session cookie. An unknown login, a wrong password, a locked account
+        and a disabled user all answer `401 invalid_credentials`; an account
+        with an authenticator answers `401 otp_required` once the password was
+        right. `429 too_many_attempts` when the client is throttled.
+      operationId: passwordSignIn
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Gate" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [login, password]
+              properties:
+                login: { type: string }
+                password: { type: string, format: password }
+                otp: { type: string, description: A TOTP code or a recovery code. }
+      responses:
+        "204": { description: Signed in. }
+        "401": { description: "`invalid_credentials`, `otp_required` or `invalid_otp`." }
+        "403": { description: "`mfa_enrolment_required`, `insecure_transport` or a cross-site request." }
+        "429": { description: "`too_many_attempts`." }
+  /v1/_auth/invite/info:
+    post:
+      tags: [auth]
+      summary: What an invitation page needs to render (the code in the body, never the URL).
+      operationId: inviteInfo
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string } } } } }
+      responses:
+        "200": { description: "The gate, a fixed login or a suggested e-mail, whether an authenticator is required, the length minimums, and a TOTP enrolment (`secret`, `otpauth_uri`, `enrolment`)." }
+        "404": { description: "`link_invalid`: unknown, used, revoked or expired." }
+  /v1/_auth/invite:
+    post:
+      tags: [auth]
+      summary: Redeem an invitation — choose a login, set a password, enrol TOTP — and sign in.
+      operationId: redeemInvite
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, password]
+              properties:
+                code: { type: string }
+                login: { type: string }
+                password: { type: string, format: password }
+                totp_enrolment: { type: string }
+                totp_code: { type: string }
+      responses:
+        "201": { description: "Signed in: `redirect`, `login`, and `recovery_codes` (shown once) when an authenticator was enrolled." }
+        "400": { description: "A policy refusal (`password_too_short`, `password_breached`, `password_is_login`), `invalid_login`, `totp_required` or `invalid_totp`." }
+        "404": { description: "`link_invalid`." }
+        "409": { description: "`login_taken`." }
+  /v1/_auth/reset/info:
+    post:
+      tags: [auth]
+      summary: What a reset page needs to render.
+      operationId: resetInfo
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string } } } } }
+      responses:
+        "200": { description: "The gate, the login, whether the account has an authenticator, the length minimums and, without one, a TOTP enrolment." }
+        "404": { description: "`link_invalid`." }
+  /v1/_auth/reset:
+    post:
+      tags: [auth]
+      summary: Complete a reset — a new password (and the authenticator's code, if the account has one) — and sign in.
+      description: Ends every session made from the old password and retires the user's delegated tokens.
+      operationId: completeReset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, password]
+              properties:
+                code: { type: string }
+                password: { type: string, format: password }
+                otp: { type: string }
+                totp_enrolment: { type: string }
+                totp_code: { type: string }
+      responses:
+        "200": { description: Signed in. }
+        "401": { description: "`otp_required` or `invalid_otp`." }
+        "404": { description: "`link_invalid`." }
+  /v1/_auth/account:
+    get:
+      tags: [auth]
+      summary: The signed-in password user's login and authenticator state.
+      operationId: accountInfo
+      responses:
+        "200": { description: "`gate`, `login`, `has_totp`, `recovery_codes_left`, `require_mfa`." }
+        "403": { description: "`session_required`: only a password-gate Web UI session." }
+  /v1/_auth/password:
+    post:
+      tags: [auth]
+      summary: Change the password (re-authenticates; ends the account's other sessions).
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password }
+                otp: { type: string }
+      responses:
+        "204": { description: Changed; this browser has a new session. }
+        "401": { description: "`reauth_failed` or `otp_required`." }
+  /v1/_auth/totp/begin:
+    post:
+      tags: [auth]
+      summary: Start enrolling an authenticator (a fresh secret).
+      operationId: totpBegin
+      responses:
+        "200": { description: "`secret`, `otpauth_uri`, `enrolment`." }
+  /v1/_auth/totp/confirm:
+    post:
+      tags: [auth]
+      summary: Confirm an authenticator with its first code (re-authenticates); returns ten recovery codes once.
+      operationId: totpConfirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                otp: { type: string }
+                enrolment: { type: string }
+                code: { type: string }
+      responses:
+        "200": { description: "`recovery_codes`." }
+  /v1/_auth/totp:
+    delete:
+      tags: [auth]
+      summary: Remove the authenticator (re-authenticates; the password left must meet the sole-factor policy, or send new_password).
+      operationId: totpRemove
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                otp: { type: string }
+                new_password: { type: string, format: password }
+      responses:
+        "204": { description: Removed. }
+        "400": { description: "`password_too_weak_alone`, or a policy refusal of new_password." }
+        "403": { description: "`mfa_required`: the gate requires an authenticator." }
 components:
   securitySchemes:
     bearerAuth:
