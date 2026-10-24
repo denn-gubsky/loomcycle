@@ -308,9 +308,10 @@ was written into the database: retire it instead.
 
 **Upgrading to v1.122.0 or newer:** migration 0109 adds the access-control tables
 (the `loomcycle-migrate` step applies it). The overlay needs the `dynamic` volume
-and its dataset (Phase 2, Phase 3, Phase 5) or files tools return are refused, and
-the volume name `inbox` is reserved. Access control changes nothing until you set
-`LOOMCYCLE_ACL` or write a rule — see *Access control* below.
+and its dataset (Phase 2, Phase 3, Phase 5) or files tools return are refused; add
+the dataset and its mount **before** the `dynamic:` overlay entry, since a volume
+whose path is missing stops the boot. The volume name `inbox` is reserved. Access
+control changes nothing until you set `LOOMCYCLE_ACL` or write a rule — see *Access control* below.
 
 ## Access control — rule lists, groups and bindings
 
@@ -455,6 +456,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
 | `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
+| Crash-loop ending `config: load failed err="volumes.dynamic: path \"/mnt/dynamic\" must already exist …"` | The overlay declares the `dynamic` volume but the app has no mount at `/mnt/dynamic` (an install made from a compose before v1.122.0). Create the dataset owned by 65532 (Phase 2) and add the mount (Phase 5: `…/dynamic:/mnt/dynamic`, or *Additional storage* in the wizard). To boot first, comment out the `dynamic:` block. |
 | A tool's file shows as `[file not kept: no dynamic_root volume is configured …]` | The overlay has no `dynamic_root: true` volume, or its mount is missing — add the `dynamic` entry (Phase 3) and its mount (Phase 5). |
 | `403 {"code":"acl_denied", …}` on a request that worked before | A rule denies it, or (under `enforce`) no rule allows it. The body names the rules that denied; **Settings → Access → Simulator** shows every rule considered. Back to `shadow` while you fix the list. |
 | `503 acl_unavailable` | The caller's rules could not be read (a database fault). Under `enforce` the request is refused rather than admitted; a paused run stays paused and a schedule tries again next tick. Check the Postgres connection. |
