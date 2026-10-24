@@ -5,10 +5,11 @@ package mcp_test
 // the public surface of mcp from a real consumer's vantage point.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -499,14 +500,15 @@ func TestGetWithRetryRecoversFromTransientBuildFailure(t *testing.T) {
 	)
 	t.Cleanup(pool.Close)
 
-	var logged []string
-	logf := func(format string, args ...any) {
-		logged = append(logged, fmt.Sprintf(format, args...))
-	}
+	// GetWithRetry logs from the calling goroutine only, so a plain buffer
+	// is race-free here.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	caller, descs, err := pool.GetWithRetry(ctx, "delayed", logf)
+	caller, descs, err := pool.GetWithRetry(ctx, "delayed", logger)
+	logged := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if err != nil {
 		t.Fatalf("expected eventual success, got: %v\nlogs:\n%s", err, strings.Join(logged, "\n"))
 	}
@@ -521,10 +523,16 @@ func TestGetWithRetryRecoversFromTransientBuildFailure(t *testing.T) {
 		t.Errorf("expected ≥2 retry log lines (one per failed attempt + 1 success), got %d:\n%s",
 			len(logged), strings.Join(logged, "\n"))
 	}
+	// Each failed attempt is a WARN retry line naming the server.
+	for _, line := range logged[:len(logged)-1] {
+		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "handshake failed") || !strings.Contains(line, "server=delayed") {
+			t.Errorf("retry log line should be a WARN handshake failure for server=delayed: %q", line)
+		}
+	}
 	// Last log line should announce success (final attempt count > 1).
 	lastLine := logged[len(logged)-1]
-	if !strings.Contains(lastLine, "succeeded on attempt") {
-		t.Errorf("last log line should announce success: %q", lastLine)
+	if !strings.Contains(lastLine, "handshake succeeded after retry") || !strings.Contains(lastLine, "attempt=3") {
+		t.Errorf("last log line should announce success on attempt 3: %q", lastLine)
 	}
 }
 

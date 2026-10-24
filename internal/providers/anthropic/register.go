@@ -27,6 +27,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	}
 	d.capsPatch = o.Capabilities
 	d.auth = o.RequestAuth
-	providers.WarnUnknownOptions(o.Logf, "anthropic", o.Options)
+	providers.WarnUnknownOptions(o.Logger, "anthropic", o.Options)
 	return d, nil
 }

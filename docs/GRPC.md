@@ -136,7 +136,7 @@ Groups, access-control lists, bindings and the authz questions have four op-disp
 | `AclBinding` | `list`, `create`, `delete` | `/v1/_aclbinding*` | `substrate:tenant` |
 | `Authz` | `evaluation`, `evaluations`, `explain`, `simulate` | `POST /v1/_authz/*` | any principal, about itself |
 
-The four RPCs and the HTTP routes call one implementation, and that implementation holds every gate: tenant confinement (an admin alone may focus another tenant), the tenant-operator floor for groups, lists and bindings (a member is refused; gRPC has no member path), each op's own access-control question (a list write asks `author def:acl/<name>`, a retire `retire`, a binding write `author def:acl/*`, a group write `manage principal:group:*`), the self-elevation guards, the audit events and cache invalidation on every replica. `Authz` answers about the caller; naming another `subject` needs a tenant operator. None of them is reachable from inside a run. What each op returns and refuses is the HTTP route's; see the configuration guide's *Managing groups, ACL lists and bindings*.
+The four RPCs and the HTTP routes call one implementation, and that implementation holds every gate: tenant confinement (an admin alone may focus another tenant), the tenant-operator floor for groups, lists and bindings (a member is refused on both transports: these routes are carved out of the member path — see *Who may call which RPC*), each op's own access-control question (a list write asks `author def:acl/<name>`, a retire `retire`, a binding write `author def:acl/*`, a group write `manage principal:group:*`), the self-elevation guards, the audit events and cache invalidation on every replica. `Authz` answers about the caller; naming another `subject` needs a tenant operator. None of them is reachable from inside a run. What each op returns and refuses is the HTTP route's; see the configuration guide's *Managing groups, ACL lists and bindings*.
 
 ```sh
 # input_json is bytes, so grpcurl takes it base64-encoded; there is no
@@ -219,6 +219,18 @@ Comparison is **constant-time** (`subtle.ConstantTimeCompare`) to
 prevent token-recovery via timing side-channels. Empty
 `LOOMCYCLE_AUTH_TOKEN` opens the surface (matches HTTP behavior).
 Health() is exempt from auth so liveness probes don't need credentials.
+
+## Who may call which RPC
+
+Every RPC asks for a scope, and a principal is admitted to an RPC when it is admitted to the RPC's HTTP twin — with the two isolated-user exceptions below. A test compares the two gates for every RPC of the service.
+
+- **Admin** (`substrate:admin`, and the legacy `LOOMCYCLE_AUTH_TOKEN`): every RPC.
+- **Tenant operator** (`substrate:tenant`): every RPC except the operator plane — token minting (`OperatorTokenDef`), runtime admin (`PauseRuntime`, `ResumeRuntime`, `GetRuntimeState`, `ResolveProbe`, the snapshot RPCs) and `DirectoryTenants`. Each RPC confines it to its own tenant.
+- **Member** (a non-isolated user token: `runs:*`, `channel:*`, no `substrate:tenant`): the run, read and channel RPCs its scopes name, plus the tenant RPCs a member reaches over HTTP — the definition families (`AgentDef` … `HookDef`, `TeamDef` — whose `run` and `cancel` ops also need `runs:create`, and `poll` `runs:read`), `Path`, `Document`, `Memory`, `CredentialDef`, `History` (its own chats only), `UsageReport`, `DirectoryUsers`, `TokenLimit` with `op: list`, and a team's own channels (`ListTeamChannels` and `PeekTeamChannel` with `channel:read`, `ReleaseTeamChannel` with `channel:publish`). It is refused what an operator controls: `TokenLimit` `set` and `delete`, `RetentionOverride`, `DirectoryInspect`, `ErasureReport` / `ErasureExecute`, `Crypto`, `GroupDef` / `AclDef` / `AclBinding`, and the operator plane.
+- **Isolated user** (`substrate:user`): its own runs, `CredentialDef` for its own `scope: user` credentials, `Evaluation` (its own runs) and `Authz` about itself. Over HTTP it can also list the tenant's users and read its own chats; over gRPC `DirectoryUsers` and `History` ask `substrate:tenant`.
+- **A token limited to certain agents**: the run plane only, whatever its scopes.
+
+A refusal at the gate is `PERMISSION_DENIED` with `insufficient scope: <scope> required`. Access-control lists are asked after the scope gate (`acl_denied: …`); `TokenLimit` asks each operation's own question (`read runtime:limits` to list, `manage runtime:limits` to set or delete). The member path is open to every `substrate:tenant` RPC except those whose HTTP route the operator keeps for itself, and the list of those is shared by both transports.
 
 ## Error code mapping
 

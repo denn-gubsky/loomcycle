@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -56,11 +55,11 @@ func (b *boot) mountA2AServer() {
 			ChannelNotify: channelBus.Notify,
 		})
 		if err != nil {
-			log.Fatalf("a2a server: %v", err)
+			fatal("a2a server: setup failed", "err", err)
 		}
 		if a2aServer != nil {
 			srv.SetExtraMux(a2aServer.Mount)
-			log.Printf("a2a: server surface enabled (card=%q tenancy=%q)", cfg.Env.A2AServerCardName, cfg.Env.A2ATenancyRouting)
+			slog.Info("a2a: server surface enabled", "card", cfg.Env.A2AServerCardName, "tenancy", cfg.Env.A2ATenancyRouting)
 		}
 	}
 
@@ -121,13 +120,13 @@ func (b *boot) mountWebhooks() {
 			rec.Mount(reg)
 			rec.MountAdmin(reg, adminAuth)
 		})
-		log.Printf("webhooks: enabled (POST /v1/_webhooks/{name} + a team's own at POST /v1/_teams/{team}/webhooks/{name}, env_allowlist=%d names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed; unauthenticated_mode=%t)",
-			len(webhookAllowlist), cfg.Env.WebhooksAllowUnauthenticated)
+		slog.Info("webhooks: enabled (POST /v1/_webhooks/{name} + a team's own at POST /v1/_teams/{team}/webhooks/{name}; env_allowlist names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed)",
+			"env_allowlist_names", len(webhookAllowlist), "unauthenticated_mode", cfg.Env.WebhooksAllowUnauthenticated)
 		// Surface every static webhook that will fail every delivery (inert,
 		// or its secret won't resolve) so the operator sees WHY at boot rather
 		// than discovering it via a 503 — the F23/F24 discoverability gap.
 		for _, warn := range webhookapi.UnresolvableStaticSecrets(cfg, webhookAllowlist, os.Getenv) {
-			log.Printf("webhooks: WARNING: %s", warn)
+			slog.Warn("webhooks: " + warn)
 		}
 		// Materialize static yaml `webhooks:` into the webhook_defs substrate
 		// (F24) — parity with agents/skills/schedules, so a static webhook is
@@ -136,23 +135,23 @@ func (b *boot) mountWebhooks() {
 		bootWH := &builtin.WebhookDef{Store: storeIface, Cfg: cfg}
 		bootWHCtx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "webhook-bootstrap"})
 		if n, err := bootWH.BootstrapStaticWebhooks(bootWHCtx); err != nil {
-			log.Printf("webhooks: static-webhook bootstrap: %v (continuing)", err)
+			slog.Error("webhooks: static-webhook bootstrap failed (continuing)", "err", err)
 		} else if n > 0 {
-			log.Printf("webhooks: materialized %d static webhook(s) into the substrate", n)
+			slog.Info("webhooks: materialized static webhooks into the substrate", "webhooks", n)
 		}
 		// Read-only: name any stored webhook whose runs execute outside its
 		// owning tenant (a non-admin could author one before the guard).
 		if warns, err := bootWH.ForeignExecTenantWarnings(bootWHCtx); err != nil {
-			log.Printf("webhooks: execution-tenant audit: %v (continuing)", err)
+			slog.Error("webhooks: execution-tenant audit failed (continuing)", "err", err)
 		} else {
 			for _, warn := range warns {
-				log.Printf("webhooks: WARNING: %s", warn)
+				slog.Warn("webhooks: " + warn)
 			}
 		}
 	} else if cfg.Env.WebhooksEnabled {
-		log.Printf("webhooks: disabled (no Store backend or no HTTP server)")
+		slog.Warn("webhooks: disabled (no Store backend or no HTTP server)")
 	} else {
-		log.Printf("webhooks: disabled (LOOMCYCLE_WEBHOOKS_ENABLED=0)")
+		slog.Info("webhooks: disabled (LOOMCYCLE_WEBHOOKS_ENABLED=0)")
 	}
 
 	b.webhookReceiver = webhookReceiver

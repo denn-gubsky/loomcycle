@@ -16,6 +16,7 @@ package cdc
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -31,13 +32,13 @@ const docChunkPrefix = "doc.chunk:"
 // Store decorates a store.Store with CDC emission on writes.
 type Store struct {
 	store.Store
-	logf func(format string, args ...any)
+	logger *slog.Logger
 }
 
-// Wrap returns a CDC-emitting store over base. logf may be nil (append
+// Wrap returns a CDC-emitting store over base. logger may be nil (append
 // failures then go unlogged — used by tests).
-func Wrap(base store.Store, logf func(format string, args ...any)) *Store {
-	return &Store{Store: base, logf: logf}
+func Wrap(base store.Store, logger *slog.Logger) *Store {
+	return &Store{Store: base, logger: logger}
 }
 
 var _ store.Store = (*Store)(nil)
@@ -141,8 +142,9 @@ func (c *Store) emitKey(ctx context.Context, tenantID string, scope store.Memory
 }
 
 func (c *Store) emit(ctx context.Context, ch store.MemoryChange) {
-	if err := c.Store.AppendMemoryChange(ctx, ch); err != nil && c.logf != nil {
+	if err := c.Store.AppendMemoryChange(ctx, ch); err != nil && c.logger != nil {
 		// The write already succeeded; a failed append only lags the feed.
-		c.logf("cdc: append %s change failed (feed lag, write succeeded): %v", ch.Type, err)
+		c.logger.Error("cdc: append change failed (feed lag, write succeeded)",
+			"change_type", ch.Type, "tenant", ch.TenantID, "err", err)
 	}
 }

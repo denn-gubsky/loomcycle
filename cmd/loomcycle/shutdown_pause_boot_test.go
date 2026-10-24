@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -324,7 +325,7 @@ func shutDownParked(t *testing.T, rb *runningBoot, pgid int) {
 		t.Fatalf("shutdown exited with %v\n%s", err, rb.out.String())
 	}
 	t.Logf("shutdown took %s", time.Since(sent).Round(time.Millisecond))
-	if log := rb.out.String(); !strings.Contains(log, "1 run(s) paused") || !strings.Contains(log, "1 had their tool calls interrupted") {
+	if log := rb.out.String(); !shutdownPauseLogged(log, 1, 1) {
 		t.Errorf("shutdown log does not report the run paused and its tool call interrupted\n%s", log)
 	}
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
@@ -334,4 +335,20 @@ func shutDownParked(t *testing.T, rb *runningBoot, pgid int) {
 	}
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	t.Fatalf("the sleep's process group %d outlived the shutdown\n%s", pgid, rb.out.String())
+}
+
+// shutdownPauseLogged reports whether log holds the shutdown pause line with
+// the given counts as attributes of that one line.
+func shutdownPauseLogged(log string, paused, interrupted int) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if !strings.Contains(line, "shutdown: runs paused for the next boot to resume") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if slices.Contains(fields, fmt.Sprintf("paused=%d", paused)) &&
+			slices.Contains(fields, fmt.Sprintf("interrupted=%d", interrupted)) {
+			return true
+		}
+	}
+	return false
 }

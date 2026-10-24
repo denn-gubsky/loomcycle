@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -52,7 +53,7 @@ type Config struct {
 	Deterministic bool   // LOOMCYCLE_CODE_AGENTS_DETERMINISTIC (cross-run reproducibility)
 	RunTimeout    time.Duration
 	MaxWall       time.Duration // a run's lifetime limit, waits included; 0 → DefaultMaxWall
-	Logf          func(format string, args ...any)
+	Logger        *slog.Logger  // nil → discarded
 }
 
 // Provider is the RFC J synthetic code-js Provider, Appendix-B replay model.
@@ -66,7 +67,7 @@ type Provider struct {
 	deterministic bool
 	runTimeout    time.Duration
 	maxWall       time.Duration
-	logf          func(string, ...any)
+	logger        *slog.Logger
 	// id is the provider identity reported by ID(). Defaults to providerID
 	// ("code-js") in New(); the RFC BF driver registry sets it from
 	// DriverOptions.ID.
@@ -88,16 +89,16 @@ func New(cfg Config) *Provider {
 	if cfg.MaxWall <= 0 {
 		cfg.MaxWall = DefaultMaxWall
 	}
-	logf := cfg.Logf
-	if logf == nil {
-		logf = func(string, ...any) {}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Provider{
 		compiler:      newCompiler(cfg.CodeRoot),
 		deterministic: cfg.Deterministic,
 		runTimeout:    cfg.RunTimeout,
 		maxWall:       cfg.MaxWall,
-		logf:          logf,
+		logger:        logger,
 		id:            providerID,
 	}
 }

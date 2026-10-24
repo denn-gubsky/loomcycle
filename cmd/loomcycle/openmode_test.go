@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,23 +49,34 @@ func TestOpenModeRefusal_StoreErrorRefuses(t *testing.T) {
 	}
 }
 
-// logRecorder counts warnings and signals each one.
+// logRecorder is a slog.Handler that records each line's level and message
+// and signals each one.
 type logRecorder struct {
-	mu    sync.Mutex
-	lines []string
-	ch    chan struct{}
+	mu     sync.Mutex
+	lines  []string
+	levels []slog.Level
+	ch     chan struct{}
 }
 
-func (r *logRecorder) logf(format string, args ...any) {
+func (r *logRecorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *logRecorder) Handle(_ context.Context, rec slog.Record) error {
 	r.mu.Lock()
-	r.lines = append(r.lines, fmt.Sprintf(format, args...))
+	r.lines = append(r.lines, rec.Message)
+	r.levels = append(r.levels, rec.Level)
 	r.mu.Unlock()
 	// Never block the loop under test: a full channel only drops a wake-up.
 	select {
 	case r.ch <- struct{}{}:
 	default:
 	}
+	return nil
 }
+
+func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *logRecorder) WithGroup(string) slog.Handler      { return r }
+
+func (r *logRecorder) logger() *slog.Logger { return slog.New(r) }
 
 func waitForLine(t *testing.T, r *logRecorder) {
 	t.Helper()
@@ -82,7 +93,7 @@ func TestWarnOpenMode_RepeatsUntilAuthConfigured(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		warnOpenMode(context.Background(), 5*time.Millisecond,
-			func(context.Context) (bool, error) { return configured.Load(), nil }, rec.logf)
+			func(context.Context) (bool, error) { return configured.Load(), nil }, rec.logger())
 		close(done)
 	}()
 	waitForLine(t, rec) // at once
@@ -93,8 +104,13 @@ func TestWarnOpenMode_RepeatsUntilAuthConfigured(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("warnOpenMode kept running after auth was configured")
 	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
 	if !strings.Contains(rec.lines[0], "open mode") {
 		t.Errorf("warning = %q, want it to say open mode", rec.lines[0])
+	}
+	if rec.levels[0] != slog.LevelWarn {
+		t.Errorf("warning level = %v, want WARN", rec.levels[0])
 	}
 }
 
@@ -103,7 +119,7 @@ func TestWarnOpenMode_ReturnsOnContextDone(t *testing.T) {
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
 	done := make(chan struct{})
 	go func() {
-		warnOpenMode(ctx, time.Hour, func(context.Context) (bool, error) { return false, nil }, rec.logf)
+		warnOpenMode(ctx, time.Hour, func(context.Context) (bool, error) { return false, nil }, rec.logger())
 		close(done)
 	}()
 	waitForLine(t, rec)
@@ -117,7 +133,7 @@ func TestWarnOpenMode_ReturnsOnContextDone(t *testing.T) {
 
 func TestWarnOpenMode_SilentWhenAuthConfigured(t *testing.T) {
 	rec := &logRecorder{ch: make(chan struct{}, 8)}
-	warnOpenMode(context.Background(), time.Millisecond, func(context.Context) (bool, error) { return true, nil }, rec.logf)
+	warnOpenMode(context.Background(), time.Millisecond, func(context.Context) (bool, error) { return true, nil }, rec.logger())
 	if len(rec.lines) != 0 {
 		t.Errorf("logged %v with auth configured", rec.lines)
 	}
@@ -137,7 +153,7 @@ func TestWarnOpenMode_StoreErrorTickNeitherWarnsNorStops(t *testing.T) {
 				return false, errors.New("store unavailable")
 			}
 			return false, nil
-		}, rec.logf)
+		}, rec.logger())
 		close(done)
 	}()
 	waitForLine(t, rec)

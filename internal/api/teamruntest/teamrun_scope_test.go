@@ -17,17 +17,9 @@ const (
 )
 
 // memberSurfaces are the surfaces a tenant member's token reaches the tool on
-// whatever scopes it holds. The gRPC TeamDef RPC is not one: it has no member
-// path and needs substrate:tenant outright.
-var memberSurfaces = surfaces[:0:0]
-
-func init() {
-	for _, s := range surfaces {
-		if s.name != "grpc" {
-			memberSurfaces = append(memberSurfaces, s)
-		}
-	}
-}
+// whatever scopes it holds: every one, since the gRPC TeamDef RPC gained the
+// member path (RFC EZ Q1) and with it the per-op run-scope check.
+var memberSurfaces = surfaces
 
 // refusedFor fails unless o is the per-op scope refusal naming op and scope.
 func refusedFor(t *testing.T, o outcome, op, scope string) {
@@ -200,31 +192,19 @@ func TestTeamRun_OperatorsAreUnchanged(t *testing.T) {
 	}
 }
 
-// The gRPC TeamDef RPC never had the gap: it needs substrate:tenant, which
-// carries both run scopes, and has no member path. Pinned so that opening the
-// RPC to members does not open op=run with it.
-func TestTeamRun_GRPCRefusesEveryMemberAtTheRPC(t *testing.T) {
-	for name, scopes := range map[string][]string{
-		"runs:read":              {auth.ScopeRunsRead},
-		"runs:create":            {auth.ScopeRunsCreate},
-		"both run scopes":        {auth.ScopeRunsCreate, auth.ScopeRunsRead},
-		"an isolated user":       {auth.ScopeUser},
-		"channel scopes":         {auth.ScopeChannelRead, auth.ScopeChannelPublish},
-		"no scopes on the token": nil,
-	} {
-		t.Run(name, func(t *testing.T) {
-			e := newEnv(t, false)
-			bob := e.mint("bob", scopes...)
-			for _, input := range []string{runSolo, cancelWalk, pollWalks, `{"op":"get","name":"solo"}`} {
-				o := e.teamGRPC(bob, input)
-				if !o.forbidden || !o.atRoute {
-					t.Errorf("%s: forbidden=%v atRoute=%v %q; want PermissionDenied for substrate:tenant", input, o.forbidden, o.atRoute, o.text)
-				}
-			}
-			if n, rows := e.prov.count(), e.walkRuns(); n != 0 || rows != 0 {
-				t.Errorf("%d model calls and %d walk run rows, want none", n, rows)
-			}
-		})
+// Over gRPC a member is now admitted to the TeamDef RPC (the member path), so
+// the run ops are held by the per-op check, not by the RPC gate: the refusal
+// names the op, and nothing runs. The member tests above run on gRPC too; this
+// pins the one thing they do not — that the RPC gate itself let the member in.
+func TestTeamRun_GRPCHoldsAMemberAtTheOpNotTheRPC(t *testing.T) {
+	e := newEnv(t, false)
+	bob := e.mint("bob", auth.ScopeRunsRead)
+	o := e.teamGRPC(bob, runSolo)
+	if !o.forbidden || o.atRoute || !strings.Contains(o.text, "op=run") {
+		t.Errorf("run: forbidden=%v atRoute=%v %q; want the per-op refusal", o.forbidden, o.atRoute, o.text)
+	}
+	if n, rows := e.prov.count(), e.walkRuns(); n != 0 || rows != 0 {
+		t.Errorf("%d model calls and %d walk run rows, want none", n, rows)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 )
 
@@ -153,6 +154,9 @@ func (s *Server) ListTeamChannels(ctx context.Context, req *loomcyclepb.ListTeam
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
 	}
+	if err := teamChannelScope(ctx, auth.ScopeChannelRead); err != nil {
+		return nil, err
+	}
 	resp, err := s.connector.ListTeamChannels(ctx, connector.TeamChannelsRequest{Team: req.GetTeam(), Tenant: req.GetTenant()})
 	if err != nil {
 		return nil, channelErrCode(err)
@@ -180,6 +184,9 @@ func (s *Server) PeekTeamChannel(ctx context.Context, req *loomcyclepb.PeekTeamC
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
 	}
+	if err := teamChannelScope(ctx, auth.ScopeChannelRead); err != nil {
+		return nil, err
+	}
 	resp, err := s.connector.PeekTeamChannel(ctx, connector.TeamChannelPeekRequest{
 		Team: req.GetTeam(), Name: req.GetName(), Tenant: req.GetTenant(), UserID: req.GetUserId(),
 		FromCursor: req.GetFromCursor(), MaxMessages: int(req.GetMaxMessages()),
@@ -202,6 +209,9 @@ func (s *Server) ReleaseTeamChannel(ctx context.Context, req *loomcyclepb.Releas
 	if s.connector == nil {
 		return nil, status.Error(codes.Unavailable, "connector not wired")
 	}
+	if err := teamChannelScope(ctx, auth.ScopeChannelPublish); err != nil {
+		return nil, err
+	}
 	resp, err := s.connector.ReleaseTeamChannel(ctx, connector.TeamChannelReleaseRequest{
 		Team: req.GetTeam(), Name: req.GetName(), Tenant: req.GetTenant(), UserID: req.GetUserId(), Count: int(req.GetCount()),
 	})
@@ -212,6 +222,21 @@ func (s *Server) ReleaseTeamChannel(ctx context.Context, req *loomcyclepb.Releas
 		Team: resp.Team, Name: resp.Name, Released: resp.Released,
 		ReleasedCount: int32(resp.ReleasedCount), StillHeld: int32(resp.StillHeld),
 	}, nil
+}
+
+// teamChannelScope refuses a caller whose token lacks the channel scope a
+// team-channel operation needs — the gRPC twin of the HTTP teamChannelScopeOK.
+// The RPCs are gated like the team, which a member reaches on the member path
+// whatever it was granted; what they do is a channel read or write, so without
+// this a token granted only runs:read would read a team's messages here while
+// the channel RPCs refuse it. substrate:tenant implies both scopes; no
+// principal (no authentication configured) is the operator.
+func teamChannelScope(ctx context.Context, need string) error {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || auth.HasScope(p.Scopes, need) {
+		return nil
+	}
+	return status.Errorf(codes.PermissionDenied, "insufficient scope: a team's own channels require %s", need)
 }
 
 // AckChannel — mirrors POST /v1/_channels/{name}/ack.

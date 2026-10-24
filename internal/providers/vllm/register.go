@@ -24,6 +24,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	// vLLM's per-request tuning (extra_body) is not modelled as driver options
 	// yet; surface any configured options as an advisory warning rather than
 	// silently dropping them.
-	providers.WarnUnknownOptions(o.Logf, "vllm", o.Options)
+	providers.WarnUnknownOptions(o.Logger, "vllm", o.Options)
 	return d, nil
 }

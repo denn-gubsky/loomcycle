@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1273,7 +1273,7 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 		// One log line, not a returned error — see writeBody. The admin re-embed
 		// surface is how an operator recovers a scope that was written while the
 		// embedder was down.
-		log.Printf("document: embed body failed for chunk %s: %v", chunkID, err)
+		slog.WarnContext(ctx, "document: embed body failed for a chunk", "chunk_id", chunkID, "err", err)
 		return
 	}
 	if err := d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, bodyKey, store.MemoryEmbedding{
@@ -1284,7 +1284,7 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 		EmbedText: text,
 		CreatedAt: time.Now().UTC(),
 	}); err != nil {
-		log.Printf("document: store embedding failed for chunk %s: %v", chunkID, err)
+		slog.WarnContext(ctx, "document: store embedding failed for a chunk", "chunk_id", chunkID, "err", err)
 	}
 }
 

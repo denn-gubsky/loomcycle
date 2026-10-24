@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -172,7 +172,7 @@ func (s *WebSearch) Execute(ctx context.Context, input json.RawMessage) (tools.R
 			s.Resolver.MarkOutcome(id, err)
 			lastErr = err
 			passedOver = append(passedOver, id)
-			log.Printf("websearch: provider %q failed: %v (falling over)", id, err)
+			slog.WarnContext(ctx, "websearch: provider failed (falling over)", "provider", id, "err", err)
 			continue
 		}
 		s.Resolver.MarkOutcome(id, nil)

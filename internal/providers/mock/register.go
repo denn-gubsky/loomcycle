@@ -32,6 +32,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		d.rate500 = 0
 	}
 	d.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "mock", o.Options, "stable")
+	providers.WarnUnknownOptions(o.Logger, "mock", o.Options, "stable")
 	return d, nil
 }

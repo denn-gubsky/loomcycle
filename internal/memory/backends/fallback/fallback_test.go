@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -60,6 +60,11 @@ func (f *fakeBackend) Stats(_ context.Context, scope store.MemoryScope) (store.M
 	return store.MemoryEmbedStats{Scope: scope}, nil
 }
 
+// captureLogger returns a logger writing every record, at any level, to buf.
+func captureLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
 // TestFallback_PrimaryErrorServesFromFallbackAndLogs pins the core
 // graceful-degradation behavior: primary errors → fallback serves the op
 // → success → a degradation log line is emitted (without any secret).
@@ -68,12 +73,7 @@ func TestFallback_PrimaryErrorServesFromFallbackAndLogs(t *testing.T) {
 	fb := &fakeBackend{name: "fallback"}
 
 	var captured bytes.Buffer
-	capLogf := func(format string, args ...any) {
-		captured.WriteString(fmt.Sprintf(format, args...))
-		captured.WriteByte('\n')
-	}
-
-	b := fallback.New(primary, fb, capLogf)
+	b := fallback.New(primary, fb, captureLogger(&captured))
 	entries, _, err := b.List(context.Background(), store.MemoryScopeAgent, "qa", "", 10)
 	if err != nil {
 		t.Fatalf("List: unexpected error after fallback: %v", err)
@@ -81,8 +81,17 @@ func TestFallback_PrimaryErrorServesFromFallbackAndLogs(t *testing.T) {
 	if len(entries) != 1 || entries[0].Key != "from-fallback" {
 		t.Fatalf("List served from %+v, want fallback", entries)
 	}
-	if !strings.Contains(captured.String(), "falling back to in-process") {
-		t.Errorf("expected degradation log, got: %q", captured.String())
+	line := captured.String()
+	for _, want := range []string{
+		"level=WARN",
+		"memory backend failed, falling back to in-process",
+		"backend=*fallback_test.fakeBackend",
+		"op=list",
+		"connection refused",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("degradation log missing %q, got: %q", want, line)
+		}
 	}
 }
 
@@ -94,7 +103,7 @@ func TestFallback_PrimarySuccessDoesNotTouchFallback(t *testing.T) {
 	fb := &fakeBackend{name: "fallback", failErr: errors.New("fallback should not be called")}
 
 	var captured bytes.Buffer
-	b := fallback.New(primary, fb, func(f string, a ...any) { captured.WriteString(fmt.Sprintf(f, a...)) })
+	b := fallback.New(primary, fb, captureLogger(&captured))
 
 	res, err := b.Set(context.Background(), store.MemoryScopeAgent, "qa", "k", json.RawMessage(`1`), memory.SetOptions{})
 	if err != nil {
@@ -116,7 +125,7 @@ func TestFallback_GetNotFoundDoesNotDegrade(t *testing.T) {
 	fb := &fakeBackend{name: "fallback", getValue: json.RawMessage(`"stale"`)}
 
 	var captured bytes.Buffer
-	b := fallback.New(primary, fb, func(f string, a ...any) { captured.WriteString(fmt.Sprintf(f, a...)) })
+	b := fallback.New(primary, fb, captureLogger(&captured))
 
 	_, err := b.Get(context.Background(), store.MemoryScopeAgent, "qa", "k")
 	var nf *store.ErrNotFound

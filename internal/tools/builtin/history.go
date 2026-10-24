@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -745,7 +745,7 @@ func (h *History) populateEmbedding(ctx context.Context, sess store.Session) {
 	}
 	vecs, err := h.Embedder.Embed(ctx, []string{text})
 	if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
-		log.Printf("history: populate embedding for chat %s failed (index not updated): %v", sess.ID, err)
+		slog.ErrorContext(ctx, "history: populate embedding for a chat failed (index not updated)", "session_id", sess.ID, "err", err)
 		return
 	}
 	if err := h.Store.SessionEmbedUpsert(ctx, sess.ID, store.SessionEmbedding{
@@ -754,7 +754,7 @@ func (h *History) populateEmbedding(ctx context.Context, sess store.Session) {
 		Dimension: len(vecs[0]),
 		Vector:    vecs[0],
 	}); err != nil {
-		log.Printf("history: upsert embedding for chat %s failed (index not updated): %v", sess.ID, err)
+		slog.ErrorContext(ctx, "history: upsert embedding for a chat failed (index not updated)", "session_id", sess.ID, "err", err)
 	}
 }
 

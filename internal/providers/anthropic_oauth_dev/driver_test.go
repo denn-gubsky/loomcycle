@@ -2,6 +2,7 @@ package anthropic_oauth_dev
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +22,7 @@ func TestOAuthTransport_AppliesAuthHeaders(t *testing.T) {
 	if err := store.Save(NewToken("sk-ant-oat-test", "sk-ant-ort-test", "user:inference", 3600)); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	refresher := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	refresher := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 	// Don't Start() — we don't want the background tick interfering
 	// with the test; the cached token is loaded by NewRefresher's
 	// constructor.
@@ -71,7 +72,7 @@ func TestOAuthTransport_401RetryDoesNotDoubleBetaHeader(t *testing.T) {
 	if err := store.Save(NewToken("sk-ant-oat-stale", "sk-ant-ort-test", "user:inference", 3600)); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	refresher := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	refresher := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 
 	// Faux Anthropic: returns 401 on the first call, 200 on the
 	// retry. Records the anthropic-beta header on every call.
@@ -138,7 +139,7 @@ func TestOAuthTransport_401RetryDoesNotDoubleBetaHeader(t *testing.T) {
 func TestOAuthTransport_ApplyAuthIsIdempotent(t *testing.T) {
 	store := NewTokenStore(t.TempDir() + "/tokens.json")
 	_ = store.Save(NewToken("x", "y", "s", 3600))
-	refresher := NewRefresher(store, ExchangeOptions{}, func(string, ...any) {})
+	refresher := NewRefresher(store, ExchangeOptions{}, slog.New(slog.DiscardHandler))
 
 	transport := &oauthTransport{refresher: refresher, version: "test"}
 	req, _ := http.NewRequest("POST", "http://example.com", nil)

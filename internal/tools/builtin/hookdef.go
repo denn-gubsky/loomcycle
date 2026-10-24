@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -550,7 +550,8 @@ func (h *HookDef) admitNoTraceHookDefChange(ctx context.Context, op, tenant, nam
 			return fmt.Errorf("%s: hook %q was not changed: its audit record could not be written: %w", op, name, err)
 		}
 	}
-	log.Printf("hookdef: %s by %q of hook %q in tenant %q, run by no-trace agent(s) %s", op, subject, name, tenant, strings.Join(agents, ", "))
+	slog.WarnContext(ctx, "hookdef: change of a hook run by no-trace agent(s)",
+		"op", op, "subject", subject, "hook", name, "target_tenant", tenant, "agents", strings.Join(agents, ", "))
 	return nil
 }
 

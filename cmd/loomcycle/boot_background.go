@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -34,7 +34,7 @@ func (b *boot) startBackground() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	b.addCleanup(bgCancel)
 	if !b.bootAuthConfigured {
-		go warnOpenMode(bgCtx, openModeWarnInterval, b.srv.AuthConfiguredErr, log.Printf)
+		go warnOpenMode(bgCtx, openModeWarnInterval, b.srv.AuthConfiguredErr, slog.Default())
 	}
 
 	// Webhook delivery counters: each replica adds what it counted every
@@ -57,7 +57,7 @@ func (b *boot) startBackground() {
 	// bgCancel() on SIGTERM (or a future pause hook) cancels the
 	// heartbeat goroutines naturally.
 	if heartbeatRunner != nil {
-		log.Printf("system channels: starting %d heartbeat goroutine(s)", len(heartbeatSpecs))
+		slog.Info("system channels: starting heartbeat goroutines", "goroutines", len(heartbeatSpecs))
 		heartbeatRunner.Start(bgCtx)
 	}
 
@@ -91,7 +91,7 @@ func (b *boot) startCluster() {
 	if cfg.Env.ReplicaID != "" {
 		pgStore, ok := asPostgresStore(storeIface)
 		if !ok {
-			log.Fatalf("coord: REPLICA_ID set but store is not *storepostgres.Store (openStore guard bypassed?)")
+			fatal("coord: REPLICA_ID set but store is not *storepostgres.Store (openStore guard bypassed?)")
 		}
 		bp, err := coord.NewPostgresBackplane(coord.PostgresBackplaneConfig{
 			Pool:      pgStore.Pool(),
@@ -99,11 +99,11 @@ func (b *boot) startCluster() {
 			ReplicaID: cfg.Env.ReplicaID,
 		})
 		if err != nil {
-			log.Fatalf("coord: backplane init: %v", err)
+			fatal("coord: backplane init failed", "err", err)
 		}
 		b.addCleanup(func() {
 			if err := bp.Close(); err != nil {
-				log.Printf("coord: backplane close: %v", err)
+				slog.Warn("coord: backplane close failed", "err", err)
 			}
 		})
 		replicaStore := coord.NewReplicaStore(pgStore.Pool())
@@ -128,7 +128,7 @@ func (b *boot) startCluster() {
 			select {
 			case <-hbDone:
 			case <-time.After(heartbeatJoinTimeout):
-				log.Printf("coord: the heartbeat's shutdown DELETE did not finish within %s", heartbeatJoinTimeout)
+				slog.Warn("coord: the heartbeat's shutdown DELETE did not finish in time", "timeout", heartbeatJoinTimeout)
 			}
 		})
 		// Wire the cluster view onto /healthz. Phase 1 ships the
@@ -161,7 +161,7 @@ func (b *boot) startCluster() {
 			AckTimeout:   ackTimeout,
 		})
 		if err != nil {
-			log.Fatalf("coord: cancel coordinator init: %v", err)
+			fatal("coord: cancel coordinator init failed", "err", err)
 		}
 		// A cancel for a run whose replica is recorded dead ends the run the
 		// way the server ends any run no live loop holds.
@@ -182,7 +182,7 @@ func (b *boot) startCluster() {
 				AckTimeout:   ackTimeout,
 			})
 			if err != nil {
-				log.Fatalf("coord: steer coordinator init: %v", err)
+				fatal("coord: steer coordinator init failed", "err", err)
 			}
 			steerReg.SetClusterSteerer(steerCoord)
 			go steerCoord.RunSteerSubscriber(bgCtx, steerReg)
@@ -202,7 +202,7 @@ func (b *boot) startCluster() {
 				AckTimeout:   ackTimeout,
 			})
 			if err != nil {
-				log.Fatalf("coord: turn-cancel coordinator init: %v", err)
+				fatal("coord: turn-cancel coordinator init failed", "err", err)
 			}
 			tcReg.SetClusterCanceller(tcCoord)
 			go tcCoord.RunTurnCancelSubscriber(bgCtx, tcReg)
@@ -219,25 +219,25 @@ func (b *boot) startCluster() {
 		if rsb := srv.RunStateBus(); rsb != nil {
 			rsb.SetBackplane(bp)
 			if err := rsb.SubscribeBackplane(bgCtx, bp); err != nil {
-				log.Fatalf("coord: runstate bus subscribe: %v", err)
+				fatal("coord: runstate bus subscribe failed", "err", err)
 			}
 		}
 		if cb := srv.ChannelBus(); cb != nil {
 			cb.SetBackplane(bp)
 			if err := cb.SubscribeBackplane(bgCtx, bp); err != nil {
-				log.Fatalf("coord: channel bus subscribe: %v", err)
+				fatal("coord: channel bus subscribe failed", "err", err)
 			}
 		}
 		// RFC L Decision 11: flush the local auth-token cache when a peer
 		// replica creates/rotates/retires a token.
 		if err := srv.SubscribeTokenInvalidations(bgCtx, bp); err != nil {
-			log.Fatalf("coord: token-cache invalidation subscribe: %v", err)
+			fatal("coord: token-cache invalidation subscribe failed", "err", err)
 		}
 		// RFC EY: drop a tenant's compiled ACL sets when a peer replica
 		// changed its rules, groups or bindings.
 		if r := srv.ACLResolver(); r != nil {
 			if err := r.Subscribe(bgCtx, bp); err != nil {
-				log.Fatalf("coord: acl invalidation subscribe: %v", err)
+				fatal("coord: acl invalidation subscribe failed", "err", err)
 			}
 		}
 
@@ -259,7 +259,9 @@ func (b *boot) startCluster() {
 		pgSessionLock := runner.NewPgSessionLocker(pgStore.Pool())
 		srv.SetPgSessionLocker(pgSessionLock)
 
-		log.Printf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on singleton_sweepers=on session_lock=pg-advisory", cfg.Env.ReplicaID, ackTimeout)
+		// Message kept verbatim: examples/cluster/README.md quotes it.
+		slog.Info(fmt.Sprintf("coord: cluster mode active — replica_id=%s heartbeat=30s backplane=postgres-listen-notify user_quotas=db-backed cancel_ack_timeout=%s bus_fanout=on singleton_sweepers=on session_lock=pg-advisory", cfg.Env.ReplicaID, ackTimeout),
+			"replica_id", cfg.Env.ReplicaID, "cancel_ack_timeout", ackTimeout)
 	}
 
 	b.advisoryLock = advisoryLock
@@ -300,7 +302,7 @@ func (b *boot) startRunSweepers() {
 		sweeper := heartbeat.New(storeIface, hbCfg)
 		go sweeper.Run(bgCtx)
 	} else {
-		log.Printf("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+		slog.Warn("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
 	}
 
 	// Channel hooks: the worker that decides the messages of channels that
@@ -314,13 +316,13 @@ func (b *boot) startRunSweepers() {
 		hookOwner = fmt.Sprintf("%s-%d", host, os.Getpid())
 	}
 	if cfg.Env.ChannelHooksEnabled && srv != nil && storeIface != nil {
-		log.Printf("channel hooks: worker started (owner %s, concurrency %d, per channel %d, max wait %s)",
-			hookOwner, cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel, cfg.Env.ChannelHooksMaxWait)
+		slog.Info("channel hooks: worker started", "owner", hookOwner, "concurrency", cfg.Env.ChannelHooksConcurrency,
+			"per_channel", cfg.Env.ChannelHooksPerChannel, "max_wait", cfg.Env.ChannelHooksMaxWait)
 		go srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run(bgCtx)
 	} else {
 		for name, ch := range cfg.Channels {
 			if ch.HasHooks() {
-				log.Printf("channel hooks: %q declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1 turns them on); they are skipped and its messages are delivered unhooked", name)
+				slog.Warn("channel hooks: a channel declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1 turns them on); they are skipped and its messages are delivered unhooked", "channel", name)
 			}
 		}
 		if srv != nil && storeIface != nil {
@@ -373,7 +375,7 @@ func (b *boot) startRunSweepers() {
 		usageSweeper := usage.New(storeIface, uCfg)
 		go usageSweeper.Run(bgCtx)
 	} else {
-		log.Printf("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
+		slog.Warn("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
 	}
 
 	// RFC BM data-retention sweeper — same placement rationale as the usage
@@ -428,7 +430,7 @@ func (b *boot) startRunSweepers() {
 		retentionSweeper := retention.New(storeIface, rCfg)
 		go retentionSweeper.Run(bgCtx)
 	} else {
-		log.Printf("retention: sweeper disabled (LOOMCYCLE_RETENTION_ENABLED != 1 or no Store)")
+		slog.Info("retention: sweeper disabled (LOOMCYCLE_RETENTION_ENABLED != 1 or no Store)")
 	}
 }
 
@@ -444,13 +446,13 @@ func (b *boot) seedServerState() {
 	// seeding fault leaves the counters empty (fail-open: budgets must never
 	// block the runtime from starting). No-op when the server has no store.
 	if err := srv.SeedLimits(bgCtx); err != nil {
-		log.Printf("limits: seed failed (budgets start empty until next write): %v", err)
+		slog.Error("limits: seed failed (budgets start empty until next write)", "err", err)
 	}
 	// RFC DT: seed the per-model throughput estimate from the ledger's latest
 	// timed calls. Non-fatal — an empty estimate learns again from live calls,
 	// and nothing depends on it yet (measure-only).
 	if err := srv.SeedThroughput(bgCtx); err != nil {
-		log.Printf("throughput: seed failed (estimate starts empty): %v", err)
+		slog.Warn("throughput: seed failed (estimate starts empty)", "err", err)
 	}
 
 	// Identity Documents for config-declared principals. They exist because an operator
@@ -480,11 +482,11 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				n, err := storeIface.OperatorTokenDefDeleteExpired(ctx, time.Now().Add(-expiredTokenRetention))
 				if err != nil {
-					log.Printf("expired-token sweep: %v", err)
+					slog.Error("expired-token sweep: failed", "err", err)
 					return
 				}
 				if n > 0 {
-					log.Printf("expired-token sweep: deleted %d expired token row(s)", n)
+					slog.Info("expired-token sweep: deleted expired token rows", "rows", n)
 				}
 			})
 	}
@@ -499,16 +501,16 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				swept, err := storeIface.MemorySweep(ctx)
 				if err != nil {
-					log.Printf("memory sweep: %v", err)
+					slog.Error("memory sweep: failed", "err", err)
 					return
 				}
 				if swept > 0 {
-					log.Printf("memory sweep: deleted %d expired row(s)", swept)
+					slog.Info("memory sweep: deleted expired rows", "rows", swept)
 				}
 			})
-		log.Printf("memory: sweeper interval=%s", cfg.Env.MemorySweepInterval)
+		slog.Info("memory: sweeper enabled", "interval", cfg.Env.MemorySweepInterval)
 	} else {
-		log.Printf("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
+		slog.Warn("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
 
 	// Drained consolidation-queue rows. An ack only stamps drained_at, so
@@ -519,15 +521,15 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				pruned, err := memory.PruneDrainedPending(ctx, storeIface, ttl, time.Now(), memory.PendingPruneBatch)
 				if err != nil {
-					log.Printf("memory_pending prune: %v", err)
+					slog.Error("memory_pending prune: failed", "err", err)
 				}
 				if pruned > 0 {
-					log.Printf("memory_pending prune: deleted %d row(s) drained more than %s ago", pruned, ttl)
+					slog.Info("memory_pending prune: deleted rows drained longer than the ttl", "rows", pruned, "ttl", ttl)
 				}
 			})
-		log.Printf("memory: drained-queue prune interval=1h ttl=%s", ttl)
+		slog.Info("memory: drained-queue prune enabled", "interval", time.Hour, "ttl", ttl)
 	} else if storeIface != nil {
-		log.Printf("memory: drained-queue prune disabled (LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS=0)")
+		slog.Warn("memory: drained-queue prune disabled (LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS=0)")
 	}
 
 	// RFC CD Part C — prune the change-feed table so the opt-in feed stays
@@ -539,14 +541,14 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				pruned, err := storeIface.PruneMemoryChanges(ctx, time.Now().Add(-window))
 				if err != nil {
-					log.Printf("memory_changes prune: %v", err)
+					slog.Error("memory_changes prune: failed", "err", err)
 					return
 				}
 				if pruned > 0 {
-					log.Printf("memory_changes prune: deleted %d row(s) older than %s", pruned, window)
+					slog.Info("memory_changes prune: deleted rows older than the window", "rows", pruned, "window", window)
 				}
 			})
-		log.Printf("memory: change-feed retention sweeper interval=1h window=%s", window)
+		slog.Info("memory: change-feed retention sweeper enabled", "interval", time.Hour, "window", window)
 	}
 
 	// RFC CD Part C (push) — deliver change events to operator-declared HTTP
@@ -557,11 +559,11 @@ func (b *boot) startStoreSweepers() {
 	if memoryChangesEnabled() && storeIface != nil && len(cfg.ChangeSubscriptions) > 0 {
 		subs := resolveChangeSubscriptions(cfg)
 		if len(subs) > 0 {
-			deliverer := changesub.New(storeIface, resolveChangeSubSecret, log.Printf)
+			deliverer := changesub.New(storeIface, resolveChangeSubSecret, slog.Default())
 			interval := changeSubDeliveryInterval()
 			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
 				func(ctx context.Context) { deliverer.RunOnce(ctx, subs) })
-			log.Printf("memory: change-subscription push engine — %d subscription(s), interval=%s", len(subs), interval)
+			slog.Info("memory: change-subscription push engine enabled", "subscriptions", len(subs), "interval", interval)
 		}
 	}
 
@@ -582,7 +584,7 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				scopes, err := sqlMemMgr.ListScopes(ctx)
 				if err != nil {
-					log.Printf("deadlink gc: list scopes: %v", err)
+					slog.Error("deadlink gc: list scopes failed", "err", err)
 					return
 				}
 				for _, sk := range scopes {
@@ -596,7 +598,7 @@ func (b *boot) startStoreSweepers() {
 					rep, err := docTool.ReconcileDeadLinks(ctx, sk, ms, cfg.Env.DeadLinkGCDryRun)
 					if err != nil {
 						// Per-scope: one unreadable scope must not stop the sweep.
-						log.Printf("deadlink gc: %s/%s/%s: %v", sk.Tenant, sk.Scope, sk.ScopeID, err)
+						slog.Error("deadlink gc: scope reconcile failed", "tenant", sk.Tenant, "scope", sk.Scope, "scope_id", sk.ScopeID, "err", err)
 						continue
 					}
 					if !rep.Empty() {
@@ -604,15 +606,15 @@ func (b *boot) startStoreSweepers() {
 						if cfg.Env.DeadLinkGCDryRun {
 							verb = "would collect"
 						}
-						log.Printf("deadlink gc: %s %s", verb, rep)
+						slog.Info("deadlink gc: "+verb, "report", rep)
 					}
 				}
 			})
-		log.Printf("deadlink gc: interval=%s dry_run=%v", cfg.Env.DeadLinkGCInterval, cfg.Env.DeadLinkGCDryRun)
+		slog.Info("deadlink gc: enabled", "interval", cfg.Env.DeadLinkGCInterval, "dry_run", cfg.Env.DeadLinkGCDryRun)
 	} else if storeIface != nil && sqlMemMgr == nil {
-		log.Printf("deadlink gc: disabled (no SQL Memory — no chunk tables to reconcile)")
+		slog.Info("deadlink gc: disabled (no SQL Memory — no chunk tables to reconcile)")
 	} else {
-		log.Printf("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
+		slog.Warn("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
 	}
 
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
@@ -621,16 +623,16 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				swept, err := storeIface.ChannelSweepExpired(ctx)
 				if err != nil {
-					log.Printf("channels sweep: %v", err)
+					slog.Error("channels sweep: failed", "err", err)
 					return
 				}
 				if swept > 0 {
-					log.Printf("channels sweep: deleted %d expired row(s)", swept)
+					slog.Info("channels sweep: deleted expired rows", "rows", swept)
 				}
 			})
-		log.Printf("channels: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
+		slog.Info("channels: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)
 	} else if storeIface != nil {
-		log.Printf("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
+		slog.Warn("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
 	}
 
 	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
@@ -640,14 +642,14 @@ func (b *boot) startStoreSweepers() {
 			func(ctx context.Context) {
 				swept, err := storeIface.InterruptSweepExpired(ctx)
 				if err != nil {
-					log.Printf("interrupts sweep: %v", err)
+					slog.Error("interrupts sweep: failed", "err", err)
 					return
 				}
 				if swept > 0 {
-					log.Printf("interrupts sweep: timed_out %d expired row(s)", swept)
+					slog.Info("interrupts sweep: timed out expired rows", "rows", swept)
 				}
 			})
-		log.Printf("interrupts: sweeper interval=%s", cfg.Env.ChannelsSweepInterval)
+		slog.Info("interrupts: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)
 	}
 }
 
