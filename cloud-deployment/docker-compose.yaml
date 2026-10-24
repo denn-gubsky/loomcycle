@@ -184,6 +184,11 @@ services:
       # today's gates deciding and logs every place the rules would answer
       # differently (acl_shadow_diverged). Read at startup.
       LOOMCYCLE_ACL: ${LOOMCYCLE_ACL:-shadow}
+      # The public URL: invite and reset links are built from it, the password
+      # gate refuses to load without it, and it is how loomcycle knows the
+      # tunnel is HTTPS (a request with this Host gets the Secure session
+      # cookie). Set here so a deploy carries it even if .env.insecure doesn't.
+      LOOMCYCLE_PUBLIC_URL: ${LOOMCYCLE_PUBLIC_URL:-https://app.loomcycle.cloud}
     volumes:
       - ./data:/data
       - ./config:/config:ro

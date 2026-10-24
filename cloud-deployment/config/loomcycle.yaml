@@ -182,6 +182,35 @@ volumes:
 # with `acls:` is reachable from any tenant's binding, but a binding names
 # one tenant, so this file cannot bind tenants the landing page creates.
 
+# ─── Sign-in (RFC FA; plan: ../AUTH-INTEGRATION.md) ──────────────────
+# Token mode during the migration: the paste box keeps working for existing
+# tokens, and the `cloud` password gate signs in people the landing invites.
+# The password gate needs LOOMCYCLE_SECRET_KEY (pepper + TOTP secrets) and
+# LOOMCYCLE_PUBLIC_URL (invite/reset links): without either, the config does
+# not load. INSTALL.md "Upgrading to Web UI sessions" has the host steps.
+auth:
+  mode: token
+  gates:
+    token: { kind: token, label: "Access token" }
+    cloud:
+      kind: password
+      label: "loomcycle.cloud account"
+      require_mfa: false            # true at the strict switch (plan phase 6)
+      invites: { default_ttl: 168h, max_ttl: 720h }
+      resets: { ttl: 1h }
+      allowed_return_to: ["https://loomcycle.cloud/"]
+      # Lets the landing's auth:manage token reset an owner's password and
+      # attach a password to a legacy owner's subject. That makes the token
+      # able to take over any owner's account, which is acceptable here only
+      # because the landing proves the owner's Google identity first.
+      manager_may_recover_owners: true
+  # The tunnel reaches loomcycle from the compose network, so without these
+  # every login would look like it came from cloudflared and one attacker's
+  # failures would throttle everyone. Trust the docker range and read
+  # Cloudflare's client-address header.
+  trusted_proxies: ["172.16.0.0/12"]
+  client_ip_header: CF-Connecting-IP
+
 # ─── Web search ───────────────────────────────────────────────────────
 # SearXNG is wired here, NOT via env — there is no LOOMCYCLE_SEARCH_* var. The
 # base_url is the in-compose service name. `brave` is an optional paid fallback

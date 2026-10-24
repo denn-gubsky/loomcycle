@@ -54,7 +54,7 @@ auth:
     token:  { kind: token }    # the paste box, still needed during the migration
     cloud:
       kind: password
-      display: "loomcycle.cloud account"
+      label: "loomcycle.cloud account"
       require_mfa: false       # true at the strict switch (phase 6)
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets:  { ttl: 1h }
