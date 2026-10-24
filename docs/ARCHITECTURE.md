@@ -305,7 +305,7 @@ State: `Availability` per provider, `ModelStatus` per model. Three orthogonal fl
 Lifecycle:
 1. Startup: `cmd/loomcycle/main.go` builds the resolver, runs the first-round probe synchronously (parallel across providers, 5s deadline each), then starts a background goroutine that re-probes every `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS` (default 15 min, max 1 h).
 2. Per-request: HTTP / gRPC server calls `Server.resolveAgent(name)` which routes pin-vs-tier and returns `(provider, model, effort)` for the loop.
-3. On driver error: loop calls `MarkStalled(provider, model, reason)` (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix).
+3. On driver error: loop calls `MarkStalled(provider, model, reason)` (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix) — but only for a model fault (`providers.StallsModel`): a 5xx, a transport error, an in-stream error, a 404 for a missing or retired model. A request error (400/401/403/422) does not stall the model: the matrix is shared by every run, and one agent's malformed request must not take the model away from the rest. A 429 goes to `MarkRateLimited` instead.
 
 Effort flow: agent yaml `effort: low|medium|high` → `Decision.Effort` → `RunOptions.Effort` → `providers.Request.Effort`. Each driver translates per its `Capabilities.SupportsEffort`:
 
