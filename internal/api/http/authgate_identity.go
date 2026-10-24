@@ -20,14 +20,18 @@ package http
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/identity"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -317,4 +321,85 @@ func (s *Server) groupStillGates(ctx context.Context, gate, tenant, name string)
 		return false
 	}
 	return len(row.ExternalID) > len(gate) && row.ExternalID[:len(gate)+1] == gate+":"
+}
+
+// credKindIdentity binds a session to the user_identities row it signed in
+// through and to the user row that identity names (RFC FA §3.3 step 4). The
+// binding MAC covers the identity's issuer, external subject and creation
+// time, and the user row's creation time, so unlinking the identity (or
+// linking a different provider account in its place), deleting the user
+// (or deleting and re-creating one of the same subject) ends the session on
+// its next request. Status is read live: disabled ends it, pending makes it
+// answer no to everything.
+const credKindIdentity = "identity"
+
+// identityBindingHash is what an identity session's MAC covers.
+func identityBindingHash(id store.UserIdentityRow, u store.UserRow) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("identity\x00%s\x00%s\x00%s\x00%d\x00%d",
+		id.Gate, id.Issuer, id.ExternalSubject, id.CreatedAt.UnixNano(), u.CreatedAt.UnixNano())))
+	return hex.EncodeToString(sum[:])
+}
+
+// sessionIdentityRow is the subject's identity at the gate, as stored.
+func (s *Server) sessionIdentityRow(ctx context.Context, tenant, subject, gate string) (store.UserIdentityRow, error) {
+	ids, err := s.store.UserIdentityListSubject(ctx, tenant, subject)
+	if err != nil {
+		return store.UserIdentityRow{}, err
+	}
+	for _, id := range ids {
+		if id.Gate == gate {
+			return id, nil
+		}
+	}
+	return store.UserIdentityRow{}, &store.ErrNotFound{Kind: "user_identity", ID: subject}
+}
+
+// identitySessionBinding is an identity-gate session's binding.
+func (s *Server) identitySessionBinding(ctx context.Context, ident sessionIdentity) (kind, ref, credHash string, err error) {
+	id, err := s.sessionIdentityRow(ctx, ident.TenantID, ident.Subject, ident.Gate)
+	if err != nil {
+		return "", "", "", err
+	}
+	u, err := s.store.UserGet(ctx, ident.TenantID, ident.Subject)
+	if err != nil {
+		return "", "", "", err
+	}
+	if u.Status == "disabled" {
+		return "", "", "", errUserDisabled
+	}
+	return credKindIdentity, "", identityBindingHash(id, u), nil
+}
+
+// identitySessionPrincipal re-resolves an identity-gate session: the gate is
+// still configured with an identity map, the identity and the user are the
+// ones the session was made from, and the user is not disabled. A pending
+// user's principal holds no scope and an empty ACL set, so every access
+// question is NoMatch; the middleware then admits it to GET /v1/_me alone.
+func (s *Server) identitySessionPrincipal(ctx context.Context, row store.UISessionRow, bound func(string) bool, pending *bool) (auth.Principal, bool, bool) {
+	if _, ok := s.identityGate(row.Gate); !ok {
+		return auth.Principal{}, false, true
+	}
+	id, err := s.sessionIdentityRow(ctx, row.TenantID, row.Subject, row.Gate)
+	if err != nil {
+		return auth.Principal{}, false, isNotFound(err)
+	}
+	u, err := s.store.UserGet(ctx, row.TenantID, row.Subject)
+	if err != nil {
+		return auth.Principal{}, false, isNotFound(err)
+	}
+	if !bound(identityBindingHash(id, u)) {
+		return auth.Principal{}, false, true
+	}
+	switch u.Status {
+	case "active":
+		return s.userSessionPrincipal(ctx, u)
+	case store.UserStatusPending:
+		eff, err := authz.Compile(authz.Input{Subject: authz.Subject{TenantID: u.TenantID, ID: u.Subject}, Now: time.Now()})
+		if err != nil {
+			return auth.Principal{}, false, false
+		}
+		*pending = true
+		return auth.Principal{TenantID: u.TenantID, Subject: u.Subject, Scopes: []string{}, Effective: eff}, true, true
+	}
+	return auth.Principal{}, false, true
 }

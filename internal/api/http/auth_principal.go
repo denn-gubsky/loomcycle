@@ -71,6 +71,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			r = r.WithContext(withUIAuth(r.Context(), *ui))
+			// A user awaiting approval may learn that it waits, nothing else.
+			if ui.pending && !(r.Method == http.MethodGet && r.URL.Path == "/v1/_me") {
+				writeJSONError(w, http.StatusForbidden, "awaiting_approval",
+					"your account is awaiting an operator's approval")
+				return
+			}
 		}
 		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
 			writeScopeError(w, required, "insufficient scope")
@@ -355,11 +361,11 @@ func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, 
 		return auth.Principal{}, nil, false
 	}
 	if id, ok := s.sessionIDFromCookie(r); ok {
-		p, row, ok := s.sessionPrincipal(r, id)
+		p, ua, ok := s.sessionPrincipal(r, id)
 		if !ok {
 			return auth.Principal{}, nil, false
 		}
-		return p, &uiAuth{session: &row}, true
+		return p, &ua, true
 	}
 	if bearer, ok := legacyBearerCookie(r, strict); ok {
 		warnEvery(&s.legacyCookieWarnedAt, "auth: a browser signed in with the "+webui.LegacyBearerCookie+
