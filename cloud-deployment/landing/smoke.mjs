@@ -3,7 +3,20 @@
 // /v1/_ admin-plane block + static serving all behave.
 //
 //   node smoke.mjs        (run from cloud-deployment/landing/)
+//
+// With a REAL loomcycle running a `kind: password` gate, it also drives the
+// account flow end to end (signup → redeem → team invite → member redeem →
+// reset → disable/enable → remove, plus the refusals). Point it there with:
+//
+//   SMOKE_RUNTIME_URL=http://127.0.0.1:8787   the runtime (its LOOMCYCLE_PUBLIC_URL)
+//   SMOKE_MANAGE_TOKEN=…                      an auth:manage operator token
+//   SMOKE_AUTH_GATE=cloud                     the gate's name (default cloud)
+//   SMOKE_RETURN_TO=/ui/                      a return_to the gate accepts (default /ui/)
+//
+// Without the first two that section is skipped. Links, codes and the token
+// are never printed.
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,10 +130,133 @@ try {
   const idx = await fetch(base + "/");
   const html = await idx.text();
   ok(idx.ok && html.includes("<html"), "static landing served at /");
+
+  // without LOOMCYCLE_AUTH_MANAGE_TOKEN the account flow is off
+  ok(who.auth_gate === false, "/api/whoami reports auth_gate:false without the manage token");
+  const off = await fetch(base + "/api/signup", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  ok(off.status === 503 && (await off.json()).error === "auth_gate_not_configured", "/api/signup answers 503 without the manage token");
 } catch (e) {
   console.error("smoke error:", e); failures++;
 } finally {
   child.kill("SIGKILL"); upstream.close();
+}
+
+// 3) the account flow against a real runtime (optional).
+const RT = (process.env.SMOKE_RUNTIME_URL || "").replace(/\/+$/, "");
+const MANAGE = process.env.SMOKE_MANAGE_TOKEN || "";
+if (!RT || !MANAGE) {
+  console.log("SKIP account flow against a real runtime (set SMOKE_RUNTIME_URL + SMOKE_MANAGE_TOKEN)");
+} else {
+  await liveAccountFlow().catch((e) => { console.error("live smoke error:", e && e.message); failures++; });
+}
+
+async function liveAccountFlow() {
+  const ORIGIN = "http://smoke.test";
+  const lport = 8098;
+  const landing = spawn(process.execPath, ["server.js"], {
+    cwd: HERE,
+    env: {
+      ...process.env, PORT: String(lport), LOOMCYCLE_URL: RT, MINT_DEV_ALLOW_UNVERIFIED: "1", WEB_ROOT,
+      LOOMCYCLE_ADMIN_TOKEN: "unused-by-the-account-flow", LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE,
+      AUTH_GATE: process.env.SMOKE_AUTH_GATE || "cloud", APP_URL: RT,
+      SIGNUP_RETURN_TO: process.env.SMOKE_RETURN_TO || "/ui/", APP_ORIGIN: ORIGIN,
+    },
+    stdio: "inherit",
+  });
+  const lb = `http://127.0.0.1:${lport}`;
+  const as = (email) => async (method, p, body, origin = ORIGIN) => {
+    const headers = { accept: "application/json", "Cf-Access-Authenticated-User-Email": email };
+    if (method !== "GET") headers.origin = origin;
+    if (body !== undefined) headers["content-type"] = "application/json";
+    const r = await fetch(lb + p, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    let json = null; try { json = await r.json(); } catch {}
+    return { status: r.status, json };
+  };
+  // redeem plays the person on loomcycle's invite page: the code from the
+  // link's fragment, a password, same-origin with the UI header.
+  const redeem = async (url) => {
+    const code = url.slice(url.indexOf("#") + 1);
+    const r = await fetch(RT + "/v1/_auth/invite", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Loomcycle-UI": "1", Origin: RT },
+      body: JSON.stringify({ code, password: "pw-" + randomBytes(16).toString("hex") }),
+    });
+    return r.status;
+  };
+  try {
+    for (let i = 0; i < 50; i++) {
+      try { if ((await fetch(lb + "/_up")).ok) break; } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const run = Date.now().toString(36);
+    const ownerEmail = `smoke-owner-${run}@example.com`;
+    const owner = as(ownerEmail);
+
+    let r = await fetch(lb + "/api/whoami", { headers: { accept: "application/json", "Cf-Access-Authenticated-User-Email": ownerEmail } }).then((x) => x.json());
+    ok(r.auth_gate === true && r.signed_up === false, "live: whoami → auth_gate:true, signed_up:false for a fresh visitor");
+
+    r = await owner("POST", "/api/signup", {});
+    ok(r.status === 200 && r.json.redirect.startsWith(RT + "/ui/invite#"), "live: signup → redirect to the app's invite page");
+    ok((await redeem(r.json.redirect)) === 201, "live: the owner invite redeems with a password");
+
+    r = await fetch(lb + "/api/whoami", { headers: { accept: "application/json", "Cf-Access-Authenticated-User-Email": ownerEmail } }).then((x) => x.json());
+    ok(r.signed_up === true, "live: whoami → signed_up:true after redemption");
+    r = await owner("POST", "/api/signup", {});
+    ok(r.status === 409 && r.json.signed_up === true, "live: a second signup → 409 signed_up");
+
+    r = await owner("GET", "/api/team");
+    const me = r.json.members.find((m) => m.you);
+    ok(r.status === 200 && r.json.members.length === 1 && me && me.login === ownerEmail && me.access_mode === "tenant", "live: team lists the owner (you, tenant, login = e-mail)");
+
+    const memberEmail = `smoke-member-${run}@example.com`;
+    r = await owner("POST", "/api/team/invites", { email: memberEmail });
+    ok(r.status === 201 && r.json.url.startsWith(RT + "/ui/invite#") && r.json.expires_at, "live: member invite → link + expiry");
+    const memberLink = r.json.url;
+    r = await owner("GET", "/api/team/invites");
+    ok(r.json.invites.some((i) => i.email === memberEmail) && !JSON.stringify(r.json).includes("#"), "live: pending invites list it, with no link");
+    ok((await redeem(memberLink)) === 201, "live: the member redeems the invite");
+
+    r = await owner("GET", "/api/team");
+    const member = r.json.members.find((m) => m.login === memberEmail);
+    ok(member && member.access_mode === "isolated" && member.status === "active", "live: the member is in the team at the floor (isolated)");
+    const enc = encodeURIComponent(member.subject);
+
+    r = await owner("POST", `/api/team/${enc}/reset`, {});
+    ok(r.status === 201 && r.json.url.startsWith(RT + "/ui/reset#"), "live: member reset → link");
+    r = await owner("POST", `/api/team/${enc}/disable`, {});
+    ok(r.status === 200 && r.json.status === "disabled", "live: disable the member");
+    r = await owner("POST", `/api/team/${enc}/enable`, {});
+    ok(r.status === 200 && r.json.status === "active", "live: re-enable the member");
+
+    // refusals
+    const intruder = as(`smoke-intruder-${run}@example.com`);
+    r = await intruder("POST", `/api/team/${enc}/disable`, {});
+    ok(r.status === 404, "live: another visitor's request on that member → 404");
+    r = await owner("GET", "/api/team");
+    ok(r.json.members.find((m) => m.subject === member.subject).status === "active", "live: … and the member is unchanged");
+    r = await owner("POST", `/api/team/${enc}/disable`, {}, "https://evil.test");
+    ok(r.status === 403, "live: a cross-origin POST → 403");
+    r = await owner("POST", `/api/team/${encodeURIComponent(me.subject)}/disable`, {});
+    ok(r.status === 403 && r.json.error === "target_beyond_floor", "live: the owner cannot disable themselves through the website (the floor)");
+
+    r = await owner("POST", `/api/team/${encodeURIComponent(me.subject)}/reset`, {});
+    ok(r.status === 201 || (r.status === 403 && r.json.error === "target_beyond_floor"),
+      `live: reset my password → ${r.status === 201 ? "link (manager_may_recover_owners on)" : "refused (manager_may_recover_owners off)"}`);
+
+    r = await owner("POST", "/api/team/invites", { email: `smoke-revoke-${run}@example.com` });
+    const rid = r.json.invite_id;
+    r = await owner("DELETE", `/api/team/invites/${rid}`);
+    ok(r.status === 204, "live: revoke a pending invite");
+    r = await owner("GET", "/api/team/invites");
+    ok(!r.json.invites.some((i) => i.invite_id === rid), "live: … and it is no longer pending");
+
+    r = await owner("DELETE", `/api/team/${enc}`);
+    ok(r.status === 204, "live: remove the member");
+    r = await owner("GET", "/api/team");
+    ok(r.json.members.length === 1, "live: the team is the owner again");
+  } finally {
+    landing.kill("SIGKILL");
+  }
 }
 console.log(failures ? `\n${failures} FAILURE(S)` : "\nALL SMOKE CHECKS PASSED");
 process.exit(failures ? 1 : 0);
