@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -18,23 +19,15 @@ import (
 // trusted proxy. Any other peer is the client, whatever headers it sends: a
 // header from an untrusted peer is the client's own word about itself.
 func sourceIP(policy config.AuthPolicy, r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer, err := netip.ParseAddr(host)
-	if err != nil {
+	peer, ok := authgate.PeerAddr(r)
+	if !ok {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
 		return host
 	}
-	peer = peer.Unmap()
-	trusted := func(a netip.Addr) bool {
-		for _, p := range policy.TrustedProxies {
-			if p.Contains(a) {
-				return true
-			}
-		}
-		return false
-	}
+	trusted := func(a netip.Addr) bool { return authgate.InPrefixes(a, policy.TrustedProxies) }
 	if !trusted(peer) {
 		return peer.String()
 	}
