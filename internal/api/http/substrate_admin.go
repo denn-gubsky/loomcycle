@@ -381,6 +381,20 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 		return
 	}
 
+	// A definition op the caller's ACL refused (RFC EZ §1.2) is answered
+	// as the route gate answers one: 403 acl_denied, or 503 acl_unavailable,
+	// the body verbatim — not a tool failure.
+	if code, ok := tools.ACLRefusalCode(result.Text, result.ErrorInfo); result.IsError && ok {
+		status := http.StatusForbidden
+		if code == "acl_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(result.Text))
+		return
+	}
+
 	// Mirror the in-process tool's IsError convention onto HTTP.
 	// The tool's Text payload is JSON when it succeeded, plain
 	// error text when it failed. We pass through verbatim — the

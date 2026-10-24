@@ -1,11 +1,13 @@
 package a2a
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -41,10 +43,9 @@ func TestSignCardIfConfigured_AllowlistedKeySignsAndVerifies(t *testing.T) {
 	cardCfg.SignWithKeyEnv = envName
 	allowlist := map[string]bool{envName: true}
 
-	var traced []string
-	signCardIfConfigured(generated, cardCfg, allowlist, func(f string, a ...any) {
-		traced = append(traced, f)
-	})
+	var logs bytes.Buffer
+	signCardIfConfigured(generated, cardCfg, allowlist, captureLogger(&logs))
+	traced := logLines(logs.String())
 
 	if len(generated.Signatures) != 1 {
 		t.Fatalf("card has %d signatures, want 1 (should be signed)", len(generated.Signatures))
@@ -77,10 +78,9 @@ func TestSignCardIfConfigured_UnallowlistedKeyServesUnsignedWithTrace(t *testing
 	cardCfg.SignWithKeyEnv = envName
 	allowlist := map[string]bool{} // envName NOT allowlisted
 
-	var traced []string
-	signCardIfConfigured(generated, cardCfg, allowlist, func(f string, a ...any) {
-		traced = append(traced, f)
-	})
+	var logs bytes.Buffer
+	signCardIfConfigured(generated, cardCfg, allowlist, captureLogger(&logs))
+	traced := logLines(logs.String())
 
 	if len(generated.Signatures) != 0 {
 		t.Fatalf("card was signed despite the key env not being allowlisted")
@@ -88,6 +88,7 @@ func TestSignCardIfConfigured_UnallowlistedKeyServesUnsignedWithTrace(t *testing
 	if len(traced) != 1 || !strings.Contains(traced[0], "not in allowlist") {
 		t.Fatalf("trace = %v, want one 'not in allowlist' line", traced)
 	}
+	assertSignTraceLine(t, traced[0], envName, strings.Split(pemStr, "\n")[1])
 }
 
 // TestSignCardIfConfigured_UnsetEnvServesUnsignedWithTrace asserts an
@@ -102,10 +103,9 @@ func TestSignCardIfConfigured_UnsetEnvServesUnsignedWithTrace(t *testing.T) {
 	cardCfg.SignWithKeyEnv = envName
 	allowlist := map[string]bool{envName: true}
 
-	var traced []string
-	signCardIfConfigured(generated, cardCfg, allowlist, func(f string, a ...any) {
-		traced = append(traced, f)
-	})
+	var logs bytes.Buffer
+	signCardIfConfigured(generated, cardCfg, allowlist, captureLogger(&logs))
+	traced := logLines(logs.String())
 
 	if len(generated.Signatures) != 0 {
 		t.Fatalf("card was signed despite the key env being unset")
@@ -113,6 +113,7 @@ func TestSignCardIfConfigured_UnsetEnvServesUnsignedWithTrace(t *testing.T) {
 	if len(traced) != 1 || !strings.Contains(traced[0], "unset") {
 		t.Fatalf("trace = %v, want one 'unset' line", traced)
 	}
+	assertSignTraceLine(t, traced[0], envName, "")
 }
 
 // TestSignCardIfConfigured_NoKeyConfiguredServesUnsignedSilently asserts a
@@ -122,10 +123,9 @@ func TestSignCardIfConfigured_NoKeyConfiguredServesUnsignedSilently(t *testing.T
 	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard() // SignWithKeyEnv == ""
 
-	var traced []string
-	signCardIfConfigured(generated, cardCfg, map[string]bool{}, func(f string, a ...any) {
-		traced = append(traced, f)
-	})
+	var logs bytes.Buffer
+	signCardIfConfigured(generated, cardCfg, map[string]bool{}, captureLogger(&logs))
+	traced := logLines(logs.String())
 
 	if len(generated.Signatures) != 0 {
 		t.Fatalf("card was signed with no key configured")
@@ -140,21 +140,58 @@ func TestSignCardIfConfigured_NoKeyConfiguredServesUnsignedSilently(t *testing.T
 // never a 500.
 func TestSignCardIfConfigured_MalformedKeyServesUnsignedWithTrace(t *testing.T) {
 	const envName = "LOOMCYCLE_A2A_SIGNING_KEY"
-	t.Setenv(envName, "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----")
+	const badPEM = "-----BEGIN PRIVATE KEY-----\nnot a key\n-----END PRIVATE KEY-----"
+	t.Setenv(envName, badPEM)
 
 	generated := buildAgentCard(fixtureCard(), "https://agents.example", "", false, true)
 	cardCfg := fixtureCard()
 	cardCfg.SignWithKeyEnv = envName
 
-	var traced []string
-	signCardIfConfigured(generated, cardCfg, map[string]bool{envName: true}, func(f string, a ...any) {
-		traced = append(traced, f)
-	})
+	var logs bytes.Buffer
+	signCardIfConfigured(generated, cardCfg, map[string]bool{envName: true}, captureLogger(&logs))
+	traced := logLines(logs.String())
 
 	if len(generated.Signatures) != 0 {
 		t.Fatalf("card was signed with a malformed key")
 	}
 	if len(traced) != 1 || !strings.Contains(traced[0], "failed to parse") {
 		t.Fatalf("trace = %v, want one 'failed to parse' line", traced)
+	}
+	assertSignTraceLine(t, traced[0], envName, "not a key")
+	if !strings.Contains(traced[0], "err=") {
+		t.Errorf("parse-failure trace carries no err attr: %s", traced[0])
+	}
+}
+
+// captureLogger returns a text-format logger writing every level to w.
+func captureLogger(w *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// logLines splits captured log output into its non-empty lines.
+func logLines(out string) []string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return lines
+}
+
+// assertSignTraceLine checks an unsigned-card trace is a WARN naming the
+// signing-key env var (env=<name>) and never carrying the key value.
+// keyFragment is a single-line slice of the env value (the text handler
+// escapes newlines, so a multi-line PEM would never match verbatim).
+func assertSignTraceLine(t *testing.T, line, envName, keyFragment string) {
+	t.Helper()
+	if !strings.Contains(line, "level=WARN") {
+		t.Errorf("trace not at WARN: %s", line)
+	}
+	if !strings.Contains(line, "env="+envName) {
+		t.Errorf("trace missing env=%s: %s", envName, line)
+	}
+	if keyFragment != "" && strings.Contains(line, keyFragment) {
+		t.Errorf("trace leaks the signing key value: %s", line)
 	}
 }

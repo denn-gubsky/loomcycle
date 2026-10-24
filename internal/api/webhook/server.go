@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -158,7 +159,7 @@ type Receiver struct {
 	// false (default) a none-auth webhook 503s rather than silently accepting
 	// unsigned external POSTs. Set from LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED.
 	allowUnauthenticated bool
-	logf                 func(format string, args ...any)
+	logger               *slog.Logger
 
 	dedup   *dedupCache
 	limiter *rateLimiter
@@ -210,7 +211,8 @@ type Deps struct {
 	Credentials CredentialResolver
 	// AllowUnauthenticated enables auth.kind="none" webhooks. Default false.
 	AllowUnauthenticated bool
-	Logf                 func(format string, args ...any)
+	// Logger receives the receiver's log lines. Nil discards them.
+	Logger *slog.Logger
 	// Counts stores each definition's delivery counters (RFC EK §9). May be
 	// nil (nothing is counted; RunCountFlusher returns at once).
 	Counts CountStore
@@ -231,9 +233,9 @@ func New(d Deps) *Receiver {
 	if getenv == nil {
 		getenv = osGetenv
 	}
-	logf := d.Logf
-	if logf == nil {
-		logf = func(string, ...any) {}
+	logger := d.Logger
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	// The creds field stays a nil interface without an engine: storedSecret
 	// tells that apart from a credential that is missing.
@@ -255,7 +257,7 @@ func New(d Deps) *Receiver {
 		creds:                creds,
 		secrets:              secrets,
 		allowUnauthenticated: d.AllowUnauthenticated,
-		logf:                 logf,
+		logger:               logger,
 		dedup:                newDedupCache(now),
 		limiter:              newRateLimiter(now),
 		bodyReadTimeout:      defaultBodyReadTimeout,
@@ -350,7 +352,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	body, bodyOK := rec.readDelivery(w, r, rec.bodyLimit(wd))
 	if !bodyOK {
 		rec.finish(span, whKey, "", "rejected_body", "")
-		rec.logf("webhook %q: body unreadable or over its %d-byte limit", name, rec.bodyLimit(wd))
+		rec.logger.Warn("webhook: body unreadable or over its byte limit", "webhook", name, "limit_bytes", rec.bodyLimit(wd))
 		writeUnknownWebhook(w)
 		return
 	}
@@ -397,7 +399,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if held == nil && rec.dedup.seenAny(dk) {
-		rec.logf("webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", name)
+		rec.logger.Info("webhook: replayed delivery (delivery_id seen within TTL) — idempotent ack", "webhook", name)
 		rec.replayAck(ctx, w, span, name, whKey, did, dk, wd)
 		return
 	}
@@ -407,7 +409,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	proj, perr := projectDecoded(wd.PayloadMapping, dbody)
 	if perr != nil {
 		rec.finish(span, whKey, did, "rejected_mapping", "")
-		rec.logf("webhook %q: payload mapping failed: %v", name, perr)
+		rec.logger.Warn("webhook: payload mapping failed", "webhook", name, "err", perr)
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return
 	}
@@ -415,13 +417,13 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	// a malformed body is: refused before anything is claimed or started.
 	if key, bad := payloadCredentialRef(proj.Fields); bad {
 		rec.finish(span, whKey, did, "rejected_mapping", "")
-		rec.logf("webhook %q: payload_mapping credential %q holds a stored-credential reference, which only the definition may name", name, key)
+		rec.logger.Warn("webhook: payload_mapping credential holds a stored-credential reference, which only the definition may name", "webhook", name, "credential_key", key)
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return
 	}
 	for _, mk := range proj.MissingKeys {
 		// Missing optional fields are a tracing note, not a failure.
-		rec.logf("webhook %q: payload_mapping target %q resolved to empty", name, mk)
+		rec.logger.Debug("webhook: payload_mapping target resolved to empty", "webhook", name, "target", mk)
 	}
 
 	// 5b. Claim a dedup_key's keys, before the rate limit so a duplicate
@@ -449,7 +451,7 @@ func (rec *Receiver) handle(w http.ResponseWriter, r *http.Request) {
 	default:
 		rec.releaseHeld(ctx, name, held)
 		rec.finish(span, whKey, did, "rejected_delivery", "")
-		rec.logf("webhook %q: unknown delivery mode %q", name, wd.Delivery)
+		rec.logger.Warn("webhook: unknown delivery mode", "webhook", name, "delivery_mode", wd.Delivery)
 		writeError(w, http.StatusBadRequest, "bad_delivery", "")
 	}
 }
@@ -470,11 +472,11 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 	if strings.EqualFold(strings.TrimSpace(a.Kind), "none") {
 		if !rec.allowUnauthenticated {
 			rec.finish(span, whKey, "", verdictUnresolved, "")
-			rec.logf("webhook %q: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", name)
+			rec.logger.Warn("webhook: auth.kind=none but LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED is not set — refusing", "webhook", name)
 			writeUnavailable(w)
 			return false
 		}
-		rec.logf("webhook %q: accepted UNAUTHENTICATED delivery (auth.kind=none)", name)
+		rec.logger.Warn("webhook: accepted UNAUTHENTICATED delivery (auth.kind=none)", "webhook", name)
 	} else if passes, verr := rec.verify(r.Context(), a, tenant, body, r.Header.Get); verr != nil {
 		var ae *authError
 		if errors.As(verr, &ae) && ae.verdict == verdictUnresolved {
@@ -483,7 +485,7 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 			// it; the env var or reference goes to the log and the ring
 			// only, never to the unauthenticated caller (RFC ES #4).
 			rec.finish(span, whKey, "", verdictUnresolved, "")
-			rec.logf("webhook %q: secret unresolvable: %s", name, ae.msg)
+			rec.logger.Warn("webhook: secret unresolvable", "webhook", name, "reason", ae.msg)
 			writeUnavailable(w)
 			return false
 		}
@@ -498,7 +500,7 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 		}
 		rec.noteRefusalMACs(passes)
 		rec.finish(span, whKey, "", verdictRejectedSig, "")
-		rec.logf("webhook %q: signature rejected", name)
+		rec.logger.Warn("webhook: signature rejected", "webhook", name)
 		writeUnknownWebhook(w)
 		return false
 	}
@@ -508,7 +510,7 @@ func (rec *Receiver) authenticate(w http.ResponseWriter, r *http.Request, span t
 // verify resolves auth's secrets and checks the request against them. It
 // returns how many MAC passes over the body the check made.
 func (rec *Receiver) verify(ctx context.Context, a config.WebhookAuth, tenant string, body []byte, headerGet func(string) string) (int, error) {
-	secrets, err := verificationSecrets(ctx, a, tenant, rec.creds, rec.envAllowlist, rec.getenv, rec.logf)
+	secrets, err := verificationSecrets(ctx, a, tenant, rec.creds, rec.envAllowlist, rec.getenv, rec.logger)
 	if err != nil {
 		return 0, err
 	}
@@ -562,13 +564,13 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 		ok, err := rec.store.WebhookDeliveryClaim(ctx, keys, now, now.Add(durableDedupTTL))
 		if err != nil {
 			rec.finish(span, whKey, did, "rejected_publish", "")
-			rec.logf("webhook %q: claim the delivery's dedup keys: %v", name, err)
+			rec.logger.Warn("webhook: claim the delivery's dedup keys", "webhook", name, "err", err)
 			writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
 			return
 		}
 		if !ok {
 			rec.dedup.recordDuplicate(dk)
-			rec.logf("webhook %q: delivery already accepted (held in the store) — idempotent ack", name)
+			rec.logger.Info("webhook: delivery already accepted (held in the store) — idempotent ack", "webhook", name)
 			rec.replayAck(ctx, w, span, name, whKey, did, dk, wd)
 			return
 		}
@@ -586,11 +588,11 @@ func (rec *Receiver) deliverChannel(ctx context.Context, w http.ResponseWriter, 
 			// Released, so the sender's retry is processed, not acked as a
 			// duplicate of a delivery that never landed.
 			if rerr := rec.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), keys); rerr != nil {
-				rec.logf("webhook %q: release the dedup keys of a delivery that did not publish: %v", name, rerr)
+				rec.logger.Error("webhook: release the dedup keys of a delivery that did not publish", "webhook", name, "err", rerr)
 			}
 		}
 		rec.finish(span, whKey, did, "rejected_publish", "")
-		rec.logf("webhook %q: channel publish failed: %v", name, err)
+		rec.logger.Warn("webhook: channel publish failed", "webhook", name, "channel", wd.Channel, "err", err)
 		writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
 		return
 	}
@@ -619,7 +621,7 @@ func (rec *Receiver) deliverSpawn(ctx context.Context, w http.ResponseWriter, sp
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")
 		return
 	}
-	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logf)
+	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logger)
 	// The delivery as the receiver saw it, beside the definition's own metadata
 	// (a webhook that lists events only).
 	in.Metadata = withWebhookMetadata(in.Metadata, wd, event, did)
@@ -745,7 +747,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 	go func() {
 		err := rec.runner.RunOnce(context.Background(), in, cb)
 		if err != nil {
-			rec.logf("webhook %q: async run failed: %v", name, err)
+			rec.logger.Warn("webhook: async run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}
 		// Here, not in the response's select: a setup that outlasts the
 		// response's wait may still start the run.
@@ -915,7 +917,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 	go func() {
 		err := rec.runner.RunOnce(context.Background(), in, cb)
 		if err != nil {
-			rec.logf("webhook %q: sync run failed: %v", name, err)
+			rec.logger.Warn("webhook: sync run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}
 		rec.afterSpawn(name, held, dk, err, linkErr, spawnedRunID)
 		// Fire on_complete hooks AFTER the run returns, same posture as the

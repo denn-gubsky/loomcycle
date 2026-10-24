@@ -49,7 +49,7 @@ func (rec *Receiver) handleDeliveryCounts(w http.ResponseWriter, r *http.Request
 	}
 	rows, err := rec.counts.WebhookCounts(r.Context(), owner.TenantID, name, owner.Static)
 	if err != nil {
-		rec.logf("webhook %q: reading delivery counts: %v", name, err)
+		rec.logger.Warn("webhook: reading delivery counts", "webhook", name, "err", err)
 		writeError(w, http.StatusInternalServerError, "counts_unavailable", "")
 		return
 	}
@@ -277,7 +277,7 @@ func (rec *Receiver) handleTest(w http.ResponseWriter, r *http.Request) {
 	//    so the preview matches exactly what a delivery would produce, then
 	//    project ONLY the non-sensitive fields — credential VALUES are
 	//    dropped, keys retained.
-	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logf)
+	in := buildRunInput(wd, proj, rec.envAllowlist, rec.getenv, rec.logger)
 	keys := make([]string, 0, len(in.UserCredentials))
 	for k := range in.UserCredentials {
 		keys = append(keys, k)

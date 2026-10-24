@@ -3784,6 +3784,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithRunID(loopCtx, runID)
+	// RFC EZ §1.2: where a definition op this run's tools ask is refused is
+	// recorded, as an off-run one is. Sub-agents inherit it with the ctx.
+	loopCtx = tools.WithACLRecorder(loopCtx, s.recordToolACLEvent)
 	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef, hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 

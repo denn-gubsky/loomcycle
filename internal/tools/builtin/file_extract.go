@@ -63,7 +63,8 @@ func (s *extractSink) Text(md string) error {
 }
 
 func (s *extractSink) Image(img extract.Image) (string, error) {
-	res := inbox.Capture(s.ctx, inbox.Item{Name: img.Name, MediaType: img.MediaType, Origin: s.origin, Dir: s.dir}, img.Data)
+	res := inbox.Capture(s.ctx, inbox.Item{Name: img.Name, MediaType: img.MediaType, Origin: s.origin, Dir: s.dir,
+		Page: img.Page, Slide: img.Slide}, img.Data)
 	if !res.Kept {
 		if len(s.notKept) < 10 {
 			s.notKept = append(s.notKept, res.Stub)
@@ -113,7 +114,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	ex, ok := extract.Default().For(mt, name)
 	if !ok {
 		return errValidation(fmt.Sprintf("extract: cannot extract text from %s (%s)", r.raw, mt),
-			"Extract reads DOCX, XLSX, PPTX, HTML, CSV and TSV, text, Markdown and images."), nil
+			"Extract reads DOCX, XLSX, PPTX, PDF, HTML, CSV and TSV, text, Markdown and images."), nil
 	}
 	sum := sha256.New()
 	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, info.Size())); err != nil {
@@ -261,7 +262,8 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	md = hoistExtractedImages(md)
 
 	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath})
-	out, err := f.Docs.Execute(withVolumeAssetReader(ctx, readExtractedImage), call)
+	ictx := withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields)
+	out, err := f.Docs.Execute(ictx, call)
 	if err != nil {
 		return tools.Result{}, err
 	}
@@ -360,6 +362,25 @@ func readExtractedImage(ctx context.Context, r dataRef, max int64) ([]byte, erro
 		return nil, errors.New("only images op=extract wrote are attached by File op=import")
 	}
 	return readVolumeBytes(ctx, r, max)
+}
+
+// extractedImageFields gives an extracted picture's image chunk the page or
+// slide it was on, from its capture record, while the bytes read are still
+// the ones captured.
+func extractedImageFields(ctx context.Context, r dataRef, data []byte) map[string]any {
+	sum := sha256.Sum256(data)
+	rec, ok := recordFor(ctx, r, path.Clean(r.path), hex.EncodeToString(sum[:]))
+	if !ok {
+		return nil
+	}
+	out := map[string]any{}
+	if rec.Page > 0 {
+		out["page"] = rec.Page
+	}
+	if rec.Slide > 0 {
+		out["slide"] = rec.Slide
+	}
+	return out
 }
 
 // isExtractedRef reports a reference into the inbox's extracted folder,

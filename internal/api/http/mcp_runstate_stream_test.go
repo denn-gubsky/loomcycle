@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestMCPStreamUserRunStates_TenantSessionDropsOtherTenantsRuns(t *testing.T)
 	bus := runstate.NewBus()
 	srv.SetRunStateBus(bus)
 
-	mcpSrv := lcmcp.New(lcmcp.Config{Connector: srv, Logf: func(string, ...any) {}})
+	mcpSrv := lcmcp.New(lcmcp.Config{Connector: srv, Logger: slog.New(slog.DiscardHandler)})
 	ctx, cancel := context.WithTimeout(auth.WithPrincipal(t.Context(), auth.Principal{
 		TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant},
 	}), 5*time.Second)

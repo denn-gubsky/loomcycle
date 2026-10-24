@@ -3,9 +3,11 @@ package builtin
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"path"
 	"regexp"
@@ -50,6 +52,19 @@ type volumeAssetReaderKey struct{}
 // makes. Unexported: only this package's tools set it.
 func withVolumeAssetReader(ctx context.Context, fn volumeAssetReader) context.Context {
 	return context.WithValue(ctx, volumeAssetReaderKey{}, fn)
+}
+
+// volumeImageFields returns chunk fields for an image the import read, from
+// what the runtime knows of the file (where in its document an extracted
+// picture was). Errors are not possible: no fields is the answer.
+type volumeImageFields func(ctx context.Context, r dataRef, data []byte) map[string]any
+
+type volumeImageFieldsKey struct{}
+
+// withVolumeImageFields lets the tool that supplies the read also supply
+// fields for the image chunks it attaches. Unexported, like the reader.
+func withVolumeImageFields(ctx context.Context, fn volumeImageFields) context.Context {
+	return context.WithValue(ctx, volumeImageFieldsKey{}, fn)
 }
 
 // documentVolumeRead is import_md's own read: Read's grant and hooks, then
@@ -130,6 +145,7 @@ type volumeImageLoader struct {
 type loadedImage struct {
 	mediaType, data string // data is base64, as setAsset takes it
 	err             string
+	fields          map[string]any
 }
 
 func newVolumeImageLoader(chunks []mdChunk) *volumeImageLoader {
@@ -187,7 +203,28 @@ func (d *Document) loadVolumeImage(ctx context.Context, c *mdChunk, l *volumeIma
 		return fail(img.err)
 	}
 	c.assetMediaType, c.assetData = img.mediaType, img.data
+	if len(img.fields) > 0 {
+		c.fields = mergeChunkFields(c.fields, img.fields)
+	}
 	return "", true
+}
+
+// mergeChunkFields sets keys on a chunk's fields object. Fields that are not
+// an object are replaced: an image chunk's fields are the runtime's.
+func mergeChunkFields(fields json.RawMessage, set map[string]any) json.RawMessage {
+	m := map[string]any{}
+	if len(fields) > 0 {
+		_ = json.Unmarshal(fields, &m)
+		if m == nil {
+			m = map[string]any{}
+		}
+	}
+	maps.Copy(m, set)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fields
+	}
+	return b
 }
 
 // readVolumeImage reads one volume image within the import's byte budget.
@@ -218,5 +255,9 @@ func (d *Document) readVolumeImage(ctx context.Context, ref string, l *volumeIma
 	if !validImageMediaTypes[mt] {
 		return loadedImage{err: fmt.Sprintf("%s is not a PNG, JPEG, GIF or WebP image", mt)}
 	}
-	return loadedImage{mediaType: mt, data: base64.StdEncoding.EncodeToString(b)}
+	img := loadedImage{mediaType: mt, data: base64.StdEncoding.EncodeToString(b)}
+	if fn, ok := ctx.Value(volumeImageFieldsKey{}).(volumeImageFields); ok && fn != nil {
+		img.fields = fn(ctx, r, b)
+	}
+	return img
 }

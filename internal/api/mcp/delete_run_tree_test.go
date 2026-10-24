@@ -43,7 +43,7 @@ func TestDeleteRunTreeMCP_NeedsTheRunsDeleteScope(t *testing.T) {
 				t.Errorf("delete_run_tree listed = %v, want %v", listed, c.allowed)
 			}
 			mc := &mockConnector{}
-			srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+			srv := New(Config{Connector: mc, Logger: discardLogger()})
 			resps, _ := driveServerCtx(t, srv, ctx, deleteTreeCallFrame)
 			if len(resps) != 1 {
 				t.Fatalf("got %d responses, want 1", len(resps))
@@ -73,7 +73,7 @@ func TestDeleteRunTreeMCP_PassesTheIDAndReturnsTheCounts(t *testing.T) {
 		Kept:       map[string]string{"usage_ledger": "kept"},
 		NotReached: []connector.NotReached{{Name: "snapshots", Count: &n, Reason: "a copy"}},
 	}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 
 	call := func(args string) loommcp.CallToolResult {
 		t.Helper()
@@ -120,7 +120,7 @@ func TestDeleteRunTreeMCP_PassesTheIDAndReturnsTheCounts(t *testing.T) {
 // A live run in the tree is a refusal the caller can act on, not a failure.
 func TestDeleteRunTreeMCP_TellsTheCallerToCancelALiveRunFirst(t *testing.T) {
 	mc := &mockConnector{deleteTreeErr: statusCodeErr{409, "run r_live is still live (running, awaiting input, or paused); cancel it first"}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	resps, _ := driveServer(t, srv, deleteTreeCallFrame)
 	var res loommcp.CallToolResult
 	if len(resps) != 1 || resps[0].Error != nil || json.Unmarshal(resps[0].Result, &res) != nil {

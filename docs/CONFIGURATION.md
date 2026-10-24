@@ -1697,6 +1697,7 @@ The access-control management surface (the `LOOMCYCLE_ACL` row above lists its r
 - **A group synced from an identity provider** (`external_id` set) is read-only here: a member add or remove, and an upsert over the group, are refused with `409 group_external`; manage its members at the provider.
 - **Unset times are omitted.** A live list has no `retired_at`; a binding with no expiry has no `expires_at` (they used to read `0001-01-01T00:00:00Z`).
 - `GET /v1/_me` reports `acl_mode` in open mode too.
+- **Subject erasure removes a user's memberships and bindings.** `GET /v1/_erasure` (and the `erasure` MCP tool / gRPC twin) counts them in `tier2_uncovered` as `acl_memberships` and `acl_bindings` — retired bindings included, since they still name the user — and a note names the groups and lists. A live `POST /v1/_erasure` deletes them in one transaction, bumps the tenant's `acl_version`, drops the cached sets on every replica and records `subject_access_erased` in the audit log, as a management write does; a dry run writes nothing. The groups and lists themselves, group-kind bindings and bindings to the user's tokens stay (erasure does not revoke tokens). Memberships and bindings declared in `groups:` / `acl_bindings:` cannot be erased from the store: they are listed in the report's notes and in the result's `retained.access_control_config` — remove them from the config file.
 
 ## 9c. Environment files — secrets vs. config (`.env.local` / `.env.insecure`)
 

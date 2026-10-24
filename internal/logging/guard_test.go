@@ -21,6 +21,7 @@ var convertedPackages = []string{
 	"internal/api/grpc",
 	"internal/api/http",
 	"internal/api/mcp",
+	"internal/api/webhook",
 	"internal/awaited",
 	"internal/channelhooks",
 	"internal/channels",

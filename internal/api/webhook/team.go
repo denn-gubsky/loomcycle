@@ -105,12 +105,12 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 		rec.releaseHeld(ctx, name, held)
 		if errors.Is(err, errTeamVarRefused) {
 			rec.finish(span, whKey, did, verdictRejectedTeamStart, "")
-			rec.logf("webhook %q: team delivery refused: %v", name, err)
+			rec.logger.Warn("webhook: team delivery refused", "webhook", name, "err", err)
 			writeError(w, http.StatusBadRequest, "invalid_run", "")
 			return
 		}
 		rec.finish(span, whKey, did, "rejected_mapping", "")
-		rec.logf("webhook %q: vars mapping failed: %v", name, err)
+		rec.logger.Warn("webhook: vars mapping failed", "webhook", name, "err", err)
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return
 	}
@@ -166,7 +166,7 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 		rec.releaseHeld(ctx, name, held)
 	}
 	rec.finish(span, whKey, did, verdictRejectedTeamStart, "")
-	rec.logf("webhook %q: team walk did not start: %v", name, err)
+	rec.logger.Warn("webhook: team walk did not start", "webhook", name, "team", wd.Team, "err", err)
 	rec.teamStartErrorResponse(w, err)
 }
 
