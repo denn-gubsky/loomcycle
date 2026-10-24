@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -183,6 +184,10 @@ type SubstrateWebhookDef struct {
 	// Isolated (RFC BX P2b) mirrors mergedWebhookDef — captured from the authoring
 	// principal, projected onto config.Webhook for the receiver.
 	Isolated bool `json:"isolated,omitempty"`
+	// ACLOwner (RFC EZ §1.5) mirrors mergedWebhookDef — the author whose
+	// access-control set binds each delivery's run, projected onto
+	// config.Webhook for the receiver.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
 	// CaptureDisabled mirrors mergedWebhookDef's marker for a def restored
 	// from a snapshot without its literal credentials. Projected onto
 	// config.Webhook, where the receiver treats it as disabled.
@@ -268,6 +273,7 @@ func (s SubstrateWebhookDef) ToConfigDef() config.Webhook {
 		Vars:                  s.Vars,
 		OperatorKeyRestricted: s.OperatorKeyRestricted,
 		Isolated:              s.Isolated,
+		ACLOwner:              s.ACLOwner,
 		CaptureDisabled:       s.CaptureDisabled.toConfig(),
 	}
 }

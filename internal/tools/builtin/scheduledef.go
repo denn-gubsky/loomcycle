@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -230,6 +231,9 @@ func (s *ScheduleDef) execCreate(ctx context.Context, policy tools.ScheduleDefPo
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// RFC EZ §1.5: whose rules bind each fire — this author's, as a fork's
+	// other captured bits are the forker's.
+	def.ACLOwner = tools.AuthorACLOwner(ctx)
 	def.UserScopeCredentials = authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, ident.TenantID)
 	if res, refused := refuseNonOperatorLayerFanout("create", def); refused {
@@ -478,6 +482,9 @@ func (s *ScheduleDef) execFork(ctx context.Context, policy tools.ScheduleDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the scheduler stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// RFC EZ §1.5: whose rules bind each fire — this author's, as a fork's
+	// other captured bits are the forker's.
+	def.ACLOwner = tools.AuthorACLOwner(ctx)
 	def.UserScopeCredentials = authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, tenantID)
 	if res, refused := refuseNonOperatorLayerFanout("fork", def); refused {
@@ -791,6 +798,14 @@ func (s *ScheduleDef) persistForkFromHookEdit(ctx context.Context, parent store.
 	// not widen a confined author's schedule by editing a hook.
 	def.OperatorKeyRestricted = def.OperatorKeyRestricted || operatorKeyRestrictedFromCtx(ctx, s.Cfg)
 	def.Isolated = def.Isolated || tools.AuthorIsolated(ctx)
+	// The new version is bound to whoever wrote it, as a fork is: keeping the
+	// parent author's rules would let a narrower editor make the trigger fire
+	// with authority the editor does not hold. An editor no set binds (open
+	// mode) leaves the recorded owner in place — dropping it would unnarrow
+	// the trigger.
+	if ed := tools.AuthorACLOwner(ctx); ed != nil {
+		def.ACLOwner = ed
+	}
 	def.UserScopeCredentials = def.UserScopeCredentials && authorMayActAs(ctx, def.UserID)
 	stampOperatorLayer(ctx, &def, parent.TenantID)
 	if err := validateScheduleDef(def); err != nil {
@@ -1532,6 +1547,14 @@ type mergedScheduleDef struct {
 	// bodies byte-identical. Drift-tested against scheduler.scheduleDef /
 	// SubstrateScheduleDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// ACLOwner is whose access-control set (RFC EY) binds each fire (RFC EZ
+	// §1.5): the author's, captured at create/fork (server authority — applyOverlay
+	// never copies it, so an overlay can neither set nor clear it). The fire
+	// compiles that subject's CURRENT set and narrows the run by it. Absent on a
+	// yaml-bootstrapped def and on one written with no set in force: those fire
+	// on Isolated / OperatorKeyRestricted alone, as before. Drift-tested against
+	// scheduler.scheduleDef / SubstrateScheduleDef.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
 	// UserScopeCredentials is captured at create/fork (server authority, never
 	// overlay-set): the author is an operator, or user_id is the author's own.
 	// Only then does a fired run resolve $cred: in user_id's own scope — else

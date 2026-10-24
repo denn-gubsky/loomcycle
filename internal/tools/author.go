@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
 
 // A definition that starts runs later — a schedule, a webhook, a team walk —
@@ -43,4 +45,25 @@ func AuthorOperatorKeyRestricted(ctx context.Context, gateOn bool) bool {
 // gate, like auth.IsIsolated.
 func AuthorIsolated(ctx context.Context) bool {
 	return RunIdentity(ctx).Isolated || auth.IsIsolated(auth.PrincipalFromContext(ctx))
+}
+
+// AuthorACLOwner is whose access-control set (RFC EY) binds what the author on
+// ctx leaves behind to start runs later — a schedule, a webhook — recorded on
+// the definition so each fire is narrowed by that set as it stands then (RFC
+// EZ §1.5). In a run it is the run's originating caller (RunPolicy.ACL, which
+// a resumed or restarted run carries with no principal on ctx); off-run the
+// live principal's. A principal whose set could not be compiled is still
+// named, with its class: the fire compiles the set again and refuses the run
+// while it cannot, rather than the definition firing unnarrowed for ever.
+//
+// nil: no subject — open mode, or a run no set binds. The
+// definition then fires as before, on its captured bits alone.
+func AuthorACLOwner(ctx context.Context) *authz.SubjectRef {
+	if acl := PolicyOf(ctx).ACL; acl != nil {
+		return authz.RefOf(acl.Subject)
+	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		return aclres.RefOf(p)
+	}
+	return nil
 }

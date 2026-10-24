@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
@@ -53,6 +54,10 @@ type scheduleDef struct {
 	// Isolated is the RFC BX P2b confinement bit captured on the def at authoring;
 	// copied into RunInput so the fired run keeps the creator's confinement.
 	Isolated bool `json:"isolated,omitempty"`
+	// ACLOwner is the author whose access-control set binds each fire (RFC EZ
+	// §1.5), captured on the def; copied into RunInput, where RunOnce compiles
+	// its current set. nil (a yaml row, an older def) fires as before.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
 	// UserScopeCredentials is captured when the def is written: its author
 	// was an operator, or wrote it for themselves (user_id is theirs). Only
 	// then does a fired run's $cred: resolve in user_id's own scope.
@@ -254,5 +259,9 @@ func buildRunInput(def scheduleDef, envAllowlist map[string]bool, logger *slog.L
 		// RFC BX P2b: carry the captured isolation bit into the run — same
 		// no-principal-at-fire-time rationale as OperatorKeyRestricted.
 		Isolated: def.Isolated,
+		// RFC EZ §1.5: the author's access-control set, compiled as it stands
+		// at this fire, narrows the run; the two bits above stay as the
+		// fallback for a def that records no owner.
+		ACLOwner: def.ACLOwner,
 	}
 }

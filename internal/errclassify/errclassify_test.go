@@ -39,6 +39,7 @@ func TestCategoryOf_ClassifiesEveryKnownSentinel(t *testing.T) {
 		{"backpressure", runner.ErrBackpressure, tools.CategoryTransient, true, ptr(backpressureBackoff)},
 		{"per-user quota", runner.ErrPerUserQuotaExhausted, tools.CategoryTransient, true, ptr(backpressureBackoff)},
 		{"runtime paused", runner.ErrRuntimePaused, tools.CategoryTransient, true, ptr(pausedBackoff)},
+		{"acl unavailable", runner.ErrACLUnavailable, tools.CategoryTransient, true, nil},
 		{"deadline exceeded", context.DeadlineExceeded, tools.CategoryTransient, true, nil},
 
 		{"token limit", runner.ErrTokenLimitExceeded, tools.CategoryBusiness, false, nil},
@@ -224,6 +225,7 @@ func TestCategoryOf_NoUnclassifiedSentinelDrift(t *testing.T) {
 			"ErrPerUserQuotaExhausted": runner.ErrPerUserQuotaExhausted,
 			"ErrRuntimePaused":         runner.ErrRuntimePaused,
 			"ErrTokenLimitExceeded":    runner.ErrTokenLimitExceeded,
+			"ErrACLUnavailable":        runner.ErrACLUnavailable,
 			"ErrInternal":              runner.ErrInternal,
 			"ErrStreamingUnsupported":  runner.ErrStreamingUnsupported,
 			"ErrRunNotConfigured":      runner.ErrRunNotConfigured,
