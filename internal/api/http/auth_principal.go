@@ -1271,6 +1271,11 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeTenant
 	case strings.HasPrefix(path, "/v1/_authz/"):
 		return ""
+	// RFC FA P2: a signed-in person's own account (password, authenticator).
+	// Any principal reaches the handler, which serves only a password-gate
+	// Web UI session and re-authenticates every change.
+	case strings.HasPrefix(path, "/v1/_auth/"):
+		return ""
 	// Tenant enumeration. ScopeAdmin, and the HANDLER re-checks: the counts are
 	// unremarkable but the LIST ITSELF is cross-tenant information, which is
 	// exactly what a tenant-confined principal must not learn.

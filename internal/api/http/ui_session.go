@@ -292,6 +292,11 @@ func (s *Server) gateFor(g config.AuthGate) (authgate.Gate, error) {
 	switch g.Kind {
 	case config.AuthGateKindToken:
 		return authgate.NewBaseAuthGate(s.resolvePrincipal), nil
+	case config.AuthGateKindPassword:
+		if pw, ok := s.passwordGateNamed(g.Name); ok {
+			return pw, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the password gate is not running (see the boot log)", g.Name)
 	}
 	return nil, fmt.Errorf("auth gate %q: kind %q has no implementation", g.Name, g.Kind)
 }
@@ -466,6 +471,10 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 func (s *Server) credentialBinding(ctx context.Context, h auth.TokenHasher, ident sessionIdentity) (kind, ref, credHash string, err error) {
 	c := ident.Credential
 	if c == nil {
+		// A password-gate session is bound to the stored password.
+		if _, ok := s.passwordGateNamed(ident.Gate); ok {
+			return s.passwordSessionBinding(ctx, ident)
+		}
 		return "", "", "", fmt.Errorf("%w: gate %q verified an identity with no loomcycle credential", errNoSessionBinding, ident.Gate)
 	}
 	p := c.Principal
@@ -595,6 +604,8 @@ func (s *Server) sessionCredentialPrincipal(ctx context.Context, id []byte, row 
 			return p, p.TokenDefID == row.CredRef, true
 		}
 		return auth.Principal{}, false, true
+	case credKindPassword:
+		return s.passwordSessionPrincipal(ctx, row, bound)
 	case credKindLegacy:
 		secret := s.cfg().Env.AuthToken
 		if secret == "" || !bound(h.Hash(secret)) {

@@ -13,12 +13,15 @@ package http
 // latter held to the provisioning floor once the tenant has a user.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -29,6 +32,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -122,6 +126,64 @@ func NewPasswordGates(gates []PasswordGateSettings, hasher *password.Hasher, pol
 	return pg, nil
 }
 
+// PasswordGatesFromConfig builds the password gates the config declares (nil
+// when it declares none). The pepper and the TOTP key derive from
+// LOOMCYCLE_SECRET_KEY (with LOOMCYCLE_SECRET_KEY_PREVIOUS still verifying
+// and opening during a rotation); the policy refuses the built-in breached list
+// plus every gate's denylist_file — one policy for all gates, since a password
+// breached anywhere is breached.
+func PasswordGatesFromConfig(cfg *config.Config) (*PasswordGates, error) {
+	var gates []PasswordGateSettings
+	var lists []io.Reader
+	for _, g := range cfg.ResolvedAuth.Gates {
+		p := g.Password
+		if p == nil {
+			continue
+		}
+		gates = append(gates, PasswordGateSettings{
+			Name: g.Name, Trusted: p.Trusted, RequireMFA: p.RequireMFA, ManagerMayRecoverOwners: p.ManagerMayRecoverOwners,
+			InviteDefaultTTL: p.InviteDefaultTTL, InviteMaxTTL: p.InviteMaxTTL, ResetTTL: p.ResetTTL,
+			AllowedReturnTo: p.AllowedReturnTo, Throttle: password.Throttle{MaxFailures: p.MaxFailures, Lockout: p.Lockout},
+			NewUserAccessMode: p.NewUserAccessMode, NewUserGroups: p.NewUserGroups,
+		})
+		if p.DenylistFile != "" {
+			b, err := os.ReadFile(p.DenylistFile)
+			if err != nil {
+				return nil, fmt.Errorf("auth.gates.%s.password.denylist_file: %w", g.Name, err)
+			}
+			lists = append(lists, bytes.NewReader(b), strings.NewReader("\n"))
+		}
+	}
+	if len(gates) == 0 {
+		return nil, nil
+	}
+	cur, err := credential.DerivePasswordPepper(cfg.Env.SecretKey)
+	if err != nil {
+		return nil, fmt.Errorf("LOOMCYCLE_SECRET_KEY: %w", err)
+	}
+	prev, err := credential.DerivePasswordPepper(cfg.Env.SecretKeyPrevious)
+	if err != nil {
+		return nil, fmt.Errorf("LOOMCYCLE_SECRET_KEY_PREVIOUS: %w", err)
+	}
+	hasher, err := password.NewHasher(cur, prev)
+	if err != nil {
+		return nil, err
+	}
+	var extra io.Reader
+	if len(lists) > 0 {
+		extra = io.MultiReader(lists...)
+	}
+	policy, err := password.NewPolicy(extra)
+	if err != nil {
+		return nil, err
+	}
+	sealer, err := credential.NewSealer(cfg.Env.SecretKey, cfg.Env.SecretKeyPrevious)
+	if err != nil {
+		return nil, err
+	}
+	return NewPasswordGates(gates, hasher, policy, sealer, cfg.Env.PublicURL)
+}
+
 // Names lists the configured password gates, sorted.
 func (pg *PasswordGates) Names() []string {
 	out := make([]string, 0, len(pg.byName))
@@ -131,6 +193,10 @@ func (pg *PasswordGates) Names() []string {
 	slices.Sort(out)
 	return out
 }
+
+// PolicySize is how many breached passwords the policy refuses (for the boot
+// log; never the entries).
+func (pg *PasswordGates) PolicySize() int { return pg.policy.Size() }
 
 // passwordGatesHolder is read on every management request and swapped by
 // SetPasswordGates (boot, config reload).

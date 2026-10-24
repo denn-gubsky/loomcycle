@@ -4657,6 +4657,22 @@ func (s *Server) Mux() http.Handler {
 	// authMiddleware so an expired session can still log out; the handler's
 	// CSRF check (custom header + same origin) keeps other sites from it.
 	mux.Handle("POST /v1/_auth/logout", recoveryMiddleware(http.HandlerFunc(s.handleAuthLogout)))
+	// RFC FA P2 — the password gate's person-facing endpoints. The login,
+	// invite and reset posts are unauthenticated (they ESTABLISH a session):
+	// each takes its code in the body (never the URL), is same-origin with
+	// the X-Loomcycle-UI header, and is throttled per source, code and
+	// account. The self-service routes need a password-gate session, through
+	// authMiddleware (whose CSRF check covers cookie-authenticated writes).
+	mux.Handle("POST /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handlePasswordLogin)))
+	mux.Handle("POST /v1/_auth/invite/info", recoveryMiddleware(http.HandlerFunc(s.handleInviteInfo)))
+	mux.Handle("POST /v1/_auth/invite", recoveryMiddleware(http.HandlerFunc(s.handleRedeemInvite)))
+	mux.Handle("POST /v1/_auth/reset/info", recoveryMiddleware(http.HandlerFunc(s.handleResetInfo)))
+	mux.Handle("POST /v1/_auth/reset", recoveryMiddleware(http.HandlerFunc(s.handleCompleteReset)))
+	mux.Handle("GET /v1/_auth/account", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAccountInfo))))
+	mux.Handle("POST /v1/_auth/password", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleChangePassword))))
+	mux.Handle("POST /v1/_auth/totp/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPBegin))))
+	mux.Handle("POST /v1/_auth/totp/confirm", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPConfirm))))
+	mux.Handle("DELETE /v1/_auth/totp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPRemove))))
 	// OpenAPI contract (RFC CD Part A) — served UNAUTHENTICATED, like /ui:
 	// the machine-readable contract is non-secret and must be discoverable
 	// for codegen, while the data behind it still goes through authMiddleware.

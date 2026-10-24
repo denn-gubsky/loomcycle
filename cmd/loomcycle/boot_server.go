@@ -88,6 +88,17 @@ func (b *boot) buildServer() {
 	if w := insecureCookiesWarning(&cfg.Env); w != "" {
 		slog.Warn(w)
 	}
+	// RFC FA P2: the password gates, with their pepper, policy and TOTP key.
+	// A gate that cannot run is a boot failure, not a gate that silently
+	// accepts nobody.
+	pwGates, err := lchttp.PasswordGatesFromConfig(cfg)
+	if err != nil {
+		fatal(fmt.Sprintf("auth: %v", err))
+	}
+	if pwGates != nil {
+		srv.SetPasswordGates(pwGates)
+		slog.Info("auth: password gates", "gates", pwGates.Names(), "breached_list_entries", pwGates.PolicySize())
+	}
 	b.bootAuthConfigured = bootAuthConfigured
 	if bootAuthConfigured {
 		for _, w := range srv.AuthPostureWarnings(context.Background()) {
