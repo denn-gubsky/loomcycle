@@ -324,8 +324,34 @@ func (s *Server) cancelTeamWalk(ctx context.Context, runID, reason string) (stop
 	if !s.allowlistReachesRun(ctx, runID) {
 		return false, true, connector.ErrRunNotInFlight
 	}
+	if err := s.authorizeWalkCancel(ctx, e.meta.AgentID); err != nil {
+		return false, true, err
+	}
 	e.cancel(cancel.CauseWithReason(strings.TrimSpace(reason)))
 	return true, true, nil
+}
+
+// authorizeWalkCancel asks `cancel team:<name>` of the walk agentID files
+// (team:<name>) before anything stops it (RFC EZ §1.2): the question TeamDef
+// cancel asks of a walk inside a run, asked of the run-plane cancels too, or a
+// caller denied it there would end the walk here. Any other agent id asks
+// nothing. Callers ask it AFTER their ownership gates, so a caller who cannot
+// see the walk still gets the opaque not-found, not a refusal naming it.
+func (s *Server) authorizeWalkCancel(ctx context.Context, agentID string) error {
+	team, ok := strings.CutPrefix(agentID, teamWalkAgentPrefix)
+	if !ok {
+		return nil
+	}
+	res, refused := tools.AuthorizeTeamOp(tools.WithACLRecorder(ctx, s.recordToolACLEvent), "cancel", team)
+	if !refused {
+		return nil
+	}
+	code, _ := tools.ACLRefusalCode(res.Text, res.Error)
+	msg := code
+	if res.Error != nil {
+		msg = res.Error.Description
+	}
+	return &connector.ACLRefusal{Code: code, Body: res.Text, Msg: msg}
 }
 
 // stopLocalWalk stops a walk live on this replica, with no ownership check:
