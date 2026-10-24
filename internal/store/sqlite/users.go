@@ -29,6 +29,12 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
+	// The tenant's bootstrap marker goes first: a marker with no user (the
+	// insert below failing) only refuses a later bootstrap, never allows one.
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO tenant_bootstraps (tenant_id, at, via) VALUES (?, ?, 'users')`,
+		row.TenantID, createdAt.UnixNano()); err != nil {
+		return fmt.Errorf("user create: bootstrap marker: %w", err)
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO users (
 			tenant_id, subject, display_name, access_mode, status, created_at, created_by

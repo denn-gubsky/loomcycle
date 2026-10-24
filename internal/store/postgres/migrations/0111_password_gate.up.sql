@@ -104,6 +104,24 @@ CREATE TABLE IF NOT EXISTS auth_resets (
 );
 CREATE INDEX IF NOT EXISTS auth_resets_by_subject ON auth_resets (tenant_id, subject);
 
+-- A tenant that has ever had a user. Written before the first users row of a
+-- tenant by every path that creates one (POST /v1/_users, an invite
+-- redemption, a snapshot restore — all through the store), and never
+-- deleted. A website's auth:manage credential may give a tenant its owner
+-- only while the tenant has no marker AND no users rows, so deleting every
+-- user cannot re-arm that bootstrap and hand the tenant to a new owner. A
+-- legacy cloud tenant (tokens, never a users row) has no marker and can be
+-- bootstrapped exactly once: that is how its owner is migrated.
+CREATE TABLE IF NOT EXISTS tenant_bootstraps (
+    tenant_id TEXT        PRIMARY KEY,
+    at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    via       TEXT        NOT NULL DEFAULT ''
+);
+-- Tenants that already have users count as bootstrapped from the start.
+INSERT INTO tenant_bootstraps (tenant_id, via)
+    SELECT DISTINCT tenant_id, 'backfill' FROM users
+    ON CONFLICT (tenant_id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS auth_throttle (
     throttle_key  TEXT        PRIMARY KEY,
     failures      INTEGER     NOT NULL DEFAULT 0,

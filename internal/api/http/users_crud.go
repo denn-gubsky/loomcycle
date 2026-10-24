@@ -160,19 +160,19 @@ func (s *Server) userCrudTenant(w http.ResponseWriter, r *http.Request) (string,
 }
 
 // managerMayCreateOwner admits an auth:manage credential's access_mode
-// tenant user only as the first user of an empty tenant with no live owner
-// invite (the same bootstrap rule as an invite: D16). Operator tokens alone do
-// not make a tenant non-empty — legacy cloud tenants have them and no users
-// row, and their owner is created this way.
+// tenant user only as the first user of a tenant that never had one, with no
+// live owner invite (the same bootstrap rule as an invite: D16). Operator
+// tokens alone do not bootstrap a tenant — legacy cloud tenants have them and
+// no users row, and their owner is created this way, once.
 func (s *Server) managerMayCreateOwner(w http.ResponseWriter, r *http.Request, tenant string) bool {
-	has, err := s.tenantHasUsers(r.Context(), tenant)
+	has, err := s.tenantBootstrapped(r.Context(), tenant)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return false
 	}
 	if has {
 		writeJSONError(w, http.StatusForbidden, "tenant_not_empty",
-			"an "+auth.ScopeAuthManage+" token may create an access_mode tenant user only in a tenant with no users")
+			"an "+auth.ScopeAuthManage+" token may create an access_mode tenant user only in a tenant that never had a user")
 		return false
 	}
 	live, err := s.store.AuthInviteLiveBootstrap(r.Context(), tenant, time.Now())
@@ -224,8 +224,15 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// RFC FA D16: auth:manage never promotes. Raising an existing user's
-	// access_mode is the tenant's own operator's call.
+	// RFC FA D16: auth:manage acts only on users at the floor — it may not
+	// re-mode, disable or re-enable a user above it (display_name stays its
+	// to fix) — and never promotes. Raising a user's access_mode is the
+	// tenant's own operator's call.
+	if caller == gateCallerManager && (req.AccessMode != nil || req.Status != nil) {
+		if _, ok := s.holdManagerToFloorTarget(w, r.Context(), caller, nil, tenant, subject, "update", false); !ok {
+			return
+		}
+	}
 	if caller == gateCallerManager && req.AccessMode != nil {
 		cur, err := s.store.UserGet(r.Context(), tenant, subject)
 		if err != nil {
@@ -289,8 +296,11 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_subject", "subject is required")
 		return
 	}
-	tenant, _, ok := s.userCrudTenant(w, r)
+	tenant, caller, ok := s.userCrudTenant(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := s.holdManagerToFloorTarget(w, r.Context(), caller, nil, tenant, subject, "delete", false); !ok {
 		return
 	}
 	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the

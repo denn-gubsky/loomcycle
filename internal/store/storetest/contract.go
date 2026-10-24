@@ -529,6 +529,7 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthInviteRedeemTakenLoginConflictsAndLeavesInviteLive", testAuthInviteRedeemTakenLoginConflictsAndLeavesInviteLive},
 		{"AuthInviteRedeemBootstrapRefusedOnceTenantHasUser", testAuthInviteRedeemBootstrapRefusedOnceTenantHasUser},
 		{"AuthInviteRedeemConcurrentBootstrapsAdmitOne", testAuthInviteRedeemConcurrentBootstrapsAdmitOne},
+		{"TenantBootstrappedSurvivesDeletingEveryUser", testTenantBootstrappedSurvivesDeletingEveryUser},
 		{"AuthInviteRedeemAttachToMissingSubjectIsNotFound", testAuthInviteRedeemAttachToMissingSubjectIsNotFound},
 		{"AuthInviteLiveBootstrapReportsOnlyLiveBootstrap", testAuthInviteLiveBootstrapReportsOnlyLiveBootstrap},
 		{"AuthResetCreateSupersedesEarlierLiveReset", testAuthResetCreateSupersedesEarlierLiveReset},

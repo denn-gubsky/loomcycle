@@ -620,6 +620,50 @@ func testAuthInviteRedeemBootstrapRefusedOnceTenantHasUser(t *testing.T, s store
 	}
 }
 
+// A tenant that ever had a user stays bootstrapped after every user is
+// deleted, so an owner bootstrap cannot be re-armed by emptying the tenant
+// (the takeover the marker exists to close). Users created by UserCreate and
+// by a redemption both mark it.
+func testTenantBootstrappedSurvivesDeletingEveryUser(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := pwgT0.Add(time.Hour)
+	for _, tenant := range []string{"via-users", "via-invite"} {
+		if got, err := s.TenantBootstrapped(ctx, tenant); err != nil || got {
+			t.Fatalf("%s before any user: (%v, %v), want (false, nil)", tenant, got, err)
+		}
+	}
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "via-users", Subject: "u", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	boot := pwgInvite("inv-mark", "code-mark", "via-invite")
+	boot.Bootstrap = true
+	if err := s.AuthInviteCreate(ctx, boot); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AuthInviteRedeem(ctx, pwgRedemption("code-mark", "via-invite", "owner", "owner-mark", now)); err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	for tenant, subject := range map[string]string{"via-users": "u", "via-invite": "owner"} {
+		if _, err := s.UserDelete(ctx, tenant, subject); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.TenantBootstrapped(ctx, tenant); err != nil || !got {
+			t.Errorf("%s after deleting its only user: (%v, %v), want (true, nil)", tenant, got, err)
+		}
+	}
+	again := pwgInvite("inv-rearm", "code-rearm", "via-users")
+	again.Bootstrap = true
+	if err := s.AuthInviteCreate(ctx, again); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AuthInviteRedeem(ctx, pwgRedemption("code-rearm", "via-users", "intruder", "intruder-rearm", now)); pwgConflictKind(err) != "tenant_not_empty" {
+		t.Fatalf("bootstrap of an emptied tenant: err = %v, want tenant_not_empty", err)
+	}
+	if got, _ := s.TenantBootstrapped(ctx, "never-had-users"); got {
+		t.Error("a tenant with no user ever reads as bootstrapped")
+	}
+}
+
 func testAuthInviteRedeemConcurrentBootstrapsAdmitOne(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	now := pwgT0.Add(time.Hour)

@@ -235,7 +235,8 @@ type PasswordGateStore interface {
 	AuthInviteRevoke(ctx context.Context, inviteID string, at time.Time) (bool, error)
 	// AuthInviteRedeem applies a redemption in one transaction: it consumes the
 	// invite (live at red.Now, else *ErrNotFound{Kind:"auth_invite"}), refuses a
-	// bootstrap invite whose tenant has a user (*ErrConflict{Kind:"tenant_not_empty"}),
+	// bootstrap invite whose tenant was ever bootstrapped (TenantBootstrapped;
+	// *ErrConflict{Kind:"tenant_not_empty"}),
 	// creates red.User or checks the attached subject exists
 	// (*ErrNotFound{Kind:"user"}), and writes the identity (*ErrConflict on a
 	// taken login), the credential and the second factor. Any failure leaves
@@ -277,6 +278,12 @@ type PasswordGateStore interface {
 	// AuthThrottleDeleteExpired removes keys whose window and block both ended
 	// before `before`.
 	AuthThrottleDeleteExpired(ctx context.Context, before time.Time) (int, error)
+
+	// TenantBootstrapped reports whether the tenant has ever had a user: a
+	// tenant_bootstraps marker (written before the first users row of a
+	// tenant by every user-creating path, never deleted) or a users row. A
+	// website's owner bootstrap is allowed only when this is false.
+	TenantBootstrapped(ctx context.Context, tenantID string) (bool, error)
 
 	// AuthSubjectDelete removes every gate row of a subject: identities,
 	// credentials, TOTP, recovery codes, and its invites and resets. Called

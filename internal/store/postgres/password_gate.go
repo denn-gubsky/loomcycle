@@ -610,7 +610,8 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 			return fmt.Errorf("auth invite redeem: bootstrap lock: %w", err)
 		}
 		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM users WHERE tenant_id = $1`, inv.TenantID).Scan(&n); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM users WHERE tenant_id = $1)
+			+ (SELECT count(*) FROM tenant_bootstraps WHERE tenant_id = $1)`, inv.TenantID).Scan(&n); err != nil {
 			return fmt.Errorf("auth invite redeem: count users: %w", err)
 		}
 		if n > 0 {
@@ -620,6 +621,10 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 
 	if red.User != nil {
 		u := *red.User
+		if _, err := tx.Exec(ctx, `INSERT INTO tenant_bootstraps (tenant_id, at, via) VALUES ($1, $2, $3)
+			ON CONFLICT (tenant_id) DO NOTHING`, u.TenantID, now, "invite:"+inv.Gate); err != nil {
+			return fmt.Errorf("auth invite redeem: bootstrap marker: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO users (tenant_id, subject, display_name, access_mode, status, created_at, created_by)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -651,6 +656,16 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// TenantBootstrapped implements store.PasswordGateStore.
+func (s *Store) TenantBootstrapped(ctx context.Context, tenantID string) (bool, error) {
+	var ok bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM tenant_bootstraps WHERE tenant_id = $1)
+		OR EXISTS (SELECT 1 FROM users WHERE tenant_id = $1)`, tenantID).Scan(&ok); err != nil {
+		return false, fmt.Errorf("tenant bootstrapped: %w", err)
+	}
+	return ok, nil
 }
 
 // AuthInviteLiveBootstrap implements store.PasswordGateStore.

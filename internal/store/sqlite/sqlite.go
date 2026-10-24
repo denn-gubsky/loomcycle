@@ -637,6 +637,16 @@ func (s *Store) migrate(ctx context.Context) error {
 			used_at    INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS auth_resets_by_subject ON auth_resets(tenant_id, subject)`,
+		// A tenant that has ever had a user, never deleted (postgres 0111
+		// explains why). The backfill is idempotent and runs every open, so
+		// a database upgraded across this release marks its tenants too.
+		`CREATE TABLE IF NOT EXISTS tenant_bootstraps (
+			tenant_id TEXT    PRIMARY KEY,
+			at        INTEGER NOT NULL,
+			via       TEXT    NOT NULL DEFAULT ''
+		)`,
+		`INSERT OR IGNORE INTO tenant_bootstraps (tenant_id, at, via)
+			SELECT DISTINCT tenant_id, 0, 'backfill' FROM users`,
 		`CREATE TABLE IF NOT EXISTS auth_throttle (
 			throttle_key  TEXT    PRIMARY KEY,
 			failures      INTEGER NOT NULL DEFAULT 0,

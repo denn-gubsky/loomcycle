@@ -139,6 +139,14 @@ type Event struct {
 	// id. Never a code, a link, a password or a TOTP secret. The user travels
 	// in TargetTenant / TargetSubject, the caller in the Actor fields.
 	AuthRecordID string `json:"auth_record_id,omitempty"`
+	// AuthRecovery marks an auth:manage action on a user above the
+	// provisioning floor that the gate's manager_may_recover_owners allowed
+	// (a reset, or attaching a first password); AuthTargetAccessMode is that
+	// user's access mode. Both are what an auditor of a website's credential
+	// looks for.
+	// An "auth_manage_refused" names the refused operation in AuthReason.
+	AuthRecovery         bool   `json:"auth_recovery,omitempty"`
+	AuthTargetAccessMode string `json:"auth_target_access_mode,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

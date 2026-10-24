@@ -45,6 +45,12 @@ type PasswordGateSettings struct {
 	// paths on loomcycle's own origin.
 	AllowedReturnTo []string
 	Throttle        password.Throttle
+	// ManagerMayRecoverOwners lets an auth:manage credential issue a reset
+	// for a user above the floor, and attach a first password to one — so a
+	// website can recover or migrate a tenant's owner. It makes that
+	// credential able to take over any owner's account, so it is off unless
+	// the deployment's trust model is "the website owns the accounts".
+	ManagerMayRecoverOwners bool
 }
 
 // PasswordGates is everything the password gates share: their settings, the
@@ -177,18 +183,83 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, into any) bool {
 	return true
 }
 
-// tenantHasUsers reports whether the tenant has any users row. Legacy cloud
-// tenants created by the old mint path hold tokens but no users rows; they
-// count as empty here, which is what lets a website bootstrap their owner
-// (decision recorded in the PR: operator tokens in the tenant do not block).
-func (s *Server) tenantHasUsers(ctx context.Context, tenant string) (bool, error) {
+// tenantBootstrapped reports whether the tenant has ever had a user (a
+// persistent marker, or a users row), which closes the owner bootstrap of an
+// auth:manage credential for good: deleting every user does not re-open it.
+// A legacy cloud tenant created by the old mint path holds tokens but has
+// never had a users row; it is not bootstrapped, so a website can give it its
+// owner exactly once (the planned migration). Operator tokens in the tenant do
+// not count.
+func (s *Server) tenantBootstrapped(ctx context.Context, tenant string) (bool, error) {
 	if tenant == "" {
-		// "" lists every tenant; the default tenant is never empty for this
-		// purpose, so it can never be bootstrapped by a website.
+		// The shared tenant is never a website's to bootstrap.
 		return true, nil
 	}
-	rows, err := s.store.UserList(ctx, tenant)
-	return len(rows) > 0, err
+	return s.store.TenantBootstrapped(ctx, tenant)
+}
+
+// userAboveFloor reports whether a user holds more than the provisioning
+// floor: access_mode tenant, or membership of any group. (P2 has no per-gate
+// floor groups; a gate that later declares some will subtract them here.)
+func (s *Server) userAboveFloor(ctx context.Context, tenant, subject string) (store.UserRow, bool, error) {
+	u, err := s.store.UserGet(ctx, tenant, subject)
+	if err != nil {
+		return store.UserRow{}, false, err
+	}
+	if u.AccessMode == "tenant" {
+		return u, true, nil
+	}
+	groups, err := s.store.GroupsOfSubject(ctx, tenant, subject)
+	return u, len(groups) > 0, err
+}
+
+// floorTarget is the verdict on an auth:manage caller acting on an existing
+// user.
+type floorTarget struct {
+	// recovery: the user is above the floor and the gate's
+	// manager_may_recover_owners allowed the action.
+	recovery   bool
+	accessMode string
+}
+
+// holdManagerToFloorTarget applies the floor to the TARGET of an auth:manage
+// action, not only to what it grants (D16): such a caller may delete,
+// disable, re-enable, re-mode, rename, strip or reset only a user at the
+// floor. A user above it (the tenant's owner, anyone in a group) is the
+// tenant's own operators' to manage — otherwise the website's credential could
+// delete or demote an owner, or reset its password and sign in as it. The one
+// exception is `recoverable` actions (a reset, attaching a first password) on
+// a gate with manager_may_recover_owners, audited as a recovery. Tenant
+// operators and admins pass. A missing user passes, so the caller's own 404
+// answers it. The refusal is written and audited here; ok=false then.
+func (s *Server) holdManagerToFloorTarget(w http.ResponseWriter, ctx context.Context, caller gateCaller, g *PasswordGateSettings, tenant, subject, op string, recoverable bool) (floorTarget, bool) {
+	if caller != gateCallerManager {
+		return floorTarget{}, true
+	}
+	u, above, err := s.userAboveFloor(ctx, tenant, subject)
+	if isNotFound(err) {
+		return floorTarget{}, true
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return floorTarget{}, false
+	}
+	if !above {
+		return floorTarget{accessMode: u.AccessMode}, true
+	}
+	if recoverable && g != nil && g.ManagerMayRecoverOwners {
+		return floorTarget{recovery: true, accessMode: u.AccessMode}, true
+	}
+	gate := ""
+	if g != nil {
+		gate = g.Name
+	}
+	p, _ := auth.PrincipalFromContext(ctx)
+	s.recordAuthAudit(audit.Event{Action: "auth_manage_refused", AuthGate: gate, AuthReason: op,
+		TargetTenant: tenant, TargetSubject: subject, AuthTargetAccessMode: u.AccessMode,
+		ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix})
+	writeJSONError(w, http.StatusForbidden, "target_beyond_floor", "an "+auth.ScopeAuthManage+" token cannot change this user")
+	return floorTarget{}, false
 }
 
 // --- invites ---
@@ -323,7 +394,7 @@ func (s *Server) handleAuthgateCreateInvite(w http.ResponseWriter, r *http.Reque
 	}
 	var grant inviteGrant
 	if subject := strings.TrimSpace(req.Subject); subject != "" {
-		grant, ok = s.attachGrant(w, ctx, g, tenant, subject, req)
+		grant, ok = s.attachGrant(w, ctx, g, caller, tenant, subject, req)
 	} else {
 		grant, ok = s.newUserGrant(w, ctx, g, caller, tenant, req, now)
 	}
@@ -344,7 +415,7 @@ func (s *Server) handleAuthgateCreateInvite(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	s.recordGateAudit(ctx, "auth_invite_created", g.Name, row.InviteID, tenant, row.Subject)
+	s.recordGateAudit(ctx, "auth_invite_created", g.Name, row.InviteID, tenant, row.Subject, floorTarget{recovery: grant.recovery, accessMode: grant.targetMode})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"invite_id": row.InviteID, "url": pg.publicURL + "/ui/invite#" + code, "expires_at": row.ExpiresAt,
 	})
@@ -355,6 +426,10 @@ type inviteGrant struct {
 	accessMode string
 	groups     []string
 	bootstrap  bool
+	// recovery and targetMode are recorded on the audit event of an
+	// auth:manage attach to a user above the floor.
+	recovery   bool
+	targetMode string
 }
 
 // newUserGrant decides what an invite for a NEW user may grant.
@@ -385,7 +460,7 @@ func (s *Server) newUserGrant(w http.ResponseWriter, ctx context.Context, g Pass
 		return inviteGrant{accessMode: mode, groups: groups}, true
 	}
 	if caller == gateCallerManager && mode == "tenant" && len(groups) == 0 {
-		has, err := s.tenantHasUsers(ctx, tenant)
+		has, err := s.tenantBootstrapped(ctx, tenant)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 			return inviteGrant{}, false
@@ -398,7 +473,7 @@ func (s *Server) newUserGrant(w http.ResponseWriter, ctx context.Context, g Pass
 		switch {
 		case has:
 			writeJSONError(w, http.StatusForbidden, "tenant_not_empty",
-				"access_mode tenant is allowed only for the first user of an empty tenant; this tenant has users")
+				"access_mode tenant is allowed only for the first user of a tenant that never had one")
 			return inviteGrant{}, false
 		case live:
 			writeJSONError(w, http.StatusConflict, "bootstrap_invite_live",
@@ -415,7 +490,7 @@ func (s *Server) newUserGrant(w http.ResponseWriter, ctx context.Context, g Pass
 // attachGrant checks an invite that attaches a password to an existing user.
 // The user keeps its subject, access mode and groups: the invite may restate
 // them but never raise them — an attach is never a promotion.
-func (s *Server) attachGrant(w http.ResponseWriter, ctx context.Context, g PasswordGateSettings, tenant, subject string, req createInviteRequest) (inviteGrant, bool) {
+func (s *Server) attachGrant(w http.ResponseWriter, ctx context.Context, g PasswordGateSettings, caller gateCaller, tenant, subject string, req createInviteRequest) (inviteGrant, bool) {
 	user, err := s.store.UserGet(ctx, tenant, subject)
 	if isNotFound(err) {
 		writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
@@ -431,6 +506,13 @@ func (s *Server) attachGrant(w http.ResponseWriter, ctx context.Context, g Passw
 	} else if has {
 		writeJSONError(w, http.StatusConflict, "credential_exists",
 			"this user already has a password or a login at this gate; issue a reset instead")
+		return inviteGrant{}, false
+	}
+	// Attaching a password to a user above the floor is a recovery: only
+	// with manager_may_recover_owners, and only here, where the user has no
+	// credential at this gate yet (the legacy-owner migration).
+	target, ok := s.holdManagerToFloorTarget(w, ctx, caller, &g, tenant, subject, "attach", true)
+	if !ok {
 		return inviteGrant{}, false
 	}
 	if m := strings.TrimSpace(req.AccessMode); m != "" && accessRank(m) > accessRank(user.AccessMode) {
@@ -450,7 +532,7 @@ func (s *Server) attachGrant(w http.ResponseWriter, ctx context.Context, g Passw
 			}
 		}
 	}
-	return inviteGrant{subject: user.Subject}, true
+	return inviteGrant{subject: user.Subject, recovery: target.recovery, targetMode: target.accessMode}, true
 }
 
 // accessRank orders access modes from least to most reach.
@@ -573,7 +655,7 @@ func (s *Server) handleAuthgateRevokeInvite(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusConflict, "invite_not_live", "the invite was already redeemed, revoked or expired")
 		return
 	}
-	s.recordGateAudit(ctx, "auth_invite_revoked", g.Name, row.InviteID, row.TenantID, row.Subject)
+	s.recordGateAudit(ctx, "auth_invite_revoked", g.Name, row.InviteID, row.TenantID, row.Subject, floorTarget{})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -598,7 +680,7 @@ func (s *Server) handleAuthgateCreateReset(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	ctx := r.Context()
-	tenant, _, ok := s.manageTenant(w, ctx, req.Tenant)
+	tenant, caller, ok := s.manageTenant(w, ctx, req.Tenant)
 	if !ok {
 		return
 	}
@@ -608,6 +690,10 @@ func (s *Server) handleAuthgateCreateReset(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if _, ok := s.gateIdentity(w, ctx, g.Name, tenant, subject); !ok {
+		return
+	}
+	target, ok := s.holdManagerToFloorTarget(w, ctx, caller, &g, tenant, subject, "reset", true)
+	if !ok {
 		return
 	}
 	now := time.Now().UTC()
@@ -626,7 +712,7 @@ func (s *Server) handleAuthgateCreateReset(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	s.recordGateAudit(ctx, "auth_reset_issued", g.Name, id, tenant, subject)
+	s.recordGateAudit(ctx, "auth_reset_issued", g.Name, id, tenant, subject, target)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"reset_id": id, "url": pg.publicURL + "/ui/reset#" + code, "expires_at": row.ExpiresAt,
 	})
@@ -669,12 +755,15 @@ func (s *Server) handleAuthgateDeleteCredentials(w http.ResponseWriter, r *http.
 		return
 	}
 	ctx := r.Context()
-	tenant, _, ok := s.manageTenant(w, ctx, r.URL.Query().Get("tenant"))
+	tenant, caller, ok := s.manageTenant(w, ctx, r.URL.Query().Get("tenant"))
 	if !ok {
 		return
 	}
 	subject := strings.TrimSpace(r.PathValue("subject"))
 	if _, ok := s.gateIdentity(w, ctx, g.Name, tenant, subject); !ok {
+		return
+	}
+	if _, ok := s.holdManagerToFloorTarget(w, ctx, caller, &g, tenant, subject, "remove_credentials", false); !ok {
 		return
 	}
 	removed, err := s.store.UserCredentialDelete(ctx, tenant, subject, store.CredentialKindPassword)
@@ -686,7 +775,7 @@ func (s *Server) handleAuthgateDeleteCredentials(w http.ResponseWriter, r *http.
 		return
 	}
 	if removed {
-		s.recordGateAudit(ctx, "auth_credential_removed", g.Name, "", tenant, subject)
+		s.recordGateAudit(ctx, "auth_credential_removed", g.Name, "", tenant, subject, floorTarget{})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -708,7 +797,7 @@ func (s *Server) handleAuthgateRenameLogin(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	ctx := r.Context()
-	tenant, _, ok := s.manageTenant(w, ctx, req.Tenant)
+	tenant, caller, ok := s.manageTenant(w, ctx, req.Tenant)
 	if !ok {
 		return
 	}
@@ -719,6 +808,9 @@ func (s *Server) handleAuthgateRenameLogin(w http.ResponseWriter, r *http.Reques
 	}
 	subject := strings.TrimSpace(r.PathValue("subject"))
 	if _, ok := s.gateIdentity(w, ctx, g.Name, tenant, subject); !ok {
+		return
+	}
+	if _, ok := s.holdManagerToFloorTarget(w, ctx, caller, &g, tenant, subject, "rename_login", false); !ok {
 		return
 	}
 	if err := s.store.UserIdentityRename(ctx, tenant, subject, g.Name, login); err != nil {
@@ -733,7 +825,7 @@ func (s *Server) handleAuthgateRenameLogin(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	s.recordGateAudit(ctx, "auth_login_renamed", g.Name, "", tenant, subject)
+	s.recordGateAudit(ctx, "auth_login_renamed", g.Name, "", tenant, subject, floorTarget{})
 	writeJSON(w, http.StatusOK, map[string]any{"subject": subject, "login": login})
 }
 
@@ -796,7 +888,8 @@ func (s *Server) handleAuthgateListIdentities(w http.ResponseWriter, r *http.Req
 }
 
 // handleAuthgateTenantStatus serves GET /v1/_authgate/{gate}/tenant-status:
-// whether the tenant has a user yet and whether an owner invite is live —
+// whether the tenant has (or ever had) a user and whether an owner invite is
+// live —
 // what a website needs to decide on a bootstrap invite, and nothing about
 // who the users are.
 func (s *Server) handleAuthgateTenantStatus(w http.ResponseWriter, r *http.Request) {
@@ -808,7 +901,12 @@ func (s *Server) handleAuthgateTenantStatus(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	has, err := s.tenantHasUsers(ctx, tenant)
+	booted, err := s.tenantBootstrapped(ctx, tenant)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	users, err := s.store.UserList(ctx, tenant)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
@@ -818,7 +916,10 @@ func (s *Server) handleAuthgateTenantStatus(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tenant_id": tenant, "has_users": has, "bootstrap_invite_live": live})
+	// bootstrapped (ever had a user) is what decides an owner bootstrap;
+	// has_users is whether it has one now.
+	writeJSON(w, http.StatusOK, map[string]any{"tenant_id": tenant, "has_users": len(users) > 0,
+		"bootstrapped": booted, "bootstrap_invite_live": live})
 }
 
 // requireStore answers 503 when the server runs without a store.
@@ -832,15 +933,25 @@ func (s *Server) requireStore(w http.ResponseWriter) bool {
 }
 
 // recordGateAudit writes one password-gate management record: never a code,
-// a link or a password.
-func (s *Server) recordGateAudit(ctx context.Context, action, gate, recordID, tenant, subject string) {
-	if s.tokenAudit == nil {
-		return
-	}
+// a link or a password. A recovery (see holdManagerToFloorTarget) is marked
+// with the target's access mode.
+func (s *Server) recordGateAudit(ctx context.Context, action, gate, recordID, tenant, subject string, t floorTarget) {
 	p, _ := auth.PrincipalFromContext(ctx)
 	ev := audit.Event{Action: action, AuthGate: gate, AuthRecordID: recordID, TargetTenant: tenant, TargetSubject: subject,
 		ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix}
+	if t.recovery {
+		ev.AuthRecovery, ev.AuthTargetAccessMode = true, t.accessMode
+	}
+	s.recordAuthAudit(ev)
+}
+
+// recordAuthAudit writes an audit record best-effort: it never fails the
+// request.
+func (s *Server) recordAuthAudit(ev audit.Event) {
+	if s.tokenAudit == nil {
+		return
+	}
 	if err := s.tokenAudit.Record(ev); err != nil {
-		slog.Error("authgate: audit write failed", "action", action, "err", err)
+		slog.Error("authgate: audit write failed", "action", ev.Action, "err", err)
 	}
 }

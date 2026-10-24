@@ -232,6 +232,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "derived change log"},
 	"memory_cursors": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "consolidation watermarks and a lease owned by a source replica"},
+	"tenant_bootstraps": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "written by the store whenever a tenant gets its first users row, so a restore that recreates users recreates its markers"},
 	"auth_throttle": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "short-lived login-failure counters of the source; they mean nothing on an instance that did not see the failures"},
 	"process_samples": {Kind: coverOmitted, Backends: onBoth,

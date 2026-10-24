@@ -66,7 +66,9 @@ func testPasswordGates(t *testing.T) *PasswordGates {
 			ResetTTL: time.Hour, AllowedReturnTo: []string{"https://site.example/welcome"},
 			Throttle: password.Throttle{MaxFailures: 10, Lockout: 15 * time.Minute}}
 	}
-	pg, err := NewPasswordGates([]PasswordGateSettings{gate("local", false), gate("staff", true)}, h, pol, sealer, "https://lc.example/")
+	cloud := gate("cloud", false)
+	cloud.ManagerMayRecoverOwners = true
+	pg, err := NewPasswordGates([]PasswordGateSettings{gate("local", false), gate("staff", true), cloud}, h, pol, sealer, "https://lc.example/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,8 +392,8 @@ func TestUsersCRUD_AuthManagerIsHeldToTheFloorOutsideABootstrap(t *testing.T) {
 	if code, b := f.call(t, bSite, "PATCH", "/v1/_users/member?tenant=newco", `{"access_mode":"tenant"}`); code != http.StatusForbidden || b["code"] != "promotion_refused" {
 		t.Fatalf("raise: %d %v", code, b)
 	}
-	if code, b := f.call(t, bSite, "PATCH", "/v1/_users/owner?tenant=newco", `{"access_mode":"isolated","display_name":"O"}`); code != http.StatusOK {
-		t.Fatalf("lowering is not a promotion: %d %v", code, b)
+	if code, b := f.call(t, bSite, "PATCH", "/v1/_users/owner?tenant=newco", `{"display_name":"O"}`); code != http.StatusOK {
+		t.Fatalf("renaming the owner's display name: %d %v", code, b)
 	}
 	_, list := bearerCall(t, f.ts, bSite, "GET", "/v1/_users?tenant=newco", "")
 	if !strings.Contains(list, `"owner"`) || !strings.Contains(list, `"member"`) || strings.Contains(list, "acme") {
@@ -445,6 +447,141 @@ func TestAuthgateDeleteCredentials_RemovesPasswordAndTOTPAndKeepsTheLogin(t *tes
 	}
 	if got := f.audit.actions(); len(got) == 0 || got[len(got)-1] != "auth_credential_removed" {
 		t.Fatalf("audit = %v", got)
+	}
+}
+
+// Rule 1: emptying a tenant does not re-arm the owner bootstrap. Once a
+// tenant had a user, an auth:manage credential is held to the floor there for
+// good, by both bootstrap paths (POST /v1/_users and the owner invite).
+func TestAuthManage_CannotRearmTheBootstrapByEmptyingTheTenant(t *testing.T) {
+	f := newGateFixture(t)
+	if code, b := f.call(t, bSite, "POST", "/v1/_users?tenant=newco", `{"subject":"owner","access_mode":"tenant"}`); code != http.StatusCreated {
+		t.Fatalf("bootstrap: %d %v", code, b)
+	}
+	// The tenant's own admin removes the owner (the website cannot: rule 2).
+	if code, _ := f.call(t, bAdmin, "DELETE", "/v1/_users/owner?tenant=newco", ""); code != http.StatusNoContent {
+		t.Fatalf("admin delete: %d", code)
+	}
+	if code, b := f.call(t, bSite, "POST", "/v1/_users?tenant=newco", `{"subject":"usurper","access_mode":"tenant"}`); code != http.StatusForbidden || b["code"] != "tenant_not_empty" {
+		t.Fatalf("re-bootstrap by create: %d %v", code, b)
+	}
+	if code, b := f.call(t, bSite, "POST", "/v1/_authgate/local/invites", `{"tenant":"newco","access_mode":"tenant"}`); code != http.StatusForbidden || b["code"] != "tenant_not_empty" {
+		t.Fatalf("re-bootstrap by invite: %d %v", code, b)
+	}
+	_, st := f.call(t, bSite, "GET", "/v1/_authgate/local/tenant-status?tenant=newco", "")
+	if st["has_users"] != false || st["bootstrapped"] != true {
+		t.Fatalf("tenant-status = %v", st)
+	}
+}
+
+// Rule 2 + 4: the floor applies to the TARGET. An auth:manage credential may
+// not delete, disable, re-enable, re-mode, strip, rename, reset or attach a
+// password to a user above the floor (the owner; anyone in a group), and may
+// do all of it to a floor user. Display names stay its to fix.
+func TestAuthManage_IsRefusedEveryChangeToAUserAboveTheFloor(t *testing.T) {
+	f := newGateFixture(t)
+	ctx := context.Background()
+	f.addUser(t, "acme", "owner", "tenant")
+	f.addUser(t, "acme", "grouped", "isolated")
+	f.addUser(t, "acme", "plain", "isolated")
+	f.addUser(t, "acme", "nopw-owner", "tenant")
+	if _, err := f.st.GroupPut(ctx, store.GroupRow{TenantID: "acme", Name: "staff"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "staff", MemberKind: store.GroupMemberUser, MemberID: "grouped"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"owner", "grouped", "plain"} {
+		f.addLogin(t, "acme", s, "local", s+"-login")
+	}
+	ops := func(subject string) []struct{ method, path, body string } {
+		return []struct{ method, path, body string }{
+			{"PATCH", "/v1/_users/" + subject + "?tenant=acme", `{"status":"disabled"}`},
+			{"PATCH", "/v1/_users/" + subject + "?tenant=acme", `{"access_mode":"isolated"}`},
+			{"POST", "/v1/_authgate/local/resets", `{"tenant":"acme","subject":"` + subject + `"}`},
+			{"PATCH", "/v1/_authgate/local/logins/" + subject, `{"tenant":"acme","login":"` + subject + `-renamed"}`},
+			{"DELETE", "/v1/_authgate/local/credentials/" + subject + "?tenant=acme", ""},
+			{"DELETE", "/v1/_users/" + subject + "?tenant=acme", ""},
+		}
+	}
+	for _, subject := range []string{"owner", "grouped"} {
+		for _, op := range ops(subject) {
+			if code, b := f.call(t, bSite, op.method, op.path, op.body); code != http.StatusForbidden || b["code"] != "target_beyond_floor" {
+				t.Errorf("%s %s on %s: %d %v, want 403 target_beyond_floor", op.method, op.path, subject, code, b)
+			}
+		}
+		if code, b := f.call(t, bSite, "PATCH", "/v1/_users/"+subject+"?tenant=acme", `{"display_name":"x"}`); code != http.StatusOK {
+			t.Errorf("display name of %s: %d %v", subject, code, b)
+		}
+	}
+	if code, b := f.call(t, bSite, "POST", "/v1/_authgate/local/invites", `{"tenant":"acme","subject":"nopw-owner"}`); code != http.StatusForbidden || b["code"] != "target_beyond_floor" {
+		t.Errorf("attach to an owner: %d %v", code, b)
+	}
+	// Re-enabling is a status change like disabling.
+	disabled := "disabled"
+	if err := f.st.UserUpdate(ctx, "acme", "owner", store.UserPatch{Status: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := f.call(t, bSite, "PATCH", "/v1/_users/owner?tenant=acme", `{"status":"active"}`); code != http.StatusForbidden {
+		t.Errorf("re-enable the owner: %d %v", code, b)
+	}
+	for _, op := range ops("plain") {
+		if code, b := f.call(t, bSite, op.method, op.path, op.body); code >= 300 {
+			t.Errorf("%s %s on a floor user: %d %v", op.method, op.path, code, b)
+		}
+	}
+	// A tenant operator is unaffected.
+	if code, b := f.call(t, bAcmeOp, "POST", "/v1/_authgate/local/resets", `{"subject":"grouped"}`); code != http.StatusCreated {
+		t.Errorf("tenant operator reset: %d %v", code, b)
+	}
+	refused := 0
+	for _, e := range f.audit.evs {
+		if e.Action == "auth_manage_refused" {
+			refused++
+		}
+	}
+	if refused == 0 {
+		t.Error("refusals were not audited")
+	}
+}
+
+// Rule 3: on a gate with manager_may_recover_owners, a reset and a first
+// password for an above-floor user are allowed and audited as a recovery;
+// deleting, disabling, demoting or renaming still is not.
+func TestAuthManage_RecoveryCarveOutIsOptInPerGateAndAudited(t *testing.T) {
+	f := newGateFixture(t)
+	f.addUser(t, "acme", "owner", "tenant")
+	f.addUser(t, "acme", "legacy@acme.test", "tenant")
+	f.addLogin(t, "acme", "owner", "cloud", "owner@acme.test")
+	if code, b := f.call(t, bSite, "POST", "/v1/_authgate/cloud/resets", `{"tenant":"acme","subject":"owner"}`); code != http.StatusCreated {
+		t.Fatalf("recovery reset: %d %v", code, b)
+	}
+	if code, b := f.call(t, bSite, "POST", "/v1/_authgate/cloud/invites", `{"tenant":"acme","subject":"legacy@acme.test","email":"legacy@acme.test"}`); code != http.StatusCreated {
+		t.Fatalf("recovery attach: %d %v", code, b)
+	}
+	recovered := map[string]string{}
+	for _, e := range f.audit.evs {
+		if e.AuthRecovery {
+			recovered[e.Action] = e.AuthTargetAccessMode
+		}
+	}
+	if recovered["auth_reset_issued"] != "tenant" || recovered["auth_invite_created"] != "tenant" {
+		t.Fatalf("recovery audit = %v", recovered)
+	}
+	for _, op := range []struct{ method, path, body string }{
+		{"PATCH", "/v1/_authgate/cloud/logins/owner", `{"tenant":"acme","login":"x@acme.test"}`},
+		{"DELETE", "/v1/_authgate/cloud/credentials/owner?tenant=acme", ""},
+		{"PATCH", "/v1/_users/owner?tenant=acme", `{"status":"disabled"}`},
+		{"DELETE", "/v1/_users/owner?tenant=acme", ""},
+	} {
+		if code, b := f.call(t, bSite, op.method, op.path, op.body); code != http.StatusForbidden {
+			t.Errorf("%s %s: %d %v, want 403", op.method, op.path, code, b)
+		}
+	}
+	// The same reset on a gate without the opt-in is refused.
+	f.addLogin(t, "acme", "legacy@acme.test", "local", "legacy@acme.test")
+	if code, _ := f.call(t, bSite, "POST", "/v1/_authgate/local/resets", `{"tenant":"acme","subject":"legacy@acme.test"}`); code != http.StatusForbidden {
+		t.Errorf("reset on a gate without the opt-in: %d", code)
 	}
 }
 
