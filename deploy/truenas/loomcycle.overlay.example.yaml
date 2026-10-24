@@ -42,3 +42,23 @@ volumes:
 #     volumes: [work]
 #     system_prompt: |
 #       …
+
+# Access control: rule lists, groups and bindings, read with LOOMCYCLE_ACL set to
+# compat, shadow or enforce (the compose). Declared here they are read-only in
+# Settings → Access, where you can also write them; a stored list with the same
+# name shadows a declared one. A malformed entry fails the boot, naming it. See
+# INSTALL.md, "Access control".
+#
+# acls:
+#   members-no-shell:
+#     description: members may run agents but not shell commands or git pushes
+#     rules:
+#       - { effect: deny, actions: [invoke], resources: ["tool:Bash"] }
+#       - { effect: deny, actions: [push],   resources: ["git:*"] }
+#       - { effect: deny, actions: [write],  resources: ["volume:work"] }
+# groups:
+#   family:
+#     tenant: my-tenant          # the tenant the tokens were minted in
+#     members: [alice, bob]      # token subjects
+# acl_bindings:
+#   - { acl: members-no-shell, group: family, tenant: my-tenant }

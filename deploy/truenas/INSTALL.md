@@ -231,6 +231,13 @@ services:
       # Private IPs stay hard-blocked; a run can further narrow per-call.
       LOOMCYCLE_HTTP_HOST_ALLOWLIST: "*"
 
+      # --- access control (see "Access control" below) ---
+      # shadow: the scope gates still decide, and every place your rules would
+      # answer differently is logged + audited (acl_shadow_diverged). Switch to
+      # enforce once that is quiet. Read at startup: restart after a change.
+      LOOMCYCLE_ACL: "shadow"
+      # LOOMCYCLE_ACL_CACHE_TTL_SECONDS: "5"   # how long compiled rules are trusted (0 = every request)
+
       # --- files tools return (the run inbox, under the `dynamic` volume) ---
       # Defaults shown; uncomment to change.
       # LOOMCYCLE_FILE_MAX_BYTES: "67108864"          # one kept file (64 MiB)
@@ -298,6 +305,82 @@ docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap --def-i
 The container already carries the server's env and config, so the command sees the
 same database and pepper. It is safe while the server runs. A row you never minted
 was written into the database: retire it instead.
+
+**Upgrading to v1.122.0 or newer:** migration 0109 adds the access-control tables
+(the `loomcycle-migrate` step applies it). The overlay needs the `dynamic` volume
+and its dataset (Phase 2, Phase 3, Phase 5) or files tools return are refused, and
+the volume name `inbox` is reserved. Access control changes nothing until you set
+`LOOMCYCLE_ACL` or write a rule — see *Access control* below.
+
+## Access control — rule lists, groups and bindings
+
+From v1.122.0 a tenant operator can say, per user or group, which agents, tools,
+volumes, memory scopes and definitions a principal may use, with an explicit
+**deny** that beats any allow. Token scopes stay the ceiling: a rule can narrow
+what a token reaches, never widen it.
+
+**1. Pick the mode** (`LOOMCYCLE_ACL`, set in Phase 5; restart after a change):
+
+| Mode | Who decides | Use it |
+|---|---|---|
+| `compat` (default) | the scope gates, plus any deny you bind | nothing changes until you write a rule |
+| `shadow` | the scope gates; every disagreement with the rules is logged and audited as `acl_shadow_diverged` | before `enforce`, for a few days of normal use |
+| `enforce` | the rules: a question no rule allows is refused `403 acl_denied`; rules that cannot be read refuse with `503 acl_unavailable` | once `shadow` is quiet |
+
+Every token class has a built-in list (`builtin:admin`, `builtin:tenant-operator`,
+`builtin:member`, `builtin:isolated`, `builtin:run-plane`) that reproduces its reach,
+so `enforce` with no rules written behaves like `compat`. The one difference: under
+`enforce` an isolated user (`substrate:user`) may not list its tenant's users.
+
+**2. Write rules** — either in the Web UI (**Settings → Access**: the Groups,
+Policies and Bindings tabs, and a Simulator that answers "may this user do this?"
+with every rule it considered, against the saved rules or a draft), or declared in
+the overlay `loomcycle.yaml` next to `volumes:`. Config rows are
+read-only in the UI; a stored list with the same name shadows a config one.
+
+```yaml
+acls:
+  members-no-shell:
+    description: members may run agents but not shell commands or git pushes
+    rules:
+      - { effect: deny, actions: [invoke], resources: ["tool:Bash"] }
+      - { effect: deny, actions: [push],   resources: ["git:*"] }
+      - { effect: deny, actions: [write],  resources: ["volume:work"] }   # work becomes read-only for them
+groups:
+  family:
+    tenant: loomcycle-dev            # the tenant your tokens were minted in
+    members: [alice, bob]            # token subjects
+acl_bindings:
+  - { acl: members-no-shell, group: family, tenant: loomcycle-dev }
+  # also: user: <subject>, token: <token name>, or tenant_wide: true
+```
+
+A rule is `{effect, actions, resources, when}`. Resources look like `agent:chat/*`,
+`tool:Bash`, `volume:work`, `memory:tenant`, `document:tenant:/kb/**`,
+`def:agent/*`, `team:*`; `when` can limit a rule by `transport`, `time`,
+`interactive`, `tier`, `source_cidr` and a few more. The Policies tab's rule editor
+offers every type and verb (the same catalog `POST /v1/_acldef` `op=catalog` returns). A malformed entry fails
+`loomcycle validate` and the boot, naming the entry.
+
+**3. What the rules reach.** Inside a run, a tool the caller may not `invoke` is
+withheld from the model (reported once as a `capability_inert` event), a volume it
+may not `write` is mounted read-only, and memory or history scopes it may not
+`read` are dropped; sub-agents inherit the caller's rules. A paused, restored or
+restarted run is narrowed again by the caller's **current** rules. A schedule or
+webhook run is narrowed by its definition's author, an A2A run by the calling
+peer's credential, and a team walk by whoever started it or the trigger's author.
+
+**Upgrading from v1.121 or older:**
+
+- Schedules and webhooks created before the upgrade record no author, so they fire
+  unnarrowed until you re-save them (create again, fork, or edit their hook).
+- A token limited to certain agents can no longer start team walks
+  (`builtin:run-plane` denies `run team:*`, in `compat` too).
+- Erasing a user (Settings → Erasure) now also revokes their member tokens and
+  removes their group memberships and bindings. Config-declared memberships stay —
+  remove them from the overlay.
+- Snapshots don't carry lists, groups or bindings. After restoring on another
+  instance, recreate them, or keep them in the overlay.
 
 ## Browser + sandbox variant (serve-and-test)
 
@@ -373,6 +456,9 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
 | A tool's file shows as `[file not kept: no dynamic_root volume is configured …]` | The overlay has no `dynamic_root: true` volume, or its mount is missing — add the `dynamic` entry (Phase 3) and its mount (Phase 5). |
+| `403 {"code":"acl_denied", …}` on a request that worked before | A rule denies it, or (under `enforce`) no rule allows it. The body names the rules that denied; **Settings → Access → Simulator** shows every rule considered. Back to `shadow` while you fix the list. |
+| `503 acl_unavailable` | The caller's rules could not be read (a database fault). Under `enforce` the request is refused rather than admitted; a paused run stays paused and a schedule tries again next tick. Check the Postgres connection. |
+| Log lines `authz: acl_shadow_diverged …` | `shadow` mode found a request the rules would answer differently from the scope gates. Each line names the action and resource: adjust the list, or accept the change before `enforce`. |
 | `toomanyrequests: You have reached your pull rate limit` | Docker Hub anonymous quota exhausted — see below. |
 
 ### Docker Hub rate limits

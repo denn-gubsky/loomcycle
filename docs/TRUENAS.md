@@ -193,6 +193,30 @@ datasets must be `chown`ed to 65532:65532.**
 - **Mint tenant tokens from the Web UI** (no shell needed): sign in with the admin
   (root) token, click the gear → **Settings → Tokens** ([`operator-tokens`](../internal/help/builtin/operator-tokens.md)).
 
+## Access control
+
+From v1.122.0, rule lists, groups and bindings say per user or group which agents,
+tools, volumes, scopes and definitions a principal may use, with explicit deny over
+allow; token scopes stay the ceiling. Set `LOOMCYCLE_ACL` in the compose (Route A)
+or the wizard's *Advanced environment options* (Route B):
+
+- `compat` (default) — the scope gates decide, plus any deny you bind. Nothing
+  changes until you write a rule.
+- `shadow` — the gates decide; each place the rules would answer differently is
+  logged and audited as `acl_shadow_diverged`. The paste compose ships with it.
+- `enforce` — the rules decide: `403 acl_denied`, or `503 acl_unavailable` when the
+  rules cannot be read. Built-in lists reproduce each token class's reach, so
+  `enforce` with no rules written behaves like `compat`.
+
+The mode is read at startup, so restart the app after changing it. Write rules in
+the Web UI (**Settings → Access**) or declare `acls:` / `groups:` / `acl_bindings:`
+in the overlay (commented example in
+[`loomcycle.overlay.example.yaml`](../deploy/truenas/loomcycle.overlay.example.yaml)).
+[`INSTALL.md`](../deploy/truenas/INSTALL.md#access-control--rule-lists-groups-and-bindings)
+walks through it, including what changes for an existing install; the full
+reference is the `LOOMCYCLE_ACL` row in
+[CONFIGURATION.md](CONFIGURATION.md#9b-multi-tenant-authentication-rfc-l).
+
 ## Health & upgrade
 
 - **Health:** the container `HEALTHCHECK` is `loomcycle health` (GETs the unauth
