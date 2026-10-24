@@ -292,6 +292,9 @@ type Server struct {
 	// dependency. See internal/resolve and the matrix RFC at
 	// doc-internal/rfcs/model-resolution-matrix.md.
 	resolver *resolve.Resolver
+	// keyReprobeInFlight single-flights the re-probe an operator-key refusal
+	// starts: a burst of runs hitting the same dead key runs one probe.
+	keyReprobeInFlight atomic.Bool
 
 	// credResolver resolves a tenant/user credential by its env-var NAME (RFC
 	// AR): a run whose tenant/user stored e.g. ANTHROPIC_API_KEY / BRAVE_API_KEY
@@ -1564,6 +1567,35 @@ func (s *Server) markRateLimitedFn(tier string) func(p, m string, retryAfter tim
 			retryAfter = operatorCooldown
 		}
 		s.resolver.MarkRateLimited(p, m, retryAfter)
+	}
+}
+
+// markProviderUnreachableFn returns a closure for
+// loop.RunOptions.MarkProviderUnreachable: the loop calls it when a provider
+// refused the operator's own key. Every model on the provider shares that key,
+// so the whole provider leaves routing at once (SetReachable false, keeping
+// its model list, exactly as a failed probe does), and an immediate re-probe
+// is started in the background so a key that works again — rotated, or a
+// transient refusal — brings it back without waiting for the periodic probe.
+//
+// Returns nil when no resolver is wired.
+func (s *Server) markProviderUnreachableFn() func(p, reason string) {
+	if s.resolver == nil {
+		return nil
+	}
+	return func(p, reason string) {
+		s.resolver.SetReachable(p, false, nil, "operator key refused: "+reason)
+		if !s.keyReprobeInFlight.CompareAndSwap(false, true) {
+			return
+		}
+		go func() {
+			defer s.keyReprobeInFlight.Store(false)
+			// Detached from the run: the run that saw the refusal is ending.
+			// main.go's probe applies its own per-provider timeouts.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			s.resolver.ForceProbe(ctx)
+		}()
 	}
 }
 
@@ -3897,6 +3929,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// boundary; the baseline is what the run starts with.
 		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
+	// A refusal of the operator's own key takes the whole provider out of routing.
+	runOpts.MarkProviderUnreachable = s.markProviderUnreachableFn()
 	if sessHold != nil {
 		stateful := loop.StatefulMode(mergedContext, provider.Capabilities().Local, in.Interactive)
 		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, loopCtx, stateful,
@@ -7858,6 +7892,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}
+	// A refusal of the operator's own key takes the whole provider out of routing.
+	opts.MarkProviderUnreachable = s.markProviderUnreachableFn()
 
 	// cleanup fires the SAME releases as the guarded error-defers above, in the
 	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →

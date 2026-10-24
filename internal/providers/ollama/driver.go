@@ -602,7 +602,9 @@ func (d *Driver) Call(ctx context.Context, req providers.Request) (<-chan provid
 		defer resp.Body.Close()
 		cancelStream()
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s %d: %s", d.providerID, resp.StatusCode, strings.TrimSpace(string(errBody)))
+		// The key source lets the loop tell the operator's refused key (the
+		// provider is down for every run) from a tenant's (this run only).
+		return nil, providers.WithKeySource(fmt.Errorf("%s %d: %s", d.providerID, resp.StatusCode, strings.TrimSpace(string(errBody))), credSource)
 	}
 
 	resp.Body = streamhttp.WrapBody(resp.Body, d.idleTimeout, cancelStream)

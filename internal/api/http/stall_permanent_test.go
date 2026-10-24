@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -128,4 +129,73 @@ func TestFallbackForRun_RateLimitCoolsTheModelInsteadOfStalling(t *testing.T) {
 	if !st.RateLimited {
 		t.Error("a 429 left the model un-cooled; want it rate-limited so the re-resolve walks past it")
 	}
+}
+
+// The operator's own key refused: the provider leaves routing at once, so the
+// next run on the tier falls to the other provider (or, with none left, gets
+// the unavailable error), and a re-probe is started so a working key brings it
+// back. A tenant's key refused leaves the provider in routing.
+func TestOperatorKeyRefusal_NextRunFallsToAnotherProviderAndAReprobeRuns(t *testing.T) {
+	newResolver := func(cands []resolve.Candidate) (*resolve.Resolver, chan struct{}) {
+		r := resolve.NewResolver([]string{"anthropic", "openai"}, map[string][]resolve.Candidate{"middle": cands})
+		r.SetReachable("anthropic", true, []string{"claude-haiku-5-5"}, "")
+		r.SetReachable("openai", true, []string{"gpt-5"}, "")
+		probed := make(chan struct{}, 4)
+		r.SetForceProbeCallback(func(context.Context) { probed <- struct{}{} })
+		return r, probed
+	}
+	run := func(srv *Server, source string) {
+		_, _ = loop.Run(context.Background(), loop.RunOptions{
+			Provider:                &failingCallProvider{id: "anthropic", err: providers.WithKeySource(errors.New("anthropic 401: invalid x-api-key"), source)},
+			Model:                   "claude-haiku-5-5",
+			Segments:                []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+			MarkStalled:             srv.markStalledFn("anthropic", "claude-haiku-5-5"),
+			MarkProviderUnreachable: srv.markProviderUnreachableFn(),
+		})
+	}
+	both := []resolve.Candidate{{Provider: "anthropic", Model: "claude-haiku-5-5"}, {Provider: "openai", Model: "gpt-5"}}
+
+	t.Run("operator key, another provider in the tier", func(t *testing.T) {
+		r, probed := newResolver(both)
+		srv := &Server{resolver: r, cfgHolder: config.NewHolder(&config.Config{})}
+		run(srv, "operator")
+		d, err := r.Resolve(resolve.AgentRequest{Name: "next", Tier: "middle"})
+		if err != nil || d.Provider != "openai" {
+			t.Fatalf("next run resolved (%s, %v), want openai", d.Provider, err)
+		}
+		select {
+		case <-probed:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no re-probe was started after the operator key was refused")
+		}
+		// A probe that finds the key working again brings the provider back.
+		r.SetReachable("anthropic", true, []string{"claude-haiku-5-5"}, "")
+		if d, err := r.Resolve(resolve.AgentRequest{Name: "next", Tier: "middle"}); err != nil || d.Provider != "anthropic" {
+			t.Errorf("after a good probe the tier resolved (%s, %v), want anthropic back", d.Provider, err)
+		}
+	})
+
+	t.Run("operator key, no other provider", func(t *testing.T) {
+		r, _ := newResolver(both[:1])
+		srv := &Server{resolver: r, cfgHolder: config.NewHolder(&config.Config{})}
+		run(srv, "operator")
+		if d, err := r.Resolve(resolve.AgentRequest{Name: "next", Tier: "middle"}); err == nil {
+			t.Fatalf("next run resolved %s/%s, want the unavailable error", d.Provider, d.Model)
+		}
+	})
+
+	t.Run("tenant key", func(t *testing.T) {
+		r, probed := newResolver(both)
+		srv := &Server{resolver: r, cfgHolder: config.NewHolder(&config.Config{})}
+		run(srv, "tenant")
+		d, err := r.Resolve(resolve.AgentRequest{Name: "next", Tier: "middle"})
+		if err != nil || d.Provider != "anthropic" {
+			t.Fatalf("after a tenant-key 401 the tier resolved (%s, %v), want anthropic still in routing", d.Provider, err)
+		}
+		select {
+		case <-probed:
+			t.Error("a tenant-key refusal started a re-probe")
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
 }

@@ -91,3 +91,50 @@ func TestRecoverStatefulCall_StallsOnlyOnModelFaults(t *testing.T) {
 		}
 	}
 }
+
+// A refusal of the operator's own key takes the whole provider out — every
+// model on it shares that key — and does not stall the one model. A tenant's
+// key refused touches nothing shared.
+func TestRun_OperatorKeyRefusalMarksTheProviderUnreachable(t *testing.T) {
+	for _, tc := range []struct {
+		source      string
+		unreachable int
+	}{{"operator", 1}, {"tenant", 0}, {"user", 0}} {
+		var stalls, down int
+		var downProvider string
+		_, err := Run(context.Background(), RunOptions{
+			Provider:    &erroringProvider{err: providers.WithKeySource(fmt.Errorf("anthropic 401: invalid x-api-key"), tc.source)},
+			Model:       "claude-haiku-5-5",
+			Segments:    []PromptSegment{{Role: "user", Content: []PromptContentBlock{{Type: "trusted-text", Text: "x"}}}},
+			MarkStalled: func(_, _, _ string) { stalls++ },
+			MarkProviderUnreachable: func(p, _ string) {
+				down++
+				downProvider = p
+			},
+		})
+		if err == nil {
+			t.Fatalf("%s: Run should propagate the 401", tc.source)
+		}
+		if down != tc.unreachable || stalls != 0 {
+			t.Errorf("%s key 401: MarkProviderUnreachable=%d MarkStalled=%d, want %d and 0", tc.source, down, stalls, tc.unreachable)
+		}
+		if tc.unreachable == 1 && downProvider != "erroring" {
+			t.Errorf("provider marked unreachable = %q, want erroring", downProvider)
+		}
+	}
+}
+
+// The stateful loop's recovery reports the operator-key refusal the same way.
+func TestRecoverStatefulCall_OperatorKeyRefusalMarksTheProviderUnreachable(t *testing.T) {
+	down := 0
+	opts := &RunOptions{
+		Provider:                &erroringProvider{},
+		Model:                   "claude-haiku-5-5",
+		MarkProviderUnreachable: func(_, _ string) { down++ },
+	}
+	_ = recoverStatefulCall(context.Background(), opts, &statefulRecovery{},
+		providers.WithKeySource(fmt.Errorf("anthropic 403: forbidden"), "operator"), func(providers.Event) {}, nil)
+	if down != 1 {
+		t.Errorf("MarkProviderUnreachable calls = %d, want 1", down)
+	}
+}
