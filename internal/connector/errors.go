@@ -303,3 +303,17 @@ type TeamChannelError struct {
 
 func (e *TeamChannelError) Error() string { return e.Msg }
 func (e *TeamChannelError) Unwrap() error { return e.Kind }
+
+// ACLRefusal is an access-control refusal of an operation that asks an
+// instance question of its own — a walk's cancel asks `cancel team:<name>`
+// (RFC EZ §1.2). Code is acl_denied or acl_unavailable; Body is the refusal
+// as the HTTP gate writes it, so every transport carries one shape: HTTP
+// answers 403 / 503 with Body, gRPC PermissionDenied / Unavailable with
+// Error, MCP a tool error whose text is Body.
+type ACLRefusal struct {
+	Code string
+	Body string
+	Msg  string
+}
+
+func (e *ACLRefusal) Error() string { return e.Code + ": " + e.Msg }

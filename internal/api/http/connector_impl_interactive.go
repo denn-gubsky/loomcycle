@@ -218,6 +218,11 @@ func (s *Server) CancelTurn(ctx context.Context, runID, reason string) (bool, bo
 	if err != nil || !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, runID) {
 		return false, false, connector.ErrRunNotInFlight
 	}
+	// A walk live on another replica: asked here, before the cancel is routed
+	// to its owner, which stops it without asking (stopLocalWalk).
+	if err := s.authorizeWalkCancel(ctx, run.AgentID); err != nil {
+		return false, false, err
+	}
 	fired, err := s.turnCancelReg.Cancel(ctx, runID, reason)
 	if err != nil {
 		return false, false, err

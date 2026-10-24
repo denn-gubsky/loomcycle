@@ -561,6 +561,10 @@ func (s *Server) CancelRun(ctx context.Context, agentID, reason string) (connect
 		if !runOwnershipOK(ctx, run) || !s.allowlistReachesRun(ctx, run.ID) {
 			return connector.CancelRunResult{}, &store.ErrNotFound{Kind: "run", ID: agentID}
 		}
+		// MCP cancel_run can name a walk by its agent id (team:<name>).
+		if err := s.authorizeWalkCancel(ctx, agentID); err != nil {
+			return connector.CancelRunResult{}, err
+		}
 		// The cancel is broadcast to every replica with its reason.
 		if run.Retention == retentionmode.None {
 			reason = ""

@@ -90,7 +90,12 @@ func (s *Server) CancelTurn(ctx context.Context, req *loomcyclepb.CancelTurnRequ
 		return nil, status.Error(codes.InvalidArgument, "run_id must match [A-Za-z0-9_-]{1,128}")
 	}
 	stopped, parked, err := s.connector.CancelTurn(ctx, runID, req.GetReason())
+	var refusal *connector.ACLRefusal
 	switch {
+	case errors.As(err, &refusal) && refusal.Code == "acl_unavailable":
+		return nil, status.Error(codes.Unavailable, err.Error())
+	case errors.As(err, &refusal):
+		return nil, status.Error(codes.PermissionDenied, err.Error())
 	case errors.Is(err, connector.ErrTurnCancelUnavailable):
 		return nil, status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, connector.ErrRunNotInFlight):

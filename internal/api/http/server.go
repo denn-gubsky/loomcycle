@@ -8657,7 +8657,18 @@ func (s *Server) handleCancelTurn(w http.ResponseWriter, r *http.Request) {
 	// back to the byte-identical status codes + bodies this handler shipped
 	// pre-P3b (the 409s carry a machine `code` via writeJSONError).
 	stopped, parked, err := s.CancelTurn(r.Context(), runID, req.Reason)
+	var refusal *connector.ACLRefusal
 	switch {
+	case errors.As(err, &refusal):
+		// A walk's cancel the caller's ACL refused: the route gate's answer.
+		status := http.StatusForbidden
+		if refusal.Code == "acl_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(refusal.Body))
+		return
 	case errors.Is(err, connector.ErrTurnNotInteractive):
 		writeJSONError(w, http.StatusConflict, "not_interactive", "turn-cancel applies only to interactive runs; use POST /v1/agents/{id}/cancel to stop this run")
 		return

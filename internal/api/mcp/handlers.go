@@ -557,6 +557,12 @@ func handleCancelRun(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		return toolErr("invalid cancel_run arguments: " + err.Error()), nil
 	}
 	res, err := env.connector.CancelRun(ctx, p.AgentID, p.Reason)
+	var refusal *connector.ACLRefusal
+	if errors.As(err, &refusal) {
+		// A walk's cancel the caller's ACL refused: the refusal body, as a
+		// definition op's refusal is carried.
+		return toolErr(refusal.Body), nil
+	}
 	if err != nil {
 		return toolErrFrom("cancel_run", err), nil
 	}
