@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -647,6 +649,19 @@ func (s *Store) AuthInviteRedeem(ctx context.Context, red store.AuthInviteRedemp
 		}
 	}
 
+	if red.OwnerBinding != nil {
+		// Only a bootstrap invite makes an owner, and only of the user it
+		// creates.
+		if !inv.Bootstrap || red.User == nil {
+			return fmt.Errorf("auth invite redeem: an owner binding needs a bootstrap invite that creates its user")
+		}
+		if err := checkOwnerBinding(red.User.TenantID, red.User.Subject, *red.OwnerBinding); err != nil {
+			return err
+		}
+		if err := insertOwnerBinding(ctx, tx, *red.OwnerBinding, now); err != nil {
+			return err
+		}
+	}
 	if err := insertIdentity(ctx, tx, red.Identity); err != nil {
 		return err
 	}
@@ -961,6 +976,86 @@ func (s *Store) AuthSubjectDelete(ctx context.Context, tenantID, subject string)
 		if _, err := tx.Exec(ctx, q, tenantID, subject); err != nil {
 			return fmt.Errorf("auth subject delete: %w", err)
 		}
+	}
+	return tx.Commit(ctx)
+}
+
+// checkOwnerBinding refuses an owner binding that is not the user's own in
+// its tenant: the store writes exactly the grant the caller described, for
+// exactly that user.
+func checkOwnerBinding(tenant, subject string, b store.AclBindingRow) error {
+	if b.TenantID != tenant || b.SubjectKind != "user" || b.SubjectID != subject || b.ACLName == "" {
+		return fmt.Errorf("owner binding: must be a user-kind binding of %s/%s", tenant, subject)
+	}
+	return nil
+}
+
+// insertOwnerBinding writes a user-kind ACL binding and bumps the tenant's
+// acl_version inside tx, so a cached set sees it on its next request.
+func insertOwnerBinding(ctx context.Context, tx pgx.Tx, b store.AclBindingRow, at time.Time) error {
+	if b.BindingID == "" {
+		var raw [12]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return err
+		}
+		b.BindingID = "aclb_" + hex.EncodeToString(raw[:])
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO acl_bindings (binding_id, tenant_id, acl_name, subject_kind, subject_id, expires_at, created_at, created_by, retired_at)
+		VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, NULL)`, b.BindingID, b.TenantID, b.ACLName, b.SubjectKind, b.SubjectID, at, b.CreatedBy); err != nil {
+		return fmt.Errorf("owner binding: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO acl_version (tenant_id, version, updated_at) VALUES ($1, 1, $2)
+		ON CONFLICT (tenant_id) DO UPDATE SET version = acl_version.version + 1, updated_at = excluded.updated_at`, b.TenantID, at); err != nil {
+		return fmt.Errorf("owner binding: acl version: %w", err)
+	}
+	return nil
+}
+
+// UserCreateOwner implements store.PasswordGateStore. It takes the same
+// per-tenant advisory lock as a bootstrap invite's redemption, so an owner
+// create and an owner redemption of one tenant cannot both see it empty.
+func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner store.AclBindingRow) error {
+	if !store.ValidUserAccessMode(user.AccessMode) || !store.ValidUserStatus(user.Status) {
+		return fmt.Errorf("user create owner: invalid access_mode %q or status %q", user.AccessMode, user.Status)
+	}
+	if err := checkOwnerBinding(user.TenantID, user.Subject, owner); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	created := user.CreatedAt
+	if created.IsZero() {
+		created = now
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('loomcycle/auth-bootstrap/' || $1::text, 0))`, user.TenantID); err != nil {
+		return fmt.Errorf("user create owner: bootstrap lock: %w", err)
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM users WHERE tenant_id = $1)
+		+ (SELECT count(*) FROM tenant_bootstraps WHERE tenant_id = $1)`, user.TenantID).Scan(&n); err != nil {
+		return fmt.Errorf("user create owner: count users: %w", err)
+	}
+	if n > 0 {
+		return &store.ErrConflict{Kind: "tenant_not_empty", ID: user.TenantID}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO tenant_bootstraps (tenant_id, at, via) VALUES ($1, $2, 'owner')`, user.TenantID, now); err != nil {
+		return fmt.Errorf("user create owner: bootstrap marker: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO users (tenant_id, subject, display_name, access_mode, status, created_at, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		user.TenantID, user.Subject, user.DisplayName, user.AccessMode, user.Status, created, user.CreatedBy); err != nil {
+		if gateUniqueViolation(err) {
+			return &store.ErrConflict{Kind: "user", ID: user.Subject}
+		}
+		return fmt.Errorf("user create owner: %w", err)
+	}
+	if err := insertOwnerBinding(ctx, tx, owner, now); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

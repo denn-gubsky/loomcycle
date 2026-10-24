@@ -161,6 +161,11 @@ type AuthInviteRedemption struct {
 	Credential UserCredentialRow
 	// SecondFactor is set when the gate requires MFA (or the invitee enrolled).
 	SecondFactor *AuthSecondFactor
+	// OwnerBinding, set only for a bootstrap invite, is the user-kind ACL
+	// binding that makes the new user its tenant's operator. It is written in
+	// the same transaction as the user and its login, so no owner is ever
+	// half-made.
+	OwnerBinding *AclBindingRow
 }
 
 // AuthResetCompletion is everything one reset completion writes, in one
@@ -319,6 +324,13 @@ type PasswordGateStore interface {
 	// AuthThrottleDeleteExpired removes keys whose window and block both ended
 	// before `before`.
 	AuthThrottleDeleteExpired(ctx context.Context, before time.Time) (int, error)
+
+	// UserCreateOwner creates the first user of a tenant together with the
+	// user-kind ACL binding that makes it the tenant's operator, in one
+	// transaction that also writes the bootstrap marker. It refuses
+	// (*ErrConflict{Kind:"tenant_not_empty"}) a tenant that was ever
+	// bootstrapped, checked inside the transaction, and writes nothing then.
+	UserCreateOwner(ctx context.Context, user UserRow, owner AclBindingRow) error
 
 	// TenantBootstrapped reports whether the tenant has ever had a user: a
 	// tenant_bootstraps marker (written before the first users row of a

@@ -122,8 +122,23 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   time.Now().UTC(),
 		CreatedBy:   principalSubject(r.Context()),
 	}
-	if err := s.store.UserCreate(r.Context(), row); err != nil {
+	// A website's bootstrap create makes the tenant's owner: the user and its
+	// tenant-operator binding go in one transaction, which re-checks that the
+	// tenant never had a user (owner decision, Q6).
+	owner := caller == gateCallerManager && accessMode == "tenant"
+	var err error
+	if owner {
+		err = s.store.UserCreateOwner(r.Context(), row, ownerBinding(row.TenantID, row.Subject, "bootstrap:"+principalSubject(r.Context())))
+	} else {
+		err = s.store.UserCreate(r.Context(), row)
+	}
+	if err != nil {
 		var conflict *store.ErrConflict
+		if errors.As(err, &conflict) && conflict.Kind == "tenant_not_empty" {
+			writeJSONError(w, http.StatusForbidden, "tenant_not_empty",
+				"an "+auth.ScopeAuthManage+" token may create an access_mode tenant user only in a tenant that never had a user")
+			return
+		}
 		if errors.As(err, &conflict) {
 			writeJSONError(w, http.StatusConflict, "user_exists",
 				"a user with that subject already exists in this tenant")
@@ -131,6 +146,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSONError(w, http.StatusInternalServerError, "user_create_failed", err.Error())
 		return
+	}
+	if owner {
+		s.aclChanged(r.Context(), row.TenantID, "auth_owner_bound", row.Subject)
 	}
 	// A USER COMING INTO EXISTENCE IS THE ESTABLISHMENT MOMENT, and this is where it
 	// happens — not at token mint. Provisioning was originally hooked only to the

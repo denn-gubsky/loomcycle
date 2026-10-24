@@ -346,7 +346,10 @@ func (s *Server) aboveFloor(ctx context.Context, tenant, subject string, g *Pass
 			}
 		}
 		for _, b := range in.Bindings {
-			if authz.IsBuiltin(b.ACL) || !b.AppliesTo(in.Subject) {
+			// A built-in list counts too when it is bound to the user (an
+			// owner binding grants the operator plane); the class baselines
+			// the resolver adds are tenant-wide and skipped below.
+			if !b.AppliesTo(in.Subject) {
 				continue
 			}
 			switch b.SubjectKind {

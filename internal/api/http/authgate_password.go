@@ -26,6 +26,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -415,7 +416,46 @@ func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessi
 	if err != nil {
 		return auth.Principal{}, false, true
 	}
+	if u.AccessMode == "tenant" {
+		owner, err := s.hasOwnerBinding(ctx, u.TenantID, u.Subject)
+		if err != nil {
+			return auth.Principal{}, false, false
+		}
+		if owner {
+			scopes = []string{auth.ScopeTenant}
+		}
+	}
 	return s.enrichPrincipal(ctx, auth.Principal{TenantID: u.TenantID, Subject: u.Subject, Scopes: scopes}), true, true
+}
+
+// ownerBinding is the user-kind binding to the built-in tenant-operator list
+// that makes a bootstrapped owner its tenant's operator.
+func ownerBinding(tenant, subject, by string) store.AclBindingRow {
+	return store.AclBindingRow{TenantID: tenant, ACLName: authz.BaselineTenantOperator,
+		SubjectKind: string(authz.SubjectUser), SubjectID: subject, CreatedBy: by}
+}
+
+// hasOwnerBinding reports whether the user holds a live owner binding. The
+// ACL engine never applies a built-in list through a binding (the class
+// baselines come from a session's scopes), and a password session's scopes are
+// capped by its access_mode, so the binding is read here as the grant: with it
+// an access_mode tenant user's session gets substrate:tenant — confined to its
+// own tenant like every tenant operator — and retiring it in the Access console
+// takes that away on the next request. Nothing else derives operator scopes
+// for a session; a member's session is unchanged.
+func (s *Server) hasOwnerBinding(ctx context.Context, tenant, subject string) (bool, error) {
+	rows, err := s.store.AclBindingsFor(ctx, tenant, subject, nil, "")
+	if err != nil {
+		return false, err
+	}
+	now := time.Now()
+	for _, r := range rows {
+		if r.SubjectKind == string(authz.SubjectUser) && r.SubjectID == subject && r.ACLName == authz.BaselineTenantOperator &&
+			r.RetiredAt.IsZero() && (r.ExpiresAt.IsZero() || now.Before(r.ExpiresAt)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // --- TOTP enrolment tokens ---
@@ -737,6 +777,12 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		red.User = &store.UserRow{TenantID: inv.TenantID, Subject: subject, AccessMode: inv.AccessMode, Status: "active",
 			CreatedAt: now, CreatedBy: "invite:" + inv.InviteID}
 	}
+	if inv.Bootstrap && red.User != nil {
+		// A tenant's first owner is its operator (owner decision, Q6): the
+		// binding goes in with the user, in the same transaction.
+		b := ownerBinding(inv.TenantID, subject, "invite:"+inv.InviteID)
+		red.OwnerBinding = &b
+	}
 	if err := s.store.AuthInviteRedeem(ctx, red); err != nil {
 		var conflict *store.ErrConflict
 		switch {
@@ -754,6 +800,9 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	if red.User != nil {
 		s.joinInviteGroups(ctx, g, inv, subject)
+	}
+	if red.OwnerBinding != nil {
+		s.aclChanged(ctx, inv.TenantID, "auth_owner_bound", subject)
 	}
 	s.recordGateAudit(ctx, "auth_invite_redeemed", g.Name, inv.InviteID, inv.TenantID, subject, floorTarget{})
 	s.recordGateAudit(ctx, "auth_password_set", g.Name, inv.InviteID, inv.TenantID, subject, floorTarget{})
