@@ -1083,8 +1083,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		RestoreBackground:      s.restoreBackgroundFn(run, pollLedger, residents),
 		ResumeAwaitingChildren: resumeChildren,
 	}
-	// A refusal of the operator's own key takes the whole provider out of routing.
-	runOpts.MarkProviderUnreachable = s.markProviderUnreachableFn()
+	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
+	runOpts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 	residentDone := func(string, *builtin.ChildCappedError) {}
 	if rc != nil {
 		// Its parent's op=cancel stops its current turn, as it did live.

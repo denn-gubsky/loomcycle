@@ -274,27 +274,73 @@ func WithKeySource(err error, source string) error {
 	return &keySourceError{err: err, source: source}
 }
 
-// OperatorKeyRefused reports whether the provider refused the OPERATOR's own
-// credentials: a 401/403 on a call sent with the operator's key, or no AWS
-// credentials obtainable for the operator's signed call. Every model on the
-// provider shares that key, so the provider is unusable for every run until
-// the key is fixed. A tenant's or user's own key refused is not this: it says
-// nothing about anyone else's runs.
+// OperatorKeyRefused reports whether a call sent with the OPERATOR's own key
+// was refused in a way that is clearly about that key (IsKeyRefusal). It is a
+// suspicion, not a verdict: the caller confirms it with the provider's own
+// probe before taking the provider out, because a refusal can still be about
+// the one request. A tenant's or user's own key refused never qualifies — it
+// says nothing about anyone else's runs.
 func OperatorKeyRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrAuthUnavailable) {
+		return true // only the operator's signed call can produce it
+	}
+	var ks *keySourceError
+	if !errors.As(err, &ks) || ks.source != "operator" {
+		return false
+	}
+	// Judged on the driver's own error, not the outer message: a caller
+	// wrapping it ("call: anthropic 401: …") moves the anchored prefix.
+	return IsKeyRefusal(ks)
+}
+
+// keyRefusalMarkers are provider error texts that name the credential itself
+// as the problem. A 403 alone does not qualify: Bedrock answers 403 for a
+// model the role may not invoke or has no Marketplace subscription to, while
+// the same credentials serve its other models — taking the provider out on
+// that would let one run's model choice remove it for every tenant.
+var keyRefusalMarkers = []string{
+	"authentication_error",                      // Anthropic
+	"invalid_api_key", "invalid_authentication", // OpenAI and compatibles
+	"API_KEY_INVALID",                                  // Gemini (a 400)
+	"UnrecognizedClientException",                      // AWS: unknown access key
+	"InvalidSignatureException", "IncompleteSignature", // AWS: signing
+	"ExpiredTokenException", "MissingAuthenticationToken",
+	// AWS bodies often carry only the message, the exception name being in a
+	// header the drivers do not keep.
+	"security token included in the request is invalid",
+	"security token included in the request is expired",
+	"request signature we calculated does not match",
+}
+
+// keyRefusalStatusRe finds a 401 in the shapes the drivers report: a call's
+// "<name> 401:", a probe's "…: status 401 (…)" or "<name> /models 401:".
+var keyRefusalStatusRe = regexp.MustCompile(`(^[a-z][a-z0-9_-]* |[ :]status |/[^ :]+ )401\b`)
+
+// IsKeyRefusal reports whether err says the provider refused the credentials
+// themselves: an HTTP 401, a body naming a bad / expired / unknown key or a
+// bad signature, or no credentials obtainable at all (ErrAuthUnavailable). It
+// reads both call errors and the probe's listing errors. Permission, model
+// access, Marketplace and quota refusals do not count.
+func IsKeyRefusal(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, ErrAuthUnavailable) {
 		return true
 	}
-	var ks *keySourceError
-	if !errors.As(err, &ks) || ks.source != "operator" {
-		return false
+	msg := err.Error()
+	if keyRefusalStatusRe.MatchString(msg) {
+		return true
 	}
-	// The status is read off the driver's own error, not the outer message: a
-	// caller wrapping it ("call: anthropic 401: …") moves the anchored prefix.
-	code := statusFromError(ks)
-	return code == 401 || code == 403
+	for _, m := range keyRefusalMarkers {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikeDeprecatedModel returns true when the error body carries a
