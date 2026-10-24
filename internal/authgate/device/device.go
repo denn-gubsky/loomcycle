@@ -153,22 +153,6 @@ func FormatUserCode(canonical string) string {
 // reader could reverse by enumeration.
 const UserCodeHashLabel = "loomcycle/device-user-code/v1:"
 
-// NextInterval is the interval after a poll: unchanged when the poll came on
-// time, one SlowDownStep longer (capped) when it came early.
-func NextInterval(cur time.Duration, early bool) time.Duration {
-	if cur <= 0 {
-		cur = DefaultInterval
-	}
-	if !early {
-		return cur
-	}
-	cur += SlowDownStep
-	if cur > MaxInterval {
-		cur = MaxInterval
-	}
-	return cur
-}
-
 // ClientID bounds what a client may call itself: it is shown to the person
 // on the approval page, so it is a short printable label, not free text.
 const maxClientIDLen = 64

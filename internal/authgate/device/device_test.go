@@ -3,7 +3,6 @@ package device
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestNewUserCode_DrawsOnlyUnambiguousLetters(t *testing.T) {
@@ -91,21 +90,6 @@ func TestDeviceCode_StoredFormIsAHashThatDoesNotEqualTheCode(t *testing.T) {
 		if WellFormedDeviceCode(bad) {
 			t.Fatalf("%q accepted as a device code", bad)
 		}
-	}
-}
-
-func TestNextInterval_AddsFiveSecondsPerEarlyPollUpToTheCap(t *testing.T) {
-	if got := NextInterval(DefaultInterval, false); got != DefaultInterval {
-		t.Fatalf("on-time poll changed the interval to %s", got)
-	}
-	if got := NextInterval(DefaultInterval, true); got != 10*time.Second {
-		t.Fatalf("early poll: got %s, want 10s", got)
-	}
-	if got := NextInterval(MaxInterval, true); got != MaxInterval {
-		t.Fatalf("cap: got %s", got)
-	}
-	if got := NextInterval(0, false); got != DefaultInterval {
-		t.Fatalf("zero interval: got %s", got)
 	}
 }
 
