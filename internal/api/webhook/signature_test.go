@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func stripeSig(secret string, body []byte, ts time.Time) string {
 // verifyFromEnv is the receiver's env-form path: resolve the secret auth
 // names through the allowlist gate, then verify against it.
 func verifyFromEnv(a config.WebhookAuth, body []byte, headerGet func(string) string, allowlist map[string]bool, getenv func(string) string, now func() time.Time) error {
-	secrets, err := verificationSecrets(context.Background(), a, "", nil, allowlist, getenv, func(string, ...any) {})
+	secrets, err := verificationSecrets(context.Background(), a, "", nil, allowlist, getenv, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return err
 	}

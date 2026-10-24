@@ -304,7 +304,7 @@ func httpTestServer(t *testing.T, runner runner.Runner) (*httptest.Server, *http
 	h := NewHTTPHandler(Config{
 		Connector:     mc,
 		Runner:        runner,
-		Logf:          func(string, ...any) {},
+		Logger:        discardLogger(),
 		ServerName:    "loomcycle-test",
 		ServerVersion: "v0.8.15.3-test",
 	})
@@ -677,7 +677,7 @@ func TestHTTPTransport_SpawnRunOperatorTimeout(t *testing.T) {
 	mc := &httpMockConnector{spawnGate: make(chan struct{})} // never closed
 	h := NewHTTPHandler(Config{
 		Connector:         mc,
-		Logf:              func(string, ...any) {},
+		Logger:            discardLogger(),
 		ServerName:        "loomcycle-test",
 		ServerVersion:     "v-test",
 		SpawnRunTimeoutMS: 120,

@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -211,7 +212,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	})
 
 	srv.SetMCPHTTPHandler(lcmcp.NewHTTPHandler(lcmcp.Config{
-		Connector: srv, Runner: srv, Store: st, Logf: func(string, ...any) {},
+		Connector: srv, Runner: srv, Store: st, Logger: slog.New(slog.DiscardHandler),
 	}))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
