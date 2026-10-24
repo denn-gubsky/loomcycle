@@ -35,7 +35,9 @@ func TestAnthropicModelRules_Families(t *testing.T) {
 		{"global.anthropic.claude-haiku-5-5", true, false},
 		{"anthropic.claude-haiku-5-5-v1:0", true, false},
 		{"us.anthropic.claude-haiku-5-6-v1:0", true, false}, // a later 5.x minor
-		{"eu.anthropic.claude-sonnet-5-5", true, false},
+		{"claude-sonnet-5-5", true, true},
+		{"eu.anthropic.claude-sonnet-5-5", true, true},
+		{"anthropic.claude-sonnet-5-5-v1:0", true, true},
 		{"anthropic.claude-haiku-4-5-20251001-v1:0", false, false},
 		{"claude-3-5-haiku-20241022", false, false},
 		{"some-unknown-model", false, false},
@@ -185,6 +187,29 @@ func TestToolChoice_AnthropicDropsForcingOnModelsThatRefuseIt(t *testing.T) {
 		req.Model, req.ToolChoice = model, providers.ToolChoice{Mode: providers.ToolChoiceNone}
 		if got := bodyOf(t, req)["tool_choice"]; !jsonEqual(got, map[string]any{"type": "none"}) {
 			t.Errorf("%s: tool_choice none = %v, want it preserved", model, got)
+		}
+	}
+}
+
+// Sonnet 5.5 answers a forced tool_choice with a 400, directly and on Bedrock,
+// so it is dropped as on the other models that refuse it. Sonnet 5 and Haiku
+// 5.5 accept forcing and must keep it.
+func TestToolChoice_Sonnet55DropsForcingOtherFiveXModelsKeepIt(t *testing.T) {
+	forced := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"}
+	for _, model := range []string{"claude-sonnet-5-5", "eu.anthropic.claude-sonnet-5-5", "anthropic.claude-sonnet-5-5-v1:0"} {
+		for _, mode := range []providers.ToolChoice{forced, {Mode: providers.ToolChoiceRequired}} {
+			req := baseReq()
+			req.Model, req.ToolChoice = model, mode
+			if got, present := bodyOf(t, req)["tool_choice"]; present {
+				t.Errorf("%s: forced tool_choice %v reached the wire", model, got)
+			}
+		}
+	}
+	for _, model := range []string{"claude-sonnet-5", "eu.anthropic.claude-haiku-5-5"} {
+		req := baseReq()
+		req.Model, req.ToolChoice = model, forced
+		if got := bodyOf(t, req)["tool_choice"]; !jsonEqual(got, map[string]any{"type": "tool", "name": "emit_state"}) {
+			t.Errorf("%s: tool_choice = %v, want the forced choice kept", model, got)
 		}
 	}
 }
