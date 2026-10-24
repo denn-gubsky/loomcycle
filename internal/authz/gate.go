@@ -59,6 +59,16 @@ type GateResult struct {
 // legacyAllowed is what the scope gate said. eff may be nil (no resolver,
 // or the store could not be read).
 func Evaluate(ctx context.Context, eff *Effective, action string, res Resource, legacyAllowed bool) GateResult {
+	return evaluate(ctx, eff, action, res, legacyAllowed, (*Effective).Decide)
+}
+
+// EvaluateScope is Evaluate for a question about every instance of one scope
+// (Effective.DecideScope); res.Name is the bare scope.
+func EvaluateScope(ctx context.Context, eff *Effective, action string, res Resource, legacyAllowed bool) GateResult {
+	return evaluate(ctx, eff, action, res, legacyAllowed, (*Effective).DecideScope)
+}
+
+func evaluate(ctx context.Context, eff *Effective, action string, res Resource, legacyAllowed bool, decide func(*Effective, Request) Decision) GateResult {
 	mode := ModeFrom(ctx)
 	if eff == nil {
 		if mode == ModeEnforce {
@@ -69,7 +79,7 @@ func Evaluate(ctx context.Context, eff *Effective, action string, res Resource, 
 	if res.TenantID == "" {
 		res.TenantID = eff.Subject.TenantID
 	}
-	d := eff.Decide(Request{
+	d := decide(eff, Request{
 		Subject:  eff.Subject,
 		Action:   action,
 		Resource: res,

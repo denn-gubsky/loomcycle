@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -131,6 +132,17 @@ func (c *CredentialDef) Execute(ctx context.Context, raw json.RawMessage) (tools
 	if serr != nil {
 		return errResult(serr.Error()), nil
 	}
+	// RFC EZ §1.5 seam 5: the caller's access-control set is asked about the
+	// credential this call names; list is filtered instead.
+	acl := tools.CallerACL(ctx)
+	if acl != nil && in.Op != "list" {
+		verb := credentialACLVerb(in.Op)
+		res := credentialACLResource(scope, scopeID, in.Name)
+		if !tools.ACLAllowsInstance(ctx, acl, verb, res) {
+			return errPermission(fmt.Sprintf("%s: the caller's access-control rules do not allow %s on %s:%s", in.Op, verb, res.Type, res.Name),
+				"This credential is outside what the caller may "+verb+"; do not retry it."), nil
+		}
+	}
 	switch in.Op {
 	case "create":
 		if in.Usage == credential.UsageCrypto {
@@ -143,7 +155,7 @@ func (c *CredentialDef) Execute(ctx context.Context, raw json.RawMessage) (tools
 	case "get":
 		return c.execGet(ctx, tenantID, scope, scopeID, in)
 	case "list":
-		return c.execList(ctx, tenantID, scope, scopeID)
+		return c.execList(ctx, tenantID, scope, scopeID, acl)
 	case "delete":
 		return c.execDelete(ctx, tenantID, scope, scopeID, in)
 	case "generate", "rotate", "set_min_version", "delete_version", "export_key", "import_key":
@@ -241,13 +253,18 @@ func (c *CredentialDef) execGet(ctx context.Context, tenantID, scope, scopeID st
 	return jsonResult(credentialMeta(row, ""))
 }
 
-func (c *CredentialDef) execList(ctx context.Context, tenantID, scope, scopeID string) (tools.Result, error) {
+func (c *CredentialDef) execList(ctx context.Context, tenantID, scope, scopeID string, acl *authz.Effective) (tools.Result, error) {
 	rows, err := c.Engine.List(ctx, tenantID, scope, scopeID)
 	if err != nil {
 		return errResult("list: " + err.Error()), nil
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
+		// A listing is a search (RFC EZ §1.6): a credential the caller may not
+		// use is absent, not refused.
+		if !tools.ACLFilterAllows(ctx, acl, "use", credentialACLResource(scope, scopeID, r.Name)) {
+			continue
+		}
 		out = append(out, credentialMeta(r, ""))
 	}
 	return jsonResult(map[string]any{"scope": scope, "credentials": out})
@@ -262,6 +279,27 @@ func (c *CredentialDef) execDelete(ctx context.Context, tenantID, scope, scopeID
 		return errResult("delete: " + err.Error()), nil
 	}
 	return jsonResult(map[string]any{"name": in.Name, "scope": scope, "deleted": found})
+}
+
+// credentialACLVerb is the catalog verb an op asks of `credential:`: reading
+// metadata is use (the weaker verb, which every class that may reference a
+// credential holds); everything that writes, rotates, retires or exports is
+// manage, and so is an op this table does not know (the stronger verb).
+func credentialACLVerb(op string) string {
+	if op == "get" {
+		return "use"
+	}
+	return "manage"
+}
+
+// credentialACLResource names a credential for the engine:
+// `credential:<scope>:<name>`, owned by the subject for user scope.
+func credentialACLResource(scope, scopeID, name string) authz.Resource {
+	r := authz.Resource{Type: "credential", Name: scope + ":" + name}
+	if scope == "user" {
+		r.Owner = scopeID
+	}
+	return r
 }
 
 // credentialMeta renders a row as METADATA ONLY — never the sealed definition or
