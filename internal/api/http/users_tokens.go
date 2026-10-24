@@ -370,33 +370,38 @@ func (s *Server) retireUserTokensBeyond(ctx context.Context, tenant, subject str
 
 // retireDelegatedUserTokens retires every currently-active DELEGATED member
 // token for (tenant, subject) and invalidates the token cache. Called when a
-// user is DELETED or DISABLED so their bearer(s) stop authenticating
-// immediately — the auth hot path (resolvePrincipalUncached) is token-only and
-// never consults users.status, so without this a disabled/deleted user's token
-// would keep working until its own retired_at. Only DELEGATED member tokens are
-// touched (isDelegatedUserToken): an admin/tenant-operator token that happens to
-// share the subject is a different role and is left to the operator-token
-// surface. Returns the count retired.
-func (s *Server) retireDelegatedUserTokens(ctx context.Context, tenant, subject string) (int, error) {
+// user is DELETED or DISABLED, or ERASED, so their bearer(s) stop
+// authenticating immediately — the auth hot path (resolvePrincipalUncached) is
+// token-only and never consults users.status, so without this a
+// disabled/deleted user's token would keep working until its own retired_at.
+// Only DELEGATED member tokens are touched (isDelegatedUserToken): an
+// admin/tenant-operator token that happens to share the subject is a different
+// role and is left to the operator-token surface. Returns the rows retired —
+// on an error too, and the cache is flushed for those, so a retire that
+// faulted part-way does not leave the ones it did retire authenticating from
+// the cache.
+func (s *Server) retireDelegatedUserTokens(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error) {
 	rows, err := s.store.OperatorTokenDefListBySubject(ctx, tenant, subject)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	now := time.Now().UTC()
-	n := 0
+	var retired []store.OperatorTokenDefRow
+	defer func() {
+		if len(retired) > 0 {
+			s.invalidateTokenCache(ctx)
+		}
+	}()
 	for _, row := range rows {
 		if !isDelegatedUserToken(row, tenant, subject) || !tokenActive(row) {
 			continue
 		}
 		if err := s.store.OperatorTokenDefSetRetiredAt(ctx, row.DefID, now); err != nil {
-			return n, err
+			return retired, err
 		}
-		n++
+		retired = append(retired, row)
 	}
-	if n > 0 {
-		s.invalidateTokenCache(ctx)
-	}
-	return n, nil
+	return retired, nil
 }
 
 // handleMintUserToken serves POST /v1/_users/{subject}/tokens. Mints a bearer
