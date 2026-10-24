@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -331,7 +331,8 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 				return fmt.Errorf("%s: no-trace agent %q was not changed: its audit record could not be written: %w", op, name, err)
 			}
 		}
-		log.Printf("agentdef: %s by %q on no-trace agent %q in tenant %q: %s", op, subject, name, tenant, action)
+		slog.WarnContext(ctx, "agentdef: change on a no-trace agent",
+			"op", op, "subject", subject, "agent_name", name, "target_tenant", tenant, "action", action)
 	}
 	return nil
 }

@@ -65,6 +65,7 @@ var convertedPackages = []string{
 	"internal/store/storetest",
 	"internal/teamrun",
 	"internal/tools/a2a",
+	"internal/tools/builtin",
 	"internal/tools/mcp",
 	"internal/tools/mcp/http",
 	"internal/tools/mcp/stdio",

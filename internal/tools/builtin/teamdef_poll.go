@@ -3,7 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +41,7 @@ func finishPollWalk(bg *tools.Background, runID string, releaseLive func(), run 
 	defer releaseLive()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("teamdef: poll-mode walk %s panicked: %v", runID, r)
+			slog.Error("teamdef: poll-mode walk panicked", "run_id", runID, "panic", r)
 			releaseLive()
 			bg.Finish(runID, tools.ChildFailed, tools.ChildResult{Error: "run: internal error"})
 		}

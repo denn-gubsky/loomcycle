@@ -1028,13 +1028,13 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 ### Diagnostic logging (v0.12.7)
 
-`LOOMCYCLE_CHANNEL_DEBUG=1` enables structured per-publish + per-retry log lines used to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — these lines are noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The two log shapes are:
+`LOOMCYCLE_CHANNEL_DEBUG=1` enables a structured per-publish log line used, with the per-retry lines below, to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — the publish line is noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The retry lines are not gated by the flag: they fire whenever the bounded retry runs. The log shapes are:
 
 - `channel publish channel=X id=... commit_us=N pool_total=A pool_acquired=B pool_idle=C` — fires on every successful publish. `commit_us` measures the postgres `tx.Commit` duration in microseconds; the pool fields capture pgxpool state at commit time.
 
-- `channel "X" subscribe-race-recovered attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
+- `channel subscribe-race-recovered channel=X attempt=N msgs=K recovery_lag_ms=Y first_read_lag_us=Z from_cursor="..." pool_total=A pool_acquired=B pool_idle=C` — fires when the bounded retry rescued a subscribe after Bus.Wait returned via the waker but the immediate re-read found no rows. `first_read_lag_us` is the diagnostic field that distinguishes the race window (waker → empty read), separate from `recovery_lag_ms` (waker → eventually-non-empty read).
 
-A complementary `subscribe-race-exhausted` log fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends. See `~/work/loomcycle-internal/doc-internal/channel-race-investigation.md` for the hypothesis table.
+A complementary `WARN channel subscribe-race-exhausted — silent miss; investigate channel=X attempts=3 …` line, with the same fields, fires when all 3 retry attempts return empty. SQLite's parity logging (commit_us only — single-writer, no pool) lets operators A/B the same workload against both backends. See `~/work/loomcycle-internal/doc-internal/channel-race-investigation.md` for the hypothesis table.
 
 ### Quotas and overflow
 

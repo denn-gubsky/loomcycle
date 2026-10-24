@@ -314,7 +314,7 @@ func (b *boot) loadMCPRegistry() {
 	// existing v0.8.1 lazy resolver). Errors are logged + non-fatal —
 	// a corrupted row blocks only its own server from being callable.
 	// A snapshot restore runs the same function (SetMCPRegistryRefresh below).
-	if _, err := builtin.RehydrateMCPRegistry(context.Background(), storeIface, cfg.MCPServers, dynamicMCPRegistry, log.Printf); err != nil {
+	if _, err := builtin.RehydrateMCPRegistry(context.Background(), storeIface, cfg.MCPServers, dynamicMCPRegistry, slog.Default()); err != nil {
 		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
 	} else if size := dynamicMCPRegistry.Size(); size > 0 {
 		log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)

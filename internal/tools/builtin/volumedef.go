@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -778,16 +778,16 @@ func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool,
 		return false, fmt.Errorf("resolve path: %w", err)
 	}
 	if err := relInsideRoot(rootResolved, target, resolved); err != nil {
-		log.Printf("%s REFUSED: %s (target=%q)", who, err, target)
+		slog.Warn("volumedef: fenced delete REFUSED", "who", who, "err", err, "path", target)
 		return false, fmt.Errorf("refusing to delete %q — it does not resolve strictly inside the dynamic root", resolved)
 	}
 	if resolved == rootResolved || resolved == expectedParent {
-		log.Printf("%s REFUSED: resolved path %q is the dynamic root or the parent dir itself", who, resolved)
+		slog.Warn("volumedef: fenced delete REFUSED: resolved path is the dynamic root or the parent dir itself", "who", who, "resolved", resolved)
 		return false, fmt.Errorf("refusing to delete the dynamic root or the parent directory itself")
 	}
 	expectedPrefix := expectedParent + string(filepath.Separator)
 	if !strings.HasPrefix(resolved+string(filepath.Separator), expectedPrefix) {
-		log.Printf("%s REFUSED: resolved %q lacks expected prefix %q", who, resolved, expectedPrefix)
+		slog.Warn("volumedef: fenced delete REFUSED: resolved path lacks the expected prefix", "who", who, "resolved", resolved, "expected_prefix", expectedPrefix)
 		return false, fmt.Errorf("refusing to delete %q — it is not under the expected parent directory", resolved)
 	}
 	// Delete through a handle on the dynamic root, never by the checked
@@ -808,7 +808,7 @@ func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool,
 	}
 	dir, err := vfs.openDir(parentRel)
 	if err != nil {
-		log.Printf("%s REFUSED: %v (target=%q)", who, err, target)
+		slog.Warn("volumedef: fenced delete REFUSED", "who", who, "err", err, "path", target)
 		return false, fmt.Errorf("refusing to delete %q: %w", resolved, err)
 	}
 	defer dir.Close()

@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -64,7 +65,7 @@ func TestMCPServerDefTool_BinaryResultsRoundTrips(t *testing.T) {
 		t.Errorf("registry = %+v, %v", spec, ok)
 	}
 	reg := loommcp.NewDynamicRegistry()
-	if _, err := RehydrateMCPRegistry(context.Background(), tool.Store, tool.Cfg.MCPServers, reg, t.Logf); err != nil {
+	if _, err := RehydrateMCPRegistry(context.Background(), tool.Store, tool.Cfg.MCPServers, reg, slog.New(slog.NewTextHandler(t.Output(), nil))); err != nil {
 		t.Fatal(err)
 	}
 	if spec, ok := reg.Get("", "ms365"); !ok || spec.BinaryResults != "capture" {

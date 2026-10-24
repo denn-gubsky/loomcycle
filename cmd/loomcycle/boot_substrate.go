@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -36,7 +37,7 @@ func (b *boot) wireSubstrateTools() {
 	// A snapshot restore reloads the registry with boot's own function, so
 	// the MCP server defs it restored go live without a restart.
 	srv.SetMCPRegistryRefresh(func(ctx context.Context) (int, error) {
-		return builtin.RehydrateMCPRegistry(ctx, storeIface, cfg.MCPServers, dynamicMCPRegistry, log.Printf)
+		return builtin.RehydrateMCPRegistry(ctx, storeIface, cfg.MCPServers, dynamicMCPRegistry, slog.Default())
 	})
 	// v1.x — wire the ScheduleDef substrate tool. Same operator-admin-
 	// only posture; reached via Connector.ScheduleDef + the admin

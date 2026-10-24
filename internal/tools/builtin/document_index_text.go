@@ -26,7 +26,7 @@ package builtin
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
@@ -224,8 +224,8 @@ func (d *Document) subtreeChunks(ctx context.Context, key sqlmem.ScopeKey, chunk
 		return nil, nil, err
 	}
 	if res.Truncated {
-		log.Printf("document: re-index of the subtree under %s was clipped at %d chunks by the SQL Memory row cap; "+
-			"the rest keep their old index text until POST /v1/_document/reindex runs", chunkID, len(res.Rows))
+		slog.WarnContext(ctx, "document: re-index of a subtree was clipped by the SQL Memory row cap; "+
+			"the rest keep their old index text until POST /v1/_document/reindex runs", "chunk_id", chunkID, "rows", len(res.Rows))
 	}
 	for _, r := range res.Rows {
 		ids = append(ids, asStr(r[0]))
@@ -289,7 +289,7 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 
 	ids, types, err := d.subtreeChunks(ctx, key, chunkID)
 	if err != nil {
-		log.Printf("document: re-index of the subtree under %s: %v", chunkID, err)
+		slog.WarnContext(ctx, "document: re-index of a subtree failed", "chunk_id", chunkID, "err", err)
 		ids, types = nil, nil
 	}
 	if len(ids) <= reindexSyncMax {
@@ -318,7 +318,7 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 		defer func() {
 			if r := recover(); r != nil {
 				d.dropReindex(dk)
-				log.Printf("document: re-index of document %s panicked: %v", dk.docID, r)
+				slog.ErrorContext(bg, "document: re-index of a document panicked", "document_id", dk.docID, "panic", r)
 			}
 		}()
 		d.reindexChunks(bg, key, mscope, ids, types)
@@ -330,7 +330,7 @@ func (d *Document) reindexSubtree(ctx context.Context, key sqlmem.ScopeKey, msco
 			for id := range pending {
 				ids, types, err := d.subtreeChunks(bg, key, id)
 				if err != nil {
-					log.Printf("document: re-index of the subtree under %s: %v", id, err)
+					slog.WarnContext(bg, "document: re-index of a subtree failed", "chunk_id", id, "err", err)
 					continue
 				}
 				d.reindexChunks(bg, key, mscope, ids, types)
@@ -413,7 +413,7 @@ func (d *Document) reindexChunk(ctx context.Context, tenant string, key sqlmem.S
 	bodyKey := chunkBodyKey(id)
 	cb, err := d.readBody(ctx, mscope, key.ScopeID, id)
 	if err != nil {
-		log.Printf("document: re-index %s: read body: %v", id, err)
+		slog.WarnContext(ctx, "document: re-index of a chunk could not read its body", "chunk_id", id, "err", err)
 		return
 	}
 	text := d.chunkIndexText(ctx, key, id, chunkType, cb.Body)
@@ -425,7 +425,7 @@ func (d *Document) reindexChunk(ctx context.Context, tenant string, key sqlmem.S
 			// Nothing may stay indexed for a chunk that derives to nothing (see embedBody).
 			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, bodyKey)
 		case !d.embedText(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
-			log.Printf("document: re-index %s: embed failed", id)
+			slog.WarnContext(ctx, "document: re-index of a chunk: embed failed", "chunk_id", id)
 			return
 		}
 		if recheck == reindexChunkRechecks {

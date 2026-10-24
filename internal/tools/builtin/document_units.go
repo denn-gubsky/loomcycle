@@ -10,7 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -105,7 +105,7 @@ func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, unit
 			// the re-index pass picks it up. The key may have held an older unit, and
 			// its vector must not stand for this one's text.
 			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, k)
-			log.Printf("document: unit %s written but not embedded", k)
+			slog.WarnContext(ctx, "document: unit written but not embedded", "key", k)
 		}
 		written++
 	}
@@ -145,7 +145,7 @@ func (d *Document) unitsOf(ctx context.Context, tenant string, mscope store.Memo
 	for {
 		page, err := d.Store.MemoryListAfter(ctx, tenant, mscope, scopeID, memrank.UnitKeyPrefixFor(chunkID), cursor, reindexPage)
 		if err != nil {
-			log.Printf("document: list units of %s: %v", chunkID, err)
+			slog.WarnContext(ctx, "document: list units of a chunk failed", "chunk_id", chunkID, "err", err)
 			return out
 		}
 		out = append(out, page...)

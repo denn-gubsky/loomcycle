@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
-	"log"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -2002,7 +2002,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		walkCtx = providers.WithRunClock(walkCtx, nil)
 		go func() {
 			if _, werr := walk(); werr != nil {
-				log.Printf("teamdef: detached walk %q (run %s): %v", row.Name, runID, werr)
+				slog.Warn("teamdef: detached walk failed", "team", row.Name, "run_id", runID, "err", werr)
 			}
 		}()
 		return okJSON(map[string]any{
