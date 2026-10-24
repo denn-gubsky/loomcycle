@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -68,7 +69,13 @@ func testPasswordGates(t *testing.T) *PasswordGates {
 	}
 	cloud := gate("cloud", false)
 	cloud.ManagerMayRecoverOwners = true
-	pg, err := NewPasswordGates([]PasswordGateSettings{gate("local", false), gate("staff", true), cloud}, h, pol, sealer, "https://lc.example/")
+	mfa := gate("mfa", false)
+	mfa.RequireMFA = true
+	// strict3 locks an account at its third failure, so a test reaches the
+	// lockout without waiting out the backoff between failures.
+	strict3 := gate("strict3", false)
+	strict3.Throttle.MaxFailures = 3
+	pg, err := NewPasswordGates([]PasswordGateSettings{gate("local", false), gate("staff", true), cloud, mfa, strict3}, h, pol, sealer, "https://lc.example/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +107,13 @@ func newGateFixture(t *testing.T) *gateFixture {
 	seedToken(t, st, bSite, "site", "site", []string{auth.ScopeAuthManage}, time.Time{})
 	sink := &captureSink{}
 	s.SetTokenAudit(sink)
-	s.SetPasswordGates(testPasswordGates(t))
+	pg := testPasswordGates(t)
+	s.SetPasswordGates(pg)
+	// The login page and the gate switch read the gates from config.
+	cfg := s.cfg()
+	for _, n := range pg.Names() {
+		cfg.ResolvedAuth.Gates = append(cfg.ResolvedAuth.Gates, config.AuthGate{Name: n, Kind: config.AuthGateKindPassword, Label: n})
+	}
 	ts := httptest.NewServer(s.Mux())
 	t.Cleanup(ts.Close)
 	return &gateFixture{srv: s, st: st, ts: ts, audit: sink}

@@ -24,9 +24,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -51,6 +53,38 @@ type PasswordGateSettings struct {
 	// credential able to take over any owner's account, so it is off unless
 	// the deployment's trust model is "the website owns the accounts".
 	ManagerMayRecoverOwners bool
+	// NewUserAccessMode and NewUserGroups are the floor: what a user the gate
+	// provisions gets without anyone's say-so (RFC FA §3.7a). Empty means the
+	// deployment default (DefaultFloor).
+	NewUserAccessMode string
+	NewUserGroups     []string
+}
+
+// floorPolicy is a provisioning floor: an access mode and the groups every
+// new user is in.
+type floorPolicy struct {
+	accessMode string
+	groups     []string
+}
+
+// defaultFloor is RFC FA §3.7a's deployment default for a new user (D11):
+// isolated, in the everyone and new-users groups.
+var defaultFloor = floorPolicy{accessMode: "isolated", groups: []string{"everyone", "new-users"}}
+
+// floorOf is the floor a gate provisions at; nil (the /v1/_users routes,
+// which belong to no gate) is the deployment default.
+func floorOf(g *PasswordGateSettings) floorPolicy {
+	f := defaultFloor
+	if g == nil {
+		return f
+	}
+	if g.NewUserAccessMode != "" {
+		f.accessMode = g.NewUserAccessMode
+	}
+	if g.NewUserGroups != nil {
+		f.groups = g.NewUserGroups
+	}
+	return f
 }
 
 // PasswordGates is everything the password gates share: their settings, the
@@ -86,6 +120,16 @@ func NewPasswordGates(gates []PasswordGateSettings, hasher *password.Hasher, pol
 		pg.byName[g.Name] = g
 	}
 	return pg, nil
+}
+
+// Names lists the configured password gates, sorted.
+func (pg *PasswordGates) Names() []string {
+	out := make([]string, 0, len(pg.byName))
+	for n := range pg.byName {
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // passwordGatesHolder is read on every management request and swapped by
@@ -198,19 +242,93 @@ func (s *Server) tenantBootstrapped(ctx context.Context, tenant string) (bool, e
 	return s.store.TenantBootstrapped(ctx, tenant)
 }
 
-// userAboveFloor reports whether a user holds more than the provisioning
-// floor: access_mode tenant, or membership of any group. (P2 has no per-gate
-// floor groups; a gate that later declares some will subtract them here.)
-func (s *Server) userAboveFloor(ctx context.Context, tenant, subject string) (store.UserRow, bool, error) {
+// aboveFloor is THE floor predicate: whether a user holds any authority a
+// user the gate provisions would not have. It is true when any of
+//
+//   - its access_mode is above the floor's;
+//   - it is in a group, directly or through nesting, stored or declared in
+//     config, that is not one of the floor's groups;
+//   - an ACL binding applies to it other than tenant-wide ones and those on
+//     the floor's groups — on its subject, a group above, or one of its tokens;
+//   - it holds a live token with a scope its floor access mode does not grant.
+//
+// Group membership and bindings come from the ACL resolver's own Input — the
+// stored rows, the config-declared ones and the nesting closure, exactly what
+// the engine compiles — so the predicate cannot see less authority than the
+// engine grants. It fails CLOSED: any error but a missing user reads as above
+// the floor (the error is returned too). A missing user is (false, ErrNotFound).
+func (s *Server) aboveFloor(ctx context.Context, tenant, subject string, g *PasswordGateSettings) (bool, store.UserRow, error) {
 	u, err := s.store.UserGet(ctx, tenant, subject)
 	if err != nil {
-		return store.UserRow{}, false, err
+		return !isNotFound(err), store.UserRow{}, err
 	}
-	if u.AccessMode == "tenant" {
-		return u, true, nil
+	f := floorOf(g)
+	if accessRank(u.AccessMode) > accessRank(f.accessMode) {
+		return true, u, nil
 	}
-	groups, err := s.store.GroupsOfSubject(ctx, tenant, subject)
-	return u, len(groups) > 0, err
+	res := s.aclResolver
+	if res == nil {
+		// No resolver wired (open or compat deployments, tests): the same
+		// computation over the store alone.
+		res = aclres.New(s.store, authz.ModeCompat, 0)
+	}
+	floorGroup := func(name string) bool { return slices.Contains(f.groups, name) }
+	beyondFloor := func(in authz.Input) bool {
+		for _, gr := range in.Subject.Groups {
+			if !floorGroup(gr) {
+				return true
+			}
+		}
+		for _, b := range in.Bindings {
+			if authz.IsBuiltin(b.ACL) || !b.AppliesTo(in.Subject) {
+				continue
+			}
+			switch b.SubjectKind {
+			case authz.SubjectTenant:
+				// Every user of the tenant has it, a new one too.
+			case authz.SubjectGroup:
+				if !floorGroup(b.SubjectID) {
+					return true
+				}
+			default:
+				return true
+			}
+		}
+		return false
+	}
+	in, err := res.Input(ctx, authz.Subject{TenantID: tenant, ID: subject})
+	if err != nil {
+		return true, u, err
+	}
+	if beyondFloor(in) {
+		return true, u, nil
+	}
+	floorScopes, err := auth.GrantableUserScopes(f.accessMode)
+	if err != nil {
+		return true, u, err
+	}
+	tokens, err := s.store.OperatorTokenDefListBySubject(ctx, tenant, subject)
+	if err != nil {
+		return true, u, err
+	}
+	for _, t := range tokens {
+		if !tokenActive(t) {
+			continue
+		}
+		for _, sc := range t.AllowedScopes {
+			if !slices.Contains(floorScopes, sc) {
+				return true, u, nil
+			}
+		}
+		tin, err := res.Input(ctx, authz.Subject{TenantID: tenant, ID: subject, TokenDefID: t.DefID})
+		if err != nil {
+			return true, u, err
+		}
+		if beyondFloor(tin) {
+			return true, u, nil
+		}
+	}
+	return false, u, nil
 }
 
 // floorTarget is the verdict on an auth:manage caller acting on an existing
@@ -236,18 +354,18 @@ func (s *Server) holdManagerToFloorTarget(w http.ResponseWriter, ctx context.Con
 	if caller != gateCallerManager {
 		return floorTarget{}, true
 	}
-	u, above, err := s.userAboveFloor(ctx, tenant, subject)
+	above, u, err := s.aboveFloor(ctx, tenant, subject, g)
 	if isNotFound(err) {
 		return floorTarget{}, true
-	}
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-		return floorTarget{}, false
 	}
 	if !above {
 		return floorTarget{accessMode: u.AccessMode}, true
 	}
-	if recoverable && g != nil && g.ManagerMayRecoverOwners {
+	if err != nil {
+		// Could not tell: refused like a user above the floor, recovery
+		// included.
+		slog.Warn("authgate: floor check failed (refusing)", "tenant", tenant, "err", err)
+	} else if recoverable && g != nil && g.ManagerMayRecoverOwners {
 		return floorTarget{recovery: true, accessMode: u.AccessMode}, true
 	}
 	gate := ""
@@ -376,6 +494,9 @@ func (s *Server) handleAuthgateCreateInvite(w http.ResponseWriter, r *http.Reque
 	row := store.AuthInviteRow{
 		Gate: g.Name, TenantID: tenant, ReturnTo: req.ReturnTo, Email: strings.TrimSpace(req.Email),
 		CreatedBy: principalSubject(ctx), CreatedAt: now, ExpiresAt: now.Add(ttl),
+		// A website's link is held to the floor again when it is redeemed,
+		// and revoked if its target's authority is raised before then.
+		IssuedByManager: caller == gateCallerManager,
 	}
 	if strings.TrimSpace(req.Login) != "" {
 		login, err := password.NormalizeLogin(req.Login)
@@ -442,7 +563,7 @@ type inviteGrant struct {
 func (s *Server) newUserGrant(w http.ResponseWriter, ctx context.Context, g PasswordGateSettings, caller gateCaller, tenant string, req createInviteRequest, now time.Time) (inviteGrant, bool) {
 	mode := strings.TrimSpace(req.AccessMode)
 	if mode == "" {
-		mode = "isolated"
+		mode = floorOf(&g).accessMode
 	}
 	if !store.ValidUserAccessMode(mode) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_access_mode", "access_mode must be one of tenant|isolated")
@@ -452,7 +573,13 @@ func (s *Server) newUserGrant(w http.ResponseWriter, ctx context.Context, g Pass
 	if !ok {
 		return inviteGrant{}, false
 	}
-	beyondFloor := mode != "isolated" || len(groups) > 0
+	f := floorOf(&g)
+	beyondFloor := accessRank(mode) > accessRank(f.accessMode)
+	for _, gr := range groups {
+		if !slices.Contains(f.groups, gr) {
+			beyondFloor = true
+		}
+	}
 	if !beyondFloor {
 		return inviteGrant{accessMode: mode, groups: groups}, true
 	}
@@ -483,7 +610,7 @@ func (s *Server) newUserGrant(w http.ResponseWriter, ctx context.Context, g Pass
 		return inviteGrant{accessMode: mode, bootstrap: true}, true
 	}
 	writeJSONError(w, http.StatusForbidden, "beyond_floor",
-		"an invite through this gate may grant only access_mode isolated and no groups (mark the gate trusted to lift this)")
+		"an invite through this gate may grant only the gate's new-user access mode and groups (mark the gate trusted to lift this)")
 	return inviteGrant{}, false
 }
 
@@ -707,7 +834,8 @@ func (s *Server) handleAuthgateCreateReset(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	row := store.AuthResetRow{ResetID: id, CodeHash: hash, Gate: g.Name, TenantID: tenant, Subject: subject,
-		CreatedBy: principalSubject(ctx), CreatedAt: now, ExpiresAt: now.Add(g.ResetTTL)}
+		CreatedBy: principalSubject(ctx), CreatedAt: now, ExpiresAt: now.Add(g.ResetTTL),
+		IssuedByManager: caller == gateCallerManager}
 	if err := s.store.AuthResetCreate(ctx, row); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
