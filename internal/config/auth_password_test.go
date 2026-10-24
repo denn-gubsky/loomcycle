@@ -1,0 +1,105 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func passwordGateConfig(mode string, g AuthGateConfig) *Config {
+	g.Kind = AuthGateKindPassword
+	c := &Config{Auth: AuthConfig{Mode: mode, Gates: map[string]AuthGateConfig{"local": g}}}
+	c.Env.SecretKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+	c.Env.PublicURL = "https://lc.example"
+	return c
+}
+
+func TestResolveAuth_PasswordGateDefaults(t *testing.T) {
+	c := passwordGateConfig("", AuthGateConfig{})
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	g := c.ResolvedAuth.Gates[0]
+	pw := g.Password
+	if g.Kind != AuthGateKindPassword || pw == nil || g.Label != "local" {
+		t.Fatalf("gate = %+v", g)
+	}
+	if pw.RequireMFA || pw.InviteDefaultTTL != 168*time.Hour || pw.InviteMaxTTL != 720*time.Hour || pw.ResetTTL != time.Hour ||
+		pw.MaxFailures != 10 || pw.Lockout != 15*time.Minute || pw.Trusted || pw.ManagerMayRecoverOwners || pw.NewUserGroups != nil {
+		t.Fatalf("token-mode defaults = %+v", pw)
+	}
+	// D3: MFA is required by default in strict mode, and a password gate is
+	// an interactive gate strict mode accepts on its own.
+	c = passwordGateConfig("strict", AuthGateConfig{})
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.ResolvedAuth.Gates[0].Password.RequireMFA {
+		t.Fatal("strict mode must default require_mfa to true")
+	}
+	off := false
+	c = passwordGateConfig("strict", AuthGateConfig{RequireMFA: &off})
+	if err := resolveAuth(c); err != nil || c.ResolvedAuth.Gates[0].Password.RequireMFA {
+		t.Fatalf("explicit require_mfa: false: %v", err)
+	}
+}
+
+// `loomcycle validate` fails a password gate that could not issue a link or
+// key a hash, rather than the first invite failing at run time.
+func TestResolveAuth_PasswordGateNeedsTheSecretKeyAndThePublicURL(t *testing.T) {
+	c := passwordGateConfig("", AuthGateConfig{})
+	c.Env.PublicURL = ""
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_PUBLIC_URL") {
+		t.Fatalf("no public URL: %v", err)
+	}
+	c = passwordGateConfig("", AuthGateConfig{})
+	c.Env.SecretKey = ""
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_SECRET_KEY") {
+		t.Fatalf("no secret key: %v", err)
+	}
+}
+
+func TestResolveAuth_PasswordGateRefusesBadValues(t *testing.T) {
+	tenant := "tenant"
+	for name, g := range map[string]AuthGateConfig{
+		"default over max":       {Invites: AuthGateInvitesConfig{DefaultTTL: "200h", MaxTTL: "100h"}},
+		"max over 30d":           {Invites: AuthGateInvitesConfig{MaxTTL: "800h"}},
+		"reset over 24h":         {Resets: AuthGateResetsConfig{TTL: "25h"}},
+		"foreign http return":    {AllowedReturnTo: []string{"http://site.example/"}},
+		"relative return":        {AllowedReturnTo: []string{"/welcome"}},
+		"zero lockout":           {Password: AuthGatePasswordConfig{LockoutMinutes: -1}},
+		"missing denylist":       {Password: AuthGatePasswordConfig{DenylistFile: "/nonexistent/denylist.txt"}},
+		"bad new_user mode":      {NewUser: AuthGateNewUserConfig{AccessMode: "admin"}},
+		"tenant floor untrusted": {NewUser: AuthGateNewUserConfig{AccessMode: tenant}},
+	} {
+		if err := resolveAuth(passwordGateConfig("", g)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	list := filepath.Join(t.TempDir(), "deny.txt")
+	if err := os.WriteFile(list, []byte("hunter2hunter2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ok := AuthGateConfig{Trusted: true, AllowedReturnTo: []string{"https://site.example/welcome", "http://localhost:3000/"},
+		Password: AuthGatePasswordConfig{DenylistFile: list, MaxFailures: 5, LockoutMinutes: 30},
+		NewUser:  AuthGateNewUserConfig{AccessMode: tenant, Groups: &[]string{"staff"}}}
+	c := passwordGateConfig("", ok)
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	pw := c.ResolvedAuth.Gates[0].Password
+	if pw.MaxFailures != 5 || pw.Lockout != 30*time.Minute || pw.DenylistFile != list || len(pw.NewUserGroups) != 1 || len(pw.AllowedReturnTo) != 2 {
+		t.Fatalf("resolved = %+v", pw)
+	}
+}
+
+// The password gate's keys on another kind are a mistake the operator should
+// hear about, not silently dropped.
+func TestResolveAuth_PasswordKeysOnATokenGateAreRefused(t *testing.T) {
+	c := &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"paste": {Kind: "token", Trusted: true}}}}
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "only to kind: password") {
+		t.Fatalf("err = %v", err)
+	}
+}
