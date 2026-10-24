@@ -239,14 +239,33 @@ const EMAIL_RE = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-
 // Upstream error codes the client may see, and the status it sees them with.
 // A "not found" of any kind collapses into one 404 so another tenant's ids
 // read exactly like unknown ones. Anything else is an opaque 502.
+// login_taken and credential_exists are deliberately absent: logins are unique
+// across every tenant, so either would tell an owner that an address has an
+// account somewhere else. The routes that can meet them answer generically.
 const PASS_CODES = new Map([
-  ["login_taken", 409], ["bootstrap_invite_live", 409], ["credential_exists", 409],
+  ["bootstrap_invite_live", 409],
   ["invite_not_live", 409], ["tenant_not_empty", 409], ["target_beyond_floor", 403],
   ["invalid_login", 400], ["user_not_found", 404], ["login_not_found", 404],
   ["invite_not_found", 404],
   // Deployment faults: the operator needs the code, the visitor cannot fix them.
   ["invalid_return_to", 502], ["gate_not_found", 502],
 ]);
+const ADDRESS_TAKEN = new Set(["login_taken", "credential_exists"]);
+// Upstream 4xx codes the caller's own input or tenant state produces. They are
+// deterministic, so retrying them must keep costing rate-limit slots.
+const CALLER_CODES = new Set([...ADDRESS_TAKEN, "login_fixed", "beyond_floor", "promotion_refused",
+  "bootstrap_invite_live", "invite_not_live", "tenant_not_empty", "target_beyond_floor", "invalid_login",
+  "user_not_found", "login_not_found", "invite_not_found", "unknown_group", "invalid_ttl"]);
+
+// runtimeFault reports whether a failed upstream answer is one the caller
+// cannot cause: the runtime unreachable, a 5xx, or an answer outside the
+// contract (a 4xx with a code we do not know). Only those give a rate-limit
+// slot back; anything the caller can repeat at will keeps it spent.
+function runtimeFault(up) {
+  if (up.status === 0 || up.status >= 500) return true;
+  const code = up.json && typeof up.json.code === "string" ? up.json.code : "";
+  return !CALLER_CODES.has(code);
+}
 
 // redact strips what must never reach a log line: link codes, URL fragments
 // (where the codes travel), bearer values and the manage token itself.
@@ -454,9 +473,12 @@ async function signupState(p) {
 // revokeLive revokes the tenant's live invites that match pred. A stale one is
 // the visitor's own: only this owner's verified identity can ask the landing
 // for an invite into this tenant, and its link was shown only in their browser.
-async function revokeLive(tenant, pred) {
+// onWrite is called before each revoke, so a caller can tell that this request
+// already changed state upstream.
+async function revokeLive(tenant, pred, onWrite = () => {}) {
   for (const inv of await tenantInvites(tenant)) {
     if (inv.state !== "live" || !pred(inv) || !INVITE_ID_RE.test(inv.invite_id)) continue;
+    onWrite();
     const up = await manage("DELETE", gatePath("invites", inv.invite_id), { query: { tenant } });
     if (up.status !== 204 && !(up.json && up.json.code === "invite_not_live")) throw new UpstreamFailure("revoke", up);
   }
@@ -500,48 +522,66 @@ async function memberOrNull(p, subject) {
 // is {redirect}: the page location.replace()s it (the code rides the fragment,
 // so it reaches no server log, and replace() keeps it out of this site's history).
 app.post("/api/signup", accountRoute(async (req, res, p) => {
-  // Both slots are reserved before the first await; a signup the runtime then
-  // fails gives them back, so an outage does not lock a visitor out.
+  // Both slots are reserved before the first await. A signup gives them back
+  // only when the runtime failed it (runtimeFault) before this request changed
+  // anything upstream; every other outcome — a refusal the visitor can repeat,
+  // or a stale invite already revoked — keeps them spent.
   const relIp = signupLimit.take("ip:" + clientSource(req));
   const relId = relIp && signupLimit.take("id:" + p.subject);
   if (!relIp || !relId) {
     if (relIp) relIp();
     return res.status(429).json({ error: "rate_limited" });
   }
-  let counted = false;
+  const ctx = { wrote: false };
+  let spent = true;
   try {
-    counted = await withTenantLock(p.tenant, () => signup(res, p));
+    spent = await withTenantLock(p.tenant, () => signup(res, p, ctx));
+  } catch (e) {
+    spent = ctx.wrote || !(e instanceof UpstreamFailure ? runtimeFault(e.up) : true);
+    throw e;
   } finally {
-    if (!counted) { relIp(); relId(); }
+    if (!spent) { relIp(); relId(); }
   }
 }));
 
 // signup answers one signup inside the tenant's lock (so a revoke-and-reissue
-// cannot race another). It returns whether the request counts against the
-// visitor's limit: everything but a failed upstream call does.
-async function signup(res, p) {
+// cannot race another). It returns whether the request spends the visitor's
+// rate-limit slots; ctx.wrote records an upstream state change on the way.
+async function signup(res, p, ctx) {
   const st = await signupState(p);
+  const wrote = () => { ctx.wrote = true; };
   let body;
   if (st.kind === "new") {
     // A live owner invite (P2 allows one) is the visitor's own earlier attempt
     // whose link they no longer have: revoke it and issue a fresh one rather
     // than telling them to find a link that was only ever in their address bar.
-    if (st.inviteLive) await revokeLive(p.tenant, (inv) => inv.bootstrap === true);
+    if (st.inviteLive) await revokeLive(p.tenant, (inv) => inv.bootstrap === true, wrote);
     body = { tenant: p.tenant, access_mode: "tenant", login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
   } else if (st.kind === "legacy") {
-    await revokeLive(p.tenant, (inv) => inv.subject === st.subject);
+    await revokeLive(p.tenant, (inv) => inv.subject === st.subject, wrote);
     body = { tenant: p.tenant, subject: st.subject, login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
   } else {
     res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });
     return true;
   }
   const up = await manage("POST", gatePath("invites"), { body });
-  if (up.status !== 201) { sendUpstreamError(res, "signup", up); return false; }
+  if (up.status !== 201) {
+    if (ADDRESS_TAKEN.has(up.json?.code)) {
+      // The visitor's own e-mail is already a login at the gate (in some
+      // tenant). It is their own address, but the answer stays generic.
+      logWarn(`account upstream signup: ${up.status} address unavailable`);
+      res.status(409).json({ error: "cannot_sign_up", app: APP_URL + "/ui/login",
+        message: "This address can't be used to create a workspace. If it already has an account, sign in at the app." });
+    } else {
+      sendUpstreamError(res, "signup", up);
+    }
+    return ctx.wrote || !runtimeFault(up);
+  }
   const link = checkedLink(up.json, "/ui/invite#");
   if (!link) {
     logWarn("account upstream signup: link outside APP_URL");
     res.status(502).json({ error: "link_mismatch" });
-    return false;
+    return true; // the invite was created upstream
   }
   res.json({ redirect: link.url, expires_at: link.expires_at });
   return true;
@@ -591,28 +631,42 @@ app.post("/api/team/invites", accountRoute(async (req, res, p) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
   if (email.length > 254 || !EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid_email" });
   // Reserve the day's slot before the first await, and count pending invites
-  // and create one under the tenant's lock; anything but a created invite
-  // gives the slot back.
+  // and create one under the tenant's lock. Only a runtime fault gives the
+  // slot back (runtimeFault); a refusal the owner can repeat keeps it spent.
   const release = inviteLimit.take(p.tenant);
   if (!release) return res.status(429).json({ error: "invite_limit" });
-  let created = false;
+  let spent = true;
   try {
-    created = await withTenantLock(p.tenant, async () => {
+    spent = await withTenantLock(p.tenant, async () => {
       const pending = (await tenantInvites(p.tenant)).filter((i) => i.state === "live").length;
-      if (pending >= MAX_PENDING_INVITES) { res.status(429).json({ error: "too_many_pending" }); return false; }
+      if (pending >= MAX_PENDING_INVITES) { res.status(429).json({ error: "too_many_pending" }); return true; }
       const up = await manage("POST", gatePath("invites"), { body: { tenant: p.tenant, email, login: loginOf(email) } });
-      if (up.status !== 201) { sendUpstreamError(res, "invite", up); return false; }
+      if (up.status !== 201) {
+        if (ADDRESS_TAKEN.has(up.json?.code)) {
+          // One answer whether the address is a login in another tenant or
+          // already has a password here: no cross-tenant oracle.
+          logWarn(`account upstream invite: ${up.status} address unavailable`);
+          res.status(409).json({ error: "cannot_invite_address",
+            message: "This address can't be invited. If they already have an account, ask them to sign in." });
+        } else {
+          sendUpstreamError(res, "invite", up);
+        }
+        return !runtimeFault(up);
+      }
       const link = checkedLink(up.json, "/ui/invite#");
       if (!link) {
         logWarn("account upstream invite: link outside APP_URL");
         res.status(502).json({ error: "link_mismatch" });
-        return false;
+        return true; // the invite was created upstream
       }
       res.status(201).json({ invite_id: up.json.invite_id, url: link.url, expires_at: link.expires_at });
       return true;
     });
+  } catch (e) {
+    spent = !(e instanceof UpstreamFailure ? runtimeFault(e.up) : true);
+    throw e;
   } finally {
-    if (!created) release();
+    if (!spent) release();
   }
 }));
 

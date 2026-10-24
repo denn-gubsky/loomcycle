@@ -95,7 +95,14 @@ function fakeRuntime() {
         return send(res, 200, { name: body.name, tenant_id: body.tenant_id, subject: body.subject, allowed_scopes: body.scopes, token: "lc_TEST0001", token_suffix: "0001" });
       }
       if (rec.auth !== `Bearer ${MANAGE}`) return err(res, 401, "unauthorized");
-      if (f.inject) { const once = f.inject(rec); if (once) { f.inject = null; return send(res, once.status, once.body); } }
+      if (f.inject) {
+        const once = f.inject(rec);
+        if (once) {
+          f.inject = null;
+          if (once.drop) return req.socket.destroy(); // the runtime vanishes mid-request
+          return send(res, once.status, once.body);
+        }
+      }
       const tenant = rec.query.tenant ?? body?.tenant;
       if (!tenant) return err(res, 400, "tenant_required");
       const t = T(tenant);
@@ -335,12 +342,25 @@ describe("POST /api/signup", () => {
     assert.equal(r.status, 409);
     assert.equal(mutations(m).length, 0);
   });
-  test("passes login_taken through and nothing else of the upstream body", async () => {
-    const email = newEmail();
+  test("an e-mail already a login elsewhere gets a generic refusal that spends the slot, never login_taken", async () => {
+    const email = newEmail(), ip = "203.0.113.30";
     fake.logins.set(email, { tenant: "t_other", subject: "cloud:x" });
-    const r = await call(on, "POST", "/api/signup", { email, body: {} });
-    assert.equal(r.status, 409);
-    assert.deepEqual(r.json, { error: "login_taken" });
+    for (let i = 0; i < 10; i++) {
+      const r = await call(on, "POST", "/api/signup", { email, ip, body: {} });
+      assert.equal(r.status, 409);
+      assert.equal(r.json.error, "cannot_sign_up");
+      assert.equal(typeof r.json.message, "string");
+      assert.doesNotMatch(JSON.stringify(r.json), /login_taken/);
+    }
+    assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 429);
+  });
+  test("a signup that revoked a stale invite keeps its slot spent even when the create then fails", async () => {
+    const email = newEmail(), ip = "203.0.113.31";
+    assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 200); // slot 1, a live invite
+    fake.inject = (rec) => rec.method === "POST" ? { status: 500, body: { code: "internal" } } : undefined;
+    assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 502); // revoked, then failed: slot 2
+    for (let i = 0; i < 8; i++) assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 200, `signup ${i}`);
+    assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 429);
   });
   test("limits signups to 10 an hour per source address", async () => {
     const ip = "203.0.113.7";
@@ -446,13 +466,46 @@ describe("invites", () => {
     // another login (e.g. someone else's e-mail) at redemption.
     assert.deepEqual(mutations(m)[0].body, { tenant, email: "new@example.com", login: "new@example.com" });
   });
-  test("a member invite for an address already a login at the gate is 409 login_taken", async () => {
+  test("an address with an account in any tenant gets one generic refusal — no cross-tenant oracle — and spends the slot", async () => {
     const { email } = await signUp();
-    const taken = "taken-" + rnd(3) + "@example.com";
-    fake.logins.set(taken, { tenant: "t_other", subject: "cloud:x" });
-    const r = await call(on, "POST", "/api/team/invites", { email, body: { email: taken } });
+    const answers = new Set();
+    for (let i = 0; i < 20; i++) {
+      const taken = `taken-${i}-${rnd(3)}@example.com`;
+      fake.logins.set(taken, { tenant: "t_other", subject: "cloud:x" });
+      const r = await call(on, "POST", "/api/team/invites", { email, body: { email: taken } });
+      assert.equal(r.status, 409);
+      answers.add(JSON.stringify(r.json));
+    }
+    // credential_exists reads exactly the same
+    fake.inject = (rec) => rec.method === "POST" ? { status: 409, body: { code: "credential_exists", error: "x" } } : undefined;
+    const ce = await call(on, "POST", "/api/team/invites", { email, body: { email: "ce@example.com" } });
+    assert.equal(ce.status, 429, "20 refused invites spent the day's slots");
+    fake.inject = null;
+    assert.equal(answers.size, 1);
+    const only = JSON.parse([...answers][0]);
+    assert.equal(only.error, "cannot_invite_address");
+    assert.match(only.message, /can't be invited/);
+    assert.doesNotMatch([...answers][0], /login_taken|credential_exists/);
+  });
+  test("credential_exists maps to the same refusal as login_taken", async () => {
+    const { email } = await signUp();
+    fake.inject = (rec) => rec.method === "POST" ? { status: 409, body: { code: "credential_exists", error: "x" } } : undefined;
+    const r = await call(on, "POST", "/api/team/invites", { email, body: { email: "ce2@example.com" } });
     assert.equal(r.status, 409);
-    assert.deepEqual(r.json, { error: "login_taken" });
+    assert.equal(r.json.error, "cannot_invite_address");
+  });
+  test("a runtime that drops the connection does not spend an invite slot", async () => {
+    const { email, tenant } = await signUp();
+    fake.inject = (rec) => rec.method === "POST" ? { drop: true } : undefined;
+    const dropped = await call(on, "POST", "/api/team/invites", { email, body: { email: "d@example.com" } });
+    assert.equal(dropped.status, 502);
+    assert.deepEqual(dropped.json, { error: "runtime_unreachable" });
+    for (let i = 0; i < 20; i++) {
+      const r = await call(on, "POST", "/api/team/invites", { email, body: { email: `k${i}@example.com` } });
+      assert.equal(r.status, 201, `invite ${i}: ${r.text}`);
+      fake.T(tenant).invites.get(r.json.invite_id).revoked = true;
+    }
+    assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: "l@example.com" } })).status, 429);
   });
   test("an invalid e-mail is a 400 with no upstream write", async () => {
     const { email } = await signUp();
@@ -547,10 +600,11 @@ describe("invites", () => {
       assert.equal(rs.filter((r) => r.status === 201).length, 2);
       assert.ok(rs.filter((r) => r.status !== 201).every((r) => r.json.error === "too_many_pending"));
     } finally { fake.delayMs = 0; }
-    // the three refused requests gave their daily slots back: 2 used of 20
+    // a refusal the tenant's own state causes keeps its slot spent: 5 of 20 used
     const left = [...fake.T(tenant).invites.values()];
     for (const i of left) i.revoked = true;
-    for (let i = 0; i < 18; i++) assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: `u${i}@example.com` } })).status, 201);
+    for (let i = 0; i < 15; i++) assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: `u${i}@example.com` } })).status, 201);
+    assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: "u-last@example.com" } })).status, 429);
   });
   test("refuses a 51st pending invite", async () => {
     const { email, tenant } = await signUp();
