@@ -171,3 +171,34 @@ func TestStallsModel_OnlyModelFaultsStall(t *testing.T) {
 		}
 	}
 }
+
+// Only a refusal of the OPERATOR's own credentials says the provider is
+// unusable for every run; a tenant's or user's key refused says nothing about
+// anyone else, and a non-auth status says nothing about the key.
+func TestOperatorKeyRefused_OnlyOperatorAuthRefusals(t *testing.T) {
+	op401 := WithKeySource(errors.New("anthropic 401: invalid x-api-key"), "operator")
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"operator 401", op401, true},
+		{"operator 403", WithKeySource(errors.New("openai 403: forbidden"), "operator"), true},
+		{"wrapped operator 401", fmt.Errorf("call: %w", op401), true},
+		{"no AWS credentials", fmt.Errorf("http: %w", fmt.Errorf("%w: no creds", ErrAuthUnavailable)), true},
+		{"tenant 401", WithKeySource(errors.New("anthropic 401: invalid x-api-key"), "tenant"), false},
+		{"user 403", WithKeySource(errors.New("gemini 403: forbidden"), "user"), false},
+		{"operator 400", WithKeySource(errors.New("anthropic 400: invalid_request_error"), "operator"), false},
+		{"operator 500", WithKeySource(errors.New("anthropic 500: boom"), "operator"), false},
+		{"untagged 401", errors.New("anthropic 401: invalid x-api-key"), false},
+	} {
+		if got := OperatorKeyRefused(tc.err); got != tc.want {
+			t.Errorf("%s: OperatorKeyRefused = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// The tag must not change what the error says or how it classifies.
+	if op401.Error() != "anthropic 401: invalid x-api-key" || ClassifyError(op401) != ErrorClassPermanent {
+		t.Errorf("tagged error = %q / %v, want the driver's message and class unchanged", op401.Error(), ClassifyError(op401))
+	}
+}

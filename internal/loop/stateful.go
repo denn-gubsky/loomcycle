@@ -716,17 +716,11 @@ func recoverStatefulCall(ctx context.Context, opts *RunOptions, rec *statefulRec
 		}
 		return statefulCallRetry
 	}
-	// Resolver feedback, split by class exactly as Run's is: a 429 cools the
-	// pair briefly, a model fault (providers.StallsModel) marks it stalled. An operator-key refusal is a
-	// per-run policy decision, not an outage, and must not poison the matrix.
+	// Resolver feedback, decided exactly as Run's is (reportCallFault). A
+	// restricted run's refusal to use the operator key (ErrOperatorKeyForbidden)
+	// is a per-run policy decision, not an outage, and must not touch the matrix.
 	if !errors.Is(err, providers.ErrOperatorKeyForbidden) {
-		if providers.IsRateLimit(err) {
-			if opts.MarkRateLimited != nil {
-				opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
-			}
-		} else if opts.MarkStalled != nil && providers.StallsModel(err) {
-			opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
-		}
+		reportCallFault(opts, err)
 	}
 	if tryProviderFallback(ctx, opts, &rec.fallbackAttempts, err, emit, msgs, rec.firstStepSucceeded) == fallbackOutcomeSwitched {
 		rec.sameProviderRetries = 0

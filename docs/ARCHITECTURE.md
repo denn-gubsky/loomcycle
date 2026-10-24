@@ -299,13 +299,13 @@ References: `internal/providers/`, `internal/providers/anthropic/driver.go`, `in
 
 State: `Availability` per provider, `ModelStatus` per model. Three orthogonal flags:
 - `Excluded` — operator chose not to enable this provider (no API key, base URL unset). Set at startup; cleared by `SetReachable`.
-- `Reachable` — most recent probe succeeded. Set/cleared by every probe sweep.
+- `Reachable` — most recent probe succeeded. Set/cleared by every probe sweep, and also cleared at once when the provider refuses the operator's own key (a 401/403 on a call sent with it); that also starts an immediate re-probe, which sets it again once the key works.
 - per-model `Stalled` — runtime feedback from the loop on a 5xx-after-retry or in-stream error. Cleared by the next successful probe.
 
 Lifecycle:
 1. Startup: `cmd/loomcycle/main.go` builds the resolver, runs the first-round probe synchronously (parallel across providers, 5s deadline each), then starts a background goroutine that re-probes every `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS` (default 15 min, max 1 h).
 2. Per-request: HTTP / gRPC server calls `Server.resolveAgent(name)` which routes pin-vs-tier and returns `(provider, model, effort)` for the loop.
-3. On driver error: loop calls `MarkStalled(provider, model, reason)` (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix) — but only for a model fault (`providers.StallsModel`): a 5xx, a transport error, an in-stream error, a 404 for a missing or retired model. A request error (400/401/403/422) does not stall the model: the matrix is shared by every run, and one agent's malformed request must not take the model away from the rest. A 429 goes to `MarkRateLimited` instead.
+3. On driver error (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix), the loop reports the failure by class (`reportCallFault`): a 429 → `MarkRateLimited` (a short cooldown; the fallback re-resolve does the same); a 401/403 on the operator's own key → the whole provider is marked unreachable and re-probed, since every model on it shares that key; a model fault (`providers.StallsModel`: a 5xx, a transport error, an in-stream error, a 404 for a missing or retired model) → `MarkStalled(provider, model, reason)`. A request error (400/422), or a 401/403 on a tenant's or user's own key, touches nothing shared: the matrix serves every run, and one caller's bad request or key must not take a model away from the rest.
 
 Effort flow: agent yaml `effort: low|medium|high` → `Decision.Effort` → `RunOptions.Effort` → `providers.Request.Effort`. Each driver translates per its `Capabilities.SupportsEffort`:
 

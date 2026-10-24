@@ -253,6 +253,50 @@ func StallsModel(err error) bool {
 	return ClassifyError(err) != ErrorClassPermanent || statusFromError(err) == 404
 }
 
+// keySourceError carries which key a failed call was sent with. Error() is
+// the driver's own message, so ClassifyError and statusFromError see the same
+// "<name> <code>:" text as before.
+type keySourceError struct {
+	err    error
+	source string
+}
+
+func (e *keySourceError) Error() string { return e.err.Error() }
+func (e *keySourceError) Unwrap() error { return e.err }
+
+// WithKeySource records which key a failed call was sent with: the source
+// ResolveKeyOrOperator returned ("operator", or the override's scope, e.g.
+// "tenant" / "user"). Drivers wrap their non-2xx status error with it.
+func WithKeySource(err error, source string) error {
+	if err == nil {
+		return nil
+	}
+	return &keySourceError{err: err, source: source}
+}
+
+// OperatorKeyRefused reports whether the provider refused the OPERATOR's own
+// credentials: a 401/403 on a call sent with the operator's key, or no AWS
+// credentials obtainable for the operator's signed call. Every model on the
+// provider shares that key, so the provider is unusable for every run until
+// the key is fixed. A tenant's or user's own key refused is not this: it says
+// nothing about anyone else's runs.
+func OperatorKeyRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrAuthUnavailable) {
+		return true
+	}
+	var ks *keySourceError
+	if !errors.As(err, &ks) || ks.source != "operator" {
+		return false
+	}
+	// The status is read off the driver's own error, not the outer message: a
+	// caller wrapping it ("call: anthropic 401: …") moves the anchored prefix.
+	code := statusFromError(ks)
+	return code == 401 || code == 403
+}
+
 // looksLikeDeprecatedModel returns true when the error body carries a
 // "this model is no longer available / has been retired" pattern. The
 // matchers are intentionally permissive — false negatives (treated as
