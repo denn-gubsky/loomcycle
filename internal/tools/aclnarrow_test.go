@@ -135,3 +135,78 @@ func TestNarrowSkillsByACL(t *testing.T) {
 		t.Errorf("compat no set = %+v", got)
 	}
 }
+
+// shadowPolicy is a run policy as shadow mode leaves it: every grant of the
+// definition, nothing narrowed.
+func shadowPolicy(eff *authz.Effective) RunPolicy {
+	return RunPolicy{
+		Tools: []string{"Read", "Bash", "Write"},
+		Volumes: VolumePolicyValue{Active: true, Bindings: []VolumeBinding{
+			{Name: "scratch", Root: "/s"}, {Name: "shared", Root: "/h"}, {Name: "secrets", Root: "/x"}, {Name: "docs", Root: "/d", ReadOnly: true},
+		}},
+		Memory:  MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}},
+		SqlMem:  SqlMemPolicyValue{AllowedScopes: []string{"user"}},
+		History: HistoryPolicyValue{Scopes: []string{"self"}},
+		Skill:   SkillPolicyValue{Granted: true},
+		ACL:     eff,
+	}
+}
+
+func divergenceKeys(ds []ACLShadowDivergence) []string {
+	var out []string
+	for _, d := range ds {
+		out = append(out, d.Surface.Action+" "+d.Surface.Type+":"+d.Surface.Name+" "+d.Decision.Outcome.String())
+	}
+	return out
+}
+
+// In shadow mode the run keeps what the narrowing helpers would take in
+// enforce; ShadowACLNarrowing names each of those, with the engine's answer
+// — a rule's deny and a question no rule allows alike, since enforce takes
+// both.
+func TestShadowACLNarrowing_NamesWhatEnforceWouldTake(t *testing.T) {
+	eff := compiledSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"invoke"}, Resources: []string{"tool:Read"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}},
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write"}, Resources: []string{"volume:scratch"}},
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"volume:shared", "volume:docs", "memory:user", "sqlmem:user", "history:self"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read", "write"}, Resources: []string{"volume:secrets"}})
+	got := divergenceKeys(ShadowACLNarrowing(modeCtx(authz.ModeShadow), shadowPolicy(eff)))
+	want := []string{
+		"invoke tool:Bash deny",
+		"invoke tool:Write no_match",
+		"write volume:shared no_match",
+		"read volume:secrets deny",
+		"read memory:tenant no_match",
+		"invoke skill:* no_match",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("shadow divergences:\n got  %q\n want %q", got, want)
+	}
+	// The deciding rules travel with each one.
+	if ds := ShadowACLNarrowing(modeCtx(authz.ModeShadow), shadowPolicy(eff)); len(ds) == 0 || len(ds[0].Decision.Reasons) == 0 || ds[0].Decision.Reasons[0].ACL != "a" {
+		t.Errorf("the deny carries no deciding rule: %+v", ds)
+	}
+}
+
+// Compat and enforce narrowed the run themselves, and a run with no set has
+// nothing to be compared with: none of them reports anything.
+func TestShadowACLNarrowing_NothingOutsideShadowOrWithoutASet(t *testing.T) {
+	eff := compiledSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}})
+	for _, m := range []authz.Mode{authz.ModeCompat, authz.ModeEnforce} {
+		if got := ShadowACLNarrowing(modeCtx(m), shadowPolicy(eff)); got != nil {
+			t.Errorf("%s: %q", m, divergenceKeys(got))
+		}
+	}
+	if got := ShadowACLNarrowing(modeCtx(authz.ModeShadow), shadowPolicy(nil)); got != nil {
+		t.Errorf("shadow with no set: %q", divergenceKeys(got))
+	}
+	// A set that allows everything the run holds: nothing to report.
+	all := compiledSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "skill:*"}},
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write"}, Resources: []string{"volume:*", "memory:*", "sqlmem:*"}},
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"history:*"}})
+	if got := ShadowACLNarrowing(modeCtx(authz.ModeShadow), shadowPolicy(all)); got != nil {
+		t.Errorf("shadow, all allowed: %q", divergenceKeys(got))
+	}
+}

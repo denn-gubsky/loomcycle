@@ -3772,6 +3772,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		Interruption: in.Interruption,
 	})
 	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
+	// Shadow mode narrowed nothing above; record what enforce would have.
+	loopCtx = s.recordShadowNarrowing(loopCtx, runID, runPolicy)
 	// RFC AH Phase 2b: a FRESH run-scoped ephemeral volume set, attached ONCE
 	// at this top-level start. Sub-agents inherit this SAME pointer via the
 	// ctx chain (runSubAgent must not re-attach it) — never shared across
@@ -7759,6 +7761,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	childGrant.Own.CoreBlocks = tools.CoreBlocksPolicyValue{Blocks: coreBlocks}
 	childPolicy = parentPolicy.Inherit(childGrant)
 	subCtx = tools.WithRunPolicy(subCtx, childPolicy)
+	subCtx = s.recordShadowNarrowing(subCtx, subRunID, childPolicy)
 	// RFC AH Phase 2b: the run-tree's ephemeral volume SET is deliberately NOT
 	// re-attached here — subCtx derives from the parent's ctx (via subRunCtx ←
 	// WithCancelCause(ctx)), so the SAME *EphemeralVolumeSet pointer flows down

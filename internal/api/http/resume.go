@@ -965,6 +965,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	src.CoreBlocks = coreBlocks
 	runPolicy, liveInterruption := s.agentRunPolicy(loopCtx, agentDef, run.Agent, src)
 	loopCtx = tools.WithRunPolicy(loopCtx, runPolicy)
+	loopCtx = s.recordShadowNarrowing(loopCtx, run.ID, runPolicy)
 	// RFC AH Phase 2b: re-attach a fresh run-scoped ephemeral set, REHYDRATED
 	// from any ephemeral_volume_defs rows this run created before it was
 	// paused/snapshotted (the sweeper skips paused runs, so the rows + on-disk

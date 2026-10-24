@@ -38,6 +38,10 @@ type Event struct {
 	AclAction  string   `json:"acl_action,omitempty"`
 	AclOutcome string   `json:"acl_outcome,omitempty"`
 	AclRules   []string `json:"acl_rules,omitempty"`
+	// AclRunID is the run a divergence was found in: set for what shadow
+	// mode lets a run keep at its start (a tool, a volume's write, a
+	// keyspace, the skills) or lets it spawn, empty for a request's gate.
+	AclRunID string `json:"acl_run_id,omitempty"`
 
 	// --- RFC AA SQL Memory (Action = "sql_query" | "sql_exec") ---
 	// All omitempty so a non-SQL audit record is byte-identical to before.
