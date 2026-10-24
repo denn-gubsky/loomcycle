@@ -188,6 +188,12 @@ func categoryOf(err error) (tools.ErrorInfo, bool) {
 			ptr(pausedBackoff),
 		), true
 
+	case errors.Is(err, runner.ErrACLUnavailable):
+		return transient(
+			"The access-control rules that bind this run could not be read right now, so it was not started without them. The request is valid and should succeed once they can be read.",
+			nil,
+		), true
+
 	case errors.Is(err, context.DeadlineExceeded):
 		return transient(
 			"The operation exceeded its time budget before completing. Retrying may succeed, particularly with a smaller request.",

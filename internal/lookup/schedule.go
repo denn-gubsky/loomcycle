@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -133,6 +134,9 @@ type SubstrateScheduleDef struct {
 	// via a config projection — present here only to keep the JSON mirrors
 	// drift-parity-clean.
 	Isolated bool `json:"isolated,omitempty"`
+	// ACLOwner (RFC EZ §1.5) mirrors mergedScheduleDef; like Isolated, the fire
+	// path reads it via scheduler.scheduleDef — here for drift parity only.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
 	// UserScopeCredentials mirrors mergedScheduleDef's captured bit, read by
 	// the scheduler's own decode; here for drift parity only.
 	UserScopeCredentials bool `json:"user_scope_credentials,omitempty"`

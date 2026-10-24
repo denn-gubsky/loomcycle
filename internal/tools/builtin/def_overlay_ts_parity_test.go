@@ -37,11 +37,13 @@ var serverOnlyOverlayFields = map[string]map[string]string{
 		"capture_disabled":        "written only by a snapshot restore; cleared by re-supplying credentials",
 		"operator_layer":          "stamped from the caller's operator authority after the overlay",
 		"user_scope_credentials":  "captured at create/fork: the author is an operator or the schedule's own user",
+		"acl_owner":               "captured from the authoring principal at create/fork/hook edit (RFC EZ §1.5)",
 	},
 	"WebhookDefOverlay": {
 		"operator_key_restricted": "captured from the authoring principal at create/fork (RFC AX)",
 		"isolated":                "captured from the authoring principal at create/fork (RFC BX)",
 		"capture_disabled":        "written only by a snapshot restore; cleared by re-supplying credentials",
+		"acl_owner":               "captured from the authoring principal at create/fork (RFC EZ §1.5)",
 	},
 }
 

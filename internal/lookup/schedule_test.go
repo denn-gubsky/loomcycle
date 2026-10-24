@@ -235,6 +235,7 @@ func TestSchedule_DriftDetection(t *testing.T) {
 		// operator_key_restricted, deliberately NOT on config.ScheduledRun — the
 		// scheduler fire path reads it via scheduler.scheduleDef, not ToConfigDef.
 		"isolated":               true,
+		"acl_owner":              true, // RFC EZ §1.5: captured owner whose ACL set binds each fire
 		"user_scope_credentials": true, // captured: the author may act as user_id
 		// Server-set marker on a def restored from a snapshot without its
 		// literal credentials. Deliberately NOT on config.ScheduledRun: the

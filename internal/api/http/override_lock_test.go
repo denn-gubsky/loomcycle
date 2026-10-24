@@ -158,6 +158,7 @@ func TestOverrideLock_EveryRequestFieldIsClassified(t *testing.T) {
 		"Metadata":  "non-secret labels", "PayloadMetadata": "set by a trigger, not a caller",
 		"OperatorKeyRestricted": "server-derived", "Isolated": "server-derived",
 		"CredentialsNoUserScope": "set by a trigger, never by a request; it only narrows",
+		"ACLOwner":               "set by a trigger from its definition's recorded owner, never by a request; it only narrows",
 		"ConfiguredRunID":        "which draft to start", "ConfiguredDraft": "the stored draft", "Detached": "delivery",
 		"QueuedRunID":               "which queued run a restart starts; set by the boot, never by a request",
 		"Admission":                 "delivery: wait for a run slot or be refused at once; it takes no capacity the caps do not already bound",
