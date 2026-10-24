@@ -28,6 +28,16 @@ func TestAnthropicModelRules_Families(t *testing.T) {
 		{"claude-opus-4-5-20251101", false, false},
 		{"claude-sonnet-4-5", false, false},
 		{"claude-haiku-4-5", false, false},
+		// Haiku 5.x joined the adaptive-only family; Bedrock ids carry a
+		// geography and/or anthropic. prefix and sometimes a -v1:0 suffix.
+		{"claude-haiku-5-5", true, false},
+		{"eu.anthropic.claude-haiku-5-5", true, false},
+		{"global.anthropic.claude-haiku-5-5", true, false},
+		{"anthropic.claude-haiku-5-5-v1:0", true, false},
+		{"us.anthropic.claude-haiku-5-6-v1:0", true, false}, // a later 5.x minor
+		{"eu.anthropic.claude-sonnet-5-5", true, false},
+		{"anthropic.claude-haiku-4-5-20251001-v1:0", false, false},
+		{"claude-3-5-haiku-20241022", false, false},
 		{"some-unknown-model", false, false},
 	} {
 		got := anthropicModelRules(tc.model)
@@ -100,6 +110,60 @@ func TestRequestBody_AdaptiveModelsDropSampling(t *testing.T) {
 				t.Errorf("%s: %s present=%v, want %v", tc.model, k, present, tc.kept)
 			}
 		}
+	}
+}
+
+// Claude Haiku 5.5 (direct or on Bedrock) answers any non-default temperature /
+// top_p / top_k with a 400 ("`temperature` is deprecated for this model"), so
+// an agent with sampling set failed every call. Those knobs must never reach
+// the wire there, while the 4.x models keep receiving them — including an
+// explicit temperature 0, which is deterministic and not the same as unset.
+func TestRequestBody_DeprecatedSamplingNeverReachesTheWire(t *testing.T) {
+	temp, topP, topK := 0.7, 0.9, 40
+	for _, model := range []string{
+		"claude-haiku-5-5",
+		"eu.anthropic.claude-haiku-5-5",
+		"anthropic.claude-haiku-5-5-v1:0",
+		"eu.anthropic.claude-sonnet-5-5",
+		"claude-sonnet-5-5",
+	} {
+		req := baseReq()
+		req.Model, req.Temperature, req.TopP, req.TopK = model, &temp, &topP, &topK
+		body := bodyOf(t, req)
+		for _, k := range []string{"temperature", "top_p", "top_k"} {
+			if v, present := body[k]; present {
+				t.Errorf("%s: %s=%v reached the wire, want it omitted", model, k, v)
+			}
+		}
+	}
+
+	zero := 0.0
+	for _, model := range []string{"claude-haiku-4-5", "anthropic.claude-haiku-4-5-20251001-v1:0", "claude-sonnet-4-6"} {
+		req := baseReq()
+		req.Model, req.Temperature = model, &zero
+		got, present := bodyOf(t, req)["temperature"]
+		if !present || got != 0.0 {
+			t.Errorf("%s: temperature = %v (present=%v), want an explicit 0 kept", model, got, present)
+		}
+	}
+}
+
+// The chat bundle's shape (effort medium + temperature 0.7) on Haiku 5.5:
+// effort reaches the wire as adaptive thinking + output_config.effort, and the
+// temperature is dropped rather than failing the call.
+func TestRequestBody_Haiku5EffortWithTemperatureSendsAdaptiveEffortOnly(t *testing.T) {
+	temp := 0.7
+	req := baseReq()
+	req.Model, req.Effort, req.Temperature = "eu.anthropic.claude-haiku-5-5", "medium", &temp
+	body := bodyOf(t, req)
+	if _, present := body["temperature"]; present {
+		t.Errorf("temperature reached the wire: %v", body["temperature"])
+	}
+	if !jsonEqual(body["thinking"], map[string]any{"type": "adaptive"}) {
+		t.Errorf("thinking = %v, want {type: adaptive} with no budget", body["thinking"])
+	}
+	if !jsonEqual(body["output_config"], map[string]any{"effort": "medium"}) {
+		t.Errorf("output_config = %v, want effort medium", body["output_config"])
 	}
 }
 
