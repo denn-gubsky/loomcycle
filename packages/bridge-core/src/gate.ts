@@ -16,6 +16,8 @@ import { createHmac, createPrivateKey, randomUUID, sign as cryptoSign, type KeyO
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
+import type { TokenSource } from "./tokens.js";
+
 /** The JWS algorithms a gate key signs with; loomcycle derives the same one
  *  from the public key it pinned. */
 export type GateAlg = "EdDSA" | "ES256" | "HS256";
@@ -286,5 +288,62 @@ export class GateClient {
       throw new GateError(res.status, typeof body.code === "string" ? body.code : "error");
     }
     return body;
+  }
+}
+
+/** GroupsFor says which platform groups a conversation's run identity is in,
+ *  from where the conversation is (its reply reference). undefined: unknown,
+ *  so nothing is asserted and loomcycle syncs nothing. */
+export type GroupsFor = (subject: string, ref: unknown) => Promise<string[] | undefined>;
+
+/** GateBroker is the TokenSource of a bridge that is an external gate: a run
+ *  identity "<gate>:<sub>" gets the token loomcycle issues for `sub`. The key
+ *  is read at start (ready), so building a bridge stays synchronous. */
+export class GateBroker implements TokenSource {
+  private client?: GateClient;
+
+  constructor(
+    private readonly opts: Omit<GateClientOptions, "key">,
+    private readonly groupsFor?: GroupsFor,
+  ) {}
+
+  ready(key: GateKey): void {
+    this.client = new GateClient({ ...this.opts, key });
+  }
+
+  /** subjectOf is the loomcycle subject of a platform id. */
+  subjectOf(sub: string): string {
+    return `${this.opts.gate}:${sub}`;
+  }
+
+  private started(): GateClient {
+    if (!this.client) throw new Error("the gate key is not loaded yet (the bridge has not started)");
+    return this.client;
+  }
+
+  private subOf(subject: string): string {
+    const prefix = `${this.opts.gate}:`;
+    if (!subject.startsWith(prefix) || subject.length === prefix.length) {
+      throw new Error(`subject ${JSON.stringify(subject)} is not one of gate ${this.opts.gate}'s`);
+    }
+    return subject.slice(prefix.length);
+  }
+
+  async tokenFor(subject: string, displayName?: string, ref?: unknown): Promise<string> {
+    const client = this.started();
+    const sub = this.subOf(subject);
+    // A failed lookup asserts no groups rather than an empty list: an empty
+    // list would remove every group the gate gave the user.
+    const groups = this.groupsFor && ref !== undefined ? await this.groupsFor(subject, ref).catch(() => undefined) : undefined;
+    return client.tokenFor({ sub, name: displayName, groups });
+  }
+
+  forget(subject: string): void {
+    if (this.client && subject.startsWith(`${this.opts.gate}:`)) this.client.forget(subject.slice(this.opts.gate.length + 1));
+  }
+
+  /** revoke tells loomcycle the identity is gone (§3.7c removal). */
+  async revoke(subject: string): Promise<void> {
+    await this.started().revoke(this.subOf(subject));
   }
 }

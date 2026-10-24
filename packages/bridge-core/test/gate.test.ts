@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GateClient, GateError, keyFromPrivate, keyFromSecret, loadGateKey, type GateKey } from "../src/gate.js";
+import { EnvReader, loadSharedConfig } from "../src/config.js";
+import { GateBroker, GateClient, GateError, keyFromPrivate, keyFromSecret, loadGateKey, type GateKey } from "../src/gate.js";
 
 const AUD = "https://lc.example";
 
@@ -144,6 +145,70 @@ describe("gate client", () => {
     const fsImports = [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*"node:fs(?:\/promises)?"/g)].flatMap((m) => m[1]!.split(",").map((s) => s.trim()));
     expect(fsImports).toEqual(["readFile"]);
     expect(src).not.toMatch(/from\s*"node:fs"\s*;?\s*$/m);
+  });
+});
+
+describe("gate broker", () => {
+  it("maps <gate>:<sub> subjects, asks with the conversation's groups, and refuses another gate's subject", async () => {
+    const lc = fakeLoomcycle();
+    const seen: unknown[] = [];
+    const b = new GateBroker({ baseUrl: "http://lc", gate: "telegram", audience: AUD, fetch: lc.fetchFn }, async (subject, ref) => {
+      seen.push([subject, ref]);
+      return ["tg-chat--100"];
+    });
+    await expect(b.tokenFor("telegram:1")).rejects.toThrow(/not loaded/);
+    b.ready(edKey().key);
+    await b.tokenFor("telegram:conv:abc", "Group", { chatId: -100 });
+    const p = decode(lc.calls[0]!.body.assertion).payload;
+    expect(p).toMatchObject({ sub: "conv:abc", name: "Group", groups: ["tg-chat--100"] });
+    expect(seen).toEqual([["telegram:conv:abc", { chatId: -100 }]]);
+    await expect(b.tokenFor("slack:1")).rejects.toThrow(/not one of gate telegram/);
+    await expect(b.tokenFor("telegram:")).rejects.toThrow();
+    expect(b.subjectOf("7")).toBe("telegram:7");
+  });
+
+  it("asserts no groups when the lookup fails, so nothing is removed", async () => {
+    const lc = fakeLoomcycle();
+    const b = new GateBroker({ baseUrl: "http://lc", gate: "telegram", audience: AUD, fetch: lc.fetchFn }, async () => {
+      throw new Error("Bot API down");
+    });
+    b.ready(edKey().key);
+    await b.tokenFor("telegram:1", "Ann", { chatId: 1 });
+    expect("groups" in decode(lc.calls[0]!.body.assertion).payload).toBe(false);
+  });
+});
+
+describe("gate configuration", () => {
+  const base = { LOOMCYCLE_BASE_URL: "http://lc:8080", BRIDGE_AGENT: "chat", BRIDGE_GATE: "telegram", BRIDGE_GATE_AUDIENCE: "https://lc.example/", BRIDGE_GATE_KEY: "{}" };
+
+  it("reads the gate and holds no loomcycle token", () => {
+    const r = new EnvReader(base);
+    const cfg = loadSharedConfig(r, { port: 1, gate: true });
+    r.check("t");
+    expect(cfg.gate).toMatchObject({ name: "telegram", audience: "https://lc.example" });
+    expect(cfg.loomcycleToken).toBe("");
+  });
+
+  it("refuses a leftover operator token, a bridge-side access mode, no key, or a plain-http audience", () => {
+    for (const [env, want] of [
+      [{ ...base, LOOMCYCLE_TOKEN: "lct_x" }, /LOOMCYCLE_TOKEN must not be set/],
+      [{ ...base, BRIDGE_USER_ACCESS_MODE: "tenant" }, /identity_map/],
+      [{ ...base, BRIDGE_GATE_KEY: undefined }, /BRIDGE_GATE_KEY/],
+      [{ ...base, BRIDGE_GATE_AUDIENCE: "http://lc.example" }, /https/],
+      [{ ...base, BRIDGE_GATE: "Tele Gram" }, /gate name/],
+    ] as const) {
+      const r = new EnvReader(env);
+      loadSharedConfig(r, { port: 1, gate: true });
+      expect(() => r.check("t")).toThrow(want);
+    }
+  });
+
+  it("leaves a bridge that is not a gate exactly as it was", () => {
+    const r = new EnvReader({ LOOMCYCLE_BASE_URL: "http://lc", LOOMCYCLE_TOKEN: "lct_x", BRIDGE_AGENT: "chat" });
+    const cfg = loadSharedConfig(r, { port: 1 });
+    r.check("t");
+    expect(cfg.gate).toBeUndefined();
+    expect(cfg.loomcycleToken).toBe("lct_x");
   });
 });
 

@@ -25,6 +25,16 @@ export interface TokenBrokerOptions {
   now?: () => number;
 }
 
+/** Where a conversation gets the loomcycle token its runs act with: the
+ *  TokenBroker (a bridge holding an operator token mints them) or the
+ *  GateBroker (loomcycle issues them to a bridge that is an external gate).
+ *  `ref` is the conversation's reply reference, for a source that derives
+ *  what it asserts (a chat's groups) from where the conversation is. */
+export interface TokenSource {
+  tokenFor(subject: string, displayName?: string, ref?: unknown): Promise<string>;
+  forget(subject: string): void;
+}
+
 interface Cached {
   token: string;
   expiresAt: number;
@@ -32,7 +42,7 @@ interface Cached {
 
 const DEFAULT_RENEW_BEFORE_MS = 10 * 60 * 1000;
 
-export class TokenBroker {
+export class TokenBroker implements TokenSource {
   private readonly cache = new Map<string, Cached>();
   private readonly inflight = new Map<string, Promise<string>>();
   private readonly registered = new Set<string>();

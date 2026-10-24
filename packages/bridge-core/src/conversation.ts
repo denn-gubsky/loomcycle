@@ -21,14 +21,14 @@ import type { BridgePort, ClientFactory, Logger, RunClient } from "./ports.js";
 import { MessageSink, StreamSink, type MessageSinkOptions, type StreamSinkOptions, type TurnSink } from "./renderer.js";
 import type { ConversationRecord, ConversationStore } from "./store.js";
 import { HELP_TEXT, parseCommand } from "./text.js";
-import { statusOf, type TokenBroker } from "./tokens.js";
+import { statusOf, type TokenSource } from "./tokens.js";
 
 export interface ConversationDeps<TRef> {
   platform: PlatformInfo;
   capabilities: PlatformCapabilities;
   agent: string;
   store: ConversationStore<TRef>;
-  broker: TokenBroker;
+  broker: TokenSource;
   clients: ClientFactory;
   port: BridgePort<TRef>;
   log: Logger;
@@ -164,7 +164,7 @@ export class Conversation<TRef> {
   /** runClient is loomcycle as the conversation's run identity: the person in
    *  a 1:1 chat, the conversation itself in a shared one. */
   private async runClient(): Promise<RunClient> {
-    const token = await this.deps.broker.tokenFor(this.rec.runSubject, this.rec.runName);
+    const token = await this.deps.broker.tokenFor(this.rec.runSubject, this.rec.runName, this.rec.ref);
     this.deps.health?.loomcycle();
     return this.deps.clients(token);
   }
