@@ -221,6 +221,9 @@ type AuthPolicy struct {
 	// Lifecycle is the validated auth.lifecycle.new_user (zero: the
 	// defaults; read it through NewUserFloor).
 	Lifecycle AuthNewUser
+	// Removal is the validated removal policy (read it through
+	// RemovalPolicy).
+	Removal AuthRemovalPolicy
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -361,6 +364,9 @@ func resolveAuth(c *Config) error {
 		return err
 	}
 	if p.Lifecycle, err = resolveLifecycle(c.Auth.Lifecycle); err != nil {
+		return err
+	}
+	if p.Removal, err = resolveRemoval(c); err != nil {
 		return err
 	}
 	if p.Idle > p.Absolute {

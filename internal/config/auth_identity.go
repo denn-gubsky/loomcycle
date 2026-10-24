@@ -84,9 +84,11 @@ var (
 )
 
 // AuthLifecycleConfig is `auth.lifecycle`. The removal policy keys
-// (on_removed, dormant_after) belong to a later phase.
+// (on_removed, dormant_after) are resolved in auth_removal.go.
 type AuthLifecycleConfig struct {
-	NewUser AuthNewUserConfig `yaml:"new_user,omitempty"`
+	NewUser      AuthNewUserConfig   `yaml:"new_user,omitempty"`
+	OnRemoved    AuthOnRemovedConfig `yaml:"on_removed,omitempty"`
+	DormantAfter string              `yaml:"dormant_after,omitempty"`
 }
 
 // AuthNewUserConfig is what a user a gate creates starts with.
