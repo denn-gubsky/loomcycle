@@ -87,10 +87,21 @@ func (g *Gate) Complete(ctx context.Context, r *http.Request, _ authgate.LoginSt
 // nonce is recorded), so a request must be verified once and the result
 // shared, not verified again by each reader.
 func (g *Gate) Verify(ctx context.Context, r *http.Request) (authgate.Assertion, error) {
-	h, err := g.source.Take(r)
+	h, err := g.Take(r)
 	if err != nil {
 		return authgate.Assertion{}, err
 	}
+	return g.VerifyTaken(ctx, h)
+}
+
+// Take runs the request filter alone (Source.Take): it strips every alias of
+// the gate's headers, removes them from an untrusted peer's request, and
+// returns the values a trusted peer sent. The server runs it on every request
+// before any handler, and verifies the values only when something asks.
+func (g *Gate) Take(r *http.Request) (map[string]string, error) { return g.source.Take(r) }
+
+// VerifyTaken verifies values Take returned.
+func (g *Gate) VerifyTaken(ctx context.Context, h map[string]string) (authgate.Assertion, error) {
 	id, err := g.verify(ctx, h)
 	if err != nil {
 		return authgate.Assertion{}, err
