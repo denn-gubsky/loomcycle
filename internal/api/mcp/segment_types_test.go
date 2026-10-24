@@ -36,7 +36,7 @@ func TestSegments_UnknownBlockTypeIsAToolError(t *testing.T) {
 			if !res.IsError || len(res.Content) == 0 || !strings.Contains(res.Content[0].Text, `unknown type "untrusted"`) {
 				t.Errorf("a block of type \"untrusted\" was not refused as a tool error: %+v", res)
 			}
-			if prov.last != nil {
+			if prov.lastReq() != nil {
 				t.Error("a run started despite the refusal")
 			}
 			for _, good := range []string{"", "untrusted-block"} {

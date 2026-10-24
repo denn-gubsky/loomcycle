@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +25,19 @@ import (
 // The configured_run tool against the REAL HTTP server as its connector — the
 // rules live there, so a fake would only test the argument mapping.
 
-type draftAnswerProvider struct{ last *providers.Request }
+// draftAnswerProvider records the last request it was called with. A
+// spawn_runs batch calls it from several runs at once, so the record is
+// guarded; tests read it through lastReq.
+type draftAnswerProvider struct {
+	mu   sync.Mutex
+	last *providers.Request
+}
+
+func (p *draftAnswerProvider) lastReq() *providers.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.last
+}
 
 func (p *draftAnswerProvider) ID() string                  { return "stub" }
 func (p *draftAnswerProvider) Probe(context.Context) error { return nil }
@@ -36,7 +49,9 @@ func (p *draftAnswerProvider) Capabilities() providers.Capabilities {
 }
 func (p *draftAnswerProvider) Call(_ context.Context, req providers.Request) (<-chan providers.Event, error) {
 	r := req
+	p.mu.Lock()
 	p.last = &r
+	p.mu.Unlock()
 	ch := make(chan providers.Event, 2)
 	ch <- providers.Event{Type: providers.EventText, Text: "finished"}
 	ch <- providers.Event{Type: providers.EventDone, StopReason: "end_turn", Usage: &providers.Usage{}}
@@ -112,7 +127,7 @@ func TestConfiguredRunTool_CreateUpdateStartDelete(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Content[0].Text), &created); err != nil || created.Status != "configured" || created.RunID == "" {
 		t.Fatalf("created = %+v (%v)", created, err)
 	}
-	if prov.last != nil {
+	if prov.lastReq() != nil {
 		t.Error("the provider was called for a draft")
 	}
 
@@ -130,8 +145,8 @@ func TestConfiguredRunTool_CreateUpdateStartDelete(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.Content[0].Text), &result); err != nil || result.FinalText != "finished" || result.RunID != created.RunID {
 		t.Errorf("start result = %+v (%v), want this run's final text", result, err)
 	}
-	if prov.last == nil || prov.last.Temperature == nil || *prov.last.Temperature != 0.6 {
-		t.Errorf("provider saw %+v, want the patched temperature", prov.last)
+	if prov.lastReq() == nil || prov.lastReq().Temperature == nil || *prov.lastReq().Temperature != 0.6 {
+		t.Errorf("provider saw %+v, want the patched temperature", prov.lastReq())
 	}
 	if run, _ := st.GetRun(context.Background(), created.RunID); run.Status != store.RunCompleted {
 		t.Errorf("row after start = %q", run.Status)
