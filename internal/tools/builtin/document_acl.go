@@ -249,6 +249,20 @@ func (a *docACL) readable(ctx context.Context, docID string) (bool, error) {
 	return true, nil
 }
 
+// limitsReading reports whether the set can deny reading some document of this
+// scope: a rule naming part of it, or a deny on the whole scope. Nil (no set)
+// limits nothing.
+func (a *docACL) limitsReading(ctx context.Context) (bool, error) {
+	if a == nil {
+		return false, nil
+	}
+	if a.pathSensitive {
+		return true, nil
+	}
+	ok, err := a.readable(ctx, "")
+	return !ok, err
+}
+
 // chunk asks verb about the document holding a chunk. A chunk that does not
 // exist asks nothing: the op reports it missing, as it would to anyone.
 func (a *docACL) chunk(ctx context.Context, op, verb, chunkID string) (*tools.Result, error) {

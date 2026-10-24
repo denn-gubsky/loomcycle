@@ -57,6 +57,9 @@ filter: {
 }
 ```
 
+When access-control rules keep you from reading part of the scope, the counts
+cover only what you may read, and `inverted` is left out.
+
 `matched_chunks: 0` means the filter itself matched nothing — check the path,
 type or status — as opposed to an empty result with matches, which means nothing
 in that part of the tree is relevant. A call with no filter has no `filter` key.

@@ -827,3 +827,59 @@ func TestDocumentSearchFilter_PagesPastTheRowCap(t *testing.T) {
 		t.Errorf("the store was sent %d ids, want 10", len(f.IDs))
 	}
 }
+
+// TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts — the echo and the
+// filter_too_wide refusal must not be a way to measure documents the caller may
+// not read: growing a read-denied document inside the filtered subtree changes
+// neither the counts nor the refusal text.
+func TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts(t *testing.T) {
+	d, _, base := mermaidDocFixture(t, "savepoint", "nesting", "secret", "public")
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	// A readable document outside the filter, so /kb is not the whole scope and
+	// the filter needs a list at all.
+	out, r := docExec(t, d, open, `{"op":"create_document","scope":"tenant","title":"Other","path":"/other/doc"}`)
+	if r.IsError {
+		t.Fatalf("create_document: %s", r.Text)
+	}
+	for i := 0; i < 2; i++ {
+		if _, r := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+out["document_id"].(string)+`","title":"o","body":"public"}`); r.IsError {
+			t.Fatalf("create_chunk: %s", r.Text)
+		}
+	}
+	ctx := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+
+	observe := func() (string, string) {
+		t.Helper()
+		_, res := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`)
+		if res.IsError {
+			t.Fatalf("search: %s", res.Text)
+		}
+		var out struct {
+			Filter json.RawMessage `json:"filter"`
+		}
+		_ = json.Unmarshal([]byte(res.Text), &out)
+		d.Cfg = &config.Config{}
+		d.Cfg.Env.DocumentSearchFilterMaxIDs = 1
+		_, refused := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`)
+		d.Cfg = nil
+		if !refused.IsError || !strings.Contains(refused.Text, "filter_too_wide") {
+			t.Fatalf("precondition: a 1-id cap refuses the /kb filter, got %s", refused.Text)
+		}
+		return string(out.Filter), refused.Text
+	}
+	echo1, refusal1 := observe()
+	// Grow the denied document, and the scope with it.
+	for i := 0; i < 5; i++ {
+		if _, r := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+s.secretDoc+`","title":"more","body":"savepoint nesting secret"}`); r.IsError {
+			t.Fatalf("create_chunk: %s", r.Text)
+		}
+	}
+	echo2, refusal2 := observe()
+	if echo1 != echo2 {
+		t.Errorf("the echo moved when only a read-denied document grew:\n before %s\n after  %s", echo1, echo2)
+	}
+	if refusal1 != refusal2 {
+		t.Errorf("the refusal moved when only a read-denied document grew:\n before %s\n after  %s", refusal1, refusal2)
+	}
+}

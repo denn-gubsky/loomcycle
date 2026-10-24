@@ -3683,8 +3683,10 @@ export type DocumentSearchFilter = {
   /** Present when a type was widened to its ontology subtypes. */
   type_expanded_to?: string[];
   /** True when the match was sent to the search as "everything except" its
-   *  complement (the smaller list). */
-  inverted: boolean;
+   *  complement (the smaller list). Absent while access-control rules can deny
+   *  the caller reading part of the scope — the counts above then cover only
+   *  readable documents. */
+  inverted?: boolean;
 };
 
 /** One hit of `document({op:"search"})`. */
