@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSee, hasTenantScope, TENANT_SCOPE } from "./visibility";
+import { canSee, grantOf, hasTenantScope, surfacesOf, TENANT_SCOPE } from "./visibility";
 
 describe("canSee", () => {
   it("shows an `all` surface to every role, including a delegated user", () => {
@@ -42,5 +42,40 @@ describe("hasTenantScope", () => {
     // An exact-membership check, not a substring one — "substrate:tenant-readonly"
     // is not the operator scope, and a startsWith/includes bug would grant it.
     expect(hasTenantScope(["substrate:tenant-readonly"])).toBe(false);
+  });
+});
+
+describe("canSee with the server's capability summary", () => {
+  it("lets the server's answer decide over the role, both ways", () => {
+    // A member (no tenant scope) the server says may use a tenant surface sees it…
+    expect(canSee("tenant", false, false, true)).toBe(true);
+    // …and an operator the server says may not (an ACL deny) does not.
+    expect(canSee("tenant", false, true, false)).toBe(false);
+    expect(canSee("admin", true, false, false)).toBe(false);
+  });
+
+  it("falls back to the role rule when the server did not answer for the page", () => {
+    expect(canSee("tenant", false, true, undefined)).toBe(true);
+    expect(canSee("tenant", false, false, undefined)).toBe(false);
+  });
+});
+
+describe("grantOf", () => {
+  it("reads a page's answer and nothing else", () => {
+    expect(grantOf({ channels: false }, "channels")).toBe(false);
+    expect(grantOf({ channels: true }, "channels")).toBe(true);
+    expect(grantOf({ channels: true }, "memory")).toBeUndefined();
+    expect(grantOf(undefined, "channels")).toBeUndefined();
+    // An inherited property is not an answer.
+    expect(grantOf({}, "toString")).toBeUndefined();
+  });
+});
+
+describe("surfacesOf", () => {
+  it("reads effective.surfaces off the principal, absent on an older server", () => {
+    expect(surfacesOf({ effective: { surfaces: { run: true } } })).toEqual({ run: true });
+    expect(surfacesOf({})).toBeUndefined();
+    expect(surfacesOf(null)).toBeUndefined();
+    expect(surfacesOf(undefined)).toBeUndefined();
   });
 });

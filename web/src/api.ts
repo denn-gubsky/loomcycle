@@ -580,6 +580,13 @@ export interface Principal {
   /** The caller's groups (transitive); absent when none were resolved. */
   groups?: string[];
   acl_version?: number;
+  /**
+   * RFC EZ §4: which Web UI pages the caller may reach — per page id, what the
+   * server's route gates and access-control lists would say to a request to the
+   * page's primary route. Drives the left nav and the Settings tabs; absent on an
+   * older server (the role rule decides then).
+   */
+  effective?: { surfaces?: Record<string, boolean> };
 }
 
 export interface ServerCapabilities {

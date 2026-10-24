@@ -816,7 +816,8 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			"capabilities": s.serverCapabilities(),
 			// The rollout mode is the deployment's, not the principal's: an
 			// open-mode console shows it like any other.
-			"acl_mode": string(s.aclMode()),
+			"acl_mode":  string(s.aclMode()),
+			"effective": openModeEffective(),
 		})
 		return
 	}
@@ -840,6 +841,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	if p.Effective != nil {
 		out["acl_version"] = p.Effective.Version
 	}
+	// RFC EZ §4: which Web UI pages the principal may reach, asked of the
+	// gates a request to each page's primary route would face.
+	out["effective"] = navEffective(r.Context(), p)
 	writeJSONOK(w, out)
 }
 

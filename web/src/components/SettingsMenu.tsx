@@ -26,6 +26,7 @@ import {
   isMenuItemCurrent,
   settingsMenuItems,
 } from "../lib/settingsSections";
+import { type Surfaces } from "../lib/visibility";
 
 // A Record over Section, not a lookup with a fallback: adding a section without
 // an icon is then a type error here rather than a blank row in the menu.
@@ -64,11 +65,13 @@ const LINK_ICONS: Record<MenuLinkId, LucideIcon> = {
 export default function SettingsMenu({
   isAdmin,
   hasTenantScope,
+  surfaces,
 }: {
   isAdmin: boolean;
   hasTenantScope: boolean;
+  surfaces?: Surfaces;
 }) {
-  const items = settingsMenuItems(isAdmin, hasTenantScope);
+  const items = settingsMenuItems(isAdmin, hasTenantScope, surfaces);
   // Anything besides Log out makes this a settings menu; Log out alone makes it
   // an account menu.
   const hasSections = items.some((i) => i.kind !== "logout");
