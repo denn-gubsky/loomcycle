@@ -2065,6 +2065,16 @@ func (t *TeamDef) walkHoldingKey(ctx context.Context, in teamDefInput, lostRace 
 	if w == nil {
 		return nil, nil
 	}
+	// The key is matched alone, so the walk it holds may be of another team
+	// than the one this call asked run of. Answering with it stands in for
+	// starting THAT team and hands over its status and output, so it asks
+	// run and read (as a poll would) of the held walk's team; a refusal
+	// carries nothing of the walk.
+	for _, op := range []string{"run", "poll"} {
+		if res, refused := tools.AuthorizeTeamOp(ctx, op, w.Name); refused {
+			return refuse(res)
+		}
+	}
 	out := map[string]any{
 		"name":         w.Name,
 		"def_id":       w.DefID,

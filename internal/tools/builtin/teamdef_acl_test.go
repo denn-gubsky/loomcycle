@@ -183,3 +183,60 @@ func TestAgentTool_PollAndCancelOfAWalkAskItsTeam(t *testing.T) {
 		t.Errorf("Agent cancel of a team the deny does not name: %s", res.Text)
 	}
 }
+
+// An idempotency_key answers a start with the walk the key already holds,
+// whatever team the request names ("the rest of the request is not
+// compared"). That answer stands in for starting the held walk's team and
+// carries its output, so it asks run and read of THAT team: a key reused
+// with an allowed team must not hand over a denied team's walk. Both
+// lookups are covered: before the start, and after losing the key's race.
+func TestTeamDefTool_InRunKeyedRunAsksTheHeldWalksTeam(t *testing.T) {
+	held := &ExistingWalk{RunID: "r_held", Name: "secret", DefID: "tdf_secret", Status: "completed",
+		Ended: true, Terminal: "done", FinalText: "the secret answer"}
+	for _, c := range []struct {
+		name     string
+		lostRace bool
+		deny     string
+	}{
+		{"found before the start, run denied", false, "run"},
+		{"found before the start, read denied", false, "read"},
+		{"found after losing the race, run denied", true, "run"},
+		{"found after losing the race, read denied", true, "read"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tool, ctx, _, _, done := breakFixture(t)
+			defer done()
+			tool.ExistingWalk = func(_ context.Context, _ string, lostRace bool) (*ExistingWalk, error) {
+				if lostRace != c.lostRace {
+					return nil, nil
+				}
+				return held, nil
+			}
+			tool.WalkRun = func(ctx context.Context, _ WalkRunSpec) (context.Context, string, func(WalkEnd), error) {
+				return ctx, "", func(WalkEnd) {}, ErrWalkKeyHeld
+			}
+			run := runJudgedBy(ctx, defACLSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{c.deny}, Resources: []string{"team:secret"}}))
+
+			res := runTD(t, tool, run, `{"op":"run","name":"triage","input":"x","idempotency_key":"k1"}`)
+			if aclCode(res) != "acl_denied" || !strings.Contains(res.Text, c.deny+" team:secret") {
+				t.Errorf("want acl_denied naming %s team:secret, got %s", c.deny, res.Text)
+			}
+			if strings.Contains(res.Text, held.FinalText) || strings.Contains(res.Text, held.RunID) {
+				t.Errorf("the refusal carries the held walk: %s", res.Text)
+			}
+		})
+	}
+	// The held walk of a team the caller may run and read is answered as
+	// before.
+	tool, ctx, _, _, done := breakFixture(t)
+	defer done()
+	tool.ExistingWalk = func(context.Context, string, bool) (*ExistingWalk, error) {
+		return &ExistingWalk{RunID: "r_held", Name: "triage", DefID: "tdf_1", Status: "running"}, nil
+	}
+	tool.WalkRun = (&walkRunRecorder{}).open
+	run := runJudgedBy(ctx, defACLSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"run", "read"}, Resources: []string{"team:secret"}}))
+	res := runTD(t, tool, run, `{"op":"run","name":"triage","input":"x","idempotency_key":"k1"}`)
+	if res.IsError || decodeResult(t, res.Text)["run_id"] != "r_held" {
+		t.Errorf("the held walk of an allowed team: %s", res.Text)
+	}
+}
