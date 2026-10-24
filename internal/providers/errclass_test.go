@@ -143,3 +143,31 @@ func TestErrorClass_StringIsHumanReadable(t *testing.T) {
 		}
 	}
 }
+
+// StallsModel decides what the shared resolver matrix hears about a failed
+// call. A request error must leave the model alone; a model or provider fault,
+// and a model the provider does not have, must stall it.
+func TestStallsModel_OnlyModelFaultsStall(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("anthropic 400: invalid_request_error: `temperature` is deprecated for this model."), false},
+		{errors.New("anthropic 401: invalid x-api-key"), false},
+		{errors.New("anthropic 403: forbidden"), false},
+		{errors.New("openai 422: unprocessable"), false},
+		{errors.New("anthropic 413: request too large"), false},
+		{fmt.Errorf("call: %w", ErrOperatorKeyForbidden), false},
+		{errors.New("anthropic 404: model: claude-nope not found"), true},
+		{errors.New("gemini 404: model gemini-2.0-flash is no longer available"), true},
+		{errors.New("anthropic 500: upstream timeout"), true},
+		{errors.New("anthropic 529: overloaded_error"), true},
+		{errors.New("http: dial tcp: connection refused"), true},
+		{errors.New("something unrecognised"), true},
+	} {
+		if got := StallsModel(tc.err); got != tc.want {
+			t.Errorf("StallsModel(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
