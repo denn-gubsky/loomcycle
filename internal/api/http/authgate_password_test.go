@@ -482,6 +482,41 @@ func TestPasswordGate_ThrottleSeesEachClientBehindATrustedProxy(t *testing.T) {
 	}
 }
 
+// Removing the authenticator leaves the password as the only factor, so a
+// password that was long enough only beside it (8 characters) must be
+// replaced in the same request (the coordinator's finding 2).
+func TestPasswordGate_RemovingTOTPNeedsAPasswordThatStandsAlone(t *testing.T) {
+	f := newGateFixture(t)
+	inv := f.inviteCode(t, bAcmeOp, "local", `{}`)
+	b := f.browser(t)
+	_, info := b.do("POST", "/v1/_auth/invite/info", jsonBody(t, map[string]string{"code": inv}))
+	totp := info["totp"].(map[string]any)
+	secret, _ := totpB32Decode(totp["secret"].(string))
+	step := password.TOTPStep(time.Now())
+	code, redeemed := b.do("POST", "/v1/_auth/invite", jsonBody(t, map[string]string{"code": inv, "login": "olga@example.com",
+		"password": "eight+ok", "totp_enrolment": totp["enrolment"].(string), "totp_code": password.TOTPCode(secret, step)}))
+	if code != http.StatusCreated {
+		t.Fatalf("redeem with an optional authenticator: %d %v", code, redeemed)
+	}
+	otp := password.TOTPCode(secret, step+1)
+	if code, body := b.do("DELETE", "/v1/_auth/totp", jsonBody(t, map[string]string{"current_password": "eight+ok", "otp": otp})); code != http.StatusBadRequest || body["code"] != "password_too_weak_alone" {
+		t.Fatalf("removal with an 8-character password: %d %v", code, body)
+	}
+	_, subject := b.me()
+	if _, err := f.st.UserTOTPGet(context.Background(), "acme", subject); err != nil {
+		t.Fatalf("the refused removal removed the authenticator: %v", err)
+	}
+	const strong = "a passphrase that stands on its own"
+	// The next TOTP step is already spent; a recovery code re-authenticates.
+	otp = redeemed["recovery_codes"].([]any)[0].(string)
+	if code, body := b.do("DELETE", "/v1/_auth/totp", jsonBody(t, map[string]string{"current_password": "eight+ok", "otp": otp, "new_password": strong})); code != http.StatusNoContent {
+		t.Fatalf("removal with a new sole-factor password: %d %v", code, body)
+	}
+	if code, body := f.browser(t).login("local", "olga@example.com", strong, ""); code != http.StatusNoContent {
+		t.Fatalf("sign-in with the new password and no code: %d %v", code, body)
+	}
+}
+
 // The unauthenticated posts are refused from another site: without the UI
 // header, or cross-origin.
 func TestPasswordGate_PublicPostsAreSameOriginOnly(t *testing.T) {

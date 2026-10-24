@@ -1159,10 +1159,17 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 type removeTOTPRequest struct {
 	CurrentPassword string `json:"current_password"`
 	OTP             string `json:"otp"`
+	// NewPassword replaces a password that was long enough only beside the
+	// authenticator (8 characters) with one that stands alone (15).
+	NewPassword string `json:"new_password"`
 }
 
 // handleTOTPRemove serves DELETE /v1/_auth/totp. A gate that requires a
-// second factor refuses it.
+// second factor refuses it. Without the authenticator the password is the
+// only factor, so it must meet the sole-factor policy: the current one, or a
+// new_password set in the same request (before the authenticator goes, so a
+// failure in between leaves the account with both, never with a weak
+// password alone).
 func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 	pw, sess, login, ok := s.selfService(w, r)
 	if !ok {
@@ -1179,11 +1186,46 @@ func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, req.OTP) {
 		return
 	}
-	if _, err := s.store.UserTOTPDelete(r.Context(), sess.TenantID, sess.Subject); err != nil {
+	ctx := r.Context()
+	newPass := req.NewPassword != ""
+	candidate := req.CurrentPassword
+	if newPass {
+		candidate = req.NewPassword
+	}
+	norm, err := password.Normalize(candidate)
+	if err == nil {
+		err = pw.pg.policy.Check(norm, false, login)
+	}
+	if err != nil {
+		if !newPass {
+			writeJSONErrorBody(w, http.StatusBadRequest, map[string]any{"code": "password_too_weak_alone",
+				"error": "without an authenticator your password is the only factor and must meet that policy; " +
+					"send a new_password with the removal", "min_length": password.MinLengthSoleFactor})
+			return
+		}
+		writePolicyError(w, err)
+		return
+	}
+	if newPass {
+		phc, kid, err := pw.pg.hasher.Hash(ctx, norm)
+		if err == nil {
+			err = s.store.UserCredentialSet(ctx, store.UserCredentialRow{TenantID: sess.TenantID, Subject: sess.Subject,
+				Kind: store.CredentialKindPassword, PHC: phc, PepperKID: kid, UpdatedAt: time.Now().UTC()})
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not store the password")
+			return
+		}
+		s.recordGateAudit(ctx, "auth_password_set", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
+	}
+	if _, err := s.store.UserTOTPDelete(ctx, sess.TenantID, sess.Subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	s.recordGateAudit(r.Context(), "auth_totp_removed", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
+	s.recordGateAudit(ctx, "auth_totp_removed", pw.g.Name, "", sess.TenantID, sess.Subject, floorTarget{})
+	if newPass && !s.startPasswordSession(w, r, pw.g.Name, sess.TenantID, sess.Subject, []string{amrPassword}) {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
