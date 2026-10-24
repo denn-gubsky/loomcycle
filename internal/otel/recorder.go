@@ -281,6 +281,13 @@ const (
 	// loomcycle.memory.deadlink.dropped counter derives from the same-named
 	// span event.
 	AttrDeadlinkDropped = "loomcycle.memory.deadlink_dropped"
+	// AttrMemoryFilterIDs / AttrMemoryFilterExcludeIDs are the sizes of the id
+	// allow / deny lists a structural document filter bound into each leg of this
+	// retrieval. Absent on an unfiltered search. Recorded so an operator can see
+	// what a slow filtered search was carrying: the list is bound into every leg,
+	// and its size is the cost a denormalised column would remove.
+	AttrMemoryFilterIDs        = "loomcycle.memory.filter.ids"
+	AttrMemoryFilterExcludeIDs = "loomcycle.memory.filter.exclude_ids"
 
 	// AttrHelpWritten / Pruned / Unchanged / Failed / Degraded mirror the
 	// help.ReconcileStats fields (RFC BL PR5) so the counters + degraded gauge
@@ -541,6 +548,23 @@ func SetMemorySearchResult(span trace.Span, mode string, topK, deadlinkDropped i
 		span.AddEvent(EventDeadlinkDropped,
 			trace.WithAttributes(attribute.Int(AttrDeadlinkDropped, deadlinkDropped)))
 	}
+}
+
+// SetMemorySearchFilterIDs stamps the id-list sizes of a filtered retrieval.
+// Nothing is recorded for an unfiltered one, so its span is unchanged. No-op on
+// a nil / non-recording span.
+func SetMemorySearchFilterIDs(span trace.Span, ids, excludeIDs int) {
+	if span == nil || (ids <= 0 && excludeIDs <= 0) || !span.IsRecording() {
+		return
+	}
+	var kvs []attribute.KeyValue
+	if ids > 0 {
+		kvs = append(kvs, attribute.Int(AttrMemoryFilterIDs, ids))
+	}
+	if excludeIDs > 0 {
+		kvs = append(kvs, attribute.Int(AttrMemoryFilterExcludeIDs, excludeIDs))
+	}
+	span.SetAttributes(kvs...)
 }
 
 // RecordDeadlinkDropped records a dead-link drop count on `span` (attribute +

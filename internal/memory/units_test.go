@@ -83,6 +83,45 @@ func TestUnitLegFilter_OnlyForChunkTargetedSearches(t *testing.T) {
 	}
 }
 
+// TestSearchQuery_IDsReachTheUnitLeg — an id list restricts the main legs AND
+// the unit leg alike: a chunk excluded from the main pool must not come back
+// through one of its derived units. And it survives every path through Filter,
+// including the selector branches that return early.
+func TestSearchQuery_IDsReachTheUnitLeg(t *testing.T) {
+	ids, excl := []string{"c1", "c2"}, []string{"c3"}
+	for _, c := range []struct {
+		name string
+		q    SearchQuery
+	}{
+		{"document search by prefix", SearchQuery{Prefix: DocumentChunkKeyPrefix}},
+		{"documents selector", SearchQuery{Sources: []Source{SourceDocuments}}},
+		{"no selector", SearchQuery{}},
+		{"facts and notes", SearchQuery{Sources: []Source{SourceFacts, SourceNotes}}},
+		{"traces alone", SearchQuery{Sources: []Source{SourceTraces}}},
+	} {
+		q := c.q
+		q.IDs, q.ExcludeIDs = ids, excl
+		main, err := q.Filter()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if !reflect.DeepEqual(main.IDs, ids) || !reflect.DeepEqual(main.ExcludeIDs, excl) {
+			t.Errorf("%s: main filter ids = %v / %v, want %v / %v", c.name, main.IDs, main.ExcludeIDs, ids, excl)
+		}
+		if unit, run := q.UnitLegFilter(main); run {
+			if !reflect.DeepEqual(unit.IDs, ids) || !reflect.DeepEqual(unit.ExcludeIDs, excl) {
+				t.Errorf("%s: unit leg ids = %v / %v, want %v / %v", c.name, unit.IDs, unit.ExcludeIDs, ids, excl)
+			}
+		} else if c.name == "document search by prefix" || c.name == "documents selector" {
+			t.Errorf("%s: precondition — a chunk-targeted search runs a unit leg", c.name)
+		}
+	}
+	// No list, no constraint: the filter a filter-free caller gets is unchanged.
+	if f, _ := (SearchQuery{Prefix: DocumentChunkKeyPrefix}).Filter(); f.IDs != nil || f.ExcludeIDs != nil {
+		t.Errorf("a query with no id list carries one: %+v", f)
+	}
+}
+
 func unitRow(chunk, kind string, n int, text string, score float64) store.MemorySearchEntry {
 	v, _ := json.Marshal(UnitValue{ChunkID: chunk, Kind: kind, Text: text})
 	return store.MemorySearchEntry{MemoryEntry: store.MemoryEntry{Key: UnitKey(chunk, kind, n), Value: v}, Score: score, SemanticScore: score}
