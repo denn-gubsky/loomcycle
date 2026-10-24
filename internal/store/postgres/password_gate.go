@@ -425,14 +425,14 @@ func (s *Store) UserRecoveryCodesRemaining(ctx context.Context, tenantID, subjec
 // ---- invites ---------------------------------------------------------------
 
 const inviteCols = `invite_id, code_hash, gate, tenant_id, subject, access_mode, groups, login, email, return_to,
-	bootstrap, created_by, created_at, expires_at, redeemed_at, redeemed_subject, revoked_at`
+	bootstrap, issued_by_manager, created_by, created_at, expires_at, redeemed_at, redeemed_subject, revoked_at`
 
 func scanInvite(row rowScanner) (store.AuthInviteRow, error) {
 	var r store.AuthInviteRow
 	var groups string
 	var redeemed, revoked *time.Time
 	if err := row.Scan(&r.InviteID, &r.CodeHash, &r.Gate, &r.TenantID, &r.Subject, &r.AccessMode, &groups,
-		&r.Login, &r.Email, &r.ReturnTo, &r.Bootstrap, &r.CreatedBy, &r.CreatedAt, &r.ExpiresAt,
+		&r.Login, &r.Email, &r.ReturnTo, &r.Bootstrap, &r.IssuedByManager, &r.CreatedBy, &r.CreatedAt, &r.ExpiresAt,
 		&redeemed, &r.RedeemedSubject, &revoked); err != nil {
 		return store.AuthInviteRow{}, err
 	}
@@ -461,9 +461,10 @@ func (s *Store) AuthInviteCreate(ctx context.Context, row store.AuthInviteRow) e
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO auth_invites (`+inviteCols+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 		row.InviteID, row.CodeHash, row.Gate, row.TenantID, row.Subject, row.AccessMode, string(gj),
-		row.Login, row.Email, row.ReturnTo, row.Bootstrap, row.CreatedBy, gateStamp(row.CreatedAt), row.ExpiresAt,
+		row.Login, row.Email, row.ReturnTo, row.Bootstrap, row.IssuedByManager, row.CreatedBy,
+		gateStamp(row.CreatedAt), row.ExpiresAt,
 		nullTime(row.RedeemedAt), row.RedeemedSubject, nullTime(row.RevokedAt))
 	if err != nil {
 		if gateUniqueViolation(err) {
@@ -668,6 +669,35 @@ func (s *Store) TenantBootstrapped(ctx context.Context, tenantID string) (bool, 
 	return ok, nil
 }
 
+// TenantBootstrapList implements store.PasswordGateStore.
+func (s *Store) TenantBootstrapList(ctx context.Context) ([]store.TenantBootstrapRow, error) {
+	rows, err := s.pool.Query(ctx, `SELECT tenant_id, at, via FROM tenant_bootstraps ORDER BY tenant_id`)
+	if err != nil {
+		return nil, fmt.Errorf("tenant bootstrap list: %w", err)
+	}
+	defer rows.Close()
+	out := []store.TenantBootstrapRow{}
+	for rows.Next() {
+		var r store.TenantBootstrapRow
+		if err := rows.Scan(&r.TenantID, &r.At, &r.Via); err != nil {
+			return nil, fmt.Errorf("tenant bootstrap list scan: %w", err)
+		}
+		r.At = r.At.UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// TenantBootstrapMark implements store.PasswordGateStore.
+func (s *Store) TenantBootstrapMark(ctx context.Context, row store.TenantBootstrapRow) error {
+	if _, err := s.pool.Exec(ctx, `INSERT INTO tenant_bootstraps (tenant_id, at, via)
+		VALUES ($1, $2, $3) ON CONFLICT (tenant_id) DO NOTHING`,
+		row.TenantID, gateStamp(row.At), row.Via); err != nil {
+		return fmt.Errorf("tenant bootstrap mark: %w", err)
+	}
+	return nil
+}
+
 // AuthInviteLiveBootstrap implements store.PasswordGateStore.
 func (s *Store) AuthInviteLiveBootstrap(ctx context.Context, tenantID string, now time.Time) (bool, error) {
 	var ok bool
@@ -692,12 +722,12 @@ func (s *Store) AuthInviteDeleteExpired(ctx context.Context, before time.Time) (
 
 // ---- resets ----------------------------------------------------------------
 
-const resetCols = `reset_id, code_hash, gate, tenant_id, subject, created_by, created_at, expires_at, used_at`
+const resetCols = `reset_id, code_hash, gate, tenant_id, subject, issued_by_manager, created_by, created_at, expires_at, used_at`
 
 func scanReset(row rowScanner) (store.AuthResetRow, error) {
 	var r store.AuthResetRow
 	var used *time.Time
-	if err := row.Scan(&r.ResetID, &r.CodeHash, &r.Gate, &r.TenantID, &r.Subject, &r.CreatedBy,
+	if err := row.Scan(&r.ResetID, &r.CodeHash, &r.Gate, &r.TenantID, &r.Subject, &r.IssuedByManager, &r.CreatedBy,
 		&r.CreatedAt, &r.ExpiresAt, &used); err != nil {
 		return store.AuthResetRow{}, err
 	}
@@ -730,9 +760,9 @@ func (s *Store) AuthResetCreate(ctx context.Context, row store.AuthResetRow) err
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO auth_resets (`+resetCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		row.ResetID, row.CodeHash, row.Gate, row.TenantID, row.Subject, row.CreatedBy, created, row.ExpiresAt,
-		nullTime(row.UsedAt)); err != nil {
+		INSERT INTO auth_resets (`+resetCols+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		row.ResetID, row.CodeHash, row.Gate, row.TenantID, row.Subject, row.IssuedByManager, row.CreatedBy,
+		created, row.ExpiresAt, nullTime(row.UsedAt)); err != nil {
 		if gateUniqueViolation(err) {
 			return &store.ErrConflict{Kind: "auth_reset", ID: row.ResetID}
 		}
@@ -795,6 +825,37 @@ func (s *Store) AuthResetDeleteExpired(ctx context.Context, before time.Time) (i
 		return 0, fmt.Errorf("auth reset delete expired: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// AuthRevokeManagerIssued implements store.PasswordGateStore. Both updates
+// run in one transaction, so a failure closes neither kind of link and the
+// caller's authority-raising write is refused with nothing half-done.
+func (s *Store) AuthRevokeManagerIssued(ctx context.Context, tenantID, subject string, at time.Time) (int, error) {
+	at = gateStamp(at)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	total := 0
+	for _, q := range []string{
+		`UPDATE auth_resets SET used_at = $1
+		WHERE tenant_id = $2 AND subject = $3 AND issued_by_manager
+			AND used_at IS NULL AND expires_at > $1`,
+		`UPDATE auth_invites SET revoked_at = $1
+		WHERE tenant_id = $2 AND subject = $3 AND issued_by_manager
+			AND redeemed_at IS NULL AND revoked_at IS NULL AND expires_at > $1`,
+	} {
+		tag, err := tx.Exec(ctx, q, at, tenantID, subject)
+		if err != nil {
+			return 0, fmt.Errorf("auth revoke manager-issued: %w", err)
+		}
+		total += int(tag.RowsAffected())
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("auth revoke manager-issued: %w", err)
+	}
+	return total, nil
 }
 
 // ---- throttle --------------------------------------------------------------

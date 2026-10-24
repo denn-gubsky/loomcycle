@@ -63,6 +63,14 @@ func captureUsers(ctx context.Context, s store.Store, out *UsersSection) error {
 			CreatedBy:   r.CreatedBy,
 		})
 	}
+	marks, err := s.TenantBootstrapList(ctx)
+	if err != nil {
+		return fmt.Errorf("snapshot users bootstraps: %w", err)
+	}
+	out.Bootstraps = make([]TenantBootstrapEntry, 0, len(marks))
+	for _, m := range marks {
+		out.Bootstraps = append(out.Bootstraps, TenantBootstrapEntry{TenantID: m.TenantID, At: m.At.UTC(), Via: m.Via})
+	}
 	return nil
 }
 
@@ -121,6 +129,23 @@ func captureTokenLimits(ctx context.Context, s store.Store, capturedAt time.Time
 		return a.UserID < b.UserID
 	})
 	out.UsageMTD = block
+	return nil
+}
+
+// restoreBootstraps writes each tenant_bootstraps marker the target does not
+// have; an existing marker is never moved. It runs before restoreUsers so a
+// marker keeps the source's time and route rather than the one UserCreate
+// would stamp. A marker only ever refuses an owner bootstrap, so a failure
+// here aborts the restore (nothing else has been written yet) rather than
+// leave an emptied tenant open to a second owner. A snapshot without the
+// field restores no markers here; restoreUsers then marks only the tenants
+// whose users it creates.
+func restoreBootstraps(ctx context.Context, s store.Store, sec *UsersSection) error {
+	for _, b := range sec.Bootstraps {
+		if err := s.TenantBootstrapMark(ctx, store.TenantBootstrapRow{TenantID: b.TenantID, At: b.At, Via: b.Via}); err != nil {
+			return fmt.Errorf("snapshot restore users bootstrap %q: %w", b.TenantID, err)
+		}
+	}
 	return nil
 }
 

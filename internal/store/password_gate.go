@@ -87,7 +87,13 @@ type AuthInviteRow struct {
 	// Bootstrap marks the owner invite of an empty tenant (the one case an
 	// untrusted inviter may grant access_mode tenant). Its redemption re-checks
 	// that the tenant still has no user.
-	Bootstrap       bool
+	Bootstrap bool
+	// IssuedByManager is set when an auth:manage credential issued the
+	// invite. Such an invite is re-checked against the provisioning floor at
+	// redemption, and revoked when its target's authority is raised
+	// (AuthRevokeManagerIssued), so a link minted while the target was
+	// unprivileged cannot be redeemed after it became privileged.
+	IssuedByManager bool
 	CreatedBy       string
 	CreatedAt       time.Time
 	ExpiresAt       time.Time
@@ -104,20 +110,34 @@ func (r AuthInviteRow) Live(now time.Time) bool {
 // AuthResetRow is a one-time password reset link (RFC FA §6.1). CodeHash is
 // the hex SHA-256 of the code.
 type AuthResetRow struct {
-	ResetID   string
-	CodeHash  string
-	Gate      string
-	TenantID  string
-	Subject   string
-	CreatedBy string
-	CreatedAt time.Time
-	ExpiresAt time.Time
-	UsedAt    time.Time
+	ResetID  string
+	CodeHash string
+	Gate     string
+	TenantID string
+	Subject  string
+	// IssuedByManager is set when an auth:manage credential issued the reset.
+	// Such a reset is re-checked against the provisioning floor at
+	// completion, and used up when its target's authority is raised
+	// (AuthRevokeManagerIssued).
+	IssuedByManager bool
+	CreatedBy       string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	UsedAt          time.Time
 }
 
 // Live reports whether the reset can still be completed at now.
 func (r AuthResetRow) Live(now time.Time) bool {
 	return r.UsedAt.IsZero() && now.Before(r.ExpiresAt)
+}
+
+// TenantBootstrapRow is one tenant_bootstraps marker: the tenant had a user
+// at At, first written through Via ("users", "invite:<gate>", "backfill").
+// At reads back zero for a sqlite backfill row, whose time is unknown.
+type TenantBootstrapRow struct {
+	TenantID string
+	At       time.Time
+	Via      string
 }
 
 // AuthSecondFactor is the TOTP enrolment a redemption or a reset completes in
@@ -264,6 +284,27 @@ type PasswordGateStore interface {
 	// `before`.
 	AuthResetDeleteExpired(ctx context.Context, before time.Time) (int, error)
 
+	// AuthRevokeManagerIssued closes every manager-issued link aimed at
+	// (tenantID, subject) that is live at `at`: a reset is marked used
+	// (used_at = at) and an invite attaching to the subject is revoked
+	// (revoked_at = at). Operator-issued links are untouched. Returns how many
+	// rows it changed.
+	//
+	// A manager's link is checked against the provisioning floor when it is
+	// issued; raising the target's authority afterwards would let the link
+	// carry a password onto a now-privileged account. So every write that
+	// raises a user's authority calls this BEFORE the write and aborts the
+	// write when it fails (a revoked link is harmless if the grant then
+	// fails; a grant with a live stale link is the bug). Both backends call
+	// it inside these store methods, so every transport and a snapshot
+	// restore are covered:
+	//   - GroupMemberAdd with MemberKind user (row.TenantID, row.MemberID);
+	//   - AclBindingPut with SubjectKind user (SubjectID), or token (the
+	//     token def's TenantID/Subject; a missing token def revokes nothing);
+	//   - UserUpdate setting AccessMode to "tenant";
+	//   - OperatorTokenDefCreate, always, for (row.TenantID, row.Subject).
+	AuthRevokeManagerIssued(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
+
 	// AuthThrottleGet returns a throttle key's failures inside its current
 	// window and its block. Zero values for an unknown key or a window that
 	// ended before now.
@@ -284,6 +325,14 @@ type PasswordGateStore interface {
 	// tenant by every user-creating path, never deleted) or a users row. A
 	// website's owner bootstrap is allowed only when this is false.
 	TenantBootstrapped(ctx context.Context, tenantID string) (bool, error)
+	// TenantBootstrapList returns every tenant_bootstraps marker, ordered by
+	// tenant_id. Empty slice when there are none. A snapshot carries these so
+	// a tenant whose users were all deleted stays bootstrapped on restore.
+	TenantBootstrapList(ctx context.Context) ([]TenantBootstrapRow, error)
+	// TenantBootstrapMark writes a marker unless the tenant already has one;
+	// an existing marker is never moved (its At and Via stay). A zero At is
+	// stamped with the current time.
+	TenantBootstrapMark(ctx context.Context, row TenantBootstrapRow) error
 
 	// AuthSubjectDelete removes every gate row of a subject: identities,
 	// credentials, TOTP, recovery codes, and its invites and resets. Called

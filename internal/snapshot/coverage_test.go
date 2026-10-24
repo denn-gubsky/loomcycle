@@ -269,6 +269,14 @@ const (
 	markDrained     = "dp0mark-pending-drained-content"
 	markLeaseOwner  = "dp0mark-consolidation-lease-owner"
 	markDirent      = "dp0mark-dirent-name"
+	markBootTenant  = "dp0mark-bootstrap-tenant"
+	markLogin       = "dp0mark-gate-login"
+	markPHC         = "dp0mark-password-phc"
+	markTOTPSeal    = "dp0mark-totp-sealed"
+	markRecovery    = "dp0mark-recovery-code-hash"
+	markInviteCode  = "dp0mark-invite-code-hash"
+	markResetCode   = "dp0mark-reset-code-hash"
+	markThrottleKey = "dp0mark-throttle-key"
 	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
@@ -373,6 +381,23 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	_, err = s.UsageCarryRaise(ctx, store.UsageCarryRow{TenantID: markCarryTenant, Month: limits.MonthStart(now), Tokens: 42})
 	must("usage_carry", err)
 
+	// RFC FA P2 gate state for one user, and a tenant whose only marker
+	// outlives its users. The gate rows hold authentication material and
+	// must never travel; the marker must.
+	must("tenant_bootstraps", s.TenantBootstrapMark(ctx, store.TenantBootstrapRow{TenantID: markBootTenant, At: now, Via: "users"}))
+	must("user_identities", s.UserIdentityCreate(ctx, store.UserIdentityRow{TenantID: "acme", Subject: markUser,
+		Gate: "password", ExternalSubject: markLogin, CreatedAt: now}))
+	must("user_credentials", s.UserCredentialSet(ctx, store.UserCredentialRow{TenantID: "acme", Subject: markUser,
+		Kind: store.CredentialKindPassword, PHC: markPHC, PepperKID: "kid", UpdatedAt: now}))
+	must("user_totp", s.UserTOTPPut(ctx, store.UserTOTPRow{TenantID: "acme", Subject: markUser, Sealed: markTOTPSeal, CreatedAt: now}))
+	must("user_recovery_codes", s.UserRecoveryCodesReplace(ctx, "acme", markUser, []string{markRecovery}, now))
+	must("auth_invites", s.AuthInviteCreate(ctx, store.AuthInviteRow{InviteID: "inv_dp0mark", CodeHash: markInviteCode, Gate: "password",
+		TenantID: "acme", AccessMode: "isolated", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}))
+	must("auth_resets", s.AuthResetCreate(ctx, store.AuthResetRow{ResetID: "rst_dp0mark", CodeHash: markResetCode, Gate: "password",
+		TenantID: "acme", Subject: markUser, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}))
+	_, _, err = s.AuthThrottleRecordFailure(ctx, markThrottleKey, now, time.Hour, func(int) time.Duration { return 0 })
+	must("auth_throttle", err)
+
 	return []plantedRow{
 		{table: "credential_defs", absent: []string{markCredName, markCredCipher}},
 		{table: "operator_token_defs", absent: []string{markTokName, markTokSubject, markTokHash, "otd_dp0mark"}},
@@ -393,6 +418,14 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		{table: "users", present: []string{markUser}},
 		{table: "token_limits", present: []string{markLimitUser}},
 		{table: "usage_carry", present: []string{markCarryTenant}},
+		{table: "tenant_bootstraps", present: []string{markBootTenant}},
+		{table: "user_identities", absent: []string{markLogin}},
+		{table: "user_credentials", absent: []string{markPHC}},
+		{table: "user_totp", absent: []string{markTOTPSeal}},
+		{table: "user_recovery_codes", absent: []string{markRecovery}},
+		{table: "auth_invites", absent: []string{markInviteCode, "inv_dp0mark"}},
+		{table: "auth_resets", absent: []string{markResetCode, "rst_dp0mark"}},
+		{table: "auth_throttle", absent: []string{markThrottleKey}},
 	}
 }
 

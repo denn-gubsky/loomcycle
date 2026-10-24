@@ -143,6 +143,12 @@ var tableCoverageMap = map[string]tableCoverage{
 	"teamdef_active":   {Kind: coverSection, Section: "team_def_active", Secrets: "none", Backends: onBoth},
 	"teamdefs": {Kind: coverSection, Section: "team_defs", Backends: onBoth,
 		Secrets: "reported: a literal header value in an inline hook block (capture_findings)"},
+	// A marker is the only record that an emptied tenant once had an owner,
+	// and it is what refuses a second owner bootstrap there. The users rows
+	// cannot re-derive it for a tenant that has none left, so a restore that
+	// dropped it would hand such a tenant to whoever bootstraps it next.
+	"tenant_bootstraps": {Kind: coverSection, Section: "users", Secrets: "none", Backends: onBoth,
+		Reason: "carried as users.bootstraps (insert-or-ignore on restore); a snapshot written before that field restores markers only for the tenants whose users it creates"},
 	"token_limits": {Kind: coverSection, Section: "token_limits", Secrets: "none", Backends: onBoth,
 		Cache: "limits.Tracker (ceilings seeded at boot)"},
 	// usage_carry is written FROM the token_limits section's usage_mtd block,
@@ -189,25 +195,28 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "the per-call billing ledger; only a month-to-date aggregate may travel, with token_limits"},
 	"usage_archive": {Kind: coverNever, Backends: onBoth,
 		Reason: "rolled-up billing ledger"},
-	// RFC FA P2 auth-gate state. The credentials, second factors and codes
-	// are authentication material peppered or sealed with keys the target
-	// does not hold. An identity holds no secret, but it is an authentication
-	// binding: for an OIDC gate the (issuer, sub) row alone lets that external
-	// account log in as the user, so restoring it would grant the source's
-	// logins on the target. The users section carries the users; logins are
-	// re-issued there.
+	// RFC FA P2 auth-gate state, treated like operator_token_defs and
+	// credential_defs: authentication material never travels, and the
+	// target re-issues logins. The credentials, second factors and codes are
+	// peppered, sealed or hashed with keys the target does not hold (so they
+	// would not even work there), and each is still offline-attackable or
+	// replayable material. An identity holds no secret, but it is an
+	// authentication binding: for an OIDC gate the (issuer, sub) row alone
+	// lets that external account log in as the user. The users section
+	// carries the users (and the tenant_bootstraps markers); a restored user
+	// has no login until one is issued on the target.
 	"user_identities": {Kind: coverNever, Backends: onBoth,
-		Reason: "login-to-user bindings; restoring one would let a source login (an OIDC subject, a password login) sign in on the target"},
+		Reason: "not carried: login-to-user bindings with no secret, but restoring one would let a source login (an OIDC subject, a password login) sign in on the target"},
 	"user_credentials": {Kind: coverNever, Backends: onBoth,
-		Reason: "peppered password hashes keyed off a pepper outside the database"},
+		Reason: "not carried: password hashes peppered with a key outside the database; secret material like an operator token hash, and useless on a target without that pepper"},
 	"user_totp": {Kind: coverNever, Backends: onBoth,
-		Reason: "TOTP secrets sealed under the source's deployment key"},
+		Reason: "not carried: TOTP secrets sealed under the source's deployment key, like credential_defs ciphertext"},
 	"user_recovery_codes": {Kind: coverNever, Backends: onBoth,
-		Reason: "hashes of single-use second-factor recovery codes"},
+		Reason: "not carried: hashes of single-use second-factor recovery codes; a carried code would bypass the second factor on the target"},
 	"auth_invites": {Kind: coverNever, Backends: onBoth,
-		Reason: "hashes of single-use sign-up codes; a restored live invite would admit a sign-up on the target"},
+		Reason: "not carried: hashes of single-use sign-up codes; a restored live invite would admit a sign-up (or attach a password to a user) on the target"},
 	"auth_resets": {Kind: coverNever, Backends: onBoth,
-		Reason: "hashes of single-use password-reset codes"},
+		Reason: "not carried: hashes of single-use password-reset codes; a restored live reset would set a user's password on the target"},
 	"retention_overrides": {Kind: coverNever, Backends: onBoth,
 		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 
@@ -232,10 +241,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "derived change log"},
 	"memory_cursors": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "consolidation watermarks and a lease owned by a source replica"},
-	"tenant_bootstraps": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "written by the store whenever a tenant gets its first users row, so a restore that recreates users recreates its markers"},
 	"auth_throttle": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "short-lived login-failure counters of the source; they mean nothing on an instance that did not see the failures"},
+		Reason: "not carried: short-lived login-failure counters of the source (no secret); they mean nothing on an instance that did not see the failures"},
 	"process_samples": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "operational metrics of the source process"},
 	"replicas": {Kind: coverOmitted, Backends: onPostgres,

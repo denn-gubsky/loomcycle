@@ -127,6 +127,13 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 	if patch.Status != nil && !store.ValidUserStatus(*patch.Status) {
 		return fmt.Errorf("user update: status must be one of active|disabled, got %q", *patch.Status)
 	}
+	// Raising a user to access_mode tenant closes its manager-issued links
+	// first (store.PasswordGateStore.AuthRevokeManagerIssued).
+	if patch.AccessMode != nil && *patch.AccessMode == "tenant" {
+		if _, err := s.AuthRevokeManagerIssued(ctx, tenantID, subject, time.Now().UTC()); err != nil {
+			return fmt.Errorf("user update: %w", err)
+		}
+	}
 	sets := []string{}
 	args := []any{}
 	idx := 1

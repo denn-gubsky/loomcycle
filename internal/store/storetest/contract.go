@@ -537,6 +537,11 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthThrottleWindowBlockAndExpiry", testAuthThrottleWindowBlockAndExpiry},
 		{"AuthInviteAndResetDeleteExpiredKeepLiveRows", testAuthInviteAndResetDeleteExpiredKeepLiveRows},
 		{"AuthSubjectDeleteRemovesOnlyThatSubjectsRows", testAuthSubjectDeleteRemovesOnlyThatSubjectsRows},
+		{"AuthInviteAndResetRoundTripIssuedByManager", testAuthInviteAndResetRoundTripIssuedByManager},
+		{"AuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks", testAuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks},
+		{"AuthorityRaisingWritesRevokeManagerIssuedLinks", testAuthorityRaisingWritesRevokeManagerIssuedLinks},
+		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},
+		{"TenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant", testTenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant},
 		// RFC AL Path primitive — the dirent (path tree) substrate.
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},

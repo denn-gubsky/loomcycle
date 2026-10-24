@@ -16,6 +16,12 @@
 -- across the deployment. UNIQUE (tenant_id, subject, gate) holds "one
 -- identity per gate per user" and also serves the by-subject lookup.
 --
+-- issued_by_manager on auth_invites / auth_resets marks a link an auth:manage
+-- credential issued. Such a link is re-checked against the provisioning floor
+-- when it is used, and every write that raises its target's authority closes
+-- it first (AuthRevokeManagerIssued), so a link minted while the target was
+-- unprivileged cannot land a password on a now-privileged account.
+--
 -- auth_throttle stores window_end rather than the window length: callers
 -- pass the window per call, and a read must know when the current window
 -- closed without being told its length.
@@ -82,6 +88,7 @@ CREATE TABLE IF NOT EXISTS auth_invites (
     email            TEXT        NOT NULL DEFAULT '',
     return_to        TEXT        NOT NULL DEFAULT '',
     bootstrap        BOOLEAN     NOT NULL DEFAULT FALSE,
+    issued_by_manager BOOLEAN    NOT NULL DEFAULT FALSE,
     created_by       TEXT        NOT NULL DEFAULT '',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at       TIMESTAMPTZ NOT NULL,
@@ -97,6 +104,7 @@ CREATE TABLE IF NOT EXISTS auth_resets (
     gate       TEXT        NOT NULL,
     tenant_id  TEXT        NOT NULL DEFAULT '',
     subject    TEXT        NOT NULL,
+    issued_by_manager BOOLEAN NOT NULL DEFAULT FALSE,
     created_by TEXT        NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
