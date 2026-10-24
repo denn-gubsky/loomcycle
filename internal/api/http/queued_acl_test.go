@@ -207,3 +207,19 @@ func TestRestartQueuedRuns_RunWithNoACLOriginStartsAsBefore(t *testing.T) {
 		t.Errorf("a run queued with no caller's set started narrowed: %+v", aclNarrowingOf(seen[0]))
 	}
 }
+
+// With no resolver wired, access control is not configured, so a queued run
+// starts at the restart as a live request would: with no set, rather than
+// staying queued on an error no later restart can clear.
+func TestRestartQueuedRuns_NoACLResolverWiredStartsTheRunAsALiveRequestWould(t *testing.T) {
+	e := aclResumeFixture(t, true, map[string][][]providers.Event{"worker": {probeTurn("tu_q"), endTurn()}})
+	run := e.queueAsDev(t, "worker", "a_q_unwired")
+	e.srv.SetACLResolver(nil)
+	if restarted, failed := e.restart(t); restarted != 1 || failed != 0 {
+		t.Fatalf("restarted %d, failed %d; want 1/0", restarted, failed)
+	}
+	waitRunStatus(t, e.st, run.ID, store.RunCompleted)
+	if seen := e.waitProbes(t, 1); seen[0].ACL != nil || !slices.Contains(seen[0].Tools, "Bash") {
+		t.Errorf("with no resolver wired the restarted run is narrowed: %+v", aclNarrowingOf(seen[0]))
+	}
+}
