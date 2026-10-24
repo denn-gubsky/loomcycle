@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 )
@@ -144,5 +147,66 @@ func TestErasure_DryRunWritesNoRecord(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &res)
 	if dry, _ := res["dry_run"].(bool); !dry {
 		t.Errorf("the response does not report itself as a dry run: %v", res)
+	}
+}
+
+// TestErasureConnector_RecordsTheSameAuditAsHTTP: MCP and gRPC reach erasure
+// through the connector method, not the HTTP handler. Before the audit moved
+// into that shared path, a live erasure over either wrote no record at all —
+// the one operation nothing can undo, unrecorded on two of three transports.
+func TestErasureConnector_RecordsTheSameAuditAsHTTP(t *testing.T) {
+	sink := &recordingSink{}
+	s := &Server{store: memStoreForTest(t)}
+	s.SetEraseAudit(sink)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "t1", Subject: "ops", TokenSuffix: "abc123"})
+
+	if _, err := s.ErasureExecute(ctx, erasure.ExecuteRequest{Tenant: "t1", Subject: "alice", Confirm: "alice"}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(sink.events) != 2 || sink.events[0].Action != "erase_intent" || sink.events[1].Action != "erase_result" {
+		t.Fatalf("records = %+v, want erase_intent then erase_result", sink.events)
+	}
+	for i, ev := range sink.events {
+		if ev.TargetTenant != "t1" || ev.TargetSubject != "alice" ||
+			ev.ActorTenant != "t1" || ev.ActorSubject != "ops" || ev.ActorTokenSuffix != "abc123" {
+			t.Errorf("record %d does not name the target and the actor: %+v", i, ev)
+		}
+	}
+	if sink.events[1].ErasePlanes == nil {
+		t.Errorf("the result record carries no planes: %+v", sink.events[1])
+	}
+
+	// A dry run over the connector writes nothing, as over HTTP.
+	sink.events = nil
+	if _, err := s.ErasureExecute(ctx, erasure.ExecuteRequest{Tenant: "t1", Subject: "alice", DryRun: true}); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(sink.events) != 0 {
+		t.Errorf("a dry run wrote %d record(s)", len(sink.events))
+	}
+}
+
+// TestErasureConnector_RefusesWithoutAnAuditSink: the refusal HTTP gives (503)
+// holds for the transports that call the connector too, and arrives as a
+// sentinel each maps to its own status — nothing is deleted.
+func TestErasureConnector_RefusesWithoutAnAuditSink(t *testing.T) {
+	st := memStoreForTest(t)
+	s := &Server{store: st}
+	ctx := context.Background()
+	if _, err := st.CreateSession(ctx, "t1", "chat", "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := s.ErasureExecute(ctx, erasure.ExecuteRequest{Tenant: "t1", Subject: "alice", Confirm: "alice"})
+	if !errors.Is(err, erasure.ErrAuditUnavailable) {
+		t.Fatalf("err = %v, want ErrAuditUnavailable", err)
+	}
+	rows, _, lerr := st.ListSessions(ctx, store.SessionFilter{TenantID: "t1", UserID: "alice"}, 10, 0)
+	if lerr != nil || len(rows) != 1 {
+		t.Errorf("sessions after a refused erasure = %d (%v), want 1 — nothing may be deleted unrecorded", len(rows), lerr)
+	}
+	// A rejected request still never reaches the audit question.
+	if _, err := s.ErasureExecute(ctx, erasure.ExecuteRequest{Tenant: "t1", Subject: "alice", Confirm: "bob"}); !errors.Is(err, erasure.ErrConfirmMismatch) {
+		t.Errorf("confirm mismatch err = %v, want ErrConfirmMismatch", err)
 	}
 }

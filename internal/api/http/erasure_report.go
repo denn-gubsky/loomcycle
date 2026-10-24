@@ -95,11 +95,3 @@ func (s *Server) ErasureReport(ctx context.Context, tenant, subject string) (era
 	}
 	return s.erasureService().Report(ctx, tenant, subject)
 }
-
-// ErasureExecute implements connector.Connector.
-func (s *Server) ErasureExecute(ctx context.Context, req erasure.ExecuteRequest) (erasure.Result, error) {
-	if s.store == nil {
-		return erasure.Result{}, errors.New("no store configured")
-	}
-	return s.erasureService().Execute(ctx, req)
-}

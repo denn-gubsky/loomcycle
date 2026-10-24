@@ -2484,6 +2484,10 @@ func erasureErrToStatus(err error) error {
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, erasure.ErrConfirmMismatch):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, erasure.ErrAuditUnavailable):
+		// HTTP's 503: nothing was deleted, and configuring the sink and
+		// retrying is the way out.
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

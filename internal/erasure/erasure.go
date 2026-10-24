@@ -41,6 +41,11 @@ import (
 var ErrConfirmMismatch = errors.New(
 	"a live erasure requires confirm to equal subject — this is irreversible")
 
+// ErrAuditUnavailable is returned when a live erasure's intent record cannot
+// be written, so the erasure is refused before anything is deleted. Sentinel
+// so each transport maps it to its own status (HTTP 503 / gRPC Unavailable).
+var ErrAuditUnavailable = errors.New("refusing to erase without an audit record")
+
 // ErrNoSubject is returned when subject is empty.
 var ErrNoSubject = errors.New("subject is required")
 
@@ -194,6 +199,9 @@ type ExecuteRequest struct {
 	Subject string
 	DryRun  bool
 	Confirm string
+	// SourceAddr is the caller's network address, for the audit record. Set
+	// by a transport that knows it; never read from a request body.
+	SourceAddr string
 }
 
 // Result reports what an erasure did, or would do.
