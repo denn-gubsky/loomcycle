@@ -132,17 +132,20 @@ const signedURLMarker = "[redacted:signed-url]"
 // that are credentials only in a URL. # covers an implicit-grant redirect
 // (#access_token=…).
 //
-// The value stops at anything a URL value does not carry and at every
-// separator in the same encodings: & (also the start of &amp;), backslash
-// (\u0026 and an escaped quote), and the escape %26 — any other %XX, such
-// as %2B in an Azure signature, stays inside the value. The class excludes
-// [ and ], so a masked value never matches again.
+// The value ends only where a query value or the string holding the URL
+// ends: & (also the start of &amp;), #, whitespace, a quote, < or >, a
+// backslash (\u0026, and an escaped quote, so the mask never runs past the
+// end of a JSON string), and the escape %26 — any other %XX, such as %2B in
+// an Azure signature, stays inside the value. Any other character, however
+// unusual in a value (| ; , ( ) [ ] { }), is masked with it: stopping there
+// would store the rest of the value in clear, and the pattern tier that
+// runs next cannot take it either, since it does not match after a marker.
 //
 // Go's regexp is linear-time (RE2), so no input can make this backtrack.
 var signedParamRe = regexp.MustCompile(`(?i)(?:[?&#;]|\\u0026|%3f|%26)` +
 	`(` + strings.Join(signedNames, "|") + `)` +
 	`(?:=|%3d)` +
-	`((?:[^%&\s"'<>\\#\[\](){},;|` + "`" + `]|%(?:[013-9a-f][0-9a-f]|2[0-57-9a-f]))+)`)
+	`((?:[^%&\s"'<>\\#]|%[^2%&\s"'<>\\#]|%2[^6&\s"'<>\\#])+)`)
 
 // signedCompanion holds the names that are a credential only beside another
 // parameter in the same URL. "Signature" is generic; CloudFront's is the one
@@ -239,6 +242,11 @@ func maskSignedURLParams(s string) string {
 			if !ok {
 				continue
 			}
+		}
+		// A value an exact tier already masked keeps that marker, and so
+		// does one this pass masked before (the pass is idempotent).
+		if v := s[m[4]:m[5]]; strings.HasPrefix(v, "[redacted") && strings.IndexByte(v, ']') == len(v)-1 {
+			continue
 		}
 		b.WriteString(s[last:m[4]])
 		b.WriteString(signedURLMarker)
@@ -352,15 +360,24 @@ func (r *Redactor) Enabled() bool {
 	return r.dynReplacer != nil
 }
 
-// String returns s with every recognised secret masked. Tier A (exact env
-// values) runs first, then the Tier-B patterns, then the runtime-registered
-// values (Tier A').
+// String returns s with every recognised secret masked. The exact tiers run
+// first — Tier A (env values), then the runtime-registered values (Tier
+// A') — then Tier C (signed-URL parameters) and the Tier-B patterns.
 func (r *Redactor) String(s string) string {
 	if !r.Enabled() || s == "" {
 		return s
 	}
+	// The exact tiers run first: a heuristic that rewrote part of a known
+	// value would leave the exact match nothing to find, and the rest of the
+	// value would be stored in clear.
 	if r.replacer != nil {
 		s = r.replacer.Replace(s)
+	}
+	r.mu.RLock()
+	dyn := r.dynReplacer
+	r.mu.RUnlock()
+	if dyn != nil {
+		s = dyn.Replace(s)
 	}
 	// Before the patterns: their key=value rule would otherwise take a URL's
 	// token= value to the end of the URL, parameters after it included.
@@ -369,12 +386,6 @@ func (r *Redactor) String(s string) string {
 	}
 	for _, p := range r.patterns {
 		s = p.re.ReplaceAllString(s, p.repl)
-	}
-	r.mu.RLock()
-	dyn := r.dynReplacer
-	r.mu.RUnlock()
-	if dyn != nil {
-		s = dyn.Replace(s)
 	}
 	return s
 }

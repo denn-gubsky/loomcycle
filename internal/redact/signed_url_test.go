@@ -242,3 +242,71 @@ func TestRedactor_SignedURLParamsEveryNameInEveryEncoding(t *testing.T) {
 		}
 	}
 }
+
+// TestRedactor_RegisteredValueMaskedWholeBeforeHeuristics: an exact
+// registered value is masked before any heuristic rewrites part of it, or
+// the exact match no longer finds it and the rest is stored in clear.
+func TestRedactor_RegisteredValueMaskedWholeBeforeHeuristics(t *testing.T) {
+	const secret = "https://x.example/p?token=AAAA1111&key=BBBB2222"
+	r := New(nil, true).WithSignedURLParams()
+	r.Register(secret)
+	got := r.String(`{"url":"` + secret + `"}`)
+	if want := `{"url":"` + dynamicMarker + `"}`; got != want {
+		t.Errorf("registered value not masked whole:\n got  %s\n want %s", got, want)
+	}
+
+	// The static tier, likewise.
+	r = New(map[string]string{"LOOMCYCLE_UPLOAD_URL": secret}, true).WithSignedURLParams()
+	if got, want := r.String("put "+secret), "put [redacted:LOOMCYCLE_UPLOAD_URL]"; got != want {
+		t.Errorf("env value not masked whole:\n got  %s\n want %s", got, want)
+	}
+}
+
+// TestRedactor_SignedURLValueMaskedToItsBoundary: the mask runs to the end
+// of the value — a query separator, the end of the string it sits in, or
+// whitespace — not to the first character that is merely unusual in one.
+func TestRedactor_SignedURLValueMaskedToItsBoundary(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	for _, tc := range []struct{ in, want string }{
+		{`https://h.example.com/p?token=1|secret`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?token=a|b`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?token=abc(def`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?token=ab;cd`, `https://h.example.com/p?token=` + signedMarker},
+		{`https://h.example.com/p?sig=abc,def&x=1`, `https://h.example.com/p?sig=` + signedMarker + `&x=1`},
+		{`https://h.example.com/p?sig=a(b)[c]{d}` + "`e`" + `#frag`, `https://h.example.com/p?sig=` + signedMarker + `#frag`},
+		{`{\"u\":\"https://h.example.com/p?sig=ab,cd;ef\",\"n\":1}`, `{\"u\":\"https://h.example.com/p?sig=` + signedMarker + `\",\"n\":1}`},
+		{`{"u":"https://h.example.com/p?tempauth=ab}cd","n":1}`, `{"u":"https://h.example.com/p?tempauth=` + signedMarker + `","n":1}`},
+		{`see https://h.example.com/p?sig=ab'cd`, `see https://h.example.com/p?sig=` + signedMarker + `'cd`},
+		// A value another tier already masked keeps its marker.
+		{`https://h.example.com/p?tempauth=[redacted:credential]&dc=0`, `https://h.example.com/p?tempauth=[redacted:credential]&dc=0`},
+	} {
+		if got := r.String(tc.in); got != tc.want {
+			t.Errorf("\n in   %s\n got  %s\n want %s", tc.in, got, tc.want)
+		}
+	}
+	for _, in := range []string{
+		`https://example.com/a?q=a;b,c|d&page=(2)&filter=[x]`,
+		`{"url":"https://example.com/a?b=c;d","n":1}`,
+	} {
+		if got := r.String(in); got != in {
+			t.Errorf("changed an ordinary URL:\n in  %s\n got %s", in, got)
+		}
+	}
+}
+
+// TestRedactor_SignedURLValueStopsOnlyAtABoundary: for every printable ASCII
+// character, a value holding it is masked through to its end unless the
+// character is one where a query value or the string around it ends.
+func TestRedactor_SignedURLValueStopsOnlyAtABoundary(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	const boundary = "&#\"'<>\\ "
+	for c := byte(0x20); c < 0x7f; c++ {
+		got := r.String("https://h.example.com/p?token=FAKEa" + string(c) + "FAKEz")
+		if strings.Contains(got, "FAKEa") {
+			t.Errorf("%q: head survived: %s", c, got)
+		}
+		if survived, atBoundary := strings.Contains(got, "FAKEz"), strings.IndexByte(boundary, c) >= 0; survived != atBoundary {
+			t.Errorf("%q: tail survived=%v: %s", c, survived, got)
+		}
+	}
+}
