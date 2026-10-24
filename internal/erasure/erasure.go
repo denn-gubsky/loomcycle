@@ -88,7 +88,7 @@ func (s *Service) accessControl(ctx context.Context, tenant, subject string) (su
 	if err != nil {
 		return out, err
 	}
-	out.groups = groups
+	out.groups = sortedUnique(groups)
 	rows, err := s.Store.AclBindingList(ctx, tenant, true)
 	if err != nil {
 		return out, err
@@ -162,12 +162,26 @@ type Report struct {
 	Tier1   Tier     `json:"tier1_covered"`
 	Tier2   Tier     `json:"tier2_uncovered"`
 	Tier3   Residue  `json:"tier3_residue"`
+	Access  Access   `json:"access"`
 	Notes   []string `json:"notes"`
 	// Errors names planes that could not be READ. A plane that failed is not a
 	// plane that is empty, and a report unable to distinguish them cannot answer
 	// the question it exists for.
 	Errors []string `json:"errors,omitempty"`
 }
+
+// Access names, rather than counts, what an erasure removes from the
+// subject's authority — or, in a report or a dry run, what it would: the
+// groups the subject leaves and the lists its bindings named. The notes say
+// the same in prose; this is the form a client can act on. Config-declared
+// rows are not the store's to remove and are not listed here (see Retained).
+// The slices are never nil, so the wire carries [] rather than null.
+type Access struct {
+	Groups []string `json:"groups"`
+	Lists  []string `json:"lists"`
+}
+
+func emptyAccess() Access { return Access{Groups: []string{}, Lists: []string{}} }
 
 type Tier struct {
 	Counts map[string]int64 `json:"counts"`
@@ -217,6 +231,7 @@ type Result struct {
 	// reads as complete.
 	Retained map[string]string `json:"retained"`
 	Residue  Residue           `json:"residue"`
+	Access   Access            `json:"access"`
 	Errors   []string          `json:"errors,omitempty"`
 	Notes    []string          `json:"notes"`
 }
@@ -275,6 +290,7 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		Subject: subject,
 		Tier1:   Tier{Counts: map[string]int64{}},
 		Tier2:   Tier{Counts: map[string]int64{}},
+		Access:  emptyAccess(),
 	}
 	fail := func(plane string, err error) { rep.Errors = append(rep.Errors, plane+": "+err.Error()) }
 
@@ -322,6 +338,7 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	} else {
 		rep.Tier2.set("acl_memberships", int64(len(acl.groups)))
 		rep.Tier2.set("acl_bindings", int64(acl.bindings))
+		rep.Access.Groups, rep.Access.Lists = acl.groups, acl.lists
 		for _, n := range []string{acl.storedNote(), acl.configNote()} {
 			if n != "" {
 				aclNotes = append(aclNotes, n)
@@ -439,6 +456,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	res := Result{
 		Tenant: tenant, Subject: subject, DryRun: req.DryRun,
 		Deleted: map[string]int{}, Retained: map[string]string{},
+		Access: emptyAccess(),
 	}
 	for _, plane := range []string{
 		"chats", "memory_rows", "path_entries",
@@ -473,10 +491,14 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		if req.DryRun {
 			res.Deleted["acl_memberships"] = len(acl.groups)
 			res.Deleted["acl_bindings"] = acl.bindings
+			res.Access.Groups, res.Access.Lists = acl.groups, acl.lists
 		} else if m, b, err := s.Store.AclEraseSubject(ctx, tenant, subject); err != nil {
 			fail("access_control", err)
 		} else {
 			res.Deleted["acl_memberships"], res.Deleted["acl_bindings"] = m, b
+			// Named from the read just before the delete, and only once it
+			// succeeded: a failed delete removed nothing and must not claim to.
+			res.Access.Groups, res.Access.Lists = acl.groups, acl.lists
 			if m+b > 0 && s.ACLChanged != nil {
 				s.ACLChanged(ctx, tenant, subject)
 			}
