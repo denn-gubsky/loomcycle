@@ -228,7 +228,7 @@ The reference is relative to the volume root, as every file tool's path is: Read
 | `stat`, `ls` | anyone who may read the run (the gate `get_run` uses) |
 | `import` | the same; the Document goes into the **caller's** own scopes |
 | `extract`, `rm`, `clear` | the run's owner (the principal whose subject and tenant are the run's) or an admin |
-| `keep` | the owner or an admin, into a read-write dynamic volume of the caller's tenant that the caller's access rules let it write |
+| `keep` | the owner (not an isolated user) or an admin, into a read-write dynamic volume of the caller's tenant that the caller's access rules let it write |
 | `download`, `upload` | nobody: they need a run's HTTP host policy |
 
 A run the caller may not read answers exactly as a missing one does. A run that has ended answers that its inbox is gone, with the tree. The tool needs `runs:read`, like `get_run`, and is tenant-confined. Input is decoded strictly (exact field names, each once, nothing after the object).
