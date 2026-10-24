@@ -1284,7 +1284,7 @@ func (s *Server) execBuiltin(ctx context.Context, tool tools.Tool, input json.Ra
 	}
 	d := tools.NewDispatcher(ts)
 	d.SetErrorClassifier(errclassify.CategoryOf)
-	return d.Call(ctx, tool.Name(), input)
+	return d.Call(tools.WithACLRecorder(ctx, s.recordToolACLEvent), tool.Name(), input)
 }
 
 // helpTool is the server's help-serving tool (Context), or nil. It is what

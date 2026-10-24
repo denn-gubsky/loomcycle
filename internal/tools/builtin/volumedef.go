@@ -137,6 +137,10 @@ func (v *VolumeDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Res
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
+	// RFC EZ §1.2: the op's own verb, asked of the volume definition it names.
+	if res, refused := tools.AuthorizeDefOp(ctx, "volume", in.Op, in.Name); refused {
+		return res, nil
+	}
 	switch in.Op {
 	case "create":
 		return v.execCreate(ctx, in)

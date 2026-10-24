@@ -410,6 +410,35 @@ func GroupsOfSubject(ctx context.Context, q Querier, tenantID, subject string) (
 	return out, rows.Err()
 }
 
+// AclEraseSubject removes the subject's user-kind memberships and
+// user-kind bindings in one transaction with a single version bump.
+func AclEraseSubject(ctx context.Context, db DB, tenantID, subject string) (memberships, bindings int, err error) {
+	if subject == "" {
+		return 0, 0, fmt.Errorf("acl erase subject: subject is required")
+	}
+	err = db.InTx(ctx, func(tx Querier) error {
+		m, err := tx.Exec(ctx, `DELETE FROM user_group_members WHERE tenant_id = ? AND member_kind = 'user' AND member_id = ?`,
+			tenantID, subject)
+		if err != nil {
+			return err
+		}
+		b, err := tx.Exec(ctx, `DELETE FROM acl_bindings WHERE tenant_id = ? AND subject_kind = 'user' AND subject_id = ?`,
+			tenantID, subject)
+		if err != nil {
+			return err
+		}
+		memberships, bindings = int(m), int(b)
+		if m+b == 0 {
+			return nil
+		}
+		return bumpAclVersion(ctx, tx, tenantID)
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return memberships, bindings, nil
+}
+
 // ---- bindings ----
 
 func mintBindingID() string {

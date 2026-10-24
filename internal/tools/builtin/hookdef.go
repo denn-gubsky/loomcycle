@@ -142,6 +142,13 @@ func (h *HookDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
+	// RFC EZ §1.2: the op's own verb, asked of the hook definition it names.
+	if res, refused := tools.AuthorizeDefOp(ctx, "hook", in.Op, defOpNames(ctx, in.Name, func(ctx context.Context, id string) (string, string, error) {
+		row, err := h.Store.HookDefGet(ctx, id)
+		return row.Name, row.TenantID, err
+	}, in.DefID, in.ParentDefID)...); refused {
+		return res, nil
+	}
 	switch in.Op {
 	case "create":
 		return h.execCreate(ctx, in)

@@ -333,6 +333,9 @@ func (m *mockConnector) CredentialDef(context.Context, json.RawMessage) (connect
 func (m *mockConnector) Crypto(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) File(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) GroupDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -501,8 +504,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 64 {
-		t.Errorf("got %d tools, want 64 (+groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 65 {
+		t.Errorf("got %d tools, want 65 (+file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -513,6 +516,9 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	}
 	if !names["crypto"] {
 		t.Error("catalogue missing the crypto meta-tool")
+	}
+	if !names["file"] {
+		t.Error("catalogue missing the file meta-tool")
 	}
 	for _, want := range []string{"list_team_channels", "peek_team_channel", "release_team_channel", "delete_run_tree"} {
 		if !names[want] {

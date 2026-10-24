@@ -157,6 +157,15 @@ type AclStore interface {
 	// still returned and Explain can show it.
 	AclBindingsFor(ctx context.Context, tenantID, subject string, groups []string, tokenDefID string) ([]AclBindingRow, error)
 
+	// AclEraseSubject removes, in one transaction, the subject's user-kind
+	// group memberships and every user-kind binding to it (retired ones
+	// too: a retired row still names the subject) in the tenant, and bumps
+	// acl_version once when anything went. Group-kind edges and bindings
+	// whose id happens to equal the subject are a group's, not the
+	// subject's, and stay. An empty subject is refused. Subject erasure's
+	// execute tier is the caller.
+	AclEraseSubject(ctx context.Context, tenantID, subject string) (memberships, bindings int, err error)
+
 	// AclVersion returns the tenant's current version: 0 before any write,
 	// bumped by every write above. Replicas compare it to decide whether a
 	// cached Effective set is current.

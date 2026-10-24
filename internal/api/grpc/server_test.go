@@ -967,6 +967,9 @@ func (m *mockConnector) CredentialDef(context.Context, json.RawMessage) (connect
 func (m *mockConnector) Crypto(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) File(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) GroupDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }

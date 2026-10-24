@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
@@ -67,36 +68,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if required := requiredScopeFor(r.Method, r.URL.Path); required != "" && !auth.HasScope(p.Scopes, required) {
-			// RFC CB: the scope check failed, but a NON-ISOLATED user token (a
-			// tenant member — runs:*/channel:*, no substrate:tenant) may still
-			// reach a member-accessible tenant surface. Such a token already has
-			// whole-tenant DATA access inside a run (it is not isolated — see
-			// auth/grants.go), so this admits the matching HTTP surfaces for
-			// read+write. Isolated tokens (substrate:user) fail !IsIsolated and
-			// stay 403; the operator-control carve-outs (minting / roster /
-			// budget-write / erasure / hooks) are excluded by
-			// tenantMemberAccessible; and every such handler still confines a
-			// member to its own tenant via principalTenantScope / tenantFromCtx.
-			memberOK := tenantMemberAccessible(r.Method, r.URL.Path) && !auth.IsIsolated(p, ok)
-			// RFC CN: the user self-service surfaces (the credential store + the MCP
-			// transport) admit ANY authenticated principal that carries a subject —
-			// INCLUDING an isolated substrate:user user, who is otherwise held at the
-			// tenant-member isolation floor — so a user can store its OWN scope=user
-			// API tokens (a personal Slack/Telegram bot token, a per-user webhook
-			// secret). The handler / MCP per-tool gate then confine a non-tenant caller
-			// to scope=user on its own subject; tenant/agent scope still requires
-			// substrate:tenant.
-			selfOK := userSelfServiceRoute(r.Method, r.URL.Path) && p.Subject != ""
-			// The raw model endpoints stay open to every principal that is
-			// not an isolated user: a member token holds no llm:gateway scope
-			// of its own, and requiring one would have broken every member
-			// token minted before the scope existed.
-			gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, ok)
-			if !(memberOK || selfOK || gatewayMemberOK) {
-				writeScopeError(w, required, "insufficient scope")
-				return
-			}
+		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
+			writeScopeError(w, required, "insufficient scope")
+			return
 		}
 		// After the scope check, and independent of it: a credential limited
 		// to certain agents is held to the run plane however wide its scopes.
@@ -117,6 +91,56 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(ctx, p)))
 	})
+}
+
+// scopeGate is the route's scope gate for an authenticated principal p: the
+// scope the route requires, and whether p is admitted — by holding it, or on
+// one of the paths below that admit a principal without it. It returns the
+// scope so the refusal can name it.
+func scopeGate(p auth.Principal, method, path string) (required string, admitted bool) {
+	required = requiredScopeFor(method, path)
+	if required == "" || auth.HasScope(p.Scopes, required) {
+		return required, true
+	}
+
+	// RFC CB: the scope check failed, but a NON-ISOLATED user token (a
+	// tenant member — runs:*/channel:*, no substrate:tenant) may still
+	// reach a member-accessible tenant surface. Such a token already has
+	// whole-tenant DATA access inside a run (it is not isolated — see
+	// auth/grants.go), so this admits the matching HTTP surfaces for
+	// read+write. Isolated tokens (substrate:user) fail !IsIsolated and
+	// stay 403; the operator-control carve-outs (minting / roster /
+	// budget-write / erasure / hooks) are excluded by
+	// tenantMemberAccessible; and every such handler still confines a
+	// member to its own tenant via principalTenantScope / tenantFromCtx.
+	memberOK := tenantMemberAccessible(method, path) && !auth.IsIsolated(p, true)
+	// RFC CN: the user self-service surfaces (the credential store + the MCP
+	// transport) admit ANY authenticated principal that carries a subject —
+	// INCLUDING an isolated substrate:user user, who is otherwise held at the
+	// tenant-member isolation floor — so a user can store its OWN scope=user
+	// API tokens (a personal Slack/Telegram bot token, a per-user webhook
+	// secret). The handler / MCP per-tool gate then confine a non-tenant caller
+	// to scope=user on its own subject; tenant/agent scope still requires
+	// substrate:tenant.
+	selfOK := userSelfServiceRoute(method, path) && p.Subject != ""
+	// The raw model endpoints stay open to every principal that is
+	// not an isolated user: a member token holds no llm:gateway scope
+	// of its own, and requiring one would have broken every member
+	// token minted before the scope existed.
+	gatewayMemberOK := required == auth.ScopeLLMGateway && !auth.IsIsolated(p, true)
+	return required, memberOK || selfOK || gatewayMemberOK
+}
+
+// RouteAdmits reports whether an authenticated principal p gets past the
+// legacy gates of the route — its scope (with the member, self-service and
+// gateway paths) and the run-plane restriction — before any ACL question. It
+// is what the cross-transport parity test (internal/api/acltest) asks of every
+// gRPC RPC's HTTP twin; authMiddleware runs the same two functions.
+func RouteAdmits(p auth.Principal, method, path string) bool {
+	if _, admitted := scopeGate(p, method, path); !admitted {
+		return false
+	}
+	return !p.Restrictions.RunPlaneOnly() || runPlaneRoute(method, path)
 }
 
 // admitPrincipalAgent refuses a top-level run of an agent the caller's token
@@ -1139,7 +1163,7 @@ func requiredScopeFor(method, path string) string {
 	// carved out below. The evaluate / explain / simulate questions are
 	// open to any authenticated principal: the handler confines a
 	// non-operator to its OWN subject's decisions.
-	case isACLManagementPath(path):
+	case memberpath.IsACLManagementPath(path):
 		return auth.ScopeTenant
 	case strings.HasPrefix(path, "/v1/_authz/"):
 		return ""
@@ -1368,17 +1392,14 @@ func isRunTreeDeletePath(method, path string) bool {
 // auth/grants.go: "whole-tenant data access is conferred by NOT being isolated"),
 // so this opens the matching HTTP tenant surfaces for read+write. The rule: any
 // route that requires ScopeTenant, MINUS the operator-control carve-outs
-// (memberCarveOut). Routes already at ScopeAdmin (cross-tenant enumeration,
+// (memberpath.CarvedOut). Routes already at ScopeAdmin (cross-tenant enumeration,
 // runtime admin, token minting via the /v1/_* catch-all) are excluded
 // automatically — they are not ScopeTenant. The middleware still requires the
 // caller to be non-isolated (auth.IsIsolated == false), and every one of these
 // handlers still confines a member to its own tenant (principalTenantScope /
 // tenantFromCtx), so opening the gate here does not widen a member cross-tenant.
 func tenantMemberAccessible(method, path string) bool {
-	if requiredScopeFor(method, path) != auth.ScopeTenant {
-		return false
-	}
-	return !memberCarveOut(method, path)
+	return memberpath.Route(requiredScopeFor(method, path), method, path)
 }
 
 // userSelfServiceRoute marks the HTTP routes RFC CN opens for user SELF-SERVICE of
@@ -1403,50 +1424,6 @@ func userSelfServiceRoute(method, path string) bool {
 		return method == http.MethodPost
 	case "/v1/_mcp":
 		return method == http.MethodPost || method == http.MethodDelete
-	}
-	return false
-}
-
-// memberCarveOut lists the ScopeTenant routes that STAY operator-only (require a
-// real substrate:tenant token) even for a non-isolated member — the operator
-// CONTROLS, not member data (RFC CB §Scope). Opening these to a member would be a
-// privilege / cost-control / destruction hazard:
-//   - user create + roster mutation + user-token minting (/v1/_users*) — escalation
-//   - per-subject erasure (/v1/_erasure) — destructive
-//   - budget WRITES (PUT/DELETE /v1/_limits) — cost-control bypass (GET stays open)
-func memberCarveOut(method, path string) bool {
-	switch {
-	case path == "/v1/_users" && method == http.MethodPost:
-		return true
-	case strings.HasPrefix(path, "/v1/_users/"):
-		return true
-	case path == "/v1/_erasure":
-		return true
-	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
-		return true
-	// RFC EY: who may do what is the operator's to write and to read; a
-	// member learns its own reach from /v1/_me and /v1/_authz/explain.
-	case isACLManagementPath(path):
-		return true
-	// Switching storage back on for a no-trace agent is the operator's call:
-	// a member who could do it could read what its colleagues' runs said.
-	// Reading the list stays operator-only too; it names what is being
-	// debugged.
-	case path == "/v1/_retention/overrides":
-		return true
-	// RFC CD Part C — the memory/document CHANGE FEED is substrate:tenant-only,
-	// NOT member-accessible (locked decision): the feed exposes the tenant's
-	// write pattern (a metadata side-channel) and is operator observability, not
-	// member data. Both the /v1/_memory/ prefix (ScopeTenant) and the
-	// /v1/_document/changes route (ScopeTenant via isTenantConfinedDefPath) would
-	// otherwise be member-accessible; carve them out so a non-isolated member is
-	// refused.
-	case path == "/v1/_memory/changes" || path == "/v1/_document/changes":
-		return true
-	// Crypto with the tenant's keys: a member who could decrypt with them could
-	// read whatever the tenant sealed, and sign as the tenant. Operators only.
-	case path == "/v1/_crypto":
-		return true
 	}
 	return false
 }
@@ -1521,7 +1498,7 @@ func isTenantConfinedDefPath(path string) bool {
 	// RFC CD Part C — the document change feed lives under /v1/_document with a
 	// /changes suffix, so (like the asset GET) it needs a prefix match; the
 	// family list below is exact-match. Same ScopeTenant posture as /v1/_document
-	// (and it is carved out of member access — see memberCarveOut).
+	// (and it is carved out of member access — see memberpath.CarvedOut).
 	if strings.HasPrefix(path, "/v1/_document/changes") {
 		return true
 	}
@@ -1568,21 +1545,10 @@ func isTenantConfinedDefPath(path string) bool {
 		"/v1/_credentialdef",
 		// RFC EP P1b — Crypto operations outside a run, with the caller's tenant
 		// and own-subject keys (s.Crypto stamps them from the principal).
-		// Carved out of member access (memberCarveOut).
+		// Carved out of member access (memberpath.CarvedOut).
 		"/v1/_crypto",
 	} {
 		if path == fam || path == fam+"/names" {
-			return true
-		}
-	}
-	return false
-}
-
-// isACLManagementPath matches the RFC EY management routes: groups, ACL
-// rule lists and bindings.
-func isACLManagementPath(path string) bool {
-	for _, fam := range []string{"/v1/_groups", "/v1/_acldef", "/v1/_aclbinding"} {
-		if path == fam || strings.HasPrefix(path, fam+"/") {
 			return true
 		}
 	}

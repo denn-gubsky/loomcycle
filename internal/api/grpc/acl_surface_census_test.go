@@ -69,8 +69,9 @@ func TestGRPCSurface_EveryRPCIsGovernedOrListed(t *testing.T) {
 
 // The access-control management RPCs: one per family of the op table, each
 // gated as its HTTP routes are — substrate:tenant for the three management
-// families (gRPC has no member path, so the scope alone keeps a member
-// out), any authenticated principal for its own authz questions.
+// families (their routes are carved out of the member path, so a member is
+// kept out on both transports), any authenticated principal for its own
+// authz questions.
 func TestACLRPCs_ExistPerFamilyAndAreScopedAsTheirRoutes(t *testing.T) {
 	registered := map[string]bool{}
 	for _, name := range serviceRPCs() {
