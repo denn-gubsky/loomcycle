@@ -412,6 +412,14 @@ func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessi
 	if u.Status != "active" {
 		return auth.Principal{}, false, true
 	}
+	return s.userSessionPrincipal(ctx, u)
+}
+
+// userSessionPrincipal is an active user's session principal, for every gate
+// whose session stands for the user itself (password, identity gates): the
+// scopes its access_mode grants a delegated token, plus the tenant-operator
+// scope an owner binding gives an access_mode tenant user — never more.
+func (s *Server) userSessionPrincipal(ctx context.Context, u store.UserRow) (auth.Principal, bool, bool) {
 	scopes, err := auth.GrantableUserScopes(u.AccessMode)
 	if err != nil {
 		return auth.Principal{}, false, true
