@@ -846,8 +846,10 @@ type anthropicRules struct {
 // behaviour — so a model this table predates keeps working as it did.
 //
 // Families (from Anthropic's model documentation):
-//   - adaptive only: Opus 4.7, Opus 4.8, Opus 5 and 5.5, Sonnet 5, and the
-//     Fable and Mythos lines. Opus 4.6 / Sonnet 4.6 still accept a budget.
+//   - adaptive only: Opus 4.7, Opus 4.8, Opus 5 and 5.5, Sonnet 5 and 5.5,
+//     Haiku 5.x, and the Fable and Mythos lines. Opus 4.6 / Sonnet 4.6 still
+//     accept a budget, and Haiku 4.5 still accepts sampling. Matching
+//     "haiku-5" (not "haiku") keeps Haiku 4.5 and the claude-3-*-haiku ids out.
 //   - no forced choice: Opus 5.5, Fable 5.1, Mythos 5.1, Mythos Preview.
 //   - no structured output: Claude 3.x and older, Sonnet 4 and Opus 4.0
 //     (Opus 4.1 and every later family accept it).
@@ -862,7 +864,7 @@ func anthropicModelRules(model string) anthropicRules {
 		return false
 	}
 	return anthropicRules{
-		adaptiveOnly:   has("opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-", "mythos-"),
+		adaptiveOnly:   has("opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "haiku-5", "fable-", "mythos-"),
 		noForcedChoice: has("opus-5-5", "fable-5-1", "mythos-5-1", "mythos-preview"),
 		noStructuredOutput: has("claude-2", "claude-instant", "claude-3",
 			"sonnet-4-0", "sonnet-4-2025", "opus-4-0", "opus-4-2025"),

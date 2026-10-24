@@ -935,7 +935,7 @@ To grant none, set the gate to `["-*"]` in a definition overlay (AgentDef create
 
 **Not frontmatter keys.** The loader reads only the fields of the `frontmatter` struct and silently ignores any other key. `sampling`, `compaction`, `context`, `tool_choice`, `output_format`, `volumes`, `sql_scopes` and `history_scope` are not in that struct, so in a `.md` file they do nothing. Set them on the agent's entry in the operator yaml `agents:` map (below) or in a definition overlay.
 
-- `sampling` — `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking.
+- `sampling` — `temperature` / `top_p` / `top_k` / `frequency_penalty` / `presence_penalty` / `seed` / `stop`. Each driver applies what its provider supports, drops the rest. `temperature: 0.0` is deterministic (≠ unset). Overridable per-run on `/v1/runs` (`sampling`), merged per field (per-run wins). See `Context op=help topic=sampling`. Anthropic drops temperature/top_p when `effort` engages thinking, and drops temperature/top_p/top_k outright on the models that reject non-default sampling (Opus 4.7 and later, Sonnet 5.x, Haiku 5.x, Fable, Mythos — direct or on Bedrock).
 - `volumes` — names of top-level `volumes:` entries the agent's file/exec tools may use. Empty = implicitly bound to `[default]`. Confines the agent to exactly the named volumes (does NOT also grant `default`). See §9d.
 
 ### Worked examples (real agents from jobs-search-agent)
