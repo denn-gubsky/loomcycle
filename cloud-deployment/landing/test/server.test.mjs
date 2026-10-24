@@ -611,6 +611,15 @@ describe("upstream failures", () => {
     assert.equal(r.status, 502);
     assert.deepEqual(r.json, { error: "upstream_error" });
   });
+  test("an upstream not-found (a member removed mid-request) is the same opaque 404", async () => {
+    const { email, tenant } = await signUp();
+    const member = "cloud:" + b32();
+    fake.addUser(tenant, member, "isolated", "m-" + rnd(3) + "@example.com");
+    fake.inject = (rec) => rec.method === "PATCH" ? { status: 404, body: { code: "user_not_found", error: "no such user in this tenant" } } : undefined;
+    const r = await call(on, "POST", `/api/team/${encodeURIComponent(member)}/disable`, { email, body: {} });
+    assert.equal(r.status, 404);
+    assert.deepEqual(r.json, { error: "not_found" });
+  });
   test("an unreachable runtime is a 502", async () => {
     const dead = await startLanding({ LOOMCYCLE_URL: "http://127.0.0.1:9", LOOMCYCLE_ADMIN_TOKEN: ADMIN, MINT_DEV_ALLOW_UNVERIFIED: "1",
       LOOMCYCLE_AUTH_MANAGE_TOKEN: MANAGE });

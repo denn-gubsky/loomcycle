@@ -252,6 +252,7 @@ const PASS_CODES = new Map([
 // (where the codes travel), bearer values and the manage token itself.
 function redact(s) {
   let out = String(s)
+    .replace(/\S*#[^\s"'<>]*/g, "[link redacted]")
     .replace(/lc[a-z]_[A-Za-z0-9_-]+/g, "lc?_[redacted]")
     .replace(/#[^\s"'<>]*/g, "#[redacted]")
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
