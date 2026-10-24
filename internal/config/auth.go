@@ -75,6 +75,8 @@ type AuthConfig struct {
 	Mode    string                    `yaml:"mode,omitempty"`
 	Session AuthSessionConfig         `yaml:"session,omitempty"`
 	Gates   map[string]AuthGateConfig `yaml:"gates,omitempty"`
+	// Lifecycle is the deployment's defaults for users a gate creates.
+	Lifecycle AuthLifecycleConfig `yaml:"lifecycle,omitempty"`
 	// TrustedProxies are the CIDRs of the reverse proxies in front of the
 	// server (a cloudflared container's network, loopback for tailscale
 	// serve). Only a request from one of them may say who the client is,
@@ -121,6 +123,9 @@ type AuthGateConfig struct {
 	AllowedReturnTo []string               `yaml:"allowed_return_to,omitempty"`
 	Password        AuthGatePasswordConfig `yaml:"password,omitempty"`
 	NewUser         AuthGateNewUserConfig  `yaml:"new_user,omitempty"`
+	// IdentityMap maps a verified external identity to a (tenant, subject)
+	// for the gate kinds that verify one (auth_identity.go).
+	IdentityMap *AuthIdentityMapConfig `yaml:"identity_map,omitempty"`
 }
 
 // AuthGateInvitesConfig holds Go durations.
@@ -158,6 +163,8 @@ type AuthGate struct {
 	Label string
 	// Password is set for kind: password.
 	Password *AuthPasswordGate
+	// Identity is set for the kinds that map an external identity.
+	Identity *AuthIdentityMap
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -192,6 +199,9 @@ type AuthPolicy struct {
 	// and auth.client_ip_header (canonical form).
 	TrustedProxies []netip.Prefix
 	ClientIPHeader string
+	// Lifecycle is the validated auth.lifecycle.new_user (zero: the
+	// defaults; read it through NewUserFloor).
+	Lifecycle AuthNewUser
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -331,6 +341,9 @@ func resolveAuth(c *Config) error {
 	if p.ReauthWindow, err = parseSessionDuration("auth.session.reauth_window", c.Auth.Session.ReauthWindow, DefaultSessionReauthWindow); err != nil {
 		return err
 	}
+	if p.Lifecycle, err = resolveLifecycle(c.Auth.Lifecycle); err != nil {
+		return err
+	}
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
 	}
@@ -382,6 +395,10 @@ func resolveAuth(c *Config) error {
 			return fmt.Errorf("auth.gates.%s: kind is required (token or password)", name)
 		default:
 			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token or password)", name, g.Kind)
+		}
+		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
+			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
+				"(a bearer names its own tenant and subject; a password gate's users come from invites)", name, kind)
 		}
 		var pw *AuthPasswordGate
 		if kind == AuthGateKindPassword {
