@@ -548,3 +548,22 @@ func TestFileTwin_InboxIsListedAsTheTenantsEphemeralVolume(t *testing.T) {
 		t.Errorf("another tenant sees %+v", other)
 	}
 }
+
+// An isolated user is confined to its own scope, and a dynamic volume is
+// shared by its tenant. Inside a run the agent definition picks the volumes
+// it writes; off-run keep would let the user pick any of them, so an
+// isolated owner may not keep, and nothing is written.
+func TestFileTwin_KeepRefusesAnIsolatedOwner(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	rec := f.capture(t, runID, "acme", "minutes.txt", "http", []byte("the minutes\n"), true)
+	docs := f.mkVolume(t, "acme", "docs", "rw")
+
+	isolated := auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeUser, auth.ScopeRunsCreate, auth.ScopeRunsRead}}
+	if _, text, isErr := f.call(t, isolated, map[string]any{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:new.txt"}); !isErr || !strings.Contains(text, "isolated") {
+		t.Errorf("keep by an isolated owner = %s", text)
+	}
+	if _, err := os.Stat(filepath.Join(docs, "new.txt")); !os.IsNotExist(err) {
+		t.Errorf("a refused keep wrote a file: %v", err)
+	}
+}

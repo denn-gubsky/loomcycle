@@ -272,6 +272,7 @@ export type {
   RunnableAgentsResponse,
   // Whoami / principal (RFC L, v0.17.0)
   WhoamiResponse,
+  WhoamiEffective,
   // Pause / Resume / State
   PauseResult,
   RetentionOverride,

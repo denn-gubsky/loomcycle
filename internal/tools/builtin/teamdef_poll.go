@@ -143,6 +143,9 @@ func (t *TeamDef) execPoll(ctx context.Context, in teamDefInput) (tools.Result, 
 		return errNotFound(fmt.Sprintf("poll: not a team walk of this run: %s", strings.Join(unknown, ", ")),
 			"Use the run_id a run with mode \"poll\" returned to you."), nil
 	}
+	if res, refused := authorizeWalks(ctx, "poll", walks); refused {
+		return res, nil
+	}
 	ids := make([]string, len(walks))
 	for i, v := range walks {
 		ids[i] = v.RunID
@@ -264,6 +267,25 @@ func walkTextLen(r map[string]any) int {
 	return n
 }
 
+// authorizeWalks asks op's team verb (tools.AuthorizeTeamOp) of the team of
+// each walk a poll or cancel selected — read to read it, cancel to end it —
+// before anything is read, waited for or cancelled, so a refusal leaves every
+// walk as it was. TeamDef and Agent poll/cancel both call it: either reads or
+// ends a walk. A child that is not a walk asks nothing here, and a selection
+// with no walk asks nothing at all: it touches no team.
+func authorizeWalks(ctx context.Context, op string, views []tools.ChildView) (tools.Result, bool) {
+	var names []string
+	for _, v := range views {
+		if v.Kind == tools.ChildKindTeam {
+			names = append(names, strings.TrimPrefix(v.Agent, teamWalkLabel))
+		}
+	}
+	if len(names) == 0 {
+		return tools.Result{}, false
+	}
+	return tools.AuthorizeTeamOp(ctx, op, names...)
+}
+
 // execCancel ends walks this run started in poll mode, as Agent cancel ends
 // any background child: each walk's ctx is cancelled with the reason
 // "cancelled by its parent", which cancels its members and ends its run
@@ -293,6 +315,9 @@ func (t *TeamDef) execCancel(ctx context.Context, in teamDefInput) (tools.Result
 	if len(unknown) > 0 {
 		return errNotFound(fmt.Sprintf("cancel: not a team walk of this run: %s — nothing was cancelled", strings.Join(unknown, ", ")),
 			"Use the run_id a run with mode \"poll\" returned to you."), nil
+	}
+	if res, refused := authorizeWalks(ctx, "cancel", walks); refused {
+		return res, nil
 	}
 	cause := runcancel.CauseWithReason("cancelled by its parent")
 	var cancelled []tools.ChildView

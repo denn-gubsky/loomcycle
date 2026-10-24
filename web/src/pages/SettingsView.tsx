@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { hasTenantScope as principalHasTenantScope } from "../lib/visibility";
+import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { resolveSection, settingsHref, visibleSections } from "../lib/settingsSections";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
@@ -60,7 +60,7 @@ export default function SettingsView() {
   // once the principal has resolved, so this reflects the real role.
   const isAdmin = !principal || principal.is_admin;
   const hasTenantScope = principalHasTenantScope(principal?.scopes);
-  const visible = visibleSections(isAdmin, hasTenantScope);
+  const visible = visibleSections(isAdmin, hasTenantScope, surfacesOf(principal));
   // The tab lives in the URL (/settings/<section>) so the top bar's settings menu
   // can deep-link one and the back button walks tabs. It is re-resolved against
   // what the principal can see on every render: an absent, unknown or

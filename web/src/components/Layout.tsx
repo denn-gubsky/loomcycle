@@ -1,4 +1,4 @@
-import { canSee, hasTenantScope as principalHasTenantScope } from "../lib/visibility";
+import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
 import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
@@ -8,7 +8,7 @@ import PauseControls from "./PauseControls";
 import NoTraceOverrideBanner from "./NoTraceOverrideBanner";
 import OpenModeBanner from "./OpenModeBanner";
 import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
-import { NAV_ITEMS } from "./navItems";
+import { visibleNavItems } from "./navItems";
 import Combobox, { type ComboRow } from "./Combobox";
 import SettingsMenu from "./SettingsMenu";
 import TenantCombobox from "./TenantCombobox";
@@ -53,6 +53,9 @@ export default function Layout() {
   // (handleWhoami), so they already see every item via canSee's admin branch
   // — no open-mode special case needed here.
   const hasTenantScope = principalHasTenantScope(principal?.scopes);
+  // RFC EZ §4: what the server says this principal may reach, page by page. Where
+  // it answers, the nav and the settings menu follow it; the role is the fallback.
+  const surfaces = surfacesOf(principal);
 
   // Super-admin tenant-focus (?tenant=): "" = all tenants (admin's default
   // global view). A tenant principal can't set this — the backend forces
@@ -167,12 +170,13 @@ export default function Layout() {
   return (
     <div className="layout">
       <aside className={"sidebar" + (navCollapsed ? " sidebar-collapsed" : "")}>
-        {/* Per-surface visibility (RFC AS §4): run/runs for every role; the
-            tenant-scoped surfaces for admin OR a substrate:tenant operator;
-            the operator-plane surfaces for admin only. canSee encodes the
-            class → role gate; the server still enforces it (defence in depth). */}
+        {/* Per-page visibility (RFC EZ §4): the server's capability summary
+            (/v1/_me effective.surfaces) decides each item — what the route gates
+            and access-control lists would say to the page's primary request —
+            and the role class (RFC AS §4) is the fallback for a page it does not
+            answer. The server still enforces every route (defence in depth). */}
         <nav className="sidebar-nav">
-          {NAV_ITEMS.filter((it) => canSee(it.vis, isAdmin, hasTenantScope)).map(({ to, label, Icon }) => (
+          {visibleNavItems(isAdmin, hasTenantScope, surfaces).map(({ to, label, Icon }) => (
             <NavLink key={to} to={to} title={label}>
               <Icon size={18} className="sidebar-icon" />
               <span className="sidebar-label">{label}</span>
@@ -310,7 +314,7 @@ export default function Layout() {
               in Log out. Rendered for EVERY role: Log out lives only here, so a
               delegated user with no section still gets the menu. The backend
               gates each surface server-side (defence in depth). */}
-          <SettingsMenu isAdmin={isAdmin} hasTenantScope={hasTenantScope} />
+          <SettingsMenu isAdmin={isAdmin} hasTenantScope={hasTenantScope} surfaces={surfaces} />
         </header>
         <OpenModeBanner principal={principal} />
         {(isAdmin || hasTenantScope) && <NoTraceOverrideBanner />}

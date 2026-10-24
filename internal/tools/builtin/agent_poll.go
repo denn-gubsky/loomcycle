@@ -349,6 +349,9 @@ func (a *AgentTool) pollChildren(ctx context.Context, in agentInput) (tools.Resu
 	if len(unknown) > 0 {
 		return unknownChildren(unknown), nil
 	}
+	if res, refused := authorizeWalks(ctx, "poll", views); refused {
+		return res, nil
+	}
 	ids := make([]string, len(views))
 	for i, v := range views {
 		ids[i] = v.RunID
@@ -531,6 +534,9 @@ func (a *AgentTool) cancelChildren(ctx context.Context, in agentInput) (tools.Re
 	views, unknown := bg.Select(in.ChildRunIDs, "")
 	if len(unknown) > 0 {
 		return unknownChildren(unknown), nil
+	}
+	if res, refused := authorizeWalks(ctx, "cancel", views); refused {
+		return res, nil
 	}
 	cause := runcancel.CauseWithReason("cancelled by its parent")
 	var cancelled []tools.ChildView

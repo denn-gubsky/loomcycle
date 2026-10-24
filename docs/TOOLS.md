@@ -105,6 +105,25 @@ Response size (network tools):
 - `HTTP` returns at most **256 KiB** of response body, marked `[truncated at N bytes]` when cut.
 - `WebFetch` goes through the same guarded request path but reads up to **2 MiB** of raw page before stripping HTML, so a page whose first few hundred KiB are inline CSS still yields its text; a `<script>`/`<style>` block cut off by that read is dropped rather than returned as text. The stripped text is then cut — on a character boundary, marked `[truncated]` — to the run's context window in tokens, as bytes of text (about a quarter of the window at ~4 bytes a token), never above 256 KiB. The window is the one the model actually runs with — what its provider reports, lowered by `max_context_tokens` when that is set — so an agent with no `max_context_tokens` on a small local model is still sized to that model; only when no window is known at all is it 256 KiB. The optional `max_chars` input (bytes of UTF-8, so multi-byte text cannot overrun the window) asks for less or more, clamped to 1–256 KiB.
 
+### Per-call access control: Document, Path, CredentialDef
+
+When the caller is bound to access-control rules (`LOOMCYCLE_ACL`, see [CONFIGURATION.md §9b](CONFIGURATION.md)), these three tools ask the caller's rules about the thing each call resolves to, on every call — inside a run (the rules of the principal that started the run's tree, which bind every sub-agent) and on their off-run surfaces (`POST /v1/_document`, `/v1/_path`, `/v1/_credentialdef`, the gRPC RPCs and the MCP `document` / `path` / `credentialdef` tools). A run or call with no rules on it (open mode, a trigger firing under a definition) behaves as before. A refusal is a `permission` tool error naming the verb and the resource.
+
+**Document** asks of `document:<scope>:<path>`, where `path` is each Path-tree name the document is filed under (a document named at two paths must be allowed at both; one filed nowhere answers to the rules on its whole scope):
+
+| Verb | Ops |
+|---|---|
+| `read` | `get_document`, `get_chunk`, `export_md`, `export_canvas`, `history`, `get_version`, `diff`, `get_asset`, `get_edges`, `list_tags`, `list_types`, `diff_remote` |
+| `write` | `create_document`, `import_md`, `import_canvas` (the name the new document is about to get), `create_chunk`, `update_chunk`, `move_chunk` (both parents), `reorder_chunk`, `set_path` (the document and the new name), `add_tags`, `remove_tags`, `define_type`, `set_asset`, `judge_fact`, `supersede_chunk`, `set_remote`, `sync` |
+| `delete` | `delete_document`, `delete_chunk` |
+| `link` | `link_chunks`, `unlink_chunks` (both ends) |
+
+An op that reaches a scope's documents without naming them first — `list_facts`, `graph_recall`, `verbatim_answer`, `verification_stats`, `query_chunks`, `backlinks`, `related`, `unlinked_mentions` (read); `upsert_chunk`, `remember` (write); `propose_entity`, `propose_subject` (write, tenant scope) — asks about every document of the scope at once, so it is refused when any rule denies part of the scope or carries a condition only a document can answer. `across_scopes` also asks `read` of the other scopes it reads. `query_documents`, `documents_summary` and `search` leave out the documents the caller may not read instead of refusing (a listing is a search). An op the table does not know asks every verb of the whole scope.
+
+**Path** asks of the name the call touches, as the thing it names: a document, a directory (made with `mkdir` or implied by what is under it) or a missing name is `document:<scope>:<path>`; a memory entry is `memory:<scope>`; a volume mount is `volume:<name>`. `resolve` and `stat` ask `read`; `mkdir` and `mv` ask `write` (`mv` of the old and the new name of the entry and of every entry under it); `rm` asks `delete` of the name and, with `recursive`, of every name under it (`write` for a memory entry or volume mount, which have no delete verb). `ls` leaves out what the caller may not read. A deny on `write document:tenant:/kb/secret/**` therefore also stops renaming a document out of `/kb/secret`, moving one in, and moving or removing a directory above it.
+
+**CredentialDef** asks of `credential:<scope>:<name>`: `get` asks `use`; `create` (which also rotates a stored value), `delete`, `generate`, `rotate`, `set_min_version`, `delete_version`, `export_key`, `import_key` and any op the tool does not know ask `manage`; `list` leaves out what the caller may not `use`. Creating a key held in an external KMS also asks `use` of every `$cred:<name>` its `external` object names, since the key reaches the KMS with them.
+
 ### `Read` by line range
 
 `Read` has two modes, chosen by its arguments alone.
@@ -209,7 +228,7 @@ The reference is relative to the volume root, as every file tool's path is: Read
 | `stat`, `ls` | anyone who may read the run (the gate `get_run` uses) |
 | `import` | the same; the Document goes into the **caller's** own scopes |
 | `extract`, `rm`, `clear` | the run's owner (the principal whose subject and tenant are the run's) or an admin |
-| `keep` | the owner or an admin, into a read-write dynamic volume of the caller's tenant that the caller's access rules let it write |
+| `keep` | the owner (not an isolated user) or an admin, into a read-write dynamic volume of the caller's tenant that the caller's access rules let it write |
 | `download`, `upload` | nobody: they need a run's HTTP host policy |
 
 A run the caller may not read answers exactly as a missing one does. A run that has ended answers that its inbox is gone, with the tree. The tool needs `runs:read`, like `get_run`, and is tenant-confined. Input is decoded strictly (exact field names, each once, nothing after the object).

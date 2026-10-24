@@ -158,3 +158,105 @@ func TestAuthorizeDefOp_ReportsToTheStampedRecorder(t *testing.T) {
 		t.Errorf("recorded %v", got)
 	}
 }
+
+func TestTeamOpAction_MapsEachWalkOpToItsTeamVerb(t *testing.T) {
+	cases := []struct{ op, want string }{
+		{"run", "run"},
+		{"poll", "read"},
+		{"cancel", "cancel"},
+		// Definition ops are DefOpAction's; they ask nothing of team:.
+		{"create", ""},
+		{"get", ""},
+		{"frobnicate", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := TeamOpAction(c.op); got != c.want {
+			t.Errorf("TeamOpAction(%q) = %q, want %q", c.op, got, c.want)
+		}
+		// Every verb asked is one the catalog gives the team type, so a
+		// rule naming it validates.
+		if c.want != "" && !authz.ValidVerb("team", c.want) {
+			t.Errorf("TeamOpAction(%q) = %q is not a team verb", c.op, c.want)
+		}
+	}
+}
+
+func TestAuthorizeTeamOp_AsksTheWalkOpsVerbOfTheNamedTeam(t *testing.T) {
+	eff := compiledSet(t,
+		authz.Rule{Effect: authz.Deny, Actions: []string{"run"}, Resources: []string{"team:locked"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"team:secret"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"cancel"}, Resources: []string{"team:pinned"}})
+	run := WithRunID(UpdateRunPolicy(modeCtx(authz.ModeCompat), func(p *RunPolicy) { p.ACL = eff }), "run_1")
+
+	r, refused := AuthorizeTeamOp(run, "run", "locked")
+	if !refused || refusalCode(t, r) != "acl_denied" || r.Error == nil || r.Error.Category != CategoryPermission {
+		t.Errorf("run of a team denied run: refused=%v %s", refused, r.Text)
+	}
+	if !strings.Contains(r.Text, `"resource":"team:locked"`) || !strings.Contains(r.Text, `"action":"run"`) {
+		t.Errorf("refusal must name run team:locked, got %s", r.Text)
+	}
+	if _, refused := AuthorizeTeamOp(run, "run", "open"); refused {
+		t.Error("a deny on one team refused running another")
+	}
+	if _, refused := AuthorizeTeamOp(run, "run", "open", "locked"); !refused {
+		t.Error("a denied team named beside an allowed one was let through")
+	}
+	if _, refused := AuthorizeTeamOp(run, "poll", "secret"); !refused {
+		t.Error("poll of a team denied read was let through")
+	}
+	if _, refused := AuthorizeTeamOp(run, "poll", "locked"); refused {
+		t.Error("a deny on run refused a poll")
+	}
+	if _, refused := AuthorizeTeamOp(run, "cancel", "pinned"); !refused {
+		t.Error("cancel of a team denied cancel was let through")
+	}
+	if _, refused := AuthorizeTeamOp(run, "cancel", "locked"); refused {
+		t.Error("a deny on run refused a cancel")
+	}
+	// A definition op is not a walk op: nothing is asked of team:.
+	if _, refused := AuthorizeTeamOp(run, "create", "locked"); refused {
+		t.Error("a definition op was asked a team question")
+	}
+}
+
+func TestAuthorizeTeamOp_UnnamedTeamAsksEveryTeam(t *testing.T) {
+	one := compiledSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"run"}, Resources: []string{"team:locked"}})
+	all := compiledSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"run"}, Resources: []string{"team:*"}})
+	ctxWith := func(eff *authz.Effective) context.Context {
+		return WithRunID(UpdateRunPolicy(modeCtx(authz.ModeCompat), func(p *RunPolicy) { p.ACL = eff }), "run_1")
+	}
+	if _, refused := AuthorizeTeamOp(ctxWith(one), "run", ""); refused {
+		t.Error("a deny on one team refused the type-wide question")
+	}
+	r, refused := AuthorizeTeamOp(ctxWith(all), "run", "")
+	if !refused || !strings.Contains(r.Text, `"resource":"team:*"`) {
+		t.Errorf("a type-wide deny did not refuse an unnamed run as team:*: %s", r.Text)
+	}
+}
+
+func TestAuthorizeTeamOp_JudgesLikeADefinitionOp(t *testing.T) {
+	deny := compiledSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"run"}, Resources: []string{"team:*"}})
+	compat := modeCtx(authz.ModeCompat)
+	caller := auth.WithPrincipal(compat, auth.Principal{TenantID: "t", Subject: "u", Effective: deny})
+	if _, refused := AuthorizeTeamOp(caller, "run", "x"); !refused {
+		t.Error("the caller's deny did not refuse an off-run walk start")
+	}
+	if _, refused := AuthorizeTeamOp(compat, "run", "x"); refused {
+		t.Error("open mode was refused")
+	}
+	enforced := WithRunID(modeCtx(authz.ModeEnforce), "run_1")
+	r, refused := AuthorizeTeamOp(enforced, "run", "x")
+	if !refused || refusalCode(t, r) != "acl_unavailable" {
+		t.Errorf("enforce with no set: refused=%v %s", refused, r.Text)
+	}
+	var got []string
+	rec := WithACLRecorder(WithRunID(UpdateRunPolicy(compat, func(p *RunPolicy) { p.ACL = deny }), "run_1"),
+		func(_ context.Context, event string, s authz.Surface, _ authz.Decision) {
+			got = append(got, event+" "+s.Action+" "+s.Type+":"+s.Name)
+		})
+	_, _ = AuthorizeTeamOp(rec, "run", "x")
+	if len(got) != 1 || got[0] != "acl_denied run team:x" {
+		t.Errorf("recorded %v, want [acl_denied run team:x]", got)
+	}
+}

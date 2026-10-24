@@ -2336,6 +2336,19 @@ export interface WhoamiResponse {
   /** The version of the caller's compiled access-control set. Absent in open
    *  mode and when the set could not be resolved. */
   acl_version?: number;
+  /** What the caller may reach, as the server's own gates would answer it.
+   *  Absent on a server that predates the summary. */
+  effective?: WhoamiEffective;
+}
+
+/** GET /v1/_me's capability summary. Bounded and non-secret: a fixed list of
+ *  Web UI pages, no per-instance data. */
+export interface WhoamiEffective {
+  /** Per Web UI page id (`run`, `runs`, `channels`, `access`, `users`, …),
+   *  whether a request to the route the page loads first would pass the
+   *  route's scope gate and its access-control question in the current mode.
+   *  Every page is true in open mode. */
+  surfaces: Record<string, boolean>;
 }
 
 // ---- Pause / Resume / State (v0.8.17 wire shape, v0.8.18 real impls) ----

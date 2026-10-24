@@ -129,6 +129,10 @@ func Baselines() map[string]ACL {
 			Rules: []Rule{
 				{Effect: Allow, Actions: []string{"run", "read", "spawn", "steer", "cancel", "review"}, Resources: []string{"agent:*"}},
 				{Effect: Allow, Actions: []string{"read", "write", "mount"}, Resources: []string{"volume:*"}},
+				// A walk an isolated user starts runs isolated, and its own runs
+				// may run, poll and cancel it (TeamDef run/poll/cancel); the
+				// definitions stay out of reach (no def: rule).
+				{Effect: Allow, Actions: []string{"run", "read", "cancel"}, Resources: []string{"team:*"}},
 				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "mcp:*", "a2a:*", "client:*", "localapi:*"}},
 				{Effect: Allow, Actions: []string{"invoke", "read"}, Resources: []string{"skill:*"}},
 				// gateway: the decision call (runs:create) is an isolated

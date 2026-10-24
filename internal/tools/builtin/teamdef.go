@@ -543,12 +543,22 @@ func (t *TeamDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
-	// RFC EZ §1.2: the op's own verb, asked of the team definition it names.
-	if res, refused := tools.AuthorizeDefOp(ctx, "team", in.Op, defOpNames(ctx, in.Name, func(ctx context.Context, id string) (string, string, error) {
+	owner := func(ctx context.Context, id string) (string, string, error) {
 		row, err := t.Store.TeamDefGet(ctx, id)
 		return row.Name, row.TenantID, err
-	}, in.DefID, in.ParentDefID)...); refused {
+	}
+	// RFC EZ §1.2: the op's own verb, asked of the team definition it names.
+	if res, refused := tools.AuthorizeDefOp(ctx, "team", in.Op, defOpNames(ctx, in.Name, owner, in.DefID, in.ParentDefID)...); refused {
 		return res, nil
+	}
+	// A walk start asks run of the team it starts: the name given and the
+	// team its def_id is, since op=run runs the id when both are given. Asked
+	// before the idempotency_key lookup, so a refused caller is not handed a
+	// walk the key holds either. poll and cancel ask of the walks they select.
+	if in.Op == "run" {
+		if res, refused := tools.AuthorizeTeamOp(ctx, "run", defOpNames(ctx, in.Name, owner, in.DefID)...); refused {
+			return res, nil
+		}
 	}
 	switch in.Op {
 	case "create":
@@ -2054,6 +2064,16 @@ func (t *TeamDef) walkHoldingKey(ctx context.Context, in teamDefInput, lostRace 
 	}
 	if w == nil {
 		return nil, nil
+	}
+	// The key is matched alone, so the walk it holds may be of another team
+	// than the one this call asked run of. Answering with it stands in for
+	// starting THAT team and hands over its status and output, so it asks
+	// run and read (as a poll would) of the held walk's team; a refusal
+	// carries nothing of the walk.
+	for _, op := range []string{"run", "poll"} {
+		if res, refused := tools.AuthorizeTeamOp(ctx, op, w.Name); refused {
+			return refuse(res)
+		}
 	}
 	out := map[string]any{
 		"name":         w.Name,
