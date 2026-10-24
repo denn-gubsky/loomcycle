@@ -3,6 +3,8 @@ package runner
 import (
 	"context"
 	"errors"
+
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
 
 // TeamWalkStarter is the seam a TRIGGER starts a team walk through. It sits
@@ -26,7 +28,8 @@ type TeamWalkStarter interface {
 	// bits are the only authority there is.
 	//
 	// Errors a caller branches on: ErrTeamNotStartable (wrapped, with the
-	// reason), ErrInvalidArgument, ErrTokenLimitExceeded, ErrRuntimePaused.
+	// reason), ErrInvalidArgument, ErrTokenLimitExceeded, ErrRuntimePaused,
+	// ErrAgentNotAllowed and ErrACLUnavailable (the owner's set, ACLOwner).
 	// Anything else is a failed start.
 	StartTeamWalk(ctx context.Context, in TeamWalkInput) (runID string, err error)
 }
@@ -61,6 +64,14 @@ type TeamWalkInput struct {
 	// come from the delivery); a schedule unless its author could act as its
 	// user.
 	CredentialsNoUserScope bool
+	// ACLOwner is RunInput.ACLOwner for the walk: the trigger definition's
+	// recorded owner, whose CURRENT access-control set (RFC EY) is compiled
+	// at the start, asked `run team:<Team>`, and carried down the walk so
+	// every member it spawns is narrowed by it (RFC EZ §1.5). nil — a yaml
+	// trigger, a definition written with no set in force — starts the walk as
+	// before. An unreadable set refuses the start with ErrACLUnavailable; a
+	// deny, with an error that Is ErrAgentNotAllowed.
+	ACLOwner *authz.SubjectRef
 
 	// IdempotencyKey and DeliveryAltKey are the durable dedup identities of
 	// the delivery that asked for this walk (see RunInput.IdempotencyKey).
