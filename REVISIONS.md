@@ -10,15 +10,235 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.122.0
 
-*Per-agent shell credentials, run metrics in the Web UI, and a fix for rotating per-user tokens. **A new `shell_credentials` field narrows which operator-listed credentials an agent's Bash and Bashbox host commands receive**, so one agent can keep a shell without seeing every secret the others get. The Web UI's run views now show the serving model, tokens in and out, a live tok/s, a context-window gauge and the run's context method next to Compact; the agent Library shows each agent's context window. **Settings → Tokens can rotate and retire per-user (`u-`) tokens again**: it failed on every one since v1.112.0.*
+*Access control, a Git tool, files from tools kept as files, and Web UI bundles that ship without a new binary. **Authority can now be written per user and per group: ACL rule lists, nested groups and bindings, with explicit deny over allow**, asked at every HTTP, gRPC and MCP gate and intersected with an agent's own grants inside the run. It rolls out through `LOOMCYCLE_ACL` (`compat` by default, then `shadow`, then `enforce`), so nothing changes until an operator writes a list or switches mode. Lists, groups and bindings are managed from a new Settings → Access console, over HTTP, gRPC, MCP, a `loomcycle acl` command and both adapters, and can be declared in config. The line is complete apart from the gaps listed under "Not included": definition writes, Document, Path and credential calls, team walks and their cancels ask about the instance they name; a resumed, restored or restarted run keeps its caller's rules; a scheduled, webhook or A2A run is narrowed by its owner's; a subject erasure removes the subject's memberships and bindings and revokes its member tokens; members reach over gRPC what HTTP admits; and the Web UI shows the pages the caller's gates admit. **A new `Git` tool** does repository work in a bound volume without starting `git` and with the push credential held by the runtime. **Files a tool returns are kept in a run inbox** instead of being dropped or mangled: MCP image and blob blocks, opted-in base64 text, and binary HTTP and WebFetch responses. A `File` tool inspects and keeps them, downloads and uploads by URL, extracts DOCX, XLSX, PPTX, HTML and PDF to Markdown, and imports the result as a Document; an MCP `file` tool reaches a run's inbox from outside it. **The server can serve a newer Web UI** from a verified bundle in a directory or fetched by URL and pinned by SHA-256. **Every runtime log line is now levelled slog.** Also in this release: per-agent shell credentials, run metrics in the Web UI, the embedder and decision models on the Routing page, and a fix for rotating per-user tokens. **Read the upgrade notes: one migration, tool results that now land on disk, a reserved volume name, erasure revoking tokens, agent-limited tokens that can no longer start team walks, log lines that changed shape, and `go install` no longer works.***
 
-A minor release: #2035 to #2043.
+A minor release: #2035 to <this PR>.
+- access control (RFC EY, RFC EZ): the decision engine, store, gates, in-run intersection, HTTP management and config (#2055 to #2060), list writes asking `author` and `retire` (#2064, #2065), the Access console (#2069), management on gRPC, MCP and the CLI (#2079), the isolated baseline on MCP (#2080), the adapters (#2083), and follow-ups (#2084);
+- access control, the gaps closed (RFC EY, RFC EZ): a resumed, restored or restarted run keeps its caller's rules (#2091), definition writes ask `author` or `retire` of what they name (#2094), erasure removes memberships and bindings, revokes member tokens and is audited on every transport (#2095, #2112), Document, Path and CredentialDef ask about the instance (#2098), the built-in lists held to each class's reach on every surface (#2099, #2108), the gRPC member path (#2100), trigger runs and team walks narrowed by their owner or starter (#2101, #2113), TeamDef run, poll and cancel and run-plane cancels ask the team (#2110, #2114), and the Web UI: refusals worded in the Library (#2090) and capability-driven navigation (#2102);
+- #2051 and #2053 (RFC FB) add the Git tool;
+- files by reference (RFC FF): the run inbox and the File tool (#2081), base64 files in MCP text (#2085), binary HTTP and WebFetch responses, WebFetch assets and File download and upload (#2086), Office and web extraction and import (#2088), PDF extraction (#2093), the MCP `file` tool, `file_captured` in the Web UI and the TrueNAS dynamic volume (#2097), an isolated user refused `keep` from outside a run (#2109), and the guides (#2106);
+- the rest of the slog migration (#2087, #2089, #2092, #2096, #2103, #2104, #2105), with two test-build fixes (#2107, #2111);
+- #2066, #2068 and #2070 (RFC FE) serve a verified Web UI bundle from a directory or a pinned URL, and publish bundles on `webui-v*` tags;
+- #2075 shows the embedder and decision models on the Routing page;
 - #2035, #2036 and #2039 (RFC EW) add per-agent `shell_credentials`;
 - #2040 adds the run metrics, the context method label and the Library's context window;
 - #2037 fixes token rotate and retire in the Web UI and lists tokens per tenant;
-- #2038 runs only the Go tests a pull request's change can reach (CI only);
-- no dependency updates, and #2043 is these notes.
-- `@loomcycle/client` and the Python adapter are 1.122.0. The TS client gains optional fields only: `shell_credentials` on `AgentDefOverlay` and `RunSpec` (#2035), `current_def_id` on `OperatorTokenDefNameSummary` (#2037) and `context_window` on `LibraryEntry` (#2040). The Python adapter changes only its version. No method changes in either.
+- build, CI and package layering (RFC EX, RFC FE), no behaviour change: import-layering guards and the package cuts behind them (#2044, #2046, #2047, #2048, #2049, #2050, #2052, #2054, #2062), nested Go modules for `internal/errkind`, `internal/otel` and `internal/providers` (#2067, #2071, #2076), CI test selection, sharding and job skipping (#2038, #2041, #2042, #2045, #2063), the root `Dockerfile`'s Web UI stage (#2078), an empty gosec run writing its report (#2082), and architecture docs (#2061, #2077);
+- dependency updates: `vitest` 3.2.6 to 3.2.7 in `packages/explorer` (#2072), `jose` 6.2.12 to 6.2.13 in the landing page (#2073), and `actions/setup-go` 5 to 7 in CI (#2074). None reaches the binary. #2043 and <this PR> are these notes.
+- `@loomcycle/client` and the Python adapter are 1.122.0.
+  - **TS** gains 22 access-control methods (groups, lists, bindings, authz), about 40 exported types, `AclDeniedError` for a `403 acl_denied`, and optional `acl_mode`, `groups` and `acl_version` on `WhoamiResponse` (#2083), plus an optional `effective` (`WhoamiEffective`, the page summary) on `WhoamiResponse` (#2102). Erasure gains `ErasureAccess` and `ErasureTokenRef`, and `ErasureReport` and `ErasureResult` carry a required `access` (#2112). It also types the `file_captured` event (#2081), sends `binary_results` from `ensureMcpServer({binaryResults})` (#2085), adds the optional `embedder` and `decision` blocks on `RoutingResponse` (#2075), and optional fields `git_remote` (#2051), `shell_credentials` (#2035), `current_def_id` (#2037) and `context_window` (#2040). **Fix:** an ACL `409` such as `group_external` is matched by its code, so a group named like "session-ops" no longer comes back as `SessionBusyError`.
+  - **Python** gains `group_def`, `acl_def`, `acl_binding` and `authz`, `AclRefusedError` (a `SubstrateToolRefusedError`, so existing catches still work) and `AclDeniedError` (#2083), and unwraps the `file_captured` event into `FileCapturedInfo` (#2081). Erasure reports and results carry `access` (#2112).
+
+### Access control: rule lists, groups and bindings (#2055 to #2060, #2064, #2065, #2080, #2084, #2091, #2094, #2098, #2099, #2101, #2108, #2110, #2113, #2114)
+
+Authority lived on the token: its scopes and agent restrictions name kinds of thing, never instances, never deny, and no group lets a hundred users share them. An operator could not say "the support group may run `chat/*` but not `admin/*`, may read the `shared-ro` volume but not write it, and never gets `Bash`".
+
+```yaml
+acls:
+  support:
+    rules:
+      - { effect: allow, actions: [run], resources: ["agent:chat/*"] }
+      - { effect: allow, actions: [read], resources: ["volume:shared-ro"] }
+      - { effect: deny, actions: [invoke], resources: ["tool:Bash"] }
+groups:
+  support: { tenant: acme, members: [alice, bob] }
+acl_bindings:
+  - { acl: support, group: support, tenant: acme }
+```
+
+- **A rule list** holds rules of the shape `{effect, actions, resources, when}`.
+  - **Resources** cover every primitive a principal can reach: agents, volumes, tools, skills, mounted MCP, A2A and client tools, memory, SQL memory, documents, history, channels, definition families, teams, credentials, crypto, models, tiers, the gateway, runs, principals, transports and git remotes. `acldef op=catalog` lists every type, verb and scope.
+  - **Selectors** are `/`-globs (`agent:chat/*`, `agent:chat/**`), scoped names (`memory:tenant`, `document:tenant:/kb/**`, `def:agent/chat/*`) or enums (`run:own`).
+  - **`when`** is a closed set: `transport`, `time` (days, hours, time zone), `interactive`, `tier`, `user_tier`, `source_cidr`, `owner_is_self`, `agent` and spawn `depth`. A condition the request cannot answer never holds.
+  - **An explicit deny beats any allow**, and order never matters. Parsing is strict: an unknown field, type or verb is refused.
+- **Groups** nest, at most 8 deep; a cycle or a self-membership is refused. A group with an `external_id` belongs to an identity provider: adding or removing members and upserting it are refused (`409 group_external`); deleting it is allowed.
+- **Bindings** attach a list to a user, a group, a token or a whole tenant, with an optional expiry. A binding to a list that no layer has (a retired or built-in name counts as missing), or with an expiry in the past, is refused (`400 acl_binding_invalid`).
+- **The rollout mode, `LOOMCYCLE_ACL`:**
+  - `compat` (default): the scope gates decide as before, and an explicit deny bound to the caller is honoured on top.
+  - `shadow`: the scope gates decide, and every disagreement with the engine is logged and audited (`acl_shadow_diverged`).
+  - `enforce`: the engine decides. A question no rule allows is refused `403 acl_denied`. A request whose rules could not be read is refused `503 acl_unavailable` (gRPC `Unavailable`), never admitted.
+  - Each token class carries a built-in list that reproduces its reach today: `builtin:admin`, `builtin:tenant-operator`, `builtin:member`, `builtin:isolated`, and `builtin:run-plane` for a token limited to some agents. So `enforce` with no lists written behaves like `compat`. #2080 adds the MCP session and its self-service tools (`credentialdef`, `evaluation`, `authz`) to `builtin:isolated`, which had refused them in `enforce`.
+  - A test now holds each built-in list to its class's scope gates on every HTTP route, gRPC RPC and MCP tool, for each token class, in `compat` and `enforce` (#2099). Wherever the scope gates admit, the list admits; at a class's widest token, the list reaches nothing the gates refuse.
+  - Writing it corrected the lists (#2099). `builtin:isolated` no longer denies `use gateway:*`, which had refused an isolated user `/v1/_decide`, the models list and the Decide RPCs that its `runs:create` admits, in `compat` too; in `enforce` its `use credential:user:*` drops the `owner_is_self` condition, which cannot hold at the type level (`manage` keeps it), and it gains publish, subscribe and ack on channels, and `delete run:own`. `builtin:member` gains `delete` on runs, `manage channel:*`, `manage def:schedule/*` and `read runtime:retention`. The member and tenant-operator lists name their MCP tools instead of `invoke mcp-tool:*`, which had reached snapshots, pause, `operatortokendef`, `resolve_probe` and `list_channels`, and a tenant operator's `manage` on definitions now covers schedules only.
+  - `builtin:member` admits the new MCP `file` tool (#2108), and `builtin:isolated` gains `run`, `read` and `cancel team:*` (#2110).
+  - One deliberate difference: in `enforce` an isolated user is refused `GET /v1/_users`, which `compat` admits.
+- **Where it is asked:** the HTTP middleware (after every existing check), every gRPC RPC, and the MCP meta-tools, where a deny holds for an admin too. A run intake also asks `run agent:<name>`. The tools below also ask about the instance a call names, on every transport and inside a run, through one check in each tool:
+  - **Definitions, all 12 families** (#2094): `get`, `list`, `verify` and `render_diagram` ask `read def:<family>/<name>`; `retire`, `delete` and `purge` ask `retire`; `create`, `fork`, `promote`, `add_hook`, `remove_hook`, `rediscover`, `set_mode` and any unknown op ask `author`. Each name the call gives is asked, and the name each `def_id` or `parent_def_id` resolves to; an id that does not resolve in the caller's tenant or the shared one asks `def:<family>/*`, so a refusal never names another tenant's definition. Over HTTP the refusal is `403 acl_denied` or `503 acl_unavailable`, not `422 tool_refused`.
+  - **Document** (#2098) asks of `document:<scope>:<path>` at every Path-tree name the document is filed under (the bare scope when it is filed nowhere): `read` for get, export and history; `write` for create, update, move (both parents), tag and `set_path`; `delete` for the deletes; `link` at both ends of a link. A new document is checked against the name it is about to get before anything is written. Ops that reach a whole scope (search, recall, upsert and the like) are refused when any rule denies part of it.
+  - **Path** (#2098) asks of the type each entry names: a document or directory as `document:`, a memory entry as `memory:<scope>`, a volume mount as `volume:<name>`. `rm` and `mv` cover the whole subtree, `mv` under both names.
+  - **CredentialDef** (#2098): `get` asks `use credential:<name>`, every other op `manage`; creating a key held in an external KMS asks `use` of each `$cred:` it names before anything reaches the KMS.
+  - **Lists filter instead of refusing:** Document `query_documents`, `documents_summary`, `search` and `get_edges`, Path `ls` and CredentialDef `list` leave out what the caller may not read.
+  - **TeamDef** (#2110): `run` asks `run team:<name>` of the name given and of the team a `def_id` belongs to, before the idempotency-key lookup; `poll` and `cancel` ask `read` and `cancel` of each walk they select. A walk an idempotency key already holds is asked of its own team, so a key cannot reach another team's walk. `Agent` poll and cancel of a team-walk child ask the same.
+  - **Cancels from the run plane** (#2114): `POST /v1/runs/{run_id}/cancel`, gRPC `CancelTurn` and MCP `cancel_run` ask `cancel team:<name>` of a team walk, after the ownership checks, so a caller who cannot see the walk still gets not-found. A walk on another replica is asked before the cancel is routed. gRPC refuses with `PermissionDenied` or `Unavailable`.
+  - A refusal is `403 {"code":"acl_denied","action","resource","reasons"}`, naming only the rules that denied.
+  - Refusals and divergences are audited (`acl_denied`, `acl_unavailable`, `acl_shadow_diverged`), never with a bearer.
+- **Inside a run, the agent's grants are intersected with the caller's rules** (#2058):
+  - a tool the caller may not `invoke`, built-in or mounted, is withheld from the model and reported once at run start as a `capability_inert` event with gate `acl`;
+  - a volume it may not `write` is bound read-only, and one it may not `read` is dropped;
+  - memory, SQL memory and history scopes it may not `read` are dropped, and skill denies are added to the agent's `skills:` patterns;
+  - the `Agent` tool asks `spawn agent:<child>` before a child starts, and the caller's rules bind every sub-agent;
+  - `Context op=self` reports an `acl` block: mode, version, groups and removed tools.
+- **A run keeps its caller's rules after a pause** (#2091). A resumed, snapshot-restored or crash-recovered run, every run the shutdown pause parks across a restart, and a queued run started at restart are narrowed exactly as live, sub-runs by their originating caller.
+  - The run's config record carries an `acl_origin`: tenant, subject, token def id, token class and transport. Never a bearer or the compiled rules: the rules are compiled again on use, so a binding written during the pause holds after it, and a queued run a deny reached during the wait is refused `acl_denied`.
+  - `acl_origin` is stored and snapshotted but never served: HTTP, gRPC and MCP run reads strip it.
+  - When a resolver is wired but the recorded caller's rules cannot be read, the run stays paused or queued, reported `acl_unavailable`, and a later pass starts it. Code that wires no resolver (every boot wires one) resumes it as a live request would (#2113).
+- **Trigger runs are narrowed by their owner** (#2101, #2113). A run had no caller rules when a schedule, an inbound webhook or an A2A peer started it, so anyone who could author a trigger could step around a deny bound to them.
+  - ScheduleDef and WebhookDef rows gain a server-set `acl_owner` (tenant, subject, token def id, class; no bearer, no rules), stamped at create and fork after the overlay, so an overlay cannot set it. A hook edit binds the new version to its editor; an editor with no rules (open mode) leaves the recorded owner.
+  - At fire time the owner's current rules are compiled and the run is narrowed by them and asked `run agent:<name>`; its `acl_origin` records the transport `schedule`, `webhook` or `a2a`. An A2A run is bound to the peer's own credential.
+  - A `delivery: team` schedule or webhook asks `run team:<name>` of its owner and carries the owner's rules on the walk, so every member is narrowed and asked `spawn agent:` (#2113).
+  - A deny is audited `acl_denied`: a schedule records the fire `failed`, counted against `max_fires`; a webhook answers `403 agent_not_allowed`. Rules that cannot be read are `acl_unavailable`: a schedule gives the slot back to the next tick without counting it, a webhook answers 503.
+  - yaml-declared triggers record no owner and fire as before.
+- **A team walk started on the plane** over HTTP, gRPC or MCP carries its starter's rules (#2113), unless a trigger owner's or an enclosing run's already applies.
+- **Resolution:** a principal's rules are compiled from its groups (transitively), the bindings that reach it, and its class's built-in list, then cached until its tenant's `acl_version` moves. Every write invalidates the caches on every replica over the cluster bus. `LOOMCYCLE_ACL_CACHE_TTL_SECONDS` (default 5; `0` re-reads on every request) bounds the lag if a bus message is lost.
+- **`GET /v1/_me`** adds `acl_mode` (also in open mode), `groups`, `acl_version` and `effective.surfaces`, the pages the caller's gates admit (#2102, under the Access console below).
+- **Config-declared lists, groups and bindings** (#2060): `acls:`, `groups:` and `acl_bindings:`, validated at load by the engine's own parser, so a bad entry fails `loomcycle validate` and the boot. A stored list of the same name shadows a config one, as for agents, and a reload applies on the next evaluation. Listings show config rows marked `"source":"config"`.
+- **Storage:** migration 0109 adds `acl_defs`, `user_groups`, `user_group_members`, `acl_bindings` and `acl_version` (sqlite creates them at boot).
+- **Not included:**
+  - Snapshots do not carry these tables, so a restore on another instance has no lists, groups or bindings until they are written again or declared in config.
+  - Walks of a team's subscriptions start with no rules: the promoter is not recorded as a subject. Channel-hook runs, which are records with no model loop or tools, carry none either.
+  - Using a `$cred:` value when a server is bound asks no `use`.
+  - A condition on `agent`, `depth` or `tier` never holds in an instance question, which supplies only transport and clock.
+  - `POST /v1/agents/{id}/cancel` and gRPC `CancelAgent` cannot name a walk, so they ask nothing of its team. The scheduler's replace-cancel acts under the schedule's own authority.
+  - Over gRPC, an isolated user is refused `History` and `DirectoryUsers`, which HTTP admits.
+- See the `LOOMCYCLE_ACL` row and "Config-declared access control" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Managing access on every transport (#2059, #2065, #2079, #2083, #2084, #2100)
+
+- **HTTP:**
+  - groups: `GET/POST /v1/_groups`, `GET/DELETE /v1/_groups/{name}`, `GET /v1/_groups/{name}/effective` (transitive members), `POST /v1/_groups/{name}/members`, `DELETE /v1/_groups/{name}/members/{kind}/{id}`;
+  - lists: `POST /v1/_acldef` with `op` `create`, `update`, `put`, `get`, `list` (with the built-in lists), `retire`, `validate`, `catalog` or `names`, and `GET /v1/_acldef/names`;
+  - bindings: `GET/POST /v1/_aclbinding` and `DELETE /v1/_aclbinding/{id}`;
+  - questions: `POST /v1/_authz/evaluation`, `/evaluations` (a batch, with `execute_all`, `deny_on_first_deny` or `permit_on_first_permit`), `/explain` (every rule of the type and why it did or did not match) and `/simulate` (a draft of lists and bindings over the stored state; nothing is written).
+- **gRPC:** the `GroupDef`, `AclDef`, `AclBinding` and `Authz` RPCs, op-dispatched JSON like `OperatorTokenDef`. The three management RPCs need `substrate:tenant`; `Authz` needs no scope.
+- **MCP:** the `groupdef`, `acldef`, `aclbinding` and `authz` meta-tools. Of the four, a member's or isolated user's `tools/list` shows only `authz`.
+- **CLI:** `loomcycle acl groups|policies|bindings|check|explain|simulate`, over HTTP like `loomcycle operator-token`. It never prints a bearer.
+- **One implementation holds every gate,** whatever the transport:
+  - management is for tenant operators and admin (admin focuses another tenant with `?tenant=` or `tenant`); a member is refused;
+  - any principal may ask the questions about itself, and a tenant operator about any subject of its tenant;
+  - each op asks its own question of what it names: a list's `create`, `update` and `put` need `author def:acl/<name>`, `retire` needs `retire`, `get` needs `read`; group writes need `manage`; binding writes need `author`. So a deny on authoring a list holds for a tenant operator too, and a principal allowed to write but denied read is refused on every transport;
+  - a delegated writer (not a tenant operator) may not bind, join or edit what shapes its own authority: a list bound to it, its token, a group it is in or its tenant (`403 acl_self_elevation`);
+  - every write is audited (`acl_written`, `group_written`, `binding_written`, `*_retired`, `*_deleted`) and invalidates the caches;
+  - none of it is reachable from inside a run (`403 operator_plane`).
+- **Members reach over gRPC what HTTP admits** (#2100). A member token was refused every RPC that needs `substrate:tenant`, so it could do less over gRPC than over HTTP.
+  - Each RPC is mapped to its HTTP route, and the member path admits an RPC exactly when it admits its twin. Over gRPC a member now reaches the 12 definition families and `TeamDef`, Path, Document, Memory, CredentialDef, its own `History`, `UsageReport`, `DirectoryUsers`, `TokenLimit` list and the team-channel RPCs.
+  - Still refused: `TokenLimit` set and delete, `RetentionOverride`, `DirectoryInspect`, `DirectoryTenants`, erasure, `Crypto`, the access management RPCs, `OperatorTokenDef`, runtime admin and snapshots.
+  - Operations carried in the request are held to their own twin: `TokenLimit` writes ask `manage`, `TeamDef` run and cancel need `runs:create` and poll `runs:read`.
+  - `AwaitChannels` and `BroadcastChannels` were admin-only and `Memory` was missing from the scope table (so admin-only too); all three now need `substrate:tenant`, as over HTTP.
+  - Isolated users, tenant operators and admin are unchanged.
+- **Row times are UTC**, unset times are omitted, and `"expires_at": ""` means no expiry. In the error info only a transient failure is retryable; `store_unavailable` (no store configured) is not.
+- See "Managing groups, ACL lists and bindings" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md), and the access-control sections of the gRPC and MCP-server guides.
+
+### Erasure removes a subject's access (#2095, #2112)
+
+A subject erasure left the user's group memberships and user bindings in place, still naming the subject, and its member tokens still authenticated, so the erased user could sign in and write new data.
+
+- **Tier 2 now removes** the subject's user memberships and every user binding, retired ones included, in one transaction and before credentials, with one `acl_version` bump and a cache invalidation on every replica (audited `subject_access_erased`).
+- **It revokes the subject's member tokens**, with the rule user delete and disable already use, each audited `retire`, and flushes the auth cache on every replica, so a revoked bearer is refused at once. Bindings to those tokens, and to tokens retired earlier, are deleted. Tokens holding `substrate:tenant` or `substrate:admin` are kept and named in `retained.operator_tokens_privileged`.
+- **Left alone:** group bindings, the groups and lists themselves, and config-declared memberships and bindings, which are named in `retained.access_control_config` ("remove from the config file").
+- **What it removes is a structured field:** `access: {groups, lists, tokens: [{def_id, name}]}` on the report and the result (never null, never a bearer), over HTTP and MCP, and as `ErasureReportResponse.access` (8) and `ErasureExecuteResponse.access` (9) over gRPC. New per-plane counts: `acl_memberships`, `acl_bindings`, `operator_tokens` and `acl_token_bindings`. The Web UI's erasure console shows them under the report and the result. A dry run names everything and changes nothing.
+- **Audited on every transport:** the `erase_intent`, execute, `erase_result` sequence now runs in the one method HTTP, gRPC and MCP call. With no audit sink, or one that fails, a live erasure is refused: HTTP `503 audit_unavailable` as before, gRPC `Unavailable`, an MCP tool error.
+- **Fix:** retiring a user's tokens skipped the auth cache flush when the store failed part-way, so a token already retired kept authenticating from the cache.
+
+### The Access console (#2069, #2079, #2090, #2102)
+
+- **Settings → Access**, for tenant operators and admin, shows the rollout mode and what it means.
+  - **Groups:** create and delete, add and remove members (users and nested groups), the nesting tree and the effective members.
+  - **Policies:** rule lists, with the built-in ones read-only. A structured editor offers only what the catalog allows; a collapsible JSON/YAML view is validated before saving, and rules the editor cannot show are saved back unchanged.
+  - **Bindings:** create (user, group, token or tenant; optional expiry) and delete.
+  - **Simulator:** "as <subject>, may I <action> <resource>?", with the rule trail. A draft toggle evaluates unsaved edits; nothing is written.
+  - Config-declared rows show a "config · read-only" pill.
+- **The Users page** shows each user's groups, direct and through nesting, and the lists bound to it (own, via group, or tenant-wide; an expired one struck through).
+- **Refusals read as sentences on every page:** "You may not <action> <resource>, denied by list <x> v<n>, rule <i>", the Library pages included (#2090). Other error messages are unchanged.
+- **The /run terminal** says when the caller's rules withheld a tool from the run, also on re-attach, and words the `capability_inert` line as "<tool> withheld by your access rules" (#2090).
+- **The nav shows what the caller's gates admit** (#2102). Pages were chosen by role, so a member bound to a list denying channels still saw Channels and got a 403, and a member never saw the tenant pages its member path reaches.
+  - `GET /v1/_me` returns `effective.surfaces`: for each of 30 pages (16 nav items, 13 Settings sections and users), whether the route the page loads first would pass its scope gate, the run-plane limit and its access question in the current mode. Fixed ids, nothing per instance, nothing audited. Every page is true in open mode.
+  - The nav, the Settings tabs and the menu use that answer, and fall back to the role rule when a server does not send it. A hidden page opened by URL still shows the server's refusal.
+  - Members now see the tenant pages their member path reaches: library, memory, audit, usage, limits, routing and retention. What they can do is unchanged. Health stays admin-only.
+
+### The Git tool (#2051, #2053)
+
+An agent could do git work only through a shell, with `GITHUB_TOKEN` in its environment. The model can read that token, and a real `git` runs whatever a repository's config names: hooks, `core.fsmonitor`, filter drivers, credential helpers.
+
+- **`Git`** works on a repository in a bound volume through go-git. It never starts a process or reads system git config.
+  - **Read** (any volume mode): `status`, `log`, `show`, `diff`, `branch_list`, `tag_list`, `remote_list`, `merge_base`, `rev_parse`, `blame`, `grep`, `notes_list`, `submodule_list`.
+  - **Change** (a read-write volume): `init`, `add`, `rm`, `mv`, `restore`, `reset`, `commit`, `checkout` (also `sparse`), `branch_create`, `branch_delete`, `merge` (fast-forward), `clean`, `tag_create`, `tag_delete`, `remote_add`, `remote_remove`, `remote_set_url`.
+  - **Network:** `clone`, `fetch`, `pull` (fast-forward), `push`, `ls_remote`, `submodule_update`.
+  - Not available: cherry-pick, rebase, revert, stash and non-fast-forward merges.
+- **Network access** needs the new agent field `git_remote` (`[fetch]` or `[fetch, push]`; absent means none) and a listed host. Fetches reach `LOOMCYCLE_GIT_SOURCE_HOSTS` under the git-source limits; pushes reach `LOOMCYCLE_GIT_PUSH_HOSTS` (unset: no push), up to `LOOMCYCLE_GIT_PUSH_MAX_BYTES` (100 MiB). `git_remote` is not overridable per run, narrows for sub-agents (also on resume) and is not part of `content_sha256`.
+- **The remote URL is checked when it is used**, https only, so editing `.git/config` between the check and the call changes nothing. A `$cred:` or `$ghapp:` credential resolves only when its `allowed_urls` cover the target. A push gets a write-scoped GitHub App token from a resolver no read path uses.
+- **The model never sees a credential or server text:** network failures reach it as a class, with the detail in the operator log. Every network op is audited with the credential's reference, never its value.
+- **Commits** carry the operator's author (`LOOMCYCLE_GIT_AUTHOR_NAME`, `LOOMCYCLE_GIT_AUTHOR_EMAIL`; default the agent's name at `loomcycle.invalid`) and a `Loomcycle-Run:` trailer. `commit` and `tag_create` can sign with an `ed25519` key the run's `crypto_scopes` reach (`sign_key`): the Crypto tool signs in git's SSH format and counts one op, the key never leaves the runtime, and `signed_by` returns the public key for an allowed-signers file.
+- **Submodules** are fetched only from a URL that passes the same checks as any remote, never the one `.gitmodules` names unchecked. Not recursive.
+- **Bounds:** a tree is walked against the file limit (`LOOMCYCLE_GIT_SOURCE_MAX_FILES`) and 1 GiB before anything moves, so a repository that expands one subtree many times cannot fill the disk. `blame`, `grep` and `notes_list` have their own budgets, and lists stop at 1,000 items with `truncated`. A failed reset, checkout or merge restores HEAD, the branch and the index.
+- **Path safety:** no write lands inside `.git`, and the filesystem walks verified directory handles, so a symlink swap cannot move it out of the volume. Unix only; elsewhere the tool refuses.
+- See the Git section of [`docs/TOOLS.md`](docs/TOOLS.md), [`docs/CREDENTIALS.md`](docs/CREDENTIALS.md), and the `git_remote` row and git-source table in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+### Files tools return, the File tool and extraction (#2081, #2085, #2086, #2088, #2093, #2097, #2106, #2109)
+
+An MCP tool result's `image`, `audio` and `resource` blocks were dropped without a word: an image-only result reached the model as an empty string. A server that returns a file as base64 in text handed the model kilobytes to megabytes it could neither read nor reproduce. HTTP and WebFetch returned a binary body as a mangled string, nothing could download a URL into a volume or upload a file without the model re-typing it, and the Office and PDF files agents receive cannot be read as zipped XML or raw bytes.
+
+- **A returned file is kept in the run's inbox**, an ephemeral volume of the run tree named `inbox`, made under the `dynamic_root` volume on the first capture and purged with the tree. The model sees one line instead of the bytes:
+
+  ```
+  [file: volume:inbox:documents/report.pdf · application/pdf · 2.8 KiB · sha256:16d51716c3de… · from mcp:files/get_attachment]
+  ```
+
+  - Names keep their last segment, transliterated from Cyrillic and cut to `[A-Za-z0-9._-]`. The media type is the declared one, else sniffed.
+  - A `resource_link` becomes one line, resource text is kept, and an unknown block type is named. A text-only result is unchanged.
+  - A file over `LOOMCYCLE_FILE_MAX_BYTES` (64 MiB) or the tree's `LOOMCYCLE_FILE_INBOX_MAX_BYTES` (1 GiB), or no `dynamic_root` volume, gives `[file not kept: …]`. The bytes never reach the model.
+  - Each kept file emits a `file_captured` event: on SSE, in the transcript, on gRPC (`Event.file`) and in both adapters.
+- **Base64 in MCP text, opt-in** (#2085): a new per-server `binary_results: passthrough | capture` on `mcp_servers.<name>` and on MCPServerDefs. `passthrough`, the default, is byte-identical to before.
+  - Under `capture`, a text block's base64 strings of at least `LOOMCYCLE_FILE_BASE64_MIN_BYTES` (4096) are kept when they decode cleanly and to a recognisable type (from a sibling `contentType`, `mimeType` or `mediaType`, the sniff, or a sibling file name's extension) or to readable text (kept as `.txt`). Only that string is replaced by the stub; the rest of the block, valid JSON or not, is unchanged. Anything else, a cursor or a signature, is left alone.
+  - A capture the inbox refuses still replaces the base64, with the refusal line.
+  - The setting is part of the definition's content hash; `passthrough` hashes as absent, so stored rows keep theirs. It is resolved per call for the server that answered.
+- **Binary HTTP and WebFetch responses** (#2086) are judged by Content-Type, then a sniff, then the URL's extension, and streamed into the inbox: HTTP returns the status line and headers with the stub, WebFetch the stub. Text responses are byte-identical to before, including text labelled `application/octet-stream`. A HEAD is never captured, and a Content-Disposition filename names the file. They stay under the HTTP tool's 30 s timeout; large files belong to `File op=download`.
+- **WebFetch `assets: true`** (#2086) also fetches the page's images and its links to images, PDFs and Office files into `web/<host>/`, under the page's host policy re-checked on every redirect and WebFetch's own hooks, at most `assets_max` (default 20, up to 100). Fetched links are rewritten to their inbox references; skipped ones stay absolute with `[not fetched: <reason>]`, and the list is appended as one `[assets] <json>` line.
+- **`File`**, a new tool, works on files without their bytes passing through the model:
+  - `stat`, `ls`, `keep` (copy into a durable volume, never over a file unless `overwrite`), `rm` and `clear`. The inbox needs only `File`; another volume needs `Read` to look and `Write` to keep, and that tool's hooks judge the final path. `rm` and `clear` respect a read-only binding.
+  - `download` (#2086) streams a GET into the inbox or a volume, under the HTTP tool's host policy as narrowed for the run, the private-address guard, same-host redirects only and never https to http. Credential-looking headers are refused and `max_bytes` cannot raise the per-file cap; over the cap nothing is left behind.
+  - `upload` (#2086) sends a file from any readable volume as one PUT or POST, or by Graph's ranged protocol (320 KiB-aligned `Content-Range` chunks following `nextExpectedRanges`). It follows no redirect.
+  - Both need the run's own `HTTP` grant, and HTTP's hooks judge each one with the method, URL and headers (an upload's body as `{from, size, sha256}`, never the bytes, with `via: "File"`). Both time out after 10 minutes.
+  - Every URL in a result, error or record is shown with its query as `?…`. A URL's query values and user information of 8 bytes or more are registered with the redactor, at most 32 per run tree.
+  - `extract` (#2088, #2093) writes `extracted/<slug>.md` and its pictures into the inbox, also for a read-only sub-agent, within 60 s, and returns counts, `yield_chars_per_page` and an excerpt of at most 30,000 characters fenced as the new untrusted kind `file_content`. A source outside the inbox needs `Read`.
+  - `import` (#2088) builds a Document from the extracted Markdown through the Document tool's own `import_md`, so it needs the Document tool and its hooks and scope checks hold. Only the picture references extract wrote are followed; every other `volume:` reference stays a link, counted in `skipped`. The document is tagged `untrusted` and `source/<origin>`, and each picture becomes an image chunk under its own sub-heading, carrying the PDF `page` or PPTX `slide` it came from while the file still matches its capture record (#2093).
+- **Extraction, in pure Go** (#2088): DOCX (headings, lists, tables, pictures), XLSX (streamed, cached values never formulas, the first `max_rows` then `[+N rows omitted]`), PPTX (slides in order, notes, pictures), HTML (nothing fetched, scripts dropped), CSV, TSV, text, Markdown and images.
+  - One bounded zip reader serves every zip format: at most 10,000 entries, duplicate names refused, total size checked on declared and inflated bytes with a per-entry ratio guard, entry names never used as paths. XML is parsed strictly with no DTD entities, capped on elements, depth and text. Images are copied, never decoded.
+  - Document text is escaped so it cannot become Markdown structure, and in untrusted Markdown every image is defused and raw HTML is escaped.
+- **PDF** (#2093): the text layer becomes Markdown page by page, with ToUnicode CMaps, WinAnsi, MacRoman and Differences encodings and Cyrillic glyph names decoded. JPEG and JPEG 2000 pictures are copied byte for byte; others are counted, not re-encoded (a JPEG 2000 stays a link on import). Low-yield pages are listed as likely scans. Every encrypted PDF is refused, and pages (2,000), characters per page, decoded content per page, form nesting and CMap size are bounded; a parser panic becomes an error. It adds the `pdfcpu` dependency (v0.16.3, Apache-2.0), which grows the binary by about 10 MB.
+- **`import_md` accepts `volume:` image references** (#2088), the by-reference twin of a data URL, read with the run's own `Read` and its hooks; at most 64 references and 64 MiB per import, read one at a time.
+- **The MCP `file` tool** (#2097) runs the File tool on one run's inbox, named by `run_id`, from outside the run:
+  - it is gated like `get_run` (`runs:read`), and a run the caller may not read answers like a missing one;
+  - `stat`, `ls` and `import` (into the caller's own scopes) are for any reader of the run; `extract`, `rm` and `clear` for its owner or an admin; `keep` for the owner or an admin, into a read-write dynamic volume of the caller's tenant that its rules let it write, never a configured, read-only or another tenant's volume, and never for an isolated user (#2109); `download` and `upload` for nobody;
+  - an inbox whose run has ended answers "gone". Input is decoded strictly.
+- **The Web UI** shows `file_captured` as one line (`⇩ ref · type · size · from origin`) in run cards and the terminal, where it expands to show the SHA-256 and run id (#2097).
+- **TrueNAS:** the app adds a `dynamic` volume with `dynamic_root: true` on its own dataset (`/mnt/tank/loomcycle/dynamic`) to the overlay example, the compose file and INSTALL.md, and lists the file caps as commented defaults (#2097).
+- **`LOOMCYCLE_MCP_MAX_FRAME_BYTES`** (16 MiB) now caps an MCP HTTP response body, which was read without a limit, as well as a stdio line, whose fixed 16 MiB it replaces.
+- **`VolumeDef op=create` refuses the name `inbox`.**
+- Help articles cover the tool and each op. See "Files tools return" in [`docs/TOOLS.md`](docs/TOOLS.md) and "The run inbox" in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (#2106).
+
+### Web UI bundles (#2066, #2068, #2070)
+
+The Web UI is built into the binary, so a UI fix waited for a binary release.
+
+- **`LOOMCYCLE_WEBUI_DIR`** serves an unpacked bundle instead. Its `manifest.json` lists every file's SHA-256 and the UI API levels it supports.
+  - At startup every file is checked: a symlink, an unlisted file, a wrong digest or an unsupported API level falls back to the built-in UI. A bad bundle never fails the boot.
+  - Limits: 64 MiB and 10,000 files.
+  - The verified files are served from memory, so a change on disk after startup reaches nobody. Bundle files cannot shadow the login, session and logout handlers.
+- **`LOOMCYCLE_WEBUI_BUNDLE_URL`** plus **`LOOMCYCLE_WEBUI_BUNDLE_SHA256`** fetch a bundle archive once at startup instead.
+  - https only, through the egress guard (a private host needs `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`), no environment proxy, 60 s, at most 96 MiB.
+  - The archive's digest is checked before anything is unpacked. The verified bundle is cached under the data directory by digest and re-verified on every boot; a cached digest needs no network.
+  - Setting only one of the two, setting the URL together with `LOOMCYCLE_WEBUI_DIR`, a URL that is not https or carries user info, or a malformed digest fails config load. A failed download falls back.
+  - No status, error or log line carries the URL's path or query.
+- **`/healthz`** reports `ui_bundle` (`source`: `embedded`, `dir` or `url`, the bundle's `ui_version`, and a fixed `fallback_reason` code) and `ui_api_level`; `/ui/login-config.json` reports `api_level`. gRPC `Health` does not carry them.
+- **Bundles are published** as GitHub releases on `webui-v*` tags (never marked latest), with the archive, its `.sha256` and the env lines to use it. `make webui-bundle VERSION=…` builds the same archive locally.
+- See the three rows in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and "Releasing a Web UI bundle" in [`scripts/README.md`](scripts/README.md).
+
+### Embedder and decision models on the Routing page (#2075)
+
+- **`GET /v1/_routing`** gains two optional blocks, omitted when not configured:
+  - `embedder`: provider, model, its `models:` alias, the vector width, and its health since boot (`untried`, `ok` or `failing`, with counts and the last failure kind; no error text or address);
+  - `decision`: the default and each allowed model, each with `reachable`, `listed` and `available` from the provider probe. Under the operator-key gate, a tenant sees only the decision models it can key.
+- **The Routing page** has a "service models" section: green for working, red for failing or unreachable, amber for not yet confirmed (an untried embedder, or a model the Ollama host has not pulled).
 
 ### Per-agent shell credentials (#2035, #2036, #2039)
 
@@ -74,18 +294,73 @@ agents:
   - The tenant case-fold check, which reads the same list, now sees a tenant whose only tokens share a per-user name with a newer tenant's.
   - The `loomcycle tokens rewrap` review reads each name once, so such a name's rows are not listed twice.
 
-### CI (#2038)
+### Every runtime log line is levelled (#2087, #2089, #2092, #2096, #2103, #2104, #2105, #2107, #2111)
 
-A pull request now runs only the Go test packages its change can reach (by package, test imports, and the relative paths tests open). `main` still runs everything.
+v1.119.0 converted 159 log calls to `slog`; more than 700 others still went through the stdlib logger with no level, so a lost transcript write, a failed retention delete or a failed boot step read the same as "sweeper started", and a run's lines could be found only by grepping ids out of free text.
+
+- **Every log call under `cmd/` and `internal/` is now levelled:** Error for a write the runtime loses, a recovered panic or a failed boot step; Warn for a failure worked around, a refusal, a security signal or a setting that loosens security; Info for routine notices. A fatal start error is logged at Error before the process exits.
+- **Values moved into attributes** (`run_id`, `tenant`, `subject`, `schedule`, `err` and so on). Lines in a run's context carry `run_id`, `tenant`, `agent` and `user`. With `LOOMCYCLE_LOG_FORMAT=json` they arrive as JSON keys.
+- **Text output keeps the stdlib line shape:** Info lines carry no level tag, others are prefixed `WARN`, `ERROR` or `DEBUG`, and attributes follow as `key=value`. Messages keep their component prefix (`store:`, `resume:`, `auth:`). The old `WARNING:` and `PANIC` prefixes are gone; the level carries them.
+- **`LOOMCYCLE_LOG_LEVEL` now governs every runtime line.** A line from unconverted code used to print at any level; now `warn` or `error` hides the routine Info lines, `loomcycle listening on …` among them.
+- **Lines that changed shape**, for anyone matching on them:
+  - the gateway line is `llm_gateway: request request_id=… provider=…`, the embeddings line `embeddings: request …`;
+  - `mcp[<name>]: ready` and `mcp[<name>]: skipped` are `mcp: server ready server=<name>` and `mcp: server skipped server=<name>`;
+  - the `LOOMCYCLE_CHANNEL_DEBUG` publish line is `channel publish channel=X id=… commit_us=N …`, and the subscribe retry lines are `channel subscribe-race-recovered …` and `WARN channel subscribe-race-exhausted — silent miss; investigate …` (these fire whenever the retry runs, not only under the debug flag);
+  - the sqlite_vec notice is `sqlite: sqlite_vec build active extension_path=…`;
+  - the boot build line names the build time `built_at`, which as `time` collided with the record's own timestamp in JSON;
+  - the `loomcycle mcp --upstream` proxy's lines lose their doubled `mcp: mcp proxy:` prefix.
+  - Lines quoted by the docs and help pages (`loomcycle listening on …`, `auth: refusing to start in open mode …` and the like) keep their text and add the values as attributes.
+- **A guard test** fails on any non-test file under `cmd/` or `internal/` that imports the stdlib `"log"`, so new code starts on `slog`. The logger seams that took a printf function (`Logf`) now take a `*slog.Logger`; all are in `internal/` packages.
+
+### Build, CI and package layering
+
+- **Package layering** (#2044, #2046, #2047, #2048, #2049, #2050, #2052, #2054, #2062): a test now guards the import layering, and the packages that broke it were cut so nothing imports upward. The embedded config assets moved to `internal/embedded`. No behaviour change; `loomcycle validate` output and the embedded files are byte-identical.
+- **Nested Go modules** (#2067, #2071, #2076): `internal/errkind`, `internal/otel` and `internal/providers` are their own modules, so the compiler refuses an import from a driver into the rest of the binary. The root `go.mod` reaches them through `replace`, so `go install …@version` no longer works.
+- **CI** (#2038, #2041, #2042, #2045, #2063, #2082): a pull request runs only the Go test packages its change can reach (by package, test imports and the relative paths tests open) and skips jobs for parts of the tree it leaves alone; the race suite runs as seven shards and the Postgres tiers as three legs, and the Postgres store contract reuses a few migrated schemas; an empty gosec run writes an empty report, so the Security workflow on `main` is green again. `main` still runs everything.
+- **The root `Dockerfile`** builds its Web UI stage again (#2078). Release images come from `Dockerfile.release` and were not affected.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes the layering, the modules and how CI chooses what to run (#2061, #2077).
 
 ### Upgrade notes
 
-- **No migration.**
+- **Migration 0109** (Postgres) adds the access-control tables. sqlite creates them at boot. No other migration.
+- **Access control changes nothing until you use it,** with one exception below (agent-limited tokens and team walks). `LOOMCYCLE_ACL` defaults to `compat`: with no lists written or declared, every gate answers as before. Once a deny is bound to a caller, it is honoured in `compat` too, and from then on it also binds the caller's resumed and queued runs, the schedules and webhooks it authors, and the team walks it starts.
+  - Before `enforce`, run `shadow` and read the `acl_shadow_diverged` log lines and audit events.
+  - In `enforce`, a request whose rules cannot be read is refused (`503 acl_unavailable`), not admitted. In every mode, a paused or queued run whose caller's rules cannot be read stays paused or queued until they can, and a trigger whose owner's rules cannot be read does not fire: a schedule gives its slot back and a webhook answers 503.
+  - Snapshots do not carry lists, groups or bindings; re-create them, or declare them in config, after a restore on another instance.
 - **Behaviour changes:**
+  - **An agent-limited token's runs cannot start team walks.** `builtin:run-plane` denies `run team:*`, and that explicit deny holds in `compat` too, so a run started by a token with an agent list is refused a `TeamDef run`.
+  - **Subject erasure revokes the subject's member tokens** (not those holding `substrate:tenant` or `substrate:admin`, which are kept and named), so the erased user's bearer is refused at once, and removes its group memberships, user bindings and the bindings to its tokens. Config-declared memberships and bindings stay; remove them from the config file. Reports and results gain an `access` field and the `acl_memberships`, `acl_bindings`, `operator_tokens` and `acl_token_bindings` counts.
+  - **A live erasure over MCP or gRPC with no audit sink, or a failing one, is now refused,** as it already was over HTTP (gRPC `Unavailable`, an MCP tool error). MCP and gRPC erasures now write the `erase_intent` and `erase_result` audit records.
+  - **A definition write an access-control rule refuses** answers `403 acl_denied` or `503 acl_unavailable` over HTTP, not `422 tool_refused` as earlier builds of this line did. The same holds for a refused TeamDef `run`, `poll` or `cancel`.
+  - **An operator's own denies bind the team walks it starts** over HTTP, gRPC or MCP, and a cancel from the run plane (`POST /v1/runs/{run_id}/cancel`, gRPC `CancelTurn`, MCP `cancel_run`) asks `cancel team:<name>` of a walk.
+  - **A scheduled, webhook or A2A run is narrowed by its owner's rules** (an A2A run by the peer's credential). A denied schedule fire is recorded `failed` and counts against `max_fires`; a denied webhook delivery answers `403 agent_not_allowed`. Triggers written before the upgrade record no owner and fire as before until they are re-created, forked or have a hook edited.
+  - **Over gRPC, a member token reaches what its HTTP twin admits**: the definition families, `TeamDef`, Path, Document, Memory, CredentialDef, its own History, usage, the user directory, budget reads and the team channels. `Memory`, `AwaitChannels` and `BroadcastChannels` need `substrate:tenant` instead of `substrate:admin`, so tenant operators reach them too.
+  - **The Web UI's nav follows `GET /v1/_me`'s `effective.surfaces`.** Members now see the tenant pages their member path reaches (library, memory, audit, usage, limits, routing, retention), and a page a caller's rules refuse is hidden.
+  - **Tool results land on disk.** MCP tool results with an image, audio, blob or resource block, and binary HTTP and WebFetch responses, now keep the file in the run's inbox under the `dynamic_root` volume, counted against `LOOMCYCLE_FILE_INBOX_MAX_BYTES` per run tree, and the model sees a one-line `[file: …]` reference where it saw nothing or a mangled body. Without a `dynamic_root` volume it sees `[file not kept: …]`. Text-only results and text HTTP bodies are unchanged. Base64 in MCP text is captured only for a server set to `binary_results: capture`.
+  - **Log lines changed shape.** Values moved into `key=value` attributes, the `WARNING:` and `PANIC` prefixes became `WARN` and `ERROR` level tags, and the lines listed under "Every runtime log line is levelled" were renamed. Check log alerts and scrapers that match on message text. `LOOMCYCLE_LOG_LEVEL=warn` or `error` now hides every routine Info line, `loomcycle listening on …` included.
+  - **The binary is about 10 MB larger** (the `pdfcpu` PDF parser).
+  - **MCP HTTP responses** over `LOOMCYCLE_MCP_MAX_FRAME_BYTES` (16 MiB) are refused; they were read without a limit.
+  - **The volume name `inbox` is reserved.** `VolumeDef op=create` refuses it, and a static or stored volume named `inbox` makes every capture fail with `[file not kept: …]`. Rename it.
+  - **MCP `tools/list`** shows the new `groupdef`, `acldef`, `aclbinding` and `authz` tools to operators and admin, and `authz` to members and isolated users. The new `file` tool is shown to members, operators and admin, not to isolated users. A Claude Code thin client (`loomcycle mcp --upstream`) from this release treats `file` as a long-running tool.
+  - **`go install …@version` no longer works** (nested modules with `replace`). Install with Homebrew, Docker or a release tarball, or build from a clone.
   - **`GET /v1/_operatortokendef/names`** returns one row per (tenant, name). A per-user name minted in several tenants now appears once per tenant. Rows carry an additive `current_def_id`. A script that took the single row per name should key on tenant and name.
   - **`shell_credentials`:** nothing changes for an agent without the field. An agent that sets it also loses same-named host variables passed through `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV`.
-  - **`GET /v1/_library/agents`:** agent entries may carry an additive `context_window`.
-- **Images:** a minor tag rebuilds every image. All are at 1.122.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images. The Web UI is built into the binary, so these UI changes need the new image.
+- **New environment variables:**
+  - `LOOMCYCLE_ACL` (`compat`, `shadow` or `enforce`; default `compat`) and `LOOMCYCLE_ACL_CACHE_TTL_SECONDS` (default 5).
+  - `LOOMCYCLE_GIT_PUSH_HOSTS` (unset: no push), `LOOMCYCLE_GIT_PUSH_MAX_BYTES` (default 100 MiB; a malformed value refuses the boot), `LOOMCYCLE_GIT_AUTHOR_NAME` and `LOOMCYCLE_GIT_AUTHOR_EMAIL`. The Git tool's fetches use the existing `LOOMCYCLE_GIT_SOURCE_HOSTS` and limits.
+  - `LOOMCYCLE_FILE_MAX_BYTES` (default 64 MiB), `LOOMCYCLE_FILE_INBOX_MAX_BYTES` (default 1 GiB), `LOOMCYCLE_FILE_BASE64_MIN_BYTES` (default 4096; a bad value refuses the boot) and `LOOMCYCLE_MCP_MAX_FRAME_BYTES` (default 16 MiB).
+  - `LOOMCYCLE_WEBUI_DIR`, or `LOOMCYCLE_WEBUI_BUNDLE_URL` with `LOOMCYCLE_WEBUI_BUNDLE_SHA256`. Unset, the built-in UI is served as before.
+- **New config:** the top-level `acls:`, `groups:` and `acl_bindings:` blocks, the agent fields `git_remote` and `shell_credentials`, and `binary_results` on an MCP server (yaml and MCPServerDef). The TrueNAS app's overlay example and compose file add a `dynamic` volume (`dynamic_root: true`); an existing TrueNAS install keeps no captured files until it has one.
+- **New wire surface, all additive:**
+  - HTTP: `/v1/_groups…`, `/v1/_acldef…`, `/v1/_aclbinding…` and `/v1/_authz/…`; `acl_mode`, `groups`, `acl_version` and `effective.surfaces` on `/v1/_me`; `embedder` and `decision` on `/v1/_routing`; `context_window` on `/v1/_library/agents`; `ui_bundle` and `ui_api_level` on `/healthz`; `access` and the four access counts on the erasure report and result, and `retained.access_control_config` and `retained.operator_tokens_privileged` on the result.
+  - gRPC: the `GroupDef`, `AclDef`, `AclBinding` and `Authz` RPCs, `Event.file` (field 23), and `ErasureReportResponse.access` (8) and `ErasureExecuteResponse.access` (9).
+  - MCP: the `file` tool, and `access` on `erasure` results.
+  - The `file_captured` event on SSE and in the transcript, and `capability_inert` events with gate `acl`.
+  - A server-set `acl_owner` on ScheduleDef and WebhookDef bodies, and `acl_origin` on a run's stored config record (never served).
+  - New refusal codes: `acl_denied`, `acl_unavailable`, `acl_self_elevation`, `acl_binding_invalid`, `group_external` and `operator_plane`. No new `error_info.category` value: `acl_unavailable` on a trigger or a restarted run is `transient`.
+  - New audit actions: `acl_denied`, `acl_unavailable`, `acl_shadow_diverged`, the access write actions, and `subject_access_erased`.
+  - The `loomcycle acl` command and the `Git` and `File` tools; the File ops `download`, `upload`, `extract` and `import`; WebFetch's `assets` and `assets_max`; `volume:` image references in Document `import_md`; and the untrusted fence kind `file_content`, which a caller may also use on a prompt segment.
+- **Images:** a minor tag rebuilds every image. All are at 1.122.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images. The Web UI is built into the binary, so the UI changes need the new image unless a bundle is configured.
 
 ## What's in v1.121.0
 
