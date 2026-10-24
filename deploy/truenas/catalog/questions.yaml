@@ -977,13 +977,13 @@ questions:
               default: ""
           - variable: LOOMCYCLE_ACL
             label: LOOMCYCLE_ACL
-            description: '(example: compat)'
+            description: 'Access-control mode: compat (default), shadow or enforce; read at startup. compat: the scope gates decide, plus any deny bound to the caller. shadow: the gates decide and each disagreement with the rules is logged (acl_shadow_diverged); run it before enforce. enforce: the rules decide (403 acl_denied; 503 acl_unavailable when they cannot be read). (example: compat)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_ACL_CACHE_TTL_SECONDS
             label: LOOMCYCLE_ACL_CACHE_TTL_SECONDS
-            description: '(example: 5)'
+            description: 'How long a replica trusts a caller''s compiled access rules before re-reading them (default 5 seconds; 0 = on every request). (example: 5)'
             schema:
               type: string
               default: ""
