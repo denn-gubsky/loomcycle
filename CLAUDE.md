@@ -99,7 +99,7 @@ These rules apply to every interaction with this repo. Violations are bugs even 
 
 ## Code conventions
 
-- **Go style:** `gofmt` clean. `errcheck` clean. No package-level mutable globals (config struct passed in, not read from a singleton). Errors-as-values; no panics outside `main` and intentional `panic("unreachable")` sites. Logging via `log` package (structured logging is a v1.x consideration).
+- **Go style:** `gofmt` clean. `errcheck` clean. No package-level mutable globals (config struct passed in, not read from a singleton). Errors-as-values; no panics outside `main` and intentional `panic("unreachable")` sites. Logging via `log/slog`: a levelled call (`Info`/`Warn`/`Error`, `Debug` for noise) with a static message and key/value attrs (`run_id`, `tenant`, `err` …), the `*Context` form where the run's ctx is in scope, and a `*slog.Logger` (never a printf func) for an injected logger. The stdlib `log` package may not be imported under `cmd/` or `internal/` — `internal/logging/guard_test.go` enforces it.
 - **Test naming:** `Test<Subject>_<Behaviour>`. e.g. `TestSubAgent_InheritsParentCallerHostAllowlist`. The behaviour describes the postcondition the test asserts, not the input.
 - **Commit messages:** subject ≤ 72 chars in imperative mood ("fix(api): propagate host policy to sub-agents"). Body explains *why* before *what*. Reference commits via short SHA when calling out a regression. Always close with the `Co-Authored-By` line if Claude wrote substantial code.
 - **Comments explain WHY, not WHAT.** Code says what; comments add the missing context (the constraint, the past incident, the surprising-but-correct invariant). Don't write comments that summarize the next line.

@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -218,6 +219,8 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the webhook receiver stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// RFC EZ §1.5: whose rules bind each delivery's run — this author's.
+	def.ACLOwner = tools.AuthorACLOwner(ctx)
 	// A create on a name whose current def was restored without its literal
 	// credentials writes a new version of it: the marker carries over unless
 	// this create supplies every stripped key, as a fork's would.
@@ -226,8 +229,8 @@ func (s *WebhookDef) execCreate(ctx context.Context, policy tools.WebhookDefPoli
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
 	if len(resupply.Missing) > 0 {
-		log.Printf("webhookdef %q: create stays disabled — it did not supply the credential keys a snapshot stripped: %s",
-			in.Name, strings.Join(resupply.Missing, ", "))
+		slog.WarnContext(ctx, "webhookdef: create stays disabled — it did not supply the credential keys a snapshot stripped",
+			"webhook", in.Name, "missing_keys", strings.Join(resupply.Missing, ", "))
 	}
 	defJSON, err := json.Marshal(def)
 	if err != nil {
@@ -408,8 +411,8 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 	if len(resupply.Missing) > 0 {
-		log.Printf("webhookdef %q: fork stays disabled — it did not re-supply the credential keys a snapshot stripped: %s",
-			in.Name, strings.Join(resupply.Missing, ", "))
+		slog.WarnContext(ctx, "webhookdef: fork stays disabled — it did not re-supply the credential keys a snapshot stripped",
+			"webhook", in.Name, "missing_keys", strings.Join(resupply.Missing, ", "))
 	}
 	if err := validateWebhookDef(def); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
@@ -448,6 +451,8 @@ func (s *WebhookDef) execFork(ctx context.Context, policy tools.WebhookDefPolicy
 	// RFC BX P2b: capture the author's isolation status (server
 	// authority) so the webhook receiver stamps the fired run confined.
 	def.Isolated = tools.AuthorIsolated(ctx)
+	// RFC EZ §1.5: whose rules bind each delivery's run — this author's.
+	def.ACLOwner = tools.AuthorACLOwner(ctx)
 	defJSON, err := json.Marshal(def)
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: marshal: %s", err)), nil
@@ -786,7 +791,8 @@ func (s *WebhookDef) BootstrapStaticWebhooks(ctx context.Context) (int, error) {
 // secret out of the DB and is the preferred posture.
 func warnLiteralUserCredentials(name string, def mergedWebhookDef) {
 	if len(def.UserCredentials) > 0 {
-		log.Printf("webhookdef %q: user_credentials carries %d literal value(s) baked into the stored def (readable at rest) — prefer user_credentials_from_env to keep secrets out of the DB (F32)", name, len(def.UserCredentials))
+		slog.Warn("webhookdef: user_credentials carries literal value(s) baked into the stored def (readable at rest) — prefer user_credentials_from_env to keep secrets out of the DB (F32)",
+			"webhook", name, "count", len(def.UserCredentials))
 	}
 }
 
@@ -1114,6 +1120,13 @@ type mergedWebhookDef struct {
 	// confinement. Mirrors OperatorKeyRestricted; omitempty keeps pre-P2b bodies
 	// byte-identical. Drift-tested against config.Webhook / SubstrateWebhookDef.
 	Isolated bool `json:"isolated,omitempty"`
+	// ACLOwner is whose access-control set (RFC EY) binds each delivery's run
+	// (RFC EZ §1.5): the author's, captured at create/fork (server authority —
+	// applyOverlay never copies it). The receiver's run is narrowed by that
+	// subject's CURRENT set. Absent on a yaml-bootstrapped def and on one
+	// written with no set in force: those fire as before. Drift-tested against
+	// config.Webhook / SubstrateWebhookDef.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
 	// Team / Vars are the delivery=team target: the team whose walk a delivery
 	// starts (detached, the raw body as its input), and the walk's variables
 	// as strict-subset JSONPaths into that body. Whether the team exists and

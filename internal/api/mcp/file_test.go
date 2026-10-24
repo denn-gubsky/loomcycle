@@ -63,7 +63,7 @@ func TestFileMCP_ARunReaderReachesTheConnector(t *testing.T) {
 				t.Errorf("file listed = %v, want %v", listed, c.allowed)
 			}
 			fc := &fileCapturingConnector{mockConnector: &mockConnector{}}
-			srv := New(Config{Connector: fc, Logf: func(string, ...any) {}})
+			srv := New(Config{Connector: fc, Logger: discardLogger()})
 			resps, _ := driveServerCtx(t, srv, ctx, fileCallFrame)
 			if len(resps) != 1 {
 				t.Fatalf("got %d responses, want 1", len(resps))

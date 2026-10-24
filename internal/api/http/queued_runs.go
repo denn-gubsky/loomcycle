@@ -366,7 +366,7 @@ func (s *Server) recordQueuedInput(ctx context.Context, runID, tenantID, retenti
 		stored := in
 		stored.UserBearer, stored.UserCredentials = "", nil
 		rec.Input = &stored
-		rec.ACLOrigin = aclOriginOf(ctx, principalACL(ctx))
+		rec.ACLOrigin = aclOriginOf(ctx, runCallerACL(ctx)) // a recorded caller too: a trigger owner's set
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {

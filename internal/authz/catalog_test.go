@@ -96,7 +96,10 @@ func TestBaselines_ClassesDifferWhereTheyShould(t *testing.T) {
 	check(iso, "read", "memory", "user", Allowed)
 	check(iso, "read", "memory", "tenant", Denied)
 	check(iso, "read", "document", "tenant:/kb/x", Denied)
-	check(iso, "use", "gateway", "chat", Denied)
+	// The gateway is the scope gate's to refuse (llm:gateway by name; the
+	// decision call on runs:create): a baseline deny refused both even in
+	// compat (TestACLBaseline_HTTPRoutesMatchTheLegacyGatePerClass).
+	check(iso, "use", "gateway", "chat", Allowed)
 	check(iso, "read", "run", "tenant", NoMatch)
 	// Member browse of a colleague's user scope: owner_is_self only (D7).
 	self := member.Decide(Request{Subject: member.Subject, Action: "browse", Resource: Resource{Type: "memory", Name: "user:alice", Owner: "alice"}})

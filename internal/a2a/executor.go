@@ -10,7 +10,9 @@ import (
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
+	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -257,7 +259,9 @@ func (e *Executor) startRun(ctx context.Context, in runner.RunInput) *runStream 
 	// arrives, breaking INPUT_REQUIRED entirely. Cancellation now flows
 	// only through explicit paths: Executor.Cancel (Connector cascade) and
 	// stream.cancel (client abandon / unresumable park).
-	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	// The surface the run arrived on, for an access-control rule's
+	// `transport` condition evaluated under the peer's set (peerACLOwner).
+	runCtx, cancel := context.WithCancel(authz.WithTransport(context.WithoutCancel(ctx), "a2a"))
 	go func() {
 		defer close(done)
 		defer close(events)
@@ -508,7 +512,23 @@ func (e *Executor) buildRunInput(ctx context.Context, execCtx *a2asrv.ExecutorCo
 		// derived from THIS peer's own scopes, so a substrate:user A2A peer's run is
 		// data-scope-confined at admission (RunOnce reads this off RunInput).
 		Isolated: IsolatedFrom(ctx),
+		// RFC EZ §1.5: the peer's own access-control set narrows the run, and
+		// `run agent:` is asked for it, as for any authenticated caller.
+		ACLOwner: peerACLOwner(ctx),
 	}, nil
+}
+
+// peerACLOwner is the subject whose access-control set (RFC EY) binds a run
+// this plane starts: the peer's own credential, which the frontier resolved
+// and which is the run's caller. The credential is not put on the run as its
+// principal (its identity is routing's), so the set rides RunInput and RunOnce
+// compiles it. nil with no credential (open mode).
+func peerACLOwner(ctx context.Context) *authz.SubjectRef {
+	p, ok := PeerPrincipalFrom(ctx)
+	if !ok {
+		return nil
+	}
+	return aclres.RefOf(p)
 }
 
 // agentFor resolves which loomcycle agent handles this request. With no

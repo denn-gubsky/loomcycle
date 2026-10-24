@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
@@ -745,7 +746,7 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 		Admit: func(string) error { return linkErr },
 	}
 	go func() {
-		err := rec.runner.RunOnce(context.Background(), in, cb)
+		err := rec.runner.RunOnce(deliveryRunCtx(), in, cb)
 		if err != nil {
 			rec.logger.Warn("webhook: async run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}
@@ -848,6 +849,14 @@ func (rec *Receiver) spawnAsync(w http.ResponseWriter, span trace.Span, name, wh
 	}
 }
 
+// deliveryRunCtx is the detached ctx a delivery's run starts on: a client
+// disconnect never aborts an accepted run. It names the surface the run
+// arrived on, for an access-control rule's `transport` condition evaluated
+// under the def owner's set (RFC EZ §1.5).
+func deliveryRunCtx() context.Context {
+	return authz.WithTransport(context.Background(), "webhook")
+}
+
 // spawnSetupErrorResponse maps a runner setup-time sentinel to the wire
 // status. Mirrors the HTTP run-endpoint mapping so a webhook-spawned run
 // fails the same way an interactive run would.
@@ -861,6 +870,11 @@ func (rec *Receiver) spawnSetupErrorResponse(w http.ResponseWriter, err error) {
 		// same way (retry-next-window / raise-limit) rather than treating it as
 		// a transient 503 and retry-storming a budget-exhausted scope.
 		writeError(w, http.StatusTooManyRequests, "token_limit_exceeded", "")
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		// The def owner's access-control rules do not allow running its
+		// agent (RFC EZ §1.5): the delivery is refused, not retried — a
+		// resend is refused the same way until the rules change.
+		writeError(w, http.StatusForbidden, "agent_not_allowed", "")
 	case errors.Is(err, runner.ErrBackpressure), errors.Is(err, runner.ErrPerUserQuotaExhausted):
 		// Transient load (global queue / per-user cap) → 503 so a webhook client retries with backoff rather than
 		// treating it as a permanent failure.
@@ -915,7 +929,7 @@ func (rec *Receiver) spawnSync(ctx context.Context, w http.ResponseWriter, span 
 		Admit: func(string) error { return linkErr },
 	}
 	go func() {
-		err := rec.runner.RunOnce(context.Background(), in, cb)
+		err := rec.runner.RunOnce(deliveryRunCtx(), in, cb)
 		if err != nil {
 			rec.logger.Warn("webhook: sync run failed", "webhook", name, "run_id", spawnedRunID, "err", err)
 		}

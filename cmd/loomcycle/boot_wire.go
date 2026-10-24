@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -66,10 +66,10 @@ func (b *boot) wireMemory() {
 	// model is handed on: a typed-nil in the interface fields would be called.
 	rerankModel, rrErr := wiring.Reranker(cfg, pr.sched)
 	if rrErr != nil {
-		log.Fatalf("reranker: %v", rrErr)
+		fatal("reranker: building it failed", "err", rrErr)
 	}
 	if rerankModel != nil {
-		log.Printf("reranker: %s/%s (kind %s)", rerankModel.ProviderID(), rerankModel.ModelID(), rerankModel.Kind())
+		slog.Info("reranker: enabled", "provider", rerankModel.ProviderID(), "model", rerankModel.ModelID(), "kind", rerankModel.Kind())
 		inProcBackend.SetRanker(rerankModel)
 		memoryTool.Reranker = rerankModel
 		// Which kinds of memory it may reorder. Validated at config load, so the parse
@@ -77,7 +77,7 @@ func (b *boot) wireMemory() {
 		rerankSources, _ := memory.ParseSources(cfg.Memory.Reranker.Sources)
 		inProcBackend.SetRerankSources(rerankSources)
 		memoryTool.RerankSources = rerankSources
-		log.Printf("reranker: reorders %v", cfg.Memory.Reranker.EffectiveSources())
+		slog.Info("reranker: reorders memory sources", "sources", cfg.Memory.Reranker.EffectiveSources())
 	}
 	channelTool.Store = storeIface
 	// Wire the pool-stats accessor when the backend is Postgres so
@@ -126,7 +126,7 @@ func (b *boot) wireCredentials() {
 	// is fatal (fail-closed); an empty key leaves the inline backend disabled.
 	credSealer, credErr := credential.NewSealer(cfg.Env.SecretKey, cfg.Env.SecretKeyPrevious)
 	if credErr != nil {
-		log.Fatalf("credential: invalid LOOMCYCLE_SECRET_KEY: %v", credErr)
+		fatal("credential: invalid LOOMCYCLE_SECRET_KEY", "err", credErr)
 	}
 	credEngine := credential.NewEngine(storeIface, credSealer)
 	credentialDefTool.Engine = credEngine
@@ -184,23 +184,28 @@ func (b *boot) wireCredentials() {
 	// and only when it is restricted to URLs covering the clone's.
 	gitSource, gerr := gitSourceConfigFromEnv(os.Getenv, cfg.Env.HTTPPrivateHostAllowlist)
 	if gerr != nil {
-		log.Fatalf("git source: %v", gerr)
+		fatal("git source: invalid configuration", "err", gerr)
 	}
 	if gitSource != nil {
 		gitSource.Credential = builtin.GitCredentialResolver(credEngine, ghAppMinter.TokenForRepository, registerSecret)
 		volumeDefTool.Git = gitSource
-		log.Printf("git source: enabled for %s (max %d MiB fetched, %d MiB per object, %d at once)",
-			strings.Join(gitSource.Hosts, ", "), gitSource.MaxBytes>>20, gitSource.MaxObjectBytes>>20, cap(gitSource.Slots))
+		// The text is matched by test/runtime/git-tool; keep it.
+		hosts := strings.Join(gitSource.Hosts, ", ")
+		slog.Info(fmt.Sprintf("git source: enabled for %s (max %d MiB fetched, %d MiB per object, %d at once)",
+			hosts, gitSource.MaxBytes>>20, gitSource.MaxObjectBytes>>20, cap(gitSource.Slots)),
+			"hosts", hosts, "max_mib", gitSource.MaxBytes>>20, "max_object_mib", gitSource.MaxObjectBytes>>20, "slots", cap(gitSource.Slots))
 		// RFC FB: the Git tool's clone, fetch and pull share these hosts,
 		// limits and slots; push has its own host list and a resolver whose
 		// $ghapp: tokens may write.
 		gitTool.Source = gitSource
 		gitTool.PushCredential = builtin.GitPushCredentialResolver(credEngine, ghAppMinter.TokenForRepositoryWrite, registerSecret)
 		if len(gitTool.PushHosts) > 0 {
-			log.Printf("git: push enabled for %s (max %d MiB per push)", strings.Join(gitTool.PushHosts, ", "), gitTool.PushMaxBytes>>20)
+			pushHosts := strings.Join(gitTool.PushHosts, ", ")
+			slog.Info(fmt.Sprintf("git: push enabled for %s (max %d MiB per push)", pushHosts, gitTool.PushMaxBytes>>20),
+				"hosts", pushHosts, "max_push_mib", gitTool.PushMaxBytes>>20)
 		}
 	} else if len(gitTool.PushHosts) > 0 {
-		log.Printf("git: LOOMCYCLE_GIT_PUSH_HOSTS is set but LOOMCYCLE_GIT_SOURCE_HOSTS is not; the Git tool has no network, push included")
+		slog.Warn("git: LOOMCYCLE_GIT_PUSH_HOSTS is set but LOOMCYCLE_GIT_SOURCE_HOSTS is not; the Git tool has no network, push included")
 	}
 	// go-git installs file, git, ssh and plain-http clients process-wide;
 	// replace them with refusing ones now, before any repository is read.
@@ -314,29 +319,31 @@ func (b *boot) loadMCPRegistry() {
 	// existing v0.8.1 lazy resolver). Errors are logged + non-fatal —
 	// a corrupted row blocks only its own server from being callable.
 	// A snapshot restore runs the same function (SetMCPRegistryRefresh below).
-	if _, err := builtin.RehydrateMCPRegistry(context.Background(), storeIface, cfg.MCPServers, dynamicMCPRegistry, log.Printf); err != nil {
-		log.Printf("mcp_server_defs: list active failed at boot: %v (dynamic MCP servers will be empty until first registration)", err)
+	if _, err := builtin.RehydrateMCPRegistry(context.Background(), storeIface, cfg.MCPServers, dynamicMCPRegistry, slog.Default()); err != nil {
+		slog.Error("mcp_server_defs: list active failed at boot (dynamic MCP servers will be empty until first registration)", "err", err)
 	} else if size := dynamicMCPRegistry.Size(); size > 0 {
-		log.Printf("mcp_server_defs: loaded %d active registration(s) into pool registry", size)
+		slog.Info("mcp_server_defs: loaded active registrations into pool registry", "registrations", size)
 	}
 	// Read-only: name every stored version that reads the server environment
 	// without being operator-authored. The pool refuses to dial those unless
 	// LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0; each line says which.
 	if warns, err := mcpServerDefTool.OperatorEnvWarnings(context.Background()); err != nil {
-		log.Printf("mcp_server_defs: environment-reference audit: %v (continuing)", err)
+		slog.Warn("mcp_server_defs: environment-reference audit failed (continuing)", "err", err)
 	} else {
+		// "mcp_server_defs: WARNING:" is quoted in the upgrade notes and the
+		// dynamic-MCP help page as the line to look for; keep the text.
 		for _, warn := range warns {
-			log.Printf("mcp_server_defs: WARNING: %s", warn)
+			slog.Warn(fmt.Sprintf("mcp_server_defs: WARNING: %s", warn))
 		}
 	}
 	// Read-only: name every active server a tenant registered at runtime
 	// whose host is localhost or a private IP the operator has not vouched
 	// for. Those dial through the egress guard and are refused at each call.
 	if warns, err := mcpServerDefTool.PrivateHostWarnings(context.Background()); err != nil {
-		log.Printf("mcp_server_defs: private-host audit: %v (continuing)", err)
+		slog.Warn("mcp_server_defs: private-host audit failed (continuing)", "err", err)
 	} else {
 		for _, warn := range warns {
-			log.Printf("mcp_server_defs: WARNING: %s", warn)
+			slog.Warn(fmt.Sprintf("mcp_server_defs: WARNING: %s", warn))
 		}
 	}
 }
@@ -366,7 +373,7 @@ func (b *boot) addA2ATools() {
 		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, slog.Default(), toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))
 		if len(a2aTools) > 0 {
 			b.allTools = append(b.allTools, a2aTools...)
-			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))
+			slog.Info("a2a: registered outbound peer tools", "tools", len(a2aTools))
 		}
 	}
 }
