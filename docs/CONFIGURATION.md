@@ -1749,7 +1749,7 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 | Env var | Default | Values |
 |---|---|---|
 | `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
-| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Lines from code not yet converted to levelled logging are never hidden by the level (they are recorded at the configured level, `info` at minimum), so fatal and startup errors always show. An unknown value warns and uses `info`. |
+| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Every runtime line is levelled, so `warn` or `error` also hides the Info lines, "listening on" among them; fatal and startup errors are logged at `ERROR` and show at every level. An unknown value warns and uses `info`. |
 
 **Shutdown.** On SIGTERM or SIGINT, loomcycle pauses this replica's runs in flight before it exits, so the next boot resumes them instead of the stale-run sweeper failing them. It is the [pause](ARCHITECTURE.md#pause--resume--snapshot-v0817) the operator can request, made local and bounded:
 
