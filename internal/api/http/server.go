@@ -722,7 +722,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 	// names only). Default-ON; LOOMCYCLE_REDACT_SECRETS=0 leaves s.redactor nil
 	// (its methods are nil-safe, so makeRecordingEmit just skips redaction).
 	if cfg.Env.RedactSecrets {
-		s.redactor = redact.New(secretEnvValues(os.Environ()), true)
+		s.redactor = newAtRestRedactor(os.Environ())
 	}
 	// RFC Z: build the runtime-wide context-transform chain once. The redact
 	// plugin masks the same operator env-secret values + the Tier-B heuristic
@@ -6621,6 +6621,14 @@ func maskCredentialCreateValue(toolName string, input json.RawMessage) json.RawM
 		return json.RawMessage(`{"_redacted":"credential input"}`)
 	}
 	return out
+}
+
+// newAtRestRedactor builds the redactor for what the server PERSISTS. It adds
+// the signed-URL tier to what the outbound redact context plugin masks: a
+// pre-signed URL a tool returns must stay usable for the run that holds it,
+// so it is masked only in the stored copy.
+func newAtRestRedactor(environ []string) *redact.Redactor {
+	return redact.New(secretEnvValues(environ), true).WithSignedURLParams()
 }
 
 // secretEnvValues extracts the VALUES of secret-classified env vars (by name)
