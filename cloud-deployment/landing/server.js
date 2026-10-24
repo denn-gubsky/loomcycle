@@ -265,8 +265,8 @@ function logWarn(...parts) { console.warn(parts.map(redact).join(" ")); }
 // (move it to Redis if the landing ever scales out). Keys are a tenant id, a
 // verified e-mail or a source address; old hits are pruned on use and hourly.
 function limiter(max, windowMs) {
-  const hits = new Map();
-  const live = (key, now) => (hits.get(key) || []).filter((t) => now - t < windowMs);
+  const hits = new Map(); // key → [{t}]
+  const live = (key, now) => (hits.get(key) || []).filter((h) => now - h.t < windowMs);
   setInterval(() => {
     const now = Date.now();
     for (const k of hits.keys()) {
@@ -275,14 +275,43 @@ function limiter(max, windowMs) {
     }
   }, 60 * 60 * 1000).unref();
   return {
-    allowed(key, now = Date.now()) { return live(key, now).length < max; },
+    // take checks AND reserves a slot in one synchronous step. Callers take it
+    // before their first await: a check made before an await and a reservation
+    // made after it would let concurrent requests all pass. It returns the
+    // slot's release function (for a request that then fails), or null when
+    // the window is full.
     take(key, now = Date.now()) {
       const l = live(key, now);
-      if (l.length >= max) return false;
-      l.push(now); hits.set(key, l);
-      return true;
+      if (l.length >= max) return null;
+      const h = { t: now };
+      l.push(h); hits.set(key, l);
+      return () => {
+        const cur = hits.get(key);
+        const i = cur ? cur.indexOf(h) : -1;
+        if (i >= 0) cur.splice(i, 1);
+      };
     },
   };
+}
+
+// withTenantLock runs fn after every earlier fn for the same tenant has
+// finished, so a count read upstream (pending invites, a live owner invite)
+// and the write that depends on it cannot interleave with another request's.
+// Each step is bounded by the upstream timeout, so the chain always drains.
+const tenantLocks = new Map();
+async function withTenantLock(tenant, fn) {
+  const prev = tenantLocks.get(tenant) || Promise.resolve();
+  let done;
+  const mine = new Promise((r) => (done = r));
+  const tail = prev.then(() => mine);
+  tenantLocks.set(tenant, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    done();
+    if (tenantLocks.get(tenant) === tail) tenantLocks.delete(tenant);
+  }
 }
 const HOUR = 60 * 60 * 1000;
 const signupLimit = limiter(10, HOUR);          // per source address AND per verified e-mail
@@ -471,11 +500,26 @@ async function memberOrNull(p, subject) {
 // is {redirect}: the page location.replace()s it (the code rides the fragment,
 // so it reaches no server log, and replace() keeps it out of this site's history).
 app.post("/api/signup", accountRoute(async (req, res, p) => {
-  if (!signupLimit.allowed("ip:" + clientSource(req)) || !signupLimit.allowed("id:" + p.subject)) {
+  // Both slots are reserved before the first await; a signup the runtime then
+  // fails gives them back, so an outage does not lock a visitor out.
+  const relIp = signupLimit.take("ip:" + clientSource(req));
+  const relId = relIp && signupLimit.take("id:" + p.subject);
+  if (!relIp || !relId) {
+    if (relIp) relIp();
     return res.status(429).json({ error: "rate_limited" });
   }
-  signupLimit.take("ip:" + clientSource(req));
-  signupLimit.take("id:" + p.subject);
+  let counted = false;
+  try {
+    counted = await withTenantLock(p.tenant, () => signup(res, p));
+  } finally {
+    if (!counted) { relIp(); relId(); }
+  }
+}));
+
+// signup answers one signup inside the tenant's lock (so a revoke-and-reissue
+// cannot race another). It returns whether the request counts against the
+// visitor's limit: everything but a failed upstream call does.
+async function signup(res, p) {
   const st = await signupState(p);
   let body;
   if (st.kind === "new") {
@@ -488,14 +532,20 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
     await revokeLive(p.tenant, (inv) => inv.subject === st.subject);
     body = { tenant: p.tenant, subject: st.subject, login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
   } else {
-    return res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });
+    res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });
+    return true;
   }
   const up = await manage("POST", gatePath("invites"), { body });
-  if (up.status !== 201) return sendUpstreamError(res, "signup", up);
+  if (up.status !== 201) { sendUpstreamError(res, "signup", up); return false; }
   const link = checkedLink(up.json, "/ui/invite#");
-  if (!link) { logWarn("account upstream signup: link outside APP_URL"); return res.status(502).json({ error: "link_mismatch" }); }
+  if (!link) {
+    logWarn("account upstream signup: link outside APP_URL");
+    res.status(502).json({ error: "link_mismatch" });
+    return false;
+  }
   res.json({ redirect: link.url, expires_at: link.expires_at });
-}));
+  return true;
+}
 
 // GET /api/team — the owner's tenant: who is in it, their login and status.
 app.get("/api/team", accountRoute(async (_req, res, p) => {
@@ -540,15 +590,30 @@ app.get("/api/team/invites", accountRoute(async (_req, res, p) => {
 app.post("/api/team/invites", accountRoute(async (req, res, p) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
   if (email.length > 254 || !EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid_email" });
-  if (!inviteLimit.allowed(p.tenant)) return res.status(429).json({ error: "invite_limit" });
-  const pending = (await tenantInvites(p.tenant)).filter((i) => i.state === "live").length;
-  if (pending >= MAX_PENDING_INVITES) return res.status(429).json({ error: "too_many_pending" });
-  inviteLimit.take(p.tenant);
-  const up = await manage("POST", gatePath("invites"), { body: { tenant: p.tenant, email, login: loginOf(email) } });
-  if (up.status !== 201) return sendUpstreamError(res, "invite", up);
-  const link = checkedLink(up.json, "/ui/invite#");
-  if (!link) { logWarn("account upstream invite: link outside APP_URL"); return res.status(502).json({ error: "link_mismatch" }); }
-  res.status(201).json({ invite_id: up.json.invite_id, url: link.url, expires_at: link.expires_at });
+  // Reserve the day's slot before the first await, and count pending invites
+  // and create one under the tenant's lock; anything but a created invite
+  // gives the slot back.
+  const release = inviteLimit.take(p.tenant);
+  if (!release) return res.status(429).json({ error: "invite_limit" });
+  let created = false;
+  try {
+    created = await withTenantLock(p.tenant, async () => {
+      const pending = (await tenantInvites(p.tenant)).filter((i) => i.state === "live").length;
+      if (pending >= MAX_PENDING_INVITES) { res.status(429).json({ error: "too_many_pending" }); return false; }
+      const up = await manage("POST", gatePath("invites"), { body: { tenant: p.tenant, email, login: loginOf(email) } });
+      if (up.status !== 201) { sendUpstreamError(res, "invite", up); return false; }
+      const link = checkedLink(up.json, "/ui/invite#");
+      if (!link) {
+        logWarn("account upstream invite: link outside APP_URL");
+        res.status(502).json({ error: "link_mismatch" });
+        return false;
+      }
+      res.status(201).json({ invite_id: up.json.invite_id, url: link.url, expires_at: link.expires_at });
+      return true;
+    });
+  } finally {
+    if (!created) release();
+  }
 }));
 
 // DELETE /api/team/invites/:id — revoke one of the tenant's own invites.

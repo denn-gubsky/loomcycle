@@ -34,7 +34,7 @@ function fakeRuntime() {
   const f = {
     port: 0, recover: true, log: [], codes: [], tenants: new Map(), logins: new Map(),
     // inject: (req) => {status, body} | undefined — a one-off upstream answer.
-    inject: null, linkOrigin: null,
+    inject: null, linkOrigin: null, delayMs: 0,
   };
   const T = (id) => {
     if (!f.tenants.has(id)) f.tenants.set(id, { booted: false, users: new Map(), ids: new Map(), invites: new Map() });
@@ -82,7 +82,9 @@ function fakeRuntime() {
   const err = (res, status, code) => send(res, status, { code, error: code + " (message with a secret-ish https://x/ui/invite#lci_LEAKME)" });
 
   f.server = http.createServer((req, res) => {
-    let raw = ""; req.on("data", (d) => (raw += d)); req.on("end", () => {
+    // delayMs holds every answer back, so concurrent landing requests interleave
+    // their awaits the way they would against a busy runtime.
+    let raw = ""; req.on("data", (d) => (raw += d)); req.on("end", () => setTimeout(() => {
       const u = new URL(req.url, "http://x");
       const segs = u.pathname.split("/").slice(1).map(decodeURIComponent);
       let body = null; try { body = raw ? JSON.parse(raw) : null; } catch { body = "<invalid>"; }
@@ -157,7 +159,7 @@ function fakeRuntime() {
         }
       }
       return err(res, 404, "no_route");
-    });
+    }, f.delayMs));
   });
   return f;
 }
@@ -352,6 +354,24 @@ describe("POST /api/signup", () => {
     for (let i = 0; i < 10; i++) assert.equal((await call(on, "POST", "/api/signup", { email, body: {} })).status, 200);
     assert.equal((await call(on, "POST", "/api/signup", { email, body: {} })).status, 429);
   });
+  test("a signup the runtime failed gives the visitor's slots back", async () => {
+    const email = newEmail(), ip = "203.0.113.20";
+    fake.inject = (rec) => rec.path.endsWith("/tenant-status") ? { status: 500, body: { code: "internal" } } : undefined;
+    assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 502);
+    for (let i = 0; i < 10; i++) assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 200, `signup ${i}`);
+    assert.equal((await call(on, "POST", "/api/signup", { email, ip, body: {} })).status, 429);
+  });
+  test("concurrent signups for one visitor: exactly 10 pass the limit and one invite stays live", async () => {
+    const email = newEmail();
+    fake.delayMs = 15;
+    try {
+      const rs = await Promise.all(Array.from({ length: 14 }, () => call(on, "POST", "/api/signup", { email, body: {} })));
+      assert.equal(rs.filter((r) => r.status === 429).length, 4);
+      assert.equal(rs.filter((r) => r.status === 200).length, 10, rs.map((r) => r.status).join(","));
+    } finally { fake.delayMs = 0; }
+    const live = [...fake.T(tenantOf(email)).invites.values()].filter((i) => !i.revoked && !i.redeemed);
+    assert.equal(live.length, 1);
+  });
   test("refuses a link that does not point at APP_URL, without returning it", async () => {
     fake.linkOrigin = "https://evil.test";
     try {
@@ -495,6 +515,42 @@ describe("invites", () => {
     const r = await call(on, "POST", "/api/team/invites", { email, body: { email: "late@example.com" } });
     assert.equal(r.status, 429);
     assert.deepEqual(r.json, { error: "invite_limit" });
+  });
+  test("concurrent invites past the daily limit: exactly 20 succeed", async () => {
+    const { email } = await signUp();
+    fake.delayMs = 20;
+    try {
+      const rs = await Promise.all(Array.from({ length: 26 }, (_, i) =>
+        call(on, "POST", "/api/team/invites", { email, body: { email: `c${i}@example.com` } })));
+      assert.equal(rs.filter((r) => r.status === 201).length, 20);
+      assert.equal(rs.filter((r) => r.status === 429).length, 6);
+    } finally { fake.delayMs = 0; }
+  });
+  test("a failed upstream invite gives its daily slot back", async () => {
+    const { email, tenant } = await signUp();
+    fake.inject = (rec) => rec.method === "POST" ? { status: 500, body: { code: "internal" } } : undefined;
+    assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: "f@example.com" } })).status, 502);
+    for (let i = 0; i < 20; i++) {
+      const r = await call(on, "POST", "/api/team/invites", { email, body: { email: `g${i}@example.com` } });
+      assert.equal(r.status, 201, `invite ${i}: ${r.text}`);
+      fake.T(tenant).invites.get(r.json.invite_id).revoked = true;
+    }
+    assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: "h@example.com" } })).status, 429);
+  });
+  test("concurrent invites cannot overshoot the pending limit", async () => {
+    const { email, tenant } = await signUp();
+    for (let i = 0; i < 48; i++) fake.addInvite(tenant, { email: `s${i}@example.com` });
+    fake.delayMs = 20;
+    try {
+      const rs = await Promise.all(Array.from({ length: 5 }, (_, i) =>
+        call(on, "POST", "/api/team/invites", { email, body: { email: `t${i}@example.com` } })));
+      assert.equal(rs.filter((r) => r.status === 201).length, 2);
+      assert.ok(rs.filter((r) => r.status !== 201).every((r) => r.json.error === "too_many_pending"));
+    } finally { fake.delayMs = 0; }
+    // the three refused requests gave their daily slots back: 2 used of 20
+    const left = [...fake.T(tenant).invites.values()];
+    for (const i of left) i.revoked = true;
+    for (let i = 0; i < 18; i++) assert.equal((await call(on, "POST", "/api/team/invites", { email, body: { email: `u${i}@example.com` } })).status, 201);
   });
   test("refuses a 51st pending invite", async () => {
     const { email, tenant } = await signUp();
