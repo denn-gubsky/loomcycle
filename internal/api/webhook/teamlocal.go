@@ -84,7 +84,7 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 	dk := newDeliveryKeys(whKey, did, body, env)
 	if rec.dedup.seenAny(dk) {
 		rec.finish(span, "", did, verdictAcceptedReplay, "")
-		rec.logf("team webhook %q: replayed delivery (delivery_id seen within TTL) — idempotent ack", display)
+		rec.logger.Info("team webhook: replayed delivery (delivery_id seen within TTL) — idempotent ack", "webhook", display)
 		writeJSON(w, http.StatusOK, map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"})
 		return
 	}
@@ -93,7 +93,7 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 	proj, perr := projectPayload(hook.PayloadMapping, body)
 	if perr != nil {
 		rec.finish(span, "", did, "rejected_mapping", "")
-		rec.logf("team webhook %q: payload mapping failed: %v", display, perr)
+		rec.logger.Warn("team webhook: payload mapping failed", "webhook", display, "err", perr)
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return
 	}
@@ -116,11 +116,11 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 			// WebhookDef's durable duplicate is.
 			rec.dedup.recordDuplicate(dk)
 			rec.finish(span, "", did, verdictAcceptedReplay, "")
-			rec.logf("team webhook %q: delivery already accepted — idempotent ack", display)
+			rec.logger.Info("team webhook: delivery already accepted — idempotent ack", "webhook", display)
 			writeJSON(w, http.StatusOK, map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"})
 		case errors.Is(err, runner.ErrTeamWebhookNeedsUser):
 			rec.finish(span, "", did, "rejected_mapping", "")
-			rec.logf("team webhook %q: %v", display, err)
+			rec.logger.Warn("team webhook: delivery refused", "webhook", display, "err", err)
 			writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		case errors.Is(err, runner.ErrTeamWebhookGone):
 			// The walk ended while the delivery was verified: the webhook is
@@ -129,7 +129,7 @@ func (rec *Receiver) handleTeam(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "unknown_webhook", "")
 		default:
 			rec.finish(span, "", did, "rejected_publish", "")
-			rec.logf("team webhook %q: channel publish failed: %v", display, err)
+			rec.logger.Warn("team webhook: channel publish failed", "webhook", display, "err", err)
 			writeError(w, http.StatusServiceUnavailable, "channel_unavailable", "")
 		}
 		return

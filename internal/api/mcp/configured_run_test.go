@@ -72,7 +72,7 @@ func configuredMCPWith(t *testing.T, edit func(*config.Config)) (*Server, *lchtt
 	}
 	prov := &draftAnswerProvider{}
 	httpSrv := lchttp.New(cfg, singleProvider{prov}, []tools.Tool{}, concurrency.New(4, 4, time.Second), st)
-	return New(Config{Connector: httpSrv, Logf: func(string, ...any) {}}), httpSrv, prov, st
+	return New(Config{Connector: httpSrv, Logger: discardLogger()}), httpSrv, prov, st
 }
 
 // callTool runs one tools/call and returns the decoded result.

@@ -29,7 +29,7 @@ import (
 func (rec *Receiver) dispatchOnComplete(ctx context.Context, name string, wd config.Webhook, runID, agentID, userID string) {
 	for i, h := range wd.OnComplete {
 		if err := rec.dispatchOneOnComplete(ctx, name, wd.TenantID, h, runID, agentID, userID); err != nil {
-			rec.logf("webhook %q: on_complete[%d] (%s) failed: %v", name, i, h.Kind, err)
+			rec.logger.Warn("webhook: on_complete hook failed", "webhook", name, "hook_index", i, "hook_kind", h.Kind, "err", err)
 		}
 	}
 }
@@ -43,15 +43,15 @@ func (rec *Receiver) dispatchOneOnComplete(ctx context.Context, name, tenantID s
 	case "mcp.call":
 		// The receiver has no MCPCaller wired (exactly like the scheduler's
 		// nil case). Log + skip — never fail the (already-completed) run.
-		rec.logf("webhook %q: on_complete mcp.call not wired (no MCPCaller)", name)
+		rec.logger.Warn("webhook: on_complete mcp.call not wired (no MCPCaller)", "webhook", name)
 		return nil
 	case "":
 		// Defensive: validation (WH-1/WH-2) should have rejected a kind-less
 		// hook at write time. Log + skip rather than fail.
-		rec.logf("webhook %q: on_complete hook missing kind — skipping", name)
+		rec.logger.Warn("webhook: on_complete hook missing kind — skipping", "webhook", name)
 		return nil
 	default:
-		rec.logf("webhook %q: on_complete unknown hook kind %q — skipping", name, h.Kind)
+		rec.logger.Warn("webhook: on_complete unknown hook kind — skipping", "webhook", name, "hook_kind", h.Kind)
 		return nil
 	}
 }

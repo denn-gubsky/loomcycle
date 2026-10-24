@@ -97,8 +97,7 @@ const aadPrefix = "loomcycle/crypto/v1"
 // expected to be validated identifiers that never contain 0x1f.
 func AAD(tenant, source, keyName string, version int, context string) []byte {
 	const sep = 0x1f
-	b := make([]byte, 0, len(aadPrefix)+len(tenant)+len(source)+len(keyName)+len(context)+16)
-	b = append(b, aadPrefix...)
+	b := append([]byte(nil), aadPrefix...)
 	b = append(b, sep)
 	b = append(b, tenant...)
 	b = append(b, sep)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -313,12 +314,12 @@ func (b *boot) wireServerCatalog() {
 		// F33: dynamic MCP enumeration (cached tools for every server; a
 		// bounded run-start handshake for a REFERENCED server whose cache is
 		// empty) lives in the testable mcp.DynamicToolsForRun helper.
-		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)
+		out := mcp.DynamicToolsForRun(ctx, mcpPool, dynamicMCPRegistry, mcpActiveDefReader{storeIface}, tenant, wantServers, runStartMCPDiscoveryTimeout, slog.Default())
 		// Recover STATIC (yaml) MCP servers skipped at boot without a restart —
 		// the static sibling of the F33 dynamic re-probe above. Scoped to the
 		// servers this run references (wantServers) and to those that actually
 		// failed boot (skippedStaticMCP), so a healthy server is never re-dialed.
-		out = append(out, mcp.StaticToolsForRun(ctx, mcpPool, cfg.MCPServers, skippedStaticMCP, tenant, wantServers, runStartMCPDiscoveryTimeout, log.Printf)...)
+		out = append(out, mcp.StaticToolsForRun(ctx, mcpPool, cfg.MCPServers, skippedStaticMCP, tenant, wantServers, runStartMCPDiscoveryTimeout, slog.Default())...)
 		if cfg.Env.A2AServerEnabled {
 			resolve := func(ctx context.Context, name string) (config.A2AAgent, bool) {
 				// RFC N: the enumerator's `tenant` is authoritative (server
@@ -326,7 +327,7 @@ func (b *boot) wireServerCatalog() {
 				// per-run peer set under it rather than re-deriving from ctx.
 				return lookup.A2AAgent(ctx, storeIface, cfg, tenant, name)
 			}
-			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))...)
+			out = append(out, toolsa2a.RegisterTools(ctx, cfg, storeIface, resolve, nil, slog.Default(), toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))...)
 		}
 		return out
 	})
@@ -485,7 +486,7 @@ func loadWebUI(cfg *config.Config) (*webui.Bundle, webui.Status) {
 		SHA256:               cfg.Env.WebUIBundleSHA256,
 		DataDir:              cfg.Env.DataDir,
 		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
-		Logf:                 log.Printf,
+		Logger:               slog.Default(),
 	})
 	if err != nil {
 		log.Printf("webui: LOOMCYCLE_WEBUI_BUNDLE_URL (%s) refused, serving the embedded UI: %v", host, err)

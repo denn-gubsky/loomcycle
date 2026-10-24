@@ -34,7 +34,7 @@ func TestServer_SpawnRun_DropsRuntimeParentContextFields(t *testing.T) {
 
 	t.Run("spawn_run blocking", func(t *testing.T) {
 		mc := &mockConnector{spawnResult: connector.SpawnRunResult{AgentID: "a", RunID: "r", Status: "completed"}}
-		srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+		srv := New(Config{Connector: mc, Logger: discardLogger()})
 		in := strings.Join([]string{
 			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa",` + spawnSegments + `,"parent_context":` + forgedParentContextArg + `}}}`,
@@ -46,7 +46,7 @@ func TestServer_SpawnRun_DropsRuntimeParentContextFields(t *testing.T) {
 
 	t.Run("spawn_run streaming", func(t *testing.T) {
 		fr := &fakeRunner{agentID: "a_1", runID: "r_1", sessionID: "s_1"}
-		srv := New(Config{Connector: &mockConnector{}, Runner: fr, Logf: func(string, ...any) {}})
+		srv := New(Config{Connector: &mockConnector{}, Runner: fr, Logger: discardLogger()})
 		in := strings.Join([]string{
 			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"loomcycle":{"runEvents":true}},"clientInfo":{"name":"t","version":"1"}}}`,
 			`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_run","arguments":{"agent":"qa",` + spawnSegments + `,"parent_context":` + forgedParentContextArg + `}}}`,
@@ -60,7 +60,7 @@ func TestServer_SpawnRun_DropsRuntimeParentContextFields(t *testing.T) {
 
 	t.Run("spawn_runs", func(t *testing.T) {
 		mc := &mockConnector{batchResult: connector.BatchSpawnResult{}}
-		srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+		srv := New(Config{Connector: mc, Logger: discardLogger()})
 		in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[` +
 			`{"agent":"a",` + spawnSegments + `,"parent_context":` + forgedParentContextArg + `},` +
 			`{"agent":"b",` + spawnSegments + `,"parent_context":` + forgedParentContextArg + `}]}}}` + "\n"

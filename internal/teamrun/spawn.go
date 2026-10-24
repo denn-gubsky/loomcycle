@@ -254,9 +254,10 @@ type agentRunner struct {
 	// to — for every member of every state, where wave is a Starter's alone.
 	// Supplied by the server for the same reason; nil = not recorded.
 	walk func(ctx context.Context, walkID, state string, visit int) context.Context
-	// logf reports what a Starter could not do but must not fail for — a sink
-	// publish that errored, an ack that did not land. nil = slog, at INFO.
-	logf func(format string, args ...any)
+	// logger reports what a Starter could not do but must not fail for — a
+	// sink publish that errored, an ack that did not land. nil =
+	// slog.Default().
+	logger *slog.Logger
 	// operatorAuthored is the TEAM DEFINITION's authorship, stamped onto every
 	// Prompt this runner builds. The walk reads it from the def row it
 	// resolved; a runner constructed without it builds prompts that cannot use
@@ -389,9 +390,9 @@ func WithPauseSignal(sig PauseSignal) RunnerOption {
 	return func(r *agentRunner) { r.pause = sig }
 }
 
-// WithRunnerLogf wires the non-fatal log sink.
-func WithRunnerLogf(f func(format string, args ...any)) RunnerOption {
-	return func(r *agentRunner) { r.logf = f }
+// WithRunnerLogger wires the non-fatal log sink. nil keeps slog.Default().
+func WithRunnerLogger(l *slog.Logger) RunnerOption {
+	return func(r *agentRunner) { r.logger = l }
 }
 
 func (r *agentRunner) RunHandler(ctx context.Context, st teamgraph.State, task *Task) (Outcome, error) {

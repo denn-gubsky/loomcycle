@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -45,7 +46,7 @@ func (b *boot) startMCPSurfaces() {
 			Connector:          srv, // *http.Server satisfies connector.Connector
 			Runner:             srv, // *http.Server satisfies runner.Runner (streaming)
 			Store:              storeIface,
-			Logf:               log.Printf, // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
+			Logger:             slog.Default(), // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
 			ServerName:         "loomcycle",
 			ServerVersion:      buildVersion,
 			MaxConcurrentCalls: mcpMaxConcurrentCalls,
@@ -87,7 +88,7 @@ func (b *boot) startMCPSurfaces() {
 		Connector:     srv, // same *http.Server instance used by stdio MCP
 		Runner:        srv,
 		Store:         storeIface,
-		Logf:          log.Printf,
+		Logger:        slog.Default(),
 		ServerName:    "loomcycle",
 		ServerVersion: buildVersion,
 		// RFC P spawn_run timeout must apply to the HTTP transport too —
@@ -107,7 +108,7 @@ func (b *boot) startMCPSurfaces() {
 	// concurrent invocations. 5-minute cadence is well under the
 	// 30-min session inactivity TTL — leaves at least ~25 min between
 	// a session's last access and its earliest possible reaping.
-	lcmcp.RunHTTPSessionSweeper(bgCtx, mcpHTTPHandler.Sessions(), 5*time.Minute, log.Printf)
+	lcmcp.RunHTTPSessionSweeper(bgCtx, mcpHTTPHandler.Sessions(), 5*time.Minute, slog.Default())
 	log.Printf("mcp: HTTP transport enabled at POST /v1/_mcp (session sweeper interval=5m, TTL=30m)")
 }
 

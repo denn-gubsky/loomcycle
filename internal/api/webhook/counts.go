@@ -129,7 +129,7 @@ func (rec *Receiver) RunCountFlusher(ctx context.Context, interval time.Duration
 		case <-t.C:
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			if err := rec.FlushCounts(fctx); err != nil {
-				rec.logf("webhook: storing delivery counts failed (kept for the next try): %v", err)
+				rec.logger.Warn("webhook: storing delivery counts failed (kept for the next try)", "err", err)
 			}
 			cancel()
 		case <-ctx.Done():

@@ -1,9 +1,12 @@
 package webhook
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -122,7 +125,7 @@ func TestReceiver_OnCompleteMCPCall_LogsAndSkips(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	body := []byte(`{"goal":"do it"}`)
 
-	var logged []string
+	var logged lockedLog
 	wh := config.Webhook{
 		Enabled:        true,
 		Delivery:       "spawn",
@@ -145,7 +148,7 @@ func TestReceiver_OnCompleteMCPCall_LogsAndSkips(t *testing.T) {
 		EnvAllowlist: map[string]bool{"WH_SECRET": true},
 		Now:          fixedClock(now),
 		Getenv:       mapGetenv(map[string]string{"WH_SECRET": secret}),
-		Logf:         func(f string, a ...any) { logged = append(logged, f) },
+		Logger:       slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Publisher:    &channels.StorePublisher{Store: channelWriteShim{f: st}},
 	})
 
@@ -159,14 +162,33 @@ func TestReceiver_OnCompleteMCPCall_LogsAndSkips(t *testing.T) {
 	waitForHooks(t, st, 1, 0)
 
 	foundSkipLog := false
-	for _, l := range logged {
-		if strings.Contains(l, "mcp.call not wired") {
+	for _, l := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(l, "mcp.call not wired") && strings.Contains(l, "level=WARN") && strings.Contains(l, "webhook=gh") {
 			foundSkipLog = true
 		}
 	}
 	if !foundSkipLog {
-		t.Errorf("expected an mcp.call-not-wired log line; got %v", logged)
+		t.Errorf("expected a WARN mcp.call-not-wired log line for webhook gh; got %q", logged.String())
 	}
+}
+
+// lockedLog is a log sink written from the run's goroutine and read by the
+// test.
+type lockedLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 func TestReceiver_RecentDeliveries_ReturnsVerdictsNewestFirstCapped(t *testing.T) {

@@ -26,7 +26,7 @@ func TestMemoryChanges_AuthGate(t *testing.T) {
 			t.Errorf("%s scope = %q, want %s", p, got, auth.ScopeTenant)
 		}
 		if tenantMemberAccessible(http.MethodGet, p) {
-			t.Errorf("%s must NOT be member-accessible (memberCarveOut)", p)
+			t.Errorf("%s must NOT be member-accessible (memberpath.CarvedOut)", p)
 		}
 	}
 }

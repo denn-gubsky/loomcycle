@@ -153,7 +153,8 @@ func (r *agentRunner) runStarter(ctx context.Context, st teamgraph.State, task *
 	// for. after_read acks on read instead and loses the batch to a crash.
 	if waveErr == nil && h.Ack != teamgraph.AckAfterRead && cursor != "" {
 		if aerr := r.channels.Ack(ctx, h.Source.Channel, cursor); aerr != nil {
-			r.log("teamrun: state %q ack %q: %v", st.ID, h.Source.Channel, aerr)
+			r.log().Warn("teamrun: starter ack failed — the batch will be redelivered",
+				"walk_id", task.WalkID, "state", st.ID, "channel", h.Source.Channel, "err", aerr)
 		}
 	}
 	if waveErr != nil {
@@ -464,7 +465,7 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 	}
 	payload, err := json.Marshal(msg)
 	if err != nil {
-		r.log("teamrun: state %q sink marshal: %v", st.ID, err)
+		r.log().Error("teamrun: sink marshal failed — result not published", "state", st.ID, "wave_id", waveID, "err", err)
 		return
 	}
 	// A survival ctx: the wave's result must reach the sink even when the
@@ -478,7 +479,8 @@ func (r *agentRunner) publishSink(ctx context.Context, st teamgraph.State, waveI
 		publish = sp.PublishSink
 	}
 	if perr := publish(pctx, st.Handler.Sink.Channel, payload); perr != nil {
-		r.log("teamrun: state %q sink publish: %v", st.ID, perr)
+		r.log().Error("teamrun: sink publish failed — result not delivered",
+			"state", st.ID, "wave_id", waveID, "channel", st.Handler.Sink.Channel, "err", perr)
 	}
 }
 
@@ -512,13 +514,12 @@ const (
 	StarterMessagesSlot = teamgraph.StarterMessagesSlot
 )
 
-// logf reports what a Starter could not do but must not fail for.
-func (r *agentRunner) log(format string, args ...any) {
-	if r.logf != nil {
-		r.logf(format, args...)
-		return
+// log is the sink for what a Starter could not do but must not fail for.
+func (r *agentRunner) log() *slog.Logger {
+	if r.logger != nil {
+		return r.logger
 	}
-	slog.Info(fmt.Sprintf(format, args...))
+	return slog.Default()
 }
 
 // bindFromMessage projects the source message into ${var.*} per `binds`, using

@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,16 +46,22 @@ func (p *envPeer) seen() []string {
 	return append([]string(nil), p.auth...)
 }
 
-// warnLog collects the pool's log lines.
+// warnLog collects the pool's log lines: it is the writer behind logger(),
+// one text-handler line per record.
 type warnLog struct {
 	mu    sync.Mutex
 	lines []string
 }
 
-func (w *warnLog) logf(format string, args ...any) {
+func (w *warnLog) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.lines = append(w.lines, fmt.Sprintf(format, args...))
+	w.lines = append(w.lines, strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+func (w *warnLog) logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 func (w *warnLog) all() []string {
@@ -81,7 +87,7 @@ func TestMCPPoolBuild_DefaultRefusesNonOperatorDefWithEnvRef(t *testing.T) {
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	logs := &warnLog{}
-	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, logs.logf)
+	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, logs.logger())
 	keyHeader := map[string]string{"Authorization": "Bearer ${LOOMCYCLE_PEER_KEY_GLOBEX}"}
 
 	for name, hdr := range map[string]map[string]string{
@@ -151,7 +157,7 @@ func TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning(t *testing.T) 
 	reg := mcp.NewDynamicRegistry()
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
 	logs := &warnLog{}
-	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, logs.logf)
+	build := mcpPoolBuild(cfg, mcpLookupView{reg}, &credSubstitute, logs.logger())
 	keyHeader := map[string]string{"Authorization": "Bearer ${LOOMCYCLE_PEER_KEY_GLOBEX}"}
 	reg.Set(mcp.DynamicMCPServerSpec{TenantID: "acme", Name: "legacy", Transport: "http", URL: peer.srv.URL,
 		Headers: keyHeader, DefID: "mdf_legacy", Version: 3})
@@ -178,7 +184,7 @@ func TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning(t *testing.T) 
 		t.Fatalf("want exactly one warning for %d dials, got %d: %q", dials, len(lines), lines)
 	}
 	w := lines[0]
-	for _, want := range []string{"WARNING", `"legacy"`, "v3", "mdf_legacy", `tenant "acme"`, "headers.Authorization", "LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0", "re-save"} {
+	for _, want := range []string{"level=WARN", "server=legacy", "version=3", "def_id=mdf_legacy ", "tenant=acme", "headers.Authorization", "LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0", "re-save"} {
 		if !strings.Contains(w, want) {
 			t.Errorf("warning lacks %q: %s", want, w)
 		}
@@ -197,7 +203,7 @@ func TestMCPPoolBuild_OptOutDialsUnattributedEnvRefWithOneWarning(t *testing.T) 
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
-	if lines := logs.all(); len(lines) != 2 || !strings.Contains(lines[1], "v4") {
+	if lines := logs.all(); len(lines) != 2 || !strings.Contains(lines[1], "version=4") {
 		t.Fatalf("want one more warning, for v4 only, got %q", lines)
 	}
 }
@@ -212,7 +218,7 @@ func TestMCPPoolBuild_AClientBuiltBeforeTheResolverStillUsesIt(t *testing.T) {
 		"forge": {Transport: "http", URL: peer.srv.URL, Headers: map[string]string{"Authorization": "Bearer $cred:forge-token"}},
 	}}
 	var credSubstitute func(ctx context.Context, s, targetURL string) (string, []string, error)
-	build := mcpPoolBuild(cfg, mcpLookupView{mcp.NewDynamicRegistry()}, &credSubstitute, (&warnLog{}).logf)
+	build := mcpPoolBuild(cfg, mcpLookupView{mcp.NewDynamicRegistry()}, &credSubstitute, (&warnLog{}).logger())
 	c, err := build("", "forge")
 	if err != nil {
 		t.Fatal(err)

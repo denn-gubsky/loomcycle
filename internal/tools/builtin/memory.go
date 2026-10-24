@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -190,7 +191,7 @@ func (m *Memory) backend(ctx context.Context) memrank.Backend {
 		// fallback_on_error: inprocess wraps the remote so an unreachable peer
 		// degrades to local memory per-op instead of failing the run.
 		if def.FallbackOnError == "inprocess" {
-			return fallback.New(rb, m.defaultBackend(), log.Printf)
+			return fallback.New(rb, m.defaultBackend(), slog.Default())
 		}
 		return rb
 	default:
@@ -2910,7 +2911,7 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 // concat for arrays — replace; no add for numbers — replace). Used
 // by execMerge.
 func deepMerge(base, overlay map[string]any) map[string]any {
-	out := make(map[string]any, len(base)+len(overlay))
+	out := make(map[string]any, len(base))
 	for k, v := range base {
 		out[k] = v
 	}

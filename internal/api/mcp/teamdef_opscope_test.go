@@ -36,7 +36,7 @@ const teamRunCall = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"na
 // run reaches the connector as it always did.
 func TestServer_TeamDefRun_StdioOperatorIsNotHeldToAScope(t *testing.T) {
 	conn := &teamRecorder{mockConnector: &mockConnector{}}
-	srv := New(Config{Connector: conn, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: conn, Logger: discardLogger()})
 	resps, _ := driveServerCtx(t, srv, context.Background(), teamRunCall)
 	if len(resps) != 1 || resps[0].Error != nil {
 		t.Fatalf("stdio teamdef run = %+v", resps)
@@ -62,7 +62,7 @@ func TestServer_TeamDefRun_NeedsRunsCreateOnAMemberSession(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			conn := &teamRecorder{mockConnector: &mockConnector{}}
-			srv := New(Config{Connector: conn, Logf: func(string, ...any) {}})
+			srv := New(Config{Connector: conn, Logger: discardLogger()})
 			ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "bob", Scopes: tc.scopes})
 			resps, _ := driveServerCtx(t, srv, ctx, teamRunCall)
 			if len(resps) != 1 {

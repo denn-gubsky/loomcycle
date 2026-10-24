@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"sync"
@@ -89,14 +90,14 @@ type DriverOptions struct {
 	StreamOpts streamhttp.Options
 	// Options carries driver-specific tuning from the `providers:` entry's
 	// `options:` map (e.g. ollama num_ctx/num_gpu, code-js code_root). Unknown
-	// keys are logged via Logf and ignored, never fatal (see WarnUnknownOptions).
+	// keys are logged via Logger and ignored, never fatal (see WarnUnknownOptions).
 	Options map[string]any
 	// Capabilities is the optional operator override applied inside the driver's
 	// Capabilities(). Nil = advertise the driver's built-in defaults.
 	Capabilities *CapabilityPatch
-	// Logf is the boot-time logger for advisory warnings (unknown option keys).
-	// Nil is tolerated (warnings are dropped).
-	Logf func(string, ...any)
+	// Logger is the boot-time logger for advisory warnings (unknown option
+	// keys). Nil is tolerated (warnings are dropped).
+	Logger *slog.Logger
 	// RequestAuth, when set, authenticates the operator's calls instead of
 	// APIKey (RFC EM: AWS SigV4 or a minted Bedrock key). A tenant/user key
 	// override still wins over it, and a restricted run is still refused
@@ -224,12 +225,12 @@ func DefaultDialect(driver string) (string, bool) {
 	return entry.dialects[0], true
 }
 
-// WarnUnknownOptions logs (via logf, when non-nil) each key in opts that is not
-// in known. Drivers call this from their factory so an operator's typo'd
+// WarnUnknownOptions logs (at Warn via logger, when non-nil) each key in opts
+// that is not in known. Drivers call this from their factory so an operator's typo'd
 // provider option surfaces as a boot warning instead of being silently dropped.
 // Advisory only — an unknown option never fails construction.
-func WarnUnknownOptions(logf func(string, ...any), driver string, opts map[string]any, known ...string) {
-	if logf == nil || len(opts) == 0 {
+func WarnUnknownOptions(logger *slog.Logger, driver string, opts map[string]any, known ...string) {
+	if logger == nil || len(opts) == 0 {
 		return
 	}
 	knownSet := make(map[string]bool, len(known))
@@ -238,7 +239,7 @@ func WarnUnknownOptions(logf func(string, ...any), driver string, opts map[strin
 	}
 	for k := range opts {
 		if !knownSet[k] {
-			logf("provider driver %q: ignoring unknown option %q", driver, k)
+			logger.Warn("provider driver: ignoring unknown option", "driver", driver, "option", k)
 		}
 	}
 }

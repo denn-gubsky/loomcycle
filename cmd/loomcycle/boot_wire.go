@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -362,7 +363,7 @@ func (b *boot) addA2ATools() {
 			// it with the live run identity.
 			return lookup.A2AAgent(ctx, storeIface, cfg, tools.RunIdentity(ctx).TenantID, name)
 		}
-		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, log.Printf, toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))
+		a2aTools := toolsa2a.RegisterTools(context.Background(), cfg, storeIface, a2aResolve, nil, slog.Default(), toolsa2a.WithCredentialResolver(lateCredSubstitute(&b.credSubstitute)))
 		if len(a2aTools) > 0 {
 			b.allTools = append(b.allTools, a2aTools...)
 			log.Printf("a2a: registered %d outbound peer tool(s)", len(a2aTools))

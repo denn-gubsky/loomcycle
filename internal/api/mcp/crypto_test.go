@@ -52,7 +52,7 @@ func TestCryptoMCP_ATenantOperatorReachesTheConnector(t *testing.T) {
 		t.Fatal("crypto is not listed for a tenant operator")
 	}
 	cc := &cryptoCapturingConnector{mockConnector: &mockConnector{}, result: connector.ToolResult{Text: `{"ciphertext":"lc1.x"}`}}
-	srv := New(Config{Connector: cc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: cc, Logger: discardLogger()})
 	resps, _ := driveServerCtx(t, srv, ctx, cryptoCallFrame)
 	if len(resps) != 1 || resps[0].Error != nil {
 		t.Fatalf("responses = %+v", resps)
@@ -112,7 +112,7 @@ func TestCryptoMCP_OnlyAnOperatorMayCallIt(t *testing.T) {
 				t.Errorf("crypto listed = %v, want %v", listed, c.allowed)
 			}
 			cc := &cryptoCapturingConnector{mockConnector: &mockConnector{}, result: connector.ToolResult{Text: `{"ciphertext":"lc1.x"}`}}
-			srv := New(Config{Connector: cc, Logf: func(string, ...any) {}})
+			srv := New(Config{Connector: cc, Logger: discardLogger()})
 			resps, _ := driveServerCtx(t, srv, ctx, cryptoCallFrame)
 			if len(resps) != 1 {
 				t.Fatalf("got %d responses, want 1", len(resps))
@@ -148,7 +148,7 @@ func (e *rateSpentError) RetryDelay() time.Duration { return e.wait }
 // rate is spent, is classified as retryable, and says when to retry.
 func TestCryptoMCP_ASpentRateIsAToolError(t *testing.T) {
 	cc := &cryptoCapturingConnector{mockConnector: &mockConnector{}, err: &rateSpentError{wait: 7 * time.Second}}
-	srv := New(Config{Connector: cc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: cc, Logger: discardLogger()})
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeTenant}})
 	resps, _ := driveServerCtx(t, srv, ctx, cryptoCallFrame)
 	if len(resps) != 1 || resps[0].Error != nil {

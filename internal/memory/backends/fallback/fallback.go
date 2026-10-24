@@ -22,6 +22,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 
 	memory "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -39,16 +41,16 @@ import (
 type Backend struct {
 	primary  memory.Backend
 	fallback memory.Backend
-	// logf logs the degradation. NEVER receives a credential — a primary
+	// logger logs the degradation. NEVER receives a credential — a primary
 	// backend must construct its errors without its API key (the contract
-	// every backend owes this wrapper), so %v on the error is secret-free.
-	logf func(format string, args ...any)
+	// every backend owes this wrapper), so the err attr is secret-free.
+	logger *slog.Logger
 }
 
-// New builds a fallback wrapper. logf may be nil (degradation then logs
+// New builds a fallback wrapper. logger may be nil (degradation then logs
 // nothing — used by tests that assert behavior without log capture).
-func New(primary, fallback memory.Backend, logf func(format string, args ...any)) *Backend {
-	return &Backend{primary: primary, fallback: fallback, logf: logf}
+func New(primary, fallback memory.Backend, logger *slog.Logger) *Backend {
+	return &Backend{primary: primary, fallback: fallback, logger: logger}
 }
 
 // degrade logs the primary failure and reports that the fallback should
@@ -56,8 +58,9 @@ func New(primary, fallback memory.Backend, logf func(format string, args ...any)
 // primary backend, which is contractually forbidden from embedding the
 // API key in its errors.
 func (b *Backend) degrade(op string, err error) {
-	if b.logf != nil {
-		b.logf("memory backend %T failed on %s, falling back to in-process: %v", b.primary, op, err)
+	if b.logger != nil {
+		b.logger.Warn("memory backend failed, falling back to in-process",
+			"backend", fmt.Sprintf("%T", b.primary), "op", op, "err", err)
 	}
 }
 

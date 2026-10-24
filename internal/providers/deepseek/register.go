@@ -25,6 +25,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		d.SetKeyEnvName(o.KeyEnvName)
 	}
 	d.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "deepseek", o.Options)
+	providers.WarnUnknownOptions(o.Logger, "deepseek", o.Options)
 	return d, nil
 }

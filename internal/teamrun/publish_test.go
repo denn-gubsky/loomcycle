@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -92,7 +93,7 @@ func TestInputState_PublishFailureFailsTheState(t *testing.T) {
 }
 
 func TestInputState_PublishWithNoChannelExecutorIsRefused(t *testing.T) {
-	r := &agentRunner{logf: func(string, ...any) {}}
+	r := &agentRunner{logger: slog.New(slog.DiscardHandler)}
 	_, err := r.RunHandler(context.Background(), publishingInputState("pcparts-in"), &Task{Input: "x"})
 	if err == nil || !strings.Contains(err.Error(), "no channel executor") {
 		t.Errorf("err = %v, want a refusal naming the missing executor", err)

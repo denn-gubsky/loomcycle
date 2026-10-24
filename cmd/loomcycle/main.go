@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -681,7 +682,7 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 			if _, loadErr := store.Load(); loadErr != nil {
 				log.Printf("anthropic-oauth-dev: env var set but no tokens at %s — run `loomcycle anthropic login` to authorize", storePath)
 			} else {
-				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, log.Printf)
+				refresher := anthropic_oauth_dev.NewRefresher(store, anthropic_oauth_dev.ExchangeOptions{}, slog.Default())
 				refresher.Start(context.Background())
 				pr.anthropicOAuthRefresher = refresher
 				pr.byID["anthropic-oauth-dev"] = lanegate.Wrap("anthropic-oauth-dev", anthropic_oauth_dev.New(
@@ -971,7 +972,7 @@ func buildResolver(cfg *config.Config, pr *providerResolver) *resolve.Resolver {
 	// RFC BG: surface a silent model-pattern bump (a pattern resolving to a new
 	// concrete model) in the operator log. Set before the first probe so an
 	// initial resolution is recorded (first-seen never warns; only a MOVE does).
-	r.SetLogf(log.Printf)
+	r.SetLogger(slog.Default())
 
 	// First-round probe — synchronous, so the matrix is hot before
 	// the listener accepts traffic.
@@ -1246,7 +1247,7 @@ func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, 
 // credential engine exists, after static servers were already dialed.
 func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 	credSubstitute *func(ctx context.Context, s, targetURL string) (string, []string, error),
-	logf func(format string, args ...any)) func(tenant, name string) (mcp.Caller, error) {
+	logger *slog.Logger) func(tenant, name string) (mcp.Caller, error) {
 	// One warning per stored version per process: the pool rebuilds a client
 	// on every evict and respawn, and a line per dial would bury the log.
 	var warnedMu sync.Mutex
@@ -1289,9 +1290,9 @@ func mcpPoolBuild(cfg *config.Config, mcpDynView mcpLookupView,
 				warned[key] = true
 				warnedMu.Unlock()
 				if first {
-					logf("mcp_servers: WARNING: %q v%d (def_id %s, tenant %q) expands %s from the server environment but was not saved by an admin; "+
+					logger.Warn("mcp_servers: a server definition expands variables from the server environment but was not saved by an admin; "+
 						"dialing it only because LOOMCYCLE_MCP_REFUSE_UNATTRIBUTED_ENV=0 — have an admin acting in that tenant re-save it (create with the same overlay), then unset the variable",
-						name, spec.Version, spec.DefID, tenant, fields)
+						"server", name, "version", spec.Version, "def_id", spec.DefID, "tenant", tenant, "fields", fields)
 				}
 			}
 		}

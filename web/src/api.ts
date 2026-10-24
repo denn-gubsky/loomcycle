@@ -322,6 +322,18 @@ export interface LimitEventInfo {
   message?: string;
 }
 
+// FileCapturedEventInfo mirrors providers.FileCapturedInfo — the sidecar on a
+// `file_captured` event: a file a tool returned, kept in the run's inbox
+// volume instead of reaching the model. Never the bytes, never a URL's query.
+export interface FileCapturedEventInfo {
+  ref: string; // volume:inbox:<dir>/<name>
+  media_type: string;
+  size: number; // bytes
+  sha256: string;
+  origin: string; // mcp:<server>/<tool> | http | webfetch | download:<host> | extract:…
+  run_id?: string; // the run whose tool returned it (a sub-agent's, on the tree's stream)
+}
+
 export interface AdmissionEventInfo {
   // on queued: the user's cap, or every slot taken; on call_queued: "lane"
   // (every slot of the call lane taken) or "models_in_flight"
@@ -416,6 +428,8 @@ export interface EventPayload {
   // "limit" sidecar (RFC AW) — a per-scope token-budget crossing. Present on
   // both the live SSE `limit` frame and the persisted `limit` transcript row.
   limit?: LimitEventInfo;
+  // "file_captured" sidecar — a file a tool returned, kept in the run's inbox.
+  file?: FileCapturedEventInfo;
   // "queued" / "admitted" sidecar — the run waits for a run slot (why, and its
   // place when queued) / got one (how long it waited); on "call_queued" /
   // "call_admitted" the same for one model call, with its provider. Mirrors

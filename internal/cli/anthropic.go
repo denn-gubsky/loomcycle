@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -231,7 +232,7 @@ func anthropicStatus(stdout, stderr io.Writer, store *oauthdev.TokenStore, probe
 		fmt.Fprintln(stdout, "Server-side:   cannot probe — no refresh token in the store; run `loomcycle anthropic login`")
 		return 1
 	}
-	refresher := oauthdev.NewRefresher(store, opts, func(string, ...any) {})
+	refresher := oauthdev.NewRefresher(store, opts, slog.New(slog.DiscardHandler))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := refresher.RefreshNow(ctx); err != nil {

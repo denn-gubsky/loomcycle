@@ -2,7 +2,7 @@ package anthropic_oauth_dev
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,7 +16,7 @@ import (
 type Refresher struct {
 	store      *TokenStore
 	httpClient ExchangeOptions
-	logf       func(string, ...any) // nil = log.Printf
+	logger     *slog.Logger // nil = slog.Default()
 
 	mu        sync.Mutex
 	startOnce sync.Once
@@ -33,19 +33,19 @@ type Refresher struct {
 
 // NewRefresher builds a Refresher that reads/writes via store, calls
 // the OAuth token endpoint via opts.HTTPClient (nil = default client),
-// and logs via logf (nil = log.Printf).
+// and logs via logger (nil = slog.Default()).
 //
 // The initial token is loaded from the store; if absent, the Refresher
 // constructs in a usable state but Token() returns an empty Token until
 // the operator logs in.
-func NewRefresher(store *TokenStore, opts ExchangeOptions, logf func(string, ...any)) *Refresher {
-	if logf == nil {
-		logf = log.Printf
+func NewRefresher(store *TokenStore, opts ExchangeOptions, logger *slog.Logger) *Refresher {
+	if logger == nil {
+		logger = slog.Default()
 	}
 	r := &Refresher{
 		store:      store,
 		httpClient: opts,
-		logf:       logf,
+		logger:     logger,
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
 	}
@@ -141,7 +141,7 @@ func (r *Refresher) loop(ctx context.Context) {
 				// subsequent requests fail with 401 and the caller
 				// gets a clear error pointing at `loomcycle anthropic
 				// login`.
-				r.logf("anthropic-oauth-dev: refresh failed: %v (will retry on next tick)", err)
+				r.logger.Warn("anthropic-oauth-dev: refresh failed (will retry on next tick)", "err", err)
 			}
 		}
 	}
@@ -161,7 +161,7 @@ func (r *Refresher) refreshLocked(ctx context.Context) error {
 	// entirely — log and proceed best-effort (degrades to the prior
 	// single-process behavior) rather than failing the refresh outright.
 	if release, err := acquireFileLock(r.store.lockPath()); err != nil {
-		r.logf("anthropic-oauth-dev: token lock unavailable (%v); refreshing without the cross-process guard", err)
+		r.logger.Warn("anthropic-oauth-dev: token lock unavailable; refreshing without the cross-process guard", "err", err)
 	} else {
 		defer release()
 	}
@@ -178,7 +178,7 @@ func (r *Refresher) refreshLocked(ctx context.Context) error {
 	if onDisk, err := r.store.Load(); err == nil && onDisk.RefreshToken != "" {
 		if onDisk.ObtainedAt.After(r.cached.ObtainedAt) {
 			r.cached = onDisk
-			r.logf("anthropic-oauth-dev: adopted a token refreshed by another process (expires_at=%s)", onDisk.ExpiresAt.Format(time.RFC3339))
+			r.logger.Info("anthropic-oauth-dev: adopted a token refreshed by another process", "expires_at", onDisk.ExpiresAt.Format(time.RFC3339))
 			return nil
 		}
 	}
@@ -197,6 +197,6 @@ func (r *Refresher) refreshLocked(ctx context.Context) error {
 		return err
 	}
 	r.cached = fresh
-	r.logf("anthropic-oauth-dev: token refreshed (expires_at=%s)", fresh.ExpiresAt.Format(time.RFC3339))
+	r.logger.Info("anthropic-oauth-dev: token refreshed", "expires_at", fresh.ExpiresAt.Format(time.RFC3339))
 	return nil
 }

@@ -36,7 +36,7 @@ func TestStreamUserRunStates_TenantScopeFollowsThePrincipal(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mc := &mockConnector{}
-			env := &handlerEnv{connector: mc, logf: func(string, ...any) {}}
+			env := &handlerEnv{connector: mc, logger: discardLogger()}
 			res, err := handleStreamUserRunStates(tc.ctx, env,
 				json.RawMessage(`{"user_id":"alice","timeout_ms":50}`))
 			if err != nil {
@@ -59,7 +59,7 @@ func TestStreamUserRunStates_TenantScopeFollowsThePrincipal(t *testing.T) {
 // reached, with the same opaque answer HTTP gives.
 func TestStreamUserRunStates_IsolatedMemberCannotWatchAnotherUser(t *testing.T) {
 	mc := &mockConnector{}
-	env := &handlerEnv{connector: mc, logf: func(string, ...any) {}}
+	env := &handlerEnv{connector: mc, logger: discardLogger()}
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{
 		TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeUser},
 	})

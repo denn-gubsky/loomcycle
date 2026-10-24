@@ -124,6 +124,10 @@ type Record struct {
 	Origin     string    `json:"origin"`
 	RunID      string    `json:"run_id,omitempty"`
 	CapturedAt time.Time `json:"captured_at"`
+	// Page and Slide are where in its document an extracted picture was:
+	// the extractor says, and an import gives the image chunk the same.
+	Page  int `json:"page,omitempty"`
+	Slide int `json:"slide,omitempty"`
 }
 
 // Item is one file a producer hands over.
@@ -141,6 +145,8 @@ type Item struct {
 	Dir string
 	// Fallback names the file when Name is empty (a tool's name).
 	Fallback string
+	// Page and Slide place a picture an extraction found (see Record).
+	Page, Slide int
 }
 
 // Result is what a capture produced: the stub the model sees and, when the
@@ -327,6 +333,8 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		Origin:     it.Origin,
 		RunID:      tools.RunID(ctx),
 		CapturedAt: time.Now().UTC(),
+		Page:       max(it.Page, 0),
+		Slide:      max(it.Slide, 0),
 	}, nil
 }
 
