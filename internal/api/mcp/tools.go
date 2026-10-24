@@ -301,6 +301,9 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 				"nothing deletes it — credentials are the ones that matter), and tier3_residue (facts ABOUT " +
 				"the subject living in scopes they do not own, found only by tracing provenance from their " +
 				"chats). op=execute removes tiers 1 and 2. " +
+				"Tier 2 includes the subject's group memberships and the access-control bindings to it " +
+				"(acl_memberships, acl_bindings; the notes name the groups and lists). Ones declared in the " +
+				"config file are reported but cannot be erased — they must be removed from the config. " +
 				"IT DEFAULTS TO A DRY RUN: pass dry_run:false AND confirm equal to the subject to actually " +
 				"delete, which is irreversible. " +
 				"IMPORTANT: tier-3 residue is traceable only through the subject's chats, which execute " +
