@@ -328,47 +328,65 @@ func (failingACLStore) AclVersion(context.Context, string) (int64, error) {
 // A run whose caller's set cannot be read on resume does not resume on its
 // agent's full grants: it stays paused, the refusal is audited as
 // acl_unavailable, and a later pass resumes it narrowed once the set can be
-// read. Both ways the set can be missing: a resolver that fails, and none.
+// read.
 func TestResume_UnreadableCallerACLLeavesTheRunPaused(t *testing.T) {
-	for _, name := range []string{"resolver fails", "no resolver"} {
-		t.Run(name, func(t *testing.T) {
-			e := aclResumeFixture(t, true, map[string][][]providers.Event{
-				"worker": {probeTurn("tu_live"), endTurn(), probeTurn("tu_resumed"), endTurn()},
-			})
-			run := e.startAs(t, "worker", "a_paused")
-			parkForResume(t, e.srv, run.ID)
-			working := e.srv.ACLResolver()
-			var broken *aclres.Resolver // none wired
-			if name == "resolver fails" {
-				broken = aclres.New(failingACLStore{e.st}, authz.ModeCompat, 0)
-			}
-			e.srv.SetACLResolver(broken)
+	e := aclResumeFixture(t, true, map[string][][]providers.Event{
+		"worker": {probeTurn("tu_live"), endTurn(), probeTurn("tu_resumed"), endTurn()},
+	})
+	run := e.startAs(t, "worker", "a_paused")
+	parkForResume(t, e.srv, run.ID)
+	working := e.srv.ACLResolver()
+	e.srv.SetACLResolver(aclres.New(failingACLStore{e.st}, authz.ModeCompat, 0))
 
-			n, warnings := e.srv.ResumePausedRuns(context.Background())
-			if n != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "acl_unavailable") {
-				t.Fatalf("resumed %d (warnings %v); want none resumed and an acl_unavailable warning", n, warnings)
-			}
-			got, err := e.st.GetRun(context.Background(), run.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Status != store.RunRunning || got.PauseState != store.PauseStatePaused {
-				t.Errorf("run is %s/%s; want it still paused", got.Status, got.PauseState)
-			}
-			if calls := e.prov.callsOf("worker"); calls != 2 {
-				t.Errorf("the worker made %d model calls; the refused resume must make none past the live 2", calls)
-			}
-			if !slices.ContainsFunc(e.audit.events, func(ev audit.Event) bool {
-				return ev.Action == "acl_unavailable" && ev.ActorSubject == "dev" && ev.ActorTenant == "acme"
-			}) {
-				t.Errorf("no acl_unavailable audit event for dev; events: %+v", e.audit.events)
-			}
+	n, warnings := e.srv.ResumePausedRuns(context.Background())
+	if n != 0 || len(warnings) != 1 || !strings.Contains(warnings[0], "acl_unavailable") {
+		t.Fatalf("resumed %d (warnings %v); want none resumed and an acl_unavailable warning", n, warnings)
+	}
+	got, err := e.st.GetRun(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.RunRunning || got.PauseState != store.PauseStatePaused {
+		t.Errorf("run is %s/%s; want it still paused", got.Status, got.PauseState)
+	}
+	if calls := e.prov.callsOf("worker"); calls != 2 {
+		t.Errorf("the worker made %d model calls; the refused resume must make none past the live 2", calls)
+	}
+	if !slices.ContainsFunc(e.audit.events, func(ev audit.Event) bool {
+		return ev.Action == "acl_unavailable" && ev.ActorSubject == "dev" && ev.ActorTenant == "acme"
+	}) {
+		t.Errorf("no acl_unavailable audit event for dev; events: %+v", e.audit.events)
+	}
 
-			e.srv.SetACLResolver(working)
-			resumeOne(t, e.srv)
-			seen := e.waitProbes(t, 2)
-			assertNarrowedLikeLive(t, seen[0], seen[1])
-		})
+	e.srv.SetACLResolver(working)
+	resumeOne(t, e.srv)
+	seen := e.waitProbes(t, 2)
+	assertNarrowedLikeLive(t, seen[0], seen[1])
+}
+
+// With no resolver wired, access control is not configured: a live request
+// carries no set (enrichPrincipal) and neither does a trigger's run
+// (triggerOwnerCtx). A resumed run is treated the same — it resumes, as a
+// fresh request would start, with no set — rather than staying paused for
+// ever on an error no retry can clear.
+func TestResume_NoACLResolverWiredResumesAsALiveRequestWould(t *testing.T) {
+	e := aclResumeFixture(t, true, map[string][][]providers.Event{
+		"worker": {probeTurn("tu_live"), endTurn(), probeTurn("tu_resumed"), endTurn()},
+	})
+	run := e.startAs(t, "worker", "a_unwired")
+	parkForResume(t, e.srv, run.ID)
+	e.srv.SetACLResolver(nil)
+
+	n, warnings := e.srv.ResumePausedRuns(context.Background())
+	if n != 1 || len(warnings) != 0 {
+		t.Fatalf("resumed %d (warnings %v); want the run resumed with no warning", n, warnings)
+	}
+	seen := e.waitProbes(t, 2)
+	if got := seen[1]; got.ACL != nil || !slices.Contains(got.Tools, "Bash") {
+		t.Errorf("with no resolver wired the resumed run is narrowed: %+v", aclNarrowingOf(got))
+	}
+	if slices.ContainsFunc(e.audit.events, func(ev audit.Event) bool { return ev.Action == "acl_unavailable" }) {
+		t.Errorf("an unconfigured resolver was audited as acl_unavailable: %+v", e.audit.events)
 	}
 }
 
