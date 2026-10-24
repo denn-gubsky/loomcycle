@@ -270,14 +270,18 @@ func walkTextLen(r map[string]any) int {
 // authorizeWalks asks op's team verb (tools.AuthorizeTeamOp) of the team of
 // each walk a poll or cancel selected — read to read it, cancel to end it —
 // before anything is read, waited for or cancelled, so a refusal leaves every
-// walk as it was. A selection of no walks asks nothing: it touches no team.
-func authorizeWalks(ctx context.Context, op string, walks []tools.ChildView) (tools.Result, bool) {
-	if len(walks) == 0 {
-		return tools.Result{}, false
+// walk as it was. TeamDef and Agent poll/cancel both call it: either reads or
+// ends a walk. A child that is not a walk asks nothing here, and a selection
+// with no walk asks nothing at all: it touches no team.
+func authorizeWalks(ctx context.Context, op string, views []tools.ChildView) (tools.Result, bool) {
+	var names []string
+	for _, v := range views {
+		if v.Kind == tools.ChildKindTeam {
+			names = append(names, strings.TrimPrefix(v.Agent, teamWalkLabel))
+		}
 	}
-	names := make([]string, len(walks))
-	for i, v := range walks {
-		names[i] = strings.TrimPrefix(v.Agent, teamWalkLabel)
+	if len(names) == 0 {
+		return tools.Result{}, false
 	}
 	return tools.AuthorizeTeamOp(ctx, op, names...)
 }

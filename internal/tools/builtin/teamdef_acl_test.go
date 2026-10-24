@@ -148,3 +148,38 @@ func mustPollWalk(t *testing.T, tool *TeamDef, ctx context.Context, name string)
 	}
 	return id
 }
+
+// Agent poll and cancel read and end a walk like any background child, so
+// they ask its team what TeamDef poll and cancel ask; a sub-agent child asks
+// nothing of team:.
+func TestAgentTool_PollAndCancelOfAWalkAskItsTeam(t *testing.T) {
+	tool, ctx, bg, _, _, done := walkACLFixture(t)
+	defer done()
+	rev := startPollWalk(t, tool, ctx, "")
+	other := mustPollWalk(t, tool, ctx, "other")
+	a := pollTool(newGated())
+	run := runJudgedBy(ctx, defACLSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read", "cancel"}, Resources: []string{"team:rev"}}))
+
+	for _, in := range []string{
+		`{"op":"poll","child_run_ids":["` + rev + `"]}`,
+		`{"op":"poll"}`,
+		`{"op":"cancel","child_run_ids":["` + rev + `"]}`,
+		`{"op":"cancel","child_run_ids":["` + other + `","` + rev + `"]}`,
+	} {
+		res := execJSON(t, a, run, in)
+		if aclCode(res) != "acl_denied" || !strings.Contains(res.Text, "team:rev") {
+			t.Errorf("Agent %s: want acl_denied naming team:rev, got %s", in, res.Text)
+		}
+	}
+	for _, id := range []string{rev, other} {
+		if v, _ := bg.Lookup(id); v.Ended() {
+			t.Fatalf("walk %s ended under a refused cancel: %s", id, v.State)
+		}
+	}
+	if p := decodePoll(t, execJSON(t, a, run, `{"op":"poll","child_run_ids":["`+other+`"]}`)); len(p.Children) != 1 {
+		t.Errorf("Agent poll of a team the deny does not name = %+v", p)
+	}
+	if res := execJSON(t, a, run, `{"op":"cancel","child_run_ids":["`+other+`"]}`); res.IsError {
+		t.Errorf("Agent cancel of a team the deny does not name: %s", res.Text)
+	}
+}
