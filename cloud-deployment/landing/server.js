@@ -239,9 +239,15 @@ const EMAIL_RE = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-
 // Upstream error codes the client may see, and the status it sees them with.
 // A "not found" of any kind collapses into one 404 so another tenant's ids
 // read exactly like unknown ones. Anything else is an opaque 502.
-// login_taken and credential_exists are deliberately absent: logins are unique
-// across every tenant, so either would tell an owner that an address has an
-// account somewhere else. The routes that can meet them answer generically.
+// login_taken and credential_exists are deliberately absent: the routes that
+// can meet them answer one generic refusal for both. That hides only WHICH
+// reason applies (an account in another tenant, or one already in this
+// tenant) — not THAT the address is taken: a refusal next to a created invite
+// still says "this address has an account somewhere", because logins are
+// unique per gate across every tenant. That existence oracle stays until
+// invites are e-mailed with an always-"sent" answer (AUTH-INTEGRATION.md open
+// question 2); until then each verified identity may meet it only
+// refusedInviteLimit times a day.
 const PASS_CODES = new Map([
   ["bootstrap_invite_live", 409],
   ["invite_not_live", 409], ["tenant_not_empty", 409], ["target_beyond_floor", 403],
@@ -294,6 +300,7 @@ function limiter(max, windowMs) {
     }
   }, 60 * 60 * 1000).unref();
   return {
+    full(key, now = Date.now()) { return live(key, now).length >= max; },
     // take checks AND reserves a slot in one synchronous step. Callers take it
     // before their first await: a check made before an await and a reservation
     // made after it would let concurrent requests all pass. It returns the
@@ -335,6 +342,7 @@ async function withTenantLock(tenant, fn) {
 const HOUR = 60 * 60 * 1000;
 const signupLimit = limiter(10, HOUR);          // per source address AND per verified e-mail
 const inviteLimit = limiter(20, 24 * HOUR);     // invites issued per tenant per day
+const refusedInviteLimit = limiter(10, 24 * HOUR); // "address can't be invited" answers per verified e-mail per day
 const MAX_PENDING_INVITES = 50;                 // live invites per tenant (counted upstream)
 
 // clientSource is the address the per-source signup limit counts. The landing
@@ -638,6 +646,9 @@ app.post("/api/team/invites", accountRoute(async (req, res, p) => {
   let spent = true;
   try {
     spent = await withTenantLock(p.tenant, async () => {
+      // Checked under the lock, which serialises this identity's invites (its
+      // tenant is derived from it), so concurrent probes cannot overshoot.
+      if (refusedInviteLimit.full("id:" + p.subject)) { res.status(429).json({ error: "invite_limit" }); return true; }
       const pending = (await tenantInvites(p.tenant)).filter((i) => i.state === "live").length;
       if (pending >= MAX_PENDING_INVITES) { res.status(429).json({ error: "too_many_pending" }); return true; }
       const up = await manage("POST", gatePath("invites"), { body: { tenant: p.tenant, email, login: loginOf(email) } });
@@ -646,6 +657,7 @@ app.post("/api/team/invites", accountRoute(async (req, res, p) => {
           // One answer whether the address is a login in another tenant or
           // already has a password here: no cross-tenant oracle.
           logWarn(`account upstream invite: ${up.status} address unavailable`);
+          refusedInviteLimit.take("id:" + p.subject);
           res.status(409).json({ error: "cannot_invite_address",
             message: "This address can't be invited. If they already have an account, ask them to sign in." });
         } else {
