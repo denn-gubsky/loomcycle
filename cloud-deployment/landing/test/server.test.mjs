@@ -111,6 +111,23 @@ function fakeRuntime() {
       switch (route) {
         case "GET v1/_users":
           return send(res, 200, { users: [...t.users.values()] });
+        case "POST v1/_users": {
+          // loomcycle's auth:manage create: an access_mode tenant user only as
+          // the first user of a never-bootstrapped tenant with no live owner
+          // invite (which also binds it to builtin:tenant-operator).
+          const s = body?.subject;
+          if (!s) return err(res, 400, "missing_subject");
+          if (t.users.has(s)) return err(res, 409, "user_exists");
+          const mode = body.access_mode || "isolated";
+          if (mode === "tenant") {
+            if (t.booted) return err(res, 403, "tenant_not_empty");
+            if ([...t.invites.values()].some((i) => i.bootstrap && live(i))) return err(res, 409, "bootstrap_invite_live");
+            t.ownerBound = s;
+          }
+          t.users.set(s, { user_id: s, display_name: "", access_mode: mode, status: "active", registered: true });
+          t.booted = true;
+          return send(res, 201, { tenant_id: tenant, ...t.users.get(s) });
+        }
         case "PATCH v1/_users/{s}": case "DELETE v1/_users/{s}": {
           const s = segs[2];
           if (!t.users.has(s)) return err(res, 404, "user_not_found");
@@ -291,18 +308,45 @@ describe("whoami with the account flow on", () => {
 
 // ───────────────────────────── signup ────────────────────────────────────────
 describe("POST /api/signup", () => {
-  test("bootstraps an empty tenant with an owner invite built only from the verified identity", async () => {
-    const email = newEmail();
+  test("bootstraps an empty tenant: creates the owner under the verified e-mail, then attaches a password", async () => {
+    const email = newEmail(), tenant = tenantOf(email);
     const m = mark();
     // Every field a client could try to steer with is ignored.
     const r = await call(on, "POST", "/api/signup", { email, body: { tenant: "t_evil", subject: "root", access_mode: "tenant", groups: ["admins"], login: "x", return_to: "https://evil.test/" } });
     assert.equal(r.status, 200, r.text);
     assert.ok(r.json.redirect.startsWith(`http://127.0.0.1:${fake.port}/ui/invite#lci_`));
-    const create = since(m).find((x) => x.method === "POST");
-    assert.deepEqual(create.body, { tenant: tenantOf(email), access_mode: "tenant", login: email, return_to: RETURN_TO });
-    assert.equal(create.path, `/v1/_authgate/${GATE}/invites`);
+    const [owner, invite] = since(m).filter((x) => x.method === "POST");
+    // The owner's subject is the verified e-mail, the same subject the old
+    // /api/mint tokens carried, so a legacy tenant's data stays the owner's.
+    assert.equal(owner.path, "/v1/_users");
+    assert.equal(owner.query.tenant, tenant);
+    assert.deepEqual(owner.body, { subject: email, access_mode: "tenant" });
+    assert.equal(fake.T(tenant).ownerBound, email, "the create binds the owner to tenant-operator");
+    assert.equal(invite.path, `/v1/_authgate/${GATE}/invites`);
+    assert.deepEqual(invite.body, { tenant, subject: email, login: email, return_to: RETURN_TO });
+    assert.equal(fake.redeem(r.json.redirect), email, "the owner signs in as the e-mail subject");
     for (const x of since(m)) assert.equal(x.auth, `Bearer ${MANAGE}`, "only the manage token goes upstream");
     for (const x of since(m)) assert.notEqual(x.query.tenant ?? x.body?.tenant, "t_evil");
+  });
+  test("a legacy tenant with tokens but no users row gets its owner under the e-mail subject too", async () => {
+    // The old /api/mint path left tokens and data under subject = e-mail but
+    // no users row, so loomcycle reports the tenant as never bootstrapped.
+    // Signup must land the owner on that same subject, not a fresh one.
+    const email = newEmail(), tenant = tenantOf(email);
+    fake.T(tenant); // the tenant exists upstream only through its tokens and data
+    const r = await call(on, "POST", "/api/signup", { email, body: {} });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(fake.redeem(r.json.redirect), email);
+  });
+  test("a signup that created the owner but failed to issue the invite completes on retry", async () => {
+    const email = newEmail(), tenant = tenantOf(email);
+    fake.inject = (rec) => rec.method === "POST" && rec.path.endsWith("/invites") ? { status: 500, body: { code: "internal" } } : undefined;
+    const first = await call(on, "POST", "/api/signup", { email, body: {} });
+    assert.ok(first.status >= 500, first.text);
+    assert.ok(fake.T(tenant).users.has(email), "the owner row was created before the failure");
+    const second = await call(on, "POST", "/api/signup", { email, body: {} });
+    assert.equal(second.status, 200, second.text);
+    assert.equal(fake.redeem(second.json.redirect), email);
   });
   test("replaces a stale live owner invite with a fresh one", async () => {
     const email = newEmail();
