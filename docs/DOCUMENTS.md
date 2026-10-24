@@ -208,6 +208,30 @@ The response is `{scope, dry_run, examined, up_to_date, reindexed, unindexed, fa
 - Every chunk body is searched, including chunks memory's facts are homed in. That is why the op filters by the key prefix and not by `sources=[documents]`.
 - **Side effect:** as with `Memory op=search`, a returned chunk's access count is bumped, which feeds the ranker's frequency term.
 
+#### Filtered search — aiming `search` and `related` at one corpus
+
+One scope often holds several corpora — board files, regulator norms, decisions, a gate's own reports. Each retrieval leg keeps at most 51 candidates, fused and then reranked, so for wording common to all of them the pool can hold none of the corpus a caller wants, and no amount of post-filtering fixes a pool filled from the wrong place. `search` and `related` therefore take structural filters that are applied **inside every leg, before its limit**:
+
+| Argument | Meaning |
+|---|---|
+| `under_path` / `under_paths` | chunks of documents named at or under any of these paths (this scope's tree) |
+| `exclude_under_path` / `exclude_under_paths` | never chunks of documents named at or under these paths |
+| `document_id` / `document_ids` | only these documents |
+| `exclude_document_ids` | never these documents |
+| `type` / `types` | chunk type, each widened to its ontology subtypes (reported as `type_expanded_to`) |
+| `status` / `statuses` | exact status |
+| `tag` / `tag_prefix` | exact tag / the tag or anything nested under it |
+| `as_of` | unix ns; chunks whose sidecar validity interval contains the instant (a chunk with no interval always passes — the `graph_recall` rule) |
+
+Kinds combine with AND, values within a list with OR; a singular and its plural twin are one filter (their union).
+
+**How it works — resolve in SQL Memory, restrict in the main store.** The filter is resolved once per call, in the scope's SQL Memory (`chunks`, `chunk_tags`, `chunk_memory_meta`, the Path tree), to a set of chunk ids. That set travels to the store as `MemorySearchFilter.IDs` (or `ExcludeIDs`), an *id segment* relative to the key prefix: for `doc.chunk:<id>` it is the chunk id and for a derived unit `doc.unit:<id>:<kind>:<n>` the same chunk id, so one list restricts the vector leg, the full-text leg and both unit legs alike. Postgres applies it in the statement (`split_part(...) = ANY($ids)`), before `LIMIT`; fusion, unit resolution, dedup and the rerank then only ever see filtered rows. Resolving at query time against the tables that own the structure means a filter is correct the moment a chunk is moved, retyped, retagged or renamed — there is no denormalised copy to keep in step.
+
+- **Response.** Only when a filter was given, the response carries `filter: {applied, matched_documents, matched_chunks, type_expanded_to?, inverted}`. A filter-free call is byte-identical to before (no resolver runs). `matched_chunks: 0` returns `{chunks: [], filter}` without embedding the query.
+- **Size.** When the matched set is more than half the scope, its complement is sent as a denylist instead (`inverted: true`); an exclusion-only filter is always a denylist. The list sent is capped by `LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS` (default 50,000); over it the call is refused with a business error `filter_too_wide` carrying `matched_chunks`, `scope_chunks` and the cap — never a silent post-filter. The list's size is recorded on the `loomcycle.memory.search` span as `loomcycle.memory.filter.ids` / `loomcycle.memory.filter.exclude_ids`.
+- **Isolation and access control.** Paths resolve in the caller's own tenant + scope tree; a foreign document id resolves to nothing. With an access-control set, read-denied documents are dropped while the filter is resolved, so the counts never describe a denied subtree; the listing post-filter still runs on the answer.
+- **Tiers.** The id predicate is Postgres-only, which is the only tier with vector and full-text legs; sqlite ignores it.
+
 ### The opt-in rerank — memory.reranker + memory_rerank
 
 One model call per search reorders the first N candidates. The model reads the question plus each candidate's **index text** (so every candidate arrives labelled with its document and section), each truncated to a character budget.
