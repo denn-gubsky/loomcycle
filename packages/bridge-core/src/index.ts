@@ -26,3 +26,5 @@ export type { Command } from "./text.js";
 export { statusOf, TokenBroker } from "./tokens.js";
 export type { TokenBrokerOptions } from "./tokens.js";
 export { safeEqual } from "./verify.js";
+export { GateClient, GateError, keyFromPrivate, keyFromSecret, loadGateKey } from "./gate.js";
+export type { Exec, GateAlg, GateClientOptions, GateIdentity, GateKey, TokenRequest } from "./gate.js";
