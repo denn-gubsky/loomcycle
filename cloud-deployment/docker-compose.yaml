@@ -178,10 +178,20 @@ services:
       # Auth for the pinchtab MCP stdio bridge → the pinchtab sidecar. The stdio
       # child inherits loomcycle's env, so no config interpolation is needed.
       PINCHTAB_TOKEN: ${PINCHTAB_TOKEN:-}
+      # Access-control mode: compat | shadow | enforce. Set here, not only in
+      # .env.insecure, so a deploy carries the default; LOOMCYCLE_ACL in
+      # .env.insecure (passed with --env-file) still overrides it. shadow keeps
+      # today's gates deciding and logs every place the rules would answer
+      # differently (acl_shadow_diverged). Read at startup.
+      LOOMCYCLE_ACL: ${LOOMCYCLE_ACL:-shadow}
     volumes:
       - ./data:/data
       - ./config:/config:ro
       - ./work:/mnt/work
+      # The dynamic_root volume (config/loomcycle.yaml `dynamic:`): each run's
+      # inbox, where files tools return are kept, plus ephemeral and VolumeDef
+      # volumes. Owned by 65532 like ./data (INSTALL.md).
+      - ./dynamic:/mnt/dynamic
     healthcheck:
       test: ["CMD", "/usr/local/bin/loomcycle", "health"]
       interval: 30s

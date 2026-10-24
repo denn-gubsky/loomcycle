@@ -53,8 +53,8 @@ Then, on the host, create the runtime sub-directories + set ownership (`-t` give
 
 ```bash
 ssh -t "$HOST" "cd '$DEPLOY' && \
-  mkdir -p data config work pgdata ts-state searxng web retention-exports pinchtab-data && \
-  sudo chown -R 65532:65532 data work retention-exports && \
+  mkdir -p data config work dynamic pgdata ts-state searxng web retention-exports pinchtab-data && \
+  sudo chown -R 65532:65532 data work dynamic retention-exports && \
   sudo chown -R 1000:1000 pinchtab-data"
 ```
 
@@ -387,6 +387,35 @@ What changed, for this stack:
 
 ---
 
+## Upgrading to 1.122.0: access control and the run inbox
+
+1.122.0 adds access control (rule lists, groups and bindings, written per tenant)
+and keeps the files tools return in a run inbox under a `dynamic_root` volume. The
+compose file and `config/loomcycle.yaml` in this directory carry both, so the
+automatic deploy picks them up. One step is by hand, once, on the host, **before**
+the first deploy that carries them: create the `dynamic` directory with the
+runtime's owner. Docker would otherwise create it as root, and the runtime (uid
+65532) could not write to it; every returned file would come back as
+`[file not kept: …]`.
+
+```bash
+ssh -t "$HOST" "cd '$DEPLOY' && mkdir -p dynamic && sudo chown 65532:65532 dynamic"
+```
+
+- **Mode.** The compose file sets `LOOMCYCLE_ACL` to `shadow`: today's scope gates
+  still decide, and every place the access rules would answer differently is
+  logged as `authz: acl_shadow_diverged …` and audited. Every token class has a
+  built-in list that reproduces its reach, so the log should stay quiet. To
+  switch, put `LOOMCYCLE_ACL=enforce` (or `compat`) in the host's `.env.insecure`
+  — it overrides the compose default — and recreate `loomcycle`.
+- **Who writes rules.** Each Google sign-in gets its own tenant and a tenant
+  operator token, so each user manages the lists for their own tenant in
+  **Settings → Access**. A binding names one tenant, so `config/loomcycle.yaml`
+  cannot bind the tenants the landing page creates; limits for every tenant stay
+  with the token scopes and env settings.
+- Schedules and webhooks created before 1.122.0 record no author, so they fire
+  unnarrowed until re-saved. Snapshots do not carry lists, groups or bindings.
+
 ## Routine upgrades
 
 The image versions and the loomboard ref are variables in `docker-compose.yaml`:
@@ -540,4 +569,7 @@ volumes:
 | **Create token** → `502 upstream …` | The landing reached loomcycle but the mint failed: `LOOMCYCLE_ADMIN_TOKEN` isn't a valid admin bearer (must equal `LOOMCYCLE_AUTH_TOKEN`), or the runtime is down. Check `make logs S=landing`. |
 | Ollama unreachable from loomcycle | Use the **raw tailnet IP** in `OLLAMA_BASE_URL` (MagicDNS is unavailable in the shared netns); confirm `tailscale status` shows the peer. |
 | `tailscale` unhealthy | Bad/expired `TS_AUTHKEY`, or `/dev/net/tun` missing; check `make logs S=tailscale`. |
+| A tool's file shows as `[file not kept: …]` | No `dynamic_root` volume, or the runtime cannot write it: `./dynamic` must exist and be owned by 65532 (see *Upgrading to 1.122.0*). |
+| `403 {"code":"acl_denied", …}` on a request that worked before | `LOOMCYCLE_ACL=enforce` and no rule allows it, or a deny bound to the caller. The body names the rules; **Settings → Access → Simulator** shows every rule considered. Set `shadow` while you fix the list. |
+| `503 acl_unavailable` | The caller's rules could not be read (a Postgres fault). Under `enforce` the request is refused rather than admitted. |
 | Bashbox fallback commands (`git`/`go`/…) "not found" | The plain `denngubsky/loomcycle` image is minimal — either switch the `loomcycle` + `loomcycle-migrate` images to `denngubsky/loomcycle-toolbox:<same-tag>`, or rely on the `sandbox` preset (its session image has the full toolchain). |
