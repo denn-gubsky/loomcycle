@@ -62,7 +62,7 @@ const tokenGateLabel = "Access token"
 // refused with a message that says so, rather than as unknown, so an operator
 // who copied an example learns why it does not load yet.
 var laterGateKinds = map[string]bool{
-	"oidc": true, "oauth": true, "header": true,
+	"oauth": true, "header": true,
 	"awsiam": true, "device": true, "external": true,
 }
 
@@ -126,6 +126,19 @@ type AuthGateConfig struct {
 	// IdentityMap maps a verified external identity to a (tenant, subject)
 	// for the gate kinds that verify one (auth_identity.go).
 	IdentityMap *AuthIdentityMapConfig `yaml:"identity_map,omitempty"`
+
+	// The OIDC gate's keys (kind: oidc, auth_oidc.go).
+	Preset          string   `yaml:"preset,omitempty"`
+	ClientID        string   `yaml:"client_id,omitempty"`
+	ClientSecretEnv string   `yaml:"client_secret_env,omitempty"`
+	ClientSecret    string   `yaml:"client_secret,omitempty"`
+	Issuer          string   `yaml:"issuer,omitempty"`
+	DiscoveryURL    string   `yaml:"discovery_url,omitempty"`
+	AllowedDomains  []string `yaml:"allowed_domains,omitempty"`
+	AllowedTIDs     []string `yaml:"allowed_tids,omitempty"`
+	Scopes          []string `yaml:"scopes,omitempty"`
+	EndSession      bool     `yaml:"end_session,omitempty"`
+	TokenAuth       string   `yaml:"token_auth,omitempty"`
 }
 
 // AuthGateInvitesConfig holds Go durations.
@@ -165,6 +178,8 @@ type AuthGate struct {
 	Password *AuthPasswordGate
 	// Identity is set for the kinds that map an external identity.
 	Identity *AuthIdentityMap
+	// OIDC is set for kind: oidc.
+	OIDC *AuthOIDCGate
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -344,11 +359,6 @@ func resolveAuth(c *Config) error {
 	if p.Lifecycle, err = resolveLifecycle(c.Auth.Lifecycle); err != nil {
 		return err
 	}
-	if lifecycleSet(c.Auth.Lifecycle) && !lifecycleConsumed {
-		// No gate of this release provisions users yet: a lifecycle block
-		// would read as a policy nothing applies.
-		return fmt.Errorf("auth.lifecycle is not supported yet: no gate kind in this release provisions users")
-	}
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
 	}
@@ -394,23 +404,43 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindPassword:
 			interactive++
+		case kind == AuthGateKindOIDC:
+			interactive++
 		case laterGateKinds[kind]:
-			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kind: token and kind: password are", name, kind)
+			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password and oidc are", name, kind)
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token or password)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password or oidc)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token or password)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password or oidc)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
 				"(a bearer names its own tenant and subject; a password gate's users come from invites)", name, kind)
+		}
+		if kind != AuthGateKindOIDC && hasOIDCKeys(g) {
+			return fmt.Errorf("auth.gates.%s: the OIDC gate's keys (preset, client_id, client_secret_env, issuer, "+
+				"discovery_url, allowed_domains, allowed_tids, scopes, end_session, token_auth) apply only to kind: oidc", name)
+		}
+		var oidc *AuthOIDCGate
+		var idm *AuthIdentityMap
+		if kind == AuthGateKindOIDC {
+			if hasPasswordOnlyKeys(g) {
+				return fmt.Errorf("auth.gates.%s: the password gate's keys (require_mfa, invites, resets, password, "+
+					"new_user, manager_may_recover_owners) do not apply to kind: oidc; use identity_map.new_user", name)
+			}
+			if oidc, err = resolveOIDCGate(c, name, g); err != nil {
+				return err
+			}
+			if idm, err = resolveIdentityMap(name, g.IdentityMap, p.NewUserFloor(), g.Trusted); err != nil {
+				return err
+			}
 		}
 		var pw *AuthPasswordGate
 		if kind == AuthGateKindPassword {
 			if pw, err = resolvePasswordGate(c, name, g, p.Strict()); err != nil {
 				return err
 			}
-		} else if hasPasswordKeys(g) {
+		} else if kind != AuthGateKindOIDC && hasPasswordKeys(g) {
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
 		}
@@ -421,7 +451,7 @@ func resolveAuth(c *Config) error {
 				label = tokenGateLabel
 			}
 		}
-		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw})
+		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, Identity: idm})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
@@ -434,6 +464,14 @@ func resolveAuth(c *Config) error {
 	}
 	c.ResolvedAuth = p
 	return nil
+}
+
+// hasPasswordOnlyKeys is hasPasswordKeys without trusted and
+// allowed_return_to, which the identity gates take too.
+func hasPasswordOnlyKeys(g AuthGateConfig) bool {
+	return g.RequireMFA != nil || g.ManagerMayRecoverOwners || g.Invites != (AuthGateInvitesConfig{}) ||
+		g.Resets != (AuthGateResetsConfig{}) || g.Password != (AuthGatePasswordConfig{}) ||
+		g.NewUser.AccessMode != "" || g.NewUser.Groups != nil
 }
 
 func hasPasswordKeys(g AuthGateConfig) bool {

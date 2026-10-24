@@ -293,6 +293,11 @@ func (s *Server) gateFor(g config.AuthGate) (authgate.Gate, error) {
 			return pw, nil
 		}
 		return nil, fmt.Errorf("auth gate %q: the password gate is not running (see the boot log)", g.Name)
+	case config.AuthGateKindOIDC:
+		if og, _, ok := s.oidcGateNamed(g.Name); ok {
+			return og, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the OIDC gate is misconfigured", g.Name)
 	}
 	return nil, fmt.Errorf("auth gate %q: kind %q has no implementation", g.Name, g.Kind)
 }
@@ -671,9 +676,15 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		writeCSRFRefusal(w, "cross_origin_refused")
 		return
 	}
+	endSession := ""
 	if id, ok := s.sessionIDFromCookie(r); ok && s.store != nil {
 		row, err := s.store.UISessionGet(r.Context(), sessionHash(id))
 		if err == nil {
+			// RFC FA §5: an OIDC gate may also end the provider's session
+			// (RP-initiated logout); the page follows the URL if one is given.
+			if row.RevokedAt.IsZero() {
+				endSession = s.endSessionURL(r.Context(), row.Gate)
+			}
 			changed, rerr := s.store.UISessionRevoke(r.Context(), row.SessionHash, time.Now())
 			if rerr != nil {
 				slog.Error("auth: logout could not end the session", "err", rerr)
@@ -693,6 +704,10 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, expiredCookie(name, secure || name == sessionCookieSecure))
 	}
 	w.Header().Set("Clear-Site-Data", `"cookies", "storage"`)
+	if endSession != "" {
+		writeJSON(w, http.StatusOK, map[string]string{"end_session_url": endSession})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

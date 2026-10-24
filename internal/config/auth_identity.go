@@ -160,15 +160,6 @@ type AuthIdentityMap struct {
 	AuthoritativeForUsers bool
 }
 
-// lifecycleConsumed is false until a gate kind that provisions users through
-// an identity map ships; until then auth.lifecycle is refused at load.
-const lifecycleConsumed = false
-
-func lifecycleSet(c AuthLifecycleConfig) bool {
-	n := c.NewUser
-	return n.AccessMode != "" || n.Groups != nil || n.Status != "" || n.TokenTTL != ""
-}
-
 // defaultLifecycle is the deployment floor when auth.lifecycle is absent.
 func defaultLifecycle() AuthNewUser {
 	return AuthNewUser{AccessMode: DefaultNewUserAccessMode, Groups: slices.Clone(DefaultNewUserGroups),

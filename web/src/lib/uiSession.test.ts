@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { endSession, parseLoginConfig, UI_REQUEST_HEADER, withUIHeader } from "./uiSession";
+import { endSession, endSessionWith, parseLoginConfig, signOut, UI_REQUEST_HEADER, withUIHeader } from "./uiSession";
 
 const origin = "http://loomcycle.test:8787";
 
@@ -48,6 +48,18 @@ describe("endSession", () => {
     expect(calls[0].input).toBe("/v1/_auth/logout");
     expect(calls[0].init?.method).toBe("POST");
     expect(new Headers(calls[0].init?.headers).get(UI_REQUEST_HEADER)).toBe("1");
+  });
+
+  it("follows an OIDC gate's end-session URL, and only an http(s) one", async () => {
+    const answer = (body: unknown) =>
+      (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+    const went: string[] = [];
+    const go = (u: string) => went.push(u);
+    expect(await signOut(answer({ end_session_url: "https://idp.example/logout?client_id=c" }), go)).toBe(true);
+    expect(await signOut(answer({ end_session_url: "javascript:alert(1)" }), go)).toBe(true);
+    expect(await signOut((async () => new Response(null, { status: 204 })) as unknown as typeof fetch, go)).toBe(true);
+    expect(went).toEqual(["https://idp.example/logout?client_id=c", "/ui/login", "/ui/login"]);
+    expect((await endSessionWith(answer({}))).next).toBe("/ui/login");
   });
 
   it("reports a failed logout", async () => {

@@ -139,6 +139,10 @@ type Server struct {
 	// pwGates holds the configured password gates (RFC FA P2,
 	// SetPasswordGates); empty = no password gate.
 	pwGates passwordGatesHolder
+	// oidcGates caches the OIDC gates (RFC FA P1) built from the config;
+	// oidcHTTP is their client for provider calls (nil: a 10s default).
+	oidcGates oidcGateCache
+	oidcHTTP  *http.Client
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration
@@ -4721,6 +4725,11 @@ func (s *Server) Mux() http.Handler {
 	// account. The self-service routes need a password-gate session, through
 	// authMiddleware (whose CSRF check covers cookie-authenticated writes).
 	mux.Handle("POST /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handlePasswordLogin)))
+	// RFC FA P1: redirect logins (OIDC). Unauthenticated: the start is
+	// throttled per source and the callback needs this browser's login
+	// cookie plus a single-use state (authgate_oidc.go).
+	mux.Handle("GET /v1/_auth/login/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleRedirectLogin)))
+	mux.Handle("GET /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleRedirectComplete)))
 	mux.Handle("POST /v1/_auth/invite/info", recoveryMiddleware(http.HandlerFunc(s.handleInviteInfo)))
 	mux.Handle("POST /v1/_auth/invite", recoveryMiddleware(http.HandlerFunc(s.handleRedeemInvite)))
 	mux.Handle("POST /v1/_auth/reset/info", recoveryMiddleware(http.HandlerFunc(s.handleResetInfo)))
