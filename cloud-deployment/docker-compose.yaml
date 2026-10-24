@@ -300,6 +300,13 @@ services:
       MINT_SCOPES: ${MINT_SCOPES:-substrate:tenant,runs:create}
       MINT_TENANT_PREFIX: ${MINT_TENANT_PREFIX:-t_}
       APP_ORIGIN: ${LANDING_ORIGIN:-https://loomcycle.cloud}   # CSRF origin check
+      # Accounts on loomcycle's password gate (AUTH-INTEGRATION.md). Unset token =
+      # off: the /api/signup + /api/team/* routes answer 503 and the site keeps
+      # the token vault. Needs a runtime with the password gate (phase 1).
+      LOOMCYCLE_AUTH_MANAGE_TOKEN: ${LOOMCYCLE_AUTH_MANAGE_TOKEN:-}   # secret — an auth:manage operator token
+      AUTH_GATE: ${AUTH_GATE:-cloud}                                   # the password gate's name in config/loomcycle.yaml
+      APP_URL: ${APP_URL:-https://app.loomcycle.cloud}                 # = the runtime's LOOMCYCLE_PUBLIC_URL
+      SIGNUP_RETURN_TO: ${SIGNUP_RETURN_TO:-https://loomcycle.cloud/?welcome=1}   # must be listed verbatim in the gate's allowed_return_to
       # MINT_DEV_ALLOW_UNVERIFIED: "1"   # LOCAL DEV ONLY — skips CF Access JWT verify
     volumes:
       - ./web:/srv:ro          # copy of the repo's cloud-web/ (see INSTALL.md)
