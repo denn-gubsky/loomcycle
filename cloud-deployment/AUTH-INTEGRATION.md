@@ -59,7 +59,18 @@ auth:
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets:  { ttl: 1h }
       allowed_return_to: ["https://loomcycle.cloud/"]
+      # Lets the landing reset an owner's password and attach a password to a
+      # legacy owner's subject (phase 4). Without it, the website cannot recover
+      # an owner, only members. It makes the website's credential able to take
+      # over any owner's account, which is acceptable here only because the
+      # landing proves the owner's Google identity first (RFC FA §6.1.1).
+      manager_may_recover_owners: true
 ```
+
+What `auth:manage` may not do, on any deployment (RFC FA §6.1.1):
+- **Bootstrap a tenant twice.** Once a tenant has had a user, deleting users never makes it bootstrap-able again.
+- **Touch a user above the floor** (an owner, or anyone in a group beyond the new-user groups), apart from the recovery switch above: no delete, disable, re-enable, demote, rename or credential removal.
+- **Disable, re-enable or approve** anyone but a floor member.
 
 `docker-compose.yaml`, on the `loomcycle` service:
 - `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud`. P2 builds invite and reset links from this URL, and `loomcycle validate` refuses a password gate with invites enabled when it is unset.
@@ -82,7 +93,7 @@ All the new routes follow the same rules:
 | `GET /api/team` | Lists the members, `{subject, display_name, login, access_mode, status}` | `GET /v1/_users?tenant=`, `GET /v1/_authgate/cloud/identities` |
 | `POST /api/team/invites` `{email, display_name?}` | Invites a member. The member gets the floor (`isolated`, `[everyone, new-users]`), the API's own rule (D16). The response is the link plus an expiry, for the owner to copy. | `POST /v1/_authgate/cloud/invites` |
 | `GET /api/team/invites`, `DELETE /api/team/invites/:id` | Lists pending invites (never the code), and revokes one | the matching routes |
-| `POST /api/team/:subject/reset` | Issues a reset link for a member, and returns the link for the owner to send | `POST /v1/_authgate/cloud/resets` |
+| `POST /api/team/:subject/reset` | Issues a reset link for a member, and returns the link for the owner to send. An owner who forgot their own password signs in with Google and uses "Reset my password", which resets their own subject; that relies on `manager_may_recover_owners`. | `POST /v1/_authgate/cloud/resets` |
 | `POST /api/team/:subject/disable`, `/enable` | Disables a member, which ends their sessions and retires their tokens, or re-enables them | `PATCH /v1/_users/{subject}` |
 | `DELETE /api/team/:subject` | Removes a member through the lifecycle stages (disable at once, then unbind; erasure stays an operator action) | `DELETE /v1/_users/{subject}` |
 
@@ -125,7 +136,7 @@ Existing cloud tenants were created by `/api/mint`: a tenant `t_<hash>`, a subje
 **Steps:**
 1. When a legacy owner signs in on the website, `POST /api/signup` sees that the tenant has a subject (or tokens) but no password identity.
 2. If no `users` row exists, the landing creates one: `POST /v1/_users` with `subject` = the e-mail and `access_mode: tenant`. It is the tenant's first user, so the bootstrap rule allows it.
-3. The landing then creates an invite with `subject` = the e-mail. This is an invite that attaches to an existing user and keeps its subject, groups and data (RFC FA §6.1). The browser is redirected to that invite.
+3. The landing then creates an invite with `subject` = the e-mail. This is an invite that attaches to an existing user and keeps its subject, groups and data (RFC FA §6.1). The owner is above the floor, so this needs `manager_may_recover_owners: true`. The browser is redirected to that invite.
 4. Their old tokens keep working until phase 5.
 
 **Team members who were sharing a group token** have no subject of their own. The owner invites them as new members. Their old shared token stops at phase 5.
@@ -135,6 +146,7 @@ Existing cloud tenants were created by `/api/mint`: a tenant `t_<hash>`, a subje
 ## Security notes
 
 - **`auth:manage` is a cross-tenant credential.** It cannot read data, start runs or mint tokens. A bug in the landing that took a tenant from the request would still let one owner manage another tenant's users. That is why the tenant comes only from the verified Access identity, and a test asserts it: a request carrying another tenant's id or subject gets a `404`.
+- **With `manager_may_recover_owners: true`, a leaked `LOOMCYCLE_AUTH_MANAGE_TOKEN` can take over any owner's account**, by issuing a reset link for them. It still cannot delete, disable or demote an owner, or re-bootstrap a tenant (RFC FA §6.1.1). The recovery events are audited with `recovery: true`, so alert on any that the landing did not initiate. Keep the token only in `.env.secure` and rotate it on any suspicion.
 - **Invite and reset links are bearer-equivalent until redeemed.** They are single-use and short-lived, stored hashed by loomcycle, never logged by the landing, and shown only to the owner who asked for them.
 - **The landing still has no host port.** It is reachable only through the tunnel, with `/api/*` behind Cloudflare Access. Compared with today, its blast radius goes from "anything, anywhere" to "user records".
 - **Signup is a redirect, not an e-mail.** The person who proved the Google identity is the one who sets the password, in the same browser, within seconds. So no mailbox has to be trusted for the owner.
