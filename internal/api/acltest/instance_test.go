@@ -3,6 +3,7 @@ package acltest
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -77,7 +78,7 @@ func newInstanceEnv(t *testing.T, mode authz.Mode) *env {
 	srv := lchttp.New(cfg, noProviders{}, tl, concurrency.New(4, 4, 2*time.Second), st)
 	srv.SetSqlMem(mgr)
 	srv.SetACLResolver(aclres.New(st, mode, 0))
-	srv.SetMCPHTTPHandler(lcmcp.NewHTTPHandler(lcmcp.Config{Connector: srv, Runner: srv, Store: st, Logf: func(string, ...any) {}}))
+	srv.SetMCPHTTPHandler(lcmcp.NewHTTPHandler(lcmcp.Config{Connector: srv, Runner: srv, Store: st, Logger: slog.New(slog.DiscardHandler)}))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
 
