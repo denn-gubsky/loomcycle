@@ -36,6 +36,9 @@ const (
 // AuthGateKindToken is the gate that accepts a loomcycle bearer (BaseAuthGate).
 const AuthGateKindToken = "token"
 
+// tokenGateLabel is the token gate's label when none is configured.
+const tokenGateLabel = "Access token"
+
 // laterGateKinds are the gate kinds the RFC defines for later phases. They are
 // refused with a message that says so, rather than as unknown, so an operator
 // who copied an example learns why it does not load yet.
@@ -121,7 +124,7 @@ func (p AuthPolicy) SessionAbsolute() time.Duration {
 func (p AuthPolicy) LoginGates() []AuthGate {
 	out := append([]AuthGate(nil), p.Gates...)
 	if _, listed := p.listedTokenGate(); !listed && !p.Strict() {
-		out = append(out, AuthGate{Name: AuthGateKindToken, Kind: AuthGateKindToken, Label: "Access token"})
+		out = append(out, AuthGate{Name: AuthGateKindToken, Kind: AuthGateKindToken, Label: tokenGateLabel})
 	}
 	return out
 }
@@ -232,16 +235,19 @@ func resolveAuth(c *Config) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	tokenGates := 0
+	tokenGates, interactive := 0, 0
 	for _, name := range names {
 		g := c.Auth.Gates[name]
 		if !authGateNameRE.MatchString(name) {
 			return fmt.Errorf("auth.gates: invalid gate name %q (lowercase letters, digits, - and _, at most 32)", name)
 		}
 		kind := strings.ToLower(strings.TrimSpace(g.Kind))
+		// The one place a gate kind is accepted: a kind that becomes available
+		// is a case here (and leaves laterGateKinds).
 		switch {
 		case kind == AuthGateKindToken:
 			tokenGates++
+			interactive++
 		case laterGateKinds[kind]:
 			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kind: token is", name, kind)
 		case kind == "":
@@ -251,7 +257,10 @@ func resolveAuth(c *Config) error {
 		}
 		label := strings.TrimSpace(g.Label)
 		if label == "" {
-			label = "Access token"
+			label = name
+			if kind == AuthGateKindToken {
+				label = tokenGateLabel
+			}
 		}
 		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label})
 	}
@@ -259,8 +268,8 @@ func resolveAuth(c *Config) error {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
 	}
 	// Strict mode with no gate a person can sign in through would lock
-	// everyone out of the Web UI. Only kind: token is interactive so far.
-	if p.Strict() && tokenGates == 0 {
+	// everyone out of the Web UI.
+	if p.Strict() && interactive == 0 {
 		return fmt.Errorf("auth.mode: strict needs at least one interactive gate in auth.gates " +
 			"(e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI")
 	}

@@ -98,7 +98,7 @@ func TestBundle_ValidBundleIsServedInsteadOfEmbedded(t *testing.T) {
 	if b.UIVersion() != "1.2.3" {
 		t.Errorf("UIVersion = %q, want 1.2.3", b.UIVersion())
 	}
-	h := Handler("/ui", false, nil, WithBundle(b))
+	h := Handler("/ui", nil, WithBundle(b))
 
 	cases := []struct {
 		target, body, contentType, cacheControl string
@@ -382,7 +382,7 @@ func TestBundle_OversizeIsRefused(t *testing.T) {
 func TestBundle_FileChangedOnDiskAfterLoadIsNotServed(t *testing.T) {
 	files := testFiles()
 	dir := writeBundle(t, files, nil)
-	h := Handler("/ui", false, nil, WithBundle(mustLoad(t, dir)))
+	h := Handler("/ui", nil, WithBundle(mustLoad(t, dir)))
 
 	if err := os.WriteFile(filepath.Join(dir, "assets", "app-abc123.js"), []byte("evil()"), 0o644); err != nil {
 		t.Fatal(err)
@@ -399,14 +399,18 @@ func TestBundle_FileChangedOnDiskAfterLoadIsNotServed(t *testing.T) {
 }
 
 // TestBundle_GoRoutesAreNotShadowedByBundleFiles: files named like the Go
-// routes do not replace them — the session, login-config and logout routes
-// keep their behaviour with a bundle present.
+// routes do not replace them — login-config and the ?token= refusal keep their
+// behaviour with a bundle present, and no bundle file can make the handler set
+// a cookie.
 func TestBundle_GoRoutesAreNotShadowedByBundleFiles(t *testing.T) {
 	files := testFiles()
 	files["session"] = "bundle session"
 	files["login-config.json"] = `{"login_origins":["https://evil.example"]}`
 	files["logout"] = "bundle logout"
-	h := Handler("/ui", false, []string{"https://loomcycle.cloud"}, WithBundle(mustLoad(t, writeBundle(t, files, nil))))
+	login := func(*http.Request) LoginConfig {
+		return LoginConfig{Origins: []string{"https://loomcycle.cloud"}, Mode: "token"}
+	}
+	h := Handler("/ui", login, WithBundle(mustLoad(t, writeBundle(t, files, nil))))
 
 	rec := get(t, h, "/ui/login-config.json")
 	if strings.Contains(rec.Body.String(), "evil.example") || !strings.Contains(rec.Body.String(), "https://loomcycle.cloud") {
@@ -416,32 +420,23 @@ func TestBundle_GoRoutesAreNotShadowedByBundleFiles(t *testing.T) {
 		t.Errorf("login-config Cache-Control = %q, want no-store", rec.Header().Get("Cache-Control"))
 	}
 
-	rec = get(t, h, "/ui/logout")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
-		t.Errorf("logout: status %d Location %q, want 302 /ui/login", rec.Code, rec.Header().Get("Location"))
+	rec = get(t, h, "/ui?token=abc")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" || len(rec.Result().Cookies()) != 0 {
+		t.Errorf("?token=: status %d Location %q cookies %v, want 302 /ui/login and none", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
 	}
 
+	for _, target := range []string{"/ui/logout", "/ui/session"} {
+		if rec := get(t, h, target); len(rec.Result().Cookies()) != 0 {
+			t.Errorf("GET %s set cookies %v", target, rec.Result().Cookies())
+		}
+	}
 	req := httptest.NewRequest("POST", "/ui/session", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent || len(rec.Result().Cookies()) != 1 || rec.Result().Cookies()[0].Value != "tok" {
-		t.Errorf("POST session: status %d cookies %v, want 204 + session cookie", rec.Code, rec.Result().Cookies())
-	}
-
-	req = httptest.NewRequest("POST", "/ui/session", nil)
-	req.Header.Set("Authorization", "Bearer tok")
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("cross-site POST session: status %d, want 403", rec.Code)
-	}
-
-	rec = get(t, h, "/ui?token=abc")
-	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui" {
-		t.Errorf("?token= redirect: status %d Location %q", rec.Code, rec.Header().Get("Location"))
+	if len(rec.Result().Cookies()) != 0 || rec.Code == http.StatusNoContent {
+		t.Errorf("POST /ui/session was served by the SPA handler: status %d cookies %v", rec.Code, rec.Result().Cookies())
 	}
 }
 

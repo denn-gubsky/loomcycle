@@ -120,6 +120,16 @@ type Event struct {
 	GitCredential string   `json:"git_credential,omitempty"`
 	GitRefs       []string `json:"git_refs,omitempty"`    // refs updated
 	GitOutcome    string   `json:"git_outcome,omitempty"` // ok | a failure class
+
+	// --- Sign-in (Action = "auth_login" | "auth_login_failed" | "auth_logout" |
+	// "auth_session_expired" | "auth_session_revoked" | "auth_downgrade_refused") ---
+	//
+	// Who signed in through which gate, from where, and why a session ended:
+	// never a credential, a session id or anything derived from one. The person
+	// travels in ActorTenant / ActorSubject, the client in SourceAddr.
+	AuthGate   string   `json:"auth_gate,omitempty"`
+	AuthAMR    []string `json:"auth_amr,omitempty"`
+	AuthReason string   `json:"auth_reason,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

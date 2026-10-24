@@ -1,9 +1,9 @@
 // Package webui owns the embedded React SPA shipped in v0.7.3+.
 //
-// The package serves two HTTP handlers — the index (which optionally
-// converts a `?token=` query into the loomcycle_session cookie) and
-// a static asset handler with SPA fallback to index.html so React
-// Router handles deep links like /ui/agents/{id}.
+// The package serves the index, the unauthenticated login configuration and a
+// static asset handler with SPA fallback to index.html so React Router handles
+// deep links like /ui/agents/{id}. It sets no cookie: signing in and out are
+// the API server's routes (RFC FA), so a UI bundle cannot change them.
 //
 // Build output lives at `internal/webui/dist/` because `go:embed`
 // can't reach `..` — Vite's `web/vite.config.ts` writes here. CI
@@ -22,13 +22,31 @@ import (
 	"strings"
 )
 
-// SessionCookie is the cookie name the SPA uses to authenticate
-// against /v1/* after the operator hits /ui?token=...
-//
-// Standard HttpOnly cookie — JavaScript in the SPA can't read it
-// (no XSS exposure of the bearer token); fetch() includes it on
-// same-origin requests automatically.
-const SessionCookie = "loomcycle_session"
+// LegacyBearerCookie is the cookie earlier releases kept the raw API bearer
+// in. Nothing sets it any more; token mode still reads it for one release
+// (RFC FA decision 2) and logout clears it.
+const LegacyBearerCookie = "loomcycle_session"
+
+// LoginConfig is what the login page may know before anyone signs in: which
+// gates to offer and nothing else about the deployment (RFC FA §8).
+type LoginConfig struct {
+	// Origins are the first-party origins the postMessage handoff may accept
+	// a bearer from; empty disables the receiver.
+	Origins []string
+	// Mode is open, token or strict.
+	Mode  string
+	Gates []LoginGate
+	// SessionRefused names why this request cannot start a session (e.g.
+	// "insecure_transport"); empty when it can.
+	SessionRefused string
+}
+
+// LoginGate is one sign-in option on the login page.
+type LoginGate struct {
+	Name  string `json:"name"`
+	Kind  string `json:"kind"`
+	Label string `json:"label"`
+}
 
 // APILevel is the version of the server API the Web UI is written against.
 // The server reports it (in /healthz and in <prefix>/login-config.json), the
@@ -42,7 +60,13 @@ const SessionCookie = "loomcycle_session"
 // Never bump it for an additive change — a new route, a new optional field, a
 // new enum value the UI can ignore — because every existing bundle would then be
 // refused for no reason.
-const APILevel = 1
+//
+// Level 2 (RFC FA P0): a Web UI session cookie no longer carries the bearer,
+// and a state-changing request authenticated by it must send
+// `X-Loomcycle-UI: 1`; the login route creates a session and logout is
+// `POST /v1/_auth/logout`. A level-1 bundle sends no header, so every write it
+// made would be refused.
+const APILevel = 2
 
 // uiAssets embeds the production build of the web/ React app.
 //
@@ -52,21 +76,22 @@ var uiAssets embed.FS
 // Handler returns the http.Handler that serves the embedded SPA at
 // the given prefix (typically "/ui"). The handler:
 //
-//   - GET <prefix>?token=...   sets SessionCookie + 302s back to
-//     <prefix>; subsequent /v1/* calls authenticate via the cookie.
-//   - GET <prefix>             serves index.html.
+//   - GET <prefix>             serves index.html. A `?token=` query, the
+//     pre-session way in, is no longer honoured: it redirects to the login
+//     page so the token drops out of the address bar, and sets nothing.
+//   - GET <prefix>/login-config.json  the gates the login page offers.
 //   - GET <prefix>/<file>      serves embedded asset OR falls back
-//     to index.html (SPA-router pattern).
+//     to index.html (SPA-router pattern). <prefix>/logout is such a deep
+//     link: the SPA's logout page posts to the server's logout route, so a
+//     GET never ends a session.
 //
-// The `secureCookie` flag forces the Secure attribute on the
-// session cookie. Operators behind TLS terminators that don't set
-// r.TLS should pass true.
+// login is asked per request, because whether a session can be started
+// depends on the transport the request came over.
 //
 // The SPA files come from the embedded build unless WithBundle hands it a
 // verified bundle loaded from disk. Either way the routes above are the same
-// Go handlers: the session, login-config and logout routes are never read
-// from the SPA files, so a bundle cannot change cookie handling.
-func Handler(prefix string, secureCookie bool, loginOrigins []string, opts ...Option) http.Handler {
+// Go handlers, never read from the SPA files.
+func Handler(prefix string, login func(*http.Request) LoginConfig, opts ...Option) http.Handler {
 	prefix = strings.TrimRight(prefix, "/")
 	mux := http.NewServeMux()
 	var o handlerOptions
@@ -78,88 +103,42 @@ func Handler(prefix string, secureCookie bool, loginOrigins []string, opts ...Op
 		src = o.bundle
 	}
 
-	setSession := func(w http.ResponseWriter, r *http.Request, token string) {
-		http.SetCookie(w, &http.Cookie{
-			Name:     SessionCookie,
-			Value:    token,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-			Secure:   secureCookie || r.TLS != nil,
-		})
-	}
-
 	mux.HandleFunc(fmt.Sprintf("GET %s", prefix), func(w http.ResponseWriter, r *http.Request) {
-		// Token-set redirect — operator's first load. Kept for backward
-		// compatibility (bookmarks, the CLI hint). The POST /session route below
-		// is the preferred, URL-free path.
-		if token := r.URL.Query().Get("token"); token != "" {
-			setSession(w, r, token)
-			http.Redirect(w, r, prefix, http.StatusFound)
+		if r.URL.Query().Has("token") {
+			http.Redirect(w, r, prefix+"/login", http.StatusFound)
 			return
 		}
 		serveFile(w, src, "index.html")
 	})
 
-	// POST <prefix>/session — set the session cookie from an Authorization: Bearer
-	// header instead of a ?token= query, so the bearer never appears in a URL,
-	// browser history, or an access log. Used by (1) the SPA's paste-token form and
-	// (2) its postMessage receiver, which accepts a bearer handed off from an
-	// allowed first-party origin (e.g. the loomcycle.cloud landing) and posts it
-	// here same-origin. LOGIN-CSRF GUARD: require Sec-Fetch-Site: same-origin so
-	// only THIS app's own /ui page can set the cookie — a cross-site page cannot
-	// force a victim's browser to adopt an attacker's token (and a cross-origin
-	// fetch cannot set the Authorization header without a CORS grant we never make).
-	mux.HandleFunc(fmt.Sprintf("POST %s/session", prefix), func(w http.ResponseWriter, r *http.Request) {
-		if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" {
-			writeJSONErr(w, http.StatusForbidden, "cross_site_login_refused",
-				"session login must be same-origin")
-			return
-		}
-		token := bearerToken(r.Header.Get("Authorization"))
-		if token == "" {
-			writeJSONErr(w, http.StatusBadRequest, "missing_bearer",
-				"Authorization: Bearer <token> required")
-			return
-		}
-		setSession(w, r, token)
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	// GET <prefix>/login-config.json — the non-secret origins the SPA's
-	// postMessage login receiver may accept a bearer handoff FROM (set via
-	// LOOMCYCLE_UI_LOGIN_ORIGINS). Empty list ⇒ the receiver stays disabled, so a
-	// deployment that doesn't configure a landing origin can't be handed a token
-	// by any page. Never secret; safe to serve unauthenticated.
+	// GET <prefix>/login-config.json — what the login page needs before anyone
+	// signs in: the mode, the gate names and labels, and the origins the
+	// postMessage handoff may accept a bearer from (LOOMCYCLE_UI_LOGIN_ORIGINS;
+	// empty ⇒ the receiver stays disabled). Never secret; served
+	// unauthenticated.
 	mux.HandleFunc(fmt.Sprintf("GET %s/login-config.json", prefix), func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		origins := loginOrigins
-		if origins == nil {
-			origins = []string{}
+		var lc LoginConfig
+		if login != nil {
+			lc = login(r)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"login_origins": origins,
+		if lc.Origins == nil {
+			lc.Origins = []string{}
+		}
+		if lc.Gates == nil {
+			lc.Gates = []LoginGate{}
+		}
+		body := map[string]any{
+			"login_origins": lc.Origins,
 			"api_level":     APILevel,
-		})
-	})
-
-	// Logout — clears the session cookie and bounces to the login page. The
-	// cookie is HttpOnly, so JS can't clear it; this server route is the only
-	// way to end a Web UI session. A full navigation to <prefix>/logout (not a
-	// router push) runs this handler before React Router sees the path. More
-	// specific than the catch-all below, so Go 1.22 ServeMux routes here first.
-	mux.HandleFunc(fmt.Sprintf("GET %s/logout", prefix), func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{
-			Name:     SessionCookie,
-			Value:    "",
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-			Secure:   secureCookie || r.TLS != nil,
-			MaxAge:   -1, // delete now
-		})
-		http.Redirect(w, r, prefix+"/login", http.StatusFound)
+			"mode":          lc.Mode,
+			"gates":         lc.Gates,
+		}
+		if lc.SessionRefused != "" {
+			body["session_refused"] = lc.SessionRefused
+		}
+		_ = json.NewEncoder(w).Encode(body)
 	})
 
 	mux.HandleFunc(fmt.Sprintf("GET %s/", prefix), func(w http.ResponseWriter, r *http.Request) {
@@ -184,24 +163,6 @@ func Handler(prefix string, secureCookie bool, loginOrigins []string, opts ...Op
 	})
 
 	return mux
-}
-
-// bearerToken extracts the token from an "Authorization: Bearer <token>" header
-// value (scheme match is case-insensitive per RFC 7235). Returns "" when the
-// header is absent or not a Bearer credential.
-func bearerToken(authHeader string) string {
-	const p = "bearer "
-	if len(authHeader) <= len(p) || !strings.EqualFold(authHeader[:len(p)], p) {
-		return ""
-	}
-	return strings.TrimSpace(authHeader[len(p):])
-}
-
-// writeJSONErr writes a {code,error} JSON body with the given status.
-func writeJSONErr(w http.ResponseWriter, status int, code, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": msg})
 }
 
 // source is where the handler reads SPA files from. Every source is served by

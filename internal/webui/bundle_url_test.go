@@ -192,7 +192,7 @@ func TestLoadFromURL_PinnedArchiveIsServedWithURLSource(t *testing.T) {
 	if st != (Status{Source: SourceURL, UIVersion: "1.2.3"}) {
 		t.Errorf("status = %+v", st)
 	}
-	rec := get(t, Handler("/ui", false, nil, WithBundle(b)), "/ui/")
+	rec := get(t, Handler("/ui", nil, WithBundle(b)), "/ui/")
 	if !strings.Contains(rec.Body.String(), "<title>bundle</title>") {
 		t.Errorf("/ui/ served %q, want the downloaded bundle", rec.Body.String())
 	}

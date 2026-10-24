@@ -53,20 +53,24 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		bearer, ok := extractBearer(r)
-		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		p, ok := s.resolvePrincipal(r.Context(), bearer)
+		p, ui, ok := s.authenticateRequest(r)
 		if !ok {
 			// Opaque — never distinguish "unknown" from "expired" from
 			// "wrong" (no oracle). Detail only under LOOMCYCLE_AUTH_VERBOSE.
 			if s.authVerbose() {
-				slog.Info("auth: rejected bearer (no matching token / expired / wrong secret)")
+				slog.Info("auth: rejected credential (no matching token or session / expired / wrong secret)")
 			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if ui != nil {
+			// A cookie authenticated the request, so a browser may have sent
+			// it on another site's behalf.
+			if code := uiCSRFRefusal(r); code != "" {
+				writeCSRFRefusal(w, code)
+				return
+			}
+			r = r.WithContext(withUIAuth(r.Context(), *ui))
 		}
 		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
 			writeScopeError(w, required, "insufficient scope")
@@ -323,10 +327,79 @@ func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
 	return s.authConfiguredErr(ctx)
 }
 
-// extractBearer returns the raw token (sans "Bearer ") from the
-// Authorization header, or the Web-UI session cookie value as a
-// fallback. A present-but-malformed Authorization header is a miss.
-func extractBearer(r *http.Request) (string, bool) {
+// authenticateRequest resolves the request's credential, in this order: an
+// Authorization header; the client-tools WebSocket subprotocol bearer (not in
+// strict mode); a Web UI session cookie; and, in token mode only, the legacy
+// bearer cookie of earlier releases (RFC FA decision 2). ui is set when a
+// cookie authenticated the request, so the caller applies the CSRF check. A
+// present credential that fails is a refusal — the next kind is not tried.
+//
+// The subprotocol bearer comes before the cookies on purpose: a browser
+// extension holding its own bearer may also carry the user's session cookie,
+// and its chrome-extension:// Origin would fail the cookie path's origin check.
+func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, bool) {
+	strict := s.cfg().ResolvedAuth.Strict()
+	ctx := r.Context()
+	if bearer, ok := extractBearer(r, strict); ok {
+		p, ok := s.resolvePrincipal(ctx, bearer)
+		return p, nil, ok
+	}
+	if r.Header.Get("Authorization") != "" {
+		return auth.Principal{}, nil, false
+	}
+	if id, ok := s.sessionIDFromCookie(r); ok {
+		p, row, ok := s.sessionPrincipal(r, id)
+		if !ok {
+			return auth.Principal{}, nil, false
+		}
+		return p, &uiAuth{session: &row}, true
+	}
+	if bearer, ok := legacyBearerCookie(r, strict); ok {
+		warnEvery(&s.legacyCookieWarnedAt, "auth: a browser signed in with the "+webui.LegacyBearerCookie+
+			" bearer cookie of an earlier release; it keeps working in token mode for this release only. "+
+			"Signing in again moves the browser to a session")
+		p, ok := s.resolvePrincipal(ctx, bearer)
+		if !ok {
+			return auth.Principal{}, nil, false
+		}
+		return p, &uiAuth{}, true
+	}
+	return auth.Principal{}, nil, false
+}
+
+// credentialPresented reports whether the request carries any credential
+// authenticateRequest would try, valid or not.
+func (s *Server) credentialPresented(r *http.Request) bool {
+	strict := s.cfg().ResolvedAuth.Strict()
+	if _, ok := extractBearer(r, strict); ok || r.Header.Get("Authorization") != "" {
+		return true
+	}
+	if c, err := r.Cookie(s.sessionCookieName(r)); err == nil && c.Value != "" {
+		return true
+	}
+	_, ok := legacyBearerCookie(r, strict)
+	return ok
+}
+
+// legacyBearerCookie returns the bearer the pre-session Web UI kept in a
+// cookie. Read in token mode only, for one release; strict mode never reads a
+// bearer from a cookie.
+func legacyBearerCookie(r *http.Request, strict bool) (string, bool) {
+	if strict {
+		return "", false
+	}
+	c, err := r.Cookie(webui.LegacyBearerCookie)
+	if err != nil || c.Value == "" {
+		return "", false
+	}
+	return c.Value, true
+}
+
+// extractBearer returns the raw token (sans "Bearer ") from the Authorization
+// header or, outside strict mode, the client-tools WebSocket subprotocol. A
+// present-but-malformed Authorization header is a miss. No bearer is ever read
+// from a cookie here.
+func extractBearer(r *http.Request, strict bool) (string, bool) {
 	if h := r.Header.Get("Authorization"); h != "" {
 		const pfx = "Bearer "
 		if len(h) > len(pfx) && strings.EqualFold(h[:len(pfx)], pfx) {
@@ -334,16 +407,15 @@ func extractBearer(r *http.Request) (string, bool) {
 		}
 		return "", false
 	}
-	if c, err := r.Cookie(webui.SessionCookie); err == nil && c.Value != "" {
-		return c.Value, true
-	}
 	// WebSocket clients (browsers can't set an Authorization header on a
 	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
 	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
 	// the /v1/client-tools handler; this entry is never echoed back. Read only on
 	// a WebSocket upgrade to that route (RFC ES #5): elsewhere the header would be
 	// a second credential channel that proxies and logs do not treat as one.
-	if !isClientToolsUpgrade(r) {
+	// Strict mode does not read it (RFC FA §4): a browser there authenticates
+	// by its session.
+	if strict || !isClientToolsUpgrade(r) {
 		return "", false
 	}
 	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {
