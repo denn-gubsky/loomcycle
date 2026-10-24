@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -425,7 +424,7 @@ func (s *Server) writeCard(w http.ResponseWriter, r *http.Request, tenant string
 	}
 	base, prefix := s.cardURLAnchors(tenant)
 	generated := buildAgentCard(card, base, prefix, extended, s.grpcEnabled)
-	signCardIfConfigured(generated, card, s.signEnvAllowlist, log.Printf)
+	signCardIfConfigured(generated, card, s.signEnvAllowlist, slog.Default())
 
 	// Marshal before writing any header so a (very unlikely) encode
 	// failure surfaces as a clean 500 rather than a truncated 200 body.

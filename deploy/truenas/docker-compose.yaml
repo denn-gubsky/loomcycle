@@ -120,6 +120,17 @@ services:
       # behind a private network/tunnel. NARROW it for multi-tenant (a suffix list
       # like com,org,net,io,ai,dev). Private IPs stay hard-blocked either way.
       LOOMCYCLE_HTTP_HOST_ALLOWLIST: "*"
+
+      # ── files tools return (the run inbox) ────────────────────────────────
+      # A file an MCP server, HTTP or WebFetch returns is kept in the run's
+      # `inbox` volume under the overlay's dynamic_root volume (the `dynamic`
+      # mount below) and the model sees a one-line reference, never the bytes.
+      # Without a dynamic_root volume a file is refused, not passed through.
+      # Defaults shown; uncomment to change.
+      # LOOMCYCLE_FILE_MAX_BYTES: "67108864"          # one kept file (64 MiB)
+      # LOOMCYCLE_FILE_INBOX_MAX_BYTES: "1073741824"  # a run tree's whole inbox (1 GiB)
+      # LOOMCYCLE_FILE_BASE64_MIN_BYTES: "4096"       # shortest base64 kept as a file (binary_results: capture)
+      # LOOMCYCLE_MCP_MAX_FRAME_BYTES: "16777216"     # one MCP response (stdio line / HTTP body)
     volumes:
       - /mnt/tank/loomcycle/data:/data
       - /mnt/tank/loomcycle/config:/config:ro
@@ -127,6 +138,9 @@ services:
       # name to the IN-CONTAINER path (e.g. work → /mnt/work). Add a mount + overlay
       # entry per agent volume.
       - /mnt/tank/loomcycle/work:/mnt/work
+      # The dynamic_root volume (overlay `dynamic:`): runtime-made volumes — a
+      # run's inbox, ephemeral and VolumeDef volumes — live under it.
+      - /mnt/tank/loomcycle/dynamic:/mnt/dynamic
     healthcheck:
       # The binary's own probe GETs /healthz — image-agnostic (no curl needed).
       test: ["CMD", "/usr/local/bin/loomcycle", "health"]

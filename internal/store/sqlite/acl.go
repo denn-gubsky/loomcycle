@@ -77,6 +77,10 @@ func (s *Store) AclBindingsFor(ctx context.Context, tenantID, subject string, gr
 	return sqlshared.AclBindingsFor(ctx, s.shared(), tenantID, subject, groups, tokenDefID)
 }
 
+func (s *Store) AclEraseSubject(ctx context.Context, tenantID, subject string) (int, int, error) {
+	return sqlshared.AclEraseSubject(ctx, s.shared(), tenantID, subject)
+}
+
 func (s *Store) AclVersion(ctx context.Context, tenantID string) (int64, error) {
 	return sqlshared.AclVersion(ctx, s.shared(), tenantID)
 }

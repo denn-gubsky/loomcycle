@@ -56,6 +56,7 @@ func (PPTX) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 			continue
 		}
 		rep.Slides++
+		w.slide = rep.Slides
 		md, err := pptxSlide(a, w, &rep, rl.Target, rep.Slides)
 		if err != nil {
 			rep.finish(w)

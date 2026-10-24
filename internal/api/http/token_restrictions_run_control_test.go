@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -119,7 +120,7 @@ func TestMCPReviewRun_RestrictedTokenCannotReviewAnotherAgentsRun(t *testing.T) 
 		defer cancel()
 		in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"review_run","arguments":{"agent_id":"a_held_other","decision":"approve"}}}` + "\n"
 		var stdout bytes.Buffer
-		if err := lcmcp.New(lcmcp.Config{Connector: srv, Logf: func(string, ...any) {}}).Serve(ctx, strings.NewReader(in), &stdout); err != nil {
+		if err := lcmcp.New(lcmcp.Config{Connector: srv, Logger: slog.New(slog.DiscardHandler)}).Serve(ctx, strings.NewReader(in), &stdout); err != nil {
 			t.Fatalf("Serve: %v", err)
 		}
 		var resp loommcp.Response

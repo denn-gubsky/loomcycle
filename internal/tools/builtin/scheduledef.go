@@ -154,6 +154,13 @@ func (s *ScheduleDef) Execute(ctx context.Context, raw json.RawMessage) (tools.R
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
+	// RFC EZ §1.2: the op's own verb, asked of the schedule definition it names.
+	if res, refused := tools.AuthorizeDefOp(ctx, "schedule", in.Op, defOpNames(ctx, in.Name, func(ctx context.Context, id string) (string, string, error) {
+		row, err := s.Store.ScheduleDefGet(ctx, id)
+		return row.Name, row.TenantID, err
+	}, in.DefID, in.ParentDefID)...); refused {
+		return res, nil
+	}
 	policy := tools.ScheduleDefPolicy(ctx)
 
 	// Every op that writes a version: a hook edit is a fork too.

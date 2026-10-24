@@ -12,7 +12,7 @@ import (
 // callGetRun drives one get_run call and returns its result.
 func callGetRun(t *testing.T, mc *mockConnector, args string) loommcp.CallToolResult {
 	t.Helper()
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_run","arguments":` + args + `}}`,

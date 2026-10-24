@@ -301,6 +301,9 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 				"nothing deletes it — credentials are the ones that matter), and tier3_residue (facts ABOUT " +
 				"the subject living in scopes they do not own, found only by tracing provenance from their " +
 				"chats). op=execute removes tiers 1 and 2. " +
+				"Tier 2 includes the subject's group memberships and the access-control bindings to it " +
+				"(acl_memberships, acl_bindings; the notes name the groups and lists). Ones declared in the " +
+				"config file are reported but cannot be erased — they must be removed from the config. " +
 				"IT DEFAULTS TO A DRY RUN: pass dry_run:false AND confirm equal to the subject to actually " +
 				"delete, which is irreversible. " +
 				"IMPORTANT: tier-3 residue is traceable only through the subject's chats, which execute " +
@@ -520,6 +523,11 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 			Name:        "crypto",
 			Description: "Encrypt, decrypt, sign, verify, MAC, one-time codes, password hashes, hashing and random values with keys the RUNTIME holds, outside any run — for an operator or a service, such as a backend that seals a field before writing it to its own database. Ops: encrypt, decrypt, rewrap, mac, verify_mac, sign, verify, public_key, totp, hash, random, hash_password, verify_password. encrypt with public_key seals to someone else's X25519 or RSA key as a JWE, with no key of yours. from and to are refused here (they read an agent's stores, and there is no agent). You name a key; its material is never returned. The keys you can use are your tenant's and your OWN user keys — crypto keys or credentials stored with credentialdef at scope tenant or user — never an agent's, which belong to that agent's runs, and there are no run credentials outside a run. A value sealed here decrypts in your tenant's runs, and the reverse. `tenant` is ADMIN ONLY: an admin may name another tenant to use that tenant's keys (and then no user keys); any other token naming a tenant not its own is refused, so leave it out. A failed decrypt or verify is deliberately opaque: it does not say whether the key, the context or the data was wrong. Needs substrate:tenant — a tenant's members do not see this tool. Each call takes one from the token's run rate when it has one; past it the call is refused with when to retry. Do NOT use it to create or store a key — that is credentialdef — and do NOT use it to give a run's agent cryptography: list Crypto in the agent's tools instead.",
 			InputSchema: cryptoMCPSchema(),
+		},
+		{
+			Name:        "file",
+			Description: fileMCPDescription,
+			InputSchema: fileMCPSchema(),
 		},
 		{
 			Name:        "path",

@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
@@ -135,22 +136,22 @@ func effectiveGoal(w config.Webhook, proj projectResult) string {
 // the static fallback; the more specific source should override.
 //
 // getenv is injected so tests drive the env branches deterministically.
-// logf may be nil.
-func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string]bool, getenv func(string) string, logf func(format string, args ...any)) runner.RunInput {
+// logger may be nil (nothing is logged).
+func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string]bool, getenv func(string) string, logger *slog.Logger) runner.RunInput {
 	creds := make(map[string]string)
 
 	// 1. Env-resolved credentials, gated by the allowlist (scheduler parity).
 	for k, envName := range w.UserCredentialsFromEnv {
 		if !envAllowlist[envName] {
-			if logf != nil {
-				logf("webhook: env var %q for credential key %q not in allowlist — skipping", envName, k)
+			if logger != nil {
+				logger.Warn("webhook: env var for credential key not in allowlist — skipping", "env_var", envName, "credential_key", k)
 			}
 			continue
 		}
 		v := getenv(envName)
 		if v == "" {
-			if logf != nil {
-				logf("webhook: env var %q for credential key %q is empty — skipping", envName, k)
+			if logger != nil {
+				logger.Warn("webhook: env var for credential key is empty — skipping", "env_var", envName, "credential_key", k)
 			}
 			continue
 		}
@@ -173,8 +174,8 @@ func buildRunInput(w config.Webhook, proj projectResult, envAllowlist map[string
 	//    empty projected values, so an absent optional path does NOT clobber a
 	//    prior source (a missing optional field shouldn't blank the fallback).
 	for name, val := range collectPrefixed(proj.Fields, credentialsPrefix) {
-		if _, had := creds[name]; had && logf != nil {
-			logf("webhook: credential key %q has both a non-payload source + payload source — payload value wins", name)
+		if _, had := creds[name]; had && logger != nil {
+			logger.Info("webhook: credential key has both a non-payload source + payload source — payload value wins", "credential_key", name)
 		}
 		creds[name] = val
 	}

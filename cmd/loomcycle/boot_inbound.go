@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -110,7 +111,7 @@ func (b *boot) mountWebhooks() {
 			EnvAllowlist:         webhookAllowlist,
 			Credentials:          credEngine, // auth.secret: a stored verification secret
 			AllowUnauthenticated: cfg.Env.WebhooksAllowUnauthenticated,
-			Logf:                 log.Printf,
+			Logger:               slog.Default(),
 			Counts:               storeIface, // per-definition delivery counters (RFC EK §9)
 		})
 		webhookReceiver = rec

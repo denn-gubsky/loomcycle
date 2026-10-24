@@ -3788,6 +3788,9 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	// RFC BB: per-agent web-search fallback list (empty = global search_priority).
 	loopCtx = tools.WithSearchProviders(loopCtx, agentDef.SearchProviders)
 	loopCtx = tools.WithRunID(loopCtx, runID)
+	// RFC EZ §1.2: where a definition op this run's tools ask is refused is
+	// recorded, as an off-run one is. Sub-agents inherit it with the ctx.
+	loopCtx = tools.WithACLRecorder(loopCtx, s.recordToolACLEvent)
 	loopCtx = s.withRunHooks(loopCtx, runID, effectiveAgentName, agentDef, hooks.Additions{Hooks: in.Hooks, ToolHooks: in.ToolHooks})
 	loopCtx = tools.WithDispatcher(loopCtx, dispatcher)
 
@@ -4198,7 +4201,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUsers))))
 	// RFC EY P4: user groups, ACL rule lists, bindings, and the AuthZEN-shaped
 	// evaluate / explain / simulate questions. Tenant-confined by the handlers
-	// (adminFocusedTenant); operator-only for members (memberCarveOut).
+	// (adminFocusedTenant); operator-only for members (memberpath.CarvedOut).
 	mux.Handle("GET /v1/_groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListGroups))))
 	mux.Handle("POST /v1/_groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpsertGroup))))
 	mux.Handle("GET /v1/_groups/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleGetGroup))))

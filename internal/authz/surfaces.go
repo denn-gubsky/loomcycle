@@ -369,8 +369,11 @@ func GRPCSurface(rpc string) (Surface, bool) {
 		return typeLevel("broadcast", "channel"), true
 	case "UsageReport":
 		return instance("read", "runtime", "usage"), true
+	// TokenLimit carries list|set|delete in its request: the RPC asks the
+	// family's weakest verb, as GET /v1/_limits does, and the gRPC gate then
+	// asks each operation its own HTTP twin's question (manage for a write).
 	case "TokenLimit":
-		return instance("manage", "runtime", "limits"), true
+		return instance("read", "runtime", "limits"), true
 	case "RetentionOverride":
 		return instance("manage", "runtime", "retention"), true
 	case "DirectoryUsers", "DirectoryInspect":

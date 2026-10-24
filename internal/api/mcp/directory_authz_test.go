@@ -20,7 +20,7 @@ import (
 // list would be a lie, and a one-entry list would still confirm the caller's own
 // tenant in a shape they cannot distinguish from "you are the only tenant".
 func TestDirectory_TenantsIsRefusedForANonAdmin(t *testing.T) {
-	env := &handlerEnv{connector: &mockConnector{}, logf: func(string, ...any) {}}
+	env := &handlerEnv{connector: &mockConnector{}, logger: discardLogger()}
 
 	tenantCtx := auth.WithPrincipal(context.Background(), auth.Principal{
 		TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant},
@@ -67,7 +67,7 @@ func TestDirectory_TenantsIsRefusedForANonAdmin(t *testing.T) {
 // argument, because a subject id is only unique within one tenant.
 func TestDirectory_TenantComesFromThePrincipal(t *testing.T) {
 	mc := &mockConnector{}
-	env := &handlerEnv{connector: mc, logf: func(string, ...any) {}}
+	env := &handlerEnv{connector: mc, logger: discardLogger()}
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{
 		TenantID: "acme", Subject: "op", Scopes: []string{auth.ScopeTenant},
 	})

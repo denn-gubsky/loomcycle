@@ -115,6 +115,13 @@ func (s *DocumentSourceDef) Execute(ctx context.Context, raw json.RawMessage) (t
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
+	// RFC EZ §1.2: the op's own verb, asked of the documentsource definition it names.
+	if res, refused := tools.AuthorizeDefOp(ctx, "documentsource", in.Op, defOpNames(ctx, in.Name, func(ctx context.Context, id string) (string, string, error) {
+		row, err := s.Store.DocumentSourceDefGet(ctx, id)
+		return row.Name, row.TenantID, err
+	}, in.DefID, in.ParentDefID)...); refused {
+		return res, nil
+	}
 	policy := tools.DocumentSourceDefPolicy(ctx)
 
 	switch in.Op {

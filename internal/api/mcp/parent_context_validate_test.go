@@ -37,7 +37,7 @@ func TestServer_SpawnRun_RefusesOverLongParentContextField(t *testing.T) {
 	call := func(t *testing.T, name, args string) (loommcp.CallToolResult, *mockConnector) {
 		t.Helper()
 		mc := &mockConnector{spawnResult: connector.SpawnRunResult{AgentID: "a", RunID: "r", Status: "completed"}}
-		srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+		srv := New(Config{Connector: mc, Logger: discardLogger()})
 		resps, _ := driveServer(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"`+name+`","arguments":`+args+`}}`+"\n")
 		if len(resps) != 1 {
 			t.Fatalf("got %d responses, want 1", len(resps))

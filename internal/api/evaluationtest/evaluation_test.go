@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -106,7 +107,7 @@ func newEnv(t *testing.T) *env {
 
 	srv := lchttp.New(cfg, noProviders{}, []tools.Tool{&builtin.Evaluation{Store: st}}, concurrency.New(4, 4, 2*time.Second), st)
 	srv.SetMCPHTTPHandler(lcmcp.NewHTTPHandler(lcmcp.Config{
-		Connector: srv, Runner: srv, Store: st, Logf: func(string, ...any) {},
+		Connector: srv, Runner: srv, Store: st, Logger: slog.New(slog.DiscardHandler),
 	}))
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)

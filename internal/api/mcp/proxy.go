@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -41,8 +42,9 @@ type ProxyConfig struct {
 	// Token is the bearer for the runtime's /v1/* auth. Empty in
 	// open mode (no auth middleware) — then no Authorization header.
 	Token string
-	// Logf is the log sink (stderr; never stdout — stdout is the wire).
-	Logf func(format string, v ...any)
+	// Logger is the structured log sink. nil → slog.Default(), which writes
+	// to stderr. It must never write to stdout — stdout is the wire.
+	Logger *slog.Logger
 	// Client overrides the HTTP client. nil → a default with no overall
 	// timeout (a streaming spawn_run holds the response open for the
 	// whole run; an overall timeout would truncate it) but WITH a
@@ -150,6 +152,10 @@ var longRunTools = map[string]bool{
 	// sequence — a single-shot response held open for minutes. Without this a
 	// header timeout would reconnect-retry and re-execute the whole team.
 	"teamdef": true,
+	// file op=extract may take its whole extraction timeout (60s, the
+	// default header timeout) and op=import builds a Document. A retry would
+	// extract twice (a second .md) or import a second copy of the document.
+	"file": true,
 }
 
 // newProxyTransport builds the thin client's HTTP transport. headerTimeout=0
@@ -170,8 +176,8 @@ func newProxyTransport(idleTimeout, headerTimeout time.Duration) *http.Transport
 
 // NewProxyClient builds a thin-client proxy targeting Upstream.
 func NewProxyClient(cfg ProxyConfig) *ProxyClient {
-	if cfg.Logf == nil {
-		cfg.Logf = defaultLogf
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
 	}
 	client, streamClient := cfg.Client, cfg.Client
 	if cfg.Client == nil {
@@ -281,7 +287,7 @@ func (p *ProxyClient) forward(ctx context.Context, frame []byte, stdout io.Write
 			p.replyError(stdout, frame, "upstream unreachable: "+transportErr.Error())
 			return
 		}
-		p.cfg.Logf("mcp proxy: upstream connection error (%v) — reconnect attempt %d/%d", transportErr, attempt+1, len(p.reconnectDelays))
+		p.cfg.Logger.Warn("mcp proxy: upstream connection error — reconnecting", "attempt", attempt+1, "max_attempts", len(p.reconnectDelays), "err", transportErr)
 		if !p.backoff(ctx, p.reconnectDelays[attempt]) {
 			return // ctx cancelled during backoff — shutting down
 		}
@@ -347,7 +353,7 @@ func (p *ProxyClient) forwardOnce(ctx context.Context, frame []byte, stdout io.W
 		// session-expiry signal, never for initialize itself, at most one retry.
 		if allowReinit && sessionExpired(resp.StatusCode, body) && frameMethod(frame) != "initialize" {
 			if rerr := p.reinitialize(ctx, sentSID); rerr != nil {
-				p.cfg.Logf("mcp proxy: re-initialize after session expiry failed: %v", rerr)
+				p.cfg.Logger.Warn("mcp proxy: re-initialize after session expiry failed", "err", rerr)
 			} else {
 				// Retry on the fresh session. A transport error on the retry
 				// bubbles up so the outer forward loop can reconnect+backoff.
@@ -437,11 +443,11 @@ func (p *ProxyClient) writeLine(stdout io.Writer, frame []byte) {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 	if _, err := stdout.Write(frame); err != nil {
-		p.cfg.Logf("mcp proxy: write stdout: %v", err)
+		p.cfg.Logger.Warn("mcp proxy: write stdout failed", "err", err)
 		return
 	}
 	if _, err := stdout.Write([]byte("\n")); err != nil {
-		p.cfg.Logf("mcp proxy: write newline: %v", err)
+		p.cfg.Logger.Warn("mcp proxy: write newline failed", "err", err)
 	}
 }
 
@@ -451,7 +457,7 @@ func (p *ProxyClient) writeLine(stdout io.Writer, frame []byte) {
 func (p *ProxyClient) replyError(stdout io.Writer, frame []byte, msg string) {
 	id, ok := frameRequestID(frame)
 	if !ok {
-		p.cfg.Logf("mcp proxy: %s (notification dropped)", msg)
+		p.cfg.Logger.Warn("mcp proxy: forward failed (notification dropped)", "err", msg)
 		return
 	}
 	resp := loommcp.Response{
@@ -461,7 +467,7 @@ func (p *ProxyClient) replyError(stdout io.Writer, frame []byte, msg string) {
 	}
 	raw, err := json.Marshal(resp)
 	if err != nil {
-		p.cfg.Logf("mcp proxy: marshal error reply: %v", err)
+		p.cfg.Logger.Error("mcp proxy: marshal error reply failed — reply dropped", "err", err)
 		return
 	}
 	p.writeLine(stdout, raw)
@@ -516,12 +522,12 @@ func (p *ProxyClient) reinitialize(ctx context.Context, staleSID string) error {
 		return fmt.Errorf("upstream returned no Mcp-Session-Id on re-initialize")
 	}
 	p.setSessionID(newSID)
-	p.cfg.Logf("mcp proxy: upstream session expired — re-initialized (fresh session, client uninterrupted)")
+	p.cfg.Logger.Info("mcp proxy: upstream session expired — re-initialized (fresh session, client uninterrupted)")
 	// Mark the new session initialized (a notification; no response). The
 	// upstream doesn't currently gate tools/call on it, but this keeps the
 	// handshake spec-correct + future-proof.
 	if _, nerr := p.silentPost(ctx, initializedNotification, newSID); nerr != nil {
-		p.cfg.Logf("mcp proxy: notifications/initialized after re-init: %v", nerr)
+		p.cfg.Logger.Warn("mcp proxy: notifications/initialized after re-init failed", "err", nerr)
 	}
 	return nil
 }
