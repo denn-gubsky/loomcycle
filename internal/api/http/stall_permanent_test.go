@@ -104,3 +104,28 @@ func TestFallbackForRun_StallsTheFailedModelOnlyOnModelFaults(t *testing.T) {
 		}
 	}
 }
+
+// A 429 reaches the fallback closure (it is retryable). It must cool the model
+// for the rate-limit window, as the loop's own 429 feedback does, never stall
+// it until the next probe: a rate limit says "slow down", not "broken".
+func TestFallbackForRun_RateLimitCoolsTheModelInsteadOfStalling(t *testing.T) {
+	s := pinTierServer(t)
+	s.cfg().UserTiers = map[string]config.UserTier{"default": {FallbackOnError: true}}
+	storeActiveDef(t, s, "walker", "def_tier", `{"tier":"middle"}`)
+	_, restore := captureLog(t)
+	defer restore()
+
+	_, reResolve := s.fallbackForRun("", "", "walker", "", false, nil)
+	if reResolve == nil {
+		t.Fatal("fallback policy not armed — fixture does not exercise the fallback path")
+	}
+	_, _, _, _ = reResolve(context.Background(), "anthropic", "claude-sonnet-4-6", errors.New("anthropic 429: rate_limit_error"))
+
+	st := s.resolver.Snapshot()["anthropic"].Models["claude-sonnet-4-6"]
+	if st.Stalled {
+		t.Error("a 429 stalled the model until the next probe; want a rate-limit cooldown instead")
+	}
+	if !st.RateLimited {
+		t.Error("a 429 left the model un-cooled; want it rate-limited so the re-resolve walks past it")
+	}
+}
