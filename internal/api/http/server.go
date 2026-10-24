@@ -2791,7 +2791,12 @@ func (s *Server) fallbackForRun(tenantID, userID, agentName, userTier string, re
 		// resolver's matrix walks past it. SetReachable=false on
 		// the model only, not the whole provider — other models on
 		// the same provider may still be valid.
-		if s.resolver != nil {
+		//
+		// Only for a model fault (providers.StallsModel): the matrix is shared
+		// by every run. The loop cascades only retryable and retired-model
+		// errors today, so a permanent request error never gets here; the
+		// check keeps this site from drifting from the loop's.
+		if s.resolver != nil && providers.StallsModel(cause) {
 			s.resolver.MarkStalled(failedProvider, failedModel, cause.Error())
 		}
 		// Re-resolve with the same agent + user_tier at the run's tenant

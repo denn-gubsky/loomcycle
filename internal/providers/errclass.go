@@ -231,6 +231,28 @@ func IsRateLimit(err error) bool {
 	return statusFromError(err) == 429
 }
 
+// StallsModel reports whether a failed call should mark its (provider, model)
+// stalled in the resolver's shared matrix: whether the error says the MODEL is
+// unusable for every run, not that this one request was. A 429 is decided
+// separately (IsRateLimit → MarkRateLimited) and ctx tear-downs are left to the
+// caller's own guards.
+//
+// A permanent request error — 400/401/403/422, an operator-key refusal, an
+// unusable per-run credential — describes this request or this caller. The
+// same model serves every other run, so stalling it took it away from all of
+// them until the next probe: a 400 from one agent's sampling setting left a
+// whole tier answering 503 "no reachable provider". A broken operator key is
+// still caught, by the periodic probe that marks the provider unreachable.
+//
+// A 404 is the exception: ClassifyError calls it permanent, but "model not
+// found" is true for every run, so it stalls, as a retired model does.
+func StallsModel(err error) bool {
+	if err == nil {
+		return false
+	}
+	return ClassifyError(err) != ErrorClassPermanent || statusFromError(err) == 404
+}
+
 // looksLikeDeprecatedModel returns true when the error body carries a
 // "this model is no longer available / has been retired" pattern. The
 // matchers are intentionally permissive — false negatives (treated as

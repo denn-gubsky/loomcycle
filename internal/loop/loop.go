@@ -3991,6 +3991,9 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 	//   5xx / model 404 / network → MarkStalled (15-min
 	//     probe-gated recovery; "model is broken for a
 	//     while, stop wasting calls")
+	//   400/401/403/422 → neither (providers.StallsModel): the
+	//     request was wrong, not the model, and the matrix is
+	//     shared by every run
 	//
 	// The split matters: pre-v0.12.7 MarkStalled treated 429
 	// the same as 5xx, which under the x1000 load test
@@ -4017,7 +4020,7 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 			if s.opts.MarkRateLimited != nil {
 				s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
 			}
-		} else if s.opts.MarkStalled != nil {
+		} else if s.opts.MarkStalled != nil && providers.StallsModel(err) {
 			s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, err.Error())
 		}
 	}
@@ -4218,7 +4221,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 					if s.opts.MarkRateLimited != nil {
 						s.opts.MarkRateLimited(s.opts.Provider.ID(), s.opts.Model, 0)
 					}
-				} else if s.opts.MarkStalled != nil {
+				} else if s.opts.MarkStalled != nil && providers.StallsModel(streamErr) {
 					s.opts.MarkStalled(s.opts.Provider.ID(), s.opts.Model, ev.Error)
 				}
 			}

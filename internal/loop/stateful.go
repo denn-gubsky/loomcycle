@@ -717,14 +717,14 @@ func recoverStatefulCall(ctx context.Context, opts *RunOptions, rec *statefulRec
 		return statefulCallRetry
 	}
 	// Resolver feedback, split by class exactly as Run's is: a 429 cools the
-	// pair briefly, anything else marks it stalled. An operator-key refusal is a
+	// pair briefly, a model fault (providers.StallsModel) marks it stalled. An operator-key refusal is a
 	// per-run policy decision, not an outage, and must not poison the matrix.
 	if !errors.Is(err, providers.ErrOperatorKeyForbidden) {
 		if providers.IsRateLimit(err) {
 			if opts.MarkRateLimited != nil {
 				opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
 			}
-		} else if opts.MarkStalled != nil {
+		} else if opts.MarkStalled != nil && providers.StallsModel(err) {
 			opts.MarkStalled(opts.Provider.ID(), opts.Model, err.Error())
 		}
 	}
