@@ -82,19 +82,7 @@ var baselineWiderThanGateGRPC = map[string]string{
 	// gate difference between the transports, reported; the baseline follows
 	// HTTP.
 	"isolated-full|read history:*": "HTTP admits it, the History RPC requires substrate:tenant (a gate difference, reported)",
-	// AwaitChannels, BroadcastChannels and Memory are absent from
-	// grpcConsumerScopes, so they default to substrate:admin, while their
-	// HTTP routes admit a tenant operator and a member (RFC EZ §1.3 re-gates
-	// Memory). Gate differences, reported; the baseline follows HTTP.
-	"tenant|await channel:*":          grpcAdminByDefault,
-	"tenant|broadcast channel:*":      grpcAdminByDefault,
-	"tenant|read memory:*":            grpcAdminByDefault,
-	"member-full|await channel:*":     grpcAdminByDefault,
-	"member-full|broadcast channel:*": grpcAdminByDefault,
-	"member-full|read memory:*":       grpcAdminByDefault,
 }
-
-const grpcAdminByDefault = "the RPC is admin-only by default (not in grpcConsumerScopes) while its HTTP route admits this class (a gate difference, reported)"
 
 func questionKey(s authz.Surface) string { return s.Action + " " + s.Type + ":" + s.Name }
 
