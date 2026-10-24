@@ -128,6 +128,11 @@ func TestNarrowSkillsByACL(t *testing.T) {
 	if got := NarrowSkillsByACL(modeCtx(authz.ModeCompat), allow, sp); !reflect.DeepEqual(got.Patterns, []string{"doc/*", "-*"}) {
 		t.Errorf("deny-all pattern = %+v", got)
 	}
+	// Shadow applies nothing: the patterns stay as the definition gave them
+	// (ShadowACLNarrowing reports the denies instead).
+	if got := NarrowSkillsByACL(modeCtx(authz.ModeShadow), eff, sp); !reflect.DeepEqual(got, sp) {
+		t.Errorf("shadow = %+v, want the definition's %+v", got, sp)
+	}
 	if got := NarrowSkillsByACL(modeCtx(authz.ModeEnforce), nil, sp); !reflect.DeepEqual(got.Patterns, []string{"-*"}) {
 		t.Errorf("enforce no set = %+v", got)
 	}
@@ -208,5 +213,28 @@ func TestShadowACLNarrowing_NothingOutsideShadowOrWithoutASet(t *testing.T) {
 		authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"history:*"}})
 	if got := ShadowACLNarrowing(modeCtx(authz.ModeShadow), shadowPolicy(all)); got != nil {
 		t.Errorf("shadow, all allowed: %q", divergenceKeys(got))
+	}
+}
+
+// With a skill allowed at all, enforce appends each unconditional skill deny
+// to the agent's patterns; shadow appends none of them and names each one.
+func TestShadowACLNarrowing_NamesEachSkillDenyEnforceWouldAppend(t *testing.T) {
+	eff := compiledSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"invoke"}, Resources: []string{"skill:*"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"skill:support/**", "skill:seo"}})
+	p := RunPolicy{Skill: SkillPolicyValue{Patterns: []string{"doc/*"}, Granted: true}, ACL: eff}
+	ds := ShadowACLNarrowing(modeCtx(authz.ModeShadow), p)
+	if got, want := divergenceKeys(ds), []string{"invoke skill:support/** deny", "invoke skill:seo deny"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("shadow skill divergences:\n got  %q\n want %q", got, want)
+	}
+	for _, d := range ds {
+		if len(d.Decision.Reasons) == 0 || d.Decision.Reasons[0].ACL != "a" {
+			t.Errorf("%s carries no deciding rule: %+v", d.Surface.Name, d.Decision)
+		}
+	}
+	// A policy that grants no skill loses nothing.
+	p.Skill = SkillPolicyValue{}
+	if got := ShadowACLNarrowing(modeCtx(authz.ModeShadow), p); got != nil {
+		t.Errorf("no skill granted: %q", divergenceKeys(got))
 	}
 }

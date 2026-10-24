@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Shadow mode inside a run: the run keeps every grant its definition gives
@@ -185,5 +187,44 @@ func TestACLShadow_AResumedRunRecordsItsNarrowingAgain(t *testing.T) {
 	evs := sink.diverged("invoke", "tool:Bash")
 	if len(evs) != 2 || evs[0].AclRunID != run.ID || evs[1].AclRunID != run.ID {
 		t.Errorf("want the live start and the resume each recorded against %s: %+v", run.ID, evs)
+	}
+}
+
+// An explicit skill deny: compat appends it to the agent's skill patterns,
+// enforce does too, and shadow leaves the patterns as the definition gave
+// them and records the deny once against the run instead.
+func TestACLShadow_SkillDenyIsRecordedNotApplied(t *testing.T) {
+	for _, tc := range []struct {
+		mode      authz.Mode
+		applied   bool
+		divergent int
+	}{
+		{authz.ModeShadow, false, 1},
+		{authz.ModeCompat, true, 0},
+		{authz.ModeEnforce, true, 0},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			e, sink := shadowRunEnv(t, tc.mode, false, map[string][][]providers.Event{
+				"worker": {probeTurn("tu_live"), endTurn()},
+			})
+			if _, err := e.st.AclDefPut(context.Background(), store.AclDefRow{TenantID: "acme", Name: "no-seo",
+				Rules: json.RawMessage(`[{"effect":"deny","actions":["invoke"],"resources":["skill:seo"]}]`)}); err != nil {
+				t.Fatal(err)
+			}
+			bindACL(t, e.st, "no-seo")
+			run := e.startAs(t, "worker", "a_skill_"+string(tc.mode))
+			skills := e.waitProbes(t, 1)[0].Skill
+			if got := slices.Contains(skills.Patterns, "-seo"); got != tc.applied || !skills.Granted {
+				t.Errorf("skill patterns %+v: -seo applied = %v, want %v", skills, got, tc.applied)
+			}
+			evs := sink.diverged("invoke", "skill:seo")
+			if len(evs) != tc.divergent {
+				t.Fatalf("%d acl_shadow_diverged entries for skill:seo, want %d: %+v", len(evs), tc.divergent, evs)
+			}
+			if tc.divergent == 1 && (evs[0].AclRunID != run.ID || evs[0].AclOutcome != "deny" ||
+				len(evs[0].AclRules) == 0 || !strings.HasPrefix(evs[0].AclRules[0], "no-seo#")) {
+				t.Errorf("entry %+v, want run %s, a deny by no-seo", evs[0], run.ID)
+			}
+		})
 	}
 }
