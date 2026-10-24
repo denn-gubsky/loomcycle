@@ -349,17 +349,27 @@ func TestRedactor_SignedURLRandomValuesMaskedWhole(t *testing.T) {
 }
 
 // TestRedactor_SignedURLManyMatchesInOneValueStayLinear: matches inside one
-// long value (no boundary between them) must not each re-scan the value. On
-// a quadratic pass this input takes tens of seconds; a linear one, under
-// -race, well under a second.
+// long value (no boundary between them) must not each re-scan the value.
+// Judged by how the time grows, not by a wall-clock limit, which -race and a
+// loaded machine break: 4x the input costs ~4x when linear, ~16x when each
+// match re-scans (the draft that did took 37s on 60000 of these).
 func TestRedactor_SignedURLManyMatchesInOneValueStayLinear(t *testing.T) {
 	r := New(nil, false).WithSignedURLParams()
+	best := func(in string) time.Duration {
+		var min time.Duration
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			_ = r.String(in)
+			if d := time.Since(start); i == 0 || d < min {
+				min = d
+			}
+		}
+		return min
+	}
 	for _, unit := range []string{"?code=x", "?token=x"} {
-		in := strings.Repeat(unit, 60000)
-		start := time.Now()
-		_ = r.String(in)
-		if d := time.Since(start); d > 5*time.Second {
-			t.Errorf("%q x60000 took %v", unit, d)
+		small, large := best(strings.Repeat(unit, 5000)), best(strings.Repeat(unit, 20000))
+		if ratio := float64(large) / float64(small); ratio > 8 {
+			t.Errorf("%q: 4x the input took %.1fx the time (%v -> %v)", unit, ratio, small, large)
 		}
 	}
 }
