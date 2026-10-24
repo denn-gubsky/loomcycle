@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -184,18 +185,29 @@ func (s *Server) aclAdmit(ctx context.Context, p auth.Principal, surface authz.S
 // recordACLEvent writes a refusal or a shadow divergence to the audit sink
 // (best-effort) and the log. Names and ids only, never a bearer.
 func (s *Server) recordACLEvent(ctx context.Context, p auth.Principal, action string, surface authz.Surface, d authz.Decision) {
+	s.recordACLEventIn(ctx, p, action, surface, d, "")
+}
+
+// recordACLEventIn is recordACLEvent for a question found in run runID; ""
+// records exactly what recordACLEvent does.
+func (s *Server) recordACLEventIn(ctx context.Context, p auth.Principal, action string, surface authz.Surface, d authz.Decision, runID string) {
 	reasons := make([]string, 0, len(d.Reasons))
 	for _, r := range d.Reasons {
 		reasons = append(reasons, fmt.Sprintf("%s#%d:%s", r.ACL, r.RuleIndex, r.Effect))
 	}
-	slog.Warn("authz: "+action, "tenant", p.TenantID, "subject", p.Subject, "action", surface.Action,
-		"resource", surface.Type+":"+surface.Name, "outcome", d.Outcome.String(), "rules", reasons, "transport", authz.TransportFrom(ctx))
+	attrs := []any{"tenant", p.TenantID, "subject", p.Subject, "action", surface.Action,
+		"resource", surface.Type + ":" + surface.Name, "outcome", d.Outcome.String(), "rules", reasons, "transport", authz.TransportFrom(ctx)}
+	if runID != "" {
+		attrs = append(attrs, "run_id", runID)
+	}
+	slog.Warn("authz: "+action, attrs...)
 	if s.tokenAudit == nil {
 		return
 	}
 	ev := audit.Event{
 		Action: action, ActorTenant: p.TenantID, ActorSubject: p.Subject, ActorTokenSuffix: p.TokenSuffix,
 		TargetName: surface.Type + ":" + surface.Name, AclAction: surface.Action, AclOutcome: d.Outcome.String(), AclRules: reasons,
+		AclRunID: runID,
 	}
 	if err := s.tokenAudit.Record(ev); err != nil {
 		slog.Error("authz: audit write failed", "err", err)
@@ -328,6 +340,11 @@ func (s *Server) triggerWalkOwnerCtx(ctx context.Context, owner *authz.SubjectRe
 func (s *Server) aclAdmitSpawn(ctx context.Context, eff *authz.Effective, child string) error {
 	surface := authz.Surface{Action: "spawn", Type: "agent", Name: child}
 	res := authz.EvaluateSurface(ctx, eff, surface, true)
+	// Shadow mode lets the spawn through; one enforce would refuse is
+	// recorded against the parent's run, as the run-start narrowing is.
+	if authz.ModeFrom(ctx) == authz.ModeShadow && res.Evaluated && !authz.Resolve(authz.ModeEnforce, res.Decision, true) {
+		s.recordRunShadowDivergence(ctx, tools.RunID(ctx), eff, surface, res.Decision)
+	}
 	if res.Unavailable || !res.Allowed {
 		p, _ := auth.PrincipalFromContext(ctx)
 		if eff != nil {
@@ -337,6 +354,84 @@ func (s *Server) aclAdmitSpawn(ctx context.Context, eff *authz.Effective, child 
 		return &errACLDenied{surface: surface, decision: res.Decision}
 	}
 	return nil
+}
+
+// recordShadowNarrowing records, in shadow mode, what enforce would take
+// from run runID's policy p at its start (tools.ShadowACLNarrowing) — one
+// acl_shadow_diverged entry each, the run keeping all of it. It returns ctx
+// with the run tree's record of what was already recorded, which the run's
+// children inherit (shadowRecorded); compat, enforce and a run with no set
+// get ctx back as it is.
+func (s *Server) recordShadowNarrowing(ctx context.Context, runID string, p tools.RunPolicy) context.Context {
+	if p.ACL == nil || authz.ModeFrom(ctx) != authz.ModeShadow {
+		return ctx
+	}
+	ctx = withShadowRecorded(ctx)
+	for _, d := range tools.ShadowACLNarrowing(ctx, p) {
+		s.recordRunShadowDivergence(ctx, runID, p.ACL, d.Surface, d.Decision)
+	}
+	return ctx
+}
+
+// recordRunShadowDivergence records one divergence found in run runID,
+// judged by eff, unless the run's tree already recorded the same question of
+// the same set. The entry names eff's subject; the token suffix is the
+// principal's on ctx only when that principal IS the subject.
+func (s *Server) recordRunShadowDivergence(ctx context.Context, runID string, eff *authz.Effective, surface authz.Surface, d authz.Decision) {
+	if eff == nil || !shadowFirstRecord(ctx, eff, surface) {
+		return
+	}
+	p := auth.Principal{TenantID: eff.Subject.TenantID, Subject: eff.Subject.ID}
+	if cp, ok := auth.PrincipalFromContext(ctx); ok && cp.TenantID == p.TenantID && cp.Subject == p.Subject {
+		p.TokenSuffix = cp.TokenSuffix
+	}
+	s.recordACLEventIn(ctx, p, "acl_shadow_diverged", surface, d, runID)
+}
+
+// shadowRecorded is what a run tree has recorded as in-run shadow
+// divergences. A sub-agent is narrowed by its parent's set, the same
+// pointer (RunPolicy.Inherit), so a question its parent's start already
+// recorded — the same tool, volume or keyspace in both definitions, the same
+// child spawned twice — is recorded once per tree, under the run that met
+// it first. Keyed by the set as well, so a run in the tree bound by another
+// caller's set records its own. A resumed run starts a new record: it is
+// narrowed again by its caller's rules as they stand then.
+type shadowRecorded struct {
+	mu   sync.Mutex
+	seen map[shadowRecordKey]struct{}
+}
+
+type shadowRecordKey struct {
+	eff    *authz.Effective
+	action string
+	typ    string
+	name   string
+}
+
+type ctxKeyShadowRecorded struct{}
+
+func withShadowRecorded(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(ctxKeyShadowRecorded{}).(*shadowRecorded); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyShadowRecorded{}, &shadowRecorded{seen: map[shadowRecordKey]struct{}{}})
+}
+
+// shadowFirstRecord reports whether surface, judged by eff, is new to the
+// tree on ctx, marking it recorded. No record on ctx: always new.
+func shadowFirstRecord(ctx context.Context, eff *authz.Effective, surface authz.Surface) bool {
+	r, ok := ctx.Value(ctxKeyShadowRecorded{}).(*shadowRecorded)
+	if !ok {
+		return true
+	}
+	k := shadowRecordKey{eff: eff, action: surface.Action, typ: surface.Type, name: surface.Name}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, dup := r.seen[k]; dup {
+		return false
+	}
+	r.seen[k] = struct{}{}
+	return true
 }
 
 // emitACLRemovedTools reports, once at run start, each tool the definition
