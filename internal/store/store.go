@@ -4817,6 +4817,28 @@ type MemorySearchFilter struct {
 	// does for observed time, and carries exactly the same warning: on a corpus where
 	// nothing has been dated it returns nothing at all.
 	RequireValid bool
+
+	// IDs restricts to rows whose ID SEGMENT is in the set. The id segment is the
+	// text after KeyPrefix up to the next ':' or the end of the key — so in the
+	// chunk namespace `doc.chunk:<id>` it is the chunk id, and in the unit
+	// namespace `doc.unit:<id>:<kind>:<n>` it is the same chunk id. One list
+	// therefore restricts a chunk and every one of its derived search units alike,
+	// without the store knowing what either namespace is.
+	//
+	// Meaningful only with KeyPrefix set; with an empty KeyPrefix the segment is
+	// the key's first ':'-separated part. Empty constrains nothing — a caller
+	// whose allow set is empty must not search at all, because an empty list here
+	// means "everything", not "nothing".
+	//
+	// Applied in the query, before the LIMIT, for the reason the type comment
+	// gives: a post-filter on a 51-row pool cannot fill a page from a small corpus
+	// inside a large scope. Postgres only; sqlite has no vector or full-text leg
+	// to apply it to (its MemoryEmbedSearch refuses and its MemoryFullTextSearch
+	// returns nothing), so it ignores both id fields.
+	IDs []string
+	// ExcludeIDs drops rows whose id segment is in the set. Same shape as IDs;
+	// composes with it as AND. Empty constrains nothing.
+	ExcludeIDs []string
 }
 
 // MemoryProvenanceConstraint selects rows by whether they carry provenance.
@@ -4916,7 +4938,8 @@ func (f MemorySearchFilter) IsZero() bool {
 		f.ExcludeTracePrefix == "" && f.ExcludeUnitPrefix == "" &&
 		f.Provenance == ProvenanceAny &&
 		f.ObservedFrom.IsZero() && f.ObservedTo.IsZero() && !f.RequireObserved &&
-		f.AsOf.IsZero() && !f.RequireValid
+		f.AsOf.IsZero() && !f.RequireValid &&
+		len(f.IDs) == 0 && len(f.ExcludeIDs) == 0
 }
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when
