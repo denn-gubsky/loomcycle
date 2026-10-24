@@ -53,9 +53,42 @@ dot — it never advertises an outage. Change the endpoint via
 Bump the hard-coded fallback version in two places when releasing: the
 `fail()` helper in `index.html` and the `data-live-version` spans.
 
+## Accounts on the password gate (when the landing enables them)
+
+The console has two modes, chosen by `GET /api/whoami`'s `auth_gate`. With
+`auth_gate: false` (the landing has no `LOOMCYCLE_AUTH_MANAGE_TOKEN`) it is the
+token-vault flow described below, unchanged. With `auth_gate: true`
+(`cloud-deployment/AUTH-INTEGRATION.md`, phase 3):
+
+1. **Sign in with Google** — Cloudflare Access, unchanged.
+2. **Workspace.** A new visitor gets **Create your workspace**: `POST
+   /api/signup` answers `{redirect}` and the page `location.replace()`s it — the
+   app's `/ui/invite#<code>` page, where they choose a password (this site never
+   sees one; `replace` keeps the code out of this site's history). The app sends
+   them back to `/?welcome=1`. A returning owner (`signed_up: true`) gets **Open
+   app** (`app.loomcycle.cloud/ui/login`) and **Manage team**.
+3. **Team** (`data-pane="4"`). Members (login, role read-only, status) with
+   Reset / Disable / Enable / Remove (destructive ones confirm first); an invite
+   form that returns a single-use link with a copy button and its expiry —
+   loomcycle sends no e-mail, the owner sends the link; pending invites with
+   Revoke; **Reset my password** for the owner. Links appear in one box that is
+   cleared when the view changes. Results are announced in `role="status"`
+   regions.
+
+The vault stays visible **read-only** in this mode: existing tokens still sign
+in to the app and loomboard, but there is no Mint and no paste — API tokens are
+made in the app. Everything the page shows comes from the landing's
+`/api/team/*` JSON, rendered with `textContent` (no HTML from the server).
+
+**Checks:** the landing's `npm test` includes `test/site.test.mjs`, which
+compiles every inline script, checks the markup balances and that the panes and
+controls the script wires up exist. The flow itself is verified by hand against
+a local runtime (see `cloud-deployment/INSTALL.md` → "Enabling accounts").
+
 ## Sign-in flow — what is real and what is a prototype
 
-`index.html` contains a working three-step console (nav → **Sign in**).
+`index.html` contains a working three-step console (nav → **Sign in**). This
+section describes the token-vault mode (`auth_gate: false`).
 
 **Real, implemented in the page:**
 
