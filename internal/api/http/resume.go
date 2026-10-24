@@ -2363,6 +2363,13 @@ func (s *Server) resumedACL(ctx context.Context, run store.Run, runCfg runConfig
 // would leave a resumed or restarted run held on an error nothing clears.
 // Every boot wires a resolver.
 func (s *Server) recordedCallerACL(ctx context.Context, o *aclOriginRecord, agent string) (context.Context, *authz.Effective, error) {
+	return s.recordedCallerACLFor(ctx, o, authz.Surface{Action: "run", Type: "agent", Name: agent})
+}
+
+// recordedCallerACLFor is recordedCallerACL for a start that is asked
+// another question than `run agent:` (a trigger's team walk): an unreadable
+// set is audited against surface.
+func (s *Server) recordedCallerACLFor(ctx context.Context, o *aclOriginRecord, surface authz.Surface) (context.Context, *authz.Effective, error) {
 	ctx = authz.WithMode(ctx, s.aclMode())
 	if o.Transport != "" {
 		ctx = authz.WithTransport(ctx, o.Transport)
@@ -2372,7 +2379,7 @@ func (s *Server) recordedCallerACL(ctx context.Context, o *aclOriginRecord, agen
 	}
 	eff, err := s.aclResolver.ResolveSubject(ctx, o.subject())
 	if err != nil {
-		s.recordACLEvent(ctx, o.principal(), "acl_unavailable", authz.Surface{Action: "run", Type: "agent", Name: agent}, authz.Decision{})
+		s.recordACLEvent(ctx, o.principal(), "acl_unavailable", surface, authz.Decision{})
 		return ctx, nil, err
 	}
 	return ctx, eff, nil
