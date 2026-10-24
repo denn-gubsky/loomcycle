@@ -78,3 +78,33 @@ func (s *eraseSink) Record(ev audit.Event) error {
 	s.events = append(s.events, ev)
 	return nil
 }
+
+// TestErasure_CarriesTheAccessField: the structured access field — groups,
+// lists and tokens by def id and name — reaches a gRPC client on both RPCs,
+// as it does the HTTP and MCP JSON.
+func TestErasure_CarriesTheAccessField(t *testing.T) {
+	access := erasure.Access{
+		Groups: []string{"ops"}, Lists: []string{"readers"},
+		Tokens: []erasure.TokenRef{{DefID: "def_1", Name: "u-alice"}},
+	}
+	mc := &mockConnector{erasureReport: erasure.Report{Access: access}, erasureResult: erasure.Result{Access: access}}
+	srv := &Server{connector: mc}
+	check := func(what string, got *loomcyclepb.ErasureAccess) {
+		t.Helper()
+		if len(got.GetGroups()) != 1 || got.GetGroups()[0] != "ops" ||
+			len(got.GetLists()) != 1 || got.GetLists()[0] != "readers" ||
+			len(got.GetTokens()) != 1 || got.GetTokens()[0].GetDefId() != "def_1" || got.GetTokens()[0].GetName() != "u-alice" {
+			t.Errorf("%s access = %v", what, got)
+		}
+	}
+	rep, err := srv.ErasureReport(context.Background(), &loomcyclepb.ErasureReportRequest{Subject: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("report", rep.GetAccess())
+	res, err := srv.ErasureExecute(context.Background(), &loomcyclepb.ErasureExecuteRequest{Subject: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("execute", res.GetAccess())
+}

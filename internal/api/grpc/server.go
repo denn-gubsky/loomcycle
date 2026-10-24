@@ -2431,6 +2431,7 @@ func (s *Server) ErasureReport(ctx context.Context, req *loomcyclepb.ErasureRepo
 		Tier3Residue:   erasureResidueToProto(rep.Tier3),
 		Notes:          rep.Notes,
 		Errors:         rep.Errors,
+		Access:         erasureAccessToProto(rep.Access),
 	}, nil
 }
 
@@ -2472,6 +2473,7 @@ func (s *Server) ErasureExecute(ctx context.Context, req *loomcyclepb.ErasureExe
 		Residue:  erasureResidueToProto(res.Residue),
 		Errors:   res.Errors,
 		Notes:    res.Notes,
+		Access:   erasureAccessToProto(res.Access),
 	}, nil
 }
 
@@ -2491,6 +2493,16 @@ func erasureErrToStatus(err error) error {
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
+}
+
+// erasureAccessToProto carries the names; a token travels as def id + name,
+// the only identity erasure.TokenRef has.
+func erasureAccessToProto(a erasure.Access) *loomcyclepb.ErasureAccess {
+	out := &loomcyclepb.ErasureAccess{Groups: a.Groups, Lists: a.Lists}
+	for _, t := range a.Tokens {
+		out.Tokens = append(out.Tokens, &loomcyclepb.ErasureToken{DefId: t.DefID, Name: t.Name})
+	}
+	return out
 }
 
 func erasureTierToProto(t erasure.Tier) *loomcyclepb.ErasureTier {
