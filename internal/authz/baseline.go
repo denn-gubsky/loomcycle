@@ -61,7 +61,7 @@ var memberMCPTools = []string{
 	"memorybackenddef", "documentsourcedef", "volumedef", "credentialdef", "authz",
 	"memory", "channel", "channeldef", "path", "document", "history", "decision",
 	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
-	"peek_channel", "ack_channel", "stream_user_run_states", "directory", "erasure",
+	"peek_channel", "ack_channel", "stream_user_run_states", "directory", "erasure", "file",
 }
 
 // tenantMCPTools is what it admits a tenant operator to: every

@@ -510,7 +510,24 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if refused := d.guardOntologyWrite(ctx, key, in.Op, in); refused != nil {
 		return *refused, nil
 	}
+	// RFC EZ §1.5 seam 5: the caller's access-control set, asked about the
+	// document(s) this call resolves to; see document_acl.go.
+	acl, refused, err := d.guardDocumentACL(ctx, key, in)
+	if err != nil {
+		return errFrom("document: access control: "+err.Error(), err), nil
+	}
+	if refused != nil {
+		return *refused, nil
+	}
+	res, err := d.dispatch(ctx, key, mscope, in, raw)
+	if err != nil {
+		return res, err
+	}
+	return acl.filterListing(ctx, in.Op, res), nil
+}
 
+// dispatch runs one op; Execute has resolved the scope and asked the gates.
+func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
 	switch in.Op {
 	case "create_document":
 		return d.createDocument(ctx, key, mscope, in)
@@ -1628,6 +1645,18 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	now := time.Now().UnixNano()
 	docID := newDocID()
+	// The name the document will be filed under, decided before it exists so
+	// the caller's access-control set can refuse it with nothing left behind
+	// (RFC EZ §1.5 seam 5). Every path that makes a document comes here.
+	docPath := in.Path
+	if docPath == "" {
+		docPath = "/documents/" + docDefaultPathSegment(in.Title, docID)
+	}
+	if canonical, perr := normalizePath(docPath); perr == nil {
+		if refused := d.aclRefuseNewName(ctx, key, "create_document", canonical); refused != nil {
+			return *refused, nil
+		}
+	}
 	// THE ONTOLOGY GATE APPLIES HERE TOO, now that a root can be an entity. It used
 	// to live on upsert_chunk alone, which was the only way to make one; a
 	// subject-homed store creates its entities through create_document, so leaving
@@ -1721,10 +1750,6 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// documents in ONE scope would share that slot; the default segment falls back
 	// to the (unique) doc id when the title slugifies to empty, and a caller that
 	// needs collision-proof naming should pass an explicit `path`.
-	docPath := in.Path
-	if docPath == "" {
-		docPath = "/documents/" + docDefaultPathSegment(in.Title, docID)
-	}
 	if p, perr := d.registerDocDirent(ctx, key, docID, docPath); perr != nil {
 		resp["path_warning"] = "document created but path registration failed: " + perr.Error()
 	} else {

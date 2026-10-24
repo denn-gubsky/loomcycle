@@ -182,6 +182,9 @@ func (s *Scheduler) recordRefusal(ctx context.Context, row store.ScheduleDueRow,
 		case fireBackpressure:
 			out.Err += retriedNote
 			s.logger.Warn("scheduler: schedule: the run queue is full — the slot is fired again on the next tick", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339))
+		case fireACLUnavailable:
+			out.Err += retriedNote
+			s.logger.Warn("scheduler: schedule: its owner's access-control rules could not be read — the slot is fired again on the next tick", "schedule", row.Name, "slot", row.NextRunAt.UTC().Format(time.RFC3339))
 		}
 	}
 	_, done := s.recordFireOutcome(ctx, row, def, now, out)

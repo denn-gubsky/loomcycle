@@ -54,6 +54,12 @@ const (
 	// paused the runtime, the schedule did no work, and the next fire after
 	// resume does it. A fan-out stops dispatching on it.
 	firePaused
+	// fireACLUnavailable: the def owner's access-control set could not be
+	// compiled (a store fault), so the run was refused rather than started
+	// without it (RFC EZ §1.5). Something broke, so it reads "failed"; but the
+	// slot has not run, so it is given back and fired again on the next tick,
+	// as a full queue's is, and does not use up max_fires.
+	fireACLUnavailable
 )
 
 // classifyFire buckets a run error. Each case is errors.Is so a wrapped
@@ -73,6 +79,8 @@ func classifyFire(err error) fireClass {
 		return fireDeferred
 	case errors.Is(err, runner.ErrRuntimePaused):
 		return firePaused
+	case errors.Is(err, runner.ErrACLUnavailable):
+		return fireACLUnavailable
 	default:
 		return fireFailed
 	}
@@ -96,12 +104,12 @@ func (c fireClass) status() string {
 // countsAsFire reports whether a fire of this class uses up one of the
 // schedule's max_fires.
 func (c fireClass) countsAsFire() bool {
-	return c != fireUnknownAgent && c != fireTeamNotStartable && c != firePaused && c != fireBackpressure
+	return c != fireUnknownAgent && c != fireTeamNotStartable && c != firePaused && c != fireBackpressure && c != fireACLUnavailable
 }
 
 // retried reports whether a run or team fire of this class gives its slot
 // back to be fired again on the next tick.
-func (c fireClass) retried() bool { return c == fireBackpressure }
+func (c fireClass) retried() bool { return c == fireBackpressure || c == fireACLUnavailable }
 
 // retriedNote ends a full-queue refusal's last_error, so the operator reads
 // that the slot was not lost.

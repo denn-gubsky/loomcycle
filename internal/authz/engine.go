@@ -279,6 +279,94 @@ func (e *Effective) Decide(req Request) Decision {
 	return Decision{Outcome: NoMatch}
 }
 
+// DecideScope answers a question about EVERY instance of one scope of a
+// scoped type at once; Resource.Name is the bare scope (`tenant`). It is what
+// an operation asks when it reaches a scope's instances without naming them
+// first — a search, a fact walk, a raw query (RFC EZ §1.5 seam 5). It mirrors
+// the type-level reading: a DENY matches when it names any instance of the
+// scope (some of what the operation reaches is refused), an ALLOW only when it
+// covers the whole scope. A type with no scopes is answered by Decide.
+func (e *Effective) DecideScope(req Request) Decision {
+	if req.Resource.TenantID != "" && req.Resource.TenantID != e.Subject.TenantID {
+		return Decision{Outcome: Denied, TenantFloor: true}
+	}
+	spec, ok := catalogByName[req.Resource.Type]
+	if !ok || !spec.isScoped() {
+		return e.Decide(req)
+	}
+	tr := e.byType[req.Resource.Type]
+	if tr == nil {
+		return Decision{Outcome: NoMatch}
+	}
+	scope := req.Resource.Name
+	var reasons []Reason
+	denied, allowed := false, false
+	for _, r := range tr.deny {
+		if r.actions[req.Action] && r.touchesScope(scope, false) && r.when.holdsForScope(&req, true) {
+			denied = true
+			reasons = append(reasons, Reason{ACL: r.acl, Version: r.version, RuleIndex: r.index, Effect: Deny})
+		}
+	}
+	for _, r := range tr.allow {
+		if r.actions[req.Action] && r.touchesScope(scope, true) && r.when.holdsForScope(&req, false) {
+			allowed = true
+			reasons = append(reasons, Reason{ACL: r.acl, Version: r.version, RuleIndex: r.index, Effect: Allow})
+		}
+	}
+	switch {
+	case denied:
+		return Decision{Outcome: Denied, Reasons: reasons}
+	case allowed:
+		return Decision{Outcome: Allowed, Reasons: reasons}
+	}
+	return Decision{Outcome: NoMatch}
+}
+
+// HasInstanceRules reports whether any rule on typ names only PART of scope
+// (a selector with a path under the scope) or carries a condition. Without
+// one, every instance of the scope gets the answer the bare scope gets, so a
+// caller need not look up the instance's name to ask about it. ANY condition
+// counts, not only the instance-dependent ones (owner_is_self): the per-
+// instance question is exact either way, and keeping one list of
+// "scope-decidable" fields in step with the condition set is a drift waiting
+// to happen for a saving only on sets that carry conditions.
+func (e *Effective) HasInstanceRules(typ, scope string) bool {
+	tr := e.byType[typ]
+	if tr == nil {
+		return false
+	}
+	for _, rules := range [][]*compiledRule{tr.deny, tr.allow} {
+		for _, r := range rules {
+			for _, s := range r.sels {
+				if (s.scope == "*" || s.scope == scope) && (!coversScope(s) || r.when != nil) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// touchesScope reports whether one of the rule's selectors names scope:
+// any part of it, or — when whole is set — all of it.
+func (r *compiledRule) touchesScope(scope string, whole bool) bool {
+	for _, s := range r.sels {
+		if s.scope != "*" && s.scope != scope {
+			continue
+		}
+		if !whole || coversScope(s) {
+			return true
+		}
+	}
+	return false
+}
+
+// coversScope reports whether a scoped selector names every instance of its
+// scope: no path, or the path `**`.
+func coversScope(s selector) bool {
+	return s.glob == nil || (len(s.glob) == 1 && s.glob[0] == "**")
+}
+
 // DenyPatterns returns the names of every UNCONDITIONAL deny selector on
 // typ for action, as written (`support/**`, `Bash`), for a consumer that
 // enforces with its own pattern list — the `skills:` allowlist takes `-glob`

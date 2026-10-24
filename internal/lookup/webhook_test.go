@@ -252,6 +252,7 @@ func TestWebhook_DriftDetection(t *testing.T) {
 		"vars":                      true, // delivery=team: the walk's variables, as JSONPaths into the body
 		"operator_key_restricted":   true, // RFC AX: captured operator-key restriction (anti-bypass)
 		"isolated":                  true, // RFC BX P2b: captured isolation bit (anti-bypass)
+		"acl_owner":                 true, // RFC EZ §1.5: captured owner whose ACL set binds each delivery
 		"capture_disabled":          true, // server-set by a snapshot restore that stripped literal credentials
 	}
 	have := a2aJSONTagsOf(reflect.TypeOf(lookup.SubstrateWebhookDef{}))
