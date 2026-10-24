@@ -349,6 +349,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 		if err := decodeWithMigration(migrations.SectionUsers, rawSection, &sec); err != nil {
 			return result, err
 		}
+		if err := restoreBootstraps(ctx, s, &sec); err != nil {
+			return result, err
+		}
 		restoreUsers(ctx, s, &sec, &result)
 	}
 	if rawSection, ok := sections[migrations.SectionTokenLimits]; ok {

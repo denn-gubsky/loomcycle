@@ -25,7 +25,13 @@ var aclUngovernedRoutes = map[string]bool{
 	"GET /ui": true, "GET /ui/": true, "POST /ui/session": true, "GET /ui/login-config.json": true, "GET /ui/logout": true, "POST /ui/logout": true,
 	// Signing out ends the caller's own session and runs before any
 	// principal exists (an expired session may still log out).
-	"POST /v1/_auth/logout":                     true,
+	"POST /v1/_auth/logout": true,
+	// The password gate's login, invite and reset posts establish a session
+	// (no principal yet); the account routes act on the caller's own
+	// credentials only.
+	"POST /v1/_auth/complete/{gate}": true, "POST /v1/_auth/invite/info": true, "POST /v1/_auth/invite": true,
+	"POST /v1/_auth/reset/info": true, "POST /v1/_auth/reset": true, "GET /v1/_auth/account": true,
+	"POST /v1/_auth/password": true, "POST /v1/_auth/totp/begin": true, "POST /v1/_auth/totp/confirm": true, "DELETE /v1/_auth/totp": true,
 	"GET /.well-known/agent-card.json/extended": true,
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.

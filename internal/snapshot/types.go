@@ -183,6 +183,25 @@ type CaptureFindingEntry struct {
 type UsersSection struct {
 	Version string      `json:"version"`
 	Entries []UserEntry `json:"entries"`
+	// Bootstraps are the tenant_bootstraps markers: every tenant that ever
+	// had a user, including one whose users were all deleted. A marker is
+	// what refuses a second owner bootstrap of such a tenant, and the
+	// users rows alone cannot re-derive it for a tenant that has none, so
+	// without this a snapshot round trip would re-arm that bootstrap.
+	// Additive and optional: a snapshot written before it has no field, and
+	// its restore re-derives markers only from the users rows it creates
+	// (UserCreate writes one), so an emptied tenant in such a snapshot is
+	// not marked on the target.
+	Bootstraps []TenantBootstrapEntry `json:"bootstraps,omitempty"`
+}
+
+// TenantBootstrapEntry mirrors a tenant_bootstraps row. It holds no secret.
+type TenantBootstrapEntry struct {
+	TenantID string `json:"tenant_id,omitempty"`
+	// At is when the tenant first had a user; zero when the source did not
+	// know (a sqlite backfill), and then the target stamps its restore time.
+	At  time.Time `json:"at"`
+	Via string    `json:"via,omitempty"`
 }
 
 // UserEntry mirrors a users row. It holds no secret. AccessMode and Status

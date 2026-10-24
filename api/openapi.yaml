@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: loomcycle data API (memory, documents, decision models, crypto)
+  title: loomcycle data API (memory, documents, decision models, crypto, password gate management)
   version: "1.0.0"
   description: |
     The external HTTP data API for loomcycle's **memory** and **document/path**
@@ -25,6 +25,10 @@ info:
     token budget. The **crypto** route (`/v1/_crypto`) requires
     `substrate:tenant` and is NOT open to a tenant's members: decrypting with
     the tenant's keys would let a member read whatever the tenant sealed.
+    The **password gate management** routes (`/v1/_authgate/{gate}/…`) require
+    `substrate:tenant` (own tenant) or an `auth:manage` token — a website's
+    user-management credential that reaches only these routes and the
+    `/v1/_users` create / list / update / delete, across tenants.
 
     The spec document itself (`/v1/openapi.yaml`, `/v1/openapi.json`) and the
     docs console (`/v1/docs`) are served unauthenticated — the contract is
@@ -43,6 +47,8 @@ tags:
     description: Decision models — typed questions about supplied state, answered with probabilities.
   - name: crypto
     description: Encrypt, decrypt, sign, verify, MAC and one-time codes with keys the runtime holds.
+  - name: authgate
+    description: Password gate management — invitations, reset links, logins. Never a password.
   - name: auth
     description: |
       Web UI sign-in and sign-out (server-side sessions). A request a session
@@ -774,6 +780,375 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_authgate/{gate}/invites:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+    post:
+      tags: [authgate]
+      summary: Create a single-use invitation to a password gate.
+      description: |
+        Returns a link to loomcycle's own invite page; the invitee chooses a
+        login (or takes the invite's fixed `login`), sets a password there and
+        enrols TOTP when the gate requires it. The code inside the link is shown
+        only in this response and stored only as its SHA-256. loomcycle sends no
+        mail: the caller delivers the link.
+
+        Who may call: a `substrate:tenant` operator for its own tenant (`tenant`
+        defaults to and must equal its own), an admin for any, an `auth:manage`
+        token for any (it must name `tenant`). A new user gets `access_mode:
+        isolated` and no groups unless the gate is `trusted`; an `auth:manage`
+        token is held to that on any gate, except one owner invite
+        (`access_mode: tenant`) for a tenant with no users yet. With `subject`
+        the invite attaches a password to that existing user instead, which
+        keeps its subject, access mode and groups (never raised). No field takes
+        a password; an unknown field is refused.
+      operationId: createAuthgateInvite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                tenant: { type: string }
+                subject: { type: string, description: An existing user to attach the password to. }
+                access_mode: { type: string, enum: [isolated, tenant] }
+                groups: { type: array, items: { type: string } }
+                login: { type: string, description: The login the invitee must take (normalised NFKC + case-folded). }
+                email: { type: string }
+                ttl: { type: string, description: "Go duration; default 168h, at most the gate's max (720h)." }
+                return_to: { type: string, description: A path on this server or one of the gate's allowed_return_to. }
+      responses:
+        "201":
+          description: The invite and its link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthgateLink" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`tenant_mismatch`, `beyond_floor`, `tenant_not_empty` or `promotion_refused`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`login_taken`, `credential_exists` or `bootstrap_invite_live`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [authgate]
+      summary: List the gate's invites (never their codes).
+      operationId: listAuthgateInvites
+      parameters:
+        - { $ref: "#/components/parameters/TenantQuery" }
+      responses:
+        "200":
+          description: Invites, newest first, with their state (live, redeemed, revoked, expired).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invites: { type: array, items: { type: object } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_authgate/{gate}/invites/{id}:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [authgate]
+      summary: Revoke a live invite.
+      operationId: revokeAuthgateInvite
+      parameters:
+        - { $ref: "#/components/parameters/TenantQuery" }
+      responses:
+        "204": { description: Revoked. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: The invite was already redeemed, revoked or expired. }
+  /v1/_authgate/{gate}/resets:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+    post:
+      tags: [authgate]
+      summary: Issue a one-time password reset link (valid 1 hour).
+      description: |
+        For a user with a login at this gate. The link opens loomcycle's reset
+        page, where the person sets a new password; completing it ends the
+        user's sessions and delegated tokens. A newer link supersedes an older
+        one. There is no route that sets a password directly.
+      operationId: createAuthgateReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [subject]
+              properties:
+                tenant: { type: string }
+                subject: { type: string }
+      responses:
+        "201":
+          description: The reset and its link.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthgateLink" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/_authgate/{gate}/credentials/{subject}:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+      - { name: subject, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [authgate]
+      summary: Remove the user's password, TOTP and recovery codes (the login stays reserved).
+      operationId: deleteAuthgateCredentials
+      parameters:
+        - { $ref: "#/components/parameters/TenantQuery" }
+      responses:
+        "204": { description: Removed. }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/_authgate/{gate}/logins/{subject}:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+      - { name: subject, in: path, required: true, schema: { type: string } }
+    patch:
+      tags: [authgate]
+      summary: Rename the user's login at this gate (the subject, and the user's data, do not move).
+      operationId: renameAuthgateLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [login]
+              properties:
+                tenant: { type: string }
+                login: { type: string }
+      responses:
+        "200": { description: Renamed. }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { description: "`login_taken`: logins are unique per gate, compared case-insensitively." }
+  /v1/_authgate/{gate}/identities:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+    get:
+      tags: [authgate]
+      summary: List a user's logins, and whether it has a password and a TOTP factor.
+      operationId: listAuthgateIdentities
+      parameters:
+        - { $ref: "#/components/parameters/TenantQuery" }
+        - { name: subject, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: The logins; never a secret. }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /v1/_authgate/{gate}/tenant-status:
+    parameters:
+      - { $ref: "#/components/parameters/Gate" }
+    get:
+      tags: [authgate]
+      summary: Whether a tenant has any user yet and whether an owner invite is live.
+      description: What a website needs to decide on a bootstrap owner invite; nothing about who the users are.
+      operationId: getAuthgateTenantStatus
+      parameters:
+        - { $ref: "#/components/parameters/TenantQuery" }
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id: { type: string }
+                  has_users: { type: boolean }
+                  bootstrapped: { type: boolean, description: The tenant has ever had a user; an owner bootstrap needs false. }
+                  bootstrap_invite_live: { type: boolean }
+  /v1/_auth/complete/{gate}:
+    post:
+      tags: [auth]
+      summary: Sign in through a password gate (the login form's post).
+      description: |
+        Unauthenticated; same-origin with `X-Loomcycle-UI: 1`. 204 sets the
+        session cookie. An unknown login, a wrong password, a locked account
+        and a disabled user all answer `401 invalid_credentials`; an account
+        with an authenticator answers `401 otp_required` once the password was
+        right. `429 too_many_attempts` when the client is throttled.
+      operationId: passwordSignIn
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Gate" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [login, password]
+              properties:
+                login: { type: string }
+                password: { type: string, format: password }
+                otp: { type: string, description: A TOTP code or a recovery code. }
+      responses:
+        "204": { description: Signed in. }
+        "401": { description: "`invalid_credentials`, `otp_required` or `invalid_otp`." }
+        "403": { description: "`mfa_enrolment_required`, `insecure_transport` or a cross-site request." }
+        "429": { description: "`too_many_attempts`." }
+  /v1/_auth/invite/info:
+    post:
+      tags: [auth]
+      summary: What an invitation page needs to render (the code in the body, never the URL).
+      operationId: inviteInfo
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string } } } } }
+      responses:
+        "200": { description: "The gate, a fixed login or a suggested e-mail, whether an authenticator is required, the length minimums, and a TOTP enrolment (`secret`, `otpauth_uri`, `enrolment`)." }
+        "404": { description: "`link_invalid`: unknown, used, revoked or expired." }
+  /v1/_auth/invite:
+    post:
+      tags: [auth]
+      summary: Redeem an invitation — choose a login, set a password, enrol TOTP — and sign in.
+      operationId: redeemInvite
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, password]
+              properties:
+                code: { type: string }
+                login: { type: string }
+                password: { type: string, format: password }
+                totp_enrolment: { type: string }
+                totp_code: { type: string }
+      responses:
+        "201": { description: "Signed in: `redirect`, `login`, and `recovery_codes` (shown once) when an authenticator was enrolled." }
+        "400": { description: "A policy refusal (`password_too_short`, `password_breached`, `password_is_login`), `invalid_login`, `totp_required` or `invalid_totp`." }
+        "404": { description: "`link_invalid`." }
+        "409": { description: "`login_taken`." }
+  /v1/_auth/reset/info:
+    post:
+      tags: [auth]
+      summary: What a reset page needs to render.
+      operationId: resetInfo
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string } } } } }
+      responses:
+        "200": { description: "The gate, the login, whether the account has an authenticator, the length minimums and, without one, a TOTP enrolment." }
+        "404": { description: "`link_invalid`." }
+  /v1/_auth/reset:
+    post:
+      tags: [auth]
+      summary: Complete a reset — a new password (and the authenticator's code, if the account has one) — and sign in.
+      description: Ends every session made from the old password and retires the user's delegated tokens.
+      operationId: completeReset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, password]
+              properties:
+                code: { type: string }
+                password: { type: string, format: password }
+                otp: { type: string }
+                totp_enrolment: { type: string }
+                totp_code: { type: string }
+      responses:
+        "200": { description: Signed in. }
+        "401": { description: "`otp_required` or `invalid_otp`." }
+        "404": { description: "`link_invalid`." }
+  /v1/_auth/account:
+    get:
+      tags: [auth]
+      summary: The signed-in password user's login and authenticator state.
+      operationId: accountInfo
+      responses:
+        "200": { description: "`gate`, `login`, `has_totp`, `recovery_codes_left`, `require_mfa`." }
+        "403": { description: "`session_required`: only a password-gate Web UI session." }
+  /v1/_auth/password:
+    post:
+      tags: [auth]
+      summary: Change the password (re-authenticates; ends the account's other sessions).
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                new_password: { type: string, format: password }
+                otp: { type: string }
+      responses:
+        "204": { description: Changed; this browser has a new session. }
+        "401": { description: "`reauth_failed` or `otp_required`." }
+  /v1/_auth/totp/begin:
+    post:
+      tags: [auth]
+      summary: Start enrolling an authenticator (a fresh secret).
+      operationId: totpBegin
+      responses:
+        "200": { description: "`secret`, `otpauth_uri`, `enrolment`." }
+  /v1/_auth/totp/confirm:
+    post:
+      tags: [auth]
+      summary: Confirm an authenticator with its first code (re-authenticates); returns ten recovery codes once.
+      operationId: totpConfirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                otp: { type: string }
+                enrolment: { type: string }
+                code: { type: string }
+      responses:
+        "200": { description: "`recovery_codes`." }
+  /v1/_auth/totp:
+    delete:
+      tags: [auth]
+      summary: Remove the authenticator (re-authenticates; the password left must meet the sole-factor policy, or send new_password).
+      operationId: totpRemove
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: string, format: password }
+                otp: { type: string }
+                new_password: { type: string, format: password }
+      responses:
+        "204": { description: Removed. }
+        "400": { description: "`password_too_weak_alone`, or a policy refusal of new_password." }
+        "403": { description: "`mfa_required`: the gate requires an authenticator." }
 components:
   securitySchemes:
     bearerAuth:
@@ -781,6 +1156,18 @@ components:
       scheme: bearer
       description: An OperatorTokenDef-minted bearer (substrate:tenant, or a non-isolated member token; runs:create for the decision routes).
   parameters:
+    Gate:
+      name: gate
+      in: path
+      required: true
+      schema: { type: string }
+      description: A configured gate of kind password; any other name is a 404.
+    TenantQuery:
+      name: tenant
+      in: query
+      required: false
+      schema: { type: string }
+      description: The tenant to act on. Required for an auth:manage token; a tenant operator may name only its own.
     Scope:
       name: scope
       in: path
@@ -854,6 +1241,18 @@ components:
         code: { type: string }
         error: { type: string }
       required: [code, error]
+    AuthgateLink:
+      description: |
+        A one-time link to loomcycle's own invite or reset page. The code is in
+        the URL fragment, so it never reaches a server log or a Referer header;
+        it is returned only here and stored only hashed.
+      type: object
+      properties:
+        invite_id: { type: string }
+        reset_id: { type: string }
+        url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+      required: [url, expires_at]
     ForbiddenError:
       description: A 403. `required_scope` is present when `code` is `insufficient_scope`.
       allOf:

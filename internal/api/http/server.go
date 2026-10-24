@@ -136,6 +136,9 @@ type Server struct {
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
+	// pwGates holds the configured password gates (RFC FA P2,
+	// SetPasswordGates); empty = no password gate.
+	pwGates passwordGatesHolder
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration
@@ -4246,6 +4249,19 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMintUserToken))))
 	mux.Handle("GET /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserTokens))))
 	mux.Handle("DELETE /v1/_users/{subject}/tokens/{def_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRevokeUserToken))))
+	// RFC FA P2 — the password gate's management API: invitations, reset
+	// links, password removal, login renames and the logins of a user. None
+	// accepts a password. A tenant operator manages its own tenant, an admin
+	// any, and an auth:manage credential any (authManageRoute admits it here
+	// and on the /v1/_users CRUD only). Scope-gated in requiredScopeFor.
+	mux.Handle("POST /v1/_authgate/{gate}/invites", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateCreateInvite))))
+	mux.Handle("GET /v1/_authgate/{gate}/invites", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListInvites))))
+	mux.Handle("DELETE /v1/_authgate/{gate}/invites/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRevokeInvite))))
+	mux.Handle("POST /v1/_authgate/{gate}/resets", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateCreateReset))))
+	mux.Handle("DELETE /v1/_authgate/{gate}/credentials/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateDeleteCredentials))))
+	mux.Handle("PATCH /v1/_authgate/{gate}/logins/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRenameLogin))))
+	mux.Handle("GET /v1/_authgate/{gate}/identities", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListIdentities))))
+	mux.Handle("GET /v1/_authgate/{gate}/tenant-status", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateTenantStatus))))
 	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
 	// _system/* channels. Used by external monitoring (push alerts in
 	// via webhook), ops dashboards (operator-issued alarms), and
@@ -4641,6 +4657,22 @@ func (s *Server) Mux() http.Handler {
 	// authMiddleware so an expired session can still log out; the handler's
 	// CSRF check (custom header + same origin) keeps other sites from it.
 	mux.Handle("POST /v1/_auth/logout", recoveryMiddleware(http.HandlerFunc(s.handleAuthLogout)))
+	// RFC FA P2 — the password gate's person-facing endpoints. The login,
+	// invite and reset posts are unauthenticated (they ESTABLISH a session):
+	// each takes its code in the body (never the URL), is same-origin with
+	// the X-Loomcycle-UI header, and is throttled per source, code and
+	// account. The self-service routes need a password-gate session, through
+	// authMiddleware (whose CSRF check covers cookie-authenticated writes).
+	mux.Handle("POST /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handlePasswordLogin)))
+	mux.Handle("POST /v1/_auth/invite/info", recoveryMiddleware(http.HandlerFunc(s.handleInviteInfo)))
+	mux.Handle("POST /v1/_auth/invite", recoveryMiddleware(http.HandlerFunc(s.handleRedeemInvite)))
+	mux.Handle("POST /v1/_auth/reset/info", recoveryMiddleware(http.HandlerFunc(s.handleResetInfo)))
+	mux.Handle("POST /v1/_auth/reset", recoveryMiddleware(http.HandlerFunc(s.handleCompleteReset)))
+	mux.Handle("GET /v1/_auth/account", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAccountInfo))))
+	mux.Handle("POST /v1/_auth/password", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleChangePassword))))
+	mux.Handle("POST /v1/_auth/totp/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPBegin))))
+	mux.Handle("POST /v1/_auth/totp/confirm", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPConfirm))))
+	mux.Handle("DELETE /v1/_auth/totp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPRemove))))
 	// OpenAPI contract (RFC CD Part A) — served UNAUTHENTICATED, like /ui:
 	// the machine-readable contract is non-secret and must be discoverable
 	// for codegen, while the data behind it still goes through authMiddleware.

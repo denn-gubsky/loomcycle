@@ -1666,7 +1666,7 @@ auth:
 
 - **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `LOOMCYCLE_UI_LOGIN_ORIGINS` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
 - **`auth.mode: strict`** offers only the listed gates. The paste box exists only if a `kind: token` gate is listed, the handoff is off, the old bearer cookie and the WebSocket subprotocol bearer are not read, and Web UI sessions need HTTPS (see below). Strict mode with no interactive gate fails the load (nobody could sign in); strict mode with no credential at all refuses to boot. A config reload cannot lower the mode (audited `auth_downgrade_refused`); that takes a restart. API bearers are unaffected.
-- **Gates.** `kind: token` (paste a loomcycle token) is the only kind in this release; the other kinds the RFC names are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
+- **Gates.** `kind: token` (paste a loomcycle token) and `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)); the other kinds the RFC names are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
 - **`auth.session`.** `idle` (default 8h) ends a session after that long without a request; `absolute` (default 7 days) caps it whatever the activity. Shortening either applies to sessions already issued. `reauth_window` (default 15m) is validated now and used once sensitive actions ask for a recent sign-in.
 - **A session never outlives or out-reaches its token.** A session made from a pasted token re-checks that token on every request: retiring or expiring a minted token, changing a principal's secret, removing it, or changing `LOOMCYCLE_AUTH_TOKEN` ends the session on its next request, and the session always carries the token's **current** scopes. A changed token pepper (`LOOMCYCLE_OPERATOR_TOKEN_PEPPER` / `LOOMCYCLE_SECRET_KEY`) ends every session. A browser that presents the cookie with a different User-Agent ends it too.
 
@@ -1682,6 +1682,77 @@ auth:
 **CSRF.** A request a session cookie authenticates that changes state must carry `X-Loomcycle-UI: 1` and come from the server's own origin (`Sec-Fetch-Site: same-origin`, or an `Origin` naming this host); a WebSocket upgrade it authenticates needs the same origin. The login route needs a same-origin request too. Requests with an `Authorization` header are not affected. **A UI bundle built for an older server (`LOOMCYCLE_WEBUI_DIR` / `LOOMCYCLE_WEBUI_BUNDLE_URL`) does not send the header**, so the server's UI API level is now 2 and such a bundle is refused in favour of the embedded UI.
 
 **Routes.** `POST /ui/session` (the token gate; `Authorization: Bearer`; 204 + cookie, or an opaque `401 invalid_credentials`), `POST /v1/_auth/logout` (revokes the session, clears the cookies, sends `Clear-Site-Data`), `GET /ui/login-config.json` (the mode, the gates' names, kinds and labels, the handoff origins, and `session_refused` when this request cannot sign in), and `GET /v1/_me`'s `auth` block (`mode`; for a session also `gate`, `amr`, `auth_time`, `session_expires_at`). `GET /ui?token=…` no longer signs anyone in: it redirects to the login page. With `LOOMCYCLE_AUDIT_LOG_PATH` set, `auth_login`, `auth_login_failed`, `auth_logout`, `auth_session_expired` and `auth_session_revoked` are recorded with the gate, tenant, subject and source address, never a token or session id. Ended sessions are deleted hourly.
+
+### Password gate — `kind: password` (RFC FA P2)
+
+**Why a password gate, and why loomcycle never takes the password over its API.** A website that runs its own sign-up (loomcycle.cloud) and a tenant that adds its own people both need accounts that are not pasted tokens. loomcycle keeps those passwords itself, to the current standard, but the person always types theirs into **loomcycle's own pages** — the login form, an invitation page, a reset page. A website or an operator only ever handles **links**: loomcycle issues them, the caller delivers them (loomcycle sends no mail), and no management route accepts a password.
+
+```yaml
+auth:
+  trusted_proxies: [127.0.0.1]      # see "The client address behind a proxy" below
+  gates:
+    local:
+      kind: password
+      label: "Sign in"
+      require_mfa: true             # default: true in strict mode, false in token mode
+      trusted: false                # true: an operator's invite may grant access_mode tenant and groups
+      invites: { default_ttl: 168h, max_ttl: 720h }   # max at most 30 days
+      resets: { ttl: 1h }                              # at most 24h
+      allowed_return_to: ["https://www.example.com/welcome"]
+      password: { denylist_file: /etc/loomcycle/denylist.txt, max_failures: 10, lockout_minutes: 15 }
+      new_user: { access_mode: isolated, groups: [everyone, new-users] }   # the provisioning floor (these are the defaults)
+      manager_may_recover_owners: false
+```
+
+A password gate needs **`LOOMCYCLE_SECRET_KEY`** (the password pepper and the key that seals authenticator secrets derive from it) and **`LOOMCYCLE_PUBLIC_URL`** (invite and reset links are built from it); without either the config fails to load, so `loomcycle validate` reports it. A password gate is an interactive gate, so strict mode may list it alone.
+
+- **Storage.** Argon2id (`m=19456, t=2, p=1`) in a PHC string whose digest is an HMAC under a pepper derived from `LOOMCYCLE_SECRET_KEY` and never stored, so a copy of the database verifies nothing. `LOOMCYCLE_SECRET_KEY_PREVIOUS` keeps verifying during a key rotation, and a password is re-hashed on its next sign-in. Authenticator secrets are sealed with the same key the credential store uses, bound to the user; recovery codes and every invite and reset code are kept only as hashes.
+- **Policy** (NIST SP 800-63B-4): at least 15 characters when the password is the only factor, 8 with an authenticator; no composition rules, no expiry, paste allowed, Unicode-normalised. Refused: the built-in list of the 10,000 most common passwords (SecLists, MIT), the lines of `password.denylist_file` (one per line, `#` comments, compared case-insensitively), and the person's own login or e-mail.
+- **Logins** are unique per gate across every tenant, compared after Unicode normalisation and case folding (`Alice@Example.com` and `alice@example.com` are one login), so the login form asks for no tenant. A user the gate creates gets the subject `<gate>:<random>`; the login is an attribute and can be renamed without moving the user's data.
+- **Sign-in and throttling.** An unknown login, a wrong password, a locked account and a disabled user get the same `401 invalid_credentials`, after the same Argon2id work. Failures are counted per account (a short backoff from the fourth, then a lockout of `lockout_minutes` at `max_failures`, audited `auth_login_locked`), per client address, and per client address and login together (so a client guessing one account slows itself there first); invite and reset links are throttled per link too. The counters are in the store, so every replica sees them. An account with an authenticator is asked for its 6-digit code (or a recovery code) only after the password was right; a code is accepted once.
+- **The client address behind a proxy.** Throttling (and the audit's source address) needs the real client, not the proxy every request arrives from. `auth.trusted_proxies` lists the proxies allowed to say who the client is, and `auth.client_ip_header` the header they say it in; without a header, the right-most `X-Forwarded-For` entry that is not a trusted proxy is used. A request from any other peer is taken at its own address, whatever headers it sends. The server warns at boot when a password gate runs with an `https` `LOOMCYCLE_PUBLIC_URL` and no `trusted_proxies`.
+
+  | Deployment | Set |
+  |---|---|
+  | Cloudflare Tunnel (`cloudflared` in its own container) | `auth.trusted_proxies: [<the cloudflared container network, e.g. 172.18.0.0/16>]`, `auth.client_ip_header: CF-Connecting-IP` |
+  | `tailscale serve` on the same machine | `auth.trusted_proxies: [127.0.0.1, "::1"]` (it sends `X-Forwarded-For`) |
+  | Direct (browsers connect to loomcycle itself) | nothing |
+- **Authenticator (TOTP).** Enrolled on the invite page when `require_mfa` is set (optional otherwise), or later on `/ui/account`. Ten single-use recovery codes are shown once. `require_mfa` on a gate refuses a sign-in without one, and the authenticator cannot be removed there. Elsewhere removing it leaves the password as the only factor, so a password that was long enough only beside it (8–14 characters) must be replaced in the same request.
+- **Lost the authenticator and the recovery codes.** A reset never clears the authenticator (the link alone must not get past the second factor), so the way back is two operator steps: `DELETE /v1/_authgate/{gate}/credentials/{subject}` removes the password, authenticator and recovery codes (the login stays reserved), then `POST /v1/_authgate/{gate}/resets` issues a link on which the person sets a new password and, where the gate requires one, enrols a new authenticator.
+- **Sessions.** A password sign-in ends in the same Web UI session as a pasted token, bound to the stored password: a reset, a password change or a removed password ends every session made from the old one. The session carries the user's own reach — the scopes its `access_mode` grants a delegated token, and its access-control set — never more, with one exception: a tenant's **bootstrapped owner** (below) holds a user binding to the built-in `builtin:tenant-operator` list, and its session is its tenant's operator (`substrate:tenant`, confined to that tenant). The binding is listed in the Access console; retiring it takes the operator plane away on the owner's next request. Only the bootstrap writes it: member invites, attach invites and recoveries never do.
+
+**Links.** An invite or reset link is `https://<LOOMCYCLE_PUBLIC_URL>/ui/invite#lci_…` or `/ui/reset#lcr_…`. The code is in the fragment, so it reaches no server log or `Referer`; the page sends it in a POST body and drops it from the address bar. A code is single-use, expires, and is stored only as its SHA-256.
+
+**Management API** (`/v1/_authgate/{gate}/…`; `{gate}` must be a password gate). None of these takes a password; a body field the route does not know is refused.
+
+| Route | Does |
+|---|---|
+| `POST invites {tenant?, subject?, access_mode?, groups?, login?, email?, ttl?, return_to?}` | A single-use invite → `{invite_id, url, expires_at}`. With `subject`, attaches a password to that existing user (no login or password at the gate yet; its access mode and groups are kept and never raised). `login` fixes the login; `email` suggests one. |
+| `GET invites`, `DELETE invites/{id}` | List (never a code); revoke a live one. |
+| `POST resets {tenant?, subject}` | A one-time reset link for a user with a login at the gate; a newer one supersedes it. Completing it ends the user's sessions and retires its delegated tokens; an account with an authenticator must also give a code from it. |
+| `DELETE credentials/{subject}` | Removes the password, authenticator and recovery codes; the login stays reserved, so a reset restores it. |
+| `PATCH logins/{subject} {login}` | Renames the login. |
+| `GET identities?subject=` | The user's logins at every gate, and whether it has a password and an authenticator. |
+| `GET tenant-status?tenant=` | `has_users`, `bootstrapped` (ever had a user) and `bootstrap_invite_live` — what a website needs for an owner bootstrap. |
+
+**Who may call.** A `substrate:tenant` operator for its own tenant (`tenant` defaults to it; another is `403 tenant_mismatch`); an admin for any tenant; and an **`auth:manage`** token — a website's user-management credential, minted alone (`scopes: ["auth:manage"]`), which reaches only these routes and the `/v1/_users` list, create, update and delete, in any tenant it names with `tenant` / `?tenant=` (it must name one), and nothing else: no runs, no data, no whoami, no token minting, no groups or ACLs, no gRPC.
+
+**The floor.** What a user the gate provisions gets unasked is `new_user` (default `isolated` in `[everyone, new-users]`). On a gate that is not `trusted`, an invite may grant no more. A user is **above the floor** when its access mode is higher, it is in any other group (stored or config-declared, directly or through nesting), an access-control binding applies to it other than tenant-wide ones and those on the floor groups, or it holds a token with a scope the floor does not grant; a store error counts as above. What an `auth:manage` token may do:
+
+| Action | Floor user | Above the floor | Above, with `manager_may_recover_owners: true` |
+|---|---|---|---|
+| Invite a new user | at the floor (any gate, `trusted` or not) | — | — |
+| Owner bootstrap (`access_mode: tenant` invite or `POST /v1/_users`) | only for a tenant that never had a users row and has no live owner invite; operator tokens in the tenant do not count, so a tenant created by the old cloud mint path gets its owner exactly once. The owner is bound to `builtin:tenant-operator` in the same transaction (audited `auth_owner_bound`), which puts it above the floor | — | — |
+| Attach a password (invite with `subject`) | yes | refused | yes, if the user has no login or password at the gate yet (audited `auth_recovery`) |
+| Reset link | yes | refused | yes (audited `auth_recovery`) |
+| Delete, disable, re-enable, change `access_mode`, remove the password, rename the login | yes (`access_mode` never raised) | refused | refused |
+| Change `display_name` | yes | yes | yes |
+
+Refusals are `403 target_beyond_floor`, audited `auth_manage_refused`. A link an `auth:manage` token issued is checked against the floor **again when it is used**, and any write that raises the user's authority (a group membership, a binding on it or its token, `access_mode: tenant`, a new token) revokes it at once. **`manager_may_recover_owners` makes the website's credential able to take over any owner's account** — the website then owns the accounts, which is loomcycle.cloud's trust model; keep it `false` everywhere else. Deleting every user of a tenant does not re-open its bootstrap: a tenant that ever had a user stays marked, and the marker travels in snapshots.
+
+**Person-facing routes** (loomcycle's own pages call them; each is same-origin with `X-Loomcycle-UI: 1`): `POST /v1/_auth/complete/{gate}` (sign in: `login`, `password`, `otp`), `POST /v1/_auth/invite/info` and `POST /v1/_auth/invite`, `POST /v1/_auth/reset/info` and `POST /v1/_auth/reset`, and on a password session `GET /v1/_auth/account`, `POST /v1/_auth/password`, `POST /v1/_auth/totp/begin`, `POST /v1/_auth/totp/confirm`, `DELETE /v1/_auth/totp` — each change re-asks the current password (and code). The pages are `/ui/login`, `/ui/invite`, `/ui/reset` and `/ui/account`.
+
+**Audit** (with `LOOMCYCLE_AUDIT_LOG_PATH`): `auth_invite_created`, `auth_invite_revoked`, `auth_invite_redeemed`, `auth_reset_issued`, `auth_password_set`, `auth_credential_removed`, `auth_login_renamed`, `auth_totp_enrolled`, `auth_totp_removed`, `auth_login_locked`, `auth_manage_refused`, `auth_manage_recovery`, `auth_owner_bound`, besides the sign-in events above — with the gate, tenant, subject and caller, never a code, link or password. Dead invites and resets are deleted a week after they stop working; idle throttle counters hourly.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 

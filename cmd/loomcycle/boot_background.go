@@ -464,6 +464,10 @@ func (b *boot) seedServerState() {
 	go srv.ProvisionDeclaredPrincipalDocs(bgCtx)
 }
 
+// authGateLinkRetention is how long a used, revoked or expired invite or
+// reset row is kept before the sweeper deletes it.
+const authGateLinkRetention = 7 * 24 * time.Hour
+
 // startStoreSweepers starts the periodic store sweepers: expired tokens,
 // memory TTL, drained queue rows, the change feed and its push engine,
 // dead-link GC, channels and interrupts.
@@ -504,6 +508,34 @@ func (b *boot) startStoreSweepers() {
 				}
 				if n > 0 {
 					slog.Info("ui-session sweep: deleted ended sessions", "rows", n)
+				}
+			})
+	}
+
+	// Password gate sweeper (RFC FA P2): invites and resets that can no
+	// longer be used, kept a week for the audit trail's sake, and throttle
+	// counters whose window and block have both ended. The rows hold only
+	// code hashes; deleting them changes no answer.
+	if storeIface != nil {
+		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthGateSweeper, "auth-gate",
+			func(ctx context.Context) {
+				now := time.Now()
+				inv, err := storeIface.AuthInviteDeleteExpired(ctx, now.Add(-authGateLinkRetention))
+				if err == nil {
+					var rst int
+					rst, err = storeIface.AuthResetDeleteExpired(ctx, now.Add(-authGateLinkRetention))
+					inv += rst
+				}
+				var thr int
+				if err == nil {
+					thr, err = storeIface.AuthThrottleDeleteExpired(ctx, now)
+				}
+				if err != nil {
+					slog.Error("auth-gate sweep: failed", "err", err)
+					return
+				}
+				if inv+thr > 0 {
+					slog.Info("auth-gate sweep: deleted dead links and idle counters", "links", inv, "counters", thr)
 				}
 			})
 	}

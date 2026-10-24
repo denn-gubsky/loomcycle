@@ -47,6 +47,13 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	// Tenant scope: a tenant principal sees only its own tenant's users;
 	// super-admin sees all, or focuses one via ?tenant= (the UI's tenant
 	// switcher). all=true → "" filter (every tenant).
+	// RFC FA D16: an auth:manage credential names the tenant and gets the
+	// registered users only — not the run activity, which is data it has no
+	// reach over.
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok && auth.IsAuthManager(p) {
+		s.listUsersForManager(w, r)
+		return
+	}
 	tenantID, all := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
 	if all {
 		tenantID = ""
@@ -112,6 +119,27 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// listUsersForManager is GET /v1/_users for an auth:manage credential: one
+// named tenant's registered users, without run activity.
+func (s *Server) listUsersForManager(w http.ResponseWriter, r *http.Request) {
+	tenant, _, ok := s.manageTenant(w, r.Context(), r.URL.Query().Get("tenant"))
+	if !ok {
+		return
+	}
+	records, err := s.store.UserList(r.Context(), tenant)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := listUsersResponse{Users: make([]wireUserSummary, 0, len(records))}
+	for _, rec := range records {
+		resp.Users = append(resp.Users, wireUserSummary{
+			UserID: rec.Subject, Registered: true, DisplayName: rec.DisplayName, AccessMode: rec.AccessMode, Status: rec.Status,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func toWireUser(u store.UserSummary) wireUserSummary {

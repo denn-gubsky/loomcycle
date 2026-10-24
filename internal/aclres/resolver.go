@@ -99,6 +99,10 @@ func (r *Resolver) Mode() authz.Mode { return r.mode }
 // the token.
 func Class(p auth.Principal) string {
 	switch {
+	// Before admin: an auth:manage credential is held to its own list even
+	// if a scope set slipped past ValidateScopeSet.
+	case auth.IsAuthManager(p):
+		return "authmanager"
 	case p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin):
 		return "admin"
 	case auth.HasScope(p.Scopes, auth.ScopeTenant):
@@ -130,7 +134,7 @@ func ClassKey(p auth.Principal) string {
 func splitClassKey(key string) (class string, runPlane, ok bool) {
 	class, runPlane = strings.CutSuffix(key, runPlaneSuffix)
 	switch class {
-	case "admin", "tenant", "isolated", "member":
+	case "admin", "tenant", "isolated", "member", "authmanager":
 		return class, runPlane, true
 	}
 	return "", false, false
@@ -144,6 +148,8 @@ func baselineName(class string) string {
 		return authz.BaselineTenantOperator
 	case "isolated":
 		return authz.BaselineIsolated
+	case "authmanager":
+		return authz.BaselineAuthManager
 	}
 	return authz.BaselineMember
 }

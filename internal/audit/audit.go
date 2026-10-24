@@ -130,6 +130,23 @@ type Event struct {
 	AuthGate   string   `json:"auth_gate,omitempty"`
 	AuthAMR    []string `json:"auth_amr,omitempty"`
 	AuthReason string   `json:"auth_reason,omitempty"`
+
+	// --- Password gate management (Action = "auth_invite_created" |
+	// "auth_invite_revoked" | "auth_invite_redeemed" | "auth_reset_issued" |
+	// "auth_password_set" | "auth_credential_removed" | "auth_login_renamed") ---
+	//
+	// The gate travels in AuthGate above; this adds the invite or reset row
+	// id. Never a code, a link, a password or a TOTP secret. The user travels
+	// in TargetTenant / TargetSubject, the caller in the Actor fields.
+	AuthRecordID string `json:"auth_record_id,omitempty"`
+	// AuthRecovery marks an auth:manage action on a user above the
+	// provisioning floor that the gate's manager_may_recover_owners allowed
+	// (a reset, or attaching a first password); AuthTargetAccessMode is that
+	// user's access mode. Both are what an auditor of a website's credential
+	// looks for.
+	// An "auth_manage_refused" names the refused operation in AuthReason.
+	AuthRecovery         bool   `json:"auth_recovery,omitempty"`
+	AuthTargetAccessMode string `json:"auth_target_access_mode,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

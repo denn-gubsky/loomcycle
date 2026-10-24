@@ -102,6 +102,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 // one of the paths below that admit a principal without it. It returns the
 // scope so the refusal can name it.
 func scopeGate(p auth.Principal, method, path string) (required string, admitted bool) {
+	// RFC FA D16: a user-management credential reaches its route list and
+	// nothing else — not even the routes any authenticated principal may
+	// call. Checked first so no member, self-service or gateway path below
+	// can admit it elsewhere.
+	if auth.IsAuthManager(p) {
+		return auth.ScopeAuthManage, authManageRoute(method, path)
+	}
 	required = requiredScopeFor(method, path)
 	if required == "" || auth.HasScope(p.Scopes, required) {
 		return required, true
@@ -1249,6 +1256,12 @@ func requiredScopeFor(method, path string) string {
 	// without granting new reach. principalTenantScope confines it.
 	case strings.HasPrefix(path, "/v1/_users/"):
 		return auth.ScopeTenant
+	// RFC FA P2: the password gate's management API (invites, resets,
+	// credentials, logins) is the tenant operator's for its own tenant; admin
+	// for any. An auth:manage credential is admitted by authManageRoute
+	// before this switch. The handlers confine the tenant.
+	case strings.HasPrefix(path, authGateRoutePrefix):
+		return auth.ScopeTenant
 	// RFC EY P4: groups, ACL rule lists and bindings are the tenant
 	// operator's (admin focuses another tenant with ?tenant=); members are
 	// carved out below. The evaluate / explain / simulate questions are
@@ -1257,6 +1270,11 @@ func requiredScopeFor(method, path string) string {
 	case memberpath.IsACLManagementPath(path):
 		return auth.ScopeTenant
 	case strings.HasPrefix(path, "/v1/_authz/"):
+		return ""
+	// RFC FA P2: a signed-in person's own account (password, authenticator).
+	// Any principal reaches the handler, which serves only a password-gate
+	// Web UI session and re-authenticates every change.
+	case strings.HasPrefix(path, "/v1/_auth/"):
 		return ""
 	// Tenant enumeration. ScopeAdmin, and the HANDLER re-checks: the counts are
 	// unremarkable but the LIST ITSELF is cross-tenant information, which is
@@ -1518,6 +1536,28 @@ func userSelfServiceRoute(method, path string) bool {
 	}
 	return false
 }
+
+// authManageRoute is the whole reach of an auth:manage credential (RFC FA
+// D16): the password gate's management API, and the user roster's list,
+// create, update and delete. Not GET /v1/_users/{subject} (the per-subject
+// view aggregates usage, limits and memory), not the token routes under it,
+// not whoami. A deny-by-default allowlist: a route added later is closed to
+// it until it is listed here.
+func authManageRoute(method, path string) bool {
+	if strings.HasPrefix(path, authGateRoutePrefix) {
+		return true
+	}
+	if path == "/v1/_users" {
+		return method == http.MethodGet || method == http.MethodPost
+	}
+	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok && rest != "" && !strings.Contains(rest, "/") {
+		return method == http.MethodPatch || method == http.MethodDelete
+	}
+	return false
+}
+
+// authGateRoutePrefix is the password gate's management API.
+const authGateRoutePrefix = "/v1/_authgate/"
 
 // isTenantConfinedDefPath matches the substrate def-authoring families that
 // RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined

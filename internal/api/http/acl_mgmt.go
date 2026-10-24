@@ -914,7 +914,7 @@ func (s *Server) aclConfigList(ctx context.Context, tenant, name string) (aclCon
 func builtinACLs() []authz.ACL {
 	bl := authz.Baselines()
 	out := make([]authz.ACL, 0, len(bl))
-	for _, name := range []string{authz.BaselineAdmin, authz.BaselineTenantOperator, authz.BaselineMember, authz.BaselineIsolated, authz.BaselineRunPlane} {
+	for _, name := range []string{authz.BaselineAdmin, authz.BaselineTenantOperator, authz.BaselineMember, authz.BaselineIsolated, authz.BaselineRunPlane, authz.BaselineAuthManager} {
 		out = append(out, bl[name])
 	}
 	return out

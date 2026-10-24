@@ -179,14 +179,6 @@ func credentialMAC(id []byte, h auth.TokenHasher, credHash string) string {
 	return sessionMAC(id, "cred", h.Hash(hasherProbe)+"\x00"+credHash)
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
 // sameOrigin reports whether a browser request came from this server's own
 // pages. Sec-Fetch-Site is authoritative when the browser sends it (every
 // current browser does); without it the Origin header must name this host. A
@@ -292,6 +284,11 @@ func (s *Server) gateFor(g config.AuthGate) (authgate.Gate, error) {
 	switch g.Kind {
 	case config.AuthGateKindToken:
 		return authgate.NewBaseAuthGate(s.resolvePrincipal), nil
+	case config.AuthGateKindPassword:
+		if pw, ok := s.passwordGateNamed(g.Name); ok {
+			return pw, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the password gate is not running (see the boot log)", g.Name)
 	}
 	return nil, fmt.Errorf("auth gate %q: kind %q has no implementation", g.Name, g.Kind)
 }
@@ -332,7 +329,7 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_bearer", "Authorization: Bearer <token> required")
 		return
 	case err != nil:
-		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, SourceAddr: clientIP(r)})
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
 		return
 	}
@@ -423,7 +420,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 		CredRef:           ref,
 		CredMAC:           credentialMAC(id, h, credHash),
 		UAHash:            sessionMAC(id, "ua", r.UserAgent()),
-		IPHash:            sessionMAC(id, "ip", clientIP(r)),
+		IPHash:            sessionMAC(id, "ip", s.clientSource(r)),
 		CreatedAt:         now,
 		LastSeenAt:        now,
 		IdleExpiresAt:     now.Add(policy.SessionIdle()),
@@ -453,7 +450,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 	http.SetCookie(w, expiredCookie(webui.LegacyBearerCookie, secure))
 	s.recordAuthEvent(audit.Event{
 		Action: "auth_login", ActorTenant: ident.TenantID, ActorSubject: ident.Subject,
-		AuthGate: ident.Gate, AuthAMR: ident.AMR, SourceAddr: clientIP(r),
+		AuthGate: ident.Gate, AuthAMR: ident.AMR, SourceAddr: s.clientSource(r),
 	})
 	return nil
 }
@@ -466,6 +463,10 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 func (s *Server) credentialBinding(ctx context.Context, h auth.TokenHasher, ident sessionIdentity) (kind, ref, credHash string, err error) {
 	c := ident.Credential
 	if c == nil {
+		// A password-gate session is bound to the stored password.
+		if _, ok := s.passwordGateNamed(ident.Gate); ok {
+			return s.passwordSessionBinding(ctx, ident)
+		}
 		return "", "", "", fmt.Errorf("%w: gate %q verified an identity with no loomcycle credential", errNoSessionBinding, ident.Gate)
 	}
 	p := c.Principal
@@ -595,6 +596,8 @@ func (s *Server) sessionCredentialPrincipal(ctx context.Context, id []byte, row 
 			return p, p.TokenDefID == row.CredRef, true
 		}
 		return auth.Principal{}, false, true
+	case credKindPassword:
+		return s.passwordSessionPrincipal(ctx, row, bound)
 	case credKindLegacy:
 		secret := s.cfg().Env.AuthToken
 		if secret == "" || !bound(h.Hash(secret)) {
@@ -621,7 +624,7 @@ func (s *Server) endSession(ctx context.Context, r *http.Request, row store.UISe
 	if changed {
 		s.recordAuthEvent(audit.Event{
 			Action: action, ActorTenant: row.TenantID, ActorSubject: row.Subject,
-			AuthGate: row.Gate, AuthReason: reason, SourceAddr: clientIP(r),
+			AuthGate: row.Gate, AuthReason: reason, SourceAddr: s.clientSource(r),
 		})
 	}
 }
@@ -648,7 +651,7 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 			if changed {
 				s.recordAuthEvent(audit.Event{
 					Action: "auth_logout", ActorTenant: row.TenantID, ActorSubject: row.Subject,
-					AuthGate: row.Gate, SourceAddr: clientIP(r),
+					AuthGate: row.Gate, SourceAddr: s.clientSource(r),
 				})
 			}
 		}

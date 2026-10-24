@@ -4369,6 +4369,37 @@ button.primary:disabled {
   color: var(--fg);
   opacity: 0.55;
 }
+/* Password gate (RFC FA P2): the sign-in form's heading, the authenticator
+   enrolment block and the one-time recovery codes. */
+.login-card form,
+.login-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.login-gate {
+  margin: 0.5rem 0 0;
+  font-size: 0.95rem;
+}
+.login-fieldset {
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+}
+.login-secret {
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+  user-select: all;
+}
+.login-codes {
+  columns: 2;
+  margin: 0;
+  padding-left: 1.2rem;
+  font-family: ui-monospace, monospace;
+}
+.login-check {
+  font-size: 0.85rem;
+}
 
 .role-badge {
   font-size: 0.72rem;

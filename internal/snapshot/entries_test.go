@@ -113,7 +113,7 @@ var pinnedEntryKeys = map[string][]string{
 		"memory", "memory_pending", "channels", "channel_defs", "webhook_defs", "webhook_def_active", "schedule_defs",
 		"schedule_def_active", "evaluations", "paused_runs", "queued_runs", "interaction_history", "sqlmem", "dirents", "capture_findings"},
 
-	"UsersSection":              {"version", "entries"},
+	"UsersSection":              {"version", "entries", "bootstraps"},
 	"TokenLimitsSection":        {"version", "entries", "usage_mtd"},
 	"AgentDefsSection":          {"version", "entries"},
 	"AgentDefActiveSection":     {"version", "entries"},
@@ -136,6 +136,9 @@ var pinnedEntryKeys = map[string][]string{
 	"CaptureFindingsSection":    {"version", "entries"},
 
 	"UserEntry": {"tenant_id", "subject", "display_name", "access_mode", "status", "created_at", "created_by"},
+	// A bootstrap marker names a tenant, a time and the route that wrote it
+	// ("users", "invite:<gate name>", "backfill"): no login, no credential.
+	"TenantBootstrapEntry": {"tenant_id", "at", "via"},
 	"TokenLimitEntry": {"tenant_id", "scope", "scope_id", "soft_limit", "hard_limit", "updated_at",
 		"updated_by"},
 	// Budget state only: one total per (tenant, user). It must never gain a

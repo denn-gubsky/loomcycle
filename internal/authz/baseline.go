@@ -17,6 +17,7 @@ const (
 	BaselineMember         = "builtin:member"
 	BaselineIsolated       = "builtin:isolated"
 	BaselineRunPlane       = "builtin:run-plane"
+	BaselineAuthManager    = "builtin:auth-manager"
 )
 
 // BuiltinPrefix marks a baseline name.
@@ -167,6 +168,13 @@ func Baselines() map[string]ACL {
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},
 				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse"}, Resources: []string{"document:tenant"}},
 				{Effect: Deny, Actions: []string{"read"}, Resources: []string{"history:tenant", "history:global"}},
+			}},
+		// RFC FA D16: a website's user-management credential. The roster and
+		// the password gate's management questions, across tenants; nothing
+		// else.
+		BaselineAuthManager: {Name: BaselineAuthManager, Description: "auth:manage — the user roster and the password gate's invites, resets and logins, nothing else",
+			Rules: []Rule{
+				{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"principal:user:*"}},
 			}},
 		BaselineRunPlane: {Name: BaselineRunPlane, Description: "a token limited to certain agents (RFC EF): the run plane only",
 			Rules: []Rule{

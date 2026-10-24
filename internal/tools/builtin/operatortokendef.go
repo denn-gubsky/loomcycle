@@ -277,6 +277,9 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	if bad := auth.UnknownScopes(scopes); bad != nil {
 		return errResult(fmt.Sprintf("create: unknown scope(s) %v — not in the closed catalog", bad)), nil
 	}
+	if err := auth.ValidateScopeSet(scopes); err != nil {
+		return errResult("create: " + err.Error()), nil
+	}
 
 	var restrictions auth.Restrictions
 	if in.Agents != nil {

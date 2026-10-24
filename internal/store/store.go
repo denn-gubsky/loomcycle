@@ -1625,6 +1625,8 @@ type Store interface {
 	TokenLimitStore
 	RetentionStore
 	UserStore
+	AuthIdentityStore
+	PasswordGateStore
 	SnapshotStore
 	SnapshotReadStore
 	SnapshotRestoreStore
@@ -2418,7 +2420,10 @@ type UserStore interface {
 	// and rejects an AccessMode / Status outside the shared enum.
 	UserUpdate(ctx context.Context, tenantID, subject string, patch UserPatch) error
 
-	// UserDelete hard-deletes one identity row and reports whether a row
+	// UserDelete hard-deletes one identity row and, in the same transaction,
+	// unbinds the subject: its live user-kind ACL bindings are retired and its
+	// user-kind group memberships removed (acl_version bumped), so a later
+	// user of the same subject inherits nothing. It reports whether a row
 	// was removed (false = the row did not exist). The subject's OWNED data
 	// (runs / sessions / memory) has no FK to this table and is left intact
 	// — deleting the identity record is not the erasure surface.

@@ -44,6 +44,10 @@ func CarvedOut(method, path string) bool {
 		return true
 	case strings.HasPrefix(path, "/v1/_users/"):
 		return true
+	// The password gate's invites, resets and logins hand out access to the
+	// tenant: the operator's, like minting a user's token.
+	case strings.HasPrefix(path, "/v1/_authgate/"):
+		return true
 	case path == "/v1/_erasure":
 		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):

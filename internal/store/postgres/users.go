@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
 // users.go — RFC BX P2a tenant-owned user-identity CRUD against the `users`
@@ -30,6 +31,12 @@ func (s *Store) UserCreate(ctx context.Context, row store.UserRow) error {
 	createdAt := row.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
+	}
+	// The tenant's bootstrap marker goes first: a marker with no user (the
+	// insert below failing) only refuses a later bootstrap, never allows one.
+	if _, err := s.pool.Exec(ctx, `INSERT INTO tenant_bootstraps (tenant_id, at, via) VALUES ($1, $2, 'users')
+		ON CONFLICT (tenant_id) DO NOTHING`, row.TenantID, createdAt); err != nil {
+		return fmt.Errorf("user create: bootstrap marker: %w", err)
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO users (
@@ -121,6 +128,13 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 	if patch.Status != nil && !store.ValidUserStatus(*patch.Status) {
 		return fmt.Errorf("user update: status must be one of active|disabled, got %q", *patch.Status)
 	}
+	// Raising a user to access_mode tenant closes its manager-issued links
+	// first (store.PasswordGateStore.AuthRevokeManagerIssued).
+	if patch.AccessMode != nil && *patch.AccessMode == "tenant" {
+		if _, err := s.AuthRevokeManagerIssued(ctx, tenantID, subject, time.Now().UTC()); err != nil {
+			return fmt.Errorf("user update: %w", err)
+		}
+	}
 	sets := []string{}
 	args := []any{}
 	idx := 1
@@ -167,9 +181,5 @@ func (s *Store) UserUpdate(ctx context.Context, tenantID, subject string, patch 
 // UserDelete hard-deletes one identity row and reports whether a row was
 // removed. Owned data (runs / sessions / memory) has no FK here and stays.
 func (s *Store) UserDelete(ctx context.Context, tenantID, subject string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM users WHERE tenant_id = $1 AND subject = $2`, tenantID, subject)
-	if err != nil {
-		return false, fmt.Errorf("user delete: %w", err)
-	}
-	return tag.RowsAffected() > 0, nil
+	return sqlshared.UserDeleteUnbind(ctx, s.shared(), tenantID, subject)
 }

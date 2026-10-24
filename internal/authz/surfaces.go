@@ -270,6 +270,12 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		default:
 			return instance("manage", "principal", "user:"+rest[1]), true
 		}
+	case name == "authgate":
+		// RFC FA P2: the password gate's invites, resets and logins provision
+		// access for users. Every route asks `manage`, reads included: who
+		// holds an open invite is the operator's business, and a grant of
+		// roster reads must not reach it.
+		return instance("manage", "principal", "user:*"), true
 	case name == "tenants":
 		return instance("read", "runtime", "tenants"), true
 	case name == "snapshots":

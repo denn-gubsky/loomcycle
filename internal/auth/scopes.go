@@ -1,5 +1,10 @@
 package auth
 
+import (
+	"fmt"
+	"slices"
+)
+
 // RFC L scope catalog — a CLOSED, documented set. Operators cannot
 // invent scope names (the runtime wouldn't enforce them), so create/
 // rotate validate every requested scope against this catalog. The
@@ -66,6 +71,17 @@ const (
 	// intended.
 	ScopeLLMGateway = "llm:gateway"
 
+	// ScopeAuthManage (RFC FA D16) is the user-management credential of a
+	// website that runs its own sign-up: it reaches the password gate's
+	// management API (/v1/_authgate/*) and the /v1/_users create / list /
+	// update / delete, ACROSS tenants, and NOTHING else — no runs, no data, no
+	// token minting, no group or ACL authoring. It is not tenant-implied and
+	// implies nothing, and it is minted alone (ValidateScopeSet): mixed into a
+	// wider token it would either be pointless or widen that token across
+	// tenants. The route list is enforced by the HTTP gate (authManageRoute);
+	// gRPC and every other transport refuse a principal holding only it.
+	ScopeAuthManage = "auth:manage"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -90,6 +106,7 @@ var scopeCatalog = map[string]struct{}{
 	ScopeProvidersOperatorKey: {},
 	ScopeRunsDelete:           {},
 	ScopeLLMGateway:           {},
+	ScopeAuthManage:           {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -138,6 +155,31 @@ func UnknownScopes(scopes []string) []string {
 		}
 	}
 	return bad
+}
+
+// ValidateScopeSet refuses a scope set that combines auth:manage with any
+// other scope (RFC FA D16). Callers check UnknownScopes first.
+func ValidateScopeSet(scopes []string) error {
+	manage, other := false, false
+	for _, s := range scopes {
+		if s == ScopeAuthManage {
+			manage = true
+		} else {
+			other = true
+		}
+	}
+	if manage && other {
+		return fmt.Errorf("%s must be a token's only scope: it is a cross-tenant user-management credential, "+
+			"and combined with another scope it would carry that reach into the other's surfaces", ScopeAuthManage)
+	}
+	return nil
+}
+
+// IsAuthManager reports whether p is a user-management credential (RFC FA
+// D16): it holds auth:manage, which ValidateScopeSet keeps alone. Every
+// transport admits such a principal only to the user-management routes.
+func IsAuthManager(p Principal) bool {
+	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeAuthManage)
 }
 
 // HasScope reports whether the granted set includes want. ScopeAdmin is a

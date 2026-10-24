@@ -178,6 +178,9 @@ var (
 	// LockKeyUISessionSweeper gates the hourly delete of Web UI session rows
 	// that are revoked or expired (RFC FA §5).
 	LockKeyUISessionSweeper int64
+	// LockKeyAuthGateSweeper gates the hourly delete of the password gate's
+	// dead invites and resets and its idle throttle counters (RFC FA P2).
+	LockKeyAuthGateSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -241,6 +244,7 @@ func init() {
 	LockKeyScheduleReconcile = fnvKey("schedule_reconcile")
 	LockKeyExpiredTokenSweeper = fnvKey("expired_token_sweeper")
 	LockKeyUISessionSweeper = fnvKey("ui_session_sweeper")
+	LockKeyAuthGateSweeper = fnvKey("auth_gate_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

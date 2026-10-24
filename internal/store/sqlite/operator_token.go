@@ -67,6 +67,11 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 	if err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def: encode allowed_scopes: %w", err)
 	}
+	// A token is authority for its subject: close the subject's manager-issued
+	// links first (store.PasswordGateStore.AuthRevokeManagerIssued).
+	if _, err := s.AuthRevokeManagerIssued(ctx, row.TenantID, row.Subject, time.Now().UTC()); err != nil {
+		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def: %w", err)
+	}
 	if row.CreatedAt.IsZero() {
 		row.CreatedAt = time.Now()
 	}
