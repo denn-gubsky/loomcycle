@@ -389,6 +389,18 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_AUTH_MODE
+            label: LOOMCYCLE_AUTH_MODE
+            description: 'Web UI sign-in mode: token (default; paste a token) or strict (only the gates in the yaml `auth.gates` block). A config may raise it, never lower it. (example: token)'
+            schema:
+              type: string
+              default: ""
+          - variable: LOOMCYCLE_UI_INSECURE_COOKIES
+            label: LOOMCYCLE_UI_INSECURE_COOKIES
+            description: 'Strict mode only: allow Web UI sessions over plain HTTP (a cookie without Secure), e.g. on a tailnet. Behind a TLS terminator set an https:// LOOMCYCLE_PUBLIC_URL instead. Warned at boot. (example: 1)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_WEBUI_DIR
             label: LOOMCYCLE_WEBUI_DIR
             description: 'Serve the Web UI from an unpacked UI bundle here (built SPA + manifest.json with each file''s SHA-256 and supported API levels) instead of the built-in UI. Read at startup; a bundle failing verification is logged and the built-in UI served. Keep it operator-writable only: the UI runs with the operator''s session. (example: /srv/loomcycle/webui)'

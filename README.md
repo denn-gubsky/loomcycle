@@ -149,7 +149,7 @@ loomcycle init
 export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)   # or: loomcycle init --with-token
 export ANTHROPIC_API_KEY=sk-...
 loomcycle
-open "http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN"   # sets the cookie once
+open "http://127.0.0.1:8787/ui"   # paste $LOOMCYCLE_AUTH_TOKEN on the sign-in page
 ```
 
 Treat anyone holding the token as fully trusted to drive the runtime.

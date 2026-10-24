@@ -82,8 +82,9 @@ var uiAssets embed.FS
 //   - GET <prefix>/login-config.json  the gates the login page offers.
 //   - GET <prefix>/<file>      serves embedded asset OR falls back
 //     to index.html (SPA-router pattern). <prefix>/logout is such a deep
-//     link: the SPA's logout page posts to the server's logout route, so a
-//     GET never ends a session.
+//     link: the SPA's page there only asks, and its button posts to the
+//     server's logout route, so neither the GET nor loading the page ends a
+//     session.
 //
 // login is asked per request, because whether a session can be started
 // depends on the transport the request came over.

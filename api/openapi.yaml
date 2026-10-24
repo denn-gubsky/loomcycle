@@ -43,6 +43,12 @@ tags:
     description: Decision models — typed questions about supplied state, answered with probabilities.
   - name: crypto
     description: Encrypt, decrypt, sign, verify, MAC and one-time codes with keys the runtime holds.
+  - name: auth
+    description: |
+      Web UI sign-in and sign-out (server-side sessions). A request a session
+      cookie authenticates that changes state must send `X-Loomcycle-UI: 1`
+      from the server's own origin; requests with an `Authorization` header
+      are not affected.
 paths:
   /v1/_memory/scopes:
     get:
@@ -686,6 +692,88 @@ paths:
                   value: { code: decision_not_configured, error: this deployment declares no decision models }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /ui/login-config.json:
+    get:
+      tags: [auth]
+      summary: What the Web UI sign-in page offers.
+      description: |
+        Unauthenticated. The mode, the configured gates (name, kind, label
+        only), the origins the postMessage handoff may accept a token from
+        (token mode only), and `session_refused` when this request cannot
+        start a session (e.g. strict mode over plain HTTP). Nothing else about
+        the deployment.
+      operationId: getLoginConfig
+      security: []
+      responses:
+        "200":
+          description: The sign-in options.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [login_origins, api_level, mode, gates]
+                properties:
+                  login_origins: { type: array, items: { type: string } }
+                  api_level: { type: integer, description: The Web UI API level (2 from Web UI sessions on). }
+                  mode: { type: string, enum: [open, token, strict] }
+                  gates:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, kind, label]
+                      properties:
+                        name: { type: string }
+                        kind: { type: string, description: "The gate kind; `token` in this release." }
+                        label: { type: string }
+                  session_refused: { type: string, enum: [insecure_transport] }
+  /ui/session:
+    post:
+      tags: [auth]
+      summary: Sign in to the Web UI with a token (the token gate).
+      description: |
+        The bearer is validated, then a server-side session is created and
+        an HttpOnly session cookie set (`__Host-lc_session` over HTTPS,
+        `lc_session` over plain HTTP); the browser never keeps the token. A
+        session cookie already present is ended (fixation). Must be a
+        same-origin request (`Sec-Fetch-Site: same-origin`, or an `Origin`
+        naming this host).
+      operationId: createUISession
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Signed in; the session cookie is set. }
+        "400":
+          description: "`missing_bearer`: no `Authorization: Bearer` header."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: "`invalid_credentials`: opaque — the token does not authenticate. Audited `auth_login_failed`; nothing is created."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: "`cross_site_login_refused`, `gate_unavailable` (strict mode lists no token gate) or `insecure_transport` (strict mode over plain HTTP without LOOMCYCLE_UI_INSECURE_COOKIES)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`open_mode`: authentication is off; no session is needed."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_auth/logout:
+    post:
+      tags: [auth]
+      summary: End the Web UI session.
+      description: |
+        Revokes the session on the server (on every replica), clears every Web
+        UI cookie and sends `Clear-Site-Data: "cookies", "storage"`. Works
+        with an expired session too. Requires `X-Loomcycle-UI: 1` and a
+        same-origin request, so no other site can sign a user out.
+      operationId: deleteUISession
+      security: []
+      parameters:
+        - { name: X-Loomcycle-UI, in: header, required: true, schema: { type: string, enum: ["1"] } }
+      responses:
+        "204": { description: Signed out. }
+        "403":
+          description: "`cross_origin_refused`: the header or the same-origin check is missing."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: "`logout_failed`: the session could not be ended; retry."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 components:
   securitySchemes:
     bearerAuth:
