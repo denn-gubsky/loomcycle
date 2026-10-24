@@ -90,8 +90,8 @@ and examples, as `Document/<op>` — for example
 
 | op | What it does | Required besides `op` |
 |---|---|---|
-| `search` | semantic search over chunk bodies — start here when you do not know which document | `query` |
-| `related` | chunks whose bodies are semantically closest to a chunk's | `id` |
+| `search` | semantic search over chunk bodies — start here when you do not know which document; aim it with path, document, type, status, tag or `as_of` filters | `query` |
+| `related` | chunks whose bodies are semantically closest to a chunk's; takes the same filters as `search` | `id` |
 | `query_chunks` | structured filters (document, type, status, tag, path) or a read-only `sql` SELECT | — |
 
 **History**
@@ -195,7 +195,10 @@ readable for questions about the past.
 `/documents/<title>` when you pass no `path`. `get_document`, `delete_document`,
 `export_md`, `sync` and friends accept `path` instead of `id`, and
 `query_documents`, `query_chunks` and `documents_summary` take `under_path` to
-limit themselves to a subtree. Paths follow the Path tool's rules
+limit themselves to a subtree. `search` and `related` take `under_path(s)` and
+`exclude_under_path(s)` too, applied before ranking, so a search aimed at one
+subtree finds that subtree's best matches even when the rest of the scope
+matches better. Paths follow the Path tool's rules
 (`{"op":"help","topic":"Path"}`).
 
 ## Change events
