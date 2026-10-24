@@ -219,6 +219,26 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, agent)
 		)`,
+		// Web UI login sessions (RFC FA §5), keyed by the SHA-256 of the cookie
+		// id; every time is unix nanos, revoked_at NULL = live. Mirrors postgres
+		// migration 0110.
+		`CREATE TABLE IF NOT EXISTS ui_sessions (
+			session_hash        TEXT    PRIMARY KEY,
+			tenant_id           TEXT    NOT NULL,
+			subject             TEXT    NOT NULL,
+			gate                TEXT    NOT NULL,
+			amr                 TEXT    NOT NULL DEFAULT '[]',
+			cred_kind           TEXT    NOT NULL,
+			cred_ref            TEXT    NOT NULL DEFAULT '',
+			cred_mac            TEXT    NOT NULL,
+			ua_hash             TEXT    NOT NULL DEFAULT '',
+			ip_hash             TEXT    NOT NULL DEFAULT '',
+			created_at          INTEGER NOT NULL,
+			last_seen_at        INTEGER NOT NULL,
+			idle_expires_at     INTEGER NOT NULL,
+			absolute_expires_at INTEGER NOT NULL,
+			revoked_at          INTEGER
+		)`,
 		`CREATE TABLE IF NOT EXISTS usage_carry (
 			tenant_id  TEXT    NOT NULL DEFAULT '',
 			user_id    TEXT    NOT NULL DEFAULT '',

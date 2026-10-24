@@ -183,6 +183,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "sealed tenant secrets keyed off the source's LOOMCYCLE_SECRET_KEY; even the names are withheld"},
 	"operator_token_defs": {Kind: coverNever, Backends: onBoth,
 		Reason: "bearer-authentication material; restoring one would make a source bearer valid on the target"},
+	"ui_sessions": {Kind: coverNever, Backends: onBoth,
+		Reason: "browser login sessions bound to one browser on THIS deployment; restoring one would let a source cookie authenticate on the target"},
 	"token_usage": {Kind: coverNever, Backends: onBoth,
 		Reason: "the per-call billing ledger; only a month-to-date aggregate may travel, with token_limits"},
 	"usage_archive": {Kind: coverNever, Backends: onBoth,
