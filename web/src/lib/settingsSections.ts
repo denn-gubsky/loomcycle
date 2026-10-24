@@ -1,4 +1,4 @@
-import { canSee, type Visibility } from "./visibility";
+import { canSee, grantOf, type Surfaces, type Visibility } from "./visibility";
 
 // The Settings hub's sections, shared by the hub's tabs (SettingsView) and the
 // top bar's settings menu (SettingsMenu).
@@ -66,9 +66,15 @@ export const SECTIONS: SectionDef[] = [
   { id: "health", label: "Health", vis: "admin" },
 ];
 
-// visibleSections is the sections a viewer may reach, in hub order.
-export function visibleSections(isAdmin: boolean, hasTenantScope: boolean): SectionDef[] {
-  return SECTIONS.filter((s) => canSee(s.vis, isAdmin, hasTenantScope));
+// visibleSections is the sections a viewer may reach, in hub order. `surfaces` is
+// GET /v1/_me's capability summary: where it answers for a section (by its id),
+// that answer decides; `vis` is the fallback for a server that gave none.
+export function visibleSections(
+  isAdmin: boolean,
+  hasTenantScope: boolean,
+  surfaces?: Surfaces,
+): SectionDef[] {
+  return SECTIONS.filter((s) => canSee(s.vis, isAdmin, hasTenantScope, grantOf(surfaces, s.id)));
 }
 
 // settingsHref is the deep link to one section: /settings/<id>.
@@ -130,9 +136,13 @@ export type SettingsMenuItem =
 // every role had, so the menu is now the only way out of a session: a delegated
 // user, who has no settings section and no linked page, must still get a menu,
 // holding that one row.
-export function settingsMenuItems(isAdmin: boolean, hasTenantScope: boolean): SettingsMenuItem[] {
+export function settingsMenuItems(
+  isAdmin: boolean,
+  hasTenantScope: boolean,
+  surfaces?: Surfaces,
+): SettingsMenuItem[] {
   return [
-    ...visibleSections(isAdmin, hasTenantScope).map(
+    ...visibleSections(isAdmin, hasTenantScope, surfaces).map(
       (s): SettingsMenuItem => ({
         kind: "section",
         id: s.id,
@@ -140,7 +150,7 @@ export function settingsMenuItems(isAdmin: boolean, hasTenantScope: boolean): Se
         href: settingsHref(s.id),
       }),
     ),
-    ...MENU_LINKS.filter((l) => canSee(l.vis, isAdmin, hasTenantScope)).map(
+    ...MENU_LINKS.filter((l) => canSee(l.vis, isAdmin, hasTenantScope, grantOf(surfaces, l.id))).map(
       (l): SettingsMenuItem => ({ kind: "link", id: l.id, label: l.label, href: l.href }),
     ),
     { kind: "logout", label: "Log out", href: LOGOUT_HREF },

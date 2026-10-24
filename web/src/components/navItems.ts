@@ -17,7 +17,7 @@ import {
   ScrollText,
   Workflow,
 } from "lucide-react";
-import { type Visibility } from "../lib/visibility";
+import { canSee, grantOf, type Surfaces, type Visibility } from "../lib/visibility";
 
 // Left-sidebar navigation model (RFC AS §4 — per-surface visibility class,
 // replacing the old binary `adminOnly`):
@@ -43,40 +43,56 @@ import { type Visibility } from "../lib/visibility";
 // re-gated to ScopeTenant — closing the earlier admin-only carve-out.
 // The type and the predicate live in ../lib/visibility — the Settings tabs use the
 // same two, and a second copy is how the two surfaces drifted apart in the first place.
+//
+// `id` names the page in GET /v1/_me's capability summary (effective.surfaces):
+// when the server answers for it, that answer decides and `vis` is only the
+// fallback. The server's table (internal/api/http/nav_capabilities.go) must list
+// every id here; a Go test reads this file to hold the two equal.
 export interface NavItem {
+  id: string;
   to: string;
   label: string;
   Icon: LucideIcon;
   vis: Visibility;
 }
 export const NAV_ITEMS: NavItem[] = [
-  { to: "/run", label: "run", Icon: Play, vis: "all" },
-  { to: "/agents", label: "runs", Icon: ListTree, vis: "all" },
+  { id: "run", to: "/run", label: "run", Icon: Play, vis: "all" },
+  { id: "runs", to: "/agents", label: "runs", Icon: ListTree, vis: "all" },
   // RFC CN — every login (incl. an isolated substrate:user user) can self-serve
   // its OWN scope=user API tokens here; the operator Settings → Credentials tab
   // (tenant authoring) stays separate.
-  { to: "/my-credentials", label: "credentials", Icon: KeyRound, vis: "all" },
-  { to: "/library/agents", label: "library", Icon: Library, vis: "tenant" },
-  { to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant" },
-  { to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant" },
-  { to: "/paths", label: "paths", Icon: FolderTree, vis: "tenant" },
-  { to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },
-  { to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
-  { to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
-  { to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
-  { to: "/memory", label: "memory", Icon: Brain, vis: "tenant" },
-  { to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
+  { id: "my-credentials", to: "/my-credentials", label: "credentials", Icon: KeyRound, vis: "all" },
+  { id: "library", to: "/library/agents", label: "library", Icon: Library, vis: "tenant" },
+  { id: "integrations", to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant" },
+  { id: "volumes", to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant" },
+  { id: "paths", to: "/paths", label: "paths", Icon: FolderTree, vis: "tenant" },
+  { id: "channels", to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },
+  { id: "schedules", to: "/schedules", label: "schedules", Icon: CalendarClock, vis: "tenant" },
+  { id: "teams", to: "/teams", label: "teams", Icon: Workflow, vis: "tenant" },
+  { id: "interrupts", to: "/interrupts", label: "interrupts", Icon: Bell, vis: "tenant" },
+  { id: "memory", to: "/memory", label: "memory", Icon: Brain, vis: "tenant" },
+  { id: "snapshots", to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
   // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
   // via the event's owning session, so a tenant sees only its own events.
-  { to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
+  { id: "audit", to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
   // usage: token/cost report. Tenant-visible (RFC AV): GET /v1/_usage is
   // ScopeTenant-gated and the handler tenant-scopes the aggregation (a tenant
   // operator sees only its own tenant's spend; admin sees all + ?tenant=).
-  { to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
-  { to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
+  { id: "usage", to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
+  { id: "activity", to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
   // NOTE: routing + limits moved OUT of the main nav INTO Settings tabs (the
   // /routing + /limits routes still exist for deep links, but SettingsView is
   // now the primary surface — see SettingsView's routing/limits tabs).
   // users (/users) is likewise reached from the top bar's settings menu, not from
   // here — see MENU_LINKS in ../lib/settingsSections.
 ];
+
+// visibleNavItems is the left nav for a viewer, in order: the server's answer per
+// page when it gave one, the role rule otherwise.
+export function visibleNavItems(
+  isAdmin: boolean,
+  hasTenantScope: boolean,
+  surfaces: Surfaces | undefined,
+): NavItem[] {
+  return NAV_ITEMS.filter((it) => canSee(it.vis, isAdmin, hasTenantScope, grantOf(surfaces, it.id)));
+}
