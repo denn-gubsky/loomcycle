@@ -99,11 +99,16 @@ any tailnet device: `tailscale status | grep -i ollama-host`. You'll put it in
 
    | Hostname | Service |
    |---|---|
-   | `app.loomcycle.cloud` | `http://tailscale:8787` |
+   | `app.loomcycle.cloud` | `http://loomcycle-edge:8787` |
    | `loomcycle.cloud`     | `http://landing:8080` |
 
-   > ⚠️ **The app hostname points at `tailscale:8787`, NOT `loomcycle:8787`.**
-   > loomcycle shares the tailscale netns and has no DNS name of its own.
+   > ⚠️ **The app hostname points at `loomcycle-edge:8787`, NOT `loomcycle:8787`.**
+   > loomcycle shares the tailscale netns and has no DNS name of its own;
+   > `loomcycle-edge` is the tailscale container's alias on the compose `edge`
+   > network, which only cloudflared shares. Going through it is what lets
+   > loomcycle trust `CF-Connecting-IP` from cloudflared alone. Older installs
+   > used `http://tailscale:8787`: that still works, but every sign-in then
+   > counts against one shared throttle bucket.
 
 3. Cloudflare auto-creates the proxied DNS records for the tunnel.
 
@@ -416,6 +421,74 @@ ssh -t "$HOST" "cd '$DEPLOY' && mkdir -p dynamic && sudo chown 65532:65532 dynam
 - Schedules and webhooks created before 1.122.0 record no author, so they fire
   unnarrowed until re-saved. Snapshots do not carry lists, groups or bindings.
 
+## Upgrading to Web UI sessions and the password gate
+
+The first release with RFC FA P0 + P2 (Web UI sessions, the password gate,
+`auth:manage`) is carried here by `config/loomcycle.yaml` (the `auth:` block)
+and the compose file (`LOOMCYCLE_PUBLIC_URL`). The automatic deploy applies
+both, so do these host steps **before** that release is deployed. The plan
+behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
+
+1. **`LOOMCYCLE_SECRET_KEY` must be set** in `.env.secure`. The password gate
+   derives its pepper and the TOTP secret key from it, and **refuses to load
+   without it**: the runtime would crash-loop on `a password gate needs
+   LOOMCYCLE_SECRET_KEY`. Check that the running server already uses one
+   (this prints a count, not the key):
+
+   ```bash
+   ssh "$HOST" "cd '$DEPLOY' && docker compose logs loomcycle 2>&1 | grep -c 'pepper derived from LOOMCYCLE_SECRET_KEY'"
+   ```
+
+   A count above 0 means it is set; nothing to do. If it is 0, the key is
+   being added for the first time. Operator tokens minted before then are
+   stored unpeppered and stop authenticating until they are rewrapped. So
+   generate a key (`openssl rand -base64 32`), add `LOOMCYCLE_SECRET_KEY=…`
+   to `.env.secure`, recreate `loomcycle`, then review and rewrap:
+
+   ```bash
+   C="docker compose --env-file .env.insecure --env-file .env.secure exec loomcycle loomcycle"
+   $C tokens rewrap                                  # lists the unpeppered rows and a digest; writes nothing
+   $C tokens rewrap --def-id <id> --def-id <id>      # rewrap the ones you minted (or --all-listed <digest>)
+   ```
+
+   Keep the key: losing it ends every session and makes every password,
+   TOTP secret and stored credential unreadable.
+2. **`LOOMCYCLE_PUBLIC_URL`** comes from the compose file
+   (`https://app.loomcycle.cloud`). Leave the Cloudflare tunnel's Host
+   header as it is (don't set `httpHostHeader`): loomcycle treats a request
+   whose Host matches this URL as HTTPS and issues the `__Host-lc_session`
+   cookie.
+3. **Point the tunnel at the edge network.** The compose file adds an `edge`
+   network that only cloudflared (fixed address `10.253.253.2`) and the
+   runtime join, and the config trusts `CF-Connecting-IP` from that address
+   alone. In the Cloudflare dashboard, change the `app.loomcycle.cloud`
+   route's service from `http://tailscale:8787` to
+   `http://loomcycle-edge:8787` after the deploy that adds the network. Until
+   you do, the runtime sees every sign-in as coming from cloudflared's
+   `loomnet` address: logins still work, but one attacker's failures slow
+   everyone's (never spoofable either way). Make the change right after the
+   deploy: no one has a password yet at that point (accounts start with the
+   landing's signup, phases 2–3), so the window costs nothing if it's short.
+   If `10.253.253.0/29` collides with a network on the host, change the
+   subnet, cloudflared's `.2`, tailscale's `.3`, the `ip_range` and
+   `auth.trusted_proxies` together.
+4. **After the deploy, mint the landing's credential**: one operator token
+   with only `auth:manage`. The landing uses it from phase 2 on.
+
+   ```bash
+   # on the host, from the deploy directory; reads the admin token from .env.secure without printing it
+   set -a; . ./.env.secure; set +a
+   curl -s -X POST https://app.loomcycle.cloud/v1/_operatortokendef \
+     -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"op":"create","name":"cloud-landing","scopes":["auth:manage"]}' | jq -r .token
+   ```
+
+   Put the printed value in `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN=…`
+   (it is shown once), then clear your terminal scrollback.
+5. **Check:** `https://app.loomcycle.cloud/ui/login` offers both the token
+   box and "loomcycle.cloud account". Existing tokens keep working: the
+   mode stays `token` until plan phase 6.
+
 ## Routine upgrades
 
 The image versions and the loomboard ref are variables in `docker-compose.yaml`:
@@ -562,7 +635,9 @@ volumes:
 | `loomcycle-migrate` exits 1, `connection refused` | Postgres not up yet, or the DSN password ≠ `POSTGRES_PASSWORD`. Check `make logs S=postgres`. |
 | runtime logs `sqlmem: … permission denied to create role` | The DSN role lacks `CREATEROLE`. The init makes `loomcycle` a superuser (has it); if you swapped to a non-super role, `ALTER ROLE loomcycle CREATEROLE;`. |
 | runtime refuses to start, pgvector missing | pgvector binaries absent — use the `pgvector/pgvector:pg18` image (it ships them); wipe `pgdata/` and re-init if the first migrate ran before pgvector existed. |
-| `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://tailscale:8787` (not `loomcycle:…`); confirm `cloudflared` is `running` and the hostname exists in the dashboard. |
+| runtime restarts in a loop, log `a password gate needs LOOMCYCLE_SECRET_KEY` (or `…LOOMCYCLE_PUBLIC_URL`) | The `auth:` block's password gate needs both. Set the missing one (see "Upgrading to Web UI sessions"), or comment out the `cloud:` gate in `config/loomcycle.yaml` to boot without it. |
+| Web UI sign-in on `app.loomcycle.cloud` sets `lc_session` (not `__Host-lc_session`) and the log warns about plain HTTP; in strict mode it fails with `insecure_transport` | The tunnel rewrites the Host header, so loomcycle can't tell the request came through HTTPS. Remove `httpHostHeader` from the tunnel's route. |
+| `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://loomcycle-edge:8787` (or the older `http://tailscale:8787`; never `loomcycle:…`); confirm `cloudflared` is `running`, attached to the `edge` network, and the hostname exists in the dashboard. |
 | landing status strip grey / config "not published" | `LOOMCYCLE_PUBLIC_CONFIG=1` must be set (it is by default); confirm the landing can reach `tailscale:8787` (`make logs S=landing`). |
 | `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN required` → set it in `.env.secure`. |
 | **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |

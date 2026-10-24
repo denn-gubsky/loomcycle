@@ -25,6 +25,21 @@ name: loomcycle
 networks:
   loomnet:
     driver: bridge
+  # The tunnel's own path to the runtime. Only cloudflared and the tailscale
+  # container (whose netns loomcycle shares) join it, and cloudflared has a
+  # fixed address, so loomcycle can trust exactly that address to report the
+  # real client in CF-Connecting-IP (config/loomcycle.yaml auth.trusted_proxies).
+  # On loomnet the same header could be forged by any container, including the
+  # agent-driven browser sidecar. The tunnel route must target the edge-only
+  # alias http://loomcycle-edge:8787 so its traffic takes this network.
+  edge:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.253.253.0/29
+          # Both members have fixed addresses; anything allocated dynamically
+          # lands in .4–.7, so no container but cloudflared can ever hold .2.
+          ip_range: 10.253.253.4/30
   # Dedicated network for serve-and-test sessions. A sandbox_open with `expose:<alias>`
   # attaches the (host-Docker-sibling) session container HERE under a --network-alias,
   # so a dev server it binds is reachable from the pinchtab sidecar at
@@ -90,7 +105,11 @@ services:
     image: tailscale/tailscale:latest
     restart: unless-stopped
     hostname: loomcycle-cloud
-    networks: [loomnet]
+    networks:
+      loomnet: {}
+      edge:
+        ipv4_address: 10.253.253.3  # fixed, so it can never take cloudflared's .2
+        aliases: [loomcycle-edge]   # resolves only on edge: the tunnel's target
     cap_add: [NET_ADMIN]
     devices:
       - /dev/net/tun
@@ -184,6 +203,11 @@ services:
       # today's gates deciding and logs every place the rules would answer
       # differently (acl_shadow_diverged). Read at startup.
       LOOMCYCLE_ACL: ${LOOMCYCLE_ACL:-shadow}
+      # The public URL: invite and reset links are built from it, the password
+      # gate refuses to load without it, and it is how loomcycle knows the
+      # tunnel is HTTPS (a request with this Host gets the Secure session
+      # cookie). Set here so a deploy carries it even if .env.insecure doesn't.
+      LOOMCYCLE_PUBLIC_URL: ${LOOMCYCLE_PUBLIC_URL:-https://app.loomcycle.cloud}
     volumes:
       - ./data:/data
       - ./config:/config:ro
@@ -349,14 +373,17 @@ services:
         condition: service_healthy
 
   # ── Cloudflare tunnel (token method) — app + loomcycle + board.loomcycle.cloud ──
-  #    Dashboard routes: app.loomcycle.cloud → http://tailscale:8787 (the runtime),
+  #    Dashboard routes: app.loomcycle.cloud → http://loomcycle-edge:8787 (the runtime, over `edge`),
   #    loomcycle.cloud → http://landing:8080 (this stack),
   #    board.loomcycle.cloud → http://loomboard:8080 (the hosted loomboard).
   #    Protect /api/* on loomcycle.cloud with a Cloudflare Access (Google) policy — see INSTALL.md.
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    networks: [loomnet]
+    networks:
+      loomnet: {}                   # landing, loomboard, the telegram bridge
+      edge:
+        ipv4_address: 10.253.253.2  # the one address loomcycle trusts for CF-Connecting-IP
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}

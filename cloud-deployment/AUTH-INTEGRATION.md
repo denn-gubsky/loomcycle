@@ -54,7 +54,7 @@ auth:
     token:  { kind: token }    # the paste box, still needed during the migration
     cloud:
       kind: password
-      display: "loomcycle.cloud account"
+      label: "loomcycle.cloud account"
       require_mfa: false       # true at the strict switch (phase 6)
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets:  { ttl: 1h }
@@ -65,11 +65,12 @@ auth:
       # over any owner's account, which is acceptable here only because the
       # landing proves the owner's Google identity first (RFC FA §6.1.1).
       manager_may_recover_owners: true
-  # The tunnel connects from the compose network, so without these every login
-  # would look like it came from cloudflared and one attacker's failures would
-  # throttle everyone. Trust the docker range the compose networks use and read
-  # Cloudflare's client-address header.
-  trusted_proxies: ["172.16.0.0/12"]
+  # Without these every login would look like it came from cloudflared and one
+  # attacker's failures would throttle everyone. Trust ONLY cloudflared's fixed
+  # address on the compose `edge` network (the tunnel route targets
+  # http://loomcycle-edge:8787): on loomnet any container, the agent-driven
+  # browser sidecar included, could forge CF-Connecting-IP.
+  trusted_proxies: ["10.253.253.2/32"]
   client_ip_header: CF-Connecting-IP
 ```
 
