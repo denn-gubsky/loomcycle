@@ -464,6 +464,22 @@ table.tokens .revoke:focus-visible { outline: 2px solid var(--color-accent); out
 .fineprint { font-size: 13px; line-height: 21px;
   color: color-mix(in srgb, var(--color-text) 70%, transparent); margin: 0; }
 
+/* account flow: workspace + team (shown when the landing reports auth_gate) */
+.sheet [hidden] { display: none; }   /* beats .btn/.reveal display rules */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.acct { margin-bottom: var(--leading); }
+.acct p:not(.fineprint) { font-size: 15.5px; line-height: var(--leading); margin: 0 0 var(--leading);
+  max-width: 56ch; color: color-mix(in srgb, var(--color-text) 82%, transparent); }
+.acct-status { min-height: 21px; margin-top: var(--half); }
+.acct-status[data-tone="error"] { color: var(--color-accent-700); }
+table.team td small { display: block; font-size: 12px;
+  color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+table.team td .you { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  border: 2px solid var(--color-divider); padding: 1px 5px 0; margin-left: 6px; }
+[data-linkbox] .val .input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; }
+@media (max-width: 560px) { [data-linkbox] .val { flex-wrap: wrap; } }
+
 /* ————— instance info dialog: what GET /v1/config publishes ————— */
 .info-sec + .info-sec { border-top: 2px solid var(--color-divider); }
 .info-sec { padding: calc(1.1 * var(--leading)) clamp(20px, 3vw, 32px); }
@@ -977,10 +993,30 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
           <button type="button" class="btn btn-ghost" data-signout>Sign out</button>
         </div>
 
-        <p style="font-size:15.5px;line-height:var(--leading);margin:0 0 var(--leading);max-width:56ch;color:color-mix(in srgb, var(--color-text) 82%, transparent)">Two ways in. Mint a token for <strong>your own tenant</strong> — an isolated store, your own substrate, your own encrypted provider keys. Or add a <strong>group token</strong> someone minted for their tenant and handed to you: it puts you in their documents, memory, Path tree and substrate, working on the same material.</p>
+        <p data-legacy-only style="font-size:15.5px;line-height:var(--leading);margin:0 0 var(--leading);max-width:56ch;color:color-mix(in srgb, var(--color-text) 82%, transparent)">Two ways in. Mint a token for <strong>your own tenant</strong> — an isolated store, your own substrate, your own encrypted provider keys. Or add a <strong>group token</strong> someone minted for their tenant and handed to you: it puts you in their documents, memory, Path tree and substrate, working on the same material.</p>
+
+        <!-- account flow: shown when /api/whoami reports auth_gate (the landing holds
+             an auth:manage token). Passwords are only ever typed on the app's pages. -->
+        <div class="acct" data-gate-only hidden>
+          <div data-ws-new>
+            <p>Your workspace is <strong>your own tenant</strong> — an isolated store, your own substrate, your own encrypted provider keys. Creating it takes you to <code class="inline-code">app.loomcycle.cloud</code>, where you choose a password. This site never sees it.</p>
+            <div class="sheet-actions">
+              <button type="button" class="btn btn-primary" data-signup>Create your workspace</button>
+            </div>
+          </div>
+          <div data-ws-owner hidden>
+            <p>Your workspace is ready. Sign in to the app with your e-mail and password, or manage who else can use it.</p>
+            <div class="sheet-actions">
+              <a class="btn btn-primary" data-open-app href="https://app.loomcycle.cloud/ui/login">Open app →</a>
+              <button type="button" class="btn btn-ghost" data-manage-team>Manage team</button>
+            </div>
+          </div>
+          <p class="fineprint acct-status" role="status" aria-live="polite" data-acct-status></p>
+        </div>
 
         <div>
-          <span class="kicker">Your token vault — this browser only</span>
+          <span class="kicker" data-vault-kicker>Your token vault — this browser only</span>
+          <p class="fineprint" data-gate-only hidden style="margin-bottom:var(--half)">Read-only while sign-in moves to passwords: tokens already here still sign in, and new API tokens are made in the app (<code class="inline-code">/ui</code> → Tokens).</p>
           <div class="vault">
             <div class="vault-bar">
               <span class="lock" id="vault-lock-tag">Locked</span>
@@ -992,6 +1028,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
               <tbody id="token-rows"></tbody>
             </table>
           </div>
+          <div data-legacy-only>
           <p class="quota"><span id="quota-text">0 of 5 tokens in use</span><span class="bar"><i id="quota-bar"></i></span></p>
 
           <span class="kicker">Add a token</span>
@@ -1028,7 +1065,51 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
             </div>
             <p class="fineprint">A token someone else minted for their tenant and sent you — signing in with it puts you in <em>their</em> tenant: shared documents, shared memory, shared Path tree, one budget. Whoever minted it can revoke it. It is wrapped locally and never sent to loomcycle.cloud.</p>
           </div>
+          </div>
         </div>
+      </div>
+    </div>
+
+    <!-- pane 4: the team (account flow only) -->
+    <div class="pane" data-pane="4" hidden>
+      <div class="sheet-body">
+        <div class="sheet-actions" style="margin-bottom:var(--leading)">
+          <button type="button" class="btn btn-ghost" data-back-workspace>← Workspace</button>
+          <button type="button" class="btn btn-ghost" data-reset-self>Reset my password</button>
+        </div>
+
+        <span class="kicker" id="team-kicker">Members</span>
+        <table class="tokens team" aria-labelledby="team-kicker">
+          <thead><tr><th scope="col">Person</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody id="team-rows"></tbody>
+        </table>
+
+        <div class="reveal" data-linkbox hidden>
+          <div class="warnbar"><span style="width:8px;height:8px;background:currentColor;display:block"></span> <span data-link-title>Invite link</span></div>
+          <div class="val">
+            <input class="input" id="link-value" type="text" readonly spellcheck="false" aria-label="Link to send" />
+            <button type="button" class="btn btn-primary" data-copy-link>Copy</button>
+            <a class="btn btn-ghost" data-open-link href="#" target="_blank" rel="noopener noreferrer" hidden>Open</a>
+          </div>
+          <p class="fineprint" data-link-note style="padding:0 16px 14px"></p>
+        </div>
+        <p class="fineprint acct-status" role="status" aria-live="polite" data-team-status></p>
+
+        <span class="kicker">Invite someone</span>
+        <form class="mint-row" data-invite-form novalidate>
+          <div class="field">
+            <label for="invite-email">Their e-mail</label>
+            <input class="input" id="invite-email" type="email" autocomplete="off" spellcheck="false" required placeholder="colleague@example.com" />
+          </div>
+          <button type="submit" class="btn btn-primary">Create invite link</button>
+        </form>
+        <p class="fineprint" style="margin-bottom:var(--leading)">loomcycle sends no e-mail: you get a single-use link to send them yourself. They choose a password on <code class="inline-code">app.loomcycle.cloud</code> and join as a member with their own space. A role change (making someone a co-owner) is done in the app's Users console.</p>
+
+        <span class="kicker" id="invites-kicker">Pending invites</span>
+        <table class="tokens" aria-labelledby="invites-kicker">
+          <thead><tr><th scope="col">E-mail</th><th scope="col">Expires</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+          <tbody id="invite-rows"></tbody>
+        </table>
       </div>
     </div>
 
@@ -1430,6 +1511,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
         who.querySelector('small').innerHTML =
           'tenant <code class="inline-code">' + (identity.tenant || '') + '</code>';
       }
+      applyMode();
       return true;
     } catch (_) { identity = null; return false; }
   }
@@ -1572,8 +1654,9 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     document.querySelectorAll('[data-rail]').forEach((r) => {
       r.toggleAttribute('data-done', Number(r.dataset.rail) <= step);
     });
-    tag.textContent = 'Step 0' + step;
-    title.textContent = titles[step];
+    tag.textContent = 'Step 0' + Math.min(step, 3);
+    title.textContent = (gateOn() && gateTitles[step]) || titles[step];
+    if (step !== 4) clearLink();
     if (step === 2) render();
   }
   async function open() {
@@ -1582,7 +1665,7 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     requestAnimationFrame(() => sheet.setAttribute('data-open', ''));
     const signed = await checkAuth();
     go(signed ? 2 : 1);
-    sheet.querySelector(signed ? '[data-vault-toggle]' : '[data-signin]')?.focus();
+    focusFirst(signed ? ['[data-signup]', '[data-open-app]', '[data-vault-toggle]'] : ['[data-signin]']);
   }
   function close() {
     sheet.removeAttribute('data-open');
@@ -1635,7 +1718,9 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
       const tr = document.createElement('tr');
       const td = document.createElement('td');
       td.colSpan = 4; td.className = 'empty';
-      td.textContent = 'No tokens yet. Mint one for your tenant, or add a group token you were given.';
+      td.textContent = gateOn()
+        ? 'No tokens in this browser. Make API tokens in the app.'
+        : 'No tokens yet. Mint one for your tenant, or add a group token you were given.';
       tr.appendChild(td); rows.appendChild(tr);
     }
     for (const it of items) {
@@ -1762,9 +1847,305 @@ loomcycle mcp --upstream https://app.loomcycle.cloud/v1/_mcp</pre>
     setTimeout(() => flag.removeAttribute('data-on'), 1600);
   });
 
+  /* ——— the account flow ———
+     When the landing holds an auth:manage token, /api/whoami says auth_gate:true
+     and sign-in moves to loomcycle's password gate: "Create your workspace"
+     follows /api/signup's redirect to the app's invite page, and the Team view
+     manages the owner's tenant through /api/team/*. The landing derives the
+     tenant from the Access identity; this page never names one. Invite and reset
+     links are credentials until used: they are shown only in the link box,
+     cleared when the view changes, and never logged. Without auth_gate the page
+     is exactly the token-vault flow above. */
+  const gateTitles = { 2: 'Your workspace', 4: 'Your team' };
+  function gateOn() { return !!(identity && identity.auth_gate === true); }
+  const acctStatus = sheet.querySelector('[data-acct-status]');
+  const teamStatus = sheet.querySelector('[data-team-status]');
+  function say(el, msg, tone) {
+    el.textContent = msg || '';
+    if (tone) el.setAttribute('data-tone', tone); else el.removeAttribute('data-tone');
+  }
+
+  function applyMode() {
+    const on = gateOn();
+    sheet.querySelectorAll('[data-legacy-only]').forEach((n) => { n.hidden = on; });
+    sheet.querySelectorAll('[data-gate-only]').forEach((n) => { n.hidden = !on; });
+    const rails = { 1: 'Identify', 2: on ? 'Workspace' : 'Tenant & token', 3: on ? 'Team' : 'Hand off' };
+    sheet.querySelectorAll('[data-rail]').forEach((r) => { r.textContent = rails[r.dataset.rail]; });
+    sheet.querySelector('[data-vault-kicker]').textContent = on
+      ? 'Your token vault — read-only' : 'Your token vault — this browser only';
+    if (!on) return;
+    const app = identity.app || (APP + '/ui/login');
+    sheet.querySelector('[data-open-app]').href = app;
+    /* signed_up null = the landing could not ask the runtime: offer "create";
+       /api/signup answers 409 for a workspace that already exists. */
+    const owner = identity.signed_up === true;
+    sheet.querySelector('[data-ws-new]').hidden = owner;
+    sheet.querySelector('[data-ws-owner]').hidden = !owner;
+    if (identity.signed_up === null) say(acctStatus, 'Could not check your workspace just now — Create will tell you if it already exists.');
+  }
+
+  function focusFirst(selectors) {
+    for (const s of selectors) {
+      const el = sheet.querySelector(s);
+      if (el && el.offsetParent !== null) { el.focus(); return; }
+    }
+  }
+
+  async function api(method, path, body) {
+    const init = { method, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
+    if (method !== 'GET') {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body || {});
+    }
+    let r;
+    try { r = await fetch(path, init); }
+    catch (_) { return { status: 0, json: { error: 'network' } }; }
+    const json = await r.json().catch(() => ({}));
+    if (r.status === 401) { identity = null; go(1); }
+    return { status: r.status, json };
+  }
+
+  /* One sentence per error code the landing returns (it never passes the
+     runtime's own messages through). */
+  function explain(res, ctx) {
+    const code = res.json && res.json.error;
+    if (res.json && typeof res.json.message === 'string') return res.json.message;
+    switch (code) {
+      case 'rate_limited': return 'Too many attempts — wait a while and try again.';
+      case 'invite_limit': return 'Your invite limit for today is used up. Try again tomorrow.';
+      case 'too_many_pending': return 'Too many invites are still pending. Revoke some first.';
+      case 'target_beyond_floor': return ctx === 'self'
+        ? 'Password recovery for owners is turned off on this deployment. Change your password in the app (/ui/account).'
+        : 'This person has tenant-wide access. Manage them in the app’s Users console.';
+      case 'no_login': return 'This person has not set a password yet — send them a new invite instead.';
+      case 'invite_not_live': return 'That invite was already used, revoked or expired.';
+      case 'not_found': return 'Not found — the list may be out of date.';
+      case 'auth_gate_not_configured': return 'Accounts are not enabled on this deployment yet.';
+      case 'runtime_unreachable': case 'network': return 'The runtime could not be reached. Try again in a moment.';
+      case 'cross_origin_refused': return 'Refused: this request did not come from loomcycle.cloud.';
+    }
+    return 'Something went wrong (' + (res.status || 'network') + '). Try again.';
+  }
+
+  /* — create your workspace — */
+  sheet.querySelector('[data-signup]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    say(acctStatus, 'Creating your workspace…');
+    const res = await api('POST', '/api/signup');
+    if (res.status === 200 && res.json.redirect) {
+      say(acctStatus, 'Taking you to the app to choose your password…');
+      /* replace(): the invite code rides the fragment; keep it out of this
+         site's history. The app's page drops it from its own address bar. */
+      location.replace(res.json.redirect);
+      return;
+    }
+    btn.disabled = false;
+    if (res.status === 409 && res.json.signed_up) {
+      identity.signed_up = true;
+      applyMode();
+      say(acctStatus, 'You already have a workspace — open the app to sign in.');
+      focusFirst(['[data-open-app]']);
+      return;
+    }
+    if (res.status !== 401) say(acctStatus, explain(res), 'error');
+  });
+
+  /* — the team view — */
+  const teamRows = document.getElementById('team-rows');
+  const inviteRows = document.getElementById('invite-rows');
+  let selfSubject = null;
+
+  sheet.querySelector('[data-manage-team]').addEventListener('click', async () => {
+    go(4);
+    say(teamStatus, '');
+    sheet.querySelector('[data-back-workspace]').focus();
+    await loadTeam();
+  });
+  sheet.querySelector('[data-back-workspace]').addEventListener('click', () => {
+    go(2);
+    focusFirst(['[data-manage-team]', '[data-open-app]']);
+  });
+
+  function cell(tr, text) {
+    const td = document.createElement('td');
+    if (text !== undefined) td.textContent = text;
+    tr.appendChild(td);
+    return td;
+  }
+  function emptyRow(tbody, cols, text) {
+    const tr = document.createElement('tr');
+    const td = cell(tr, text);
+    td.colSpan = cols; td.className = 'empty';
+    tbody.appendChild(tr);
+  }
+  function when(iso) {
+    const d = iso ? new Date(iso) : null;
+    return d && !isNaN(d) ? d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+  }
+  function actionButton(label, aria, fn, cls) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = cls || 'use'; b.textContent = label;
+    b.setAttribute('aria-label', aria);
+    b.addEventListener('click', async () => { b.disabled = true; try { await fn(); } finally { b.disabled = false; } });
+    return b;
+  }
+
+  async function loadTeam() {
+    teamRows.innerHTML = ''; inviteRows.innerHTML = '';
+    emptyRow(teamRows, 4, 'Loading…');
+    const [team, invites] = await Promise.all([api('GET', '/api/team'), api('GET', '/api/team/invites')]);
+    if (team.status === 401) return;
+    teamRows.innerHTML = '';
+    if (team.status !== 200) { emptyRow(teamRows, 4, explain(team)); }
+    else {
+      selfSubject = team.json.self;
+      sheet.querySelector('[data-reset-self]').hidden = !selfSubject;
+      for (const m of team.json.members) teamRows.appendChild(memberRow(m));
+      if (!team.json.members.length) emptyRow(teamRows, 4, 'Nobody yet.');
+    }
+    inviteRows.innerHTML = '';
+    if (invites.status !== 200) { emptyRow(inviteRows, 3, explain(invites)); return; }
+    for (const inv of invites.json.invites) inviteRows.appendChild(inviteRow(inv));
+    if (!invites.json.invites.length) emptyRow(inviteRows, 3, 'No pending invites.');
+  }
+
+  function memberRow(m) {
+    const tr = document.createElement('tr');
+    const who = m.login || m.display_name || m.subject;
+    const person = cell(tr);
+    person.append(document.createTextNode(who));
+    if (m.you) { const y = document.createElement('span'); y.className = 'you'; y.textContent = 'you'; person.appendChild(y); }
+    if (m.display_name && m.display_name !== who) { const s = document.createElement('small'); s.textContent = m.display_name; person.appendChild(s); }
+    cell(tr, m.access_mode === 'tenant' ? 'Owner' : 'Member');
+    cell(tr, (m.status === 'disabled' ? 'Disabled' : 'Active') + (m.has_password ? '' : ' · no password yet'));
+    const act = cell(tr);
+    const box = document.createElement('div'); box.className = 'rowact';
+    if (m.you) {
+      /* "Reset my password" sits above the table */
+    } else if (m.access_mode === 'tenant') {
+      const s = document.createElement('small'); s.textContent = 'manage in the app'; box.appendChild(s);
+    } else {
+      const enc = encodeURIComponent(m.subject);
+      box.appendChild(actionButton('Reset', 'Reset the password of ' + who, () => issueReset(enc, who, false)));
+      if (m.status === 'disabled') {
+        box.appendChild(actionButton('Enable', 'Enable ' + who, () => setStatus(enc, who, 'enable')));
+      } else {
+        box.appendChild(actionButton('Disable', 'Disable ' + who, () => setStatus(enc, who, 'disable')));
+      }
+      box.appendChild(actionButton('Remove', 'Remove ' + who, () => removeMember(enc, who), 'rm'));
+    }
+    act.appendChild(box);
+    return tr;
+  }
+
+  function inviteRow(inv) {
+    const tr = document.createElement('tr');
+    cell(tr, inv.email || inv.login || (inv.kind === 'owner' ? 'owner invite' : '—'));
+    cell(tr, when(inv.expires_at));
+    const act = cell(tr);
+    const box = document.createElement('div'); box.className = 'rowact';
+    box.appendChild(actionButton('Revoke', 'Revoke the invite for ' + (inv.email || 'this address'), async () => {
+      if (!confirm('Revoke the invite for ' + (inv.email || 'this address') + '? Its link stops working.')) return;
+      const res = await api('DELETE', '/api/team/invites/' + encodeURIComponent(inv.invite_id));
+      if (res.status === 204) { say(teamStatus, 'Invite revoked.'); await loadTeam(); }
+      else if (res.status !== 401) say(teamStatus, explain(res), 'error');
+    }, 'rm'));
+    act.appendChild(box);
+    return tr;
+  }
+
+  async function setStatus(enc, who, action) {
+    if (action === 'disable' && !confirm('Disable ' + who + '? They are signed out at once and their API tokens stop working. You can enable them again; tokens are not restored.')) return;
+    const res = await api('POST', '/api/team/' + enc + '/' + action);
+    if (res.status === 200) { say(teamStatus, who + (action === 'disable' ? ' is disabled.' : ' is enabled.')); await loadTeam(); }
+    else if (res.status !== 401) say(teamStatus, explain(res), 'error');
+  }
+  async function removeMember(enc, who) {
+    if (!confirm('Remove ' + who + ' from your workspace? Their sign-in and API tokens are deleted. Their data stays in the tenant.')) return;
+    const res = await api('DELETE', '/api/team/' + enc);
+    if (res.status === 204) { say(teamStatus, who + ' was removed.'); await loadTeam(); }
+    else if (res.status !== 401) say(teamStatus, explain(res), 'error');
+  }
+  async function issueReset(enc, who, self) {
+    if (!self && !confirm('Make a password-reset link for ' + who + '? Anyone holding it can set their password until it expires.')) return;
+    const res = await api('POST', '/api/team/' + enc + '/reset');
+    if (res.status === 201) {
+      showLink(self ? 'Your reset link' : 'Reset link', res.json.url, self
+        ? 'Open it to choose a new password. It works once and expires ' + when(res.json.expires_at) + '.'
+        : 'Send this to ' + who + ' yourself — loomcycle sends no e-mail. It works once and expires ' + when(res.json.expires_at) + '.', self);
+    } else if (res.status !== 401) say(teamStatus, explain(res, self ? 'self' : ''), 'error');
+  }
+  sheet.querySelector('[data-reset-self]').addEventListener('click', async (e) => {
+    if (!selfSubject) return;
+    const btn = e.currentTarget;   /* currentTarget is null once the handler awaits */
+    btn.disabled = true;
+    try { await issueReset(encodeURIComponent(selfSubject), 'you', true); }
+    finally { btn.disabled = false; }
+  });
+
+  sheet.querySelector('[data-invite-form]').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('invite-email');
+    const email = input.value.trim();
+    if (!input.checkValidity() || !email) { say(teamStatus, 'Enter an e-mail address.', 'error'); input.focus(); return; }
+    const btn = e.currentTarget.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      const res = await api('POST', '/api/team/invites', { email });
+      if (res.status === 201) {
+        input.value = '';
+        showLink('Invite link for ' + email, res.json.url,
+          'Send this to ' + email + ' yourself — loomcycle sends no e-mail. It works once and expires ' + when(res.json.expires_at) + '.', false);
+        await loadTeam();
+      } else if (res.status === 400) say(teamStatus, 'That does not look like an e-mail address.', 'error');
+      else if (res.status !== 401) say(teamStatus, explain(res), 'error');
+    } finally { btn.disabled = false; }
+  });
+
+  /* — the link box: one link at a time, cleared when the view changes — */
+  const linkBox = sheet.querySelector('[data-linkbox]');
+  const linkInput = document.getElementById('link-value');
+  const openLink = sheet.querySelector('[data-open-link]');
+  function showLink(titleText, url, note, openable) {
+    sheet.querySelector('[data-link-title]').textContent = titleText;
+    linkInput.value = url;
+    sheet.querySelector('[data-link-note]').textContent = note;
+    openLink.hidden = !openable;
+    openLink.href = openable ? url : '#';
+    linkBox.hidden = false;
+    say(teamStatus, titleText + ' ready.');
+    sheet.querySelector('[data-copy-link]').focus();
+  }
+  function clearLink() {
+    linkInput.value = '';
+    openLink.href = '#';
+    linkBox.hidden = true;
+  }
+  sheet.querySelector('[data-copy-link]').addEventListener('click', async () => {
+    const url = linkInput.value;
+    if (!url) return;
+    let copied = false;
+    try { await navigator.clipboard.writeText(url); copied = true; }
+    catch (_) {
+      /* no async clipboard (insecure context, old browser): select the field
+         and use the legacy command */
+      linkInput.focus(); linkInput.select();
+      try { copied = document.execCommand('copy'); } catch (_) {}
+    }
+    say(teamStatus, copied ? 'Link copied.' : 'Select the link and copy it (Ctrl+C / ⌘C).', copied ? '' : 'error');
+  });
+
+  /* returning from the app after setting a password (SIGNUP_RETURN_TO) */
+  const params = new URLSearchParams(location.search);
+  if (params.get('welcome') === '1') {
+    history.replaceState(null, '', location.pathname);
+    open().then(() => { if (gateOn()) say(acctStatus, 'Your workspace is ready. Welcome to loomcycle.cloud.'); });
+  }
+
   /* returning from the Cloudflare Access login → open the console straight to the
      token vault (checkAuth in open() will see the Access cookie) */
-  if (new URLSearchParams(location.search).get('signedin') === '1') {
+  if (params.get('signedin') === '1') {
     history.replaceState(null, '', location.pathname);
     open();
   }
