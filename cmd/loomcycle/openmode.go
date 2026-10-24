@@ -48,6 +48,28 @@ func openModeRefusal(authConfigured bool, authErr error, env *config.Env) error 
 		strings.Join(public, ", "))
 }
 
+// strictModeRefusal returns the error that stops a boot in strict mode with no
+// credential configured, or nil. Strict mode (RFC FA §4) means a person signs
+// in only through a configured gate, while open mode serves every route with
+// no sign-in at all; running both would be open mode under a strict label.
+func strictModeRefusal(authConfigured bool, cfg *config.Config) error {
+	if !cfg.ResolvedAuth.Strict() || authConfigured {
+		return nil
+	}
+	return fmt.Errorf("refusing to start: auth.mode is strict but no credential is configured, so the " +
+		"server would run in open mode. Set LOOMCYCLE_AUTH_TOKEN or declare a principal, or use token mode")
+}
+
+// insecureCookiesWarning is the boot warning for LOOMCYCLE_UI_INSECURE_COOKIES,
+// "" when it is not set.
+func insecureCookiesWarning(env *config.Env) string {
+	if !env.UIInsecureCookies {
+		return ""
+	}
+	return "auth: LOOMCYCLE_UI_INSECURE_COOKIES=1 — Web UI session cookies may be issued over plain HTTP, " +
+		"where anyone on the network path can read them. Use it on a private network (a tailnet, a lab) only"
+}
+
 // warnOpenMode logs the open-mode warning now and every interval after while
 // the server stays in open mode. It returns when ctx ends, or once auth is
 // configured (an admin token minted at runtime): a running server does not move

@@ -23,6 +23,9 @@ var aclUngovernedRoutes = map[string]bool{
 	"GET /healthz": true, "GET /v1/_me": true, "GET /v1/config": true,
 	"GET /v1/openapi.json": true, "GET /v1/openapi.yaml": true, "GET /v1/docs": true, "GET /v1/docs/": true, "GET /v1/docs/{file}": true,
 	"GET /ui": true, "GET /ui/": true, "POST /ui/session": true, "GET /ui/login-config.json": true, "GET /ui/logout": true, "POST /ui/logout": true,
+	// Signing out ends the caller's own session and runs before any
+	// principal exists (an expired session may still log out).
+	"POST /v1/_auth/logout":                     true,
 	"GET /.well-known/agent-card.json/extended": true,
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.

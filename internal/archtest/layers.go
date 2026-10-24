@@ -150,6 +150,7 @@ var layers = []layer{
 		subsystems: []string{
 			"internal/agents",
 			"internal/auth",
+			"internal/authgate",
 			"internal/claudeimport",
 			"internal/config",
 			"internal/credential",
@@ -266,6 +267,7 @@ var allowedSideways = []subsystemEdge{
 
 	// L2
 	{"internal/agents", "internal/hooks"},
+	{"internal/authgate", "internal/auth"},
 	{"internal/config", "internal/agents"},
 	{"internal/config", "internal/auth"},
 	{"internal/config", "internal/credential"},

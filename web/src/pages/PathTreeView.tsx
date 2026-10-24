@@ -22,7 +22,7 @@ import type { DocScope } from "../api";
 // that mutates the document refreshes the tree + selected chunk.
 
 // cookieFetch mirrors api.ts's jsonFetch transport EXACTLY: the Web UI is
-// same-origin and rides the `loomcycle_session` HttpOnly cookie (no bearer), and
+// same-origin and rides the HttpOnly Web UI session cookie (no bearer), and
 // a 401 bounces to the login page. Injecting it into the package's
 // @loomcycle/client keeps that behavior transparent. Defined at module scope so
 // its identity is stable across renders (the package memoizes its client on the

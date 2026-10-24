@@ -58,18 +58,17 @@ func TestAuthMiddleware_BearerHeaderAccepted(t *testing.T) {
 	}
 }
 
-// TestAuthMiddleware_CookieAcceptedWhenNoBearer pins the v0.7.3
-// addition: when the bearer header is absent, the middleware checks
-// the loomcycle_session cookie and authenticates against the same
-// stored token. This is the path the SPA uses after /ui?token=...
-// has set the cookie.
+// TestAuthMiddleware_CookieAcceptedWhenNoBearer: in token mode the bearer
+// cookie earlier releases set (loomcycle_session) still authenticates for one
+// release (RFC FA decision 2), so a browser signed in before the upgrade keeps
+// working until it signs in again. Nothing sets this cookie any more.
 func TestAuthMiddleware_CookieAcceptedWhenNoBearer(t *testing.T) {
 	s := authedTestServer(t, "secret")
 	var reached bool
 	h := s.authMiddleware(passthroughHandler(&reached))
 
 	req := httptest.NewRequest("GET", "/v1/agents/x", nil)
-	req.AddCookie(&http.Cookie{Name: webui.SessionCookie, Value: "secret"})
+	req.AddCookie(&http.Cookie{Name: webui.LegacyBearerCookie, Value: "secret"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -90,7 +89,7 @@ func TestAuthMiddleware_BearerWinsOverCookie(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/v1/agents/x", nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
-	req.AddCookie(&http.Cookie{Name: webui.SessionCookie, Value: "secret"})
+	req.AddCookie(&http.Cookie{Name: webui.LegacyBearerCookie, Value: "secret"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -108,7 +107,7 @@ func TestAuthMiddleware_BadCookieRejected(t *testing.T) {
 	h := s.authMiddleware(passthroughHandler(&reached))
 
 	req := httptest.NewRequest("GET", "/v1/agents/x", nil)
-	req.AddCookie(&http.Cookie{Name: webui.SessionCookie, Value: "wrong"})
+	req.AddCookie(&http.Cookie{Name: webui.LegacyBearerCookie, Value: "wrong"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

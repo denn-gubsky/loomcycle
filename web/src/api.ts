@@ -1,7 +1,7 @@
-// Thin client over loomcycle's /v1/* surface. Auth is via the
-// `loomcycle_session` HttpOnly cookie set by the server when the
-// operator visits `/ui?token=...` — fetch() includes it
-// automatically because we're same-origin. No bearer header needed.
+// Thin client over loomcycle's /v1/* surface. Auth is via the HttpOnly Web UI
+// session cookie the server sets at sign-in — fetch() includes it automatically
+// because we're same-origin, and lib/uiSession adds the X-Loomcycle-UI header
+// the server's CSRF check asks for. No bearer header needed.
 //
 // Every failed response is thrown through apiError (lib/apiError), so an
 // access-control refusal (403 acl_denied / insufficient_scope /
@@ -2847,8 +2847,8 @@ export async function deleteMemoryEntry(
 //
 // POST /v1/runs and POST /v1/sessions/{id}/messages return
 // text/event-stream. EventSource can't POST a body or set headers, but
-// the loomcycle_session cookie authenticates fetch() same-origin (the
-// server's extractBearer cookie fallback), so we read the body as a
+// the Web UI session cookie authenticates fetch() same-origin, so we read
+// the body as a
 // ReadableStream and parse SSE frames ourselves. This is the UI's first
 // streaming reader — every other call is a one-shot jsonFetch.
 

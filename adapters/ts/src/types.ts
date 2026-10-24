@@ -2339,6 +2339,24 @@ export interface WhoamiResponse {
   /** What the caller may reach, as the server's own gates would answer it.
    *  Absent on a server that predates the summary. */
   effective?: WhoamiEffective;
+  /** How the caller signed in. Absent on a server that predates Web UI
+   *  sessions. */
+  auth?: WhoamiAuth;
+}
+
+/** GET /v1/_me's sign-in block. `mode` is always present; the rest only when
+ *  a Web UI session (not a bearer) authenticated the request. */
+export interface WhoamiAuth {
+  /** `open` (no credential configured), `token` or `strict`. */
+  mode: "open" | "token" | "strict";
+  /** The configured gate the session was created through. */
+  gate?: string;
+  /** The authentication methods the gate used, e.g. `["bearer"]`. */
+  amr?: string[];
+  /** When the session's login happened (RFC 3339). */
+  auth_time?: string;
+  /** When the session stops authenticating unless renewed by activity. */
+  session_expires_at?: string;
 }
 
 /** GET /v1/_me's capability summary. Bounded and non-secret: a fixed list of

@@ -53,20 +53,24 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		bearer, ok := extractBearer(r)
-		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		p, ok := s.resolvePrincipal(r.Context(), bearer)
+		p, ui, ok := s.authenticateRequest(r)
 		if !ok {
 			// Opaque — never distinguish "unknown" from "expired" from
 			// "wrong" (no oracle). Detail only under LOOMCYCLE_AUTH_VERBOSE.
 			if s.authVerbose() {
-				slog.Info("auth: rejected bearer (no matching token / expired / wrong secret)")
+				slog.Info("auth: rejected credential (no matching token or session / expired / wrong secret)")
 			}
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if ui != nil {
+			// A cookie authenticated the request, so a browser may have sent
+			// it on another site's behalf.
+			if code := uiCSRFRefusal(r); code != "" {
+				writeCSRFRefusal(w, code)
+				return
+			}
+			r = r.WithContext(withUIAuth(r.Context(), *ui))
 		}
 		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
 			writeScopeError(w, required, "insufficient scope")
@@ -323,10 +327,79 @@ func (s *Server) AuthConfiguredErr(ctx context.Context) (bool, error) {
 	return s.authConfiguredErr(ctx)
 }
 
-// extractBearer returns the raw token (sans "Bearer ") from the
-// Authorization header, or the Web-UI session cookie value as a
-// fallback. A present-but-malformed Authorization header is a miss.
-func extractBearer(r *http.Request) (string, bool) {
+// authenticateRequest resolves the request's credential, in this order: an
+// Authorization header; the client-tools WebSocket subprotocol bearer (not in
+// strict mode); a Web UI session cookie; and, in token mode only, the legacy
+// bearer cookie of earlier releases (RFC FA decision 2). ui is set when a
+// cookie authenticated the request, so the caller applies the CSRF check. A
+// present credential that fails is a refusal — the next kind is not tried.
+//
+// The subprotocol bearer comes before the cookies on purpose: a browser
+// extension holding its own bearer may also carry the user's session cookie,
+// and its chrome-extension:// Origin would fail the cookie path's origin check.
+func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, bool) {
+	strict := s.cfg().ResolvedAuth.Strict()
+	ctx := r.Context()
+	if bearer, ok := extractBearer(r, strict); ok {
+		p, ok := s.resolvePrincipal(ctx, bearer)
+		return p, nil, ok
+	}
+	if r.Header.Get("Authorization") != "" {
+		return auth.Principal{}, nil, false
+	}
+	if id, ok := s.sessionIDFromCookie(r); ok {
+		p, row, ok := s.sessionPrincipal(r, id)
+		if !ok {
+			return auth.Principal{}, nil, false
+		}
+		return p, &uiAuth{session: &row}, true
+	}
+	if bearer, ok := legacyBearerCookie(r, strict); ok {
+		warnEvery(&s.legacyCookieWarnedAt, "auth: a browser signed in with the "+webui.LegacyBearerCookie+
+			" bearer cookie of an earlier release; it keeps working in token mode for this release only. "+
+			"Signing in again moves the browser to a session")
+		p, ok := s.resolvePrincipal(ctx, bearer)
+		if !ok {
+			return auth.Principal{}, nil, false
+		}
+		return p, &uiAuth{}, true
+	}
+	return auth.Principal{}, nil, false
+}
+
+// credentialPresented reports whether the request carries any credential
+// authenticateRequest would try, valid or not.
+func (s *Server) credentialPresented(r *http.Request) bool {
+	strict := s.cfg().ResolvedAuth.Strict()
+	if _, ok := extractBearer(r, strict); ok || r.Header.Get("Authorization") != "" {
+		return true
+	}
+	if c, err := r.Cookie(s.sessionCookieName(r)); err == nil && c.Value != "" {
+		return true
+	}
+	_, ok := legacyBearerCookie(r, strict)
+	return ok
+}
+
+// legacyBearerCookie returns the bearer the pre-session Web UI kept in a
+// cookie. Read in token mode only, for one release; strict mode never reads a
+// bearer from a cookie.
+func legacyBearerCookie(r *http.Request, strict bool) (string, bool) {
+	if strict {
+		return "", false
+	}
+	c, err := r.Cookie(webui.LegacyBearerCookie)
+	if err != nil || c.Value == "" {
+		return "", false
+	}
+	return c.Value, true
+}
+
+// extractBearer returns the raw token (sans "Bearer ") from the Authorization
+// header or, outside strict mode, the client-tools WebSocket subprotocol. A
+// present-but-malformed Authorization header is a miss. No bearer is ever read
+// from a cookie here.
+func extractBearer(r *http.Request, strict bool) (string, bool) {
 	if h := r.Header.Get("Authorization"); h != "" {
 		const pfx = "Bearer "
 		if len(h) > len(pfx) && strings.EqualFold(h[:len(pfx)], pfx) {
@@ -334,16 +407,15 @@ func extractBearer(r *http.Request) (string, bool) {
 		}
 		return "", false
 	}
-	if c, err := r.Cookie(webui.SessionCookie); err == nil && c.Value != "" {
-		return c.Value, true
-	}
 	// WebSocket clients (browsers can't set an Authorization header on a
 	// WebSocket) carry the bearer as a Sec-WebSocket-Protocol entry of the form
 	// "bearer.<token>" (RFC BC). The app subprotocol is negotiated separately in
 	// the /v1/client-tools handler; this entry is never echoed back. Read only on
 	// a WebSocket upgrade to that route (RFC ES #5): elsewhere the header would be
 	// a second credential channel that proxies and logs do not treat as one.
-	if !isClientToolsUpgrade(r) {
+	// Strict mode does not read it (RFC FA §4): a browser there authenticates
+	// by its session.
+	if strict || !isClientToolsUpgrade(r) {
 		return "", false
 	}
 	if protos := r.Header.Get("Sec-WebSocket-Protocol"); protos != "" {
@@ -464,30 +536,8 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 			negativeCacheable = false
 		}
 		if err == nil {
-			// Valid iff not retired (or still inside the grace window) and
-			// not past its fixed lifetime. Both refusals look the same.
-			if row.ValidAt(time.Now()) {
-				// A restrictions record this build cannot read refuses the
-				// token. Reading it as "unrestricted" would give a narrowed
-				// credential the whole of its scopes.
-				restrictions, rerr := auth.ParseRestrictions(row.RestrictionsJSON)
-				if rerr != nil {
-					slog.Warn("auth: token refused", "token_def", row.DefID, "err", rerr)
-					return auth.Principal{}, false, true, never
-				}
-				validUntil := never
-				if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
-					validUntil = row.ValidUntil()
-				}
-				return auth.Principal{
-					TenantID:     row.TenantID,
-					Subject:      row.Subject,
-					Scopes:       row.AllowedScopes,
-					TokenDefID:   row.DefID,
-					Restrictions: restrictions,
-				}, true, true, validUntil
-			}
-			return auth.Principal{}, false, true, never // expired → opaque 401, cacheable
+			p, ok, validUntil := tokenRowPrincipal(row, time.Now())
+			return p, ok, true, validUntil // a refusal (expired, unreadable) is cacheable
 		}
 		// Not found (ErrNotFound) → fall through to legacy. Any OTHER
 		// store error is a genuine outage: fail closed AND not cacheable (we
@@ -526,6 +576,39 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 		}, true, true, never
 	}
 	return auth.Principal{}, false, negativeCacheable, never // genuine unknown → cacheable negative, unless the older-form lookups ran
+}
+
+// tokenRowPrincipal is the principal a minted token row authenticates as at
+// now, whether it authenticates at all, and when it stops (zero = never). Every
+// path that turns a token row into a principal uses it, so a Web UI session
+// built on a token can never read the row more generously than the bearer
+// lookup does.
+func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Principal, bool, time.Time) {
+	var never time.Time
+	// Valid iff not retired (or still inside the grace window) and not past its
+	// fixed lifetime. Both refusals look the same.
+	if !row.ValidAt(now) {
+		return auth.Principal{}, false, never
+	}
+	// A restrictions record this build cannot read refuses the token. Reading
+	// it as "unrestricted" would give a narrowed credential the whole of its
+	// scopes.
+	restrictions, err := auth.ParseRestrictions(row.RestrictionsJSON)
+	if err != nil {
+		slog.Warn("auth: token refused", "token_def", row.DefID, "err", err)
+		return auth.Principal{}, false, never
+	}
+	validUntil := never
+	if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
+		validUntil = row.ValidUntil()
+	}
+	return auth.Principal{
+		TenantID:     row.TenantID,
+		Subject:      row.Subject,
+		Scopes:       row.AllowedScopes,
+		TokenDefID:   row.DefID,
+		Restrictions: restrictions,
+	}, true, validUntil
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is
@@ -818,6 +901,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			// open-mode console shows it like any other.
 			"acl_mode":  string(s.aclMode()),
 			"effective": openModeEffective(),
+			"auth":      s.whoamiAuth(r.Context(), true),
 		})
 		return
 	}
@@ -844,6 +928,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	// RFC EZ §4: which Web UI pages the principal may reach, asked of the
 	// gates a request to each page's primary route would face.
 	out["effective"] = navEffective(r.Context(), p)
+	// RFC FA: how the caller signed in — the mode always, the gate, methods
+	// and session times when a Web UI session authenticated the request.
+	out["auth"] = s.whoamiAuth(r.Context(), false)
 	writeJSONOK(w, out)
 }
 

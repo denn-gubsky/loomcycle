@@ -29,8 +29,8 @@ const REFRESH_MS = 30_000;
 export default function Layout() {
   // user_id is the gating context for the run-list query. Persisted in
   // localStorage so the operator doesn't have to re-pick on every
-  // navigation. The bearer token is in the HttpOnly cookie set by the
-  // server's ?token=... redirect; we don't manage it here.
+  // navigation. Authentication is the HttpOnly session cookie the server
+  // sets at sign-in; the browser holds no token, and we don't manage it here.
   const [userId, setUserId] = useState<string>(() => localStorage.getItem(USER_ID_KEY) ?? "");
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [usersErr, setUsersErr] = useState<string | null>(null);

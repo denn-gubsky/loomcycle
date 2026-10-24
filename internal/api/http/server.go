@@ -591,6 +591,11 @@ type Server struct {
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
 	tokenCache *tokenCache
+	// legacyCookieWarnedAt and plainSessionWarnedAt (unix nanos) rate-limit
+	// the Web UI session warnings (ui_session.go): a browser still on the
+	// legacy bearer cookie, and sessions issued over plain HTTP.
+	legacyCookieWarnedAt atomic.Int64
+	plainSessionWarnedAt atomic.Int64
 	// wrappedTokens reports whether a token row may be on the wrapped form
 	// (RFC ES F3/C2, token_rewrap.go): set by the boot scan, true when it
 	// found a wrapped row or an untagged one the rewrap command may wrap, so
@@ -4621,23 +4626,21 @@ func (s *Server) Mux() http.Handler {
 	// the upgrade (authMiddleware wraps a plain handler), so the principal is on
 	// ctx by the time handleClientTools upgrades.
 	mux.Handle("GET /v1/client-tools", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleClientTools))))
-	// v0.7.3 Web UI — embedded React SPA. The cookie-set landing
-	// page (/ui with a ?token= query) is intentionally NOT
-	// auth-middleware-wrapped; it sets the cookie that the
-	// authMiddleware will then accept on subsequent /v1 calls.
-	// Static asset requests (/ui/assets/*) don't need auth either
-	// — the SPA shell is public; it pulls protected data from
-	// /v1/* which DOES go through authMiddleware. Standard SPA-on-
-	// API split.
-	uiHandler := webui.Handler("/ui", false, s.cfg().Env.UILoginOrigins, webui.WithBundle(s.uiBundle))
+	// v0.7.3 Web UI — embedded React SPA. The shell and its assets are
+	// public; the SPA pulls protected data from /v1/*, which goes through
+	// authMiddleware. Standard SPA-on-API split.
+	uiHandler := webui.Handler("/ui", s.loginConfig, webui.WithBundle(s.uiBundle))
 	mux.Handle("GET /ui", recoveryMiddleware(uiHandler))
 	mux.Handle("GET /ui/", recoveryMiddleware(uiHandler))
-	// POST /ui/session — the URL-free login (Authorization: Bearer -> session
-	// cookie), used by the SPA's paste-token form + its postMessage handoff
-	// receiver. Unauthenticated like GET /ui (it ESTABLISHES the session); the
-	// handler enforces the same-origin login-CSRF guard. The GET-only /ui routes
-	// above don't match a POST, so it needs its own registration.
-	mux.Handle("POST /ui/session", recoveryMiddleware(uiHandler))
+	// POST /ui/session — the token gate's login (RFC FA): validates the
+	// Authorization bearer and starts a Web UI session. Unauthenticated (it
+	// ESTABLISHES the session); the handler enforces the same-origin
+	// login-CSRF guard.
+	mux.Handle("POST /ui/session", recoveryMiddleware(http.HandlerFunc(s.handleUILogin)))
+	// POST /v1/_auth/logout — ends the session server-side. Outside
+	// authMiddleware so an expired session can still log out; the handler's
+	// CSRF check (custom header + same origin) keeps other sites from it.
+	mux.Handle("POST /v1/_auth/logout", recoveryMiddleware(http.HandlerFunc(s.handleAuthLogout)))
 	// OpenAPI contract (RFC CD Part A) — served UNAUTHENTICATED, like /ui:
 	// the machine-readable contract is non-secret and must be discoverable
 	// for codegen, while the data behind it still goes through authMiddleware.
@@ -9272,11 +9275,12 @@ func (s *Server) handleListUserInterrupts(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"interrupts": rows, "total": len(rows)})
 }
 
-// hasSessionCookie returns true when the request carries the
-// Web UI session cookie — drives the resolved_by attribution.
+// hasSessionCookie reports whether a Web UI cookie (a session, or the legacy
+// bearer cookie) authenticated the request — drives the resolved_by
+// attribution.
 func hasSessionCookie(r *http.Request) bool {
-	c, err := r.Cookie("loomcycle_session")
-	return err == nil && c != nil && c.Value != ""
+	_, ok := uiAuthFrom(r.Context())
+	return ok
 }
 
 // writeJSON is a small helper for the new endpoints that avoids

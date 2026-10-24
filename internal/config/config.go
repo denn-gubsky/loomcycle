@@ -292,6 +292,13 @@ type Config struct {
 	// Not in YAML; carries the resolved secrets, so it is never serialized.
 	ResolvedPrincipals []auth.DeclaredPrincipal `yaml:"-"`
 
+	// Auth is how people sign in to the Web UI (RFC FA): the mode, the session
+	// lifetimes and the login gates. Validated at load into ResolvedAuth.
+	Auth AuthConfig `yaml:"auth,omitempty"`
+	// ResolvedAuth is Auth with the env default applied, durations parsed and
+	// the implicit token gate added in token mode.
+	ResolvedAuth AuthPolicy `yaml:"-"`
+
 	// Env-derived; not in YAML.
 	Env Env `yaml:"-"`
 
@@ -4055,6 +4062,13 @@ type Env struct {
 	// handoff), so a deployment without a configured landing can't be handed a
 	// token by any page. Non-secret.
 	UILoginOrigins []string
+	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet default for
+	// `auth.mode` (RFC FA §4); a config may raise it, never lower it.
+	AuthMode string
+	// UIInsecureCookies (LOOMCYCLE_UI_INSECURE_COOKIES=1) lets strict mode
+	// create Web UI sessions over plain HTTP, with a cookie that is not
+	// Secure — for a private network such as a tailnet. Warned at boot.
+	UIInsecureCookies bool
 	// WebUIDir (LOOMCYCLE_WEBUI_DIR) names a directory holding an unpacked Web
 	// UI bundle (the built SPA plus manifest.json) to serve instead of the
 	// embedded UI. Read once at startup; operator-set only, because a bundle
@@ -5379,6 +5393,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		ListenAddr:                  getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
 		UILoginOrigins:              splitCommaTrim(os.Getenv("LOOMCYCLE_UI_LOGIN_ORIGINS")),
+		AuthMode:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_AUTH_MODE")),
+		UIInsecureCookies:           os.Getenv("LOOMCYCLE_UI_INSECURE_COOKIES") == "1",
 		WebUIDir:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),
 		WebUIBundleURL:              strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_URL")),
 		WebUIBundleSHA256:           strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_BUNDLE_SHA256")),
@@ -8969,6 +8985,10 @@ func validate(c *Config) error {
 	// table (reads each token_env from the environment). A bad scope/env-name
 	// fails load; an empty token_env makes that principal inert + warns.
 	if err := resolvePrincipals(c); err != nil {
+		return err
+	}
+	// RFC FA: the auth mode, session lifetimes and login gates.
+	if err := resolveAuth(c); err != nil {
 		return err
 	}
 	// RFC EY §9: validate the acls / groups / acl_bindings blocks with the

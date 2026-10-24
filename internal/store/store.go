@@ -1651,6 +1651,7 @@ type Store interface {
 	MemoryBackendDefStore
 	DocumentSourceDefStore
 	OperatorTokenStore
+	UISessionStore
 	EvaluationStore
 	MetricsStore
 	DynamicAgentStore
@@ -4314,6 +4315,30 @@ type OperatorTokenStore interface {
 	OperatorTokenDefDeleteExpired(ctx context.Context, before time.Time) (int, error)
 }
 
+// UISessionStore persists Web UI login sessions (RFC FA §5). The browser holds
+// only an opaque id; the row is keyed by that id's SHA-256, so reading the table
+// never yields a cookie that authenticates. Expiry and revocation are decided by
+// the auth layer from the row's times; the store only records them.
+type UISessionStore interface {
+	// UISessionCreate inserts a new session. SessionHash, TenantID, Subject,
+	// Gate and both expiry times are required.
+	UISessionCreate(ctx context.Context, row UISessionRow) error
+	// UISessionGet returns the session whose id hashes to sessionHash, revoked
+	// or not. ErrNotFound when there is none.
+	UISessionGet(ctx context.Context, sessionHash string) (UISessionRow, error)
+	// UISessionTouch records activity on a live session: it moves last_seen_at
+	// and idle_expires_at. A revoked or missing row is left alone (no error).
+	UISessionTouch(ctx context.Context, sessionHash string, lastSeen, idleExpires time.Time) error
+	// UISessionRevoke sets revoked_at on a live session and reports whether it
+	// did; (false, nil) when the row is missing or already revoked, so a caller
+	// that audits the end of a session records it once.
+	UISessionRevoke(ctx context.Context, sessionHash string, at time.Time) (bool, error)
+	// UISessionDeleteExpired removes every session that can no longer
+	// authenticate at `before` — revoked, idle-expired or past its absolute
+	// lifetime — and returns how many went.
+	UISessionDeleteExpired(ctx context.Context, before time.Time) (int, error)
+}
+
 // EvaluationStore persists evaluation scores.
 type EvaluationStore interface {
 	// ---- Evaluation ----
@@ -6404,6 +6429,39 @@ func (r OperatorTokenDefRow) ValidUntil() time.Time {
 // tokenFarFuture stands for "never" in ValidUntil. Year 9999 is the largest
 // value both backends and JSON round-trip.
 var tokenFarFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// UISessionRow is one Web UI login session (RFC FA §5).
+//
+// The credential the session was created from is never stored. CredKind and
+// CredRef name where to find it again (a minted token's def id, a config
+// principal's id, or the legacy secret), and CredMAC is an HMAC keyed by the
+// session id itself over that credential's current hash — so the auth layer can
+// tell on every request that the credential still exists and is the same one,
+// while a reader of this table, who never sees a session id, learns nothing it
+// could test a guess against.
+type UISessionRow struct {
+	SessionHash string
+	TenantID    string
+	Subject     string
+	// Gate is the configured gate the person logged in through.
+	Gate string
+	// AMR lists the authentication methods the gate used (RFC 8176 style).
+	AMR      []string
+	CredKind string
+	CredRef  string
+	CredMAC  string
+	// UAHash and IPHash are keyed by the session id as well: the first checks
+	// that the browser presenting the cookie is the one that logged in, the
+	// second is recorded only.
+	UAHash            string
+	IPHash            string
+	CreatedAt         time.Time
+	LastSeenAt        time.Time
+	IdleExpiresAt     time.Time
+	AbsoluteExpiresAt time.Time
+	// RevokedAt is zero for a session that has not been ended.
+	RevokedAt time.Time
+}
 
 // OperatorTokenDefNameSummary is one row of the names listing — no
 // secret material, suitable for GET /v1/_operatortokendef/names.

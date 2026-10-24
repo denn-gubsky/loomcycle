@@ -121,4 +121,4 @@ Specific symptoms:
 2. Read `loomcycle.yaml` top-to-bottom — every section is commented.
 3. Pick which provider tier to dispatch your default agent to (edit `agents.default.tier:` or `agents.default.model:`).
 4. Run `loomcycle` to start the server on `127.0.0.1:8787`.
-5. Open `http://127.0.0.1:8787/ui?token=$LOOMCYCLE_AUTH_TOKEN` for the Web UI.
+5. Open `http://127.0.0.1:8787/ui` for the Web UI and paste `$LOOMCYCLE_AUTH_TOKEN` on the sign-in page.

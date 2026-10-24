@@ -76,6 +76,15 @@ func (s *Server) refuseReloadLosingAuth(candidate *config.Config) error {
 			"do not count here: one can be retired at any moment). Keep the admin principal, set " +
 			"LOOMCYCLE_AUTH_TOKEN, or restart to drop it")
 	}
+	// RFC FA §4: strict mode is a promise that a person signs in only through
+	// a configured gate. A reload must not quietly take it back; lowering the
+	// mode is a restart. (Dropping strict mode's last interactive gate already
+	// fails the candidate's load.)
+	if config.AuthModeLowered(cur.ResolvedAuth, candidate.ResolvedAuth) {
+		return fmt.Errorf("the new config lowers auth.mode from %s to %s; a reload cannot lower the sign-in "+
+			"mode. Keep auth.mode: %s, or restart to change it", cur.ResolvedAuth.ModeName(),
+			candidate.ResolvedAuth.ModeName(), cur.ResolvedAuth.ModeName())
+	}
 	return nil
 }
 

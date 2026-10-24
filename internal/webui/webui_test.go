@@ -8,82 +8,39 @@ import (
 	"testing"
 )
 
-func TestHandler_TokenQueryRedirectsAndSetsCookie(t *testing.T) {
-	h := Handler("/ui", false, nil)
-	req := httptest.NewRequest("GET", "/ui?token=secret-token-123", nil)
+// TestHandler_TokenQuerySetsNoCookie: `/ui?token=` was the pre-session way in
+// and set the raw bearer as a cookie. It is no longer honoured (RFC FA §5): it
+// sends the browser to the login page, so the token leaves the address bar,
+// and sets nothing.
+func TestHandler_TokenQuerySetsNoCookie(t *testing.T) {
+	h := Handler("/ui", nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302 (token-set redirect)", rec.Code)
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/ui?token=secret-token-123", nil))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/ui/login" {
+		t.Fatalf("status = %d Location = %q, want 302 to /ui/login", rec.Code, rec.Header().Get("Location"))
 	}
-	if loc := rec.Header().Get("Location"); loc != "/ui" {
-		t.Errorf("Location = %q, want /ui (without the ?token= so refresh doesn't re-set)", loc)
-	}
-	cookies := rec.Result().Cookies()
-	var found *http.Cookie
-	for _, c := range cookies {
-		if c.Name == SessionCookie {
-			found = c
-		}
-	}
-	if found == nil {
-		t.Fatalf("no %s cookie set; tokens = %+v", SessionCookie, cookies)
-	}
-	if found.Value != "secret-token-123" {
-		t.Errorf("cookie value = %q, want secret-token-123", found.Value)
-	}
-	if !found.HttpOnly {
-		t.Error("cookie not HttpOnly — must be (XSS exposure of bearer token)")
-	}
-	if found.SameSite != http.SameSiteStrictMode {
-		t.Errorf("SameSite = %v, want Strict", found.SameSite)
-	}
-	if found.Path != "/" {
-		t.Errorf("cookie path = %q, want /", found.Path)
+	if c := rec.Result().Cookies(); len(c) != 0 {
+		t.Fatalf("?token= set cookies %+v; nothing may carry a bearer into a cookie", c)
 	}
 }
 
-func TestHandler_LogoutClearsCookieAndRedirects(t *testing.T) {
-	h := Handler("/ui", false, nil)
-	req := httptest.NewRequest("GET", "/ui/logout", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302 (logout redirect)", rec.Code)
-	}
-	if loc := rec.Header().Get("Location"); loc != "/ui/login" {
-		t.Errorf("Location = %q, want /ui/login", loc)
-	}
-	var found *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == SessionCookie {
-			found = c
+// TestHandler_SetsNoCookieOnAnyRoute: the SPA handler never sets a cookie — the
+// login and logout routes are the API server's, so a UI bundle cannot change
+// cookie handling. GET /ui/logout is a deep link the SPA handles by posting to
+// the server's logout route; the GET itself changes nothing.
+func TestHandler_SetsNoCookieOnAnyRoute(t *testing.T) {
+	h := Handler("/ui", nil)
+	for _, target := range []string{"/ui", "/ui/logout", "/ui/login", "/ui/login-config.json", "/ui/assets/x.js"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		if c := rec.Result().Cookies(); len(c) != 0 {
+			t.Errorf("GET %s set cookies %+v", target, c)
 		}
 	}
-	if found == nil {
-		t.Fatalf("no %s cookie in response — logout must emit a clearing Set-Cookie", SessionCookie)
-	}
-	// A deletion cookie: empty value + MaxAge<0 (the browser drops it).
-	if found.Value != "" || found.MaxAge >= 0 {
-		t.Errorf("logout cookie not a deletion: value=%q MaxAge=%d (want \"\" and <0)", found.Value, found.MaxAge)
-	}
-}
-
-func TestHandler_SecureCookieFlag(t *testing.T) {
-	// secureCookie=true forces the Secure attribute even when r.TLS is
-	// nil — covers the operator behind a TLS terminator.
-	h := Handler("/ui", true, nil)
-	req := httptest.NewRequest("GET", "/ui?token=x", nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("got %d cookies, want 1", len(cookies))
-	}
-	if !cookies[0].Secure {
-		t.Error("cookie missing Secure attribute despite secureCookie=true")
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/ui/session", nil))
+	if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
+		t.Errorf("POST /ui/session reached the SPA handler: status %d", rec.Code)
 	}
 }
 
@@ -91,7 +48,7 @@ func TestHandler_IndexReturns503WhenUINotBuilt(t *testing.T) {
 	// dist/ in the source tree contains only .gitkeep at this point
 	// (assuming tests run before `make build-ui`). Hitting /ui without
 	// an index.html should produce the documented diagnostic.
-	h := Handler("/ui", false, nil)
+	h := Handler("/ui", nil)
 	req := httptest.NewRequest("GET", "/ui", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -127,88 +84,38 @@ func TestContentType(t *testing.T) {
 	}
 }
 
-// TestPostSession_SetsCookieFromBearer: the URL-free login (RFC — secure
-// handoff). A same-origin POST /ui/session with Authorization: Bearer <token>
-// sets the loomcycle_session cookie (HttpOnly, SameSite=Strict) and 204s — the
-// bearer never appears in a URL.
-func TestPostSession_SetsCookieFromBearer(t *testing.T) {
-	h := Handler("/ui", true, []string{"https://loomcycle.cloud"})
-	req := httptest.NewRequest("POST", "/ui/session", nil)
-	req.Header.Set("Authorization", "Bearer secret-token-123")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
-	}
-	var found *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == SessionCookie {
-			found = c
+// TestLoginConfig_ServesModeGatesAndOrigins: the login page renders from this
+// document — the mode, the gates (name, kind, label) and the handoff origins —
+// and an unconfigured list is an empty array, not null.
+func TestLoginConfig_ServesModeGatesAndOrigins(t *testing.T) {
+	login := func(*http.Request) LoginConfig {
+		return LoginConfig{
+			Origins: []string{"https://loomcycle.cloud"}, Mode: "token",
+			Gates:          []LoginGate{{Name: "token", Kind: "token", Label: "Access token"}},
+			SessionRefused: "insecure_transport",
 		}
 	}
-	if found == nil || found.Value != "secret-token-123" {
-		t.Fatalf("session cookie = %+v, want value secret-token-123", found)
-	}
-	if !found.HttpOnly || found.SameSite != http.SameSiteStrictMode || !found.Secure {
-		t.Errorf("cookie attrs weak: HttpOnly=%v SameSite=%v Secure=%v", found.HttpOnly, found.SameSite, found.Secure)
-	}
-}
-
-// TestPostSession_RejectsCrossSite: the login-CSRF guard. A cross-site POST
-// (Sec-Fetch-Site: cross-site) is refused, so no page can force a victim's
-// browser to adopt an attacker's token.
-func TestPostSession_RejectsCrossSite(t *testing.T) {
-	h := Handler("/ui", false, nil)
-	req := httptest.NewRequest("POST", "/ui/session", nil)
-	req.Header.Set("Authorization", "Bearer x")
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("cross-site POST status = %d, want 403", rec.Code)
+	Handler("/ui", login).ServeHTTP(rec, httptest.NewRequest("GET", "/ui/login-config.json", nil))
+	var body struct {
+		Origins        []string    `json:"login_origins"`
+		Mode           string      `json:"mode"`
+		Gates          []LoginGate `json:"gates"`
+		SessionRefused string      `json:"session_refused"`
 	}
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == SessionCookie {
-			t.Fatalf("cross-site request must NOT set a session cookie")
-		}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
 	}
-}
-
-// TestPostSession_RejectsMissingBearer: no bearer → 400, no cookie.
-func TestPostSession_RejectsMissingBearer(t *testing.T) {
-	h := Handler("/ui", false, nil)
-	req := httptest.NewRequest("POST", "/ui/session", nil)
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("missing-bearer status = %d, want 400", rec.Code)
-	}
-}
-
-// TestLoginConfig_ServesConfiguredOrigins: the SPA reads the allowed handoff
-// origins here; an unconfigured deployment returns an empty list (receiver
-// disabled).
-func TestLoginConfig_ServesConfiguredOrigins(t *testing.T) {
-	h := Handler("/ui", false, []string{"https://loomcycle.cloud"})
-	req := httptest.NewRequest("GET", "/ui/login-config.json", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if body := rec.Body.String(); !strings.Contains(body, "https://loomcycle.cloud") || !strings.Contains(body, "login_origins") {
-		t.Errorf("login-config body = %s, want login_origins incl. the landing origin", body)
+	if len(body.Origins) != 1 || body.Mode != "token" || len(body.Gates) != 1 || body.Gates[0].Kind != "token" ||
+		body.Gates[0].Label != "Access token" || body.SessionRefused != "insecure_transport" {
+		t.Errorf("login-config = %s", rec.Body.String())
 	}
 
-	// Unconfigured → empty array, not null (so the SPA gets a definite disabled state).
-	h2 := Handler("/ui", false, nil)
-	rec2 := httptest.NewRecorder()
-	h2.ServeHTTP(rec2, httptest.NewRequest("GET", "/ui/login-config.json", nil))
-	if body := strings.TrimSpace(rec2.Body.String()); !strings.Contains(body, "[]") {
-		t.Errorf("unconfigured login-config = %s, want an empty [] list", body)
+	rec = httptest.NewRecorder()
+	Handler("/ui", nil).ServeHTTP(rec, httptest.NewRequest("GET", "/ui/login-config.json", nil))
+	got := rec.Body.String()
+	if !strings.Contains(got, `"login_origins":[]`) || !strings.Contains(got, `"gates":[]`) || strings.Contains(got, "session_refused") {
+		t.Errorf("unconfigured login-config = %s, want empty lists and no refusal", got)
 	}
 }
 
@@ -217,7 +124,7 @@ func TestLoginConfig_ServesConfiguredOrigins(t *testing.T) {
 // the operator signs in.
 func TestLoginConfig_ReportsAPILevel(t *testing.T) {
 	rec := httptest.NewRecorder()
-	Handler("/ui", false, nil).ServeHTTP(rec, httptest.NewRequest("GET", "/ui/login-config.json", nil))
+	Handler("/ui", nil).ServeHTTP(rec, httptest.NewRequest("GET", "/ui/login-config.json", nil))
 	var body struct {
 		APILevel *int `json:"api_level"`
 	}

@@ -510,6 +510,10 @@ func Run(t *testing.T, factory Factory) {
 		{"AclVersionBumpsOnEveryWrite", testAclVersionBumpsOnEveryWrite},
 		{"AclEraseSubjectRemovesOnlyThatSubjectsRows", testAclEraseSubjectRemovesOnlyThatSubjectsRows},
 		{"AclEraseTokenBindingsRemovesOnlyThoseTokensRows", testAclEraseTokenBindingsRemovesOnlyThoseTokensRows},
+		// RFC FA Web UI login sessions.
+		{"UISessionCreateGetRoundTrip", testUISessionCreateGetRoundTrip},
+		{"UISessionRevokeIsOnceAndTouchSkipsRevoked", testUISessionRevokeIsOnceAndTouchSkipsRevoked},
+		{"UISessionDeleteExpiredKeepsOnlyLiveRows", testUISessionDeleteExpiredKeepsOnlyLiveRows},
 		// RFC AL Path primitive — the dirent (path tree) substrate.
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},

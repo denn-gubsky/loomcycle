@@ -48,8 +48,7 @@ func isPublicView(ctx context.Context) bool {
 func (s *Server) publicOrAuthMiddleware(next http.Handler) http.Handler {
 	authed := s.authMiddleware(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, presented := extractBearer(r)
-		if !presented && s.cfg() != nil && s.cfg().Env.PublicConfig {
+		if !s.credentialPresented(r) && s.cfg() != nil && s.cfg().Env.PublicConfig {
 			next.ServeHTTP(w, r.WithContext(markPublicView(r.Context())))
 			return
 		}
