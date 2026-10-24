@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -190,7 +191,7 @@ func callFrame(id int64, name string) string {
 func TestProxy_ForwardsWithAuthAndSession(t *testing.T) {
 	rec := &upstreamRec{}
 	up := mockUpstream(t, rec)
-	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Token: "tok-123", Logf: func(string, ...any) {}})
+	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Token: "tok-123", Logger: discardLogger()})
 	h := newProxyHarness(t, pc)
 	defer h.close()
 
@@ -227,7 +228,7 @@ func TestProxy_ForwardsWithAuthAndSession(t *testing.T) {
 func TestProxy_RelaysSSEStream(t *testing.T) {
 	rec := &upstreamRec{}
 	up := mockUpstream(t, rec)
-	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Logf: func(string, ...any) {}})
+	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Logger: discardLogger()})
 	h := newProxyHarness(t, pc)
 	defer h.close()
 
@@ -251,7 +252,7 @@ func TestProxy_RelaysSSEStream(t *testing.T) {
 func TestProxy_SSEDropBeforeFinalRepliesError(t *testing.T) {
 	rec := &upstreamRec{}
 	up := mockUpstream(t, rec)
-	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Logf: func(string, ...any) {}})
+	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Logger: discardLogger()})
 	h := newProxyHarness(t, pc)
 	defer h.close()
 
@@ -267,7 +268,7 @@ func TestProxy_SSEDropBeforeFinalRepliesError(t *testing.T) {
 func TestProxy_UpstreamHTTPErrorBecomesJSONRPC(t *testing.T) {
 	rec := &upstreamRec{}
 	up := mockUpstream(t, rec)
-	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Logf: func(string, ...any) {}})
+	pc := NewProxyClient(ProxyConfig{Upstream: up.URL, Logger: discardLogger()})
 	h := newProxyHarness(t, pc)
 	defer h.close()
 
@@ -286,7 +287,7 @@ func TestProxy_DeadUpstreamRepliesError(t *testing.T) {
 	// test quick while still exercising the retry loop.
 	pc := NewProxyClient(ProxyConfig{
 		Upstream:        "http://127.0.0.1:1",
-		Logf:            func(string, ...any) {},
+		Logger:          discardLogger(),
 		ReconnectDelays: []time.Duration{time.Millisecond, time.Millisecond},
 	})
 	h := newProxyHarness(t, pc)
@@ -351,7 +352,8 @@ func TestProxy_ReinitializesOnSessionExpiry(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	pc := NewProxyClient(ProxyConfig{Upstream: srv.URL, Logf: func(string, ...any) {}})
+	logs := &syncBuffer{}
+	pc := NewProxyClient(ProxyConfig{Upstream: srv.URL, Logger: captureLogger(logs)})
 	h := newProxyHarness(t, pc)
 	defer h.close()
 
@@ -368,6 +370,12 @@ func TestProxy_ReinitializesOnSessionExpiry(t *testing.T) {
 	defer mu.Unlock()
 	if initCount < 2 {
 		t.Errorf("expected a transparent re-initialize (initCount>=2), got %d", initCount)
+	}
+	// The recovery is logged once, at INFO (logged before the retried
+	// response is relayed, so it is already captured here).
+	line := logLine(t, logs.String(), "mcp proxy: upstream session expired — re-initialized")
+	if !strings.Contains(line, "level=INFO") {
+		t.Errorf("re-initialize line not at INFO: %s", line)
 	}
 }
 
@@ -408,9 +416,10 @@ func TestProxy_RecoversAfterTransportError(t *testing.T) {
 	// req #1 = initialize (succeeds), req #2 = the first tools/call (drops),
 	// retry #3 = tools/call (succeeds).
 	flaky := &flakyRT{failOn: map[int]bool{2: true}, inner: http.DefaultTransport}
+	logs := &syncBuffer{}
 	pc := NewProxyClient(ProxyConfig{
 		Upstream:        up.URL,
-		Logf:            func(string, ...any) {},
+		Logger:          captureLogger(logs),
 		Client:          &http.Client{Transport: flaky},
 		ReconnectDelays: []time.Duration{0, time.Millisecond},
 	})
@@ -423,6 +432,14 @@ func TestProxy_RecoversAfterTransportError(t *testing.T) {
 	got := h.waitResp(2, 3*time.Second)
 	if got.Error != nil {
 		t.Fatalf("expected transparent recovery after a transport error, got JSON-RPC error: %+v", got.Error)
+	}
+	// The dropped connection is logged once as a WARN carrying the retry
+	// position and the transport error.
+	line := logLine(t, logs.String(), "mcp proxy: upstream connection error — reconnecting")
+	for _, want := range []string{"level=WARN", "attempt=1", "max_attempts=2", "connection reset by peer"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("reconnect log line missing %q: %s", want, line)
+		}
 	}
 }
 
@@ -483,7 +500,7 @@ func TestProxy_RecoversAcrossServerRestart(t *testing.T) {
 	flaky := &flakyRT{failOn: map[int]bool{2: true}, inner: http.DefaultTransport}
 	pc := NewProxyClient(ProxyConfig{
 		Upstream:        srv.URL,
-		Logf:            func(string, ...any) {},
+		Logger:          discardLogger(),
 		Client:          &http.Client{Transport: flaky},
 		ReconnectDelays: []time.Duration{0, time.Millisecond},
 	})
@@ -510,7 +527,7 @@ func TestProxy_RecoversAcrossServerRestart(t *testing.T) {
 // connections below the runtime server's 120s IdleTimeout (so the client
 // reopens before the server severs an idle keep-alive socket).
 func TestProxy_DefaultClientHasStallGuards(t *testing.T) {
-	pc := NewProxyClient(ProxyConfig{Upstream: "http://127.0.0.1:8787", Logf: func(string, ...any) {}})
+	pc := NewProxyClient(ProxyConfig{Upstream: "http://127.0.0.1:8787", Logger: discardLogger()})
 	tr, ok := pc.client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("default client Transport = %T, want *http.Transport", pc.client.Transport)
@@ -586,7 +603,7 @@ func TestProxy_NoHeaderTimeoutOnSpawnRun(t *testing.T) {
 	// A very short header timeout for FAST frames; the spawn_run must bypass it.
 	pc := NewProxyClient(ProxyConfig{
 		Upstream:              srv.URL,
-		Logf:                  func(string, ...any) {},
+		Logger:                discardLogger(),
 		ResponseHeaderTimeout: 50 * time.Millisecond,
 		ReconnectDelays:       []time.Duration{0, time.Millisecond},
 	})

@@ -27,8 +27,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -48,6 +50,100 @@ var ErrNoSubject = errors.New("subject is required")
 type Service struct {
 	Store  store.Store
 	SqlMem *sqlmem.Manager
+	// ACLStatic returns the config-declared access control (yaml `groups:` /
+	// `acl_bindings:`). Those rows live in a file, not the store, so erasure
+	// can only NAME them for the operator to remove. nil = none declared.
+	ACLStatic func() *authz.Static
+	// ACLChanged runs after a live erasure removed access-control rows. The
+	// transport owns what that means — dropping the compiled sets cached on
+	// every replica and recording the write in the ACL audit trail, exactly as
+	// the management writes do — because the cache and the backplane are its.
+	// Without it a replica keeps serving the erased subject's grants until its
+	// cache TTL lapses. nil = nothing cached.
+	ACLChanged func(ctx context.Context, tenant, subject string)
+}
+
+// subjectACL is a subject's RFC EY access-control footprint in one tenant.
+type subjectACL struct {
+	groups   []string // stored direct memberships (member kind user)
+	bindings int      // stored user-kind binding rows, retired ones included
+	lists    []string // the distinct lists those bindings name
+	// Config-declared: not erasable from the store.
+	cfgGroups []string
+	cfgLists  []string
+}
+
+// accessControl reads the subject's memberships and bindings. Retired
+// bindings count: a retired row still names the subject, and the erasure
+// deletes it. Group- and token-kind rows are not the subject's even when
+// their id equals it, so the filter is on kind as well as id.
+func (s *Service) accessControl(ctx context.Context, tenant, subject string) (subjectACL, error) {
+	var out subjectACL
+	groups, err := s.Store.GroupsOfSubject(ctx, tenant, subject)
+	if err != nil {
+		return out, err
+	}
+	out.groups = groups
+	rows, err := s.Store.AclBindingList(ctx, tenant, true)
+	if err != nil {
+		return out, err
+	}
+	var lists []string
+	for _, r := range rows {
+		if r.SubjectKind == string(authz.SubjectUser) && r.SubjectID == subject {
+			out.bindings++
+			lists = append(lists, r.ACLName)
+		}
+	}
+	out.lists = sortedUnique(lists)
+	if s.ACLStatic != nil {
+		static := s.ACLStatic()
+		direct, _ := static.GroupsOf(tenant, subject)
+		out.cfgGroups = sortedUnique(direct)
+		var cfgLists []string
+		for _, b := range static.BindingsIn(tenant) {
+			if b.SubjectKind == authz.SubjectUser && b.SubjectID == subject {
+				cfgLists = append(cfgLists, b.ACL)
+			}
+		}
+		out.cfgLists = sortedUnique(cfgLists)
+	}
+	return out, nil
+}
+
+// storedNote names the stored rows; "" when there are none.
+func (a subjectACL) storedNote() string {
+	if len(a.groups) == 0 && a.bindings == 0 {
+		return ""
+	}
+	return fmt.Sprintf("access control (stored, removed by an erasure): member of group(s) [%s]; "+
+		"%d binding row(s) to the subject (retired ones included) naming list(s) [%s]. "+
+		"The groups and lists themselves are not the subject's and stay.",
+		strings.Join(a.groups, ", "), a.bindings, strings.Join(a.lists, ", "))
+}
+
+// configNote names the config-declared rows; "" when there are none.
+func (a subjectACL) configNote() string {
+	if len(a.cfgGroups) == 0 && len(a.cfgLists) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("declared in config; remove from the config file: the subject is a member of "+
+		"group(s) [%s] and bound to list(s) [%s] in the yaml `groups:` / `acl_bindings:` blocks. "+
+		"An erasure cannot remove them, and they apply again to a re-created user of the same id.",
+		strings.Join(a.cfgGroups, ", "), strings.Join(a.cfgLists, ", "))
+}
+
+func sortedUnique(in []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // provenanceBound caps the residue walk. A hit sets Residue.Truncated, making
@@ -212,6 +308,18 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 	}
 
 	// ---- tier 2 ----
+	var aclNotes []string
+	if acl, err := s.accessControl(ctx, tenant, subject); err != nil {
+		fail("access_control", err)
+	} else {
+		rep.Tier2.set("acl_memberships", int64(len(acl.groups)))
+		rep.Tier2.set("acl_bindings", int64(acl.bindings))
+		for _, n := range []string{acl.storedNote(), acl.configNote()} {
+			if n != "" {
+				aclNotes = append(aclNotes, n)
+			}
+		}
+	}
 	if creds, err := s.Store.CredentialDefList(ctx, tenant, "user", subject); err != nil {
 		fail("credentials", err)
 	} else {
@@ -263,6 +371,7 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		"tier3 is found through provenance, so it covers only facts that RECORDED the chat they came from. A fact written about this subject WITHOUT provenance is not reachable by any mechanism, and is not counted here.",
 		"counts are live rows: expired and superseded rows are excluded, because they are invisible to every read and counting them would overstate what is held.",
 	}
+	rep.Notes = append(rep.Notes, aclNotes...)
 	if sqlMemUnexamined {
 		rep.Notes = append(rep.Notes,
 			"SQL Memory is not configured on this deployment, so the sql_memory plane was NOT "+
@@ -325,6 +434,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 	for _, plane := range []string{
 		"chats", "memory_rows", "path_entries",
+		"acl_memberships", "acl_bindings",
 		"credentials", "token_limits", "usage_carry", "interrupts",
 	} {
 		res.Deleted[plane] = 0
@@ -344,6 +454,26 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	// ---- tier 2 ----
+	// Access control first: it is the subject's authority rather than its data,
+	// and an erasure that faults part-way should not leave grants standing.
+	if acl, err := s.accessControl(ctx, tenant, subject); err != nil {
+		fail("access_control", err)
+	} else {
+		if n := acl.configNote(); n != "" {
+			res.Retained["access_control_config"] = n
+		}
+		if req.DryRun {
+			res.Deleted["acl_memberships"] = len(acl.groups)
+			res.Deleted["acl_bindings"] = acl.bindings
+		} else if m, b, err := s.Store.AclEraseSubject(ctx, tenant, subject); err != nil {
+			fail("access_control", err)
+		} else {
+			res.Deleted["acl_memberships"], res.Deleted["acl_bindings"] = m, b
+			if m+b > 0 && s.ACLChanged != nil {
+				s.ACLChanged(ctx, tenant, subject)
+			}
+		}
+	}
 	if creds, err := s.Store.CredentialDefList(ctx, tenant, "user", subject); err != nil {
 		fail("credentials", err)
 	} else {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,7 +111,7 @@ func TestRegisterAgent_PinOrTierAloneStillRegisters(t *testing.T) {
 // JSON-RPC failure — the caller can read it and resend with one mode.
 func TestMCPRegisterAgent_PinAndTierIsToolError(t *testing.T) {
 	srv, cfg, st := newRegisterAgentFixture(t)
-	mcpSrv := lcmcp.New(lcmcp.Config{Connector: srv, Logf: func(string, ...any) {}})
+	mcpSrv := lcmcp.New(lcmcp.Config{Connector: srv, Logger: slog.New(slog.DiscardHandler)})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

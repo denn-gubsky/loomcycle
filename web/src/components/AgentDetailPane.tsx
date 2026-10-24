@@ -15,6 +15,7 @@ import {
 } from "../api";
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
+import { fileCapturedLine } from "../lib/fileCaptured";
 import { settledToolIds } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
 import { metricsFromEvents } from "../lib/runMetrics";
@@ -806,6 +807,8 @@ function summaryFor(ev: EventPayload, row?: TranscriptEvent): string {
       const p = row?.payload as SystemPromptPayload | undefined;
       return firstLine(p?.system_prompt ?? "", 200);
     }
+    case "file_captured":
+      return fileCapturedLine(ev.file);
     default:
       return "";
   }

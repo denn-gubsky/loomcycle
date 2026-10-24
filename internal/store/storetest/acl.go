@@ -400,3 +400,98 @@ func testAclVersionBumpsOnEveryWrite(t *testing.T, s store.Store) {
 	_, _ = s.AclDefPut(ctx, mkAclDef("other", "a", aclRulesA))
 	expect("other tenant write", 9)
 }
+
+// testAclEraseSubjectRemovesOnlyThatSubjectsRows pins subject erasure's ACL
+// step: the subject's user-kind memberships and user-kind bindings (retired
+// ones too) go, in its tenant only, with one version bump. Each survivor is
+// the minimal pair of a removed row — another user, a GROUP named like the
+// subject, the same subject in another tenant — so an over-broad predicate
+// fails here rather than in production.
+func testAclEraseSubjectRemovesOnlyThatSubjectsRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for _, tenant := range []string{"acme", "other"} {
+		for _, g := range []string{"support", "ops", "alice"} {
+			if _, err := s.GroupPut(ctx, store.GroupRow{TenantID: tenant, Name: g}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	member := func(tenant, group, kind, id string) {
+		t.Helper()
+		if err := s.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: tenant, GroupName: group, MemberKind: kind, MemberID: id}); err != nil {
+			t.Fatalf("member %s/%s %s:%s: %v", tenant, group, kind, id, err)
+		}
+	}
+	member("acme", "support", "user", "alice")
+	member("acme", "ops", "user", "alice")
+	member("acme", "support", "user", "bob")
+	member("acme", "support", "group", "alice") // the GROUP "alice", not the user
+	member("other", "support", "user", "alice")
+	bind := func(tenant, kind, id string) store.AclBindingRow {
+		t.Helper()
+		b, err := s.AclBindingPut(ctx, store.AclBindingRow{TenantID: tenant, ACLName: "l", SubjectKind: kind, SubjectID: id})
+		if err != nil {
+			t.Fatalf("bind %s %s:%s: %v", tenant, kind, id, err)
+		}
+		return b
+	}
+	bind("acme", "user", "alice")
+	retired := bind("acme", "user", "alice")
+	if ok, err := s.AclBindingRetire(ctx, "acme", retired.BindingID); !ok || err != nil {
+		t.Fatalf("retire = %v, %v", ok, err)
+	}
+	keep := map[string]bool{
+		bind("acme", "user", "bob").BindingID:    true,
+		bind("acme", "group", "alice").BindingID: true,
+		bind("acme", "token", "alice").BindingID: true,
+		bind("acme", "tenant", "").BindingID:     true,
+	}
+	otherAlice := bind("other", "user", "alice")
+	before, _ := s.AclVersion(ctx, "acme")
+	otherBefore, _ := s.AclVersion(ctx, "other")
+
+	m, b, err := s.AclEraseSubject(ctx, "acme", "alice")
+	if err != nil || m != 2 || b != 2 {
+		t.Fatalf("erase = (%d memberships, %d bindings, %v), want (2, 2, nil)", m, b, err)
+	}
+	if g, _ := s.GroupsOfSubject(ctx, "acme", "alice"); len(g) != 0 {
+		t.Errorf("alice still a member of %v", g)
+	}
+	if g, _ := s.GroupsOfSubject(ctx, "acme", "bob"); !reflect.DeepEqual(g, []string{"support"}) {
+		t.Errorf("bob's membership = %v, want [support]", g)
+	}
+	if graph, _ := s.GroupGraph(ctx, "acme"); !reflect.DeepEqual(graph["support"], []string{"alice"}) {
+		t.Errorf("the group alice's edge into support = %v, want [alice]", graph["support"])
+	}
+	all, _ := s.AclBindingList(ctx, "acme", true)
+	if len(all) != len(keep) {
+		t.Errorf("acme bindings after erase = %d, want %d", len(all), len(keep))
+	}
+	for _, r := range all {
+		if !keep[r.BindingID] {
+			t.Errorf("binding %s (%s:%s) survived the erasure", r.BindingID, r.SubjectKind, r.SubjectID)
+		}
+	}
+	if g, _ := s.GroupsOfSubject(ctx, "other", "alice"); !reflect.DeepEqual(g, []string{"support"}) {
+		t.Errorf("another tenant's alice lost her membership: %v", g)
+	}
+	if got, _ := s.AclBindingList(ctx, "other", true); len(got) != 1 || got[0].BindingID != otherAlice.BindingID {
+		t.Errorf("another tenant's bindings = %+v", got)
+	}
+	if v, _ := s.AclVersion(ctx, "acme"); v != before+1 {
+		t.Errorf("acme version = %d, want %d (one bump)", v, before+1)
+	}
+	if v, _ := s.AclVersion(ctx, "other"); v != otherBefore {
+		t.Errorf("other tenant's version moved: %d → %d", otherBefore, v)
+	}
+	// Repeating it is a no-op and does not bump.
+	if m, b, err := s.AclEraseSubject(ctx, "acme", "alice"); err != nil || m != 0 || b != 0 {
+		t.Errorf("second erase = (%d, %d, %v), want (0, 0, nil)", m, b, err)
+	}
+	if v, _ := s.AclVersion(ctx, "acme"); v != before+1 {
+		t.Errorf("a no-op erase bumped the version to %d", v)
+	}
+	if _, _, err := s.AclEraseSubject(ctx, "acme", ""); err == nil {
+		t.Error("an empty subject was accepted")
+	}
+}

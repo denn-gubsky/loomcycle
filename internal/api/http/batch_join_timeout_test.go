@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -316,7 +317,7 @@ func TestRunsBatch_HTTPJoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 // MCP spawn_runs over the real connector: the same bound, the same envelope.
 func TestMCPSpawnRuns_JoinOnAHeldKeyEndsAtTheServerBound(t *testing.T) {
 	s, held, _ := heldRunServer(t, 300*time.Millisecond)
-	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logf: func(string, ...any) {}})
+	mcpSrv := lcmcp.New(lcmcp.Config{Connector: s, Logger: slog.New(slog.DiscardHandler)})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"spawn_runs","arguments":{"spawns":[{"agent":"r","user_id":"u1","idempotency_key":"held","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}]}}}` + "\n"
 	res, _ := joinWithin(t, func() connector.BatchSpawnResult {
 		var stdout bytes.Buffer

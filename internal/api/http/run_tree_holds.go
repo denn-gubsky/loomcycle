@@ -175,6 +175,24 @@ func (r *treeVolumeSets) inbox(root string) *inbox.Tree {
 	return e.inbox
 }
 
+// liveInbox returns the inbox state of a tree that has a run in this
+// process, and false when none does. Unlike inbox it never makes a private
+// state: a caller from outside the tree (the MCP file twin) shares the live
+// tree's index and cap when there is one, and counts the files on disk itself
+// when there is not.
+func (r *treeVolumeSets) liveInbox(root string) (*inbox.Tree, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.sets[root]
+	if root == "" || e == nil {
+		return nil, false
+	}
+	if e.inbox == nil {
+		e.inbox = inbox.NewTree()
+	}
+	return e.inbox, true
+}
+
 // drop forgets the tree's set. Called when the tree's volumes are purged:
 // nothing is left for the set to name, and a top-level run that registered
 // it has no later point at which to release.

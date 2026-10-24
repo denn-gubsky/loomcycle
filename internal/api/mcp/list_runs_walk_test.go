@@ -14,7 +14,7 @@ import (
 // callListRuns drives one list_runs call and returns its result.
 func callListRuns(t *testing.T, mc *mockConnector, args string) loommcp.CallToolResult {
 	t.Helper()
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_runs","arguments":` + args + `}}`,
@@ -136,7 +136,7 @@ func TestServer_ListRuns_ByParentRunIDListsThatRunsChildren(t *testing.T) {
 // that is not forwarded does not error, it streams every run.
 func TestServer_StreamUserRunStates_ForwardsItsFilters(t *testing.T) {
 	mc := &mockConnector{streamEvents: []connector.RunStateEvent{{RunID: "r1", UserID: "user-a", Status: "running"}}}
-	srv := New(Config{Connector: mc, Logf: func(string, ...any) {}})
+	srv := New(Config{Connector: mc, Logger: discardLogger()})
 	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stream_user_run_states","arguments":{"user_id":"user-a","walk_id":"r_walk","parent_run_id":"r_parent","max_events":1,"timeout_ms":500}}}` + "\n"
 	if resps, _ := driveServer(t, srv, in); len(resps) != 1 {
 		t.Fatalf("got %d responses", len(resps))

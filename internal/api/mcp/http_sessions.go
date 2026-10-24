@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -167,12 +168,14 @@ func newSessionID() string {
 // map but Get filters them at read time, so functional correctness
 // is preserved (only storage reclamation is forgone). For an
 // HTTP MCP server with low session volume this is acceptable.
-func RunHTTPSessionSweeper(ctx context.Context, store *HTTPSessionStore, interval time.Duration, logf func(string, ...any)) {
+//
+// logger receives the per-sweep reclaim count; nil → slog.Default().
+func RunHTTPSessionSweeper(ctx context.Context, store *HTTPSessionStore, interval time.Duration, logger *slog.Logger) {
 	if interval <= 0 || store == nil {
 		return
 	}
-	if logf == nil {
-		logf = defaultLogf
+	if logger == nil {
+		logger = slog.Default()
 	}
 	go func() {
 		t := time.NewTicker(interval)
@@ -183,7 +186,7 @@ func RunHTTPSessionSweeper(ctx context.Context, store *HTTPSessionStore, interva
 				return
 			case <-t.C:
 				if n := store.Sweep(); n > 0 {
-					logf("http_mcp: swept %d expired session(s)", n)
+					logger.Info("http_mcp: swept expired sessions", "sessions", n)
 				}
 			}
 		}

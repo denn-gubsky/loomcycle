@@ -126,6 +126,13 @@ func (s *WebhookDef) Execute(ctx context.Context, raw json.RawMessage) (tools.Re
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errResult(fmt.Sprintf("invalid input JSON: %s", err)), nil
 	}
+	// RFC EZ §1.2: the op's own verb, asked of the webhook definition it names.
+	if res, refused := tools.AuthorizeDefOp(ctx, "webhook", in.Op, defOpNames(ctx, in.Name, func(ctx context.Context, id string) (string, string, error) {
+		row, err := s.Store.WebhookDefGet(ctx, id)
+		return row.Name, row.TenantID, err
+	}, in.DefID, in.ParentDefID)...); refused {
+		return res, nil
+	}
 	policy := tools.WebhookDefPolicy(ctx)
 
 	if in.Op == "create" || in.Op == "fork" {
@@ -1172,7 +1179,7 @@ func mergeCredentialMap(base, overlay map[string]string) map[string]string {
 	if len(overlay) == 0 {
 		return base
 	}
-	merged := make(map[string]string, len(base)+len(overlay))
+	merged := make(map[string]string, len(base))
 	for k, v := range base {
 		merged[k] = v
 	}
@@ -1346,7 +1353,7 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	// a copy: buildDefinition can start from the static entry, whose map is
 	// the loaded config's.
 	if len(ov.EventShapes) > 0 {
-		merged := make(map[string][]string, len(d.EventShapes)+len(ov.EventShapes))
+		merged := make(map[string][]string, len(d.EventShapes))
 		for e, paths := range d.EventShapes {
 			merged[e] = paths
 		}

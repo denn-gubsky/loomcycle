@@ -106,6 +106,11 @@ var tenantConfinableTools = map[string]bool{
 	// for anyone else. It also needs substrate:tenant by name
 	// (toolRequiredScope): it uses the tenant's keys.
 	"crypto": true,
+	// file (RFC FF D16): a run's inbox, read through get_run's tenant and
+	// owner gate; the writing ops need the run's owner or an admin, and keep
+	// reaches only the caller's own tenant's volumes. It needs runs:read by
+	// name (toolRequiredScope), as get_run does.
+	"file": true,
 
 	// RFC EZ access-control management. The shared implementation stamps the
 	// tenant from the principal (an admin alone may focus another) and holds
@@ -227,6 +232,7 @@ var toolRequiredScope = map[string]string{
 	"delete_run_tree": auth.ScopeRunsDelete,
 	// Reading runs.
 	"get_run":                auth.ScopeRunsRead,
+	"file":                   auth.ScopeRunsRead,
 	"list_runs":              auth.ScopeRunsRead,
 	"stream_user_run_states": auth.ScopeRunsRead,
 	// The per-user channel surface.

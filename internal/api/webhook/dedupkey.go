@@ -133,7 +133,7 @@ func (rec *Receiver) claimHeld(ctx context.Context, w http.ResponseWriter, span 
 	}
 	if err != nil {
 		rec.finish(span, whKey, did, "rejected_claim", "")
-		rec.logf("webhook %q: claim the delivery's dedup keys: %v", name, err)
+		rec.logger.Warn("webhook: claim the delivery's dedup keys", "webhook", name, "err", err)
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")
 		return false
 	}
@@ -147,7 +147,7 @@ func (rec *Receiver) claimHeld(ctx context.Context, w http.ResponseWriter, span 
 // answerHeldDuplicate answers a delivery of an event already handled, by the
 // run holder ("" when that claim's run has not registered).
 func (rec *Receiver) answerHeldDuplicate(w http.ResponseWriter, span trace.Span, name, whKey, did, holder string) {
-	rec.logf("webhook %q: an event already handled (its dedup_key is held) — idempotent ack", name)
+	rec.logger.Info("webhook: an event already handled (its dedup_key is held) — idempotent ack", "webhook", name)
 	rec.finish(span, whKey, did, verdictAcceptedReplay, holder)
 	resp := map[string]string{"webhook_name": name, "delivery_id": did, "deduped": "true"}
 	if holder != "" {
@@ -192,7 +192,7 @@ func (rec *Receiver) releaseHeld(ctx context.Context, name string, h *heldKeys) 
 		err = rec.store.WebhookDeliveryRelease(context.WithoutCancel(ctx), h.keys)
 	}
 	if err != nil {
-		rec.logf("webhook %q: release the dedup keys of a delivery that started nothing: %v", name, err)
+		rec.logger.Error("webhook: release the dedup keys of a delivery that started nothing", "webhook", name, "err", err)
 	}
 }
 
@@ -206,7 +206,7 @@ func (rec *Receiver) setHeldRun(name string, h *heldKeys, runID string) {
 		return
 	}
 	if _, err := rec.store.WebhookDeliveryLinkRun(context.Background(), h.claimID, runID); err != nil {
-		rec.logf("webhook %q: record run %s on its dedup keys: %v", name, runID, err)
+		rec.logger.Warn("webhook: record a run on its dedup keys failed", "webhook", name, "run_id", runID, "err", err)
 	}
 }
 
@@ -245,13 +245,13 @@ func (rec *Receiver) linkSpawnedRun(name string, h *heldKeys, runID string) erro
 		ok, err = rec.store.WebhookDeliveryLinkRun(context.Background(), h.claimID, runID)
 		if err == nil {
 			if !ok {
-				rec.logf("webhook %q: run %s refused: its dedup claim was taken over by a later delivery", name, runID)
+				rec.logger.Warn("webhook: run refused: its dedup claim was taken over by a later delivery", "webhook", name, "run_id", runID)
 				return errClaimTakenOver
 			}
 			return nil
 		}
 	}
-	rec.logf("webhook %q: run %s refused: record it on its dedup claim: %v", name, runID, err)
+	rec.logger.Error("webhook: run refused: record it on its dedup claim", "webhook", name, "run_id", runID, "err", err)
 	return fmt.Errorf("record the run on its delivery's dedup claim: %w", err)
 }
 
@@ -270,7 +270,7 @@ func (rec *Receiver) afterSpawn(name string, held *heldKeys, dk deliveryKeys, er
 		return
 	}
 	if rerr := rec.store.RunReleaseFailedDeliveryKeys(context.Background(), []string{dk.key, dk.alt}); rerr != nil {
-		rec.logf("webhook %q: give back the delivery keys of a run that never ran: %v", name, rerr)
+		rec.logger.Error("webhook: give back the delivery keys of a run that never ran", "webhook", name, "err", rerr)
 	}
 }
 
@@ -292,7 +292,7 @@ func (rec *Receiver) newHeldKeys(w http.ResponseWriter, span trace.Span, name, w
 	id, missing, err := dedupFieldsID(wd.DedupKey, body)
 	if err != nil {
 		rec.finish(span, whKey, did, "rejected_mapping", "")
-		rec.logf("webhook %q: dedup_key: %v", name, err)
+		rec.logger.Warn("webhook: dedup_key", "webhook", name, "err", err)
 		writeError(w, http.StatusBadRequest, "bad_mapping", "")
 		return nil, false
 	}

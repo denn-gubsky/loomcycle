@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -256,7 +257,7 @@ func runThinClient(upstream string) {
 	pc := lcmcp.NewProxyClient(lcmcp.ProxyConfig{
 		Upstream: upstream,
 		Token:    os.Getenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN"),
-		Logf:     log.Printf, // stderr; never stdout (stdout is the JSON-RPC wire)
+		Logger:   slog.Default(), // stderr; never stdout (stdout is the JSON-RPC wire)
 		// Self-recovery knobs (defaults applied by NewProxyClient when unset).
 		// The thin client boots with NO config load, so these are read straight
 		// from the environment.

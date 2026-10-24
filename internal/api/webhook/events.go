@@ -95,7 +95,7 @@ func classifyEvent(wd config.Webhook, header http.Header, b *deliveryBody) event
 func (rec *Receiver) answerEvent(w http.ResponseWriter, span trace.Span, whKey, name, did string, o eventOutcome) {
 	rec.finish(span, whKey, did, o.verdict, "")
 	if o.code != "" {
-		rec.logf("webhook %q: delivery refused: %s (event %q)", name, o.code, o.event)
+		rec.logger.Warn("webhook: delivery refused", "webhook", name, "reason", o.code, "event", o.event)
 		writeError(w, o.status, o.code, "")
 		return
 	}

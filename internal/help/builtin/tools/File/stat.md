@@ -16,7 +16,8 @@ the Read tool.
 
 ## Returns
 
-`{ref, path, media_type, size, sha256, origin, captured_at}` for a kept file;
+`{ref, path, media_type, size, sha256, origin, captured_at}` for a kept file,
+with `page` or `slide` for a picture `extract` found on one;
 `{ref, path, media_type, size, sha256, origin: "unknown", modified}` otherwise.
 
 ## Errors

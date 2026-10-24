@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -102,7 +103,7 @@ func TestWebhook_UnresolvableSecretDoesNotNameTheSecret(t *testing.T) {
 			var logged strings.Builder
 			rec := newTestReceiver(t, map[string]config.Webhook{"gh": {Enabled: true, Delivery: "spawn", Agent: "x", Auth: c.auth}},
 				&fakeRunner{runID: "r", agentID: "a"}, nil, map[string]string{"WH_SECRET": "shhh"}, nil, now)
-			rec.logf = func(format string, args ...any) { logged.WriteString(fmt.Sprintf(format, args...)) }
+			rec.logger = slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 			h := http.Header{}
 			h.Set("X-Hub-Signature-256", githubSig("shhh", body))

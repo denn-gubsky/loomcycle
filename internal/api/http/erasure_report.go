@@ -12,12 +12,28 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 )
 
-// erasureService builds the shared service from this server's stores.
+// erasureService builds the shared service from this server's stores. Every
+// transport reaches erasure through here (MCP and gRPC via the connector
+// methods below), so the access-control hooks are wired once for all of them.
 func (s *Server) erasureService() *erasure.Service {
-	return &erasure.Service{Store: s.store, SqlMem: s.sqlMem}
+	return &erasure.Service{
+		Store: s.store, SqlMem: s.sqlMem,
+		ACLStatic: func() *authz.Static {
+			if c := s.cfg(); c != nil {
+				return c.ResolvedACL
+			}
+			return nil
+		},
+		// The same epilogue as an ACL management write: invalidate the cached
+		// sets on every replica and record the change in the ACL audit trail.
+		ACLChanged: func(ctx context.Context, tenant, subject string) {
+			s.aclChanged(ctx, tenant, "subject_access_erased", subject)
+		},
+	}
 }
 
 // resolveErasureTenant applies the tenant rule both erasure routes share.
