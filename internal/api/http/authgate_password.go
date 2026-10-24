@@ -111,16 +111,21 @@ func (pw *passwordGate) Complete(ctx context.Context, r *http.Request, _ authgat
 // sourceKey is a throttle key for a client address, MAC'd so the store holds
 // no address.
 func (pg *PasswordGates) sourceKey(scope, ip string) string {
-	return "src:" + scope + ":" + pg.hasher.MAC("throttle-source", ip)
+	return "src:" + scope + ":" + pg.hasher.MAC("throttle-source", throttleSourceKey(ip))
 }
 
 // sourceLoginKey counts one source's failures against one login, so a client
 // guessing one account is slowed on that account long before its address as a
 // whole is, and an address many people share (an office NAT) is not held back
-// for everyone by one of them.
+// for everyone by one of them. login is the normalised login the lookup uses
+// (or invalidLoginKey), so two spellings of one login share a counter.
 func (pg *PasswordGates) sourceLoginKey(gate, ip, login string) string {
-	return "srclogin:" + gate + ":" + pg.hasher.MAC("throttle-source-login", ip+"\x00"+login)
+	return "srclogin:" + gate + ":" + pg.hasher.MAC("throttle-source-login", throttleSourceKey(ip)+"\x00"+login)
 }
+
+// invalidLoginKey is the login every login that does not normalise is
+// throttled under: garbage shares one bucket rather than getting one each.
+const invalidLoginKey = "\x00invalid-login"
 
 // sourceBlocked reports whether the source is held back now.
 func (s *Server) sourceBlocked(ctx context.Context, key string) bool {
@@ -146,8 +151,13 @@ func (s *Server) recordSourceFailure(ctx context.Context, key string, block func
 // needed or wrong.
 func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pass, otp, ip string) (store.UserIdentityRow, []string, error) {
 	now := time.Now()
+	loginN, lerr := password.NormalizeLogin(login)
+	loginKey := loginN
+	if lerr != nil {
+		loginKey = invalidLoginKey
+	}
 	src := pw.pg.sourceKey(pw.g.Name, ip)
-	srcLogin := pw.pg.sourceLoginKey(pw.g.Name, ip, strings.ToLower(strings.TrimSpace(login)))
+	srcLogin := pw.pg.sourceLoginKey(pw.g.Name, ip, loginKey)
 	th := pw.g.Throttle
 	if s.sourceBlocked(ctx, src) || s.sourceBlocked(ctx, srcLogin) {
 		_ = pw.pg.hasher.Dummy(ctx, pass)
@@ -159,7 +169,6 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		return store.UserIdentityRow{}, nil, authgate.ErrInvalidCredential
 	}
 	norm, nerr := password.Normalize(pass)
-	loginN, lerr := password.NormalizeLogin(login)
 	if nerr != nil || lerr != nil {
 		_ = pw.pg.hasher.Dummy(ctx, pass)
 		return refuse()

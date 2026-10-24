@@ -8,6 +8,21 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
+// IPv6 is throttled per /64, IPv4 per address, a v4-in-v6 address as its
+// v4 self.
+func TestThrottleSourceKey_GroupsIPv6ByThe64(t *testing.T) {
+	a := throttleSourceKey("2001:db8:1:2:aaaa::1")
+	if b := throttleSourceKey("2001:db8:1:2:ffff:ffff:ffff:ffff"); a != b {
+		t.Errorf("two addresses of one /64 throttle apart: %s %s", a, b)
+	}
+	if c := throttleSourceKey("2001:db8:1:3::1"); a == c {
+		t.Errorf("two /64s share a bucket: %s", c)
+	}
+	if throttleSourceKey("::ffff:192.0.2.7") != throttleSourceKey("192.0.2.7") || throttleSourceKey("192.0.2.7") == throttleSourceKey("192.0.2.8") {
+		t.Error("IPv4 is not per address (unmapped)")
+	}
+}
+
 func TestSourceIP_TrustsOnlyAConfiguredProxysWord(t *testing.T) {
 	proxies := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("127.0.0.1/32")}
 	cf := config.AuthPolicy{TrustedProxies: proxies, ClientIPHeader: "Cf-Connecting-Ip"}

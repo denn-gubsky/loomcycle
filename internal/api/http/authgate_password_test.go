@@ -482,6 +482,23 @@ func TestPasswordGate_ThrottleSeesEachClientBehindATrustedProxy(t *testing.T) {
 	}
 }
 
+// The (source, login) counter keys on the same normalised login the lookup
+// uses: two spellings of one login are one counter.
+func TestPasswordGate_TwoSpellingsOfOneLoginShareAThrottleCounter(t *testing.T) {
+	f := newGateFixture(t)
+	b := f.browser(t)
+	// Four failures (the free ones are three) against one unknown login,
+	// alternating how it is written.
+	for _, l := range []string{"Zed@Example.com", "zed@example.com", "ＺＥＤ@example.com", "zed@EXAMPLE.com"} {
+		if code, _ := b.login("local", l, "some wrong passphrase", ""); code != http.StatusUnauthorized {
+			t.Fatalf("failure for %q: %d", l, code)
+		}
+	}
+	if code, body := b.login("local", "zed@example.com", "some wrong passphrase", ""); code != http.StatusTooManyRequests {
+		t.Fatalf("after four failures on one login spelled four ways: %d %v, want 429", code, body)
+	}
+}
+
 // Removing the authenticator leaves the password as the only factor, so a
 // password that was long enough only beside it (8 characters) must be
 // replaced in the same request (the coordinator's finding 2).

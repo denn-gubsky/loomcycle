@@ -63,6 +63,24 @@ func sourceIP(policy config.AuthPolicy, r *http.Request) string {
 	return peer.String()
 }
 
+// throttleSourceKey is the bucket a client address is throttled in: an IPv4
+// address itself, an IPv6 address's /64 (one host usually holds a whole /64,
+// so per-address buckets would let it rotate through 2^64 of them). A
+// v4-in-v6 address is unmapped first. Audit records keep the full address;
+// only throttling groups. Every source limiter goes through this one function
+// so they cannot disagree.
+func throttleSourceKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap()
+	if a.Is6() {
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	return a.String()
+}
+
 // ProxyThrottleWarning is the boot warning for a password gate that is
 // evidently behind a TLS-terminating proxy (an https LOOMCYCLE_PUBLIC_URL,
 // which the server itself does not serve) with no auth.trusted_proxies: every
