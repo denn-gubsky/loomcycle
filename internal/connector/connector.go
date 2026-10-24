@@ -405,6 +405,18 @@ type Connector interface {
 	// RPC and the MCP meta-tool `crypto`.
 	Crypto(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// File runs one File-tool operation on the inbox of a run the caller may
+	// read, from outside any run (RFC FF D16). The input is the File tool's,
+	// plus "run_id"; the ops are stat, ls, extract, import, keep, rm and clear
+	// (download and upload need a run's host policy, so they are refused). The
+	// run is read through the same tenant and owner gate as get_run, and
+	// another tenant's run is not found. import builds the Document in the
+	// caller's own scopes, keep copies into a dynamic volume of the caller's
+	// tenant, and extract, rm and clear change the run's inbox, so only the
+	// run's owner or an admin may make them. Reachable via the MCP meta-tool
+	// `file`.
+	File(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// --- Access-control management (RFC EZ §3) ---
 	//
 	// GroupDef, AclDef, AclBinding and Authz are the op-dispatched twins of

@@ -219,6 +219,9 @@ func (m *httpMockConnector) CredentialDef(context.Context, json.RawMessage) (con
 func (m *httpMockConnector) Crypto(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) File(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) GroupDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }

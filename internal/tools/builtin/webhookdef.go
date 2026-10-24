@@ -1179,7 +1179,7 @@ func mergeCredentialMap(base, overlay map[string]string) map[string]string {
 	if len(overlay) == 0 {
 		return base
 	}
-	merged := make(map[string]string, len(base)+len(overlay))
+	merged := make(map[string]string, len(base))
 	for k, v := range base {
 		merged[k] = v
 	}
@@ -1353,7 +1353,7 @@ func (d *mergedWebhookDef) applyOverlay(ov mergedWebhookDef) {
 	// a copy: buildDefinition can start from the static entry, whose map is
 	// the loaded config's.
 	if len(ov.EventShapes) > 0 {
-		merged := make(map[string][]string, len(d.EventShapes)+len(ov.EventShapes))
+		merged := make(map[string][]string, len(d.EventShapes))
 		for e, paths := range d.EventShapes {
 			merged[e] = paths
 		}

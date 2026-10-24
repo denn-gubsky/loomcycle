@@ -6458,8 +6458,7 @@ func (s *Store) MemoryPendingAck(ctx context.Context, tenantID string, scope sto
 		return nil
 	}
 	placeholders := make([]string, len(ids))
-	args := make([]any, 0, len(ids)+4)
-	args = append(args, time.Now().UnixNano(), tenantID, string(scope), scopeID)
+	args := []any{time.Now().UnixNano(), tenantID, string(scope), scopeID}
 	for i, id := range ids {
 		placeholders[i] = "?"
 		args = append(args, id)
