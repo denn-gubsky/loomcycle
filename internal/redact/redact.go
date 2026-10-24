@@ -122,8 +122,8 @@ const signedURLMarker = "[redacted:signed-url]"
 
 // signedParamRe is Tier C: a query parameter whose NAME marks a credential
 // that grants access by itself — a pre-signed URL works for anyone holding
-// it, with no sign-in — followed by its value. Only the value group is
-// replaced.
+// it, with no sign-in — up to its = (or %3D). signedValueEnd finds where the
+// value after it ends; that value is what is replaced.
 //
 // The parameter must open a query component: after ? & # ; or their stored
 // encodings (\u0026 as Go's JSON writes &, %3F and %26 inside another URL;
@@ -132,20 +132,34 @@ const signedURLMarker = "[redacted:signed-url]"
 // that are credentials only in a URL. # covers an implicit-grant redirect
 // (#access_token=…).
 //
-// The value ends only where a query value or the string holding the URL
-// ends: & (also the start of &amp;), #, whitespace, a quote, < or >, a
-// backslash (\u0026, and an escaped quote, so the mask never runs past the
-// end of a JSON string), and the escape %26 — any other %XX, such as %2B in
-// an Azure signature, stays inside the value. Any other character, however
-// unusual in a value (| ; , ( ) [ ] { }), is masked with it: stopping there
-// would store the rest of the value in clear, and the pattern tier that
-// runs next cannot take it either, since it does not match after a marker.
-//
 // Go's regexp is linear-time (RE2), so no input can make this backtrack.
 var signedParamRe = regexp.MustCompile(`(?i)(?:[?&#;]|\\u0026|%3f|%26)` +
 	`(` + strings.Join(signedNames, "|") + `)` +
-	`(?:=|%3d)` +
-	`((?:[^%&\s"'<>\\#]|%[^2%&\s"'<>\\#]|%2[^6&\s"'<>\\#])+)`)
+	`(?:=|%3d)`)
+
+// signedValueEnd returns where the value starting at s[i] ends: at the
+// first place a query value or the string holding the URL ends — & (also
+// the start of &amp;), #, whitespace, a quote, < or >, a backslash (\u0026,
+// and an escaped quote, so the mask never runs past the end of a JSON
+// string) — or at the escape %26, or at the end of s. Every other byte,
+// however unusual in a value (| ; , ( ) [ ] { }, a % that does not begin
+// %26), belongs to it: stopping there would store the rest in clear, and
+// the pattern tier that runs next cannot take it either, since it does not
+// match after a marker. A scan, not a regex class, because "a % unless it
+// begins %26" needs a lookahead RE2 does not have.
+func signedValueEnd(s string, i int) int {
+	for ; i < len(s); i++ {
+		switch s[i] {
+		case '&', '#', '"', '\'', '<', '>', '\\', ' ', '\t', '\n', '\r', '\f', '\v':
+			return i
+		case '%':
+			if i+2 < len(s) && s[i+1] == '2' && s[i+2] == '6' {
+				return i
+			}
+		}
+	}
+	return i
+}
 
 // signedCompanion holds the names that are a credential only beside another
 // parameter in the same URL. "Signature" is generic; CloudFront's is the one
@@ -218,7 +232,21 @@ func maskSignedURLParams(s string) string {
 	}
 	var verdicts []verdict
 	urlLo, urlHi := -1, -1
+	// Matches inside one value share its end: no boundary lies between a
+	// match and the end the scan from an earlier one found, so that end is
+	// reused instead of scanning the value again for each.
+	valueEnd := -1
 	for _, m := range ms {
+		if m[0] < last {
+			continue // inside a value already masked
+		}
+		if m[1] > valueEnd {
+			valueEnd = signedValueEnd(s, m[1])
+		}
+		end := valueEnd
+		if end == m[1] {
+			continue // an empty value
+		}
 		if companion := signedCompanion[strings.ToLower(s[m[2]:m[3]])]; companion != nil {
 			if m[0] >= urlHi {
 				urlLo = strings.LastIndexAny(s[:m[0]], urlStop) + 1
@@ -245,12 +273,12 @@ func maskSignedURLParams(s string) string {
 		}
 		// A value an exact tier already masked keeps that marker, and so
 		// does one this pass masked before (the pass is idempotent).
-		if v := s[m[4]:m[5]]; strings.HasPrefix(v, "[redacted") && strings.IndexByte(v, ']') == len(v)-1 {
+		if v := s[m[1]:end]; strings.HasPrefix(v, "[redacted") && strings.IndexByte(v, ']') == len(v)-1 {
 			continue
 		}
-		b.WriteString(s[last:m[4]])
+		b.WriteString(s[last:m[1]])
 		b.WriteString(signedURLMarker)
-		last = m[5]
+		last = end
 	}
 	if last == 0 {
 		return s
