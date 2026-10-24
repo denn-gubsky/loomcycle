@@ -4734,6 +4734,8 @@ func (s *Server) Mux() http.Handler {
 	// authMiddleware so an expired session can still log out; the handler's
 	// CSRF check (custom header + same origin) keeps other sites from it.
 	mux.Handle("POST /v1/_auth/logout", recoveryMiddleware(http.HandlerFunc(s.handleAuthLogout)))
+	// RFC FA P5 — the presented bearer retires itself (`loomcycle logout`).
+	mux.Handle("POST /v1/_auth/token/revoke", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSelfRevokeToken))))
 	// RFC FA P2 — the password gate's person-facing endpoints. The login,
 	// invite and reset posts are unauthenticated (they ESTABLISH a session):
 	// each takes its code in the body (never the URL), is same-origin with

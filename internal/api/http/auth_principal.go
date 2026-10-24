@@ -253,6 +253,10 @@ func runPlaneRoute(method, path string) bool {
 	// agent allowlist first, so the token learns nothing about other agents.
 	case isAgentOverridablePath(path):
 		return method == http.MethodGet
+	// A token retiring itself (`loomcycle logout`) is never an escalation, and
+	// a token limited to some agents must still be able to sign out.
+	case path == "/v1/_auth/token/revoke":
+		return method == http.MethodPost
 	case path == "/v1/_mcp":
 		// The MCP transport itself; the per-tool gate inside it applies the
 		// same rule to each tool (the MCP package's runPlaneTools).

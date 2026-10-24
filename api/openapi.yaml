@@ -845,6 +845,36 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_auth/token/revoke:
+    post:
+      tags: [auth]
+      summary: Retire the bearer this request is made with.
+      description: |
+        `loomcycle logout` calls it with the token `loomcycle login` was issued.
+        Only a delegated user token can retire itself; a config principal, the
+        legacy secret and an operator token (admin or tenant scope) are refused.
+        A Web UI session signs out with `POST /v1/_auth/logout` instead. An
+        agent-restricted token may call it.
+      operationId: selfRevokeToken
+      responses:
+        "200":
+          description: Retired; the token stops authenticating at once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  def_id: { type: string }
+                  retired_at: { type: string, format: date-time }
+        "400":
+          description: "`use_logout`: a Web UI session cookie authenticated the request."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: "The bearer does not authenticate (already retired, expired or unknown)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: "`not_revocable`: not a delegated user token."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /v1/_auth/assert:
     post:
       tags: [auth]
