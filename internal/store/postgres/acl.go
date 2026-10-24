@@ -36,6 +36,10 @@ func (s *Store) GroupGet(ctx context.Context, tenantID, name string) (store.Grou
 	return sqlshared.GroupGet(ctx, s.shared(), tenantID, name)
 }
 
+func (s *Store) GroupCreate(ctx context.Context, row store.GroupRow) (bool, error) {
+	return sqlshared.GroupCreate(ctx, s.shared(), row)
+}
+
 func (s *Store) GroupList(ctx context.Context, tenantID string) ([]store.GroupRow, error) {
 	return sqlshared.GroupList(ctx, s.shared(), tenantID)
 }

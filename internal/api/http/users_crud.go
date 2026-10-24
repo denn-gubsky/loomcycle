@@ -49,6 +49,14 @@ type wireUserRecord struct {
 	CreatedBy   string    `json:"created_by"`
 }
 
+// wireUserStatus is the status a caller may set through the users CRUD:
+// active or disabled. "pending" is the store's too, but only an auth gate
+// provisions a user into it and only the approval route takes one out, so it
+// is refused here rather than settable as a status that answers nothing.
+func wireUserStatus(status string) bool {
+	return status == "active" || status == "disabled"
+}
+
 func toWireUserRecord(r store.UserRow) wireUserRecord {
 	return wireUserRecord{
 		TenantID:    r.TenantID,
@@ -105,7 +113,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			"access_mode must be one of tenant|isolated")
 		return
 	}
-	if !store.ValidUserStatus(status) {
+	if !wireUserStatus(status) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_status",
 			"status must be one of active|disabled")
 		return
@@ -233,7 +241,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			"access_mode must be one of tenant|isolated")
 		return
 	}
-	if req.Status != nil && !store.ValidUserStatus(*req.Status) {
+	if req.Status != nil && !wireUserStatus(*req.Status) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_status",
 			"status must be one of active|disabled")
 		return
