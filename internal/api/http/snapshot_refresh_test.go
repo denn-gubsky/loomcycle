@@ -60,7 +60,7 @@ func newMCPRefreshHarness(t *testing.T) *mcpRefreshHarness {
 	srv.cfg().Env.HTTPPrivateHostAllowlist = []string{"127.0.0.1"}
 	h := &mcpRefreshHarness{srv: srv, st: st, reg: loommcp.NewDynamicRegistry()}
 	srv.SetMCPRegistryRefresh(func(ctx context.Context) (int, error) {
-		return builtin.RehydrateMCPRegistry(ctx, st, srv.cfg().MCPServers, h.reg, t.Logf)
+		return builtin.RehydrateMCPRegistry(ctx, st, srv.cfg().MCPServers, h.reg, schedulerTestLogger(t, nil))
 	})
 	h.pool = loommcp.NewPool(
 		func(tenant, name string) (loommcp.Caller, error) {
@@ -145,7 +145,7 @@ func (h *mcpRefreshHarness) seedLiveTakenDef(t *testing.T, liveURL string) {
 	if err := h.st.MCPServerDefSetActive(ctx, "acme", "taken", "mcp_dst_taken", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := builtin.RehydrateMCPRegistry(ctx, h.st, nil, h.reg, t.Logf); err != nil {
+	if _, err := builtin.RehydrateMCPRegistry(ctx, h.st, nil, h.reg, schedulerTestLogger(t, nil)); err != nil {
 		t.Fatal(err)
 	}
 }

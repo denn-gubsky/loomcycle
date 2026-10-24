@@ -22,7 +22,7 @@ func init() {
 // run_timeout_seconds / max_wall_seconds), which cmd/loomcycle's toDriverOptions populates from the
 // LOOMCYCLE_CODE_AGENTS_* env (an explicit `providers:` entry overrides that).
 func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
-	cfg := Config{Logf: o.Logf}
+	cfg := Config{Logger: o.Logger}
 	if root, ok := providers.StringOption(o.Options, "code_root"); ok {
 		cfg.CodeRoot = root
 	}
@@ -40,6 +40,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 		p.id = o.ID
 	}
 	p.capsPatch = o.Capabilities
-	providers.WarnUnknownOptions(o.Logf, "code-js", o.Options, "code_root", "deterministic", "run_timeout_seconds", "max_wall_seconds")
+	providers.WarnUnknownOptions(o.Logger, "code-js", o.Options, "code_root", "deterministic", "run_timeout_seconds", "max_wall_seconds")
 	return p, nil
 }

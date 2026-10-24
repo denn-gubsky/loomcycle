@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -34,13 +35,18 @@ type peerLister interface {
 // resolve is the per-call DefResolver each tool re-runs at Execute time
 // (so a substrate fork of an already-registered peer is picked up
 // without re-registering); newPeer is the client factory (nil ⇒ the
-// production SDK factory, exempting the operator's private-host allowlist); logf emits one triage line per skipped peer
-// (no credentials/secrets — CLAUDE.md rule 4). Boot-time enumeration
+// production SDK factory, exempting the operator's private-host allowlist); logger
+// receives one triage line per skipped peer (no credentials/secrets — CLAUDE.md
+// rule 4) and is handed to every tool built; nil is silent, pass slog.Default()
+// for production. Boot-time enumeration
 // failures are logged and skipped, never fatal: a transient store error
 // must not block loomcycle start.
-func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resolve DefResolver, newPeer peerClientFactory, logf func(string, ...any), opts ...Option) []tools.Tool {
+func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resolve DefResolver, newPeer peerClientFactory, logger *slog.Logger, opts ...Option) []tools.Tool {
 	if cfg == nil {
 		return nil
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	if newPeer == nil {
 		// A peer dials through the same guard, with the same operator vouch
@@ -64,7 +70,7 @@ func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resol
 	if st != nil {
 		names, err := st.A2AAgentDefListNames(ctx)
 		if err != nil {
-			trace(logf, "a2a tools: listing substrate peer defs failed (%v) — registering yaml peers only", err)
+			logger.Warn("a2a tools: listing substrate peer defs failed — registering yaml peers only", "err", err)
 		} else {
 			for _, n := range names {
 				// Only names with an ACTIVE version are callable; a name
@@ -83,14 +89,14 @@ func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resol
 	for _, peer := range peers {
 		def, ok := resolve(ctx, peer)
 		if !ok {
-			trace(logf, "a2a tools: peer %q could not be resolved at boot — skipping", peer)
+			logger.Warn("a2a tools: peer could not be resolved at boot — skipping", "peer", peer)
 			continue
 		}
 		if len(def.ExpectedSkills) == 0 {
 			// A peer with no declared expected_skills has no skill to
 			// target; the synthetic tool fronts exactly one (peer, skill)
 			// pair. Skip with a triage line rather than guessing a skill.
-			trace(logf, "a2a tools: peer %q declares no expected_skills — no synthetic tool registered (add expected_skills to make it callable)", peer)
+			logger.Warn("a2a tools: peer declares no expected_skills — no synthetic tool registered (add expected_skills to make it callable)", "peer", peer)
 			continue
 		}
 		for _, skill := range def.ExpectedSkills {
@@ -98,7 +104,7 @@ func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resol
 				continue
 			}
 			desc := fmt.Sprintf("Call the %q skill on remote A2A peer %q.", skill.ID, peer)
-			tool := NewTool(peer, skill.ID, desc, resolve, newPeer, logf)
+			tool := NewTool(peer, skill.ID, desc, resolve, newPeer, logger)
 			for _, o := range opts {
 				o(tool)
 			}
@@ -106,12 +112,4 @@ func RegisterTools(ctx context.Context, cfg *config.Config, st peerLister, resol
 		}
 	}
 	return out
-}
-
-// trace is a nil-safe logf invocation, matching the helper in the
-// server-side card package.
-func trace(logf func(string, ...any), format string, args ...any) {
-	if logf != nil {
-		logf(format, args...)
-	}
 }

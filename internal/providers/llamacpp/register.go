@@ -24,6 +24,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	if pin, ok := providers.BoolOption(o.Options, "pin_slots"); ok && pin {
 		d.PinSlots()
 	}
-	providers.WarnUnknownOptions(o.Logf, "llamacpp", o.Options, "pin_slots")
+	providers.WarnUnknownOptions(o.Logger, "llamacpp", o.Options, "pin_slots")
 	return d, nil
 }

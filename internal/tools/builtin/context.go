@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -961,7 +961,7 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 				var nf *store.ErrNotFound
 				if !errors.As(err, &nf) {
 					s.Error = err.Error()
-					log.Printf("context agents: AgentDefGetActive(%q): %v", name, err)
+					slog.WarnContext(ctx, "context agents: AgentDefGetActive failed", "agent_name", name, "err", err)
 				}
 			}
 		}

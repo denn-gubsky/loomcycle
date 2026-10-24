@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -43,9 +43,9 @@ func (b *boot) startPauseAndResume() {
 		pauseMgr.SetReplicaID(cfg.Env.ReplicaID)
 		srv.SetPauseManager(pauseMgr)
 		if pauseDefault > 0 {
-			log.Printf("pause: manager wired (default timeout=%s)", pauseDefault)
+			slog.Info("pause: manager wired", "default_timeout", pauseDefault)
 		} else {
-			log.Printf("pause: manager wired (default timeout=%s)", pause.DefaultPauseTimeout)
+			slog.Info("pause: manager wired", "default_timeout", pause.DefaultPauseTimeout)
 		}
 
 		// v0.12.3 Phase 4: cluster-wide pause/resume. The pause
@@ -56,7 +56,7 @@ func (b *boot) startPauseAndResume() {
 		if cfg.Env.ReplicaID != "" {
 			pgStoreForPause, ok := asPostgresStore(storeIface)
 			if !ok {
-				log.Fatalf("coord: pause cluster wiring requires Postgres store (REPLICA_ID set + non-Postgres store — should have been caught by openStore)")
+				fatal("coord: pause cluster wiring requires Postgres store (REPLICA_ID set + non-Postgres store — should have been caught by openStore)")
 			}
 			rss := coord.NewRuntimeStateStore(pgStoreForPause.Pool())
 			cacheTTL := time.Duration(cfg.Env.PauseCacheTTLMs) * time.Millisecond
@@ -76,9 +76,9 @@ func (b *boot) startPauseAndResume() {
 			if bp := srv.Backplane(); bp != nil {
 				pauseMgr.SetBackplane(bp)
 				if err := pauseMgr.SubscribeBackplane(bgCtx, bp); err != nil {
-					log.Fatalf("coord: pause backplane subscribe: %v", err)
+					fatal("coord: pause backplane subscribe failed", "err", err)
 				}
-				log.Printf("coord: cluster pause/resume wired (cache_ttl=%s)", cacheTTL)
+				slog.Info("coord: cluster pause/resume wired", "cache_ttl", cacheTTL)
 			}
 		}
 	}
@@ -100,9 +100,9 @@ func (b *boot) startPauseAndResume() {
 		// the work instead of being answered with a run that cannot finish.
 		// Synchronous and first: nothing may resume or retry before it.
 		if n, err := srv.FailLostNoTraceRuns(bgCtx, processStartedAt); err != nil {
-			log.Printf("no-trace: could not fail the runs lost in the last stop: %v", err)
+			slog.Error("no-trace: could not fail the runs lost in the last stop", "err", err)
 		} else if n > 0 {
-			log.Printf("no-trace: failed %d run(s) lost in the last stop (not resumable); their idempotency keys are released", n)
+			slog.Warn("no-trace: failed the runs lost in the last stop (not resumable); their idempotency keys are released", "runs", n)
 		}
 		// A run still queued for a slot when this process stopped lost its
 		// wait with it. Each is queued again, in its old order, from the
@@ -110,21 +110,21 @@ func (b *boot) startPauseAndResume() {
 		// sealed secrets this key cannot open) is failed with the reason and
 		// its idempotency keys released.
 		if n, failed, err := srv.RestartQueuedRuns(bgCtx, processStartedAt); err != nil {
-			log.Printf("queue: could not restart the runs queued when loomcycle last stopped: %v", err)
+			slog.Error("queue: could not restart the runs queued when loomcycle last stopped", "err", err)
 		} else if n > 0 || failed > 0 {
-			log.Printf("queue: %d run(s) queued when loomcycle last stopped are queued again; %d could not be and were failed", n, failed)
+			slog.Info("queue: the runs queued when loomcycle last stopped are queued again; those that could not be were failed", "requeued", n, "failed", failed)
 		}
 		go func() {
 			resume := func(ctx context.Context) error {
 				n, warnings := srv.ResumePausedRuns(ctx)
 				if n > 0 || len(warnings) > 0 {
-					log.Printf("resume(boot): re-dispatched %d paused run(s); %d flagged", n, len(warnings))
+					slog.Info("resume(boot): re-dispatched paused runs", "resumed", n, "flagged", len(warnings))
 				}
 				return nil
 			}
 			if advisoryLock != nil {
 				if _, err := advisoryLock.TryRun(bgCtx, coord.LockKeyResumePausedRuns, resume); err != nil {
-					log.Printf("resume(boot): advisory-gated resume failed: %v", err)
+					slog.Error("resume(boot): advisory-gated resume failed", "err", err)
 				}
 			} else {
 				_ = resume(bgCtx)
@@ -197,16 +197,16 @@ func (b *boot) startTeamSubscriptions() {
 				case <-t.C:
 					started, err := srv.SweepTeamSubscriptions(bgCtx)
 					if err != nil {
-						log.Printf("team-subscriptions: sweep: %v", err)
+						slog.Error("team-subscriptions: sweep failed", "err", err)
 						continue
 					}
 					if started > 0 {
-						log.Printf("team-subscriptions: started %d walk(s)", started)
+						slog.Info("team-subscriptions: started walks", "walks", started)
 					}
 				}
 			}
 		}()
-		log.Printf("team-subscriptions: enabled (tick=%s, cluster_gated=%v)", tick, advisoryLock != nil)
+		slog.Info("team-subscriptions: enabled", "tick", tick, "cluster_gated", advisoryLock != nil)
 	}
 }
 
@@ -247,22 +247,22 @@ func (b *boot) startBootReconciles() {
 				// Indexing the help docs is maintenance: behind live runs.
 				stats, err := help.ReconcileIndex(lanegate.WithBackground(ctx), helpSet, storeIface, embedder)
 				if err != nil {
-					log.Printf("help index: reconcile failed (search degrades): %v", err)
+					slog.Error("help index: reconcile failed (search degrades)", "err", err)
 					return nil // non-fatal — degrade, don't fail boot
 				}
 				switch {
 				case stats.Degraded:
-					log.Printf("help index: no embedder/vector support — query uses in-memory substring scan")
+					slog.Warn("help index: no embedder/vector support — query uses in-memory substring scan")
 				case stats.Written > 0 || stats.Pruned > 0 || stats.Failed > 0:
-					log.Printf("help index: reconciled (%d written, %d pruned, %d unchanged, %d failed)", stats.Written, stats.Pruned, stats.Unchanged, stats.Failed)
+					slog.Info("help index: reconciled", "written", stats.Written, "pruned", stats.Pruned, "unchanged", stats.Unchanged, "failed", stats.Failed)
 				default:
-					log.Printf("help index: up to date (%d sections, 0 embed calls)", stats.Unchanged)
+					slog.Info("help index: up to date (0 embed calls)", "sections", stats.Unchanged)
 				}
 				return nil
 			}
 			if advisoryLock != nil {
 				if _, err := advisoryLock.TryRun(bgCtx, coord.LockKeyHelpIndexReconcile, reconcile); err != nil {
-					log.Printf("help index: advisory-gated reconcile failed: %v", err)
+					slog.Error("help index: advisory-gated reconcile failed", "err", err)
 				}
 			} else {
 				_ = reconcile(bgCtx)
@@ -295,8 +295,8 @@ func (b *boot) startMetrics() {
 		})
 		go metricsSampler.Run(bgCtx)
 		srv.SetMetricsSampler(metricsSampler)
-		log.Printf("metrics: sampler enabled (interval=%s, system=%v)",
-			cfg.Env.MetricsSampleInterval, cfg.Env.MetricsCollectSystem)
+		slog.Info("metrics: sampler enabled",
+			"interval", cfg.Env.MetricsSampleInterval, "system", cfg.Env.MetricsCollectSystem)
 		if cfg.Env.MetricsSweepInterval > 0 && cfg.Env.MetricsRetentionDays > 0 {
 			retentionDays := cfg.Env.MetricsRetentionDays
 			go runAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
@@ -304,22 +304,22 @@ func (b *boot) startMetrics() {
 					cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 					swept, err := storeIface.MetricsSweep(ctx, cutoff)
 					if err != nil {
-						log.Printf("metrics sweep: %v", err)
+						slog.Error("metrics sweep: failed", "err", err)
 						return
 					}
 					if swept > 0 {
-						log.Printf("metrics sweep: deleted %d expired row(s)", swept)
+						slog.Info("metrics sweep: deleted expired rows", "rows", swept)
 					}
 				})
-			log.Printf("metrics: sweeper enabled (retention=%dd, interval=%s)",
-				cfg.Env.MetricsRetentionDays, cfg.Env.MetricsSweepInterval)
+			slog.Info("metrics: sweeper enabled",
+				"retention_days", cfg.Env.MetricsRetentionDays, "interval", cfg.Env.MetricsSweepInterval)
 		} else {
-			log.Printf("metrics: sweeper disabled (retention=0 or sweep interval=0)")
+			slog.Warn("metrics: sweeper disabled (retention=0 or sweep interval=0)")
 		}
 	} else if cfg.Env.MetricsEnabled {
-		log.Printf("metrics: sampler disabled (no Store backend)")
+		slog.Warn("metrics: sampler disabled (no Store backend)")
 	} else {
-		log.Printf("metrics: sampler disabled (LOOMCYCLE_METRICS_ENABLED=0)")
+		slog.Info("metrics: sampler disabled (LOOMCYCLE_METRICS_ENABLED=0)")
 	}
 }
 
@@ -371,17 +371,17 @@ func (b *boot) startScheduler() {
 		bootSched := &builtin.ScheduleDef{Store: storeIface, Cfg: cfg}
 		bootCtx := tools.WithRunIdentity(bgCtx, tools.RunIdentityValue{AgentID: "scheduler-bootstrap"})
 		if n, err := bootSched.BootstrapStaticSchedules(bootCtx); err != nil {
-			log.Printf("scheduler: static-schedule bootstrap: %v (continuing)", err)
+			slog.Error("scheduler: static-schedule bootstrap failed (continuing)", "err", err)
 		} else if n > 0 {
-			log.Printf("scheduler: materialized %d static schedule(s) into the substrate", n)
+			slog.Info("scheduler: materialized static schedules into the substrate", "schedules", n)
 		}
 		// Read-only: name any stored schedule whose runs execute outside its
 		// owning tenant (a non-admin could author one before the guard).
 		if warns, err := bootSched.ForeignExecTenantWarnings(bootCtx); err != nil {
-			log.Printf("scheduler: execution-tenant audit: %v (continuing)", err)
+			slog.Error("scheduler: execution-tenant audit failed (continuing)", "err", err)
 		} else {
 			for _, warn := range warns {
-				log.Printf("scheduler: WARNING: %s", warn)
+				slog.Warn("scheduler: " + warn)
 			}
 		}
 
@@ -432,12 +432,12 @@ func (b *boot) startScheduler() {
 			sched.SetReconcileCoordination(advisoryLock, coord.LockKeyScheduleReconcile)
 		}
 		sched.Start(bgCtx)
-		log.Printf("scheduler: enabled (tick=%ds, env_allowlist=%d names)",
-			cfg.Env.SchedulerTickSeconds, len(cfg.Env.SchedulerEnvAllowlist))
+		slog.Info("scheduler: enabled",
+			"tick_seconds", cfg.Env.SchedulerTickSeconds, "env_allowlist_names", len(cfg.Env.SchedulerEnvAllowlist))
 	} else if cfg.Env.SchedulerEnabled {
-		log.Printf("scheduler: disabled (no Store backend or no HTTP server)")
+		slog.Warn("scheduler: disabled (no Store backend or no HTTP server)")
 	} else {
-		log.Printf("scheduler: disabled (LOOMCYCLE_SCHEDULER_ENABLED=0)")
+		slog.Info("scheduler: disabled (LOOMCYCLE_SCHEDULER_ENABLED=0)")
 	}
 }
 
@@ -454,7 +454,8 @@ func (b *boot) logChannelSummary() {
 			names = append(names, name)
 		}
 		sort.Strings(names)
-		log.Printf("channels: configured %d — %s", n, strings.Join(names, " / "))
+		// Message kept verbatim: docs/PLAN.md quotes it.
+		slog.Info(fmt.Sprintf("channels: configured %d — %s", n, strings.Join(names, " / ")), "channels", n)
 	}
 }
 
@@ -509,14 +510,14 @@ func (b *boot) startVolumeAndAgentSweepers() {
 			func(ctx context.Context) {
 				n, err := storeIface.DynamicAgentSweep(ctx)
 				if err != nil {
-					log.Printf("dynamic_agents sweep: %v", err)
+					slog.Error("dynamic_agents sweep: failed", "err", err)
 					return
 				}
 				if n > 0 {
-					log.Printf("dynamic_agents sweep: deleted %d expired row(s)", n)
+					slog.Info("dynamic_agents sweep: deleted expired rows", "rows", n)
 				}
 			})
-		log.Printf("dynamic_agents: sweeper enabled (interval=%s)", cfg.Env.DynamicAgentSweepInterval)
+		slog.Info("dynamic_agents: sweeper enabled", "interval", cfg.Env.DynamicAgentSweepInterval)
 	}
 
 	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. The inline
@@ -532,7 +533,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 			func(ctx context.Context) {
 				cands, err := storeIface.EphemeralVolumeSweepCandidates(ctx)
 				if err != nil {
-					log.Printf("ephemeral_volumes sweep: candidates: %v", err)
+					slog.Error("ephemeral_volumes sweep: list candidates failed", "err", err)
 					return
 				}
 				purged := 0
@@ -540,21 +541,21 @@ func (b *boot) startVolumeAndAgentSweepers() {
 					// Fenced RemoveAll of the per-run subtree (re-derived;
 					// never a stored path). removed=false → already gone.
 					if _, perr := builtin.PurgeEphemeralRunTree(dynRoot, c.RootRunID, "ephemeral sweeper"); perr != nil {
-						log.Printf("ephemeral_volumes sweep: purge run=%s: %v", c.RootRunID, perr)
+						slog.Error("ephemeral_volumes sweep: purge failed", "run_id", c.RootRunID, "err", perr)
 						// Still drop the rows below — a purge fault must not
 						// wedge the row forever (the dir may be partly gone).
 					}
 					if _, derr := storeIface.EphemeralVolumeDeleteByRun(ctx, c.RootRunID); derr != nil {
-						log.Printf("ephemeral_volumes sweep: delete rows run=%s: %v", c.RootRunID, derr)
+						slog.Error("ephemeral_volumes sweep: delete rows failed", "run_id", c.RootRunID, "err", derr)
 						continue
 					}
 					purged++
 				}
 				if purged > 0 {
-					log.Printf("ephemeral_volumes sweep: purged %d terminal run tree(s)", purged)
+					slog.Info("ephemeral_volumes sweep: purged terminal run trees", "trees", purged)
 				}
 			})
-		log.Printf("ephemeral_volumes: sweeper enabled (interval=%s, dynamic_root=%s)", cfg.Env.EphemeralVolumeSweepInterval, dynRoot)
+		slog.Info("ephemeral_volumes: sweeper enabled", "interval", cfg.Env.EphemeralVolumeSweepInterval, "dynamic_root", dynRoot)
 	}
 }
 
