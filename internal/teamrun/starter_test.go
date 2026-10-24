@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,7 +86,7 @@ func starterState() teamgraph.State {
 }
 
 func starterRunner(ch *fakeChannels, spawn SpawnFunc) *agentRunner {
-	r := &agentRunner{spawn: spawn, channels: ch, logf: func(string, ...any) {}}
+	r := &agentRunner{spawn: spawn, channels: ch, logger: slog.New(slog.DiscardHandler)}
 	return r
 }
 
@@ -512,7 +513,7 @@ func (s *sinkMarkingChannels) PublishSink(ctx context.Context, channel string, p
 // on the sink may not make it disappear.
 func TestStarter_PublishesItsSinkMarkedAsASinkMessage(t *testing.T) {
 	ch := &sinkMarkingChannels{fakeChannels: fakeChannels{inbox: []ChannelMessage{{ID: "m1", Payload: json.RawMessage(`{}`)}}}}
-	r := &agentRunner{channels: ch, logf: func(string, ...any) {}, spawn: textSpawn(func(context.Context, string, Prompt, string) (string, error) {
+	r := &agentRunner{channels: ch, logger: slog.New(slog.DiscardHandler), spawn: textSpawn(func(context.Context, string, Prompt, string) (string, error) {
 		return "ok", nil
 	})}
 	if _, err := r.RunHandler(context.Background(), starterState(), &Task{Input: "start", WalkID: "w"}); err != nil {

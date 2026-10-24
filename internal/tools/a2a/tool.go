@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	a2asdk "github.com/a2aproject/a2a-go/v2/a2a"
@@ -31,7 +32,7 @@ type DefResolver func(ctx context.Context, name string) (config.A2AAgent, bool)
 // model can only invoke peer/skill combinations an operator blessed, and
 // cannot reach an arbitrary host by crafting tool input.
 //
-// Dependencies are injected (resolver + client factory + logf) so the
+// Dependencies are injected (resolver + client factory + logger) so the
 // dispatch path is unit-testable against a fake peer with no real HTTP.
 type Tool struct {
 	peer        string
@@ -40,10 +41,10 @@ type Tool struct {
 
 	resolve DefResolver
 	newPeer peerClientFactory
-	// logf emits one triage line per notable event (missing credential,
-	// signature failure). MUST NOT include the bearer value — CLAUDE.md
-	// rule 4. Nil is allowed (silent).
-	logf func(format string, args ...any)
+	// logger receives one triage line per notable event (missing
+	// credential, signature failure). MUST NOT include the bearer value —
+	// CLAUDE.md rule 4. Never nil: NewTool makes a nil one silent.
+	logger *slog.Logger
 	// credSubstitute resolves a stored credential reference ("$cred:<name>")
 	// in the run's bearer for a peer URL, as an MCP server's header is
 	// resolved. Nil refuses a reference rather than sending it as written.
@@ -69,10 +70,14 @@ var _ tools.Tool = (*Tool)(nil)
 // human/model-facing blurb (typically the expected-skill or resolved
 // card skill description). newPeer defaults, when nil, to the production
 // SDK factory with NO private-host exemptions; RegisterTools passes one
-// carrying the operator's private-host allowlist.
-func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerClientFactory, logf func(string, ...any)) *Tool {
+// carrying the operator's private-host allowlist. logger may be nil
+// (silent); pass slog.Default() for production.
+func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerClientFactory, logger *slog.Logger) *Tool {
 	if newPeer == nil {
 		newPeer = sdkPeerClientFactory(nil)
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Tool{
 		peer:        peer,
@@ -80,7 +85,7 @@ func NewTool(peer, skill, description string, resolve DefResolver, newPeer peerC
 		description: description,
 		resolve:     resolve,
 		newPeer:     newPeer,
-		logf:        logf,
+		logger:      logger,
 	}
 }
 
@@ -132,7 +137,7 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if err != nil {
 		// Absent-but-required credential: a clear tool error PLUS a
 		// tracing event, never a silent empty bearer (slice contract).
-		t.trace("a2a: peer=%q skill=%q credential resolution failed: %v", t.peer, t.skill, err)
+		t.logger.WarnContext(ctx, "a2a: credential resolution failed", "peer", t.peer, "skill", t.skill, "err", err)
 		t.emitToolEvent(ctx, true, err.Error())
 		res := tools.Result{Text: fmt.Sprintf("a2a: %s", err), IsError: true}
 		if errors.Is(err, tools.ErrRunCredentialUnavailable) {
@@ -151,7 +156,7 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	// peer's URL keeps the requests that carry it from being redirected.
 	ctx = netguard.WithPinnable(ctx)
 	if bearer, err = t.openStoredBearer(ctx, def, bearer); err != nil {
-		t.trace("a2a: peer=%q skill=%q stored credential did not resolve: %v", t.peer, t.skill, err)
+		t.logger.WarnContext(ctx, "a2a: stored credential did not resolve", "peer", t.peer, "skill", t.skill, "err", err)
 		t.emitToolEvent(ctx, true, "the run's credential for this peer is a stored one that could not be resolved")
 		return tools.Result{Text: fmt.Sprintf("a2a: peer %q requires a stored credential that could not be resolved for it", t.peer), IsError: true,
 			Error: &tools.ErrorInfo{Category: tools.CategoryBusiness, Retryable: false,
@@ -163,7 +168,7 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		if ctx.Err() != nil {
 			return tools.Result{}, ctx.Err()
 		}
-		t.trace("a2a: peer=%q skill=%q client build failed: %v", t.peer, t.skill, err)
+		t.logger.WarnContext(ctx, "a2a: client build failed", "peer", t.peer, "skill", t.skill, "err", err)
 		return tools.Result{Text: fmt.Sprintf("a2a: connect to peer %q failed: %s", t.peer, err), IsError: true}, nil
 	}
 	defer func() { _ = peer.Close() }()
@@ -180,7 +185,7 @@ func (t *Tool) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		if ctx.Err() != nil {
 			return tools.Result{}, ctx.Err()
 		}
-		t.trace("a2a: peer=%q skill=%q send failed: %v", t.peer, t.skill, err)
+		t.logger.WarnContext(ctx, "a2a: send failed", "peer", t.peer, "skill", t.skill, "err", err)
 		return tools.Result{Text: fmt.Sprintf("a2a: call to peer %q skill %q failed: %s", t.peer, t.skill, err), IsError: true}, nil
 	}
 
@@ -271,12 +276,6 @@ func (t *Tool) emitToolEvent(ctx context.Context, isErr bool, detail string) {
 		IsError: isErr,
 		Text:    fmt.Sprintf("a2a peer=%s skill=%s: %s", t.peer, t.skill, detail),
 	})
-}
-
-func (t *Tool) trace(format string, args ...any) {
-	if t.logf != nil {
-		t.logf(format, args...)
-	}
 }
 
 // resultText extracts the peer's terminal response into a single text

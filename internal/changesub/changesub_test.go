@@ -1,10 +1,12 @@
 package changesub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,13 +166,27 @@ func TestDeliver_FailureLeavesCursor(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d := New(fs, testSecretFor, nil)
+	var logs bytes.Buffer
+	d := New(fs, testSecretFor, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	sub := Subscription{Name: "s1", CallbackURL: srv.URL, TenantID: "acme", Client: srv.Client()}
 	d.RunOnce(context.Background(), []Subscription{sub})
 
 	// At-least-once: a failed delivery must NOT advance the cursor.
 	if fs.cursors["s1"] != 0 {
 		t.Errorf("cursor = %d, want 0 (delivery failed, must retry next tick)", fs.cursors["s1"])
+	}
+	// The operator is told the delivery failed and will be retried.
+	line := strings.TrimSpace(logs.String())
+	for _, want := range []string{
+		"level=WARN",
+		"change_subscriptions: delivery failed (will retry)",
+		"subscription=s1",
+		"tenant=acme",
+		"returned 500",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("delivery-failure log missing %q: %s", want, line)
+		}
 	}
 }
 

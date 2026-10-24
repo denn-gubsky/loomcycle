@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -557,7 +558,7 @@ func (b *boot) startStoreSweepers() {
 	if memoryChangesEnabled() && storeIface != nil && len(cfg.ChangeSubscriptions) > 0 {
 		subs := resolveChangeSubscriptions(cfg)
 		if len(subs) > 0 {
-			deliverer := changesub.New(storeIface, resolveChangeSubSecret, log.Printf)
+			deliverer := changesub.New(storeIface, resolveChangeSubSecret, slog.Default())
 			interval := changeSubDeliveryInterval()
 			go runAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
 				func(ctx context.Context) { deliverer.RunOnce(ctx, subs) })

@@ -61,9 +61,9 @@ func TestRetentionOverride_DelegatesToTheConnector(t *testing.T) {
 	}
 }
 
-// Who may call it on this transport: an admin and a tenant operator. gRPC has
-// no member bypass, so the scope is the whole gate here; a token limited to
-// certain agents is refused whatever its scopes.
+// Who may call it on this transport: an admin and a tenant operator. Its HTTP
+// routes are carved out of the member path, so a member is refused here too; a
+// token limited to certain agents is refused whatever its scopes.
 func TestRetentionOverride_IsOperatorOnly(t *testing.T) {
 	const method = grpcMethodPrefix + "RetentionOverride"
 	if got := requiredScopeForRPC(method); got != auth.ScopeTenant {

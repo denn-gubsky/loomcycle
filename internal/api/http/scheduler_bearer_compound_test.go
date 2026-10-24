@@ -184,7 +184,7 @@ func TestSchedulerBearerCompound(t *testing.T) {
 	allTools := []tools.Tool{}
 	mcpInitCtx, mcpInitCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	for name := range cfg.MCPServers {
-		_, descs, err := pool.GetWithRetry(mcpInitCtx, name, t.Logf)
+		_, descs, err := pool.GetWithRetry(mcpInitCtx, name, schedulerTestLogger(t, nil))
 		if err != nil {
 			t.Fatalf("mcp[%s]: handshake failed: %v", name, err)
 		}

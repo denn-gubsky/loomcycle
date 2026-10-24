@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -54,15 +55,15 @@ type Store interface {
 type Deliverer struct {
 	store      Store
 	secretFor  func(envName string) (string, error) // allowlist-gated env resolve
-	logf       func(string, ...any)
+	logger     *slog.Logger
 	batchLimit int
 	maxRetries int
 }
 
 // New builds a Deliverer. secretFor resolves an env-var NAME to its value
-// (allowlist-gated); logf may be nil.
-func New(s Store, secretFor func(string) (string, error), logf func(string, ...any)) *Deliverer {
-	return &Deliverer{store: s, secretFor: secretFor, logf: logf, batchLimit: 200, maxRetries: 3}
+// (allowlist-gated); logger may be nil (delivery failures then go unlogged).
+func New(s Store, secretFor func(string) (string, error), logger *slog.Logger) *Deliverer {
+	return &Deliverer{store: s, secretFor: secretFor, logger: logger, batchLimit: 200, maxRetries: 3}
 }
 
 // RunOnce delivers pending changes for every subscription, draining each
@@ -72,8 +73,9 @@ func (d *Deliverer) RunOnce(ctx context.Context, subs []Subscription) {
 		for {
 			fetched, err := d.deliverOnce(ctx, sub)
 			if err != nil {
-				if d.logf != nil {
-					d.logf("change_subscriptions.%s: delivery failed (will retry): %v", sub.Name, err)
+				if d.logger != nil {
+					d.logger.Warn("change_subscriptions: delivery failed (will retry)",
+						"subscription", sub.Name, "tenant", sub.TenantID, "err", err)
 				}
 				break
 			}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
@@ -31,7 +32,7 @@ func (b *boot) openAndMigrateStore() {
 	// default → the store is unwrapped and the path is byte-identical. Cluster
 	// coord below unwraps via asPostgresStore to reach the concrete backend.
 	if memoryChangesEnabled() && storeIface != nil {
-		storeIface = cdc.Wrap(storeIface, log.Printf)
+		storeIface = cdc.Wrap(storeIface, slog.Default())
 		log.Printf("memory: change-data-capture feed ENABLED (LOOMCYCLE_MEMORY_CHANGES_ENABLED=1)")
 	}
 

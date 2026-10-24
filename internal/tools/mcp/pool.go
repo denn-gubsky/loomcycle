@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -233,9 +234,11 @@ func (p *Pool) initEntry(ctx context.Context, tenant, name string) (Caller, []To
 // dev server compiling its `/api/mcp` route on first request). Without
 // retry, a slow-starting peer means loomcycle marks the server "skipped"
 // and the operator has to restart loomcycle after the peer is up.
-func (p *Pool) GetWithRetry(ctx context.Context, name string, logf func(string, ...any)) (Caller, []ToolDescriptor, error) {
-	if logf == nil {
-		logf = func(string, ...any) {}
+//
+// logger may be nil (silent); pass slog.Default() for production.
+func (p *Pool) GetWithRetry(ctx context.Context, name string, logger *slog.Logger) (Caller, []ToolDescriptor, error) {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
 	}
 	const initialDelay = 500 * time.Millisecond
 	const maxDelay = 16 * time.Second
@@ -247,7 +250,7 @@ func (p *Pool) GetWithRetry(ctx context.Context, name string, logf func(string, 
 		caller, descs, err := p.Get(ctx, name)
 		if err == nil {
 			if attempt > 1 {
-				logf("mcp[%s]: handshake succeeded on attempt %d", name, attempt)
+				logger.Info("mcp: handshake succeeded after retry", "server", name, "attempt", attempt)
 			}
 			return caller, descs, nil
 		}
@@ -267,7 +270,7 @@ func (p *Pool) GetWithRetry(ctx context.Context, name string, logf func(string, 
 		if errors.Is(err, tools.ErrRunCredentialUnavailable) {
 			return nil, nil, fmt.Errorf("mcp[%s]: %w", name, lastErr)
 		}
-		logf("mcp[%s]: handshake failed (attempt %d): %v — retrying in %s", name, attempt, err, delay)
+		logger.Warn("mcp: handshake failed — retrying", "server", name, "attempt", attempt, "retry_in", delay, "err", err)
 		select {
 		case <-ctx.Done():
 			return nil, nil, fmt.Errorf("mcp[%s]: gave up after %d attempt(s): %w", name, attempt, lastErr)
