@@ -464,30 +464,8 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 			negativeCacheable = false
 		}
 		if err == nil {
-			// Valid iff not retired (or still inside the grace window) and
-			// not past its fixed lifetime. Both refusals look the same.
-			if row.ValidAt(time.Now()) {
-				// A restrictions record this build cannot read refuses the
-				// token. Reading it as "unrestricted" would give a narrowed
-				// credential the whole of its scopes.
-				restrictions, rerr := auth.ParseRestrictions(row.RestrictionsJSON)
-				if rerr != nil {
-					slog.Warn("auth: token refused", "token_def", row.DefID, "err", rerr)
-					return auth.Principal{}, false, true, never
-				}
-				validUntil := never
-				if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
-					validUntil = row.ValidUntil()
-				}
-				return auth.Principal{
-					TenantID:     row.TenantID,
-					Subject:      row.Subject,
-					Scopes:       row.AllowedScopes,
-					TokenDefID:   row.DefID,
-					Restrictions: restrictions,
-				}, true, true, validUntil
-			}
-			return auth.Principal{}, false, true, never // expired → opaque 401, cacheable
+			p, ok, validUntil := tokenRowPrincipal(row, time.Now())
+			return p, ok, true, validUntil // a refusal (expired, unreadable) is cacheable
 		}
 		// Not found (ErrNotFound) → fall through to legacy. Any OTHER
 		// store error is a genuine outage: fail closed AND not cacheable (we
@@ -526,6 +504,39 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 		}, true, true, never
 	}
 	return auth.Principal{}, false, negativeCacheable, never // genuine unknown → cacheable negative, unless the older-form lookups ran
+}
+
+// tokenRowPrincipal is the principal a minted token row authenticates as at
+// now, whether it authenticates at all, and when it stops (zero = never). Every
+// path that turns a token row into a principal uses it, so a Web UI session
+// built on a token can never read the row more generously than the bearer
+// lookup does.
+func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Principal, bool, time.Time) {
+	var never time.Time
+	// Valid iff not retired (or still inside the grace window) and not past its
+	// fixed lifetime. Both refusals look the same.
+	if !row.ValidAt(now) {
+		return auth.Principal{}, false, never
+	}
+	// A restrictions record this build cannot read refuses the token. Reading
+	// it as "unrestricted" would give a narrowed credential the whole of its
+	// scopes.
+	restrictions, err := auth.ParseRestrictions(row.RestrictionsJSON)
+	if err != nil {
+		slog.Warn("auth: token refused", "token_def", row.DefID, "err", err)
+		return auth.Principal{}, false, never
+	}
+	validUntil := never
+	if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
+		validUntil = row.ValidUntil()
+	}
+	return auth.Principal{
+		TenantID:     row.TenantID,
+		Subject:      row.Subject,
+		Scopes:       row.AllowedScopes,
+		TokenDefID:   row.DefID,
+		Restrictions: restrictions,
+	}, true, validUntil
 }
 
 // legacyFallbackDisabled reports whether the LOOMCYCLE_AUTH_TOKEN path is
