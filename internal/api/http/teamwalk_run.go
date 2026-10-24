@@ -55,6 +55,9 @@ func (s *Server) openTeamWalkRun(ctx context.Context, spec builtin.WalkRunSpec) 
 	if s.store == nil {
 		return ctx, "", func(builtin.WalkEnd) {}, fmt.Errorf("run tracking requires a store")
 	}
+	// The starter's access-control set binds the walk's members, wherever the
+	// walk was started from; before, only an enclosing run carried one.
+	ctx = stampWalkStarterACL(ctx)
 	ident := tools.RunIdentity(ctx)
 	agent := teamWalkAgentPrefix + spec.Name
 	detach := spec.Detach

@@ -182,6 +182,9 @@ func buildTeamWalkInput(def scheduleDef) runner.TeamWalkInput {
 		// As buildRunInput: only a def whose author could act as user_id
 		// resolves in its scope.
 		CredentialsNoUserScope: !(def.UserScopeCredentials || def.staticRow),
+		// RFC EZ §1.5: the author's set, as buildRunInput carries it for an
+		// agent tick, binds the walk and every member it spawns.
+		ACLOwner: def.ACLOwner,
 	}
 }
 
