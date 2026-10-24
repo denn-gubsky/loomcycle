@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { erasureGate, residueMeaning } from "./erasure";
+import { accessSummary, erasureGate, residueMeaning } from "./erasure";
 
 describe("erasureGate", () => {
   const ready = { subject: "alice", reportedSubject: "alice", confirm: "alice" };
@@ -56,5 +56,22 @@ describe("residueMeaning", () => {
     const m = residueMeaning({ rows: 12, sessions_examined: 4 });
     expect(m).toContain("12 row(s)");
     expect(m).not.toContain("at least");
+  });
+});
+
+describe("accessSummary", () => {
+  it("names the groups, lists and tokens an erasure removes", () => {
+    expect(
+      accessSummary({
+        groups: ["ops"],
+        lists: ["deny-bash"],
+        tokens: [{ def_id: "def_1", name: "u-alice" }, { def_id: "def_2", name: "" }],
+      }),
+    ).toBe("groups ops · lists deny-bash · tokens u-alice (def_1), def_2");
+  });
+
+  it("says nothing when no access is removed, or the server is too old to report it", () => {
+    expect(accessSummary({ groups: [], lists: [], tokens: [] })).toBe("");
+    expect(accessSummary(undefined)).toBe("");
   });
 });

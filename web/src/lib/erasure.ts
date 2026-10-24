@@ -1,3 +1,5 @@
+import type { ErasureAccess } from "../api";
+
 // The rules the erasure console enforces before it will offer to delete anything.
 //
 // These live here rather than inline because each one is a guard against a specific way
@@ -69,4 +71,18 @@ export function residueMeaning(r: ErasureResidue | undefined): string {
     return `none found across ${r.sessions_examined} session(s)`;
   }
   return `${scope}${r.rows} row(s) derived from this subject's sessions, which a subject-keyed delete does not reach`;
+}
+
+// accessSummary renders the access an erasure removes, or "" when it removes none (or the
+// server is too old to say). Tokens are named by name and def id: the bearer is never
+// part of a report.
+export function accessSummary(a: ErasureAccess | undefined): string {
+  if (!a) return "";
+  const parts: string[] = [];
+  if (a.groups.length > 0) parts.push(`groups ${a.groups.join(", ")}`);
+  if (a.lists.length > 0) parts.push(`lists ${a.lists.join(", ")}`);
+  if (a.tokens.length > 0) {
+    parts.push(`tokens ${a.tokens.map((t) => (t.name ? `${t.name} (${t.def_id})` : t.def_id)).join(", ")}`);
+  }
+  return parts.join(" · ");
 }

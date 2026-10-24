@@ -1465,6 +1465,15 @@ export interface ErasureTier {
   total: number;
 }
 
+// ErasureAccess names the access an erasure removes (or, in a report or a dry run, would
+// remove): the groups the subject leaves, the lists bound to it, and its member tokens,
+// revoked by def id and name — never a bearer value.
+export interface ErasureAccess {
+  groups: string[];
+  lists: string[];
+  tokens: { def_id: string; name: string }[];
+}
+
 export interface ErasureReportResponse {
   tenant: string;
   subject: string;
@@ -1477,6 +1486,8 @@ export interface ErasureReportResponse {
     truncated?: boolean;
   };
   notes?: string[];
+  // Absent from a server older than v1.122.0.
+  access?: ErasureAccess;
   errors?: string[];
 }
 
@@ -1489,6 +1500,7 @@ export interface ErasureResult {
   residue?: ErasureReportResponse["tier3_residue"];
   errors?: string[];
   notes?: string[];
+  access?: ErasureAccess;
 }
 
 export function getErasureReport(subject: string, tenant?: string): Promise<ErasureReportResponse> {
