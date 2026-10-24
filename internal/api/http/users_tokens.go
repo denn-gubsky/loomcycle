@@ -404,6 +404,24 @@ func (s *Server) retireDelegatedUserTokens(ctx context.Context, tenant, subject 
 	return retired, nil
 }
 
+// erasureSubjectTokens splits (tenant, subject)'s token rows by the rule
+// retireDelegatedUserTokens applies: the member tokens an erasure revokes,
+// active or not, and the rest, which it leaves.
+func (s *Server) erasureSubjectTokens(ctx context.Context, tenant, subject string) (revocable, kept []store.OperatorTokenDefRow, err error) {
+	rows, err := s.store.OperatorTokenDefListBySubject(ctx, tenant, subject)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, row := range rows {
+		if isDelegatedUserToken(row, tenant, subject) {
+			revocable = append(revocable, row)
+		} else {
+			kept = append(kept, row)
+		}
+	}
+	return revocable, kept, nil
+}
+
 // handleMintUserToken serves POST /v1/_users/{subject}/tokens. Mints a bearer
 // token for one of the caller's OWN active users, with scopes derived from the
 // user's access_mode. The subject is in the path and the tenant and scopes are

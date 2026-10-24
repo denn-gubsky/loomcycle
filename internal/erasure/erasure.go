@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -66,6 +67,81 @@ type Service struct {
 	// Without it a replica keeps serving the erased subject's grants until its
 	// cache TTL lapses. nil = nothing cached.
 	ACLChanged func(ctx context.Context, tenant, subject string)
+	// ListTokens returns the subject's bearer tokens in the tenant: the ones
+	// an erasure revokes (active or already retired), and the ones it leaves.
+	// RetireTokens retires the active revocable ones and stops them
+	// authenticating on every replica, returning those it retired (also on
+	// error). The transport owns both: which tokens are the subject's to lose
+	// is the member-token rule its token surfaces share, and the auth cache
+	// and backplane are its. Either nil = the token plane is not examined.
+	ListTokens   func(ctx context.Context, tenant, subject string) (revocable, kept []store.OperatorTokenDefRow, err error)
+	RetireTokens func(ctx context.Context, tenant, subject string) ([]store.OperatorTokenDefRow, error)
+}
+
+// subjectTokens is the subject's bearer-token footprint in one tenant.
+type subjectTokens struct {
+	active  []store.OperatorTokenDefRow // revocable and still authenticating
+	retired []string                    // def ids of revocable tokens already retired or expired
+	kept    []store.OperatorTokenDefRow // not revocable and still authenticating
+}
+
+// allIDs is every revocable def id, active or not: the bindings keyed to
+// them are what an erasure removes.
+func (t subjectTokens) allIDs() []string {
+	return append(append([]string{}, t.retired...), tokenIDs(t.active)...)
+}
+
+// keptNote names the tokens an erasure leaves; "" when there are none.
+func (t subjectTokens) keptNote() string {
+	if len(t.kept) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d token(s) bound to the subject hold an operator scope (substrate:tenant or "+
+		"substrate:admin) and are not revoked by an erasure: def id(s) [%s]. A role is not the member's "+
+		"credential; retire them with the operator-token surface (operatortokendef op=retire).",
+		len(t.kept), strings.Join(tokenIDs(t.kept), ", "))
+}
+
+func tokenIDs(rows []store.OperatorTokenDefRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.DefID)
+	}
+	return out
+}
+
+func tokenRefs(rows []store.OperatorTokenDefRow) []TokenRef {
+	out := make([]TokenRef, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, TokenRef{DefID: r.DefID, Name: r.Name})
+	}
+	return out
+}
+
+// tokens reads the subject's tokens; examined is false when the transport
+// wired no token plane.
+func (s *Service) tokens(ctx context.Context, tenant, subject string) (out subjectTokens, examined bool, err error) {
+	if s.ListTokens == nil || s.RetireTokens == nil {
+		return out, false, nil
+	}
+	revocable, kept, err := s.ListTokens(ctx, tenant, subject)
+	if err != nil {
+		return out, true, err
+	}
+	now := time.Now()
+	for _, r := range revocable {
+		if r.ValidAt(now) {
+			out.active = append(out.active, r)
+		} else {
+			out.retired = append(out.retired, r.DefID)
+		}
+	}
+	for _, r := range kept {
+		if r.ValidAt(now) {
+			out.kept = append(out.kept, r)
+		}
+	}
+	return out, true, nil
 }
 
 // subjectACL is a subject's RFC EY access-control footprint in one tenant.
@@ -73,6 +149,10 @@ type subjectACL struct {
 	groups   []string // stored direct memberships (member kind user)
 	bindings int      // stored user-kind binding rows, retired ones included
 	lists    []string // the distinct lists those bindings name
+	// The token-kind bindings, retired ones included, of the subject's
+	// revocable tokens, and the distinct lists they name.
+	tokenBindings int
+	tokenLists    []string
 	// Config-declared: not erasable from the store.
 	cfgGroups []string
 	cfgLists  []string
@@ -81,8 +161,9 @@ type subjectACL struct {
 // accessControl reads the subject's memberships and bindings. Retired
 // bindings count: a retired row still names the subject, and the erasure
 // deletes it. Group- and token-kind rows are not the subject's even when
-// their id equals it, so the filter is on kind as well as id.
-func (s *Service) accessControl(ctx context.Context, tenant, subject string) (subjectACL, error) {
+// their id equals it, so the filter is on kind as well as id; the token-kind
+// rows counted are those of tokenIDs, the subject's revocable tokens.
+func (s *Service) accessControl(ctx context.Context, tenant, subject string, tokenIDs []string) (subjectACL, error) {
 	var out subjectACL
 	groups, err := s.Store.GroupsOfSubject(ctx, tenant, subject)
 	if err != nil {
@@ -93,14 +174,23 @@ func (s *Service) accessControl(ctx context.Context, tenant, subject string) (su
 	if err != nil {
 		return out, err
 	}
-	var lists []string
+	tokens := map[string]bool{}
+	for _, id := range tokenIDs {
+		tokens[id] = true
+	}
+	var lists, tokenLists []string
 	for _, r := range rows {
-		if r.SubjectKind == string(authz.SubjectUser) && r.SubjectID == subject {
+		switch {
+		case r.SubjectKind == string(authz.SubjectUser) && r.SubjectID == subject:
 			out.bindings++
 			lists = append(lists, r.ACLName)
+		case r.SubjectKind == string(authz.SubjectToken) && tokens[r.SubjectID]:
+			out.tokenBindings++
+			tokenLists = append(tokenLists, r.ACLName)
 		}
 	}
 	out.lists = sortedUnique(lists)
+	out.tokenLists = sortedUnique(tokenLists)
 	if s.ACLStatic != nil {
 		static := s.ACLStatic()
 		direct, _ := static.GroupsOf(tenant, subject)
@@ -118,13 +208,20 @@ func (s *Service) accessControl(ctx context.Context, tenant, subject string) (su
 
 // storedNote names the stored rows; "" when there are none.
 func (a subjectACL) storedNote() string {
-	if len(a.groups) == 0 && a.bindings == 0 {
+	if len(a.groups) == 0 && a.bindings == 0 && a.tokenBindings == 0 {
 		return ""
 	}
 	return fmt.Sprintf("access control (stored, removed by an erasure): member of group(s) [%s]; "+
-		"%d binding row(s) to the subject (retired ones included) naming list(s) [%s]. "+
+		"%d binding row(s) to the subject (retired ones included) naming list(s) [%s]; "+
+		"%d binding row(s) to its tokens naming list(s) [%s]. "+
 		"The groups and lists themselves are not the subject's and stay.",
-		strings.Join(a.groups, ", "), a.bindings, strings.Join(a.lists, ", "))
+		strings.Join(a.groups, ", "), a.bindings, strings.Join(a.lists, ", "),
+		a.tokenBindings, strings.Join(a.tokenLists, ", "))
+}
+
+// allLists is the distinct lists named by both kinds of binding.
+func (a subjectACL) allLists() []string {
+	return sortedUnique(append(append([]string{}, a.lists...), a.tokenLists...))
 }
 
 // configNote names the config-declared rows; "" when there are none.
@@ -179,9 +276,18 @@ type Report struct {
 type Access struct {
 	Groups []string `json:"groups"`
 	Lists  []string `json:"lists"`
+	// Tokens are the subject's bearer tokens revoked (or that would be).
+	Tokens []TokenRef `json:"tokens"`
 }
 
-func emptyAccess() Access { return Access{Groups: []string{}, Lists: []string{}} }
+// TokenRef names one bearer token by its def id and name. Never the bearer:
+// the plaintext is not stored, and its hash is not a name.
+type TokenRef struct {
+	DefID string `json:"def_id"`
+	Name  string `json:"name"`
+}
+
+func emptyAccess() Access { return Access{Groups: []string{}, Lists: []string{}, Tokens: []TokenRef{}} }
 
 type Tier struct {
 	Counts map[string]int64 `json:"counts"`
@@ -235,6 +341,10 @@ type Result struct {
 	Errors   []string          `json:"errors,omitempty"`
 	Notes    []string          `json:"notes"`
 }
+
+const retainedTokenRows = "a revoked token is RETIRED, not deleted: its row (def id, name, " +
+	"subject, scopes — never the bearer) stays as the token registry and audit record, and stops " +
+	"authenticating at once. A row with an expiry is pruned after it; one without stays."
 
 const retainedUsageLedger = "retained by design: cost rows are accounting records an " +
 	"operator may be legally required to keep. The correct treatment is to break the personal " +
@@ -333,12 +443,23 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 
 	// ---- tier 2 ----
 	var aclNotes []string
-	if acl, err := s.accessControl(ctx, tenant, subject); err != nil {
+	tk, tokensExamined, err := s.tokens(ctx, tenant, subject)
+	if err != nil {
+		fail("operator_tokens", err)
+	} else if tokensExamined {
+		rep.Tier2.set("operator_tokens", int64(len(tk.active)))
+		rep.Access.Tokens = tokenRefs(tk.active)
+		if n := tk.keptNote(); n != "" {
+			aclNotes = append(aclNotes, n)
+		}
+	}
+	if acl, err := s.accessControl(ctx, tenant, subject, tk.allIDs()); err != nil {
 		fail("access_control", err)
 	} else {
 		rep.Tier2.set("acl_memberships", int64(len(acl.groups)))
 		rep.Tier2.set("acl_bindings", int64(acl.bindings))
-		rep.Access.Groups, rep.Access.Lists = acl.groups, acl.lists
+		rep.Tier2.set("acl_token_bindings", int64(acl.tokenBindings))
+		rep.Access.Groups, rep.Access.Lists = acl.groups, acl.allLists()
 		for _, n := range []string{acl.storedNote(), acl.configNote()} {
 			if n != "" {
 				aclNotes = append(aclNotes, n)
@@ -460,13 +581,16 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 	for _, plane := range []string{
 		"chats", "memory_rows", "path_entries",
-		"acl_memberships", "acl_bindings",
+		"acl_memberships", "acl_bindings", "acl_token_bindings",
 		"credentials", "token_limits", "usage_carry", "interrupts",
 	} {
 		res.Deleted[plane] = 0
 	}
 	if s.SqlMem != nil {
 		res.Deleted["sql_memory_scopes"] = 0
+	}
+	if s.ListTokens != nil && s.RetireTokens != nil {
+		res.Deleted["operator_tokens"] = 0
 	}
 	fail := func(plane string, err error) { res.Errors = append(res.Errors, plane+": "+err.Error()) }
 
@@ -480,9 +604,38 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	// ---- tier 2 ----
-	// Access control first: it is the subject's authority rather than its data,
-	// and an erasure that faults part-way should not leave grants standing.
-	if acl, err := s.accessControl(ctx, tenant, subject); err != nil {
+	// Authority first, tokens before access control: it is the subject's
+	// authority rather than its data, and an erasure that faults part-way
+	// should not leave a working bearer or grants standing. A revoked token's
+	// bindings go in the access-control step below.
+	var bindingTokens []string // def ids whose token-kind bindings go
+	tk, tokensExamined, err := s.tokens(ctx, tenant, subject)
+	if err != nil {
+		fail("operator_tokens", err)
+	} else if tokensExamined {
+		if n := tk.keptNote(); n != "" {
+			res.Retained["operator_tokens_privileged"] = n
+		}
+		if len(tk.active)+len(tk.retired) > 0 {
+			res.Retained["operator_token_rows"] = retainedTokenRows
+		}
+		if req.DryRun {
+			res.Deleted["operator_tokens"] = len(tk.active)
+			res.Access.Tokens = tokenRefs(tk.active)
+			bindingTokens = tk.allIDs()
+		} else {
+			retired, err := s.RetireTokens(ctx, tenant, subject)
+			if err != nil {
+				fail("operator_tokens", err)
+			}
+			res.Deleted["operator_tokens"] = len(retired)
+			res.Access.Tokens = tokenRefs(retired)
+			// Only tokens that no longer authenticate lose their bindings: one a
+			// fault left working keeps the authority it has until a re-run.
+			bindingTokens = append(append([]string{}, tk.retired...), tokenIDs(retired)...)
+		}
+	}
+	if acl, err := s.accessControl(ctx, tenant, subject, bindingTokens); err != nil {
 		fail("access_control", err)
 	} else {
 		if n := acl.configNote(); n != "" {
@@ -491,15 +644,30 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 		if req.DryRun {
 			res.Deleted["acl_memberships"] = len(acl.groups)
 			res.Deleted["acl_bindings"] = acl.bindings
-			res.Access.Groups, res.Access.Lists = acl.groups, acl.lists
-		} else if m, b, err := s.Store.AclEraseSubject(ctx, tenant, subject); err != nil {
-			fail("access_control", err)
+			res.Deleted["acl_token_bindings"] = acl.tokenBindings
+			res.Access.Groups, res.Access.Lists = acl.groups, acl.allLists()
 		} else {
-			res.Deleted["acl_memberships"], res.Deleted["acl_bindings"] = m, b
-			// Named from the read just before the delete, and only once it
-			// succeeded: a failed delete removed nothing and must not claim to.
-			res.Access.Groups, res.Access.Lists = acl.groups, acl.lists
-			if m+b > 0 && s.ACLChanged != nil {
+			var changed int
+			var lists []string
+			if m, b, err := s.Store.AclEraseSubject(ctx, tenant, subject); err != nil {
+				fail("access_control", err)
+			} else {
+				res.Deleted["acl_memberships"], res.Deleted["acl_bindings"] = m, b
+				// Named from the read just before the delete, and only once it
+				// succeeded: a failed delete removed nothing and must not claim to.
+				res.Access.Groups = acl.groups
+				lists = append(lists, acl.lists...)
+				changed += m + b
+			}
+			if n, err := s.Store.AclEraseTokenBindings(ctx, tenant, bindingTokens); err != nil {
+				fail("access_control", err)
+			} else {
+				res.Deleted["acl_token_bindings"] = n
+				lists = append(lists, acl.tokenLists...)
+				changed += n
+			}
+			res.Access.Lists = sortedUnique(lists)
+			if changed > 0 && s.ACLChanged != nil {
 				s.ACLChanged(ctx, tenant, subject)
 			}
 		}
