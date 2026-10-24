@@ -707,6 +707,19 @@ describe("per-subject routes", () => {
       assert.deepEqual(r.json, { error: "target_beyond_floor" });
     } finally { fake.recover = true; }
   });
+  test("the owner cannot reset another tenant-mode user's password, only their own", async () => {
+    // With owner recovery on, loomcycle lets the landing's token reset ANY
+    // owner. The landing must keep that to the signed-in owner's own account,
+    // or one owner could take over a co-owner's.
+    const { email, tenant } = await signUp();
+    const coOwner = "cloud:" + b32();
+    fake.addUser(tenant, coOwner, "tenant", "co-" + rnd(3) + "@example.com");
+    const m = mark();
+    const r = await call(on, "POST", `/api/team/${encodeURIComponent(coOwner)}/reset`, { email, body: {} });
+    assert.equal(r.status, 403, r.text);
+    assert.deepEqual(r.json, { error: "target_beyond_floor" });
+    assert.equal(mutations(m).length, 0, "no reset was requested upstream");
+  });
   test("reset of a user with no login yet is 409 no_login", async () => {
     const { email, tenant } = await signUp();
     const s = "cloud:" + b32();

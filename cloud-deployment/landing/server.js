@@ -695,9 +695,16 @@ app.delete("/api/team/invites/:id", accountRoute(async (req, res, p) => {
 // POST /api/team/:subject/reset — a reset link for the owner to hand over. On
 // the owner's own subject it is "reset my password", which loomcycle allows
 // only with the gate's manager_may_recover_owners (else 403 target_beyond_floor).
+// That switch lets this token reset ANY owner, so a tenant-mode target other
+// than the signed-in owner is refused here: one owner must not be able to take
+// over a co-owner's account through the website.
 app.post("/api/team/:subject/reset", accountRoute(async (req, res, p) => {
   const u = await memberOrNull(p, req.params.subject);
   if (!u) return notFound(res);
+  if (u.access_mode === "tenant") {
+    const self = await findSelf(p, await tenantUsers(p.tenant));
+    if (!self || self.subject !== u.user_id) return res.status(403).json({ error: "target_beyond_floor" });
+  }
   const up = await manage("POST", gatePath("resets"), { body: { tenant: p.tenant, subject: u.user_id } });
   if (up.status === 404 && up.json?.code === "login_not_found") return res.status(409).json({ error: "no_login" });
   if (up.status !== 201) return sendUpstreamError(res, "reset", up);
