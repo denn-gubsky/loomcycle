@@ -165,6 +165,13 @@ type AclStore interface {
 	// subject's, and stay. An empty subject is refused. Subject erasure's
 	// execute tier is the caller.
 	AclEraseSubject(ctx context.Context, tenantID, subject string) (memberships, bindings int, err error)
+	// AclEraseTokenBindings removes, in one transaction, every token-kind
+	// binding (retired ones too) whose token def id is in defIDs, in the
+	// tenant, and bumps acl_version once when anything went. Subject erasure
+	// calls it with the def ids of the subject's revoked tokens; a binding to
+	// a token that no longer authenticates grants nothing, but it still names
+	// the token. Empty defIDs is a no-op.
+	AclEraseTokenBindings(ctx context.Context, tenantID string, defIDs []string) (int, error)
 
 	// AclVersion returns the tenant's current version: 0 before any write,
 	// bumped by every write above. Replicas compare it to decide whether a

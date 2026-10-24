@@ -509,6 +509,7 @@ func Run(t *testing.T, factory Factory) {
 		{"AclBindingPutListRetireAndFor", testAclBindingPutListRetireAndFor},
 		{"AclVersionBumpsOnEveryWrite", testAclVersionBumpsOnEveryWrite},
 		{"AclEraseSubjectRemovesOnlyThatSubjectsRows", testAclEraseSubjectRemovesOnlyThatSubjectsRows},
+		{"AclEraseTokenBindingsRemovesOnlyThoseTokensRows", testAclEraseTokenBindingsRemovesOnlyThoseTokensRows},
 		// RFC AL Path primitive — the dirent (path tree) substrate.
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},
