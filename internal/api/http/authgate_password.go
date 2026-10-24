@@ -368,6 +368,9 @@ func (s *Server) startPasswordSession(w http.ResponseWriter, r *http.Request, ga
 	if err == nil {
 		return true
 	}
+	if writeTenantPolicyRefusal(w, err) {
+		return false
+	}
 	if errors.Is(err, errSessionsUnavailable) {
 		writeJSONError(w, http.StatusServiceUnavailable, "sessions_unavailable", "this server cannot keep Web UI sessions")
 		return false

@@ -845,6 +845,73 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_auth/tenant-policies:
+    get:
+      tags: [auth]
+      summary: List per-tenant gate policies (admin).
+      description: |
+        Every tenant whose people must sign in through named gates, from
+        `auth.tenant_policies` in config and from stored rows. `gates` is what
+        applies: the intersection when both set one (a row only narrows the
+        config). Enforced when a Web UI session is established and when a gate
+        issues a token.
+      operationId: listTenantPolicies
+      responses:
+        "200":
+          description: The policies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies: { type: array, items: { $ref: "#/components/schemas/TenantPolicy" } }
+        "403": { description: "Not an admin." }
+  /v1/_auth/tenant-policies/{tenant}:
+    parameters:
+      - { name: tenant, in: path, required: true, schema: { type: string } }
+    put:
+      tags: [auth]
+      summary: Set a tenant's gate policy (admin).
+      description: |
+        The tenant's people may then sign in, and be issued tokens, only through
+        these gates. Its live Web UI sessions and gate-issued tokens from any
+        other gate end at once; hand-minted tokens are left alone.
+      operationId: putTenantPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gates]
+              additionalProperties: false
+              properties:
+                gates: { type: array, minItems: 1, items: { type: string } }
+      responses:
+        "200":
+          description: Stored and applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/TenantPolicy" }
+                  sessions_ended: { type: integer }
+                  tokens_retired: { type: integer }
+        "400":
+          description: "`unknown_gate`, `policy_empty` (no gate) or a malformed body."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "Not an admin." }
+        "409":
+          description: "`policy_empty`: nothing in common with the config's policy for the tenant."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    delete:
+      tags: [auth]
+      summary: Remove a tenant's stored gate policy (admin); the config's still applies.
+      operationId: deleteTenantPolicy
+      responses:
+        "200": { description: Removed. }
+        "404": { description: "`policy_not_found`." }
   /v1/_auth/token/revoke:
     post:
       tags: [auth]
@@ -1520,6 +1587,16 @@ components:
         code: { type: string }
         error: { type: string }
       required: [code, error]
+    TenantPolicy:
+      description: A tenant's gate policy (RFC FA P5).
+      type: object
+      properties:
+        tenant_id: { type: string }
+        gates: { type: array, items: { type: string }, description: "What applies." }
+        config_gates: { type: array, items: { type: string } }
+        stored_gates: { type: array, items: { type: string } }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
     AuthgateLink:
       description: |
         A one-time link to loomcycle's own invite or reset page. The code is in

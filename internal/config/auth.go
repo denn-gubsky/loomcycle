@@ -87,6 +87,9 @@ type AuthConfig struct {
 	// in (Cloudflare: CF-Connecting-IP). Empty: the right-most
 	// X-Forwarded-For entry that is not a trusted proxy.
 	ClientIPHeader string `yaml:"client_ip_header,omitempty"`
+	// TenantPolicies: tenant → the gates its people must come through
+	// (auth_tenant_policy.go).
+	TenantPolicies map[string]AuthTenantPolicyConfig `yaml:"tenant_policies,omitempty"`
 }
 
 // AuthSessionConfig holds Go durations ("8h", "15m").
@@ -229,6 +232,9 @@ type AuthPolicy struct {
 	// Removal is the validated removal policy (read it through
 	// RemovalPolicy).
 	Removal AuthRemovalPolicy
+	// TenantPolicies is the validated auth.tenant_policies: tenant → sorted
+	// gate names. The admin-managed rows can only narrow it.
+	TenantPolicies map[string][]string
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -525,6 +531,9 @@ func resolveAuth(c *Config) error {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
 	}
 	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
+		return err
+	}
+	if p.TenantPolicies, err = resolveTenantPolicies(c, p.Gates); err != nil {
 		return err
 	}
 	// Strict mode with no gate a person can sign in through would lock

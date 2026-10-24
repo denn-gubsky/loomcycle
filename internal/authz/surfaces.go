@@ -294,6 +294,9 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return instance("manage", "principal", "user:*"), true
 	case name == "tenants":
 		return instance("read", "runtime", "tenants"), true
+	case name == "auth" && len(rest) >= 2 && rest[1] == "tenant-policies":
+		// RFC FA P5: a tenant's gate policy is deployment administration.
+		return instance(readOrManage(method), "runtime", "tenants"), true
 	case name == "snapshots":
 		return instance(readOrManage(method), "runtime", "snapshot"), true
 	case name == "pause", name == "resume":

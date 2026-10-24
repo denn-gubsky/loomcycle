@@ -357,6 +357,9 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 		TenantID: p.TenantID, Subject: p.Subject, Gate: cfgGate.Name, AMR: a.AMR, Credential: a.Credential,
 	}
 	if err := s.establishSession(w, r, ident); err != nil {
+		if writeTenantPolicyRefusal(w, err) {
+			return
+		}
 		if errors.Is(err, errSessionsUnavailable) {
 			writeJSONError(w, http.StatusServiceUnavailable, "sessions_unavailable", "this server cannot keep Web UI sessions")
 			return
@@ -408,6 +411,12 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 		return errors.New("web ui session: tenant, subject and gate are required")
 	}
 	ctx := r.Context()
+	// RFC FA P5: a tenant whose people must come through named gates.
+	if err := s.tenantGateAllowed(ctx, ident.TenantID, ident.Gate); err != nil {
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", ActorTenant: ident.TenantID, ActorSubject: ident.Subject,
+			AuthGate: ident.Gate, AuthReason: "tenant_policy", SourceAddr: s.clientSource(r)})
+		return err
+	}
 	h, err := s.hasher()
 	if err != nil {
 		return err
