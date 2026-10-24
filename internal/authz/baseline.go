@@ -35,6 +35,41 @@ func allowAll(types ...string) []Rule {
 // each.
 func everyType() []string { return Types() }
 
+// mcpTools names the loomcycle-as-MCP-server meta-tools a class may invoke
+// as `mcp-tool:<name>` selectors. The baselines name them one by one rather
+// than `mcp-tool:*`: the per-tool gate (principalMayCallTool) admits each
+// class to a fixed list, so a wildcard reached the operator-plane tools
+// (snapshots, pause, token minting) in enforce mode. The equivalence test in
+// internal/api/mcp fails when a tool is added to a class's list without its
+// grant here.
+func mcpTools(names ...string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		out[i] = "mcp-tool:" + n
+	}
+	return out
+}
+
+// memberMCPTools is what the per-tool gate admits a non-isolated member to:
+// the tenant-confinable tools less the five that need substrate:tenant by
+// name (retention_override, crypto, groupdef, acldef, aclbinding).
+var memberMCPTools = []string{
+	"spawn_run", "spawn_runs", "cancel_run", "get_run", "compact_run", "retune_run", "review_run",
+	"configured_run", "list_runs", "delete_run_tree", "register_agent", "unregister_agent", "list_agents",
+	"agentdef", "skilldef", "teamdef", "list_team_channels", "peek_team_channel", "release_team_channel",
+	"hookdef", "mcpserverdef", "scheduledef", "a2aservercarddef", "a2aagentdef", "webhookdef",
+	"memorybackenddef", "documentsourcedef", "volumedef", "credentialdef", "authz",
+	"memory", "channel", "channeldef", "path", "document", "history", "decision",
+	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
+	"peek_channel", "ack_channel", "stream_user_run_states", "directory", "erasure",
+}
+
+// tenantMCPTools is what it admits a tenant operator to: every
+// tenant-confinable tool. The runtime-global ones (snapshots, pause and
+// resume, the resolver probe, token minting, the all-channel list) stay the
+// admin's.
+var tenantMCPTools = append([]string{"retention_override", "crypto", "groupdef", "acldef", "aclbinding"}, memberMCPTools...)
+
 // Baselines returns the built-in lists by name. Each validates against the
 // catalog (TestBaselines_Validate), so a catalog change that drops a verb a
 // baseline names fails the build.
@@ -44,9 +79,15 @@ func Baselines() map[string]ACL {
 		BaselineAdmin: {Name: BaselineAdmin, Description: "substrate:admin — every verb on every type",
 			Rules: allowAll(everyType()...)},
 		BaselineTenantOperator: {Name: BaselineTenantOperator, Description: "substrate:tenant — every verb in its own tenant except the operator plane",
-			Rules: append(allowAll("agent", "volume", "tool", "skill", "mcp", "mcp-tool", "a2a", "client", "localapi", "search",
-				"memory", "sqlmem", "document", "history", "channel", "def", "team", "credential", "crypto", "model", "tier",
+			Rules: append(allowAll("agent", "volume", "tool", "skill", "mcp", "a2a", "client", "localapi", "search",
+				"memory", "sqlmem", "document", "history", "channel", "team", "credential", "crypto", "model", "tier",
 				"gateway", "evaluation", "interruption", "run", "transport", "git"),
+				Rule{Effect: Allow, Actions: []string{"invoke"}, Resources: mcpTools(tenantMCPTools...)},
+				// Every definition family; `manage` (the firing controls)
+				// on schedules only — the webhook test and delivery views
+				// are operator-admin.
+				Rule{Effect: Allow, Actions: []string{"author", "retire", "read"}, Resources: []string{"def:*"}},
+				Rule{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"def:schedule/*"}},
 				Rule{Effect: Allow, Actions: []string{"read", "manage", "mint"}, Resources: []string{"principal:user:*", "principal:group:*"}},
 				Rule{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:token:*"}},
 				Rule{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:erasure", "runtime:usage", "runtime:routing", "runtime:events"}},
@@ -55,7 +96,8 @@ func Baselines() map[string]ACL {
 			Rules: []Rule{
 				{Effect: Allow, Actions: []string{"run", "read", "spawn", "steer", "cancel", "review"}, Resources: []string{"agent:*"}},
 				{Effect: Allow, Actions: []string{"read", "write", "mount"}, Resources: []string{"volume:*"}},
-				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "mcp:*", "mcp-tool:*", "a2a:*", "client:*", "localapi:*"}},
+				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "mcp:*", "a2a:*", "client:*", "localapi:*"}},
+				{Effect: Allow, Actions: []string{"invoke"}, Resources: mcpTools(memberMCPTools...)},
 				{Effect: Allow, Actions: []string{"invoke", "read", "author"}, Resources: []string{"skill:*"}},
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"search:*", "model:*", "tier:*", "gateway:*", "transport:*"}},
 				{Effect: Allow, Actions: []string{"read", "write", "recall"}, Resources: []string{"memory:user", "memory:agent", "memory:tenant"}},
@@ -64,16 +106,23 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"read", "write", "delete", "link"}, Resources: []string{"document:user", "document:agent", "document:tenant"}},
 				{Effect: Allow, Actions: []string{"browse"}, Resources: []string{"document:user", "document:agent"}, When: &Condition{OwnerIsSelf: &self}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"history:self", "history:user"}},
-				{Effect: Allow, Actions: []string{"publish", "subscribe", "ack", "await", "broadcast"}, Resources: []string{"channel:*"}},
+				// manage: the member path admits the /v1/_channels writes
+				// (create, patch, delete, purge, release).
+				{Effect: Allow, Actions: []string{"publish", "subscribe", "ack", "await", "broadcast", "manage"}, Resources: []string{"channel:*"}},
 				{Effect: Allow, Actions: []string{"author", "retire", "read"}, Resources: []string{"def:agent/*", "def:skill/*", "def:team/*", "def:mcpserver/*", "def:schedule/*", "def:webhook/*", "def:volume/*", "def:a2a/*", "def:a2aserver/*", "def:hook/*", "def:memorybackend/*", "def:documentsource/*"}},
+				// The /v1/_schedules run-now / pause / resume controls are on
+				// the member path.
+				{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"def:schedule/*"}},
 				{Effect: Allow, Actions: []string{"run", "read", "cancel", "author"}, Resources: []string{"team:*"}},
 				{Effect: Allow, Actions: []string{"use", "manage"}, Resources: []string{"credential:user:*", "credential:agent:*"}},
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:tenant:*"}},
 				{Effect: Allow, Actions: []string{"submit", "read"}, Resources: []string{"evaluation:*"}},
 				{Effect: Allow, Actions: []string{"raise", "resolve"}, Resources: []string{"interruption:*"}},
-				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review"}, Resources: []string{"run:own", "run:tenant"}},
+				// delete: a member token granted runs:delete deletes run trees;
+				// the scope stays the ceiling for one that was not.
+				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own", "run:tenant"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:user:*"}},
-				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:limits", "runtime:usage", "runtime:routing", "runtime:events"}},
+				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:usage", "runtime:routing", "runtime:events"}},
 				{Effect: Allow, Actions: []string{"fetch", "push"}, Resources: []string{"git:*"}},
 			}},
 		BaselineIsolated: {Name: BaselineIsolated, Description: "substrate:user — own scope only, plus the shared catalog floor",
@@ -82,7 +131,10 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"read", "write", "mount"}, Resources: []string{"volume:*"}},
 				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"tool:*", "mcp:*", "a2a:*", "client:*", "localapi:*"}},
 				{Effect: Allow, Actions: []string{"invoke", "read"}, Resources: []string{"skill:*"}},
-				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"search:*", "model:*", "tier:*"}},
+				// gateway: the decision call (runs:create) is an isolated
+				// user's; the raw model endpoints need llm:gateway granted by
+				// name, which the scope gate holds as the ceiling.
+				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"search:*", "model:*", "tier:*", "gateway:*"}},
 				// The loomcycle-as-MCP-server session an isolated user is let in
 				// for (RFC CN credential self-service), and the self-service
 				// tools its scope gate admits there (userSelfServiceTools in
@@ -95,14 +147,22 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:user", "sqlmem:agent"}},
 				{Effect: Allow, Actions: []string{"read", "write", "delete", "link"}, Resources: []string{"document:user", "document:agent"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"history:self", "history:user"}},
-				{Effect: Allow, Actions: []string{"use", "manage"}, Resources: []string{"credential:user:*"}, When: &Condition{OwnerIsSelf: &self}},
+				// The per-user channel surface (its own subject only) and the
+				// channel RPCs, which the channel scopes admit an isolated
+				// user to.
+				{Effect: Allow, Actions: []string{"publish", "subscribe", "ack"}, Resources: []string{"channel:*"}},
+				// use, unconditionally: the credential route asks it at the
+				// type level, where an owner_is_self condition cannot hold,
+				// and an isolated user's run resolves only its own user
+				// keyspace. Writing one stays limited to its own.
+				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"credential:user:*"}},
+				{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"credential:user:*"}, When: &Condition{OwnerIsSelf: &self}},
 				{Effect: Allow, Actions: []string{"submit", "read"}, Resources: []string{"evaluation:self"}},
-				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review"}, Resources: []string{"run:own"}},
+				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own"}},
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},
 				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse"}, Resources: []string{"document:tenant"}},
 				{Effect: Deny, Actions: []string{"read"}, Resources: []string{"history:tenant", "history:global"}},
-				{Effect: Deny, Actions: []string{"use"}, Resources: []string{"gateway:*"}},
 			}},
 		BaselineRunPlane: {Name: BaselineRunPlane, Description: "a token limited to certain agents (RFC EF): the run plane only",
 			Rules: []Rule{
