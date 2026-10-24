@@ -21,8 +21,8 @@ import (
 // ops that only look, retire for the ones that take a definition out of
 // service, and author for every other op — fail closed, so an op added to a
 // tool later is asked author even if nobody adds it here. "" for an op that
-// names no definition: a team walk's run, poll and cancel, which are run
-// operations, not definition ones.
+// names no definition: a team walk's run, poll and cancel, which are walk
+// operations, asked of the team by AuthorizeTeamOp.
 func DefOpAction(family, op string) string {
 	switch op {
 	case "get", "list", "verify", "render_diagram":
@@ -35,6 +35,34 @@ func DefOpAction(family, op string) string {
 		}
 	}
 	return "author"
+}
+
+// TeamOpAction is the verb a team walk op asks of the team it acts on (RFC
+// EZ §1.2: `run|read|cancel team:<name>`): run to start a walk, read to poll
+// one, cancel to end one. "" for every other op — those are definition ops,
+// asked by DefOpAction of def:team/<name>.
+func TeamOpAction(op string) string {
+	switch op {
+	case "run":
+		return "run"
+	case "poll":
+		return "read"
+	case "cancel":
+		return "cancel"
+	}
+	return ""
+}
+
+// AuthorizeTeamOp asks op's verb (TeamOpAction) of team:<name> for each name,
+// and of team:* when a name is "" or none is given, judged and recorded as
+// AuthorizeDefOp judges a definition op. It returns the refusal and true, or
+// a zero Result and false when the op may proceed.
+func AuthorizeTeamOp(ctx context.Context, op string, names ...string) (Result, bool) {
+	action := TeamOpAction(op)
+	if action == "" {
+		return Result{}, false
+	}
+	return authorizeInstances(ctx, action, "team", "", names)
 }
 
 // ACLRecordFunc records a refusal or a shadow divergence of a question a
@@ -80,6 +108,14 @@ func AuthorizeDefOp(ctx context.Context, family, op string, names ...string) (Re
 	if action == "" {
 		return Result{}, false
 	}
+	return authorizeInstances(ctx, action, "def", family+"/", names)
+}
+
+// authorizeInstances asks action of typ:<prefix><name> for each name, and of
+// typ:<prefix>* for a name that is "" or when none is given, against the set
+// defOpSet picks. It returns the first refusal and true, or a zero Result and
+// false when every question is admitted.
+func authorizeInstances(ctx context.Context, action, typ, prefix string, names []string) (Result, bool) {
 	eff, judged := defOpSet(ctx)
 	if !judged {
 		return Result{}, false
@@ -96,7 +132,7 @@ func AuthorizeDefOp(ctx context.Context, family, op string, names ...string) (Re
 			continue
 		}
 		asked[name] = true
-		surface := authz.Surface{Action: action, Type: "def", Name: family + "/" + name}
+		surface := authz.Surface{Action: action, Type: typ, Name: prefix + name}
 		if r, refused := judgeDefOp(ctx, eff, surface); refused {
 			return r, true
 		}
@@ -135,8 +171,9 @@ func judgeDefOp(ctx context.Context, eff *authz.Effective, s authz.Surface) (Res
 }
 
 // ACLRefusalCode reports whether a failed result is a refusal of
-// AuthorizeDefOp, and its code: acl_denied or acl_unavailable. A transport
-// that answers in status codes (HTTP) answers it as the route gate does.
+// AuthorizeDefOp or AuthorizeTeamOp, and its code: acl_denied or
+// acl_unavailable. A transport that answers in status codes (HTTP) answers it
+// as the route gate does.
 func ACLRefusalCode(text string, info *ErrorInfo) (string, bool) {
 	if info == nil || (info.Category != CategoryPermission && info.Category != CategoryTransient) {
 		return "", false
