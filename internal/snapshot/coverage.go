@@ -189,6 +189,25 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "the per-call billing ledger; only a month-to-date aggregate may travel, with token_limits"},
 	"usage_archive": {Kind: coverNever, Backends: onBoth,
 		Reason: "rolled-up billing ledger"},
+	// RFC FA P2 auth-gate state. The credentials, second factors and codes
+	// are authentication material peppered or sealed with keys the target
+	// does not hold. An identity holds no secret, but it is an authentication
+	// binding: for an OIDC gate the (issuer, sub) row alone lets that external
+	// account log in as the user, so restoring it would grant the source's
+	// logins on the target. The users section carries the users; logins are
+	// re-issued there.
+	"user_identities": {Kind: coverNever, Backends: onBoth,
+		Reason: "login-to-user bindings; restoring one would let a source login (an OIDC subject, a password login) sign in on the target"},
+	"user_credentials": {Kind: coverNever, Backends: onBoth,
+		Reason: "peppered password hashes keyed off a pepper outside the database"},
+	"user_totp": {Kind: coverNever, Backends: onBoth,
+		Reason: "TOTP secrets sealed under the source's deployment key"},
+	"user_recovery_codes": {Kind: coverNever, Backends: onBoth,
+		Reason: "hashes of single-use second-factor recovery codes"},
+	"auth_invites": {Kind: coverNever, Backends: onBoth,
+		Reason: "hashes of single-use sign-up codes; a restored live invite would admit a sign-up on the target"},
+	"auth_resets": {Kind: coverNever, Backends: onBoth,
+		Reason: "hashes of single-use password-reset codes"},
 	"retention_overrides": {Kind: coverNever, Backends: onBoth,
 		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 
@@ -213,6 +232,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "derived change log"},
 	"memory_cursors": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "consolidation watermarks and a lease owned by a source replica"},
+	"auth_throttle": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "short-lived login-failure counters of the source; they mean nothing on an instance that did not see the failures"},
 	"process_samples": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "operational metrics of the source process"},
 	"replicas": {Kind: coverOmitted, Backends: onPostgres,

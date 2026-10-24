@@ -560,6 +560,90 @@ func (s *Store) migrate(ctx context.Context) error {
 			version    INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)`,
+		// RFC FA P2 password gate. Mirrors postgres migration 0111 (see
+		// 0111_password_gate.up.sql for the design): logins → users, and the
+		// gate's hashed / peppered / sealed material only. Unix-nano INTEGER
+		// timestamps, NULL = unset; INTEGER 0/1 booleans.
+		`CREATE TABLE IF NOT EXISTS user_identities (
+			tenant_id        TEXT    NOT NULL DEFAULT '',
+			subject          TEXT    NOT NULL,
+			gate             TEXT    NOT NULL,
+			issuer           TEXT    NOT NULL DEFAULT '',
+			external_subject TEXT    NOT NULL,
+			email            TEXT    NOT NULL DEFAULT '',
+			email_verified   INTEGER NOT NULL DEFAULT 0,
+			created_at       INTEGER NOT NULL,
+			last_login_at    INTEGER,
+			PRIMARY KEY (gate, issuer, external_subject),
+			UNIQUE (tenant_id, subject, gate)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_credentials (
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			subject      TEXT    NOT NULL,
+			kind         TEXT    NOT NULL,
+			phc          TEXT    NOT NULL,
+			pepper_kid   TEXT    NOT NULL DEFAULT '',
+			updated_at   INTEGER NOT NULL,
+			failed_count INTEGER NOT NULL DEFAULT 0,
+			locked_until INTEGER,
+			PRIMARY KEY (tenant_id, subject, kind)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_totp (
+			tenant_id    TEXT    NOT NULL DEFAULT '',
+			subject      TEXT    NOT NULL,
+			sealed       TEXT    NOT NULL,
+			created_at   INTEGER NOT NULL,
+			confirmed_at INTEGER,
+			last_step    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (tenant_id, subject)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_recovery_codes (
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			subject    TEXT    NOT NULL,
+			code_hash  TEXT    NOT NULL,
+			created_at INTEGER NOT NULL,
+			used_at    INTEGER,
+			PRIMARY KEY (tenant_id, subject, code_hash)
+		)`,
+		`CREATE TABLE IF NOT EXISTS auth_invites (
+			invite_id        TEXT    PRIMARY KEY,
+			code_hash        TEXT    NOT NULL UNIQUE,
+			gate             TEXT    NOT NULL,
+			tenant_id        TEXT    NOT NULL DEFAULT '',
+			subject          TEXT    NOT NULL DEFAULT '',
+			access_mode      TEXT    NOT NULL DEFAULT '',
+			groups           TEXT    NOT NULL DEFAULT '[]',
+			login            TEXT    NOT NULL DEFAULT '',
+			email            TEXT    NOT NULL DEFAULT '',
+			return_to        TEXT    NOT NULL DEFAULT '',
+			bootstrap        INTEGER NOT NULL DEFAULT 0,
+			created_by       TEXT    NOT NULL DEFAULT '',
+			created_at       INTEGER NOT NULL,
+			expires_at       INTEGER NOT NULL,
+			redeemed_at      INTEGER,
+			redeemed_subject TEXT    NOT NULL DEFAULT '',
+			revoked_at       INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS auth_invites_by_gate_tenant ON auth_invites(gate, tenant_id)`,
+		`CREATE TABLE IF NOT EXISTS auth_resets (
+			reset_id   TEXT    PRIMARY KEY,
+			code_hash  TEXT    NOT NULL UNIQUE,
+			gate       TEXT    NOT NULL,
+			tenant_id  TEXT    NOT NULL DEFAULT '',
+			subject    TEXT    NOT NULL,
+			created_by TEXT    NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			used_at    INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS auth_resets_by_subject ON auth_resets(tenant_id, subject)`,
+		`CREATE TABLE IF NOT EXISTS auth_throttle (
+			throttle_key  TEXT    PRIMARY KEY,
+			failures      INTEGER NOT NULL DEFAULT 0,
+			window_start  INTEGER NOT NULL,
+			window_end    INTEGER NOT NULL,
+			blocked_until INTEGER
+		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

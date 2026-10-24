@@ -1625,6 +1625,8 @@ type Store interface {
 	TokenLimitStore
 	RetentionStore
 	UserStore
+	AuthIdentityStore
+	PasswordGateStore
 	SnapshotStore
 	SnapshotReadStore
 	SnapshotRestoreStore
