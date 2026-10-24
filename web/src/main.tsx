@@ -34,6 +34,9 @@ import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
 import LoginView from "./pages/LoginView";
 import LogoutView from "./pages/LogoutView";
+import InviteView from "./pages/InviteView";
+import ResetView from "./pages/ResetView";
+import AccountView from "./pages/AccountView";
 import { installUIRequestHeader } from "./lib/uiSession";
 
 // Before anything fetches: every same-origin request carries the header the
@@ -57,10 +60,15 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         {/* Logout is a page, not a server GET: it posts the logout and then
             goes to the login page, so a link elsewhere cannot end a session. */}
         <Route path="logout" element={<LogoutView />} />
+        {/* The password gate's invitation and reset links (RFC FA P2): public
+            pages, like login, whose code rides the URL fragment. */}
+        <Route path="invite" element={<InviteView />} />
+        <Route path="reset" element={<ResetView />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="run" element={<RunView />} />
           <Route path="my-credentials" element={<MyCredentialsView />} />
+          <Route path="account" element={<AccountView />} />
           <Route path="teams" element={<TeamsView />} />
           <Route path="agents" element={<AgentsView />} />
           <Route path="agents/:agentId" element={<AgentIdRedirect />} />
