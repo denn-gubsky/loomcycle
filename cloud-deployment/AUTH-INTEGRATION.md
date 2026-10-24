@@ -58,7 +58,7 @@ auth:
       require_mfa: false       # true at the strict switch (phase 6)
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets:  { ttl: 1h }
-      allowed_return_to: ["https://loomcycle.cloud/"]
+      allowed_return_to: ["https://loomcycle.cloud/?welcome=1"]   # exact match: = the landing's SIGNUP_RETURN_TO
       # Lets the landing reset an owner's password and attach a password to a
       # legacy owner's subject (phase 4). Without it, the website cannot recover
       # an owner, only members. It makes the website's credential able to take
@@ -163,7 +163,7 @@ Existing cloud tenants were created by `/api/mint`: a tenant `t_<hash>`, a subje
 Building against loomcycle's actual `auth:manage` API (RFC FA P2) changed these details of the plan. The code follows the API.
 
 **Phase 1 must also do these:**
-- **`allowed_return_to` is an exact match**, query string included. The landing's `SIGNUP_RETURN_TO` defaults to `https://loomcycle.cloud/?welcome=1`, so the gate must list exactly that, not `https://loomcycle.cloud/`. Otherwise every signup fails, and the landing answers `502 invalid_return_to`.
+- **`allowed_return_to` is an exact match**, query string included. The landing's `SIGNUP_RETURN_TO` (set on the host as `LANDING_SIGNUP_RETURN_TO`) defaults to `https://loomcycle.cloud/?welcome=1`, so the gate must list exactly that, not `https://loomcycle.cloud/`. Otherwise every signup fails, and the landing answers `502 invalid_return_to`.
 - **The gate's label key is `label:`**, not `display:`.
 - **Minting the `auth:manage` token needs `tenant_id` and `subject`.** `POST /v1/_operatortokendef {op: create, name: cloud-landing, tenant_id: <any>, subject: <any>, scopes: ["auth:manage"]}`. An `auth:manage` token ignores its own tenant.
 

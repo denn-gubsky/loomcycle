@@ -259,13 +259,13 @@ the site shows the token vault exactly as before — until
 password gate (plan **phase 0 + 1**):
 
 1. **Runtime** — a loomcycle release with RFC FA P0 + P2, and the phase-1 config
-   in `config/loomcycle.yaml`: a `kind: password` gate named as `AUTH_GATE`
+   in `config/loomcycle.yaml`: a `kind: password` gate named as `LANDING_AUTH_GATE`
    (default `cloud`), `manager_may_recover_owners: true` (owner "Reset my
    password" and the legacy-owner migration need it), and
-   **`allowed_return_to` listing `SIGNUP_RETURN_TO` verbatim** — the match is
+   **`allowed_return_to` listing `LANDING_SIGNUP_RETURN_TO` verbatim** — the match is
    exact, query string included (default `https://loomcycle.cloud/?welcome=1`).
    `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` is already set and must
-   equal the landing's `APP_URL`; the landing refuses an invite link that points
+   equal `LANDING_APP_URL`; the landing refuses an invite link that points
    anywhere else.
 2. **Mint the landing's token** with the admin bearer (it must be minted alone;
    `tenant_id`/`subject` are required but mean nothing for this scope):
@@ -280,7 +280,10 @@ password gate (plan **phase 0 + 1**):
    (by hand; don't paste it anywhere else). Keep `LOOMCYCLE_ADMIN_TOKEN` for now —
    `/api/mint` stays until phase 5.
 3. **Non-secret settings** in `.env.insecure` (defaults shown in
-   `.env.insecure.example`): `AUTH_GATE`, `APP_URL`, `SIGNUP_RETURN_TO`.
+   `.env.insecure.example`): `LANDING_AUTH_GATE`, `LANDING_APP_URL`,
+   `LANDING_SIGNUP_RETURN_TO`. Compose passes them to the landing as `AUTH_GATE`,
+   `APP_URL` and `SIGNUP_RETURN_TO`; the prefix keeps them apart from the
+   runtime, which loads the same `.env.insecure`.
 4. `make up` (recreates `landing`), then check:
    `curl -s https://loomcycle.cloud/api/whoami` with your Access session reports
    `"auth_gate":true`; without a session it is `401`. Then the manual pass: a fresh
@@ -522,19 +525,10 @@ behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
    If `10.253.253.0/29` collides with a network on the host, change the
    subnet, cloudflared's `.2`, tailscale's `.3`, the `ip_range` and
    `auth.trusted_proxies` together.
-4. **After the deploy, mint the landing's credential**: one operator token
-   with only `auth:manage`. The landing uses it from phase 2 on.
-
-   ```bash
-   # on the host, from the deploy directory; reads the admin token from .env.secure without printing it
-   set -a; . ./.env.secure; set +a
-   curl -s -X POST https://app.loomcycle.cloud/v1/_operatortokendef \
-     -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" -H 'Content-Type: application/json' \
-     -d '{"op":"create","name":"cloud-landing","scopes":["auth:manage"]}' | jq -r .token
-   ```
-
-   Put the printed value in `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN=…`
-   (it is shown once), then clear your terminal scrollback.
+4. **After the deploy, enable the landing's accounts** when you're ready:
+   mint its `auth:manage` token and set its settings as in
+   [Enabling accounts](#enabling-accounts-password-gate-optional-until-phase-5).
+   Until then the site keeps the token vault.
 5. **Check:** `https://app.loomcycle.cloud/ui/login` offers both the token
    box and "loomcycle.cloud account". Existing tokens keep working: the
    mode stays `token` until plan phase 6.
@@ -693,10 +687,10 @@ volumes:
 | **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |
 | **Create token** → `502 upstream …` | The landing reached loomcycle but the mint failed: `LOOMCYCLE_ADMIN_TOKEN` isn't a valid admin bearer (must equal `LOOMCYCLE_AUTH_TOKEN`), or the runtime is down. Check `make logs S=landing`. |
 | **Create your workspace** → `Accounts are not enabled` (`503 auth_gate_not_configured`) | `LOOMCYCLE_AUTH_MANAGE_TOKEN` isn't reaching the landing — set it in `.env.secure` and `make up`. |
-| **Create your workspace** → error, `make logs S=landing` shows `account upstream signup: 400 invalid_return_to` | `SIGNUP_RETURN_TO` is not in the gate's `allowed_return_to` **verbatim** (exact match, query string included). |
-| landing logs `account upstream …: 404 gate_not_found` | `AUTH_GATE` doesn't name a `kind: password` gate in `config/loomcycle.yaml`, or the runtime predates the password gate. |
+| **Create your workspace** → error, `make logs S=landing` shows `account upstream signup: 400 invalid_return_to` | `LANDING_SIGNUP_RETURN_TO` is not in the gate's `allowed_return_to` **verbatim** (exact match, query string included). |
+| landing logs `account upstream …: 404 gate_not_found` | `LANDING_AUTH_GATE` doesn't name a `kind: password` gate in `config/loomcycle.yaml`, or the runtime predates the password gate. |
 | landing logs `account upstream …: 401 …` or `403 insufficient_scope` | `LOOMCYCLE_AUTH_MANAGE_TOKEN` is not a live `auth:manage` token (retired, or minted with another scope). |
-| site shows `link_mismatch` | The runtime's `LOOMCYCLE_PUBLIC_URL` differs from the landing's `APP_URL`; make them equal. |
+| site shows `link_mismatch` | The runtime's `LOOMCYCLE_PUBLIC_URL` differs from `LANDING_APP_URL`; make them equal. |
 | **Reset my password** → "recovery for owners is turned off" | The gate lacks `manager_may_recover_owners: true`; the owner changes the password in the app (`/ui/account`) instead. |
 | Ollama unreachable from loomcycle | Use the **raw tailnet IP** in `OLLAMA_BASE_URL` (MagicDNS is unavailable in the shared netns); confirm `tailscale status` shows the peer. |
 | `tailscale` unhealthy | Bad/expired `TS_AUTHKEY`, or `/dev/net/tun` missing; check `make logs S=tailscale`. |

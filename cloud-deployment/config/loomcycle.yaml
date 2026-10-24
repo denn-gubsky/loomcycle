@@ -198,7 +198,9 @@ auth:
       require_mfa: false            # true at the strict switch (plan phase 6)
       invites: { default_ttl: 168h, max_ttl: 720h }
       resets: { ttl: 1h }
-      allowed_return_to: ["https://loomcycle.cloud/"]
+      # Exact match, query string included: must equal the landing's
+      # LANDING_SIGNUP_RETURN_TO, or every signup fails with invalid_return_to.
+      allowed_return_to: ["https://loomcycle.cloud/?welcome=1"]
       # Lets the landing's auth:manage token reset an owner's password and
       # attach a password to a legacy owner's subject. That makes the token
       # able to take over any owner's account, which is acceptable here only

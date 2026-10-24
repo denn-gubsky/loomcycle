@@ -304,9 +304,9 @@ services:
       # off: the /api/signup + /api/team/* routes answer 503 and the site keeps
       # the token vault. Needs a runtime with the password gate (phase 1).
       LOOMCYCLE_AUTH_MANAGE_TOKEN: ${LOOMCYCLE_AUTH_MANAGE_TOKEN:-}   # secret — an auth:manage operator token
-      AUTH_GATE: ${AUTH_GATE:-cloud}                                   # the password gate's name in config/loomcycle.yaml
-      APP_URL: ${APP_URL:-https://app.loomcycle.cloud}                 # = the runtime's LOOMCYCLE_PUBLIC_URL
-      SIGNUP_RETURN_TO: ${SIGNUP_RETURN_TO:-https://loomcycle.cloud/?welcome=1}   # must be listed verbatim in the gate's allowed_return_to
+      AUTH_GATE: ${LANDING_AUTH_GATE:-cloud}                                   # the password gate's name in config/loomcycle.yaml
+      APP_URL: ${LANDING_APP_URL:-https://app.loomcycle.cloud}                 # = the runtime's LOOMCYCLE_PUBLIC_URL
+      SIGNUP_RETURN_TO: ${LANDING_SIGNUP_RETURN_TO:-https://loomcycle.cloud/?welcome=1}   # must be listed verbatim in the gate's allowed_return_to
       # MINT_DEV_ALLOW_UNVERIFIED: "1"   # LOCAL DEV ONLY — skips CF Access JWT verify
     volumes:
       - ./web:/srv:ro          # copy of the repo's cloud-web/ (see INSTALL.md)
