@@ -50,6 +50,9 @@ const dynamicMarker = "[redacted:credential]"
 type Redactor struct {
 	replacer *strings.Replacer // Tier A: exact env-value → [redacted:NAME]; nil if none
 	patterns []patternRule     // Tier B: nil when patterns are disabled
+	// Tier C: mask signed-URL credential query values. Set by
+	// WithSignedURLParams, never by New, so only an at-rest redactor has it.
+	signedURLs bool
 
 	// Tier A' — runtime-registered exact secret values (RFC AV/AR: resolved
 	// $cred: values + provider-key overrides). Registered as credentials resolve,
@@ -110,6 +113,142 @@ var patternRules = []patternRule{
 	// `password:\n  value`): a fence tag always starts its line, so an
 	// indented continuation can never be one.
 	{regexp.MustCompile(`(?i)\b(api[_-]?key|secret|token|password)\b([ \t]*["']?[ \t]*[:=](?:[ \t]*\r?\n[ \t]+|[ \t]*)["']?)[^\s"',}\[\]\\]+`), "${1}${2}[redacted]"},
+}
+
+// signedURLMarker replaces the value of a signed-URL credential parameter.
+// The parameter name stays, so a stored transcript still shows which URL it
+// was and what kind of credential it carried.
+const signedURLMarker = "[redacted:signed-url]"
+
+// signedParamRe is Tier C: a query parameter whose NAME marks a credential
+// that grants access by itself — a pre-signed URL works for anyone holding
+// it, with no sign-in — followed by its value. Only the value group is
+// replaced.
+//
+// The parameter must open a query component: after ? & # ; or their stored
+// encodings (\u0026 as Go's JSON writes &, %3F and %26 inside another URL;
+// &amp; ends in ;). So the same word in prose, or a key=value pair outside a
+// URL, is left alone — the name list includes generic words (token, code)
+// that are credentials only in a URL. # covers an implicit-grant redirect
+// (#access_token=…).
+//
+// The value stops at anything a URL value does not carry and at every
+// separator in the same encodings: & (also the start of &amp;), backslash
+// (\u0026 and an escaped quote), and the escape %26 — any other %XX, such
+// as %2B in an Azure signature, stays inside the value. The class excludes
+// [ and ], so a masked value never matches again.
+//
+// Go's regexp is linear-time (RE2), so no input can make this backtrack.
+var signedParamRe = regexp.MustCompile(`(?i)(?:[?&#;]|\\u0026|%3f|%26)` +
+	`(` + strings.Join(signedNames, "|") + `)` +
+	`(?:=|%3d)` +
+	`((?:[^%&\s"'<>\\#\[\](){},;|` + "`" + `]|%(?:[013-9a-f][0-9a-f]|2[0-57-9a-f]))+)`)
+
+// signedCompanion holds the names that are a credential only beside another
+// parameter in the same URL. "Signature" is generic; CloudFront's is the one
+// next to Key-Pair-Id or Policy. "code" is an OAuth authorization code only
+// in a redirect that also carries state; elsewhere ?code= is a country,
+// promo or error code, and masking it would cost a later turn the URL.
+var signedCompanion = map[string]*regexp.Regexp{
+	"signature": regexp.MustCompile(`(?i)(?:[?&#;]|\\u0026|%3f|%26)(?:key-pair-id|policy)(?:=|%3d)`),
+	"code":      regexp.MustCompile(`(?i)(?:[?&#;]|\\u0026|%3f|%26)state(?:=|%3d)`),
+}
+
+// urlStop ends the URL a companion parameter is looked for in.
+const urlStop = " \t\r\n\"'<>`"
+
+// signedNames are the parameter names Tier C masks: signedParamRe's name
+// group and the prefilter's list. Regex-safe as written (no metacharacters).
+var signedNames = []string{
+	"tempauth", "sig", "x-amz-signature", "x-amz-credential", "x-amz-security-token",
+	"x-goog-signature", "x-goog-credential", "access_token", "token", "code", "signature",
+}
+
+// maxSignedNameLen is the longest name in signedNames.
+const maxSignedNameLen = len("x-amz-security-token")
+
+// hasSignedParamCandidate reports whether some = or %3D in s directly
+// follows a name in signedNames. Every signedParamRe match has one, so a
+// false here skips the regex; it runs on every persisted string, and most
+// hold no such name. It is a suffix test, not an exact one, because an
+// encoded separator ends in name bytes (\u0026tempauth=, %26sig=).
+func hasSignedParamCandidate(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '=' && (s[i] != '%' || i+2 >= len(s) || s[i+1] != '3' || s[i+2]|0x20 != 'd') {
+			continue
+		}
+		j := i
+		for j > 0 && i-j < maxSignedNameLen && isParamNameByte(s[j-1]) {
+			j--
+		}
+		run := s[j:i]
+		for _, name := range signedNames {
+			if len(run) >= len(name) && strings.EqualFold(run[len(run)-len(name):], name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isParamNameByte(c byte) bool {
+	return c == '-' || c == '_' || ('0' <= c && c <= '9') || ('a' <= c|0x20 && c|0x20 <= 'z')
+}
+
+// maskSignedURLParams applies Tier C to s.
+func maskSignedURLParams(s string) string {
+	if !hasSignedParamCandidate(s) {
+		return s
+	}
+	ms := signedParamRe.FindAllStringSubmatchIndex(s, -1)
+	if ms == nil {
+		return s
+	}
+	var b strings.Builder
+	last := 0
+	// The URL around a match, and each companion verdict in it, is found once
+	// and reused for the matches after it in the same URL: a long URL with
+	// many matches costs one scan, not one per match.
+	type verdict struct {
+		re *regexp.Regexp
+		ok bool
+	}
+	var verdicts []verdict
+	urlLo, urlHi := -1, -1
+	for _, m := range ms {
+		if companion := signedCompanion[strings.ToLower(s[m[2]:m[3]])]; companion != nil {
+			if m[0] >= urlHi {
+				urlLo = strings.LastIndexAny(s[:m[0]], urlStop) + 1
+				urlHi = len(s)
+				if i := strings.IndexAny(s[m[1]:], urlStop); i >= 0 {
+					urlHi = m[1] + i
+				}
+				verdicts = verdicts[:0]
+			}
+			ok, seen := false, false
+			for _, v := range verdicts {
+				if v.re == companion {
+					ok, seen = v.ok, true
+					break
+				}
+			}
+			if !seen {
+				ok = companion.MatchString(s[urlLo:urlHi])
+				verdicts = append(verdicts, verdict{companion, ok})
+			}
+			if !ok {
+				continue
+			}
+		}
+		b.WriteString(s[last:m[4]])
+		b.WriteString(signedURLMarker)
+		last = m[5]
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // MatchesPattern reports whether any Tier-B heuristic matches s. It is the
@@ -189,6 +328,14 @@ func (r *Redactor) Register(value string) {
 	r.dynReplacer = strings.NewReplacer(pairs...)
 }
 
+// WithSignedURLParams turns on Tier C and returns r.
+func (r *Redactor) WithSignedURLParams() *Redactor {
+	if r != nil {
+		r.signedURLs = true
+	}
+	return r
+}
+
 // Enabled reports whether the redactor would mask anything. A no-op / nil
 // redactor returns false, letting callers skip the copy on the hot path. When
 // static tiers are absent it consults the runtime-registered set under RLock;
@@ -197,7 +344,7 @@ func (r *Redactor) Enabled() bool {
 	if r == nil {
 		return false
 	}
-	if r.replacer != nil || len(r.patterns) > 0 {
+	if r.replacer != nil || len(r.patterns) > 0 || r.signedURLs {
 		return true
 	}
 	r.mu.RLock()
@@ -214,6 +361,11 @@ func (r *Redactor) String(s string) string {
 	}
 	if r.replacer != nil {
 		s = r.replacer.Replace(s)
+	}
+	// Before the patterns: their key=value rule would otherwise take a URL's
+	// token= value to the end of the URL, parameters after it included.
+	if r.signedURLs {
+		s = maskSignedURLParams(s)
 	}
 	for _, p := range r.patterns {
 		s = p.re.ReplaceAllString(s, p.repl)
