@@ -161,7 +161,12 @@ func (s *Server) aclAdmitAgent(ctx context.Context, p auth.Principal, ok bool, a
 	if !ok {
 		return nil // no principal: open mode or a trigger firing under a definition
 	}
-	surface := authz.Surface{Action: "run", Type: "agent", Name: agent}
+	return s.aclAdmit(ctx, p, authz.Surface{Action: "run", Type: "agent", Name: agent})
+}
+
+// aclAdmit asks surface of p's set, audits a refusal or a shadow divergence,
+// and returns the refusal (an *errACLDenied) or nil.
+func (s *Server) aclAdmit(ctx context.Context, p auth.Principal, surface authz.Surface) error {
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
 	switch {
 	case res.Unavailable:
