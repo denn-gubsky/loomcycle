@@ -267,3 +267,26 @@ func DeriveTokenPepper(secretKeyB64 string) (string, error) {
 	}
 	return hex.EncodeToString(pepper), nil
 }
+
+// passwordPepperInfo is the HKDF info for the password-gate pepper (RFC FA
+// §6). Like tokenPepperInfo it must never change: every stored password hash
+// is keyed by the pepper it derives.
+const passwordPepperInfo = "loomcycle/password-pepper/v1"
+
+// DerivePasswordPepper derives the password-gate pepper from a master key
+// (LOOMCYCLE_SECRET_KEY or its _PREVIOUS), parsed exactly as NewSealer parses
+// it: HKDF-SHA256(key, info="loomcycle/password-pepper/v1"). The info string
+// keeps it apart from the operator-token pepper and the per-tenant credential
+// keys derived from the same master key, so learning one tells nothing about
+// another. An empty key yields nil: the password gate refuses to run without
+// a pepper rather than store hashes a database reader could attack offline.
+func DerivePasswordPepper(secretKeyB64 string) ([]byte, error) {
+	if strings.TrimSpace(secretKeyB64) == "" {
+		return nil, nil
+	}
+	kek, err := decodeKey(secretKeyB64)
+	if err != nil {
+		return nil, err
+	}
+	return hkdf.Key(sha256.New, kek, nil, passwordPepperInfo, 32)
+}

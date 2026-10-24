@@ -268,6 +268,7 @@ var allowedSideways = []subsystemEdge{
 	// L2
 	{"internal/agents", "internal/hooks"},
 	{"internal/authgate", "internal/auth"},
+	{"internal/authgate", "internal/credential"},
 	{"internal/config", "internal/agents"},
 	{"internal/config", "internal/auth"},
 	{"internal/config", "internal/credential"},

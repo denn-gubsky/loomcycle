@@ -30,3 +30,10 @@ feature/ec2/imds and service/sts modules)
 
 Smithy Go (github.com/aws/smithy-go)
   Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+This product also bundles the following MIT-licensed data.
+
+SecLists Passwords/Common-Credentials/10k-most-common.txt (embedded in
+internal/authgate/password/breached/ as the password gate's built-in breached
+password list; license in that directory)
+  Copyright (c) 2018 Daniel Miessler
