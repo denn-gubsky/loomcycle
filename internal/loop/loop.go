@@ -602,12 +602,12 @@ type RunOptions struct {
 	// MarkRateLimited is the proper structural fix.
 	MarkRateLimited func(provider, model string, retryAfter time.Duration)
 
-	// MarkProviderUnreachable takes a whole provider out of routing at once:
-	// the call was refused the operator's own credentials, which every model
-	// on that provider shares. The server also starts a re-probe, so a key
-	// that works again brings the provider back without waiting for the
-	// periodic one. A tenant's or user's own key refused never reaches it.
-	MarkProviderUnreachable func(provider, reason string)
+	// ReportOperatorKeyRefusal reports a call refused in a way that names the
+	// operator's own key (providers.OperatorKeyRefused). The server confirms
+	// it with the provider's own probe before taking the provider out of
+	// routing — every model on it shares the key, but one refusal can still be
+	// about the one request. A tenant's or user's own key never reaches it.
+	ReportOperatorKeyRefusal func(provider, reason string)
 
 	// MaxSameProviderRetries caps retryable-error retries against the
 	// CURRENT (provider, model) before MarkRateLimited cools the
@@ -813,9 +813,10 @@ const (
 // reportCallFault tells the resolver what a failed provider call says about
 // the shared routing matrix — one decision for every call site, so they
 // cannot drift. A 429 cools the (provider, model) briefly; the operator's own
-// key refused takes the whole provider out; a model fault stalls the model;
-// anything else (a request error, a tenant's key refused) touches nothing
-// shared. The callers keep their own cancellation and operator-key guards.
+// key refused is reported for the server to confirm; a model fault stalls the
+// model; anything else (a request error, a model-access 403, a tenant's key
+// refused) touches nothing shared. The callers keep their own cancellation
+// and operator-key guards.
 func reportCallFault(opts *RunOptions, err error) {
 	switch {
 	case providers.IsRateLimit(err):
@@ -823,8 +824,8 @@ func reportCallFault(opts *RunOptions, err error) {
 			opts.MarkRateLimited(opts.Provider.ID(), opts.Model, 0)
 		}
 	case providers.OperatorKeyRefused(err):
-		if opts.MarkProviderUnreachable != nil {
-			opts.MarkProviderUnreachable(opts.Provider.ID(), err.Error())
+		if opts.ReportOperatorKeyRefusal != nil {
+			opts.ReportOperatorKeyRefusal(opts.Provider.ID(), err.Error())
 		}
 	case providers.StallsModel(err):
 		if opts.MarkStalled != nil {
@@ -4021,12 +4022,12 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 	//   5xx / model 404 / network → MarkStalled (15-min
 	//     probe-gated recovery; "model is broken for a
 	//     while, stop wasting calls")
-	//   401/403 on the OPERATOR's own key → MarkProviderUnreachable
-	//     (every model on the provider shares that key; a re-probe
-	//     brings it back once the key works)
-	//   400/422, or 401/403 on a tenant's/user's key → nothing
-	//     shared (providers.StallsModel): the request or the
-	//     caller was wrong, not the model
+	//   the OPERATOR's own key refused (a 401, or a body naming
+	//     the key) → ReportOperatorKeyRefusal; the server takes the
+	//     provider out only if its own probe is refused too
+	//   400/403/422, or a tenant's/user's key refused → nothing
+	//     shared (providers.StallsModel): the request, the model's
+	//     access or the caller was wrong, not the model
 	//
 	// reportCallFault makes that decision for every call site.
 	//

@@ -184,7 +184,14 @@ func TestOperatorKeyRefused_OnlyOperatorAuthRefusals(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"operator 401", op401, true},
-		{"operator 403", WithKeySource(errors.New("openai 403: forbidden"), "operator"), true},
+		{"operator 403 naming the key", WithKeySource(errors.New(`anthropic 403: {"message":"UnrecognizedClientException: The security token included in the request is invalid."}`), "operator"), true},
+		{"operator 403 bad signature, message only", WithKeySource(errors.New(`anthropic 403: {"message":"The request signature we calculated does not match the signature you provided."}`), "operator"), true},
+		{"operator 400 Gemini bad key", WithKeySource(errors.New(`gemini 400: {"error":{"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}`), "operator"), true},
+		{"operator 401 OpenAI", WithKeySource(errors.New(`openai 401: {"error":{"code":"invalid_api_key"}}`), "operator"), true},
+		{"operator 403 plain forbidden", WithKeySource(errors.New("openai 403: forbidden"), "operator"), false},
+		{"operator 403 model access denied", WithKeySource(errors.New(`anthropic 403: {"message":"AccessDeniedException: You don't have access to the model with the specified model ID."}`), "operator"), false},
+		{"operator 403 Marketplace", WithKeySource(errors.New(`anthropic 403: {"message":"Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions (aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe)"}`), "operator"), false},
+		{"operator 429 quota", WithKeySource(errors.New(`openai 429: {"error":{"code":"insufficient_quota"}}`), "operator"), false},
 		{"wrapped operator 401", fmt.Errorf("call: %w", op401), true},
 		{"no AWS credentials", fmt.Errorf("http: %w", fmt.Errorf("%w: no creds", ErrAuthUnavailable)), true},
 		{"tenant 401", WithKeySource(errors.New("anthropic 401: invalid x-api-key"), "tenant"), false},
@@ -200,5 +207,33 @@ func TestOperatorKeyRefused_OnlyOperatorAuthRefusals(t *testing.T) {
 	// The tag must not change what the error says or how it classifies.
 	if op401.Error() != "anthropic 401: invalid x-api-key" || ClassifyError(op401) != ErrorClassPermanent {
 		t.Errorf("tagged error = %q / %v, want the driver's message and class unchanged", op401.Error(), ClassifyError(op401))
+	}
+}
+
+// The confirming probe's error comes from the driver's model listing, whose
+// messages carry the status in a path-qualified form. Only a refusal that is
+// clearly about the key counts.
+func TestIsKeyRefusal_ProbeErrorShapes(t *testing.T) {
+	for _, tc := range []struct {
+		msg  string
+		want bool
+	}{
+		{`anthropic /v1/models: status 401 ({"type":"error","error":{"type":"authentication_error"}})`, true},
+		{`openai /v1/models: status 401 (Unauthorized)`, true},
+		{`ollama /api/tags: status 401 (unauthorized)`, true},
+		{`gemini /models 400: {"error":{"details":[{"reason":"API_KEY_INVALID"}]}}`, true},
+		{`bedrock model listing: /inference-profiles: status 403 ({"message":"The security token included in the request is invalid."})`, true},
+		{`bedrock model listing: /inference-profiles: status 403 ({"message":"The security token included in the request is expired"})`, true},
+		{`bedrock model listing: /inference-profiles: status 403 ({"message":"User is not authorized to perform: bedrock:ListInferenceProfiles"})`, false},
+		{`openai /v1/models: status 500 (boom)`, false},
+		{`openai /v1/models: Get "http://h:4010/v1/models": EOF`, false},
+		{`ollama /api/tags: dial tcp 10.0.0.1:11434: connection refused`, false},
+	} {
+		if got := IsKeyRefusal(errors.New(tc.msg)); got != tc.want {
+			t.Errorf("IsKeyRefusal(%s) = %v, want %v", tc.msg, got, tc.want)
+		}
+	}
+	if !IsKeyRefusal(fmt.Errorf("x: %w", ErrAuthUnavailable)) || IsKeyRefusal(nil) {
+		t.Error("ErrAuthUnavailable must count as a key refusal; nil must not")
 	}
 }

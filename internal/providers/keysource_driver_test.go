@@ -9,9 +9,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
-// Every keyed LLM driver tags an auth refusal with the key it sent, so the
-// loop can tell the operator's dead key (provider down for everyone) from a
-// tenant's (that run only).
+// Every keyed LLM driver tags a status error with the key it sent, so the
+// loop can tell the operator's refused key (the provider may be down for
+// everyone, once a probe confirms it) from a tenant's (that run only).
 func TestDrivers_AuthRefusalNamesTheKeyThatWasRefused(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -28,9 +28,11 @@ func TestDrivers_AuthRefusalNamesTheKeyThatWasRefused(t *testing.T) {
 				{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "hi"}}},
 			}}
 
+			// A 401 is about the key; a bare 403 may be about one model or one
+			// request (no access, no subscription), so it does not qualify.
 			_, opErr := p.Call(context.Background(), req)
-			if !providers.OperatorKeyRefused(opErr) {
-				t.Errorf("%s %d on the operator key: OperatorKeyRefused = false (err %v)", driver, status, opErr)
+			if want := status == http.StatusUnauthorized; providers.OperatorKeyRefused(opErr) != want {
+				t.Errorf("%s %d on the operator key: OperatorKeyRefused = %v, want %v (err %v)", driver, status, !want, want, opErr)
 			}
 
 			tenantCtx := providers.WithCredentialResolver(context.Background(), func(_ context.Context, name string) (providers.CredentialResolution, bool, error) {

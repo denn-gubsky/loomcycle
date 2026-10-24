@@ -292,9 +292,10 @@ type Server struct {
 	// dependency. See internal/resolve and the matrix RFC at
 	// doc-internal/rfcs/model-resolution-matrix.md.
 	resolver *resolve.Resolver
-	// keyReprobeInFlight single-flights the re-probe an operator-key refusal
-	// starts: a burst of runs hitting the same dead key runs one probe.
-	keyReprobeInFlight atomic.Bool
+	// keyProbes holds the providers with a confirming key probe in flight
+	// (provider id → struct{}): a burst of runs refused the same key probes
+	// that provider once.
+	keyProbes sync.Map
 
 	// credResolver resolves a tenant/user credential by its env-var NAME (RFC
 	// AR): a run whose tenant/user stored e.g. ANTHROPIC_API_KEY / BRAVE_API_KEY
@@ -1570,31 +1571,42 @@ func (s *Server) markRateLimitedFn(tier string) func(p, m string, retryAfter tim
 	}
 }
 
-// markProviderUnreachableFn returns a closure for
-// loop.RunOptions.MarkProviderUnreachable: the loop calls it when a provider
-// refused the operator's own key. Every model on the provider shares that key,
-// so the whole provider leaves routing at once (SetReachable false, keeping
-// its model list, exactly as a failed probe does), and an immediate re-probe
-// is started in the background so a key that works again — rotated, or a
-// transient refusal — brings it back without waiting for the periodic probe.
+// operatorKeyRefusalFn returns a closure for
+// loop.RunOptions.ReportOperatorKeyRefusal: the loop calls it when a call sent
+// with the operator's own key was refused in a way that names the key. Every
+// model on the provider shares that key, so if the key really is dead the
+// provider is unusable for every run — but one refusal can still be about the
+// one request, and shared reachability must never flip on one run's say-so.
 //
-// Returns nil when no resolver is wired.
-func (s *Server) markProviderUnreachableFn() func(p, reason string) {
-	if s.resolver == nil {
+// So it only starts the provider's own probe — the request-independent check
+// the periodic loop runs with the operator's key — in the background, at most
+// one per provider at a time, and takes the provider out of routing
+// (SetReachable false, keeping its model list as a failed probe does) only if
+// that probe is refused the key too. A probe that succeeds changes nothing;
+// one that fails for another reason (network) is left to the periodic probe.
+// The periodic probe brings the provider back once the key works.
+//
+// Returns nil when no resolver or provider registry is wired.
+func (s *Server) operatorKeyRefusalFn() func(p, reason string) {
+	if s.resolver == nil || s.providers == nil {
 		return nil
 	}
-	return func(p, reason string) {
-		s.resolver.SetReachable(p, false, nil, "operator key refused: "+reason)
-		if !s.keyReprobeInFlight.CompareAndSwap(false, true) {
+	return func(p, _ string) {
+		if _, busy := s.keyProbes.LoadOrStore(p, struct{}{}); busy {
 			return
 		}
 		go func() {
-			defer s.keyReprobeInFlight.Store(false)
-			// Detached from the run: the run that saw the refusal is ending.
-			// main.go's probe applies its own per-provider timeouts.
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer s.keyProbes.Delete(p)
+			prov, err := s.providers.Get(p)
+			if err != nil {
+				return
+			}
+			// Detached from the run, which is ending with its own error.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			s.resolver.ForceProbe(ctx)
+			if perr := prov.Probe(ctx); perr != nil && providers.IsKeyRefusal(perr) {
+				s.resolver.SetReachable(p, false, nil, "operator key refused: "+perr.Error())
+			}
 		}()
 	}
 }
@@ -3929,8 +3941,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		// boundary; the baseline is what the run starts with.
 		ReReadShapeOnOperatorTurn: s.reReadShapeOnOperatorTurnFn(runID, runCfg.ToolChoice, runCfg.OutputFormat),
 	}
-	// A refusal of the operator's own key takes the whole provider out of routing.
-	runOpts.MarkProviderUnreachable = s.markProviderUnreachableFn()
+	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
+	runOpts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 	if sessHold != nil {
 		stateful := loop.StatefulMode(mergedContext, provider.Capabilities().Local, in.Interactive)
 		s.releaseSessionWhileParked(&runOpts, &parkLock{hold: sessHold, sessionID: in.SessionID}, loopCtx, stateful,
@@ -7892,8 +7904,8 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Hooks:                  s.hookDispatcher,
 		MaxSameProviderRetries: s.retryAttemptsForAgent(def, parentTier),
 	}
-	// A refusal of the operator's own key takes the whole provider out of routing.
-	opts.MarkProviderUnreachable = s.markProviderUnreachableFn()
+	// A refusal of the operator's own key: the provider leaves routing if its probe agrees.
+	opts.ReportOperatorKeyRefusal = s.operatorKeyRefusalFn()
 
 	// cleanup fires the SAME releases as the guarded error-defers above, in the
 	// SAME order runSubAgent's original defers ran LIFO (deregSubGate →
