@@ -23,7 +23,6 @@ package providerbuild
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -137,7 +136,7 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		StreamOpts:   stream,
 		Options:      opts,
 		Capabilities: CapabilityPatch(pc.Capabilities),
-		Logf:         log.Printf,
+		Logger:       slog.Default(),
 	}
 	if pc.Auth != nil {
 		do.RequestAuth = awsRequestAuth(id, pc, baseURL, cfg.SecretSink)

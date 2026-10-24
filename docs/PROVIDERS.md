@@ -524,7 +524,7 @@ If any of these are unacceptable for your workload, use the `anthropic` provider
 
 Auth-surface drift surfaces as one of two patterns:
 
-- **Refresh failures**: the background goroutine logs `anthropic-oauth-dev: refresh failed: ...` on every 30s tick. Persistent failures across multiple ticks mean the refresh endpoint changed or the refresh token was revoked.
+- **Refresh failures**: the background goroutine logs `WARN anthropic-oauth-dev: refresh failed (will retry on next tick) err=...` on every 30s tick. Persistent failures across multiple ticks mean the refresh endpoint changed or the refresh token was revoked.
 - **400 INVALID_REQUEST on Messages calls**: Anthropic's auth surface rejected the request. Most common cause: the User-Agent's pinned Claude Code version is too old.
 
 When the second pattern hits:

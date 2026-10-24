@@ -10,13 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -442,8 +442,8 @@ func TestLoadFromURL_CachedDigestIsReusedWithoutRequest(t *testing.T) {
 	}
 	srv.Close()
 
-	var logs []string
-	src.Logf = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	var logs bytes.Buffer
+	src.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	b, st, err := loadFromURL(src, APILevel, defaultLimits, testFetch(pool))
 	if err != nil {
 		t.Fatalf("second load with the server down: %v", err)
@@ -454,8 +454,9 @@ func TestLoadFromURL_CachedDigestIsReusedWithoutRequest(t *testing.T) {
 	if n := hits.Load(); n != 1 {
 		t.Errorf("the server got %d requests, want 1", n)
 	}
-	if !strings.Contains(strings.Join(logs, "\n"), "cached") {
-		t.Errorf("no log line says the cache was used: %q", logs)
+	if line := logs.String(); !strings.Contains(line, "webui: using the cached UI bundle") ||
+		!strings.Contains(line, "sha256="+sum(archive)) {
+		t.Errorf("no log line says the cache was used: %q", line)
 	}
 }
 
@@ -536,16 +537,15 @@ func TestLoadFromURL_StatusAndLogsCarryNoURLPathOrQuery(t *testing.T) {
 			if c.timeout > 0 {
 				f.timeout = c.timeout
 			}
-			var mu sync.Mutex
-			var logs []string
+			var logs bytes.Buffer
 			src := urlSrc(srv.URL, path+"?"+query, c.digest, t.TempDir())
-			src.Logf = func(format string, args ...any) {
-				mu.Lock()
-				defer mu.Unlock()
-				logs = append(logs, fmt.Sprintf(format, args...))
-			}
+			src.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 			_, st, err := loadFromURL(src, APILevel, defaultLimits, f)
+			// The fetch is always logged, so the leak scan below reads real lines.
+			if !strings.Contains(logs.String(), "webui: fetching the UI bundle") {
+				t.Errorf("no fetch line was logged: %q", logs.String())
+			}
 			health, _ := json.Marshal(st)
 			for _, leak := range []string{"t0ps3cr3t", "private-bucket", "127.0.0.1"} {
 				if strings.Contains(string(health), leak) {
@@ -553,7 +553,7 @@ func TestLoadFromURL_StatusAndLogsCarryNoURLPathOrQuery(t *testing.T) {
 				}
 			}
 			var text []string
-			text = append(text, logs...)
+			text = append(text, strings.Split(logs.String(), "\n")...)
 			if err != nil {
 				text = append(text, err.Error())
 			}

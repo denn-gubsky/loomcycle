@@ -34,6 +34,6 @@ func newFromOptions(o providers.DriverOptions) (providers.Provider, error) {
 	if n, ok := providers.IntOption(o.Options, "num_gpu"); ok {
 		d.WithNumGpu(n)
 	}
-	providers.WarnUnknownOptions(o.Logf, "ollama", o.Options, "num_ctx", "num_gpu")
+	providers.WarnUnknownOptions(o.Logger, "ollama", o.Options, "num_ctx", "num_gpu")
 	return d, nil
 }
