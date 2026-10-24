@@ -101,7 +101,7 @@ func (pw *passwordGate) Complete(ctx context.Context, r *http.Request, _ authgat
 	if err := dec.Decode(&req); err != nil || req.Login == "" || req.Password == "" {
 		return authgate.Assertion{}, authgate.ErrNoCredential
 	}
-	id, amr, err := pw.s.verifyPassword(ctx, pw, req.Login, req.Password, req.OTP, clientIP(r))
+	id, amr, err := pw.s.verifyPassword(ctx, pw, req.Login, req.Password, req.OTP, pw.s.clientSource(r))
 	if err != nil {
 		return authgate.Assertion{}, err
 	}
@@ -112,6 +112,14 @@ func (pw *passwordGate) Complete(ctx context.Context, r *http.Request, _ authgat
 // no address.
 func (pg *PasswordGates) sourceKey(scope, ip string) string {
 	return "src:" + scope + ":" + pg.hasher.MAC("throttle-source", ip)
+}
+
+// sourceLoginKey counts one source's failures against one login, so a client
+// guessing one account is slowed on that account long before its address as a
+// whole is, and an address many people share (an office NAT) is not held back
+// for everyone by one of them.
+func (pg *PasswordGates) sourceLoginKey(gate, ip, login string) string {
+	return "srclogin:" + gate + ":" + pg.hasher.MAC("throttle-source-login", ip+"\x00"+login)
 }
 
 // sourceBlocked reports whether the source is held back now.
@@ -139,13 +147,15 @@ func (s *Server) recordSourceFailure(ctx context.Context, key string, block func
 func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pass, otp, ip string) (store.UserIdentityRow, []string, error) {
 	now := time.Now()
 	src := pw.pg.sourceKey(pw.g.Name, ip)
+	srcLogin := pw.pg.sourceLoginKey(pw.g.Name, ip, strings.ToLower(strings.TrimSpace(login)))
 	th := pw.g.Throttle
-	if s.sourceBlocked(ctx, src) {
+	if s.sourceBlocked(ctx, src) || s.sourceBlocked(ctx, srcLogin) {
 		_ = pw.pg.hasher.Dummy(ctx, pass)
 		return store.UserIdentityRow{}, nil, errTooManyAttempts
 	}
 	refuse := func() (store.UserIdentityRow, []string, error) {
 		s.recordSourceFailure(ctx, src, th.SourceBlockFor)
+		s.recordSourceFailure(ctx, srcLogin, th.SourceLoginBlockFor)
 		return store.UserIdentityRow{}, nil, authgate.ErrInvalidCredential
 	}
 	norm, nerr := password.Normalize(pass)
@@ -205,6 +215,7 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		if !ok {
 			s.recordAccountFailure(ctx, pw, id)
 			s.recordSourceFailure(ctx, src, th.SourceBlockFor)
+			s.recordSourceFailure(ctx, srcLogin, th.SourceLoginBlockFor)
 			return store.UserIdentityRow{}, nil, errOTPInvalid
 		}
 		amr = append(amr, method)
@@ -301,18 +312,18 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_credentials", "login and password are required")
 		return
 	case errors.Is(err, authgate.ErrInvalidCredential):
-		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, SourceAddr: clientIP(r)})
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
 		return
 	case errors.Is(err, errTooManyAttempts):
-		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "throttled", SourceAddr: clientIP(r)})
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "throttled", SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts; wait and try again")
 		return
 	case errors.Is(err, errOTPRequired):
 		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
 		return
 	case errors.Is(err, errOTPInvalid):
-		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "invalid_otp", SourceAddr: clientIP(r)})
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "invalid_otp", SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusUnauthorized, "invalid_otp", "that code was not accepted")
 		return
 	case errors.Is(err, errMFAEnrolment):
@@ -525,7 +536,7 @@ func (s *Server) unauthenticatedPost(w http.ResponseWriter, r *http.Request, pg 
 		}
 		return "", false
 	}
-	src := pg.sourceKey(scope, clientIP(r))
+	src := pg.sourceKey(scope, s.clientSource(r))
 	if s.sourceBlocked(r.Context(), src) {
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts; wait and try again")
 		return "", false
@@ -1018,7 +1029,7 @@ func (s *Server) selfService(w http.ResponseWriter, r *http.Request) (*passwordG
 // current password (and the second factor, when the account has one), through
 // the same throttled check as a login.
 func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, pw *passwordGate, sess store.UISessionRow, login, current, otp string) bool {
-	id, _, err := s.verifyPassword(r.Context(), pw, login, current, otp, clientIP(r))
+	id, _, err := s.verifyPassword(r.Context(), pw, login, current, otp, s.clientSource(r))
 	switch {
 	case err == nil && id.TenantID == sess.TenantID && id.Subject == sess.Subject:
 		return true

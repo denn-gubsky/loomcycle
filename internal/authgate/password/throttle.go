@@ -44,6 +44,11 @@ func (t Throttle) AccountLockFor(n int) time.Duration {
 // failures and no hard lockout beyond the cap.
 func (t Throttle) SourceBlockFor(n int) time.Duration { return Backoff(n, SourceFree, t.Lockout) }
 
+// SourceLoginBlockFor paces one source's failures against one login: the
+// account curve without its hard lockout, so a client guessing one account
+// slows itself there without locking the account for its owner.
+func (t Throttle) SourceLoginBlockFor(n int) time.Duration { return Backoff(n, accountFree, t.Lockout) }
+
 // CodeBlockFor blocks a code for Lockout after CodeMaxFailures.
 func (t Throttle) CodeBlockFor(n int) time.Duration {
 	if n >= CodeMaxFailures {

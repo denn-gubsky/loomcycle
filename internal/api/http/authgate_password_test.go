@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base32"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -174,13 +176,15 @@ func TestPasswordGate_UnknownLoginAndWrongPasswordAreIndistinguishable(t *testin
 		var ds []time.Duration
 		var code int
 		var body map[string]any
-		for range 5 {
+		// Three tries each: the per-(source, login) backoff starts after the
+		// third, and a throttled answer would be a different one.
+		for range 3 {
 			start := time.Now()
 			code, body = f.browser(t).login("local", login, "a wrong passphrase of some length", "")
 			ds = append(ds, time.Since(start))
 		}
 		sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
-		return ds[2], code, body
+		return ds[1], code, body
 	}
 	known, kc, kb := median("dana@example.com")
 	unknown, uc, ub := median("nobody@example.com")
@@ -442,6 +446,39 @@ func TestPasswordGate_AccountRoutesNeedAPasswordSessionAndBasicAuthIsRefused(t *
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("basic auth: %d", resp.StatusCode)
+	}
+}
+
+// Behind a trusted proxy each client is throttled by its own address: one
+// client's failures hold back that client, not every client the proxy
+// carries (the coordinator's finding: keying on the peer made one attacker
+// block every sign-in through a Cloudflare tunnel).
+func TestPasswordGate_ThrottleSeesEachClientBehindATrustedProxy(t *testing.T) {
+	f := newGateFixture(t)
+	f.srv.cfg().ResolvedAuth.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	f.srv.cfg().ResolvedAuth.ClientIPHeader = "X-Client-Ip"
+	f.redeemed(t, "local", "nora@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+	attempt := func(client, login, pass string) int {
+		req, _ := http.NewRequest("POST", f.ts.URL+"/v1/_auth/complete/local", strings.NewReader(jsonBody(t, map[string]string{"login": login, "password": pass})))
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set(uiRequestHeader, "1")
+		req.Header.Set("User-Agent", testUA)
+		req.Header.Set("X-Client-Ip", client)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for i := range password.SourceFree + 2 {
+		attempt("198.51.100.1", fmt.Sprintf("guess-%d@example.com", i), "a guessed passphrase here")
+	}
+	if code := attempt("198.51.100.1", "nora@example.com", goodPassword); code != http.StatusTooManyRequests {
+		t.Fatalf("the guessing client is not held back: %d", code)
+	}
+	if code := attempt("198.51.100.2", "nora@example.com", goodPassword); code != http.StatusNoContent {
+		t.Fatalf("another client through the same proxy is held back: %d", code)
 	}
 }
 

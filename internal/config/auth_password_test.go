@@ -103,3 +103,23 @@ func TestResolveAuth_PasswordKeysOnATokenGateAreRefused(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestResolveAuth_TrustedProxiesAndClientIPHeader(t *testing.T) {
+	c := &Config{Auth: AuthConfig{TrustedProxies: []string{"172.18.0.0/16", "127.0.0.1"}, ClientIPHeader: "cf-connecting-ip"}}
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	p := c.ResolvedAuth
+	if len(p.TrustedProxies) != 2 || p.TrustedProxies[1].Bits() != 32 || p.ClientIPHeader != "Cf-Connecting-Ip" {
+		t.Fatalf("resolved = %+v", p)
+	}
+	for name, a := range map[string]AuthConfig{
+		"header without proxies": {ClientIPHeader: "CF-Connecting-IP"},
+		"bad cidr":               {TrustedProxies: []string{"not-a-network"}},
+		"bad header name":        {TrustedProxies: []string{"10.0.0.0/8"}, ClientIPHeader: "X Bad: header"},
+	} {
+		if err := resolveAuth(&Config{Auth: a}); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

@@ -98,6 +98,9 @@ func (b *boot) buildServer() {
 	if pwGates != nil {
 		srv.SetPasswordGates(pwGates)
 		slog.Info("auth: password gates", "gates", pwGates.Names(), "breached_list_entries", pwGates.PolicySize())
+		if w := lchttp.ProxyThrottleWarning(cfg); w != "" {
+			slog.Warn(w)
+		}
 	}
 	b.bootAuthConfigured = bootAuthConfigured
 	if bootAuthConfigured {

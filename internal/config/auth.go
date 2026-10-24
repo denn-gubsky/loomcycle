@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
+	"net/textproto"
 	"net/url"
 	"os"
 	"regexp"
@@ -66,11 +68,23 @@ var laterGateKinds = map[string]bool{
 
 var authGateNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
+var authHeaderNameRE = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
 // AuthConfig is the yaml `auth:` block.
 type AuthConfig struct {
 	Mode    string                    `yaml:"mode,omitempty"`
 	Session AuthSessionConfig         `yaml:"session,omitempty"`
 	Gates   map[string]AuthGateConfig `yaml:"gates,omitempty"`
+	// TrustedProxies are the CIDRs of the reverse proxies in front of the
+	// server (a cloudflared container's network, loopback for tailscale
+	// serve). Only a request from one of them may say who the client is,
+	// through ClientIPHeader or else X-Forwarded-For; any other peer is the
+	// client itself. The password gate throttles by that client address.
+	TrustedProxies []string `yaml:"trusted_proxies,omitempty"`
+	// ClientIPHeader is the header a trusted proxy puts the client address
+	// in (Cloudflare: CF-Connecting-IP). Empty: the right-most
+	// X-Forwarded-For entry that is not a trusted proxy.
+	ClientIPHeader string `yaml:"client_ip_header,omitempty"`
 }
 
 // AuthSessionConfig holds Go durations ("8h", "15m").
@@ -174,6 +188,10 @@ type AuthPolicy struct {
 	ReauthWindow time.Duration
 	// Gates is the configured gates, sorted by name.
 	Gates []AuthGate
+	// TrustedProxies and ClientIPHeader are the validated auth.trusted_proxies
+	// and auth.client_ip_header (canonical form).
+	TrustedProxies []netip.Prefix
+	ClientIPHeader string
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -315,6 +333,28 @@ func resolveAuth(c *Config) error {
 	}
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
+	}
+	for _, cidr := range c.Auth.TrustedProxies {
+		pfx, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+		if err != nil {
+			addr, aerr := netip.ParseAddr(strings.TrimSpace(cidr))
+			if aerr != nil {
+				return fmt.Errorf("auth.trusted_proxies: %q is not a CIDR or an address", cidr)
+			}
+			pfx = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		p.TrustedProxies = append(p.TrustedProxies, pfx.Masked())
+	}
+	if h := strings.TrimSpace(c.Auth.ClientIPHeader); h != "" {
+		if len(p.TrustedProxies) == 0 {
+			// A client-address header with no proxy allowed to set it would
+			// be read from nobody; say so rather than ignore it.
+			return fmt.Errorf("auth.client_ip_header: set auth.trusted_proxies too — only a trusted proxy's header is read")
+		}
+		if !authHeaderNameRE.MatchString(h) {
+			return fmt.Errorf("auth.client_ip_header: %q is not a header name", h)
+		}
+		p.ClientIPHeader = textproto.CanonicalMIMEHeaderKey(h)
 	}
 	names := make([]string, 0, len(c.Auth.Gates))
 	for name := range c.Auth.Gates {
