@@ -162,6 +162,26 @@ cache:
   native:
     enabled: true                 # honour Anthropic cache_control hints
 
+# ─── Volumes ──────────────────────────────────────────────────────────
+# The dynamic root: the runtime makes volumes under it — each run's `inbox`
+# (a file an MCP server, HTTP or WebFetch returns is kept there and the model
+# sees a one-line reference), ephemeral volumes and VolumeDef volumes. Without
+# it a returned file is refused ("[file not kept: …]") and VolumeDef create
+# fails. Not bound to agents. The path is the compose mount ./dynamic, which
+# must exist and be owned by 65532 (INSTALL.md).
+volumes:
+  dynamic:
+    path: /mnt/dynamic
+    mode: rw
+    dynamic_root: true
+
+# ─── Access control ───────────────────────────────────────────────────
+# The mode is LOOMCYCLE_ACL (compose default: shadow). Every Google sign-in
+# gets its own tenant and a tenant-operator token, so each user writes the
+# rule lists for their own tenant in Settings → Access. A list declared here
+# with `acls:` is reachable from any tenant's binding, but a binding names
+# one tenant, so this file cannot bind tenants the landing page creates.
+
 # ─── Web search ───────────────────────────────────────────────────────
 # SearXNG is wired here, NOT via env — there is no LOOMCYCLE_SEARCH_* var. The
 # base_url is the in-compose service name. `brave` is an optional paid fallback
