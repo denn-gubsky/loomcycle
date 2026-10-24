@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
@@ -136,6 +137,11 @@ var (
 	// operator/tenant/user has spent its monthly token budget; retry next month
 	// or raise the limit. Wire: HTTP 429 / gRPC ResourceExhausted.
 	ErrTokenLimitExceeded = errors.New("token_limit_exceeded")
+	// ErrACLUnavailable — a run a trigger fired under its definition's owner
+	// (RFC EZ §1.5) could not have that owner's access-control set compiled
+	// (a store fault). It is refused rather than run without the set; nothing
+	// is wrong with the request, so a retry may succeed. Wire: HTTP 503.
+	ErrACLUnavailable = errors.New("acl_unavailable")
 	// ErrInternal — unexpected error from store / loop / providers.
 	// Wire: HTTP 500 / gRPC Internal.
 	ErrInternal = errors.New("internal error")
@@ -442,6 +448,17 @@ type RunInput struct {
 	// unconfined (fail-open); the principal-on-ctx paths ignore this and derive
 	// isolation from the live principal instead.
 	Isolated bool
+
+	// ACLOwner is whose access-control set (RFC EY) binds a run a trigger
+	// fires with no principal on ctx (RFC EZ §1.5): the trigger definition's
+	// owner as the definition records it, or an A2A peer's credential. RunOnce
+	// compiles its CURRENT set, narrows the run by it as a live caller's
+	// narrows a live run, and asks `run agent:` for it. A set that cannot be
+	// compiled refuses the run (ErrACLUnavailable). nil — a yaml trigger, a
+	// definition written before the field or with no set in force — runs as
+	// before, bound by the captured Isolated / OperatorKeyRestricted bits
+	// alone. Ignored when a principal is on ctx: the live caller's set binds.
+	ACLOwner *authz.SubjectRef
 
 	// ConfiguredRunID starts an existing DRAFT (RFC DI D5) instead of creating a
 	// run: RunOnce runs its usual validation and admission, then moves that row
