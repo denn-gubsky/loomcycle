@@ -828,58 +828,151 @@ func TestDocumentSearchFilter_PagesPastTheRowCap(t *testing.T) {
 	}
 }
 
-// TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts — the echo and the
-// filter_too_wide refusal must not be a way to measure documents the caller may
-// not read: growing a read-denied document inside the filtered subtree changes
-// neither the counts nor the refusal text.
-func TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts(t *testing.T) {
-	d, _, base := mermaidDocFixture(t, "savepoint", "nesting", "secret", "public")
-	open := tenantDocCtx(base, nil)
-	s := seedACLDocs(t, d, open)
-	// A readable document outside the filter, so /kb is not the whole scope and
-	// the filter needs a list at all.
+// aclCorpus: /kb/secret/plan (read-denied to the limited caller) and
+// /kb/public/notes in the tenant scope, plus a readable /other/doc with ten
+// chunks, so /kb is a minority of the scope and an unnarrowed list would be an
+// allowlist whose size the denied document moves.
+func aclCorpus(t *testing.T) (d *Document, spy *legSpy, open, limited context.Context, s aclDocs) {
+	t.Helper()
+	d, vs, base := mermaidDocFixture(t, "savepoint", "nesting", "secret", "public")
+	spy = &legSpy{ftsStore: &ftsStore{vs}}
+	d.Store = spy
+	open = tenantDocCtx(base, nil)
+	s = seedACLDocs(t, d, open)
 	out, r := docExec(t, d, open, `{"op":"create_document","scope":"tenant","title":"Other","path":"/other/doc"}`)
 	if r.IsError {
 		t.Fatalf("create_document: %s", r.Text)
 	}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 10; i++ {
 		if _, r := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+out["document_id"].(string)+`","title":"o","body":"public"}`); r.IsError {
 			t.Fatalf("create_chunk: %s", r.Text)
 		}
 	}
-	ctx := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	limited = tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	return d, spy, open, limited, s
+}
 
-	observe := func() (string, string) {
+// TestDocumentSearch_ACLLimitedCallerSendsNoDeniedID — for a caller an
+// access-control set limits, the filter is narrowed to what it may read before
+// anything is sent: no id of a read-denied document reaches the store, and the
+// list is never inverted into a denylist (which would have to name them).
+func TestDocumentSearch_ACLLimitedCallerSendsNoDeniedID(t *testing.T) {
+	d, spy, _, ctx, s := aclCorpus(t)
+	spy.reset()
+	_, res := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`)
+	if res.IsError {
+		t.Fatalf("search: %s", res.Text)
+	}
+	if len(spy.filters) == 0 {
+		t.Fatal("the search reached no store leg")
+	}
+	for _, f := range spy.filters {
+		if len(f.ExcludeIDs) != 0 {
+			t.Errorf("a limited caller's filter was sent as a denylist: %v", f.ExcludeIDs)
+		}
+		for _, id := range f.IDs {
+			if id == s.secretChunk {
+				t.Errorf("the read-denied chunk %s was sent to the store", id)
+			}
+		}
+		if !setOf(f.IDs)[s.publicChunk] {
+			t.Errorf("the readable chunk is missing from the list: %v", f.IDs)
+		}
+	}
+	// A filter wide enough to invert for anyone else is still an allowlist here.
+	spy.reset()
+	if _, res = docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","exclude_under_path":"/kb/public"}`); res.IsError {
+		t.Fatalf("search: %s", res.Text)
+	}
+	for _, f := range spy.filters {
+		if len(f.ExcludeIDs) != 0 || setOf(f.IDs)[s.secretChunk] {
+			t.Errorf("a wide filter for a limited caller sent %d allowed (denied included: %v) / %d excluded",
+				len(f.IDs), setOf(f.IDs)[s.secretChunk], len(f.ExcludeIDs))
+		}
+	}
+}
+
+// TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts — the echo and the
+// filter_too_wide refusal must not be a way to measure documents the caller may
+// not read: growing a read-denied document inside the filtered subtree changes
+// neither the counts, nor whether the refusal fires, nor its text.
+func TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts(t *testing.T) {
+	d, _, open, ctx, s := aclCorpus(t)
+	const in = `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`
+	observe := func(cap int) (string, bool) {
 		t.Helper()
-		_, res := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`)
+		d.Cfg = &config.Config{}
+		d.Cfg.Env.DocumentSearchFilterMaxIDs = cap
+		defer func() { d.Cfg = nil }()
+		res, err := d.Execute(ctx, json.RawMessage(in))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if res.IsError {
-			t.Fatalf("search: %s", res.Text)
+			return res.Text, true
 		}
 		var out struct {
 			Filter json.RawMessage `json:"filter"`
 		}
 		_ = json.Unmarshal([]byte(res.Text), &out)
-		d.Cfg = &config.Config{}
-		d.Cfg.Env.DocumentSearchFilterMaxIDs = 1
-		_, refused := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`)
-		d.Cfg = nil
-		if !refused.IsError || !strings.Contains(refused.Text, "filter_too_wide") {
-			t.Fatalf("precondition: a 1-id cap refuses the /kb filter, got %s", refused.Text)
-		}
-		return string(out.Filter), refused.Text
+		return string(out.Filter), false
 	}
-	echo1, refusal1 := observe()
-	// Grow the denied document, and the scope with it.
+	// /kb holds 4 chunks (2 readable); the scope 15. A cap of 4 admits the
+	// readable list and would refuse /kb's full list once the denied document grows.
+	echo1, refused1 := observe(4)
+	tight1, tightRefused1 := observe(1)
 	for i := 0; i < 5; i++ {
 		if _, r := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+s.secretDoc+`","title":"more","body":"savepoint nesting secret"}`); r.IsError {
 			t.Fatalf("create_chunk: %s", r.Text)
 		}
 	}
-	echo2, refusal2 := observe()
+	echo2, refused2 := observe(4)
+	tight2, tightRefused2 := observe(1)
+	if refused1 || refused2 {
+		t.Errorf("a cap the readable list fits was refused (before %v, after %v): %s", refused1, refused2, echo2)
+	}
 	if echo1 != echo2 {
 		t.Errorf("the echo moved when only a read-denied document grew:\n before %s\n after  %s", echo1, echo2)
 	}
-	if refusal1 != refusal2 {
-		t.Errorf("the refusal moved when only a read-denied document grew:\n before %s\n after  %s", refusal1, refusal2)
+	if !tightRefused1 || !tightRefused2 || !strings.Contains(tight1, "filter_too_wide") {
+		t.Fatalf("precondition: a 1-id cap refuses the readable list (before %v, after %v)", tightRefused1, tightRefused2)
+	}
+	if tight1 != tight2 {
+		t.Errorf("the refusal moved when only a read-denied document grew:\n before %s\n after  %s", tight1, tight2)
+	}
+	if strings.Contains(tight1, "scope_chunks") {
+		t.Errorf("a limited caller's refusal names the scope total: %s", tight1)
+	}
+}
+
+// TestDocumentSearch_UnlimitedCallerStillInverts — the narrowing is for a caller
+// a set actually limits. One whose set denies nothing in this scope keeps the
+// full behaviour: full counts, and inversion for a wide filter.
+func TestDocumentSearch_UnlimitedCallerStillInverts(t *testing.T) {
+	d, spy, _, _, _ := aclCorpus(t)
+	base := tools.WithRunIdentity(tools.WithAgentName(context.Background(), "doc-agent"),
+		tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
+	// A rule about another scope: it limits nothing here.
+	ctx := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:user:/x/**"}}))
+	spy.reset()
+	_, res := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting public","exclude_under_path":"/kb"}`)
+	if res.IsError {
+		t.Fatalf("search: %s", res.Text)
+	}
+	var out struct {
+		Filter map[string]any `json:"filter"`
+	}
+	_ = json.Unmarshal([]byte(res.Text), &out)
+	if len(spy.filters) == 0 || len(spy.filters[0].ExcludeIDs) == 0 {
+		t.Errorf("an unlimited caller's exclusion was not sent as a denylist: %+v", spy.filters)
+	}
+	spy.reset()
+	_, res = docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting public","under_path":"/other"}`)
+	if res.IsError {
+		t.Fatalf("search: %s", res.Text)
+	}
+	_ = json.Unmarshal([]byte(res.Text), &out)
+	if out.Filter["inverted"] != true || len(spy.filters) == 0 || len(spy.filters[0].ExcludeIDs) == 0 {
+		t.Errorf("an unlimited caller's wide filter did not invert: echo %v", out.Filter)
 	}
 }

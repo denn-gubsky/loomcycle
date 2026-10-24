@@ -71,8 +71,8 @@ filter: {
 }
 ```
 
-When access-control rules keep you from reading part of the scope, the counts
-cover only what you may read, and `inverted` is left out.
+When access-control rules keep you from reading part of the scope, the filter
+covers only what you may read, and so do the counts.
 
 `matched_chunks: 0` means the filter itself matched nothing — check the path,
 type or status — as opposed to an empty result with matches, which means nothing

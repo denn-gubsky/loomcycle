@@ -62,10 +62,7 @@ type searchFilterEcho struct {
 	MatchedDocuments int                 `json:"matched_documents"`
 	MatchedChunks    int                 `json:"matched_chunks"`
 	TypeExpandedTo   []string            `json:"type_expanded_to,omitempty"`
-	// Inverted is withheld (nil) while an access-control set limits the caller:
-	// whether the match is over half the scope depends on documents it may not
-	// read.
-	Inverted *bool `json:"inverted,omitempty"`
+	Inverted         bool                `json:"inverted"`
 }
 
 // searchFilterSet is a resolved filter: the echo, and the one list the store is
@@ -169,28 +166,20 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 	if refusal != nil {
 		return nil, refusal, nil
 	}
-	notInverted := false
-	set := &searchFilterSet{echo: searchFilterEcho{Applied: ap, Inverted: &notInverted}}
+	set := &searchFilterSet{echo: searchFilterEcho{Applied: ap}}
 
-	// ACCESS CONTROL. The ids sent to the store are the filter's, not narrowed by
-	// the caller's access-control set: the listing post-filter (filterListing)
-	// still decides what is shown, unchanged. But every number this call REPORTS
-	// would otherwise describe documents the caller may not read, and a caller
-	// varying its filter could measure a denied subtree with them. So while a set
-	// limits the caller, the echo counts only readable documents, and the scope
-	// total, the list size and `inverted` are withheld — decided here, before any
-	// early return, so even the echo's shape says nothing about a denied path.
-	//
-	// RESIDUAL, until access control becomes a pre-filter on the search itself:
-	// whether a filter is refused as too wide is still decided on the full list,
-	// so a limited caller learns one bit — over or under the cap — about it.
+	// ACCESS CONTROL. For a caller whose access-control set can deny it reading
+	// part of this scope, the filter is narrowed to the documents it may read
+	// BEFORE anything is counted or sent, and the list always travels as an
+	// allowlist: a denylist would have to name the unreadable chunks, and its size
+	// would depend on them. So no id of a denied document reaches the store, and
+	// no count, refusal or `inverted` bit moves when a denied document changes.
+	// The listing post-filter still runs on the answer, unchanged; a filter-free
+	// search is not narrowed here at all (that pre-filter is a separate change).
 	acl := d.newDocACL(ctx, key)
 	limited, err := acl.limitsReading(ctx)
 	if err != nil {
 		return nil, nil, err
-	}
-	if limited {
-		set.echo.Inverted = nil
 	}
 
 	// Document level. A nil include set means "every document"; an include that
@@ -242,12 +231,6 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 		return nil, nil, err
 	}
 	maxIDs := d.searchFilterMaxIDs()
-	refuse := func(matched, listed int) *tools.Result {
-		if limited {
-			return filterTooWideLimited(op, maxIDs)
-		}
-		return filterTooWide(op, matched, scopeChunks, listed, maxIDs)
-	}
 	if include == nil && where == "" && !limited {
 		// Exclusion only: a denylist by nature, never inverted.
 		deny, denyDocs, err := d.chunkIDsOfDocuments(ctx, key, docIDsOf(exclude))
@@ -261,20 +244,34 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 			return set, nil, nil
 		}
 		if len(deny) > maxIDs {
-			return nil, refuse(set.echo.MatchedChunks, len(deny)), nil
+			return nil, filterTooWide(op, set.echo.MatchedChunks, scopeChunks, len(deny), maxIDs), nil
 		}
 		set.excludeIDs = deny
 		return set, nil, nil
 	}
 
 	var allow []string
-	allowDocs := map[string]int{} // document id → its matched chunks
+	allowDocs := map[string]bool{}
+	readable := map[string]bool{}
 	keep := func(chunkID, docID string) error {
 		if exclude[docID] {
 			return nil
 		}
+		if limited {
+			ok, seen := readable[docID]
+			if !seen {
+				var err error
+				if ok, err = acl.readable(ctx, docID); err != nil {
+					return err
+				}
+				readable[docID] = ok
+			}
+			if !ok {
+				return nil
+			}
+		}
 		allow = append(allow, chunkID)
-		allowDocs[docID]++
+		allowDocs[docID] = true
 		return nil
 	}
 	if include != nil {
@@ -284,22 +281,18 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 	} else if err := d.eachChunk(ctx, key, "", where, args, keep); err != nil {
 		return nil, nil, err
 	}
+	set.echo.MatchedChunks, set.echo.MatchedDocuments = len(allow), len(allowDocs)
 	if len(allow) == 0 {
 		return set, nil, nil
 	}
-	set.echo.MatchedChunks, set.echo.MatchedDocuments = len(allow), len(allowDocs)
 	if limited {
-		set.echo.MatchedChunks, set.echo.MatchedDocuments = 0, 0
-		for docID, n := range allowDocs {
-			ok, err := acl.readable(ctx, docID)
-			if err != nil {
-				return nil, nil, err
-			}
-			if ok {
-				set.echo.MatchedChunks += n
-				set.echo.MatchedDocuments++
-			}
+		// Never inverted: see the access-control note above.
+		if len(allow) > maxIDs {
+			return nil, filterTooWideLimited(op, len(allow), maxIDs), nil
 		}
+		sort.Strings(allow)
+		set.ids = allow
+		return set, nil, nil
 	}
 
 	// INVERSION. The list is bound into every leg, so send whichever of the set
@@ -307,7 +300,7 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 	// the complement, which then holds every chunk the filter did NOT match.
 	if 2*len(allow) <= scopeChunks {
 		if len(allow) > maxIDs {
-			return nil, refuse(set.echo.MatchedChunks, len(allow)), nil
+			return nil, filterTooWide(op, len(allow), scopeChunks, len(allow), maxIDs), nil
 		}
 		sort.Strings(allow)
 		set.ids = allow
@@ -327,15 +320,12 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 		return nil, nil, err
 	}
 	if len(complement) > maxIDs {
-		return nil, refuse(set.echo.MatchedChunks, len(complement)), nil
+		return nil, filterTooWide(op, len(allow), scopeChunks, len(complement), maxIDs), nil
 	}
 	// An empty complement is a filter that matched the whole scope: no list at all
 	// is then exactly right, and the echo still reports what was matched.
 	set.excludeIDs = complement
-	if !limited {
-		inverted := true
-		set.echo.Inverted = &inverted
-	}
+	set.echo.Inverted = true
 	return set, nil, nil
 }
 
@@ -350,11 +340,11 @@ func filterTooWide(op string, matched, scope, listed, maxIDs int) *tools.Result 
 }
 
 // filterTooWideLimited is filterTooWide for a caller an access-control set
-// limits: the scope's size and the list's depend on documents it may not read,
-// so neither is said.
-func filterTooWideLimited(op string, maxIDs int) *tools.Result {
-	r := errBusiness(fmt.Sprintf("%s: filter_too_wide: the filter would send the search more chunk ids than the limit of %d (max_ids=%d)",
-		op, maxIDs, maxIDs),
+// limits: its list is the readable matches, so that is all it reports — the
+// scope's size would describe documents it may not read.
+func filterTooWideLimited(op string, matched, maxIDs int) *tools.Result {
+	r := errBusiness(fmt.Sprintf("%s: filter_too_wide: the filter matches %d chunks you may read, over the limit of %d chunk ids a search can be sent (matched_chunks=%d max_ids=%d)",
+		op, matched, maxIDs, matched, maxIDs),
 		"Narrow the filter with type, status or a tag, or search a smaller subtree.")
 	return &r
 }
