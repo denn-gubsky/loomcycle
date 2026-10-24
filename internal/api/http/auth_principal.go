@@ -901,6 +901,7 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 			// open-mode console shows it like any other.
 			"acl_mode":  string(s.aclMode()),
 			"effective": openModeEffective(),
+			"auth":      s.whoamiAuth(r.Context(), true),
 		})
 		return
 	}
@@ -927,6 +928,9 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	// RFC EZ §4: which Web UI pages the principal may reach, asked of the
 	// gates a request to each page's primary route would face.
 	out["effective"] = navEffective(r.Context(), p)
+	// RFC FA: how the caller signed in — the mode always, the gate, methods
+	// and session times when a Web UI session authenticated the request.
+	out["auth"] = s.whoamiAuth(r.Context(), false)
 	writeJSONOK(w, out)
 }
 

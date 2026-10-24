@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -594,5 +595,49 @@ func TestUISession_WebSocketUpgradeFromForeignOriginRefused(t *testing.T) {
 	}
 	if code, reached := through(s, upgrade("http://example.com")); code != http.StatusOK || !reached {
 		t.Errorf("same-origin upgrade = %d reached=%v, want 200", code, reached)
+	}
+}
+
+// /v1/_me's auth block: the mode always; the gate, methods and session times
+// when a session authenticated the request; open in open mode.
+func TestWhoami_ReportsHowTheCallerSignedIn(t *testing.T) {
+	type authBlock struct {
+		Mode             string    `json:"mode"`
+		Gate             string    `json:"gate"`
+		AMR              []string  `json:"amr"`
+		AuthTime         time.Time `json:"auth_time"`
+		SessionExpiresAt time.Time `json:"session_expires_at"`
+	}
+	whoami := func(s *Server, r *http.Request) authBlock {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.authMiddleware(http.HandlerFunc(s.handleWhoami)).ServeHTTP(rec, r)
+		var body struct {
+			Auth *authBlock `json:"auth"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Auth == nil {
+			t.Fatalf("whoami %d %s: %v", rec.Code, rec.Body.String(), err)
+		}
+		return *body.Auth
+	}
+	s, _, _ := sessionTestServer(t, "legacy-secret")
+	c := mustSession(t, s, "legacy-secret")
+	got := whoami(s, sessionReq(http.MethodGet, "/v1/_me", c))
+	if got.Mode != "token" || got.Gate != "token" || len(got.AMR) != 1 || got.AMR[0] != "bearer" || got.AuthTime.IsZero() ||
+		!got.SessionExpiresAt.After(got.AuthTime) || got.SessionExpiresAt.After(got.AuthTime.Add(8*time.Hour+time.Minute)) {
+		t.Errorf("session auth block = %+v", got)
+	}
+	bearer := httptest.NewRequest(http.MethodGet, "/v1/_me", nil)
+	bearer.Header.Set("Authorization", "Bearer legacy-secret")
+	if got := whoami(s, bearer); got.Mode != "token" || got.Gate != "" || !got.AuthTime.IsZero() {
+		t.Errorf("bearer auth block = %+v, want the mode only", got)
+	}
+	s.cfg().ResolvedAuth = strictPolicy()
+	if got := whoami(s, bearer); got.Mode != "strict" {
+		t.Errorf("strict mode reported as %q", got.Mode)
+	}
+	open, _, _ := sessionTestServer(t, "")
+	if got := whoami(open, httptest.NewRequest(http.MethodGet, "/v1/_me", nil)); got.Mode != "open" {
+		t.Errorf("open mode reported as %q", got.Mode)
 	}
 }
