@@ -161,7 +161,12 @@ func (s *Server) aclAdmitAgent(ctx context.Context, p auth.Principal, ok bool, a
 	if !ok {
 		return nil // no principal: open mode or a trigger firing under a definition
 	}
-	surface := authz.Surface{Action: "run", Type: "agent", Name: agent}
+	return s.aclAdmit(ctx, p, authz.Surface{Action: "run", Type: "agent", Name: agent})
+}
+
+// aclAdmit asks surface of p's set, audits a refusal or a shadow divergence,
+// and returns the refusal (an *errACLDenied) or nil.
+func (s *Server) aclAdmit(ctx context.Context, p auth.Principal, surface authz.Surface) error {
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
 	switch {
 	case res.Unavailable:
@@ -286,6 +291,37 @@ func (s *Server) triggerOwnerCtx(ctx context.Context, owner *authz.SubjectRef, a
 	return withRecordedCaller(ctx, o, eff), nil
 }
 
+// triggerWalkOwnerCtx is triggerOwnerCtx for a team walk a trigger starts
+// (RFC EZ §1.5): the owner's CURRENT set compiled, `run team:<team>` asked
+// for it, and the set put on ctx's run policy — the carrier a walk's members
+// inherit it through (prepareSubRunValues reads the parent policy's ACL),
+// exactly as the members of a walk an agent starts inherit that run's. So
+// each member is narrowed by the owner's set, asked `spawn agent:` for it,
+// and records it for a resume. A trigger's start has no principal on ctx
+// (runner.TeamWalkStarter); the transport is the trigger's own.
+//
+// No owner, or no resolver wired: ctx as it is, as triggerOwnerCtx. A set
+// that cannot be compiled refuses the start with ErrACLUnavailable; a deny,
+// with an *errACLDenied (which Is ErrAgentNotAllowed). Both are audited.
+func (s *Server) triggerWalkOwnerCtx(ctx context.Context, owner *authz.SubjectRef, team string) (context.Context, error) {
+	if owner == nil || s.aclResolver == nil {
+		return ctx, nil
+	}
+	surface := authz.Surface{Action: "run", Type: "team", Name: team}
+	o := aclOriginRecord{TenantID: owner.TenantID, Subject: owner.Subject, TokenDefID: owner.TokenDefID, Class: owner.Class, Transport: authz.TransportFrom(ctx)}
+	ctx, eff, err := s.recordedCallerACLFor(ctx, &o, surface)
+	if err != nil {
+		return ctx, fmt.Errorf("%w: the access-control rules of the owner of the trigger that started team %q (tenant %q, subject %q) could not be read (%v); the walk is refused rather than run without them",
+			runner.ErrACLUnavailable, team, owner.TenantID, owner.Subject, err)
+	}
+	p := o.principal()
+	p.Effective = eff
+	if err := s.aclAdmit(ctx, p, surface); err != nil {
+		return ctx, err
+	}
+	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.ACL = eff }), nil
+}
+
 // aclAdmitSpawn is the `spawn agent:<name>` question a parent asks before it
 // starts a child, against the ORIGINATING principal's set the parent policy
 // carries. No set (open mode, a trigger's run): nothing to ask.
@@ -316,4 +352,28 @@ func emitACLRemovedTools(removed []string, emit func(providers.Event)) {
 			CapabilityInert: &providers.CapabilityInertInfo{Tool: name, Gate: "acl", Message: msg},
 		})
 	}
+}
+
+// stampWalkStarterACL is ctx for a team walk about to open its run, with the
+// starter's set on its run policy — the carrier its members inherit it
+// through (prepareSubRunValues reads the parent policy's ACL), so each is
+// narrowed by it and asked `spawn agent:` for it (RFC EZ §1.5). The starter
+// is the caller on ctx (runCallerACL): a principal on the HTTP, gRPC or MCP
+// plane, or a recorded caller.
+//
+// A set already on the policy is kept: an enclosing run's (a walk an agent
+// starts is bound by that run's originating caller) or a trigger owner's
+// (triggerWalkOwnerCtx). Inside a run with no set, nothing is stamped either:
+// the run's caller had none, and a principal on its ctx is not the run's
+// authority. No set to stamp (open mode, a team subscription's walk): ctx as
+// it is.
+func stampWalkStarterACL(ctx context.Context) context.Context {
+	if tools.PolicyOf(ctx).ACL != nil || tools.RunID(ctx) != "" {
+		return ctx
+	}
+	eff := runCallerACL(ctx)
+	if eff == nil {
+		return ctx
+	}
+	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = eff })
 }

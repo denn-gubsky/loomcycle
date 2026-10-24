@@ -2335,9 +2335,11 @@ func toolResultText(m providers.Message) string {
 // unnarrowed, as every resumed run did before — so a run paused before this
 // was recorded comes back on its agent's full grants one last time.
 //
-// A record whose set cannot be compiled — no resolver wired, a store fault —
-// is an error, never no set: the caller leaves the run paused, and the refusal
-// is logged and audited as acl_unavailable, in every mode.
+// A record whose set cannot be compiled — a store fault — is an error, never
+// no set: the caller leaves the run paused, and the refusal is logged and
+// audited as acl_unavailable, in every mode. No resolver wired is not that:
+// access control is not configured, and the run resumes with no set, as a
+// fresh request would start (recordedCallerACL).
 func (s *Server) resumedACL(ctx context.Context, run store.Run, runCfg runConfigRecord) (context.Context, *authz.Effective, error) {
 	if runCfg.ACLOrigin == nil {
 		return ctx, nil, nil
@@ -2351,22 +2353,33 @@ func (s *Server) resumedACL(ctx context.Context, run store.Run, runCfg runConfig
 
 // recordedCallerACL compiles the CURRENT set of the caller o records, for a
 // run that outlived its request (a resume, a queued run started after a
-// restart), and returns ctx carrying the operator's current rollout mode and
-// the transport the request arrived on. A set that cannot be compiled — no
-// resolver wired, a store fault — is an error, never no set; it is logged and
+// restart, a trigger's fire), and returns ctx carrying the operator's current
+// rollout mode and the transport the request arrived on. A set that cannot be
+// compiled (a store fault) is an error, never no set; it is logged and
 // audited as acl_unavailable against `run agent:<agent>`.
+//
+// No resolver wired: no set and no error. Access control is not configured,
+// so a live request carries no set either (enrichPrincipal) — refusing here
+// would leave a resumed or restarted run held on an error nothing clears.
+// Every boot wires a resolver.
 func (s *Server) recordedCallerACL(ctx context.Context, o *aclOriginRecord, agent string) (context.Context, *authz.Effective, error) {
+	return s.recordedCallerACLFor(ctx, o, authz.Surface{Action: "run", Type: "agent", Name: agent})
+}
+
+// recordedCallerACLFor is recordedCallerACL for a start that is asked
+// another question than `run agent:` (a trigger's team walk): an unreadable
+// set is audited against surface.
+func (s *Server) recordedCallerACLFor(ctx context.Context, o *aclOriginRecord, surface authz.Surface) (context.Context, *authz.Effective, error) {
 	ctx = authz.WithMode(ctx, s.aclMode())
 	if o.Transport != "" {
 		ctx = authz.WithTransport(ctx, o.Transport)
 	}
-	var eff *authz.Effective
-	err := errors.New("no access-control resolver is wired")
-	if s.aclResolver != nil {
-		eff, err = s.aclResolver.ResolveSubject(ctx, o.subject())
+	if s.aclResolver == nil {
+		return ctx, nil, nil
 	}
+	eff, err := s.aclResolver.ResolveSubject(ctx, o.subject())
 	if err != nil {
-		s.recordACLEvent(ctx, o.principal(), "acl_unavailable", authz.Surface{Action: "run", Type: "agent", Name: agent}, authz.Decision{})
+		s.recordACLEvent(ctx, o.principal(), "acl_unavailable", surface, authz.Decision{})
 		return ctx, nil, err
 	}
 	return ctx, eff, nil
