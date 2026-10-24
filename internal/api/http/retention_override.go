@@ -30,7 +30,7 @@ import (
 // does it lift the mode of a child of a no-trace parent — lift the parent.
 //
 // Who may set one: an admin for any tenant, a tenant operator for its own. A
-// tenant member may not (memberCarveOut), and neither may a token limited to
+// tenant member may not (memberpath.CarvedOut), and neither may a token limited to
 // certain agents (it is held to the run endpoints).
 
 // retentionOverrideMax is the longest an override may run. It is a tool for

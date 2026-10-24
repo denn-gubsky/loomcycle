@@ -62,13 +62,16 @@ The distroless image runs as **uid 65532** — the mapped datasets must be owned
 it. From the TrueNAS shell:
 
 ```sh
-mkdir -p /mnt/APPS2/loomcycle/{data,config,work}
+mkdir -p /mnt/APPS2/loomcycle/{data,config,work,dynamic}
 chown -R 65532:65532 /mnt/APPS2/loomcycle
 ```
 
 - `data` → loomcycle's own state (SQL-Memory cache, snapshots)
 - `config` → the thin overlay (`loomcycle.yaml`) + the secrets env file (Phase 4)
 - `work` → an agent filesystem Volume (RFC AH); add more datasets + mounts as needed
+- `dynamic` → the dynamic root: volumes the runtime makes — each run's `inbox`
+  (files an MCP server, HTTP or WebFetch returns are kept there, not handed to
+  the model as base64), ephemeral and VolumeDef volumes
 
 ## Phase 3 — The config overlay
 
@@ -82,6 +85,10 @@ volumes:
     path: /mnt/work       # the IN-CONTAINER mount point (Phase 5 maps the dataset here)
     mode: rw
     default: true
+  dynamic:
+    path: /mnt/dynamic    # runtime-made volumes, incl. each run's inbox
+    mode: rw
+    dynamic_root: true
 ```
 
 ## Phase 4 — Secrets & the secure env file
@@ -223,10 +230,18 @@ services:
       # NARROW it to a suffix list (e.g. com,org,net,io,ai,dev — allows whole TLDs).
       # Private IPs stay hard-blocked; a run can further narrow per-call.
       LOOMCYCLE_HTTP_HOST_ALLOWLIST: "*"
+
+      # --- files tools return (the run inbox, under the `dynamic` volume) ---
+      # Defaults shown; uncomment to change.
+      # LOOMCYCLE_FILE_MAX_BYTES: "67108864"          # one kept file (64 MiB)
+      # LOOMCYCLE_FILE_INBOX_MAX_BYTES: "1073741824"  # a run tree's whole inbox (1 GiB)
+      # LOOMCYCLE_FILE_BASE64_MIN_BYTES: "4096"       # shortest base64 kept as a file (binary_results: capture)
+      # LOOMCYCLE_MCP_MAX_FRAME_BYTES: "16777216"     # one MCP response (stdio line / HTTP body)
     volumes:
       - /mnt/APPS2/loomcycle/data:/data
       - /mnt/APPS2/loomcycle/config:/config:ro
       - /mnt/APPS2/loomcycle/work:/mnt/work
+      - /mnt/APPS2/loomcycle/dynamic:/mnt/dynamic
     healthcheck:
       test: ["CMD", "/usr/local/bin/loomcycle", "health"]
       interval: 30s
@@ -357,6 +372,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
 | `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
+| A tool's file shows as `[file not kept: no dynamic_root volume is configured …]` | The overlay has no `dynamic_root: true` volume, or its mount is missing — add the `dynamic` entry (Phase 3) and its mount (Phase 5). |
 | `toomanyrequests: You have reached your pull rate limit` | Docker Hub anonymous quota exhausted — see below. |
 
 ### Docker Hub rate limits

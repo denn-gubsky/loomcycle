@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // Operator-trust constants for gRPC substrate dispatches.
@@ -401,7 +402,17 @@ func (s *Server) HookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest)
 // endpoint takes. It uses the USER-aware substrateGRPCUserCtx because the walk's
 // run and its member runs are filed under RunIdentity.UserID: under the
 // synthetic grpc-admin id the walk ran as nobody (see the HTTP handler).
+//
+// A member reaches this RPC on the member path whatever its token holds, as it
+// reaches POST /v1/_teamdef: authoring a team is a member's to do. Starting,
+// polling and cancelling a walk are run operations, so they also need the run
+// scope, judged on the caller before the tool by the check the HTTP route and
+// the MCP tool use (builtin.TeamDefMissingScope): nothing is admitted and no
+// run row is opened on a refusal.
 func (s *Server) TeamDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	if op, need := builtin.TeamDefMissingScope(ctx, req.GetInputJson()); need != "" {
+		return nil, status.Errorf(codes.PermissionDenied, "insufficient scope: TeamDef op=%s requires %s", op, need)
+	}
 	return s.dispatchSubstrateRPCCtx(ctx, "TeamDef", req, substrateGRPCUserCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		res, err := s.connector.TeamDef(ctx, in)
 		if err != nil {

@@ -8,7 +8,10 @@ reads the file, so its text never passes through you, and each picture that
 `extract` wrote (`volume:inbox:extracted/…`) becomes an image chunk holding
 the picture's bytes. An image chunk is a chunk of its own, so each picture
 is placed under its own sub-heading after the text of the section it was in;
-a picture inside a table cell stays a link.
+a picture inside a table cell stays a link. A picture from a PDF or a slide deck
+carries the page or slide it was on as the image chunk's `page` or `slide`
+field. Image chunks hold PNG, JPEG, GIF and WebP: a JPEG 2000 picture from a
+PDF stays a link and is counted in `skipped`.
 
 The file is treated as someone else's text. A link in it to any other file —
 in the inbox or in your own volumes — stays a link and is counted in

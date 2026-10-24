@@ -40,7 +40,7 @@ When a file could not be kept, the line says why instead
 | `clear` | empty the inbox, or one folder of it | `prefix` |
 | `download` | GET a URL into the inbox, or into one of your volumes | `url`, `to`, `headers`, `max_bytes` |
 | `upload` | send a file to a URL, whole or in ranges for an upload session | `from`, `url`, `method`, `ranged`, `chunk_bytes` |
-| `extract` | turn a DOCX, XLSX, PPTX, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files | `path`, `images`, `max_rows`, `excerpt_chars` |
+| `extract` | turn a DOCX, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files | `path`, `images`, `max_rows`, `excerpt_chars` |
 | `import` | build a Document from a Markdown file, the pictures `extract` kept attached as image chunks | `path`, `title`, `doc_path`, `scope`, `tags` |
 
 A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
