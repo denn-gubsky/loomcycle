@@ -9,6 +9,8 @@ server** (static site + self-serve token minting), and a Cloudflare tunnel — o
 `make up`.
 
 > **Step-by-step setup lives in [`INSTALL.md`](INSTALL.md).** This file is the map.
+>
+> **Planned:** sign-in moves from landing-minted tokens to loomcycle's password gate, managed by the landing through the `auth:manage` API — see [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md).
 
 ## Architecture
 
