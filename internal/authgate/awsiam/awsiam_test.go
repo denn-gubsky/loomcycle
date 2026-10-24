@@ -506,3 +506,29 @@ func mustAuth(t *testing.T, d LoginData) awsauth.SigV4Authorization {
 	}
 	return a
 }
+
+func TestGate_GenuineButDisallowedARNRecordsNothing(t *testing.T) {
+	// STS answers 200 for every AWS principal in the world. A signature for
+	// an ARN this gate refuses must not take room in the cache or the store,
+	// or any AWS account could fill them.
+	f := newFakeSTS(t)
+	shared := &sharedRecord{}
+	g := f.gate()
+	g.Replay = replay.New(2)
+	g.Shared, g.SharedScope = shared, "awsiam:ci"
+	for i, key := range []string{"AKIAOTHER", "AKIAFOREIGN", "AKIAOTHER"} {
+		d := login(t, key, "https://sts.amazonaws.com/", "us-east-1", stsBody, t0.Add(time.Duration(i)*time.Second), nil)
+		if _, err := g.Verify(context.Background(), d); !errors.Is(err, authgate.ErrInvalidCredential) {
+			t.Fatalf("%s: %v, want ErrInvalidCredential", key, err)
+		}
+	}
+	if n := g.Replay.Len(); n != 0 {
+		t.Fatalf("refused ARNs left %d entries in the cache", n)
+	}
+	if len(shared.seen) != 0 {
+		t.Fatalf("refused ARNs left %d rows in the shared record", len(shared.seen))
+	}
+	if _, err := g.Verify(context.Background(), validLogin(t)); err != nil {
+		t.Fatalf("a genuine allowed login afterwards: %v", err)
+	}
+}

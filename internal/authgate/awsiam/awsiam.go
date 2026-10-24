@@ -208,6 +208,14 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 		g.Replay.Release(key)
 		return Identity{}, err
 	}
+	// Authorised before anything is recorded: STS vouches for every AWS
+	// principal in the world, so recording a refused one would let any AWS
+	// account fill the cache and the store. A refused ARN replayed is simply
+	// refused again.
+	if !MatchAny(g.AllowedARNs, id.ARN) {
+		g.Replay.Release(key)
+		return Identity{}, invalid("%s is not in allowed_arns", id.ARN)
+	}
 	expires := replay.EntryExpiry(signedAt, window)
 	if g.Shared != nil {
 		// Another replica may have been handed the same request.
@@ -224,9 +232,6 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 	}
 	g.Replay.Commit(key, expires)
 	id.SignedAt = signedAt
-	if !MatchAny(g.AllowedARNs, id.ARN) {
-		return Identity{}, invalid("%s is not in allowed_arns", id.ARN)
-	}
 	return id, nil
 }
 
