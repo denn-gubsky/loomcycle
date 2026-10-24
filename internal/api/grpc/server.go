@@ -1146,6 +1146,11 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	if p.Restrictions.RunPlaneOnly() && !grpcRunPlaneRPCs[strings.TrimPrefix(fullMethod, grpcMethodPrefix)] {
 		return status.Error(codes.PermissionDenied, "this token is limited to starting and following runs of its allowed agents")
 	}
+	// RFC FA D16: a user-management credential reaches only the HTTP user
+	// routes; no RPC is on its list.
+	if auth.IsAuthManager(p) {
+		return status.Error(codes.PermissionDenied, "an "+auth.ScopeAuthManage+" token reaches only the user-management HTTP routes")
+	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
 		// RFC CB member path, as on HTTP (RFC EZ Q1): a NON-ISOLATED principal

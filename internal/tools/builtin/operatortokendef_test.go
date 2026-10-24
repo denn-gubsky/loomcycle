@@ -285,6 +285,19 @@ func TestOperatorTokenDef_RejectsUnknownScope(t *testing.T) {
 	}
 }
 
+// auth:manage is a website's cross-tenant user-management credential; mixed
+// into a wider token it would carry that reach into the other's surfaces, so
+// it is minted alone (RFC FA D16).
+func TestOperatorTokenDef_AuthManageIsMintedOnlyAlone(t *testing.T) {
+	tool, ctx, _, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"create","name":"site-mixed","tenant_id":"t","scopes":["auth:manage","runs:create"]}`))
+	if !res.IsError || !strings.Contains(res.Text, "only scope") {
+		t.Fatalf("auth:manage + runs:create should be refused; got %s", res.Text)
+	}
+	mustOp(t, tool, ctx, `{"op":"create","name":"site","tenant_id":"t","scopes":["auth:manage"]}`)
+}
+
 // "Acme" and "acme" are two tenants to loomcycle but ONE volume directory on
 // a case-insensitive filesystem. A mint that would create the second spelling
 // is refused; the existing spelling keeps minting.

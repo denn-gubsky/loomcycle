@@ -156,6 +156,9 @@ func resolvePrincipals(c *Config) error {
 		if bad := auth.UnknownScopes(def.Scopes); len(bad) > 0 {
 			return fmt.Errorf("principals.%s: unknown scope(s) %v (not in the closed catalog)", name, bad)
 		}
+		if err := auth.ValidateScopeSet(def.Scopes); err != nil {
+			return fmt.Errorf("principals.%s: %w", name, err)
+		}
 		// A tenant-confined principal must NAME its tenant. The store's list
 		// queries (ListUsers, UserList, the run and audit lists) read tenant ""
 		// as EVERY tenant — the admin all-tenants view — so a non-admin whose

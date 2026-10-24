@@ -58,6 +58,16 @@ func TestResolvePrincipals_UnknownScope(t *testing.T) {
 	}
 }
 
+func TestResolvePrincipals_AuthManageMustBeTheOnlyScope(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TOKEN_X", "lct_x")
+	c := &Config{Principals: map[string]PrincipalDef{
+		"x": {Subject: "site", Tenant: "site", Scopes: []string{auth.ScopeAuthManage, auth.ScopeTenant}, TokenEnv: "LOOMCYCLE_TOKEN_X"},
+	}}
+	if err := resolvePrincipals(c); err == nil || !strings.Contains(err.Error(), "only scope") {
+		t.Errorf("err = %v, want auth:manage refused alongside another scope", err)
+	}
+}
+
 func TestResolvePrincipals_NonAllowlistedTokenEnv(t *testing.T) {
 	t.Setenv("FOO_TOKEN", "lct_x")
 	c := &Config{Principals: map[string]PrincipalDef{

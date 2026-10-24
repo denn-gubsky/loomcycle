@@ -79,6 +79,7 @@ func eqClasses() []eqClass {
 		{name: "isolated-full", scopes: append([]string{auth.ScopeUser}, eqMemberScopes...), maximal: true},
 		{name: "isolated", scopes: []string{auth.ScopeUser}},
 		{name: "isolated+runplane", scopes: append([]string{auth.ScopeUser}, eqMemberScopes...), agents: []string{"chat"}},
+		{name: "auth-manager", scopes: []string{auth.ScopeAuthManage}, maximal: true},
 	}
 }
 
@@ -109,6 +110,10 @@ var baselineWiderThanGateHTTP = map[string]string{
 	// the roster question admits every user under it, so the carve-out is
 	// held by the scope gate.
 	"member-full|read principal:user:x": "the roster question cannot be granted without each user's; the member carve-out holds at the scope gate",
+	// The same for an auth:manage credential: it lists the roster but not
+	// GET /v1/_users/{subject} (the per-subject view aggregates usage and
+	// memory), and authManageRoute holds that at the scope gate.
+	"auth-manager|read principal:user:x": "the roster question cannot be granted without each user's; authManageRoute holds the per-subject view at the scope gate",
 }
 
 const inRunReach = "the class's in-run reach asks the same question as an off-run operator route the scope gate refuses it"
