@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -57,7 +57,7 @@ func (b credentialBinding) resolve(ctx context.Context, what, name string) (cred
 		// A store read fault is NOT a legitimate miss — still fail soft
 		// (see the type comment), but make it observable so a silent
 		// fall-back regression is diagnosable.
-		log.Printf("%s: credential resolve %q failed for tenant=%s: %v", what, name, ri.TenantID, err)
+		slog.Warn("credential: resolve failed", "caller", what, "env_var", name, "tenant", ri.TenantID, "err", err)
 		return credential.Resolved{}, false, nil
 	}
 	if !found {
@@ -118,7 +118,7 @@ func (b credentialBinding) keyable(ctx context.Context, tenantID, agentName, use
 		return false
 	}
 	if err != nil {
-		log.Printf("credential: keyable check %q for tenant=%s: %v", name, tenantID, err)
+		slog.Warn("credential: keyable check failed", "env_var", name, "tenant", tenantID, "err", err)
 		return false
 	}
 	return ok

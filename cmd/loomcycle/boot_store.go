@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -24,7 +24,7 @@ func (b *boot) openAndMigrateStore() {
 	// a shared contract suite in CI so they can't drift silently.
 	storeIface, storeCloser, err := openStore(cfg)
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		fatal("store: open failed", "err", err)
 	}
 	b.addCleanup(storeCloser)
 	// RFC CD Part C — when the change-data-capture feed is enabled, wrap the
@@ -33,7 +33,7 @@ func (b *boot) openAndMigrateStore() {
 	// coord below unwraps via asPostgresStore to reach the concrete backend.
 	if memoryChangesEnabled() && storeIface != nil {
 		storeIface = cdc.Wrap(storeIface, slog.Default())
-		log.Printf("memory: change-data-capture feed ENABLED (LOOMCYCLE_MEMORY_CHANGES_ENABLED=1)")
+		slog.Info("memory: change-data-capture feed ENABLED (LOOMCYCLE_MEMORY_CHANGES_ENABLED=1)")
 	}
 
 	// v0.9.x content_sha256 backfill — populate the new column on
@@ -45,22 +45,23 @@ func (b *boot) openAndMigrateStore() {
 	// AgentDef set/fork.
 	bfCtx, bfCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if n, err := storeIface.BackfillAgentDefContentSHA256(bfCtx, backfillAgentDefSignFn); err != nil {
-		log.Printf("agent_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+		slog.Error("agent_defs: backfill content_sha256 partial", "err", err, "rows_updated", n)
 	} else if n > 0 {
-		log.Printf("agent_defs: backfilled %d rows with content_sha256", n)
+		// Backfill messages kept verbatim: internal/help/builtin/content-signatures.md quotes them.
+		slog.Info(fmt.Sprintf("agent_defs: backfilled %d rows with content_sha256", n), "rows", n)
 	}
 	if n, err := storeIface.BackfillSkillDefContentSHA256(bfCtx, backfillSkillDefSignFn); err != nil {
-		log.Printf("skill_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+		slog.Error("skill_defs: backfill content_sha256 partial", "err", err, "rows_updated", n)
 	} else if n > 0 {
-		log.Printf("skill_defs: backfilled %d rows with content_sha256", n)
+		slog.Info(fmt.Sprintf("skill_defs: backfilled %d rows with content_sha256", n), "rows", n)
 	}
 	// v0.9.x mcp_server_defs backfill — shares the same 30-second
 	// bfCtx so the cumulative "boot blocked on slow store" wait is
 	// bounded. Documented best-effort posture as for the other two.
 	if n, err := storeIface.BackfillMCPServerDefContentSHA256(bfCtx, backfillMCPServerDefSignFn); err != nil {
-		log.Printf("mcp_server_defs: backfill content_sha256 partial — %v (rows updated before error: %d)", err, n)
+		slog.Error("mcp_server_defs: backfill content_sha256 partial", "err", err, "rows_updated", n)
 	} else if n > 0 {
-		log.Printf("mcp_server_defs: backfilled %d rows with content_sha256", n)
+		slog.Info(fmt.Sprintf("mcp_server_defs: backfilled %d rows with content_sha256", n), "rows", n)
 	}
 	// v0.9.x system_prompt_base backfill — fills the field that PR #186's
 	// read-side normalizer derives at runtime. Closes the on-disk data
@@ -69,9 +70,9 @@ func (b *boot) openAndMigrateStore() {
 	// second boot after a full backfill finds zero rows missing the
 	// field. Shares the same bfCtx — bounded boot wait.
 	if n, err := storeIface.BackfillAgentDefSystemPromptBase(bfCtx); err != nil {
-		log.Printf("agent_defs: backfill system_prompt_base partial — %v (rows updated before error: %d)", err, n)
+		slog.Error("agent_defs: backfill system_prompt_base partial", "err", err, "rows_updated", n)
 	} else if n > 0 {
-		log.Printf("agent_defs: backfilled %d rows with system_prompt_base", n)
+		slog.Info(fmt.Sprintf("agent_defs: backfilled %d rows with system_prompt_base", n), "rows", n)
 	}
 	bfCancel()
 

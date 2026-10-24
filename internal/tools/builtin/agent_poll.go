@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -217,7 +217,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("background child %s panicked: %v", runID, r)
+			slog.ErrorContext(cctx, "background child panicked", "child_run_id", runID, "panic", r)
 			finish(tools.ChildFailed, tools.ChildResult{Error: fmt.Sprintf("sub-agent %q failed: internal error", e.name)})
 		}
 	}()

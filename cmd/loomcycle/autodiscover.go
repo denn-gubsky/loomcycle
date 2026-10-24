@@ -4,7 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -125,9 +125,9 @@ func configDirLayers(dir string) ([]string, error) {
 // re-log the whole layering on every reload (auth.env is set-if-unset, so its
 // re-run at reload is a silent no-op regardless).
 func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]config.Layer, error) {
-	logf := func(format string, args ...any) {
+	info := func(msg string, args ...any) {
 		if verbose {
-			log.Printf(format, args...)
+			slog.Info(msg, args...)
 		}
 	}
 
@@ -142,7 +142,10 @@ func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]confi
 		for _, u := range units {
 			presetLayers = append(presetLayers, config.Layer{Name: u.Name, Data: u.Data})
 		}
-		logf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(presetNames), strings.Join(presetNames, ", "))
+		// The TrueNAS install guide quotes this line's text; keep it.
+		presets := strings.Join(presetNames, ", ")
+		info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(presetNames), presets),
+			"presets", presets)
 	}
 
 	// LOOMCYCLE_CONFIG_DIR (RFC AQ §4) — a directory of *.yaml/*.yml layered as a
@@ -155,7 +158,7 @@ func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]confi
 		}
 		configDirFiles = files
 		if len(files) > 0 {
-			logf("config: layering %d file(s) from LOOMCYCLE_CONFIG_DIR=%s (lexical order)", len(files), dir)
+			info("config: layering files from LOOMCYCLE_CONFIG_DIR (lexical order)", "files", len(files), "dir", dir)
 		}
 	}
 
@@ -176,7 +179,7 @@ func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]confi
 			cfgFiles = []string{resolvedCfg}
 		case len(presetLayers) > 0:
 			// Presets-only: the embedded base IS the config (RFC AQ §2.2).
-			logf("config: no operator config file — running from embedded presets only")
+			info("config: no operator config file — running from embedded presets only")
 		default:
 			var b strings.Builder
 			b.WriteString("no config found at any of:\n")
@@ -212,14 +215,14 @@ func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]confi
 				added = append(added, f)
 			}
 		}
-		logf("config: + %d section file(s): %s", len(added), strings.Join(added, ", "))
+		info("config: + section files", "files", len(added), "paths", strings.Join(added, ", "))
 		cfgFiles = expanded
 	}
 
 	// Ordered disk-file layers: CONFIG_DIR first, then CONFIG_FILES/--config.
 	diskFiles := append(append([]string{}, configDirFiles...), cfgFiles...)
 	if len(diskFiles) > 1 {
-		logf("config: layering %d files (last wins): %s", len(diskFiles), strings.Join(diskFiles, " ◁ "))
+		info("config: layering files (last wins)", "files", len(diskFiles), "paths", strings.Join(diskFiles, " ◁ "))
 	}
 	// Auto-load <configdir>/auth.env BEFORE config.Load reads os.Getenv, keyed on
 	// the LAST (authoritative) disk-file layer. Set-if-unset (real env wins), so a
@@ -227,9 +230,11 @@ func assembleConfigLayers(presetFlags, cfgPaths []string, verbose bool) ([]confi
 	// no file to load from.
 	if len(diskFiles) > 0 {
 		if authEnvPath, n, err := cli.LoadAuthEnv(diskFiles[len(diskFiles)-1]); err != nil {
-			logf("auth.env: %v (continuing without it)", err)
+			if verbose {
+				slog.Warn("auth.env: loading it failed (continuing without it)", "err", err)
+			}
 		} else if n > 0 {
-			logf("auth.env: loaded %d var(s) from %s (a shell export overrides them)", n, authEnvPath)
+			info("auth.env: loaded vars (a shell export overrides them)", "vars", n, "path", authEnvPath)
 		}
 	}
 

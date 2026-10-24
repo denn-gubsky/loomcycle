@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -46,7 +46,7 @@ func (b *boot) buildMCP() {
 			type closer interface{ Close() error }
 			cl, ok := c.(closer)
 			if !ok {
-				log.Printf("mcp pool: teardown skipped (%T does not implement Close)", c)
+				slog.Warn("mcp pool: teardown skipped (the client does not implement Close)", "client_type", fmt.Sprintf("%T", c))
 				return
 			}
 			_ = cl.Close()
@@ -116,7 +116,7 @@ func (b *boot) buildMCP() {
 	// set below.
 	skippedStaticMCP := map[string]bool{}
 	if mcpMode {
-		log.Printf("mcp mode: skipping eager upstream MCP init for %d server(s); run-start re-probe + lazy resolver handshake on first agent use", len(cfg.MCPServers))
+		slog.Info("mcp mode: skipping eager upstream MCP init; run-start re-probe + lazy resolver handshake on first agent use", "servers", len(cfg.MCPServers))
 		for name := range cfg.MCPServers {
 			skippedStaticMCP[name] = true
 		}
@@ -125,7 +125,7 @@ func (b *boot) buildMCP() {
 		for name, srv := range cfg.MCPServers {
 			_, descs, err := mcpPool.GetWithRetry(mcpInitCtx, name, slog.Default())
 			if err != nil {
-				log.Printf("mcp[%s]: skipped — %v — run-start re-probe will retry when a run references it", name, err)
+				slog.Warn("mcp: server skipped — run-start re-probe will retry when a run references it", "server", name, "err", err)
 				skippedStaticMCP[name] = true
 				continue
 			}
@@ -133,8 +133,8 @@ func (b *boot) buildMCP() {
 			for _, d := range filtered {
 				b.allTools = append(b.allTools, mcp.NewTool(mcpPool, name, d))
 			}
-			log.Printf("mcp[%s]: ready, %d/%d tools registered (transport=%s)",
-				name, len(filtered), len(descs), srv.Transport)
+			slog.Info("mcp: server ready", "server", name, "tools_registered", len(filtered),
+				"tools_offered", len(descs), "transport", srv.Transport)
 		}
 		mcpInitCancel()
 	}
@@ -155,7 +155,8 @@ func (b *boot) buildMCP() {
 	// (static cfg.MCPServers → dynamic registry), so cfg + the registry are
 	// passed straight through.
 	mcpLazyResolver := mcp.NewLazyResolver(mcpPool, cfg, dynamicMCPRegistry, func(server string, count int) {
-		log.Printf("mcp[%s]: lazy-registered %d tool(s) on first agent call", server, count)
+		// Message kept verbatim: docs/PLAN.md quotes it.
+		slog.Info(fmt.Sprintf("mcp[%s]: lazy-registered %d tool(s) on first agent call", server, count), "server", server, "tools", count)
 	}, 0)
 
 	b.dynamicMCPRegistry = dynamicMCPRegistry
