@@ -4839,6 +4839,23 @@ type MemorySearchFilter struct {
 	// ExcludeIDs drops rows whose id segment is in the set. Same shape as IDs;
 	// composes with it as AND. Empty constrains nothing.
 	ExcludeIDs []string
+	// IDsPrefixes confines IDs / ExcludeIDs to the DOCUMENT CLASS of these
+	// namespaces: a row is held to the lists only when its key begins with one of
+	// them AND it carries no provenance, and its id segment is then the text after
+	// THAT prefix. Every other row — a note, a fact (provenance; a fact homed in a
+	// chunk shares the chunk prefix, as ExcludeDocumentPrefix explains), a row in
+	// any other namespace — passes the lists untouched.
+	//
+	// It exists for a search that spans more than documents: a Memory search with
+	// no selector returns facts and notes beside chunk bodies and their derived
+	// units, and a document filter on it must narrow the documents without
+	// dropping everything else for not being a chunk id. Two prefixes rather than
+	// one because such a search reaches chunks AND units in its main legs.
+	//
+	// Empty: the lists apply to every row, segment after KeyPrefix (the
+	// single-namespace search, e.g. Document op=search). Meaningless without IDs
+	// or ExcludeIDs. Postgres only, like the lists themselves.
+	IDsPrefixes []string
 }
 
 // MemoryProvenanceConstraint selects rows by whether they carry provenance.
@@ -4939,7 +4956,7 @@ func (f MemorySearchFilter) IsZero() bool {
 		f.Provenance == ProvenanceAny &&
 		f.ObservedFrom.IsZero() && f.ObservedTo.IsZero() && !f.RequireObserved &&
 		f.AsOf.IsZero() && !f.RequireValid &&
-		len(f.IDs) == 0 && len(f.ExcludeIDs) == 0
+		len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 && len(f.IDsPrefixes) == 0
 }
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when
