@@ -108,3 +108,40 @@ func TestBaselines_ClassesDifferWhereTheyShould(t *testing.T) {
 		t.Errorf("browse self=%v other=%v", self.Outcome, other.Outcome)
 	}
 }
+
+// A walk op asks run, read or cancel of team:<name> (TeamDef run/poll/cancel).
+// Every class whose legacy gates let it start a walk — an isolated user
+// included: a substrate:user caller's walk runs isolated — must be admitted
+// by its baseline, or enforce with no lists authored would refuse what
+// compat admits. The run-plane list's deny on run is deliberate (RFC EF: a
+// token limited to certain agents may not reach others through a walk).
+func TestBaselines_EveryWalkingClassMayRunReadAndCancelAWalk(t *testing.T) {
+	bl := Baselines()
+	compile := func(names ...string) *Effective {
+		in := Input{Subject: Subject{TenantID: "t", ID: "alice"}, ACLs: map[string]ACLVersion{}, Now: testNow}
+		for _, n := range names {
+			in.Bindings = append(in.Bindings, Binding{ACL: n, SubjectKind: SubjectTenant})
+			in.ACLs[n] = ACLVersion{ACL: bl[n]}
+		}
+		e, err := Compile(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	for _, class := range []string{BaselineAdmin, BaselineTenantOperator, BaselineMember, BaselineIsolated} {
+		e := compile(class)
+		for _, verb := range []string{"run", "read", "cancel"} {
+			if got := ask(e, verb, "team", "rev"); got != Allowed {
+				t.Errorf("%s: %s team:rev = %v, want allowed", class, verb, got)
+			}
+		}
+	}
+	runPlane := compile(BaselineMember, BaselineRunPlane)
+	if got := ask(runPlane, "run", "team", "rev"); got != Denied {
+		t.Errorf("run-plane: run team:rev = %v, want denied", got)
+	}
+	if got := ask(runPlane, "cancel", "team", "rev"); got != Allowed {
+		t.Errorf("run-plane: cancel team:rev = %v, want allowed", got)
+	}
+}
