@@ -1,8 +1,10 @@
 package redact
 
 import (
+	"math/rand/v2"
 	"strings"
 	"testing"
+	"time"
 )
 
 const signedMarker = "[redacted:signed-url]"
@@ -307,6 +309,57 @@ func TestRedactor_SignedURLValueStopsOnlyAtABoundary(t *testing.T) {
 		}
 		if survived, atBoundary := strings.Contains(got, "FAKEz"), strings.IndexByte(boundary, c) >= 0; survived != atBoundary {
 			t.Errorf("%q: tail survived=%v: %s", c, survived, got)
+		}
+	}
+	// Percent forms: only the escape %26 ends a value.
+	for _, v := range []string{"abc%%def", "abc%2%def", "abc%2", "abc%", "abc%2%", "a%%%2b"} {
+		for _, tail := range []string{"", "%26x=1", "&x=1"} {
+			in := "https://h.example.com/p?token=" + v + tail
+			if got, want := r.String(in), "https://h.example.com/p?token="+signedMarker+tail; got != want {
+				t.Errorf("\n in   %s\n got  %s\n want %s", in, got, want)
+			}
+		}
+	}
+}
+
+// TestRedactor_SignedURLRandomValuesMaskedWhole: a value drawn from every
+// non-boundary character class, the ones a regex class is likely to drop
+// included, is masked whole and the next parameter is kept.
+func TestRedactor_SignedURLRandomValuesMaskedWhole(t *testing.T) {
+	r := New(nil, true).WithSignedURLParams()
+	const alphabet = "abcXYZ0129%%%26()|;,[]{}" + "`" + "-._~+/=?!*$@:"
+	rng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 5000; i++ {
+		b := make([]byte, 1+rng.IntN(24))
+		for j := range b {
+			b[j] = alphabet[rng.IntN(len(alphabet))]
+		}
+		v := string(b)
+		if strings.Contains(v, "%26") || strings.HasPrefix(v, "[redacted") {
+			continue // a real separator, or a value already masked
+		}
+		for _, sep := range []string{"&", jsonAmp} {
+			in := `{"u":"https://h.example.com/p?token=` + v + sep + `x=1"}`
+			want := `{"u":"https://h.example.com/p?token=` + signedMarker + sep + `x=1"}`
+			if got := r.String(in); got != want {
+				t.Fatalf("value %q:\n got  %s\n want %s", v, got, want)
+			}
+		}
+	}
+}
+
+// TestRedactor_SignedURLManyMatchesInOneValueStayLinear: matches inside one
+// long value (no boundary between them) must not each re-scan the value. On
+// a quadratic pass this input takes tens of seconds; a linear one, under
+// -race, well under a second.
+func TestRedactor_SignedURLManyMatchesInOneValueStayLinear(t *testing.T) {
+	r := New(nil, false).WithSignedURLParams()
+	for _, unit := range []string{"?code=x", "?token=x"} {
+		in := strings.Repeat(unit, 60000)
+		start := time.Now()
+		_ = r.String(in)
+		if d := time.Since(start); d > 5*time.Second {
+			t.Errorf("%q x60000 took %v", unit, d)
 		}
 	}
 }
