@@ -25,6 +25,18 @@ name: loomcycle
 networks:
   loomnet:
     driver: bridge
+  # The tunnel's own path to the runtime. Only cloudflared and the tailscale
+  # container (whose netns loomcycle shares) join it, and cloudflared has a
+  # fixed address, so loomcycle can trust exactly that address to report the
+  # real client in CF-Connecting-IP (config/loomcycle.yaml auth.trusted_proxies).
+  # On loomnet the same header could be forged by any container, including the
+  # agent-driven browser sidecar. The tunnel route must target the edge-only
+  # alias http://loomcycle-edge:8787 so its traffic takes this network.
+  edge:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.253.253.0/29
   # Dedicated network for serve-and-test sessions. A sandbox_open with `expose:<alias>`
   # attaches the (host-Docker-sibling) session container HERE under a --network-alias,
   # so a dev server it binds is reachable from the pinchtab sidecar at
@@ -90,7 +102,10 @@ services:
     image: tailscale/tailscale:latest
     restart: unless-stopped
     hostname: loomcycle-cloud
-    networks: [loomnet]
+    networks:
+      loomnet: {}
+      edge:
+        aliases: [loomcycle-edge]   # resolves only on edge: the tunnel's target
     cap_add: [NET_ADMIN]
     devices:
       - /dev/net/tun
@@ -354,14 +369,17 @@ services:
         condition: service_healthy
 
   # ── Cloudflare tunnel (token method) — app + loomcycle + board.loomcycle.cloud ──
-  #    Dashboard routes: app.loomcycle.cloud → http://tailscale:8787 (the runtime),
+  #    Dashboard routes: app.loomcycle.cloud → http://loomcycle-edge:8787 (the runtime, over `edge`),
   #    loomcycle.cloud → http://landing:8080 (this stack),
   #    board.loomcycle.cloud → http://loomboard:8080 (the hosted loomboard).
   #    Protect /api/* on loomcycle.cloud with a Cloudflare Access (Google) policy — see INSTALL.md.
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    networks: [loomnet]
+    networks:
+      loomnet: {}                   # landing, loomboard, the telegram bridge
+      edge:
+        ipv4_address: 10.253.253.2  # the one address loomcycle trusts for CF-Connecting-IP
     command: ["tunnel", "--no-autoupdate", "run"]
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}

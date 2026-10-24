@@ -15,7 +15,7 @@ server** (static site + self-serve token minting), and a Cloudflare tunnel — o
 ## Architecture
 
 ```
-Internet ─▶ Cloudflare edge ─▶ cloudflared ─┬─ app.loomcycle.cloud ─▶ tailscale:8787  (loomcycle UI/API)
+Internet ─▶ Cloudflare edge ─▶ cloudflared ─┬─ app.loomcycle.cloud ─▶ loomcycle-edge:8787 (loomcycle UI/API, via the `edge` network)
               (+ Access on         │         ├─ loomcycle.cloud      ─▶ landing:8080    (Node → cloud-web/ + /api/mint)
                loomcycle.cloud/api)│         └─ telegram.loomcycle.cloud/telegram/webhook ─▶ telegram-bridge:8443 (optional)
 compose network `loomnet`:
@@ -72,7 +72,8 @@ compose network `loomnet`:
 over the tailnet. Consequences baked into this compose:
 
 - **loomcycle has no compose DNS name of its own** — everything that dials it uses
-  **`http://tailscale:8787`** (the cloudflared route for `app.loomcycle.cloud`, and
+  **`http://tailscale:8787`** (on `loomnet`; the cloudflared route for `app.loomcycle.cloud` uses the
+  `edge`-only alias `http://loomcycle-edge:8787` so loomcycle can trust its `CF-Connecting-IP`; and
   the landing's `/v1` + `/healthz` proxy target).
 - loomcycle still reaches `postgres:5432`, `searxng:8080`, `builder-sidecar:9000`
   by name (tailscale is a normal member of `loomnet`).

@@ -99,11 +99,16 @@ any tailnet device: `tailscale status | grep -i ollama-host`. You'll put it in
 
    | Hostname | Service |
    |---|---|
-   | `app.loomcycle.cloud` | `http://tailscale:8787` |
+   | `app.loomcycle.cloud` | `http://loomcycle-edge:8787` |
    | `loomcycle.cloud`     | `http://landing:8080` |
 
-   > ⚠️ **The app hostname points at `tailscale:8787`, NOT `loomcycle:8787`.**
-   > loomcycle shares the tailscale netns and has no DNS name of its own.
+   > ⚠️ **The app hostname points at `loomcycle-edge:8787`, NOT `loomcycle:8787`.**
+   > loomcycle shares the tailscale netns and has no DNS name of its own;
+   > `loomcycle-edge` is the tailscale container's alias on the compose `edge`
+   > network, which only cloudflared shares. Going through it is what lets
+   > loomcycle trust `CF-Connecting-IP` from cloudflared alone. Older installs
+   > used `http://tailscale:8787`: that still works, but every sign-in then
+   > counts against one shared throttle bucket.
 
 3. Cloudflare auto-creates the proxied DNS records for the tunnel.
 
@@ -453,7 +458,18 @@ behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
    header as it is (don't set `httpHostHeader`): loomcycle treats a request
    whose Host matches this URL as HTTPS and issues the `__Host-lc_session`
    cookie.
-3. **After the deploy, mint the landing's credential**: one operator token
+3. **Point the tunnel at the edge network.** The compose file adds an `edge`
+   network that only cloudflared (fixed address `10.253.253.2`) and the
+   runtime join, and the config trusts `CF-Connecting-IP` from that address
+   alone. In the Cloudflare dashboard, change the `app.loomcycle.cloud`
+   route's service from `http://tailscale:8787` to
+   `http://loomcycle-edge:8787` after the deploy that adds the network. Until
+   you do, the runtime sees every sign-in as coming from cloudflared's
+   `loomnet` address: logins still work, but one attacker's failures slow
+   everyone's (never spoofable either way). If `10.253.253.0/29` collides
+   with a network on the host, change the subnet, the address and
+   `auth.trusted_proxies` together.
+4. **After the deploy, mint the landing's credential**: one operator token
    with only `auth:manage`. The landing uses it from phase 2 on.
 
    ```bash
@@ -466,7 +482,7 @@ behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
 
    Put the printed value in `.env.secure` as `LOOMCYCLE_AUTH_MANAGE_TOKEN=…`
    (it is shown once), then clear your terminal scrollback.
-4. **Check:** `https://app.loomcycle.cloud/ui/login` offers both the token
+5. **Check:** `https://app.loomcycle.cloud/ui/login` offers both the token
    box and "loomcycle.cloud account". Existing tokens keep working: the
    mode stays `token` until plan phase 6.
 
@@ -618,7 +634,7 @@ volumes:
 | runtime refuses to start, pgvector missing | pgvector binaries absent — use the `pgvector/pgvector:pg18` image (it ships them); wipe `pgdata/` and re-init if the first migrate ran before pgvector existed. |
 | runtime restarts in a loop, log `a password gate needs LOOMCYCLE_SECRET_KEY` (or `…LOOMCYCLE_PUBLIC_URL`) | The `auth:` block's password gate needs both. Set the missing one (see "Upgrading to Web UI sessions"), or comment out the `cloud:` gate in `config/loomcycle.yaml` to boot without it. |
 | Web UI sign-in on `app.loomcycle.cloud` sets `lc_session` (not `__Host-lc_session`) and the log warns about plain HTTP; in strict mode it fails with `insecure_transport` | The tunnel rewrites the Host header, so loomcycle can't tell the request came through HTTPS. Remove `httpHostHeader` from the tunnel's route. |
-| `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://tailscale:8787` (not `loomcycle:…`); confirm `cloudflared` is `running` and the hostname exists in the dashboard. |
+| `app.loomcycle.cloud` → 502 / 1033 | The tunnel route must target `http://loomcycle-edge:8787` (or the older `http://tailscale:8787`; never `loomcycle:…`); confirm `cloudflared` is `running`, attached to the `edge` network, and the hostname exists in the dashboard. |
 | landing status strip grey / config "not published" | `LOOMCYCLE_PUBLIC_CONFIG=1` must be set (it is by default); confirm the landing can reach `tailscale:8787` (`make logs S=landing`). |
 | `landing` exits at boot: `FATAL: CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD required` | Set both in `.env.insecure` from the Access app (Phase 4), or `MINT_DEV_ALLOW_UNVERIFIED=1` for local testing only. `FATAL: LOOMCYCLE_ADMIN_TOKEN required` → set it in `.env.secure`. |
 | **Create token** → `not signed in` (401) | The Access cookie isn't present — the `/api` Access app is missing/misconfigured, or you didn't complete the Google login. Verify the app protects `loomcycle.cloud` path `api` and `CF_ACCESS_AUD` matches. |

@@ -204,11 +204,14 @@ auth:
       # able to take over any owner's account, which is acceptable here only
       # because the landing proves the owner's Google identity first.
       manager_may_recover_owners: true
-  # The tunnel reaches loomcycle from the compose network, so without these
-  # every login would look like it came from cloudflared and one attacker's
-  # failures would throttle everyone. Trust the docker range and read
-  # Cloudflare's client-address header.
-  trusted_proxies: ["172.16.0.0/12"]
+  # The tunnel reaches loomcycle through cloudflared, so without these every
+  # login would look like it came from cloudflared and one attacker's failures
+  # would throttle everyone. Trust ONLY cloudflared's fixed address on the
+  # compose `edge` network: on loomnet any container (the agent-driven browser
+  # sidecar included) could forge CF-Connecting-IP. Needs the tunnel route on
+  # http://loomcycle-edge:8787 (INSTALL.md); until then, traffic arrives over
+  # loomnet, is not trusted, and shares one throttle bucket (never spoofable).
+  trusted_proxies: ["10.253.253.2/32"]
   client_ip_header: CF-Connecting-IP
 
 # ─── Web search ───────────────────────────────────────────────────────
