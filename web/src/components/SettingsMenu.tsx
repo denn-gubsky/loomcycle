@@ -27,6 +27,19 @@ import {
   settingsMenuItems,
 } from "../lib/settingsSections";
 import { type Surfaces } from "../lib/visibility";
+import { signOut } from "../lib/uiSession";
+
+/** The menu's "Log out": sign out from this click, and fall back to the
+ *  confirm page at href when the server could not end the session. */
+export async function handleLogoutClick(
+  e: { preventDefault(): void },
+  href: string,
+  out: () => Promise<boolean> = () => signOut(),
+  go: (url: string) => void = (url) => window.location.assign(url),
+): Promise<void> {
+  e.preventDefault();
+  if (!(await out())) go(href);
+}
 
 // A Record over Section, not a lookup with a fallback: adding a section without
 // an icon is then a type error here rather than a blank row in the menu.
@@ -184,9 +197,9 @@ export default function SettingsMenu({
             const startsGroup = i > 0 && items[i - 1].kind !== item.kind;
             const sep = startsGroup && <div className="settings-menu-sep" role="separator" />;
             if (item.kind === "logout") {
-              // A full-page anchor, not a router link: /ui/logout loads the
-              // logout page fresh, which ends the session on the server
-              // (POST /v1/_auth/logout) and clears the HttpOnly cookie.
+              // The click signs out itself (POST /v1/_auth/logout, then the
+              // login page). The href is the confirm page, for a middle-click
+              // or a failed sign-out.
               return (
                 <div key="logout" role="none">
                   {sep}
@@ -197,6 +210,7 @@ export default function SettingsMenu({
                     tabIndex={-1}
                     className="settings-menu-item settings-menu-logout"
                     onKeyDown={(e) => onItemKeyDown(e, i)}
+                    onClick={(e) => void handleLogoutClick(e, item.href)}
                   >
                     <LogOut size={15} />
                     {item.label}

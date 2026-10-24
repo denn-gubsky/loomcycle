@@ -54,6 +54,18 @@ export async function endSession(fetchImpl: typeof fetch = fetch): Promise<boole
   }
 }
 
+/** The sign-out a person asked for (a click): end the session, then go to the
+ *  login page. Never call it on page load — a link from another site could
+ *  then sign the user out, since this same-origin POST carries the cookie. */
+export async function signOut(
+  fetchImpl: typeof fetch = fetch,
+  go: (url: string) => void = (url) => window.location.assign(url),
+): Promise<boolean> {
+  const ok = await endSession(fetchImpl);
+  if (ok) go("/ui/login");
+  return ok;
+}
+
 /** One sign-in option, as /ui/login-config.json lists it. */
 export interface LoginGate {
   name: string;
