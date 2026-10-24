@@ -136,6 +136,9 @@ type Server struct {
 	// tokenAudit records delegated user-token mints and revocations
 	// (SetTokenAudit); nil = not recorded.
 	tokenAudit audit.Sink
+	// pwGates holds the configured password gates (RFC FA P2,
+	// SetPasswordGates); empty = no password gate.
+	pwGates passwordGatesHolder
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration
@@ -4246,6 +4249,19 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMintUserToken))))
 	mux.Handle("GET /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserTokens))))
 	mux.Handle("DELETE /v1/_users/{subject}/tokens/{def_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRevokeUserToken))))
+	// RFC FA P2 — the password gate's management API: invitations, reset
+	// links, password removal, login renames and the logins of a user. None
+	// accepts a password. A tenant operator manages its own tenant, an admin
+	// any, and an auth:manage credential any (authManageRoute admits it here
+	// and on the /v1/_users CRUD only). Scope-gated in requiredScopeFor.
+	mux.Handle("POST /v1/_authgate/{gate}/invites", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateCreateInvite))))
+	mux.Handle("GET /v1/_authgate/{gate}/invites", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListInvites))))
+	mux.Handle("DELETE /v1/_authgate/{gate}/invites/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRevokeInvite))))
+	mux.Handle("POST /v1/_authgate/{gate}/resets", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateCreateReset))))
+	mux.Handle("DELETE /v1/_authgate/{gate}/credentials/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateDeleteCredentials))))
+	mux.Handle("PATCH /v1/_authgate/{gate}/logins/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRenameLogin))))
+	mux.Handle("GET /v1/_authgate/{gate}/identities", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListIdentities))))
+	mux.Handle("GET /v1/_authgate/{gate}/tenant-status", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateTenantStatus))))
 	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
 	// _system/* channels. Used by external monitoring (push alerts in
 	// via webhook), ops dashboards (operator-issued alarms), and

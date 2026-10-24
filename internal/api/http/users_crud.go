@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -80,11 +81,20 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_subject", "subject is required")
 		return
 	}
+	tenant, caller, ok := s.userCrudTenant(w, r)
+	if !ok {
+		return
+	}
 	// Apply the RFC BX defaults BEFORE validating so an omitted dial means
 	// "full whole-tenant collaboration" (today's behaviour), not a rejection.
 	accessMode := strings.TrimSpace(req.AccessMode)
 	if accessMode == "" {
 		accessMode = "tenant"
+		// A website's credential provisions at the floor unless it says
+		// otherwise (and may say otherwise only for an empty tenant).
+		if caller == gateCallerManager {
+			accessMode = "isolated"
+		}
 	}
 	status := strings.TrimSpace(req.Status)
 	if status == "" {
@@ -100,8 +110,11 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 			"status must be one of active|disabled")
 		return
 	}
+	if caller == gateCallerManager && accessMode == "tenant" && !s.managerMayCreateOwner(w, r, tenant) {
+		return
+	}
 	row := store.UserRow{
-		TenantID:    tenantFromCtx(r.Context()), // authoritative principal tenant
+		TenantID:    tenant, // the principal's, or the one an admin / auth:manage named
 		Subject:     subject,
 		DisplayName: strings.TrimSpace(req.DisplayName),
 		AccessMode:  accessMode,
@@ -130,6 +143,49 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	// succeed, and a template document is a convenience.
 	s.ProvisionIdentityDocs(r.Context(), row.TenantID, row.Subject)
 	writeJSON(w, http.StatusCreated, toWireUserRecord(row))
+}
+
+// userCrudTenant is the tenant a user create / update / delete acts on. Before
+// RFC FA it was always the principal's own; an admin and an auth:manage
+// credential may now name another with ?tenant= (auth:manage must). A tenant
+// operator's ?tenant= is still ignored, as it always was.
+func (s *Server) userCrudTenant(w http.ResponseWriter, r *http.Request) (string, gateCaller, bool) {
+	ctx := r.Context()
+	switch caller := callerOf(ctx); caller {
+	case gateCallerManager, gateCallerAdmin:
+		return s.manageTenant(w, ctx, r.URL.Query().Get("tenant"))
+	default:
+		return tenantFromCtx(ctx), caller, true
+	}
+}
+
+// managerMayCreateOwner admits an auth:manage credential's access_mode
+// tenant user only as the first user of an empty tenant with no live owner
+// invite (the same bootstrap rule as an invite: D16). Operator tokens alone do
+// not make a tenant non-empty — legacy cloud tenants have them and no users
+// row, and their owner is created this way.
+func (s *Server) managerMayCreateOwner(w http.ResponseWriter, r *http.Request, tenant string) bool {
+	has, err := s.tenantHasUsers(r.Context(), tenant)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return false
+	}
+	if has {
+		writeJSONError(w, http.StatusForbidden, "tenant_not_empty",
+			"an "+auth.ScopeAuthManage+" token may create an access_mode tenant user only in a tenant with no users")
+		return false
+	}
+	live, err := s.store.AuthInviteLiveBootstrap(r.Context(), tenant, time.Now())
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return false
+	}
+	if live {
+		writeJSONError(w, http.StatusConflict, "bootstrap_invite_live",
+			"this tenant has a live owner invite; revoke it or let it be redeemed")
+		return false
+	}
+	return true
 }
 
 // handleUpdateUser serves PATCH /v1/_users/{subject}. Patches mutable fields
@@ -164,7 +220,28 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			"status must be one of active|disabled")
 		return
 	}
-	tenant := tenantFromCtx(r.Context())
+	tenant, caller, ok := s.userCrudTenant(w, r)
+	if !ok {
+		return
+	}
+	// RFC FA D16: auth:manage never promotes. Raising an existing user's
+	// access_mode is the tenant's own operator's call.
+	if caller == gateCallerManager && req.AccessMode != nil {
+		cur, err := s.store.UserGet(r.Context(), tenant, subject)
+		if err != nil {
+			if isNotFound(err) {
+				writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
+			} else {
+				writeJSONError(w, http.StatusInternalServerError, "user_update_failed", err.Error())
+			}
+			return
+		}
+		if accessRank(*req.AccessMode) > accessRank(cur.AccessMode) {
+			writeJSONError(w, http.StatusForbidden, "promotion_refused",
+				"an "+auth.ScopeAuthManage+" token cannot raise a user's access_mode")
+			return
+		}
+	}
 	patch := store.UserPatch{
 		DisplayName: req.DisplayName,
 		AccessMode:  req.AccessMode,
@@ -212,7 +289,10 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing_subject", "subject is required")
 		return
 	}
-	tenant := tenantFromCtx(r.Context())
+	tenant, _, ok := s.userCrudTenant(w, r)
+	if !ok {
+		return
+	}
 	// Fail-safe ordering: retire the user's delegated tokens BEFORE removing the
 	// identity row, so a deleted user's bearer can never outlive the record (the
 	// auth path is token-only). A no-op when the user has no tokens / doesn't
@@ -220,6 +300,13 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// stranding live tokens under a gone identity.
 	if _, err := s.retireDelegatedUserTokens(r.Context(), tenant, subject); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", err.Error())
+		return
+	}
+	// The user's logins and password go first too: a login must never map to a
+	// user that no longer exists, and a later user of the same name (an
+	// operator-chosen subject) must not inherit the old password.
+	if err := s.store.AuthSubjectDelete(r.Context(), tenant, subject); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "user_delete_failed", err.Error())
 		return
 	}
 	removed, err := s.store.UserDelete(r.Context(), tenant, subject)

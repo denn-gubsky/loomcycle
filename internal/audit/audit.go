@@ -130,6 +130,15 @@ type Event struct {
 	AuthGate   string   `json:"auth_gate,omitempty"`
 	AuthAMR    []string `json:"auth_amr,omitempty"`
 	AuthReason string   `json:"auth_reason,omitempty"`
+
+	// --- Password gate management (Action = "auth_invite_created" |
+	// "auth_invite_revoked" | "auth_invite_redeemed" | "auth_reset_issued" |
+	// "auth_password_set" | "auth_credential_removed" | "auth_login_renamed") ---
+	//
+	// The gate travels in AuthGate above; this adds the invite or reset row
+	// id. Never a code, a link, a password or a TOTP secret. The user travels
+	// in TargetTenant / TargetSubject, the caller in the Actor fields.
+	AuthRecordID string `json:"auth_record_id,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and
