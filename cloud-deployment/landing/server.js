@@ -483,10 +483,10 @@ app.post("/api/signup", accountRoute(async (req, res, p) => {
     // whose link they no longer have: revoke it and issue a fresh one rather
     // than telling them to find a link that was only ever in their address bar.
     if (st.inviteLive) await revokeLive(p.tenant, (inv) => inv.bootstrap === true);
-    body = { tenant: p.tenant, access_mode: "tenant", login: p.subject, return_to: SIGNUP_RETURN_TO };
+    body = { tenant: p.tenant, access_mode: "tenant", login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
   } else if (st.kind === "legacy") {
     await revokeLive(p.tenant, (inv) => inv.subject === st.subject);
-    body = { tenant: p.tenant, subject: st.subject, login: p.subject, return_to: SIGNUP_RETURN_TO };
+    body = { tenant: p.tenant, subject: st.subject, login: loginOf(p.subject), return_to: SIGNUP_RETURN_TO };
   } else {
     return res.status(409).json({ error: "already_signed_up", signed_up: true, app: APP_URL + "/ui/login" });
   }
@@ -534,7 +534,9 @@ app.get("/api/team/invites", accountRoute(async (_req, res, p) => {
 }));
 
 // POST /api/team/invites {email} — a member invite. It carries no access_mode
-// and no groups: the member gets the gate's floor, the API's own rule.
+// and no groups: the member gets the gate's floor, the API's own rule. Its
+// login is pinned to the invited address, so whoever opens the link cannot
+// take another login — someone else's e-mail — when redeeming it.
 app.post("/api/team/invites", accountRoute(async (req, res, p) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
   if (email.length > 254 || !EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid_email" });
@@ -542,7 +544,7 @@ app.post("/api/team/invites", accountRoute(async (req, res, p) => {
   const pending = (await tenantInvites(p.tenant)).filter((i) => i.state === "live").length;
   if (pending >= MAX_PENDING_INVITES) return res.status(429).json({ error: "too_many_pending" });
   inviteLimit.take(p.tenant);
-  const up = await manage("POST", gatePath("invites"), { body: { tenant: p.tenant, email } });
+  const up = await manage("POST", gatePath("invites"), { body: { tenant: p.tenant, email, login: loginOf(email) } });
   if (up.status !== 201) return sendUpstreamError(res, "invite", up);
   const link = checkedLink(up.json, "/ui/invite#");
   if (!link) { logWarn("account upstream invite: link outside APP_URL"); return res.status(502).json({ error: "link_mismatch" }); }

@@ -415,14 +415,24 @@ describe("GET /api/team", () => {
 });
 
 describe("invites", () => {
-  test("a member invite carries only the tenant and the e-mail, and returns the link with its expiry", async () => {
+  test("a member invite carries only the tenant and the e-mail, pinned as the login, and returns the link with its expiry", async () => {
     const { email, tenant } = await signUp();
     const m = mark();
-    const r = await call(on, "POST", "/api/team/invites", { email, body: { email: " New@Example.com ", access_mode: "tenant", groups: ["admins"], tenant: "t_evil", subject: "root" } });
+    const r = await call(on, "POST", "/api/team/invites", { email, body: { email: " New@Example.com ", login: "someone-else@example.com", access_mode: "tenant", groups: ["admins"], tenant: "t_evil", subject: "root" } });
     assert.equal(r.status, 201, r.text);
     assert.ok(r.json.url.includes("/ui/invite#lci_"));
     assert.ok(r.json.expires_at);
-    assert.deepEqual(mutations(m)[0].body, { tenant, email: "new@example.com" });
+    // login fixed to the invited address: whoever opens the link cannot take
+    // another login (e.g. someone else's e-mail) at redemption.
+    assert.deepEqual(mutations(m)[0].body, { tenant, email: "new@example.com", login: "new@example.com" });
+  });
+  test("a member invite for an address already a login at the gate is 409 login_taken", async () => {
+    const { email } = await signUp();
+    const taken = "taken-" + rnd(3) + "@example.com";
+    fake.logins.set(taken, { tenant: "t_other", subject: "cloud:x" });
+    const r = await call(on, "POST", "/api/team/invites", { email, body: { email: taken } });
+    assert.equal(r.status, 409);
+    assert.deepEqual(r.json, { error: "login_taken" });
   });
   test("an invalid e-mail is a 400 with no upstream write", async () => {
     const { email } = await signUp();
