@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -29,9 +30,11 @@ func (b *boot) startListeners() {
 	httpServer := b.httpServer
 
 	go func() {
-		log.Printf("loomcycle listening on %s", cfg.Env.ListenAddr)
+		// The text is quoted in the deployment guides as the sign of a
+		// healthy boot; keep it.
+		slog.Info(fmt.Sprintf("loomcycle listening on %s", cfg.Env.ListenAddr), "addr", cfg.Env.ListenAddr)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %v", err)
+			fatal("listen: serving HTTP failed", "addr", cfg.Env.ListenAddr, "err", err)
 		}
 	}()
 
@@ -89,7 +92,7 @@ func (b *boot) startListeners() {
 		}
 		grpcLis, err := net.Listen("tcp", cfg.Env.GrpcAddr)
 		if err != nil {
-			log.Fatalf("grpc listen %s: %v", cfg.Env.GrpcAddr, err)
+			fatal("grpc listen: opening the listener failed", "addr", cfg.Env.GrpcAddr, "err", err)
 		}
 		grpcAdapter.MustLogStartupBanner(cfg.Env.GrpcAddr)
 		go func() {
@@ -98,7 +101,7 @@ func (b *boot) startListeners() {
 			// failure (would pollute operator logs and trip alert
 			// rules watching for "error" tokens).
 			if err := grpcSrv.Serve(grpcLis); err != nil && !errors.Is(err, googlegrpc.ErrServerStopped) {
-				log.Printf("grpc serve: %v", err)
+				slog.Error("grpc serve: failed", "err", err)
 			}
 		}()
 	}
@@ -130,7 +133,7 @@ func (b *boot) waitAndShutdown() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
-	log.Println("shutting down…")
+	slog.Info("shutting down…")
 
 	// RFC ES F1: park the runs in flight so the next boot resumes them, while
 	// the listeners drain. Concurrently, not one after the other, so the whole
@@ -193,7 +196,7 @@ func (b *boot) waitAndShutdown() {
 	if webhookReceiver != nil {
 		fctx, fcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := webhookReceiver.FlushCounts(fctx); err != nil {
-			log.Printf("webhooks: storing the last delivery counts failed: %v", err)
+			slog.Error("webhooks: storing the last delivery counts failed", "err", err)
 		}
 		fcancel()
 	}
@@ -205,7 +208,7 @@ func (b *boot) waitAndShutdown() {
 		otelCtx, otelCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer otelCancel()
 		if err := otelShutdown(otelCtx); err != nil {
-			log.Printf("otel: shutdown failed: %v", err)
+			slog.Error("otel: shutdown failed", "err", err)
 		}
 	}
 }
@@ -233,23 +236,23 @@ func stopGRPC(srv *googlegrpc.Server, timeout time.Duration, runsPaused bool) {
 	case <-time.After(timeout):
 	}
 	if runsPaused {
-		log.Printf("grpc: %s graceful stop expired; the open streams end with the process", timeout)
+		slog.Warn("grpc: graceful stop expired; the open streams end with the process", "timeout", timeout)
 		return
 	}
-	log.Printf("grpc: %s graceful stop expired; stopping the open streams", timeout)
+	slog.Warn("grpc: graceful stop expired; stopping the open streams", "timeout", timeout)
 	srv.Stop()
 	<-done
 }
 
 // logShutdownPause reports what the shutdown pause did with the runs in flight.
 func logShutdownPause(res pause.ShutdownResult) {
-	log.Printf("shutdown: %d run(s) paused for the next boot to resume (%s); %d had their tool calls interrupted",
-		res.ParkedRuns, res.Duration.Round(time.Millisecond), len(res.InterruptedRuns))
+	slog.Info("shutdown: runs paused for the next boot to resume",
+		"paused", res.ParkedRuns, "elapsed", res.Duration.Round(time.Millisecond), "interrupted", len(res.InterruptedRuns))
 	if len(res.UnparkedRuns) > 0 {
-		log.Printf("shutdown: %d run(s) did not park in time and are not resumed (raise LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS): %s",
-			len(res.UnparkedRuns), strings.Join(res.UnparkedRuns, ", "))
+		slog.Warn("shutdown: runs did not park in time and are not resumed (raise LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS)",
+			"runs", len(res.UnparkedRuns), "run_ids", strings.Join(res.UnparkedRuns, ", "))
 	}
 	if res.UnpausableRuns > 0 {
-		log.Printf("shutdown: %d no-trace run(s) in flight are lost: they have nothing stored to resume from", res.UnpausableRuns)
+		slog.Warn("shutdown: no-trace runs in flight are lost: they have nothing stored to resume from", "runs", res.UnpausableRuns)
 	}
 }

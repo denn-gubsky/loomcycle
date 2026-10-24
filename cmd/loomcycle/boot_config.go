@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -23,13 +23,13 @@ func (b *boot) loadConfig() {
 	}
 	cfg, err := config.LoadLayers(layers...)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		fatal("config: load failed", "err", err)
 	}
 	// Non-fatal config advisories (e.g. an agent with Memory in tools
 	// but no memory_scopes — the tool would default-deny every call, F21).
 	// Surfaced once at boot so a silent-ish partial misconfig is visible.
 	for _, warn := range cfg.Warnings {
-		log.Printf("config: WARNING: %s", warn)
+		slog.Warn("config: warning", "detail", warn)
 	}
 	b.cfg = cfg
 }
@@ -50,13 +50,13 @@ func (b *boot) initTelemetry() {
 		SamplerRatio:   cfg.Env.OTELTracesSamplerRatio,
 	})
 	if otelErr != nil {
-		log.Fatalf("otel: %v", otelErr)
+		fatal("otel: tracer setup failed", "err", otelErr)
 	}
 	if cfg.Env.OTELExporterEndpoint != "" {
-		log.Printf("otel: tracer enabled — endpoint=%s service=%s sampler=traceidratio@%g",
-			cfg.Env.OTELExporterEndpoint, cfg.Env.OTELServiceName, cfg.Env.OTELTracesSamplerRatio)
+		slog.Info("otel: tracer enabled", "url", cfg.Env.OTELExporterEndpoint, "service", cfg.Env.OTELServiceName,
+			"sampler", fmt.Sprintf("traceidratio@%g", cfg.Env.OTELTracesSamplerRatio))
 	} else {
-		log.Printf("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
+		slog.Info("otel: disabled (set LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT to enable)")
 	}
 	b.otelShutdown = otelShutdown
 }

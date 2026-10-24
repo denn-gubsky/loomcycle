@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"os"
 	"strconv"
@@ -62,7 +61,7 @@ func (b *boot) startMCPSurfaces() {
 			// Sourced from the registry (lcmcp.MetaToolCount) so the count
 			// can't drift — the hardcoded "20" went stale once the registry
 			// grew past 40. Same rationale as the CLI help count.
-			log.Printf("mcp: stdio server starting (%d tools registered)", lcmcp.MetaToolCount())
+			slog.Info("mcp: stdio server starting", "tools", lcmcp.MetaToolCount())
 			// Not cancelled with the background work (RFC ES F1): a run a
 			// tools/call started here runs under the call's ctx, and the
 			// shutdown cancels the background ctx right after it parks the
@@ -70,9 +69,9 @@ func (b *boot) startMCPSurfaces() {
 			// instead of resumed. The loop ends on stdin's EOF, or with the
 			// process.
 			if err := mcpSrv.Serve(context.WithoutCancel(bgCtx), os.Stdin, os.Stdout); err != nil {
-				log.Printf("mcp: serve ended: %v", err)
+				slog.Error("mcp: serve ended", "err", err)
 			} else {
-				log.Printf("mcp: stdio closed; HTTP listener continues")
+				slog.Info("mcp: stdio closed; HTTP listener continues")
 			}
 		}()
 	}
@@ -109,14 +108,14 @@ func (b *boot) startMCPSurfaces() {
 	// 30-min session inactivity TTL — leaves at least ~25 min between
 	// a session's last access and its earliest possible reaping.
 	lcmcp.RunHTTPSessionSweeper(bgCtx, mcpHTTPHandler.Sessions(), 5*time.Minute, slog.Default())
-	log.Printf("mcp: HTTP transport enabled at POST /v1/_mcp (session sweeper interval=5m, TTL=30m)")
+	slog.Info("mcp: HTTP transport enabled at POST /v1/_mcp (session sweeper interval=5m, TTL=30m)")
 }
 
 // logSessionLockGC reports the session-lock GC settings. It is its own step,
 // apart from startSessionGC, because the boot log has always printed this
 // line after the MCP transport's.
 func (b *boot) logSessionLockGC() {
-	log.Printf("session-lock GC: interval=%s max_idle=%s", b.sessionGCInterval, b.sessionGCMaxIdle)
+	slog.Info("session-lock GC", "interval", b.sessionGCInterval, "max_idle", b.sessionGCMaxIdle)
 }
 
 // startResolveProbe registers the snapshot-restore force-probe and starts
@@ -148,7 +147,7 @@ func (b *boot) startResolveProbe() {
 		runResolveProbeOnce(ctx, resolver, pr, cfg)
 	})
 	go runResolveProbeLoop(bgCtx, resolver, pr, cfg, probeInterval)
-	log.Printf("resolve probe: interval=%s", probeInterval)
+	slog.Info("resolve probe: periodic re-probe started", "interval", probeInterval)
 }
 
 // wireConfigReload registers the runtime config-reload sections and the
