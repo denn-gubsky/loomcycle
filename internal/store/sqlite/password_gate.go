@@ -547,15 +547,20 @@ func (s *Store) AuthInviteGetByCode(ctx context.Context, codeHash string) (store
 	return authInviteGetWhere(ctx, s.db, "code_hash", codeHash, "")
 }
 
-// AuthInviteList implements store.PasswordGateStore.
+// AuthInviteList implements store.PasswordGateStore. The tenant filter is
+// unconditional: "" is the shared tenant, not a wildcard.
 func (s *Store) AuthInviteList(ctx context.Context, gate, tenantID string) ([]store.AuthInviteRow, error) {
-	q := `SELECT ` + inviteCols + ` FROM auth_invites WHERE gate = ?`
-	args := []any{gate}
-	if tenantID != "" {
-		q += ` AND tenant_id = ?`
-		args = append(args, tenantID)
-	}
-	q += ` ORDER BY created_at DESC, invite_id DESC`
+	return s.listInvites(ctx, `SELECT `+inviteCols+` FROM auth_invites WHERE gate = ? AND tenant_id = ?
+		ORDER BY created_at DESC, invite_id DESC`, gate, tenantID)
+}
+
+// AuthInviteListAllTenants implements store.PasswordGateStore.
+func (s *Store) AuthInviteListAllTenants(ctx context.Context, gate string) ([]store.AuthInviteRow, error) {
+	return s.listInvites(ctx, `SELECT `+inviteCols+` FROM auth_invites WHERE gate = ?
+		ORDER BY created_at DESC, invite_id DESC`, gate)
+}
+
+func (s *Store) listInvites(ctx context.Context, q string, args ...any) ([]store.AuthInviteRow, error) {
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("auth invite list: %w", err)

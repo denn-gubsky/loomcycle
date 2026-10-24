@@ -519,11 +519,16 @@ func (s *Server) handleAuthgateListInvites(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	// An admin naming no tenant sees every tenant's, as on the user roster.
+	// An admin naming no tenant sees every tenant's, as on the user roster —
+	// by its own store method, so no tenant value (the shared tenant is "")
+	// can stand for "all".
+	var rows []store.AuthInviteRow
+	var err error
 	if caller == gateCallerAdmin && strings.TrimSpace(wire) == "" {
-		tenant = ""
+		rows, err = s.store.AuthInviteListAllTenants(ctx, g.Name)
+	} else {
+		rows, err = s.store.AuthInviteList(ctx, g.Name, tenant)
 	}
-	rows, err := s.store.AuthInviteList(ctx, g.Name, tenant)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return

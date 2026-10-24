@@ -223,9 +223,14 @@ type PasswordGateStore interface {
 	// Both return the row whatever its state; *ErrNotFound{Kind:"auth_invite"}.
 	AuthInviteGet(ctx context.Context, inviteID string) (AuthInviteRow, error)
 	AuthInviteGetByCode(ctx context.Context, codeHash string) (AuthInviteRow, error)
-	// AuthInviteList returns the gate's invites in tenantID ("" = every
-	// tenant), newest first.
+	// AuthInviteList returns the gate's invites in exactly tenantID, newest
+	// first. "" is the shared tenant like any other, never "every tenant": a
+	// caller whose tenant resolved to "" must not read the others'.
 	AuthInviteList(ctx context.Context, gate, tenantID string) ([]AuthInviteRow, error)
+	// AuthInviteListAllTenants returns the gate's invites in every tenant,
+	// newest first: the admin's deliberate cross-tenant view, a separate
+	// method so no tenant value can select it.
+	AuthInviteListAllTenants(ctx context.Context, gate string) ([]AuthInviteRow, error)
 	// AuthInviteRevoke revokes a live invite and reports whether it did.
 	AuthInviteRevoke(ctx context.Context, inviteID string, at time.Time) (bool, error)
 	// AuthInviteRedeem applies a redemption in one transaction: it consumes the

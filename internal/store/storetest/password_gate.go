@@ -448,9 +448,13 @@ func testAuthInviteCreateGetListAndRevokeOnce(t *testing.T, s store.Store) {
 	if err != nil || !reflect.DeepEqual(ids(acme), []string{"inv-b", "inv-a"}) {
 		t.Errorf("acme list = %v, %v; want newest first [inv-b inv-a]", ids(acme), err)
 	}
-	all, err := s.AuthInviteList(ctx, pwgGate, "")
+	all, err := s.AuthInviteListAllTenants(ctx, pwgGate)
 	if err != nil || !reflect.DeepEqual(ids(all), []string{"inv-c", "inv-b", "inv-a"}) {
 		t.Errorf("all-tenant list = %v, %v; want [inv-c inv-b inv-a]", ids(all), err)
+	}
+	// "" is the shared tenant, not a wildcard: it lists none of the others'.
+	if shared, err := s.AuthInviteList(ctx, pwgGate, ""); err != nil || len(shared) != 0 {
+		t.Errorf("shared-tenant list = %v, %v; want none of the other tenants' invites", ids(shared), err)
 	}
 	if none, err := s.AuthInviteList(ctx, pwgGate, "nobody"); err != nil || none == nil || len(none) != 0 {
 		t.Errorf("empty list = %#v, %v; want an empty slice", none, err)
