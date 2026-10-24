@@ -229,3 +229,69 @@ func TestToolChoice_AnthropicKeepsForcingUnderAdaptiveThinking(t *testing.T) {
 		t.Errorf("tool_choice = %v, want the forced choice kept", body["tool_choice"])
 	}
 }
+
+// On Bedrock, Claude Sonnet 5 accepts a forced tool_choice only with thinking
+// explicitly disabled (it thinks adaptively when the field is omitted). The
+// forced choice is kept and thinking is turned off for that call; the direct
+// API and Vertex need no change.
+func TestToolChoice_BedrockSonnet5ForcedChoiceDisablesThinking(t *testing.T) {
+	for _, model := range []string{
+		"anthropic.claude-sonnet-5",
+		"eu.anthropic.claude-sonnet-5",
+		"us.anthropic.claude-sonnet-5-v1:0",
+		"global.anthropic.claude-sonnet-5-20260101-v1:0",
+	} {
+		for _, effort := range []string{"", "low", "high"} {
+			for _, mode := range []providers.ToolChoice{
+				{Mode: providers.ToolChoiceTool, Name: "emit_state"},
+				{Mode: providers.ToolChoiceRequired},
+			} {
+				req := baseReq()
+				req.Model, req.Effort, req.ToolChoice, req.MaxTokens = model, effort, mode, 16384
+				body := bodyOf(t, req)
+				if _, present := body["tool_choice"]; !present {
+					t.Errorf("%s/%q/%v: forced tool_choice dropped, want it kept", model, effort, mode.Mode)
+				}
+				if !jsonEqual(body["thinking"], map[string]any{"type": "disabled"}) {
+					t.Errorf("%s/%q/%v: thinking = %v, want {type: disabled}", model, effort, mode.Mode, body["thinking"])
+				}
+			}
+		}
+	}
+}
+
+// Guards: a call that does not force a tool keeps adaptive thinking and effort
+// on Bedrock Sonnet 5; the direct-API Sonnet 5 keeps both under a forced
+// choice; Sonnet 5.5 drops the forced choice instead; Haiku 5.5 keeps it with
+// its adaptive thinking.
+func TestToolChoice_ThinkingDisabledOnlyForBedrockSonnet5Forced(t *testing.T) {
+	forced := providers.ToolChoice{Mode: providers.ToolChoiceTool, Name: "emit_state"}
+	adaptive := map[string]any{"type": "adaptive"}
+	for _, tc := range []struct {
+		model        string
+		tc           providers.ToolChoice
+		wantThinking any
+		wantForced   bool
+	}{
+		{"eu.anthropic.claude-sonnet-5", providers.ToolChoice{}, adaptive, false},
+		{"eu.anthropic.claude-sonnet-5", providers.ToolChoice{Mode: providers.ToolChoiceNone}, adaptive, false},
+		{"claude-sonnet-5", forced, adaptive, true},
+		{"eu.anthropic.claude-sonnet-5-5", forced, adaptive, false},
+		{"eu.anthropic.claude-haiku-5-5", forced, adaptive, true},
+	} {
+		req := baseReq()
+		req.Model, req.Effort, req.ToolChoice, req.MaxTokens = tc.model, "high", tc.tc, 16384
+		body := bodyOf(t, req)
+		if !jsonEqual(body["thinking"], tc.wantThinking) {
+			t.Errorf("%s/%v: thinking = %v, want %v", tc.model, tc.tc.Mode, body["thinking"], tc.wantThinking)
+		}
+		if !jsonEqual(body["output_config"], map[string]any{"effort": "high"}) {
+			t.Errorf("%s/%v: output_config = %v, want effort high", tc.model, tc.tc.Mode, body["output_config"])
+		}
+		got, present := body["tool_choice"]
+		forcedSent := present && !jsonEqual(got, map[string]any{"type": "none"})
+		if forcedSent != tc.wantForced {
+			t.Errorf("%s/%v: forced tool_choice sent = %v (%v), want %v", tc.model, tc.tc.Mode, forcedSent, got, tc.wantForced)
+		}
+	}
+}
