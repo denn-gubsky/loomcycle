@@ -21,20 +21,31 @@ test("every inline script compiles", () => {
   }
 });
 
-// withoutCodeBlocks drops scripts, styles and comments so only markup is
-// counted. It is not a sanitizer (the result is never rendered), but it is
-// written like one: case-insensitive, tolerant of `</script >`, and repeated
-// until nothing changes, so a removal can't leave a new block behind.
+// withoutCodeBlocks returns the markup outside scripts, styles and comments,
+// so only real tags are counted. It scans and copies rather than deleting
+// matches, so it is not a sanitizer and is never used as one (the result is
+// only counted, never rendered).
+const BLOCKS = [["<script", "</script", ">"], ["<style", "</style", ">"], ["<!--", "-->", ""]];
 function withoutCodeBlocks(s) {
-  let prev;
-  do {
-    prev = s;
-    s = s
-      .replace(/<script\b[\s\S]*?<\/script\b[^>]*>/gi, "")
-      .replace(/<style\b[\s\S]*?<\/style\b[^>]*>/gi, "")
-      .replace(/<!--[\s\S]*?-->/g, "");
-  } while (s !== prev);
-  return s;
+  const lower = s.toLowerCase();
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    let start = -1;
+    let block = null;
+    for (const b of BLOCKS) {
+      const at = lower.indexOf(b[0], i);
+      if (at >= 0 && (start < 0 || at < start)) [start, block] = [at, b];
+    }
+    if (start < 0) return out + s.slice(i);
+    out += s.slice(i, start);
+    const close = lower.indexOf(block[1], start + block[0].length);
+    if (close < 0) return out; // an unterminated block runs to the end
+    const after = block[2] ? lower.indexOf(block[2], close + block[1].length) : close + block[1].length - 1;
+    if (after < 0) return out;
+    i = after + 1;
+  }
+  return out;
 }
 
 test("div, table, form and button tags are balanced", () => {
