@@ -63,7 +63,11 @@ type env struct {
 	grpc loomcyclepb.LoomcycleClient
 }
 
-func newEnv(t *testing.T, mode authz.Mode) *env {
+func newEnv(t *testing.T, mode authz.Mode) *env { return newEnvWith(t, mode, nil) }
+
+// newEnvWith is newEnv with tools: wire, when set, returns the server's
+// per-agent tools and wires the rest onto the server once it exists.
+func newEnvWith(t *testing.T, mode authz.Mode, wire func(cfg *config.Config, st store.Store) ([]tools.Tool, func(*lchttp.Server))) *env {
 	t.Helper()
 	cfg := &config.Config{
 		Defaults:    config.Defaults{Provider: "none", Model: "none"},
@@ -92,7 +96,12 @@ func newEnv(t *testing.T, mode authz.Mode) *env {
 			t.Fatal(err)
 		}
 	}
-	srv := lchttp.New(cfg, noProviders{}, []tools.Tool{}, concurrency.New(4, 4, 2*time.Second), st)
+	agentTools, wireServer := []tools.Tool{}, func(*lchttp.Server) {}
+	if wire != nil {
+		agentTools, wireServer = wire(cfg, st)
+	}
+	srv := lchttp.New(cfg, noProviders{}, agentTools, concurrency.New(4, 4, 2*time.Second), st)
+	wireServer(srv)
 	srv.SetACLResolver(aclres.New(st, mode, 0))
 	srv.SetMCPHTTPHandler(lcmcp.NewHTTPHandler(lcmcp.Config{Connector: srv, Runner: srv, Store: st, Logf: func(string, ...any) {}}))
 	ts := httptest.NewServer(srv.Mux())
