@@ -14,15 +14,31 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.resolve(HERE, "../../../cloud-web/index.html"), "utf8");
 
 test("every inline script compiles", () => {
-  const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const scripts = [...html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi)].map((m) => m[1]);
   assert.ok(scripts.length >= 1);
   for (const [i, s] of scripts.entries()) {
     assert.doesNotThrow(() => new vm.Script(s, { filename: `inline-script-${i}.js` }), `inline script ${i}`);
   }
 });
 
+// withoutCodeBlocks drops scripts, styles and comments so only markup is
+// counted. It is not a sanitizer (the result is never rendered), but it is
+// written like one: case-insensitive, tolerant of `</script >`, and repeated
+// until nothing changes, so a removal can't leave a new block behind.
+function withoutCodeBlocks(s) {
+  let prev;
+  do {
+    prev = s;
+    s = s
+      .replace(/<script\b[\s\S]*?<\/script\b[^>]*>/gi, "")
+      .replace(/<style\b[\s\S]*?<\/style\b[^>]*>/gi, "")
+      .replace(/<!--[\s\S]*?-->/g, "");
+  } while (s !== prev);
+  return s;
+}
+
 test("div, table, form and button tags are balanced", () => {
-  const body = html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<style[\s\S]*?<\/style>/g, "").replace(/<!--[\s\S]*?-->/g, "");
+  const body = withoutCodeBlocks(html);
   for (const tag of ["div", "table", "tbody", "form", "button", "p"]) {
     const open = (body.match(new RegExp(`<${tag}[\\s>]`, "g")) || []).length;
     const close = (body.match(new RegExp(`</${tag}>`, "g")) || []).length;
