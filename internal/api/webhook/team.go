@@ -72,6 +72,9 @@ func buildTeamWalkInput(w config.Webhook, proj projectResult, body []byte) (runn
 		Isolated:              w.Isolated,
 		// The user can come from the delivery, as for a spawned run.
 		CredentialsNoUserScope: true,
+		// RFC EZ §1.5: the def author's set binds the walk, as buildRunInput
+		// carries it for a spawned run.
+		ACLOwner: w.ACLOwner,
 	}, nil
 }
 
@@ -134,8 +137,9 @@ func (rec *Receiver) deliverTeam(ctx context.Context, w http.ResponseWriter, spa
 
 	// A detached ctx, as the async spawn uses: an accepted delivery's walk
 	// must not die with the sender's connection, and nothing on the request is
-	// the walk's authority — that is all in `in`.
-	runID, err := rec.teams.StartTeamWalk(context.Background(), in)
+	// the walk's authority — that is all in `in`. It names the webhook
+	// transport, as a spawned run's does.
+	runID, err := rec.teams.StartTeamWalk(deliveryRunCtx(), in)
 	if err == nil {
 		rec.setHeldRun(name, held, runID)
 		rec.dedup.recordAccepted(dk)
@@ -199,6 +203,10 @@ func (rec *Receiver) teamStartErrorResponse(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_run", "")
 	case errors.Is(err, runner.ErrTokenLimitExceeded):
 		writeError(w, http.StatusTooManyRequests, "token_limit_exceeded", "")
+	case errors.Is(err, runner.ErrAgentNotAllowed):
+		// The def owner's access-control rules do not allow running its team
+		// (RFC EZ §1.5): refused, not retried, as an agent delivery's is.
+		writeError(w, http.StatusForbidden, "agent_not_allowed", "")
 	default:
 		// A paused runtime, or a start that failed: retry with backoff.
 		writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "")

@@ -42,6 +42,12 @@ func (s *Server) StartTeamWalk(ctx context.Context, in runner.TeamWalkInput) (st
 	if err := s.teamWalkStartable(ctx, in); err != nil {
 		return "", err
 	}
+	// After the team is known to exist, as an agent run asks `run agent:`
+	// once its agent is resolved: the owner's set narrows the walk's members.
+	ctx, err := s.triggerWalkOwnerCtx(ctx, in.ACLOwner, in.Team)
+	if err != nil {
+		return "", err
+	}
 
 	body, err := json.Marshal(map[string]any{
 		"op":    "run",
@@ -128,6 +134,10 @@ func (s *Server) teamWalkStartable(ctx context.Context, in runner.TeamWalkInput)
 // which a non-admin author cannot point outside its own tenant; the two bits
 // are the ones captured from that author. This is subscriptionCtx with a
 // trigger definition in place of a promoter.
+//
+// The definition owner's access-control set is not stamped here: it is on
+// ctx's run policy already (triggerWalkOwnerCtx), and members inherit it from
+// there.
 //
 // The agent id is the walk's own label: nothing resolves it, and it must not
 // read as some agent's.
