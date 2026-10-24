@@ -344,6 +344,11 @@ func resolveAuth(c *Config) error {
 	if p.Lifecycle, err = resolveLifecycle(c.Auth.Lifecycle); err != nil {
 		return err
 	}
+	if lifecycleSet(c.Auth.Lifecycle) && !lifecycleConsumed {
+		// No gate of this release provisions users yet: a lifecycle block
+		// would read as a policy nothing applies.
+		return fmt.Errorf("auth.lifecycle is not supported yet: no gate kind in this release provisions users")
+	}
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
 	}

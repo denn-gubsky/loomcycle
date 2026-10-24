@@ -151,16 +151,15 @@ func TestResolveAuth_IdentityMapRefusedOnTokenAndPasswordGates(t *testing.T) {
 	}
 }
 
-func TestResolveAuth_LifecycleResolved(t *testing.T) {
+// No fail-open keys: until a gate kind provisions users, an auth.lifecycle
+// block (and a kind that would take an identity_map) is refused at load.
+func TestResolveAuth_LifecycleRefusedUntilAGateProvisions(t *testing.T) {
 	c := &Config{Auth: AuthConfig{Lifecycle: AuthLifecycleConfig{NewUser: AuthNewUserConfig{Status: "pending"}}}}
-	if err := resolveAuth(c); err != nil {
-		t.Fatal(err)
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "not supported yet") {
+		t.Fatalf("lifecycle: %v", err)
 	}
-	if f := c.ResolvedAuth.NewUserFloor(); f.Status != "pending" || f.AccessMode != "isolated" {
-		t.Fatalf("floor = %+v", f)
-	}
-	c = &Config{Auth: AuthConfig{Lifecycle: AuthLifecycleConfig{NewUser: AuthNewUserConfig{AccessMode: "tenant"}}}}
-	if err := resolveAuth(c); err == nil {
-		t.Fatal("a tenant lifecycle floor loaded")
+	c = &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"g": {Kind: "oidc", IdentityMap: &AuthIdentityMapConfig{Tenant: "a"}}}}}
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "not supported in this release yet") {
+		t.Fatalf("oidc with identity_map: %v", err)
 	}
 }
