@@ -23,7 +23,7 @@ There are three alternatives, and each was ruled out:
 
 - **The landing holds one narrow credential.** It is an operator token with the `auth:manage` scope. That scope covers user and gate management across tenants, and nothing else: no runs, no data, no token minting, no ACL authoring.
 - **The website handles arrival and team management.** It creates a tenant's owner invite, lists the team, invites members and issues reset links.
-- **Passwords are typed only on loomcycle's own pages** (D17): `app.loomcycle.cloud/ui/invite/{code}` and `/ui/reset/{code}`. The website never sees a password.
+- **Passwords are typed only on loomcycle's own pages** (D17): `app.loomcycle.cloud/ui/invite#<code>` and `/ui/reset#<code>` (the code rides the URL fragment and is POSTed in the body, so it never reaches an access log). The website never sees a password.
 - **Signing in to the app is a password login** on `app.loomcycle.cloud`, which then holds a server-side session (P0). The browser holds no bearer.
 
 ## Target architecture
@@ -35,7 +35,7 @@ There are three alternatives, and each was ruled out:
                 │                                   ▼
                 │                         tailscale:8787  /v1/_authgate/cloud/*, /v1/_users*
                 │
-                └─ redirect ─▶ app.loomcycle.cloud/ui/invite/{code}   (set login + password; session cookie)
+                └─ redirect ─▶ app.loomcycle.cloud/ui/invite#<code>    (set login + password; session cookie)
                                app.loomcycle.cloud/ui/login           (login + password [+ TOTP])
 ```
 
@@ -65,6 +65,12 @@ auth:
       # over any owner's account, which is acceptable here only because the
       # landing proves the owner's Google identity first (RFC FA §6.1.1).
       manager_may_recover_owners: true
+  # The tunnel connects from the compose network, so without these every login
+  # would look like it came from cloudflared and one attacker's failures would
+  # throttle everyone. Trust the docker range the compose networks use and read
+  # Cloudflare's client-address header.
+  trusted_proxies: ["172.16.0.0/12"]
+  client_ip_header: CF-Connecting-IP
 ```
 
 What `auth:manage` may not do, on any deployment (RFC FA §6.1.1):
@@ -89,7 +95,7 @@ All the new routes follow the same rules:
 
 | Route | Does | Upstream |
 |---|---|---|
-| `POST /api/signup` | Creates the visitor's workspace, or re-enters it. **Empty tenant:** create a bootstrap owner invite (`access_mode: tenant`, `login` = e-mail, `return_to: https://loomcycle.cloud/?welcome=1`), then **redirect the browser straight to the invite link**. The visitor sets a password at once, so no e-mail is needed. **Tenant has users, and the e-mail is a legacy subject with no password:** a migration invite that attaches to that subject (phase 4). **Otherwise:** `409 {signed_up: true, app: "https://app.loomcycle.cloud/ui/login"}`. | `GET /v1/_users?tenant=` (does the tenant have users?), `POST /v1/_authgate/cloud/invites` |
+| `POST /api/signup` | Creates the visitor's workspace, or re-enters it. **Empty tenant:** create a bootstrap owner invite (`access_mode: tenant`, `login` = e-mail, `return_to: https://loomcycle.cloud/?welcome=1`), then **redirect the browser straight to the invite link**. Redeeming it also binds the owner to `builtin:tenant-operator` in their tenant, so their app session can run the tenant's operator plane (RFC FA §6.1.2). The visitor sets a password at once, so no e-mail is needed. **Tenant has users, and the e-mail is a legacy subject with no password:** a migration invite that attaches to that subject (phase 4). **Otherwise:** `409 {signed_up: true, app: "https://app.loomcycle.cloud/ui/login"}`. | `GET /v1/_users?tenant=` (does the tenant have users?), `POST /v1/_authgate/cloud/invites` |
 | `GET /api/team` | Lists the members, `{subject, display_name, login, access_mode, status}` | `GET /v1/_users?tenant=`, `GET /v1/_authgate/cloud/identities` |
 | `POST /api/team/invites` `{email, display_name?}` | Invites a member. The member gets the floor (`isolated`, `[everyone, new-users]`), the API's own rule (D16). The response is the link plus an expiry, for the owner to copy. | `POST /v1/_authgate/cloud/invites` |
 | `GET /api/team/invites`, `DELETE /api/team/invites/:id` | Lists pending invites (never the code), and revokes one | the matching routes |
