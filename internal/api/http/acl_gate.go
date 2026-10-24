@@ -353,3 +353,27 @@ func emitACLRemovedTools(removed []string, emit func(providers.Event)) {
 		})
 	}
 }
+
+// stampWalkStarterACL is ctx for a team walk about to open its run, with the
+// starter's set on its run policy — the carrier its members inherit it
+// through (prepareSubRunValues reads the parent policy's ACL), so each is
+// narrowed by it and asked `spawn agent:` for it (RFC EZ §1.5). The starter
+// is the caller on ctx (runCallerACL): a principal on the HTTP, gRPC or MCP
+// plane, or a recorded caller.
+//
+// A set already on the policy is kept: an enclosing run's (a walk an agent
+// starts is bound by that run's originating caller) or a trigger owner's
+// (triggerWalkOwnerCtx). Inside a run with no set, nothing is stamped either:
+// the run's caller had none, and a principal on its ctx is not the run's
+// authority. No set to stamp (open mode, a team subscription's walk): ctx as
+// it is.
+func stampWalkStarterACL(ctx context.Context) context.Context {
+	if tools.PolicyOf(ctx).ACL != nil || tools.RunID(ctx) != "" {
+		return ctx
+	}
+	eff := runCallerACL(ctx)
+	if eff == nil {
+		return ctx
+	}
+	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = eff })
+}
