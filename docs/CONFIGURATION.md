@@ -1931,6 +1931,25 @@ Every commit also carries a `Loomcycle-Run: <run id>` trailer. See `docs/TOOLS.m
 **Memory.** A clone holds its pack on disk and at most a few objects in memory, each no larger than the object limit. Budget a small multiple of `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` per clone running at once.
 
 
+### 9d.2.3 The run inbox (files tools return)
+
+The runtime makes one ephemeral volume of its own per run tree: **`inbox`**, at `<dynamic_root>/_ephemeral/<root_run_id>/inbox`. A file that a tool returns is kept there instead of reaching the model as bytes; this covers an MCP image/audio/blob block, base64 from a server with `binary_results: capture`, and a binary HTTP or WebFetch body. The model gets a one-line reference such as `volume:inbox:documents/report.pdf` that Read, Crypto and the `File` tool take (see [TOOLS.md](TOOLS.md), "Files tools return").
+
+- **Requires a `dynamic_root` volume.** Without one, nothing is kept and every file becomes a refusal line. It is made on the first capture, recorded like any ephemeral volume, and purged with the tree, with the same crash sweeper. The TrueNAS app ships one (a `dynamic` volume on its own dataset, mounted at `/mnt/dynamic`); a hand-written deployment must declare one.
+- **The name is reserved.** `VolumeDef op=create` refuses `inbox`, persistent or ephemeral. A tenant's existing persistent volume, or a configured `volumes:` entry, named `inbox` makes every capture refuse rather than be shadowed: rename it.
+- **Runtime writes are not agent writes.** Captures, downloads and extractions are written by the runtime, so a sub-agent whose ephemeral volumes are read-only still has its results kept. Its own `File rm`/`clear` are refused, like any write.
+- **Visible to operators.** The Volumes page lists a live inbox with its tenant's ephemeral volumes, and the MCP `file` tool reads, imports or copies out of a run's inbox by `run_id` (changing it needs the run's owner or an admin).
+- **Caps** (refuse the boot on a bad value):
+
+| Variable | Default | Bounds |
+|---|---|---|
+| `LOOMCYCLE_FILE_MAX_BYTES` | 64 MiB | one kept or downloaded file |
+| `LOOMCYCLE_FILE_INBOX_MAX_BYTES` | 1 GiB | the tree's whole inbox (a resumed tree counts what it already holds) |
+| `LOOMCYCLE_MCP_MAX_FRAME_BYTES` | 16 MiB | one MCP response: a stdio JSON-RPC line, or an MCP HTTP body |
+| `LOOMCYCLE_FILE_BASE64_MIN_BYTES` | 4096 | the shortest base64 string a `binary_results: capture` server's text is searched for |
+
+Since RFC FF, `/loomcycle/rfcs/files-by-reference`.
+
 ### 9d.3 Volumes console tab (RFC AH Phase 4)
 
 The embedded Web UI (`/ui`) has a dedicated **Volumes** tab (admin-gated, alongside Library / Integrations / Channels / Schedules) to view and manage volumes for the operator's tenant. It's a thin client over the HTTP surface — no new runtime behaviour.
