@@ -764,8 +764,8 @@ func TestGrpcMemory_ObservedAtOnSetPassesThroughVerbatim(t *testing.T) {
 
 // TestGrpcCredentialDef_ScopeGate: the RFC AR credential RPC is ScopeTenant, but
 // RFC CN admits an isolated substrate:user caller via the self-service carve-out
-// (and only for THIS RPC). A plain member is denied — gRPC has no RFC CB member
-// bypass.
+// (and only for THIS RPC). A plain (non-isolated) member reaches it on the
+// member path, as it reaches POST /v1/_credentialdef (RFC EZ Q1).
 func TestGrpcCredentialDef_ScopeGate(t *testing.T) {
 	if got := requiredScopeForRPC(grpcMethodPrefix + "CredentialDef"); got != auth.ScopeTenant {
 		t.Errorf("CredentialDef scope = %q, want substrate:tenant", got)
@@ -791,8 +791,8 @@ func TestGrpcCredentialDef_ScopeGate(t *testing.T) {
 
 	member := auth.WithPrincipal(context.Background(),
 		auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}})
-	if err := enforceScope(member, cred); status.Code(err) != codes.PermissionDenied {
-		t.Errorf("member on CredentialDef: code = %v, want PermissionDenied (no gRPC member bypass)", status.Code(err))
+	if err := enforceScope(member, cred); err != nil {
+		t.Errorf("member on CredentialDef: %v, want admitted (the member path, as on HTTP)", err)
 	}
 }
 

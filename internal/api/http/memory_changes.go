@@ -20,7 +20,7 @@ import (
 // Value-free: each frame names WHAT changed; the subscriber pulls the current
 // value via the data API. Tenant-scoped (the feed is read for the caller's OWN
 // tenant only) and — per the locked decision — substrate:tenant, NOT
-// member-accessible (see memberCarveOut). The table is only ever populated when
+// member-accessible (see memberpath.CarvedOut). The table is only ever populated when
 // LOOMCYCLE_MEMORY_CHANGES_ENABLED; with the feed off this stream just idles.
 
 const memoryChangesPollInterval = 250 * time.Millisecond
