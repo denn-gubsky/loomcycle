@@ -4311,6 +4311,12 @@ button.primary:disabled {
   border-radius: 12px;
   background: var(--panel, #161a22);
 }
+/* A gate's sign-in form sits inside the card and keeps its column rhythm. */
+.login-card > form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
 .login-brand {
   font-weight: 700;
   letter-spacing: 0.02em;

@@ -33,6 +33,12 @@ import MyCredentialsView from "./pages/MyCredentialsView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
 import LoginView from "./pages/LoginView";
+import LogoutView from "./pages/LogoutView";
+import { installUIRequestHeader } from "./lib/uiSession";
+
+// Before anything fetches: every same-origin request carries the header the
+// server's CSRF check asks of a session-authenticated write.
+installUIRequestHeader(window);
 
 // Mounted at /ui/ in production; the BrowserRouter basename matches
 // so links / navigation generate correct paths.
@@ -48,6 +54,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         {/* Login is outside the Layout shell (no nav, no whoami gate) —
             it's where a 401 bounces and where the token-entry form lives. */}
         <Route path="login" element={<LoginView />} />
+        {/* Logout is a page, not a server GET: it posts the logout and then
+            goes to the login page, so a link elsewhere cannot end a session. */}
+        <Route path="logout" element={<LogoutView />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="run" element={<RunView />} />

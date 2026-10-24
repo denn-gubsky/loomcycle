@@ -184,8 +184,9 @@ export default function SettingsMenu({
             const startsGroup = i > 0 && items[i - 1].kind !== item.kind;
             const sep = startsGroup && <div className="settings-menu-sep" role="separator" />;
             if (item.kind === "logout") {
-              // A full-page anchor, not a router link: the session cookie is
-              // HttpOnly, so only the server's /ui/logout handler can clear it.
+              // A full-page anchor, not a router link: /ui/logout loads the
+              // logout page fresh, which ends the session on the server
+              // (POST /v1/_auth/logout) and clears the HttpOnly cookie.
               return (
                 <div key="logout" role="none">
                   {sep}
