@@ -98,12 +98,13 @@ func (f *ForwardAuthHMAC) Verify(ctx context.Context, identity, signature string
 	if window <= 0 {
 		window = DefaultHMACWindow
 	}
-	if d := now.Sub(t); d > window || d < -window {
+	if d := now.Sub(t); d >= window || d <= -window {
 		return Identity{}, invalid("forward-auth: timestamp outside the window")
 	}
-	// Remembered until t leaves the window, the last moment it could be
-	// presented again.
-	if err := f.Replay.Admit(nonce, t.Add(window)); err != nil {
+	// Remembered past the last moment t is inside the window, judged by the
+	// same clock read as the window. The MAC is already checked, so only an
+	// authenticated nonce is recorded.
+	if err := f.Replay.Admit(nonce, replay.EntryExpiry(t, window), now); err != nil {
 		return Identity{}, invalid("forward-auth: nonce %v", err)
 	}
 	claims, err := decodeClaims([]byte(identity))

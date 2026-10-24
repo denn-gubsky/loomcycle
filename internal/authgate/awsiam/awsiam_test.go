@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,11 +84,9 @@ func newFakeSTS(t *testing.T) *fakeSTS {
 }
 
 func (f *fakeSTS) gate() *Gate {
-	c := replay.New(0)
-	c.SetClock(func() time.Time { return t0 })
 	return &Gate{
 		ServerID: serverID, AllowedARNs: []string{"arn:aws:iam::123456789012:role/ci-*"},
-		Regions: []string{"eu-west-1"}, Replay: c, HTTP: f.srv.Client(),
+		Regions: []string{"eu-west-1"}, Replay: replay.New(0), HTTP: f.srv.Client(),
 		Now:      func() time.Time { return t0 },
 		endpoint: func(string) string { return f.srv.URL + "/" },
 	}
@@ -341,4 +340,169 @@ func TestCanonicalARN(t *testing.T) {
 			t.Errorf("CanonicalARN(%q) accepted", bad)
 		}
 	}
+}
+
+// junkLogin is well-formed but signed with a key STS does not know: only STS
+// can tell it is not genuine.
+func junkLogin(t *testing.T, i int) LoginData {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, "https://sts.amazonaws.com/", strings.NewReader(stsBody))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+	req.Header.Set(ServerIDHeader, serverID)
+	creds := awsauth.Credentials{AccessKeyID: fmt.Sprintf("AKIAJUNK%d", i), SecretAccessKey: fmt.Sprintf("junk-%d", i)}
+	awsauth.SignRequest(req, []byte(stsBody), creds, "us-east-1", "sts", t0)
+	hb, _ := json.Marshal(req.Header)
+	enc := base64.StdEncoding.EncodeToString
+	return LoginData{Method: http.MethodPost, URL: enc([]byte("https://sts.amazonaws.com/")), Headers: enc(hb), Body: enc([]byte(stsBody))}
+}
+
+func TestGate_UnauthenticatedSignaturesNeverFillTheReplayCache(t *testing.T) {
+	f := newFakeSTS(t)
+	g := f.gate()
+	g.Replay = replay.New(4)
+	for i := 0; i < 20; i++ {
+		if _, err := g.Verify(context.Background(), junkLogin(t, i)); !errors.Is(err, authgate.ErrInvalidCredential) {
+			t.Fatalf("junk %d: %v", i, err)
+		}
+	}
+	if n := g.Replay.Len(); n != 0 {
+		t.Fatalf("STS-refused signatures left %d entries in the replay cache", n)
+	}
+	if _, err := g.Verify(context.Background(), validLogin(t)); err != nil {
+		t.Fatalf("a genuine login after a flood of junk: %v", err)
+	}
+}
+
+func TestGate_ConcurrentIdenticalRequestsAdmitExactlyOne(t *testing.T) {
+	f := newFakeSTS(t)
+	release := make(chan struct{})
+	var arrived atomic.Int32
+	inner := f.srv.Config.Handler
+	f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived.Add(1)
+		<-release
+		inner.ServeHTTP(w, r)
+	})
+	g := f.gate()
+	d := validLogin(t)
+	const n = 6
+	var ok atomic.Int32
+	done := make(chan struct{}, n)
+	for i := 0; i < n; i++ {
+		go func() {
+			if _, err := g.Verify(context.Background(), d); err == nil {
+				ok.Add(1)
+			}
+			done <- struct{}{}
+		}()
+	}
+	// Let the presentations reach the point where they call STS (or are
+	// refused), then answer every one STS received.
+	deadline := time.Now().Add(5 * time.Second)
+	for arrived.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	for i := 0; i < n; i++ {
+		<-done
+	}
+	if ok.Load() != 1 {
+		t.Fatalf("%d of %d identical concurrent requests accepted, want 1", ok.Load(), n)
+	}
+}
+
+func TestGate_RequestAtTheWindowEdgeCannotBeReplayedLater(t *testing.T) {
+	f := newFakeSTS(t)
+	g := f.gate()
+	signed := t0.Add(-DefaultWindow + time.Second) // one second from the edge
+	d := login(t, "AKIACIROLE", "https://sts.amazonaws.com/", "us-east-1", stsBody, signed, nil)
+	if _, err := g.Verify(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	// At every later moment the window still accepts it, the entry still
+	// refuses it.
+	for _, at := range []time.Time{t0.Add(500 * time.Millisecond), signed.Add(DefaultWindow - time.Nanosecond)} {
+		at := at
+		g.Now = func() time.Time { return at }
+		if _, err := g.Verify(context.Background(), d); !errors.Is(err, authgate.ErrInvalidCredential) {
+			t.Fatalf("replay at +%s: %v, want ErrInvalidCredential", at.Sub(signed), err)
+		}
+	}
+	// Exactly one window old, the window itself refuses it.
+	edge := login(t, "AKIACIROLE", "https://sts.amazonaws.com/", "us-east-1", stsBody, t0.Add(-DefaultWindow), nil)
+	if _, err := f.gate().Verify(context.Background(), edge); !errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("a request signed exactly one window ago: %v, want ErrInvalidCredential", err)
+	}
+}
+
+// sharedRecord stands in for store.AuthReplayStore.
+type sharedRecord struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+	err  error
+}
+
+func (s *sharedRecord) AuthReplayAdmit(_ context.Context, scope, key string, expires, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return false, s.err
+	}
+	if s.seen == nil {
+		s.seen = map[string]time.Time{}
+	}
+	if until, ok := s.seen[scope+"/"+key]; ok && now.Before(until) {
+		return false, nil
+	}
+	s.seen[scope+"/"+key] = expires
+	return true, nil
+}
+
+func TestGate_RequestReplayedToAnotherReplicaIsRefused(t *testing.T) {
+	f := newFakeSTS(t)
+	shared := &sharedRecord{}
+	a, b := f.gate(), f.gate() // two replicas: separate caches, one store
+	a.Shared, a.SharedScope = shared, "awsiam:ci"
+	b.Shared, b.SharedScope = shared, "awsiam:ci"
+	d := validLogin(t)
+	if _, err := a.Verify(context.Background(), d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Verify(context.Background(), d); !errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("replay to the second replica = %v, want ErrInvalidCredential", err)
+	}
+	sig := mustAuth(t, d).Signature
+	for k := range shared.seen {
+		if strings.Contains(k, sig) {
+			t.Fatal("the shared record holds the raw signature, not its hash")
+		}
+	}
+}
+
+func TestGate_SharedRecordFailureRefusesTheLogin(t *testing.T) {
+	f := newFakeSTS(t)
+	g := f.gate()
+	g.Shared, g.SharedScope = &sharedRecord{err: errors.New("db down")}, "awsiam:ci"
+	if _, err := g.Verify(context.Background(), validLogin(t)); err == nil {
+		t.Fatal("accepted a login whose replay record could not be written")
+	}
+	// The local reservation was released: once the store is back, the same
+	// (still fresh) request is judged again rather than refused as a replay.
+	g.Shared = &sharedRecord{}
+	if _, err := g.Verify(context.Background(), validLogin(t)); err != nil {
+		t.Fatalf("after the store recovered: %v", err)
+	}
+}
+
+func mustAuth(t *testing.T, d LoginData) awsauth.SigV4Authorization {
+	t.Helper()
+	raw, _ := base64.StdEncoding.DecodeString(d.Headers)
+	var h map[string][]string
+	_ = json.Unmarshal(raw, &h)
+	a, err := awsauth.ParseAuthorization(h["Authorization"][0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }

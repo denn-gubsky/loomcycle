@@ -4,7 +4,16 @@
 //
 // The cache is in-process and bounded. It answers for one replica only: a
 // gate whose credential can be replayed against a second replica within its
-// window needs a store-backed admitter beside it (the AWS IAM gate has one).
+// window records it in the store as well (store.AuthReplayStore).
+//
+// Two ways in. Admit is for a value whose credential is already
+// authenticated (the forward-auth HMAC was checked first). Reserve / Commit /
+// Release is for a value that only a remote check can authenticate (an STS
+// signature): Reserve holds it in flight, so a concurrent identical
+// presentation is refused, and only Commit — after the check passed — records
+// it; Release drops a reservation whose check failed. So an unauthenticated
+// caller can never leave a value behind: it can hold at most what it has in
+// flight.
 package replay
 
 import (
@@ -14,9 +23,10 @@ import (
 )
 
 var (
-	// ErrReplayed: the value was already admitted and has not expired.
+	// ErrReplayed: the value was already admitted and has not expired, or a
+	// presentation of it is in flight.
 	ErrReplayed = errors.New("replay: value already used")
-	// ErrFull: the cache holds its maximum of unexpired values. The caller
+	// ErrFull: the cache holds its maximum of live values. The caller
 	// refuses the credential: admitting it unrecorded would let it be
 	// replayed, and evicting a live entry would let THAT one be.
 	ErrFull = errors.New("replay: cache full")
@@ -26,44 +36,89 @@ var (
 // is ~15 MB at worst, and a value only stays until its window closes.
 const DefaultMax = 100_000
 
+// Margin is how long an entry outlives the last moment its value is
+// acceptable, so a clock read a moment later than the acceptance check never
+// finds the entry already gone.
+const Margin = time.Minute
+
+// EntryExpiry is when the entry for a value stamped at `at` and acceptable
+// while |now - at| < window may be forgotten.
+func EntryExpiry(at time.Time, window time.Duration) time.Time {
+	return at.Add(window + Margin)
+}
+
+// entry is a committed value (until set) or a reservation in flight.
+type entry struct {
+	until    time.Time
+	inFlight bool
+}
+
 // Cache is a set of admitted values with expiry. The zero value is not
 // usable; build one with New.
 type Cache struct {
 	mu  sync.Mutex
-	m   map[string]time.Time
+	m   map[string]entry
 	max int
-	now func() time.Time
 }
 
-// New builds a cache holding at most max unexpired values (DefaultMax when
+// New builds a cache holding at most max live values (DefaultMax when
 // max ≤ 0).
 func New(max int) *Cache {
 	if max <= 0 {
 		max = DefaultMax
 	}
-	return &Cache{m: make(map[string]time.Time), max: max, now: time.Now}
+	return &Cache{m: make(map[string]entry), max: max}
 }
 
-// SetClock replaces the cache's clock (tests).
-func (c *Cache) SetClock(now func() time.Time) {
-	c.mu.Lock()
-	c.now = now
-	c.mu.Unlock()
-}
-
-// Admit records key as used until expires. It is check-and-insert in one
-// step, so two concurrent presentations of one value admit exactly one.
-func (c *Cache) Admit(key string, expires time.Time) error {
+// Admit records key as used until expires, in one check-and-insert step: of
+// two concurrent presentations of one value, exactly one is admitted. now is
+// the caller's clock read, the same one it judged the credential's window by.
+func (c *Cache) Admit(key string, expires, now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.now()
-	if until, ok := c.m[key]; ok && now.Before(until) {
+	if err := c.claimLocked(key, now); err != nil {
+		return err
+	}
+	c.m[key] = entry{until: expires}
+	return nil
+}
+
+// Reserve holds key in flight. Every Reserve that returns nil must be
+// followed by exactly one Commit or Release.
+func (c *Cache) Reserve(key string, now time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.claimLocked(key, now); err != nil {
+		return err
+	}
+	c.m[key] = entry{inFlight: true}
+	return nil
+}
+
+// Commit turns a reservation into a used value, kept until expires.
+func (c *Cache) Commit(key string, expires time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[key] = entry{until: expires}
+}
+
+// Release drops a reservation. A committed value is left alone.
+func (c *Cache) Release(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.m[key]; ok && e.inFlight {
+		delete(c.m, key)
+	}
+}
+
+func (c *Cache) claimLocked(key string, now time.Time) error {
+	if e, ok := c.m[key]; ok && (e.inFlight || now.Before(e.until)) {
 		return ErrReplayed
 	}
 	if len(c.m) >= c.max {
 		// Sweep only when full: an O(n) pass amortised over max inserts.
-		for k, until := range c.m {
-			if !now.Before(until) {
+		for k, e := range c.m {
+			if !e.inFlight && !now.Before(e.until) {
 				delete(c.m, k)
 			}
 		}
@@ -71,11 +126,11 @@ func (c *Cache) Admit(key string, expires time.Time) error {
 			return ErrFull
 		}
 	}
-	c.m[key] = expires
 	return nil
 }
 
-// Len is the number of values held, expired ones included until a sweep.
+// Len is the number of values held (reservations and committed, expired ones
+// included until a sweep).
 func (c *Cache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

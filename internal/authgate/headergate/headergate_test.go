@@ -452,11 +452,9 @@ func TestALBRegionFromSigner(t *testing.T) {
 var hmacSecret = []byte("0123456789abcdef0123456789abcdef")
 
 func hmacGate() *ForwardAuthHMAC {
-	c := replay.New(0)
-	c.SetClock(fixedNow)
 	return &ForwardAuthHMAC{
 		Secret: func(context.Context) ([]byte, error) { return hmacSecret, nil },
-		Replay: c, Now: fixedNow,
+		Replay: replay.New(0), Now: fixedNow,
 	}
 }
 
@@ -541,5 +539,23 @@ func TestForwardAuth_UnavailableSecretFailsClosed(t *testing.T) {
 	g.Secret = func(context.Context) ([]byte, error) { return nil, errors.New("store down") }
 	if _, err := g.Verify(context.Background(), testIdentity, SignForwardAuth(hmacSecret, testIdentity, t0, "nonce-0000000000001")); err == nil {
 		t.Fatal("verified with no secret")
+	}
+}
+
+func TestForwardAuth_HeaderAtTheWindowEdgeCannotBeReplayedLater(t *testing.T) {
+	g := hmacGate()
+	stamped := t0.Add(-DefaultHMACWindow + time.Second)
+	sig := SignForwardAuth(hmacSecret, testIdentity, stamped, "nonce-0000000000edge")
+	if _, err := g.Verify(context.Background(), testIdentity, sig); err != nil {
+		t.Fatal(err)
+	}
+	last := stamped.Add(DefaultHMACWindow - time.Nanosecond)
+	g.Now = func() time.Time { return last }
+	if _, err := g.Verify(context.Background(), testIdentity, sig); !errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("replay at the last acceptable moment: %v, want ErrInvalidCredential", err)
+	}
+	edge := SignForwardAuth(hmacSecret, testIdentity, t0.Add(-DefaultHMACWindow), "nonce-00000000000edge2")
+	if _, err := hmacGate().Verify(context.Background(), testIdentity, edge); !errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("a header stamped exactly one window ago: %v, want ErrInvalidCredential", err)
 	}
 }

@@ -27,7 +27,9 @@ package awsiam
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -83,6 +85,11 @@ type Identity struct {
 	SignedAt time.Time
 }
 
+// SharedAdmitter is the cross-replica replay record (store.AuthReplayStore).
+type SharedAdmitter interface {
+	AuthReplayAdmit(ctx context.Context, scope, key string, expires, now time.Time) (bool, error)
+}
+
 // Gate verifies presented STS requests.
 type Gate struct {
 	// ServerID is the value the signed X-Loomcycle-AWS-Server-ID must carry.
@@ -93,7 +100,13 @@ type Gate struct {
 	// one.
 	Regions []string
 	Window  time.Duration
-	Replay  *replay.Cache
+	// Replay holds signatures in flight and remembers the ones STS accepted,
+	// on this replica.
+	Replay *replay.Cache
+	// Shared, when set, records each accepted signature (as a SHA-256 hash)
+	// for every replica, under SharedScope.
+	Shared      SharedAdmitter
+	SharedScope string
 	// HTTP is the client STS is called with; nil uses a 10-second-timeout
 	// client that follows no redirects.
 	HTTP *http.Client
@@ -170,6 +183,7 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 	if err != nil || signedAt.UTC().Format("20060102") != auth.Day {
 		return Identity{}, invalid("X-Amz-Date is missing or disagrees with the credential scope")
 	}
+	// One clock read judges the window and stamps the replay entry.
 	now := time.Now()
 	if g.Now != nil {
 		now = g.Now()
@@ -178,16 +192,37 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 	if window <= 0 {
 		window = DefaultWindow
 	}
-	if dt := now.Sub(signedAt); dt > window || dt < -window {
+	if dt := now.Sub(signedAt); dt >= window || dt <= -window {
 		return Identity{}, invalid("request was signed outside the %s window", window)
 	}
-	if err := g.Replay.Admit("sig:"+auth.Signature, signedAt.Add(window)); err != nil {
+	// The signature is held in flight while STS judges it, so a concurrent
+	// identical presentation is refused, and recorded only once STS said it
+	// is genuine: an unauthenticated caller can never leave an entry behind
+	// (or fill a bounded cache and so lock out real logins).
+	key := "sig:" + auth.Signature
+	if err := g.Replay.Reserve(key, now); err != nil {
 		return Identity{}, invalid("request %v", err)
 	}
 	id, err := g.ask(ctx, host, hdr, auth, body)
 	if err != nil {
+		g.Replay.Release(key)
 		return Identity{}, err
 	}
+	expires := replay.EntryExpiry(signedAt, window)
+	if g.Shared != nil {
+		// Another replica may have been handed the same request.
+		sum := sha256.Sum256([]byte(auth.Signature))
+		ok, err := g.Shared.AuthReplayAdmit(ctx, g.SharedScope, hex.EncodeToString(sum[:]), expires, now)
+		if err != nil {
+			g.Replay.Release(key)
+			return Identity{}, fmt.Errorf("awsiam: recording the request: %w", err)
+		}
+		if !ok {
+			g.Replay.Commit(key, expires)
+			return Identity{}, invalid("request %v", replay.ErrReplayed)
+		}
+	}
+	g.Replay.Commit(key, expires)
 	id.SignedAt = signedAt
 	if !MatchAny(g.AllowedARNs, id.ARN) {
 		return Identity{}, invalid("%s is not in allowed_arns", id.ARN)
