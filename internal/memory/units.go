@@ -132,7 +132,9 @@ func (q SearchQuery) UnitLegFilter(main store.MemorySearchFilter) (store.MemoryS
 	}
 	// The id lists carry over unchanged: a unit key's id segment is its chunk's
 	// id, so the list that restricts the chunks restricts their units too.
-	return q.When.Filter(store.MemorySearchFilter{KeyPrefix: prefix, IDs: main.IDs, ExcludeIDs: main.ExcludeIDs}), true
+	// So does the confinement: a narrowed prefix (doc.unit:<part of an id>) cannot
+	// have its segment cut after it, which is what IDsPrefixes is for.
+	return q.When.Filter(store.MemorySearchFilter{KeyPrefix: prefix, IDs: main.IDs, ExcludeIDs: main.ExcludeIDs, IDsPrefixes: main.IDsPrefixes}), true
 }
 
 // prefixReaches reports whether a key filtered by prefix could lie in ns.
