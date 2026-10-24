@@ -491,6 +491,23 @@ func (b *boot) startStoreSweepers() {
 			})
 	}
 
+	// Web UI session sweeper (RFC FA §5): a revoked or expired session can no
+	// longer authenticate, so its row only takes space. Hourly, one replica
+	// per cluster per tick; the delete is idempotent.
+	if storeIface != nil {
+		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyUISessionSweeper, "ui-session",
+			func(ctx context.Context) {
+				n, err := storeIface.UISessionDeleteExpired(ctx, time.Now())
+				if err != nil {
+					slog.Error("ui-session sweep: failed", "err", err)
+					return
+				}
+				if n > 0 {
+					slog.Info("ui-session sweep: deleted ended sessions", "rows", n)
+				}
+			})
+	}
+
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
 	// goroutine only matters for keeping the table small over the

@@ -81,6 +81,13 @@ func (b *boot) buildServer() {
 		// The deployment guides quote this refusal's text; keep it.
 		fatal(fmt.Sprintf("auth: %v", err))
 	}
+	if err := strictModeRefusal(bootAuthConfigured, cfg); err != nil {
+		fatal(fmt.Sprintf("auth: %v", err))
+	}
+	slog.Info("auth: Web UI sign-in", "mode", cfg.ResolvedAuth.ModeName(), "gates", len(cfg.ResolvedAuth.LoginGates()))
+	if w := insecureCookiesWarning(&cfg.Env); w != "" {
+		slog.Warn(w)
+	}
 	b.bootAuthConfigured = bootAuthConfigured
 	if bootAuthConfigured {
 		for _, w := range srv.AuthPostureWarnings(context.Background()) {

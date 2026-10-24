@@ -175,6 +175,9 @@ var (
 	// LockKeyExpiredTokenSweeper gates the hourly delete of token rows whose
 	// fixed lifetime ran out long enough ago.
 	LockKeyExpiredTokenSweeper int64
+	// LockKeyUISessionSweeper gates the hourly delete of Web UI session rows
+	// that are revoked or expired (RFC FA §5).
+	LockKeyUISessionSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -237,6 +240,7 @@ func init() {
 	LockKeyMemoryPendingSweeper = fnvKey("memory_pending_sweeper")
 	LockKeyScheduleReconcile = fnvKey("schedule_reconcile")
 	LockKeyExpiredTokenSweeper = fnvKey("expired_token_sweeper")
+	LockKeyUISessionSweeper = fnvKey("ui_session_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

@@ -163,3 +163,26 @@ func TestWarnOpenMode_StoreErrorTickNeitherWarnsNorStops(t *testing.T) {
 		t.Errorf("warned after %d reads, want the first warning only after the 3 failed reads", n)
 	}
 }
+
+// Strict mode with no credential would be open mode under a strict label.
+func TestStrictModeRefusal_OnlyStrictWithoutCredential(t *testing.T) {
+	strict := &config.Config{ResolvedAuth: config.AuthPolicy{Mode: config.AuthModeStrict}}
+	if err := strictModeRefusal(false, strict); err == nil || !strings.Contains(err.Error(), "open mode") {
+		t.Errorf("strict without credential: err = %v, want a refusal naming open mode", err)
+	}
+	if err := strictModeRefusal(true, strict); err != nil {
+		t.Errorf("strict with a credential: %v", err)
+	}
+	if err := strictModeRefusal(false, &config.Config{}); err != nil {
+		t.Errorf("token-mode open server: %v (open mode has its own check)", err)
+	}
+}
+
+func TestInsecureCookiesWarning_OnlyWhenSet(t *testing.T) {
+	if w := insecureCookiesWarning(&config.Env{}); w != "" {
+		t.Errorf("unset: %q", w)
+	}
+	if w := insecureCookiesWarning(&config.Env{UIInsecureCookies: true}); !strings.Contains(w, "LOOMCYCLE_UI_INSECURE_COOKIES") {
+		t.Errorf("set: %q", w)
+	}
+}
