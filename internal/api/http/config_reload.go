@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 )
@@ -31,6 +33,9 @@ import (
 // subsystem rebuild is needed, so a reload applies them for free. (Heartbeat
 // CHANNEL timing is boot-fixed and stays restart_required — a niche carve-out.)
 var holderLiveSections = map[string]bool{
+	// auth (RFC FA): every request reads the mode, gates and session
+	// lifetimes from s.cfg().ResolvedAuth.
+	"auth":       true,
 	"user_tiers": true,
 	"agents":     true,
 	"defaults":   true,
@@ -123,6 +128,10 @@ func (s *Server) ReloadConfig(ctx context.Context, dryRun bool) (ReloadResult, e
 	// Validation too, so a dry run reports it: no reload turns auth off or
 	// takes the last admin credential.
 	if err := s.refuseReloadLosingAuth(candidate); err != nil {
+		p, _ := auth.PrincipalFromContext(ctx)
+		s.recordAuthEvent(audit.Event{
+			Action: "auth_downgrade_refused", ActorTenant: p.TenantID, ActorSubject: p.Subject, AuthReason: err.Error(),
+		})
 		return ReloadResult{}, fmt.Errorf("%w: %v", config.ErrReloadInvalid, err)
 	}
 
