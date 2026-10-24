@@ -279,7 +279,6 @@ function redact(s) {
   let out = String(s)
     .replace(/\S*#[^\s"'<>]*/g, "[link redacted]")
     .replace(/lc[a-z]_[A-Za-z0-9_-]+/g, "lc?_[redacted]")
-    .replace(/#[^\s"'<>]*/g, "#[redacted]")
     .replace(/Bearer\s+\S+/gi, "Bearer [redacted]");
   if (MANAGE_TOKEN) out = out.split(MANAGE_TOKEN).join("[redacted]");
   return out;
@@ -655,7 +654,8 @@ app.post("/api/team/invites", accountRoute(async (req, res, p) => {
       if (up.status !== 201) {
         if (ADDRESS_TAKEN.has(up.json?.code)) {
           // One answer whether the address is a login in another tenant or
-          // already has a password here: no cross-tenant oracle.
+          // already has a password here — it hides which, not that (see
+          // ADDRESS_TAKEN), and is counted against the identity's budget.
           logWarn(`account upstream invite: ${up.status} address unavailable`);
           refusedInviteLimit.take("id:" + p.subject);
           res.status(409).json({ error: "cannot_invite_address",
