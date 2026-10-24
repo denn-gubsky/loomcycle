@@ -79,8 +79,7 @@ What `auth:manage` may not do, on any deployment (RFC FA §6.1.1):
 - **Disable, re-enable or approve** anyone but a floor member.
 
 `docker-compose.yaml`, on the `loomcycle` service:
-- `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud`. P2 builds invite and reset links from this URL, and `loomcycle validate` refuses a password gate with invites enabled when it is unset.
-- The TLS-terminator setting that P0 adds, so the session cookie is `__Host-lc_session; Secure` behind the Cloudflare tunnel. The tunnel delivers plain HTTP to the origin. The exact env name is fixed in the P0 PR.
+- `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud`. It does two jobs. P2 builds invite and reset links from it, and a password gate refuses to load without it. P0 also reads it to recognise the TLS terminator: the tunnel delivers plain HTTP, but a request whose Host is `app.loomcycle.cloud` counts as HTTPS, so the session cookie is `__Host-lc_session; Secure`. Leave the tunnel's Host header as it is (don't set `httpHostHeader`).
 
 **The website's credential:** an admin mints one operator token with `scopes: ["auth:manage"]`, for example named `cloud-landing`. It goes into `.env.secure` as **`LOOMCYCLE_AUTH_MANAGE_TOKEN`**. It replaces `LOOMCYCLE_ADMIN_TOKEN` in the landing service's environment (phase 5). Rotate it like any operator token.
 
@@ -125,7 +124,7 @@ The vault and the `postMessage` handoff stay **read-only for one release**. Exis
 | # | What | Done when |
 |---|---|---|
 | 0 | loomcycle P0 + P2 released, and the cloud runtime on that version | `/v1/_authgate/cloud/invites` answers on the cloud host |
-| 1 | The runtime config above. Mint the `auth:manage` token into `.env.secure` (as `LOOMCYCLE_AUTH_MANAGE_TOKEN`), alongside the admin token for now. Set `LOOMCYCLE_PUBLIC_URL` and the terminator setting. | `app.loomcycle.cloud/ui/login` shows both the token box and the password gate; the session cookie is `__Host-lc_session` |
+| 1 | The runtime config above. Mint the `auth:manage` token into `.env.secure` (as `LOOMCYCLE_AUTH_MANAGE_TOKEN`), alongside the admin token for now. Set `LOOMCYCLE_PUBLIC_URL`. | `app.loomcycle.cloud/ui/login` shows both the token box and the password gate; the session cookie is `__Host-lc_session` |
 | 2 | Landing `POST /api/signup` + `/api/team/*`, with a fake-runtime unit suite and an extended `smoke.mjs` | Smoke passes against a local runtime (`MINT_DEV_ALLOW_UNVERIFIED=1`) |
 | 3 | `cloud-web` signup + Team UI; the vault becomes read-only | Manual: a fresh Google account → workspace → password → app; an owner invites a member, the member redeems, the owner resets and disables them |
 | 4 | Migrate the existing tenants (below) | Every existing owner can log in with a password |
