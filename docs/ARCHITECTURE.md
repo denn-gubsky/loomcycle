@@ -311,7 +311,7 @@ Effort flow: agent yaml `effort: low|medium|high` → `Decision.Effort` → `Run
 
 | Driver | Translation |
 |---|---|
-| `anthropic` | `thinking.budget_tokens` (low → skip thinking; medium → 2048; high → 8192). Haiku always skips. Budget clamps to `max_tokens - 1024` if it would exceed `max_tokens`; drops below 1024 minimum. |
+| `anthropic` | Adaptive-only models (Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.x, Fable, Mythos): `output_config.effort` as given, plus `thinking: {type: adaptive}` for medium/high (low sends effort only); temperature/top_p/top_k are not sent. On Bedrock, Sonnet 5 with a forced `tool_choice` gets `thinking: {type: disabled}` for that call. Older models: `thinking.budget_tokens` (low → skip; medium → 2048; high → 8192), clamped to `max_tokens - 1024`, skipped below the 1024 minimum; Haiku 4.5 and earlier always skip. |
 | `openai` | `reasoning_effort` (pass-through). API rejects on non-reasoning models with 400. |
 | `deepseek` | Inherits OpenAI via the wrapper. |
 | `ollama`, `ollama-local` | Both share the same driver: `SupportsEffort=false`. Loop logs once per Run when effort is dropped. |
