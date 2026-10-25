@@ -4389,6 +4389,7 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 			if len(cb.Fields) > 0 {
 				meta["fields"] = cb.Fields
 			}
+			putValidity(meta, row.ValidAt, row.InvalidAt)
 			mj, _ := json.Marshal(meta)
 			b.WriteString("<!-- loom: " + string(mj) + " -->\n")
 		}
@@ -4446,7 +4447,11 @@ type mdChunk struct {
 	typ    string
 	status string
 	fields json.RawMessage
-	body   string
+	// validAt / invalidAt are the chunk's own interval from the metadata comment;
+	// nil when absent (a clean export imports timeless chunks).
+	validAt   *int64
+	invalidAt *int64
+	body      string
 	// RFC BO — set when the body was a self-contained media form: an image
 	// chunk's decoded bytes to re-attach via set_asset (assetData base64 +
 	// assetMediaType), unwrapped from a data-URL. A mermaid chunk carries its
@@ -4611,13 +4616,16 @@ func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
 		if cur != nil && strings.HasPrefix(trimmed, "<!-- loom:") && strings.HasSuffix(trimmed, "-->") {
 			payload := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "<!-- loom:"), "-->"))
 			var meta struct {
-				ID     string          `json:"id"`
-				Type   string          `json:"type"`
-				Status string          `json:"status"`
-				Fields json.RawMessage `json:"fields"`
+				ID        string          `json:"id"`
+				Type      string          `json:"type"`
+				Status    string          `json:"status"`
+				Fields    json.RawMessage `json:"fields"`
+				ValidAt   *int64          `json:"valid_at"`
+				InvalidAt *int64          `json:"invalid_at"`
 			}
 			if json.Unmarshal([]byte(payload), &meta) == nil {
 				cur.oldID, cur.typ, cur.status, cur.fields = meta.ID, meta.Type, meta.Status, meta.Fields
+				cur.validAt, cur.invalidAt = meta.ValidAt, meta.InvalidAt
 			}
 			continue
 		}
@@ -4664,6 +4672,13 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	chunks, edges := parseLoomMarkdown(in.Markdown)
 	if len(chunks) == 0 {
 		return errValidation("import_md: no headings found — a document needs at least one '# Heading'", ""), nil
+	}
+	// Checked before anything is written: import_md is not atomic, and a refusal
+	// half way would leave a partial document behind.
+	for _, c := range chunks {
+		if r := emptyIntervalRefusal("import_md: chunk "+strconv.Quote(c.title), c.validAt, c.invalidAt); r != nil {
+			return *r, nil
+		}
 	}
 	oldToNew := map[string]string{}
 	type frame struct {
@@ -4727,6 +4742,12 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 				return errFrom("import_md: "+err.Error(), err), nil
 			}
 		}
+		if first.validAt != nil || first.invalidAt != nil {
+			if err := d.exec(ctx, key, `UPDATE chunks SET valid_at = ?, invalid_at = ? WHERE id = ?`,
+				int64Arg(first.validAt), int64Arg(first.invalidAt), rootID); err != nil {
+				return errFrom("import_md: "+err.Error(), err), nil
+			}
+		}
 		if first.assetData != "" {
 			attach(rootID, first)
 		}
@@ -4766,6 +4787,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		cc, _ := d.createChunk(ctx, key, mscope, docInput{
 			DocumentID: docID, ParentID: parent, Title: titleOrUntitled(c.title),
 			Type: c.typ, Status: c.status, Body: c.body, Fields: c.fields,
+			ValidAt: c.validAt, InvalidAt: c.invalidAt,
 		})
 		if cc.IsError {
 			return cc, nil
