@@ -3263,6 +3263,22 @@ type MemoryVectorStore interface {
 	// ErrVectorUnsupported on backends without a vector index.
 	MemoryEmbedGet(ctx context.Context, tenantID string, scope MemoryScope, scopeID, key string) (MemoryEmbedding, error)
 
+	// MemoryEmbedSetDocumentID sets (or, with an empty documentID, clears) the stored
+	// document id of every embedded row whose id segment after keyPrefix is in ids —
+	// the same id-segment rule as MemorySearchFilter.IDs, so one call over
+	// "doc.unit:" reaches every derived unit of the listed chunks. It writes only
+	// that column and returns the rows changed. A chunk move calls it: the move
+	// changes which document the chunk's rows belong to while their vectors stay
+	// valid. Returns ErrVectorUnsupported on backends without a vector index.
+	MemoryEmbedSetDocumentID(ctx context.Context, tenantID string, scope MemoryScope, scopeID, keyPrefix string, ids []string, documentID string) (int64, error)
+
+	// MemoryEmbedMissingDocumentID reports whether any embedded row under any of
+	// keyPrefixes lacks a stored document id — the precondition check for searching
+	// by MemorySearchFilter.DocumentIDs, since a row without one would silently drop
+	// out of such a search. An empty keyPrefixes reports true. Backends without a
+	// vector index report true (and no error), so a caller simply falls back.
+	MemoryEmbedMissingDocumentID(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, keyPrefixes []string) (bool, error)
+
 	// MemoryEmbedDelete removes a row's embedding while LEAVING the row itself.
 	//
 	// The gap it fills: nothing could un-index a row. Deleting the memory row cascades
@@ -4839,6 +4855,19 @@ type MemorySearchFilter struct {
 	// ExcludeIDs drops rows whose id segment is in the set. Same shape as IDs;
 	// composes with it as AND. Empty constrains nothing.
 	ExcludeIDs []string
+
+	// DocumentIDs restricts to rows whose stored document id (MemoryEmbedding.
+	// DocumentID) is in the set: a few hundred document ids in place of the tens of
+	// thousands of chunk ids IDs would need for the same corpus. A row with no
+	// stored document id never matches, so a caller may use this only once every
+	// row it means to search carries one (MemoryEmbedMissingDocumentID) — otherwise
+	// the rows without one silently drop out. Empty constrains nothing. Postgres
+	// only, like IDs.
+	DocumentIDs []string
+	// ExcludeDocumentIDs drops rows whose stored document id is in the set. A row
+	// with no stored document id is kept: it is not of any listed document.
+	// Composes with every other field as AND. Empty constrains nothing.
+	ExcludeDocumentIDs []string
 }
 
 // MemoryProvenanceConstraint selects rows by whether they carry provenance.
@@ -4939,7 +4968,8 @@ func (f MemorySearchFilter) IsZero() bool {
 		f.Provenance == ProvenanceAny &&
 		f.ObservedFrom.IsZero() && f.ObservedTo.IsZero() && !f.RequireObserved &&
 		f.AsOf.IsZero() && !f.RequireValid &&
-		len(f.IDs) == 0 && len(f.ExcludeIDs) == 0
+		len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 &&
+		len(f.DocumentIDs) == 0 && len(f.ExcludeDocumentIDs) == 0
 }
 
 // MemoryEntry is one row in the memory table. ExpiresAt is zero when
@@ -5071,6 +5101,14 @@ type MemoryEmbedding struct {
 	Vector    []float32 `json:"-"` // not JSON-serialised here; snapshot uses its own base64 path
 	EmbedText string    `json:"embed_text"`
 	CreatedAt time.Time `json:"created_at"`
+	// DocumentID is the Document a document row (a chunk body or one of its derived
+	// search units) belongs to, so a search can be restricted by document
+	// (MemorySearchFilter.DocumentIDs). Empty means "not stated": MemoryEmbedSet then
+	// KEEPS whatever the row already carries, because re-embedding a row never moves
+	// it to another document — only a chunk move does, and that writes the column
+	// itself (MemoryEmbedSetDocumentID). A new row written without one stores none,
+	// which a document-restricted search treats as "fall back to chunk ids".
+	DocumentID string `json:"document_id,omitempty"`
 }
 
 // MemorySearchEntry is one result row of MemoryEmbedSearch. It

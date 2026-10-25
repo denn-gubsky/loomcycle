@@ -81,6 +81,17 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 	return store.MemoryEmbedding{}, errVecImplPending
 }
 
+// MemoryEmbedSetDocumentID: no vector index here, so no embedded row to mark.
+func (s *Store) MemoryEmbedSetDocumentID(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, ids []string, documentID string) (int64, error) {
+	return 0, errVecImplPending
+}
+
+// MemoryEmbedMissingDocumentID reports true: with no vector index there is nothing a
+// document-restricted search could use, so callers keep to their fallback.
+func (s *Store) MemoryEmbedMissingDocumentID(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, keyPrefixes []string) (bool, error) {
+	return true, nil
+}
+
 func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
 	return nil, errVecImplPending
 }

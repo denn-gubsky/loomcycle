@@ -70,17 +70,19 @@ func (s *Store) MemoryEmbedSet(ctx context.Context, tenantID string, scope store
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
+	// document_id: an empty DocumentID keeps the stored one (see MemoryEmbedding).
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO memory_embeddings(tenant_id, scope, scope_id, key, provider, model, dimension, embedding, embed_text, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10)
+		`INSERT INTO memory_embeddings(tenant_id, scope, scope_id, key, provider, model, dimension, embedding, embed_text, created_at, document_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9, $10, NULLIF($11, ''))
 		 ON CONFLICT (tenant_id, scope, scope_id, key) DO UPDATE SET
-		    provider   = excluded.provider,
-		    model      = excluded.model,
-		    dimension  = excluded.dimension,
-		    embedding  = excluded.embedding,
-		    embed_text = excluded.embed_text,
-		    created_at = excluded.created_at`,
-		tenantID, string(scope), scopeID, key, e.Provider, e.Model, e.Dimension, vecText, e.EmbedText, createdAt,
+		    provider    = excluded.provider,
+		    model       = excluded.model,
+		    dimension   = excluded.dimension,
+		    embedding   = excluded.embedding,
+		    embed_text  = excluded.embed_text,
+		    created_at  = excluded.created_at,
+		    document_id = COALESCE(excluded.document_id, memory_embeddings.document_id)`,
+		tenantID, string(scope), scopeID, key, e.Provider, e.Model, e.Dimension, vecText, e.EmbedText, createdAt, e.DocumentID,
 	)
 	if err != nil {
 		return fmt.Errorf("MemoryEmbedSet: %w", err)
@@ -114,15 +116,16 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 	}
 	var (
 		provider, model, embedText, embeddingText string
+		documentID                                string
 		dimension                                 int
 		createdAt                                 time.Time
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT provider, model, dimension, embedding::text, embed_text, created_at
+		`SELECT provider, model, dimension, embedding::text, embed_text, created_at, coalesce(document_id, '')
 		 FROM memory_embeddings
 		 WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3 AND key = $4`,
 		tenantID, string(scope), scopeID, key,
-	).Scan(&provider, &model, &dimension, &embeddingText, &embedText, &createdAt)
+	).Scan(&provider, &model, &dimension, &embeddingText, &embedText, &createdAt, &documentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.MemoryEmbedding{}, &store.ErrNotFound{Kind: "memory_embedding", ID: key}
 	}
@@ -134,13 +137,65 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 		return store.MemoryEmbedding{}, fmt.Errorf("MemoryEmbedGet: decode vector: %w", err)
 	}
 	return store.MemoryEmbedding{
-		Provider:  provider,
-		Model:     model,
-		Dimension: dimension,
-		Vector:    vec,
-		EmbedText: embedText,
-		CreatedAt: createdAt,
+		Provider:   provider,
+		Model:      model,
+		Dimension:  dimension,
+		Vector:     vec,
+		EmbedText:  embedText,
+		CreatedAt:  createdAt,
+		DocumentID: documentID,
 	}, nil
+}
+
+// MemoryEmbedSetDocumentID writes the document id of the rows whose id segment
+// after keyPrefix is in ids. See the Store interface.
+func (s *Store) MemoryEmbedSetDocumentID(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, keyPrefix string, ids []string, documentID string) (int64, error) {
+	if !s.pgvectorEnabled {
+		return 0, store.ErrVectorUnsupported
+	}
+	if keyPrefix == "" || len(ids) == 0 {
+		return 0, nil
+	}
+	// IS DISTINCT FROM, so a re-run over rows already right changes (and locks)
+	// nothing. Planned per execution: the id list is an `= ANY` like a search's.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE memory_embeddings
+		    SET document_id = NULLIF($7, '')
+		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3
+		    AND key LIKE $4
+		    AND split_part(substr(key, char_length($5::text) + 1), ':', 1) = ANY($6::text[])
+		    AND document_id IS DISTINCT FROM NULLIF($7, '')`,
+		planPerExecution([]any{tenantID, string(scope), scopeID, likePrefixPattern(keyPrefix), keyPrefix, ids, documentID})...,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("MemoryEmbedSetDocumentID: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// MemoryEmbedMissingDocumentID reports whether any embedded row under keyPrefixes
+// has no document id. Answered from the memory_embeddings_document_id_missing
+// partial index, which holds only rows without one.
+func (s *Store) MemoryEmbedMissingDocumentID(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, keyPrefixes []string) (bool, error) {
+	if !s.pgvectorEnabled || len(keyPrefixes) == 0 {
+		return true, nil
+	}
+	args := []any{tenantID, string(scope), scopeID}
+	var likes []string
+	for _, p := range keyPrefixes {
+		args = append(args, likePrefixPattern(p))
+		likes = append(likes, "key LIKE $"+strconv.Itoa(len(args)))
+	}
+	var missing bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM memory_embeddings
+		  WHERE tenant_id = $1 AND scope = $2 AND scope_id = $3
+		    AND document_id IS NULL AND (`+strings.Join(likes, " OR ")+`))`,
+		args...,
+	).Scan(&missing); err != nil {
+		return true, fmt.Errorf("MemoryEmbedMissingDocumentID: %w", err)
+	}
+	return missing, nil
 }
 
 // MemoryEmbedSearch runs Top-K cosine similarity. Pre-checks the
@@ -240,6 +295,24 @@ func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) 
 	if len(f.ExcludeIDs) > 0 {
 		args = append(args, f.ExcludeIDs)
 		cond += " AND " + seg + " <> ALL($" + strconv.Itoa(len(args)) + "::text[])"
+	}
+	return cond, args
+}
+
+// documentIDCondition appends the document allow/deny lists (DocumentIDs /
+// ExcludeDocumentIDs) over the stored document id. Shared by both legs, like
+// idSegmentCondition. A NULL document id fails the allowlist (it is of no listed
+// document) and passes the denylist for the same reason: coalesce to ”, which no
+// document id is.
+func documentIDCondition(f store.MemorySearchFilter, args []any) (string, []any) {
+	cond := ""
+	if len(f.DocumentIDs) > 0 {
+		args = append(args, f.DocumentIDs)
+		cond += " AND me.document_id = ANY($" + strconv.Itoa(len(args)) + "::text[])"
+	}
+	if len(f.ExcludeDocumentIDs) > 0 {
+		args = append(args, f.ExcludeDocumentIDs)
+		cond += " AND coalesce(me.document_id, '') <> ALL($" + strconv.Itoa(len(args)) + "::text[])"
 	}
 	return cond, args
 }
@@ -381,6 +454,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	prefixCondition += observedCond
 	idCond, args = idSegmentCondition(filter, args)
 	prefixCondition += idCond
+	var docCond string
+	docCond, args = documentIDCondition(filter, args)
+	prefixCondition += docCond
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at, m.observed_at, m.valid_at, m.invalid_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
@@ -399,7 +475,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			   AND me.dimension = $6` + prefixCondition + `
 	         ORDER BY me.embedding <=> $4::vector
 	         LIMIT $5`
-	if idCond != "" {
+	if idCond != "" || docCond != "" {
 		args = planPerExecution(args)
 	}
 	rows, err := s.pool.Query(ctx, sql, args...)
@@ -528,6 +604,9 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	prefixCondition += observedCond
 	idCond, args = idSegmentCondition(filter, args)
 	prefixCondition += idCond
+	var docCond string
+	docCond, args = documentIDCondition(filter, args)
+	prefixCondition += docCond
 	// plainto_tsquery normalises arbitrary user text into a safe tsquery
 	// (never errors on input, no injection surface), returning the empty
 	// query — which matches nothing — when the text yields no lexemes.
@@ -549,7 +628,7 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	           AND me.embed_text_tsv @@ plainto_tsquery('english', $4)` + prefixCondition + `
 	         ORDER BY score DESC
 	         LIMIT $5`
-	if idCond != "" {
+	if idCond != "" || docCond != "" {
 		args = planPerExecution(args)
 	}
 	rows, err := s.pool.Query(ctx, sql, args...)
