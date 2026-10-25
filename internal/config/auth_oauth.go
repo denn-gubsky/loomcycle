@@ -206,6 +206,25 @@ func resolveOAuthGate(c *Config, name string, g AuthGateConfig) (*AuthOAuthGate,
 	if g.IdentityMap == nil {
 		return nil, fmt.Errorf("%s.identity_map: required (which tenant an OAuth identity lands in)", where)
 	}
+	// A provider's login, name and username are the user's to rename, so an
+	// identity map keyed on them would let a rename land on someone else's
+	// account or tenant. The gate asserts only sub (the immutable id), a
+	// verified e-mail and its own org-filtered groups; the map may use only
+	// those.
+	m := g.IdentityMap
+	if s := strings.TrimSpace(m.Subject); s != "" && s != "sub" {
+		return nil, fmt.Errorf("%s.identity_map.subject: an OAuth gate's subject is the provider's immutable id (sub), not %q", where, s)
+	}
+	if tc := strings.TrimSpace(m.TenantClaim); tc != "" && tc != EmailDomainClaim {
+		return nil, fmt.Errorf("%s.identity_map.tenant_claim: an OAuth gate picks a tenant only by %s (a verified e-mail), not %q",
+			where, EmailDomainClaim, tc)
+	}
+	if m.Groups != nil {
+		if gc := strings.TrimSpace(m.Groups.Claim); gc != "" && gc != "groups" {
+			return nil, fmt.Errorf("%s.identity_map.groups.claim: an OAuth gate's groups are its own allowed_orgs-filtered list; leave claim empty, not %q",
+				where, gc)
+		}
+	}
 	o.TrustEmail = (o.Preset == OAuthPresetGitHub || o.Preset == OAuthPresetGitLab) && o.BaseURL == ""
 	if g.TrustEmail != nil {
 		o.TrustEmail = *g.TrustEmail

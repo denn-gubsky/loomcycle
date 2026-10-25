@@ -332,7 +332,10 @@ func (g *Gate) assertion(p profile) (authgate.Assertion, error) {
 		return authgate.Assertion{}, fmt.Errorf("%w: not a member of an allowed organisation", authgate.ErrInvalidCredential)
 	}
 	now := g.now()
-	claims := map[string]any{"sub": p.id, "login": p.login, "name": p.name, "groups": stringsAny(groups)}
+	// Only what the user cannot rename into someone else is a claim an
+	// identity map may read: the immutable id, a verified e-mail and the
+	// gate's own org-filtered groups. The login and name are display only.
+	claims := map[string]any{"sub": p.id, "groups": stringsAny(groups)}
 	if p.email != "" {
 		claims["email"] = p.email
 		claims["email_verified"] = true
