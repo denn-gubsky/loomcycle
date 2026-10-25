@@ -156,6 +156,14 @@ type SearchQuery struct {
 	// Empty constrains nothing.
 	IDs        []string
 	ExcludeIDs []string
+
+	// DocumentIDs / ExcludeDocumentIDs restrict by the document id stored on each
+	// row (store.MemorySearchFilter.DocumentIDs): the same corpus as a chunk-id
+	// list, named by its documents. Document op=search sets them in place of IDs /
+	// ExcludeIDs once every document row of the scope carries a document id.
+	// Empty constrains nothing.
+	DocumentIDs        []string
+	ExcludeDocumentIDs []string
 }
 
 // CanReturnDocuments reports whether this query can return Document chunk bodies:
@@ -360,6 +368,7 @@ func (q SearchQuery) selectorFilter() (store.MemorySearchFilter, error) {
 	// documents-only, the refusal), and attaching a predicate at each one is how it
 	// ends up honoured on some queries and silently dropped on others.
 	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix, IDs: q.IDs, ExcludeIDs: q.ExcludeIDs})
+	f.DocumentIDs, f.ExcludeDocumentIDs = q.DocumentIDs, q.ExcludeDocumentIDs
 	var facts, notes, docs, traces bool
 	for _, s := range q.Sources {
 		switch s {

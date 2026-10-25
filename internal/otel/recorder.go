@@ -288,6 +288,11 @@ const (
 	// and its size is the cost a denormalised column would remove.
 	AttrMemoryFilterIDs        = "loomcycle.memory.filter.ids"
 	AttrMemoryFilterExcludeIDs = "loomcycle.memory.filter.exclude_ids"
+	// AttrMemoryFilterDocumentIDs / AttrMemoryFilterExcludeDocumentIDs are the
+	// sizes of the document-id lists a filter bound instead, where the scope's rows
+	// carry their document id. A span shows one pair or the other.
+	AttrMemoryFilterDocumentIDs        = "loomcycle.memory.filter.document_ids"
+	AttrMemoryFilterExcludeDocumentIDs = "loomcycle.memory.filter.exclude_document_ids"
 
 	// AttrHelpWritten / Pruned / Unchanged / Failed / Degraded mirror the
 	// help.ReconcileStats fields (RFC BL PR5) so the counters + degraded gauge
@@ -563,6 +568,22 @@ func SetMemorySearchFilterIDs(span trace.Span, ids, excludeIDs int) {
 	}
 	if excludeIDs > 0 {
 		kvs = append(kvs, attribute.Int(AttrMemoryFilterExcludeIDs, excludeIDs))
+	}
+	span.SetAttributes(kvs...)
+}
+
+// SetMemorySearchFilterDocumentIDs stamps the document-id list sizes of a
+// filtered retrieval, as SetMemorySearchFilterIDs does for chunk ids.
+func SetMemorySearchFilterDocumentIDs(span trace.Span, docs, excludeDocs int) {
+	if span == nil || (docs <= 0 && excludeDocs <= 0) || !span.IsRecording() {
+		return
+	}
+	var kvs []attribute.KeyValue
+	if docs > 0 {
+		kvs = append(kvs, attribute.Int(AttrMemoryFilterDocumentIDs, docs))
+	}
+	if excludeDocs > 0 {
+		kvs = append(kvs, attribute.Int(AttrMemoryFilterExcludeDocumentIDs, excludeDocs))
 	}
 	span.SetAttributes(kvs...)
 }

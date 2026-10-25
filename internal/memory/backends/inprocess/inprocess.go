@@ -241,6 +241,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		return memory.SearchResult{}, ferr
 	}
 	lcotel.SetMemorySearchFilterIDs(span, len(filter.IDs), len(filter.ExcludeIDs))
+	lcotel.SetMemorySearchFilterDocumentIDs(span, len(filter.DocumentIDs), len(filter.ExcludeDocumentIDs))
 	// Derived search units: where the main legs cannot reach them (a
 	// chunk-targeted search), a separate unit leg fetches them, fused with the rest.
 	unitFilter, unitLeg := q.UnitLegFilter(filter)

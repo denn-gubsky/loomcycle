@@ -1235,3 +1235,35 @@ func TestMetrics_FilterIDsOnTheSpan(t *testing.T) {
 		t.Errorf("an unfiltered search recorded %s: %v", lcotel.AttrMemoryFilterIDs, got)
 	}
 }
+
+// TestMetrics_FilterDocumentIDsOnTheSpan — a search restricted by document ids
+// records those lists' sizes, under their own attributes, so a span says which
+// kind of list the search carried.
+func TestMetrics_FilterDocumentIDsOnTheSpan(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeAgent, "a1"
+	if r, err := b.Set(ctx, scope, id, "doc.chunk:c1", json.RawMessage(`{"body":"alice go"}`), memory.SetOptions{Embed: true, EmbedText: "alice go"}); err != nil || !r.Embedded {
+		t.Fatalf("set: r=%+v err=%v", r, err)
+	}
+	if _, err := b.Search(ctx, scope, id, memory.SearchQuery{QueryText: "alice go", TopK: 5, Prefix: "doc.chunk:",
+		DocumentIDs: []string{"d1", "d2", "d3"}, ExcludeDocumentIDs: []string{"d4"}}, memory.DefaultRankConfig(), memory.DedupConfig{}); err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	got := map[string]int64{}
+	for _, s := range exp.GetSpans() {
+		if s.Name == lcotel.SpanMemorySearch {
+			for _, kv := range s.Attributes {
+				got[string(kv.Key)] = kv.Value.AsInt64()
+			}
+		}
+	}
+	if got[lcotel.AttrMemoryFilterDocumentIDs] != 3 || got[lcotel.AttrMemoryFilterExcludeDocumentIDs] != 1 {
+		t.Errorf("span attrs = %v, want %s=3 %s=1", got, lcotel.AttrMemoryFilterDocumentIDs, lcotel.AttrMemoryFilterExcludeDocumentIDs)
+	}
+	if _, has := got[lcotel.AttrMemoryFilterIDs]; has {
+		t.Errorf("a document-restricted search recorded a chunk-id list: %v", got)
+	}
+}

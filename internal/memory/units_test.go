@@ -226,3 +226,40 @@ func TestFuseRRFMany_TwoListsIsFuseRRF(t *testing.T) {
 		t.Errorf("three lists fused = %s", got)
 	}
 }
+
+// TestSearchQuery_DocumentIDsReachEveryLeg — the document lists ride the same
+// paths as the id lists: every branch of Filter, and the unit leg, whose rows
+// store their chunk's document id.
+func TestSearchQuery_DocumentIDsReachEveryLeg(t *testing.T) {
+	docs, excl := []string{"d1", "d2"}, []string{"d3"}
+	for _, c := range []struct {
+		name string
+		q    SearchQuery
+	}{
+		{"document search by prefix", SearchQuery{Prefix: DocumentChunkKeyPrefix}},
+		{"documents selector", SearchQuery{Sources: []Source{SourceDocuments}}},
+		{"no selector", SearchQuery{}},
+		{"facts and notes", SearchQuery{Sources: []Source{SourceFacts, SourceNotes}}},
+		{"traces alone", SearchQuery{Sources: []Source{SourceTraces}}},
+	} {
+		q := c.q
+		q.DocumentIDs, q.ExcludeDocumentIDs = docs, excl
+		main, err := q.Filter()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if !reflect.DeepEqual(main.DocumentIDs, docs) || !reflect.DeepEqual(main.ExcludeDocumentIDs, excl) {
+			t.Errorf("%s: main filter documents = %v / %v, want %v / %v", c.name, main.DocumentIDs, main.ExcludeDocumentIDs, docs, excl)
+		}
+		if unit, run := q.UnitLegFilter(main); run {
+			if !reflect.DeepEqual(unit.DocumentIDs, docs) || !reflect.DeepEqual(unit.ExcludeDocumentIDs, excl) {
+				t.Errorf("%s: unit leg documents = %v / %v, want %v / %v", c.name, unit.DocumentIDs, unit.ExcludeDocumentIDs, docs, excl)
+			}
+		} else if c.name == "document search by prefix" || c.name == "documents selector" {
+			t.Errorf("%s: precondition — a chunk-targeted search runs a unit leg", c.name)
+		}
+	}
+	if f, _ := (SearchQuery{Prefix: DocumentChunkKeyPrefix}).Filter(); f.DocumentIDs != nil || f.ExcludeDocumentIDs != nil {
+		t.Errorf("a query with no document list carries one: %+v", f)
+	}
+}
