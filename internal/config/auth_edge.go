@@ -5,8 +5,6 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
-
-	"github.com/denn-gubsky/loomcycle/internal/credential"
 )
 
 // RFC FA P3: the edge gates.
@@ -52,10 +50,11 @@ type AuthHeaderGate struct {
 	ALBRegion string
 	Issuer    string
 	ClientID  string
-	// forward-auth-hmac: the shared secret, by env-var name or as a stored
-	// credential of the gate's tenant (never a literal).
-	SecretEnv  string
-	SecretCred string
+	// forward-auth-hmac: the shared secret, by env-var name only. A secret
+	// that verifies identities is the operator's: never a literal in the
+	// file, and never a tenant's stored credential, which a tenant could set
+	// and so forge any identity the gate maps into its tenant.
+	SecretEnv string
 }
 
 // AuthAWSIAMGate is a validated kind: awsiam gate.
@@ -186,33 +185,21 @@ func resolveHeaderGate(name string, g AuthGateConfig) (*AuthHeaderGate, error) {
 			"alb_arn": g.ALBARN != "", "issuer": g.Issuer != "", "client_id": g.ClientID != ""}); err != nil {
 			return nil, err
 		}
-		env, sec := strings.TrimSpace(g.SecretEnv), strings.TrimSpace(g.Secret)
-		switch {
-		case env != "" && sec != "":
-			return nil, fmt.Errorf("%s: set secret_env or secret, not both", where)
-		case env != "":
-			if !ExpandEnvAllowed(env) || envNameDenied(env) {
-				return nil, fmt.Errorf("%s.secret_env: %q must be a LOOMCYCLE_*-prefixed (or allowlisted) name that is not one of "+
-					"loomcycle's own infrastructure secrets or a principal's bearer", where, env)
-			}
-			h.SecretEnv = env
-		case sec != "":
-			ref, ok := credential.ParseRef(sec)
-			if !ok {
-				// Never quoted: a literal here is the secret.
-				return nil, fmt.Errorf("%s.secret takes only a stored credential, written \"$cred:<name>\": a literal secret "+
-					"would sit in the config file; use secret_env for an environment variable", where)
-			}
-			if g.IdentityMap == nil || strings.TrimSpace(g.IdentityMap.Tenant) == "" {
-				// A stored credential belongs to a tenant; only a gate with
-				// one fixed tenant names whose.
-				return nil, fmt.Errorf("%s.secret: a $cred: secret is read from the gate's identity_map.tenant, so it needs a fixed tenant; "+
-					"use secret_env with tenant_claim", where)
-			}
-			h.SecretCred = ref
-		default:
-			return nil, fmt.Errorf("%s: forward-auth-hmac needs the shared secret: secret_env: LOOMCYCLE_… or secret: \"$cred:<name>\"", where)
+		env := strings.TrimSpace(g.SecretEnv)
+		if strings.TrimSpace(g.Secret) != "" {
+			// Never quoted: a literal here is the secret itself.
+			return nil, fmt.Errorf("%s.secret is not accepted: a secret that verifies identities comes only from the operator, "+
+				"never a literal in the file or a tenant's stored credential ($cred:), which a tenant could set to forge "+
+				"identities; use secret_env: LOOMCYCLE_…", where)
 		}
+		if env == "" {
+			return nil, fmt.Errorf("%s: forward-auth-hmac needs the shared secret: secret_env: LOOMCYCLE_…", where)
+		}
+		if !ExpandEnvAllowed(env) || envNameDenied(env) {
+			return nil, fmt.Errorf("%s.secret_env: %q must be a LOOMCYCLE_*-prefixed (or allowlisted) name that is not one of "+
+				"loomcycle's own infrastructure secrets or a principal's bearer", where, env)
+		}
+		h.SecretEnv = env
 	case "":
 		return nil, fmt.Errorf("%s: preset is required (cloudflare-access, aws-alb or forward-auth-hmac)", where)
 	default:

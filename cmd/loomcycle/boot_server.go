@@ -104,7 +104,7 @@ func (b *boot) buildServer() {
 	}
 	// RFC FA P3: the header (trusted-proxy) and AWS IAM gates. Like the
 	// password gates, one that cannot run fails the boot.
-	edgeDeps := lchttp.EdgeGateDeps{SecretToCompare: credEngine.ResolveToCompare}
+	var edgeDeps lchttp.EdgeGateDeps
 	if storeIface != nil {
 		edgeDeps.Replay = storeIface
 	}

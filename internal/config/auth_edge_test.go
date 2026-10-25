@@ -97,13 +97,9 @@ func TestResolveAuth_HeaderGateRefusals(t *testing.T) {
 		}), "alb_arn"},
 		{"cloudflare key on alb", mod(albGateConfig(), func(g *AuthGateConfig) { g.TeamDomain = "a.b" }), "does not apply to preset aws-alb"},
 		{"no secret", mod(hmacGateConfig(), func(g *AuthGateConfig) { g.SecretEnv = "" }), "needs the shared secret"},
-		{"both secrets", mod(hmacGateConfig(), func(g *AuthGateConfig) { g.Secret = "$cred:proxy" }), "not both"},
 		{"secret env outside the namespace", mod(hmacGateConfig(), func(g *AuthGateConfig) { g.SecretEnv = "HOME" }), "secret_env"},
 		{"secret env is the admin bearer", mod(hmacGateConfig(), func(g *AuthGateConfig) { g.SecretEnv = "LOOMCYCLE_AUTH_TOKEN" }), "infrastructure secrets"},
-		{"$cred with a claimed tenant", mod(hmacGateConfig(), func(g *AuthGateConfig) {
-			g.SecretEnv, g.Secret = "", "$cred:proxy"
-			g.IdentityMap = &AuthIdentityMapConfig{TenantClaim: "tenant", AllowedTenants: map[string]string{"acme": "acme"}}
-		}), "fixed tenant"},
+		{"a stored credential beside secret_env", mod(hmacGateConfig(), func(g *AuthGateConfig) { g.Secret = "$cred:proxy" }), "operator"},
 		{"awsiam key on a header gate", mod(cfGateConfig(), func(g *AuthGateConfig) { g.ServerID = "x" }), "apply only to kind: awsiam"},
 		{"password key on a header gate", mod(cfGateConfig(), func(g *AuthGateConfig) { b := true; g.RequireMFA = &b }), "do not apply to kind: header"},
 	}
@@ -124,12 +120,14 @@ func TestResolveAuth_LiteralSecretIsRefusedAndNeverQuoted(t *testing.T) {
 	}
 }
 
-func TestResolveAuth_StoredSecretNeedsAFixedTenant(t *testing.T) {
-	g := hmacGateConfig()
-	g.SecretEnv, g.Secret = "", "$cred:proxy-hmac"
-	p := mustResolve(t, edgeConfig("", map[string]AuthGateConfig{"g": g}))
-	if p.Gates[0].Header.SecretCred != "proxy-hmac" {
-		t.Fatalf("secret cred %q", p.Gates[0].Header.SecretCred)
+// A secret that verifies identities must be the operator's: a tenant that can
+// write its own credentials could otherwise set the forward-auth secret and
+// forge an identity header for anyone the gate maps into that tenant.
+func TestResolveAuth_StoredCredentialCannotBeAVerificationSecret(t *testing.T) {
+	for _, sec := range []string{"$cred:proxy-hmac", "$cred:x"} {
+		g := hmacGateConfig()
+		g.SecretEnv, g.Secret = "", sec
+		mustRefuse(t, g, "secret_env")
 	}
 }
 

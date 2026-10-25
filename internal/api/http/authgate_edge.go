@@ -60,9 +60,6 @@ type edgeGatesHolder struct{ p atomic.Pointer[EdgeGates] }
 
 // EdgeGateDeps are what building the edge gates needs from the boot.
 type EdgeGateDeps struct {
-	// SecretToCompare reads a forward-auth gate's $cred: secret from its
-	// tenant (credential.Engine.ResolveToCompare). Nil refuses such a gate.
-	SecretToCompare func(ctx context.Context, tenantID, name string) (string, bool, error)
 	// Replay records accepted STS signatures for every replica. Nil keeps
 	// the AWS IAM gate's replay protection to this replica.
 	Replay store.AuthReplayStore
@@ -133,7 +130,7 @@ func buildHeaderGate(g config.AuthGate, deps EdgeGateDeps) (*headergate.Gate, er
 		}
 		return headergate.NewALBGate(alb, h.TrustedProxyCIDRs), nil
 	case config.HeaderPresetForwardAuthHMAC:
-		secret, err := forwardAuthSecret(g, deps)
+		secret, err := forwardAuthSecret(g)
 		if err != nil {
 			return nil, err
 		}
@@ -143,34 +140,18 @@ func buildHeaderGate(g config.AuthGate, deps EdgeGateDeps) (*headergate.Gate, er
 	return nil, fmt.Errorf("preset %q has no implementation", h.Preset)
 }
 
-// forwardAuthSecret is the gate's secret source. An env var is read once at
-// boot (the environment does not change under a running process); a stored
-// credential is read per request from the gate's fixed tenant, so rotating
-// it needs no restart.
-func forwardAuthSecret(g config.AuthGate, deps EdgeGateDeps) (func(context.Context) ([]byte, error), error) {
+// forwardAuthSecret is the gate's secret, from the operator's environment
+// only (read once at boot: the environment does not change under a running
+// process). Never from a tenant's credential store: whoever can set a
+// verification secret can forge every identity it verifies.
+func forwardAuthSecret(g config.AuthGate) (func(context.Context) ([]byte, error), error) {
 	h := g.Header
-	if h.SecretEnv != "" {
-		v := os.Getenv(h.SecretEnv)
-		if len(v) < 32 {
-			return nil, fmt.Errorf("secret_env %s is unset or shorter than 32 bytes", h.SecretEnv)
-		}
-		b := []byte(v)
-		return func(context.Context) ([]byte, error) { return b, nil }, nil
+	v := os.Getenv(h.SecretEnv)
+	if h.SecretEnv == "" || len(v) < 32 {
+		return nil, fmt.Errorf("secret_env %s is unset or shorter than 32 bytes", h.SecretEnv)
 	}
-	if deps.SecretToCompare == nil || g.Identity == nil || g.Identity.Tenant == "" {
-		return nil, errors.New("secret: $cred: needs the credential store and a fixed identity_map.tenant")
-	}
-	tenant, name := g.Identity.Tenant, h.SecretCred
-	return func(ctx context.Context) ([]byte, error) {
-		v, ok, err := deps.SecretToCompare(ctx, tenant, name)
-		if err != nil {
-			return nil, err
-		}
-		if !ok || len(v) < 32 {
-			return nil, fmt.Errorf("stored credential %s is missing in tenant %q or shorter than 32 bytes", name, tenant)
-		}
-		return []byte(v), nil
-	}, nil
+	b := []byte(v)
+	return func(context.Context) ([]byte, error) { return b, nil }, nil
 }
 
 // SetEdgeGates installs the built edge gates (boot).
