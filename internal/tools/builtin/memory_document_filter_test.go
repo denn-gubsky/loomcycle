@@ -432,3 +432,68 @@ func TestMemorySearch_ACLLimitedCallerSendsNoDeniedID(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryDocumentFilter_CoreBothTiers runs the resolver's no-provisioning
+// probe and its resolution on both SQL Memory tiers: an unprovisioned scope and
+// one provisioned by other SQL without the document tables both match nothing
+// and are left as they were; a scope with documents resolves an exclusion.
+func TestMemoryDocumentFilter_CoreBothTiers(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		assertMemoryDocumentFilterCore(t, d, ctx)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		assertMemoryDocumentFilterCore(t, d, ctx)
+	})
+}
+
+func assertMemoryDocumentFilterCore(t *testing.T, d *Document, ctx context.Context) {
+	t.Helper()
+	agent := tools.AgentName(ctx)
+	agentKey := sqlmem.ScopeKey{Tenant: sqlScopeTenant(ctx), Scope: "agent", ScopeID: agent}
+	excl := memrank.DocumentFilter{ExcludeUnderPaths: []string{"/qg/reports"}}
+
+	res, err := d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeAgent, agent, excl)
+	if err != nil || res.MatchedChunks != 0 {
+		t.Fatalf("unprovisioned scope: %+v, %v — want no match", res, err)
+	}
+	if ok, err := d.SqlMem.ScopeExists(ctx, agentKey); err != nil || ok {
+		t.Fatalf("resolving provisioned the agent scope (exists=%v, err=%v)", ok, err)
+	}
+
+	// Provisioned by an agent's own SQL, but holding no document tables.
+	if _, err := d.SqlMem.Exec(ctx, agentKey, "CREATE TABLE scratch (x INTEGER)", nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	res, err = d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeAgent, agent, excl)
+	if err != nil || res.MatchedChunks != 0 {
+		t.Fatalf("scope without document tables: %+v, %v — want no match", res, err)
+	}
+	if _, err := d.SqlMem.Query(ctx, agentKey, "SELECT count(*) FROM chunks WHERE 1=0", nil); !schemaMissing(err) {
+		t.Errorf("resolving created the document tables (probe err = %v)", err)
+	}
+
+	// The user scope, with documents under both paths.
+	mk := func(path string) string {
+		out, r := docExec(t, d, ctx, `{"op":"create_document","title":"Doc","path":"`+path+`"}`)
+		if r.IsError {
+			t.Fatalf("create_document: %s", r.Text)
+		}
+		id := out["document_id"].(string)
+		if _, r := docExec(t, d, ctx, `{"op":"create_chunk","document_id":"`+id+`","title":"c","body":"norm clause"}`); r.IsError {
+			t.Fatalf("create_chunk: %s", r.Text)
+		}
+		return id
+	}
+	mk("/qg/norms/a")
+	mk("/qg/reports/r")
+	res, err = d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeUser, tools.RunIdentity(ctx).UserID, excl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two chunks per document (the root and one content chunk): the report's two are excluded.
+	if res.MatchedDocuments != 1 || len(res.ExcludeIDs) != 2 || len(res.IDs) != 0 {
+		t.Errorf("user scope exclusion = %+v, want 1 matched document and the report's 2 chunks as the denylist", res)
+	}
+}
