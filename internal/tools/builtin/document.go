@@ -1294,12 +1294,13 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 		return
 	}
 	if err := d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, bodyKey, store.MemoryEmbedding{
-		Provider:  d.Embedder.Provider(),
-		Model:     d.Embedder.Model(),
-		Dimension: len(vec[0]),
-		Vector:    vec[0],
-		EmbedText: text,
-		CreatedAt: time.Now().UTC(),
+		Provider:   d.Embedder.Provider(),
+		Model:      d.Embedder.Model(),
+		Dimension:  len(vec[0]),
+		Vector:     vec[0],
+		EmbedText:  text,
+		CreatedAt:  time.Now().UTC(),
+		DocumentID: d.rowDocumentID(ctx, key, bodyKey),
 	}); err != nil {
 		slog.WarnContext(ctx, "document: store embedding failed for a chunk", "chunk_id", chunkID, "err", err)
 	}
@@ -3467,7 +3468,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// when one was named: a filter-free call stays on exactly the old path.
 	var filter *searchFilterSet
 	if hasSearchFilter(in) {
-		set, refusal, err := d.resolveSearchFilter(ctx, key, "search", in)
+		set, refusal, err := d.resolveStoreFilter(ctx, key, mscope, "search", in)
 		if err != nil {
 			return docFail("search: filter: ", err), nil
 		}
@@ -3504,6 +3505,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	if filter != nil {
 		sq.IDs, sq.ExcludeIDs = filter.ids, filter.excludeIDs
+		sq.DocumentIDs, sq.ExcludeDocumentIDs = filter.documentIDs, filter.excludeDocumentIDs
 	}
 	res, err := d.searchBackend().Search(ctx, mscope, key.ScopeID, sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
@@ -3601,7 +3603,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
 	withFilter := func(m map[string]any) map[string]any { return m }
 	if hasSearchFilter(in) {
-		set, refusal, err := d.resolveSearchFilter(ctx, key, "related", in)
+		set, refusal, err := d.resolveStoreFilter(ctx, key, mscope, "related", in)
 		if err != nil {
 			return docFail("related: filter: ", err), nil
 		}
@@ -3616,6 +3618,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 			return jsonResult(withFilter(map[string]any{"related": []map[string]any{}}))
 		}
 		sf.IDs, sf.ExcludeIDs = set.ids, set.excludeIDs
+		sf.DocumentIDs, sf.ExcludeDocumentIDs = set.documentIDs, set.excludeDocumentIDs
 	}
 	// The query text is the chunk's own body. An empty or media body has nothing
 	// to embed — the same predicate embedBody skips on write — so it has no

@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -185,9 +186,27 @@ func (d *Document) HomeFactsUnderSubjects(ctx context.Context, tenantID string,
 		if dryRun {
 			continue
 		}
+		// The rows' stored document id is a copy of chunks.document_id, which this
+		// move changes. It is CLEARED before the move and written after it, so a
+		// fault in between leaves rows a filtered search falls back on rather than
+		// rows that name the document they just left.
+		moving, merr := d.homingChunkIDs(ctx, key, s)
+		if merr != nil {
+			return rep, fmt.Errorf("homing %s: %w (%d subjects were already homed and are committed)",
+				s.naturalKey, merr, rep.SubjectsHomed-1)
+		}
+		if err := d.setDocumentAttribution(ctx, tenantID, scope, key.ScopeID, moving, ""); err != nil {
+			return rep, fmt.Errorf("homing %s: clearing the search index's document ids: %w (%d subjects were already homed and are committed)",
+				s.naturalKey, err, rep.SubjectsHomed-1)
+		}
 		if err := d.homeOneSubject(ctx, key, target, s); err != nil {
 			return rep, fmt.Errorf("homing %s: %w (%d subjects were already homed and are committed)",
 				s.naturalKey, err, rep.SubjectsHomed-1)
+		}
+		if err := d.attributeDocument(ctx, key, scope, target.docID); err != nil {
+			// Left cleared: correct, and filled by the next document re-index pass.
+			slog.WarnContext(ctx, "document: homed facts keep no document id in the search index until a re-index",
+				"natural_key", s.naturalKey, "document_id", target.docID, "err", err)
 		}
 		// The placeholder root an adopted document came with, after its SQL side is
 		// committed — bodies live in a different database and cannot join that
@@ -494,6 +513,20 @@ func (d *Document) homeOneSubject(ctx context.Context, key sqlmem.ScopeKey, targ
 		}
 		return nil
 	})
+}
+
+// homingChunkIDs is every chunk homeOneSubject will re-file: the subject node and
+// each fact with its subtree.
+func (d *Document) homingChunkIDs(ctx context.Context, key sqlmem.ScopeKey, s homingSubject) ([]string, error) {
+	ids := []string{s.chunkID}
+	for _, fid := range s.factIDs {
+		sub, _, err := d.subtreeChunks(ctx, key, fid)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, sub...)
+	}
+	return ids, nil
 }
 
 // moveSubtreeDocument re-stamps document_id on every descendant of a moved chunk,

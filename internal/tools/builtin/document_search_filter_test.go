@@ -379,6 +379,9 @@ func TestDocumentRelated_ExcludeDocumentIDsDropsTheOwnDocument(t *testing.T) {
 
 func TestDocumentSearch_ExcludeUnderPathDropsTheTopHit(t *testing.T) {
 	c, decoys, targets := normsCorpus(t)
+	// This test inspects the chunk-id list, so the scope reports no stored document
+	// ids and the search stays on that path (the document-id path is tested apart).
+	c.vs.noDocumentIDs = true
 	ids, _ := c.call(map[string]any{"op": "search", "query": "norm clause", "limit": 5})
 	if len(ids) == 0 || !setOf(decoys)[ids[0]] {
 		t.Fatalf("precondition: a board file is the top hit (%v)", ids)
@@ -641,6 +644,9 @@ func TestDocumentSearch_UnresolvedPathReportsZeroMatchedDocuments(t *testing.T) 
 
 func TestDocumentSearch_WideFilterInvertsToADenylist(t *testing.T) {
 	c, decoys, _ := normsCorpus(t)
+	// This test inspects the chunk-id list, so the scope reports no stored document
+	// ids and the search stays on that path (the document-id path is tested apart).
+	c.vs.noDocumentIDs = true
 	c.spy.reset()
 	ids, echo := c.call(map[string]any{"op": "search", "query": "norm clause", "limit": 10, "under_path": "/board"})
 	for _, id := range ids {
@@ -662,6 +668,9 @@ func TestDocumentSearch_WideFilterInvertsToADenylist(t *testing.T) {
 
 func TestDocumentSearch_FilterOverTheCapIsRefused(t *testing.T) {
 	c, _, _ := normsCorpus(t)
+	// This test inspects the chunk-id list, so the scope reports no stored document
+	// ids and the search stays on that path (the document-id path is tested apart).
+	c.vs.noDocumentIDs = true
 	c.d.Cfg = &config.Config{}
 	c.d.Cfg.Env.DocumentSearchFilterMaxIDs = 5
 	before := c.emb.n.Load()
@@ -750,6 +759,8 @@ func TestDocumentSearchFilter_CoreBothTiers(t *testing.T) {
 func assertSearchFilterCore(t *testing.T, d *Document, ctx context.Context) {
 	t.Helper()
 	vs := newVectorStore(d.Store)
+	// The chunk-id path's core; the document-id path has its own.
+	vs.noDocumentIDs = true
 	d.Store = &ftsStore{vs}
 	d.Embedder = newFakeEmbedder("fake", "m1", "norm", "clause")
 	c := &corpus{t: t, d: d, vs: vs, ctx: ctx, docs: map[string]string{}, byID: map[string][]string{}}
@@ -858,6 +869,9 @@ func aclCorpus(t *testing.T) (d *Document, spy *legSpy, open, limited context.Co
 // list is never inverted into a denylist (which would have to name them).
 func TestDocumentSearch_ACLLimitedCallerSendsNoDeniedID(t *testing.T) {
 	d, spy, _, ctx, s := aclCorpus(t)
+	// This test inspects the chunk-id list, so the scope reports no stored document
+	// ids and the search stays on that path (the document-id path is tested apart).
+	spy.noDocumentIDs = true
 	spy.reset()
 	_, res := docExec(t, d, ctx, `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`)
 	if res.IsError {
@@ -897,7 +911,10 @@ func TestDocumentSearch_ACLLimitedCallerSendsNoDeniedID(t *testing.T) {
 // not read: growing a read-denied document inside the filtered subtree changes
 // neither the counts, nor whether the refusal fires, nor its text.
 func TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts(t *testing.T) {
-	d, _, open, ctx, s := aclCorpus(t)
+	d, spy, open, ctx, s := aclCorpus(t)
+	// This test inspects the chunk-id list, so the scope reports no stored document
+	// ids and the search stays on that path (the document-id path is tested apart).
+	spy.noDocumentIDs = true
 	const in = `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`
 	observe := func(cap int) (string, bool) {
 		t.Helper()
@@ -950,6 +967,9 @@ func TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts(t *testing.T) {
 // full behaviour: full counts, and inversion for a wide filter.
 func TestDocumentSearch_UnlimitedCallerStillInverts(t *testing.T) {
 	d, spy, _, _, _ := aclCorpus(t)
+	// This test inspects the chunk-id list, so the scope reports no stored document
+	// ids and the search stays on that path (the document-id path is tested apart).
+	spy.noDocumentIDs = true
 	base := tools.WithRunIdentity(tools.WithAgentName(context.Background(), "doc-agent"),
 		tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
 	// A rule about another scope: it limits nothing here.

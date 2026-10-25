@@ -100,7 +100,7 @@ func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, unit
 		if err := d.Store.MemorySet(ctx, tenant, mscope, key.ScopeID, k, v, 0); err != nil {
 			return written, fmt.Errorf("derived units: write %s: %w", k, err)
 		}
-		if idx := d.unitIndexText(ctx, key, chunkID, text); idx != "" && !d.embedText(ctx, tenant, mscope, key.ScopeID, k, idx) {
+		if idx := d.unitIndexText(ctx, key, chunkID, text); idx != "" && !d.embedText(ctx, tenant, mscope, key, k, idx) {
 			// Best-effort like every document embed: the row stands, unindexed, and
 			// the re-index pass picks it up. The key may have held an older unit, and
 			// its vector must not stand for this one's text.
@@ -177,7 +177,7 @@ func (d *Document) reindexUnitsOf(ctx context.Context, tenant string, mscope sto
 		_ = json.Unmarshal(u.Value, &v)
 		if idx := d.unitIndexText(ctx, key, chunkID, v.Text); idx != "" &&
 			!d.indexCurrent(ctx, tenant, mscope, key.ScopeID, u.Key, idx) {
-			d.embedText(ctx, tenant, mscope, key.ScopeID, u.Key, idx)
+			d.embedText(ctx, tenant, mscope, key, u.Key, idx)
 		}
 	}
 }

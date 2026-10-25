@@ -39,7 +39,11 @@ type ReindexReport struct {
 	Reindexed int `json:"reindexed"`
 	// Unindexed chunks derive to nothing (a bodyless document root, a letterless
 	// heading) but still had a vector; it was removed — or, in a dry run, would be.
-	Unindexed  int      `json:"unindexed"`
+	Unindexed int `json:"unindexed"`
+	// Attributed rows had a current vector but not their document id (rows embedded
+	// before the column existed); the id was written — or, in a dry run, would be.
+	// No embedding call. A scope is searched by document id only once none is left.
+	Attributed int      `json:"attributed,omitempty"`
 	Failed     int      `json:"failed"`
 	FailedKeys []string `json:"failed_keys,omitempty"`
 	// NextCursor resumes the walk; pass it back as `after`. More is true while chunks
@@ -99,8 +103,11 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 				return rep, gerr
 			}
 			switch {
-			case want == "" && !hasStored, hasStored && stored.EmbedText == want:
+			case want == "" && !hasStored:
 				rep.UpToDate++
+			case hasStored && stored.EmbedText == want:
+				rep.UpToDate++
+				d.backfillDocumentID(ctx, tenant, mscope, key, row.Key, stored.DocumentID, dryRun, &rep)
 			case want == "":
 				rep.Unindexed++
 				if !dryRun {
@@ -110,7 +117,7 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 				}
 			default:
 				rep.Reindexed++
-				if !dryRun && !d.embedText(ctx, tenant, mscope, key.ScopeID, row.Key, want) {
+				if !dryRun && !d.embedText(ctx, tenant, mscope, key, row.Key, want) {
 					rep.Reindexed--
 					rep.fail(row.Key)
 				}
@@ -153,19 +160,44 @@ func (r *ReindexReport) fail(key string) {
 }
 
 // embedText embeds one precomputed index text and stores it, reporting success.
-func (d *Document) embedText(ctx context.Context, tenant string, mscope store.MemoryScope, scopeID, bodyKey, text string) bool {
+// The row's document id is derived here, from the chunks table, so every caller —
+// a chunk body or a derived unit, a write or a re-index — stores the same answer.
+func (d *Document) embedText(ctx context.Context, tenant string, mscope store.MemoryScope, key sqlmem.ScopeKey, bodyKey, text string) bool {
 	vec, err := d.Embedder.Embed(ctx, []string{text})
 	if err != nil || len(vec) == 0 {
 		return false
 	}
-	return d.Store.MemoryEmbedSet(ctx, tenant, mscope, scopeID, bodyKey, store.MemoryEmbedding{
-		Provider:  d.Embedder.Provider(),
-		Model:     d.Embedder.Model(),
-		Dimension: len(vec[0]),
-		Vector:    vec[0],
-		EmbedText: text,
-		CreatedAt: time.Now().UTC(),
+	return d.Store.MemoryEmbedSet(ctx, tenant, mscope, key.ScopeID, bodyKey, store.MemoryEmbedding{
+		Provider:   d.Embedder.Provider(),
+		Model:      d.Embedder.Model(),
+		Dimension:  len(vec[0]),
+		Vector:     vec[0],
+		EmbedText:  text,
+		CreatedAt:  time.Now().UTC(),
+		DocumentID: d.rowDocumentID(ctx, key, bodyKey),
 	}) == nil
+}
+
+// backfillDocumentID writes a current row's document id when the stored one is
+// missing or different, without re-embedding it.
+func (d *Document) backfillDocumentID(ctx context.Context, tenant string, mscope store.MemoryScope, key sqlmem.ScopeKey, rowKey, stored string, dryRun bool, rep *ReindexReport) {
+	want := d.rowDocumentID(ctx, key, rowKey)
+	if want == "" || want == stored {
+		return
+	}
+	rep.Attributed++
+	if dryRun {
+		return
+	}
+	prefix, id := chunkBodyKeyPrefix, ChunkIDFromBodyKey(rowKey)
+	if id == "" {
+		prefix = memrank.DocumentUnitKeyPrefix
+		id, _ = memrank.UnitChunkID(rowKey)
+	}
+	if _, err := d.Store.MemoryEmbedSetDocumentID(ctx, tenant, mscope, key.ScopeID, prefix, []string{id}, want); err != nil {
+		rep.Attributed--
+		rep.fail(rowKey)
+	}
 }
 
 // bodyFromValue reads the body out of a chunk-body row's JSON envelope ("" when the

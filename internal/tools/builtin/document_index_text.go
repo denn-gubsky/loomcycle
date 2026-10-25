@@ -424,7 +424,7 @@ func (d *Document) reindexChunk(ctx context.Context, tenant string, key sqlmem.S
 		case text == "":
 			// Nothing may stay indexed for a chunk that derives to nothing (see embedBody).
 			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, bodyKey)
-		case !d.embedText(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
+		case !d.embedText(ctx, tenant, mscope, key, bodyKey, text):
 			slog.WarnContext(ctx, "document: re-index of a chunk: embed failed", "chunk_id", id)
 			return
 		}

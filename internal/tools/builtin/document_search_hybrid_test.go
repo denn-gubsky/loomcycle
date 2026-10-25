@@ -40,7 +40,7 @@ func (f *ftsStore) MemoryFullTextSearch(ctx context.Context, tenant string, scop
 		if filter.ExcludeUnitPrefix != "" && strings.HasPrefix(key, filter.ExcludeUnitPrefix) {
 			continue
 		}
-		if !idSegmentPasses(filter, key) {
+		if !idSegmentPasses(filter, key) || !documentIDPasses(filter, e.DocumentID) {
 			continue
 		}
 		text, n := strings.ToLower(e.EmbedText), 0

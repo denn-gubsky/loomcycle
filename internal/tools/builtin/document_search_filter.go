@@ -71,6 +71,11 @@ type searchFilterSet struct {
 	echo       searchFilterEcho
 	ids        []string
 	excludeIDs []string
+	// documentIDs / excludeDocumentIDs replace the two lists above when the filter
+	// names only documents and the scope's rows carry their document id
+	// (document_search_bydoc.go). At most one of the four is set.
+	documentIDs        []string
+	excludeDocumentIDs []string
 }
 
 // hasSearchFilter reports whether the call names any structural filter. False

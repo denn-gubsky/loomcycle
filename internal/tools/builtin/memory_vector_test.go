@@ -36,6 +36,10 @@ type vectorStore struct {
 	mu      sync.Mutex
 	embeds  map[string]store.MemoryEmbedding // key = scope|id|key
 	enabled bool
+	// noDocumentIDs makes the fake report every document row as lacking a stored
+	// document id, as a scope embedded before the column existed does — so a test
+	// can hold a search to the chunk-id path.
+	noDocumentIDs bool
 }
 
 func newVectorStore(s store.Store) *vectorStore {
@@ -64,8 +68,72 @@ func (v *vectorStore) MemoryEmbedSet(ctx context.Context, _ string, scope store.
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	// An unstated document id keeps the stored one, as the postgres upsert does.
+	if prev, ok := v.embeds[vsKey(scope, scopeID, key)]; ok && e.DocumentID == "" {
+		e.DocumentID = prev.DocumentID
+	}
 	v.embeds[vsKey(scope, scopeID, key)] = e
 	return nil
+}
+
+// MemoryEmbedSetDocumentID is the postgres id-segment update in Go.
+func (v *vectorStore) MemoryEmbedSetDocumentID(_ context.Context, _ string, scope store.MemoryScope, scopeID, keyPrefix string, ids []string, documentID string) (int64, error) {
+	if !v.enabled {
+		return 0, store.ErrVectorUnsupported
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	prefix := vsKey(scope, scopeID, "")
+	var n int64
+	for k, e := range v.embeds {
+		key, ok := strings.CutPrefix(k, prefix)
+		if !ok || !strings.HasPrefix(key, keyPrefix) || e.DocumentID == documentID ||
+			!idSegmentPasses(store.MemorySearchFilter{KeyPrefix: keyPrefix, IDs: ids}, key) {
+			continue
+		}
+		e.DocumentID = documentID
+		v.embeds[k] = e
+		n++
+	}
+	return n, nil
+}
+
+func (v *vectorStore) MemoryEmbedMissingDocumentID(_ context.Context, _ string, scope store.MemoryScope, scopeID string, keyPrefixes []string) (bool, error) {
+	if !v.enabled || v.noDocumentIDs || len(keyPrefixes) == 0 {
+		return true, nil
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	prefix := vsKey(scope, scopeID, "")
+	for k, e := range v.embeds {
+		key, ok := strings.CutPrefix(k, prefix)
+		if !ok || e.DocumentID != "" {
+			continue
+		}
+		for _, p := range keyPrefixes {
+			if strings.HasPrefix(key, p) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// documentIDPasses is the postgres document-id predicate in Go: a row with no
+// stored document id fails an allowlist and passes a denylist.
+func documentIDPasses(f store.MemorySearchFilter, documentID string) bool {
+	in := func(list []string) bool {
+		for _, id := range list {
+			if id == documentID {
+				return true
+			}
+		}
+		return false
+	}
+	if len(f.DocumentIDs) > 0 && (documentID == "" || !in(f.DocumentIDs)) {
+		return false
+	}
+	return documentID == "" || !in(f.ExcludeDocumentIDs)
 }
 
 func (v *vectorStore) MemoryEmbedGet(ctx context.Context, _ string, scope store.MemoryScope, scopeID, key string) (store.MemoryEmbedding, error) {
@@ -162,6 +230,9 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		}
 		if !idSegmentPasses(filter, key) {
 			continue // outside the id list, as the postgres predicate drops it
+		}
+		if !documentIDPasses(filter, e.DocumentID) {
+			continue
 		}
 		// Filter expired base rows.
 		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, key)
