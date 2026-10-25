@@ -1540,6 +1540,18 @@ func userSelfServiceRoute(method, path string) bool {
 	case "/v1/_mcp":
 		return method == http.MethodPost || method == http.MethodDelete
 	}
+	// RFC FA D14: a user lists, links and unlinks its own sign-in identities.
+	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok {
+		parts := strings.Split(rest, "/")
+		if len(parts) >= 2 && parts[0] != "" && parts[1] == "identities" {
+			switch len(parts) {
+			case 2:
+				return method == http.MethodGet || method == http.MethodPost
+			case 3:
+				return method == http.MethodDelete && parts[2] != ""
+			}
+		}
+	}
 	return false
 }
 

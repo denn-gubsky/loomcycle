@@ -328,14 +328,6 @@ func (s *Server) handleRedirectComplete(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, dest, http.StatusSeeOther)
 }
 
-// completeLink is a callback whose login was started to link this identity
-// to a signed-in user; the linking routes own it.
-func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, cfg config.AuthGate, row store.AuthLoginStateRow, a authgate.Assertion) {
-	// Account linking ships with its routes; a link state cannot be made
-	// before they exist, so one arriving here is refused.
-	loginRedirect(w, r, cfg.Name, "login_failed")
-}
-
 // endSessionURL is where a logout from gate's session sends the browser
 // next, "" for none.
 func (s *Server) endSessionURL(ctx context.Context, gate string) string {
