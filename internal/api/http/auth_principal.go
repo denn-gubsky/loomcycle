@@ -71,8 +71,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			r = r.WithContext(withUIAuth(r.Context(), *ui))
+			// A user awaiting approval may learn that it waits, nothing else.
+			if ui.pending && !(r.Method == http.MethodGet && r.URL.Path == "/v1/_me") {
+				writeJSONError(w, http.StatusForbidden, "awaiting_approval",
+					"your account is awaiting an operator's approval")
+				return
+			}
 		}
-		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
+		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted && !ownIdentityRequest(p, r) {
 			writeScopeError(w, required, "insufficient scope")
 			return
 		}
@@ -355,11 +361,11 @@ func (s *Server) authenticateRequest(r *http.Request) (auth.Principal, *uiAuth, 
 		return auth.Principal{}, nil, false
 	}
 	if id, ok := s.sessionIDFromCookie(r); ok {
-		p, row, ok := s.sessionPrincipal(r, id)
+		p, ua, ok := s.sessionPrincipal(r, id)
 		if !ok {
 			return auth.Principal{}, nil, false
 		}
-		return p, &uiAuth{session: &row}, true
+		return p, &ua, true
 	}
 	if bearer, ok := legacyBearerCookie(r, strict); ok {
 		warnEvery(&s.legacyCookieWarnedAt, "auth: a browser signed in with the "+webui.LegacyBearerCookie+
@@ -1552,6 +1558,13 @@ func authManageRoute(method, path string) bool {
 	}
 	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok && rest != "" && !strings.Contains(rest, "/") {
 		return method == http.MethodPatch || method == http.MethodDelete
+	}
+	// The approval of a pending user (RFC FA §6.1.1: floor users only, which
+	// the handler enforces).
+	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok && method == http.MethodPost {
+		if sub, ok := strings.CutSuffix(rest, "/approve"); ok && sub != "" && !strings.Contains(sub, "/") {
+			return true
+		}
 	}
 	return false
 }

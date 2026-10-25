@@ -149,8 +149,12 @@ type Event struct {
 	// user's access mode. Both are what an auditor of a website's credential
 	// looks for.
 	// An "auth_manage_refused" names the refused operation in AuthReason.
-	AuthRecovery         bool   `json:"auth_recovery,omitempty"`
-	AuthTargetAccessMode string `json:"auth_target_access_mode,omitempty"`
+	AuthRecovery bool `json:"auth_recovery,omitempty"`
+	// AuthGroupsAdded / AuthGroupsRemoved are a gate's group sync (RFC FA
+	// §3.7b): the group names a login added the user to or removed it from.
+	AuthGroupsAdded      []string `json:"auth_groups_added,omitempty"`
+	AuthGroupsRemoved    []string `json:"auth_groups_removed,omitempty"`
+	AuthTargetAccessMode string   `json:"auth_target_access_mode,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

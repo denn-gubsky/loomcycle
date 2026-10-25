@@ -117,6 +117,11 @@ type AclStore interface {
 	// and external_id); CreatedAt / CreatedBy are kept on an update.
 	GroupPut(ctx context.Context, row GroupRow) (GroupRow, error)
 	GroupGet(ctx context.Context, tenantID, name string) (GroupRow, error)
+	// GroupCreate inserts the group only if no group of that name exists in
+	// the tenant, and reports whether it did. Unlike GroupPut it never
+	// changes an existing group, so an identity provider's sync can never
+	// turn a locally managed group into one it manages.
+	GroupCreate(ctx context.Context, row GroupRow) (bool, error)
 	// GroupList returns the tenant's groups ordered by name.
 	GroupList(ctx context.Context, tenantID string) ([]GroupRow, error)
 	// GroupDelete removes the group and every membership edge that names

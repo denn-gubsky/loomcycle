@@ -87,6 +87,11 @@ export default function Layout() {
     getWhoami()
       .then((p) => {
         if (cancelled) return;
+        // RFC FA §3.7a: a user awaiting approval reaches nothing else.
+        if (p.auth?.status === "pending") {
+          window.location.replace("/ui/pending");
+          return;
+        }
         setPrincipal(p);
         // A tenant's workspace defaults to its own subject's runs so the
         // runs view is populated immediately without picking a user.

@@ -23,7 +23,7 @@ import (
 
 const operatorTokenDefSelect = `SELECT def_id, name, tenant_id, subject, token_hash,
 	allowed_scopes, created_at, created_by_agent_id, created_by_run_id,
-	rotated_from, retired_at, expires_at, restrictions FROM operator_token_defs`
+	rotated_from, retired_at, expires_at, restrictions, issued_by_gate FROM operator_token_defs`
 
 func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	var (
@@ -48,7 +48,7 @@ func scanOperatorTokenDef(row pgx.Row) (store.OperatorTokenDefRow, error) {
 	if err := row.Scan(
 		&out.DefID, &out.Name, &out.TenantID, &out.Subject, &out.TokenHash,
 		&scopesJSON, &out.CreatedAt, &agentID, &runID,
-		&rotated, &retiredAt, &expiresAt, &restrict,
+		&rotated, &retiredAt, &expiresAt, &restrict, &out.IssuedByGate,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, err
 	}
@@ -99,11 +99,12 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO operator_token_defs (
 			def_id, name, tenant_id, subject, token_hash, allowed_scopes,
-			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at, restrictions
-		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)`,
+			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at, restrictions,
+			issued_by_gate
+		) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb, $14)`,
 		row.DefID, row.Name, row.TenantID, row.Subject, row.TokenHash, string(scopesJSON),
 		row.CreatedAt, nullableString(row.CreatedByAgentID), nullableString(row.CreatedByRunID),
-		nullableString(row.RotatedFrom), retired, expires, nullableString(row.RestrictionsJSON),
+		nullableString(row.RotatedFrom), retired, expires, nullableString(row.RestrictionsJSON), row.IssuedByGate,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def insert: %w", err)
 	}

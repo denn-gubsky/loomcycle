@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { NewPasswordFields, RecoveryCodes, TotpEnrolBlock, passwordReady } from "../components/PasswordGateParts";
+import LinkedSignIns from "../components/LinkedSignIns";
 import {
   type AccountInfo,
   type Refusal,
@@ -53,7 +54,15 @@ export default function AccountView() {
     );
   }
   if (!info) {
-    return <div className="page">{refusal ? <p className="login-error">{refusalText(refusal)}</p> : <p>Loading…</p>}</div>;
+    // A session from an identity provider has no password to manage; its
+    // sign-in methods are still the person's own.
+    return (
+      <div className="page">
+        <h1>Your account</h1>
+        <LinkedSignIns />
+        {refusal ? null : <p>Loading…</p>}
+      </div>
+    );
   }
 
   const min = info.has_totp ? 8 : 15;

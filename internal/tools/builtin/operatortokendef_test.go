@@ -528,6 +528,29 @@ func TestOperatorTokenDef_RotateOfAnExpiredTokenIsRefused(t *testing.T) {
 	mustOp(t, tool, ctx, `{"op":"create","name":"dead","tenant_id":"acme","scopes":["runs:create"]}`)
 }
 
+// RFC FA §7: a gate-issued token is one login's; rotating it would mint a
+// token no gate vouched for, so it is refused and the row stays as it was.
+func TestOperatorTokenDef_RotateOfAGateIssuedTokenIsRefused(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_gate", Name: "u-gate-google", TenantID: "acme", Subject: "google:1", TokenHash: "h-gate",
+		AllowedScopes: []string{"runs:create"}, ExpiresAt: time.Now().Add(time.Hour), IssuedByGate: "google",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := tool.Execute(ctx, json.RawMessage(`{"op":"rotate","def_id":"def_gate"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(res.Text, "auth gate") {
+		t.Fatalf("rotate of a gate-issued token: is_error=%v text=%q", res.IsError, res.Text)
+	}
+	if row, _ := st.OperatorTokenDefGet(ctx, "def_gate"); !row.RetiredAt.IsZero() {
+		t.Fatal("the refused rotation retired the token")
+	}
+}
+
 // Names behind the per-user prefix are written by tenant operators and repeat
 // across tenants, so the operator tool neither creates there nor acts by name
 // there: "the current token named u-alice" is whichever tenant minted last.
