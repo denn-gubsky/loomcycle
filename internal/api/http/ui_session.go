@@ -83,6 +83,10 @@ const (
 // set) or, in token mode, the legacy bearer cookie (row nil).
 type uiAuth struct {
 	session *store.UISessionRow
+	// pending: the session's user awaits an operator's approval (RFC FA
+	// §3.7a). Its principal holds no scope and an empty ACL set, and the
+	// middleware admits it to GET /v1/_me alone.
+	pending bool
 }
 
 type ctxKeyUIAuth struct{}
@@ -289,6 +293,11 @@ func (s *Server) gateFor(g config.AuthGate) (authgate.Gate, error) {
 			return pw, nil
 		}
 		return nil, fmt.Errorf("auth gate %q: the password gate is not running (see the boot log)", g.Name)
+	case config.AuthGateKindOIDC:
+		if og, _, ok := s.oidcGateNamed(g.Name); ok {
+			return og, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the OIDC gate is misconfigured", g.Name)
 	}
 	return nil, fmt.Errorf("auth gate %q: kind %q has no implementation", g.Name, g.Kind)
 }
@@ -376,6 +385,11 @@ type sessionIdentity struct {
 	// own; credentialBinding and sessionCredentialPrincipal are where such a
 	// session's binding and principal are decided, one case per kind.
 	Credential *authgate.Credential
+	// AuthTime is when the person authenticated, as the gate reports it. Zero
+	// for an identity gate that could not say (no re-authentication check
+	// counts that as recent); the token and password gates authenticate the
+	// person here and now, so zero there means the login's own time.
+	AuthTime time.Time
 }
 
 // establishSession turns a verified identity into a session: a new row, a new
@@ -410,7 +424,15 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 			slog.Warn("auth: ending the previous Web UI session failed", "err", err)
 		}
 	}
+	authTime := ident.AuthTime
+	if _, identityKind := s.identityGate(ident.Gate); authTime.IsZero() && !identityKind {
+		authTime = now
+	}
+	if authTime.After(now) {
+		authTime = now
+	}
 	row := store.UISessionRow{
+		AuthTime:          authTime,
 		SessionHash:       sessionHash(id),
 		TenantID:          ident.TenantID,
 		Subject:           ident.Subject,
@@ -467,6 +489,11 @@ func (s *Server) credentialBinding(ctx context.Context, h auth.TokenHasher, iden
 		if _, ok := s.passwordGateNamed(ident.Gate); ok {
 			return s.passwordSessionBinding(ctx, ident)
 		}
+		// An identity-gate session is bound to the linked identity and the
+		// user row it names.
+		if _, ok := s.identityGate(ident.Gate); ok {
+			return s.identitySessionBinding(ctx, ident)
+		}
 		return "", "", "", fmt.Errorf("%w: gate %q verified an identity with no loomcycle credential", errNoSessionBinding, ident.Gate)
 	}
 	p := c.Principal
@@ -494,37 +521,37 @@ func (s *Server) credentialBinding(ctx context.Context, h auth.TokenHasher, iden
 // session (revokes the row, audited once) when the session expired, the
 // browser changed, or the credential it was bound to is gone; a store error
 // refuses this request only.
-func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, store.UISessionRow, bool) {
+func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, uiAuth, bool) {
 	ctx := r.Context()
 	if s.store == nil {
-		return auth.Principal{}, store.UISessionRow{}, false
+		return auth.Principal{}, uiAuth{}, false
 	}
 	row, err := s.store.UISessionGet(ctx, sessionHash(id))
 	if err != nil {
 		if !isNotFound(err) && ctx.Err() == nil {
 			slog.Error("auth: reading a Web UI session failed (refusing the request)", "err", err)
 		}
-		return auth.Principal{}, store.UISessionRow{}, false
+		return auth.Principal{}, uiAuth{}, false
 	}
 	if !row.RevokedAt.IsZero() {
-		return auth.Principal{}, store.UISessionRow{}, false
+		return auth.Principal{}, uiAuth{}, false
 	}
 	now := time.Now()
 	policy := s.cfg().ResolvedAuth
 	if !now.Before(sessionExpiresAt(row, policy)) {
 		s.endSession(ctx, r, row, "auth_session_expired", "expired")
-		return auth.Principal{}, store.UISessionRow{}, false
+		return auth.Principal{}, uiAuth{}, false
 	}
 	if !macEqual(sessionMAC(id, "ua", r.UserAgent()), row.UAHash) {
 		s.endSession(ctx, r, row, "auth_session_revoked", "user_agent_changed")
-		return auth.Principal{}, store.UISessionRow{}, false
+		return auth.Principal{}, uiAuth{}, false
 	}
-	p, ok, definitive := s.sessionCredentialPrincipal(ctx, id, row)
+	p, pending, ok, definitive := s.sessionCredentialPrincipal(ctx, id, row)
 	if !ok {
 		if definitive {
 			s.endSession(ctx, r, row, "auth_session_revoked", "credential_invalid")
 		}
-		return auth.Principal{}, store.UISessionRow{}, false
+		return auth.Principal{}, uiAuth{}, false
 	}
 	if now.Sub(row.LastSeenAt) >= sessionTouchEvery {
 		idle := now.Add(policy.SessionIdle())
@@ -537,7 +564,7 @@ func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, s
 			row.LastSeenAt, row.IdleExpiresAt = now, idle
 		}
 	}
-	return p, row, true
+	return p, uiAuth{session: &row, pending: pending}, true
 }
 
 // sessionExpiresAt is when the session stops authenticating: its own idle and
@@ -560,8 +587,16 @@ func sessionExpiresAt(row store.UISessionRow, policy config.AuthPolicy) time.Tim
 // sessionCredentialPrincipal re-resolves the credential a session is bound to.
 // ok is false when it no longer authenticates as the same credential;
 // definitive is false when that could not be decided (a store error), so the
-// session is kept for the next request.
-func (s *Server) sessionCredentialPrincipal(ctx context.Context, id []byte, row store.UISessionRow) (p auth.Principal, ok, definitive bool) {
+// session is kept for the next request. pending is set for a user awaiting
+// approval (identity gates only).
+func (s *Server) sessionCredentialPrincipal(ctx context.Context, id []byte, row store.UISessionRow) (p auth.Principal, pending, ok, definitive bool) {
+	p, ok, definitive = s.sessionCredentialPrincipalOf(ctx, id, row, &pending)
+	return p, pending, ok, definitive
+}
+
+// sessionCredentialPrincipalOf is the per-kind resolution. Only the identity
+// case sets *pending; the other kinds keep their three-value returns.
+func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, row store.UISessionRow, pending *bool) (p auth.Principal, ok, definitive bool) {
 	h, err := s.hasher()
 	if err != nil {
 		return auth.Principal{}, false, false
@@ -598,6 +633,8 @@ func (s *Server) sessionCredentialPrincipal(ctx context.Context, id []byte, row 
 		return auth.Principal{}, false, true
 	case credKindPassword:
 		return s.passwordSessionPrincipal(ctx, row, bound)
+	case credKindIdentity:
+		return s.identitySessionPrincipal(ctx, row, bound, pending)
 	case credKindLegacy:
 		secret := s.cfg().Env.AuthToken
 		if secret == "" || !bound(h.Hash(secret)) {
@@ -639,9 +676,15 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		writeCSRFRefusal(w, "cross_origin_refused")
 		return
 	}
+	endSession := ""
 	if id, ok := s.sessionIDFromCookie(r); ok && s.store != nil {
 		row, err := s.store.UISessionGet(r.Context(), sessionHash(id))
 		if err == nil {
+			// RFC FA §5: an OIDC gate may also end the provider's session
+			// (RP-initiated logout); the page follows the URL if one is given.
+			if row.RevokedAt.IsZero() {
+				endSession = s.endSessionURL(r.Context(), row.Gate)
+			}
 			changed, rerr := s.store.UISessionRevoke(r.Context(), row.SessionHash, time.Now())
 			if rerr != nil {
 				slog.Error("auth: logout could not end the session", "err", rerr)
@@ -661,6 +704,10 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, expiredCookie(name, secure || name == sessionCookieSecure))
 	}
 	w.Header().Set("Clear-Site-Data", `"cookies", "storage"`)
+	if endSession != "" {
+		writeJSON(w, http.StatusOK, map[string]string{"end_session_url": endSession})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -694,7 +741,15 @@ func (s *Server) whoamiAuth(ctx context.Context, open bool) map[string]any {
 	if a, ok := uiAuthFrom(ctx); ok && a.session != nil {
 		out["gate"] = a.session.Gate
 		out["amr"] = a.session.AMR
-		out["auth_time"] = a.session.CreatedAt.UTC()
+		authTime := a.session.AuthTime
+		if authTime.IsZero() {
+			authTime = a.session.CreatedAt
+		}
+		out["auth_time"] = authTime.UTC()
+		if a.pending {
+			// RFC FA §3.7a: the UI shows "awaiting approval" and nothing else.
+			out["status"] = store.UserStatusPending
+		}
 		out["session_expires_at"] = sessionExpiresAt(*a.session, s.cfg().ResolvedAuth).UTC()
 	}
 	return out

@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { type LoginConfig, type LoginGate, parseLoginConfig } from "../lib/uiSession";
 import { refusalText as passwordRefusalText, signInWithPassword } from "../lib/passwordGate";
+import { REDIRECT_GATE_KINDS, redirectLoginError, redirectLoginHref } from "../lib/oidcGate";
 
 // LoginView is the sign-in page. It renders from /ui/login-config.json: the
 // deployment's mode and its gates (name, kind, label) — nothing else about the
 // server is known before sign-in. Each gate kind has its own form: `token`, the
 // paste box (BaseAuthGate), and `password`, a login and password with an
-// authenticator code when the account has one (NaiveAuthGate). A gate kind
+// authenticator code when the account has one (NaiveAuthGate), and `oidc`, a
+// button that starts a sign-in at the identity provider (a top-level
+// navigation; the provider sends the browser back to the server). A gate kind
 // this page does not know is listed but not offered.
 //
 // Signing in creates a server-side session: the browser gets an HttpOnly
@@ -217,7 +220,9 @@ export default function LoginView() {
 
   const tokenGate = config?.gates.find((g) => g.kind === "token");
   const passwordGates = config?.gates.filter((g) => g.kind === "password") ?? [];
+  const redirectGates = config?.gates.filter((g) => REDIRECT_GATE_KINDS.includes(g.kind)) ?? [];
   const blocked = config?.sessionRefused ?? "";
+  const returned = redirectLoginError(new URLSearchParams(window.location.search).get("error") ?? "");
 
   return (
     <div className="login-page">
@@ -230,11 +235,27 @@ export default function LoginView() {
           </p>
         )}
         {config === null && <p className="login-sub">Loading…</p>}
+        {returned && !blocked && (
+          <p className="login-error" role="alert">
+            {returned}
+          </p>
+        )}
+        {redirectGates.map((g) =>
+          blocked ? (
+            <button key={g.name} className="login-btn" type="button" disabled>
+              {g.label}
+            </button>
+          ) : (
+            <a key={g.name} className="login-btn" href={redirectLoginHref(g.name)}>
+              {g.label}
+            </a>
+          ),
+        )}
         {passwordGates.map((g) => (
           <PasswordGateForm key={g.name} gate={g} disabled={blocked !== ""} />
         ))}
         {tokenGate && <TokenGateForm gate={tokenGate} disabled={blocked !== ""} />}
-        {config !== null && !tokenGate && passwordGates.length === 0 && (
+        {config !== null && !tokenGate && passwordGates.length === 0 && redirectGates.length === 0 && (
           <p className="login-sub">
             {config.gates.length === 0
               ? "This server offers no way to sign in to the Web UI."

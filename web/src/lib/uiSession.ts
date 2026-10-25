@@ -39,30 +39,51 @@ export function installUIRequestHeader(win: Window): void {
   win.fetch = withUIHeader(win.fetch.bind(win), win.location.origin);
 }
 
+/** The outcome of a logout: whether the server ended the session, and where
+ *  to send the browser next — the identity provider's end-session page when
+ *  the gate signs out there too (RFC FA §5), else the login page. */
+export interface LogoutResult {
+  ok: boolean;
+  next: string;
+}
+
 /** Ends the session on the server (POST /v1/_auth/logout). The server also
- *  clears the cookies and sends Clear-Site-Data. */
-export async function endSession(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+ *  clears the cookies and sends Clear-Site-Data; an OIDC gate configured with
+ *  end_session answers 200 with the provider's end_session_url. */
+export async function endSessionWith(fetchImpl: typeof fetch = fetch): Promise<LogoutResult> {
   try {
     const r = await fetchImpl("/v1/_auth/logout", {
       method: "POST",
       credentials: "same-origin",
       headers: { [UI_REQUEST_HEADER]: "1" },
     });
-    return r.ok;
+    let next = "/ui/login";
+    if (r.ok && r.status === 200) {
+      const body = (await r.json().catch(() => ({}))) as { end_session_url?: unknown };
+      const u = body.end_session_url;
+      if (typeof u === "string" && /^https?:\/\//.test(u)) next = u;
+    }
+    return { ok: r.ok, next };
   } catch {
-    return false;
+    return { ok: false, next: "/ui/login" };
   }
 }
 
+/** endSessionWith, reporting only whether the session ended. */
+export async function endSession(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  return (await endSessionWith(fetchImpl)).ok;
+}
+
 /** The sign-out a person asked for (a click): end the session, then go to the
- *  login page. Never call it on page load — a link from another site could
- *  then sign the user out, since this same-origin POST carries the cookie. */
+ *  login page (or the provider's end-session page). Never call it on page
+ *  load — a link from another site could then sign the user out, since this
+ *  same-origin POST carries the cookie. */
 export async function signOut(
   fetchImpl: typeof fetch = fetch,
   go: (url: string) => void = (url) => window.location.assign(url),
 ): Promise<boolean> {
-  const ok = await endSession(fetchImpl);
-  if (ok) go("/ui/login");
+  const { ok, next } = await endSessionWith(fetchImpl);
+  if (ok) go(next);
   return ok;
 }
 

@@ -103,7 +103,7 @@ func TestResolveAuth_RefusesBadValues(t *testing.T) {
 			t.Errorf("%s: loaded", name)
 		}
 	}
-	err := resolveAuth(&Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"google": {Kind: "oidc"}}}})
+	err := resolveAuth(&Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"github": {Kind: "oauth"}}}})
 	if err == nil || !strings.Contains(err.Error(), "not supported in this release") {
 		t.Errorf("a later-phase kind must say it is not supported yet; got %v", err)
 	}

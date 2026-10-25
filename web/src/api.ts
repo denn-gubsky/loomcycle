@@ -587,6 +587,8 @@ export interface Principal {
    * older server (the role rule decides then).
    */
   effective?: { surfaces?: Record<string, boolean> };
+  /** RFC FA: how the caller signed in. status "pending" = awaiting approval. */
+  auth?: { mode?: string; gate?: string; amr?: string[]; auth_time?: string; status?: string };
 }
 
 export interface ServerCapabilities {

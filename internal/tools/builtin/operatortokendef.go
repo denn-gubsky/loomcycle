@@ -466,6 +466,13 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
+	// A token an auth gate issued (RFC FA §7) is a short-lived login, not a
+	// standing credential: the person signs in through the gate again. A
+	// rotation would mint a token the gate never vouched for.
+	if prior.IssuedByGate != "" {
+		return errResult(fmt.Sprintf("rotate: token %q was issued by auth gate %q for one login; sign in through the gate again instead of rotating it",
+			prior.DefID, prior.IssuedByGate)), nil
+	}
 	// The replacement inherits the lifetime, so rotating a token that has run
 	// out would mint one that is dead on arrival.
 	if !prior.ExpiresAt.IsZero() && !time.Now().Before(prior.ExpiresAt) {

@@ -35,13 +35,33 @@ type Gate interface {
 }
 
 // LoginState is the per-login state an interactive gate carries from Begin to
-// Complete (the redirect target, a nonce, a PKCE verifier). The token gate
-// needs none; the gates that do add their fields with them.
-type LoginState struct{}
+// Complete. The token and password gates need none. A redirect gate (OIDC,
+// OAuth, external) gets it from the server's login-state machinery
+// (codeflow), which derives the verifier and nonce from a secret only the
+// browser's login cookie holds, so a database read cannot finish a login.
+type LoginState struct {
+	// State is the OAuth `state` sent to the provider; Complete refuses a
+	// callback whose state is not this one.
+	State string
+	// Nonce is the OIDC nonce the ID token must echo.
+	Nonce string
+	// CodeVerifier is the PKCE (S256) verifier.
+	CodeVerifier string
+	// RedirectURI is this gate's exact callback URL.
+	RedirectURI string
+	// Reauth asks the provider for a fresh authentication (prompt=login,
+	// max_age=0): an account link must not ride an old provider session.
+	Reauth bool
+	// StartedAt is when the login began; with Reauth the provider's
+	// auth_time must not be earlier.
+	StartedAt time.Time
+}
 
 // Assertion is what a gate says about the person it verified (RFC FA §3.1).
 type Assertion struct {
-	// Subject is the identity's stable key at the gate (never a display name).
+	// Subject is the identity's stable key at the gate (never a display name):
+	// for an identity gate the provider's `sub`, which the identity map turns
+	// into a loomcycle subject.
 	Subject string
 	// TenantHint is the tenant the gate saw, for the identity map to judge.
 	TenantHint string
@@ -49,6 +69,25 @@ type Assertion struct {
 	AMR []string
 	// AuthTime is when the person authenticated.
 	AuthTime time.Time
+	// Issuer is who vouches for Subject (an OIDC `iss`); with the gate and
+	// Subject it keys the person's user_identities row.
+	Issuer string
+	// Email, EmailVerified and DisplayName are attributes, never a key.
+	Email         string
+	EmailVerified bool
+	DisplayName   string
+	// Groups is the group list a gate knows natively (an external gate, a
+	// forge's org teams). An OIDC gate leaves it empty: the identity map
+	// reads groups from Claims.
+	Groups []string
+	// AccessMode is an access_mode the gate asserts; honoured only for a
+	// trusted gate (D12).
+	AccessMode string
+	// Claims are the verified claims, for the identity map's tenant,
+	// subject and groups claims.
+	Claims map[string]any
+	// ExpiresAt is when the assertion itself stops being valid.
+	ExpiresAt time.Time
 	// Credential is set only by a gate that verified a loomcycle credential.
 	// The identity is then already authoritative (the bearer's own tenant and
 	// subject), and a session made from it must stay bound to that credential:

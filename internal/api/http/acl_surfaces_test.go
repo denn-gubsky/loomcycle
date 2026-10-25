@@ -32,6 +32,9 @@ var aclUngovernedRoutes = map[string]bool{
 	"POST /v1/_auth/complete/{gate}": true, "POST /v1/_auth/invite/info": true, "POST /v1/_auth/invite": true,
 	"POST /v1/_auth/reset/info": true, "POST /v1/_auth/reset": true, "GET /v1/_auth/account": true,
 	"POST /v1/_auth/password": true, "POST /v1/_auth/totp/begin": true, "POST /v1/_auth/totp/confirm": true, "DELETE /v1/_auth/totp": true,
+	// The redirect gates' login start and provider callback establish a
+	// session (no principal yet).
+	"GET /v1/_auth/login/{gate}": true, "GET /v1/_auth/complete/{gate}": true,
 	"GET /.well-known/agent-card.json/extended": true,
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.

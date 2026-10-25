@@ -1591,9 +1591,16 @@ func ValidUserAccessMode(mode string) bool {
 	return mode == "tenant" || mode == "isolated"
 }
 
+// "pending" (RFC FA §3.7a) is a user an auth gate provisioned that awaits an
+// operator's approval: it can sign in, and its session answers every access
+// question no until POST /v1/_users/{subject}/approve makes it active.
+// Anything that admits only "active" treats it as not yet a user.
 func ValidUserStatus(status string) bool {
-	return status == "active" || status == "disabled"
+	return status == "active" || status == "disabled" || status == UserStatusPending
 }
+
+// UserStatusPending is the awaiting-approval status.
+const UserStatusPending = "pending"
 
 // TenantSummary is one tenant's derived activity, from ListTenants.
 type TenantSummary struct {
@@ -1627,6 +1634,7 @@ type Store interface {
 	UserStore
 	AuthIdentityStore
 	PasswordGateStore
+	AuthLoginStateStore
 	SnapshotStore
 	SnapshotReadStore
 	SnapshotRestoreStore
@@ -6449,6 +6457,10 @@ type OperatorTokenDefRow struct {
 	// the runtime. Like the expiry it is fixed at mint and copied by a
 	// rotation.
 	RestrictionsJSON string `json:"-"`
+	// IssuedByGate names the auth gate that issued the token for a person it
+	// verified (RFC FA §7); "" for a token an operator or tenant minted. Fixed
+	// at mint, so strict mode can tell a gate-issued user token apart.
+	IssuedByGate string `json:"issued_by_gate,omitempty"`
 }
 
 // ValidAt reports whether the row authenticates at t: not retired (or still
@@ -6506,6 +6518,10 @@ type UISessionRow struct {
 	AbsoluteExpiresAt time.Time
 	// RevokedAt is zero for a session that has not been ended.
 	RevokedAt time.Time
+	// AuthTime is when the person last authenticated as the gate reported
+	// it (an OIDC auth_time); zero when the gate could not say, which no
+	// re-authentication check counts as recent.
+	AuthTime time.Time
 }
 
 // OperatorTokenDefNameSummary is one row of the names listing — no
