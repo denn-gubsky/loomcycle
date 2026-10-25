@@ -101,7 +101,7 @@ func (f *fakeForge) server(t *testing.T) *httptest.Server {
 func githubGate(t *testing.T, base string, allowed []string, requireOrg bool) *Gate {
 	t.Helper()
 	g, err := New(Config{Name: "gh", Preset: PresetGitHub, ClientID: "cid", ClientSecret: "csecret",
-		BaseURL: base, AllowedOrgs: allowed, RequireOrg: requireOrg})
+		BaseURL: base, AllowedOrgs: allowed, RequireOrg: requireOrg, TrustEmail: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestOAuthGeneric_EmailNeedsAJSONTrueVerifiedClaim(t *testing.T) {
 	defer srv.Close()
 	g, err := New(Config{Name: "sso", Preset: PresetGeneric, ClientID: "c", ClientSecret: "s",
 		AuthURL: srv.URL + "/authorize", TokenURL: srv.URL + "/token", UserinfoURL: srv.URL + "/userinfo",
-		Claims: ClaimMap{Groups: "roles"}, AllowedOrgs: []string{"staff"}})
+		Claims: ClaimMap{Groups: "roles"}, AllowedOrgs: []string{"staff"}, TrustEmail: true})
 	if err != nil {
 		t.Fatal(err)
 	}

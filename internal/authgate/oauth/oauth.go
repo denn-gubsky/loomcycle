@@ -20,6 +20,7 @@
 package oauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -95,6 +96,11 @@ type Config struct {
 	AllowedOrgs []string
 	// RequireOrg refuses a login whose person is in none of AllowedOrgs.
 	RequireOrg bool
+	// TrustEmail lets the gate assert the provider's verified e-mail at all.
+	// Off, no e-mail is asserted: whether a self-managed instance or a
+	// generic provider really confirms addresses is that instance's
+	// configuration, which loomcycle cannot see.
+	TrustEmail bool
 	// AuthStyle is how the client authenticates at the token endpoint; zero
 	// detects it.
 	AuthStyle oauth2.AuthStyle
@@ -318,6 +324,9 @@ func (g *Gate) assertion(p profile) (authgate.Assertion, error) {
 	if p.id == "" {
 		return authgate.Assertion{}, fmt.Errorf("%w: the provider named no user id", authgate.ErrInvalidCredential)
 	}
+	if !g.cfg.TrustEmail {
+		p.email = ""
+	}
 	groups := g.trustedGroups(p.groups)
 	if g.cfg.RequireOrg && len(groups) == 0 {
 		return authgate.Assertion{}, fmt.Errorf("%w: not a member of an allowed organisation", authgate.ErrInvalidCredential)
@@ -385,7 +394,12 @@ func (g *Gate) getJSON(ctx context.Context, u, token string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%w: the provider API answered %d", authgate.ErrInvalidCredential, resp.StatusCode)
 	}
-	if err := json.Unmarshal(body, out); err != nil {
+	// UseNumber: a numeric id decoded into an interface (the generic
+	// userinfo) stays exact instead of rounding through float64, where two
+	// ids beyond 2^53 would collide on one subject.
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("%w: the provider API answer is not the expected JSON", authgate.ErrInvalidCredential)
 	}
 	return nil
@@ -495,10 +509,23 @@ func (g *Gate) gitlabProfile(ctx context.Context, base, tok string) (profile, er
 	if u.ID > 0 {
 		p.id = strconv.FormatInt(u.ID, 10)
 	}
-	// GitLab's `email` is the primary address; confirmed_at says it was
-	// verified.
-	if u.ConfirmedAt != nil && *u.ConfirmedAt != "" {
-		p.email = u.Email
+	// GitLab's `email` is the primary address. The user's confirmed_at says
+	// the ACCOUNT was confirmed once, not that the current primary was:
+	// only /user/emails listing that address with its own confirmed_at does.
+	if u.ConfirmedAt != nil && *u.ConfirmedAt != "" && u.Email != "" {
+		type email struct {
+			Email       string  `json:"email"`
+			ConfirmedAt *string `json:"confirmed_at"`
+		}
+		emails, err := getPages[email](ctx, g, base+"/api/v4/user/emails", tok)
+		if err != nil {
+			return profile{}, err
+		}
+		for _, e := range emails {
+			if strings.EqualFold(e.Email, u.Email) && e.ConfirmedAt != nil && *e.ConfirmedAt != "" {
+				p.email = u.Email
+			}
+		}
 	}
 	if len(g.allowed) == 0 {
 		return p, nil
@@ -602,14 +629,15 @@ func (g *Gate) genericProfile(ctx context.Context, tok string) (profile, error) 
 	return p, nil
 }
 
-// claimString reads a string or integral number claim.
+// claimString reads a string claim, or an integral number claim within int64,
+// exactly. A fraction, an exponent or an out-of-range number is no id.
 func claimString(m map[string]any, key string) string {
 	switch v := m[key].(type) {
 	case string:
 		return v
-	case float64:
-		if v == float64(int64(v)) {
-			return strconv.FormatInt(int64(v), 10)
+	case json.Number:
+		if n, err := strconv.ParseInt(v.String(), 10, 64); err == nil {
+			return strconv.FormatInt(n, 10)
 		}
 	}
 	return ""
