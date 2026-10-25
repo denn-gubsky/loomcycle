@@ -6,7 +6,7 @@
 // and, after a failure, show the opaque reason the server put in ?error=.
 
 /** The kinds that sign in by redirecting to a provider. */
-export const REDIRECT_GATE_KINDS = ["oidc"];
+export const REDIRECT_GATE_KINDS = ["oidc", "oauth"];
 
 /** The start URL of a redirect login. returnTo must be a /ui path (the server
  *  refuses anything else); reauth asks the provider to authenticate again. */

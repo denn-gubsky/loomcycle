@@ -1785,6 +1785,45 @@ Refusals are `403 target_beyond_floor`, audited `auth_manage_refused`. A link an
 
 **Audit** (with `LOOMCYCLE_AUDIT_LOG_PATH`): `auth_invite_created`, `auth_invite_revoked`, `auth_invite_redeemed`, `auth_reset_issued`, `auth_password_set`, `auth_credential_removed`, `auth_login_renamed`, `auth_totp_enrolled`, `auth_totp_removed`, `auth_login_locked`, `auth_manage_refused`, `auth_manage_recovery`, `auth_owner_bound`, besides the sign-in events above — with the gate, tenant, subject and caller, never a code, link or password. Dead invites and resets are deleted a week after they stop working; idle throttle counters hourly.
 
+### OAuth gate — `kind: oauth` (RFC FA P5)
+
+**Why a separate kind, not OIDC.** GitHub, GitLab and Gitea sign people in with OAuth 2.0 but issue no signed ID token, so there is nothing to verify the way the OIDC gate does. The OAuth gate runs the same redirect login (code + PKCE, a `state` bound to the browser's login cookie, `GET /v1/_auth/login/{gate}` → the provider → `GET /v1/_auth/complete/{gate}`), then asks the provider's API who the person is. Everything after that — `identity_map`, provisioning, group sync, the Web UI session — is the OIDC gate's, unchanged.
+
+```yaml
+auth:
+  gates:
+    gh:
+      kind: oauth
+      preset: github                  # github | gitlab | gitea | generic
+      label: "Sign in with GitHub"
+      client_id: Iv1.0123abcd
+      client_secret_env: LOOMCYCLE_GATE_GH_SECRET   # an env var NAME; a literal is refused
+      # base_url: https://ghe.example # GitHub Enterprise / self-hosted GitLab; required for gitea
+      allowed_orgs: [acme]            # only these orgs (and their teams, as acme/<team>) become groups
+      require_org: true               # refuse a person in none of them
+      trusted: true                   # needed for identity_map.groups
+      identity_map: { tenant: acme, provision: auto, groups: { provision: true } }
+    sso:
+      kind: oauth
+      preset: generic
+      client_id: loomcycle
+      client_secret_env: LOOMCYCLE_GATE_SSO_SECRET
+      auth_url: https://sso.example/authorize
+      token_url: https://sso.example/token
+      userinfo_url: https://sso.example/userinfo
+      claims: { subject: sub, email: email, email_verified: email_verified, name: name, groups: roles }
+      allowed_orgs: [staff]           # generic: the group values admitted
+      identity_map: { tenant: acme, provision: known }
+```
+
+- **The subject** is `<gate>:<the provider's numeric user id>` — never the login name, which its owner can rename and someone else can then take.
+- **E-mail** is recorded only when the provider says it is verified: on GitHub the primary *and* verified address from `/user/emails` (the public profile address is ignored); on GitLab the primary address only when `/api/v4/user/emails` lists it with its own `confirmed_at` (the account's `confirmed_at` is not enough); for `generic` only a JSON `true` in the `email_verified` claim. And only when `trust_email` is on: its default is on for github.com and gitlab.com and **off** for a self-managed instance (`base_url`) and for `generic`, whose address confirmation loomcycle cannot see. An `identity_map` that picks the tenant from the e-mail domain (`tenant_claim: email_domain`) is only as safe as the provider's confirmation: use it only with a provider that enforces it.
+- **Who may sign in.** On public github.com or gitlab.com anyone has an account, so a `github` or `gitlab` gate without `base_url` refuses to load unless it sets `allowed_orgs` with `require_org: true`, or says `allow_any_account: true` to admit any account there on purpose (as the OIDC `google` preset requires `allowed_domains`). A self-managed instance (`base_url`) controls its own accounts and is not held to this.
+- **Groups.** An organisation, team or group becomes a loomcycle group only when `allowed_orgs` lists it (GitHub/Gitea: the org and `org/team`; GitLab: a group path under a listed top-level group; generic: the listed values of `claims.groups`). With no `allowed_orgs` the gate asserts no groups and does not even read memberships. Syncing them into loomcycle groups needs `trusted: true` and `identity_map.groups`, as on the OIDC gate. GitLab asks for `read_api` only when `allowed_orgs` is set.
+- **Needs** `LOOMCYCLE_PUBLIC_URL` (the redirect URI is `<public URL>/v1/_auth/complete/<gate>` — register exactly that with the provider) and an `identity_map`. `base_url`, `auth_url`, `token_url` and `userinfo_url` must be `https` (http only on loopback). `scopes` replaces the preset's; `token_auth: basic | post` picks how the client authenticates at the token endpoint.
+- **Account linking** through an OAuth gate is refused: an OAuth provider cannot prove that the person signed in afresh, which linking requires. Link through an OIDC or password gate.
+- A tenant policy (`auth.tenant_policies`) may name an OAuth gate like any other sign-in gate.
+
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
 Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:
