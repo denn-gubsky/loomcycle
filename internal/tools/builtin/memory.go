@@ -1583,18 +1583,18 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	// A document filter is resolved to chunk ids BEFORE the search, and only when
 	// one was given: a filter-free search stays on exactly the old path.
-	var docFilter *docFilterPlan
+	var docFilter *MemoryDocFilterPlan
 	if df := in.documentFilter(); !df.IsZero() {
-		plan, refusal := m.planDocumentFilter(ctx, "search", scope, scopeID, df, sq, sourcesWhy(in.Prefix, sources))
+		plan, refusal := m.planDocumentFilter(ctx, "search", scope, scopeID, df, sq, MemorySourcesWhy(in.Prefix, sources))
 		if refusal != nil {
 			return *refusal, nil
 		}
 		// Nothing matched and nothing but documents could: answer without
 		// embedding the query or touching the store.
-		if plan.noDocuments && plan.documentsOnly {
-			return okJSONCount(map[string]any{"entries": []map[string]any{}, "filter": plan.echo}, 0)
+		if plan.NothingToSearch() {
+			return okJSONCount(map[string]any{"entries": []map[string]any{}, "filter": plan.Echo()}, 0)
 		}
-		plan.apply(&sq)
+		plan.Apply(&sq)
 		docFilter = plan
 	}
 	res, err := m.backend(ctx).Search(ctx, scope, scopeID, sq, rankCfg, dedupCfg)
@@ -1763,7 +1763,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	renderRerank(out, rerank, res.Rerank)
 	if docFilter != nil {
-		out["filter"] = docFilter.echo
+		out["filter"] = docFilter.Echo()
 	}
 	return okJSONCount(out, len(entries))
 }
@@ -1861,11 +1861,11 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
 	}
-	var docFilter *docFilterPlan
+	var docFilter *MemoryDocFilterPlan
 	if df := in.documentFilter(); !df.IsZero() {
 		// Judged against what the recall will actually ask for: with no sources
 		// that is facts and notes, which hold no documents to filter.
-		eff, why := sources, sourcesWhy("", sources)
+		eff, why := sources, MemorySourcesWhy("", sources)
 		if len(eff) == 0 {
 			eff, why = []memrank.Source{memrank.SourceFacts, memrank.SourceNotes}, "a recall without sources (facts and notes)"
 		}
@@ -1874,10 +1874,10 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		if refusal != nil {
 			return *refusal, nil
 		}
-		if plan.noDocuments && plan.documentsOnly {
-			return okJSONCount(map[string]any{"memories": []map[string]any{}, "filter": plan.echo}, 0)
+		if plan.NothingToSearch() {
+			return okJSONCount(map[string]any{"memories": []map[string]any{}, "filter": plan.Echo()}, 0)
 		}
-		plan.apply(&sq)
+		plan.Apply(&sq)
 		rq.Sources, rq.IDs, rq.ExcludeIDs = sq.Sources, sq.IDs, sq.ExcludeIDs
 		docFilter = plan
 	}
@@ -2115,7 +2115,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	}
 	renderRerank(out, rerank, res.Rerank)
 	if docFilter != nil {
-		out["filter"] = docFilter.echo
+		out["filter"] = docFilter.Echo()
 	}
 	return okJSONCount(out, len(memories))
 }

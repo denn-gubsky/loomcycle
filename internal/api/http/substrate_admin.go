@@ -648,46 +648,54 @@ func (s *Server) substrateBrowseCtxFn(r *http.Request) func(context.Context) con
 	reqScopeID := strings.TrimSpace(r.URL.Query().Get("scope_id"))
 	reqTenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
 	return func(ctx context.Context) context.Context {
-		base := substrateAdminUserCtx(ctx)
-		if reqScopeID == "" && reqTenant == "" {
-			return base // no override → caller's own subject (back-compat)
-		}
-		p, ok := auth.PrincipalFromContext(ctx)
-		// Open mode (no principal) is unrestricted (is_admin-equivalent), like
-		// handleWhoami/principalTenantScope — honor both overrides.
-		admin := !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
-
-		tenantID := ""
-		subject := ""
-		if ok {
-			tenantID = p.TenantID
-			subject = p.Subject
-		}
-		if admin {
-			if reqTenant != "" {
-				tenantID = reqTenant
-			}
-			if reqScopeID != "" {
-				subject = reqScopeID
-			}
-		} else {
-			// substrate:tenant — tenant stays the principal's own (reqTenant
-			// IGNORED, never widens); scope_id may target any subject in it.
-			if reqScopeID != "" {
-				subject = reqScopeID
-			}
-		}
-		// Override BOTH the user id and the agent name so resolveScope picks the
-		// requested tree for scope=user OR scope=agent.
-		return tools.WithAgentName(
-			tools.WithRunIdentity(base, tools.RunIdentityValue{
-				UserID:   subject,
-				AgentID:  substrateAdminAgentID,
-				TenantID: tenantID,
-			}),
-			subject,
-		)
+		return substrateBrowseCtx(ctx, reqScopeID, reqTenant)
 	}
+}
+
+// substrateBrowseCtx is substrateBrowseCtxFn's ctx for an explicit subject
+// (reqScopeID) and tenant focus (reqTenant), each "" for none — for a handler
+// that takes them from its body rather than the query string. Same authz: the
+// tenant focus is honoured for an admin only.
+func substrateBrowseCtx(ctx context.Context, reqScopeID, reqTenant string) context.Context {
+	base := substrateAdminUserCtx(ctx)
+	if reqScopeID == "" && reqTenant == "" {
+		return base // no override → caller's own subject (back-compat)
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	// Open mode (no principal) is unrestricted (is_admin-equivalent), like
+	// handleWhoami/principalTenantScope — honor both overrides.
+	admin := !ok || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
+
+	tenantID := ""
+	subject := ""
+	if ok {
+		tenantID = p.TenantID
+		subject = p.Subject
+	}
+	if admin {
+		if reqTenant != "" {
+			tenantID = reqTenant
+		}
+		if reqScopeID != "" {
+			subject = reqScopeID
+		}
+	} else {
+		// substrate:tenant — tenant stays the principal's own (reqTenant
+		// IGNORED, never widens); scope_id may target any subject in it.
+		if reqScopeID != "" {
+			subject = reqScopeID
+		}
+	}
+	// Override BOTH the user id and the agent name so resolveScope picks the
+	// requested tree for scope=user OR scope=agent.
+	return tools.WithAgentName(
+		tools.WithRunIdentity(base, tools.RunIdentityValue{
+			UserID:   subject,
+			AgentID:  substrateAdminAgentID,
+			TenantID: tenantID,
+		}),
+		subject,
+	)
 }
 
 // handleSubstrateOperatorTokenDef serves POST /v1/_operatortokendef.
