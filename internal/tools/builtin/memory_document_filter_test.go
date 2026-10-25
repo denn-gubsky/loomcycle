@@ -11,6 +11,7 @@ import (
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/fallback"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -296,5 +297,102 @@ func TestMemorySearch_FilterIsResolvedAtUseNotAtBuild(t *testing.T) {
 		if got[k] {
 			t.Errorf("returned the report chunk %s", k)
 		}
+	}
+}
+
+// ---- the Document tool's scope gate holds for the resolver too ---------------
+
+func scopeExists(t *testing.T, d *Document, ctx context.Context, scope string) bool {
+	t.Helper()
+	tenant := sqlScopeTenant(ctx)
+	id := tenant
+	switch scope {
+	case "user":
+		id = tools.RunIdentity(ctx).UserID
+	case "agent":
+		id = tools.AgentName(ctx)
+	}
+	ok, err := d.SqlMem.ScopeExists(ctx, sqlmem.ScopeKey{Tenant: tenant, Scope: scope, ScopeID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// TestMemorySearch_TenantDocumentFilterIsRefusedAndProvisionsNothing — a
+// tenant-scope Memory call holding memory_scopes [tenant] but no SQL Memory
+// tenant grant must not reach the tenant's SQL Memory through the filter: the
+// Document tool would refuse that scope, and resolving would provision it.
+func TestMemorySearch_TenantDocumentFilterIsRefusedAndProvisionsNothing(t *testing.T) {
+	mc := newMemDocCorpus(t)
+	mc.ctx = tools.UpdateRunPolicy(mc.ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{}
+	})
+	if scopeExists(t, mc.d, mc.ctx, "tenant") {
+		t.Fatal("precondition: the tenant SQL Memory scope already exists")
+	}
+	r := mc.mem(`{"op":"search","scope":"tenant","query":"norm clause","under_paths":["/qg/norms"]}`)
+	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryValidation {
+		t.Errorf("tenant-scope document filter = %s, want a validation refusal", r.Text)
+	}
+	if scopeExists(t, mc.d, mc.ctx, "tenant") {
+		t.Error("the refused filter provisioned the tenant's SQL Memory scope")
+	}
+}
+
+// TestDocumentFilterResolver_ConfinesAnIsolatedMemberAsTheDocumentToolDoes —
+// asked directly (not through the Memory tool's own gate), the resolver refuses
+// the shared scope to an isolated member exactly as Document op=search does.
+func TestDocumentFilterResolver_ConfinesAnIsolatedMemberAsTheDocumentToolDoes(t *testing.T) {
+	mc := newMemDocCorpus(t)
+	id := tools.RunIdentity(mc.ctx)
+	id.Isolated = true
+	ctx := tools.WithRunIdentity(mc.ctx, id)
+	f := memrank.DocumentFilter{UnderPaths: []string{"/qg/norms"}}
+
+	b, _ := json.Marshal(map[string]any{"op": "search", "scope": "tenant", "query": "norm clause", "under_path": "/qg/norms"})
+	if r, _ := mc.d.Execute(ctx, b); !r.IsError {
+		t.Fatalf("precondition: Document op=search let an isolated member search the tenant scope: %s", r.Text)
+	}
+	if _, err := mc.d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeTenant, "", f); err == nil {
+		t.Error("the resolver resolved a tenant-scope filter for an isolated member")
+	}
+	if scopeExists(t, mc.d, ctx, "tenant") {
+		t.Error("the refused filter provisioned the tenant's SQL Memory scope")
+	}
+	// Its own user scope stays open to it, as on Document op=search.
+	res, err := mc.d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeUser, "u1", f)
+	if err != nil || res.MatchedDocuments != 1 {
+		t.Errorf("isolated member's own scope: %+v, %v — want the one norms document", res, err)
+	}
+}
+
+// TestDocumentFilterResolver_ScopeWithoutDocumentsMatchesNothingAndCreatesNothing
+// — a scope whose SQL Memory was never provisioned holds no documents: the
+// filter matches nothing and leaves no database (or login role) behind.
+func TestDocumentFilterResolver_ScopeWithoutDocumentsMatchesNothingAndCreatesNothing(t *testing.T) {
+	mc := newMemDocCorpus(t)
+	if scopeExists(t, mc.d, mc.ctx, "agent") {
+		t.Fatal("precondition: the agent SQL Memory scope already exists")
+	}
+	res, err := mc.d.ResolveDocumentFilter(mc.ctx, "search", store.MemoryScopeAgent, "doc-agent",
+		memrank.DocumentFilter{ExcludeUnderPaths: []string{"/qg/reports/"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.MatchedChunks != 0 || res.MatchedDocuments != 0 || len(res.IDs) != 0 || len(res.ExcludeIDs) != 0 {
+		t.Errorf("unprovisioned scope resolved to %+v, want no match", res)
+	}
+	if got := res.Applied.ExcludeUnderPaths; len(got) != 1 || got[0] != "/qg/reports" {
+		t.Errorf("applied = %+v, want the canonical path echoed", res.Applied)
+	}
+	if scopeExists(t, mc.d, mc.ctx, "agent") {
+		t.Error("resolving a filter provisioned the agent's SQL Memory scope")
+	}
+	// Through the Memory tool: a documents-only search answers empty, without a store call.
+	got, echo := mc.keys(`{"op":"search","scope":"agent","query":"norm clause","sources":["documents"],"under_paths":["/qg/norms"]}`)
+	if len(got) != 0 || echoInt(echo, "matched_documents") != 0 {
+		t.Errorf("agent-scope search = %v / %v, want empty with matched_documents 0", got, echo)
 	}
 }

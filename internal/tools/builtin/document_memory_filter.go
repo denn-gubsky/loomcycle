@@ -28,43 +28,65 @@ type documentFilterRefusal struct{ res tools.Result }
 func (e *documentFilterRefusal) Error() string { return e.res.Text }
 
 // ResolveDocumentFilter resolves f in the memory scope (scope, scopeID) of the
-// run on ctx. The scope was already granted by the Memory tool's own gate; this
-// only narrows what that search may return, so it asks for no further grant.
-// Store, SqlMem and the rest are read here, at use, because boot hands this tool
-// to the Memory tool before binding them.
+// run on ctx. Resolving READS SQL Memory — the chunk tables — and the echo
+// discloses counts from it, so it goes through the Document tool's own scope gate
+// (resolveScope: the grants and the isolated-member confinement) exactly as
+// Document op=search does, and it never provisions anything: a scope whose SQL
+// Memory or document tables do not exist yet holds no documents, so it matches
+// nothing. Store, SqlMem and the rest are read here, at use, because boot hands
+// this tool to the Memory tool before binding them.
 func (d *Document) ResolveDocumentFilter(ctx context.Context, op string, scope store.MemoryScope, scopeID string, f memrank.DocumentFilter) (memrank.DocumentFilterResult, error) {
 	if d == nil || d.Store == nil || d.SqlMem == nil {
 		return memrank.DocumentFilterResult{}, &documentFilterRefusal{errBusiness(
 			op+": documents not configured on this server, so under_paths, exclude_under_paths, document_ids and exclude_document_ids cannot be applied",
 			"Search without the document filter.")}
 	}
-	key, err := memoryScopeDocKey(ctx, scope, scopeID)
+	// A TENANT document's bodies are not in the keyspace a tenant-scope Memory
+	// call reads: they are written under the SQL Memory scope id (the tenant),
+	// while the Memory tool's tenant scope id is empty (see resolveScope's tenant
+	// branch and writeBodyAs). A filter there could never match a document the
+	// search can return, so it is refused rather than resolved.
+	if scope == store.MemoryScopeTenant {
+		return memrank.DocumentFilterResult{}, &documentFilterRefusal{errValidation(
+			op+": document filters are not available on a tenant-scope Memory call — tenant documents are not searchable through this scope",
+			"Drop the document filter, or search the tenant's documents with the Document tool's search (scope tenant), which takes the same filters.")}
+	}
+	key, mscope, err := d.resolveScope(ctx, string(scope))
+	if err != nil {
+		return memrank.DocumentFilterResult{}, &documentFilterRefusal{errValidation(
+			op+": document filter: "+err.Error(), "Drop the document filter, or search a scope you may read documents in.")}
+	}
+	if mscope != scope || key.ScopeID != scopeID {
+		// Both tools derive the scope id from the same run identity; a mismatch
+		// means the two would read different trees, so nothing is resolved.
+		return memrank.DocumentFilterResult{}, fmt.Errorf("document filter: memory scope %s/%q is not document scope %s/%q", scope, scopeID, mscope, key.ScopeID)
+	}
+	empty, err := d.documentTablesAbsent(ctx, key)
 	if err != nil {
 		return memrank.DocumentFilterResult{}, err
 	}
-	if err := d.ensureSchema(ctx, key); err != nil {
-		return memrank.DocumentFilterResult{}, err
-	}
-	set, refusal, err := d.resolveSearchFilter(ctx, key, op, docInput{
+	in := docInput{
 		UnderPaths:         f.UnderPaths,
 		ExcludeUnderPaths:  f.ExcludeUnderPaths,
 		DocumentIDs:        f.DocumentIDs,
 		ExcludeDocumentIDs: f.ExcludeDocumentIDs,
-	})
+	}
+	if empty {
+		ap, refusal := normaliseSearchFilter(op, in)
+		if refusal != nil {
+			return memrank.DocumentFilterResult{}, &documentFilterRefusal{*refusal}
+		}
+		return memrank.DocumentFilterResult{Applied: appliedDocumentFilter(ap)}, nil
+	}
+	set, refusal, err := d.resolveSearchFilter(ctx, key, op, in)
 	if err != nil {
 		return memrank.DocumentFilterResult{}, err
 	}
 	if refusal != nil {
 		return memrank.DocumentFilterResult{}, &documentFilterRefusal{*refusal}
 	}
-	ap := set.echo.Applied
 	return memrank.DocumentFilterResult{
-		Applied: memrank.DocumentFilter{
-			UnderPaths:         ap.UnderPaths,
-			ExcludeUnderPaths:  ap.ExcludeUnderPaths,
-			DocumentIDs:        ap.DocumentIDs,
-			ExcludeDocumentIDs: ap.ExcludeDocumentIDs,
-		},
+		Applied:          appliedDocumentFilter(set.echo.Applied),
 		IDs:              set.ids,
 		ExcludeIDs:       set.excludeIDs,
 		MatchedDocuments: set.echo.MatchedDocuments,
@@ -73,20 +95,27 @@ func (d *Document) ResolveDocumentFilter(ctx context.Context, op string, scope s
 	}, nil
 }
 
-// memoryScopeDocKey is the SQL Memory scope that holds the documents of a memory
-// scope. The two planes key the tenant scope differently (see resolveScope's
-// tenant branch): memory's scope id is empty, SQL Memory's is the tenant.
-func memoryScopeDocKey(ctx context.Context, scope store.MemoryScope, scopeID string) (sqlmem.ScopeKey, error) {
-	tenant := sqlScopeTenant(ctx)
-	switch scope {
-	case store.MemoryScopeAgent, store.MemoryScopeUser:
-		if scopeID == "" {
-			return sqlmem.ScopeKey{}, fmt.Errorf("document filter: scope %s has no scope id", scope)
-		}
-		return sqlmem.ScopeKey{Tenant: tenant, Scope: string(scope), ScopeID: scopeID}, nil
-	case store.MemoryScopeTenant:
-		return sqlmem.ScopeKey{Tenant: tenant, Scope: "tenant", ScopeID: tenant}, nil
-	default:
-		return sqlmem.ScopeKey{}, fmt.Errorf("document filter: scope %q holds no documents", scope)
+func appliedDocumentFilter(ap searchFilterApplied) memrank.DocumentFilter {
+	return memrank.DocumentFilter{
+		UnderPaths:         ap.UnderPaths,
+		ExcludeUnderPaths:  ap.ExcludeUnderPaths,
+		DocumentIDs:        ap.DocumentIDs,
+		ExcludeDocumentIDs: ap.ExcludeDocumentIDs,
 	}
+}
+
+// documentTablesAbsent reports whether this scope has no document tables yet —
+// no SQL Memory scope at all, or one created by other SQL ops without them. It
+// creates nothing: ScopeExists never provisions, and the probe goes to the
+// Manager directly, not through query(), whose missing-table retry re-provisions.
+func (d *Document) documentTablesAbsent(ctx context.Context, key sqlmem.ScopeKey) (bool, error) {
+	ok, err := d.SqlMem.ScopeExists(ctx, key)
+	if err != nil || !ok {
+		return !ok, err
+	}
+	_, err = d.SqlMem.Query(ctx, key, "SELECT count(*) FROM chunks WHERE 1=0", nil)
+	if schemaMissing(err) {
+		return true, nil
+	}
+	return false, err
 }
