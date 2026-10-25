@@ -95,6 +95,9 @@ func (s *Server) redirectGateNamed(name string) (redirectGate, config.AuthGate, 
 	if g, cfg, ok := s.oidcGateNamed(name); ok {
 		return g, cfg, true
 	}
+	if g, cfg, ok := s.oauthGateNamed(name); ok {
+		return g, cfg, true
+	}
 	return nil, config.AuthGate{}, false
 }
 
@@ -103,12 +106,18 @@ func gateRedirectURI(g config.AuthGate) string {
 	if g.OIDC != nil {
 		return g.OIDC.RedirectURI
 	}
+	if g.OAuth != nil {
+		return g.OAuth.RedirectURI
+	}
 	return ""
 }
 
 func gateAllowedReturnTo(g config.AuthGate) []string {
 	if g.OIDC != nil {
 		return g.OIDC.AllowedReturnTo
+	}
+	if g.OAuth != nil {
+		return g.OAuth.AllowedReturnTo
 	}
 	return nil
 }
