@@ -17,10 +17,19 @@
 package replay
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
 )
+
+// Shared is the cross-replica record of admitted values
+// (store.AuthReplayStore): check-and-insert of (scope, key) until expires,
+// false when it is already there and live. A gate records in it after its
+// own cache, so a value one replica accepted is refused by every other.
+type Shared interface {
+	AuthReplayAdmit(ctx context.Context, scope, key string, expires, now time.Time) (bool, error)
+}
 
 var (
 	// ErrReplayed: the value was already admitted and has not expired, or a

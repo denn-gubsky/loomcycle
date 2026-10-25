@@ -85,11 +85,6 @@ type Identity struct {
 	SignedAt time.Time
 }
 
-// SharedAdmitter is the cross-replica replay record (store.AuthReplayStore).
-type SharedAdmitter interface {
-	AuthReplayAdmit(ctx context.Context, scope, key string, expires, now time.Time) (bool, error)
-}
-
 // Gate verifies presented STS requests.
 type Gate struct {
 	// ServerID is the value the signed X-Loomcycle-AWS-Server-ID must carry.
@@ -106,7 +101,7 @@ type Gate struct {
 	Replay *replay.Cache
 	// Shared, when set, records each accepted signature (as a SHA-256 hash)
 	// for every replica, under SharedScope.
-	Shared      SharedAdmitter
+	Shared      replay.Shared
 	SharedScope string
 	// HTTP is the client STS is called with; nil uses a 10-second-timeout
 	// client that follows no redirects.
