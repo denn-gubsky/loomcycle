@@ -92,7 +92,12 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		// Delegate the INSERT to create_chunk rather than writing a second insert
 		// path. It owns the parent/position/document-exists validation, and a
 		// duplicate would drift from it silently.
-		res, cerr := d.createChunk(ctx, key, mscope, in)
+		// The fact's valid_at/invalid_at belong to its sidecar (writeChunkMeta
+		// below), not to the chunk's own interval: the two are separate claims,
+		// and copying one onto the other would make every fact a dated chunk.
+		cin := in
+		cin.ValidAt, cin.InvalidAt = nil, nil
+		res, cerr := d.createChunk(ctx, key, mscope, cin)
 		if cerr != nil || res.IsError {
 			return res, cerr
 		}
