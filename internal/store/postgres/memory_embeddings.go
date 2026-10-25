@@ -286,6 +286,19 @@ func idSegmentDocumentCondition(f store.MemorySearchFilter, args []any) (string,
 		strings.Join(inside, " OR ") + ")", args
 }
 
+// planPerExecution makes a statement that binds an id list run on a plan built for
+// the bound values. `= ANY($n::text[])` is hashed only when the planner sees the
+// array as a constant, which it does in such a custom plan. pgx caches prepared
+// statements per connection, and Postgres switches a cached statement to a generic
+// plan after five executions when that looks no dearer — and in a generic plan the
+// array is a parameter, so every row walks the whole list. Measured on 20,000 rows
+// with a 20,000-id list: 9 ms custom, 18 s generic. QueryExecModeExec sends the
+// statement unnamed, which Postgres plans afresh for each execution; the cost is one
+// planning per search, small next to the scan it plans.
+func planPerExecution(args []any) []any {
+	return append([]any{pgx.QueryExecModeExec}, args...)
+}
+
 // likePrefixPattern turns a literal key prefix into a LIKE pattern.
 //
 // ESCAPED, because a prefix is caller-supplied and LIKE treats % and _ as wildcards:
@@ -428,6 +441,9 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 			   AND me.dimension = $6` + prefixCondition + `
 	         ORDER BY me.embedding <=> $4::vector
 	         LIMIT $5`
+	if idCond != "" {
+		args = planPerExecution(args)
+	}
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("MemoryEmbedSearch query: %w", err)
@@ -575,6 +591,9 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	           AND me.embed_text_tsv @@ plainto_tsquery('english', $4)` + prefixCondition + `
 	         ORDER BY score DESC
 	         LIMIT $5`
+	if idCond != "" {
+		args = planPerExecution(args)
+	}
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("MemoryFullTextSearch query: %w", err)
