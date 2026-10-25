@@ -222,10 +222,10 @@ func observedCondition(f store.MemorySearchFilter, args []any) (string, []any) {
 // ExcludeIDs. Shared by both legs for the reason observedCondition is: RRF fuses
 // them, so a predicate one leg skipped would be a predicate not applied.
 //
-// The lists bind as text[] and the probe is `= ANY` / `<> ALL`, which Postgres
-// hashes for a large array, so it costs a hash lookup per row on a scan the
-// cosine ORDER BY already pays in full. No index on the expression is wanted:
-// there is no index to use on this scan either way.
+// The lists bind as text[]. The allowlist probe is `= ANY` and the denylist an
+// anti-join (see below); Postgres hashes either for a large list, so each costs a
+// hash lookup per row on a scan the cosine ORDER BY already pays in full. No index
+// on the expression is wanted: there is no index to use on this scan either way.
 func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) {
 	if len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 {
 		return "", args
@@ -237,9 +237,20 @@ func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) 
 		args = append(args, f.IDs)
 		cond += " AND " + seg + " = ANY($" + strconv.Itoa(len(args)) + "::text[])"
 	}
+	// The denylist is an anti-join against the unnested list, not `seg <> ALL(list)`.
+	// The planner estimates `<> ALL` as one `<>` selectivity per element multiplied
+	// together (0.995 each, with no statistics on the expression), so a list of a
+	// thousand ids or more is estimated at ONE row however many survive. On that
+	// estimate it joins memory first and sorts after, evaluating the projection —
+	// `embedding::text` included — for every surviving row on one core: 4.9 s
+	// instead of 0.28 s on 100,000 rows with 20,000 ids excluded. `NOT (seg =
+	// ANY(list))` is estimated the same way. The anti-join is estimated as a join
+	// (about half the rows), which keeps the parallel top-N plan the unfiltered
+	// search uses. Same rows either way: a Go []string binds no NULL element, which
+	// is the one case where `<> ALL` and NOT EXISTS differ.
 	if len(f.ExcludeIDs) > 0 {
 		args = append(args, f.ExcludeIDs)
-		cond += " AND " + seg + " <> ALL($" + strconv.Itoa(len(args)) + "::text[])"
+		cond += " AND NOT EXISTS (SELECT 1 FROM unnest($" + strconv.Itoa(len(args)) + "::text[]) AS excl(id) WHERE excl.id = " + seg + ")"
 	}
 	return cond, args
 }
