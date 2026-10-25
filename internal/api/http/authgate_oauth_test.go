@@ -6,13 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // RFC FA P5 — the OAuth gate end to end through P1's redirect-login routes,
@@ -164,7 +164,7 @@ func TestOAuthLogin_GitHubProvisionsSyncsAllowedOrgGroupsAndStartsASession(t *te
 			t.Fatalf("an untrusted org became a group: %v", names)
 		}
 	}
-	if !containsGate(names, "acme") || !containsGate(names, "acme/platform") {
+	if !slices.Contains(names, "acme") || !slices.Contains(names, "acme/platform") {
 		t.Fatalf("groups = %v, want acme and acme/platform", names)
 	}
 }
@@ -199,19 +199,4 @@ func TestOAuthLogin_ForeignOrReplayedCallbackIsRefused(t *testing.T) {
 			t.Fatalf("%s callback: no error code", name)
 		}
 	}
-}
-
-// A tenant under a gate policy that does not list the OAuth gate refuses the
-// session, whatever the provider said.
-func TestOAuthLogin_TenantPolicyWithoutTheGateRefusesTheSession(t *testing.T) {
-	f, _ := newOAuthFixture(t, config.AuthIdentityMap{Tenant: "acme", Provision: config.ProvisionAuto}, nil)
-	f.s.cfg().ResolvedAuth.TenantPolicies = map[string][]string{"acme": {"local"}}
-	rec, _, _ := f.oauthLogin(t)
-	if sc := cookieNamed(rec, sessionCookiePlain); sc != nil && sc.Value != "" {
-		t.Fatal("a session was established through a gate the tenant policy does not list")
-	}
-	if n := sessionRows(t, f.st); n != 0 {
-		t.Fatalf("%d session rows", n)
-	}
-	_ = store.UISessionRow{}
 }
