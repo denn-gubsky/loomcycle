@@ -16,6 +16,7 @@ package http
 // must also map, through the gate's identity map, to the user's own tenant.
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -60,6 +61,35 @@ func ownIdentityRequest(p auth.Principal, r *http.Request) bool {
 		return false
 	}
 	return r.PathValue("subject") == p.Subject
+}
+
+// userCredentialSession reports whether a session's credential IS its user:
+// a password-gate or identity-gate session, whose principal is the user's
+// own reach. A token-gate session stands for a pasted bearer, which may be
+// narrower than its user (restricted, fewer scopes); linking from it would
+// hand the user's full reach to every later sign-in through the linked
+// identity — a restricted credential widening itself.
+func userCredentialSession(row *store.UISessionRow) bool {
+	return row != nil && (row.CredKind == credKindPassword || row.CredKind == credKindIdentity)
+}
+
+// principalIsTheUser is the belt to userCredentialSession's braces: the
+// session's principal carries no restriction and at least the scopes the
+// user's access_mode grants.
+func principalIsTheUser(p auth.Principal, u store.UserRow) bool {
+	if !p.Restrictions.IsZero() {
+		return false
+	}
+	want, err := auth.GrantableUserScopes(u.AccessMode)
+	if err != nil {
+		return false
+	}
+	for _, sc := range want {
+		if !auth.HasScope(p.Scopes, sc) {
+			return false
+		}
+	}
+	return true
 }
 
 // identitiesTarget resolves whose identities a request is about: the caller
@@ -141,6 +171,11 @@ func (s *Server) handleLinkUserIdentity(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusForbidden, "link_needs_own_session", "link an account from your own signed-in Web UI session")
 		return
 	}
+	if !s.linkingSessionOK(ctx, ua.session, p) {
+		writeJSONError(w, http.StatusForbidden, "link_needs_user_session",
+			"link an account from a session you signed in to with your password or an identity provider, not with a pasted token")
+		return
+	}
 	var req linkIdentityRequest
 	if !decodeStrict(w, r, &req) {
 		return
@@ -183,6 +218,17 @@ func (s *Server) handleLinkUserIdentity(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": u})
 }
 
+// linkingSessionOK holds a link or unlink to a session whose credential is
+// the user (userCredentialSession), whose principal is the user's full reach
+// (principalIsTheUser), and whose user is active.
+func (s *Server) linkingSessionOK(ctx context.Context, row *store.UISessionRow, p auth.Principal) bool {
+	if !userCredentialSession(row) {
+		return false
+	}
+	u, err := s.store.UserGet(ctx, row.TenantID, row.Subject)
+	return err == nil && u.Status == "active" && principalIsTheUser(p, u)
+}
+
 // completeLink finishes a link login: the asking session is still live and
 // its own, the provider re-authenticated the person (the gate checked
 // auth_time against this login), the identity maps to the user's tenant and
@@ -202,6 +248,12 @@ func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, cfg config
 	if err != nil || !sess.RevokedAt.IsZero() || !time.Now().Before(sessionExpiresAt(sess, s.cfg().ResolvedAuth)) ||
 		sess.TenantID != row.LinkTenant || sess.Subject != row.LinkSubject {
 		refuse("the session that asked has ended")
+		return
+	}
+	// Re-checked here, not trusted from the start: the stored session must
+	// still be one whose credential is the user.
+	if !userCredentialSession(&sess) {
+		refuse("the session that asked is not the user's own credential")
 		return
 	}
 	u, err := s.store.UserGet(ctx, row.LinkTenant, row.LinkSubject)
@@ -259,6 +311,11 @@ func (s *Server) handleUnlinkUserIdentity(w http.ResponseWriter, r *http.Request
 		ua, ok := uiAuthFrom(r.Context())
 		if !ok || ua.session == nil || ua.pending {
 			writeJSONError(w, http.StatusForbidden, "link_needs_own_session", "unlink an account from your own signed-in Web UI session")
+			return
+		}
+		if p, _ := auth.PrincipalFromContext(r.Context()); !s.linkingSessionOK(r.Context(), ua.session, p) {
+			writeJSONError(w, http.StatusForbidden, "link_needs_user_session",
+				"unlink an account from a session you signed in to with your password or an identity provider")
 			return
 		}
 		window := s.cfg().ResolvedAuth.ReauthWindow
