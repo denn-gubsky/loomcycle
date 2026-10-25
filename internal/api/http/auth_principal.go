@@ -78,7 +78,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted {
+		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted && !ownIdentityRequest(p, r) {
 			writeScopeError(w, required, "insufficient scope")
 			return
 		}
@@ -139,7 +139,7 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	// secret). The handler / MCP per-tool gate then confine a non-tenant caller
 	// to scope=user on its own subject; tenant/agent scope still requires
 	// substrate:tenant.
-	selfOK := (userSelfServiceRoute(method, path) && p.Subject != "") || ownIdentityRoute(p, method, path)
+	selfOK := userSelfServiceRoute(method, path) && p.Subject != ""
 	// The raw model endpoints stay open to every principal that is
 	// not an isolated user: a member token holds no llm:gateway scope
 	// of its own, and requiring one would have broken every member

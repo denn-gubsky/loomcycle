@@ -39,33 +39,27 @@ type wireUserIdentity struct {
 	LastLoginAt     *time.Time `json:"last_login_at,omitempty"`
 }
 
-// ownIdentityRoute reports whether the request is about the caller's OWN
-// sign-in identities: GET/POST /v1/_users/{p.Subject}/identities or DELETE
-// /v1/_users/{p.Subject}/identities/{gate}, by a principal that is a user
-// (not the legacy secret, not auth:manage). It is the only self-service
-// admission of these routes — at the scope gate and past the route's ACL
-// question — so a member never reaches another user's identities, and an
-// operator's reach to them is its ACL's. The handlers then require, for a
-// link or an unlink, the person's own Web UI session after a recent sign-in.
-func ownIdentityRoute(p auth.Principal, method, path string) bool {
-	if p.Subject == "" || p.Legacy || auth.IsAuthManager(p) {
+// ownIdentityPatterns are the identity routes' mux patterns.
+var ownIdentityPatterns = map[string]bool{
+	"GET /v1/_users/{subject}/identities":           true,
+	"POST /v1/_users/{subject}/identities":          true,
+	"DELETE /v1/_users/{subject}/identities/{gate}": true,
+}
+
+// ownIdentityRequest reports whether the request is about the caller's OWN
+// sign-in identities, decided AFTER routing from the pattern the mux matched
+// and its {subject} value — never by re-reading the decoded path, where an
+// encoded '/' in a segment can make "<self>/identities" out of a request the
+// mux routes elsewhere. Only a user principal (not the legacy secret, not
+// auth:manage) qualifies. It is the only self-service admission of these
+// routes, at the scope gate and past the route's ACL question; the handlers
+// then require, for a link or an unlink, the person's own Web UI session
+// after a recent sign-in.
+func ownIdentityRequest(p auth.Principal, r *http.Request) bool {
+	if p.Subject == "" || p.Legacy || auth.IsAuthManager(p) || !ownIdentityPatterns[r.Pattern] {
 		return false
 	}
-	rest, ok := strings.CutPrefix(path, "/v1/_users/")
-	if !ok {
-		return false
-	}
-	parts := strings.Split(rest, "/")
-	if len(parts) < 2 || parts[0] != p.Subject || parts[1] != "identities" {
-		return false
-	}
-	switch len(parts) {
-	case 2:
-		return method == http.MethodGet || method == http.MethodPost
-	case 3:
-		return method == http.MethodDelete && parts[2] != ""
-	}
-	return false
+	return r.PathValue("subject") == p.Subject
 }
 
 // identitiesTarget resolves whose identities a request is about: the caller

@@ -28,6 +28,7 @@ func linkFixture(t *testing.T, idpMap config.AuthIdentityMap) (*oidcFixture, *ht
 
 func linkReq(c *http.Cookie, subject, body string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, "/v1/_users/"+subject+"/identities", strings.NewReader(body))
+	r.Pattern = "POST /v1/_users/{subject}/identities"
 	r.SetPathValue("subject", subject)
 	if c != nil {
 		r.AddCookie(c)
@@ -174,6 +175,7 @@ func TestUnlink_EndsTheIdentitysSessions(t *testing.T) {
 	list := httptest.NewRecorder()
 	lr := sessionReq(http.MethodGet, "/v1/_users/idp:u-1/identities", sc)
 	lr.SetPathValue("subject", "idp:u-1")
+	lr.Pattern = "GET /v1/_users/{subject}/identities"
 	f.s.authMiddleware(http.HandlerFunc(f.s.handleListUserIdentities)).ServeHTTP(list, lr)
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"gate":"idp"`) {
 		t.Fatalf("list = %d %s", list.Code, list.Body.String())
@@ -182,6 +184,7 @@ func TestUnlink_EndsTheIdentitysSessions(t *testing.T) {
 	dr := sessionReq(http.MethodDelete, "/v1/_users/idp:u-1/identities/idp", sc)
 	dr.SetPathValue("subject", "idp:u-1")
 	dr.SetPathValue("gate", "idp")
+	dr.Pattern = "DELETE /v1/_users/{subject}/identities/{gate}"
 	f.s.authMiddleware(http.HandlerFunc(f.s.handleUnlinkUserIdentity)).ServeHTTP(del, dr)
 	if del.Code != http.StatusNoContent {
 		t.Fatalf("unlink = %d %s", del.Code, del.Body.String())
@@ -193,21 +196,23 @@ func TestUnlink_EndsTheIdentitysSessions(t *testing.T) {
 
 func TestIdentityRoutes_AreSelfServiceButNotOtherUsers(t *testing.T) {
 	alice := auth.Principal{TenantID: "acme", Subject: "a", Scopes: []string{auth.ScopeRunsRead}}
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/v1/_users/a/identities"}, {http.MethodPost, "/v1/_users/a/identities"},
-		{http.MethodDelete, "/v1/_users/a/identities/g"},
-	} {
-		if !ownIdentityRoute(alice, tc.method, tc.path) {
-			t.Errorf("%s %s not self-service", tc.method, tc.path)
+	req := func(pattern, subject string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Pattern = pattern
+		r.SetPathValue("subject", subject)
+		return r
+	}
+	for p := range ownIdentityPatterns {
+		if !ownIdentityRequest(alice, req(p, "a")) {
+			t.Errorf("%s not self-service for its own subject", p)
 		}
-		if ownIdentityRoute(alice, tc.method, strings.Replace(tc.path, "/a/", "/b/", 1)) {
-			t.Errorf("%s on another user's identities is self-service", tc.method)
+		if ownIdentityRequest(alice, req(p, "b")) {
+			t.Errorf("%s self-service for another subject", p)
 		}
 	}
 	legacy := alice
 	legacy.Legacy = true
-	if ownIdentityRoute(alice, http.MethodPost, "/v1/_users/a/tokens") || ownIdentityRoute(alice, http.MethodDelete, "/v1/_users/a/identities") ||
-		ownIdentityRoute(legacy, http.MethodGet, "/v1/_users/a/identities") {
+	if ownIdentityRequest(alice, req("DELETE /v1/_users/{subject}", "a")) || ownIdentityRequest(legacy, req("GET /v1/_users/{subject}/identities", "a")) {
 		t.Error("self-service reaches too far")
 	}
 	// A member listing another user's identities is an opaque miss.
@@ -215,6 +220,7 @@ func TestIdentityRoutes_AreSelfServiceButNotOtherUsers(t *testing.T) {
 	login, _, _ := f.login(t, "")
 	r := sessionReq(http.MethodGet, "/v1/_users/bob/identities", cookieNamed(login, sessionCookiePlain))
 	r.SetPathValue("subject", "bob")
+	r.Pattern = "GET /v1/_users/{subject}/identities"
 	rec := httptest.NewRecorder()
 	f.s.authMiddleware(http.HandlerFunc(f.s.handleListUserIdentities)).ServeHTTP(rec, r)
 	if rec.Code != http.StatusForbidden && rec.Code != http.StatusNotFound {

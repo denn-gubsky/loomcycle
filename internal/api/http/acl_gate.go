@@ -77,7 +77,7 @@ func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Prin
 	if !governed {
 		return ctx, true
 	}
-	if ownIdentityRoute(p, r.Method, r.URL.Path) {
+	if ownIdentityRequest(p, r) {
 		// RFC FA D14: a user's own sign-in identities are its own to read and
 		// change, as its password is; the handlers admit that self path only
 		// for the caller's own subject and, for a link or an unlink, only
