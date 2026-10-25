@@ -1318,6 +1318,22 @@ components:
           type: array
           description: "Restrict to any of: facts, notes, documents. Unknown values are dropped."
           items: { type: string, enum: [facts, notes, documents] }
+        under_paths:
+          type: array
+          items: { type: string }
+          description: "Return only the chunks of documents named at or under any of these Path-tree paths, in the caller's own tenant and this scope's tree. Narrows document chunks only (facts and notes pass), before ranking. Needs a search that can return documents; refused on scope tenant (400 invalid_filter) and without SQL Memory (400 filter_unavailable)."
+        exclude_under_paths:
+          type: array
+          items: { type: string }
+          description: "Never return the chunks of documents named at or under these paths. Documents only, as under_paths."
+        document_ids:
+          type: array
+          items: { type: string }
+          description: "Return only the chunks of these documents. Documents only, as under_paths."
+        exclude_document_ids:
+          type: array
+          items: { type: string }
+          description: "Never return the chunks of these documents. Documents only, as under_paths."
       required: [query, scope]
     MemorySearchResponse:
       type: object
@@ -1342,6 +1358,21 @@ components:
               chunk_id: { type: string, description: "Set when kind == document." }
         query_embedding_dim: { type: integer }
         truncated: { type: boolean }
+        filter:
+          type: object
+          description: "What a document filter resolved to. Present only when the request carried one."
+          properties:
+            applied:
+              type: object
+              properties:
+                under_paths: { type: array, items: { type: string } }
+                exclude_under_paths: { type: array, items: { type: string } }
+                document_ids: { type: array, items: { type: string } }
+                exclude_document_ids: { type: array, items: { type: string } }
+            matched_documents: { type: integer }
+            matched_chunks: { type: integer }
+            inverted: { type: boolean }
+          required: [applied, matched_documents, matched_chunks, inverted]
       required: [scope, scope_id, entries, query_embedding_dim, truncated]
     ReembedDryRun:
       type: object

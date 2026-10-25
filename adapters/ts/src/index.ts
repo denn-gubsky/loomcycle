@@ -300,6 +300,7 @@ export type {
   MemoryScopeKind,
   MemoryScopesResponse,
   // Memory view (RFC BV): off-run search + embed admin
+  MemorySearchDocumentFilter,
   MemorySearchInput,
   MemorySource,
   MemoryWhen,
