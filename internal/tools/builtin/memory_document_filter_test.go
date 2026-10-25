@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/fallback"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
@@ -394,5 +395,40 @@ func TestDocumentFilterResolver_ScopeWithoutDocumentsMatchesNothingAndCreatesNot
 	got, echo := mc.keys(`{"op":"search","scope":"agent","query":"norm clause","sources":["documents"],"under_paths":["/qg/norms"]}`)
 	if len(got) != 0 || echoInt(echo, "matched_documents") != 0 {
 		t.Errorf("agent-scope search = %v / %v, want empty with matched_documents 0", got, echo)
+	}
+}
+
+// TestMemorySearch_ACLLimitedCallerSendsNoDeniedID — the resolver is Document
+// op=search's, access-control narrowing included: for a caller that may not
+// read the reports, a Memory search's filter travels as an allowlist of what it
+// may read, and no report chunk id reaches the store.
+func TestMemorySearch_ACLLimitedCallerSendsNoDeniedID(t *testing.T) {
+	mc := newMemDocCorpus(t)
+	mc.ctx = tools.UpdateRunPolicy(mc.ctx, func(rp *tools.RunPolicy) {
+		rp.ACL = aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:user:/qg/reports/**"}})
+	})
+	mc.spy.reset()
+	// Exclusion only: a denylist for anyone else.
+	if r := mc.mem(`{"op":"search","scope":"user","query":"norm clause","top_k":50,"exclude_under_paths":["/nowhere"]}`); r.IsError {
+		t.Fatalf("search: %s", r.Text)
+	}
+	if len(mc.spy.filters) == 0 {
+		t.Fatal("the search reached no store leg")
+	}
+	denied := setOf(mc.reports)
+	for _, f := range mc.spy.filters {
+		if len(f.ExcludeIDs) != 0 {
+			t.Errorf("a limited caller's filter was sent as a denylist: %v", f.ExcludeIDs)
+		}
+		for _, id := range f.IDs {
+			if denied[id] {
+				t.Errorf("the read-denied report chunk %s was sent to the store", id)
+			}
+		}
+		for _, id := range mc.norms {
+			if !setOf(f.IDs)[id] {
+				t.Errorf("the readable norm chunk %s is missing from the list", id)
+			}
+		}
 	}
 }
