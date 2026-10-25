@@ -90,6 +90,20 @@ const (
 	// anything — measured: with 50 seeds and room for 28 facts, traversal and
 	// plain search returned an identical set.
 	graphDefaultSeeds = 5
+	// graphDefaultBodyChars is the excerpt an ordinary row carries when the caller
+	// does not say. A fact's title IS its claim, but an ordinary chunk's title is a
+	// heading, and a model handed a heading needs one get_chunk per row to read the
+	// text — which in practice it never does. Long enough for a clause, short enough
+	// that a 50-row walk stays a walk rather than an export.
+	graphDefaultBodyChars = 600
+	// graphMaxBodyChars caps an explicit body_chars. Refused above it rather than
+	// clamped, so a caller asking for whole bodies learns that this is not the op
+	// for them (get_chunk is).
+	graphMaxBodyChars = 4000
+	// graphBodyReadParallel bounds the concurrent body reads. The store has no
+	// multi-get, and a serial read per row is the round-trip cost bodies exist to
+	// save the model; unbounded, a 200-row answer would open 200 store calls at once.
+	graphBodyReadParallel = 8
 )
 
 // graphSeedInfo records how a walk started. A caller that cannot tell a semantic
@@ -103,18 +117,39 @@ type graphSeedInfo struct {
 // cannot tell a seed from a two-hop neighbour cannot tell a direct answer from an
 // association, which is the difference between recall and free association.
 type graphChunk struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Type     string `json:"type,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Hop      int    `json:"hop"`
-	ViaKind  string `json:"via_kind,omitempty"`
-	ViaID    string `json:"via_id,omitempty"`
-	ValidAt  *int64 `json:"valid_at,omitempty"`
-	Invalid  *int64 `json:"invalid_at,omitempty"`
-	Retired  bool   `json:"retired"`
-	Superset bool   `json:"-"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Type    string `json:"type,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Hop     int    `json:"hop"`
+	ViaKind string `json:"via_kind,omitempty"`
+	ViaID   string `json:"via_id,omitempty"`
+	// ValidAt/Invalid are the row's validity: a fact's sidecar interval, or an
+	// ordinary chunk's OWN interval (it has no sidecar, so the names keep one
+	// meaning). A fact that also carries an own chunk interval reports it as
+	// ChunkValidAt/ChunkInvalid.
+	ValidAt      *int64 `json:"valid_at,omitempty"`
+	Invalid      *int64 `json:"invalid_at,omitempty"`
+	ChunkValidAt *int64 `json:"chunk_valid_at,omitempty"`
+	ChunkInvalid *int64 `json:"chunk_invalid_at,omitempty"`
+	Retired      bool   `json:"retired"`
+	// Body is an excerpt of the chunk's Markdown body; omitted when bodies are off
+	// for this row or the body could not be read.
+	Body          string `json:"body,omitempty"`
+	BodyTruncated bool   `json:"body_truncated,omitempty"`
+	Superset      bool   `json:"-"`
+	// fact is "has a sidecar row" — the fact tier, identity nodes included.
+	fact bool
 }
+
+// graphChunkCols is what every graph_recall row is read from, in scanGraphRow's
+// order. One list, because three statements build rows and a column added to two
+// of them would scan the third's next column as the wrong field.
+const graphChunkCols = `c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at, c.valid_at, c.invalid_at, m.chunk_id`
+
+// graphChunkColCount is the number of columns in graphChunkCols; the edge columns
+// graphNeighbours appends start here.
+const graphChunkColCount = 9
 
 func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	hops := graphDefaultHops
@@ -144,6 +179,11 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		return errValidation(fmt.Sprintf("graph_recall: %d seed_ids is more than the %d a single walk starts from — "+
 			"split them across calls rather than have some silently dropped", len(in.SeedIDs), graphFrontierCap), ""), nil
 	}
+	if in.BodyChars != nil && (*in.BodyChars < 0 || *in.BodyChars > graphMaxBodyChars) {
+		return errValidation(fmt.Sprintf("graph_recall: body_chars must be 0..%d (got %d)", graphMaxBodyChars, *in.BodyChars),
+			"Omit body_chars for excerpts of non-fact chunks, pass 0 for titles only, or read a whole body with op=get_chunk."), nil
+	}
+	bodies := newGraphBodies(d, key, in.BodyChars)
 
 	seeds, seedInfo, err := d.graphSeedIDs(ctx, key, in, limit)
 	if err != nil {
@@ -250,18 +290,26 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 	// The two bounds compose rather than replace: budget caps what reaches the
 	// reader by CONTENT, limit caps it by ROWS, and whichever binds first wins.
 	for _, pass := range passes {
-		for _, id := range pass {
+		for i, id := range pass {
 			if len(out) >= limit {
 				truncated = true
 				break
 			}
 			c := seen[id]
+			// A title that alone overruns the budget is skipped before its body is
+			// read: the body can only add to the cost.
+			if budget > 0 && used+len(c.Title) > budget {
+				truncated = true
+				continue
+			}
+			bodies.prefetch(ctx, pass, i, limit-len(out), seen)
+			bodies.attach(&c)
 			if budget > 0 {
-				if used+len(c.Title) > budget {
+				if used+c.cost() > budget {
 					truncated = true
 					continue
 				}
-				used += len(c.Title)
+				used += c.cost()
 			}
 			out = append(out, c)
 		}
@@ -275,7 +323,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		}
 		rows := d.graphChunksByID(ctx, key, pending)
 		// Walked in RANK order, not the order the batch read returned them.
-		for _, id := range pending {
+		for i, id := range pending {
 			if len(out) >= limit {
 				truncated = true
 				break
@@ -287,7 +335,12 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 			if used+len(row.Title) > budget {
 				continue
 			}
-			used += len(row.Title)
+			bodies.prefetch(ctx, pending, i, limit-len(out), rows)
+			bodies.attach(&row)
+			if used+row.cost() > budget {
+				continue
+			}
+			used += row.cost()
 			row.Hop = -1 // reached by rank, not by an edge: never claim a path
 			out = append(out, row)
 			seen[id] = row
@@ -385,7 +438,7 @@ func (d *Document) graphChunksByID(ctx context.Context, key sqlmem.ScopeKey, ids
 			args = append(args, id)
 		}
 		res, err := d.query(ctx, key,
-			`SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
+			`SELECT `+graphChunkCols+`
 			   FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
 			  WHERE c.id IN (`+placeholders(len(batch))+`)`, args...)
 		if err != nil {
@@ -506,7 +559,7 @@ func (d *Document) graphSeedIDs(ctx context.Context, key sqlmem.ScopeKey, in doc
 	//
 	// A `query` seed IS discovery, so it is filtered like the expansion.
 	if len(in.SeedIDs) == 0 {
-		temporal, targs := graphTemporalClause(in)
+		temporal, targs := graphRecallTimeClause(in)
 		if temporal != "" {
 			where = append(where, temporal)
 			args = append(args, targs...)
@@ -538,7 +591,7 @@ func (d *Document) graphSeedIDs(ctx context.Context, key sqlmem.ScopeKey, in doc
 		// it to the result.
 		fetch = len(in.SeedIDs)
 	}
-	stmt := `SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at
+	stmt := `SELECT ` + graphChunkCols + `
 	           FROM chunks c LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
 	          WHERE ` + strings.Join(where, " AND ") + `
 	          ORDER BY c.title LIMIT ?`
@@ -624,7 +677,7 @@ func hasWordEdges(q string) bool {
 // package that already runs close to its CI timeout.
 func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, frontier []string, hop int, in docInput, rowCap int) ([]graphChunk, bool, error) {
 	marks := placeholders(len(frontier))
-	temporal, targs := graphTemporalClause(in)
+	temporal, targs := graphRecallTimeClause(in)
 	extra := ""
 	if temporal != "" {
 		extra = " AND " + temporal
@@ -653,13 +706,13 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 	// One statement per hop, both directions unioned. `via` carries the edge kind
 	// and the neighbour it was reached from, so the caller can see the shape of the
 	// association rather than just its endpoint.
-	stmt := `SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at, e.kind, e.from_id
+	stmt := `SELECT ` + graphChunkCols + `, e.kind, e.from_id
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.to_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
 	          WHERE e.from_id IN (` + marks + `)` + extra + `
 	         UNION
-	         SELECT c.id, c.title, c.type, c.status, m.valid_at, m.invalid_at, e.kind, e.to_id
+	         SELECT ` + graphChunkCols + `, e.kind, e.to_id
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.from_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
@@ -680,15 +733,30 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 	for _, r := range res.Rows {
 		c := scanGraphRow(r)
 		c.Hop = hop
-		if len(r) > 6 {
-			c.ViaKind = asStr(r[6])
+		if len(r) > graphChunkColCount {
+			c.ViaKind = asStr(r[graphChunkColCount])
 		}
-		if len(r) > 7 {
-			c.ViaID = asStr(r[7])
+		if len(r) > graphChunkColCount+1 {
+			c.ViaID = asStr(r[graphChunkColCount+1])
 		}
 		out = append(out, c)
 	}
 	return out, over, nil
+}
+
+// graphRecallTimeClause is graph_recall's time filter. With as_of it is the one
+// as_of rule search, related and query_chunks apply — the chunk's own interval AND,
+// for a fact, its sidecar's — so a chunk dated out of an instant is out of it on
+// every op. Without as_of it is graphTemporalClause's "true now" over the sidecar,
+// which list_facts shares; an ordinary chunk's own dates do not filter the default,
+// as they do not filter search's. So as_of=<now> can drop an ordinary chunk whose
+// own end has passed while the default keeps it (marked retired) — the split
+// search and query_chunks already have.
+func graphRecallTimeClause(in docInput) (string, []any) {
+	if in.IncludeRetired || in.AsOf == nil {
+		return graphTemporalClause(in)
+	}
+	return asOfClause(*in.AsOf)
 }
 
 // graphTemporalClause builds the time filter.
@@ -752,30 +820,37 @@ func scanGraphRows(rows [][]any, hop int, viaKind, viaID string) []graphChunk {
 	return out
 }
 
+// scanGraphRow reads one row laid out as graphChunkCols.
 func scanGraphRow(r []any) graphChunk {
-	c := graphChunk{ID: asStr(r[0]), Title: asStr(r[1])}
-	if len(r) > 2 {
-		c.Type = asStr(r[2])
+	c := graphChunk{ID: asStr(r[0]), Title: asStr(r[1]), Type: asStr(r[2]), Status: asStr(r[3])}
+	c.fact = asStr(r[8]) != ""
+	sideValid, sideInvalid := nullableInt64(r[4]), nullableInt64(r[5])
+	ownValid, ownInvalid := nullableInt64(r[6]), nullableInt64(r[7])
+	if c.fact {
+		c.ValidAt, c.Invalid = sideValid, sideInvalid
+		c.ChunkValidAt, c.ChunkInvalid = ownValid, ownInvalid
+	} else {
+		c.ValidAt, c.Invalid = ownValid, ownInvalid
 	}
-	if len(r) > 3 {
-		c.Status = asStr(r[3])
-	}
-	if len(r) > 4 {
-		if v, ok := asInt64(r[4]); ok {
-			c.ValidAt = &v
-		}
-	}
-	if len(r) > 5 {
-		if v, ok := asInt64(r[5]); ok {
-			c.Invalid = &v
-			// HAS an end date != HAS ended. A fact valid until 2027 is current, and
-			// labelling it retired told the model the opposite of the truth about
-			// something it was simultaneously being shown as a result.
-			c.Retired = v <= time.Now().UnixNano()
-		}
+	if c.Invalid != nil {
+		// HAS an end date != HAS ended. A fact valid until 2027 is current, and
+		// labelling it retired told the model the opposite of the truth about
+		// something it was simultaneously being shown as a result.
+		c.Retired = *c.Invalid <= time.Now().UnixNano()
 	}
 	return c
 }
+
+// nullableInt64 is asInt64 as a pointer: nil for NULL.
+func nullableInt64(v any) *int64 {
+	if n, ok := asInt64(v); ok {
+		return &n
+	}
+	return nil
+}
+
+// cost is what the row spends of budget_chars: everything of it a reader gets.
+func (c graphChunk) cost() int { return len(c.Title) + len(c.Body) }
 
 // asInt64 reads a nullable timestamp cell. It reports presence SEPARATELY from
 // value, unlike asInt, because a NULL and a real 0 mean different things here: NULL

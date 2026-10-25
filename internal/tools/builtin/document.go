@@ -135,7 +135,8 @@ const documentInputSchema = `{
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. A hop is ONE edge, so a fact→entity→fact step costs two: a two-hop question needs 2, a three-hop needs 4. 0 = the starting chunks only, 1 = their neighbours (default), 6 = the maximum. What bounds a long walk is budget_chars, not this."},
 		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
 		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
-		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches."},
+		"body_chars": {"type": "integer", "description": "graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
+		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. On graph_recall a chunk with its own valid_at/invalid_at must also contain the moment. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
 		"min_score":   {"type": "number", "description": "verbatim_answer: how close a match must be before it can be quoted as an answer (default 0.6). Cosine scale is a property of the embedding model, so tune this against your own — the response always reports the actual score, including when it refuses."},
@@ -333,7 +334,12 @@ type docInput struct {
 	// by construction, so a row limit lets a walk win on volume; and when the graph
 	// runs dry the walk under-fills, which is worse than not walking. 0 = the
 	// old row-limited behaviour, unchanged.
-	BudgetChars    int    `json:"budget_chars"`
+	BudgetChars int `json:"budget_chars"`
+	// BodyChars is the excerpt length on graph_recall rows. nil = the default
+	// (an excerpt on non-fact rows only), 0 = no bodies (the titles-only response),
+	// N = an excerpt of up to N characters on every row. A pointer, because 0 and
+	// unset ask for different things.
+	BodyChars      *int   `json:"body_chars"`
 	AsOf           *int64 `json:"as_of"`
 	IncludeRetired bool   `json:"include_retired"`
 	// MediaType/Data/Filename carry an image asset for set_asset (RFC BO). Data
