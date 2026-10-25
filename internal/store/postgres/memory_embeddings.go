@@ -264,37 +264,63 @@ func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) 
 // text after THAT prefix — pass the lists. The provenance test is the one
 // ExcludeDocumentPrefix uses, so "document row" means the same thing in both.
 //
-// Each list binds ONCE and every namespace's disjunct refers to it, so a mixed
-// search sends the list once per leg, as a single-namespace search does.
+// The prefixes are disjoint namespaces (memrank sets doc.chunk: and doc.unit:),
+// so a row is in at most one and has at most one segment.
+//
+// The allowlist is an OR over the classes — a row passes when it is not a
+// document row or its segment is listed. Each list binds ONCE and every
+// namespace's disjunct refers to it, so a mixed search sends the list once per
+// leg, as a single-namespace search does.
+//
+// The denylist is NOT in that OR. It is its own conjunct, an anti-join against
+// the unnested list on the row's document segment — a CASE that is NULL for
+// every row that is not a document row, and NULL matches no element, so those
+// rows pass. As a top-level conjunct the planner hashes the list once, the form
+// idSegmentCondition's denylist uses. Inside the OR a NOT EXISTS stays a
+// correlated subplan that scans the whole list for every row: on 100,000 rows
+// with 20,000 ids excluded, 4.0 s on the full-text leg (21 s with 50,000)
+// against 15 ms unfiltered.
+//
+// Measured on the same scope, what this filter still costs is not the list. It
+// reads m.origin, so it applies after the join with memory, and the top-N sort
+// then runs over joined rows with the whole projection — embedding::text
+// included — evaluated for each: 2.0 s on the vector leg against 0.26 s
+// unfiltered, whichever form the list takes (`<> ALL` in the OR: 2.0 s and
+// 0.27 s on full-text; this one: 2.0 s and 0.23 s). Any filter on memory's
+// columns pays that; it is the statement's projection to move, not this
+// predicate's form.
 func idSegmentDocumentCondition(f store.MemorySearchFilter, args []any) (string, []any) {
-	idsArg, exclArg := "", ""
+	likes := make([]string, len(f.IDsPrefixes))
+	segs := make([]string, len(f.IDsPrefixes))
+	for i, p := range f.IDsPrefixes {
+		args = append(args, likePrefixPattern(p))
+		likes[i] = "me.key LIKE $" + strconv.Itoa(len(args))
+		args = append(args, p)
+		segs[i] = "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
+	}
+	cond := ""
 	if len(f.IDs) > 0 {
 		args = append(args, f.IDs)
-		idsArg = "$" + strconv.Itoa(len(args)) + "::text[]"
+		idsArg := "$" + strconv.Itoa(len(args)) + "::text[]"
+		outside := make([]string, len(likes))
+		inside := make([]string, len(likes))
+		for i := range likes {
+			outside[i] = "NOT " + likes[i]
+			inside[i] = "(" + likes[i] + " AND " + segs[i] + " = ANY(" + idsArg + "))"
+		}
+		cond += " AND (coalesce(m.origin, '') <> '' OR (" + strings.Join(outside, " AND ") + ") OR " +
+			strings.Join(inside, " OR ") + ")"
 	}
 	if len(f.ExcludeIDs) > 0 {
 		args = append(args, f.ExcludeIDs)
-		exclArg = "$" + strconv.Itoa(len(args)) + "::text[]"
-	}
-	outside := make([]string, 0, len(f.IDsPrefixes))
-	inside := make([]string, 0, len(f.IDsPrefixes))
-	for _, p := range f.IDsPrefixes {
-		args = append(args, likePrefixPattern(p))
-		like := "me.key LIKE $" + strconv.Itoa(len(args))
-		args = append(args, p)
-		seg := "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
-		outside = append(outside, "NOT "+like)
-		test := "(" + like
-		if idsArg != "" {
-			test += " AND " + seg + " = ANY(" + idsArg + ")"
+		docSeg := "CASE WHEN coalesce(m.origin, '') <> '' THEN NULL"
+		for i := range likes {
+			docSeg += " WHEN " + likes[i] + " THEN " + segs[i]
 		}
-		if exclArg != "" {
-			test += " AND " + seg + " <> ALL(" + exclArg + ")"
-		}
-		inside = append(inside, test+")")
+		docSeg += " END"
+		cond += " AND NOT EXISTS (SELECT 1 FROM unnest($" + strconv.Itoa(len(args)) + "::text[]) AS excl(id) WHERE excl.id = " + docSeg + ")"
 	}
-	return " AND (coalesce(m.origin, '') <> '' OR (" + strings.Join(outside, " AND ") + ") OR " +
-		strings.Join(inside, " OR ") + ")", args
+	return cond, args
 }
 
 // planPerExecution makes a statement that binds an id list run on a plan built for

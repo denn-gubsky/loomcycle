@@ -77,6 +77,17 @@ func TestMemoryEmbedSearch_IDsPrefixesRestrictOnlyDocumentRows(t *testing.T) {
 	if k := keysOf(got); !sameKeys(k, mixedWant...) {
 		t.Errorf("mixed search with ExcludeIDs = %v, want %v", k, mixedWant)
 	}
+
+	// Both lists: the allowlist's class OR and the denylist's anti-join are
+	// separate conjuncts, and must still compose as AND on document rows only.
+	got, err = s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid,
+		store.MemorySearchFilter{IDs: []string{"t1", "t2"}, ExcludeIDs: []string{"t2"}, IDsPrefixes: docNamespaces}, []float32{1, 0, 0, 0}, 51)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := keysOf(got); !sameKeys(k, mixedWant...) {
+		t.Errorf("mixed search with IDs [t1 t2] and ExcludeIDs [t2] = %v, want %v", k, mixedWant)
+	}
 }
 
 func TestMemoryFullTextSearch_IDsPrefixesRestrictOnlyDocumentRows(t *testing.T) {
