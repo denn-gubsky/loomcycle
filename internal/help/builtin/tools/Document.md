@@ -66,7 +66,7 @@ and examples, as `Document/<op>` — for example
 |---|---|---|
 | `create_chunk` | add a chunk to a document | `document_id`, `title` |
 | `get_chunk` | one chunk with its body, fields, tags and current `revision` | `id` |
-| `update_chunk` | change a chunk's title/type/status/body/fields/tags | `id`, `revision` |
+| `update_chunk` | change a chunk's title/type/status/body/fields/tags/dates | `id`, `revision` |
 | `delete_chunk` | delete a chunk and everything under it | `id` |
 | `move_chunk` | give a chunk a new parent and/or position | `id` |
 | `reorder_chunk` | move a chunk one place up or down among its siblings | `id`, `direction` |
@@ -188,6 +188,26 @@ judge marked `unsupported` is withheld from these reads until you pass
 
 Correct a fact with `supersede_chunk`, not `delete_chunk`: the old fact stays
 readable for questions about the past.
+
+## Dated content
+
+Any chunk — not only a fact — can say when its content is true: pass
+`valid_at` / `invalid_at` (unix nanoseconds, `invalid_at` exclusive) to
+`create_chunk` or `update_chunk`. Use this for an edition, a tariff or a policy
+clause: content that is a passage of a document, read as a whole, and replaced
+by a newer version. `search`, `related` and `query_chunks` with `as_of` then
+return only what was in force at that moment; a chunk with no dates always
+matches. When an edition is replaced, set the old one's `invalid_at` (and its
+`status`, e.g. `repealed`, for people) — the status is not derived from the
+dates, or the other way round. Dating a chunk does not make it a fact: it does
+not appear in `list_facts`.
+
+Use the fact tier instead (`upsert_chunk`, `remember`) for a claim about
+something with a stable identity — a person's employer, a service's owner —
+that is corrected by a later claim and checked against the text it came from.
+A fact can carry both periods; `as_of` then needs both to hold. Dates are
+content time, never the time you write them: omit what you do not know, since
+a guessed date is worse than none.
 
 ## Paths
 

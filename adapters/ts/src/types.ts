@@ -3580,9 +3580,18 @@ export type DocumentToolInput = {
   /** search / related: exact chunk statuses; any matches (with `status`, the union). */
   statuses?: string[];
   /** graph_recall / list_facts: answer as of this instant (unix nanoseconds).
-   *  search / related: only chunks whose stated validity contains it; a chunk
-   *  with no stated validity always matches. */
+   *  search / related / query_chunks: only chunks whose stated validity (the
+   *  chunk's own valid_at/invalid_at and, for a fact, its fact dates) contains
+   *  it; a chunk with no stated validity always matches. */
   as_of?: number;
+  /** When the content became true in the world (unix nanoseconds).
+   *  upsert_chunk: the fact's start. create_chunk / update_chunk: the chunk's
+   *  own start (an edition coming into force); update_chunk with `null` clears
+   *  it. Omit when unknown. */
+  valid_at?: number | null;
+  /** When the content stopped being true (unix nanoseconds, exclusive; after
+   *  valid_at). Same ops as {@link valid_at}; `null` clears on update_chunk. */
+  invalid_at?: number | null;
   /** query_chunks: raw read-only SELECT (escape hatch; validator-gated). */
   sql?: string;
   /** Row/response bound. On `documents_summary` it defaults to 500 (max 5000) and
@@ -3697,6 +3706,9 @@ export type DocumentSearchHit = {
   title?: string;
   type?: string;
   document_id?: string;
+  /** The chunk's own validity period, present only when set. */
+  valid_at?: number;
+  invalid_at?: number;
   matched_unit?: { kind: string; text: string };
 };
 
@@ -3712,7 +3724,15 @@ export type DocumentSearchResult = {
 /** Response of `document({op:"related"})` — narrow a {@link DocumentToolResponse}
  *  to it. */
 export type DocumentRelatedResult = {
-  related: Array<{ chunk_id: string; score: number; title?: string; type?: string; document_id?: string }>;
+  related: Array<{
+    chunk_id: string;
+    score: number;
+    title?: string;
+    type?: string;
+    document_id?: string;
+    valid_at?: number;
+    invalid_at?: number;
+  }>;
   filter?: DocumentSearchFilter;
 };
 
