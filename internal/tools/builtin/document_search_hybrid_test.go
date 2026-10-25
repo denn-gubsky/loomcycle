@@ -37,6 +37,12 @@ func (f *ftsStore) MemoryFullTextSearch(ctx context.Context, tenant string, scop
 		if filter.KeyPrefix != "" && !strings.HasPrefix(key, filter.KeyPrefix) {
 			continue
 		}
+		if filter.ExcludeUnitPrefix != "" && strings.HasPrefix(key, filter.ExcludeUnitPrefix) {
+			continue
+		}
+		if !idSegmentPasses(filter, key) {
+			continue
+		}
 		text, n := strings.ToLower(e.EmbedText), 0
 		for _, w := range words {
 			c := strings.Count(text, w)

@@ -616,6 +616,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS
+            label: LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS
+            description: 'Document op=search / op=related filters (under_path, type, status, tag, as_of …) are resolved to a chunk-id list sent into every search leg. This caps that list; a filter that needs more is refused (filter_too_wide) rather than post-filtered. (example: 50000)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_PGVECTOR_ENABLED
             label: LOOMCYCLE_PGVECTOR_ENABLED
             description: 'Memory op=recall does embedding-based semantic search. sqlite tier uses sqlite-vec; postgres tier uses pgvector. The embedder API key (if a hosted embedder) is a SECRET → .env.local. (example: 1)'

@@ -217,6 +217,33 @@ func observedCondition(f store.MemorySearchFilter, args []any) (string, []any) {
 	return cond, args
 }
 
+// idSegmentCondition appends the id-segment allow/deny lists (IDs / ExcludeIDs):
+// the text after KeyPrefix up to the next ':' must be in IDs and not in
+// ExcludeIDs. Shared by both legs for the reason observedCondition is: RRF fuses
+// them, so a predicate one leg skipped would be a predicate not applied.
+//
+// The lists bind as text[] and the probe is `= ANY` / `<> ALL`, which Postgres
+// hashes for a large array, so it costs a hash lookup per row on a scan the
+// cosine ORDER BY already pays in full. No index on the expression is wanted:
+// there is no index to use on this scan either way.
+func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) {
+	if len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 {
+		return "", args
+	}
+	args = append(args, f.KeyPrefix)
+	seg := "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
+	cond := ""
+	if len(f.IDs) > 0 {
+		args = append(args, f.IDs)
+		cond += " AND " + seg + " = ANY($" + strconv.Itoa(len(args)) + "::text[])"
+	}
+	if len(f.ExcludeIDs) > 0 {
+		args = append(args, f.ExcludeIDs)
+		cond += " AND " + seg + " <> ALL($" + strconv.Itoa(len(args)) + "::text[])"
+	}
+	return cond, args
+}
+
 // likePrefixPattern turns a literal key prefix into a LIKE pattern.
 //
 // ESCAPED, because a prefix is caller-supplied and LIKE treats % and _ as wildcards:
@@ -336,9 +363,11 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)
-	var observedCond string
+	var observedCond, idCond string
 	observedCond, args = observedCondition(filter, args)
 	prefixCondition += observedCond
+	idCond, args = idSegmentCondition(filter, args)
+	prefixCondition += idCond
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at, m.observed_at, m.valid_at, m.invalid_at,
 	               1.0 - (me.embedding <=> $4::vector) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
@@ -478,9 +507,11 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 		prefixCondition += " AND me.key NOT LIKE $" + strconv.Itoa(len(args))
 	}
 	prefixCondition += provenanceCondition(filter.Provenance)
-	var observedCond string
+	var observedCond, idCond string
 	observedCond, args = observedCondition(filter, args)
 	prefixCondition += observedCond
+	idCond, args = idSegmentCondition(filter, args)
+	prefixCondition += idCond
 	// plainto_tsquery normalises arbitrary user text into a safe tsquery
 	// (never errors on input, no injection surface), returning the empty
 	// query — which matches nothing — when the text yields no lexemes.

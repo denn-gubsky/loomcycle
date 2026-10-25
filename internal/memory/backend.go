@@ -148,6 +148,14 @@ type SearchQuery struct {
 	// agent's `memory_units: false`). The zero value USES them wherever they exist,
 	// which is only where an operator chose to generate them.
 	NoUnits bool
+
+	// IDs / ExcludeIDs restrict the search to (or away from) rows whose id segment
+	// — the key text after Prefix up to the next ':' — is in the list; see
+	// store.MemorySearchFilter.IDs. Set by Document op=search from a resolved
+	// structural filter: chunk ids, which also select those chunks' derived units.
+	// Empty constrains nothing.
+	IDs        []string
+	ExcludeIDs []string
 }
 
 // CanReturnDocuments reports whether this query can return Document chunk bodies:
@@ -347,11 +355,11 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 
 // selectorFilter is Filter without the derived-unit rule (see withUnitExclusion).
 func (q SearchQuery) selectorFilter() (store.MemorySearchFilter, error) {
-	// The RFC CL window is applied FIRST so it survives every return path below.
-	// Filter has several early exits (no selector, documents-only, the refusal), and
-	// attaching the window at each one is how a predicate ends up honoured on some
-	// queries and silently dropped on others.
-	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix})
+	// The RFC CL window and the id lists are applied FIRST so they survive every
+	// return path below. Filter has several early exits (no selector,
+	// documents-only, the refusal), and attaching a predicate at each one is how it
+	// ends up honoured on some queries and silently dropped on others.
+	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix, IDs: q.IDs, ExcludeIDs: q.ExcludeIDs})
 	var facts, notes, docs, traces bool
 	for _, s := range q.Sources {
 		switch s {

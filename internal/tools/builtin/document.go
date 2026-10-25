@@ -104,7 +104,7 @@ func (d *Document) UsageHint() string {
 }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the cross-reference edges touching a document, each enriched with its endpoints' titles/types/statuses)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -119,21 +119,23 @@ const documentInputSchema = `{
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string"},
-		"document_id": {"type": "string"},
-		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here."},
+		"document_id": {"type": "string", "description": "The document an op works on. search / related: return only this document's chunks."},
+		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here. search / related: return only chunks of these documents."},
+		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
 		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
 		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
 		"direction":   {"type": "string", "enum": ["up","down","pull","push"], "description": "reorder_chunk: move the chunk up or down within its current level. sync: pull (default) copies the peer document's keyed chunks into this one; push writes this document's keyed chunks up to the peer (reconciled by natural_key, carrying body/tags/hierarchy/manual-links; the losing side keeps the overwritten body in its history)."},
-		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts and query_chunks the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
+		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts, query_chunks, search and related the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
+		"types":       {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks of any of these types, each including its subtypes (with type, the union of both)."},
 		"body":        {"type": "string", "description": "Markdown body."},
 		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
 		"query":     {"type": "string", "description": "search: free text matched against chunk BODIES by meaning (and by words, where the server indexes them) — the way into a document when you do not know where to look. graph_recall: find starting chunks whose title matches this text (use seed_ids instead when you already know where to start)."},
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. A hop is ONE edge, so a fact→entity→fact step costs two: a two-hop question needs 2, a three-hop needs 4. 0 = the starting chunks only, 1 = their neighbours (default), 6 = the maximum. What bounds a long walk is budget_chars, not this."},
 		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
 		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
-		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected."},
+		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. search / related: return only chunks whose stated validity contains this moment; a chunk with no stated validity always matches."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
 		"min_score":   {"type": "number", "description": "verbatim_answer: how close a match must be before it can be quoted as an answer (default 0.6). Cosine scale is a property of the embedding model, so tune this against your own — the response always reports the actual score, including when it refuses."},
@@ -156,7 +158,8 @@ const documentInputSchema = `{
 		"class":      {"type": "string", "enum": ["derived","evidential"], "description": "derived = distilled from something else (the default). evidential = source material, exempt from age-based pruning. list_facts: filter to facts of this class."},
 		"confidence": {"type": "number", "description": "0..1, how sure you are of this fact."},
 		"fields":      {"type": "object", "description": "Type-specific structured fields."},
-		"status":      {"type": "string"},
+		"status":      {"type": "string", "description": "The chunk's status label. query_chunks / search / related: return only chunks with exactly this status."},
+		"statuses":    {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks with any of these exact statuses (with status, the union of both)."},
 		"position":    {"type": "integer"},
 		"revision":    {"type": "integer", "description": "update_chunk: the chunk's current revision (optimistic concurrency). get_version: which body-change revision to read."},
 		"from_revision": {"type": "integer", "description": "diff: the earlier revision to compare (from history)."},
@@ -167,10 +170,13 @@ const documentInputSchema = `{
 		"media_type":  {"type": "string", "description": "set_asset: the image MIME type (image/png, image/jpeg, image/gif, image/webp)."},
 		"data":        {"type": "string", "description": "set_asset: the image bytes as standard base64 (no data: prefix)."},
 		"filename":    {"type": "string", "description": "set_asset: an optional original filename (metadata only)."},
-		"under_path":  {"type": "string", "description": "query_chunks / query_documents / documents_summary: restrict to documents at/under this Path-tree path."},
+		"under_path":  {"type": "string", "description": "query_chunks / query_documents / documents_summary: restrict to documents at/under this Path-tree path. search / related: return only chunks of documents named at or under it — applied before ranking, so the best matches come from that part of the tree."},
+		"under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks of documents named at or under ANY of these Path-tree paths (with under_path, the union of both)."},
+		"exclude_under_path":  {"type": "string", "description": "search / related: never return chunks of documents named at or under this Path-tree path."},
+		"exclude_under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of documents named at or under any of these Path-tree paths."},
 		"tags":        {"type": "array", "items": {"type": "string"}, "description": "The chunk's or document's tags. create_chunk/update_chunk/upsert_chunk/create_document replace-set the whole tag set (omit to leave unchanged; [] to clear). add_tags/remove_tags take the tags to add/remove incrementally. Nested tags use a slash: area/sub/topic."},
-		"tag":         {"type": "string", "description": "query_chunks / query_documents: return only chunks/documents carrying exactly this tag."},
-		"tag_prefix":  {"type": "string", "description": "query_chunks: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
+		"tag":         {"type": "string", "description": "query_chunks / query_documents / search / related: return only chunks/documents carrying exactly this tag."},
+		"tag_prefix":  {"type": "string", "description": "query_chunks / search / related: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
 		"name":        {"type": "string", "description": "define/list_types: the type name."},
@@ -337,9 +343,20 @@ type docInput struct {
 	Data      string `json:"data"`
 	Filename  string `json:"filename"`
 	UnderPath string `json:"under_path"`
-	SQL       string `json:"sql"`
-	Limit     int    `json:"limit"`
-	Name      string `json:"name"`
+	// Structural filters on search / related, beside the singular fields above
+	// that query_chunks already takes (see document_search_filter.go). Plural
+	// twins rather than string-or-list unions: the singular fields are plain
+	// strings shared by every op, and a union type is a schema shape some
+	// providers' function declarations reject.
+	UnderPaths         []string `json:"under_paths"`
+	ExcludeUnderPath   string   `json:"exclude_under_path"`
+	ExcludeUnderPaths  []string `json:"exclude_under_paths"`
+	ExcludeDocumentIDs []string `json:"exclude_document_ids"`
+	Types              []string `json:"types"`
+	Statuses           []string `json:"statuses"`
+	SQL                string   `json:"sql"`
+	Limit              int      `json:"limit"`
+	Name               string   `json:"name"`
 	// IncludeMetadata gates export_md's round-trip comments (default true when
 	// omitted; a pointer so an explicit `false` is distinguishable from unset).
 	IncludeMetadata *bool `json:"include_metadata"`
@@ -3445,6 +3462,25 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if topK > 50 {
 		topK = 50
 	}
+	// A structural filter is resolved to chunk ids BEFORE the search, so every
+	// leg's LIMIT sees only the wanted corpus (document_search_filter.go). Only
+	// when one was named: a filter-free call stays on exactly the old path.
+	var filter *searchFilterSet
+	if hasSearchFilter(in) {
+		set, refusal, err := d.resolveSearchFilter(ctx, key, "search", in)
+		if err != nil {
+			return docFail("search: filter: ", err), nil
+		}
+		if refusal != nil {
+			return *refusal, nil
+		}
+		// Nothing matched: answer without embedding the query or touching the
+		// store, so an unresolvable path costs nothing and bumps no access count.
+		if set.echo.MatchedChunks == 0 {
+			return jsonResult(map[string]any{"chunks": []map[string]any{}, "filter": set.echo})
+		}
+		filter = set
+	}
 	// THE MEMORY SEARCH PIPELINE, NOT A SECOND ONE. This op used to run a vector
 	// query of its own, so a chunk whose words matched the question but whose
 	// embedding did not — a name, a code, an error string — was unreachable here
@@ -3459,13 +3495,17 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// the same search, and an agent whose document searches are reranked should not
 	// get a different order depending on which tool it reached them through.
 	rerank := rerankOptions(ctx)
-	res, err := d.searchBackend().Search(ctx, mscope, key.ScopeID, memrank.SearchQuery{
+	sq := memrank.SearchQuery{
 		QueryText: q,
 		Prefix:    chunkBodyKeyPrefix,
 		TopK:      topK,
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
-	}, memrank.DefaultRankConfig(), memrank.DedupConfig{})
+	}
+	if filter != nil {
+		sq.IDs, sq.ExcludeIDs = filter.ids, filter.excludeIDs
+	}
+	res, err := d.searchBackend().Search(ctx, mscope, key.ScopeID, sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
 		return errFrom("search: "+err.Error(), err), nil
 	}
@@ -3519,6 +3559,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// metadata query returned.
 	result := map[string]any{"chunks": out}
 	renderRerank(result, rerank, res.Rerank)
+	if filter != nil {
+		result["filter"] = filter.echo
+	}
 	return jsonResult(result)
 }
 
@@ -3553,6 +3596,27 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	if topK > 50 {
 		topK = 50
 	}
+	// The same structural filter as search, applied to the one vector leg related
+	// runs. withFilter adds the echo to every answer once a filter was named.
+	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
+	withFilter := func(m map[string]any) map[string]any { return m }
+	if hasSearchFilter(in) {
+		set, refusal, err := d.resolveSearchFilter(ctx, key, "related", in)
+		if err != nil {
+			return docFail("related: filter: ", err), nil
+		}
+		if refusal != nil {
+			return *refusal, nil
+		}
+		withFilter = func(m map[string]any) map[string]any {
+			m["filter"] = set.echo
+			return m
+		}
+		if set.echo.MatchedChunks == 0 {
+			return jsonResult(withFilter(map[string]any{"related": []map[string]any{}}))
+		}
+		sf.IDs, sf.ExcludeIDs = set.ids, set.excludeIDs
+	}
 	// The query text is the chunk's own body. An empty or media body has nothing
 	// to embed — the same predicate embedBody skips on write — so it has no
 	// neighbours; return an empty set rather than an error (a section/parent chunk
@@ -3563,10 +3627,10 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 	body := strings.TrimSpace(cb.Body)
 	if body == "" {
-		return jsonResult(map[string]any{"related": []map[string]any{}})
+		return jsonResult(withFilter(map[string]any{"related": []map[string]any{}}))
 	}
 	if typ, _, _, _ := classifyMediaBody(cb.Body); typ != "" {
-		return jsonResult(map[string]any{"related": []map[string]any{}})
+		return jsonResult(withFilter(map[string]any{"related": []map[string]any{}}))
 	}
 	vec, err := d.Embedder.Embed(ctx, []string{body})
 	if err != nil {
@@ -3577,8 +3641,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 	// topK+1: a chunk is its own nearest neighbour, so the search ranks self first;
 	// ask for one extra to leave room to drop it and still return topK others.
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
-		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK+1)
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID, sf, vec[0], topK+1)
 	if err != nil {
 		return errFrom("related: search: "+err.Error(), err), nil
 	}
@@ -3619,7 +3682,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		}
 		out = append(out, m)
 	}
-	return jsonResult(map[string]any{"related": out})
+	return jsonResult(withFilter(map[string]any{"related": out}))
 }
 
 // unlinkedMentionScanCap bounds the body scan unlinked_mentions performs. The op

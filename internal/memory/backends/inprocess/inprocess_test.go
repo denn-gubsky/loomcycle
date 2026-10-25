@@ -1195,3 +1195,43 @@ func TestAdd_EnqueuesWithTheSessionSoTheFactCanBeFollowedBack(t *testing.T) {
 			"from this item is unreachable from the conversation it came from", got)
 	}
 }
+
+// TestMetrics_FilterIDsOnTheSpan — a search restricted by an id list records the
+// list's size on its loomcycle.memory.search span, and an unrestricted one
+// records nothing, so its span is exactly what it was.
+func TestMetrics_FilterIDsOnTheSpan(t *testing.T) {
+	exp := withInMemoryExporter(t)
+	b, _, _, cleanup := vectorFixture(t)
+	defer cleanup()
+	ctx := context.Background()
+	scope, id := store.MemoryScopeAgent, "a1"
+	if r, err := b.Set(ctx, scope, id, "doc.chunk:c1", json.RawMessage(`{"body":"alice go"}`), memory.SetOptions{Embed: true, EmbedText: "alice go"}); err != nil || !r.Embedded {
+		t.Fatalf("set: r=%+v err=%v", r, err)
+	}
+	search := func(q memory.SearchQuery) map[string]int64 {
+		t.Helper()
+		exp.Reset()
+		if _, err := b.Search(ctx, scope, id, q, memory.DefaultRankConfig(), memory.DedupConfig{}); err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		for _, s := range exp.GetSpans() {
+			if s.Name == lcotel.SpanMemorySearch {
+				out := map[string]int64{}
+				for _, kv := range s.Attributes {
+					out[string(kv.Key)] = kv.Value.AsInt64()
+				}
+				return out
+			}
+		}
+		t.Fatalf("no %q span", lcotel.SpanMemorySearch)
+		return nil
+	}
+	got := search(memory.SearchQuery{QueryText: "alice go", TopK: 5, Prefix: "doc.chunk:", IDs: []string{"c1", "c2"}, ExcludeIDs: []string{"c3"}})
+	if got[lcotel.AttrMemoryFilterIDs] != 2 || got[lcotel.AttrMemoryFilterExcludeIDs] != 1 {
+		t.Errorf("filtered span attrs = %v, want %s=2 %s=1", got, lcotel.AttrMemoryFilterIDs, lcotel.AttrMemoryFilterExcludeIDs)
+	}
+	got = search(memory.SearchQuery{QueryText: "alice go", TopK: 5, Prefix: "doc.chunk:"})
+	if _, has := got[lcotel.AttrMemoryFilterIDs]; has {
+		t.Errorf("an unfiltered search recorded %s: %v", lcotel.AttrMemoryFilterIDs, got)
+	}
+}

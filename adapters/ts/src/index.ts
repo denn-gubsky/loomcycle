@@ -387,6 +387,10 @@ export type {
   PathToolResponse,
   DocumentToolInput,
   DocumentToolResponse,
+  DocumentSearchFilter,
+  DocumentSearchHit,
+  DocumentSearchResult,
+  DocumentRelatedResult,
   // RFC BE History (browse/search/annotate past chats)
   HistoryToolInput,
   HistoryToolResponse,

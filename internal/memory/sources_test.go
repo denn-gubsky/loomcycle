@@ -2,6 +2,7 @@ package memory
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -103,7 +104,7 @@ func TestSearchQueryFilter_SourcesMapToPredicate(t *testing.T) {
 				t.Errorf("selector did not exclude raw turns: %+v", got)
 			}
 			got.ExcludeTracePrefix = ""
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("Filter() = %+v, want %+v\n%s", got, tc.want, tc.comment)
 			}
 		})

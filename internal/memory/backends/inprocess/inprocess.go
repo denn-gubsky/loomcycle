@@ -240,6 +240,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		lcotel.SetSpanError(span, ferr)
 		return memory.SearchResult{}, ferr
 	}
+	lcotel.SetMemorySearchFilterIDs(span, len(filter.IDs), len(filter.ExcludeIDs))
 	// Derived search units: where the main legs cannot reach them (a
 	// chunk-targeted search), a separate unit leg fetches them, fused with the rest.
 	unitFilter, unitLeg := q.UnitLegFilter(filter)

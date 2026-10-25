@@ -130,7 +130,9 @@ func (q SearchQuery) UnitLegFilter(main store.MemorySearchFilter) (store.MemoryS
 	if rest, ok := strings.CutPrefix(main.KeyPrefix, DocumentChunkKeyPrefix); ok {
 		prefix += rest
 	}
-	return q.When.Filter(store.MemorySearchFilter{KeyPrefix: prefix}), true
+	// The id lists carry over unchanged: a unit key's id segment is its chunk's
+	// id, so the list that restricts the chunks restricts their units too.
+	return q.When.Filter(store.MemorySearchFilter{KeyPrefix: prefix, IDs: main.IDs, ExcludeIDs: main.ExcludeIDs}), true
 }
 
 // prefixReaches reports whether a key filtered by prefix could lie in ns.

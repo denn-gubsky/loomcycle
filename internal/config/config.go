@@ -4055,6 +4055,12 @@ type Env struct {
 	// decoded bytes, so the request cap is the binding one on upload.
 	// LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES (bytes; <=0 ignored, default kept).
 	MaxDocumentAssetBytes int64
+	// DocumentSearchFilterMaxIDs caps the chunk-id list a filtered Document
+	// search or related call binds into each store leg — the allow list, or its
+	// complement when that is smaller. Over it the call is refused
+	// (filter_too_wide) rather than silently post-filtered. Default 50000.
+	// LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS (<=0 ignored, default kept).
+	DocumentSearchFilterMaxIDs int
 	// UILoginOrigins (LOOMCYCLE_UI_LOGIN_ORIGINS, comma-separated) are the
 	// first-party origins the Web UI's postMessage login receiver may accept a
 	// bearer handoff FROM — e.g. "https://loomcycle.cloud" for the landing that
@@ -6094,6 +6100,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if v := os.Getenv("LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.Env.MaxDocumentAssetBytes = n
+		}
+	}
+	cfg.Env.DocumentSearchFilterMaxIDs = 50000
+	if v := os.Getenv("LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.Env.DocumentSearchFilterMaxIDs = n
 		}
 	}
 	cfg.Env.ChannelsSweepInterval = 15 * time.Minute

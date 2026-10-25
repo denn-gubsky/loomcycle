@@ -62,6 +62,7 @@ func refuseCutIDs(in docInput) (tools.Result, bool) {
 		{"id", []string{in.ID}},
 		{"document_id", []string{in.DocumentID}},
 		{"document_ids", in.DocumentIDs},
+		{"exclude_document_ids", in.ExcludeDocumentIDs},
 		{"parent_id", []string{in.ParentID}},
 		{"new_parent_id", []string{in.NewParentID}},
 		{"after_id", []string{in.AfterID}},

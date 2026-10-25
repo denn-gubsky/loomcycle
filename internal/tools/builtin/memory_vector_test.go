@@ -160,6 +160,9 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		if filter.ExcludeUnitPrefix != "" && strings.HasPrefix(key, filter.ExcludeUnitPrefix) {
 			continue // derived search units, as the real stores drop them
 		}
+		if !idSegmentPasses(filter, key) {
+			continue // outside the id list, as the postgres predicate drops it
+		}
 		// Filter expired base rows.
 		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, key)
 		if err != nil {
@@ -187,6 +190,28 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		out = append(out, se)
 	}
 	return out, nil
+}
+
+// idSegmentPasses is the postgres id-segment predicate in Go: the key text after
+// KeyPrefix up to the next ':' must be in IDs (when set) and not in ExcludeIDs.
+// A fake that ignored the lists would make every filter assertion vacuous.
+func idSegmentPasses(f store.MemorySearchFilter, key string) bool {
+	if len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 {
+		return true
+	}
+	seg, _, _ := strings.Cut(strings.TrimPrefix(key, f.KeyPrefix), ":")
+	in := func(list []string) bool {
+		for _, id := range list {
+			if id == seg {
+				return true
+			}
+		}
+		return false
+	}
+	if len(f.IDs) > 0 && !in(f.IDs) {
+		return false
+	}
+	return !in(f.ExcludeIDs)
 }
 
 func (v *vectorStore) MemoryEmbedListByModel(ctx context.Context, _ string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
