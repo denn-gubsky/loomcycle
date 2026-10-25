@@ -53,7 +53,8 @@ type Principal struct {
 	// came from (RFC FA §7); "" for every other credential. Such a token
 	// stands only while its user is active: the server re-reads the user's
 	// status on every request it authenticates, so a disable or a gate's
-	// revoke holds at once on every replica, whatever the sweeper did.
+	// revoke holds at once on every replica, whatever the sweeper did. The
+	// tenant's gate policy (RFC FA P5) is checked against it the same way.
 	IssuedByGate string
 }
 

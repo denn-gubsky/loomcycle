@@ -567,6 +567,19 @@ func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, u
 		}
 		return auth.Principal{}, uiAuth{}, false
 	}
+	// RFC FA P5: the tenant's gate policy, on every request: the gate the
+	// session came through, and the gate that issued its token, if one did.
+	for _, gate := range []string{row.Gate, p.IssuedByGate} {
+		if gate == "" {
+			continue
+		}
+		if err := s.tenantGateAllowed(ctx, row.TenantID, gate); err != nil {
+			if errors.Is(err, errTenantGatePolicy) {
+				s.endSession(ctx, r, row, "auth_session_revoked", "tenant_policy")
+			}
+			return auth.Principal{}, uiAuth{}, false
+		}
+	}
 	if now.Sub(row.LastSeenAt) >= sessionTouchEvery {
 		idle := now.Add(policy.SessionIdle())
 		if idle.After(row.AbsoluteExpiresAt) {

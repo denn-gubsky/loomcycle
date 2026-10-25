@@ -117,4 +117,8 @@ type TenantAuthPolicyStore interface {
 	// policy takes effect on the sessions already issued, not only on the
 	// next login.
 	TenantAuthPolicyRevokeSessions(ctx context.Context, tenantID string, gates []string, at time.Time) (int, error)
+	// TenantAuthPolicyIssuedTokens returns every token row of the tenant a
+	// gate issued (issued_by_gate set), live or not, for the cleanup a policy
+	// change runs. Empty slice when there are none.
+	TenantAuthPolicyIssuedTokens(ctx context.Context, tenantID string) ([]OperatorTokenDefRow, error)
 }

@@ -558,6 +558,7 @@ func Run(t *testing.T, factory Factory) {
 		{"DeviceAuthDecideOnceAndRedeemOnce", testDeviceAuthDecideOnceAndRedeemOnce},
 		{"DeviceAuthExpiredOrDeniedCannotBeDecidedOrRedeemed", testDeviceAuthExpiredOrDeniedCannotBeDecidedOrRedeemed},
 		{"TenantAuthPolicyPutGetListDeleteAndRevokeSessions", testTenantAuthPolicyPutGetListDeleteAndRevokeSessions},
+		{"TenantAuthPolicyIssuedTokensListsOnlyTheTenantsGateIssuedRows", testTenantAuthPolicyIssuedTokensListsOnlyTheTenantsGateIssuedRows},
 		{"AuthInviteAndResetRoundTripIssuedByManager", testAuthInviteAndResetRoundTripIssuedByManager},
 		{"AuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks", testAuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks},
 		{"AuthorityRaisingWritesRevokeManagerIssuedLinks", testAuthorityRaisingWritesRevokeManagerIssuedLinks},

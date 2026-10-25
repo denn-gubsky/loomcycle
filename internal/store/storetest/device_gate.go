@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -252,5 +253,37 @@ func testTenantAuthPolicyPutGetListDeleteAndRevokeSessions(t *testing.T, s store
 	}
 	if ok, err := s.TenantAuthPolicyDelete(ctx, "acme"); err != nil || ok {
 		t.Fatalf("second delete: ok=%v err=%v", ok, err)
+	}
+}
+
+func testTenantAuthPolicyIssuedTokensListsOnlyTheTenantsGateIssuedRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	for i, r := range []store.OperatorTokenDefRow{
+		{TenantID: "acme", Subject: "alice", IssuedByGate: "google"},
+		{TenantID: "acme", Subject: "bob", IssuedByGate: "local"},
+		{TenantID: "acme", Subject: "ops"}, // hand-minted
+		{TenantID: "beta", Subject: "carol", IssuedByGate: "google"},
+	} {
+		r.DefID = fmt.Sprintf("def-%d", i)
+		r.Name = fmt.Sprintf("u-tok-%d", i)
+		r.TokenHash = fmt.Sprintf("hash-%d", i)
+		r.AllowedScopes = []string{"substrate:user"}
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.TenantAuthPolicyIssuedTokens(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjects := map[string]string{}
+	for _, r := range got {
+		subjects[r.Subject] = r.IssuedByGate
+	}
+	if len(got) != 2 || subjects["alice"] != "google" || subjects["bob"] != "local" {
+		t.Fatalf("issued tokens of acme = %+v", got)
+	}
+	if none, err := s.TenantAuthPolicyIssuedTokens(ctx, "gamma"); err != nil || len(none) != 0 || none == nil {
+		t.Fatalf("a tenant with none = %v, %v (want an empty slice)", none, err)
 	}
 }

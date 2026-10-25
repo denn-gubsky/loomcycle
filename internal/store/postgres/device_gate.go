@@ -255,3 +255,21 @@ func (s *Store) TenantAuthPolicyRevokeSessions(ctx context.Context, tenantID str
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// TenantAuthPolicyIssuedTokens implements store.TenantAuthPolicyStore.
+func (s *Store) TenantAuthPolicyIssuedTokens(ctx context.Context, tenantID string) ([]store.OperatorTokenDefRow, error) {
+	rows, err := s.pool.Query(ctx, operatorTokenDefSelect+` WHERE tenant_id = $1 AND issued_by_gate <> '' ORDER BY created_at`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("tenant_auth_policy issued tokens: %w", err)
+	}
+	defer rows.Close()
+	out := []store.OperatorTokenDefRow{}
+	for rows.Next() {
+		r, err := scanOperatorTokenDef(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

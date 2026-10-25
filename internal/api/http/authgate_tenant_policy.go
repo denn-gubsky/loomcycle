@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -41,9 +42,41 @@ var (
 )
 
 // effectiveTenantGates is the gates tenant's people may come through, and
-// whether any restriction applies.
+// whether any restriction applies. Memoised briefly per replica (it is asked
+// on every request a gate-issued token or a session makes); a policy change
+// flushes every replica's memo through the token-invalidation backplane.
 func (s *Server) effectiveTenantGates(ctx context.Context, tenant string) ([]string, bool, error) {
-	cfgGates, cfgSet := s.cfg().ResolvedAuth.TenantGates(tenant)
+	cfg, now := s.cfg(), time.Now()
+	if e, ok := s.tenantPolicyCache.get(cfg, tenant, now); ok {
+		return e.gates, e.restricted, nil
+	}
+	gates, restricted, err := s.loadTenantGates(ctx, cfg, tenant)
+	if err == nil {
+		s.tenantPolicyCache.put(cfg, tenant, tenantPolicyEntry{gates: gates, restricted: restricted, at: now})
+	}
+	return gates, restricted, err
+}
+
+// issuedTokenAllowed reports whether a resolved bearer may be used under its
+// tenant's gate policy: a token a gate issued only while the policy lists that
+// gate. A token no gate issued is the operator's and is not judged here. An
+// unreadable policy refuses.
+func (s *Server) issuedTokenAllowed(ctx context.Context, p auth.Principal) bool {
+	if p.IssuedByGate == "" {
+		return true
+	}
+	if err := s.tenantGateAllowed(ctx, p.TenantID, p.IssuedByGate); err != nil {
+		if !errors.Is(err, errTenantGatePolicy) {
+			slog.Warn("auth: tenant policy unreadable; refusing a gate-issued token", "tenant", p.TenantID, "err", err)
+		}
+		return false
+	}
+	return true
+}
+
+// loadTenantGates reads both policy sources; see effectiveTenantGates.
+func (s *Server) loadTenantGates(ctx context.Context, cfg *config.Config, tenant string) ([]string, bool, error) {
+	cfgGates, cfgSet := cfg.ResolvedAuth.TenantGates(tenant)
 	var stored []string
 	storedSet := false
 	if s.store != nil && tenant != "" {
@@ -229,6 +262,10 @@ func (s *Server) handlePutTenantPolicy(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "policy_write_failed", "the tenant policy could not be written")
 		return
 	}
+	// Every replica's memo of the policy goes now, so the next request a
+	// session or an issued token makes is judged by the new policy whatever
+	// the cleanup below manages.
+	s.invalidateTokenCache(ctx)
 	stored, err := s.store.TenantAuthPolicyGet(ctx, tenant)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "policy_write_failed", "the tenant policy could not be read back")
@@ -268,21 +305,26 @@ func (s *Server) handleDeleteTenantPolicy(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusNotFound, "policy_not_found", "the tenant has no stored policy")
 		return
 	}
+	s.invalidateTokenCache(ctx)
 	s.recordAuthEvent(audit.Event{Action: "auth_tenant_policy_deleted", ActorTenant: tenantFromCtx(ctx), ActorSubject: principalSubject(ctx),
 		TargetTenant: tenant, SourceAddr: s.clientSource(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"policy": s.tenantPolicyView(tenant, nil)})
 }
 
-// applyTenantPolicy ends the tenant's live sessions made through a gate not in
-// gates, and retires its gate-issued tokens from such a gate. Hand-minted
-// tokens are an operator's and are left alone (auth.strict.user_tokens decides
-// those).
+// applyTenantPolicy is cleanup after a policy change: it ends the tenant's
+// live sessions made through a gate not in gates and retires its gate-issued
+// tokens from such a gate, so they stop holding rows and the cache window
+// closes. It is not the control — every request is judged by the policy
+// itself (sessionPrincipal, resolvePrincipal), which is also why nothing
+// runs at boot to "catch up" with a config-declared policy. Hand-minted
+// tokens are an operator's and are left alone (auth.strict.user_tokens
+// decides those).
 func (s *Server) applyTenantPolicy(ctx context.Context, tenant string, gates []string) (sessions, tokens int, err error) {
 	sessions, err = s.store.TenantAuthPolicyRevokeSessions(ctx, tenant, gates, time.Now())
 	if err != nil {
 		return 0, 0, err
 	}
-	users, err := s.store.UserList(ctx, tenant)
+	rows, err := s.store.TenantAuthPolicyIssuedTokens(ctx, tenant)
 	if err != nil {
 		return sessions, 0, err
 	}
@@ -292,21 +334,15 @@ func (s *Server) applyTenantPolicy(ctx context.Context, tenant string, gates []s
 			s.invalidateTokenCache(ctx)
 		}
 	}()
-	for _, u := range users {
-		rows, err := s.store.OperatorTokenDefListBySubject(ctx, tenant, u.Subject)
-		if err != nil {
+	for _, row := range rows {
+		if row.IssuedByGate == "" || containsGate(gates, row.IssuedByGate) || !row.ValidAt(now) {
+			continue
+		}
+		if err := s.store.OperatorTokenDefSetRetiredAt(ctx, row.DefID, now); err != nil {
 			return sessions, tokens, err
 		}
-		for _, row := range rows {
-			if row.IssuedByGate == "" || containsGate(gates, row.IssuedByGate) || !row.ValidAt(now) {
-				continue
-			}
-			if err := s.store.OperatorTokenDefSetRetiredAt(ctx, row.DefID, now); err != nil {
-				return sessions, tokens, err
-			}
-			tokens++
-			s.recordTokenAudit(ctx, "retire", row)
-		}
+		tokens++
+		s.recordTokenAudit(ctx, "retire", row)
 	}
 	return sessions, tokens, nil
 }

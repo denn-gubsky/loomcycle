@@ -296,6 +296,7 @@ func (s *Server) EnableTokenCache(ttl time.Duration) {
 // replica would not otherwise see its own invalidation.
 func (s *Server) invalidateTokenCache(ctx context.Context) {
 	s.tokenCache.flush()
+	s.tenantPolicyCache.flush()
 	if s.backplane != nil {
 		// Payload is a sentinel — subscribers flush their whole cache
 		// (a mutation can change any resolution, incl. the legacy gate).
@@ -318,6 +319,7 @@ func (s *Server) SubscribeTokenInvalidations(ctx context.Context, bp coord.Backp
 	go func() {
 		for range ch {
 			s.tokenCache.flush()
+			s.tenantPolicyCache.flush()
 		}
 	}()
 	return nil
@@ -503,7 +505,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	}
 	hash := h.Hash(bearer)
 	if p, found, ok := s.tokenCache.get(hash); ok {
-		if found && !s.gateTokenUserActive(ctx, p) {
+		if found && (!s.gateTokenUserActive(ctx, p) || !s.issuedTokenAllowed(ctx, p)) {
 			return auth.Principal{}, false
 		}
 		if found {
@@ -520,7 +522,10 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if cacheable {
 		s.tokenCache.put(hash, p, found, validUntil)
 	}
-	if found && !s.gateTokenUserActive(ctx, p) {
+	// RFC FA P5: the tenant gate policy is checked outside the token cache,
+	// like the user's status and the ACL set, so a policy that arrives without
+	// a token change (config, a failed sweep) still holds.
+	if found && (!s.gateTokenUserActive(ctx, p) || !s.issuedTokenAllowed(ctx, p)) {
 		return auth.Principal{}, false
 	}
 	if found {

@@ -263,3 +263,21 @@ func (s *Store) TenantAuthPolicyRevokeSessions(ctx context.Context, tenantID str
 	n, err := res.RowsAffected()
 	return int(n), err
 }
+
+// TenantAuthPolicyIssuedTokens implements store.TenantAuthPolicyStore.
+func (s *Store) TenantAuthPolicyIssuedTokens(ctx context.Context, tenantID string) ([]store.OperatorTokenDefRow, error) {
+	rows, err := s.db.QueryContext(ctx, operatorTokenDefSelect+` WHERE tenant_id = ? AND issued_by_gate <> '' ORDER BY created_at`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("tenant_auth_policy issued tokens: %w", err)
+	}
+	defer rows.Close()
+	out := []store.OperatorTokenDefRow{}
+	for rows.Next() {
+		r, err := scanOperatorTokenDef(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

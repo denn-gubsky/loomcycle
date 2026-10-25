@@ -604,6 +604,9 @@ type Server struct {
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
 	tokenCache *tokenCache
+	// tenantPolicyCache memoises each tenant's effective gate policy for the
+	// per-request check (RFC FA P5); usable at its zero value.
+	tenantPolicyCache tenantPolicyCache
 	// legacyCookieWarnedAt and plainSessionWarnedAt (unix nanos) rate-limit
 	// the Web UI session warnings (ui_session.go): a browser still on the
 	// legacy bearer cookie, and sessions issued over plain HTTP.

@@ -78,6 +78,8 @@ func TestTenantPolicy_StoredRowOnlyNarrowsTheConfig(t *testing.T) {
 	if err := st.TenantAuthPolicyPut(ctx, store.TenantAuthPolicyRow{TenantID: "acme", Gates: []string{"local"}}); err != nil {
 		t.Fatal(err)
 	}
+	// The API flushes every replica's policy memo; a direct store write must too.
+	s.tenantPolicyCache.flush()
 	if rec := doLogin(t, s, loginReq(tok)); rec.Code != http.StatusForbidden {
 		t.Fatalf("after the row narrowed acme to local: %d", rec.Code)
 	}
@@ -87,6 +89,8 @@ func TestTenantPolicy_StoredRowOnlyNarrowsTheConfig(t *testing.T) {
 	if err := st.TenantAuthPolicyPut(ctx, store.TenantAuthPolicyRow{TenantID: "acme", Gates: []string{"paste"}}); err != nil {
 		t.Fatal(err)
 	}
+	// The API flushes every replica's policy memo; a direct store write must too.
+	s.tenantPolicyCache.flush()
 	if err := s.tenantGateAllowed(ctx, "acme", "paste"); !errors.Is(err, errTenantGatePolicy) {
 		t.Fatalf("a row widened the config to paste: %v", err)
 	}
