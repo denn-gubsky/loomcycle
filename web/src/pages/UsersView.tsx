@@ -15,6 +15,7 @@ import {
   updateUser,
 } from "../api";
 import { useFocusTenant } from "../components/Layout";
+import { approveUser } from "../lib/identityLinks";
 import UserAccessCell, { useAccessSnapshot, type AccessSnapshot } from "../components/UserAccessCell";
 
 // UsersView — RFC BX P2c: the tenant-operator Users console. Manage the
@@ -229,7 +230,10 @@ function UserRow({
     setBusy(true);
     setErr("");
     try {
-      const body: UpdateUserBody = { display_name: displayName, access_mode: accessMode, status };
+      // A pending user leaves pending only through approve, so an unchanged
+      // status is not sent back.
+      const body: UpdateUserBody = { display_name: displayName, access_mode: accessMode };
+      if (status !== user.status) body.status = status;
       await updateUser(user.user_id, body);
       setEditing(false);
       await onChanged();
@@ -238,6 +242,15 @@ function UserRow({
     } finally {
       setBusy(false);
     }
+  };
+
+  const approve = async () => {
+    setBusy(true);
+    setErr("");
+    const r = await approveUser(user.user_id);
+    if (!r.ok) setErr(r.message);
+    else await onChanged();
+    setBusy(false);
   };
 
   const register = async () => {
@@ -300,6 +313,7 @@ function UserRow({
         <td>
           {editing ? (
             <select value={status} onChange={(e) => setStatus(e.target.value)} disabled={busy}>
+              {user.status === "pending" && <option value="pending">pending</option>}
               {STATUSES.map((st) => (
                 <option key={st} value={st}>
                   {st}
@@ -331,6 +345,11 @@ function UserRow({
               </>
             ) : (
               <>
+                {user.status === "pending" && (
+                  <button type="button" className="primary-btn" title="Approve" onClick={() => void approve()} disabled={busy}>
+                    approve
+                  </button>
+                )}
                 <button type="button" className="ghost-btn" title="Manage tokens" onClick={() => setShowTokens((v) => !v)}>
                   <KeyRound size={14} /> tokens
                 </button>

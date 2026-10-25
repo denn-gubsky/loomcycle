@@ -36,6 +36,7 @@ import LoginView from "./pages/LoginView";
 import LogoutView from "./pages/LogoutView";
 import InviteView from "./pages/InviteView";
 import ResetView from "./pages/ResetView";
+import PendingView from "./pages/PendingView";
 import AccountView from "./pages/AccountView";
 import { installUIRequestHeader } from "./lib/uiSession";
 
@@ -64,6 +65,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             pages, like login, whose code rides the URL fragment. */}
         <Route path="invite" element={<InviteView />} />
         <Route path="reset" element={<ResetView />} />
+        <Route path="pending" element={<PendingView />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="run" element={<RunView />} />
