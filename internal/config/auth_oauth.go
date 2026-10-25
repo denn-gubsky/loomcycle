@@ -56,6 +56,11 @@ type AuthGateOAuthConfig struct {
 	Claims      *AuthOAuthClaimsConfig `yaml:"claims,omitempty"`
 	AllowedOrgs []string               `yaml:"allowed_orgs,omitempty"`
 	RequireOrg  bool                   `yaml:"require_org,omitempty"`
+	// AllowAnyAccount lets a gate on public github.com or gitlab.com admit any
+	// account there. Without it such a gate must restrict sign-in to
+	// allowed_orgs with require_org, the way the OIDC google preset requires
+	// allowed_domains: otherwise anyone with an account could sign in.
+	AllowAnyAccount bool `yaml:"allow_any_account,omitempty"`
 	// TrustEmail lets the gate assert the provider's verified e-mail. Nil:
 	// on for github.com and gitlab.com, off for a self-managed instance
 	// (base_url) and for generic, whose address confirmation loomcycle
@@ -99,7 +104,7 @@ type AuthOAuthGate struct {
 func hasOAuthKeys(g AuthGateConfig) bool {
 	o := g.AuthGateOAuthConfig
 	return o.BaseURL != "" || o.AuthURL != "" || o.TokenURL != "" || o.UserinfoURL != "" || o.Claims != nil ||
-		len(o.AllowedOrgs) > 0 || o.RequireOrg || o.TrustEmail != nil
+		len(o.AllowedOrgs) > 0 || o.RequireOrg || o.AllowAnyAccount || o.TrustEmail != nil
 }
 
 // resolveOAuthGate validates one kind: oauth gate.
@@ -172,6 +177,13 @@ func resolveOAuthGate(c *Config, name string, g AuthGateConfig) (*AuthOAuthGate,
 	}
 	switch o.Preset {
 	case OAuthPresetGitHub, OAuthPresetGitLab:
+		// The public SaaS instance has an account for anyone, so sign-in must be
+		// confined to an organisation unless the operator chose open sign-in.
+		// A self-managed instance (base_url) controls its own accounts.
+		if o.BaseURL == "" && !g.AllowAnyAccount && (len(o.AllowedOrgs) == 0 || !o.RequireOrg) {
+			return nil, fmt.Errorf("%s: preset %s on the public instance admits any account there; set allowed_orgs with "+
+				"require_org: true, or allow_any_account: true to allow that deliberately", where, o.Preset)
+		}
 	case OAuthPresetGitea:
 		if o.BaseURL == "" {
 			return nil, fmt.Errorf("%s.base_url: required for preset gitea", where)
@@ -180,11 +192,15 @@ func resolveOAuthGate(c *Config, name string, g AuthGateConfig) (*AuthOAuthGate,
 		if o.BaseURL != "" {
 			return nil, fmt.Errorf("%s.base_url: preset generic takes auth_url, token_url and userinfo_url instead", where)
 		}
-		for key, v := range map[string]*string{"auth_url": &g.AuthURL, "token_url": &g.TokenURL, "userinfo_url": &g.UserinfoURL} {
-			if strings.TrimSpace(*v) == "" {
-				return nil, fmt.Errorf("%s.%s: required for preset generic", where, key)
+		// A fixed order, so the first missing key is the one reported.
+		for _, kv := range []struct {
+			key string
+			v   string
+		}{{"auth_url", g.AuthURL}, {"token_url", g.TokenURL}, {"userinfo_url", g.UserinfoURL}} {
+			if strings.TrimSpace(kv.v) == "" {
+				return nil, fmt.Errorf("%s.%s: required for preset generic", where, kv.key)
 			}
-			if _, err := providerURL(where+"."+key, *v); err != nil {
+			if _, err := providerURL(where+"."+kv.key, kv.v); err != nil {
 				return nil, err
 			}
 		}

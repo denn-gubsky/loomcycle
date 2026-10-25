@@ -18,6 +18,11 @@ func oauthGateConfig(t *testing.T, g AuthGateConfig) *Config {
 	if g.IdentityMap == nil {
 		g.IdentityMap = &AuthIdentityMapConfig{Tenant: "acme"}
 	}
+	// Tests that aren't about who may sign in opt into open sign-in on the
+	// public instances, which the loader otherwise refuses.
+	if g.BaseURL == "" && len(g.AllowedOrgs) == 0 && !g.RequireOrg {
+		g.AllowAnyAccount = true
+	}
 	c := &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"gh": g}}}
 	c.Env.PublicURL = "https://lc.example"
 	return c
@@ -81,5 +86,42 @@ func TestResolveAuth_OAuthGateRefusesWhatItCannotHonour(t *testing.T) {
 	c := passwordGateConfig("", AuthGateConfig{AuthGateOAuthConfig: AuthGateOAuthConfig{AllowedOrgs: []string{"acme"}}})
 	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "only to kind: oauth") {
 		t.Fatalf("allowed_orgs on a password gate: %v", err)
+	}
+}
+
+// On public github.com or gitlab.com anyone has an account, so a gate there
+// must confine sign-in to allowed_orgs with require_org, or opt in to open
+// sign-in explicitly. A self-managed instance controls its own accounts.
+func TestResolveAuth_PublicOAuthPresetsRefuseOpenSignInUnlessChosen(t *testing.T) {
+	for _, preset := range []string{"github", "gitlab"} {
+		for name, oc := range map[string]AuthGateOAuthConfig{
+			"no orgs":                 {},
+			"orgs without require":    {AllowedOrgs: []string{"acme"}},
+			"orgs, require, explicit": {AllowedOrgs: []string{"acme"}, RequireOrg: true},
+		} {
+			c := oauthGateConfig(t, AuthGateConfig{Preset: preset, AuthGateOAuthConfig: oc})
+			gg := c.Auth.Gates["gh"]
+			gg.AllowAnyAccount = false
+			c.Auth.Gates["gh"] = gg
+			err := resolveAuth(c)
+			wantOK := name == "orgs, require, explicit"
+			if wantOK != (err == nil) {
+				t.Fatalf("%s %s: err = %v, want ok=%v", preset, name, err, wantOK)
+			}
+			if !wantOK && !strings.Contains(err.Error(), "allow_any_account") {
+				t.Fatalf("%s %s: err = %v, want it to name allow_any_account", preset, name, err)
+			}
+		}
+		c := oauthGateConfig(t, AuthGateConfig{Preset: preset, AuthGateOAuthConfig: AuthGateOAuthConfig{AllowAnyAccount: true}})
+		if err := resolveAuth(c); err != nil {
+			t.Fatalf("%s with allow_any_account: %v", preset, err)
+		}
+		c = oauthGateConfig(t, AuthGateConfig{Preset: preset, AuthGateOAuthConfig: AuthGateOAuthConfig{BaseURL: "https://git.acme.example"}})
+		gg := c.Auth.Gates["gh"]
+		gg.AllowAnyAccount = false
+		c.Auth.Gates["gh"] = gg
+		if err := resolveAuth(c); err != nil {
+			t.Fatalf("%s self-managed: %v", preset, err)
+		}
 	}
 }
