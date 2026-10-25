@@ -60,8 +60,9 @@ type edgeGatesHolder struct{ p atomic.Pointer[EdgeGates] }
 
 // EdgeGateDeps are what building the edge gates needs from the boot.
 type EdgeGateDeps struct {
-	// Replay records accepted STS signatures for every replica. Nil keeps
-	// the AWS IAM gate's replay protection to this replica.
+	// Replay records accepted one-time values (STS signatures, forward-auth
+	// nonces) for every replica. Nil keeps replay protection to this
+	// replica.
 	Replay store.AuthReplayStore
 }
 
@@ -135,6 +136,9 @@ func buildHeaderGate(g config.AuthGate, deps EdgeGateDeps) (*headergate.Gate, er
 			return nil, err
 		}
 		f := &headergate.ForwardAuthHMAC{Secret: secret, Replay: replay.New(0)}
+		if deps.Replay != nil {
+			f.Shared, f.SharedScope = deps.Replay, "fwdhmac:"+g.Name
+		}
 		return headergate.NewForwardAuthGate(f, h.TrustedProxyCIDRs), nil
 	}
 	return nil, fmt.Errorf("preset %q has no implementation", h.Preset)

@@ -44,9 +44,15 @@ type ForwardAuthHMAC struct {
 	Secret func(ctx context.Context) ([]byte, error)
 	// Window bounds |now - t|; DefaultHMACWindow when zero.
 	Window time.Duration
-	// Replay remembers accepted nonces for the window.
+	// Replay remembers accepted nonces for the window, on this replica.
 	Replay *replay.Cache
-	Now    func() time.Time
+	// Shared, when set, records each accepted nonce (as a SHA-256 hash)
+	// for every replica, under SharedScope: a header captured between the
+	// proxy and one replica is refused by the others too. A record that
+	// cannot be written refuses the header.
+	Shared      replay.Shared
+	SharedScope string
+	Now         func() time.Time
 }
 
 // SignForwardAuth computes the signature header value for identity, as a
@@ -104,8 +110,21 @@ func (f *ForwardAuthHMAC) Verify(ctx context.Context, identity, signature string
 	// Remembered past the last moment t is inside the window, judged by the
 	// same clock read as the window. The MAC is already checked, so only an
 	// authenticated nonce is recorded.
-	if err := f.Replay.Admit(nonce, replay.EntryExpiry(t, window), now); err != nil {
+	expires := replay.EntryExpiry(t, window)
+	if err := f.Replay.Admit(nonce, expires, now); err != nil {
 		return Identity{}, invalid("forward-auth: nonce %v", err)
+	}
+	if f.Shared != nil {
+		sum := sha256.Sum256([]byte(nonce))
+		ok, err := f.Shared.AuthReplayAdmit(ctx, f.SharedScope, hex.EncodeToString(sum[:]), expires, now)
+		if err != nil {
+			// Fail closed, and not as the caller's fault: unrecorded, the
+			// header could be replayed to another replica.
+			return Identity{}, fmt.Errorf("forward-auth: recording the nonce: %w", err)
+		}
+		if !ok {
+			return Identity{}, invalid("forward-auth: nonce %v", replay.ErrReplayed)
+		}
 	}
 	claims, err := decodeClaims([]byte(identity))
 	if err != nil {

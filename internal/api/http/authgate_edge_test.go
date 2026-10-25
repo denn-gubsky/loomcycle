@@ -428,3 +428,50 @@ func hasAction(sink *recordingSink, action string) bool {
 	}
 	return false
 }
+
+// failingReplay is a shared replay record whose store is down.
+type failingReplay struct{ store.Store }
+
+func (failingReplay) AuthReplayAdmit(context.Context, string, string, time.Time, time.Time) (bool, error) {
+	return false, fmt.Errorf("store down")
+}
+
+func TestHeaderGate_ProxyHeaderReplayedToAnotherReplicaIsRefused(t *testing.T) {
+	s, st, _, _ := edgeServer(t)
+	var captured http.Header
+	capture := func(r *http.Request) {
+		viaProxy(t, "alice")(r)
+		captured = r.Header.Clone()
+	}
+	if rec := headerLogin(t, s, capture); rec.Code != http.StatusNoContent {
+		t.Fatalf("login on the first replica = %d %s", rec.Code, rec.Body.String())
+	}
+	// A second replica over the same store: its own in-process caches, the
+	// shared replay record.
+	other, err := EdgeGatesFromConfig(s.cfg(), EdgeGateDeps{Replay: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetEdgeGates(other)
+	replay := func(r *http.Request) {
+		r.RemoteAddr = edgeProxyPeer
+		for _, k := range []string{headergate.IdentityHeader, headergate.IdentitySignatureHeader} {
+			r.Header.Set(k, captured.Get(k))
+		}
+	}
+	if rec := headerLogin(t, s, replay); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("the same proxy header on another replica = %d, want 401", rec.Code)
+	}
+}
+
+func TestHeaderGate_UnavailableSharedReplayRecordRefusesTheHeader(t *testing.T) {
+	s, st, _, _ := edgeServer(t)
+	down, err := EdgeGatesFromConfig(s.cfg(), EdgeGateDeps{Replay: failingReplay{st}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetEdgeGates(down)
+	if rec := headerLogin(t, s, viaProxy(t, "alice")); rec.Code == http.StatusNoContent {
+		t.Fatal("signed in although the nonce could not be recorded for the other replicas")
+	}
+}

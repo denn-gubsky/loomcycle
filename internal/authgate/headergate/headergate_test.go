@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -465,5 +466,57 @@ func TestForwardAuth_HeaderAtTheWindowEdgeCannotBeReplayedLater(t *testing.T) {
 	edge := SignForwardAuth(hmacSecret, testIdentity, t0.Add(-DefaultHMACWindow), "nonce-00000000000edge2")
 	if _, err := hmacGate().Verify(context.Background(), testIdentity, edge); !errors.Is(err, authgate.ErrInvalidCredential) {
 		t.Fatalf("a header stamped exactly one window ago: %v, want ErrInvalidCredential", err)
+	}
+}
+
+// sharedRecord stands in for store.AuthReplayStore.
+type sharedRecord struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+	err  error
+}
+
+func (s *sharedRecord) AuthReplayAdmit(_ context.Context, scope, key string, expires, now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return false, s.err
+	}
+	if s.seen == nil {
+		s.seen = map[string]time.Time{}
+	}
+	if until, ok := s.seen[scope+"/"+key]; ok && now.Before(until) {
+		return false, nil
+	}
+	s.seen[scope+"/"+key] = expires
+	return true, nil
+}
+
+func TestForwardAuth_HeaderReplayedToAnotherReplicaIsRefused(t *testing.T) {
+	shared := &sharedRecord{}
+	a, b := hmacGate(), hmacGate() // two replicas: their own caches, one record
+	a.Shared, a.SharedScope = shared, "fwdhmac:g"
+	b.Shared, b.SharedScope = shared, "fwdhmac:g"
+	const n = "nonce-00000000shared"
+	sig := SignForwardAuth(hmacSecret, testIdentity, t0, n)
+	if _, err := a.Verify(context.Background(), testIdentity, sig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Verify(context.Background(), testIdentity, sig); !errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("replay to the second replica = %v, want ErrInvalidCredential", err)
+	}
+	for k := range shared.seen {
+		if strings.Contains(k, n) {
+			t.Fatal("the shared record holds the nonce itself, not its hash")
+		}
+	}
+}
+
+func TestForwardAuth_UnwritableSharedRecordRefusesTheHeader(t *testing.T) {
+	g := hmacGate()
+	g.Shared, g.SharedScope = &sharedRecord{err: errors.New("db down")}, "fwdhmac:g"
+	_, err := g.Verify(context.Background(), testIdentity, SignForwardAuth(hmacSecret, testIdentity, t0, "nonce-0000000000down"))
+	if err == nil || errors.Is(err, authgate.ErrInvalidCredential) {
+		t.Fatalf("Verify with the record down = %v, want a non-credential refusal", err)
 	}
 }
