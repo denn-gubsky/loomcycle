@@ -265,10 +265,6 @@ func HTTPSurface(method, path string) (Surface, bool) {
 			return instance("manage", "principal", "user:*"), true
 		case len(rest) >= 3 && rest[2] == "tokens":
 			return instance("mint", "principal", "user:"+rest[1]), true
-		case len(rest) >= 3 && rest[2] == "identities":
-			// RFC FA D14: a user's own sign-in identities. Self-service; the
-			// handler confines a non-operator to its own subject.
-			return Surface{}, false
 		case get:
 			return instance("read", "principal", "user:"+rest[1]), true
 		default:

@@ -139,7 +139,7 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	// secret). The handler / MCP per-tool gate then confine a non-tenant caller
 	// to scope=user on its own subject; tenant/agent scope still requires
 	// substrate:tenant.
-	selfOK := userSelfServiceRoute(method, path) && p.Subject != ""
+	selfOK := (userSelfServiceRoute(method, path) && p.Subject != "") || ownIdentityRoute(p, method, path)
 	// The raw model endpoints stay open to every principal that is
 	// not an isolated user: a member token holds no llm:gateway scope
 	// of its own, and requiring one would have broken every member
@@ -1539,18 +1539,6 @@ func userSelfServiceRoute(method, path string) bool {
 		return method == http.MethodPost
 	case "/v1/_mcp":
 		return method == http.MethodPost || method == http.MethodDelete
-	}
-	// RFC FA D14: a user lists, links and unlinks its own sign-in identities.
-	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok {
-		parts := strings.Split(rest, "/")
-		if len(parts) >= 2 && parts[0] != "" && parts[1] == "identities" {
-			switch len(parts) {
-			case 2:
-				return method == http.MethodGet || method == http.MethodPost
-			case 3:
-				return method == http.MethodDelete && parts[2] != ""
-			}
-		}
 	}
 	return false
 }

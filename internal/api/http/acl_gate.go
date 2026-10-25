@@ -77,6 +77,14 @@ func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Prin
 	if !governed {
 		return ctx, true
 	}
+	if ownIdentityRoute(p, r.Method, r.URL.Path) {
+		// RFC FA D14: a user's own sign-in identities are its own to read and
+		// change, as its password is; the handlers admit that self path only
+		// for the caller's own subject and, for a link or an unlink, only
+		// from its own Web UI session after a recent sign-in. Anyone else's
+		// identities go through the route's question like the user plane.
+		return ctx, true
+	}
 	res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
 	if !s.applyGate(ctx, w, p, surface, res) {
 		return ctx, false

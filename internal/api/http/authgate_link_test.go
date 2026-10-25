@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/oidc/oidctest"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -191,15 +192,22 @@ func TestUnlink_EndsTheIdentitysSessions(t *testing.T) {
 }
 
 func TestIdentityRoutes_AreSelfServiceButNotOtherUsers(t *testing.T) {
+	alice := auth.Principal{TenantID: "acme", Subject: "a", Scopes: []string{auth.ScopeRunsRead}}
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/v1/_users/a/identities"}, {http.MethodPost, "/v1/_users/a/identities"},
 		{http.MethodDelete, "/v1/_users/a/identities/g"},
 	} {
-		if !userSelfServiceRoute(tc.method, tc.path) {
+		if !ownIdentityRoute(alice, tc.method, tc.path) {
 			t.Errorf("%s %s not self-service", tc.method, tc.path)
 		}
+		if ownIdentityRoute(alice, tc.method, strings.Replace(tc.path, "/a/", "/b/", 1)) {
+			t.Errorf("%s on another user's identities is self-service", tc.method)
+		}
 	}
-	if userSelfServiceRoute(http.MethodPost, "/v1/_users/a/tokens") || userSelfServiceRoute(http.MethodDelete, "/v1/_users/a/identities") {
+	legacy := alice
+	legacy.Legacy = true
+	if ownIdentityRoute(alice, http.MethodPost, "/v1/_users/a/tokens") || ownIdentityRoute(alice, http.MethodDelete, "/v1/_users/a/identities") ||
+		ownIdentityRoute(legacy, http.MethodGet, "/v1/_users/a/identities") {
 		t.Error("self-service reaches too far")
 	}
 	// A member listing another user's identities is an opaque miss.
@@ -209,7 +217,7 @@ func TestIdentityRoutes_AreSelfServiceButNotOtherUsers(t *testing.T) {
 	r.SetPathValue("subject", "bob")
 	rec := httptest.NewRecorder()
 	f.s.authMiddleware(http.HandlerFunc(f.s.handleListUserIdentities)).ServeHTTP(rec, r)
-	if rec.Code != http.StatusNotFound {
+	if rec.Code != http.StatusForbidden && rec.Code != http.StatusNotFound {
 		t.Fatalf("other user's identities = %d", rec.Code)
 	}
 }

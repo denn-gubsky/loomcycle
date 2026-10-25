@@ -35,10 +35,7 @@ var aclUngovernedRoutes = map[string]bool{
 	// The redirect gates' login start and provider callback establish a
 	// session (no principal yet).
 	"GET /v1/_auth/login/{gate}": true, "GET /v1/_auth/complete/{gate}": true,
-	// A user's own sign-in identities (RFC FA D14), confined by the handler.
-	"GET /v1/_users/{subject}/identities": true, "POST /v1/_users/{subject}/identities": true,
-	"DELETE /v1/_users/{subject}/identities/{gate}": true,
-	"GET /.well-known/agent-card.json/extended":     true,
+	"GET /.well-known/agent-card.json/extended": true,
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.
 	"POST /v1/_authz/evaluation": true, "POST /v1/_authz/evaluations": true, "POST /v1/_authz/explain": true, "POST /v1/_authz/simulate": true,

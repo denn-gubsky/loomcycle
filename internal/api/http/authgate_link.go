@@ -39,6 +39,35 @@ type wireUserIdentity struct {
 	LastLoginAt     *time.Time `json:"last_login_at,omitempty"`
 }
 
+// ownIdentityRoute reports whether the request is about the caller's OWN
+// sign-in identities: GET/POST /v1/_users/{p.Subject}/identities or DELETE
+// /v1/_users/{p.Subject}/identities/{gate}, by a principal that is a user
+// (not the legacy secret, not auth:manage). It is the only self-service
+// admission of these routes — at the scope gate and past the route's ACL
+// question — so a member never reaches another user's identities, and an
+// operator's reach to them is its ACL's. The handlers then require, for a
+// link or an unlink, the person's own Web UI session after a recent sign-in.
+func ownIdentityRoute(p auth.Principal, method, path string) bool {
+	if p.Subject == "" || p.Legacy || auth.IsAuthManager(p) {
+		return false
+	}
+	rest, ok := strings.CutPrefix(path, "/v1/_users/")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) < 2 || parts[0] != p.Subject || parts[1] != "identities" {
+		return false
+	}
+	switch len(parts) {
+	case 2:
+		return method == http.MethodGet || method == http.MethodPost
+	case 3:
+		return method == http.MethodDelete && parts[2] != ""
+	}
+	return false
+}
+
 // identitiesTarget resolves whose identities a request is about: the caller
 // itself (any authenticated principal with that subject), or another user of
 // the tenant for a tenant operator or an admin. Writes the refusal.
@@ -230,16 +259,21 @@ func (s *Server) handleUnlinkUserIdentity(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if self {
-		// From a session, the user unlinks with a recent sign-in, like a link.
-		if ua, ok := uiAuthFrom(r.Context()); ok && ua.session != nil {
-			window := s.cfg().ResolvedAuth.ReauthWindow
-			if window <= 0 {
-				window = config.DefaultSessionReauthWindow
-			}
-			if ua.session.AuthTime.IsZero() || time.Since(ua.session.AuthTime) > window {
-				writeJSONError(w, http.StatusForbidden, "reauth_required", "sign in again first")
-				return
-			}
+		// The user unlinks its own account only from its own session, with a
+		// recent sign-in, like a link: the self path skips the route's ACL
+		// question (ownIdentityRoute), so it must prove the person.
+		ua, ok := uiAuthFrom(r.Context())
+		if !ok || ua.session == nil || ua.pending {
+			writeJSONError(w, http.StatusForbidden, "link_needs_own_session", "unlink an account from your own signed-in Web UI session")
+			return
+		}
+		window := s.cfg().ResolvedAuth.ReauthWindow
+		if window <= 0 {
+			window = config.DefaultSessionReauthWindow
+		}
+		if ua.session.AuthTime.IsZero() || time.Since(ua.session.AuthTime) > window {
+			writeJSONError(w, http.StatusForbidden, "reauth_required", "sign in again first")
+			return
 		}
 	}
 	removed, err := s.store.UserIdentityDelete(r.Context(), tenant, subject, gate)
