@@ -31,7 +31,11 @@ existing one.** A new document always gets a Path-tree name.
 Markdown written by `export_md` with metadata also carries:
 
 - a `<!-- loom: {"id":"…","type":"task","status":"open","fields":{…}} -->`
-  line directly under a heading — sets that chunk's type, status and fields.
+  line directly under a heading — sets that chunk's type, status and fields,
+  and `"valid_at"` / `"invalid_at"` (unix nanoseconds) the period it is true.
+  Without them the chunk is undated — leave them out rather than guess. A
+  period whose `invalid_at` is not after its `valid_at` refuses the whole
+  import before anything is written.
   The `id` is only used to reconnect links: every imported chunk gets a NEW id.
 - a `<!-- loom-edges: ... -->` block of `from -> to [kind]` lines — each edge
   whose two ends were both imported is recreated between the new chunks.

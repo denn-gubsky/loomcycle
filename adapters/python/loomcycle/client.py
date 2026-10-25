@@ -1076,7 +1076,15 @@ class LoomcycleClient:
         ``type_expanded_to`` (when a type widened) and ``inverted``; a
         filter-free response has no ``filter`` key. A filter needing more ids
         than the server's limit is refused (``filter_too_wide``) and raises
-        :class:`SubstrateToolRefusedError`."""
+        :class:`SubstrateToolRefusedError`.
+
+        Any chunk can carry its own validity period: ``valid_at`` /
+        ``invalid_at`` (unix nanoseconds, ``invalid_at`` exclusive) on
+        ``op="create_chunk"`` and ``op="update_chunk"`` (``None`` clears an end
+        on update). ``search``, ``related`` and ``query_chunks`` with ``as_of``
+        return only chunks whose period contains the instant; an undated chunk
+        always matches. Hits and chunk rows report the two keys only when
+        set."""
         return await self._dispatch_substrate("Document", input)
 
     async def credential_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:

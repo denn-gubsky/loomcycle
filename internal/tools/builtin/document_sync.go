@@ -213,6 +213,13 @@ type syncChunk struct {
 	position int
 	revision int
 	tags     []string // sorted
+	// validAt / invalidAt are the chunk's OWN interval (chunks.valid_at /
+	// invalid_at), carried like the other metadata. The *Known flags say whether
+	// the side reported the key at all: a peer at this version always names both
+	// (null when unset), one that predates them names neither — and "unknown" is
+	// neither compared nor written, so such a peer never clears a local date.
+	validAt, invalidAt           *int64
+	validAtKnown, invalidAtKnown bool
 	// withheld is true when this keyed chunk is a REFUTED fact (confidence below
 	// the withhold floor). It stays in the snapshot for EXISTENCE (so the
 	// reconcile never spuriously "creates" a chunk that already exists and would
@@ -265,7 +272,8 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 		snap.chunks[kc.NaturalKey] = syncChunk{
 			id: kc.ID, nk: kc.NaturalKey, title: kc.Title, ctype: kc.Type, status: kc.Status,
 			body: cb.Body, parentNK: idToNK[row.ParentID], position: row.Position, revision: row.Revision, tags: tags,
-			withheld: kc.Withheld,
+			withheld: kc.Withheld, validAt: row.ValidAt, invalidAt: row.InvalidAt,
+			validAtKnown: true, invalidAtKnown: true,
 		}
 	}
 	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto FROM chunk_edges
@@ -325,18 +333,25 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 			return nil, fmt.Errorf("fetch remote chunk %s: %w", f.ID, cerr)
 		}
 		var rc struct {
-			Body     string   `json:"body"`
-			ParentID string   `json:"parent_id"`
-			Position int      `json:"position"`
-			Revision int      `json:"revision"`
-			Tags     []string `json:"tags"`
+			Body      string   `json:"body"`
+			ParentID  string   `json:"parent_id"`
+			Position  int      `json:"position"`
+			Revision  int      `json:"revision"`
+			Tags      []string `json:"tags"`
+			ValidAt   *int64   `json:"valid_at"`
+			InvalidAt *int64   `json:"invalid_at"`
 		}
 		_ = json.Unmarshal(rawChunk, &rc)
+		var keys map[string]json.RawMessage
+		_ = json.Unmarshal(rawChunk, &keys)
+		_, validAtKnown := keys["valid_at"]
+		_, invalidAtKnown := keys["invalid_at"]
 		sort.Strings(rc.Tags)
 		snap.chunks[nk] = syncChunk{
 			id: f.ID, nk: nk, title: f.Title, ctype: f.Type, status: f.Status,
 			body: rc.Body, parentNK: idToNK[rc.ParentID], position: rc.Position, revision: rc.Revision, tags: rc.Tags,
-			withheld: f.Entity.Withheld,
+			withheld: f.Entity.Withheld, validAt: rc.ValidAt, invalidAt: rc.InvalidAt,
+			validAtKnown: validAtKnown, invalidAtKnown: invalidAtKnown,
 		}
 	}
 	rawEdges, err := client.Do(ctx, map[string]any{"op": "get_edges", "document_id": docID, "scope": scope})
@@ -386,7 +401,12 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 // sideWriter mutates one side during a reconcile. Its methods are id-level; the
 // direction-agnostic applyReconcile resolves natural_keys to ids.
 type sideWriter interface {
+	// createKeyed creates a keyed chunk through upsert_chunk, whose valid_at /
+	// invalid_at name the FACT's sidecar interval — so the chunk's own interval
+	// is never sent there; a created chunk that has one gets it from setValidity.
 	createKeyed(ctx context.Context, sc syncChunk) (id string, err error)
+	// setValidity writes a keyed chunk's own interval (update_chunk).
+	setValidity(ctx context.Context, id string, sc syncChunk) error
 	// updateKeyed updates a keyed chunk's content. includeBody=false omits the
 	// body from the write so an update that only touches title/type/status/tags
 	// does NOT record a duplicate-body entry in the chunk's revision history
@@ -424,13 +444,33 @@ func (w localWriter) createKeyed(ctx context.Context, sc syncChunk) (string, err
 func (w localWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, revision int, includeBody bool) error {
 	rev := revision
 	payload := map[string]any{"id": id, "revision": revision, "title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags)}
-	in := docInput{ID: id, Revision: &rev, Title: sc.title, Type: sc.ctype, Status: sc.status, Tags: nonNilTags(sc.tags)}
+	in := docInput{ID: id, Revision: &rev, Title: sc.title, Type: sc.ctype, Status: sc.status, Tags: nonNilTags(sc.tags),
+		ValidAt: sc.validAt, InvalidAt: sc.invalidAt}
+	putKnownValidity(payload, sc)
 	if includeBody {
 		payload["body"] = sc.body
 		in.Body = sc.body
 	}
 	raw, _ := json.Marshal(payload)
 	res, err := w.d.updateChunk(ctx, w.key, w.mscope, in, raw)
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", res.Text)
+	}
+	return nil
+}
+
+func (w localWriter) setValidity(ctx context.Context, id string, sc syncChunk) error {
+	rev, err := w.d.chunkRevision(ctx, w.key, id)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"id": id, "revision": rev}
+	putKnownValidity(payload, sc)
+	raw, _ := json.Marshal(payload)
+	res, err := w.d.updateChunk(ctx, w.key, w.mscope, docInput{ID: id, Revision: &rev, ValidAt: sc.validAt, InvalidAt: sc.invalidAt}, raw)
 	if err != nil {
 		return err
 	}
@@ -490,10 +530,28 @@ func (w remoteWriter) updateKeyed(ctx context.Context, id string, sc syncChunk, 
 		"op": "update_chunk", "id": id, "revision": revision, "scope": w.scope,
 		"title": sc.title, "type": sc.ctype, "status": sc.status, "tags": nonNilTags(sc.tags),
 	}
+	putKnownValidity(payload, sc)
 	if includeBody {
 		payload["body"] = sc.body
 	}
 	_, err := w.client.Do(ctx, payload)
+	return err
+}
+
+func (w remoteWriter) setValidity(ctx context.Context, id string, sc syncChunk) error {
+	raw, err := w.client.Do(ctx, map[string]any{"op": "get_chunk", "id": id, "scope": w.scope})
+	if err != nil {
+		return err
+	}
+	var rc struct {
+		Revision int `json:"revision"`
+	}
+	if err := json.Unmarshal(raw, &rc); err != nil {
+		return fmt.Errorf("read remote revision: %w", err)
+	}
+	payload := map[string]any{"op": "update_chunk", "id": id, "revision": rc.Revision, "scope": w.scope}
+	putKnownValidity(payload, sc)
+	_, err = w.client.Do(ctx, payload)
 	return err
 }
 
@@ -543,6 +601,11 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 			id, err := w.createKeyed(ctx, sc)
 			if err != nil {
 				return c, fmt.Errorf("create %s: %w", nk, err)
+			}
+			if sc.validAt != nil || sc.invalidAt != nil {
+				if err := w.setValidity(ctx, id, sc); err != nil {
+					return c, fmt.Errorf("validity %s: %w", nk, err)
+				}
 			}
 			idByNK[nk] = id
 			c.created++
@@ -669,7 +732,37 @@ func contentDiffers(sc, tc syncChunk) bool {
 		sc.title != tc.title ||
 		sc.ctype != tc.ctype ||
 		sc.status != tc.status ||
+		!sameValidity(sc, tc) ||
 		!sameTags(sc.tags, tc.tags)
+}
+
+// sameValidity compares the two sides' own intervals, end by end, only where
+// BOTH sides reported the key: an end one side does not know is not a
+// difference. Against a peer that predates the keys nothing is compared, so a
+// pull never clears a local date and a push does not re-send one on every run.
+func sameValidity(a, b syncChunk) bool {
+	return (!a.validAtKnown || !b.validAtKnown || sameInstant(a.validAt, b.validAt)) &&
+		(!a.invalidAtKnown || !b.invalidAtKnown || sameInstant(a.invalidAt, b.invalidAt))
+}
+
+// putKnownValidity adds to an update payload the ends of sc's interval its side
+// reported — a value, or null to clear. An end it did not report is left out,
+// which update_chunk reads as "keep".
+func putKnownValidity(payload map[string]any, sc syncChunk) {
+	if sc.validAtKnown {
+		payload["valid_at"] = sc.validAt
+	}
+	if sc.invalidAtKnown {
+		payload["invalid_at"] = sc.invalidAt
+	}
+}
+
+// sameInstant compares two optional instants: both unset, or both set and equal.
+func sameInstant(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // ---- diff_remote: dry-run change set between the local document and its peer ----
@@ -713,8 +806,9 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 			onlyLocal = append(onlyLocal, diffEntry{NaturalKey: nk, Title: lc.title})
 			continue
 		}
-		// diverged = body/title/type/status differs; same = all of those identical.
-		if lc.body == rc.body && lc.title == rc.title && lc.ctype == rc.ctype && lc.status == rc.status {
+		// diverged = body/title/type/status/validity differs; same = all identical.
+		if lc.body == rc.body && lc.title == rc.title && lc.ctype == rc.ctype && lc.status == rc.status &&
+			sameValidity(lc, rc) {
 			same++
 		} else {
 			diverged = append(diverged, diffEntry{NaturalKey: nk, Title: lc.title})

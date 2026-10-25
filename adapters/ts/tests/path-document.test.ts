@@ -202,6 +202,32 @@ describe("document", () => {
     expect(rel.filter?.matched_chunks).toBe(0);
   });
 
+  it("types a chunk's validity period on create/update and on search hits", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ id: "c1", revision: 1 }),
+      jsonResponse({ id: "c1", revision: 2 }),
+      jsonResponse({ chunks: [{ chunk_id: "c1", score: 0.8, rank_score: 0.03, valid_at: 1704067200000000000 }] }),
+    ]);
+    const create: DocumentToolInput = {
+      op: "create_chunk",
+      document_id: "d1",
+      title: "Clause 7 (2024 edition)",
+      valid_at: 1704067200000000000,
+      invalid_at: 1767225600000000000,
+    };
+    await client.document(create);
+    // null clears an end on update_chunk, so it must survive serialisation.
+    await client.document({ op: "update_chunk", id: "c1", revision: 1, invalid_at: null });
+    const res = (await client.document({ op: "search", query: "reserves", as_of: 1748736000000000000 })) as DocumentSearchResult;
+    expect(res.chunks[0]!.valid_at).toBe(1704067200000000000);
+    expect(res.chunks[0]!.invalid_at).toBeUndefined();
+    const createBody = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(createBody.invalid_at).toBe(1767225600000000000);
+    const updateBody = JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string);
+    expect("invalid_at" in updateBody).toBe(true);
+    expect(updateBody.invalid_at).toBeNull();
+  });
+
   it("appends scope_id + tenant as query params for browse-by-subject", async () => {
     const { client, fetchMock } = makeClient([jsonResponse({ document_id: "d1" })]);
     await client.document(
