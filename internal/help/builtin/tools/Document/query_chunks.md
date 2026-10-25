@@ -1,6 +1,6 @@
 ---
 name: Document/query_chunks
-description: "Document op=query_chunks — list chunks by structure (document, path, type, status, parent, tag), or run a read-only SQL SELECT over the chunk tables."
+description: "Document op=query_chunks — list chunks by structure (document, path, type, status, parent, tag, date in force), or run a read-only SQL SELECT over the chunk tables."
 ---
 `query_chunks` finds chunks by their STRUCTURE — which document, which
 subtree, which type, status or tag. It returns the chunk rows without bodies.
@@ -24,10 +24,15 @@ All optional; with none you get the first 100 chunks of the scope.
 - `tag` — only chunks carrying exactly this tag.
 - `tag_prefix` — chunks tagged with this tag or anything nested under it:
   `area` matches `area` and `area/billing`.
+- `as_of` — only chunks true at this instant (unix nanoseconds): a chunk's
+  `valid_at` is unset or at or before it, and its `invalid_at` is unset or
+  after it. A chunk with no dates always matches. A fact must also be true
+  then by its own fact dates. The same test `search` and `related` apply, so
+  this lists the editions in force on a date without a text query.
 - `limit` — rows to return, default 100. A value over 1000 is treated as 100.
 - `sql` — a single read-only `SELECT` (or `WITH … SELECT`) run as-is. Tables:
   `documents`, `chunks` (id, document_id, parent_id, position, type, status,
-  title, revision, created_at, updated_at), `chunk_edges` (from_id, to_id,
+  title, revision, created_at, updated_at, valid_at, invalid_at), `chunk_edges` (from_id, to_id,
   kind, auto), `chunk_tags` (chunk_id, tag), `document_tags`. Chunk BODIES are
   not in these tables — get them with `get_chunk`. Write plain SQL with literal
   values; there is no way to pass parameters.
@@ -37,7 +42,7 @@ All optional; with none you get the first 100 chunks of the scope.
 ## Returns
 
 With filters: `{chunks: [{id, document_id, parent_id, title, type, status,
-position, revision}], type_expanded_to?}`, ordered by document, parent,
+position, revision, valid_at, invalid_at}], type_expanded_to?}`, ordered by document, parent,
 position. Empty fields are omitted. Fetch a body with
 `{"op":"get_chunk","id":...}`.
 
@@ -47,6 +52,7 @@ true` means the server's row cap cut the result.
 ## Errors
 
 - An empty `chunks` list is not an error — nothing matched in THIS scope.
+- `query_chunks: as_of must be a positive instant in unix nanoseconds`.
 - `query_chunks: ... read-only statements ...` — `sql` must be a SELECT. Use
   `update_chunk`, `delete_chunk` and the other ops to change data.
 - `query_chunks: ... only one SQL statement per call ...` — remove the `;`.
@@ -71,6 +77,12 @@ Everything tagged under `billing` in the documents below `/docs`:
 
 ```json
 {"op": "query_chunks", "under_path": "/docs", "tag_prefix": "billing", "limit": 50}
+```
+
+The clauses under `/norms` in force on 1 June 2025:
+
+```json
+{"op": "query_chunks", "under_path": "/norms", "type": "norm.clause", "as_of": 1748736000000000000}
 ```
 
 A title search with SQL (the filters above cannot match on title):

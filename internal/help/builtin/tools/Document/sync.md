@@ -13,7 +13,9 @@ by id. Chunks made with `create_chunk` or `import_md` have no key and are
 skipped (counted in `excluded_unkeyed`).
 
 For each keyed chunk, the side being written to receives the other side's
-title, type, status, body and tags, its place in the tree (under the chunk
+title, type, status, body, tags and validity period (`valid_at` /
+`invalid_at`; a peer on an older version has none, which reads as undated),
+its place in the tree (under the chunk
 with the same parent key, at the same position; with no keyed parent, under
 the root), and the `link_chunks` links between keyed chunks. Nothing is
 deleted: a chunk or link that exists only on the receiving side stays. An

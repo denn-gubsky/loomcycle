@@ -24,7 +24,8 @@ edges_only_remote, excluded_unkeyed_local, excluded_unkeyed_remote}`.
   peer.
 - `only_remote` — keyed chunks only the peer has; a `pull` would create them
   here.
-- `diverged` — on both sides with a different title, type, status or body.
+- `diverged` — on both sides with a different title, type, status, body or
+  validity period (`valid_at` / `invalid_at`).
 - `retagged` — on both sides with different tags.
 - `reparented` — a sync in either direction would move them in the tree.
 - Each of these is a list of `{natural_key, title}`. `same` counts chunks
