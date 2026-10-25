@@ -56,6 +56,10 @@ func TestMemorySearch_IDListStatementsNeverRunAGenericPlan(t *testing.T) {
 	filters := map[string]store.MemorySearchFilter{
 		"ids":     {KeyPrefix: "doc.chunk:", IDs: ids},
 		"exclude": {KeyPrefix: "doc.chunk:", ExcludeIDs: ids},
+		// A mixed (no-selector) Memory search confines the lists to the document
+		// class; its statement binds the same list and must plan the same way.
+		"mixed ids":     {IDs: ids, IDsPrefixes: []string{"doc.chunk:", "doc.unit:"}},
+		"mixed exclude": {ExcludeIDs: ids, IDsPrefixes: []string{"doc.chunk:", "doc.unit:"}},
 	}
 	for name, f := range filters {
 		for i := 0; i < 12; i++ {

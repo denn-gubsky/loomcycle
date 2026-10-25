@@ -353,13 +353,27 @@ func (q SearchQuery) Filter() (store.MemorySearchFilter, error) {
 	return q.withUnitExclusion(f), nil
 }
 
+// idsPrefixes is where the id lists apply. A query on exactly the chunk (or the
+// unit) namespace holds every row to them, segment after its prefix — the
+// single-namespace rule Document op=search relies on. Any other query with a list
+// can reach more than chunk bodies (facts, notes, units in the main legs) or names
+// a prefix the segment cannot be cut after, so the lists are confined to the
+// document class of both namespaces and everything else passes them.
+func (q SearchQuery) idsPrefixes() []string {
+	if (len(q.IDs) == 0 && len(q.ExcludeIDs) == 0) ||
+		q.Prefix == DocumentChunkKeyPrefix || q.Prefix == DocumentUnitKeyPrefix {
+		return nil
+	}
+	return []string{DocumentChunkKeyPrefix, DocumentUnitKeyPrefix}
+}
+
 // selectorFilter is Filter without the derived-unit rule (see withUnitExclusion).
 func (q SearchQuery) selectorFilter() (store.MemorySearchFilter, error) {
 	// The RFC CL window and the id lists are applied FIRST so they survive every
 	// return path below. Filter has several early exits (no selector,
 	// documents-only, the refusal), and attaching a predicate at each one is how it
 	// ends up honoured on some queries and silently dropped on others.
-	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix, IDs: q.IDs, ExcludeIDs: q.ExcludeIDs})
+	f := q.When.Filter(store.MemorySearchFilter{KeyPrefix: q.Prefix, IDs: q.IDs, ExcludeIDs: q.ExcludeIDs, IDsPrefixes: q.idsPrefixes()})
 	var facts, notes, docs, traces bool
 	for _, s := range q.Sources {
 		switch s {

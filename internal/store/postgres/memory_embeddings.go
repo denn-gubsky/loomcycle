@@ -230,6 +230,9 @@ func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) 
 	if len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 {
 		return "", args
 	}
+	if len(f.IDsPrefixes) > 0 {
+		return idSegmentDocumentCondition(f, args)
+	}
 	args = append(args, f.KeyPrefix)
 	seg := "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
 	cond := ""
@@ -253,6 +256,45 @@ func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) 
 		cond += " AND NOT EXISTS (SELECT 1 FROM unnest($" + strconv.Itoa(len(args)) + "::text[]) AS excl(id) WHERE excl.id = " + seg + ")"
 	}
 	return cond, args
+}
+
+// idSegmentDocumentCondition is idSegmentCondition confined to the document
+// class of f.IDsPrefixes: a row with provenance, or in none of the namespaces,
+// passes; a provenance-free row in one of them must have its id segment — the
+// text after THAT prefix — pass the lists. The provenance test is the one
+// ExcludeDocumentPrefix uses, so "document row" means the same thing in both.
+//
+// Each list binds ONCE and every namespace's disjunct refers to it, so a mixed
+// search sends the list once per leg, as a single-namespace search does.
+func idSegmentDocumentCondition(f store.MemorySearchFilter, args []any) (string, []any) {
+	idsArg, exclArg := "", ""
+	if len(f.IDs) > 0 {
+		args = append(args, f.IDs)
+		idsArg = "$" + strconv.Itoa(len(args)) + "::text[]"
+	}
+	if len(f.ExcludeIDs) > 0 {
+		args = append(args, f.ExcludeIDs)
+		exclArg = "$" + strconv.Itoa(len(args)) + "::text[]"
+	}
+	outside := make([]string, 0, len(f.IDsPrefixes))
+	inside := make([]string, 0, len(f.IDsPrefixes))
+	for _, p := range f.IDsPrefixes {
+		args = append(args, likePrefixPattern(p))
+		like := "me.key LIKE $" + strconv.Itoa(len(args))
+		args = append(args, p)
+		seg := "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
+		outside = append(outside, "NOT "+like)
+		test := "(" + like
+		if idsArg != "" {
+			test += " AND " + seg + " = ANY(" + idsArg + ")"
+		}
+		if exclArg != "" {
+			test += " AND " + seg + " <> ALL(" + exclArg + ")"
+		}
+		inside = append(inside, test+")")
+	}
+	return " AND (coalesce(m.origin, '') <> '' OR (" + strings.Join(outside, " AND ") + ") OR " +
+		strings.Join(inside, " OR ") + ")", args
 }
 
 // planPerExecution makes a statement that binds an id list run on a plan built for
