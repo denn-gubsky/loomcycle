@@ -77,6 +77,12 @@ Document tool's `search`.
 - `recall: exclude_under_paths narrows the documents a search returns, and a
   recall without sources (facts and notes) cannot return documents` — add
   `sources: ["facts", "notes", "documents"]`.
+- `recall: document filter: Document: scope=tenant is not granted to this agent
+  ...` — a permission refusal: reading this scope's documents needs a grant the
+  agent lacks (the message names it). Drop the filter, or ask an operator to
+  grant it.
+- `recall: document filters are not available on a tenant-scope Memory call` —
+  drop the filter there; the Document tool's `search` reaches tenant documents.
 - `recall: when.from ... is not an RFC3339 timestamp` — resolve the date
   yourself.
 
