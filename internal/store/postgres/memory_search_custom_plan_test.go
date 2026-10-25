@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/md5"
 	"fmt"
 	"os"
 	"testing"
@@ -58,6 +59,10 @@ func TestMemorySearch_IDListStatementsNeverRunAGenericPlan(t *testing.T) {
 		// The document lists bind the same way and need the same plan.
 		"documents":         {KeyPrefix: "doc.chunk:", DocumentIDs: ids},
 		"exclude documents": {KeyPrefix: "doc.chunk:", ExcludeDocumentIDs: ids},
+		// A mixed (no-selector) Memory search confines the lists to the document
+		// class; its statement binds the same list and must plan the same way.
+		"mixed ids":     {IDs: ids, IDsPrefixes: []string{"doc.chunk:", "doc.unit:"}},
+		"mixed exclude": {ExcludeIDs: ids, IDsPrefixes: []string{"doc.chunk:", "doc.unit:"}},
 	}
 	for name, f := range filters {
 		for i := 0; i < 12; i++ {
@@ -102,4 +107,8 @@ func freshSchemaWithVectorsOrSkip(t *testing.T) freshFixture {
 	fix := freshSchemaWithVectors(t, pgDSNFromEnv(t), true)
 	t.Cleanup(fix.cleanup)
 	return fix
+}
+
+func md5Hex(s string) string {
+	return fmt.Sprintf("%x", md5.Sum([]byte(s)))
 }

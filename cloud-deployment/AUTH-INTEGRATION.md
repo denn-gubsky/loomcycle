@@ -104,8 +104,8 @@ All the new routes follow the same rules:
 | `DELETE /api/team/:subject` | Removes a member through the lifecycle stages (disable at once, then unbind; erasure stays an operator action) | `DELETE /v1/_users/{subject}` |
 
 **More rules for the team routes:**
-- **Per-subject routes:** every `:subject` must exist in the owner's tenant. Check it with `GET /v1/_users/{subject}?tenant=` before acting. A cross-tenant id gets a `404`, the same as an unknown one.
-- **Limits:** each tenant gets at most 20 invites per day and 50 pending invites. Each source address gets 10 signups per hour. These limits live in the landing, in memory, because there is one landing process. Move them to Redis if the landing ever scales out.
+- **Per-subject routes:** every `:subject` must exist in the owner's tenant. The landing checks it in the tenant's user list (`GET /v1/_users?tenant=`) before acting. A cross-tenant id gets a `404`, the same as an unknown one.
+- **Limits:** per tenant, per verified identity and per source address, in the landing's memory (one landing process; move them to Redis if it ever scales out). The figures are under "What the build changed" → Limits.
 - **Removed:** `POST /api/mint` and its `LOOMCYCLE_ADMIN_TOKEN` (phase 5). `/api/whoami` stays, and gains `{signed_up}`.
 
 ## Website (`cloud-web/index.html`)
@@ -125,10 +125,10 @@ The vault and the `postMessage` handoff stay **read-only for one release**. Exis
 | # | What | Done when |
 |---|---|---|
 | 0 | loomcycle P0 + P2 released, and the cloud runtime on that version | `/v1/_authgate/cloud/invites` answers on the cloud host |
-| 1 | The runtime config above. Mint the `auth:manage` token into `.env.secure` (as `LOOMCYCLE_AUTH_MANAGE_TOKEN`), alongside the admin token for now. Set `LOOMCYCLE_PUBLIC_URL`. | `app.loomcycle.cloud/ui/login` shows both the token box and the password gate; the session cookie is `__Host-lc_session` |
-| 2 | **Built.** Landing `POST /api/signup` + `/api/team/*`, with a fake-runtime unit suite and an extended `smoke.mjs` | Smoke passes against a local runtime (`MINT_DEV_ALLOW_UNVERIFIED=1`) |
-| 3 | **Built.** `cloud-web` signup + Team UI; the vault becomes read-only | Manual: a fresh Google account → workspace → password → app; an owner invites a member, the member redeems, the owner resets and disables them |
-| 4 | Migrate the existing tenants (below) | Every existing owner can log in with a password |
+| 1 | **Built** (#2125); host steps pending. The runtime config above. Mint the `auth:manage` token into `.env.secure` (as `LOOMCYCLE_AUTH_MANAGE_TOKEN`), alongside the admin token for now. Set `LOOMCYCLE_PUBLIC_URL`. | `app.loomcycle.cloud/ui/login` shows both the token box and the password gate; the session cookie is `__Host-lc_session` |
+| 2 | **Built** (#2126). Landing `POST /api/signup` + `/api/team/*`, with a fake-runtime unit suite and an extended `smoke.mjs` | Smoke passes against a local runtime (`MINT_DEV_ALLOW_UNVERIFIED=1`) |
+| 3 | **Built** (#2126). `cloud-web` signup + Team UI; the vault becomes read-only | Manual: a fresh Google account → workspace → password → app; an owner invites a member, the member redeems, the owner resets and disables them |
+| 4 | **Built** (#2127). Migrate the existing tenants (below) | Every existing owner can log in with a password |
 | 5 | Remove `/api/mint`, `LOOMCYCLE_ADMIN_TOKEN` from the landing and its compose env, and the vault UI. Retire the old minted tenant tokens on a published date. | `grep LOOMCYCLE_ADMIN_TOKEN cloud-deployment/` is empty, apart from the runtime's own `LOOMCYCLE_AUTH_TOKEN` |
 | 6 | `auth.mode: strict`; drop the `token` gate from the config; `require_mfa: true` | The paste box is gone, and a hand-minted user token is refused on the UI |
 | 7 | Later: an OIDC `google` gate on the app (RFC FA P1); owners link their Google identity explicitly (D14); the website can drop Cloudflare Access for its own OIDC login | Google sign-in on the app works for a linked user |

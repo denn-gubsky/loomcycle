@@ -161,6 +161,11 @@ type RecallQuery struct {
 
 	// NoUnits ignores Document derived search units, as on SearchQuery.
 	NoUnits bool
+
+	// IDs / ExcludeIDs are a resolved document filter, as on SearchQuery. Only
+	// meaningful when Sources admits documents; empty constrains nothing.
+	IDs        []string
+	ExcludeIDs []string
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned

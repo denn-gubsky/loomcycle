@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1265,5 +1266,44 @@ func TestMetrics_FilterDocumentIDsOnTheSpan(t *testing.T) {
 	}
 	if _, has := got[lcotel.AttrMemoryFilterIDs]; has {
 		t.Errorf("a document-restricted search recorded a chunk-id list: %v", got)
+	}
+}
+
+// filterSpy records the filter every vector-leg call was given.
+type filterSpy struct {
+	*vectorStore
+	got []store.MemorySearchFilter
+}
+
+func (s *filterSpy) MemoryEmbedSearch(ctx context.Context, tenant string, scope store.MemoryScope, scopeID string,
+	f store.MemorySearchFilter, q []float32, topK int) ([]store.MemorySearchEntry, error) {
+	s.got = append(s.got, f)
+	return s.vectorStore.MemoryEmbedSearch(ctx, tenant, scope, scopeID, f, q, topK)
+}
+
+// TestRecall_IDsReachTheSearch — a recall carrying a resolved document filter
+// hands its id lists to the search it runs, so a document recall is restricted
+// in the store exactly as a document search is.
+func TestRecall_IDsReachTheSearch(t *testing.T) {
+	s, cleanup := newStore(t)
+	defer cleanup()
+	spy := &filterSpy{vectorStore: newVectorStore(s)}
+	b := inprocess.New(spy, newFakeEmbedder("alice", "go"))
+	ctx := context.Background()
+	if _, err := b.Set(ctx, store.MemoryScopeAgent, "a1", "doc.chunk:c1", json.RawMessage(`{"body":"alice go"}`), memory.SetOptions{Embed: true, EmbedText: "alice go"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Recall(ctx, store.MemoryScopeAgent, "a1", memory.RecallQuery{
+		Query: "alice go", Sources: []memory.Source{memory.SourceDocuments}, IDs: []string{"c1"}, ExcludeIDs: []string{"c9"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(spy.got) == 0 {
+		t.Fatal("the recall ran no vector leg")
+	}
+	for _, f := range spy.got {
+		if !reflect.DeepEqual(f.IDs, []string{"c1"}) || !reflect.DeepEqual(f.ExcludeIDs, []string{"c9"}) {
+			t.Errorf("recall leg filter ids = %v / %v, want [c1] / [c9]", f.IDs, f.ExcludeIDs)
+		}
 	}
 }
