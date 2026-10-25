@@ -131,6 +131,13 @@ type Memory struct {
 	// (record op/scope/row counts only). Empty defaults to "full".
 	SqlAuditMode string
 
+	// DocumentFilters resolves the document filters a search or recall may carry
+	// (under_paths, exclude_under_paths, document_ids, exclude_document_ids) — the
+	// Document tool, which owns the structure they name. Read when a search runs,
+	// never copied anywhere at build: boot assigns it before the Document tool's
+	// own store and SQL Memory are bound. Nil: any document filter is refused.
+	DocumentFilters memrank.DocumentFilterResolver
+
 	// Redactor masks operator infra-secrets out of an audited SQL statement
 	// before it is written (full mode only). Nil-safe — a nil Redactor
 	// leaves the statement unchanged (the validator already blocks the
@@ -341,6 +348,10 @@ const memoryInputSchema = `{
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
+    "under_paths":          {"type": "array", "items": {"type": "string"}, "description": "search / recall: return only the document chunks of documents named at or under ANY of these Path-tree paths, in this scope's own tree. Narrows DOCUMENTS only — facts and notes the same search returns are unaffected — and is applied before ranking, so the best document matches come from that part of the tree. Needs a search that can return documents (no sources, or sources including documents); recall must ask for documents explicitly. The response carries a filter block saying what the paths resolved to — matched_documents 0 means the path names nothing here, not that nothing relevant was found."},
+    "exclude_under_paths":  {"type": "array", "items": {"type": "string"}, "description": "search / recall: never return the document chunks of documents named at or under these Path-tree paths (e.g. reports this agent or another wrote, so its own output is not recalled as evidence). Documents only, as under_paths."},
+    "document_ids":         {"type": "array", "items": {"type": "string"}, "description": "search / recall: return only the document chunks of these documents. Documents only, as under_paths."},
+    "exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / recall: never return the document chunks of these documents. Documents only, as under_paths. For chunk-level filters (type, status, tags, a validity instant) use the Document tool's search."},
     "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."},
     "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}},
     "dedup":      {"type": "object", "description": "search-only near-duplicate collapse. Omit (or enabled=false) for no dedup (default). Drops a result whose embedding cosine similarity to a higher-ranked kept result is >= threshold. Properties: enabled (bool), threshold (number, cosine-similarity floor, default 0.92), mode (\"drop\" default | \"merge\" | \"keep\").", "properties": {"enabled": {"type": "boolean"}, "threshold": {"type": "number"}, "mode": {"type": "string", "enum": ["drop","merge","keep"]}}},
@@ -404,6 +415,15 @@ type memoryInput struct {
 	EmbedText string   `json:"embed_text,omitempty"` // v0.9.0
 	Query     string   `json:"query,omitempty"`      // v0.9.0
 	TopK      int      `json:"top_k,omitempty"`      // v0.9.0
+
+	// UnderPaths … ExcludeDocumentIDs aim a search / recall at part of the
+	// scope's documents (memory_document_filter.go). They narrow only document
+	// rows; facts and notes a mixed search returns pass them untouched.
+	UnderPaths         []string `json:"under_paths,omitempty"`
+	ExcludeUnderPaths  []string `json:"exclude_under_paths,omitempty"`
+	DocumentIDs        []string `json:"document_ids,omitempty"`
+	ExcludeDocumentIDs []string `json:"exclude_document_ids,omitempty"`
+
 	// Rank is the RFC I hybrid-ranking weight block for `search`. Nil =
 	// pure semantic (today's behavior). See memrank.RankConfig.
 	Rank *memrank.RankConfig `json:"rank,omitempty"`
@@ -1552,7 +1572,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		return errValidation(fmt.Sprintf("search: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
 	rerank := rerankOptions(ctx)
-	res, err := m.backend(ctx).Search(ctx, scope, scopeID, memrank.SearchQuery{
+	sq := memrank.SearchQuery{
 		QueryText: in.Query,
 		Prefix:    in.Prefix,
 		Sources:   sources,
@@ -1560,7 +1580,24 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		When:      when,
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
-	}, rankCfg, dedupCfg)
+	}
+	// A document filter is resolved to chunk ids BEFORE the search, and only when
+	// one was given: a filter-free search stays on exactly the old path.
+	var docFilter *docFilterPlan
+	if df := in.documentFilter(); !df.IsZero() {
+		plan, refusal := m.planDocumentFilter(ctx, "search", scope, scopeID, df, sq, sourcesWhy(in.Prefix, sources))
+		if refusal != nil {
+			return *refusal, nil
+		}
+		// Nothing matched and nothing but documents could: answer without
+		// embedding the query or touching the store.
+		if plan.noDocuments && plan.documentsOnly {
+			return okJSONCount(map[string]any{"entries": []map[string]any{}, "filter": plan.echo}, 0)
+		}
+		plan.apply(&sq)
+		docFilter = plan
+	}
+	res, err := m.backend(ctx).Search(ctx, scope, scopeID, sq, rankCfg, dedupCfg)
 	if err != nil {
 		// ErrDimensionMismatch is the user-actionable one — operators
 		// swap embedder models and forget to re-embed. Surface it as a
@@ -1725,6 +1762,9 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		out["rank_note"] = res.RankNote
 	}
 	renderRerank(out, rerank, res.Rerank)
+	if docFilter != nil {
+		out["filter"] = docFilter.echo
+	}
 	return okJSONCount(out, len(entries))
 }
 
@@ -1812,7 +1852,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		return errValidation(fmt.Sprintf("recall: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
 	rerank := rerankOptions(ctx)
-	res, err := layer.Recall(ctx, scope, scopeID, memrank.RecallQuery{
+	rq := memrank.RecallQuery{
 		Query:     in.Query,
 		TopK:      topK,
 		Threshold: in.Threshold,
@@ -1820,7 +1860,28 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		When:      when,
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
-	})
+	}
+	var docFilter *docFilterPlan
+	if df := in.documentFilter(); !df.IsZero() {
+		// Judged against what the recall will actually ask for: with no sources
+		// that is facts and notes, which hold no documents to filter.
+		eff, why := sources, sourcesWhy("", sources)
+		if len(eff) == 0 {
+			eff, why = []memrank.Source{memrank.SourceFacts, memrank.SourceNotes}, "a recall without sources (facts and notes)"
+		}
+		sq := memrank.SearchQuery{Sources: eff}
+		plan, refusal := m.planDocumentFilter(ctx, "recall", scope, scopeID, df, sq, why)
+		if refusal != nil {
+			return *refusal, nil
+		}
+		if plan.noDocuments && plan.documentsOnly {
+			return okJSONCount(map[string]any{"memories": []map[string]any{}, "filter": plan.echo}, 0)
+		}
+		plan.apply(&sq)
+		rq.Sources, rq.IDs, rq.ExcludeIDs = sq.Sources, sq.IDs, sq.ExcludeIDs
+		docFilter = plan
+	}
+	res, err := layer.Recall(ctx, scope, scopeID, rq)
 	if err != nil {
 		return errFrom(fmt.Sprintf("recall: %s", err), err), nil
 	}
@@ -2053,6 +2114,9 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 			"results may include document prose rather than only your own remembered facts and notes"
 	}
 	renderRerank(out, rerank, res.Rerank)
+	if docFilter != nil {
+		out["filter"] = docFilter.echo
+	}
 	return okJSONCount(out, len(memories))
 }
 
