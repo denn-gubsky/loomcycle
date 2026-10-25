@@ -1559,6 +1559,13 @@ func authManageRoute(method, path string) bool {
 	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok && rest != "" && !strings.Contains(rest, "/") {
 		return method == http.MethodPatch || method == http.MethodDelete
 	}
+	// The approval of a pending user (RFC FA §6.1.1: floor users only, which
+	// the handler enforces).
+	if rest, ok := strings.CutPrefix(path, "/v1/_users/"); ok && method == http.MethodPost {
+		if sub, ok := strings.CutSuffix(rest, "/approve"); ok && sub != "" && !strings.Contains(sub, "/") {
+			return true
+		}
+	}
 	return false
 }
 

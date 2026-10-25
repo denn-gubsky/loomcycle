@@ -17,6 +17,8 @@ var authManageWant = map[string]bool{
 	"POST /v1/_users":             true,
 	"PATCH /v1/_users/{subject}":  true,
 	"DELETE /v1/_users/{subject}": true,
+	// RFC FA §6.1.1: approve a floor user (the handler holds it to the floor).
+	"POST /v1/_users/{subject}/approve": true,
 
 	"POST /v1/_authgate/{gate}/invites":                 true,
 	"GET /v1/_authgate/{gate}/invites":                  true,

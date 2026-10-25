@@ -275,6 +275,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.Status != nil && *req.Status == "active" {
+		cur, err := s.store.UserGet(r.Context(), tenant, subject)
+		if err == nil && cur.Status == store.UserStatusPending {
+			writeJSONError(w, http.StatusConflict, "use_approve",
+				"this user is awaiting approval; approve it with POST /v1/_users/{subject}/approve")
+			return
+		}
+	}
 	patch := store.UserPatch{
 		DisplayName: req.DisplayName,
 		AccessMode:  req.AccessMode,

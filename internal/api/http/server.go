@@ -4299,6 +4299,9 @@ func (s *Server) Mux() http.Handler {
 	// requiredScopeFor (POST here; PATCH/DELETE via the /v1/_users/ prefix).
 	mux.Handle("POST /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateUser))))
 	mux.Handle("PATCH /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpdateUser))))
+	// RFC FA P1: the approval queue (pending → active). ScopeTenant via the
+	// /v1/_users/ prefix; auth:manage for floor users (authManageRoute).
+	mux.Handle("POST /v1/_users/{subject}/approve", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleApproveUser))))
 	mux.Handle("DELETE /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteUser))))
 	// RFC BX P2c — delegated per-user token minting. A substrate:tenant operator
 	// mints / lists / revokes bearer tokens for its OWN users (bounded
