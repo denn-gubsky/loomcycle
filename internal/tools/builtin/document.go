@@ -135,7 +135,7 @@ const documentInputSchema = `{
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. A hop is ONE edge, so a fact→entity→fact step costs two: a two-hop question needs 2, a three-hop needs 4. 0 = the starting chunks only, 1 = their neighbours (default), 6 = the maximum. What bounds a long walk is budget_chars, not this."},
 		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
 		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
-		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. search / related: return only chunks whose stated validity contains this moment; a chunk with no stated validity always matches."},
+		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded. Off by default, so you get only what is currently true."},
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
 		"min_score":   {"type": "number", "description": "verbatim_answer: how close a match must be before it can be quoted as an answer (default 0.6). Cosine scale is a property of the embedding model, so tune this against your own — the response always reports the actual score, including when it refuses."},
@@ -149,12 +149,12 @@ const documentInputSchema = `{
 		"across_scopes": {"type": "boolean", "description": "get_document / list_facts about: also look for this SUBJECT in the other scopes you can read (agent, user, tenant), matching on its natural_key. A subject exists once per scope, so its facts can be split across them — this is how \"what do we know about X\" stops depending on which scope you happened to read. Off by default: it costs up to three queries, and it never reaches another USER's scope."},
 		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
-		"valid_at":   {"type": "integer", "description": "When the fact became true IN THE WORLD (unix nanos). Omit when unknown — an undated fact is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded."},
+		"valid_at":   {"type": "integer", "description": "When the content became true IN THE WORLD (unix nanos). upsert_chunk: the fact's start. create_chunk / update_chunk: the chunk's own start, e.g. when an edition or clause came into force — it does not make the chunk a fact; update_chunk with null clears it. Omit when unknown — an undated chunk is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded."},
 		"from_pending": {"type": "string", "description": "upsert_chunk: the id of a pending item you drained, so this fact records what produced it. The server fills in the origin and the source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds."},
 		"source_session_id": {"type": "string", "description": "create_document / upsert_chunk (with subject + natural_key): the chat a fact was distilled from, when it came off a transcript rather than a drained pending item (from_pending supplies it then, and wins). Provenance only, never used for access."},
 		"source_run_id": {"type": "string", "description": "list_facts: only the facts distilled from this run — what one conversation produced."},
 		"observed_at": {"type": "integer", "description": "When the thing was SAID or written (unix nanos), as distinct from when it became true. \"Yesterday I met them in Boston\", said on the 4th, is observed_at the 4th and valid_at the 3rd. Omit when unknown."},
-		"invalid_at": {"type": "integer", "description": "When the fact STOPPED being true in the world (unix nanos). Leave unset for something still true."},
+		"invalid_at": {"type": "integer", "description": "When the content STOPPED being true in the world (unix nanos, exclusive). upsert_chunk: the fact's end. create_chunk / update_chunk: the chunk's own end, e.g. when an edition was replaced; update_chunk with null clears it. Must be after valid_at. Leave unset for something still true."},
 		"class":      {"type": "string", "enum": ["derived","evidential"], "description": "derived = distilled from something else (the default). evidential = source material, exempt from age-based pruning. list_facts: filter to facts of this class."},
 		"confidence": {"type": "number", "description": "0..1, how sure you are of this fact."},
 		"fields":      {"type": "object", "description": "Type-specific structured fields."},
@@ -382,7 +382,8 @@ var docSchemaDDL = []string{
 	`CREATE TABLE IF NOT EXISTS chunks (
 		id TEXT PRIMARY KEY, document_id TEXT NOT NULL, parent_id TEXT,
 		position INTEGER NOT NULL, type TEXT, status TEXT, title TEXT NOT NULL,
-		created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, revision INTEGER NOT NULL DEFAULT 1)`,
+		created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+		valid_at BIGINT, invalid_at BIGINT)`,
 	`CREATE TABLE IF NOT EXISTS chunk_edges (
 		from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL,
 		created_at BIGINT NOT NULL, PRIMARY KEY (from_id, to_id, kind))`,
@@ -871,6 +872,9 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateFactObservation(ctx, key); err != nil {
 		return err
 	}
+	if err := d.migrateChunkValidity(ctx, key); err != nil {
+		return err
+	}
 	if err := d.migrateEdgeAuto(ctx, key); err != nil {
 		return err
 	}
@@ -1026,6 +1030,35 @@ func (d *Document) migrateFactObservation(ctx context.Context, key sqlmem.ScopeK
 		}
 	}
 	return nil
+}
+
+// migrateChunkValidity adds chunks.valid_at / invalid_at — an ordinary chunk's own
+// validity interval, independent of the fact tier's sidecar — to a scope
+// provisioned before the columns existed. docSchemaDDL declares them for a fresh
+// scope; a CREATE TABLE IF NOT EXISTS leaves an existing chunks table untouched, so
+// this is the one path that reaches both.
+//
+// Same shape as migrateFactObservation: a leading-SELECT fast path, then a
+// per-column probe so a crash between the two ALTERs is not a duplicate-column
+// error on the next run. NULLABLE and never defaulted: the interval is when the
+// content was true in the world, and a write timestamp in its place is a wrong
+// answer to every as_of question.
+//
+// The index lives here rather than in docSchemaDDL for the reason
+// migrateDocumentFacets gives: docSchemaDDL runs before this migration, so on an
+// old scope the columns would not yet exist to index.
+func (d *Document) migrateChunkValidity(ctx context.Context, key sqlmem.ScopeKey) error {
+	if _, err := d.query(ctx, key, `SELECT valid_at, invalid_at FROM chunks WHERE 1=0`); err != nil {
+		for _, col := range []string{"valid_at", "invalid_at"} {
+			if d.tableHasColumn(ctx, key, "chunks", col) {
+				continue
+			}
+			if err := d.exec(ctx, key, `ALTER TABLE chunks ADD COLUMN `+col+` BIGINT`); err != nil {
+				return err
+			}
+		}
+	}
+	return d.exec(ctx, key, `CREATE INDEX IF NOT EXISTS chunks_validity ON chunks(valid_at, invalid_at)`)
 }
 
 // migrateAssetDescription adds chunk_assets.description + described_at (RFC BU
@@ -1493,9 +1526,14 @@ type chunkRow struct {
 	Status     string `json:"status,omitempty"`
 	Title      string `json:"title"`
 	Revision   int    `json:"revision"`
+	// ValidAt / InvalidAt are the chunk's own [valid_at, invalid_at) interval in
+	// unix nanoseconds; nil = unbounded on that side. Pointers because 0 is an
+	// instant (the epoch), not "unset".
+	ValidAt   *int64 `json:"valid_at,omitempty"`
+	InvalidAt *int64 `json:"invalid_at,omitempty"`
 }
 
-const chunkSelectCols = `id, document_id, parent_id, position, type, status, title, revision`
+const chunkSelectCols = `id, document_id, parent_id, position, type, status, title, revision, valid_at, invalid_at`
 
 func scanChunkRow(cols []string, row []any) chunkRow {
 	m := map[string]any{}
@@ -1513,6 +1551,19 @@ func scanChunkRow(cols []string, row []any) chunkRow {
 		Status:     asStr(m["status"]),
 		Title:      asStr(m["title"]),
 		Revision:   asInt(m["revision"]),
+		ValidAt:    asInt64Ptr(m["valid_at"]),
+		InvalidAt:  asInt64Ptr(m["invalid_at"]),
+	}
+}
+
+// putValidity adds a chunk's interval to a response map, only the ends that are
+// set — so an undated chunk's response carries no key at all.
+func putValidity(m map[string]any, validAt, invalidAt *int64) {
+	if validAt != nil {
+		m["valid_at"] = *validAt
+	}
+	if invalidAt != nil {
+		m["invalid_at"] = *invalidAt
 	}
 }
 
@@ -2305,6 +2356,9 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if in.Title == "" {
 		return errValidation("create_chunk: missing required field: title", "Pass `title`, the chunk's heading."), nil
 	}
+	if r := emptyIntervalRefusal("create_chunk", in.ValidAt, in.InvalidAt); r != nil {
+		return *r, nil
+	}
 	// RFC BP — after_id inserts the new chunk immediately after an existing
 	// sibling: adopt that sibling's parent, and insert-and-shift the later
 	// siblings by +1 (in one txn) so the new chunk lands at afterPos+1 with no
@@ -2406,8 +2460,9 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				}
 			}
 		}
-		return exec(`INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-			id, in.DocumentID, nullIfEmpty(parentID), pos, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now)
+		return exec(`INSERT INTO chunks (id, document_id, parent_id, position, type, status, title, created_at, updated_at, revision, valid_at, invalid_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+			id, in.DocumentID, nullIfEmpty(parentID), pos, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now,
+			int64Arg(in.ValidAt), int64Arg(in.InvalidAt))
 	}
 	var insErr error
 	if in.AfterID != "" {
@@ -2505,7 +2560,20 @@ func chunkResponse(row chunkRow, cb chunkBody) map[string]any {
 	if len(cb.Fields) > 0 {
 		out["fields"] = cb.Fields
 	}
+	putValidity(out, row.ValidAt, row.InvalidAt)
 	return out
+}
+
+// emptyIntervalRefusal refuses a validity interval that contains no instant:
+// invalid_at at or before valid_at. Half-open [valid_at, invalid_at), so such a
+// chunk would match no as_of at all — always a mistake, never a way to hide one.
+func emptyIntervalRefusal(op string, validAt, invalidAt *int64) *tools.Result {
+	if validAt == nil || invalidAt == nil || *invalidAt > *validAt {
+		return nil
+	}
+	r := errValidation(fmt.Sprintf("%s: invalid_at (%d) must be after valid_at (%d) — the interval is [valid_at, invalid_at)", op, *invalidAt, *validAt),
+		"Pass an invalid_at later than valid_at, or omit the end that is unknown.")
+	return &r
 }
 
 // --- asset ops (RFC BO — image chunks) ---
@@ -2723,6 +2791,25 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if row.Revision != *in.Revision {
 		return errBusiness(fmt.Sprintf("update_chunk: revision conflict (you passed %d, current is %d) — re-read the chunk and retry", *in.Revision, row.Revision), "Call op=get_chunk for the current revision and body, then resend with that revision."), nil
 	}
+	// Detect which fields the caller actually provided (presence-based; lets a
+	// field be set to empty, unlike a zero-value check). For valid_at/invalid_at
+	// presence is what tells an explicit null (clear) from an absent key (keep).
+	var present map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &present)
+	_, hasValidAt := present["valid_at"]
+	_, hasInvalidAt := present["invalid_at"]
+	// The interval in force AFTER this update is checked BEFORE the revision
+	// moves, so a refused update changes nothing.
+	effValid, effInvalid := row.ValidAt, row.InvalidAt
+	if hasValidAt {
+		effValid = in.ValidAt
+	}
+	if hasInvalidAt {
+		effInvalid = in.InvalidAt
+	}
+	if r := emptyIntervalRefusal("update_chunk", effValid, effInvalid); r != nil {
+		return *r, nil
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -2736,10 +2823,14 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if bumped.RowsAffected == 0 {
 		return errBusiness(fmt.Sprintf("update_chunk: revision conflict (revision %d was changed by a concurrent write) — re-read the chunk and retry", *in.Revision), "Call op=get_chunk for the current revision and body, then resend with that revision."), nil
 	}
-	// Detect which fields the caller actually provided (presence-based; lets a
-	// field be set to empty, unlike a zero-value check).
-	var present map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &present)
+	if hasValidAt || hasInvalidAt {
+		// Metadata: the revision bump above covers it, and no chunk_revisions row is
+		// written — that log records body changes only.
+		if err := d.exec(ctx, key, `UPDATE chunks SET valid_at = ?, invalid_at = ? WHERE id = ?`,
+			int64Arg(effValid), int64Arg(effInvalid), in.ID); err != nil {
+			return errFrom("update_chunk: "+err.Error(), err), nil
+		}
+	}
 	if _, has := present["title"]; has {
 		if err := d.exec(ctx, key, `UPDATE chunks SET title = ? WHERE id = ?`, in.Title, in.ID); err != nil {
 			return errFrom("update_chunk: "+err.Error(), err), nil
@@ -3402,6 +3493,8 @@ type chunkMeta struct {
 	title      string
 	typ        string
 	documentID string
+	validAt    *int64
+	invalidAt  *int64
 }
 
 // chunkMetaByIDs fetches title/type/document_id for a set of chunk ids in ONE
@@ -3420,12 +3513,13 @@ func (d *Document) chunkMetaByIDs(ctx context.Context, key sqlmem.ScopeKey, ids 
 		args[i] = id
 	}
 	res, err := d.query(ctx, key,
-		"SELECT id, title, type, document_id FROM chunks WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
+		"SELECT id, title, type, document_id, valid_at, invalid_at FROM chunks WHERE id IN ("+strings.Join(placeholders, ",")+")", args...)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range res.Rows {
-		out[asStr(r[0])] = chunkMeta{title: asStr(r[1]), typ: asStr(r[2]), documentID: asStr(r[3])}
+		out[asStr(r[0])] = chunkMeta{title: asStr(r[1]), typ: asStr(r[2]), documentID: asStr(r[3]),
+			validAt: asInt64Ptr(r[4]), invalidAt: asInt64Ptr(r[5])}
 	}
 	return out, nil
 }
@@ -3547,6 +3641,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 			if md.documentID != "" {
 				m["document_id"] = md.documentID
 			}
+			putValidity(m, md.validAt, md.invalidAt)
 		}
 		// Found through one of its derived search units: which one, and so why.
 		if mu, ok := matched[cid]; ok {
@@ -3679,6 +3774,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 			if md.documentID != "" {
 				m["document_id"] = md.documentID
 			}
+			putValidity(m, md.validAt, md.invalidAt)
 		}
 		out = append(out, m)
 	}
@@ -4024,6 +4120,22 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		where += " AND id IN (SELECT chunk_id FROM chunk_tags WHERE tag = ? OR tag LIKE ?)"
 		args = append(args, in.TagPrefix, in.TagPrefix+"/%")
 	}
+	// as_of: the chunk's own interval AND, for a fact-tier chunk, its sidecar's —
+	// the predicate search and related apply. The sidecar half is a NOT EXISTS
+	// rather than search's LEFT JOIN because this statement selects unqualified
+	// columns that chunk_memory_meta shares (valid_at, invalid_at); chunk_id is the
+	// sidecar's key, so "no row contradicts the instant" is the same test.
+	if in.AsOf != nil {
+		if *in.AsOf <= 0 {
+			return errValidation("query_chunks: as_of must be a positive instant in unix nanoseconds",
+				"Pass as_of as unix nanoseconds, e.g. 1747180800000000000, or omit it."), nil
+		}
+		frag, targs := chunkIntervalClause("chunks", *in.AsOf)
+		where += " AND " + frag + ` AND NOT EXISTS (SELECT 1 FROM chunk_memory_meta mv WHERE mv.chunk_id = chunks.id
+			AND ((mv.valid_at IS NOT NULL AND mv.valid_at > ?) OR (mv.invalid_at IS NOT NULL AND mv.invalid_at <= ?)))`
+		args = append(args, targs...)
+		args = append(args, *in.AsOf, *in.AsOf)
+	}
 	args = append(args, limit)
 	res, err := d.query(ctx, key, `SELECT `+chunkSelectCols+` FROM chunks WHERE `+where+` ORDER BY document_id, parent_id, position LIMIT ?`, args...)
 	if err != nil {
@@ -4044,6 +4156,7 @@ func (d *Document) queryChunks(ctx context.Context, key sqlmem.ScopeKey, in docI
 		if row.Status != "" {
 			m["status"] = row.Status
 		}
+		putValidity(m, row.ValidAt, row.InvalidAt)
 		chunks = append(chunks, m)
 	}
 	out := map[string]any{"chunks": chunks}
@@ -4276,6 +4389,7 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 			if len(cb.Fields) > 0 {
 				meta["fields"] = cb.Fields
 			}
+			putValidity(meta, row.ValidAt, row.InvalidAt)
 			mj, _ := json.Marshal(meta)
 			b.WriteString("<!-- loom: " + string(mj) + " -->\n")
 		}
@@ -4333,7 +4447,11 @@ type mdChunk struct {
 	typ    string
 	status string
 	fields json.RawMessage
-	body   string
+	// validAt / invalidAt are the chunk's own interval from the metadata comment;
+	// nil when absent (a clean export imports timeless chunks).
+	validAt   *int64
+	invalidAt *int64
+	body      string
 	// RFC BO — set when the body was a self-contained media form: an image
 	// chunk's decoded bytes to re-attach via set_asset (assetData base64 +
 	// assetMediaType), unwrapped from a data-URL. A mermaid chunk carries its
@@ -4498,13 +4616,16 @@ func parseLoomMarkdown(md string) ([]mdChunk, []mdEdge) {
 		if cur != nil && strings.HasPrefix(trimmed, "<!-- loom:") && strings.HasSuffix(trimmed, "-->") {
 			payload := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "<!-- loom:"), "-->"))
 			var meta struct {
-				ID     string          `json:"id"`
-				Type   string          `json:"type"`
-				Status string          `json:"status"`
-				Fields json.RawMessage `json:"fields"`
+				ID        string          `json:"id"`
+				Type      string          `json:"type"`
+				Status    string          `json:"status"`
+				Fields    json.RawMessage `json:"fields"`
+				ValidAt   *int64          `json:"valid_at"`
+				InvalidAt *int64          `json:"invalid_at"`
 			}
 			if json.Unmarshal([]byte(payload), &meta) == nil {
 				cur.oldID, cur.typ, cur.status, cur.fields = meta.ID, meta.Type, meta.Status, meta.Fields
+				cur.validAt, cur.invalidAt = meta.ValidAt, meta.InvalidAt
 			}
 			continue
 		}
@@ -4551,6 +4672,13 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	chunks, edges := parseLoomMarkdown(in.Markdown)
 	if len(chunks) == 0 {
 		return errValidation("import_md: no headings found — a document needs at least one '# Heading'", ""), nil
+	}
+	// Checked before anything is written: import_md is not atomic, and a refusal
+	// half way would leave a partial document behind.
+	for _, c := range chunks {
+		if r := emptyIntervalRefusal("import_md: chunk "+strconv.Quote(c.title), c.validAt, c.invalidAt); r != nil {
+			return *r, nil
+		}
 	}
 	oldToNew := map[string]string{}
 	type frame struct {
@@ -4614,6 +4742,12 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 				return errFrom("import_md: "+err.Error(), err), nil
 			}
 		}
+		if first.validAt != nil || first.invalidAt != nil {
+			if err := d.exec(ctx, key, `UPDATE chunks SET valid_at = ?, invalid_at = ? WHERE id = ?`,
+				int64Arg(first.validAt), int64Arg(first.invalidAt), rootID); err != nil {
+				return errFrom("import_md: "+err.Error(), err), nil
+			}
+		}
 		if first.assetData != "" {
 			attach(rootID, first)
 		}
@@ -4653,6 +4787,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		cc, _ := d.createChunk(ctx, key, mscope, docInput{
 			DocumentID: docID, ParentID: parent, Title: titleOrUntitled(c.title),
 			Type: c.typ, Status: c.status, Body: c.body, Fields: c.fields,
+			ValidAt: c.validAt, InvalidAt: c.invalidAt,
 		})
 		if cc.IsError {
 			return cc, nil

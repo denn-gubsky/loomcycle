@@ -9,7 +9,8 @@ person, or to copy it — `import_md` reads the output back.
 
 **Choose `include_metadata` for the reader.** The default (`true`) adds
 `<!-- loom: ... -->` comments that let `import_md` rebuild types, statuses,
-fields and links; pass `false` for clean Markdown a person will read.
+fields, the period each chunk is true (`valid_at`/`invalid_at`) and links;
+pass `false` for clean Markdown a person will read.
 
 ## Arguments
 
@@ -18,7 +19,8 @@ fields and links; pass `false` for clean Markdown a person will read.
 - `path` — the document's Path-tree path, e.g. `/docs/launch`. Used only when
   `document_id` and `id` are empty.
 - `include_metadata` — default `true`: after each heading a
-  `<!-- loom: {"id":…,"type":…,"status":…,"fields":…} -->` line, and at the end
+  `<!-- loom: {"id":…,"type":…,"status":…,"fields":…,"valid_at":…,"invalid_at":…} -->`
+  line (each key only when set), and at the end
   a `<!-- loom-edges: ... -->` block listing the links that start in this
   document. `false`: no comments, and every `![[...]]` embed in a body is
   replaced by the embedded chunk's text.

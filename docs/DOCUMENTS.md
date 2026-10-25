@@ -64,6 +64,23 @@ tenant-*isolated*: the SQL Memory scope key carries the authoritative tenant.
   documents at/under a path → their chunks) **or** a `sql:` escape hatch: a
   raw, read-only `SELECT` against the chunk tables, gated by the SQL Memory
   statement validator (no `ATTACH` / `PRAGMA` / multi-statement / writes).
+  It also takes `as_of` (below), so the chunks in force on a date can be
+  listed without a semantic query.
+- **Dated content.** Any chunk can carry its own validity period: nullable
+  `chunks.valid_at` / `chunks.invalid_at` (unix ns, half-open
+  `[valid_at, invalid_at)`, NULL = unbounded on that side), set by
+  `create_chunk` / `update_chunk` (an explicit JSON `null` clears an end; the
+  revision bumps, no `chunk_revisions` row is written) and round-tripped by
+  `export_md` / `import_md` in the per-chunk `<!-- loom: … -->` comment and by
+  `sync` / `diff_remote`. It is content time, never write time — nothing
+  defaults it — and it is independent of the fact tier: a dated chunk gets no
+  `chunk_memory_meta` row, so `list_facts` does not list it. Use it for an
+  edition, a tariff or a policy clause; use the fact tier for a claim with a
+  natural key and a source span. A fact-tier chunk may carry both intervals,
+  and `as_of` (`search`, `related`, `query_chunks`) then requires both to
+  contain the instant. `upsert_chunk`'s `valid_at`/`invalid_at` remain the
+  fact's sidecar interval. Existing scopes gain the columns (and the
+  `chunks_validity` index) through an idempotent migration on first use.
 - **Change events.** `update_chunk` / `move_chunk` / `link_chunks` /
   `delete_chunk` publish `{op, chunk_id, timestamp, actor}` to the
   `documents/<id>/chunks` channel, so a watcher (or a co-authoring UI) sees
@@ -221,7 +238,7 @@ One scope often holds several corpora — board files, regulator norms, decision
 | `type` / `types` | chunk type, each widened to its ontology subtypes (reported as `type_expanded_to`) |
 | `status` / `statuses` | exact status |
 | `tag` / `tag_prefix` | exact tag / the tag or anything nested under it |
-| `as_of` | unix ns; chunks whose sidecar validity interval contains the instant (a chunk with no interval always passes — the `graph_recall` rule) |
+| `as_of` | unix ns; chunks whose validity contains the instant — the chunk's own `valid_at`/`invalid_at` AND, for a fact-tier chunk, its sidecar interval (a chunk with no interval always passes — the `graph_recall` rule) |
 
 Kinds combine with AND, values within a list with OR; a singular and its plural twin are one filter (their union).
 

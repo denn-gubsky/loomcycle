@@ -398,11 +398,26 @@ func (d *Document) chunkFilterPredicate(ctx context.Context, ap searchFilterAppl
 		args = append(args, ap.TagPrefix, ap.TagPrefix+"/%")
 	}
 	if ap.AsOf != nil {
-		frag, targs := graphTemporalClause(docInput{AsOf: ap.AsOf})
+		// BOTH intervals must contain the instant: the chunk's own and, for a
+		// fact-tier chunk, its sidecar's. Two stated intervals that disagree are two
+		// claims, and "true then?" is answered yes only when both say so.
+		frag, targs := chunkIntervalClause("c", *ap.AsOf)
+		parts = append(parts, frag)
+		args = append(args, targs...)
+		frag, targs = graphTemporalClause(docInput{AsOf: ap.AsOf})
 		parts = append(parts, frag)
 		args = append(args, targs...)
 	}
 	return strings.Join(parts, " AND "), args
+}
+
+// chunkIntervalClause is the chunk's OWN validity test at an instant, over the
+// chunks table reached as ref: half-open [valid_at, invalid_at), NULL on either
+// side unbounded — the boundary convention the sidecar and the k/v row use.
+func chunkIntervalClause(ref string, asOf int64) (string, []any) {
+	return "(" + ref + ".valid_at IS NULL OR " + ref + ".valid_at <= ?) AND (" +
+			ref + ".invalid_at IS NULL OR " + ref + ".invalid_at > ?)",
+		[]any{asOf, asOf}
 }
 
 // scopeChunkCounts is the scope's chunk and document counts — what inversion and

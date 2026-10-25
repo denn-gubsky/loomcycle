@@ -1,6 +1,6 @@
 ---
 name: Document/update_chunk
-description: "Document op=update_chunk — change a chunk's title, type, status, body, fields or tags; requires the chunk's current revision."
+description: "Document op=update_chunk — change a chunk's title, type, status, body, fields, tags or validity period; requires the chunk's current revision."
 ---
 `update_chunk` edits one chunk. **You must pass the chunk's CURRENT `revision`
 — get it from `get_chunk` immediately before, never from memory or a guess.**
@@ -20,6 +20,11 @@ successful update adds 1 to the revision.
 - `fields` — the new fields object, replacing the old one whole (not merged):
   send every field you want to keep.
 - `tags` — the new tag set, replacing the old one; `[]` clears all tags.
+- `valid_at`, `invalid_at` — the period the chunk's content is true, in unix
+  nanoseconds (`invalid_at` exclusive). Each end you send replaces the stored
+  one; `null` clears it; an end you leave out is kept. Content time, not write time: when what the chunk says became true in the
+  world. Omit when unknown; a guessed instant is worse than none. Not
+  recorded in the chunk's history (only body changes are).
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Leave a key out to keep its value. Moving a chunk is `move_chunk`, not this.
@@ -40,6 +45,8 @@ revision for your next update.
 - `update_chunk: revision conflict (revision N was changed by a concurrent write) ...`
   — the same, lost by a hair. Re-read and retry.
 - `update_chunk: no such chunk: <id>` — wrong id or wrong scope.
+- `update_chunk: invalid_at (...) must be after valid_at (...)` — the period,
+  with the ends you did not send kept as stored, would contain no instant.
 - `an agent may not modify the ontology document ...` — the tenant ontology is
   operator-only.
 
@@ -60,4 +67,11 @@ sent again):
 
 ```json
 {"op": "update_chunk", "id": "5d8e2f1a0b9c4d3e7f6a5b4c3d2e1f00", "revision": 4, "fields": {"owner": "maria", "estimate_days": 3}, "tags": []}
+```
+
+Close an edition that a newer one replaced, and mark it repealed — the status
+for people, the period for `as_of`:
+
+```json
+{"op": "update_chunk", "id": "5d8e2f1a0b9c4d3e7f6a5b4c3d2e1f00", "revision": 5, "status": "repealed", "invalid_at": 1767225600000000000}
 ```
