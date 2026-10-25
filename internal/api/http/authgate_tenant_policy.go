@@ -50,9 +50,10 @@ func (s *Server) effectiveTenantGates(ctx context.Context, tenant string) ([]str
 	if e, ok := s.tenantPolicyCache.get(cfg, tenant, now); ok {
 		return e.gates, e.restricted, nil
 	}
+	gen := s.tenantPolicyCache.begin()
 	gates, restricted, err := s.loadTenantGates(ctx, cfg, tenant)
 	if err == nil {
-		s.tenantPolicyCache.put(cfg, tenant, tenantPolicyEntry{gates: gates, restricted: restricted, at: now})
+		s.tenantPolicyCache.put(cfg, tenant, tenantPolicyEntry{gates: gates, restricted: restricted, at: now}, gen)
 	}
 	return gates, restricted, err
 }

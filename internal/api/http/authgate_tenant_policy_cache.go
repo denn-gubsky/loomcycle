@@ -22,6 +22,7 @@ type tenantPolicyCache struct {
 	mu      sync.Mutex
 	cfg     *config.Config
 	entries map[string]tenantPolicyEntry
+	gen     uint64
 }
 
 type tenantPolicyEntry struct {
@@ -43,9 +44,21 @@ func (c *tenantPolicyCache) get(cfg *config.Config, tenant string, now time.Time
 	return e, true
 }
 
-func (c *tenantPolicyCache) put(cfg *config.Config, tenant string, e tenantPolicyEntry) {
+// begin returns the generation a load starts under.
+func (c *tenantPolicyCache) begin() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.gen
+}
+
+// put stores a load's result, unless a flush happened since the load began
+// (gen moved): its result may predate the change the flush announced.
+func (c *tenantPolicyCache) put(cfg *config.Config, tenant string, e tenantPolicyEntry, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.gen != gen {
+		return
+	}
 	if c.cfg != cfg || c.entries == nil {
 		c.cfg, c.entries = cfg, map[string]tenantPolicyEntry{}
 	}
@@ -56,4 +69,5 @@ func (c *tenantPolicyCache) flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries = nil
+	c.gen++
 }
