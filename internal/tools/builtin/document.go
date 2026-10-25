@@ -2539,6 +2539,17 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errFrom("get_chunk: entity: "+merr.Error(), merr), nil
 	} else if ok {
 		resp["entity"] = chunkMetaToJSON(meta)
+		// A KEYED chunk is what sync carries, so it always names both ends of its
+		// own interval — null when unset. That lets a syncing peer tell "undated
+		// here" (null: clear) from "this server does not know the field" (absent:
+		// keep), and an older peer is never mistaken for one that cleared a date.
+		if meta.NaturalKey != "" {
+			for _, k := range []string{"valid_at", "invalid_at"} {
+				if _, set := resp[k]; !set {
+					resp[k] = nil
+				}
+			}
+		}
 	}
 	return jsonResult(resp)
 }

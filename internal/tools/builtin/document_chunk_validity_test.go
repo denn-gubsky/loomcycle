@@ -35,7 +35,7 @@ func chunkInt64(t *testing.T, text, key string) (int64, bool) {
 		t.Fatalf("decode %q: %v", text, err)
 	}
 	v, ok := m[key]
-	if !ok {
+	if !ok || v == nil { // a keyed chunk names an unset end as null
 		return 0, false
 	}
 	n, err := v.(json.Number).Int64()
