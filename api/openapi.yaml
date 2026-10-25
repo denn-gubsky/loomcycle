@@ -759,6 +759,71 @@ paths:
         "409":
           description: "`open_mode`: authentication is off; no session is needed."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_users/{subject}/approve:
+    post:
+      tags: [auth]
+      summary: Approve a user awaiting approval (pending → active).
+      description: |
+        RFC FA §3.7a. A tenant operator in its own tenant, an admin in any
+        (`?tenant=`), an `auth:manage` credential only for a user at the
+        provisioning floor. Audited `auth_user_approved`. `409 not_pending` for
+        a user that is not pending. PATCH cannot take a pending user to active.
+      operationId: approveUser
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+        - { name: tenant, in: query, schema: { type: string } }
+      responses:
+        "200": { description: The user, now active. }
+        "404": { description: "`user_not_found` (also another tenant's user)." }
+        "409": { description: "`not_pending`." }
+  /v1/_users/{subject}/identities:
+    get:
+      tags: [auth]
+      summary: A user's sign-in identities (no secrets).
+      description: The user itself, or a tenant operator / admin held to `read principal:user:<subject>`.
+      operationId: listUserIdentities
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: "`{subject, identities: [{gate, issuer, external_subject, email, email_verified, created_at, last_login_at}]}`." }
+    post:
+      tags: [auth]
+      summary: Start linking another OIDC gate's account to this user (RFC FA D14).
+      description: |
+        Only the user itself, from its own Web UI session signed in within
+        `auth.session.reauth_window` (`403 reauth_required` otherwise). Answers
+        `{redirect}`, the provider URL of a fresh sign-in (prompt=login,
+        max_age=0); the callback links the account only if it maps to the
+        user's tenant and belongs to nobody yet. Never inferred from an e-mail.
+      operationId: linkUserIdentity
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [gate]
+              properties:
+                gate: { type: string }
+      responses:
+        "200": { description: "`{redirect}`." }
+        "403": { description: "`link_needs_own_session` or `reauth_required`." }
+        "409": { description: "`already_linked` or `same_gate`." }
+  /v1/_users/{subject}/identities/{gate}:
+    delete:
+      tags: [auth]
+      summary: Unlink an identity-gate account; its sessions end.
+      description: The user from its own session after a recent sign-in, or a tenant operator / admin held to `manage principal:user:<subject>`. Password logins have their own route.
+      operationId: unlinkUserIdentity
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/Gate" }
+      responses:
+        "204": { description: Unlinked. }
+        "404": { description: "`identity_not_found`." }
   /v1/_auth/logout:
     post:
       tags: [auth]
@@ -971,7 +1036,43 @@ paths:
                   has_users: { type: boolean }
                   bootstrapped: { type: boolean, description: The tenant has ever had a user; an owner bootstrap needs false. }
                   bootstrap_invite_live: { type: boolean }
+  /v1/_auth/login/{gate}:
+    get:
+      tags: [auth]
+      summary: Start a sign-in through an OIDC gate (a top-level navigation).
+      description: |
+        RFC FA P1. Unauthenticated; throttled per client source. Sets a short
+        `__Host-lc_login` (or `lc_login` over HTTP) cookie bound to a single-use
+        state and answers 303 to the provider (code + PKCE S256 + nonce). A
+        refusal is a 303 to `/ui/login?error=<code>` (`return_to_refused`,
+        `too_many_attempts`, `insecure_transport`, `gate_unavailable`).
+      operationId: redirectSignInStart
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Gate" }
+        - { name: return_to, in: query, schema: { type: string }, description: "A /ui path, or a URL listed verbatim in the gate's allowed_return_to." }
+        - { name: reauth, in: query, schema: { type: string, enum: ["1"] }, description: "Ask the provider to authenticate again (prompt=login, max_age=0)." }
+      responses:
+        "303": { description: To the provider, or back to the login page with an error code. }
+        "404": { description: "`gate_not_found`." }
   /v1/_auth/complete/{gate}:
+    get:
+      tags: [auth]
+      summary: The OIDC provider's callback.
+      description: |
+        Needs this browser's login cookie and the single-use state. Verifies the
+        ID token, provisions the user by the gate's identity map and answers 303
+        with the session cookie to `return_to` (a pending user to `/ui/pending`);
+        a refusal is a 303 to `/ui/login?error=<code>`. A link login (started by
+        POST /v1/_users/{subject}/identities) returns to `/ui/account`.
+      operationId: redirectSignInComplete
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Gate" }
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+      responses:
+        "303": { description: Into the Web UI, or back to the login page with an error code. }
     post:
       tags: [auth]
       summary: Sign in through a password gate (the login form's post).

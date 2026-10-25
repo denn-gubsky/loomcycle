@@ -516,6 +516,15 @@ func Run(t *testing.T, factory Factory) {
 		{"UISessionDeleteExpiredKeepsOnlyLiveRows", testUISessionDeleteExpiredKeepsOnlyLiveRows},
 		// RFC FA P2 password gate.
 		{"UserIdentityCreateGetListRenameRoundTrip", testUserIdentityCreateGetListRenameRoundTrip},
+		// RFC FA P1 (oidc_gate.go).
+		{"AuthLoginStateConsumesOnceAndRoundTrips", testAuthLoginStateConsumesOnceAndRoundTrips},
+		{"AuthLoginStateExpiredIsRefusedAndSwept", testAuthLoginStateExpiredIsRefusedAndSwept},
+		{"AuthLoginStateConcurrentConsumeHasOneWinner", testAuthLoginStateConcurrentConsumeHasOneWinner},
+		{"UserIdentityDeleteRemovesOnlyThatGate", testUserIdentityDeleteRemovesOnlyThatGate},
+		{"GroupCreateNeverOverwrites", testGroupCreateNeverOverwrites},
+		{"UISessionAuthTimeRoundTrips", testUISessionAuthTimeRoundTrips},
+		{"OperatorTokenIssuedByGateRoundTrips", testOperatorTokenIssuedByGateRoundTrips},
+		{"UserStatusPendingIsStored", testUserStatusPendingIsStored},
 		{"UserIdentityTakenLoginAndSecondIdentityAtGateConflict", testUserIdentityTakenLoginAndSecondIdentityAtGateConflict},
 		{"UserIdentityRenameToTakenNameConflictsAndKeepsOldName", testUserIdentityRenameToTakenNameConflictsAndKeepsOldName},
 		{"UserCredentialSetGetRehashIsACompareAndSet", testUserCredentialSetGetRehashIsACompareAndSet},

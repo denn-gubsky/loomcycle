@@ -17,7 +17,7 @@ import (
 
 const uiSessionSelect = `SELECT session_hash, tenant_id, subject, gate, amr, cred_kind, cred_ref,
 	cred_mac, ua_hash, ip_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at,
-	revoked_at FROM ui_sessions`
+	revoked_at, auth_time FROM ui_sessions`
 
 func (s *Store) UISessionCreate(ctx context.Context, row store.UISessionRow) error {
 	if row.SessionHash == "" || row.TenantID == "" || row.Subject == "" || row.Gate == "" || row.CredKind == "" ||
@@ -37,13 +37,18 @@ func (s *Store) UISessionCreate(ctx context.Context, row store.UISessionRow) err
 	if row.LastSeenAt.IsZero() {
 		row.LastSeenAt = row.CreatedAt
 	}
+	var authTime *time.Time
+	if !row.AuthTime.IsZero() {
+		t := row.AuthTime.UTC()
+		authTime = &t
+	}
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO ui_sessions (session_hash, tenant_id, subject, gate, amr, cred_kind, cred_ref, cred_mac,
-			ua_hash, ip_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULL)`,
+			ua_hash, ip_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at, auth_time)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULL, $15)`,
 		row.SessionHash, row.TenantID, row.Subject, row.Gate, string(amr), row.CredKind, row.CredRef, row.CredMAC,
 		row.UAHash, row.IPHash, row.CreatedAt.UTC(), row.LastSeenAt.UTC(),
-		row.IdleExpiresAt.UTC(), row.AbsoluteExpiresAt.UTC(),
+		row.IdleExpiresAt.UTC(), row.AbsoluteExpiresAt.UTC(), authTime,
 	); err != nil {
 		return fmt.Errorf("ui_session insert: %w", err)
 	}
@@ -52,14 +57,15 @@ func (s *Store) UISessionCreate(ctx context.Context, row store.UISessionRow) err
 
 func (s *Store) UISessionGet(ctx context.Context, sessionHash string) (store.UISessionRow, error) {
 	var (
-		row     store.UISessionRow
-		amr     string
-		revoked *time.Time
+		row      store.UISessionRow
+		amr      string
+		revoked  *time.Time
+		authTime *time.Time
 	)
 	err := s.pool.QueryRow(ctx, uiSessionSelect+` WHERE session_hash = $1`, sessionHash).Scan(
 		&row.SessionHash, &row.TenantID, &row.Subject, &row.Gate, &amr, &row.CredKind, &row.CredRef,
 		&row.CredMAC, &row.UAHash, &row.IPHash, &row.CreatedAt, &row.LastSeenAt, &row.IdleExpiresAt,
-		&row.AbsoluteExpiresAt, &revoked)
+		&row.AbsoluteExpiresAt, &revoked, &authTime)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.UISessionRow{}, &store.ErrNotFound{Kind: "ui_session", ID: "<hash>"}
 	}
@@ -71,6 +77,9 @@ func (s *Store) UISessionGet(ctx context.Context, sessionHash string) (store.UIS
 	}
 	if revoked != nil {
 		row.RevokedAt = *revoked
+	}
+	if authTime != nil {
+		row.AuthTime = *authTime
 	}
 	return row, nil
 }

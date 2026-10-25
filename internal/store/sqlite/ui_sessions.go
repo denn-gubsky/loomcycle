@@ -16,7 +16,7 @@ import (
 
 const uiSessionSelect = `SELECT session_hash, tenant_id, subject, gate, amr, cred_kind, cred_ref,
 	cred_mac, ua_hash, ip_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at,
-	revoked_at FROM ui_sessions`
+	revoked_at, auth_time FROM ui_sessions`
 
 func (s *Store) UISessionCreate(ctx context.Context, row store.UISessionRow) error {
 	if row.SessionHash == "" || row.TenantID == "" || row.Subject == "" || row.Gate == "" || row.CredKind == "" ||
@@ -36,13 +36,17 @@ func (s *Store) UISessionCreate(ctx context.Context, row store.UISessionRow) err
 	if row.LastSeenAt.IsZero() {
 		row.LastSeenAt = row.CreatedAt
 	}
+	var authTime any
+	if !row.AuthTime.IsZero() {
+		authTime = row.AuthTime.UnixNano()
+	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO ui_sessions (session_hash, tenant_id, subject, gate, amr, cred_kind, cred_ref, cred_mac,
-			ua_hash, ip_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+			ua_hash, ip_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at, auth_time)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
 		row.SessionHash, row.TenantID, row.Subject, row.Gate, string(amr), row.CredKind, row.CredRef, row.CredMAC,
 		row.UAHash, row.IPHash, row.CreatedAt.UnixNano(), row.LastSeenAt.UnixNano(),
-		row.IdleExpiresAt.UnixNano(), row.AbsoluteExpiresAt.UnixNano(),
+		row.IdleExpiresAt.UnixNano(), row.AbsoluteExpiresAt.UnixNano(), authTime,
 	); err != nil {
 		return fmt.Errorf("ui_session insert: %w", err)
 	}
@@ -54,11 +58,11 @@ func (s *Store) UISessionGet(ctx context.Context, sessionHash string) (store.UIS
 		row                           store.UISessionRow
 		amr                           string
 		created, seen, idle, absolute int64
-		revoked                       sql.NullInt64
+		revoked, authTime             sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx, uiSessionSelect+` WHERE session_hash = ?`, sessionHash).Scan(
 		&row.SessionHash, &row.TenantID, &row.Subject, &row.Gate, &amr, &row.CredKind, &row.CredRef,
-		&row.CredMAC, &row.UAHash, &row.IPHash, &created, &seen, &idle, &absolute, &revoked)
+		&row.CredMAC, &row.UAHash, &row.IPHash, &created, &seen, &idle, &absolute, &revoked, &authTime)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.UISessionRow{}, &store.ErrNotFound{Kind: "ui_session", ID: "<hash>"}
 	}
@@ -74,6 +78,9 @@ func (s *Store) UISessionGet(ctx context.Context, sessionHash string) (store.UIS
 	row.AbsoluteExpiresAt = time.Unix(0, absolute)
 	if revoked.Valid {
 		row.RevokedAt = time.Unix(0, revoked.Int64)
+	}
+	if authTime.Valid {
+		row.AuthTime = time.Unix(0, authTime.Int64)
 	}
 	return row, nil
 }

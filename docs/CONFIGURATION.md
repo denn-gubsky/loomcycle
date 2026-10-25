@@ -1666,7 +1666,7 @@ auth:
 
 - **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `LOOMCYCLE_UI_LOGIN_ORIGINS` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
 - **`auth.mode: strict`** offers only the listed gates. The paste box exists only if a `kind: token` gate is listed, the handoff is off, the old bearer cookie and the WebSocket subprotocol bearer are not read, and Web UI sessions need HTTPS (see below). Strict mode with no interactive gate fails the load (nobody could sign in); strict mode with no credential at all refuses to boot. A config reload cannot lower the mode (audited `auth_downgrade_refused`); that takes a restart. API bearers are unaffected.
-- **Gates.** `kind: token` (paste a loomcycle token) and `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)); the other kinds the RFC names are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
+- **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)) and `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)); the other kinds the RFC names are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
 - **`auth.session`.** `idle` (default 8h) ends a session after that long without a request; `absolute` (default 7 days) caps it whatever the activity. Shortening either applies to sessions already issued. `reauth_window` (default 15m) is validated now and used once sensitive actions ask for a recent sign-in.
 - **A session never outlives or out-reaches its token.** A session made from a pasted token re-checks that token on every request: retiring or expiring a minted token, changing a principal's secret, removing it, or changing `LOOMCYCLE_AUTH_TOKEN` ends the session on its next request, and the session always carries the token's **current** scopes. A changed token pepper (`LOOMCYCLE_OPERATOR_TOKEN_PEPPER` / `LOOMCYCLE_SECRET_KEY`) ends every session. A browser that presents the cookie with a different User-Agent ends it too.
 
@@ -1682,6 +1682,37 @@ auth:
 **CSRF.** A request a session cookie authenticates that changes state must carry `X-Loomcycle-UI: 1` and come from the server's own origin (`Sec-Fetch-Site: same-origin`, or an `Origin` naming this host); a WebSocket upgrade it authenticates needs the same origin. The login route needs a same-origin request too. Requests with an `Authorization` header are not affected. **A UI bundle built for an older server (`LOOMCYCLE_WEBUI_DIR` / `LOOMCYCLE_WEBUI_BUNDLE_URL`) does not send the header**, so the server's UI API level is now 2 and such a bundle is refused in favour of the embedded UI.
 
 **Routes.** `POST /ui/session` (the token gate; `Authorization: Bearer`; 204 + cookie, or an opaque `401 invalid_credentials`), `POST /v1/_auth/logout` (revokes the session, clears the cookies, sends `Clear-Site-Data`), `GET /ui/login-config.json` (the mode, the gates' names, kinds and labels, the handoff origins, and `session_refused` when this request cannot sign in), and `GET /v1/_me`'s `auth` block (`mode`; for a session also `gate`, `amr`, `auth_time`, `session_expires_at`). `GET /ui?token=…` no longer signs anyone in: it redirects to the login page. With `LOOMCYCLE_AUDIT_LOG_PATH` set, `auth_login`, `auth_login_failed`, `auth_logout`, `auth_session_expired` and `auth_session_revoked` are recorded with the gate, tenant, subject and source address, never a token or session id. Ended sessions are deleted hourly.
+
+### OIDC gate — `kind: oidc` (RFC FA P1)
+
+Sign people in to the Web UI through Google Workspace, Microsoft Entra, Okta, Keycloak, Cognito, IAM Identity Center, Auth0 or any OpenID Connect provider. loomcycle is a confidential client: it redeems the code, verifies the ID token and keeps the provider's tokens to itself; the browser only gets loomcycle's session cookie.
+
+```yaml
+auth:
+  lifecycle:
+    new_user: { access_mode: isolated, groups: [everyone, new-users], status: active, token_ttl: 12h }
+  gates:
+    google:
+      kind: oidc
+      preset: google
+      label: "Sign in with Google"
+      client_id: 1234.apps.googleusercontent.com
+      client_secret_env: LOOMCYCLE_GATE_GOOGLE_SECRET   # an env var NAME; a literal or $cred: secret is refused
+      allowed_domains: [acme.com]                     # the hd claim; email_verified must be true too
+      end_session: false                              # true: logout also visits the provider's end-session page
+      identity_map:
+        tenant: acme                                  # or tenant_claim: <claim> + allowed_tenants: {<value>: <tenant>}
+        provision: auto                               # never | known (default) | auto
+```
+
+- **Redirect URI.** Register exactly `<LOOMCYCLE_PUBLIC_URL>/v1/_auth/complete/<gate>` at the provider. `LOOMCYCLE_PUBLIC_URL` is required.
+- **Presets.** `google` (issuer fixed, `allowed_domains` required: the `hd` claim, never the e-mail's domain), `entra` (`allowed_tids`: one GUID uses that tenant's issuer; several use the `organizations` endpoint and each token's own issuer), `cognito` (`issuer: https://cognito-idp.<region>.amazonaws.com/<pool>`; `token_use` must be `id`), `okta`, `keycloak`, `identity-center`, `auth0` (each needs `issuer`), `generic` (`issuer`, optional `discovery_url`). Other keys: `scopes` (default `openid email profile`), `token_auth: basic|post`, `allowed_return_to` (absolute URLs a login may return to, matched exactly; a `/ui` path is always allowed), `trusted`.
+- **Checks.** Code flow with PKCE S256 only; `state` bound to a ten-minute `__Host-lc_login` cookie (`lc_login` over plain HTTP) and a single-use server row; `nonce`; `iss`/`aud`/`azp`; `exp` and `iat` within 5 minutes; asymmetric signature algorithms only; the key by `kid`, refetched on rotation at most once a minute. Starting a login is throttled to 30 per client source per 10 minutes.
+- **Identity map.** The subject is always `<gate>:<sub>` — never the e-mail. An identity lands in the configured tenant or, with `tenant_claim`, in the tenant `allowed_tenants` maps its claim to; anything else is refused, never the shared tenant. `provision: known` admits only users an operator created (subject `<gate>:<sub>`); `auto` creates them at `auth.lifecycle.new_user` (the floor, which may not be tenant reach). A gate's `identity_map.new_user` may go beyond the floor (tenant reach, more groups, `active` over a `pending` floor) and its `groups` block may sync groups only with `trusted: true`.
+- **Group sync.** `identity_map.groups: {claim: groups, provision: true, map: {hr-admins: admins}}` adds and removes the user's memberships, at every login, in the groups whose `external_id` is `<gate>:<provider name>` only; local groups and other gates' groups are never touched. Audited `auth_groups_synced`.
+- **Approval queue.** `new_user.status: pending` (recommended for strict deployments) lets a new person sign in to an "awaiting approval" page and nothing else, until an operator approves them in the Users console (`POST /v1/_users/{subject}/approve`).
+- **Linking.** A user links another gate's account from the account page, within `auth.session.reauth_window` of signing in, through a fresh provider sign-in; never inferred from an e-mail. `DELETE /v1/_users/{subject}/identities/{gate}` unlinks.
+- **Issued tokens.** Tokens a gate issues for non-browser clients are tagged `issued_by_gate`, live at most `new_user.token_ttl` (and `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`), and cannot be rotated.
 
 ### Password gate — `kind: password` (RFC FA P2)
 

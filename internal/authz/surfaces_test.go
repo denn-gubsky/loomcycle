@@ -58,6 +58,12 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"POST", "/v1/_users", instance("manage", "principal", "user:*"), true},
 		{"POST", "/v1/_users/alice/tokens", instance("mint", "principal", "user:alice"), true},
 		{"GET", "/v1/_users/alice", instance("read", "principal", "user:alice"), true},
+		// RFC FA D14: a user's sign-in identities are the user plane's like
+		// the rest; linking one is taking over the account.
+		{"GET", "/v1/_users/alice/identities", instance("read", "principal", "user:alice"), true},
+		{"POST", "/v1/_users/alice/identities", instance("manage", "principal", "user:alice"), true},
+		{"DELETE", "/v1/_users/alice/identities/google", instance("manage", "principal", "user:alice"), true},
+		{"POST", "/v1/_users/alice/approve", instance("manage", "principal", "user:alice"), true},
 		{"POST", "/v1/_snapshots", instance("manage", "runtime", "snapshot"), true},
 		{"GET", "/v1/_events", instance("read", "runtime", "events"), true},
 		{"POST", "/v1/_mcp", instance("use", "transport", "mcp"), true},

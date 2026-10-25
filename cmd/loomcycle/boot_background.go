@@ -509,6 +509,17 @@ func (b *boot) startStoreSweepers() {
 				if n > 0 {
 					slog.Info("ui-session sweep: deleted ended sessions", "rows", n)
 				}
+				// Started redirect logins (RFC FA P1): a used or expired one
+				// can never be consumed again, so deleting it changes no
+				// answer — a replayed callback finds nothing either way.
+				m, err := storeIface.AuthLoginStateDeleteExpired(ctx, time.Now())
+				if err != nil {
+					slog.Error("ui-session sweep: deleting login states failed", "err", err)
+					return
+				}
+				if m > 0 {
+					slog.Info("ui-session sweep: deleted finished login states", "rows", m)
+				}
 			})
 	}
 

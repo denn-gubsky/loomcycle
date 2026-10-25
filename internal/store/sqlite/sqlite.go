@@ -656,6 +656,22 @@ func (s *Store) migrate(ctx context.Context) error {
 			window_end    INTEGER NOT NULL,
 			blocked_until INTEGER
 		)`,
+		// RFC FA P1: started redirect logins (OIDC / OAuth code flows).
+		// Mirrors postgres migration 0112 (see its comment for the design).
+		`CREATE TABLE IF NOT EXISTS auth_login_states (
+			state_hash        TEXT    PRIMARY KEY,
+			gate              TEXT    NOT NULL,
+			binding_hash      TEXT    NOT NULL,
+			purpose           TEXT    NOT NULL DEFAULT 'login',
+			return_to         TEXT    NOT NULL DEFAULT '',
+			reauth            INTEGER NOT NULL DEFAULT 0,
+			link_tenant       TEXT    NOT NULL DEFAULT '',
+			link_subject      TEXT    NOT NULL DEFAULT '',
+			link_session_hash TEXT    NOT NULL DEFAULT '',
+			created_at        INTEGER NOT NULL,
+			expires_at        INTEGER NOT NULL,
+			consumed_at       INTEGER
+		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER
@@ -1599,6 +1615,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE webhook_deliveries ADD COLUMN claimed_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE webhook_deliveries ADD COLUMN run_key TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE webhook_deliveries ADD COLUMN run_alt_key TEXT NOT NULL DEFAULT ''`,
+		// RFC FA P1: when the person last authenticated (unix nanos, NULL =
+		// unknown) and the gate that issued a token. Mirrors postgres 0112.
+		`ALTER TABLE ui_sessions ADD COLUMN auth_time INTEGER`,
+		`ALTER TABLE operator_token_defs ADD COLUMN issued_by_gate TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

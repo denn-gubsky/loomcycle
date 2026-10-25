@@ -1059,3 +1059,13 @@ func (s *Store) UserCreateOwner(ctx context.Context, user store.UserRow, owner s
 	}
 	return tx.Commit(ctx)
 }
+
+// UserIdentityDelete implements store.AuthIdentityStore.
+func (s *Store) UserIdentityDelete(ctx context.Context, tenantID, subject, gate string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM user_identities WHERE tenant_id = $1 AND subject = $2 AND gate = $3`,
+		tenantID, subject, gate)
+	if err != nil {
+		return false, fmt.Errorf("user identity delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}

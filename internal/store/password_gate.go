@@ -195,6 +195,52 @@ type AuthIdentityStore interface {
 	UserIdentityRename(ctx context.Context, tenantID, subject, gate, newExternalSubject string) error
 	// UserIdentityTouchLogin stamps last_login_at.
 	UserIdentityTouchLogin(ctx context.Context, gate, issuer, externalSubject string, at time.Time) error
+	// UserIdentityDelete removes the subject's identity at gate (an account
+	// unlink) and reports whether one went.
+	UserIdentityDelete(ctx context.Context, tenantID, subject, gate string) (bool, error)
+}
+
+// Login-state purposes.
+const (
+	LoginPurposeLogin = "login"
+	LoginPurposeLink  = "link"
+)
+
+// AuthLoginStateRow is one started redirect login (RFC FA §3.5, §5): an OIDC
+// or OAuth code flow, between the redirect to the provider and its callback.
+// StateHash is the SHA-256 of the OAuth state; BindingHash is that of the
+// secret in the browser's login cookie, from which the PKCE verifier and the
+// nonce derive — neither is stored, so this row alone cannot finish a login.
+type AuthLoginStateRow struct {
+	StateHash   string
+	Gate        string
+	BindingHash string
+	// Purpose is LoginPurposeLogin, or LoginPurposeLink for an account link,
+	// which names the user and the session that asked for it.
+	Purpose         string
+	ReturnTo        string
+	Reauth          bool
+	LinkTenant      string
+	LinkSubject     string
+	LinkSessionHash string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	ConsumedAt      time.Time
+}
+
+// AuthLoginStateStore persists started redirect logins.
+type AuthLoginStateStore interface {
+	// AuthLoginStateCreate inserts a login state. *ErrConflict on a duplicate
+	// state hash.
+	AuthLoginStateCreate(ctx context.Context, row AuthLoginStateRow) error
+	// AuthLoginStateConsume marks the state used and returns it, once: only a
+	// state that is unconsumed and unexpired at now is returned, so a
+	// replayed callback finds nothing. *ErrNotFound{Kind:"auth_login_state"}
+	// otherwise.
+	AuthLoginStateConsume(ctx context.Context, stateHash string, now time.Time) (AuthLoginStateRow, error)
+	// AuthLoginStateDeleteExpired removes states that expired or were used
+	// before `before`.
+	AuthLoginStateDeleteExpired(ctx context.Context, before time.Time) (int, error)
 }
 
 // PasswordGateStore persists the password gate's credentials, second factors,
