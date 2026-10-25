@@ -4737,6 +4737,14 @@ func (s *Server) Mux() http.Handler {
 	// authMiddleware so an expired session can still log out; the handler's
 	// CSRF check (custom header + same origin) keeps other sites from it.
 	mux.Handle("POST /v1/_auth/logout", recoveryMiddleware(http.HandlerFunc(s.handleAuthLogout)))
+	// RFC FA P5 — device login (RFC 8628). The CLI's two posts are
+	// unauthenticated (the person's approval is the credential) and
+	// throttled per source; info/approve need a Web UI session, through
+	// authMiddleware (whose CSRF check covers the cookie-authenticated write).
+	mux.Handle("POST /v1/_auth/device", recoveryMiddleware(http.HandlerFunc(s.handleDeviceAuthorize)))
+	mux.Handle("POST /v1/_auth/device/token", recoveryMiddleware(http.HandlerFunc(s.handleDeviceToken)))
+	mux.Handle("POST /v1/_auth/device/info", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeviceInfo))))
+	mux.Handle("POST /v1/_auth/device/approve", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeviceApprove))))
 	// RFC FA P5 — per-tenant gate policies (admin; ScopeAdmin in scopeGate).
 	mux.Handle("GET /v1/_auth/tenant-policies", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTenantPolicies))))
 	mux.Handle("PUT /v1/_auth/tenant-policies/{tenant}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutTenantPolicy))))

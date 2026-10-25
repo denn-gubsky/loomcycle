@@ -845,6 +845,130 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_auth/device:
+    post:
+      tags: [auth]
+      summary: Start a device login (RFC 8628 §3.1).
+      description: |
+        Needs a `kind: device` gate. Unauthenticated: the person's approval in
+        the Web UI is the credential. Returns the device code (the client keeps
+        it), the user code and the verification link to show the person. Each
+        client address may start a bounded number per 15 minutes.
+      operationId: startDeviceLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string, description: "1-64 of letters, digits, - _ . : — shown on the approval page." }
+                scope: { type: string, description: "Must be absent: the token carries the approver's own scopes." }
+      responses:
+        "200":
+          description: The code pair.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_code: { type: string }
+                  user_code: { type: string, example: BCDF-GHJK }
+                  verification_uri: { type: string }
+                  verification_uri_complete: { type: string }
+                  expires_in: { type: integer }
+                  interval: { type: integer }
+        "400": { description: "RFC 6749 error: `invalid_client`, `invalid_scope`, `invalid_request`." }
+        "404": { description: "`device_login_disabled`: no device gate." }
+        "429": { description: "`slow_down`: too many device logins from this address." }
+  /v1/_auth/device/token:
+    post:
+      tags: [auth]
+      summary: Poll a device login (RFC 8628 §3.4).
+      description: |
+        Answers `authorization_pending` until the person approves, `slow_down`
+        (and a 5 s longer interval from then on) when polled early,
+        `access_denied`, `expired_token`, or `invalid_grant` (unknown or
+        already used). After approval the first poll receives a token issued
+        to the person who approved: their member scopes, tagged with the gate
+        their session came through, at most the device gate's `token_ttl`,
+        that gate's limit and LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS. A code
+        yields one token. A source polling unknown codes is blocked for a while.
+      operationId: pollDeviceLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, device_code, client_id]
+              properties:
+                grant_type: { type: string, enum: ["urn:ietf:params:oauth:grant-type:device_code"] }
+                device_code: { type: string }
+                client_id: { type: string }
+      responses:
+        "200":
+          description: The issued token (shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer }
+                  scope: { type: string }
+        "400": { description: "RFC 6749 error (see above)." }
+        "401": { description: "`invalid_client`: client_id is not the code's." }
+        "429": { description: "`slow_down`: too many unknown codes from this address." }
+  /v1/_auth/device/info:
+    post:
+      tags: [auth]
+      summary: Show what a user code is asking for (Web UI session only).
+      description: |
+        The approval page's lookup: client, source address, times, and the
+        scopes the token would carry (the person's own). The code rides the
+        body. Wrong codes count against the person and their address.
+      operationId: deviceLoginInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [user_code], properties: { user_code: { type: string } } }
+      responses:
+        "200": { description: The request to approve. }
+        "403": { description: "`session_required`: not a Web UI session (a bearer cannot approve)." }
+        "404": { description: "`code_invalid`: unknown, expired or already decided." }
+        "429": { description: "`too_many_attempts`." }
+  /v1/_auth/device/approve:
+    post:
+      tags: [auth]
+      summary: Approve or deny a device login (Web UI session only).
+      description: |
+        Needs a Web UI session (any gate) with `X-Loomcycle-UI: 1` from this
+        server's own pages. Refused when the person is not an active user,
+        the session is narrower than the token would be (a restricted pasted
+        token), or the tenant's gate policy does not list the session's gate.
+        A code is decided once.
+      operationId: approveDeviceLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code, approve]
+              properties:
+                user_code: { type: string }
+                approve: { type: boolean }
+      responses:
+        "200": { description: "`{approved}`." }
+        "403": { description: "`session_required`, `device_not_allowed`, or the CSRF refusal." }
+        "404": { description: "`code_invalid`." }
+        "429": { description: "`too_many_attempts`." }
   /v1/_auth/tenant-policies:
     get:
       tags: [auth]

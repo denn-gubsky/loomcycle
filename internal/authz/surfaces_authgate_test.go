@@ -2,17 +2,22 @@ package authz
 
 import "testing"
 
-// RFC FA P5: a bearer's self-retire is governed as the caller's
-// own-credential question, the tenant policies as deployment administration.
-func TestHTTPSurface_SelfRevokeAndTenantPolicies(t *testing.T) {
+// RFC FA P5: the device-login approval and a bearer's self-retire are governed
+// as the caller's own-credential questions; the CLI's start and poll come
+// before any principal, so they are not.
+func TestHTTPSurface_DeviceLoginAndSelfRevoke(t *testing.T) {
 	for _, tc := range []struct {
 		method, path string
 		want         Surface
 		governed     bool
 	}{
+		{"POST", "/v1/_auth/device/approve", instance("mint", "principal", "token:self"), true},
+		{"POST", "/v1/_auth/device/info", instance("mint", "principal", "token:self"), true},
 		{"POST", "/v1/_auth/token/revoke", instance("manage", "principal", "token:self"), true},
 		{"PUT", "/v1/_auth/tenant-policies/acme", instance("manage", "runtime", "tenants"), true},
 		{"GET", "/v1/_auth/tenant-policies", instance("read", "runtime", "tenants"), true},
+		{"POST", "/v1/_auth/device", Surface{}, false},
+		{"POST", "/v1/_auth/device/token", Surface{}, false},
 	} {
 		got, governed := HTTPSurface(tc.method, tc.path)
 		if got != tc.want || governed != tc.governed {

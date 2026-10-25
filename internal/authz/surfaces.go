@@ -297,6 +297,18 @@ func HTTPSurface(method, path string) (Surface, bool) {
 	case name == "auth" && len(rest) >= 2 && rest[1] == "tenant-policies":
 		// RFC FA P5: a tenant's gate policy is deployment administration.
 		return instance(readOrManage(method), "runtime", "tenants"), true
+	case name == "auth" && len(rest) == 2 && rest[1] == "device",
+		name == "auth" && len(rest) == 3 && rest[1] == "device" && rest[2] == "token":
+		// RFC FA P5, by design ungoverned: the CLI's device-login start and
+		// poll come before any principal exists. The poll authenticates by
+		// its device code alone, and the token it yields is decided by the
+		// approval below, which is governed.
+		return Surface{}, false
+	case name == "auth" && len(rest) == 3 && rest[1] == "device" && (rest[2] == "info" || rest[2] == "approve"):
+		// RFC FA P5: approving a device login mints a token for the signed-in
+		// person themselves — a self question every user's baseline grants
+		// and an ACL can deny (`deny mint principal:token:self`).
+		return instance("mint", "principal", "token:self"), true
 	case name == "auth" && len(rest) == 3 && rest[1] == "token" && rest[2] == "revoke":
 		// RFC FA P5: a bearer retiring itself (`loomcycle logout`).
 		return instance("manage", "principal", "token:self"), true

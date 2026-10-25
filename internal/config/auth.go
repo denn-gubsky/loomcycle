@@ -63,7 +63,7 @@ const tokenGateLabel = "Access token"
 // who copied an example learns why it does not load yet.
 var laterGateKinds = map[string]bool{
 	"header": true,
-	"awsiam": true, "device": true,
+	"awsiam": true,
 }
 
 var authGateNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
@@ -147,6 +147,9 @@ type AuthGateConfig struct {
 
 	// External holds the kind: external keys (auth_external.go).
 	External AuthExternalGateConfig `yaml:",inline"`
+
+	// The device gate's keys (kind: device, auth_device.go).
+	AuthGateDeviceConfig `yaml:",inline"`
 }
 
 // AuthGateInvitesConfig holds Go durations.
@@ -192,6 +195,8 @@ type AuthGate struct {
 	OAuth *AuthOAuthGate
 	// External is set for kind: external.
 	External *AuthExternalGate
+	// Device is set for kind: device.
+	Device *AuthDeviceGate
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -274,6 +279,10 @@ func (p AuthPolicy) LoginGates() []AuthGate {
 		// An external gate with no callback_url only asserts for non-browser
 		// clients (a bridge): there is nothing to offer a person.
 		if g.External != nil && !g.External.Interactive() {
+			continue
+		}
+		// A device gate is approved through a login gate, never one itself.
+		if g.Kind == AuthGateKindDevice {
 			continue
 		}
 		out = append(out, g)
@@ -418,7 +427,7 @@ func resolveAuth(c *Config) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	tokenGates, interactive := 0, 0
+	tokenGates, interactive, deviceGates := 0, 0, 0
 	for _, name := range names {
 		g := c.Auth.Gates[name]
 		if !authGateNameRE.MatchString(name) {
@@ -439,12 +448,14 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindExternal:
 			// Interactive only with a callback_url; counted below.
+		case kind == AuthGateKindDevice:
+			deviceGates++
 		case laterGateKinds[kind]:
-			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password, oidc, oauth and external are", name, kind)
+			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password, oidc, oauth, external and device are", name, kind)
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc or external)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external or device)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc or external)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external or device)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
@@ -518,6 +529,14 @@ func resolveAuth(c *Config) error {
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
 		}
+		var dev *AuthDeviceGate
+		if kind == AuthGateKindDevice {
+			if dev, err = resolveDeviceGate(c, name, g); err != nil {
+				return err
+			}
+		} else if hasDeviceKeys(g) {
+			return fmt.Errorf("auth.gates.%s: token_ttl and rate apply only to kind: device", name)
+		}
 		label := strings.TrimSpace(g.Label)
 		if label == "" {
 			label = name
@@ -525,10 +544,13 @@ func resolveAuth(c *Config) error {
 				label = tokenGateLabel
 			}
 		}
-		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth, Identity: idm, External: ext})
+		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth, Identity: idm, External: ext, Device: dev})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
+	}
+	if deviceGates > 1 {
+		return fmt.Errorf("auth.gates: at most one gate may be kind: device, got %d", deviceGates)
 	}
 	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
 		return err
