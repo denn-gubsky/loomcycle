@@ -51,6 +51,19 @@ when `sources` includes `documents`.
 An empty `memories` list is not an error. It can also mean the fact was
 `add`ed recently and is still queued for consolidation.
 
+## Aiming at documents
+
+A recall that includes `documents` in `sources` can be aimed at part of the
+scope's documents with `under_paths`, `exclude_under_paths`, `document_ids`
+and `exclude_document_ids`, exactly as on `Memory/search`: they narrow document
+chunks only, before ranking, and the answer carries the same `filter` block.
+A recall without `sources` returns facts and notes only, so a document filter
+on it is refused — ask for `[facts, notes, documents]` or `[documents]`. A path
+is a name in ONE scope's tree: when you recall in two scopes, each call
+resolves the path in its own. Like on `search`, they work on `user` and
+`agent` scope and are refused on `tenant`. For chunk-level filters use the
+Document tool's `search`.
+
 ## Errors
 
 - `recall: missing required field: query`.
@@ -61,6 +74,9 @@ An empty `memories` list is not an error. It can also mean the fact was
   agent's backend cannot recall.
 - `recall: memory: sources=[traces] must be asked for on its own ...` — split
   into two calls.
+- `recall: exclude_under_paths narrows the documents a search returns, and a
+  recall without sources (facts and notes) cannot return documents` — add
+  `sources: ["facts", "notes", "documents"]`.
 - `recall: when.from ... is not an RFC3339 timestamp` — resolve the date
   yourself.
 
@@ -82,6 +98,12 @@ The same question against knowledge shared across the tenant — a separate call
 
 ```json
 {"op": "recall", "scope": "tenant", "query": "office catering dietary options", "top_k": 5}
+```
+
+Recall facts, notes and documents, but not the reports filed under `/qg/reports`:
+
+```json
+{"op": "recall", "scope": "user", "query": "what was decided about supplier audits", "sources": ["facts", "notes", "documents"], "exclude_under_paths": ["/qg/reports"]}
 ```
 
 A question about WHEN, with the originating turns attached:

@@ -1233,6 +1233,16 @@ class LoomcycleClient:
         before concluding a scope knows nothing, because ``in_window: 0`` with a
         large ``untimed`` means an undated corpus, not an absent answer.
 
+        ``search`` / ``recall`` at ``user`` or ``agent`` scope can also be aimed at
+        part of the scope's documents with ``under_paths``, ``exclude_under_paths``,
+        ``document_ids`` and ``exclude_document_ids`` (lists). They narrow document
+        chunks only — facts and notes in the same search are untouched — and are
+        applied before ranking. They need a search that can return documents (no
+        ``sources``, or ``sources`` including ``"documents"``; ``recall`` must ask for
+        documents explicitly) and are refused otherwise, and on ``tenant`` scope.
+        The reply then carries ``filter: {applied, matched_documents,
+        matched_chunks, inverted}``.
+
         Example::
 
             await client.memory({"op": "set", "scope": "user", "key": "tone", "value": "concise"})
