@@ -340,6 +340,9 @@ var allowedSideways = []subsystemEdge{
 	{"internal/tools/builtin", "internal/teamrun"},
 	{"internal/tools/builtin", "internal/throughput"},
 	{"internal/tools/builtin", "internal/tools"},
+	// The File tool drives OCR (RFC FG): it cuts, reserves and records while
+	// an engine makes one call. transcribe imports nothing of tools.
+	{"internal/tools/builtin", "internal/transcribe"},
 	{"internal/wiring", "internal/lanegate"},
 	{"internal/wiring", "internal/providerbuild"},
 
