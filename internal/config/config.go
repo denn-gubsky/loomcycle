@@ -1797,6 +1797,15 @@ type AgentDef struct {
 	// tool — the same precedence as Compaction.
 	Context *Context `yaml:"context,omitempty"`
 
+	// Transcription is the per-agent `transcription:` block: whether the agent
+	// opts in to OCR (default never — it spends tokens per page), whether it may
+	// transcribe speech (default on when the operator configured an engine), and
+	// per-run caps that may only LOWER the operator's (a higher one is refused at
+	// load and at AgentDef create/fork). Merged per field like Compaction.
+	// Content-identifying. Not per-run overridable: that would be a run-request
+	// field on every transport.
+	Transcription *AgentTranscription `yaml:"transcription,omitempty"`
+
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
 	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
@@ -7390,6 +7399,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if !override.Context.IsZero() {
 		out.Context = MergeContext(out.Context, override.Context)
 	}
+	if !override.Transcription.IsZero() {
+		out.Transcription = MergeAgentTranscription(out.Transcription, override.Transcription)
+	}
 	if override.Providers != nil {
 		out.Providers = override.Providers
 	}
@@ -9082,6 +9094,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Compaction.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := c.CheckAgentTranscription(agent.Transcription); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Context.Validate(); err != nil {

@@ -340,6 +340,9 @@ type SubstrateAgentDef struct {
 	// Compaction: per-agent context-compaction settings (mirrors config.Compaction
 	// / mergedDef).
 	Compaction *config.Compaction `json:"compaction,omitempty"`
+	// Transcription: the per-agent OCR / speech-to-text block (mirrors
+	// config.AgentTranscription / mergedDef).
+	Transcription *config.AgentTranscription `json:"transcription,omitempty"`
 	// Context: per-agent layered-context / retention block (mirrors config.Context
 	// / mergedDef; RFC CR).
 	Context          *config.Context `json:"context,omitempty"`
@@ -489,6 +492,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		ToolChoice:             def.ToolChoice,
 		OutputFormat:           def.OutputFormat,
 		Compaction:             def.Compaction,
+		Transcription:          def.Transcription.Clone(),
 		Context:                def.Context,
 		MaxTokens:              def.MaxTokens,
 		MaxContextTokens:       def.MaxContextTokens,
@@ -556,6 +560,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		ToolChoice:            s.ToolChoice,
 		OutputFormat:          s.OutputFormat,
 		Compaction:            s.Compaction,
+		Transcription:         s.Transcription.Clone(),
 		Context:               s.Context,
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,
