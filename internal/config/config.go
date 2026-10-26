@@ -269,6 +269,11 @@ type Config struct {
 	// driver/gateway returns one, overrides this table.
 	Pricing PricingConfig `yaml:"pricing,omitempty"`
 
+	// Transcription is the `transcription:` block: the OCR and speech-to-text
+	// engines, their caps and helper commands (transcription.go). Absent, both
+	// engines are off. Defaults are applied at load (Resolved).
+	Transcription TranscriptionConfig `yaml:"transcription,omitempty"`
+
 	// Principals declares static (tenant, subject, scopes) logins, each bound
 	// to a bearer secret held in an env var (RFC AO). The map key is an
 	// informational handle. Lets an operator declare a stable service identity
@@ -895,10 +900,10 @@ type ModelRef struct {
 	ModelPattern string `yaml:"model_pattern"`
 
 	// Kind says what the model is FOR: "chat" (the default; "" is the same),
-	// "decision" or "embedder". The three are served by different endpoints, so
-	// an alias used where another kind is needed fails at the first call with
-	// whatever the provider says about it; tagged, it fails config load naming
-	// the alias and the place. It is a check on where the alias may be written,
+	// "decision", "embedder" or "transcriber" (speech-to-text). They are served
+	// by different endpoints, so an alias used where another kind is needed
+	// fails at the first call with whatever the provider says about it; tagged,
+	// it fails config load naming the alias and the place. It is a check on where the alias may be written,
 	// never a routing input.
 	Kind string `yaml:"kind"`
 }
@@ -908,6 +913,10 @@ const (
 	ModelKindChat     = "chat"
 	ModelKindDecision = "decision"
 	ModelKindEmbedder = "embedder"
+	// ModelKindTranscriber is a speech-to-text model (transcription.stt.model).
+	// It is not a lane kind: providers.<id>.lanes takes chat, decision and
+	// embedder only, since nothing calls a transcriber yet.
+	ModelKindTranscriber = "transcriber"
 )
 
 // CheckModelKind refuses a models: alias TAGGED with a kind other than the one
@@ -1787,6 +1796,15 @@ type AgentDef struct {
 	// fields win; a child def fills gaps), overridable per-spawn via the Agent
 	// tool — the same precedence as Compaction.
 	Context *Context `yaml:"context,omitempty"`
+
+	// Transcription is the per-agent `transcription:` block: whether the agent
+	// opts in to OCR (default never — it spends tokens per page), whether it may
+	// transcribe speech (default on when the operator configured an engine), and
+	// per-run caps that may only LOWER the operator's (a higher one is refused at
+	// load and at AgentDef create/fork). Merged per field like Compaction.
+	// Content-identifying. Not per-run overridable: that would be a run-request
+	// field on every transport.
+	Transcription *AgentTranscription `yaml:"transcription,omitempty"`
 
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
@@ -7381,6 +7399,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if !override.Context.IsZero() {
 		out.Context = MergeContext(out.Context, override.Context)
 	}
+	if !override.Transcription.IsZero() {
+		out.Transcription = MergeAgentTranscription(out.Transcription, override.Transcription)
+	}
 	if override.Providers != nil {
 		out.Providers = override.Providers
 	}
@@ -8831,9 +8852,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("models.%s: unknown provider %q", name, ref.Provider)
 		}
 		switch ref.Kind {
-		case "", ModelKindChat, ModelKindDecision, ModelKindEmbedder:
+		case "", ModelKindChat, ModelKindDecision, ModelKindEmbedder, ModelKindTranscriber:
 		default:
-			return fmt.Errorf("models.%s: kind %q is not one of chat, decision, embedder", name, ref.Kind)
+			return fmt.Errorf("models.%s: kind %q is not one of chat, decision, embedder, transcriber", name, ref.Kind)
 		}
 	}
 	// Library-level tier definitions.
@@ -9008,6 +9029,11 @@ func validate(c *Config) error {
 	if err := ResolveACLConfig(c); err != nil {
 		return err
 	}
+	// Before the agents loop: each agent's transcription caps are judged
+	// against the resolved operator caps.
+	if err := resolveTranscription(c); err != nil {
+		return err
+	}
 	for name, agent := range c.Agents {
 		// Agent names share the RFC BA `/`-grouped grammar with skill names
 		// (segments of [A-Za-z0-9_-] joined by `/`; no glob/`..`/leading slash),
@@ -9068,6 +9094,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Compaction.Validate(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := c.CheckAgentTranscription(agent.Transcription); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Context.Validate(); err != nil {

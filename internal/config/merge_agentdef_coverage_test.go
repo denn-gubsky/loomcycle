@@ -90,6 +90,7 @@ func nonZeroAgentDef() AgentDef {
 		Effort:                "high",
 		Sampling:              &Sampling{Temperature: floatPtr(0.5)},
 		Compaction:            &Compaction{Enabled: boolPtr(true), KeepLastN: intPtr(4)},
+		Transcription:         &AgentTranscription{OCR: "auto", MaxPagesPerRun: 7},
 		Volumes:               []string{"workspace"},
 		Providers:             []string{"anthropic"},
 		SearchProviders:       []string{"brave"},

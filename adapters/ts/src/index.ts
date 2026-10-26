@@ -489,6 +489,7 @@ export type {
   MemoryRerank,
   AgentSampling,
   AgentCompaction,
+  AgentTranscription,
   AgentContext,
   TierCandidate,
   CoreBlock,

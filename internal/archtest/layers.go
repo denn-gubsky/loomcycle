@@ -98,6 +98,7 @@ var layers = []layer{
 			"internal/fence",
 			"internal/files/extract",
 			"internal/gitsource",
+			"internal/hostenv",
 			"internal/jsonpath",
 			"internal/kms",
 			"internal/logging",
@@ -116,6 +117,7 @@ var layers = []layer{
 			"internal/statepatch",
 			"internal/steer",
 			"internal/teamspec",
+			"internal/transcribe/helper",
 			"internal/turncancel",
 		},
 		// RFC FE P2: the leaves internal/providers needs, as their own modules
@@ -217,6 +219,9 @@ var layers = []layer{
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",
+			// OCR / speech-to-text substrate: a runtime subroutine the File
+			// tool drives; its engines will call providers and lanes.
+			"internal/transcribe",
 			"internal/wiring",
 		},
 	},
@@ -260,6 +265,8 @@ var allowedSideways = []subsystemEdge{
 	// L0
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},
+	{"internal/transcribe/helper", "internal/hostenv"},
+	{"internal/transcribe/helper", "internal/procgroup"},
 
 	// L1
 	{"internal/decision", "internal/providers"},

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/hostenv"
 	"github.com/denn-gubsky/loomcycle/internal/procgroup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/ewhauser/gbash"
@@ -259,7 +260,7 @@ func (b *Bashbox) fallbackEnv(ctx context.Context, command string) (env, notes [
 	// agent gave up is not let back in through the host allowlist, for any
 	// command (D6): the agent narrowed the name, not a binding.
 	sc := tools.PolicyOf(ctx).ShellCreds
-	host := withoutEnv(scrubbedHostEnv(b.FallbackAllowedEnv), sc.WithheldHostNames(b.FallbackAllowedEnv, fallbackCredNames(b.FallbackAllowedCreds)))
+	host := withoutEnv(hostenv.Scrubbed(b.FallbackAllowedEnv), sc.WithheldHostNames(b.FallbackAllowedEnv, fallbackCredNames(b.FallbackAllowedCreds)))
 	return mergeCredEnv(ctx, host, sc.Filter(b.fallbackCredsFor(command)), b.CredResolve)
 }
 

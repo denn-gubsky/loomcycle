@@ -4848,6 +4848,19 @@ export interface AgentCompaction {
   memory_flush?: boolean;
 }
 
+/** An agent's OCR and speech-to-text settings. It can opt in to OCR and lower
+ *  the operator's per-run caps; it can never raise them or pick an engine. */
+export interface AgentTranscription {
+  /** OCR for scans and images. Default `never`: OCR is billed per page. */
+  ocr?: 'auto' | 'always' | 'never';
+  /** Speech-to-text. Default `on` when the operator configured an engine. */
+  stt?: 'on' | 'off';
+  /** At most the operator's `transcription.ocr.max_pages_per_run`. */
+  max_pages_per_run?: number;
+  /** At most the operator's `transcription.stt.max_minutes_per_run`. */
+  max_minutes_per_run?: number;
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -5046,6 +5059,8 @@ export interface AgentDefOverlay {
   sampling?: AgentSampling;
   /** Context compaction in `append` mode, merged per field. */
   compaction?: AgentCompaction;
+  /** OCR and speech-to-text settings, merged per field. */
+  transcription?: AgentTranscription;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared
