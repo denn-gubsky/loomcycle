@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,7 @@ func (discardSink) Image(extract.Image) (string, error) { return "", nil }
 type fakeLedger struct {
 	mu      sync.Mutex
 	charges []transcribe.Charge
+	err     error // returned by Charge, after recording the charge
 }
 
 func (l *fakeLedger) price(in, out int) transcribe.Price {
@@ -140,8 +142,9 @@ func (l *fakeLedger) price(in, out int) transcribe.Price {
 func (l *fakeLedger) Charge(_ context.Context, c transcribe.Charge) (transcribe.Price, error) {
 	l.mu.Lock()
 	l.charges = append(l.charges, c)
+	err := l.err
 	l.mu.Unlock()
-	return l.price(c.InputTokens, c.OutputTokens), nil
+	return l.price(c.InputTokens, c.OutputTokens), err
 }
 
 func (l *fakeLedger) Estimate(_, _ string, in, out int) transcribe.Price { return l.price(in, out) }
@@ -789,5 +792,32 @@ func TestOCR_EventSaysWhyAPassFailedOrStopped(t *testing.T) {
 	}
 	if ev := ok.transcriptionEvents(); len(ev) != 1 || ev[0].Status != "ok" || ev[0].Error != "" {
 		t.Errorf("clean pass event = %+v, want ok with no error", ev)
+	}
+}
+
+// A usage row that cannot be recorded is logged without the store's error
+// text, which can carry request data, but with what the operator needs to
+// reconcile it: the run, provider, model, the tokens and the error's class.
+// The extract itself still succeeds; the call was made.
+func TestOCR_LedgerFailureLogsTheClassNotTheErrorText(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	x := ocrRun(t, config.OCRConfig{}, agentOCR("auto"))
+	x.ledger.err = errors.New("insert token_usage: header Authorization=sk-planted-secret")
+	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
+	if _, _, res := x.extract(t, map[string]any{"path": ref}); res.IsError {
+		t.Fatalf("a lost usage row failed the extract: %s", res.Text)
+	}
+	out := buf.String()
+	if strings.Contains(out, "sk-planted-secret") || strings.Contains(out, "Authorization") {
+		t.Fatalf("the ledger error's text was logged: %s", out)
+	}
+	for _, want := range []string{"usage could not be recorded", `"provider":"anthropic"`, `"model":"claude-x"`, `"input_tokens":1000`, `"kind":`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %s: %s", want, out)
+		}
 	}
 }

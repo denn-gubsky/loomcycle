@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -278,8 +279,13 @@ func (f *File) charge(ctx context.Context, p *ocrPass, res transcribe.Result) {
 		})
 		if err != nil {
 			// The call is made and paid for; failing the extract would not
-			// unspend it. The row is lost, and the operator is told.
-			slog.Warn("transcription: the OCR call's usage could not be recorded", "run_id", tools.RunID(ctx), "provider", provider, "model", model, "err", err)
+			// unspend it. The row is lost, and the operator is told enough to
+			// reconcile it. Not the error's text: a store error can quote the
+			// request it failed on, and this is a log line.
+			slog.Warn("transcription: the OCR call's usage could not be recorded",
+				"run_id", tools.RunID(ctx), "provider", provider, "model", model,
+				"input_tokens", res.InputTokens, "output_tokens", res.OutputTokens,
+				"kind", ledgerErrKind(err))
 		}
 	}
 	if price.Priced {
@@ -291,6 +297,15 @@ func (f *File) charge(ctx context.Context, p *ocrPass, res transcribe.Result) {
 			p.priced = true
 		}
 	}
+}
+
+// ledgerErrKind is the runtime's category for a ledger failure (cancelled,
+// timeout, …), or "unclassified": a stable label to log in place of the text.
+func ledgerErrKind(err error) string {
+	if info, ok := errclassify.CategoryOf(err); ok {
+		return string(info.Category)
+	}
+	return "unclassified"
 }
 
 // ocrUnit is one engine call's input: its bytes, their type, and the
