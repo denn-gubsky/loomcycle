@@ -1451,6 +1451,12 @@ func requiredScopeFor(method, path string) string {
 	// the runs-read case below.)
 	case method == http.MethodPut && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/breakpoints"):
 		return auth.ScopeRunsCreate
+	// The File twin and the inbox download read a run; the twin refuses its
+	// writing ops to all but the run's owner or an admin itself, as the MCP
+	// twin (runs:read too) does. Before the GET case below so HEAD and the
+	// POST land here.
+	case isRunFileRoute(method, path):
+		return auth.ScopeRunsRead
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
 		return auth.ScopeRunsRead
 	// Listing a team walk's runs. Exact match: without it the bare path falls

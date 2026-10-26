@@ -66,3 +66,11 @@ which need a run's HTTP allowlist. It works on any run the caller may read;
 another tenant's run is not found. The writing ops (`extract`, `keep`, `rm`,
 `clear`) need the run's owner or an admin, and a tenant operator counts as an
 admin for the runs of its own tenant.
+
+Over HTTP the same ops are `POST /v1/runs/{run_id}/file` (the tool's input
+without `run_id`), and `GET /v1/runs/{run_id}/inbox/<path>` saves one file's
+bytes, for anyone who may read the run. The download is always an attachment;
+a type a browser would run (HTML, SVG, scripts) is sent as
+`application/octet-stream`. `X-Loomcycle-SHA256` is the hash of the bytes
+sent, and `X-Loomcycle-Origin` the tool that returned the file — `unknown`
+when the file changed after it was kept.
