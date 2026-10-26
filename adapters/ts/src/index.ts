@@ -556,6 +556,7 @@ export type {
   CapabilityInertInfo,
   LimitInfo,
   FileCapturedInfo,
+  TranscriptionInfo,
   // Run admission: the payload on event: queued / event: admitted
   AdmissionInfo,
   // A failure's structure (event: error, a failed event: tool_result) and the

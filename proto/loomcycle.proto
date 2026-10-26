@@ -1604,6 +1604,12 @@ message Event {
   // returned, kept in the run tree's inbox volume instead of reaching the
   // model as bytes (RFC FF). SERVER-generated. Nil on every other event type.
   FileCapturedInfo file = 23;
+
+  // transcription carries the payload on type=transcription frames: one OCR or
+  // speech-to-text pass a File tool call made over an inbox file — the source,
+  // the engine, the units and tokens spent and the cost, never the text.
+  // SERVER-generated. Nil on every other event type.
+  TranscriptionInfo transcription = 24;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -1774,6 +1780,26 @@ message FileCapturedInfo {
   string sha256 = 4;       // hex
   string origin = 5;       // mcp:<server>/<tool> | http | webfetch | download:<host>
   string run_id = 6;       // the run whose tool call returned it
+}
+
+// TranscriptionInfo is the payload on type=transcription frames. Mirrors
+// providers.TranscriptionInfo. Never the transcribed text.
+message TranscriptionInfo {
+  string ref = 1;            // the source file, volume:inbox:<dir>/<name>
+  string out = 2;            // the Markdown the pass wrote, when it wrote one
+  string purpose = 3;        // ocr | stt
+  string engine = 4;         // the configured engine that ran: vision, openai-audio, command, …
+  string provider = 5;       // the concrete pair the engine called, when it called a model
+  string model = 6;
+  int32 pages = 7;           // pages sent to an OCR engine
+  double seconds = 8;        // audio duration sent to a speech-to-text engine
+  int64 input_tokens = 9;
+  int64 output_tokens = 10;
+  optional double cost = 11; // absent when the pair is unpriced, which is not the same as free
+  string currency = 12;
+  string status = 13;        // ok | partial | failed
+  bool dry_run = 14;         // an estimate: no engine was called, nothing was spent
+  string run_id = 15;        // the run whose tool call made the pass
 }
 
 // AdmissionInfo is the payload on type=queued and type=admitted frames. Mirrors
