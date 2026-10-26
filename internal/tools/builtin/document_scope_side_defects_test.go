@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -28,5 +29,22 @@ func TestDeriveUnits_TenantDocumentsAreFoundByTheirPathNames(t *testing.T) {
 	}
 	if rep.DocumentsOptedIn != 1 || rep.Generated != 1 {
 		t.Errorf("the tenant document named /policies/leave was not opted in: %+v", rep)
+	}
+}
+
+// TestPlacement_TypesForSubjectReadsTheTenantTree — the conflict guard asks which
+// entity types the caller's own partition already records a subject under. For a
+// tenant caller the Memory scope id is "", which is not a SQL Memory scope id; the
+// key must come from the same mapping the Document tool uses, or the guard reads
+// no tree and can never fire for a tenant-scope pass.
+func TestPlacement_TypesForSubjectReadsTheTenantTree(t *testing.T) {
+	d, vs, ctx := tenantDocFixture(t, "tnt", "dave")
+	doc := docRun(t, d, ctx, map[string]any{"op": "create_document", "scope": "tenant", "title": "entities", "path": "/t/entities"})
+	docRun(t, d, ctx, map[string]any{"op": "upsert_chunk", "scope": "tenant", "document_id": doc["document_id"],
+		"natural_key": "person:dave", "title": "Dave", "body": "Dave", "type": "person"})
+	m := &Memory{Store: vs, SqlMem: d.SqlMem}
+	got := m.typesForSubject(ctx, store.MemoryScopeTenant, "", "Dave")
+	if len(got) != 1 || got[0] != "person" {
+		t.Errorf("types recorded for Dave in the tenant tree = %v, want [person]", got)
 	}
 }
