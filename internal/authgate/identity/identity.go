@@ -18,7 +18,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Bounds on what an assertion may carry into the store.
@@ -188,10 +187,21 @@ func AssertedGroups(m *config.AuthIdentityMap, a authgate.Assertion) []string {
 // group name.
 func ExternalID(gate, providerGroup string) string { return gate + ":" + providerGroup }
 
+// Group is the part of a tenant group a sync plan reads and provisions. The
+// caller converts to and from the store's row at its own seam, because this
+// package sits in the schema layer, below storage.
+type Group struct {
+	TenantID    string
+	Name        string
+	ExternalID  string
+	Description string
+	CreatedBy   string
+}
+
 // Plan reconciles a user's memberships with the groups a gate asserts.
 type Plan struct {
 	// Create are groups to provision (GroupCreate, insert-only).
-	Create []store.GroupRow
+	Create []Group
 	// Add and Remove are group names.
 	Add    []string
 	Remove []string
@@ -206,7 +216,7 @@ type Plan struct {
 //
 // tenantGroups is every group of the tenant; current the user's direct
 // memberships.
-func SyncPlan(gate, tenant string, m *config.AuthIdentityMap, asserted []string, tenantGroups []store.GroupRow, current []string) Plan {
+func SyncPlan(gate, tenant string, m *config.AuthIdentityMap, asserted []string, tenantGroups []Group, current []string) Plan {
 	var p Plan
 	if m == nil || !m.SyncGroups || !m.Trusted {
 		return p
@@ -243,7 +253,7 @@ func SyncPlan(gate, tenant string, m *config.AuthIdentityMap, asserted []string,
 		byExt[ext] = name
 		managed[name] = true
 		want[name] = true
-		p.Create = append(p.Create, store.GroupRow{TenantID: tenant, Name: name, ExternalID: ext,
+		p.Create = append(p.Create, Group{TenantID: tenant, Name: name, ExternalID: ext,
 			Description: fmt.Sprintf("synced from auth gate %s (%s)", gate, pg), CreatedBy: "gate:" + gate})
 	}
 	have := map[string]bool{}
