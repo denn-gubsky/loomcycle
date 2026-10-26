@@ -171,6 +171,9 @@ func (e *Engine) OCR(ctx context.Context, plan transcribe.Plan, unit transcribe.
 
 	callCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
+	// From here the request may have reached the provider, even when Call
+	// returns an error: what it carried is spent.
+	res.Reached = true
 	ch, err := prov.Call(callCtx, req)
 	if err != nil {
 		return res, err
