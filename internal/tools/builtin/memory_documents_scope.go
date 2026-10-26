@@ -43,9 +43,9 @@ type documentsScopeResolver interface {
 	ResolveDocumentsScope(ctx context.Context, op string, scope store.MemoryScope) (scopeID string, err error)
 }
 
-// documentsLegPlan is a resolved documents_scope that differs from the call's
+// DocumentsLegPlan is a resolved documents_scope that differs from the call's
 // scope.
-type documentsLegPlan struct {
+type DocumentsLegPlan struct {
 	scope   store.MemoryScope
 	scopeID string
 	// leg is what the backend searches; nil when the document filter matched no
@@ -56,10 +56,24 @@ type documentsLegPlan struct {
 }
 
 // echo is the response's `filter` block for the document leg, naming its scope.
-func (p *documentsLegPlan) echo() MemoryDocFilterEcho {
+func (p *DocumentsLegPlan) echo() MemoryDocFilterEcho {
 	e := p.filter.Echo()
 	e.Scope = string(p.scope)
 	return e
+}
+
+// Leg is what the backend searches for the document leg; nil when its filter
+// matched no document, so the leg contributes nothing.
+func (p *DocumentsLegPlan) Leg() *memrank.DocumentsLeg { return p.leg }
+
+// FilterEcho is the response's `filter` block naming the leg's scope, or nil
+// when no document filter was given.
+func (p *DocumentsLegPlan) FilterEcho() *MemoryDocFilterEcho {
+	if p.filter == nil {
+		return nil
+	}
+	e := p.echo()
+	return &e
 }
 
 // foldEqualDocumentsScope applies documents_scope equal to scope: it adds
@@ -90,7 +104,7 @@ func foldEqualDocumentsScope(in *memoryInput) {
 // planDocumentsLeg resolves a documents_scope that differs from the call's scope.
 // sources is the primary leg's parsed selector. A refusal comes back as the
 // *tools.Result.
-func (m *Memory) planDocumentsLeg(ctx context.Context, op string, in memoryInput, sources []memrank.Source) (*documentsLegPlan, *tools.Result) {
+func (m *Memory) planDocumentsLeg(ctx context.Context, op string, in memoryInput, sources []memrank.Source) (*DocumentsLegPlan, *tools.Result) {
 	switch store.MemoryScope(in.DocumentsScope) {
 	case store.MemoryScopeAgent, store.MemoryScopeUser, store.MemoryScopeTenant:
 	default:
@@ -122,13 +136,25 @@ func (m *Memory) planDocumentsLeg(ctx context.Context, op string, in memoryInput
 	}
 	// And Document op=search's gate for it. Read HERE, at use: boot assigns the
 	// resolver before it is fully bound.
-	resolver, ok := m.DocumentFilters.(documentsScopeResolver)
-	if !ok || resolver == nil {
+	return PlanDocumentsLeg(ctx, m.DocumentFilters, op, legScope, legScopeID, in.documentFilter())
+}
+
+// PlanDocumentsLeg resolves the document leg of (scope, scopeID) through the
+// Document tool's gate for that scope — Document op=search's grants, isolated
+// confinement and subject — and, when one is given, its document filter. It is
+// the part of a documents_scope the Memory tool and the off-run
+// POST /v1/_memory/search share; each checks its own authority for the scope
+// first (the tool its memory_scopes grant, the endpoint its caller's token).
+// resolver is the Document tool. A refusal comes back as the *tools.Result.
+func PlanDocumentsLeg(ctx context.Context, resolver memrank.DocumentFilterResolver, op string,
+	scope store.MemoryScope, scopeID string, df memrank.DocumentFilter) (*DocumentsLegPlan, *tools.Result) {
+	scoped, ok := resolver.(documentsScopeResolver)
+	if !ok || scoped == nil {
 		r := errBusiness(op+": documents are not configured on this server, so documents_scope cannot be searched",
 			"Search without documents_scope.")
 		return nil, &r
 	}
-	docScopeID, err := resolver.ResolveDocumentsScope(ctx, op, legScope)
+	docScopeID, err := scoped.ResolveDocumentsScope(ctx, op, scope)
 	if err != nil {
 		var rf *documentFilterRefusal
 		if errors.As(err, &rf) {
@@ -137,17 +163,17 @@ func (m *Memory) planDocumentsLeg(ctx context.Context, op string, in memoryInput
 		r := errFrom(op+": documents_scope: "+err.Error(), err)
 		return nil, &r
 	}
-	if docScopeID != legScopeID {
-		// Both tools derive the id from the same run identity; a mismatch means
+	if docScopeID != scopeID {
+		// Both sides derive the id from the same identity; a mismatch means
 		// the two would read different rows, so nothing is searched.
-		err := fmt.Errorf("documents_scope: memory scope %s/%q is not document scope %s/%q", legScope, legScopeID, legScope, docScopeID)
+		err := fmt.Errorf("documents_scope: memory scope %s/%q is not document scope %s/%q", scope, scopeID, scope, docScopeID)
 		r := errFrom(op+": "+err.Error(), err)
 		return nil, &r
 	}
-	plan := &documentsLegPlan{scope: legScope, scopeID: legScopeID,
-		leg: &memrank.DocumentsLeg{Scope: legScope, ScopeID: legScopeID}}
-	if df := in.documentFilter(); !df.IsZero() {
-		fp, refusal := m.planDocumentFilter(ctx, op, legScope, legScopeID, df,
+	plan := &DocumentsLegPlan{scope: scope, scopeID: scopeID,
+		leg: &memrank.DocumentsLeg{Scope: scope, ScopeID: scopeID}}
+	if !df.IsZero() {
+		fp, refusal := PlanMemoryDocumentFilter(ctx, resolver, op, scope, scopeID, df,
 			memrank.SearchQuery{Sources: []memrank.Source{memrank.SourceDocuments}}, "the documents_scope leg")
 		if refusal != nil {
 			return nil, refusal
@@ -173,7 +199,7 @@ func scopeAt(scopes []store.MemoryScope, i int, own store.MemoryScope) store.Mem
 
 // inScope selects the results that came from scope want, for a step applied per
 // scope; nil — every result — for a call without a documents leg.
-func inScope(legPlan *documentsLegPlan, scopes []store.MemoryScope, own, want store.MemoryScope) func(int) bool {
+func inScope(legPlan *DocumentsLegPlan, scopes []store.MemoryScope, own, want store.MemoryScope) func(int) bool {
 	if legPlan == nil {
 		return nil
 	}

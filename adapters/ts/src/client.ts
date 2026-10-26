@@ -1818,6 +1818,10 @@ export class LoomcycleClient {
     if (input.excludeUnderPaths !== undefined) body.exclude_under_paths = input.excludeUnderPaths;
     if (input.documentIds !== undefined) body.document_ids = input.documentIds;
     if (input.excludeDocumentIds !== undefined) body.exclude_document_ids = input.excludeDocumentIds;
+    // The second scope's documents: sent only when set, so a one-scope search's
+    // response stays byte-identical (no per-entry `scope`).
+    if (input.documentsScope !== undefined) body.documents_scope = input.documentsScope;
+    if (input.documentsScopeId !== undefined) body.documents_scope_id = input.documentsScopeId;
     return postJSON<MemorySearchResponse>(this.ctx, "/v1/_memory/search", body, {
       signal: opts?.signal,
     });
