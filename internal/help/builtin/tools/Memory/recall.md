@@ -8,7 +8,8 @@ first. Each item is something REMEMBERED, not something established: a
 `note` is a remark an agent recorded; only a `fact` was distilled by a
 consolidator. It needs the operator's embedder and vector store. It reads
 **one scope** — a `user` recall does not see `tenant` knowledge, so make a
-second call when you need both.
+second call when you need both. The exception is documents:
+`documents_scope` adds another scope's documents to the same recall.
 
 ## Arguments
 
@@ -22,6 +23,9 @@ second call when you need both.
 - `sources` — default `[facts, notes]`. Add `documents` to include Document
   prose (`[facts, notes, documents]`), or ask for `[traces]` alone to get raw
   conversation turns. See `Memory/search` for the allowed sets.
+- `documents_scope` — `agent`, `user` or `tenant`: also recall the documents
+  of this scope, ranked together with this scope's facts and notes into one
+  list. See "Searching a shared corpus" below.
 - `when` — narrow by when things were said, or `as_of` for what was true at
   an instant. Same shape as on `search`; give a generous window.
 - `include_source` — default `true`: attach the verbatim span each fact was
@@ -36,7 +40,9 @@ second call when you need both.
 (the text), `score`, and when known `kind` (`fact`, `note`, …), `source` (the
 original wording), `source_session_id` and `source_run_id` (where it was said
 — History can open that chat), `observed_at`, `valid_at`, `metadata`, and
-with `include_turns` a `turn: {text, speaker}`.
+with `include_turns` a `turn: {text, speaker}`. With a `documents_scope`
+different from `scope`, each memory also carries `scope`: the scope it came
+from.
 
 A remark often carries the time it was SAID. When it says "yesterday", the
 event happened relative to that time, not at it.
@@ -53,6 +59,23 @@ when `sources` includes `documents`.
 An empty `memories` list is not an error. It can also mean the fact was
 `add`ed recently and is still queued for consolidation.
 
+## Searching a shared corpus
+
+When your memory is in one scope and the reference documents are in another
+(your notes in `user`, the organisation's documents in `tenant`), set
+`documents_scope` to the documents' scope. The recall returns this scope's
+facts and notes (or whatever `sources` names) together with that scope's
+documents, ranked as one list under one `top_k`. Each memory says which
+scope it came from, so you can tell what you remember from what the
+documents say.
+
+It needs what searching that scope's documents with the Document tool needs,
+and that scope in `memory_scopes` too (for `tenant`: `memory_scopes: [tenant]`
+and `sql_scopes: [tenant]`). Without it the whole call is refused.
+`documents_scope` equal to `scope` adds `documents` to the recall's `sources`.
+It cannot be combined with `sources: [traces]`. The errors are the ones listed
+on `Memory/search`.
+
 ## Aiming at documents
 
 A recall that includes `documents` in `sources` can be aimed at part of the
@@ -62,8 +85,10 @@ chunks only, before ranking, and the answer carries the same `filter` block.
 A recall without `sources` returns facts and notes only, so a document filter
 on it is refused — ask for `[facts, notes, documents]` or `[documents]`. A path
 is a name in ONE scope's tree: when you recall in two scopes, each call
-resolves the path in its own. Like on `search`, they work in every scope; on
-`tenant` they need both tenant grants. For chunk-level filters use the
+resolves the path in its own. With a `documents_scope`, they aim at that
+scope's documents instead, and the recall may then leave out `sources`. Like
+on `search`, they work in every scope; on `tenant` they need both tenant
+grants. For chunk-level filters use the
 Document tool's `search`.
 
 ## Errors
@@ -108,6 +133,13 @@ The same question against knowledge shared across the tenant — a separate call
 
 ```json
 {"op": "recall", "scope": "tenant", "query": "office catering dietary options", "top_k": 5}
+```
+
+What this user remembers about supplier audits, together with what the
+tenant's quality norms say:
+
+```json
+{"op": "recall", "scope": "user", "documents_scope": "tenant", "query": "supplier audit frequency", "under_paths": ["/norms"]}
 ```
 
 Recall facts, notes and documents, but not the reports filed under `/qg/reports`:

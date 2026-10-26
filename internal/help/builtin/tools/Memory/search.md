@@ -17,6 +17,8 @@ searchable.
   holds `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]` — the same
   two grants the Document tool needs for them. Without the second grant, asking
   for documents is refused, and a search that does not ask leaves them out.
+  To search another scope's documents in the same call, see
+  `documents_scope`.
 - `query` (required) — plain-language text to match by meaning.
 - `top_k` — maximum results (default 10, at most 50).
 - `sources` — which kinds of row to return: `facts` (distilled by a
@@ -26,6 +28,9 @@ searchable.
   not be paired with only one of `facts`/`notes`. Allowed sets: `[facts]`,
   `[notes]`, `[facts, notes]`, `[documents]`, `[traces]`, or
   `[facts, notes, documents]`.
+- `documents_scope` — `agent`, `user` or `tenant`: also search the documents
+  of this scope, ranked together with this call's own results. See
+  "Searching a shared corpus" below.
 - `prefix` — only rows whose key starts with this.
 - `when` — narrow by when the thing was SAID: `from` / `to` (RFC3339),
   `slack` (how far outside still counts, default `"3d"`), `missing`
@@ -54,7 +59,9 @@ Extra keys appear only when relevant: `time_filter` (when you passed `when`),
 `dedup_dropped` (when dedup was on), `rank_note`, `source_turns` and
 `source_turns_found` (conversation turns the operator has you attach), and
 `sources_applied: false` with a `note` when this backend ignored `sources` —
-then the results are NOT restricted to the kinds you asked for.
+then the results are NOT restricted to the kinds you asked for. With a
+`documents_scope` different from `scope`, every entry also carries `scope`:
+the scope it came from.
 
 A document hit may carry `matched_unit: {kind, text}`: the chunk was found
 through a short description, claim or question the operator generated for it
@@ -71,6 +78,27 @@ no longer describes it), and `false` comes with a `rerank_reason` —
 `not_supported_by_memory_backend`. A `false` is never an error: the results are
 the search's own order. You cannot request or switch off the rerank.
 
+## Searching a shared corpus
+
+Your own memory and the documents you consult often live in different scopes:
+your notes in `user`, the organisation's reference documents in `tenant`.
+`documents_scope` searches both in ONE call. The call searches `scope` as it
+always does (with your `sources`, `prefix` and `when`), and also searches the
+documents, and only the documents, of `documents_scope`. Both sets of
+results are ranked together into one list and cut by one `top_k`, so you do
+not merge two lists by hand. Each entry then says which scope it came from in
+`scope`. Use it to tell what you remember from what the documents say.
+
+- It takes only documents from the other scope: facts and notes still come
+  from `scope` alone.
+- It needs what searching that scope's documents with the Document tool
+  needs, and that scope in `memory_scopes` too. For `tenant` that is
+  `memory_scopes: [tenant]` and `sql_scopes: [tenant]`. Without it the whole
+  call is refused, never answered from one scope.
+- `documents_scope` equal to `scope` is the same as adding `documents` to
+  `sources`, and the answer is the one that call would give.
+- It cannot be combined with `sources: [traces]`.
+
 ## Aiming at documents
 
 When the scope holds more than one kind of document and only part of them
@@ -86,7 +114,10 @@ include `documents`. On a `[facts]`, `[notes]` or `[traces]` search, or a
 `prefix` outside the document namespace, they are refused rather than ignored.
 They work in every scope, each in that scope's own tree; on `tenant` they need
 both tenant grants (`memory_scopes` and `sql_scopes`), as reading tenant
-documents does.
+documents does. With a `documents_scope` different from `scope`, they aim at
+that scope's documents and resolve in its tree. The documents of `scope` are
+then not filtered (leave `documents` out of `sources` if you do not want
+them).
 
 The answer then carries `filter: {applied, matched_documents, matched_chunks,
 inverted}` — what the filter resolved to. `matched_documents: 0` means the path
@@ -120,6 +151,19 @@ instant — use the Document tool's `search`.
   for the tenant's documents (`documents` in `sources`, a `doc.chunk:` prefix, or
   a document filter) and the agent lacks the second grant. Search facts and notes
   only, or ask an operator to grant it.
+- `search: unknown documents_scope "org" (want one of: agent, user, tenant)`.
+- `search: documents_scope cannot be combined with sources [traces] ...` —
+  search conversation turns in a call of their own.
+- `search: documents_scope: Memory tool: scope "tenant" not in this agent's
+  memory_scopes ...` or `search: documents_scope: Document: scope=tenant is not
+  granted to this agent ...` — a permission refusal: the agent lacks a grant
+  for that scope's documents (the message names it). Search without
+  `documents_scope`, or ask an operator to grant it.
+- `search: documents are not configured on this server, so documents_scope
+  cannot be searched` / `search: documents_scope applies only to this
+  server's own memory ...` — this server cannot run the second search. Search
+  without `documents_scope`, or make a second call with `scope` set to the
+  documents' scope.
 - `search: when.from "October" is not an RFC3339 timestamp` — resolve dates
   yourself, e.g. `2025-10-01T00:00:00Z`.
 
@@ -141,6 +185,22 @@ Search only the tenant's shared documents:
 
 ```json
 {"op": "search", "scope": "tenant", "query": "refund policy for annual plans", "sources": ["documents"]}
+```
+
+Search this user's own notes together with the tenant's reference documents,
+in one ranked list:
+
+```json
+{"op": "search", "scope": "user", "documents_scope": "tenant", "query": "supplier audit frequency", "sources": ["notes"], "under_paths": ["/norms"]}
+```
+
+```json result
+{"entries": [{"key": "doc.chunk:9b1e…", "kind": "document", "scope": "tenant", "chunk_id": "9b1e…",
+  "document": "Quality norms", "title": "Supplier audits", "value": "Suppliers are audited every 12 months …",
+  "score": 0.74, "rank_score": 0.031}, {"key": "notes/audit-followup", "kind": "note", "scope": "user",
+  "value": "Asked for the 2026 audit schedule", "score": 0.69, "rank_score": 0.029}],
+  "filter": {"scope": "tenant", "applied": {"under_paths": ["/norms"]}, "matched_documents": 3, "matched_chunks": 41, "inverted": false},
+  "query_embedding_dim": 1536, "truncated": false}
 ```
 
 Search everything this user knows about a decision, but keep the gates' own
