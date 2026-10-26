@@ -243,6 +243,15 @@ type ToolChoice struct {
 	Until string `json:"until,omitempty"`
 }
 
+// Transcription mirrors config.AgentTranscription locally (the agents package
+// stays config-free). json: tags are LOAD-BEARING for content_sha256.
+type Transcription struct {
+	OCR              string `json:"ocr,omitempty"`
+	STT              string `json:"stt,omitempty"`
+	MaxPagesPerRun   int    `json:"max_pages_per_run,omitempty"`
+	MaxMinutesPerRun int    `json:"max_minutes_per_run,omitempty"`
+}
+
 // Compaction mirrors config.Compaction locally (the agents package stays
 // config-free). json: tags mirror the persisted snake_case and are LOAD-BEARING
 // for content_sha256. Pointers so an unset field omits.
