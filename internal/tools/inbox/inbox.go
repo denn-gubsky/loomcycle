@@ -109,6 +109,8 @@ type Tree struct {
 	index map[string]Record
 	// registered counts the secrets the tree's tools handed the redactor.
 	registered int
+	// shared is what other tools keep per run tree beside the inbox (Shared).
+	shared map[any]any
 }
 
 // NewTree returns an empty tree state.
@@ -465,6 +467,29 @@ func Lookup(ctx context.Context, rel string) (Record, bool) {
 	defer h.tree.mu.Unlock()
 	r, ok := h.tree.index[cleanRel(rel)]
 	return r, ok
+}
+
+// Shared returns the value the run tree keeps under key, made by mk on the
+// first call: state another tool holds per run tree beside the inbox, living
+// as long as the tree's inbox state does — shared by the tree's sub-agents
+// and by its runs started again on resume. ok is false when ctx carries no
+// inbox. Use an unexported key type, as for a context key.
+func Shared(ctx context.Context, key any, mk func() any) (any, bool) {
+	h, ok := from(ctx)
+	if !ok {
+		return nil, false
+	}
+	h.tree.mu.Lock()
+	defer h.tree.mu.Unlock()
+	if v, ok := h.tree.shared[key]; ok {
+		return v, true
+	}
+	if h.tree.shared == nil {
+		h.tree.shared = map[any]any{}
+	}
+	v := mk()
+	h.tree.shared[key] = v
+	return v, true
 }
 
 // Forget drops the records of the files at rel or under it and gives their
