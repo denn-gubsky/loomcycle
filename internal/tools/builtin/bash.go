@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/hostenv"
 	"github.com/denn-gubsky/loomcycle/internal/procgroup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -227,26 +227,8 @@ func (b *Bash) buildEnv(ctx context.Context) (env, notes []string) {
 	// (RFC EW); it never adds one, and a name it gave up is not let back in
 	// through the host allowlist either (D6).
 	sc := tools.PolicyOf(ctx).ShellCreds
-	host := withoutEnv(scrubbedHostEnv(b.AllowedExtraEnv), sc.WithheldHostNames(b.AllowedExtraEnv, b.AllowedCreds))
+	host := withoutEnv(hostenv.Scrubbed(b.AllowedExtraEnv), sc.WithheldHostNames(b.AllowedExtraEnv, b.AllowedCreds))
 	return mergeCredEnv(ctx, host, sc.Filter(b.AllowedCreds), b.CredResolve)
-}
-
-// scrubbedHostEnv builds the environment for a host child process: PATH always
-// (most binaries break without it) plus the operator-allow-listed names.
-// Anything not on the allowlist (API keys, secrets) never leaks. Shared by the
-// Bash tool and the Bashbox host-command fallback (RFC AJ §13) so the two
-// security-sensitive env paths can't drift apart.
-func scrubbedHostEnv(allowedExtra []string) []string {
-	out := []string{}
-	if v := os.Getenv("PATH"); v != "" {
-		out = append(out, "PATH="+v)
-	}
-	for _, name := range allowedExtra {
-		if v := os.Getenv(name); v != "" {
-			out = append(out, name+"="+v)
-		}
-	}
-	return out
 }
 
 // withoutEnv is env without the entries whose names are in names.
@@ -265,14 +247,14 @@ func withoutEnv(env, names []string) []string {
 }
 
 // mergeCredEnv overlays per-tenant RFC AR credentials onto a host env slice.
-// host is the operator-allowlisted host vars (from scrubbedHostEnv); for each
+// host is the operator-allowlisted host vars (from hostenv.Scrubbed); for each
 // name in allowedCreds it resolves the run's own (tenant/user/agent) credential
 // via resolve and either OVERRIDES a same-named host var or appends it — so a
 // tenant-specific secret wins over a shared operator host var. resolve==nil or
 // no cred names → host is returned unchanged (byte-identical to the pre-cred
 // behavior). Shared by the Bash tool and the Bashbox host-command fallback so
 // the two security-sensitive credential-injection paths can't drift apart
-// (mirrors the scrubbedHostEnv sharing rationale). Deterministic order: host
+// (mirrors the hostenv.Scrubbed sharing rationale). Deterministic order: host
 // names first (declared order), then creds not already contributed by a host
 // var. The resolved value is a secret — the caller must registerSecret it and
 // it goes only into the child's env, never a log.

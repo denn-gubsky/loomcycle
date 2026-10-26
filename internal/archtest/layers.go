@@ -98,6 +98,7 @@ var layers = []layer{
 			"internal/fence",
 			"internal/files/extract",
 			"internal/gitsource",
+			"internal/hostenv",
 			"internal/jsonpath",
 			"internal/kms",
 			"internal/logging",
