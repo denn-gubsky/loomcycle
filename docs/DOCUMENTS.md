@@ -89,13 +89,22 @@ the Memory tool keeps them behind the Document tool's checks:
   `doc.chunk:` (and `doc.unit:`) key with a validation error; `delete` and
   `supersede` refuse a unit and a provenance-free (prose) chunk body. A
   consolidated fact's body carries provenance, and the consolidation pass may
-  still retire or remove a fact by its `doc.chunk:` id.
+  still retire or remove a fact by its `doc.chunk:` id. The off-run key routes
+  (`PUT` / `DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}`) apply the
+  same rule to every caller and answer `400 document_row`, pointing at
+  `/v1/_document`; they share the Memory tool's whole write rule, so a
+  `trace.turn:` key is refused there as well (`400 reserved_key`).
 - Tenant reads: reading tenant document rows through Memory needs
   `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]`, the pair the
   Document tool needs. Without it, a call that asks for documents (`documents` in
   `sources`, a `doc.chunk:` prefix, a document filter, a `get` of a prose body)
   is a permission error naming the grant; a search or list that does not ask
   leaves the document class out. Facts, notes and traces are unaffected.
+- Access control: for a caller whose access-control set denies reading a
+  document, Memory `get` answers that document's chunk, homed fact or unit
+  exactly as a missing key, and `list`, `search` and `recall` leave those rows
+  out. This holds in a run, over MCP and gRPC, and on the off-run key routes and
+  search. A caller whose set cannot deny anything sees no change.
 
 ### Concurrency, hierarchy, querying
 
