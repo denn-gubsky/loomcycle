@@ -27,6 +27,11 @@ import (
 // A placeholder fills exactly the part of the word it stands in, with its value
 // byte for byte: a value can never add, remove or split a word. The first word
 // (the program) may hold no placeholder, so a value never chooses what runs.
+// Two placeholders may not touch (`{a}{b}`, or `{a}''{b}`): with no literal
+// between them, which one begins an argument depends on the values, and no
+// real helper needs it. A value may not begin an argument with '-', where the
+// program would read it as an option — not even a lone "-": a dash a template
+// needs (stdin, `-o{out}`) is written in the template.
 
 // segment is a run of literal text or one placeholder.
 type segment struct {
@@ -74,6 +79,9 @@ func parseTemplate(tmpl string) ([]word, error) {
 			return 0, fmt.Errorf("%q is not a placeholder (a name is a letter or _, then letters, digits or _; write \\{ for a literal brace)", tmpl[i:i+end+1])
 		}
 		flush()
+		if n := len(cur); n > 0 && cur[n-1].placeholder {
+			return 0, fmt.Errorf("placeholders {%s} and {%s} touch; put a literal between them", cur[n-1].text, name)
+		}
 		cur = append(cur, segment{text: name, placeholder: true})
 		return i + end + 1, nil
 	}
@@ -168,13 +176,16 @@ func validName(name string) bool {
 }
 
 // expand fills each placeholder from vars. A placeholder with no value is an
-// error, as is a value holding NUL (it cannot cross exec) or one that starts a
-// word with '-', where the program would read it as an option.
+// error, as is a value holding NUL (it cannot cross exec) or one that would
+// begin its argument with '-', where the program would read it as an option.
+// What decides is the argument built so far, not the placeholder's position:
+// an empty value or an empty quoted literal before it leaves the argument
+// still empty.
 func expand(words []word, vars map[string]string) ([]string, error) {
 	argv := make([]string, 0, len(words))
 	for _, w := range words {
 		var b strings.Builder
-		for j, s := range w {
+		for _, s := range w {
 			if !s.placeholder {
 				b.WriteString(s.text)
 				continue
@@ -186,7 +197,7 @@ func expand(words []word, vars map[string]string) ([]string, error) {
 			if strings.IndexByte(v, 0) >= 0 {
 				return nil, fmt.Errorf("the value of {%s} holds a NUL byte", s.text)
 			}
-			if j == 0 && strings.HasPrefix(v, "-") {
+			if b.Len() == 0 && strings.HasPrefix(v, "-") {
 				return nil, fmt.Errorf("the value of {%s} starts with '-' where it begins an argument, and would be read as an option", s.text)
 			}
 			b.WriteString(v)
