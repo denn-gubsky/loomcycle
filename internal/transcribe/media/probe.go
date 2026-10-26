@@ -41,6 +41,25 @@ type Info struct {
 	WAV *WAVLayout
 }
 
+// MinBitsPerSecond is the lowest bit rate a compressed recording is taken to
+// carry (MP3's lowest, 8 kbit/s). A compressed container's length is its
+// producer's claim; counting at least its size at this rate means a header
+// that understates its length can only be raised.
+const MinBitsPerSecond = 8000
+
+// Bound is the length the run's caps judge a recording of size bytes by. A
+// sample-framed WAV is measured from its samples, which is exactly what the
+// runtime sends. Any other container's header is a claim: the length is at
+// least size at MinBitsPerSecond, so it can over-count a recording of a
+// higher bit rate (the speech engine's own report reconciles the count after
+// the call) but never under-count one at a plausible rate.
+func (i Info) Bound(size int64) time.Duration {
+	if i.WAV != nil {
+		return i.Duration
+	}
+	return max(i.Duration, dur(float64(max(size, 0))*8/MinBitsPerSecond))
+}
+
 // ErrUnknown is returned for a file whose container is not recognised.
 var ErrUnknown = errors.New("media: not a recognised audio or video container")
 
@@ -64,6 +83,9 @@ func Probe(r io.ReaderAt, size int64) (Info, error) {
 		return Info{Format: "webm", MediaType: "video/webm"}, nil
 	case len(head) >= 10 && string(head[:3]) == "ID3":
 		off := id3Size(head)
+		if off >= size {
+			return Info{}, errors.New("media: the ID3 tag runs past the end of the file")
+		}
 		var sig [4]byte
 		if _, err := r.ReadAt(sig[:], off); err == nil && string(sig[:]) == "fLaC" {
 			return probeFLAC(r, size, off)
@@ -75,8 +97,15 @@ func Probe(r io.ReaderAt, size int64) (Info, error) {
 	return Info{}, ErrUnknown
 }
 
-// readAt reads exactly n bytes at off, or fails.
+// maxRead bounds one header read: the largest is an Ogg file's tail.
+const maxRead = 1 << 20
+
+// readAt reads exactly n bytes at off, or fails. n and off come from the
+// file, so both are checked before anything is allocated.
 func readAt(r io.ReaderAt, off int64, n int) ([]byte, error) {
+	if n < 0 || n > maxRead || off < 0 {
+		return nil, errors.New("media: a header field points outside the file")
+	}
 	b := make([]byte, n)
 	if _, err := r.ReadAt(b, off); err != nil {
 		return nil, err
@@ -102,15 +131,25 @@ func dur(seconds float64) time.Duration {
 // WAVLayout is where a WAV file's samples are and how they are laid out.
 type WAVLayout struct {
 	// Fmt is the fmt chunk's body as stored, copied into each piece Cut makes.
-	Fmt        []byte
-	FormatTag  uint16
-	Channels   int
-	SampleRate int
-	ByteRate   int
-	BlockAlign int
-	DataOffset int64
-	DataSize   int64
+	Fmt       []byte
+	FormatTag uint16
+	Channels  int
+	// SampleRate and BlockAlign are what a decoder plays the samples by;
+	// ByteRate is their product, never the header's own byte-rate field.
+	SampleRate    int
+	BitsPerSample int
+	ByteRate      int
+	BlockAlign    int
+	DataOffset    int64
+	DataSize      int64
 }
+
+// sampleFramed are the WAV encodings whose samples come in fixed frames of
+// channels × sample width: integer and float PCM, A-law and µ-law, and the
+// extensible header that wraps them. Only these are measured and cut; a
+// compressed WAV (ADPCM, GSM, MP3 inside RIFF) has no length the runtime can
+// check from its header.
+var sampleFramed = map[uint16]bool{1: true, 3: true, 6: true, 7: true, 0xFFFE: true}
 
 // maxWAVChunks bounds the chunk walk of a WAV header.
 const maxWAVChunks = 256
@@ -140,8 +179,28 @@ func probeWAV(r io.ReaderAt, size int64) (Info, error) {
 			lay.FormatTag = binary.LittleEndian.Uint16(f[0:])
 			lay.Channels = int(binary.LittleEndian.Uint16(f[2:]))
 			lay.SampleRate = int(binary.LittleEndian.Uint32(f[4:]))
-			lay.ByteRate = int(binary.LittleEndian.Uint32(f[8:]))
+			declaredRate := int64(binary.LittleEndian.Uint32(f[8:]))
 			lay.BlockAlign = int(binary.LittleEndian.Uint16(f[12:]))
+			lay.BitsPerSample = int(binary.LittleEndian.Uint16(f[14:]))
+			if !sampleFramed[lay.FormatTag] {
+				// Recognised, but its length is not checkable: the caller
+				// measures it another way or refuses it.
+				return info, nil
+			}
+			// The decoder plays sample frames: the length is the data's
+			// frames over the sample rate. A header whose fields disagree
+			// with that is refused rather than believed either way.
+			if lay.Channels < 1 || lay.Channels > 32 || lay.SampleRate < 1 || lay.SampleRate > 768000 ||
+				lay.BitsPerSample < 1 || lay.BitsPerSample > 64 {
+				return info, errors.New("media: the WAV fmt chunk is out of range")
+			}
+			if lay.BlockAlign != lay.Channels*((lay.BitsPerSample+7)/8) {
+				return info, errors.New("media: the WAV block align does not match its channels and sample width")
+			}
+			lay.ByteRate = lay.SampleRate * lay.BlockAlign
+			if declaredRate != int64(lay.ByteRate) {
+				return info, errors.New("media: the WAV byte rate does not match its sample rate and block align")
+			}
 			haveFmt = true
 		case "data":
 			if !haveFmt {
@@ -152,10 +211,8 @@ func probeWAV(r io.ReaderAt, size int64) (Info, error) {
 			if n == 0 || n == 0xFFFFFFFF || body+n > size {
 				n = size - body
 			}
+			n = n / int64(lay.BlockAlign) * int64(lay.BlockAlign) // whole frames only
 			lay.DataOffset, lay.DataSize = body, n
-			if lay.ByteRate <= 0 || lay.BlockAlign <= 0 {
-				return info, errors.New("media: the WAV fmt chunk has no byte rate")
-			}
 			info.WAV = lay
 			info.Duration = dur(float64(n) / float64(lay.ByteRate))
 			return info, nil
@@ -364,6 +421,9 @@ const mp3Scan = 64 << 10
 
 func probeMP3(r io.ReaderAt, size, start int64) (Info, error) {
 	info := Info{Format: "mp3", MediaType: "audio/mpeg"}
+	if start < 0 || start >= size {
+		return info, nil
+	}
 	buf, _ := readAt(r, start, int(min(mp3Scan, size-start)))
 	if buf == nil {
 		return info, nil
