@@ -32,6 +32,7 @@ describe("transcription on a run's stream", () => {
       seconds: 2550,
       status: "partial",
       dry_run: true,
+      error: "max_minutes_per_run reached",
     };
     const { client } = makeClient([
       sseResponse([

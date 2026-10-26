@@ -16,7 +16,7 @@ func TestEventToProto_TranscriptionCarriesTheRecord(t *testing.T) {
 		Ref: "volume:inbox:documents/scan.pdf", Out: "volume:inbox:documents/scan.ocr.md",
 		Purpose: "ocr", Engine: "vision", Provider: "anthropic", Model: "claude-haiku-5-5",
 		Pages: 12, Seconds: 1.5, InputTokens: 9000, OutputTokens: 4000,
-		Cost: &cost, Currency: "USD", Status: "partial", DryRun: true, RunID: "run-2",
+		Cost: &cost, Currency: "USD", Status: "partial", DryRun: true, RunID: "run-2", Error: "max_pages_per_run reached",
 	}})
 	tr := out.GetTranscription()
 	if out.GetType() != "transcription" || tr == nil {
@@ -26,7 +26,7 @@ func TestEventToProto_TranscriptionCarriesTheRecord(t *testing.T) {
 		tr.GetPurpose() != "ocr" || tr.GetEngine() != "vision" || tr.GetProvider() != "anthropic" ||
 		tr.GetModel() != "claude-haiku-5-5" || tr.GetPages() != 12 || tr.GetSeconds() != 1.5 ||
 		tr.GetInputTokens() != 9000 || tr.GetOutputTokens() != 4000 || tr.Cost == nil || tr.GetCost() != 0.04 ||
-		tr.GetCurrency() != "USD" || tr.GetStatus() != "partial" || !tr.GetDryRun() || tr.GetRunId() != "run-2" {
+		tr.GetCurrency() != "USD" || tr.GetStatus() != "partial" || !tr.GetDryRun() || tr.GetRunId() != "run-2" || tr.GetError() != "max_pages_per_run reached" {
 		t.Errorf("transcription = %+v", tr)
 	}
 
