@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -54,6 +55,10 @@ type Driver struct {
 	// auth authenticates the operator's calls instead of apiKey (RFC EM). Nil
 	// = apiKey.
 	auth providers.RequestAuth
+	// audioClient is http without its response-header timeout, built on the
+	// first speech-to-text call (audioHTTP).
+	audioOnce   sync.Once
+	audioClient *http.Client
 }
 
 // setBearer sends k as a bearer token, which is also how Bedrock's OpenAI

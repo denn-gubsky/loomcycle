@@ -151,6 +151,18 @@ func (b *Budget) ReserveSeconds(s float64) error {
 	return nil
 }
 
+// ReleaseSeconds gives back s seconds a reservation took and no request
+// spent: a later unit that was never sent, or a reservation a second budget
+// refused. More than is held releases everything.
+func (b *Budget) ReleaseSeconds(s float64) {
+	if !(s > 0) {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seconds = max(b.seconds-s, 0)
+}
+
 // Pages is how many pages the run has reserved.
 func (b *Budget) Pages() int {
 	b.mu.Lock()

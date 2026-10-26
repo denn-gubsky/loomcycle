@@ -190,3 +190,21 @@ func TestBudget_ConcurrentReservationsNeverOvershoot(t *testing.T) {
 		t.Errorf("granted %d second reservations, counter %v; want exactly %d", okSeconds, b.Seconds(), limit)
 	}
 }
+
+// TestBudget_ReleaseSecondsGivesBackUnspentAudio — seconds a request never
+// spent go back, and a release larger than what is held floors at zero.
+func TestBudget_ReleaseSecondsGivesBackUnspentAudio(t *testing.T) {
+	b := NewBudget(Caps{MaxMinutesPerRun: 1})
+	if err := b.ReserveSeconds(50); err != nil {
+		t.Fatal(err)
+	}
+	b.ReleaseSeconds(20)
+	if err := b.ReserveSeconds(30); err != nil {
+		t.Fatalf("after the release the seconds must fit again: %v", err)
+	}
+	b.ReleaseSeconds(1000)
+	b.ReleaseSeconds(-5)
+	if b.Seconds() != 0 {
+		t.Errorf("seconds = %v, want 0", b.Seconds())
+	}
+}
