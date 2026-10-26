@@ -1678,6 +1678,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("migrate re-home tenant dirents: %w", err)
 	}
 
+	// The same split one plane over: tenant document rows (chunk bodies, derived
+	// units) keyed by the SQL Memory scope id, where a tenant-scope Memory read
+	// never looks. Mirrors postgres migration 0113; the boot sweep runs it again
+	// and logs what it did, so the report is not repeated here.
+	if _, err := s.MigrateTenantDocumentRows(ctx); err != nil {
+		return fmt.Errorf("migrate tenant document rows: %w", err)
+	}
+
 	// After the ALTERs (every current column exists to copy) and before
 	// addIndexes (whose indexes then land on the rebuilt tables).
 	if err := s.rebuildTenantBlindKeys(ctx, stmts); err != nil {
