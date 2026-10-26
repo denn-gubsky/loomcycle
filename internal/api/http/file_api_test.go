@@ -136,7 +136,7 @@ var (
 	// twinReader reads every run of its tenant and owns none of them: neither
 	// the run's owner nor an operator.
 	twinReader = auth.Principal{TenantID: "acme", Subject: "dave", Scopes: []string{auth.ScopeRunsRead}}
-	twinAdmin    = auth.Principal{TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}}
+	twinAdmin  = auth.Principal{TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}}
 )
 
 func (f *fileTwinFixture) call(t *testing.T, p auth.Principal, in map[string]any) (map[string]any, string, bool) {
