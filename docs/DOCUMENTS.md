@@ -62,15 +62,20 @@ tenant), where no tenant-scope Memory read looked:
 - Postgres migration `0113` moves them, embeddings included; SQLite does the same
   on open, and every boot repeats it to catch rows a replica on the older binary
   wrote during a rolling upgrade. The boot log reports rows moved, conflicts
-  (both coordinates held the key — the later write is kept) and strays (a tenant
-  document row at any other scope id, left where it is).
+  (both coordinates held the key — the later write is kept, except that an
+  old-keyspace chunk body whose `body` is empty never replaces the destination;
+  fields alone do not count as content) and strays (a tenant document row at any
+  other scope id, left where it is).
 - For one release a tenant body read that misses retries the old scope id, so a
   chunk an older replica just wrote reads correctly before the next boot moves it.
 - Snapshot restore re-keys an older snapshot's tenant document rows the same way.
-- During a rolling upgrade an older replica reads a moved body as empty; avoid
-  editing tenant documents through older replicas until every replica runs this
-  release. Rolling the binary back past `0113` needs the rows moved back by hand
-  (the down migration is a no-op).
+- During a rolling upgrade an older replica reads a moved body as empty. If it
+  writes that emptiness back (a fields-only `update_chunk`), the blank row lands
+  at the old scope id and the next sweep discards it in favour of the moved body;
+  a real edit made through an older replica is kept if it is the later write. The
+  older replica still shows tenant documents as empty until it is upgraded.
+  Rolling the binary back past `0113` needs the rows moved back by hand (the down
+  migration is a no-op).
 
 **Memory and document rows.** Because chunk bodies share the Memory keyspace,
 the Memory tool keeps them behind the Document tool's checks:
