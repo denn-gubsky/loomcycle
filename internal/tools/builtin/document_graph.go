@@ -747,16 +747,23 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 // graphRecallTimeClause is graph_recall's time filter. With as_of it is the one
 // as_of rule search, related and query_chunks apply — the chunk's own interval AND,
 // for a fact, its sidecar's — so a chunk dated out of an instant is out of it on
-// every op. Without as_of it is graphTemporalClause's "true now" over the sidecar,
-// which list_facts shares; an ordinary chunk's own dates do not filter the default,
-// as they do not filter search's. So as_of=<now> can drop an ordinary chunk whose
-// own end has passed while the default keeps it (marked retired) — the split
-// search and query_chunks already have.
+// every op.
+//
+// The "true now" default checks the chunk's own interval at the current instant
+// too: an edition whose own end has passed, or that is not in force yet, is left
+// out exactly as a superseded fact is, so the default and as_of=<now> agree on
+// it. The sidecar half stays graphTemporalClause's default, which list_facts
+// shares. include_retired turns both off.
 func graphRecallTimeClause(in docInput) (string, []any) {
-	if in.IncludeRetired || in.AsOf == nil {
-		return graphTemporalClause(in)
+	if in.IncludeRetired {
+		return "", nil
 	}
-	return asOfClause(*in.AsOf)
+	if in.AsOf != nil {
+		return asOfClause(*in.AsOf)
+	}
+	own, oargs := chunkIntervalClause("c", time.Now().UnixNano())
+	side, sargs := graphTemporalClause(in)
+	return "(" + own + " AND " + side + ")", append(oargs, sargs...)
 }
 
 // graphTemporalClause builds the time filter.

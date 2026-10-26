@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -420,5 +421,81 @@ func TestGraphRecall_BodyCharsOverCapIsRefused(t *testing.T) {
 	rows := graphRows(t, recallFromAda(t, d, ctx, ids, `,"body_chars":4000`))
 	if got := asStr(rows["Clause 4.2 Retention"]["body"]); got != clauseBody {
 		t.Errorf("body_chars 4000 should return the whole %d-character clause, got %d", len(clauseBody), len(got))
+	}
+}
+
+// expiredGraphFixture links Ada to three ordinary chunks with their own dates:
+// one ended in 2024, one not in force until far ahead, and one in force now.
+func expiredGraphFixture(t *testing.T) (*Document, contextT, map[string]string) {
+	t.Helper()
+	const ns2099 = int64(4070908800) * 1e9
+	d, ctx, ids := bodyGraphFixture(t)
+	docID := resultField(toolResult(vExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+ids["Ada"]+`"}`)), "document_id")
+	for _, c := range []struct {
+		title              string
+		validAt, invalidAt int64
+	}{
+		{"Repealed edition", ns2023, ns2024},
+		{"Future edition", ns2099, 0},
+		{"Current edition", ns2024, ns2099},
+	} {
+		v := map[string]any{"op": "create_chunk", "scope": "user", "document_id": docID, "parent_id": ids["Ada"],
+			"title": c.title, "valid_at": c.validAt}
+		if c.invalidAt != 0 {
+			v["invalid_at"] = c.invalidAt
+		}
+		b, _ := json.Marshal(v)
+		id := resultField(toolResult(vExec(t, d, ctx, string(b))), "id")
+		vExec(t, d, ctx, `{"op":"link_chunks","scope":"user","document_id":"`+docID+`","from_id":"`+ids["Ada"]+`","to_id":"`+id+`","kind":"has_edition"}`)
+	}
+	return d, ctx, ids
+}
+
+// TestGraphRecall_DefaultLeavesOutAnExpiredOrdinaryChunk: the default is "what is
+// true now", and a chunk whose own dates say it is not in force now is left out
+// of it as a superseded fact is — so the default and as_of=<now> agree.
+func TestGraphRecall_DefaultLeavesOutAnExpiredOrdinaryChunk(t *testing.T) {
+	d, ctx, ids := expiredGraphFixture(t)
+	rows := graphRows(t, recallFromAda(t, d, ctx, ids, ""))
+	for _, gone := range []string{"Repealed edition", "Future edition"} {
+		if _, in := rows[gone]; in {
+			t.Errorf("the default returned %q, which its own dates put out of force now", gone)
+		}
+	}
+	if _, in := rows["Current edition"]; !in {
+		t.Errorf("the default left out the edition in force now: %v", rows)
+	}
+	now := graphRows(t, recallFromAda(t, d, ctx, ids, fmt.Sprintf(`,"as_of":%d`, time.Now().UnixNano())))
+	var a, b []string
+	for title := range rows {
+		a = append(a, title)
+	}
+	for title := range now {
+		b = append(b, title)
+	}
+	sort.Strings(a)
+	sort.Strings(b)
+	if strings.Join(a, "|") != strings.Join(b, "|") {
+		t.Errorf("the default and as_of=<now> disagree:\n default %v\n as_of   %v", a, b)
+	}
+}
+
+// TestGraphRecall_IncludeRetiredReturnsAnExpiredChunkMarkedRetired: include_retired
+// still turns the time filter off, and the ended chunk says it has ended.
+func TestGraphRecall_IncludeRetiredReturnsAnExpiredChunkMarkedRetired(t *testing.T) {
+	d, ctx, ids := expiredGraphFixture(t)
+	rows := graphRows(t, recallFromAda(t, d, ctx, ids, `,"include_retired":true`))
+	repealed := rows["Repealed edition"]
+	if repealed == nil {
+		t.Fatalf("include_retired did not bring back the repealed edition: %v", rows)
+	}
+	if r, _ := repealed["retired"].(bool); !r {
+		t.Errorf("the repealed edition came back with retired=%v, want true", repealed["retired"])
+	}
+	if _, in := rows["Future edition"]; !in {
+		t.Error("include_retired did not bring back the edition not yet in force")
+	}
+	if r, _ := rows["Current edition"]["retired"].(bool); r {
+		t.Error("the edition in force now is marked retired")
 	}
 }
