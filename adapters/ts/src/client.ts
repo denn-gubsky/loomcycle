@@ -1812,6 +1812,12 @@ export class LoomcycleClient {
     // Sent only when set: an absent predicate leaves the search untouched, and
     // the server rejects a malformed one rather than silently ignoring it.
     if (input.when !== undefined) body.when = input.when;
+    // The document filters: sent only when set, so a filter-free search's
+    // response stays byte-identical (no `filter` echo).
+    if (input.underPaths !== undefined) body.under_paths = input.underPaths;
+    if (input.excludeUnderPaths !== undefined) body.exclude_under_paths = input.excludeUnderPaths;
+    if (input.documentIds !== undefined) body.document_ids = input.documentIds;
+    if (input.excludeDocumentIds !== undefined) body.exclude_document_ids = input.excludeDocumentIds;
     return postJSON<MemorySearchResponse>(this.ctx, "/v1/_memory/search", body, {
       signal: opts?.signal,
     });

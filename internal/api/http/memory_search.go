@@ -12,6 +12,7 @@ package http
 // it at ScopeAdmin); a later phase re-gates the family to the tenant axis.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -47,6 +48,24 @@ type memorySearchRequest struct {
 	// get DROPPED is how this endpoint and its in-band twin have already drifted
 	// twice; one struct and one parser is the fix.
 	When *memrank.WhenInput `json:"when,omitempty"`
+	// UnderPaths … ExcludeDocumentIDs aim the search at part of the scope's
+	// documents, exactly as on the in-run Memory tool's search: they narrow
+	// document chunks only (facts and notes pass), before every leg's limit.
+	// Resolved by the Document tool in the caller's own tenant and the scope_id
+	// below, never in a tenant the body names.
+	UnderPaths         []string `json:"under_paths,omitempty"`
+	ExcludeUnderPaths  []string `json:"exclude_under_paths,omitempty"`
+	DocumentIDs        []string `json:"document_ids,omitempty"`
+	ExcludeDocumentIDs []string `json:"exclude_document_ids,omitempty"`
+}
+
+func (b memorySearchRequest) documentFilter() memrank.DocumentFilter {
+	return memrank.DocumentFilter{
+		UnderPaths:         b.UnderPaths,
+		ExcludeUnderPaths:  b.ExcludeUnderPaths,
+		DocumentIDs:        b.DocumentIDs,
+		ExcludeDocumentIDs: b.ExcludeDocumentIDs,
+	}
 }
 
 type memorySearchEmbeddedWith struct {
@@ -93,6 +112,9 @@ type memorySearchResponse struct {
 	Entries           []memorySearchResultEntry `json:"entries"`
 	QueryEmbeddingDim int                       `json:"query_embedding_dim"`
 	Truncated         bool                      `json:"truncated"`
+	// Filter is what a document filter resolved to — present only when the
+	// request carried one, so a filter-free response is byte-identical.
+	Filter *builtin.MemoryDocFilterEcho `json:"filter,omitempty"`
 }
 
 // handleMemorySearch serves POST /v1/_memory/search.
@@ -164,12 +186,42 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_sources", serr.Error())
 		return
 	}
-	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID,
-		memrank.SearchQuery{
-			QueryText: body.Query, Prefix: "", TopK: topK,
-			Sources: sources,
-			When:    when,
-		}, rankCfg, dedupCfg)
+	sq := memrank.SearchQuery{
+		QueryText: body.Query, Prefix: "", TopK: topK,
+		Sources: sources,
+		When:    when,
+	}
+	// A document filter is resolved to chunk ids BEFORE the search, and only when
+	// one was given: a filter-free search stays on exactly the old path.
+	var filterEcho *builtin.MemoryDocFilterEcho
+	if df := body.documentFilter(); !df.IsZero() {
+		p, refusal := builtin.PlanMemoryDocumentFilter(memorySearchFilterCtx(r, body.Scope, storeScopeID),
+			&builtin.Document{Store: s.store, SqlMem: s.sqlMem}, "search",
+			store.MemoryScope(body.Scope), storeScopeID, df, sq, builtin.MemorySourcesWhy("", sources))
+		if refusal != nil {
+			status, code := memorySearchFilterRefusalStatus(*refusal)
+			if status == http.StatusInternalServerError {
+				slog.Warn("memory search document filter failed", "scope", body.Scope, "scope_id", body.ScopeID, "err", refusal.Text)
+				writeJSONError(w, status, code, "search failed")
+				return
+			}
+			writeJSONError(w, status, code, refusal.Text)
+			return
+		}
+		echo := p.Echo()
+		filterEcho = &echo
+		// Nothing matched and nothing but documents could: answer without
+		// embedding the query or touching the store.
+		if p.NothingToSearch() {
+			writeJSON(w, http.StatusOK, memorySearchResponse{
+				Scope: body.Scope, ScopeID: storeScopeID,
+				Entries: []memorySearchResultEntry{}, Filter: filterEcho,
+			})
+			return
+		}
+		p.Apply(&sq)
+	}
+	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID, sq, rankCfg, dedupCfg)
 	if err != nil {
 		// The three typed refusals are operator-actionable (no embedder / no
 		// vector index / a model swap left the stored dimension stale), so surface
@@ -241,5 +293,41 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		Entries:           entries,
 		QueryEmbeddingDim: res.QueryEmbeddingDim,
 		Truncated:         res.Truncated,
+		Filter:            filterEcho,
 	})
+}
+
+// memorySearchFilterCtx is the identity a document filter resolves under: the
+// principal's own tenant (as the search itself), the requested scope's subject,
+// and the operator-plane grants the off-run Document routes run with
+// (substrateBrowseCtx → substrateAdminCtx). The principal stays on ctx, so the
+// Document tool's access-control narrowing reads the caller's own set. The
+// subject is the scope_id this handler already accepts for the search; no
+// tenant focus is honoured, because the search does not honour one either.
+func memorySearchFilterCtx(r *http.Request, scope, storeScopeID string) context.Context {
+	subject := ""
+	if scope != string(store.MemoryScopeTenant) {
+		subject = storeScopeID
+	}
+	return substrateBrowseCtx(r.Context(), subject, "")
+}
+
+// memorySearchFilterRefusalStatus maps a refused document filter to its HTTP
+// answer by failure class — the class the Memory tool reports in a run. A
+// refusal of no known class is a fault.
+func memorySearchFilterRefusalStatus(res tools.Result) (int, string) {
+	if res.Error == nil {
+		return http.StatusInternalServerError, "internal"
+	}
+	switch res.Error.Category {
+	case tools.CategoryPermission:
+		return http.StatusForbidden, "permission_denied"
+	case tools.CategoryValidation:
+		return http.StatusBadRequest, "invalid_filter"
+	case tools.CategoryBusiness:
+		return http.StatusBadRequest, "filter_unavailable"
+	case tools.CategoryTransient:
+		return http.StatusServiceUnavailable, "filter_unavailable"
+	}
+	return http.StatusInternalServerError, "internal"
 }
