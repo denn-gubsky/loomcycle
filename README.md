@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.123.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.124.0.</em>
 </p>
 
 <p align="center">
@@ -201,7 +201,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.123.0) signs people in to the Web UI: a sign-in
+The most recent line (v1.124.0) is fixes and one Memory feature: the Library
+no longer shows a static MCP server's secrets, `File` refuses a download or
+upload URL with a stray quote before sending it, and Memory search and recall
+can read another scope's documents in the same call, with the document access
+control applied to the document hits Memory returns. See
+[`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.123.0 signed people in to the Web UI: a sign-in
 creates a server-side session, so the browser never holds the API token and
 sign-out ends the session on the server. Besides the token paste box there are
 a password gate with invitations, resets and an authenticator, an OIDC gate
@@ -214,8 +221,8 @@ ledger rows and a `transcription` run event. Document search and related can be
 aimed at part of a scope by path, document, type, status, tag and `as_of`, any
 chunk can carry a validity period, and Memory search and recall take the same
 path filters. A request error no longer takes a model away from every run, and
-signed-URL credentials are masked in stored transcripts. See the upgrade notes
-in [`REVISIONS.md`](REVISIONS.md).
+signed-URL credentials are masked in stored transcripts. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.122.0 added access control: ACL rule lists, nested groups and
 bindings with explicit deny over allow, asked at every gate and intersected with

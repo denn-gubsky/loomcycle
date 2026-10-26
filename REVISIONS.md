@@ -8,6 +8,43 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.124.0
+
+*Fixes on the v1.123 line and one Memory feature. **The Library no longer shows a static MCP server's secrets:** a header such as `Bearer ${LOOMCYCLE_MS365_MCP_TOKEN}` in `mcp_servers` reached every admin and tenant operator, and the Web UI Library page, as the live token. **`File` download and upload refuse a URL with a stray quote or space** before any request, so a model that copies an upload session's URL out of JSON with its closing quote is told so and can retry, instead of getting a misleading 401 from SharePoint. **Memory search and recall can also read another scope's documents in the same call** (`documents_scope`), with one shared ranking, and the document access control now applies to the document hits Memory returns.*
+
+Since v1.123.0: #2149, #2150, #2151.
+- `@loomcycle/client` and the Python adapter move to 1.124.0 with no API change (the TS types gain a doc comment on the masked MCP definition, #2150). `documents_scope` reaches them in a later release.
+
+### The Library masks a static MCP server's secrets (#2150)
+
+`GET /v1/_library/mcp-servers` returned each static `mcp_servers` entry with its `${NAME}` references already expanded, because the loader interpolates the yaml before parsing it. A header like `Bearer ${LOOMCYCLE_MS365_MCP_TOKEN}` therefore reached every admin and tenant-operator caller, and the Web UI Library page, as the live token.
+
+- The projection now masks what carries credentials by convention, whatever the variable is called: every header value (an auth scheme is kept: `Bearer ****`), every env value, and a URL's user information, query values and fragment. The result then passes through the at-rest redactor, which masks a secret-named variable's value wherever else it appears (args, command, URL path).
+- **Edit (forks from yaml)** seeds the MCP editor from that masked definition, so the editor now refuses to save while a `****` is left and asks for the value or a `$cred:` / run-credentials reference instead.
+
+### `File` refuses a malformed download or upload URL (#2151)
+
+A model copying an upload session's `uploadUrl` out of JSON kept the string's closing quote. Go's URL parser accepts a quote in a query, so `File op=upload` sent it and SharePoint answered `401 invalidSignature`. That reads as an expired session, and the agent gave up (seen live on a mail-intake deployment).
+
+- `File op=download` and `op=upload` now refuse, before any request, a URL holding a character a URL never holds unencoded: a double quote, a space, `<`, `>`, a backslash, a backtick or a control character.
+- The error names the character and its position and never repeats the URL, whose query may be its credential. Nothing was sent, so the same URL still works when the call is repeated.
+- Real pre-authenticated URLs are unaffected: a Graph session's `guid='…'` and `b!…` drive id, percent-encoded quotes, and surrounding whitespace, which is trimmed as before.
+
+### Memory reads another scope's documents in the same call (#2149)
+
+An agent often keeps its notes in one scope and its reference documents in another, so it made two Memory calls and merged two ranked lists itself.
+
+- `Memory op=search` and `op=recall` take `documents_scope: agent | user | tenant`. When it differs from `scope`, that scope's document prose joins the call as a second leg inside the one search: the query is embedded once, both legs meet in the same fusion, rerank and single `top_k` trim, and every hit carries its `scope`. The document filters (`under_paths`, `exclude_under_paths`, `document_ids`, `exclude_document_ids`) aim at that leg.
+- When it equals `scope`, it is the same call with `documents` added to `sources`. Without it, nothing changes.
+- The leg needs the Memory tool's grant for that scope and Document search's gate for it (for `tenant`, both `memory_scopes` and `sql_scopes`); a refusal refuses the whole call. It is refused with `sources: [traces]`, on an external memory backend, and without a Document tool. MCP `memory` and gRPC `Memory` take it now; `POST /v1/_memory/search` and the adapters follow later.
+- **Fix:** since v1.123.0 a tenant-scope Memory search finds tenant documents, but those hits skipped the document access control that Document search applies, so a caller denied a path could read it through Memory. Every hit in a document (a chunk, or a fact homed in one, whatever its class) is now checked as Document search checks it, on both legs, and dropped when the caller may not read it. A caller whose rules cannot deny reading documents gets the same answer as before, with no extra lookups.
+
+### Upgrade notes
+
+- **No migration and no config change.**
+- **Library:** a static MCP server's header, env and URL secrets now read `****` in `GET /v1/_library/mcp-servers` and the Web UI; a client that read the live values from there must get them elsewhere.
+- **Images:** a minor tag rebuilds every image. All are at 1.124.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images.
+
 ## What's in v1.123.0
 
 *Web UI sign-in, OCR on extract, filtered Document search, and fixes to provider health. **The Web UI now signs people in to a server-side session**: the browser holds an opaque cookie and never the API token, sign-out ends the session on the server, and `auth.mode: strict` offers only the sign-in options an operator lists. **Three new sign-in gates** sit beside the token paste box: a password gate with invitations, resets, an authenticator and an `auth:manage` scope for a website that provisions its own users; an OIDC gate (Google Workspace, Entra, Okta, Keycloak, Cognito, IAM Identity Center, Auth0 or any provider) with an approval queue and explicit account linking; and an OAuth gate for GitHub, GitLab and Gitea. **`File op=extract` can OCR a scanned PDF or an image** through a vision model, when the operator configures it and the agent opts in, with page caps, ledger rows and a new `transcription` run event on every transport; speech-to-text is not in this release. **`Document op=search` and `op=related` can be aimed at part of a scope** (path, document, type, status, tag, `as_of`) inside every retrieval leg, ordinary chunks can carry their own `valid_at`/`invalid_at`, `graph_recall` returns chunk text, and Memory search and recall take the same path filters. Tenant document rows move to the keyspace Memory reads, so a tenant-scope Memory search now finds tenant documents. Also: a request error no longer takes a model away from every run, an operator-key refusal is confirmed by a probe before its provider is taken out, Haiku 5.x no longer fails on sampling settings, `shadow` access control reports in-run narrowing and no longer applies skill denies, and signed-URL credentials are masked in stored transcripts. **Read the upgrade notes: five migrations, a session cookie that replaces the bearer cookie, an older Web UI bundle that is refused, Memory writes to document bodies that are refused, and several behaviour changes.***
