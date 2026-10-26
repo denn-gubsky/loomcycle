@@ -3584,6 +3584,14 @@ export type DocumentToolInput = {
    *  chunk's own valid_at/invalid_at and, for a fact, its fact dates) contains
    *  it; a chunk with no stated validity always matches. */
   as_of?: number;
+  /** graph_recall: how much of each chunk's text the rows carry. Omitted: chunks
+   *  that are not facts carry the first 600 characters of their body (a fact's
+   *  title is its claim, so facts stay title-only). `0`: titles only — the
+   *  cheapest structural walk, the response shape from before bodies existed.
+   *  `N` (at most 4000): up to N characters on every row, facts included. A cut
+   *  body ends on a word and the row says `body_truncated: true`; `budget_chars`
+   *  counts body characters too. */
+  body_chars?: number;
   /** When the content became true in the world (unix nanoseconds).
    *  upsert_chunk: the fact's start. create_chunk / update_chunk: the chunk's
    *  own start (an edition coming into force); update_chunk with `null` clears
