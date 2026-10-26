@@ -135,6 +135,16 @@ func (b *boot) buildServer() {
 	if decisionService != nil {
 		decisionService.SetOnUsage(srv.RecordRunSideCallUsage)
 	}
+	// RFC FG: the File tool's OCR, on this server's model resolution and usage
+	// ledger. A configured engine that cannot be built fails boot.
+	fileOCR, err := srv.FileOCR()
+	if err != nil {
+		fatal("transcription: building the OCR engine failed", "err", err)
+	}
+	if fileOCR != nil {
+		b.fileTool.OCR = fileOCR
+		slog.Info("transcription: OCR enabled", "engine", fileOCR.Config.OCR.Engine, "tier", fileOCR.Config.OCR.Tier, "model", fileOCR.Config.OCR.Model)
+	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)

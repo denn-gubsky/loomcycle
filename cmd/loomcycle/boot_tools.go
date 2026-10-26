@@ -474,6 +474,7 @@ func (b *boot) buildTools() {
 	b.cryptoTool = cryptoTool
 	b.pathTool = pathTool
 	b.documentTool = documentTool
+	b.fileTool = fileTool
 	b.historyTool = historyTool
 	b.evaluationTool = evaluationTool
 	b.interruptionTool = interruptionTool

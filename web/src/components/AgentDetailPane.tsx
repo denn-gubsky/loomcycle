@@ -16,6 +16,7 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { fileCapturedLine } from "../lib/fileCaptured";
+import { transcriptionLine } from "../lib/transcription";
 import { settledToolIds } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
 import { metricsFromEvents } from "../lib/runMetrics";
@@ -809,6 +810,8 @@ function summaryFor(ev: EventPayload, row?: TranscriptEvent): string {
     }
     case "file_captured":
       return fileCapturedLine(ev.file);
+    case "transcription":
+      return transcriptionLine(ev.transcription);
     default:
       return "";
   }

@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe"
 )
 
 // File op=extract and op=import (RFC FF): a document kept in a volume becomes
@@ -52,6 +53,15 @@ type extractSink struct {
 	md      strings.Builder
 	images  []string
 	notKept []string
+	// starts is where each page's Markdown begins (extract.PageSink).
+	starts map[int]int
+}
+
+func (s *extractSink) StartPage(n int) {
+	if s.starts == nil {
+		s.starts = map[int]int{}
+	}
+	s.starts[n] = s.md.Len()
 }
 
 func (s *extractSink) Text(md string) error {
@@ -88,6 +98,10 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	excerptChars := in.ExcerptChars
 	if excerptChars == 0 || excerptChars > fileExcerptChars {
 		excerptChars = fileExcerptChars
+	}
+	oc, res, ok := f.ocrRequest(ctx, in)
+	if !ok {
+		return res, nil
 	}
 	if !inbox.Available(ctx) {
 		return errBusiness("extract: this run cannot keep files, so there is nowhere to write the extracted text",
@@ -129,7 +143,8 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	xctx, cancel := context.WithTimeout(ctx, fileExtractTimeout)
 	defer cancel()
 	sink := &extractSink{ctx: xctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin}
-	images := in.Images == nil || *in.Images
+	// A dry run writes nothing, so it keeps no pictures either.
+	images := (in.Images == nil || *in.Images) && !in.DryRun
 	rep, err := ex.Extract(xctx, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows})
 	cut := false
 	switch {
@@ -151,9 +166,44 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if cut {
 		md += "\n\n[the rest of the document was not extracted]"
 	}
-	kept := inbox.Capture(xctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted}, []byte(md))
+
+	// OCR: after the text layer, which says which pages need it.
+	var lowYield []int
+	if rep.Format == "pdf" {
+		lowYield = lowYieldPages(rep, oc.minChars)
+	}
+	var pass *ocrPass
+	if pages := ocrPages(rep, oc); len(pages) > 0 || in.DryRun {
+		var plan transcribe.Plan
+		if len(pages) > 0 {
+			if plan, err = f.OCR.Engine.Plan(ctx, mt); err != nil {
+				return errBusiness("extract: OCR cannot read "+r.raw+": "+err.Error(), "An operator configures the OCR model (transcription.ocr)."), nil
+			}
+		}
+		if in.DryRun {
+			return f.ocrDryRun(ctx, oc, plan, r.raw, mt, pages, lowYield)
+		}
+		starts := sink.starts
+		if rep.Format == "image" {
+			// One page: everything after the title.
+			if i := strings.Index(md, "\n\n"); i >= 0 {
+				starts = map[int]int{1: i}
+			}
+		}
+		pass = f.runOCR(ctx, oc, plan, fh, info.Size(), mt, pages)
+		md = spliceOCR(md, starts, pass)
+	}
+
+	// ctx, not xctx: an OCR pass may well outlast the extraction's bound.
+	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted}, []byte(md))
 	if !kept.Kept {
 		return errBusiness("extract: the extracted text could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
+	}
+	if pass != nil {
+		tools.EventEmitter(ctx)(pass.event(ctx, r.raw, kept.Record.Ref))
+		if pass.failure() != nil {
+			return ocrFailure(pass, kept.Record.Ref), nil
+		}
 	}
 
 	out := map[string]any{}
@@ -164,12 +214,30 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	out["ref"] = kept.Record.Ref
 	out["source"] = r.raw
 	out["media_type"] = mt
-	out["image_refs"] = append([]string{}, sink.images...)
+	// A picture of a page OCR replaced is no longer in the Markdown.
+	out["image_refs"] = keptImageRefs(sink.images, md)
+	if len(lowYield) > 0 {
+		out["low_yield_pages"] = lowYield
+	}
+	if pass != nil {
+		out["ocr"] = pass.summary(oc.mode)
+	}
 	if len(sink.notKept) > 0 {
 		out["images_not_kept"] = sink.notKept
 	}
 	out["excerpt"] = fileContentBlock(kept.Record.Ref, excerpt, truncated)
 	return okJSONRaw(out)
+}
+
+// keptImageRefs are the pictures the Markdown still links.
+func keptImageRefs(refs []string, md string) []string {
+	out := []string{}
+	for _, r := range refs {
+		if strings.Contains(md, "]("+r+")") {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // sourceOrigin is where a file came from: its capture record's origin while

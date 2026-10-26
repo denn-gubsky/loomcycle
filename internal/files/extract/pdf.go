@@ -121,6 +121,16 @@ func cutRunesPlain(s string, n int) (string, bool) {
 
 // openPDF parses the file and refuses one that is encrypted.
 func openPDF(ctx context.Context, r io.ReaderAt, size, maxDecode int64) (*model.XRefTable, error) {
+	pc, err := openPDFContext(ctx, r, size, maxDecode)
+	if err != nil {
+		return nil, err
+	}
+	return pc.XRefTable, nil
+}
+
+// openPDFContext is openPDF returning pdfcpu's whole context, which a cut
+// (SelectPages) writes from.
+func openPDFContext(ctx context.Context, r io.ReaderAt, size, maxDecode int64) (*model.Context, error) {
 	head := make([]byte, 1024)
 	n, _ := r.ReadAt(head, 0)
 	if !bytes.Contains(head[:n], []byte("%PDF-")) {
@@ -147,7 +157,7 @@ func openPDF(ctx context.Context, r io.ReaderAt, size, maxDecode int64) (*model.
 	if err := xr.EnsurePageCount(); err != nil {
 		return nil, fmt.Errorf("extract: the PDF has no readable page tree: %s", cutPanic(err))
 	}
-	return xr, nil
+	return pc, nil
 }
 
 // ctxReaderAt fails its reads once ctx is done, so a parse of a huge or
@@ -212,6 +222,9 @@ func (e *pdfExtract) run(opts Options) error {
 		}
 		if err != nil {
 			return err
+		}
+		if ps, ok := e.w.sink.(PageSink); ok {
+			ps.StartPage(n)
 		}
 		if err := e.w.text("\n\n" + md); err != nil {
 			return err
@@ -330,6 +343,7 @@ func (e *pdfExtract) page(n int) (string, error) {
 	text, cut := p.text()
 	chars := utf8.RuneCountInString(strings.Join(strings.Fields(text), ""))
 	e.textChars += chars
+	e.rep.PageYields = append(e.rep.PageYields, PageYield{Page: n, Chars: chars, Unread: unread})
 	// A page whose content could not be read is not a scan: it is listed
 	// as unread, not as one for a reader that can see.
 	if chars < LowYieldChars && !unread {

@@ -2620,6 +2620,8 @@ agents:
 - With no engine configured, the agent's setting is accepted and has no effect.
 - The block is set in yaml or the AgentDef overlay, merges per field on a fork, and is part of the agent's content hash. A run cannot override it.
 
+**What a run reports.** Each OCR or speech-to-text pass a `File` tool call makes emits one `transcription` event: on the SSE stream, as a transcript row, on gRPC as `Event.transcription` (`TranscriptionInfo`), typed in the TS and Python clients (`AgentEvent.transcription`), and as one line in the Web UI's run views (`⟲ OCR scan.pdf · 12 pages · claude-haiku-5-5 · $0.04 · ok`). It carries the source `ref` and the `out` ref of the Markdown written, `purpose` (`ocr` | `stt`), `engine`, the `provider` and `model` called, `pages` or `seconds`, `input_tokens` and `output_tokens`, `cost` and `currency` (absent when the pair is unpriced, which is not the same as free), `status` (`ok`; `partial` when a cap or an engine error stopped it after some units, and what was written stays; `failed`), `dry_run` (an estimate: no engine was called and nothing was spent), `error` (why the pass failed or stopped early: set on `failed`, and on `partial` when a cap or an engine error stopped it; never a secret, a URL's query or the file's content) and the `run_id` whose tool call made it. Never the text. It is a record for the operator, not model input: a resumed run's conversation does not include it.
+
 ---
 
 ## 10. Cross-references

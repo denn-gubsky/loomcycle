@@ -6,6 +6,7 @@ import type {
   TranscriptEvent,
 } from "../api";
 import { fileCapturedLine } from "../lib/fileCaptured";
+import { transcriptionDetail, transcriptionLine } from "../lib/transcription";
 import { toolResultId } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
 
@@ -313,6 +314,15 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       const full = [`ref: ${f.ref}`, `media_type: ${f.media_type}`, `size: ${f.size}`, `sha256: ${f.sha256}`, `origin: ${f.origin}`];
       if (f.run_id) full.push(`run_id: ${f.run_id}`);
       return { key, ts, kind, cls: "tl-tool", collapsible: true, payload: fileCapturedLine(f), full: full.join("\n") };
+    }
+    case "transcription": {
+      // One OCR or speech-to-text pass a tool call made: what it read and
+      // spent. A dry run is an estimate, a failure reads as one. The run, the
+      // output and the tokens when expanded.
+      const t = ev.transcription;
+      if (!t) return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
+      const cls = t.dry_run ? "tl-meta" : t.status === "failed" ? "tl-error" : "tl-tool";
+      return { key, ts, kind, cls, collapsible: true, payload: transcriptionLine(t), full: transcriptionDetail(t) };
     }
     case "hook_decision": {
       // Collapsed to a one-line "who did what to which call" summary; the

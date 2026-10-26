@@ -7,7 +7,16 @@ through ``AgentEvent._from_proto``.
 
 from __future__ import annotations
 
-from loomcycle.events import AgentEvent, ToolUse, Usage, Retry, LimitInfo, AdmissionInfo, FileCapturedInfo
+from loomcycle.events import (
+    AgentEvent,
+    ToolUse,
+    Usage,
+    Retry,
+    LimitInfo,
+    AdmissionInfo,
+    FileCapturedInfo,
+    TranscriptionInfo,
+)
 from loomcycle._generated import loomcycle_pb2 as pb
 
 
@@ -130,6 +139,63 @@ def test_file_captured_event_unwraps_the_record():
         run_id="run-2",
     )
     assert AgentEvent._from_proto(pb.Event(type="text", text="hi")).file is None
+
+
+def test_transcription_event_unwraps_the_record():
+    # One OCR pass a File tool call made: what it read, what it spent.
+    proto = pb.Event(
+        type="transcription",
+        transcription=pb.TranscriptionInfo(
+            ref="volume:inbox:documents/scan.pdf",
+            out="volume:inbox:documents/scan.ocr.md",
+            purpose="ocr",
+            engine="vision",
+            provider="anthropic",
+            model="claude-haiku-5-5",
+            pages=12,
+            input_tokens=9000,
+            output_tokens=4000,
+            cost=0.04,
+            currency="USD",
+            status="partial",
+            dry_run=True,
+            run_id="run-2",
+            error="max_pages_per_run reached",
+        ),
+    )
+    ev = AgentEvent._from_proto(proto)
+    assert ev.type == "transcription"
+    assert ev.transcription == TranscriptionInfo(
+        ref="volume:inbox:documents/scan.pdf",
+        out="volume:inbox:documents/scan.ocr.md",
+        purpose="ocr",
+        engine="vision",
+        provider="anthropic",
+        model="claude-haiku-5-5",
+        pages=12,
+        seconds=0.0,
+        input_tokens=9000,
+        output_tokens=4000,
+        cost=0.04,
+        currency="USD",
+        status="partial",
+        dry_run=True,
+        run_id="run-2",
+        error="max_pages_per_run reached",
+    )
+    # An unpriced pass is not a free one: cost stays None, not 0.0.
+    stt = AgentEvent._from_proto(
+        pb.Event(
+            type="transcription",
+            transcription=pb.TranscriptionInfo(
+                ref="volume:inbox:call.mp4", purpose="stt", engine="command", seconds=2550.0, status="ok"
+            ),
+        )
+    )
+    assert stt.transcription is not None
+    assert stt.transcription.seconds == 2550.0
+    assert stt.transcription.cost is None
+    assert AgentEvent._from_proto(pb.Event(type="text", text="hi")).transcription is None
 
 
 def test_queued_and_admitted_events_unwrap_the_admission_payload():

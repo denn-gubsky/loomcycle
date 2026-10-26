@@ -47,6 +47,9 @@ type File struct {
 	// Docs is the Document tool op=import builds a document through, so its
 	// scope checks hold; nil leaves import unavailable.
 	Docs *Document
+	// OCR lets op=extract read scanned pages and images (file_ocr.go); nil
+	// leaves OCR off.
+	OCR *FileOCR
 }
 
 func (f *File) Name() string { return FileToolName }
@@ -59,7 +62,8 @@ func (f *File) Description() string {
 		"keep (copy a file out of the inbox into one of your read-write volumes, since the inbox is deleted when the run ends), " +
 		"rm (delete one inbox file), clear (empty the inbox, or one folder of it), " +
 		"download (GET a URL into the inbox, or a volume; needs the HTTP tool and its allowlist), upload (PUT or POST a volume file to a URL, whole or in ranges for an upload session), " +
-		"extract (turn a DOCX, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt), " +
+		"extract (turn a DOCX, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt; " +
+		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
@@ -86,6 +90,9 @@ func (f *File) InputSchema() json.RawMessage {
 			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
 			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000."},
 			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
+			"ocr":           {"type": "string", "enum": ["never", "auto", "always"], "description": "extract: read scanned pages and images with the OCR model. auto: only PDF pages with little or no text; always: every page; never: the text layer only. Default: your agent's setting, which is also the most you may ask for."},
+			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. Default: the operator's."},
+			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything."},
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes."},
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import: the document store. Default user."},
@@ -104,9 +111,12 @@ type fileInput struct {
 	Recursive bool   `json:"recursive"`
 	Prefix    string `json:"prefix"`
 	// extract
-	Images       *bool `json:"images"`
-	MaxRows      int   `json:"max_rows"`
-	ExcerptChars int   `json:"excerpt_chars"`
+	Images       *bool  `json:"images"`
+	MaxRows      int    `json:"max_rows"`
+	ExcerptChars int    `json:"excerpt_chars"`
+	OCR          string `json:"ocr"`
+	Language     string `json:"language"`
+	DryRun       bool   `json:"dry_run"`
 	// import
 	Title   string   `json:"title"`
 	DocPath string   `json:"doc_path"`
