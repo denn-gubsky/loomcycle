@@ -3781,6 +3781,7 @@ export interface UsageAggregate {
   provider?: string;
   model?: string;
   credential_source?: string; // operator | tenant | user
+  purpose?: string; // chat | ocr | stt
   input_tokens: number;
   output_tokens: number;
   cache_creation_tokens: number;
@@ -3789,6 +3790,9 @@ export interface UsageAggregate {
   currency?: string;
   call_count: number;
   unpriced_calls: number;
+  // Seconds of audio the group's speech-to-text calls transcribed; absent when
+  // it has none.
+  audio_seconds?: number;
 }
 
 export interface UsageReportResponse {
@@ -3799,7 +3803,7 @@ export interface UsageReportResponse {
 }
 
 export interface UsageReportParams {
-  group_by?: string; // comma list of tenant,user,provider,model,source
+  group_by?: string; // comma list of tenant,user,provider,model,source,purpose
   from?: string; // RFC3339
   to?: string; // RFC3339
   tenant?: string; // admin-only focus; ignored for a tenant operator
