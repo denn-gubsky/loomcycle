@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -179,5 +180,125 @@ func TestImportSource_TitleIsCutToItsLimit(t *testing.T) {
 	s, err := ImportSource{Title: strings.Repeat("я", 400)}.normalize()
 	if err != nil || len([]rune(s.Title)) != importSourceMaxTitleRunes {
 		t.Errorf("title runes = %d, %v", len([]rune(s.Title)), err)
+	}
+}
+
+// Provenance is the server's. Whatever a caller writes into a root's fields
+// — through Markdown metadata on an import with no source, update_chunk, or
+// set_asset (whose own fields include a media_type) — get_document must not
+// render it as where the document came from.
+func TestDocumentProvenance_CallerFieldsAreNotProvenance(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	forged := `{"origin":"import","file":"forged.pdf","sha256":"forged","captured_from":"mcp:ms365/get","source_url":"https://evil.example/","source_kind":"email","provenance":{"origin":"import","source_url":"https://evil.example/"}}`
+	show := func(name, docID string) {
+		t.Helper()
+		got, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`)
+		if r.IsError {
+			t.Fatalf("%s: get_document: %s", name, r.Text)
+		}
+		if p, ok := got["provenance"]; ok {
+			t.Errorf("%s: get_document renders caller-written fields as provenance: %v", name, p)
+		}
+		exp, _ := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`","include_metadata":false}`)
+		if p, ok := exp["provenance"]; ok || strings.Contains(asStr(exp["markdown"]), "> Source:") {
+			t.Errorf("%s: export_md renders caller-written fields as provenance: %v", name, p)
+		}
+	}
+
+	// Markdown metadata on an import that names no source.
+	md := "# Note\n<!-- loom: {\"fields\":" + forged + "} -->\n\nbody\n"
+	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md})
+	out, res := docExec(t, d, ctx, string(call))
+	if res.IsError {
+		t.Fatalf("import_md: %s", res.Text)
+	}
+	show("import_md metadata", asStr(out["document_id"]))
+
+	// update_chunk on an ordinary document's root.
+	out, res = docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Plain"}`)
+	if res.IsError {
+		t.Fatalf("create_document: %s", res.Text)
+	}
+	docID, rootID := asStr(out["document_id"]), asStr(out["root_chunk_id"])
+	if _, res := docExec(t, d, ctx, `{"op":"update_chunk","scope":"user","id":"`+rootID+`","revision":1,"fields":`+forged+`}`); res.IsError {
+		t.Fatalf("update_chunk: %s", res.Text)
+	}
+	show("update_chunk", docID)
+
+	// set_asset on a root: its own media_type field is not provenance.
+	out, _ = docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Picture"}`)
+	pic, _ := json.Marshal(map[string]any{"op": "set_asset", "scope": "user", "id": asStr(out["root_chunk_id"]),
+		"media_type": "image/png", "data": base64.StdEncoding.EncodeToString(testPNG(t)), "filename": "p.png"})
+	if _, res := docExec(t, d, ctx, string(pic)); res.IsError {
+		t.Fatalf("set_asset: %s", res.Text)
+	}
+	show("set_asset", asStr(out["document_id"]))
+}
+
+// An imported document's provenance survives an edit of its root, and an
+// edit cannot change it: the stored values are carried forward.
+func TestDocumentProvenance_SurvivesAndResistsARootEdit(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": importMDSample,
+		"source_url": "https://mail.example/msg/1", "source_kind": "email"})
+	out, res := docExec(t, d, ctx, string(call))
+	if res.IsError {
+		t.Fatalf("import_md: %s", res.Text)
+	}
+	docID, rootID := asStr(out["document_id"]), asStr(out["root_chunk_id"])
+	c, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"user","id":"`+rootID+`"}`)
+	rev := asInt(c["revision"])
+	upd, _ := json.Marshal(map[string]any{"op": "update_chunk", "scope": "user", "id": rootID, "revision": rev,
+		"body": "edited", "fields": map[string]any{"color_enabled": true, "source_url": "https://evil.example/",
+			"provenance": map[string]any{"source_url": "https://evil.example/"}}})
+	if _, res := docExec(t, d, ctx, string(upd)); res.IsError {
+		t.Fatalf("update_chunk: %s", res.Text)
+	}
+	got, _ := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`)
+	p, _ := got["provenance"].(map[string]any)
+	if p["source_url"] != "https://mail.example/msg/1" || p["source_kind"] != "email" || p["origin"] != store.OriginImport {
+		t.Errorf("provenance after a root edit = %v", p)
+	}
+	if got["color_enabled"] != true {
+		t.Errorf("the edit's own field was lost: %v", got["color_enabled"])
+	}
+}
+
+// A write that has nothing to do with provenance keeps its fields
+// byte-for-byte; one that names the field loses it, or gets the stored one.
+func TestCarryProvenanceField(t *testing.T) {
+	stored := json.RawMessage(`{"provenance":{"origin":"import"},"x":1}`)
+	for _, tc := range []struct{ fields, stored, want string }{
+		{`{"b":2,"a":1}`, ``, `{"b":2,"a":1}`},
+		{`{"a":1,"provenance":{"origin":"import"}}`, ``, `{"a":1}`},
+		{`{"a":1,"provenance":"forged"}`, string(stored), `{"a":1,"provenance":{"origin":"import"}}`},
+		{``, string(stored), `{"provenance":{"origin":"import"}}`},
+		{`[1,2]`, string(stored), `[1,2]`},
+	} {
+		if got := string(carryProvenanceField(json.RawMessage(tc.fields), json.RawMessage(tc.stored))); got != tc.want {
+			t.Errorf("carry(%s, %s) = %s, want %s", tc.fields, tc.stored, got, tc.want)
+		}
+	}
+}
+
+// export_md → import_md is a new document with no provenance unless the
+// re-import names a source: the metadata export carries the field, and an
+// import's text cannot set it.
+func TestDocumentProvenance_RoundTripDropsIt(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": importMDSample, "source_kind": "web", "source_url": "https://example.org/a"})
+	out, res := docExec(t, d, ctx, string(call))
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	exp, _ := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+asStr(out["document_id"])+`"}`)
+	call, _ = json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": asStr(exp["markdown"])})
+	out, res = docExec(t, d, ctx, string(call))
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	got, _ := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+asStr(out["document_id"])+`"}`)
+	if p, ok := got["provenance"]; ok {
+		t.Errorf("a re-import without a source has provenance: %v", p)
 	}
 }

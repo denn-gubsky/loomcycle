@@ -12,14 +12,23 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // An imported document says where it came from (RFC FF D18). Its chunk
 // bodies are stamped with the memory origin store.OriginImport, so the text
 // stays in document search and never reads as a fact; its root chunk carries
-// the provenance as fields: what the runtime recorded of the file it was
-// imported from, and the link to its source the importer gave.
+// the provenance in one field, importProvenanceKey: what the runtime recorded
+// of the file it was imported from, and the link to its source the importer
+// gave.
+//
+// The provenance is the server's. It is one reserved field rather than keys
+// beside the root's own, so a caller's ordinary fields (set_asset's
+// media_type, a document's own "file" or "origin") are never mistaken for
+// it; every body write drops a caller's value for it and carries the stored
+// one forward (putBody); and it is shown only while the root's body row has
+// the import origin, which no tool input can set.
 
 // Limits on a source the importer gives.
 const (
@@ -30,9 +39,10 @@ const (
 // ImportSourceKinds are the kinds of place a document is imported from.
 var ImportSourceKinds = []string{"sharepoint", "email", "attachment", "web", "other"}
 
-// The root-chunk fields an import stamps. They are the server's: a value the
-// imported Markdown gives for one of them is dropped, so a field that reads
-// as provenance was never written by the text being imported.
+// importProvenanceKey is the root field the provenance is kept in.
+const importProvenanceKey = "provenance"
+
+// The provenance's own fields.
 const (
 	importFieldOrigin       = "origin"
 	importFieldFile         = "file"
@@ -142,18 +152,18 @@ type importProvenance struct {
 	fields map[string]any
 }
 
-type importProvenanceKey struct{}
+type importProvenanceCtxKey struct{}
 
 // withImportProvenance attaches the provenance the File tool recorded for an
 // import to the context its import_md call runs in. A context value, never
 // tool input: these fields describe what the runtime captured, and the text
 // being imported must not be able to supply them.
 func withImportProvenance(ctx context.Context, p importProvenance) context.Context {
-	return context.WithValue(ctx, importProvenanceKey{}, p)
+	return context.WithValue(ctx, importProvenanceCtxKey{}, p)
 }
 
 func importProvenanceFrom(ctx context.Context) (importProvenance, bool) {
-	p, ok := ctx.Value(importProvenanceKey{}).(importProvenance)
+	p, ok := ctx.Value(importProvenanceCtxKey{}).(importProvenance)
 	return p, ok
 }
 
@@ -184,39 +194,68 @@ func (p importProvenance) tags() []string {
 	return nil
 }
 
-// rootFields merges the provenance over the root chunk's own fields. Every
-// provenance field the Markdown gave is dropped first, set or not here, so a
-// field that reads as provenance is the server's or absent.
-func (p importProvenance) rootFields(own json.RawMessage) json.RawMessage {
-	m := map[string]any{}
-	if len(own) > 0 {
-		if err := json.Unmarshal(own, &m); err != nil || m == nil {
-			m = map[string]any{}
-		}
+// fieldsObject decodes a chunk's fields as an object; ok is false for fields
+// that are not one (absent fields decode as an empty object).
+func fieldsObject(fields json.RawMessage) (map[string]json.RawMessage, bool) {
+	m := map[string]json.RawMessage{}
+	if len(fields) == 0 {
+		return m, true
 	}
-	for _, k := range importProvenanceFields {
-		delete(m, k)
+	if json.Unmarshal(fields, &m) != nil || m == nil {
+		return nil, false
 	}
-	for k, v := range p.fields {
-		m[k] = v
+	return m, true
+}
+
+// setProvenanceField returns fields with the provenance field set to p,
+// whatever the caller's fields held there.
+func setProvenanceField(fields json.RawMessage, p map[string]any) json.RawMessage {
+	m, ok := fieldsObject(fields)
+	if !ok {
+		m = map[string]json.RawMessage{}
+	}
+	m[importProvenanceKey], _ = json.Marshal(p)
+	b, _ := json.Marshal(m)
+	return b
+}
+
+// carryProvenanceField returns a caller's fields with its provenance field
+// replaced by the stored body's: dropped when the stored body has none. A
+// write that touches neither comes back byte-for-byte as it was given.
+func carryProvenanceField(fields, stored json.RawMessage) json.RawMessage {
+	var keep json.RawMessage
+	if s, ok := fieldsObject(stored); ok {
+		keep = s[importProvenanceKey]
+	}
+	m, ok := fieldsObject(fields)
+	if !ok {
+		return fields // not an object: it cannot hold the field
+	}
+	if _, has := m[importProvenanceKey]; !has && keep == nil {
+		return fields
+	}
+	delete(m, importProvenanceKey)
+	if keep != nil {
+		m[importProvenanceKey] = keep
 	}
 	b, _ := json.Marshal(m)
 	return b
 }
 
-// provenanceView is the provenance a root chunk's fields carry, for
-// get_document and export_md; nil when they carry none.
+// provenanceView is the provenance a root chunk's provenance field holds,
+// its known keys only; nil when it holds none.
 func provenanceView(fields json.RawMessage) map[string]any {
-	if len(fields) == 0 {
+	m, ok := fieldsObject(fields)
+	if !ok || m[importProvenanceKey] == nil {
 		return nil
 	}
-	var m map[string]any
-	if json.Unmarshal(fields, &m) != nil {
+	var p map[string]any
+	if json.Unmarshal(m[importProvenanceKey], &p) != nil {
 		return nil
 	}
 	out := map[string]any{}
 	for _, k := range importProvenanceFields {
-		if v, ok := m[k]; ok && v != nil && v != "" {
+		if v, ok := p[k]; ok && v != nil && v != "" {
 			out[k] = v
 		}
 	}
@@ -224,6 +263,21 @@ func provenanceView(fields json.RawMessage) map[string]any {
 		return nil
 	}
 	return out
+}
+
+// importedProvenance is provenanceView for a chunk whose body row carries the
+// import origin, and nil for any other: the field is the server's by every
+// write path, and the origin, which no tool input sets, is checked as well.
+func (d *Document) importedProvenance(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID string, cb chunkBody) map[string]any {
+	view := provenanceView(cb.Fields)
+	if view == nil {
+		return nil
+	}
+	prov, err := d.Store.MemoryProvenanceGet(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(chunkID))
+	if err != nil || prov.Origin != store.OriginImport {
+		return nil
+	}
+	return view
 }
 
 // provenanceLine is a clean export's one line under the title saying where

@@ -1255,8 +1255,18 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, key 
 // candidate would be a cross-database round trip from each of the four call sites
 // that label a row.
 func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string) error {
+	return d.putBody(ctx, mscope, key, chunkID, chunkType, body, fields, origin, nil)
+}
+
+// putBody is writeBodyAs with the import provenance the server stamps on an
+// imported document's root (stamped; import_md alone passes it). Every other
+// write is a caller's: the provenance field it gives is dropped and the
+// stored one carried forward, so no write path — create_chunk, update_chunk,
+// set_asset, sync, an import's Markdown metadata — can set or change where a
+// document says it came from. This is the one place every body write goes
+// through, which is why the rule lives here.
+func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any) error {
 	scopeID := docMemScopeID(mscope, key)
-	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
 	// structure never drift across the tenant axis.
@@ -1290,6 +1300,23 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 		prov.SourceSessionID = prev.SourceSessionID
 		prov.SourceRunID = prev.SourceRunID
 	}
+	if stamped != nil {
+		fields = setProvenanceField(fields, stamped)
+	} else {
+		// Only an imported body can hold provenance, so only its rewrite reads
+		// the stored fields. A failed read refuses the write rather than
+		// erase the provenance the caller could not see.
+		var stored json.RawMessage
+		if perr == nil && prev.Origin == store.OriginImport {
+			cb, err := d.readBody(ctx, mscope, key, chunkID)
+			if err != nil {
+				return err
+			}
+			stored = cb.Fields
+		}
+		fields = carryProvenanceField(fields, stored)
+	}
+	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	if prov.Origin == "" && prov.Class == "" && prov.SourceSessionID == "" && prov.SourceRunID == "" {
 		if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
 			return err
@@ -2090,8 +2117,8 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		if len(scheme) > 0 {
 			resp["color_scheme"] = scheme
 		}
-		// Where an imported document came from: its root's provenance fields.
-		if p := provenanceView(rootBody.Fields); p != nil {
+		// Where an imported document came from: its root's provenance field.
+		if p := d.importedProvenance(ctx, mscope, key, rootID, rootBody); p != nil {
 			resp["provenance"] = p
 		}
 		// WHAT THE TREE CANNOT REACH. When this document's root is a subject, a fact
@@ -4359,7 +4386,7 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		if rerr != nil {
 			return errFrom("export_md: body: "+rerr.Error(), rerr), nil
 		}
-		prov = provenanceView(rootBody.Fields)
+		prov = d.importedProvenance(ctx, mscope, key, roots[0].ID, rootBody)
 	}
 
 	var b strings.Builder
@@ -4823,10 +4850,10 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		// New document: the first heading is the root chunk.
 		first := chunks[0]
 		load(&first)
-		rootFields := first.fields
+		var stamp map[string]any
 		var tags []string
 		if imported {
-			rootFields = prov.rootFields(first.fields)
+			stamp = prov.fields
 			tags = prov.tags()
 		}
 		cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: titleOrUntitled(first.title), Path: in.Path, Tags: tags, bodyOrigin: bodyOrigin})
@@ -4835,7 +4862,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
-		if err := d.writeBodyAs(ctx, mscope, key, rootID, first.typ, first.body, rootFields, bodyOrigin); err != nil {
+		if err := d.putBody(ctx, mscope, key, rootID, first.typ, first.body, first.fields, bodyOrigin, stamp); err != nil {
 			return errFrom("import_md: root body: "+err.Error(), err), nil
 		}
 		if first.typ != "" || first.status != "" {
