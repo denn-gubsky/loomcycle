@@ -124,6 +124,18 @@ func (b *Budget) ReservePages(n int) error {
 	return nil
 }
 
+// ReleasePages gives back n pages a reservation took: one that a second
+// budget then refused, so a refused call holds nothing in either. More than
+// is held releases everything.
+func (b *Budget) ReleasePages(n int) {
+	if n <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pages = max(b.pages-n, 0)
+}
+
 // ReserveSeconds reserves s seconds of audio, or returns a *CapError naming
 // max_minutes_per_run when they do not fit.
 func (b *Budget) ReserveSeconds(s float64) error {

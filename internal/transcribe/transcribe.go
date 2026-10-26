@@ -28,7 +28,48 @@ type OCREngine interface {
 	// Accepts reports whether the engine can read this media type (image/*,
 	// application/pdf).
 	Accepts(mediaType string) bool
-	OCR(ctx context.Context, unit Unit, opts OCROptions) (Page, error)
+	// Plan resolves, without calling it, what the engine would use for a file
+	// of mediaType in the run on ctx: the model, and whether a PDF goes whole
+	// or one page image at a time. A file the engine cannot take is refused
+	// here, before anything is reserved or spent; a dry run reports the plan.
+	Plan(ctx context.Context, mediaType string) (Plan, error)
+	// OCR makes one call for one unit under plan. Its Result carries what the
+	// call spent, also alongside an error when the call got that far.
+	OCR(ctx context.Context, plan Plan, unit Unit, opts OCROptions) (Result, error)
+}
+
+// Plan is what an OCR engine will use for one file.
+type Plan struct {
+	// Engine is the configured engine ("vision").
+	Engine string
+	// Provider and Model are the pair a model-backed engine calls.
+	Provider string
+	Model    string
+	// WholePDF is true when the engine reads a PDF page range as one document;
+	// false when it reads one page image at a time, so a PDF is rasterised
+	// page by page first.
+	WholePDF bool
+}
+
+// Result is one OCR call: the text of each page of its unit, in page order,
+// and what the call spent. Usage fields are zero for an engine that is not
+// a model.
+type Result struct {
+	Pages []Page
+	// Provider and Model are the pair that served the call.
+	Provider string
+	Model    string
+	// InputTokens and OutputTokens are what the model reported.
+	InputTokens  int
+	OutputTokens int
+	// CredentialSource is whose key paid ("operator" when empty, "tenant",
+	// "user"); CredentialScopeID names the override's owner.
+	CredentialSource  string
+	CredentialScopeID string
+	// ReportedCost is the provider's own price for the call, when its answer
+	// carried one; it wins over the pricing table.
+	ReportedCost     float64
+	ReportedCurrency string
 }
 
 // STTEngine turns one cut of audio (or a video the engine accepts whole) into
