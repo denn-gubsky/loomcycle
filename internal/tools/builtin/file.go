@@ -96,7 +96,12 @@ func (f *File) InputSchema() json.RawMessage {
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes."},
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import: the document store. Default user."},
-			"tags":          {"type": "array", "items": {"type": "string"}, "description": "import: tags for the document, besides the source/... and untrusted tags it always gets."}
+			"tags":          {"type": "array", "items": {"type": "string"}, "description": "import: tags for the document, besides the source/... and untrusted tags it always gets."},
+			"source":        {"type": "object", "description": "import: where the document came from, kept on it as a link back. Pass the item's web link (a SharePoint file's webUrl, an email's webLink), never a download or upload link. Default: for a downloaded file, its URL without the query.", "properties": {
+				"url":   {"type": "string", "description": "An http(s) link, at most 2048 bytes. Any signature or token in its query is masked before it is stored."},
+				"kind":  {"type": "string", "enum": ["sharepoint", "email", "attachment", "web", "other"], "description": "What kind of place it is. Default other. The document is also tagged source/<kind>."},
+				"title": {"type": "string", "description": "The source's own name, e.g. the email's subject. One line, at most 300 characters."}
+			}}
 		},
 		"required": ["op"]
 	}`)
@@ -118,10 +123,11 @@ type fileInput struct {
 	Language     string `json:"language"`
 	DryRun       bool   `json:"dry_run"`
 	// import
-	Title   string   `json:"title"`
-	DocPath string   `json:"doc_path"`
-	Scope   string   `json:"scope"`
-	Tags    []string `json:"tags"`
+	Title   string       `json:"title"`
+	DocPath string       `json:"doc_path"`
+	Scope   string       `json:"scope"`
+	Tags    []string     `json:"tags"`
+	Source  ImportSource `json:"source"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
