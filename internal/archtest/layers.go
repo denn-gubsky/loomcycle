@@ -117,6 +117,7 @@ var layers = []layer{
 			"internal/statepatch",
 			"internal/steer",
 			"internal/teamspec",
+			"internal/transcribe/helper",
 			"internal/turncancel",
 		},
 		// RFC FE P2: the leaves internal/providers needs, as their own modules
@@ -264,6 +265,8 @@ var allowedSideways = []subsystemEdge{
 	// L0
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},
+	{"internal/transcribe/helper", "internal/hostenv"},
+	{"internal/transcribe/helper", "internal/procgroup"},
 
 	// L1
 	{"internal/decision", "internal/providers"},
