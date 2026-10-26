@@ -335,7 +335,7 @@ const memoryInputSchema = `{
   "type": "object",
   "properties": {
     "op":         {"type": "string", "enum": ["get","set","delete","list","incr","search","merge","append_dedupe","bounded_list","add","recall","placement","sql_query","sql_exec","sql_begin","sql_commit","sql_rollback","cursor_get","cursor_scan","cursor_lease","cursor_advance","cursor_release","supersede","pending_drain","pending_ack"], "description": "Which operation to perform. Families: key/value (get,set,delete,list,incr,merge,append_dedupe,bounded_list,search); memory-layer (add,recall — add enqueues for background consolidation, recall needs the vector stack); SQL (sql_query,sql_exec,sql_begin,sql_commit,sql_rollback — a per-scope SQL database, gated separately by sql_scopes); consolidation (cursor_get,cursor_scan,cursor_lease,cursor_advance,cursor_release,supersede,pending_drain,pending_ack — background memory consolidation, gated separately by a dedicated grant)."},
-    "scope":      {"type": "string", "enum": ["agent","user","tenant","run"], "description": "Which keyspace/database. ONE scope per call, and a call reads ONLY the scope you name: a user-scope search or recall does NOT see tenant knowledge, and a tenant-scope one does not see the user's. To consult both, make TWO calls and merge the results by score — that recovers exactly what one combined query would have returned. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). tenant: knowledge shared across the tenant — the place for what is true of the whole organisation rather than of one person, read by every user and agent, and never included in a user-scope recall. run: ephemeral per-run, dropped at run end — SQL ops only."},
+    "scope":      {"type": "string", "enum": ["agent","user","tenant","run"], "description": "Which keyspace/database. ONE scope per call, and a call reads ONLY the scope you name: a user-scope search or recall does NOT see tenant knowledge, and a tenant-scope one does not see the user's. To consult both, make TWO calls and merge the results by score — that recovers exactly what one combined query would have returned. The one exception is documents: documents_scope adds another scope's documents to the same call. agent: this agent's (cross-run, cross-user). user: this end-user's (cross-agent). tenant: knowledge shared across the tenant — the place for what is true of the whole organisation rather than of one person, read by every user and agent, and never included in a user-scope recall. run: ephemeral per-run, dropped at run end — SQL ops only."},
     "key":        {"type": "string", "description": "The entry's key. Required for get / set / delete / incr / merge / append_dedupe / bounded_list."},
     "path":       {"type": "string", "description": "set: also name this entry in the Path tree at this absolute path (e.g. /prefs/voice), in the same scope. get: read the entry by that path instead of by key."},
     "value":      {"description": "The value itself, placed in the call as it is: a string, number, boolean, list or object. Text is a plain string (\"value\": \"Helix\" stores Helix) — do not add quotes inside it, or they are stored too. Required for set / merge / append_dedupe / bounded_list. For merge: a JSON object whose fields overlay the existing object. For append_dedupe / bounded_list: the item to append."},
@@ -352,6 +352,7 @@ const memoryInputSchema = `{
     "exclude_under_paths":  {"type": "array", "items": {"type": "string"}, "description": "search / recall: never return the document chunks of documents named at or under these Path-tree paths (e.g. reports this agent or another wrote, so its own output is not recalled as evidence). Documents only, as under_paths."},
     "document_ids":         {"type": "array", "items": {"type": "string"}, "description": "search / recall: return only the document chunks of these documents. Documents only, as under_paths."},
     "exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / recall: never return the document chunks of these documents. Documents only, as under_paths. For chunk-level filters (type, status, tags, a validity instant) use the Document tool's search."},
+    "documents_scope":      {"type": "string", "enum": ["agent","user","tenant"], "description": "search / recall: ALSO search the documents of this scope in the same call — for example your own notes in scope user and the shared reference documents in scope tenant. The results of both are ranked together into one list, cut by one top_k, and each result then says which scope it came from (scope). Only documents are taken from this scope; facts and notes still come from scope alone. under_paths, exclude_under_paths, document_ids and exclude_document_ids then apply to this scope's documents, and the filter block names it. It needs the same grants as searching that scope's documents with the Document tool, plus that scope in memory_scopes; without them the whole call is refused. Set equal to scope, it is the same as adding documents to sources."},
     "top_k":      {"type": "integer", "description": "v0.9.0 search-only: max results (default 10, max 50)."},
     "rank":       {"type": "object", "description": "search-only hybrid ranking weights. Omit for pure semantic (default). Properties: semantic_weight, recency_weight, recency_half_life_hours, source_weight, frequency_weight (source/frequency reserved — contribute 0 today).", "properties": {"semantic_weight": {"type": "number"}, "recency_weight": {"type": "number"}, "recency_half_life_hours": {"type": "number"}, "source_weight": {"type": "number"}, "frequency_weight": {"type": "number"}}},
     "dedup":      {"type": "object", "description": "search-only near-duplicate collapse. Omit (or enabled=false) for no dedup (default). Drops a result whose embedding cosine similarity to a higher-ranked kept result is >= threshold. Properties: enabled (bool), threshold (number, cosine-similarity floor, default 0.92), mode (\"drop\" default | \"merge\" | \"keep\").", "properties": {"enabled": {"type": "boolean"}, "threshold": {"type": "number"}, "mode": {"type": "string", "enum": ["drop","merge","keep"]}}},
@@ -423,6 +424,10 @@ type memoryInput struct {
 	ExcludeUnderPaths  []string `json:"exclude_under_paths,omitempty"`
 	DocumentIDs        []string `json:"document_ids,omitempty"`
 	ExcludeDocumentIDs []string `json:"exclude_document_ids,omitempty"`
+	// DocumentsScope adds the documents of another scope to a search / recall,
+	// ranked with the call's own results (memory_documents_scope.go). When set,
+	// the document filters above aim at that scope.
+	DocumentsScope string `json:"documents_scope,omitempty"`
 
 	// Rank is the RFC I hybrid-ranking weight block for `search`. Nil =
 	// pure semantic (today's behavior). See memrank.RankConfig.
@@ -1537,6 +1542,9 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Query == "" {
 		return errValidation("search: missing required field: query", "Pass query: the text to search for."), nil
 	}
+	// documents_scope equal to scope is documents added to sources, and is run as
+	// exactly that call (memory_documents_scope.go).
+	foldEqualDocumentsScope(&in)
 	// NOTE: the vector-support / embedder pre-flight is NOT done here on the
 	// tool's in-process Store/Embedder — a named memory_backend
 	// can serve search remotely with no local vector support or embedder.
@@ -1577,7 +1585,10 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if serr != nil {
 		return errValidation(fmt.Sprintf("search: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
-	sources, refusal := gateTenantDocumentSearch(ctx, "search", scope, in.Prefix, sources, !in.documentFilter().IsZero(), false)
+	// With a documents_scope the document filters aim at that scope's leg, not at
+	// this scope.
+	ownFilter := !in.documentFilter().IsZero() && in.DocumentsScope == ""
+	sources, refusal := gateTenantDocumentSearch(ctx, "search", scope, in.Prefix, sources, ownFilter, false)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -1591,10 +1602,18 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
 	}
+	var legPlan *documentsLegPlan
+	if in.DocumentsScope != "" {
+		plan, refusal := m.planDocumentsLeg(ctx, "search", in, sources)
+		if refusal != nil {
+			return *refusal, nil
+		}
+		legPlan, sq.Documents = plan, plan.leg
+	}
 	// A document filter is resolved to chunk ids BEFORE the search, and only when
 	// one was given: a filter-free search stays on exactly the old path.
 	var docFilter *MemoryDocFilterPlan
-	if df := in.documentFilter(); !df.IsZero() {
+	if df := in.documentFilter(); ownFilter {
 		plan, refusal := m.planDocumentFilter(ctx, "search", scope, scopeID, df, sq, MemorySourcesWhy(in.Prefix, sources))
 		if refusal != nil {
 			return *refusal, nil
@@ -1630,6 +1649,17 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		}
 		return errFrom(fmt.Sprintf("search: %s", err), err), nil
 	}
+	// A document the caller's access-control set denies it reading is left out,
+	// as Document op=search leaves it out (memory_document_acl.go) — in each scope
+	// the hits came from.
+	if err := m.dropUnreadableSearchHits(ctx, scope, scopeID, &res, inScope(legPlan, res.Scopes, scope, scope)); err != nil {
+		return errFrom("search: access control: "+err.Error(), err), nil
+	}
+	if legPlan != nil {
+		if err := m.dropUnreadableSearchHits(ctx, legPlan.scope, legPlan.scopeID, &res, inScope(legPlan, res.Scopes, scope, legPlan.scope)); err != nil {
+			return errFrom("search: access control: "+err.Error(), err), nil
+		}
+	}
 
 	entries := make([]map[string]any, 0, len(res.Entries))
 
@@ -1641,13 +1671,27 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	// MemoryRowDocument meant a fact whose home is a chunk came back addressed only
 	// by its opaque `doc.chunk:<hex>` key, which is the very thing ChunkLabelsFor
 	// exists to prevent.
-	var docChunkIDs []string
-	for _, r := range res.Entries {
-		if strings.HasPrefix(r.Key, memrank.DocumentChunkKeyPrefix) {
-			docChunkIDs = append(docChunkIDs, strings.TrimPrefix(r.Key, memrank.DocumentChunkKeyPrefix))
+	var docChunkIDs, legChunkIDs []string
+	for i, r := range res.Entries {
+		if id, ok := strings.CutPrefix(r.Key, memrank.DocumentChunkKeyPrefix); ok {
+			// A leg's chunk is labelled from its own scope's tables.
+			if legPlan != nil && scopeAt(res.Scopes, i, scope) == legPlan.scope {
+				legChunkIDs = append(legChunkIDs, id)
+			} else {
+				docChunkIDs = append(docChunkIDs, id)
+			}
 		}
 	}
 	labels := ChunkLabelsFor(ctx, m.SqlMem, tools.RunIdentity(ctx).TenantID, scope, scopeID, docChunkIDs)
+	if legPlan != nil && len(legChunkIDs) > 0 {
+		legLabels := ChunkLabelsFor(ctx, m.SqlMem, tools.RunIdentity(ctx).TenantID, legPlan.scope, legPlan.scopeID, legChunkIDs)
+		if labels == nil && len(legLabels) > 0 {
+			labels = make(map[string]ChunkLabel, len(legLabels))
+		}
+		for k, v := range legLabels {
+			labels[k] = v
+		}
+	}
 
 	for i, r := range res.Entries {
 		kind := memrank.Class(r)
@@ -1695,6 +1739,11 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		// is WHY it matched, which a reader weighing the hit needs to see.
 		if i < len(res.MatchedUnits) && res.MatchedUnits[i] != nil {
 			entry["matched_unit"] = res.MatchedUnits[i]
+		}
+		// With a documents_scope, every hit says which scope it came from: the
+		// agent's own memory and the corpus are told apart. Absent otherwise.
+		if legPlan != nil {
+			entry["scope"] = string(scopeAt(res.Scopes, i, scope))
 		}
 		entries = append(entries, entry)
 	}
@@ -1775,6 +1824,9 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	if docFilter != nil {
 		out["filter"] = docFilter.Echo()
 	}
+	if legPlan != nil && legPlan.filter != nil {
+		out["filter"] = legPlan.echo()
+	}
 	return okJSONCount(out, len(entries))
 }
 
@@ -1846,6 +1898,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Query == "" {
 		return errValidation("recall: missing required field: query", "Pass query: the question to recall facts for."), nil
 	}
+	foldEqualDocumentsScope(&in)
 	topK := in.TopK
 	if topK <= 0 {
 		topK = 10
@@ -1861,7 +1914,9 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	if serr != nil {
 		return errValidation(fmt.Sprintf("recall: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
 	}
-	sources, refusal := gateTenantDocumentSearch(ctx, "recall", scope, "", sources, !in.documentFilter().IsZero(), true)
+	// With a documents_scope the document filters aim at that scope's leg.
+	ownFilter := !in.documentFilter().IsZero() && in.DocumentsScope == ""
+	sources, refusal := gateTenantDocumentSearch(ctx, "recall", scope, "", sources, ownFilter, true)
 	if refusal != nil {
 		return *refusal, nil
 	}
@@ -1875,8 +1930,16 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
 	}
+	var legPlan *documentsLegPlan
+	if in.DocumentsScope != "" {
+		plan, refusal := m.planDocumentsLeg(ctx, "recall", in, sources)
+		if refusal != nil {
+			return *refusal, nil
+		}
+		legPlan, rq.Documents = plan, plan.leg
+	}
 	var docFilter *MemoryDocFilterPlan
-	if df := in.documentFilter(); !df.IsZero() {
+	if df := in.documentFilter(); ownFilter {
 		// Judged against what the recall will actually ask for: with no sources
 		// that is facts and notes, which hold no documents to filter.
 		eff, why := sources, MemorySourcesWhy("", sources)
@@ -1898,6 +1961,24 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	res, err := layer.Recall(ctx, scope, scopeID, rq)
 	if err != nil {
 		return errFrom(fmt.Sprintf("recall: %s", err), err), nil
+	}
+	if legPlan == nil {
+		if err := m.dropUnreadableRecallHits(ctx, scope, scopeID, &res, nil); err != nil {
+			return errFrom("recall: access control: "+err.Error(), err), nil
+		}
+	} else {
+		for _, s := range []struct {
+			scope   store.MemoryScope
+			scopeID string
+		}{{scope, scopeID}, {legPlan.scope, legPlan.scopeID}} {
+			scopes := make([]store.MemoryScope, len(res.Facts))
+			for i, f := range res.Facts {
+				scopes[i] = f.Scope
+			}
+			if err := m.dropUnreadableRecallHits(ctx, s.scope, s.scopeID, &res, inScope(legPlan, scopes, scope, s.scope)); err != nil {
+				return errFrom("recall: access control: "+err.Error(), err), nil
+			}
+		}
 	}
 	// RFC CV P1 — REACH THROUGH TO THE SOURCE. A recalled fact now carries the
 	// verbatim span it was distilled from, when one was recorded.
@@ -2046,6 +2127,14 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		if f.MatchedUnit != nil {
 			mem["matched_unit"] = f.MatchedUnit
 		}
+		// With a documents_scope, every memory says which scope it came from.
+		if legPlan != nil {
+			found := f.Scope
+			if found == "" {
+				found = scope // the leg contributed nothing: every memory is this scope's
+			}
+			mem["scope"] = string(found)
+		}
 		memories = append(memories, mem)
 	}
 	// RFC DF: the turn each fact came from, when the caller asked for it. Attached
@@ -2130,6 +2219,9 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	renderRerank(out, rerank, res.Rerank)
 	if docFilter != nil {
 		out["filter"] = docFilter.Echo()
+	}
+	if legPlan != nil && legPlan.filter != nil {
+		out["filter"] = legPlan.echo()
 	}
 	return okJSONCount(out, len(memories))
 }

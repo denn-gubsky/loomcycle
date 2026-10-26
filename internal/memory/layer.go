@@ -166,6 +166,10 @@ type RecallQuery struct {
 	// meaningful when Sources admits documents; empty constrains nothing.
 	IDs        []string
 	ExcludeIDs []string
+
+	// Documents is a documents leg in another scope, as on SearchQuery. It reads
+	// only: recall never writes what the leg finds anywhere.
+	Documents *DocumentsLeg
 }
 
 // RecallFact is one extracted fact returned by Recall. ID is server-assigned
@@ -193,6 +197,10 @@ type RecallFact struct {
 
 	// MatchedUnit is the derived search unit that found this chunk, when one did.
 	MatchedUnit *MatchedUnit `json:"matched_unit,omitempty"`
+
+	// Scope is the scope the fact was found in; set only when the query carried
+	// a Documents leg.
+	Scope store.MemoryScope `json:"scope,omitempty"`
 }
 
 // RecallResult is the ranked output of Recall, trimmed to the query's TopK by

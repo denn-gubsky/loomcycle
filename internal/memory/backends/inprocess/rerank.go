@@ -18,7 +18,11 @@ import (
 // then the content, so every candidate arrives labelled with where it sits, which
 // is how the rerank was measured; for a fact or a note it is the text that was
 // indexed for it. A row with no stored index text falls back to its value.
-func (b *Backend) rerankPool(ctx context.Context, tenant string, scope store.MemoryScope, scopeID string,
+//
+// at names the scope each candidate was found in: a search with a documents leg
+// ranks one pool drawn from two scopes, and each candidate's text is read from
+// its own.
+func (b *Backend) rerankPool(ctx context.Context, tenant string, at func(string) (store.MemoryScope, string),
 	q memory.SearchQuery, pool []store.MemorySearchEntry) ([]store.MemorySearchEntry, memory.RerankReport) {
 
 	if b.reranker == nil {
@@ -36,6 +40,7 @@ func (b *Backend) rerankPool(ctx context.Context, tenant string, scope store.Mem
 	}
 	texts := make([]string, n)
 	for i := 0; i < n; i++ {
+		scope, scopeID := at(pool[i].Key)
 		texts[i] = b.candidateText(ctx, tenant, scope, scopeID, pool[i])
 	}
 	order, rep := b.reranker.Rank(ctx, q.QueryText, texts, q.Rerank.EffectiveMaxChars())
