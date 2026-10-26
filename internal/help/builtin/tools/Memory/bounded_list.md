@@ -22,6 +22,9 @@ array after, oldest first.
 
 ## Errors
 
+- `bounded_list: the doc.chunk: namespace holds Document chunk bodies ...` — a chunk
+  body is edited through the Document tool (`update_chunk`), which checks its
+  revision and scope grants. Use an ordinary key for your own data.
 - `bounded_list: limit must be >= 1` — you left `limit` out; add it.
 - `bounded_list: limit must be <= 10000`.
 - `bounded_list: existing value is not a JSON array (use set to overwrite)`.

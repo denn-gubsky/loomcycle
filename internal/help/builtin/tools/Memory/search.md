@@ -12,7 +12,11 @@ searchable.
 
 ## Arguments
 
-- `scope` (required) — `agent`, `user` or `tenant`. One scope per call.
+- `scope` (required) — `agent`, `user` or `tenant`. One scope per call. A
+  `tenant` search reaches the tenant's shared documents only when the agent
+  holds `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]` — the same
+  two grants the Document tool needs for them. Without the second grant, asking
+  for documents is refused, and a search that does not ask leaves them out.
 - `query` (required) — plain-language text to match by meaning.
 - `top_k` — maximum results (default 10, at most 50).
 - `sources` — which kinds of row to return: `facts` (distilled by a
@@ -80,9 +84,9 @@ the tree you named rather than being crowded out by the rest.
 They need a search that can return documents: no `sources`, or `sources` that
 include `documents`. On a `[facts]`, `[notes]` or `[traces]` search, or a
 `prefix` outside the document namespace, they are refused rather than ignored.
-They work on `user` and `agent` scope; a `tenant`-scope Memory search does not
-reach the tenant's documents, so there they are refused too — search tenant
-documents with the Document tool's `search`, which takes the same filters.
+They work in every scope, each in that scope's own tree; on `tenant` they need
+both tenant grants (`memory_scopes` and `sql_scopes`), as reading tenant
+documents does.
 
 The answer then carries `filter: {applied, matched_documents, matched_chunks,
 inverted}` — what the filter resolved to. `matched_documents: 0` means the path
@@ -111,9 +115,11 @@ instant — use the Document tool's `search`.
   ...` — a permission refusal: reading this scope's documents needs a grant the
   agent lacks (the message names it). Drop the filter, or ask an operator to
   grant it.
-- `search: document filters are not available on a tenant-scope Memory call` —
-  use the Document tool's `search` with `scope: "tenant"`, which takes the same
-  filters.
+- `search: reading tenant documents through Memory needs sql_scopes: [tenant] as
+  well as memory_scopes: [tenant] ...` — a permission refusal: this search asked
+  for the tenant's documents (`documents` in `sources`, a `doc.chunk:` prefix, or
+  a document filter) and the agent lacks the second grant. Search facts and notes
+  only, or ask an operator to grant it.
 - `search: when.from "October" is not an RFC3339 timestamp` — resolve dates
   yourself, e.g. `2025-10-01T00:00:00Z`.
 

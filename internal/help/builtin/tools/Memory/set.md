@@ -45,6 +45,9 @@ the string: `"value": "\"Prefers email\""` stores the quote marks too, and
 
 ## Errors
 
+- `set: the doc.chunk: namespace holds Document chunk bodies ...` — a chunk
+  body is edited through the Document tool (`update_chunk`), which checks its
+  revision and scope grants. Use an ordinary key for your own data.
 - `set: value is not valid JSON` — send text as a plain string:
   `"value": "text"`.
 - `set: missing required field: key` / `value`.

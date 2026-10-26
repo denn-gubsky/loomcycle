@@ -12,7 +12,9 @@ second call when you need both.
 
 ## Arguments
 
-- `scope` (required) — `agent`, `user` or `tenant`.
+- `scope` (required) — `agent`, `user` or `tenant`. Recalling the tenant's
+  shared documents (`documents` in `sources`) needs `sql_scopes: [tenant]` as
+  well as `memory_scopes: [tenant]`, the two grants the Document tool needs.
 - `query` (required) — what you want to know, in plain language.
 - `top_k` — maximum results (default 10, at most 50).
 - `threshold` — a 0..1 score floor; weaker matches are dropped. Default 0
@@ -60,8 +62,8 @@ chunks only, before ranking, and the answer carries the same `filter` block.
 A recall without `sources` returns facts and notes only, so a document filter
 on it is refused — ask for `[facts, notes, documents]` or `[documents]`. A path
 is a name in ONE scope's tree: when you recall in two scopes, each call
-resolves the path in its own. Like on `search`, they work on `user` and
-`agent` scope and are refused on `tenant`. For chunk-level filters use the
+resolves the path in its own. Like on `search`, they work in every scope; on
+`tenant` they need both tenant grants. For chunk-level filters use the
 Document tool's `search`.
 
 ## Errors
@@ -81,8 +83,10 @@ Document tool's `search`.
   ...` — a permission refusal: reading this scope's documents needs a grant the
   agent lacks (the message names it). Drop the filter, or ask an operator to
   grant it.
-- `recall: document filters are not available on a tenant-scope Memory call` —
-  drop the filter there; the Document tool's `search` reaches tenant documents.
+- `recall: reading tenant documents through Memory needs sql_scopes: [tenant]
+  as well as memory_scopes: [tenant] ...` — a permission refusal: the recall
+  asked for the tenant's documents and the agent lacks the second grant. Recall
+  facts and notes only, or ask an operator to grant it.
 - `recall: when.from ... is not an RFC3339 timestamp` — resolve the date
   yourself.
 
