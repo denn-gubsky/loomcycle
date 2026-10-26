@@ -59,7 +59,7 @@ id; it cannot key on an empty component.) Releases before this one keyed these
 rows by the SQL Memory scope id instead (the tenant, or `default` for the empty
 tenant), where no tenant-scope Memory read looked:
 
-- Postgres migration `0113` moves them, embeddings included; SQLite does the same
+- Postgres migration `0114` moves them, embeddings included; SQLite does the same
   on open, and every boot repeats it to catch rows a replica on the older binary
   wrote during a rolling upgrade. The boot log reports rows moved, conflicts
   (both coordinates held the key — the later write is kept, except that an
@@ -74,7 +74,7 @@ tenant), where no tenant-scope Memory read looked:
   at the old scope id and the next sweep discards it in favour of the moved body;
   a real edit made through an older replica is kept if it is the later write. The
   older replica still shows tenant documents as empty until it is upgraded.
-  Rolling the binary back past `0113` needs the rows moved back by hand (the down
+  Rolling the binary back past `0114` needs the rows moved back by hand (the down
   migration is a no-op).
 
 **Memory and document rows.** Because chunk bodies share the Memory keyspace,

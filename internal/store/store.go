@@ -3043,7 +3043,7 @@ type MemoryStore interface {
 	// doc.unit: keys, with their embeddings) from the scope_id an older binary
 	// wrote them at — the SQL Memory scope id, which is tenant_id, or "default"
 	// for the empty tenant — to scope_id "", where a tenant-scope Memory read
-	// looks. Mirrors postgres migration 0113; the boot sweep calls it again so the
+	// looks. Mirrors postgres migration 0114; the boot sweep calls it again so the
 	// rows a replica on the old binary writes during a rolling upgrade move too.
 	//
 	// A row at any other non-empty scope_id is a stray: left where it is and

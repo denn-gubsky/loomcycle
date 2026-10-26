@@ -520,7 +520,7 @@ func warnLegacyTenantMemory(st store.Store) {
 
 // sweepTenantDocumentRows moves tenant document rows still keyed by the SQL
 // Memory scope id to the tenant keyspace, and reports what it did. Postgres
-// migration 0113 (and the SQLite open path) do this once; the sweep repeats it on
+// migration 0114 (and the SQLite open path) do this once; the sweep repeats it on
 // every boot so rows a replica on the old binary wrote during a rolling upgrade
 // move too. It is idempotent and best-effort: a failure is logged, never fatal.
 //

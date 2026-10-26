@@ -1697,7 +1697,7 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	// The same split one plane over: tenant document rows (chunk bodies, derived
 	// units) keyed by the SQL Memory scope id, where a tenant-scope Memory read
-	// never looks. Mirrors postgres migration 0113; the boot sweep runs it again
+	// never looks. Mirrors postgres migration 0114; the boot sweep runs it again
 	// and logs what it did, so the report is not repeated here.
 	if _, err := s.MigrateTenantDocumentRows(ctx); err != nil {
 		return fmt.Errorf("migrate tenant document rows: %w", err)

@@ -57,7 +57,7 @@ func tenantDocDestination(t, o string) string {
 }
 
 // MigrateTenantDocumentRows implements store.Store.MigrateTenantDocumentRows for
-// both stores. Postgres migration 0113 runs the same statements once, in SQL;
+// both stores. Postgres migration 0114 runs the same statements once, in SQL;
 // this is what the SQLite open path and the boot sweep run, and what reports.
 func MigrateTenantDocumentRows(ctx context.Context, db DB) (store.TenantDocumentKeyspaceReport, error) {
 	var rep store.TenantDocumentKeyspaceReport
