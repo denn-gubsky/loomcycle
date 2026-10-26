@@ -518,6 +518,32 @@ func warnLegacyTenantMemory(st store.Store) {
 		args...)
 }
 
+// sweepTenantDocumentRows moves tenant document rows still keyed by the SQL
+// Memory scope id to the tenant keyspace, and reports what it did. Postgres
+// migration 0113 (and the SQLite open path) do this once; the sweep repeats it on
+// every boot so rows a replica on the old binary wrote during a rolling upgrade
+// move too. It is idempotent and best-effort: a failure is logged, never fatal.
+//
+// Delete with the one-release read fallback (legacyDocMemScopeID) in the next
+// minor release.
+func sweepTenantDocumentRows(st store.Store) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rep, err := st.MigrateTenantDocumentRows(ctx)
+	if err != nil {
+		slog.Error("memory: moving tenant document rows to the tenant keyspace failed; tenant documents written before the upgrade stay invisible to tenant-scope Memory reads until a later boot moves them", "err", err)
+		return
+	}
+	if rep.Moved > 0 || rep.Conflicts > 0 {
+		slog.Info("memory: moved tenant document rows to the tenant keyspace",
+			"moved", rep.Moved, "conflicts", rep.Conflicts, "conflict_sample", rep.ConflictSample)
+	}
+	if rep.Strays > 0 {
+		slog.Warn("memory: tenant document rows at an unexpected scope id were left in place; neither the Document tool nor Memory reads them",
+			"strays", rep.Strays, "sample", rep.StraySample)
+	}
+}
+
 func openStore(cfg *config.Config) (store.Store, func(), error) {
 	switch cfg.Storage.Backend {
 	case "sqlite", "":
@@ -539,6 +565,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 		st.SetChannelDebug(channelDebugEnabled())
 		slog.Info("store: sqlite", "path", dbPath)
 		warnLegacyTenantMemory(st)
+		sweepTenantDocumentRows(st)
 		return st, func() { _ = st.Close() }, nil
 
 	case "postgres":
@@ -558,6 +585,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 		}
 		slog.Info("store: postgres", "automigrate", cfg.Storage.PgAutoMigrate, "pgvector", cfg.Env.PgvectorEnabled)
 		warnLegacyTenantMemory(st)
+		sweepTenantDocumentRows(st)
 		return st, func() { _ = st.Close() }, nil
 
 	default:
