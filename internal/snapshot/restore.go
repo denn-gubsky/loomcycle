@@ -812,7 +812,9 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 				// legacy tenant), preserving cross-version restore.
 				TenantID: e.TenantID,
 				Scope:    store.MemoryScope(e.Scope),
-				ScopeID:  e.ScopeID,
+				// An older snapshot's tenant document rows move to the tenant
+				// keyspace (tenant_document_keyspace.go).
+				ScopeID: restoredMemoryScopeID(e.TenantID, store.MemoryScope(e.Scope), e.ScopeID, e.Key),
 				MemoryEntry: store.MemoryEntry{
 					Key:        e.Key,
 					Value:      e.Value,
