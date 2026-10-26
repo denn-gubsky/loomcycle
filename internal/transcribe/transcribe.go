@@ -49,6 +49,9 @@ type Plan struct {
 	// false when it reads one page image at a time, so a PDF is rasterised
 	// page by page first.
 	WholePDF bool
+	// MaxUnitBytes is the most one call may carry; the caller cuts a page
+	// range smaller when it would not fit. 0 is no limit.
+	MaxUnitBytes int64
 }
 
 // Result is one OCR call: the text of each page of its unit, in page order,

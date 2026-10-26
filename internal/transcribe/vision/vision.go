@@ -108,7 +108,7 @@ func (e *Engine) Plan(ctx context.Context, mediaType string) (transcribe.Plan, e
 	if !caps.SupportsVision {
 		return transcribe.Plan{}, fmt.Errorf("the OCR model %s/%s cannot accept images; point transcription.ocr.tier (or .model) at a vision-capable model", providerID, model)
 	}
-	plan := transcribe.Plan{Engine: e.Name(), Provider: providerID, Model: model, WholePDF: caps.SupportsDocumentInput}
+	plan := transcribe.Plan{Engine: e.Name(), Provider: providerID, Model: model, WholePDF: caps.SupportsDocumentInput, MaxUnitBytes: MaxUnitBytes}
 	if mediaType == "application/pdf" && !plan.WholePDF && e.cfg.Rasterize == nil {
 		return transcribe.Plan{}, fmt.Errorf("the OCR model %s/%s reads page images, not PDFs; set transcription.ocr.rasterize.command (e.g. pdftoppm -r 150 -png {in} {out_prefix}) so its pages can be rendered", providerID, model)
 	}
