@@ -17,7 +17,9 @@ URL's query, and any URL's query in the server's reply, as `?…`.
 
 - `from` — the file: `volume:inbox:<path>` (or a bare path in the inbox), or
   `volume:<name>:<path>` in one of your volumes, which needs the Read tool.
-- `url` — the absolute `http` or `https` URL to send it to.
+- `url` — the absolute `http` or `https` URL to send it to, exactly as the
+  service gave it: when you take it from JSON (an upload session's
+  `uploadUrl`), the value only, without the quote marks around it.
 - `method` — `PUT` (default) or `POST`.
 - `content_type` — the Content-Type to send. Default: the file's type.
 - `headers` — extra request headers. No credentials: an upload URL carries its
@@ -45,6 +47,10 @@ range again.
   reply): an upload URL may have expired.
 - A ranged upload did not finish within a bounded number of requests.
 - A header looks like a credential.
+- `url` holds a character a URL never holds unencoded (a quote, a space, `<`,
+  `>`, a backslash or a backtick), most often the closing quote of the JSON
+  string it was copied from. Nothing was sent, so the same URL still works:
+  repeat the call with it corrected.
 
 ## Examples
 
