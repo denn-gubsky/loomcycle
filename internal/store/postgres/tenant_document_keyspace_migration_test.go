@@ -10,12 +10,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// TestMigrate0113_MovesTenantDocumentRowsAndIsIdempotent runs the SQL migration
+// TestMigrate0114_MovesTenantDocumentRowsAndIsIdempotent runs the SQL migration
 // itself (the boot sweep's Go twin is in the store contract): tenant document
 // rows at the old SQL Memory scope id move to "" with their embeddings, a
 // conflict keeps the later write, a stray stays, and a re-run changes nothing.
 // With and without pgvector — memory_embeddings exists only with it.
-func TestMigrate0113_MovesTenantDocumentRowsAndIsIdempotent(t *testing.T) {
+func TestMigrate0114_MovesTenantDocumentRowsAndIsIdempotent(t *testing.T) {
 	dsn := pgDSNFromEnv(t)
 	for _, vectors := range []bool{false, true} {
 		name := "without pgvector"
@@ -67,9 +67,9 @@ func TestMigrate0113_MovesTenantDocumentRowsAndIsIdempotent(t *testing.T) {
 			}
 
 			for run := 1; run <= 2; run++ {
-				forceMigrationVersion(t, fix.storeDSN, 112)
+				forceMigrationVersion(t, fix.storeDSN, 113)
 				if err := MigrateUp(fix.storeDSN); err != nil {
-					t.Fatalf("run %d: MigrateUp re-running 0113: %v", run, err)
+					t.Fatalf("run %d: MigrateUp re-running 0114: %v", run, err)
 				}
 				for _, w := range []struct{ tenant, key, val string }{
 					{"tnt", "doc.chunk:a", `"A"`}, {"", "doc.unit:d:summary:0", `"D"`}, {"tnt", "doc.chunk:c", `"NEW-legacy"`},

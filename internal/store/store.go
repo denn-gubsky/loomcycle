@@ -818,6 +818,43 @@ type TokenUsageRow struct {
 	PrefillMs  int64
 	DecodeMs   int64
 	QueueMs    int64
+
+	// Purpose is what the call was for: UsagePurposeChat (a model call made by
+	// the loop or a side call — every row before transcription existed),
+	// UsagePurposeOCR or UsagePurposeSTT. "" is written as chat. A row of any
+	// purpose counts its tokens against the budgets the same way; an STT row
+	// carries seconds instead of tokens.
+	Purpose string
+	// AudioSeconds is the length of the audio an STT call transcribed, the
+	// unit its per-minute price is computed from. 0 on every other row.
+	AudioSeconds float64
+}
+
+// The values TokenUsageRow.Purpose takes.
+const (
+	UsagePurposeChat = "chat"
+	UsagePurposeOCR  = "ocr"
+	UsagePurposeSTT  = "stt"
+)
+
+// NormalizeUsageRow returns the purpose and audio seconds a ledger insert
+// writes for row: an empty purpose is chat, and an unknown purpose or a
+// negative or non-finite second count is refused. Both backends call it, so a
+// row neither of them could read back never reaches either table.
+func NormalizeUsageRow(row TokenUsageRow) (purpose string, audioSeconds float64, err error) {
+	purpose = row.Purpose
+	switch purpose {
+	case "":
+		purpose = UsagePurposeChat
+	case UsagePurposeChat, UsagePurposeOCR, UsagePurposeSTT:
+	default:
+		return "", 0, fmt.Errorf("usage row: unknown purpose %q", row.Purpose)
+	}
+	s := row.AudioSeconds
+	if s < 0 || math.IsNaN(s) || math.IsInf(s, 0) {
+		return "", 0, fmt.Errorf("usage row: audio seconds %v is not a duration", s)
+	}
+	return purpose, s, nil
 }
 
 // TokenLimitRow is one per-scope token budget (RFC AW). Scope is
@@ -3006,7 +3043,7 @@ type MemoryStore interface {
 	// doc.unit: keys, with their embeddings) from the scope_id an older binary
 	// wrote them at — the SQL Memory scope id, which is tenant_id, or "default"
 	// for the empty tenant — to scope_id "", where a tenant-scope Memory read
-	// looks. Mirrors postgres migration 0113; the boot sweep calls it again so the
+	// looks. Mirrors postgres migration 0114; the boot sweep calls it again so the
 	// rows a replica on the old binary writes during a rolling upgrade move too.
 	//
 	// A row at any other non-empty scope_id is a stray: left where it is and

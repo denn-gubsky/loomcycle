@@ -398,17 +398,22 @@ func (d *Document) chunkFilterPredicate(ctx context.Context, ap searchFilterAppl
 		args = append(args, ap.TagPrefix, ap.TagPrefix+"/%")
 	}
 	if ap.AsOf != nil {
-		// BOTH intervals must contain the instant: the chunk's own and, for a
-		// fact-tier chunk, its sidecar's. Two stated intervals that disagree are two
-		// claims, and "true then?" is answered yes only when both say so.
-		frag, targs := chunkIntervalClause("c", *ap.AsOf)
-		parts = append(parts, frag)
-		args = append(args, targs...)
-		frag, targs = graphTemporalClause(docInput{AsOf: ap.AsOf})
+		frag, targs := asOfClause(*ap.AsOf)
 		parts = append(parts, frag)
 		args = append(args, targs...)
 	}
 	return strings.Join(parts, " AND "), args
+}
+
+// asOfClause is THE as_of rule over `chunks c` LEFT JOIN `chunk_memory_meta m`:
+// BOTH intervals must contain the instant — the chunk's own and, for a fact-tier
+// chunk, its sidecar's. Two stated intervals that disagree are two claims, and
+// "true then?" is answered yes only when both say so. search, related and
+// graph_recall all take it from here, so one as_of means one thing.
+func asOfClause(asOf int64) (string, []any) {
+	frag, args := chunkIntervalClause("c", asOf)
+	side, sargs := graphTemporalClause(docInput{AsOf: &asOf})
+	return "(" + frag + " AND " + side + ")", append(args, sargs...)
 }
 
 // chunkIntervalClause is the chunk's OWN validity test at an instant, over the

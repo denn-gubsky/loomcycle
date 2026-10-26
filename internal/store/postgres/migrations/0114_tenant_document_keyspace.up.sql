@@ -1,4 +1,4 @@
--- 0113_tenant_document_keyspace.up.sql — move tenant-scope document rows to the
+-- 0114_tenant_document_keyspace.up.sql — move tenant-scope document rows to the
 -- Memory plane's tenant keyspace.
 --
 -- The Document tool keyed a tenant document's chunk bodies (doc.chunk:) and
