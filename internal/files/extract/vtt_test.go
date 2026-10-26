@@ -3,6 +3,7 @@ package extract
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,7 +65,7 @@ func TestCaptions_PickedForVTTAndSRT(t *testing.T) {
 // labels keep only name characters, text cannot open markup, and without a
 // section length there is one section to the recording's end.
 func TestWriteTranscript_EscapesAndSections(t *testing.T) {
-	md := WriteTranscript([]TranscriptCue{
+	md := TranscriptMarkdown([]TranscriptCue{
 		{Start: 3 * time.Second, Speaker: "Speaker 1", Text: "<script>x</script>\nline"},
 		{Start: 70 * time.Second, Speaker: "**](evil)", Text: "> quoted"},
 	}, TranscriptOptions{Title: "call.mp4", Meta: "stt engine=openai-audio", Total: 90 * time.Second})
@@ -72,5 +73,44 @@ func TestWriteTranscript_EscapesAndSections(t *testing.T) {
 		"**Speaker 1** \\<script>x\\</script> line\n\n**evil** \\> quoted"
 	if md != want {
 		t.Errorf("markdown:\n%s\nwant:\n%s", md, want)
+	}
+}
+
+// TestCaptions_ManySameTimeCuesStayLinearAndBounded — a crafted caption file
+// of 200 000 cues of one speaker at one timestamp is joined in linear time,
+// and no paragraph grows past its byte or cue cap however many cues share a
+// start; through the extractor, the same shape comes out in capped paragraphs.
+func TestCaptions_ManySameTimeCuesStayLinearAndBounded(t *testing.T) {
+	cues := make([]TranscriptCue, 200000)
+	for i := range cues {
+		cues[i] = TranscriptCue{Start: time.Second, End: time.Second, Speaker: "A", Text: "слово слово"}
+	}
+	start := time.Now()
+	joined, err := joinCues(context.Background(), cues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("joining took %v", d)
+	}
+	for _, c := range joined {
+		if len(c.Text) > captionParagraphBytes {
+			t.Fatalf("a paragraph of %d bytes, over the %d cap", len(c.Text), captionParagraphBytes)
+		}
+	}
+	if len(joined) < len(cues)/captionParagraphCues {
+		t.Errorf("%d paragraphs for %d cues: the cue cap did not apply", len(joined), len(cues))
+	}
+
+	var b bytes.Buffer
+	b.WriteString("WEBVTT\n\n")
+	for range 20000 {
+		b.WriteString("00:00:01.000 --> 00:00:01.000\n<v A>слово слово\n\n")
+	}
+	s, _ := run(t, Captions{}, b.Bytes(), Options{Name: "bomb.vtt"})
+	for _, para := range strings.Split(s.md.String(), "\n\n") {
+		if len(para) > captionParagraphBytes+64 {
+			t.Fatalf("an extracted paragraph of %d bytes", len(para))
+		}
 	}
 }

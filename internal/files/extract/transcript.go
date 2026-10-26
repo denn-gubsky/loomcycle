@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -50,26 +51,37 @@ type TranscriptOptions struct {
 // maxSpeakerRunes bounds a speaker label.
 const maxSpeakerRunes = 64
 
-// WriteTranscript renders cues, which must be in time order. Everything in a
-// cue is untrusted: its text is one escaped paragraph that cannot open a
+// WriteTranscript renders cues, which must be in time order, handing the
+// Markdown to emit a paragraph at a time (so a caller's output limit applies
+// as it goes) and stopping at emit's first error or ctx's end. Everything in
+// a cue is untrusted: its text is one escaped paragraph that cannot open a
 // heading, a list, a fence or HTML, and a speaker is a short label of
 // letters, digits, spaces and . ' -.
-func WriteTranscript(cues []TranscriptCue, o TranscriptOptions) string {
-	var b strings.Builder
-	b.WriteString(heading(1, o.Title))
+func WriteTranscript(ctx context.Context, cues []TranscriptCue, o TranscriptOptions, emit func(string) error) error {
+	head := heading(1, o.Title)
 	if o.Meta != "" {
-		b.WriteString("\n<!-- loom: " + o.Meta + " -->")
+		head += "\n<!-- loom: " + o.Meta + " -->"
+	}
+	if err := emit(head); err != nil {
+		return err
 	}
 	end := o.Total
 	if n := len(cues); end <= 0 && n > 0 {
 		end = cues[n-1].End
 	}
 	section := -1
-	for _, c := range cues {
+	var b strings.Builder
+	for i, c := range cues {
+		if i%1024 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		text := escapeLine(oneLine(c.Text))
 		if text == "" {
 			continue
 		}
+		b.Reset()
 		if o.SectionLength > 0 {
 			if k := int(c.Start / o.SectionLength); k != section {
 				section = k
@@ -89,7 +101,21 @@ func WriteTranscript(cues []TranscriptCue, o TranscriptOptions) string {
 			b.WriteString("[" + Clock(c.Start) + "] ")
 		}
 		b.WriteString(text)
+		if err := emit(b.String()); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// TranscriptMarkdown is WriteTranscript gathered into one string, for a
+// caller whose cues are already bounded.
+func TranscriptMarkdown(cues []TranscriptCue, o TranscriptOptions) string {
+	var b strings.Builder
+	_ = WriteTranscript(context.Background(), cues, o, func(s string) error {
+		b.WriteString(s)
+		return nil
+	})
 	return b.String()
 }
 

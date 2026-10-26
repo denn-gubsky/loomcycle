@@ -27,8 +27,12 @@ const (
 	// captionSection is the length of a transcript section, as for a
 	// recording cut into ten-minute pieces.
 	captionSection = 10 * time.Minute
-	// captionParagraph bounds how long one joined paragraph runs.
-	captionParagraph = 30 * time.Second
+	// captionParagraph bounds how long one joined paragraph runs, and
+	// captionParagraphBytes and captionParagraphCues how much it holds: cues
+	// can share a start, so time alone does not bound a paragraph.
+	captionParagraph      = 30 * time.Second
+	captionParagraphBytes = 4096
+	captionParagraphCues  = 256
 	// maxCaptionCues bounds the cues read.
 	maxCaptionCues = 200000
 )
@@ -68,16 +72,18 @@ func (Captions) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sin
 	}
 	// Sections follow time; a file whose cues are out of order is put in it.
 	sort.SliceStable(cues, func(i, j int) bool { return cues[i].Start < cues[j].Start })
-	w := newWriter(ctx, sink, opts)
-	md := WriteTranscript(joinCues(cues), TranscriptOptions{
-		Title: title(opts.Name, "Transcript"), SectionLength: captionSection, Timestamps: true,
-	})
-	if err := w.text(md); err != nil {
-		rep.finish(w)
+	joined, err := joinCues(ctx, cues)
+	if err != nil {
 		return rep, err
 	}
+	w := newWriter(ctx, sink, opts)
+	// Written a paragraph at a time, so the sink's output limit cuts a huge
+	// transcript where it is reached rather than refusing it whole.
+	err = WriteTranscript(ctx, joined, TranscriptOptions{
+		Title: title(opts.Name, "Transcript"), SectionLength: captionSection, Timestamps: true,
+	}, w.text)
 	rep.finish(w)
-	return rep, nil
+	return rep, err
 }
 
 // parseCaptions reads the cues of a WebVTT or SubRip file: in each block of
@@ -150,20 +156,40 @@ func cueTime(s string) (time.Duration, bool) {
 	return time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(sec*float64(time.Second)), true
 }
 
-// joinCues joins consecutive cues of one speaker into paragraphs of at most
-// captionParagraph: captions come a line at a time.
-func joinCues(cues []TranscriptCue) []TranscriptCue {
+// joinCues joins consecutive cues of one speaker into paragraphs: captions
+// come a line at a time. A paragraph ends at captionParagraph from its start,
+// at captionParagraphBytes or at captionParagraphCues, whichever comes first.
+// Each paragraph's text is gathered once, so the join is linear.
+func joinCues(ctx context.Context, cues []TranscriptCue) ([]TranscriptCue, error) {
 	var out []TranscriptCue
-	for _, c := range cues {
-		if n := len(out); n > 0 {
+	var parts []string
+	size := 0
+	flush := func() {
+		if len(parts) > 0 {
+			out[len(out)-1].Text = strings.Join(parts, " ")
+		}
+		parts, size = parts[:0], 0
+	}
+	for i, c := range cues {
+		if i%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if n := len(out); n > 0 && len(parts) > 0 {
 			last := &out[n-1]
-			if last.Speaker == c.Speaker && c.Start-last.Start < captionParagraph && c.Start >= last.Start {
-				last.Text += " " + c.Text
+			if last.Speaker == c.Speaker && c.Start >= last.Start && c.Start-last.Start < captionParagraph &&
+				size+1+len(c.Text) <= captionParagraphBytes && len(parts) < captionParagraphCues {
+				parts = append(parts, c.Text)
+				size += 1 + len(c.Text)
 				last.End = max(last.End, c.End)
 				continue
 			}
 		}
+		flush()
 		out = append(out, c)
+		parts, size = append(parts, c.Text), len(c.Text)
 	}
-	return out
+	flush()
+	return out, nil
 }
