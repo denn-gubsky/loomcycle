@@ -340,12 +340,64 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
+  # loomcycle-media — the SAME binary on a Debian slim base with ffmpeg and
+  # poppler-utils, the helper programs transcription runs (the media
+  # converter, the PDF page renderer). Opt-in per deployment; the default
+  # image stays distroless. The arm64 apt layer runs under QEMU on the amd64
+  # runner (slower than a COPY, far lighter than the toolbox's toolchains).
+  - id: loomcycle-media-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-media:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-media:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-media:latest-amd64"
+    dockerfile: Dockerfile.media
+    extra_files:
+      - LICENSE
+      - NOTICE
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=loomcycle-media"
+      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg and poppler-utils for speech-to-text conversion and PDF page rendering"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-media-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-media:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-media:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-media:latest-arm64"
+    dockerfile: Dockerfile.media
+    extra_files:
+      - LICENSE
+      - NOTICE
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=loomcycle-media"
+      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg and poppler-utils for speech-to-text conversion and PDF page rendering"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
 # regardless of their host arch.
 #
 # A manifest list is registry-local — it can only reference per-arch
-# images in its OWN registry — so the GHCR mirror needs its own six
+# images in its OWN registry — so the GHCR mirror needs its own
 # entries rather than a second name on the Docker Hub ones. The per-arch
 # images they join are the same builds, pushed twice (see `dockers:`).
 docker_manifests:
@@ -373,6 +425,14 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-browser:latest-amd64"
       - "denngubsky/loomcycle-browser:latest-arm64"
+  - name_template: "denngubsky/loomcycle-media:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-media:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-media:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-media:latest"
+    image_templates:
+      - "denngubsky/loomcycle-media:latest-amd64"
+      - "denngubsky/loomcycle-media:latest-arm64"
 
   # ── GHCR mirror ──
   - name_template: "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}"
@@ -399,3 +459,11 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-browser:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-browser:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-media:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-media:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-media:latest-arm64"
