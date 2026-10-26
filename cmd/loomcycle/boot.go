@@ -77,6 +77,7 @@ type boot struct {
 	cryptoTool        *builtin.Crypto
 	pathTool          *builtin.Path
 	documentTool      *builtin.Document
+	fileTool          *builtin.File
 	historyTool       *builtin.History
 	evaluationTool    *builtin.Evaluation
 	interruptionTool  *builtin.Interruption
