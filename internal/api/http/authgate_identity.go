@@ -261,7 +261,11 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 	if err != nil {
 		return nil, nil, err
 	}
-	plan := identity.SyncPlan(g.Name, tenant, m, asserted, all, current)
+	groups := make([]identity.Group, len(all))
+	for i, r := range all {
+		groups[i] = identity.Group{TenantID: r.TenantID, Name: r.Name, ExternalID: r.ExternalID, Description: r.Description, CreatedBy: r.CreatedBy}
+	}
+	plan := identity.SyncPlan(g.Name, tenant, m, asserted, groups, current)
 	changed := false
 	defer func() {
 		if changed {
@@ -271,7 +275,8 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 		}
 	}()
 	created := map[string]bool{}
-	for _, row := range plan.Create {
+	for _, c := range plan.Create {
+		row := store.GroupRow{TenantID: c.TenantID, Name: c.Name, ExternalID: c.ExternalID, Description: c.Description, CreatedBy: c.CreatedBy}
 		ok, err := s.store.GroupCreate(ctx, row)
 		if err != nil {
 			return added, removed, err

@@ -140,7 +140,7 @@ credential of that name`, and nothing is sent.
 | `upsert_chunk` | write a fact by `natural_key`: creates it once, updates it after | `natural_key` (+ `document_id`, `title` to create) |
 | `supersede_chunk` | retire an old fact in favour of a new one, keeping the old one | `id`, `supersedes_id` |
 | `list_facts` | browse facts, newest first, metadata only | — |
-| `graph_recall` | recall facts by following edges, optionally as of a past moment | `seed_ids` or `query` |
+| `graph_recall` | recall facts by following edges, optionally as of a past moment; chunks that are not facts carry the start of their text | `seed_ids` or `query` |
 | `remember` | store a sentence a person told you as a self-citing fact | `text` |
 | `verbatim_answer` | answer a lookup question with one verified fact, quoted exactly | `query` |
 | `judge_fact` | record whether a fact's source quote supports it | `id` or `natural_key`, `verdict`, `reason` |
@@ -182,7 +182,9 @@ By default the fact reads (`list_facts`, `graph_recall`) return what is true
 now. `as_of` asks what was true at a past moment: a fact matches when its
 `valid_at` is unset or at or before that moment, and its `invalid_at` is unset
 or after it — so a fact corrected later still answers a question about before
-the correction. `include_retired: true` drops the time filter entirely. A fact a
+the correction. On `graph_recall` a chunk with its own `valid_at`/`invalid_at`
+must contain the moment too. `include_retired: true` drops the time filter
+entirely. A fact a
 judge marked `unsupported` is withheld from these reads until you pass
 `include_refuted: true`; it is never deleted.
 

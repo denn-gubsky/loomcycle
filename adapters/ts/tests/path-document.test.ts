@@ -228,6 +228,15 @@ describe("document", () => {
     expect(updateBody.invalid_at).toBeNull();
   });
 
+  it("types graph_recall's body_chars and keeps an explicit 0", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ chunks: [], seeds: 0, hops: 1, truncated: false })]);
+    const input: DocumentToolInput = { op: "graph_recall", seed_ids: ["c1"], body_chars: 0 };
+    await client.document(input);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    // 0 asks for titles only; dropping it as falsy would ask for the default excerpts.
+    expect(body.body_chars).toBe(0);
+  });
+
   it("appends scope_id + tenant as query params for browse-by-subject", async () => {
     const { client, fetchMock } = makeClient([jsonResponse({ document_id: "d1" })]);
     await client.document(

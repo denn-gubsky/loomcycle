@@ -128,6 +128,13 @@ func (s *Store) rebuildTenantBlindKeys(ctx context.Context, schema []string) err
 	if err != nil {
 		return err
 	}
+	return s.rebuildWithForeignKeysOff(ctx, tables, schema)
+}
+
+// rebuildWithForeignKeysOff replaces each of tables with its current CREATE
+// TABLE from schema, in one transaction on one connection with foreign keys
+// off (see rebuildTenantBlindKeys). No tables is a no-op.
+func (s *Store) rebuildWithForeignKeysOff(ctx context.Context, tables, schema []string) error {
 	if len(tables) == 0 {
 		return nil
 	}
@@ -203,7 +210,7 @@ func rebuildTables(ctx context.Context, conn *sql.Conn, tables, schema []string)
 		return err
 	}
 	for i, t := range tables {
-		slog.Info("sqlite migrate: rebuilt a table with its tenant-scoped key", "table", t, "rows_kept", kept[i])
+		slog.Info("sqlite migrate: rebuilt a table with its current key", "table", t, "rows_kept", kept[i])
 	}
 	return nil
 }

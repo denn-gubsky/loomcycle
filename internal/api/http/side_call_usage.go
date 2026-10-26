@@ -3,9 +3,7 @@ package http
 import (
 	"context"
 
-	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RecordRunSideCallUsage charges a model call made OUTSIDE the loop — the
@@ -34,15 +32,10 @@ func (s *Server) RecordRunSideCallUsage(ctx context.Context, u *providers.Usage)
 	if u == nil {
 		return
 	}
-	if call, ok := tools.MeteredOffRunCall(ctx); ok {
-		_ = s.recordCallUsage(ctx, "", tools.RunIdentityValue{TenantID: call.TenantID, UserID: call.UserID}, "", 0, u)
-		return
-	}
-	runID := tools.RunID(ctx)
-	if runID == "" {
+	runID, rid, sessionID, iteration, ok := sideCallCharge(ctx)
+	if !ok {
 		s.observeCall("", u) // nothing to charge, but the call still measured the model
 		return
 	}
-	rid := tools.RunIdentity(ctx)
-	_ = s.recordCallUsage(ctx, runID, rid, rid.SessionID, loop.IterationOf(ctx), u)
+	_ = s.recordCallUsage(ctx, runID, rid, sessionID, iteration, u)
 }

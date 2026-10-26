@@ -158,6 +158,13 @@ var agentDefOverridability = map[string]overridability{
 	// agent author's decision, not a run's.
 	"Decision": notOverridable,
 
+	// OCR opt-in and per-run transcription caps: cost the agent's author
+	// decided. Lowering a cap would be a harmless narrowing, but a run-request
+	// field for it on every transport was left out of the first phase, so no run
+	// may set it yet; when one lands it is runMayNarrow (caps only lower, as
+	// against the operator's).
+	"Transcription": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,

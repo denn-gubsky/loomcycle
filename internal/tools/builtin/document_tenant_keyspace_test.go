@@ -178,3 +178,27 @@ func TestChunkIndexTextForRow_TenantRowReadsTheTenantTree(t *testing.T) {
 		t.Errorf("index text for a tenant row = %q (chunk %v), want what the write path embedded: %q", got, isChunk, want.EmbedText)
 	}
 }
+
+// TestGraphRecall_TenantChunkCarriesItsBody — graph_recall's body excerpt reads a
+// tenant chunk's body from the Memory tenant keyspace, where it now lives.
+func TestGraphRecall_TenantChunkCarriesItsBody(t *testing.T) {
+	d, _, ctx := tenantDocFixture(t, "tnt", "quorum", "board")
+	doc := docRun(t, d, ctx, map[string]any{"op": "create_document", "scope": "tenant", "title": "Board", "path": "/norms/graph"})
+	seed := docRun(t, d, ctx, map[string]any{"op": "create_chunk", "scope": "tenant", "document_id": doc["document_id"],
+		"title": "Board", "body": "the board"})["id"].(string)
+	note := docRun(t, d, ctx, map[string]any{"op": "create_chunk", "scope": "tenant", "document_id": doc["document_id"],
+		"title": "Quorum", "body": "quorum of the board"})["id"].(string)
+	docRun(t, d, ctx, map[string]any{"op": "link_chunks", "scope": "tenant", "document_id": doc["document_id"],
+		"from_id": seed, "to_id": note, "kind": "notes"})
+	out := docRun(t, d, ctx, map[string]any{"op": "graph_recall", "scope": "tenant", "seed_ids": []string{seed}, "hops": 1})
+	rows, _ := out["chunks"].([]any)
+	for _, r := range rows {
+		if row := r.(map[string]any); row["title"] == "Quorum" {
+			if row["body"] != "quorum of the board" {
+				t.Errorf("tenant chunk body in graph_recall = %v, want the chunk's text", row["body"])
+			}
+			return
+		}
+	}
+	t.Fatalf("the walk did not reach the tenant chunk: %v", out)
+}

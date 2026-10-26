@@ -163,7 +163,11 @@ func (s *Store) migrate(ctx context.Context) error {
 			load_ms               INTEGER,
 			prefill_ms            INTEGER,
 			decode_ms             INTEGER,
-			queue_ms              INTEGER
+			queue_ms              INTEGER,
+			-- What the call was for (chat | ocr | stt) and, for speech-to-text,
+			-- how many seconds of audio it transcribed. Mirrors postgres 0113.
+			purpose               TEXT NOT NULL DEFAULT 'chat',
+			audio_seconds         REAL NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)`,
@@ -188,7 +192,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			cost_currency         TEXT NOT NULL DEFAULT '',
 			call_count            INTEGER NOT NULL DEFAULT 0,
 			unpriced_calls        INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source)
+			-- Purpose is part of the key, so an archived day keeps chat, OCR
+			-- and STT apart; audio_seconds is summed. On a database created
+			-- before it, rebuildWidenedKeys swaps the old six-column key for
+			-- this one. Mirrors postgres 0113.
+			purpose               TEXT NOT NULL DEFAULT 'chat',
+			audio_seconds         REAL NOT NULL DEFAULT 0,
+			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source, purpose)
 		)`,
 		`CREATE INDEX IF NOT EXISTS usage_archive_tenant_period ON usage_archive(tenant_id, period_start)`,
 		// RFC AW — per-scope token budgets (soft + hard). A row's absence =
@@ -1619,6 +1629,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// unknown) and the gate that issued a token. Mirrors postgres 0112.
 		`ALTER TABLE ui_sessions ADD COLUMN auth_time INTEGER`,
 		`ALTER TABLE operator_token_defs ADD COLUMN issued_by_gate TEXT NOT NULL DEFAULT ''`,
+		// What a usage row was for, and the audio an STT call transcribed. A
+		// row from before reads back chat with no seconds. Mirrors postgres
+		// 0113; the archive's key gains purpose in rebuildWidenedKeys.
+		`ALTER TABLE token_usage ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat'`,
+		`ALTER TABLE token_usage ADD COLUMN audio_seconds REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE usage_archive ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat'`,
+		`ALTER TABLE usage_archive ADD COLUMN audio_seconds REAL NOT NULL DEFAULT 0`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1690,6 +1707,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	// addIndexes (whose indexes then land on the rebuilt tables).
 	if err := s.rebuildTenantBlindKeys(ctx, stmts); err != nil {
 		return fmt.Errorf("migrate rebuild tenant keys: %w", err)
+	}
+	if err := s.rebuildWidenedKeys(ctx, stmts); err != nil {
+		return fmt.Errorf("migrate rebuild widened keys: %w", err)
 	}
 
 	addIndexes := []string{
@@ -2175,6 +2195,10 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 // RecordCallUsage appends one per-call usage row (RFC AV). Append-only insert;
 // cost is stored NULL when unpriced (empty currency), distinct from zero.
 func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) error {
+	purpose, audioSeconds, err := store.NormalizeUsageRow(row)
+	if err != nil {
+		return err
+	}
 	ts := row.TS
 	if ts.IsZero() {
 		ts = time.Now()
@@ -2183,14 +2207,15 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 	if row.CostCurrency != "" {
 		costArg = row.Cost
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO token_usage (
 			run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
-			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
+			purpose, audio_seconds
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.RunID, nilIfEmpty(row.SessionID), row.TenantID, nilIfEmpty(row.UserID),
 		nilIfEmpty(row.AgentID), nilIfEmpty(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
@@ -2198,6 +2223,7 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 		costArg, nilIfEmpty(row.CostCurrency), ts.UnixNano(),
 		nilIfZeroMs(row.DurationMs), nilIfZeroMs(row.TTFTMs), nilIfZeroMs(row.LoadMs),
 		nilIfZeroMs(row.PrefillMs), nilIfZeroMs(row.DecodeMs), nilIfZeroMs(row.QueueMs),
+		purpose, audioSeconds,
 	)
 	return err
 }
@@ -2254,7 +2280,8 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
-			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
+			purpose, audio_seconds
 		 FROM token_usage WHERE run_id = ? ORDER BY iteration ASC, id ASC`,
 		runID,
 	)
@@ -2275,6 +2302,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &tsNano,
 			&dur, &ttft, &load, &prefill, &decode, &queue,
+			&r.Purpose, &r.AudioSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -2693,16 +2721,16 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source,
+		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source, purpose,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, call_count, unpriced_calls)
-		SELECT (ts/?)*? AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source,
+			cost, cost_currency, call_count, unpriced_calls, audio_seconds)
+		SELECT (ts/?)*? AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose,
 			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
 			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
-			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)
+			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds)
 		FROM token_usage WHERE ts < ?
-		GROUP BY period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source
-		ON CONFLICT(period_start, tenant_id, user_id, provider, model, credential_source) DO UPDATE SET
+		GROUP BY period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose
+		ON CONFLICT(period_start, tenant_id, user_id, provider, model, credential_source, purpose) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
@@ -2710,7 +2738,8 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 			cost                  = cost + excluded.cost,
 			cost_currency         = CASE WHEN usage_archive.cost_currency = '' THEN excluded.cost_currency ELSE usage_archive.cost_currency END,
 			call_count            = call_count + excluded.call_count,
-			unpriced_calls        = unpriced_calls + excluded.unpriced_calls`,
+			unpriced_calls        = unpriced_calls + excluded.unpriced_calls,
+			audio_seconds         = audio_seconds + excluded.audio_seconds`,
 		nanosPerDay, nanosPerDay, cutoff,
 	); err != nil {
 		return 0, err

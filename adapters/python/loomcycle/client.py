@@ -1084,7 +1084,16 @@ class LoomcycleClient:
         on update). ``search``, ``related`` and ``query_chunks`` with ``as_of``
         return only chunks whose period contains the instant; an undated chunk
         always matches. Hits and chunk rows report the two keys only when
-        set."""
+        set.
+
+        ``op="graph_recall"`` rows carry, for chunks that are not facts, the
+        first 600 characters of their body as ``body`` (``body_truncated`` when
+        cut); facts stay title-only. ``body_chars`` changes that: ``0`` returns
+        titles only, ``N`` (at most 4000) puts up to N characters on every row.
+        ``budget_chars`` counts body characters too. With ``as_of`` a chunk's
+        own ``valid_at``/``invalid_at`` must also contain the instant; a fact
+        that has its own chunk dates reports them as ``chunk_valid_at`` /
+        ``chunk_invalid_at``."""
         return await self._dispatch_substrate("Document", input)
 
     async def credential_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:

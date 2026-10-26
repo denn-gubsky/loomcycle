@@ -8,7 +8,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 func claimMap(t *testing.T, tenant string) *config.AuthIdentityMap {
@@ -103,7 +102,7 @@ func TestAssertedGroups_FromClaimDedupedAndBounded(t *testing.T) {
 
 // RFC FA §3.7b / D6: sync adds and removes only this gate's groups.
 func TestSyncPlan_TouchesOnlyThisGatesGroups(t *testing.T) {
-	groups := []store.GroupRow{
+	groups := []Group{
 		{Name: "support", ExternalID: "google:support"},
 		{Name: "support-l2", ExternalID: "google:support-l2"},
 		{Name: "local-team"},                          // local
@@ -121,7 +120,7 @@ func TestSyncPlan_TouchesOnlyThisGatesGroups(t *testing.T) {
 }
 
 func TestSyncPlan_ProvisionsWithMapButNeverClaimsATakenName(t *testing.T) {
-	groups := []store.GroupRow{{Name: "admins"}} // a local group already named admins
+	groups := []Group{{Name: "admins"}} // a local group already named admins
 	p := SyncPlan("google", "acme", syncMap(true), []string{"hr-admins", "eng", "bad name!"}, groups, nil)
 	if len(p.Create) != 1 || p.Create[0].Name != "eng" || p.Create[0].ExternalID != "google:eng" || p.Create[0].TenantID != "acme" {
 		t.Fatalf("create = %+v", p.Create)
