@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // Memory admin endpoints — drive the v0.8.0 Web UI Memory page. All
@@ -164,6 +166,26 @@ func (s *Server) handleListMemoryEntries(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	// Chunk bodies and their derived units share this keyspace: a document the
+	// caller's access-control set denies it reading is left out of the list, as
+	// Document op=search and the memory search leave it out (a listing is a
+	// search). The page can come back shorter than limit; truncated still says
+	// whether the store held more.
+	held, err := s.unreadableDocumentKeys(r, scope, storeScopeID, entries)
+	if err != nil {
+		slog.Error("memory list access check failed", "scope", scope, "scope_id", storeScopeID, "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal", "list failed")
+		return
+	}
+	if held != nil {
+		kept := entries[:0]
+		for _, e := range entries {
+			if !held[e.Key] {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
 	if entries == nil {
 		entries = []store.MemoryEntry{}
 	}
@@ -218,6 +240,19 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"scope_id and key are required")
 		return
 	}
+	// A row of a document the caller may not read is answered as a missing one,
+	// so the refusal does not say the row exists.
+	held, err := s.unreadableDocumentKeys(r, scope, adminMemoryStoreScopeID(scope, scopeID), []store.MemoryEntry{{Key: key}})
+	if err != nil {
+		slog.Error("memory get access check failed", "scope", scope, "scope_id", scopeID, "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal", "read failed")
+		return
+	}
+	if held[key] {
+		writeJSONError(w, http.StatusNotFound, "not_found",
+			"no entry at "+scope+"/"+scopeID+"/"+key)
+		return
+	}
 	entry, err := s.store.MemoryGet(r.Context(), s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant")), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -235,6 +270,26 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 		ScopeID: adminMemoryStoreScopeID(scope, scopeID),
 		Entry:   entry,
 	})
+}
+
+// unreadableDocumentKeys returns the keys among entries the caller may not
+// read because each is a chunk body or derived unit of a document its
+// access-control set denies it reading (builtin.UnreadableDocumentKeys); nil
+// when nothing is held back, which is every caller whose set denies no
+// document. It runs under the identity the memory search checks its hits under,
+// with a super-admin's ?tenant= focus carried as the rows were read in it.
+func (s *Server) unreadableDocumentKeys(r *http.Request, scope, storeScopeID string, entries []store.MemoryEntry) (map[string]bool, error) {
+	keys := make([]string, len(entries))
+	for i, e := range entries {
+		keys[i] = e.Key
+	}
+	subject := ""
+	if scope != string(store.MemoryScopeTenant) {
+		subject = storeScopeID
+	}
+	ctx := substrateBrowseCtx(r.Context(), subject, strings.TrimSpace(r.URL.Query().Get("tenant")))
+	return builtin.UnreadableDocumentKeys(ctx, &builtin.Document{Store: s.store, SqlMem: s.sqlMem},
+		store.MemoryScope(scope), storeScopeID, keys)
 }
 
 // validAdminMemoryScope mirrors the closed scope set the runtime
