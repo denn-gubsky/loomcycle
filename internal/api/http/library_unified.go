@@ -31,12 +31,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -308,7 +311,7 @@ func (s *Server) handleListLibraryMcpServers(w http.ResponseWriter, r *http.Requ
 		entry := LibraryEntry{
 			Name:             name,
 			InStatic:         true,
-			StaticDefinition: marshalStaticMCPServer(srv, discoveredTools),
+			StaticDefinition: marshalStaticMCPServer(srv, discoveredTools, s.redactor),
 		}
 		if sub, ok := subRows[name]; ok {
 			entry.InSubstrate = true
@@ -405,7 +408,15 @@ func marshalStaticSkill(sk *skills.Skill) json.RawMessage {
 // discoveredTools is the marshaled JSON from PeekTools; nil = absent
 // (init pending or failed). When non-nil it's already in the
 // substrate-mirror shape, so we embed it via json.RawMessage.
-func marshalStaticMCPServer(srv config.MCPServer, discoveredTools json.RawMessage) json.RawMessage {
+//
+// The yaml's ${NAME} references are expanded on the raw text before it is
+// parsed, so srv holds the secret VALUES, not the references: a header like
+// `Bearer ${LOOMCYCLE_MS365_MCP_TOKEN}` arrives here as the live token. The
+// fields that carry credentials by convention (header and env values, URL
+// userinfo, query and fragment) are therefore masked whatever the env var is
+// called, and the result then passes through the secret redactor, which masks
+// a secret-named env var's value wherever else it sits (args, command, path).
+func marshalStaticMCPServer(srv config.MCPServer, discoveredTools json.RawMessage, r *redact.Redactor) json.RawMessage {
 	type staticMCPJSON struct {
 		Transport       string            `json:"transport,omitempty"`
 		URL             string            `json:"url,omitempty"`
@@ -419,11 +430,11 @@ func marshalStaticMCPServer(srv config.MCPServer, discoveredTools json.RawMessag
 	}
 	b, err := json.Marshal(staticMCPJSON{
 		Transport:       srv.Transport,
-		URL:             srv.URL,
-		Headers:         srv.Headers,
+		URL:             maskURLSecrets(srv.URL),
+		Headers:         maskValues(srv.Headers, maskHeaderValue),
 		Command:         srv.Command,
 		Args:            srv.Args,
-		Env:             srv.Env,
+		Env:             maskValues(srv.Env, func(string) string { return maskedValue }),
 		PoolSize:        srv.PoolSize,
 		Tools:           srv.Tools,
 		DiscoveredTools: discoveredTools,
@@ -431,5 +442,83 @@ func marshalStaticMCPServer(srv config.MCPServer, discoveredTools json.RawMessag
 	if err != nil {
 		return nil
 	}
-	return b
+	return r.Bytes(b)
+}
+
+// maskedValue replaces a configuration value a read must not disclose.
+const maskedValue = "****"
+
+func maskValues(m map[string]string, mask func(string) string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = mask(v)
+	}
+	return out
+}
+
+// maskHeaderValue keeps a leading auth scheme ("Bearer", "Basic", "Token") so
+// the reader can still tell what kind of credential is configured.
+func maskHeaderValue(v string) string {
+	if v == "" {
+		return v
+	}
+	if scheme, rest, ok := strings.Cut(v, " "); ok && rest != "" && isAuthScheme(scheme) {
+		return scheme + " " + maskedValue
+	}
+	return maskedValue
+}
+
+func isAuthScheme(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// maskURLSecrets masks the userinfo, every query value and the fragment, and
+// keeps the scheme, host, path and query keys. A URL that does not parse is
+// masked whole: what part of it is a secret cannot be told.
+func maskURLSecrets(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return maskedValue
+	}
+	hadUser := u.User != nil
+	u.User = nil
+	if u.RawQuery != "" {
+		q := u.Query()
+		keys := make([]string, 0, len(q))
+		for k := range q {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			for range q[k] {
+				// Built by hand: url.Values.Encode would escape the mask to %2A%2A%2A%2A.
+				parts = append(parts, url.QueryEscape(k)+"="+maskedValue)
+			}
+		}
+		u.RawQuery = strings.Join(parts, "&")
+	}
+	if u.Fragment != "" {
+		u.Fragment, u.RawFragment = maskedValue, ""
+	}
+	out := u.String()
+	if hadUser {
+		// Spliced in: url.User would escape the mask to %2A%2A%2A%2A.
+		out = strings.Replace(out, "//", "//"+maskedValue+"@", 1)
+	}
+	return out
 }

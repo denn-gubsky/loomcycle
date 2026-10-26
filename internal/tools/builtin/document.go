@@ -1273,12 +1273,6 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 	// next to the embedding call this function already makes.
 	prov := store.MemoryProvenance{Origin: origin}
 	prev, perr := d.Store.MemoryProvenanceGet(ctx, tenant, mscope, scopeID, bodyKey)
-	if legacy, ok := legacyDocMemScopeID(mscope, key); ok && perr != nil {
-		// One-release fallback (see legacyDocMemScopeID): a body an old replica wrote
-		// carries its provenance at the old scope id, and a rewrite here must not
-		// reclassify a fact as prose by dropping it.
-		prev, perr = d.Store.MemoryProvenanceGet(ctx, tenant, mscope, legacy, bodyKey)
-	}
 	if perr == nil {
 		if prov.Origin == "" {
 			prov.Origin = prev.Origin
@@ -1365,12 +1359,8 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID string) (chunkBody, error) {
 	tenant := direntTenant(ctx)
 	entry, err := d.Store.MemoryGet(ctx, tenant, mscope, docMemScopeID(mscope, key), chunkBodyKey(chunkID))
-	var nf *store.ErrNotFound
-	if legacy, ok := legacyDocMemScopeID(mscope, key); ok && err != nil && asNotFound(err, &nf) {
-		// One-release fallback: see legacyDocMemScopeID.
-		entry, err = d.Store.MemoryGet(ctx, tenant, mscope, legacy, chunkBodyKey(chunkID))
-	}
 	if err != nil {
+		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
 			return chunkBody{}, nil
 		}
@@ -1958,7 +1948,9 @@ func direntScopeID(key sqlmem.ScopeKey) string {
 // scope by the tenant, the Memory plane by "" with tenant_id carrying the
 // identity. A tenant-scope Memory read looks at "", so a document row keyed by the
 // SQL Memory id is invisible to it — which is how tenant documents were stored
-// until this mapping existed (see legacyDocMemScopeID). Every Memory-plane call
+// until this mapping existed. Rows still at that id are moved by the store's
+// MigrateTenantDocumentRows (postgres migration 0114, the SQLite open path, and
+// a sweep on every boot), never read where they lie. Every Memory-plane call
 // for a document row takes its scope id from here;
 // TestDocumentRows_MemoryScopeIDGoesThroughDocMemScopeID holds the package to it.
 func docMemScopeID(mscope store.MemoryScope, key sqlmem.ScopeKey) string {
@@ -1966,21 +1958,6 @@ func docMemScopeID(mscope store.MemoryScope, key sqlmem.ScopeKey) string {
 		return ""
 	}
 	return key.ScopeID
-}
-
-// legacyDocMemScopeID is where an older binary keyed a tenant document row: the SQL
-// Memory scope id (the tenant, or "default" for the empty tenant). ok is false for
-// every other scope, whose ids never differed.
-//
-// ONE-RELEASE FALLBACK — delete in the next minor release, with its two callers
-// (readBody, writeBodyAs). The store migration moves these rows and a boot sweep
-// repeats it; this covers the rows a replica still on the old binary writes during
-// a rolling upgrade, until the next boot sweeps them.
-func legacyDocMemScopeID(mscope store.MemoryScope, key sqlmem.ScopeKey) (string, bool) {
-	if mscope != store.MemoryScopeTenant || key.ScopeID == "" {
-		return "", false
-	}
-	return key.ScopeID, true
 }
 
 // registerDocDirent names a document in the Path tree (a `document` dirent).

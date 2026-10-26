@@ -323,7 +323,9 @@ func TestUnifiedLibrary_MCP_StdioStaticOnly(t *testing.T) {
 	if def.Transport != "stdio" || def.Command != "node" || len(def.Args) != 1 || def.Args[0] != "server.js" {
 		t.Errorf("stdio fields wrong: %+v", def)
 	}
-	if def.Env["MCP_VERBOSE"] != "1" || def.PoolSize != 2 {
+	// Env values are masked: a yaml ${NAME} reference is expanded before the
+	// read sees it, so any value may be a secret.
+	if def.Env["MCP_VERBOSE"] != "****" || def.PoolSize != 2 {
 		t.Errorf("env/pool_size wrong: %+v", def)
 	}
 	if len(def.DiscoveredTools) != 0 {

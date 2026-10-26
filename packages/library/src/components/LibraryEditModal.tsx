@@ -14,6 +14,7 @@ import type { DefRow, LibraryEntry, SubstrateKind } from "../types";
 import { useLibraryData } from "../lib/dataLayer";
 import { useErrorText } from "../lib/errorText";
 import { keepHookRemovals } from "../lib/hookDefOverlay";
+import { maskedSecretProblem } from "../lib/maskedSecrets";
 
 // LibraryEditModal — Library admin UI.
 //
@@ -412,6 +413,11 @@ export default function LibraryEditModal({
       if (!skillBody.trim()) return "Skill body is required (substrate refuses empty bodies).";
     }
     if (kind === "mcp-server") {
+      const masked =
+        mcpTransport === "stdio"
+          ? maskedSecretProblem({ env: mcpEnv })
+          : maskedSecretProblem({ url: mcpUrl, headers: mcpHeaders });
+      if (masked) return masked;
       if (mcpTransport === "stdio") {
         if (!mcpCommand.trim()) return "Command is required for a stdio server.";
       } else {
