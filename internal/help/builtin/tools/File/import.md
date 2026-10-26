@@ -19,6 +19,20 @@ in the inbox or in your own volumes — stays a link and is counted in
 document is tagged `untrusted` and `source/…` (where the file came from, e.g.
 `source/mcp/ms365`).
 
+The document records where it came from, and you cannot set or change this
+yourself. When the file is one a tool returned (or text `extract` wrote from
+one), and it has not been changed since, the document's root carries
+`provenance`: the original file's name, type and sha256, where and when it
+was captured (`captured_from`, `captured_at`) and by which run. Its text is
+marked as imported, so it is found by document search and is never treated
+as something you learned. A document whose text has no heading is titled
+after the file's name.
+
+Give `source` to keep a link back to where the file lives: the item's web
+link — a SharePoint file's `webUrl`, an email's `webLink` — never a download
+or upload link, which grants access to whoever holds it. A downloaded file
+with no `source` links back to its download address, without the query.
+
 Import writes a document, so it needs the Document tool as well as this one,
 and the scope must be one your Document grants allow.
 
@@ -30,20 +44,35 @@ and the scope must be one your Document grants allow.
   `/board/2026/minutes`.
 - `scope` — `agent`, `user` (the default) or `tenant`.
 - `tags` — tags for the document, besides `untrusted` and the `source/…` tag.
+- `source` — where the document came from: `{url, kind, title}`.
+  `url` is an http(s) web link, at most 2048 bytes, with no user name or
+  password; a signature or token in its query is masked before it is kept.
+  `kind` is `sharepoint`, `email`, `attachment`, `web` or `other` (the
+  default) and adds the tag `source/<kind>`. `title` is the source's own
+  name, such as the email's subject: one line, at most 300 characters.
 
 ## Returns
 
 `{document_id, root_chunk_id, chunks, image_chunks, skipped, skipped_images,
-source, tags}` — `skipped` counts the pictures that stayed links, and
-`skipped_images` says why for the first of them.
+source, provenance, tags}` — `skipped` counts the pictures that stayed links,
+and `skipped_images` says why for the first of them. `provenance` is what the
+document records of where it came from; `get_document` shows it too.
 
 ## Errors
 
 - You do not hold the Document tool, or a Document hook refuses the import.
 - The file is not UTF-8 text, or is over 32 MiB.
 - The scope is not one your Document grants allow.
+- `source` is not valid: a URL that is not http(s), has a user name or
+  password, or is too long; or a `kind` not in the list.
 
 ## Examples
+
+Import an attachment's extracted text, linked back to the email it came with:
+
+```json
+{"op": "import", "path": "volume:inbox:extracted/Protokol-7.md", "source": {"url": "https://outlook.office365.com/owa/?ItemID=AAMkAGI2&exvsurl=1&viewmodel=ReadMessageItem", "kind": "email", "title": "Board minutes, 21 October"}}
+```
 
 Import the protocol extract wrote, named in the board's folder:
 
