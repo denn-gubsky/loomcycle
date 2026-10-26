@@ -186,3 +186,81 @@ func TestVision_DecodeWaitHonoursContext(t *testing.T) {
 		t.Fatal("a call waiting for the decoder did not give up when its context ended")
 	}
 }
+
+// pngHeaderInterlaced is pngHeader with the IHDR interlace byte set (Adam7).
+func pngHeaderInterlaced(w, h uint32, depth, colorType byte) []byte {
+	b := pngHeader(w, h, depth, colorType)
+	// signature 8 + length 4 + "IHDR" 4 + 12 bytes into the data.
+	b[28] = 1
+	chunk := b[12:29]
+	binary.BigEndian.PutUint32(b[29:], crc32.ChecksumIEEE(chunk))
+	return b
+}
+
+// jpegHeader is a JPEG that is only SOI and a start-of-frame segment of the
+// given marker (0xC0 baseline, 0xC2 progressive) and component count, with
+// an Adobe APP14 marker before it when adobe is set, then the start of a
+// scan: what DecodeConfig reads, with no pixel data after it.
+func jpegHeader(marker byte, w, h uint16, comps int, adobe bool) []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0xFF, 0xD8})
+	if adobe {
+		// APP14 "Adobe": version, flags0, flags1, transform (2 = YCCK).
+		seg := []byte("Adobe\x00\x64\x00\x00\x00\x00\x02")
+		b.Write([]byte{0xFF, 0xEE})
+		_ = binary.Write(&b, binary.BigEndian, uint16(len(seg)+2))
+		b.Write(seg)
+	}
+	sof := []byte{8, byte(h >> 8), byte(h), byte(w >> 8), byte(w), byte(comps)}
+	for i := 1; i <= comps; i++ {
+		sof = append(sof, byte(i), 0x11, 0)
+	}
+	b.Write([]byte{0xFF, marker})
+	_ = binary.Write(&b, binary.BigEndian, uint16(len(sof)+2))
+	b.Write(sof)
+	// A start-of-scan marker: where a config-only read stops.
+	b.Write([]byte{0xFF, 0xDA, 0x00, 0x08})
+	return b.Bytes()
+}
+
+// The decode estimate is per format, from the header: a progressive JPEG
+// holds its coefficients beside the output, a 4-component JPEG converts into
+// a second buffer, an interlaced PNG keeps per-pass buffers. Each of these at
+// a size whose colour model alone would pass is refused before decoding; the
+// same size in the plain form is not.
+func TestVision_DecodeEstimateIsPerFormat(t *testing.T) {
+	const side = 3000 // 9 MP: 36 MiB at 4 bytes a pixel, under the budget
+	for _, c := range []struct {
+		name    string
+		data    []byte
+		refused bool
+	}{
+		{"progressive JPEG", jpegHeader(0xC2, side, side, 3, false), true},
+		{"baseline JPEG", jpegHeader(0xC0, side, side, 3, false), false},
+		{"4-component JPEG", jpegHeader(0xC0, side, side, 4, true), true},
+		{"interlaced PNG", pngHeaderInterlaced(side, side, 8, 6), true},
+		{"non-interlaced PNG", pngHeader(side, side, 8, 6), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := &countingDecoder{}
+			e, plan := countingEngine(t, d)
+			mt := "image/png"
+			if c.data[0] == 0xFF {
+				mt = "image/jpeg"
+			}
+			_, err := e.OCR(context.Background(), plan, imageUnit(t, c.data, mt), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
+			var tooLarge *ImageTooLargeError
+			if c.refused {
+				if !errors.As(err, &tooLarge) || d.calls.Load() != 0 {
+					t.Fatalf("err = %v, decoded %d times; want a refusal before decoding", err, d.calls.Load())
+				}
+				return
+			}
+			// Accepted by the budget: the decoder is reached (and fails, as
+			// the file is only a header), and the error is not the budget's.
+			if errors.As(err, &tooLarge) || d.calls.Load() != 1 {
+				t.Fatalf("err = %v, decoded %d times; want it decoded", err, d.calls.Load())
+			}
+		})
+	}
+}
