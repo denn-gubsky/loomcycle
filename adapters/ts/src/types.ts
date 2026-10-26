@@ -60,6 +60,10 @@ export type EventType =
   // reaching the model as bytes; the model saw a one-line stub. The payload
   // rides `AgentEvent.file`.
   | "file_captured"
+  // One OCR or speech-to-text pass a File tool call made over an inbox file:
+  // the source, the engine, the units and tokens spent and the cost, never the
+  // text. The payload rides `AgentEvent.transcription`.
+  | "transcription"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
   // retuned it. Distinct from a provider fallback on purpose: a fallback means
@@ -621,6 +625,44 @@ export interface FileCapturedInfo {
   run_id?: string;
 }
 
+/** Payload on `event: transcription`: one OCR or speech-to-text pass a File
+ *  tool call made over an inbox file. Never the transcribed text. */
+export interface TranscriptionInfo {
+  /** The source file, `volume:inbox:<dir>/<name>`. */
+  ref: string;
+  /** The Markdown the pass wrote, when it wrote one. */
+  out?: string;
+  /** `"ocr"` or `"stt"`. */
+  purpose: string;
+  /** The configured engine that ran: `"vision"`, `"openai-audio"`,
+   *  `"command"`, …. */
+  engine: string;
+  /** The concrete provider/model pair the engine called, when it called one. */
+  provider?: string;
+  model?: string;
+  /** Pages sent to an OCR engine. */
+  pages?: number;
+  /** Audio duration sent to a speech-to-text engine, in seconds. */
+  seconds?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  /** The priced cost in `currency`. Absent when the pair is unpriced, which is
+   *  not the same as free. */
+  cost?: number;
+  currency?: string;
+  /** `"ok"`, `"partial"` (a cap or an engine error stopped it after some
+   *  units; what was written stays) or `"failed"`. */
+  status: string;
+  /** An estimate: no engine was called and nothing was spent. */
+  dry_run?: boolean;
+  /** The run whose tool call made the pass. */
+  run_id?: string;
+  /** Why the pass failed or stopped early (set on `"failed"`, and on
+   *  `"partial"` when a cap or an engine error stopped it). Never a secret, a
+   *  URL's query or the file's content. */
+  error?: string;
+}
+
 export interface LimitInfo {
   /** Which axis tripped: "operator" | "tenant" | "user". */
   scope: string;
@@ -855,6 +897,9 @@ export interface AgentEvent {
   /** Payload on `event: file_captured` — a file a tool returned, kept in the
    *  run's inbox. Nil on all other event types. */
   file?: FileCapturedInfo;
+  /** Payload on `event: transcription` — one OCR or speech-to-text pass a
+   *  File tool call made. Nil on all other event types. */
+  transcription?: TranscriptionInfo;
   /** Payload on `event: queued` (why the run waits, and its place) and
    *  `event: admitted` (how long it waited), and on `event: call_queued` /
    *  `event: call_admitted` (the same for one model call, with its provider

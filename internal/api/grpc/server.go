@@ -2206,6 +2206,16 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			Ref: f.Ref, MediaType: f.MediaType, Size: f.Size, Sha256: f.SHA256, Origin: f.Origin, RunId: f.RunID,
 		}
 	}
+	if tr := ev.Transcription; tr != nil {
+		out.Transcription = &loomcyclepb.TranscriptionInfo{
+			Ref: tr.Ref, Out: tr.Out, Purpose: tr.Purpose, Engine: tr.Engine, Provider: tr.Provider, Model: tr.Model,
+			Pages: int32(tr.Pages), Seconds: tr.Seconds,
+			InputTokens: int64(tr.InputTokens), OutputTokens: int64(tr.OutputTokens),
+			// proto3 optional, so an unpriced pass (nil) stays apart from a free one.
+			Cost:     tr.Cost,
+			Currency: tr.Currency, Status: tr.Status, DryRun: tr.DryRun, RunId: tr.RunID, Error: tr.Error,
+		}
+	}
 	if hd := ev.HookDecision; hd != nil {
 		out.HookDecision = &loomcyclepb.HookDecision{
 			Hook: hd.Hook, Phase: hd.Phase, ToolUseId: hd.ToolUseID, ToolName: hd.ToolName,

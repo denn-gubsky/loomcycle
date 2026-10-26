@@ -2563,9 +2563,9 @@ decision:
 
 See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
 
-## 9h. Transcription — OCR and speech-to-text (substrate)
+## 9h. Transcription — OCR and speech-to-text
 
-> **Substrate only.** This release reads, validates and stores the block, the per-agent setting and the `per_minute` price. No engine runs yet: OCR and speech-to-text calls arrive in later releases, which read exactly this configuration.
+> **OCR runs; speech-to-text does not yet.** OCR on `File op=extract` runs since this release (see the `File` tool in `docs/TOOLS.md`). Speech-to-text calls arrive in a later release, which reads the `stt` part of this block as it is.
 
 Scans, photos of documents and recordings carry no text an extractor can read. The `transcription:` block names the engines that will turn them into text, and what a run may spend. Absent, both engines are off.
 
@@ -2619,6 +2619,8 @@ agents:
 - A cap above the operator's is **refused** at config load and at AgentDef create/fork, naming both values. At run time the lower of the two applies, so an operator who lowers a cap later still binds stored agents.
 - With no engine configured, the agent's setting is accepted and has no effect.
 - The block is set in yaml or the AgentDef overlay, merges per field on a fork, and is part of the agent's content hash. A run cannot override it.
+
+**What a run reports.** Each OCR or speech-to-text pass a `File` tool call makes emits one `transcription` event: on the SSE stream, as a transcript row, on gRPC as `Event.transcription` (`TranscriptionInfo`), typed in the TS and Python clients (`AgentEvent.transcription`), and as one line in the Web UI's run views (`⟲ OCR scan.pdf · 12 pages · claude-haiku-5-5 · $0.04 · ok`). It carries the source `ref` and the `out` ref of the Markdown written, `purpose` (`ocr` | `stt`), `engine`, the `provider` and `model` called, `pages` or `seconds`, `input_tokens` and `output_tokens`, `cost` and `currency` (absent when the pair is unpriced, which is not the same as free), `status` (`ok`; `partial` when a cap or an engine error stopped it after some units, and what was written stays; `failed`), `dry_run` (an estimate: no engine was called and nothing was spent), `error` (why the pass failed or stopped early: set on `failed`, and on `partial` when a cap or an engine error stopped it; never a secret, a URL's query or the file's content) and the `run_id` whose tool call made it. Never the text. It is a record for the operator, not model input: a resumed run's conversation does not include it.
 
 ---
 

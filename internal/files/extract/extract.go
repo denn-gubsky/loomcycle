@@ -47,6 +47,15 @@ type Sink interface {
 	Image(img Image) (string, error)
 }
 
+// PageSink is a Sink that is told where each page of a paged document
+// begins: StartPage(n) comes just before page n's Markdown is written. A
+// caller that replaces one page's text (with an OCR transcript) cuts the
+// Markdown at these points instead of parsing headings back out of it.
+type PageSink interface {
+	Sink
+	StartPage(n int)
+}
+
 // ErrSinkFull is what a Sink returns when it will take no more text. An
 // extractor stops and returns its report so far with this error, so the
 // caller can keep what was written and say it was cut.
@@ -98,6 +107,20 @@ type Report struct {
 	// images rather than its text layer.
 	YieldCharsPerPage float64  `json:"yield_chars_per_page,omitempty"`
 	Notes             []string `json:"notes,omitempty"`
+	// PageYields is the text each page read held, in page order (PDF). Not
+	// part of what the model is shown: a caller uses it to choose the pages
+	// an OCR pass reads.
+	PageYields []PageYield `json:"-"`
+}
+
+// PageYield is how much text one page's text layer gave.
+type PageYield struct {
+	Page int
+	// Chars counts the page's text characters, whitespace excluded.
+	Chars int
+	// Unread is a page whose content could not be read at all: a damaged
+	// page, not a scan.
+	Unread bool
 }
 
 func (r *Report) note(format string, args ...any) {

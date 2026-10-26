@@ -104,6 +104,9 @@ func (d *Driver) Capabilities() providers.Capabilities {
 		SupportsThinking:  true,
 		SupportsEffort:    true,
 		SupportsVision:    true, // per-model refined by anthropicSupportsVision
+		// Request.Documents as `document` blocks: the transcription path's
+		// OCR call only (see buildRequestBody).
+		SupportsDocumentInput: true,
 		// Per-REQUEST refined in buildRequestBody: a forced choice is rejected
 		// when an extended-thinking block rides along, which depends on the
 		// call's effort hint and so cannot be answered here.
@@ -327,7 +330,7 @@ type wireContentBlock struct {
 	ToolUseID string           `json:"tool_use_id,omitempty"`
 	Content   string           `json:"content,omitempty"`
 	IsError   bool             `json:"is_error,omitempty"`
-	Source    *wireImageSource `json:"source,omitempty"` // type == "image" (RFC AT)
+	Source    *wireImageSource `json:"source,omitempty"` // type == "image" (RFC AT) or "document" (out-of-band PDF)
 	// Thinking + Signature carry an extended-thinking block replayed on a
 	// tool-use continuation (type == "thinking"). Anthropic verifies Signature
 	// against Thinking and 400s on a mismatch or a missing block, so both are
@@ -497,8 +500,31 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		return nil, fmt.Errorf("anthropic model %q does not support image input", req.Model)
 	}
 
+	// A PDF reaches the model only through Request.Documents, which the
+	// transcription path sets and the loop never does. A document block inside
+	// a message is refused rather than serialised: no content path that feeds
+	// messages (a user turn, a replayed transcript, a tool result) may carry
+	// one, so one here is a bug or an injection, never an intended PDF.
+	for _, m := range req.Messages {
+		for _, c := range m.Content {
+			if c.Type == "document" {
+				return nil, errors.New("anthropic: a document block is not accepted in a conversation message")
+			}
+		}
+	}
+	docs, err := documentBlocks(req.Documents)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, m := range req.Messages {
 		wm := wireMessage{Role: m.Role}
+		if len(docs) > 0 && m.Role == "user" {
+			// Before the instruction, as the Messages API recommends for a
+			// document the prompt is about. Only the first user message.
+			wm.Content = append(wm.Content, docs...)
+			docs = nil
+		}
 		// Replay the assistant turn's extended-thinking block FIRST. When
 		// extended thinking is enabled and the turn used tools, Anthropic
 		// requires the prior assistant message to start with its thinking
@@ -520,7 +546,31 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 		w.Messages = append(w.Messages, wm)
 	}
 
+	if len(docs) > 0 {
+		return nil, errors.New("anthropic: request documents need a user message to carry them")
+	}
+
 	return json.Marshal(w)
+}
+
+// documentBlocks is Request.Documents as `document` blocks with a base64
+// source. Only a PDF: the block's other source types (text, content, URL) are
+// not ones the transcription path produces, and a URL would have the provider
+// fetch on the runtime's behalf.
+func documentBlocks(in []providers.DocumentInput) ([]wireContentBlock, error) {
+	var out []wireContentBlock
+	for i, d := range in {
+		if d.MediaType != "application/pdf" {
+			return nil, fmt.Errorf("anthropic: request document %d is %q; only application/pdf is sent", i, d.MediaType)
+		}
+		if d.Data == "" {
+			return nil, fmt.Errorf("anthropic: request document %d is empty", i)
+		}
+		out = append(out, wireContentBlock{Type: "document", Source: &wireImageSource{
+			Type: "base64", MediaType: d.MediaType, Data: d.Data,
+		}})
+	}
+	return out, nil
 }
 
 func toWireBlock(c providers.ContentBlock) wireContentBlock {
