@@ -121,6 +121,39 @@ func DropUnreadableSearchHits(ctx context.Context, docs *Document, scope store.M
 	return dropUnreadableSearchHits(ctx, reader, scope, scopeID, res, inScope)
 }
 
+// UnreadableDocumentKeys returns the keys among keys, all of the memory scope
+// (scope, scopeID), that the caller on ctx may not read: a chunk body or a
+// derived unit whose document its set denies it reading, chosen by key as
+// DropUnreadableSearchHits chooses. It is that function's rule for the routes
+// that read memory rows by key rather than by search. nil: nothing is held back.
+// docs as there; an error must fail the read.
+func UnreadableDocumentKeys(ctx context.Context, docs *Document, scope store.MemoryScope, scopeID string, keys []string) (map[string]bool, error) {
+	var reader documentHitReader
+	if docs != nil {
+		reader = docs
+	}
+	var ids []string
+	for _, k := range keys {
+		if id := documentHitChunkID(k); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	keep, err := readableDocumentHits(ctx, reader, scope, scopeID, ids)
+	if err != nil || keep == nil {
+		return nil, err
+	}
+	var out map[string]bool
+	for _, k := range keys {
+		if id := documentHitChunkID(k); id != "" && !keep(id) {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[k] = true
+		}
+	}
+	return out, nil
+}
+
 // dropUnreadableSearchHits is the Memory tool's DropUnreadableSearchHits, asking
 // its own Document side.
 func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.MemoryScope, scopeID string,
