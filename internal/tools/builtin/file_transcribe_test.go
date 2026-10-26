@@ -209,7 +209,7 @@ func TestTranscribe_WholeFileUnderCap(t *testing.T) {
 		t.Fatalf("sent = %d units (%+v)", len(sent), sent)
 	}
 	want := "# voice.m4a\n<!-- loom: stt engine=openai-audio provider=whisper-local model=large-v3 minutes=0.5 language=uk -->\n\n" +
-		"## [00:00:00 – 00:00:30]\n\n[00:00:00] Добрий день.\n\n[00:00:04] Почнемо засідання."
+		"## [00:00:00 – 00:00:31]\n\n[00:00:00] Добрий день.\n\n[00:00:04] Почнемо засідання."
 	if md != want {
 		t.Errorf("markdown:\n%s\nwant:\n%s", md, want)
 	}

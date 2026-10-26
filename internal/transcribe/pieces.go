@@ -33,26 +33,41 @@ func Pieces(total, length, overlap time.Duration) []Piece {
 }
 
 // Merge puts the pieces' segments on the recording's clock and drops the
-// overlap's duplicates. Each piece's segments are timed from its From. A
-// segment of a later piece whose middle falls before the piece's Start was
-// heard in the overlap, and the previous piece already has it; one that
-// straddles the cut with its middle after it is kept, as the previous piece
-// heard only its beginning. results[i] belongs to pieces[i]; a missing or
-// nil entry (a piece not transcribed) contributes nothing.
+// overlap's duplicates. Each piece's segments are timed from its From.
+//
+//   - A segment of a later piece whose middle falls before the piece's Start
+//     was heard in the overlap, and the previous piece already has it.
+//   - One that straddles the cut with its middle after it is kept, as the
+//     previous piece heard only its beginning; and the previous piece's
+//     segments from that start on (the cut-off part it heard) are dropped,
+//     so the transcript keeps the whole utterance once and stays in time
+//     order.
+//
+// results[i] belongs to pieces[i]; a missing or nil entry (a piece not
+// transcribed) contributes nothing.
 func Merge(pieces []Piece, results []Segments) Segments {
 	var out Segments
 	for i, p := range pieces {
 		if i >= len(results) {
 			break
 		}
+		var kept Segments
 		for _, s := range results[i] {
 			s.Start += p.From
 			s.End += p.From
 			if i > 0 && s.Start+(s.End-s.Start)/2 < p.Start {
 				continue
 			}
-			out = append(out, s)
+			kept = append(kept, s)
 		}
+		if i > 0 && len(kept) > 0 && kept[0].Start < p.Start {
+			n := len(out)
+			for n > 0 && out[n-1].Start >= kept[0].Start {
+				n--
+			}
+			out = out[:n]
+		}
+		out = append(out, kept...)
 	}
 	return out
 }

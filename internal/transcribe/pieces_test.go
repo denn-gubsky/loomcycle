@@ -30,8 +30,9 @@ func TestPieces_CutWithOverlapBack(t *testing.T) {
 
 // TestTranscribe_ChunksOverlapDeduped — the overlap's speech, heard by two
 // pieces, is kept once (from the earlier piece); a segment straddling the cut
-// with most of it after the cut is kept from the later one; every time is on
-// the recording's clock.
+// with most of it after the cut is kept from the later one, which heard it
+// whole, and the earlier piece's cut-off copy of it goes; every time is on the
+// recording's clock, in order.
 func TestTranscribe_ChunksOverlapDeduped(t *testing.T) {
 	s := time.Second
 	pieces := Pieces(20*s, 10*s, 2*s) // [0,10) and [8,20) carrying from 8
@@ -45,11 +46,11 @@ func TestTranscribe_ChunksOverlapDeduped(t *testing.T) {
 	for _, x := range got {
 		texts = append(texts, x.Text)
 	}
-	want := []string{"one", "two", "thr", "three", "four"}
+	want := []string{"one", "two", "three", "four"}
 	if !reflect.DeepEqual(texts, want) {
 		t.Fatalf("texts = %q, want %q", texts, want)
 	}
-	if got[3].Start != 9*s || got[4].Start != 12*s || got[4].End != 20*s {
+	if got[2].Start != 9*s || got[3].Start != 12*s || got[3].End != 20*s {
 		t.Errorf("times not on the recording's clock: %+v", got)
 	}
 	// A piece that was not transcribed contributes nothing.

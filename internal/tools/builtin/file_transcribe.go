@@ -758,7 +758,12 @@ func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttPass, name s
 		meta += " speakers=per-section"
 	}
 	var end time.Duration
-	if n := len(p.pieces); n > 0 && p.done == n {
+	switch n := len(p.pieces); {
+	case p.route == routeWhole && p.done == 1:
+		// The piece was the header's bound; what the engine heard is the
+		// recording's length.
+		end = time.Duration(p.seconds * float64(time.Second))
+	case n > 0 && p.done == n:
 		end = p.pieces[n-1].To
 	}
 	var b strings.Builder
