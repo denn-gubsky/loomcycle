@@ -217,6 +217,9 @@ var layers = []layer{
 			"internal/throughput",
 			"internal/tools",
 			"internal/tools/builtin",
+			// OCR / speech-to-text substrate: a runtime subroutine the File
+			// tool drives; its engines will call providers and lanes.
+			"internal/transcribe",
 			"internal/wiring",
 		},
 	},
