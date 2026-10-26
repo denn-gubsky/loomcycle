@@ -291,6 +291,13 @@ type AgentContent struct {
 	// Tools is the agent's tool allowlist (the capability ceiling). Tag
 	// "tools" sorts between tier and unbounded_iterations.
 	Tools []string `json:"tools,omitempty"`
+	// Transcription is the per-agent OCR / speech-to-text block (mirrors
+	// config.AgentTranscription). Content-identifying: whether the agent OCRs
+	// and how much it may transcribe changes what its runs do and spend.
+	// Pointer + omitempty + normalize-collapse so an agent without it hashes
+	// byte-identical to pre-feature rows. Tag "transcription" sorts between
+	// tools and unbounded_iterations.
+	Transcription *Transcription `json:"transcription,omitempty"`
 	// UnboundedIterations is content-identifying (like MaxIterations): a fork
 	// that only flips it must get a distinct content_sha256, not silently
 	// dedup (cf. F14). omitempty keeps pre-existing rows byte-identical.
@@ -396,6 +403,10 @@ func normalize(c *AgentContent) {
 	// An empty or auto tool_choice asks for nothing, so it hashes as absent.
 	if c.ToolChoice != nil && (c.ToolChoice.Mode == "" || c.ToolChoice.Mode == "auto") {
 		c.ToolChoice = nil
+	}
+	// An empty transcription block asks for nothing, so it hashes as absent.
+	if c.Transcription != nil && *c.Transcription == (Transcription{}) {
+		c.Transcription = nil
 	}
 	// Same all-nil collapse for compaction (a substrate read of a no-compaction
 	// def yields `"compaction":{}`) → hashes identically to a pre-feature row.

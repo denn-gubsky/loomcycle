@@ -10,6 +10,8 @@ import { jsonResponse, makeClient } from "./helpers.js";
 import type {
   MemoryEmbedStatsResponse,
   MemoryReembedResponse,
+  MemorySearchDocumentFilter,
+  MemorySearchInput,
   MemorySearchResponse,
 } from "../src/index.js";
 
@@ -323,5 +325,61 @@ describe("memorySearch sources (RFC BW)", () => {
     expect(res.entries.map((e) => e.kind)).toEqual(["fact", "note", "document"]);
     expect(res.entries[2]!.chunk_id).toBe("z");
     expect(res.entries[0]!.chunk_id).toBeUndefined();
+  });
+});
+
+describe("memorySearch document filters", () => {
+  it("sends the four filters snake_cased, only when set, and types the filter echo", async () => {
+    const echo: MemorySearchDocumentFilter = {
+      applied: { under_paths: ["/qg/norms"], exclude_document_ids: ["d9"] },
+      matched_documents: 3,
+      matched_chunks: 41,
+      inverted: false,
+    };
+    const filtered = {
+      scope: "user",
+      scope_id: "u1",
+      entries: [],
+      query_embedding_dim: 3,
+      truncated: false,
+      filter: echo,
+    } satisfies MemorySearchResponse;
+    const plain = {
+      scope: "user",
+      scope_id: "u1",
+      entries: [],
+      query_embedding_dim: 3,
+      truncated: false,
+    } satisfies MemorySearchResponse;
+    const { client, fetchMock } = makeClient([jsonResponse(filtered), jsonResponse(plain)]);
+
+    const input: MemorySearchInput = {
+      query: "q",
+      scope: "user",
+      scopeId: "u1",
+      underPaths: ["/qg/norms"],
+      excludeUnderPaths: ["/qg/reports"],
+      documentIds: ["d1"],
+      excludeDocumentIds: ["d9"],
+    };
+    const res = await client.memorySearch(input);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
+    expect(body.under_paths).toEqual(["/qg/norms"]);
+    expect(body.exclude_under_paths).toEqual(["/qg/reports"]);
+    expect(body.document_ids).toEqual(["d1"]);
+    expect(body.exclude_document_ids).toEqual(["d9"]);
+    for (const camel of ["underPaths", "excludeUnderPaths", "documentIds", "excludeDocumentIds"]) {
+      expect(camel in body).toBe(false);
+    }
+    expect(res.filter?.matched_documents).toBe(3);
+    expect(res.filter?.applied.under_paths).toEqual(["/qg/norms"]);
+
+    // Unset: none of the keys is sent, and the response has no echo.
+    const res2 = await client.memorySearch({ query: "q", scope: "user", scopeId: "u1" });
+    const body2 = JSON.parse(String(fetchMock.mock.calls[1]![1]?.body));
+    for (const k of ["under_paths", "exclude_under_paths", "document_ids", "exclude_document_ids"]) {
+      expect(k in body2).toBe(false);
+    }
+    expect(res2.filter).toBeUndefined();
   });
 });

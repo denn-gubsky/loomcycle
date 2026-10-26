@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -323,7 +324,10 @@ func scopeExists(t *testing.T, d *Document, ctx context.Context, scope string) b
 // TestMemorySearch_TenantDocumentFilterIsRefusedAndProvisionsNothing — a
 // tenant-scope Memory call holding memory_scopes [tenant] but no SQL Memory
 // tenant grant must not reach the tenant's SQL Memory through the filter: the
-// Document tool would refuse that scope, and resolving would provision it.
+// Document tool refuses that scope, and resolving would provision it. The
+// refusal is the Document tool's own for a missing grant — a permission error
+// naming the grant — so the caller learns an operator can open it, not that
+// its call was malformed.
 func TestMemorySearch_TenantDocumentFilterIsRefusedAndProvisionsNothing(t *testing.T) {
 	mc := newMemDocCorpus(t)
 	mc.ctx = tools.UpdateRunPolicy(mc.ctx, func(rp *tools.RunPolicy) {
@@ -333,9 +337,35 @@ func TestMemorySearch_TenantDocumentFilterIsRefusedAndProvisionsNothing(t *testi
 	if scopeExists(t, mc.d, mc.ctx, "tenant") {
 		t.Fatal("precondition: the tenant SQL Memory scope already exists")
 	}
+	for _, body := range []string{
+		`{"op":"search","scope":"tenant","query":"norm clause","under_paths":["/qg/norms"]}`,
+		`{"op":"recall","scope":"tenant","query":"norm clause","sources":["documents"],"under_paths":["/qg/norms"]}`,
+	} {
+		r := mc.mem(body)
+		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission {
+			t.Errorf("%s = %s (%+v), want a permission refusal", body, r.Text, r.Error)
+		}
+		if !strings.Contains(r.Text, "sql_scopes: [tenant]") {
+			t.Errorf("%s: the refusal does not name the missing grant: %s", body, r.Text)
+		}
+	}
+	if scopeExists(t, mc.d, mc.ctx, "tenant") {
+		t.Error("the refused filter provisioned the tenant's SQL Memory scope")
+	}
+}
+
+// TestMemorySearch_GrantedTenantDocumentFilterIsAValidationRefusal — with both
+// tenant grants the scope gate passes, and the filter is still refused, as a
+// validation error: a tenant document's bodies are not in the keyspace a
+// tenant-scope Memory call reads, so no filter there could match one.
+func TestMemorySearch_GrantedTenantDocumentFilterIsAValidationRefusal(t *testing.T) {
+	mc := newMemDocCorpus(t) // holds memory_scopes and sql_scopes [tenant]
 	r := mc.mem(`{"op":"search","scope":"tenant","query":"norm clause","under_paths":["/qg/norms"]}`)
 	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryValidation {
-		t.Errorf("tenant-scope document filter = %s, want a validation refusal", r.Text)
+		t.Errorf("granted tenant-scope document filter = %s (%+v), want a validation refusal", r.Text, r.Error)
+	}
+	if !strings.Contains(r.Text, "not available on a tenant-scope Memory call") {
+		t.Errorf("refusal = %s, want the tenant-scope explanation", r.Text)
 	}
 	if scopeExists(t, mc.d, mc.ctx, "tenant") {
 		t.Error("the refused filter provisioned the tenant's SQL Memory scope")
@@ -356,8 +386,10 @@ func TestDocumentFilterResolver_ConfinesAnIsolatedMemberAsTheDocumentToolDoes(t 
 	if r, _ := mc.d.Execute(ctx, b); !r.IsError {
 		t.Fatalf("precondition: Document op=search let an isolated member search the tenant scope: %s", r.Text)
 	}
-	if _, err := mc.d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeTenant, "", f); err == nil {
-		t.Error("the resolver resolved a tenant-scope filter for an isolated member")
+	_, err := mc.d.ResolveDocumentFilter(ctx, "search", store.MemoryScopeTenant, "", f)
+	var rf *documentFilterRefusal
+	if !errors.As(err, &rf) || rf.res.Error == nil || rf.res.Error.Category != tools.CategoryPermission {
+		t.Errorf("isolated member's tenant-scope filter = %v, want the Document tool's permission refusal", err)
 	}
 	if scopeExists(t, mc.d, ctx, "tenant") {
 		t.Error("the refused filter provisioned the tenant's SQL Memory scope")

@@ -107,6 +107,13 @@ instant — use the Document tool's `search`.
   cannot return documents` — add `documents` to `sources`, or drop the filter.
 - `search: documents not configured on this server ...` — this server has no
   documents to aim at; search without the document filter.
+- `search: document filter: Document: scope=tenant is not granted to this agent
+  ...` — a permission refusal: reading this scope's documents needs a grant the
+  agent lacks (the message names it). Drop the filter, or ask an operator to
+  grant it.
+- `search: document filters are not available on a tenant-scope Memory call` —
+  use the Document tool's `search` with `scope: "tenant"`, which takes the same
+  filters.
 - `search: when.from "October" is not an RFC3339 timestamp` — resolve dates
   yourself, e.g. `2025-10-01T00:00:00Z`.
 

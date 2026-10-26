@@ -2530,6 +2530,7 @@ models:
 | an agent's `model:`, a tier candidate, the listwise memory reranker, the unit generator | `chat` |
 | the `decision:` block, a memory reranker with `kind: decision` | `decision` |
 | `memory.embedder.model` | `embedder` |
+| `transcription.stt.model` (§9h) | `transcriber` — the tag is required here; an untagged alias is refused |
 
 - A tagged alias in the wrong place **fails config load**; the error names the alias, its kind and the place.
 - An **untagged** alias used as a decision model or an embedder still loads, with a warning at boot and in `loomcycle validate` naming the alias and the tag to add. A later release will make this a failure, so tag them now.
@@ -2561,6 +2562,63 @@ decision:
 - Under `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` a tenant sees only the decision models it can key.
 
 See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
+
+## 9h. Transcription — OCR and speech-to-text (substrate)
+
+> **Substrate only.** This release reads, validates and stores the block, the per-agent setting and the `per_minute` price. No engine runs yet: OCR and speech-to-text calls arrive in later releases, which read exactly this configuration.
+
+Scans, photos of documents and recordings carry no text an extractor can read. The `transcription:` block names the engines that will turn them into text, and what a run may spend. Absent, both engines are off.
+
+```yaml
+models:
+  whisper: { provider: whisper-local, model: large-v3, kind: transcriber }
+
+transcription:
+  ocr:
+    engine: vision            # required: vision | off
+    tier: middle              # default middle; resolved like the describe-images pass
+    model: ""                 # optional models: alias (kind: chat); pins the model, tier is then ignored
+    language: uk+ru           # default uk+ru; up to three codes joined by +
+    max_pages_per_call: 100   # default 100 (never above max_pages_per_run)
+    max_pages_per_run: 300    # default 300
+    ocr_min_chars_per_page: 40   # default 40; below this a page counts as a scan
+    max_tokens_per_page: 2000    # default 2000
+    rasterize: { command: "pdftoppm -r 150 -png {in} {out_prefix}" }   # optional; must contain {in}
+    prompt_template: ""       # optional; replaces the built-in OCR instruction (operator-only)
+  stt:
+    engine: openai-audio      # required: openai-audio | off
+    provider: whisper-local   # required for openai-audio: a provider on the openai driver
+    model: whisper            # required for openai-audio: an alias tagged kind: transcriber
+    language: uk              # default uk; exactly one code
+    vocabulary: ""            # optional names and terms; folded to one line, at most 400 characters
+    diarize: auto             # auto | on | off, default auto
+    max_minutes_per_call: 120 # default 120 (never above max_minutes_per_run)
+    max_minutes_per_run: 300  # default 300
+    chunk_minutes: 10         # default 10 (never above max_minutes_per_call)
+    chunk_overlap_seconds: 2  # default 2; 0 means the default
+    media: { command: "ffmpeg -i {in} -ac 1 -ar 16000 -f wav {out}" }   # optional; must contain {in}
+```
+
+- `loomcycle validate` fails on an unknown key, a missing `engine`, a negative number, a per-call cap above its per-run cap, an unknown language code, an OCR `model` that is not a chat alias, an STT `provider` not on the `openai` driver, an STT `model` not tagged `kind: transcriber` (or served by another provider), and a helper command without `{in}`.
+- `command` and `http` (both engines) and `gemini-audio` (STT) are refused as not available yet.
+- Whether the OCR model can read images is checked when the engine is built, not at load.
+- Speech-to-text is priced per minute of audio: `pricing.models."<provider>/<model>": { per_minute: 0.006 }`, billed by the second.
+
+**Per agent.** An agent opts in to OCR and may lower the caps:
+
+```yaml
+agents:
+  doc-reader:
+    transcription:
+      ocr: auto                # auto | always | never — default never (OCR is billed per page)
+      stt: on                  # on | off — default on when the operator configured an engine
+      max_pages_per_run: 50    # at most transcription.ocr.max_pages_per_run
+      max_minutes_per_run: 60  # at most transcription.stt.max_minutes_per_run
+```
+
+- A cap above the operator's is **refused** at config load and at AgentDef create/fork, naming both values. At run time the lower of the two applies, so an operator who lowers a cap later still binds stored agents.
+- With no engine configured, the agent's setting is accepted and has no effect.
+- The block is set in yaml or the AgentDef overlay, merges per field on a fork, and is part of the agent's content hash. A run cannot override it.
 
 ---
 

@@ -2599,6 +2599,50 @@ export interface MemorySearchInput {
    *  while `"require"` is a real filter. A tight `"require"` window is how a
    *  scope that holds the answer comes back empty. */
   when?: MemoryWhen;
+  /** Aim the search at part of the scope's documents: return only the chunks of
+   *  documents named at or under ANY of these Path-tree paths, in the scope's own
+   *  tree (sent as `under_paths`). Narrows DOCUMENT chunks only — facts and notes
+   *  the same search returns pass untouched — and is applied before ranking.
+   *
+   *  The four document filters need a search that can return documents (no
+   *  `sources`, or `sources` including `"documents"`; otherwise 400
+   *  `invalid_filter`), are refused on `scope: "tenant"` (400 `invalid_filter`),
+   *  and need SQL Memory on the server (400 `filter_unavailable`). They resolve in
+   *  the caller's own tenant. The response then carries {@link
+   *  MemorySearchResponse.filter}. For chunk-level filters (type, status, tags, a
+   *  validity instant) use `document({ op: "search" })`. */
+  underPaths?: string[];
+  /** Never return the chunks of documents named at or under these paths (sent as
+   *  `exclude_under_paths`). Documents only, as {@link underPaths}. */
+  excludeUnderPaths?: string[];
+  /** Return only the chunks of these documents (sent as `document_ids`).
+   *  Documents only, as {@link underPaths}. */
+  documentIds?: string[];
+  /** Never return the chunks of these documents (sent as
+   *  `exclude_document_ids`). Documents only, as {@link underPaths}. */
+  excludeDocumentIds?: string[];
+}
+
+/** What a document filter on {@link LoomcycleClient.memorySearch} resolved to —
+ *  present on the response ONLY when a filter was sent. */
+export interface MemorySearchDocumentFilter {
+  /** The filter as applied: paths canonicalised, blanks and duplicates dropped.
+   *  Only the kinds that were sent appear. */
+  applied: {
+    under_paths?: string[];
+    exclude_under_paths?: string[];
+    document_ids?: string[];
+    exclude_document_ids?: string[];
+  };
+  /** Documents with at least one matching chunk. 0 means the paths/ids name no
+   *  document in this scope — not that nothing relevant was found. */
+  matched_documents: number;
+  /** Chunks the filter let through. */
+  matched_chunks: number;
+  /** True when the match was sent as "everything except" its complement. Always
+   *  false while access-control rules can deny the caller reading part of the
+   *  scope — the counts then cover only documents it may read. */
+  inverted: boolean;
 }
 
 /** The observed-time predicate on {@link MemorySearchInput}. Timestamps are
@@ -2685,6 +2729,9 @@ export interface MemorySearchResponse {
    *  those call for very different responses. Counts describe the candidate pool
    *  the ranker saw, not a scope-wide census. */
   time_filter?: MemoryTimeFilter;
+  /** What the document filter resolved to — present only when one was sent
+   *  ({@link MemorySearchInput.underPaths} and its siblings). */
+  filter?: MemorySearchDocumentFilter;
 }
 
 export interface MemoryTimeFilter {
@@ -4801,6 +4848,19 @@ export interface AgentCompaction {
   memory_flush?: boolean;
 }
 
+/** An agent's OCR and speech-to-text settings. It can opt in to OCR and lower
+ *  the operator's per-run caps; it can never raise them or pick an engine. */
+export interface AgentTranscription {
+  /** OCR for scans and images. Default `never`: OCR is billed per page. */
+  ocr?: 'auto' | 'always' | 'never';
+  /** Speech-to-text. Default `on` when the operator configured an engine. */
+  stt?: 'on' | 'off';
+  /** At most the operator's `transcription.ocr.max_pages_per_run`. */
+  max_pages_per_run?: number;
+  /** At most the operator's `transcription.stt.max_minutes_per_run`. */
+  max_minutes_per_run?: number;
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -4999,6 +5059,8 @@ export interface AgentDefOverlay {
   sampling?: AgentSampling;
   /** Context compaction in `append` mode, merged per field. */
   compaction?: AgentCompaction;
+  /** OCR and speech-to-text settings, merged per field. */
+  transcription?: AgentTranscription;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared

@@ -557,6 +557,10 @@ func (s *Store) FinishRun(ctx context.Context, runID string, status store.RunSta
 // RecordCallUsage appends one per-call usage row (RFC AV). Append-only; cost is
 // NULL when unpriced (empty currency), distinct from a genuine zero.
 func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) error {
+	purpose, audioSeconds, err := store.NormalizeUsageRow(row)
+	if err != nil {
+		return err
+	}
 	ts := row.TS
 	if ts.IsZero() {
 		ts = time.Now().UTC()
@@ -565,14 +569,15 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 	if row.CostCurrency != "" {
 		costArg = row.Cost
 	}
-	_, err := s.pool.Exec(ctx,
+	_, err = s.pool.Exec(ctx,
 		`INSERT INTO token_usage (
 			run_id, session_id, tenant_id, user_id, agent_id, parent_run_id,
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
-			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
+			purpose, audio_seconds
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
 		row.RunID, nullableText(row.SessionID), row.TenantID, nullableText(row.UserID),
 		nullableText(row.AgentID), nullableText(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
@@ -580,6 +585,7 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 		costArg, nullableText(row.CostCurrency), ts,
 		nullableMs(row.DurationMs), nullableMs(row.TTFTMs), nullableMs(row.LoadMs),
 		nullableMs(row.PrefillMs), nullableMs(row.DecodeMs), nullableMs(row.QueueMs),
+		purpose, audioSeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("record call usage: %w", err)
@@ -642,7 +648,8 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			iteration, provider, model, credential_source, credential_scope_id,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
-			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms
+			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
+			purpose, audio_seconds
 		 FROM token_usage WHERE run_id = $1 ORDER BY iteration ASC, id ASC`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("token usage for run: %w", err)
@@ -660,6 +667,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &r.TS,
 			&dur, &ttft, &load, &prefill, &decode, &queue,
+			&r.Purpose, &r.AudioSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan token usage: %w", err)
 		}
@@ -1069,16 +1077,16 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source,
+		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source, purpose,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, call_count, unpriced_calls)
-		SELECT date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source,
+			cost, cost_currency, call_count, unpriced_calls, audio_seconds)
+		SELECT date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose,
 			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
 			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
-			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END)
+			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds)
 		FROM token_usage WHERE ts < $1
-		GROUP BY date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', tenant_id, COALESCE(user_id,''), provider, model, credential_source
-		ON CONFLICT (period_start, tenant_id, user_id, provider, model, credential_source) DO UPDATE SET
+		GROUP BY date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose
+		ON CONFLICT (period_start, tenant_id, user_id, provider, model, credential_source, purpose) DO UPDATE SET
 			input_tokens          = usage_archive.input_tokens + excluded.input_tokens,
 			output_tokens         = usage_archive.output_tokens + excluded.output_tokens,
 			cache_creation_tokens = usage_archive.cache_creation_tokens + excluded.cache_creation_tokens,
@@ -1086,7 +1094,8 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 			cost                  = usage_archive.cost + excluded.cost,
 			cost_currency         = CASE WHEN usage_archive.cost_currency = '' THEN excluded.cost_currency ELSE usage_archive.cost_currency END,
 			call_count            = usage_archive.call_count + excluded.call_count,
-			unpriced_calls        = usage_archive.unpriced_calls + excluded.unpriced_calls`,
+			unpriced_calls        = usage_archive.unpriced_calls + excluded.unpriced_calls,
+			audio_seconds         = usage_archive.audio_seconds + excluded.audio_seconds`,
 		olderThan,
 	); err != nil {
 		return 0, fmt.Errorf("rollup usage: %w", err)
