@@ -199,6 +199,30 @@ class FileCapturedInfo:
 
 
 @dataclass(frozen=True)
+class TranscriptionInfo:
+    """Structured payload on ``transcription`` events: one OCR or
+    speech-to-text pass a File tool call made over an inbox file — the
+    source, the engine, the units and tokens spent and the cost. Never the
+    transcribed text. Mirrors ``providers.TranscriptionInfo`` on the Go side."""
+
+    ref: str  # the source file, volume:inbox:<dir>/<name>
+    purpose: str  # "ocr" | "stt"
+    engine: str  # the configured engine: "vision", "openai-audio", "command", …
+    status: str  # "ok" | "partial" | "failed"
+    out: str = ""  # the Markdown the pass wrote, when it wrote one
+    provider: str = ""  # the concrete pair the engine called, when it called a model
+    model: str = ""
+    pages: int = 0  # pages sent to an OCR engine
+    seconds: float = 0.0  # audio duration sent to a speech-to-text engine
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: Optional[float] = None  # None when the pair is unpriced — not the same as free
+    currency: str = ""
+    dry_run: bool = False  # an estimate: no engine was called, nothing was spent
+    run_id: str = ""  # the run whose tool call made the pass
+
+
+@dataclass(frozen=True)
 class AdmissionInfo:
     """Structured payload on ``queued`` and ``admitted`` events, and on
     ``call_queued`` and ``call_admitted``.
@@ -387,6 +411,7 @@ class AgentEvent:
     user_input: Optional[UserInput] = None
     limit: Optional[LimitInfo] = None
     file: Optional[FileCapturedInfo] = None
+    transcription: Optional[TranscriptionInfo] = None
     admission: Optional[AdmissionInfo] = None
     capability_inert: Optional[CapabilityInertInfo] = None
     override: Optional[OverrideInfo] = None
@@ -523,6 +548,26 @@ class AgentEvent:
                 origin=ev.file.origin,
                 run_id=ev.file.run_id,
             )
+        tr: Optional[TranscriptionInfo] = None
+        if ev.HasField("transcription"):
+            t = ev.transcription
+            tr = TranscriptionInfo(
+                ref=t.ref,
+                purpose=t.purpose,
+                engine=t.engine,
+                status=t.status,
+                out=t.out,
+                provider=t.provider,
+                model=t.model,
+                pages=t.pages,
+                seconds=t.seconds,
+                input_tokens=t.input_tokens,
+                output_tokens=t.output_tokens,
+                cost=t.cost if t.HasField("cost") else None,
+                currency=t.currency,
+                dry_run=t.dry_run,
+                run_id=t.run_id,
+            )
         adm: Optional[AdmissionInfo] = None
         if ev.HasField("admission"):
             adm = AdmissionInfo(
@@ -567,6 +612,7 @@ class AgentEvent:
             user_input=ui,
             limit=li,
             file=fc,
+            transcription=tr,
             admission=adm,
             capability_inert=ci,
             override=ov,
