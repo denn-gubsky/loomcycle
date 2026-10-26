@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -125,5 +127,58 @@ func TestMemoryKeyWrites_RefuseExactlyWhatTheToolRefuses(t *testing.T) {
 		if gotDel := rec.Code == http.StatusBadRequest; gotDel != wantDel || (!wantDel && rec.Code != http.StatusNoContent) {
 			t.Errorf("tenant operator DELETE %s: %d %s; the tool's delete refuses=%v", key, rec.Code, rec.Body.String(), wantDel)
 		}
+	}
+}
+
+// TestMemoryKeyRoutes_CoreKeysAreOperatorOnly — a core/<label> key holds a core
+// memory block, which an operator seeds; agents read it through their prompt.
+// Over the key routes only the callers the memory maintenance sweeps admit (a
+// tenant operator, an admin, open mode) write or remove one. A member's own
+// keys are unaffected.
+func TestMemoryKeyRoutes_CoreKeysAreOperatorOnly(t *testing.T) {
+	c := newACLSearchCorpus(t)
+	callers := everyCaller()
+	ctx := context.Background()
+	key := "core/persona"
+	if err := c.s.store.MemorySet(ctx, "A", store.MemoryScopeUser, "alice", key, []byte(`"seeded by the operator"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		body := ""
+		if method == http.MethodPut {
+			body = `{"value":"rewritten by a member"}`
+		}
+		rec := memoryKeyWrite(t, c.s, callers["member"], method, key, body)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"permission_denied"`) ||
+			!strings.Contains(rec.Body.String(), "operator") {
+			t.Errorf("member %s %s: %d %s, want 403 permission_denied naming the operator", method, key, rec.Code, rec.Body.String())
+		}
+		if got, err := c.s.store.MemoryGet(ctx, "A", store.MemoryScopeUser, "alice", key); err != nil || string(got.Value) != `"seeded by the operator"` {
+			t.Errorf("member %s %s: the block changed: %s (err %v)", method, key, got.Value, err)
+		}
+	}
+	if rec := memoryKeyWrite(t, c.s, callers["member"], http.MethodPut, "notes/member-own", `{"value":"mine"}`); rec.Code != http.StatusOK {
+		t.Errorf("member PUT a plain key: %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"tenant operator", "admin"} {
+		if rec := memoryKeyWrite(t, c.s, callers[name], http.MethodPut, key, `{"value":"seeded"}`); rec.Code != http.StatusOK {
+			t.Errorf("%s PUT %s: %d %s, want 200", name, key, rec.Code, rec.Body.String())
+		}
+		if rec := memoryKeyWrite(t, c.s, callers[name], http.MethodDelete, key, ""); rec.Code != http.StatusNoContent {
+			t.Errorf("%s DELETE %s: %d %s, want 204", name, key, rec.Code, rec.Body.String())
+		}
+	}
+	// Open mode: no principal on the request, the operator is whoever calls.
+	if c.s.cfgHolder == nil {
+		c.s.cfgHolder = config.NewHolder(&config.Config{})
+	}
+	req := httptest.NewRequest(http.MethodPut, "/v1/_memory/scopes/user/alice/keys/"+key, strings.NewReader(`{"value":"open"}`))
+	req.SetPathValue("scope", "user")
+	req.SetPathValue("scope_id", "alice")
+	req.SetPathValue("key", key)
+	rec := httptest.NewRecorder()
+	c.s.handlePutMemoryEntry(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("open mode PUT %s: %d %s, want 200", key, rec.Code, rec.Body.String())
 	}
 }
