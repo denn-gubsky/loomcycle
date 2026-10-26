@@ -2077,7 +2077,7 @@ message ListChildRunsResponse {
 }
 
 // UsageReportRequest mirrors GET /v1/_usage query params. group_by is a subset
-// of {tenant,user,provider,model,source}; an unknown dimension is rejected. from
+// of {tenant,user,provider,model,source,purpose}; an unknown dimension is rejected. from
 // / to are RFC3339 (empty = unbounded). tenant is an admin-only focus (ignored
 // for a scoped principal, which is confined to its own tenant).
 message UsageReportRequest {
@@ -2104,6 +2104,11 @@ message UsageAggregate {
   string currency = 11;
   int64 call_count = 12;
   int64 unpriced_calls = 13;
+  // What the calls were for: chat | ocr | stt. Set only when grouped by purpose.
+  string purpose = 14;
+  // Summed seconds of audio the group's speech-to-text calls transcribed (the
+  // unit their per-minute price is computed from); 0 when it has none.
+  double audio_seconds = 15;
 }
 
 message UsageReportResponse {
