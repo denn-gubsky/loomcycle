@@ -621,7 +621,8 @@ func TestExtract_ImageOnlyEngineRasterisesEachPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := filepath.Join(dir, "fake-pdftoppm")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec /bin/cp "+page+" \"$2-1.png\"\n"), 0o700); err != nil {
+	cwds := filepath.Join(dir, "cwds")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\npwd -P >> "+cwds+"\nexec /bin/cp "+page+" \"$2-1.png\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	x := ocrRun(t, config.OCRConfig{Rasterize: &config.HelperCommand{Command: script + " {in} {out_prefix}"}}, agentOCR("auto"))
@@ -638,14 +639,76 @@ func TestExtract_ImageOnlyEngineRasterisesEachPage(t *testing.T) {
 	if !strings.Contains(md, "## Page 2\n\nocr call 2 page 1") {
 		t.Errorf("md:\n%s", md)
 	}
-	// The helper's scratch folder is gone.
+	// The helper ran in a scratch folder directly inside the inbox, one per
+	// page, and each is gone.
 	root, _ := x.run.Set.Get(inbox.Name)
-	ents, _ := os.ReadDir(root.Root)
-	for _, e := range ents {
-		if strings.HasPrefix(e.Name(), ".ocr-") {
-			t.Errorf("scratch folder %s left behind", e.Name())
+	real, err := filepath.EvalSymlinks(root.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(cwds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(raw))
+	if len(lines) != 2 {
+		t.Fatalf("helper ran in %q, want two scratch folders", lines)
+	}
+	for _, cwd := range lines {
+		if filepath.Dir(cwd) != real || !strings.HasPrefix(filepath.Base(cwd), ".ocr-") {
+			t.Errorf("helper ran in %s, want a .ocr-* folder directly in the inbox %s", cwd, real)
+		}
+		if _, err := os.Lstat(cwd); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("scratch folder %s left behind (err %v)", cwd, err)
 		}
 	}
+	assertNoOCRScratch(t, root.Root)
+}
+
+func assertNoOCRScratch(t *testing.T, inboxRoot string) {
+	t.Helper()
+	ents, _ := os.ReadDir(inboxRoot)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".ocr-") {
+			t.Errorf("scratch entry %s left behind", e.Name())
+		}
+	}
+}
+
+// The scratch folder is held open from its creation: a helper that swaps it
+// for a symlink to a directory outside the inbox cannot make the runtime read
+// a page from there, and removing the folder removes the link, not what it
+// points at.
+func TestExtract_RasterizeScratchSwappedForSymlinkReadsNothingOutside(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(outside, "page-1.png")
+	if err := os.WriteFile(planted, testPNG(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "swap")
+	body := "#!/bin/sh\nd=$(pwd -P)\ncd /\n/bin/rm -rf \"$d\"\n/bin/ln -s " + outside + " \"$d\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	x := ocrRun(t, config.OCRConfig{Rasterize: &config.HelperCommand{Command: script + " {in} {out_prefix}"}}, agentOCR("auto"))
+	x.engine.plan.WholePDF = false
+	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
+	_, _, res := x.extract(t, map[string]any{"path": ref})
+	if !res.IsError || !strings.Contains(res.Text, "wrote no PNG") {
+		t.Fatalf("a page read through the swapped-in link: %s", res.Text)
+	}
+	if n := len(x.engine.sent()); n != 0 {
+		t.Fatalf("%d engine calls, want none", n)
+	}
+	if _, err := os.Stat(planted); err != nil {
+		t.Fatalf("the file outside the inbox was removed: %v", err)
+	}
+	root, _ := x.run.Set.Get(inbox.Name)
+	assertNoOCRScratch(t, root.Root)
 }
 
 // A call that reached the model keeps its pages counted even when it then

@@ -3,6 +3,8 @@ package builtin
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -421,6 +423,13 @@ func (f *File) ocrUnitFor(ctx context.Context, plan transcribe.Plan, fh io.Reade
 // helper. The helper runs without a shell, in a scratch folder of the inbox
 // that is removed afterwards; only the paths the runtime made reach its
 // command line.
+//
+// Every file operation goes through an os.Root (the inbox's, then one held on
+// the scratch folder from the moment it is made), never through a joined path
+// string the kernel walks again: a folder swapped for a symlink while the
+// helper runs cannot carry the page write, the PNG read or the removal out of
+// the inbox. The absolute paths exist only for the helper's command line and
+// working directory, which helper.Run fences itself.
 func (f *File) rasterize(ctx context.Context, onePage []byte, language string) ([]byte, error) {
 	op := f.ocrConfig()
 	if op == nil || op.Rasterize == nil {
@@ -430,44 +439,99 @@ func (f *File) rasterize(ctx context.Context, onePage []byte, language string) (
 	if err != nil {
 		return nil, err
 	}
-	tmp, err := os.MkdirTemp(root, ".ocr-")
+	// Only the operator's root is resolved; everything below it is derived.
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("inbox root: %w", err)
+	}
+	inboxFS, err := os.OpenRoot(real)
+	if err != nil {
+		return nil, fmt.Errorf("inbox root: %w", err)
+	}
+	defer inboxFS.Close()
+	name, err := ocrScratchName()
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
-	in := filepath.Join(tmp, "page.pdf")
-	if err := writeNew(in, onePage); err != nil {
+	if err := inboxFS.Mkdir(name, 0o700); err != nil {
 		return nil, err
 	}
+	defer inboxFS.RemoveAll(name)
+	scratch, err := inboxFS.OpenRoot(name)
+	if err != nil {
+		return nil, err
+	}
+	defer scratch.Close()
+	if err := writeNew(scratch, "page.pdf", onePage); err != nil {
+		return nil, err
+	}
+	tmp := filepath.Join(root, name)
 	prefix := filepath.Join(tmp, "page")
 	if _, err := helper.Run(ctx, helper.Spec{
 		Key:      "transcription.ocr.rasterize",
 		Template: op.Rasterize.Command,
-		Vars:     map[string]string{"in": in, "out_prefix": prefix, "out": prefix + ".png", "lang": language},
+		Vars:     map[string]string{"in": filepath.Join(tmp, "page.pdf"), "out_prefix": prefix, "out": prefix + ".png", "lang": language},
 		Root:     root,
 		Dir:      tmp,
 		Timeout:  ocrRasterizeTimeout,
 	}); err != nil {
 		return nil, err
 	}
-	matches, _ := filepath.Glob(prefix + "*.png")
-	sort.Strings(matches)
-	for _, m := range matches {
-		fi, err := os.Lstat(m)
+	return readRenderedPage(scratch)
+}
+
+// ocrScratchName is a fresh scratch folder name; Mkdir refuses one that
+// exists, so a planted entry is an error, never reused.
+func ocrScratchName() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return ".ocr-" + hex.EncodeToString(b[:]), nil
+}
+
+// readRenderedPage returns the first regular page*.png the helper wrote in
+// the scratch folder ({out_prefix}*.png, or {out}), read through the folder's
+// own handle and bounded by ocrMaxPageImage.
+func readRenderedPage(scratch *os.Root) ([]byte, error) {
+	dh, err := scratch.Open(".")
+	if err != nil {
+		return nil, err
+	}
+	names, err := dh.Readdirnames(-1)
+	dh.Close()
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if !strings.HasPrefix(n, "page") || !strings.HasSuffix(n, ".png") {
+			continue
+		}
+		fi, err := scratch.Lstat(n)
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		if fi.Size() > ocrMaxPageImage {
-			return nil, fmt.Errorf("the rendered page is %d bytes, over %d", fi.Size(), ocrMaxPageImage)
+		fh, err := scratch.Open(n)
+		if err != nil {
+			return nil, err
 		}
-		return os.ReadFile(m)
+		data, err := io.ReadAll(io.LimitReader(fh, ocrMaxPageImage+1))
+		fh.Close()
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) > ocrMaxPageImage {
+			return nil, fmt.Errorf("the rendered page is over %d bytes", ocrMaxPageImage)
+		}
+		return data, nil
 	}
 	return nil, errors.New("the rasterize helper wrote no PNG (expected {out_prefix}*.png or {out})")
 }
 
-// writeNew writes data to a file that must not exist yet.
-func writeNew(name string, data []byte) error {
-	fh, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+// writeNew writes data to a file of dir that must not exist yet.
+func writeNew(dir *os.Root, name string, data []byte) error {
+	fh, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
