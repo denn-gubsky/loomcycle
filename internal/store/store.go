@@ -3012,7 +3012,9 @@ type MemoryStore interface {
 	// A row at any other non-empty scope_id is a stray: left where it is and
 	// reported. A row whose destination is already occupied is a conflict: the
 	// one updated later is kept, the other deleted, and the pair reported — never
-	// a failure. Idempotent: a second call moves nothing.
+	// a failure — except that an old-keyspace chunk body whose `body` is empty
+	// never replaces the destination (an old replica writes one back after
+	// reading a moved body as empty). Idempotent: a second call moves nothing.
 	MigrateTenantDocumentRows(ctx context.Context) (TenantDocumentKeyspaceReport, error)
 
 	// MemoryLegacyTenantStats reports the two numbers that decide whether a
@@ -5103,8 +5105,9 @@ type TenantDocumentRowRef struct {
 }
 
 // TenantDocumentRowConflict is one key present at both the old scope id and
-// "". KeptOld reports which survived: true = the old-keyspace row was newer and
-// replaced the destination, false = the destination was kept.
+// "". KeptOld reports which survived: true = the old-keyspace row was newer (and
+// not a blank chunk body) and replaced the destination, false = the destination
+// was kept.
 type TenantDocumentRowConflict struct {
 	TenantID string `json:"tenant_id"`
 	Key      string `json:"key"`

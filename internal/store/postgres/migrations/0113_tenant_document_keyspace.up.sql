@@ -16,7 +16,10 @@
 -- Only rows at exactly the old scope id move. A tenant document row at any other
 -- non-empty scope id is a stray: left where it is and counted in the notice. A
 -- key present at both the old scope id and '' is a conflict: the later write
--- (updated_at) is kept and the other deleted — never a failure.
+-- (updated_at) is kept and the other deleted — never a failure — except that an
+-- old-keyspace chunk body whose `body` is empty (fields alone do not count) never
+-- replaces the destination: a replica on the old binary reads a moved body as
+-- empty and can write that emptiness back at the old scope id.
 --
 -- memory_embeddings references memory by the full key with no ON UPDATE action,
 -- so the two updates run as ONE statement and the foreign key is checked at its
@@ -39,8 +42,9 @@ BEGIN
        AND (substr(o.key, 1, 10) = 'doc.chunk:' OR substr(o.key, 1, 9) = 'doc.unit:')
        AND o.scope_id = CASE WHEN o.tenant_id = '' THEN 'default' ELSE o.tenant_id END;
 
-    -- Conflicts: a destination older than its old-keyspace row goes first (its
-    -- embedding cascades), then every old row that still has a destination.
+    -- Conflicts: a destination the old-keyspace row beats goes first (its
+    -- embedding cascades) — the old row written later and not a blank chunk body —
+    -- then every old row that still has a destination.
     DELETE FROM memory
      WHERE scope = 'tenant' AND scope_id = ''
        AND EXISTS (SELECT 1 FROM memory o
@@ -48,7 +52,10 @@ BEGIN
                       AND o.scope = 'tenant' AND o.scope_id <> ''
                       AND (substr(o.key, 1, 10) = 'doc.chunk:' OR substr(o.key, 1, 9) = 'doc.unit:')
                       AND o.scope_id = CASE WHEN o.tenant_id = '' THEN 'default' ELSE o.tenant_id END
-                      AND o.updated_at > memory.updated_at);
+                      AND o.updated_at > memory.updated_at
+                      AND NOT (substr(o.key, 1, 10) = 'doc.chunk:'
+                               AND jsonb_typeof(o.value) = 'object'
+                               AND COALESCE(o.value->>'body', '') = ''));
     DELETE FROM memory
      WHERE scope = 'tenant' AND scope_id <> ''
        AND (substr(key, 1, 10) = 'doc.chunk:' OR substr(key, 1, 9) = 'doc.unit:')

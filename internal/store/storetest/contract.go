@@ -17873,6 +17873,17 @@ func testMigrateTenantDocumentRowsIdempotentAndReportsStrays(t *testing.T, s sto
 	set("tnt", ts, "", "doc.chunk:c2", "OLD-dest-c2")
 	set("tnt", ts, "tnt", "doc.chunk:c2", "NEW-legacy-c2")
 	embed("tnt", "tnt", "doc.chunk:c2")
+	// Conflict, old row newer but its body BLANK — what an old replica writes back
+	// after reading a moved body as empty: the destination stays. Fields alone do
+	// not make a body non-empty.
+	if err := s.MemorySet(ctx, "tnt", ts, "", "doc.chunk:blank", json.RawMessage(`{"body":"the real text"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Millisecond)
+	if err := s.MemorySet(ctx, "tnt", ts, "tnt", "doc.chunk:blank", json.RawMessage(`{"body":"","fields":{"k":"v"}}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Millisecond)
 	// Not moved: a stray scope id, a non-document key, another scope.
 	set("tnt", ts, "other", "doc.chunk:s", "STRAY")
 	set("tnt", ts, "tnt", "notes/x", "NOTE")
@@ -17885,15 +17896,21 @@ func testMigrateTenantDocumentRowsIdempotentAndReportsStrays(t *testing.T, s sto
 	if rep.Moved != 4 {
 		t.Errorf("moved %d rows, want 4 (a, its unit, the default tenant's, c2): %+v", rep.Moved, rep)
 	}
-	if rep.Conflicts != 2 || len(rep.ConflictSample) != 2 {
-		t.Fatalf("conflicts = %d %+v, want c and c2", rep.Conflicts, rep.ConflictSample)
+	if rep.Conflicts != 3 || len(rep.ConflictSample) != 3 {
+		t.Fatalf("conflicts = %d %+v, want c, c2 and blank", rep.Conflicts, rep.ConflictSample)
 	}
 	kept := map[string]bool{}
 	for _, c := range rep.ConflictSample {
 		kept[c.Key] = c.KeptOld
 	}
-	if kept["doc.chunk:c"] || !kept["doc.chunk:c2"] {
-		t.Errorf("conflict outcomes = %v, want c kept at the destination and c2 taken from the old row", kept)
+	if kept["doc.chunk:c"] || !kept["doc.chunk:c2"] || kept["doc.chunk:blank"] {
+		t.Errorf("conflict outcomes = %v, want c and blank kept at the destination and c2 taken from the old row", kept)
+	}
+	if e, err := s.MemoryGet(ctx, "tnt", ts, "", "doc.chunk:blank"); err != nil || !strings.Contains(string(e.Value), "the real text") {
+		t.Errorf("a newer BLANK old-keyspace body replaced the destination: %s (%v)", e.Value, err)
+	}
+	if _, ok := get("tnt", ts, "tnt", "doc.chunk:blank"); ok {
+		t.Error("the blank old-keyspace row was left behind")
 	}
 	if rep.Strays != 1 || len(rep.StraySample) != 1 ||
 		rep.StraySample[0] != (store.TenantDocumentRowRef{TenantID: "tnt", ScopeID: "other", Key: "doc.chunk:s"}) {

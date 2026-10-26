@@ -27,6 +27,29 @@ func legacyTenantDocRow(t string) string {
 	   AND %[1]s.scope_id = CASE WHEN %[1]s.tenant_id = '' THEN 'default' ELSE %[1]s.tenant_id END`, t)
 }
 
+// blankOldChunkBody matches a chunk body row in alias t whose `body` is empty —
+// fields alone do not count. A replica on the old binary reads a moved body as
+// empty and can write that emptiness back at the old scope id; such a row never
+// replaces the destination, however much later it was written.
+//
+// Only a chunk body object qualifies: a row whose value is not a JSON object is
+// not a body at all, and keeps the plain later-write rule.
+func blankOldChunkBody(d Dialect, t string) string {
+	isObject := fmt.Sprintf(`jsonb_typeof(%s.value) = 'object'`, t)
+	body := fmt.Sprintf(`%s.value->>'body'`, t)
+	if d == SQLite {
+		isObject = fmt.Sprintf(`json_valid(%[1]s.value) AND json_type(%[1]s.value) = 'object'`, t)
+		body = fmt.Sprintf(`CASE WHEN json_valid(%[1]s.value) THEN json_extract(%[1]s.value, '$.body') END`, t)
+	}
+	return fmt.Sprintf(`(substr(%s.key, 1, 10) = 'doc.chunk:' AND %s AND COALESCE(%s, '') = '')`, t, isObject, body)
+}
+
+// oldRowWins: the old-keyspace row in alias o replaces the destination in alias
+// d — written later, and not a blank chunk body.
+func oldRowWins(dl Dialect, o, d string) string {
+	return fmt.Sprintf(`%[1]s.updated_at > %[2]s.updated_at AND NOT %[3]s`, o, d, blankOldChunkBody(dl, o))
+}
+
 // tenantDocDestination matches the "" row of the same tenant and key as alias o.
 func tenantDocDestination(t, o string) string {
 	return fmt.Sprintf(`%[1]s.tenant_id = %[2]s.tenant_id AND %[1]s.scope = 'tenant'
@@ -78,7 +101,8 @@ func MigrateTenantDocumentRows(ctx context.Context, db DB) (store.TenantDocument
 
 	err := db.InTx(ctx, func(tx Querier) error {
 		rep.Conflicts, rep.ConflictSample, rep.Moved = 0, nil, 0
-		rows, err := tx.Query(ctx, `SELECT o.tenant_id, o.key, CASE WHEN o.updated_at > d.updated_at THEN 1 ELSE 0 END
+		dl := tx.Dialect()
+		rows, err := tx.Query(ctx, `SELECT o.tenant_id, o.key, CASE WHEN `+oldRowWins(dl, "o", "d")+` THEN 1 ELSE 0 END
 			  FROM memory o JOIN memory d ON `+tenantDocDestination("d", "o")+`
 			 WHERE `+legacyTenantDocRow("o")+`
 			 ORDER BY o.tenant_id, o.key`)
@@ -103,13 +127,13 @@ func MigrateTenantDocumentRows(ctx context.Context, db DB) (store.TenantDocument
 			return fmt.Errorf("list conflicts: %w", err)
 		}
 		if rep.Conflicts > 0 {
-			// The later write wins, on either side. A destination older than the
-			// row about to move goes first (its embedding cascades on Postgres; the
-			// SQLite tier keeps none), then every old row that still has a
-			// destination — the destination was newer, or as new.
+			// The later write wins, on either side, except that a blank old chunk
+			// body never does (blankOldChunkBody). A destination the old row beats
+			// goes first (its embedding cascades on Postgres; the SQLite tier keeps
+			// none), then every old row that still has a destination.
 			if _, err := tx.Exec(ctx, `DELETE FROM memory WHERE scope = 'tenant' AND scope_id = ''
 				   AND EXISTS (SELECT 1 FROM memory o WHERE `+tenantDocDestination("memory", "o")+`
-				               AND `+legacyTenantDocRow("o")+` AND o.updated_at > memory.updated_at)`); err != nil {
+				               AND `+legacyTenantDocRow("o")+` AND `+oldRowWins(dl, "o", "memory")+`)`); err != nil {
 				return fmt.Errorf("drop older destinations: %w", err)
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM memory WHERE `+legacyTenantDocRow("memory")+`

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,14 @@ func TestMigrate0113_MovesTenantDocumentRowsAndIsIdempotent(t *testing.T) {
 			set("tnt", "tnt", "doc.chunk:c", "NEW-legacy")
 			embed("tnt", "tnt", "doc.chunk:c")
 			set("tnt", "other", "doc.chunk:s", "STRAY")
+			// An old replica's blank write-back, newer than the moved body.
+			if err := s.MemorySet(ctx, "tnt", ts, "", "doc.chunk:b", []byte(`{"body":"kept"}`), 0); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(3 * time.Millisecond)
+			if err := s.MemorySet(ctx, "tnt", ts, "tnt", "doc.chunk:b", []byte(`{"body":"","fields":{"k":"v"}}`), 0); err != nil {
+				t.Fatal(err)
+			}
 
 			for run := 1; run <= 2; run++ {
 				forceMigrationVersion(t, fix.storeDSN, 112)
@@ -76,6 +85,12 @@ func TestMigrate0113_MovesTenantDocumentRowsAndIsIdempotent(t *testing.T) {
 					if _, err := s.MemoryGet(ctx, g.tenant, ts, g.scopeID, g.key); err == nil {
 						t.Errorf("run %d: %s still at the old scope id %q", run, g.key, g.scopeID)
 					}
+				}
+				if e, err := s.MemoryGet(ctx, "tnt", ts, "", "doc.chunk:b"); err != nil || !strings.Contains(string(e.Value), "kept") {
+					t.Errorf("run %d: a newer BLANK old body replaced the destination: %s (%v)", run, e.Value, err)
+				}
+				if _, err := s.MemoryGet(ctx, "tnt", ts, "tnt", "doc.chunk:b"); err == nil {
+					t.Errorf("run %d: the blank old row was left behind", run)
 				}
 				if _, err := s.MemoryGet(ctx, "tnt", ts, "other", "doc.chunk:s"); err != nil {
 					t.Errorf("run %d: the stray moved: %v", run, err)
