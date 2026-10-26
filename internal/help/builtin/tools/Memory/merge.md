@@ -24,6 +24,8 @@ objects merge field by field; any other value (array, string, number, `null`)
 - `merge: the doc.chunk: namespace holds Document chunk bodies ...` — a chunk
   body is edited through the Document tool (`update_chunk`), which checks its
   revision and scope grants. Use an ordinary key for your own data.
+- `merge: the trace.turn: namespace is written by the server ...` — the server
+  indexes conversation turns under that prefix. Use an ordinary key.
 - `merge: value must be a JSON object` — wrap the fields in `{...}`.
 - `merge: existing value is not a JSON object (use set to overwrite)` — the
   key holds an array or scalar. Retrying is pointless; use `set`.

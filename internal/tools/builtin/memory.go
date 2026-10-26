@@ -2830,16 +2830,12 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	if in.Key == "" {
 		return errValidation("incr: missing required field: key", "Pass the key of the counter."), nil
 	}
-	// RFC BL P1: a read_only core block refuses incr too. limit_bytes is moot
-	// for a bounded-width number, so pass -1 to skip the size check.
-	if res, refused := refuseUnitWrite("incr", in.Key); refused {
+	// The key rule (memory_key_rules.go): the namespaces the server or the
+	// Document tool writes are refused, as on set. RFC BL P1: a read_only core
+	// block refuses incr too. limit_bytes is moot for a bounded-width number, so
+	// pass -1 to skip the size check.
+	if res, refused := MemorySetRefusal(ctx, "incr", scope, in.Key, -1); refused {
 		return res, nil
-	}
-	if res, refused := refuseChunkBodyWrite("incr", in.Key); refused {
-		return res, nil
-	}
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "incr", -1); err != nil {
-		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	delta := int64(1)
 	if in.Delta != nil {
@@ -2897,17 +2893,12 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errBusiness(fmt.Sprintf("merge: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes), memoryCapNext), nil
 	}
-	// RFC BL P1: refuse a read_only core block BEFORE taking the row lock — the
-	// mutation must not commit. The size caps run inside the reducer, on the
-	// merged value, for the same reason.
-	if res, refused := refuseUnitWrite("merge", in.Key); refused {
+	// The key rule (memory_key_rules.go): the namespaces the server or the
+	// Document tool writes are refused, as on set. RFC BL P1: refuse a read_only
+	// core block BEFORE taking the row lock — the mutation must not commit. The
+	// size caps run inside the reducer, on the merged value, for the same reason.
+	if res, refused := MemorySetRefusal(ctx, "merge", scope, in.Key, -1); refused {
 		return res, nil
-	}
-	if res, refused := refuseChunkBodyWrite("merge", in.Key); refused {
-		return res, nil
-	}
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
-		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	capCheck, err := m.reducerCap(ctx, "merge", scope, scopeID, in.Key)
 	if err != nil {
@@ -2964,16 +2955,12 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	if !json.Valid(in.Value) {
 		return errValidation("append_dedupe: value is not valid JSON", "Send text as a plain string, with no quotes inside it: \"text\", not \"\\\"text\\\"\"."), nil
 	}
-	// RFC BL P1: refuse a read_only core block before mutating; the size caps
-	// run inside the reducer, on the appended value.
-	if res, refused := refuseUnitWrite("append_dedupe", in.Key); refused {
+	// The key rule (memory_key_rules.go): the namespaces the server or the
+	// Document tool writes are refused, as on set. RFC BL P1: refuse a read_only
+	// core block before mutating; the size caps run inside the reducer, on the
+	// appended value.
+	if res, refused := MemorySetRefusal(ctx, "append_dedupe", scope, in.Key, -1); refused {
 		return res, nil
-	}
-	if res, refused := refuseChunkBodyWrite("append_dedupe", in.Key); refused {
-		return res, nil
-	}
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
-		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	capCheck, err := m.reducerCap(ctx, "append_dedupe", scope, scopeID, in.Key)
 	if err != nil {
@@ -3048,16 +3035,12 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 	if in.Limit > 10000 {
 		return errValidation("bounded_list: limit must be <= 10000", ""), nil
 	}
-	// RFC BL P1: refuse a read_only core block before mutating; the size caps
-	// run inside the reducer, on the trimmed value.
-	if res, refused := refuseUnitWrite("bounded_list", in.Key); refused {
+	// The key rule (memory_key_rules.go): the namespaces the server or the
+	// Document tool writes are refused, as on set. RFC BL P1: refuse a read_only
+	// core block before mutating; the size caps run inside the reducer, on the
+	// trimmed value.
+	if res, refused := MemorySetRefusal(ctx, "bounded_list", scope, in.Key, -1); refused {
 		return res, nil
-	}
-	if res, refused := refuseChunkBodyWrite("bounded_list", in.Key); refused {
-		return res, nil
-	}
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {
-		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	capCheck, err := m.reducerCap(ctx, "bounded_list", scope, scopeID, in.Key)
 	if err != nil {
