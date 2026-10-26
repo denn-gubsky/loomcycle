@@ -561,6 +561,31 @@ function redirectToLoginOn401(status: number): boolean {
   return false;
 }
 
+// downloadInboxFile saves one file of a run's inbox to the user's machine:
+// GET /v1/runs/{run_id}/inbox/{path} with the session cookie, then the bytes as
+// a blob through a temporary link, so a refusal (the run ended and its inbox
+// went with it) is an error the caller shows, not a downloaded error page. The
+// server serves the file as an attachment and never as a type the browser runs.
+export async function downloadInboxFile(path: string, filename: string): Promise<void> {
+  const resp = await fetch(baseURL + path, { method: "GET", credentials: "same-origin" });
+  if (!resp.ok) {
+    if (redirectToLoginOn401(resp.status)) return;
+    throw apiError(resp.status, resp.statusText, await resp.text());
+  }
+  const url = URL.createObjectURL(await resp.blob());
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Revoked after the click has been handled, so the download has its URL.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+}
+
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(baseURL + path, {
     credentials: "same-origin",

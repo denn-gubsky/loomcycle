@@ -16,6 +16,7 @@ import {
 import Breadcrumbs, { type BreadcrumbAncestor } from "./Breadcrumbs";
 import DraftPanel from "./DraftPanel";
 import { fileCapturedLine } from "../lib/fileCaptured";
+import { InboxDownloadButton } from "./InboxDownloadButton";
 import { transcriptionLine } from "../lib/transcription";
 import { settledToolIds } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
@@ -905,6 +906,15 @@ function detailFor(ev: EventPayload, row?: TranscriptEvent): ReactNode {
               )}
             </div>
           )}
+        </div>
+      );
+    }
+    case "file_captured": {
+      const runId = ev.file?.run_id || row?.run_id || "";
+      return (
+        <div>
+          {ev.file?.ref && runId && <InboxDownloadButton runId={runId} fileRef={ev.file.ref} />}
+          <pre className="full-text">{JSON.stringify(ev, null, 2)}</pre>
         </div>
       );
     }
