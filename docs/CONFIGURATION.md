@@ -2563,9 +2563,9 @@ decision:
 
 See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer formats, the four surfaces and billing.
 
-## 9h. Transcription — OCR and speech-to-text (substrate)
+## 9h. Transcription — OCR and speech-to-text
 
-> **Substrate only.** This release reads, validates and stores the block, the per-agent setting and the `per_minute` price. No engine runs yet: OCR and speech-to-text calls arrive in later releases, which read exactly this configuration.
+> **OCR runs; speech-to-text does not yet.** OCR on `File op=extract` runs since this release (see the `File` tool in `docs/TOOLS.md`). Speech-to-text calls arrive in a later release, which reads the `stt` part of this block as it is.
 
 Scans, photos of documents and recordings carry no text an extractor can read. The `transcription:` block names the engines that will turn them into text, and what a run may spend. Absent, both engines are off.
 
