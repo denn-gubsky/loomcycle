@@ -334,6 +334,27 @@ export interface FileCapturedEventInfo {
   run_id?: string; // the run whose tool returned it (a sub-agent's, on the tree's stream)
 }
 
+// TranscriptionEventInfo mirrors providers.TranscriptionInfo — the sidecar on a
+// `transcription` event: one OCR or speech-to-text pass a File tool call made
+// over an inbox file, with what it spent. Never the transcribed text.
+export interface TranscriptionEventInfo {
+  ref: string; // the source file, volume:inbox:<dir>/<name>
+  out?: string; // the Markdown the pass wrote, when it wrote one
+  purpose: string; // "ocr" | "stt"
+  engine: string; // the configured engine: vision | openai-audio | command | …
+  provider?: string; // the pair the engine called, when it called a model
+  model?: string;
+  pages?: number; // pages sent to an OCR engine
+  seconds?: number; // audio sent to a speech-to-text engine
+  input_tokens?: number;
+  output_tokens?: number;
+  cost?: number; // absent when the pair is unpriced (not the same as free)
+  currency?: string;
+  status: string; // "ok" | "partial" | "failed"
+  dry_run?: boolean; // an estimate: no engine was called, nothing was spent
+  run_id?: string; // the run whose tool call made the pass
+}
+
 export interface AdmissionEventInfo {
   // on queued: the user's cap, or every slot taken; on call_queued: "lane"
   // (every slot of the call lane taken) or "models_in_flight"
@@ -430,6 +451,8 @@ export interface EventPayload {
   limit?: LimitEventInfo;
   // "file_captured" sidecar — a file a tool returned, kept in the run's inbox.
   file?: FileCapturedEventInfo;
+  // "transcription" sidecar — one OCR or speech-to-text pass a tool call made.
+  transcription?: TranscriptionEventInfo;
   // "queued" / "admitted" sidecar — the run waits for a run slot (why, and its
   // place when queued) / got one (how long it waited); on "call_queued" /
   // "call_admitted" the same for one model call, with its provider. Mirrors
