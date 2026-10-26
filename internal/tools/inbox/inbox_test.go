@@ -241,3 +241,25 @@ func TestInbox_ResumedTreeCountsWhatItAlreadyHolds(t *testing.T) {
 		t.Errorf("a resumed tree kept past its cap: %q", second.Stub)
 	}
 }
+
+type sharedKey struct{}
+
+// A value kept beside the inbox is made once per tree and seen by every run
+// of it; another tree, and a context with no inbox, do not see it.
+func TestShared_OneValuePerTree(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	made := 0
+	mk := func() any { made++; return new(int) }
+	a, ok := inbox.Shared(r.Ctx, sharedKey{}, mk)
+	b, ok2 := inbox.Shared(tools.WithRunID(r.Ctx, "child-1"), sharedKey{}, mk)
+	if !ok || !ok2 || a != b || made != 1 {
+		t.Fatalf("shared = %v %v (%v %v), made %d", a, b, ok, ok2, made)
+	}
+	other := inboxtest.New(t, "root-2", inbox.Service{})
+	if c, _ := inbox.Shared(other.Ctx, sharedKey{}, mk); c == a || made != 2 {
+		t.Fatalf("another tree shares the value (made %d)", made)
+	}
+	if _, ok := inbox.Shared(t.Context(), sharedKey{}, mk); ok {
+		t.Fatal("a context with no inbox has a shared value")
+	}
+}

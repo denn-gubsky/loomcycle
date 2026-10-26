@@ -63,7 +63,11 @@ type RunPolicy struct {
 	// Decision is the agent's narrowing of the operator's decision models;
 	// nil narrows nothing.
 	Decision *config.AgentDecision
-	History  HistoryPolicyValue
+	// Transcription is the agent's transcription block: whether its File
+	// tool runs OCR (never, auto, always) and the caps it lowers. nil is OCR
+	// never, the default an agent opts in from.
+	Transcription *config.AgentTranscription
+	History       HistoryPolicyValue
 
 	Channel ChannelPolicyValue
 	// Interruption is the run's live interruption policy. A holder rather
@@ -208,6 +212,7 @@ var inheritRules = map[string]inheritRule{
 	"SqlMem":             ruleOwn,     //
 	"CoreBlocks":         ruleOwn,     // already folds in the parent's inheritable blocks (applyMemoryInjection)
 	"Decision":           ruleOwn,     //
+	"Transcription":      ruleOwn,     // whether OCR runs is each agent's own opt-in; the spend is bounded per run tree
 	"History":            ruleOwn,     //
 	"Channel":            ruleOwn,     //
 	"Interruption":       ruleOwn,     // from the child's definition and its record
@@ -262,6 +267,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		SqlMem:            own.SqlMem,
 		CoreBlocks:        own.CoreBlocks,
 		Decision:          own.Decision,
+		Transcription:     own.Transcription,
 		History:           own.History,
 		Channel:           own.Channel,
 		Interruption:      own.Interruption,
