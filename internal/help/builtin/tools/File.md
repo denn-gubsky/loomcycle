@@ -56,3 +56,13 @@ them) and reach only hosts on its allowlist.
 
 Do not use this tool to read a file's text: Read a text file, and do not ask
 for a file's base64.
+
+## From outside a run
+
+An operator or a service reaches a run's inbox with the `file` MCP tool. It
+takes the File tool's input plus `run_id`, and offers `stat`, `ls`,
+`extract`, `import`, `keep`, `rm` and `clear` — not `download` or `upload`,
+which need a run's HTTP allowlist. It works on any run the caller may read;
+another tenant's run is not found. The writing ops (`extract`, `keep`, `rm`,
+`clear`) need the run's owner or an admin, and a tenant operator counts as an
+admin for the runs of its own tenant.

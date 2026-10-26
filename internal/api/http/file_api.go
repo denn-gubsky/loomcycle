@@ -28,7 +28,8 @@ import (
 
 // fileTwinOwnerOps are the ops that write: extract, rm and clear change the
 // run's inbox, and keep writes into one of the tenant's volumes. Only the
-// run's owner or an admin may make them. Anyone else who may read the run
+// run's owner or an admin may make them; a tenant operator is the admin of
+// its own tenant's runs (fileTwinAdmin). Anyone else who may read the run
 // could otherwise empty, or fill, an inbox its run is still using, or write
 // (and with overwrite replace) files in volumes it has no write grant on.
 var fileTwinOwnerOps = map[string]bool{"extract": true, "rm": true, "clear": true, "keep": true}
@@ -116,7 +117,8 @@ func decodeFileTwinInput(input json.RawMessage) (fileTwinInput, error) {
 //     tree's record still names it. A finished tree's inbox was deleted with
 //     it, and the answer says so.
 //   - extract, rm, clear and keep need the run's owner (the principal whose
-//     subject is the run's user, in its tenant) or an admin.
+//     subject is the run's user, in its tenant) or an admin, which a tenant
+//     operator is for a run of its own tenant.
 //   - import builds the Document in the caller's own scopes, the ones the MCP
 //     document tool writes for this principal.
 //   - keep copies into a dynamic volume of the caller's tenant, by name, which
@@ -159,7 +161,7 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 	}
 
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
-	admin := !hasPrincipal || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin)
+	admin := fileTwinAdmin(p, hasPrincipal, run)
 	owner := hasPrincipal && p.Subject != "" && p.Subject == run.UserID && p.TenantID == run.TenantID
 	if fileTwinOwnerOps[in.Op] && !admin && !owner {
 		return fileTwinRefusal(tools.CategoryPermission, "file: only the run's owner or an admin may "+in.Op+" in its inbox",
@@ -195,6 +197,18 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 		return connector.ToolResult{}, err
 	}
 	return s.dispatchBuiltin(tctx, builtin.FileToolName, body)
+}
+
+// fileTwinAdmin reports whether the caller is an admin of the run for the
+// writing ops: no principal (open mode), the legacy operator, substrate:admin,
+// or a substrate:tenant operator of the run's own tenant. The tenant check is
+// repeated here although the read gate already folds another tenant's run
+// into not-found, so this rule alone never reaches across tenants.
+func fileTwinAdmin(p auth.Principal, hasPrincipal bool, run store.Run) bool {
+	if !hasPrincipal || p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin) {
+		return true
+	}
+	return auth.HasScope(p.Scopes, auth.ScopeTenant) && p.TenantID == run.TenantID
 }
 
 // fileTwinInboxOnly refuses a path outside the inbox before anything is read:
