@@ -167,3 +167,26 @@ func (d *Document) ReadableDocumentChunks(ctx context.Context, scope store.Memor
 	}
 	return out, nil
 }
+
+// ResolveDocumentsScope answers the Memory tool's question for a search or
+// recall that also reads the documents of ANOTHER scope (documents_scope): may the
+// run on ctx search the documents of scope, and at which memory scope id do they
+// live. It is Document op=search's own scope gate — resolveScope: the grants
+// (for tenant, memory_scopes AND sql_scopes), the isolated-member confinement,
+// the user id a user scope needs — so the Memory tool can never reach a scope's
+// documents that Document op=search would refuse. It provisions nothing. A
+// refusal comes back as a *documentFilterRefusal carrying its category.
+func (d *Document) ResolveDocumentsScope(ctx context.Context, op string, scope store.MemoryScope) (string, error) {
+	if d == nil || d.Store == nil || d.SqlMem == nil {
+		return "", &documentFilterRefusal{errBusiness(op+": documents are not configured on this server, so documents_scope cannot be searched",
+			"Search without documents_scope.")}
+	}
+	key, mscope, err := d.resolveScope(ctx, string(scope))
+	if err != nil {
+		return "", &documentFilterRefusal{docFail(op+": documents_scope: ", err)}
+	}
+	if mscope != scope {
+		return "", fmt.Errorf("documents_scope: memory scope %s is not document scope %s", scope, mscope)
+	}
+	return docMemScopeID(mscope, key), nil
+}

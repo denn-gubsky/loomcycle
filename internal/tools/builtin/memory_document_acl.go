@@ -127,6 +127,11 @@ func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.Memor
 		if i < len(res.MatchedUnits) {
 			res.MatchedUnits[n] = res.MatchedUnits[i]
 		}
+		// Written at n <= i only, so inScope still reads the unmoved scope of
+		// every later index.
+		if i < len(res.Scopes) {
+			res.Scopes[n] = res.Scopes[i]
+		}
 		n++
 	}
 	res.Entries = res.Entries[:n]
@@ -135,6 +140,9 @@ func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.Memor
 	}
 	if len(res.MatchedUnits) > n {
 		res.MatchedUnits = res.MatchedUnits[:n]
+	}
+	if len(res.Scopes) > n {
+		res.Scopes = res.Scopes[:n]
 	}
 	return nil
 }

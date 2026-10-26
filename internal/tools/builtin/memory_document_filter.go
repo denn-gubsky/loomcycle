@@ -46,6 +46,9 @@ type MemoryDocFilterEcho struct {
 	MatchedDocuments int                    `json:"matched_documents"`
 	MatchedChunks    int                    `json:"matched_chunks"`
 	Inverted         bool                   `json:"inverted"`
+	// Scope names the scope the filter was resolved in, when that is not the
+	// call's own: a documents_scope leg's. Absent otherwise.
+	Scope string `json:"scope,omitempty"`
 }
 
 // MemoryDocFilterPlan is a resolved filter, ready to put on a query.
