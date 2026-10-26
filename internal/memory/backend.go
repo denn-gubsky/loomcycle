@@ -156,6 +156,43 @@ type SearchQuery struct {
 	// Empty constrains nothing.
 	IDs        []string
 	ExcludeIDs []string
+
+	// Documents, when set, adds a second leg to the search: the document prose of
+	// ANOTHER scope of the same tenant, searched with the same query and fused
+	// with this scope's results into one ranked list. Nil — the default — is a
+	// search of this scope only, exactly as before. Only the in-process backend
+	// serves it; the caller has authorized the leg's scope.
+	Documents *DocumentsLeg
+}
+
+// DocumentsLeg is a documents-only search leg in another scope of the run's
+// tenant: an agent's own memory in one scope, its reference corpus in another,
+// ranked together. The tenant is never carried here — the backend takes it from
+// the run, as for every other read.
+type DocumentsLeg struct {
+	Scope   store.MemoryScope
+	ScopeID string
+	// IDs / ExcludeIDs restrict the leg to (or away from) these chunks, as
+	// SearchQuery.IDs / ExcludeIDs do: a resolved document filter.
+	IDs        []string
+	ExcludeIDs []string
+}
+
+// Query is the leg's own query: the primary query's text, window, rerank and
+// unit settings, over document prose only, restricted by the leg's id lists.
+// It carries no prefix (the primary's key prefix names keys of its own scope)
+// and no further leg.
+func (l *DocumentsLeg) Query(primary SearchQuery) SearchQuery {
+	return SearchQuery{
+		QueryText:  primary.QueryText,
+		TopK:       primary.TopK,
+		Sources:    []Source{SourceDocuments},
+		When:       primary.When,
+		Rerank:     primary.Rerank,
+		NoUnits:    primary.NoUnits,
+		IDs:        l.IDs,
+		ExcludeIDs: l.ExcludeIDs,
+	}
 }
 
 // CanReturnDocuments reports whether this query can return Document chunk bodies:
@@ -226,7 +263,9 @@ func (q SearchQuery) RerankAllowed(sources []Source) bool {
 			return true
 		}
 	}
-	return false
+	// A documents leg puts document prose in the same pool, so the rerank may
+	// reorder that pool whenever it could reorder the leg on its own.
+	return q.Documents != nil && q.Documents.Query(q).RerankAllowed(sources)
 }
 
 // DefaultRerankSources is what a rerank may reorder when the operator names nothing:
@@ -531,4 +570,8 @@ type SearchResult struct {
 	// its derived search units, the unit that found it; nil for an entry found
 	// directly. Nil (the whole slice) when no unit matched anything.
 	MatchedUnits []*MatchedUnit
+
+	// Scopes is index-aligned with Entries when the query carried a Documents
+	// leg: the scope each entry was found in. Nil for a single-scope search.
+	Scopes []store.MemoryScope
 }

@@ -241,9 +241,20 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 		return memory.SearchResult{}, ferr
 	}
 	lcotel.SetMemorySearchFilterIDs(span, len(filter.IDs), len(filter.ExcludeIDs))
-	// Derived search units: where the main legs cannot reach them (a
-	// chunk-targeted search), a separate unit leg fetches them, fused with the rest.
-	unitFilter, unitLeg := q.UnitLegFilter(filter)
+	// A documents leg in another scope is the same search over that scope's
+	// document prose: its own filter (documents only, its own id lists), the same
+	// query vector — the query is embedded once — and the same store legs, fused
+	// into the one pool below exactly as this scope's legs are.
+	var leg *memory.DocumentsLeg
+	var legQ memory.SearchQuery
+	var legFilter store.MemorySearchFilter
+	if q.Documents != nil {
+		leg, legQ = q.Documents, q.Documents.Query(q)
+		if legFilter, ferr = legQ.Filter(); ferr != nil {
+			lcotel.SetSpanError(span, ferr)
+			return memory.SearchResult{}, ferr
+		}
+	}
 
 	// A rerank that will run needs the deep pool too: the cheap path fetches
 	// top_k+1 rows, and a rerank shown only those can promote nothing from below
@@ -254,86 +265,77 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	willRerank := q.Rerank.Enabled && b.reranker != nil && q.RerankAllowed(b.rerankSources)
 	hybrid := b.store.SupportsFullText() || !rank.IsPureSemantic() || dedup.Enabled || willRerank
 
-	var pool []store.MemorySearchEntry
+	var fetch int
 	if hybrid {
 		// Over-fetch both legs. RRF can promote a deeper vector row a lexical
 		// match co-ranks, and dedup collapsing a near-duplicate cluster must
 		// back-fill from below top_k. The pool is bounded by the store's
 		// defensive cap (<=51); the rows beyond top_k also probe truncation.
-		fetch := topK * 4
+		fetch = topK * 4
 		// The rerank shows the model its first `candidates` rows, so the pool must
 		// hold that many whatever top_k is — at top_k 5 the over-fetch alone is 20,
 		// at top_k 2 it would be 8.
 		if n := q.Rerank.EffectiveCandidates(b.reranker); willRerank && n > fetch {
 			fetch = n
 		}
-		if fetch > 51 {
-			fetch = 51
+	} else {
+		// Cheap pure-vector path: a cosine call with a +1 truncation probe, no
+		// keyword round-trip.
+		fetch = topK + 1
+	}
+	if fetch > 51 {
+		fetch = 51
+	}
+
+	lists, lerr := b.legLists(ctx, tenant, scope, scopeID, q, filter, queryVec, fetch, hybrid)
+	if lerr != nil {
+		lcotel.SetSpanError(span, lerr)
+		return memory.SearchResult{}, lerr
+	}
+	// at names the scope a pooled row came from; without a leg every row is this
+	// scope's.
+	at := func(string) (store.MemoryScope, string) { return scope, scopeID }
+	if leg != nil {
+		docLists, derr := b.legLists(ctx, tenant, leg.Scope, leg.ScopeID, legQ, legFilter, queryVec, fetch, hybrid)
+		if derr != nil {
+			lcotel.SetSpanError(span, derr)
+			return memory.SearchResult{}, derr
 		}
-		// Leg 1: vector (cosine-ordered). Errors pass through unwrapped —
-		// ErrDimensionMismatch / ErrVectorUnsupported are user-actionable and
-		// the tool's errors.Is checks match the backend-constructed *MemoryError.
-		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, filter, queryVec, fetch)
-		if verr != nil {
-			lcotel.SetSpanError(span, verr)
-			return memory.SearchResult{}, verr
+		var legChunks map[string]bool
+		docLists, legChunks = separateLeg(lists, docLists)
+		lists = append(lists, docLists...)
+		at = func(key string) (store.MemoryScope, string) {
+			if id, ok := docChunkID(key); ok && legChunks[id] {
+				return leg.Scope, leg.ScopeID
+			}
+			return scope, scopeID
 		}
-		// Leg 2: full-text (keyword, ts_rank-ordered). (nil,nil) on a store
-		// without a full-text index, so the fusion collapses to pure-vector.
-		fres, ferr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, filter, q.QueryText, fetch)
-		if ferr != nil {
-			lcotel.SetSpanError(span, ferr)
-			return memory.SearchResult{}, ferr
-		}
+	}
+
+	var pool []store.MemorySearchEntry
+	if hybrid {
 		// Fuse by RRF: SemanticScore := the fused rank (the ranker's semantic
 		// input); Score stays each row's raw cosine. With an empty full-text
 		// leg the union is the vector list and its order is preserved.
-		if unitLeg {
-			uv, uerr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, unitFilter, queryVec, fetch)
-			if uerr != nil {
-				lcotel.SetSpanError(span, uerr)
-				return memory.SearchResult{}, uerr
-			}
-			uf, uerr := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, unitFilter, q.QueryText, fetch)
-			if uerr != nil {
-				lcotel.SetSpanError(span, uerr)
-				return memory.SearchResult{}, uerr
-			}
-			pool = memory.FuseRRFMany(memory.RRFDefaultK, vres, fres, uv, uf)
-		} else {
-			pool = memory.FuseRRF(vres, fres, memory.RRFDefaultK)
-		}
+		pool = memory.FuseRRFMany(memory.RRFDefaultK, lists...)
 	} else {
-		// Cheap pure-vector path: a single cosine call with a +1 truncation
-		// probe, no keyword round-trip. The semantic signal IS the raw cosine,
-		// so mirror Score into SemanticScore (the ranker reads that) and leave
-		// Score untouched for the tool to render.
-		fetch := topK + 1
-		if fetch > 51 {
-			fetch = 51
-		}
-		vres, verr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, filter, queryVec, fetch)
-		if verr != nil {
-			lcotel.SetSpanError(span, verr)
-			return memory.SearchResult{}, verr
-		}
-		if unitLeg {
-			uv, uerr := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, unitFilter, queryVec, fetch)
-			if uerr != nil {
-				lcotel.SetSpanError(span, uerr)
-				return memory.SearchResult{}, uerr
+		// The semantic signal IS the raw cosine, so mirror Score into
+		// SemanticScore (the ranker reads that) and leave Score untouched for the
+		// tool to render. Several lists (the unit leg, a documents leg) are all
+		// cosine-ordered, so they merge by cosine too.
+		pool = lists[0]
+		if len(lists) > 1 {
+			for _, l := range lists[1:] {
+				pool = append(pool, l...)
 			}
-			// Both lists are cosine-ordered, so the merge is by cosine too.
-			vres = append(vres, uv...)
-			sort.SliceStable(vres, func(i, j int) bool { return vres[i].Score > vres[j].Score })
-			if len(vres) > fetch {
-				vres = vres[:fetch]
+			sort.SliceStable(pool, func(i, j int) bool { return pool[i].Score > pool[j].Score })
+			if len(pool) > fetch {
+				pool = pool[:fetch]
 			}
 		}
-		for i := range vres {
-			vres[i].SemanticScore = vres[i].Score
+		for i := range pool {
+			pool[i].SemanticScore = pool[i].Score
 		}
-		pool = vres
 	}
 
 	// truncated: more distinct rows matched than the caller's top_k, computed
@@ -377,7 +379,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// Units resolve to their chunks here — after ranking, so a chunk takes the best
 	// rank of itself and its units; before dedup, the rerank and the trim, so all
 	// three see chunks and a unit never takes a slot of its own.
-	ranked, matched := memory.ResolveUnits(ranked, b.chunkBody(ctx, tenant, scope, scopeID))
+	ranked, matched := memory.ResolveUnits(ranked, b.chunkBody(ctx, tenant, at))
 	if matched != nil {
 		// Truncation counts distinct results, and a chunk's units are not results.
 		truncated = len(ranked) > topK
@@ -389,7 +391,7 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	var rerankReport *memory.RerankReport
 	if q.Rerank.Enabled {
 		var rep memory.RerankReport
-		deduped, rep = b.rerankPool(ctx, tenant, scope, scopeID, q, deduped)
+		deduped, rep = b.rerankPool(ctx, tenant, at, q, deduped)
 		rerankReport = &rep
 	}
 	if len(deduped) > topK {
@@ -409,9 +411,10 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	// — the flusher writes them later). Only when wired; access tracking is
 	// main-store memory only.
 	if b.accessFlusher != nil {
-		at := now.UTC()
+		accessed := now.UTC()
 		for i := range deduped {
-			b.accessFlusher.Record(tenant, scope, scopeID, deduped[i].Key, at)
+			s, sid := at(deduped[i].Key)
+			b.accessFlusher.Record(tenant, s, sid, deduped[i].Key, accessed)
 		}
 	}
 
@@ -437,6 +440,12 @@ func (b *Backend) Search(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	if rank.SourceReserved() {
 		out.RankNote = "source_weight is reserved and contributes 0 until source-score tracking ships"
+	}
+	if leg != nil {
+		out.Scopes = make([]store.MemoryScope, len(deduped))
+		for i := range deduped {
+			out.Scopes[i], _ = at(deduped[i].Key)
+		}
 	}
 	return out, nil
 }
@@ -625,7 +634,7 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 	}
 	res, err := b.Search(ctx, scope, scopeID,
 		memory.SearchQuery{QueryText: q.Query, TopK: topK, Sources: sources, When: q.When, Rerank: q.Rerank, NoUnits: q.NoUnits,
-			IDs: q.IDs, ExcludeIDs: q.ExcludeIDs},
+			IDs: q.IDs, ExcludeIDs: q.ExcludeIDs, Documents: q.Documents},
 		memory.DefaultRankConfig(), memory.DedupConfig{})
 	if err != nil {
 		return memory.RecallResult{}, err
@@ -645,6 +654,9 @@ func (b *Backend) Recall(ctx context.Context, scope store.MemoryScope, scopeID s
 		})
 		if i < len(res.MatchedUnits) && res.MatchedUnits[i] != nil {
 			facts[len(facts)-1].MatchedUnit = res.MatchedUnits[i]
+		}
+		if i < len(res.Scopes) {
+			facts[len(facts)-1].Scope = res.Scopes[i]
 		}
 	}
 	if len(facts) > topK {
@@ -729,10 +741,13 @@ func demoteUndated(rows []store.MemorySearchEntry, w memory.ObservedWindow) []st
 }
 
 // chunkBody fetches a chunk's body row, for a unit whose chunk did not rank on its
-// own. A missing body means the chunk is gone, and its unit must not surface.
-func (b *Backend) chunkBody(ctx context.Context, tenant string, scope store.MemoryScope, scopeID string) func(string) (store.MemorySearchEntry, bool) {
+// own, in the scope the unit was found in. A missing body means the chunk is gone,
+// and its unit must not surface.
+func (b *Backend) chunkBody(ctx context.Context, tenant string, at func(string) (store.MemoryScope, string)) func(string) (store.MemorySearchEntry, bool) {
 	return func(chunkID string) (store.MemorySearchEntry, bool) {
-		row, err := b.store.MemoryGet(ctx, tenant, scope, scopeID, memory.DocumentChunkKeyPrefix+chunkID)
+		key := memory.DocumentChunkKeyPrefix + chunkID
+		scope, scopeID := at(key)
+		row, err := b.store.MemoryGet(ctx, tenant, scope, scopeID, key)
 		if err != nil {
 			return store.MemorySearchEntry{}, false
 		}
@@ -758,4 +773,92 @@ func alignMatched(entries []store.MemorySearchEntry, matched map[string]*memory.
 		return nil
 	}
 	return out
+}
+
+// legLists runs one scope's store legs for a search and returns their ranked
+// lists, in the order the fusion takes them: vector, then full-text (hybrid
+// only), then the derived-unit legs when the main legs cannot reach units.
+// Errors pass through unwrapped — ErrDimensionMismatch / ErrVectorUnsupported are
+// user-actionable and the tool's errors.Is checks match the backend-constructed
+// *MemoryError.
+func (b *Backend) legLists(ctx context.Context, tenant string, scope store.MemoryScope, scopeID string,
+	q memory.SearchQuery, filter store.MemorySearchFilter, queryVec []float32, fetch int, hybrid bool) ([][]store.MemorySearchEntry, error) {
+	vres, err := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, filter, queryVec, fetch)
+	if err != nil {
+		return nil, err
+	}
+	lists := [][]store.MemorySearchEntry{vres}
+	if hybrid {
+		// Full-text (keyword, ts_rank-ordered). (nil,nil) on a store without a
+		// full-text index, so the fusion collapses to pure-vector.
+		fres, err := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, filter, q.QueryText, fetch)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, fres)
+	}
+	// Derived search units: where the main legs cannot reach them (a
+	// chunk-targeted search), a separate unit leg fetches them, fused with the rest.
+	unitFilter, unitLeg := q.UnitLegFilter(filter)
+	if !unitLeg {
+		return lists, nil
+	}
+	uv, err := b.store.MemoryEmbedSearch(ctx, tenant, scope, scopeID, unitFilter, queryVec, fetch)
+	if err != nil {
+		return nil, err
+	}
+	lists = append(lists, uv)
+	if hybrid {
+		uf, err := b.store.MemoryFullTextSearch(ctx, tenant, scope, scopeID, unitFilter, q.QueryText, fetch)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, uf)
+	}
+	return lists, nil
+}
+
+// docChunkID is the chunk a document-namespace key belongs to: a chunk body's own
+// id, or a derived unit's chunk.
+func docChunkID(key string) (string, bool) {
+	if id, ok := strings.CutPrefix(key, memory.DocumentChunkKeyPrefix); ok && id != "" {
+		return id, true
+	}
+	return memory.UnitChunkID(key)
+}
+
+// separateLeg keeps a documents leg's rows apart from the primary scope's: it
+// returns the leg's lists without any row whose chunk the primary lists already
+// hold, and the set of chunks the leg contributes. Every later step (the unit
+// bodies, the rerank text, the access count, the reported scope) finds a row's
+// scope by its chunk, and the pool fuses rows by key — so one chunk id must
+// belong to one scope. Chunk ids are random 128-bit values, so a clash does not
+// occur in practice; if one ever did, the primary scope's row wins rather than
+// two different rows being fused into one.
+func separateLeg(primary, leg [][]store.MemorySearchEntry) ([][]store.MemorySearchEntry, map[string]bool) {
+	taken := map[string]bool{}
+	for _, l := range primary {
+		for _, e := range l {
+			if id, ok := docChunkID(e.Key); ok {
+				taken[id] = true
+			}
+		}
+	}
+	chunks := map[string]bool{}
+	out := make([][]store.MemorySearchEntry, len(leg))
+	for i, l := range leg {
+		kept := make([]store.MemorySearchEntry, 0, len(l))
+		for _, e := range l {
+			// A documents leg only ever holds document-namespace rows; anything
+			// else would have no scope to be reported under, so it is not kept.
+			id, ok := docChunkID(e.Key)
+			if !ok || taken[id] {
+				continue
+			}
+			chunks[id] = true
+			kept = append(kept, e)
+		}
+		out[i] = kept
+	}
+	return out, chunks
 }
