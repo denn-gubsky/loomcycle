@@ -55,7 +55,7 @@ derived units (`doc.unit:`) and their embeddings are Memory rows. In the tenant
 scope they are keyed like every other tenant Memory row — `scope_id` empty, the
 `tenant_id` column carrying the identity — so `Memory op=search` / `recall` /
 `get` at `scope: tenant` reach them. (SQL Memory keeps the tenant as its scope
-id; it cannot key on an empty component.) Releases before this one keyed these
+id; it cannot key on an empty component.) Releases before v1.123.0 keyed these
 rows by the SQL Memory scope id instead (the tenant, or `default` for the empty
 tenant), where no tenant-scope Memory read looked:
 
@@ -66,15 +66,20 @@ tenant), where no tenant-scope Memory read looked:
   old-keyspace chunk body whose `body` is empty never replaces the destination;
   fields alone do not count as content) and strays (a tenant document row at any
   other scope id, left where it is).
-- For one release a tenant body read that misses retries the old scope id, so a
-  chunk an older replica just wrote reads correctly before the next boot moves it.
+- A tenant document read looks at the tenant keyspace only. A row still at the
+  old scope id reads as missing (an empty body, absent from search) until a boot
+  moves it. (v1.123.0 also retried the old scope id on a miss; that one-release
+  fallback is gone.)
 - Snapshot restore re-keys an older snapshot's tenant document rows the same way.
-- During a rolling upgrade an older replica reads a moved body as empty. If it
-  writes that emptiness back (a fields-only `update_chunk`), the blank row lands
-  at the old scope id and the next sweep discards it in favour of the moved body;
-  a real edit made through an older replica is kept if it is the later write. The
-  older replica still shows tenant documents as empty until it is upgraded.
-  Rolling the binary back past `0114` needs the rows moved back by hand (the down
+- **Do not run a v1.122-or-older replica beside v1.124.0 or later.** Upgrade
+  through v1.123.0, or stop the older replicas before starting the new ones. In
+  a mixed cluster the older replica reads moved bodies as empty, and a tenant
+  chunk it writes lands at the old scope id, where the newer replica reads it as
+  missing until the next boot's sweep moves it. If the older replica writes an
+  empty body back (a fields-only `update_chunk`), the sweep discards it in
+  favour of the moved body; a real edit made through it is kept if it is the
+  later write.
+- Rolling the binary back past `0114` needs the rows moved back by hand (the down
   migration is a no-op).
 
 **Memory and document rows.** Because chunk bodies share the Memory keyspace,
