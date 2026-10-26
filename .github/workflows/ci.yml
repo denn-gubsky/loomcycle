@@ -433,8 +433,9 @@ jobs:
           LOOMCYCLE_TEST_PG_DSN: postgres://loomcycle:loomcycle@127.0.0.1:5432/loomcycle_test?sslmode=disable
         run: go test -count=1 -timeout 600s -run 'TestNoTraceCanary' ./internal/api/http/
 
-      # DOCUMENT SEARCH ON POSTGRES + PGVECTOR, from the Document tool. Document
-      # op=search runs both its legs (vector and full text) only on this tier, so
+      # DOCUMENT SEARCH ON POSTGRES + PGVECTOR, from the Document tool (and from
+      # Memory's documents_scope leg). Document op=search runs both its legs
+      # (vector and full text) only on this tier, so
       # a test of what it returns needs the store DSN with pgvector — which the
       # SQL Memory step below does not set. A -run filter: the rest of the package
       # runs in the `Go` job and the SQL Memory step.
@@ -445,7 +446,7 @@ jobs:
           LOOMCYCLE_TEST_PG_VECTOR: "1"
         # Package before -run, so the SQL Memory step stays the one filter
         # TestCIFilter_CoversEveryPostgresTierTest reads.
-        run: go test -count=1 -timeout 600s ./internal/tools/builtin/ -run 'TestDocumentSearch_TenantResultsUnchangedByTheMigration'
+        run: go test -count=1 -timeout 600s ./internal/tools/builtin/ -run 'TestDocumentSearch_TenantResultsUnchangedByTheMigration|TestMemorySearch_DocumentsScopeOnPostgres'
 
       # SHUTDOWN PAUSE ACROSS REPLICAS (RFC ES F1). Boots two replicas on one
       # database, parks a run on the first by SIGTERM, and requires the second —
