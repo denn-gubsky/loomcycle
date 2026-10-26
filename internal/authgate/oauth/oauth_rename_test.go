@@ -23,3 +23,19 @@ func TestOAuth_LoginRenameKeepsTheSubjectAndMutableFieldsAreNotClaims(t *testing
 		t.Fatalf("display name = %q", a2.DisplayName)
 	}
 }
+
+// OAuth has no auth_time: an assertion that claimed "now" would make every
+// OAuth session look freshly authenticated to the re-authentication checks.
+func TestOAuth_AssertionClaimsNoAuthenticationTime(t *testing.T) {
+	g, err := New(Config{Name: "gh", Preset: PresetGitHub, ClientID: "c", ClientSecret: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := g.assertion(profile{id: "4242", login: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.AuthTime.IsZero() {
+		t.Fatalf("assertion auth_time = %v, want unset", a.AuthTime)
+	}
+}

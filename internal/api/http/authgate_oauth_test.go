@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -198,5 +199,28 @@ func TestOAuthLogin_ForeignOrReplayedCallbackIsRefused(t *testing.T) {
 		if loginErrorCode(t, again) == "" {
 			t.Fatalf("%s callback: no error code", name)
 		}
+	}
+}
+
+// An OAuth provider never says when the person authenticated, so an OAuth
+// sign-in must not record one: a session that claims a fresh authentication
+// would pass the re-authentication check that guards account linking.
+func TestOAuthLogin_SessionRecordsNoAuthenticationTime(t *testing.T) {
+	f, _ := newOAuthFixture(t, config.AuthIdentityMap{Tenant: "acme", Provision: config.ProvisionAuto}, nil)
+	rec, _, _ := f.oauthLogin(t)
+	sc := cookieNamed(rec, sessionCookiePlain)
+	if rec.Code != http.StatusSeeOther || sc == nil {
+		t.Fatalf("callback = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(sc.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := f.st.UISessionGet(context.Background(), sessionHash(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !row.AuthTime.IsZero() {
+		t.Fatalf("an OAuth session records auth_time %v; the provider never attested one", row.AuthTime)
 	}
 }

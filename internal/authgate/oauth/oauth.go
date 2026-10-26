@@ -340,8 +340,11 @@ func (g *Gate) assertion(p profile) (authgate.Assertion, error) {
 		claims["email"] = p.email
 		claims["email_verified"] = true
 	}
+	// AuthTime stays unset: the provider never says when the person
+	// authenticated (see ErrReauthUnsupported), and "now" would make every
+	// OAuth session pass the recent-sign-in check that guards account linking.
 	return authgate.Assertion{
-		Subject: p.id, Issuer: g.provider.issuer, AMR: []string{AMROAuth}, AuthTime: now,
+		Subject: p.id, Issuer: g.provider.issuer, AMR: []string{AMROAuth},
 		Email: p.email, EmailVerified: p.email != "", DisplayName: firstNonEmpty(p.name, p.login),
 		Groups: groups, Claims: claims, ExpiresAt: now.Add(5 * time.Minute),
 	}, nil
