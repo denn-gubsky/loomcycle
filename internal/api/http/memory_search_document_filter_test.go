@@ -226,8 +226,6 @@ func TestMemorySearchEndpoint_FilterRefusalsKeepTheirClass(t *testing.T) {
 		{`{"query":"audit","scope":"user","scope_id":"alice","sources":["facts"],"under_paths":["/qg/norms"]}`, "invalid_filter", http.StatusBadRequest},
 		// A malformed path.
 		{`{"query":"audit","scope":"user","scope_id":"alice","under_paths":["no-slash"]}`, "invalid_filter", http.StatusBadRequest},
-		// Tenant scope: the gate passes off-run, the tenant refusal stays validation.
-		{`{"query":"audit","scope":"tenant","under_paths":["/qg/norms"]}`, "invalid_filter", http.StatusBadRequest},
 	} {
 		code, out, raw := searchRaw(t, s, "A", c.body)
 		if code != c.status || out["code"] != c.code {
@@ -339,5 +337,60 @@ func TestMemorySearchEndpoint_ACLLimitedCallerSendsNoDeniedID(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), report) {
 		t.Errorf("the read-denied report chunk came back: %s", rec.Body.String())
+	}
+}
+
+// TestMemorySearchEndpoint_TenantScopeFilterResolvesInTheTenantTree — the tenant
+// scope's document rows live where the off-run search reads that scope, so its
+// filter resolves in the tenant's own tree and returns the tenant's chunks.
+func TestMemorySearchEndpoint_TenantScopeFilterResolvesInTheTenantTree(t *testing.T) {
+	s, fs, mgr := docFilterServer(t)
+	d := &builtin.Document{Store: fs, SqlMem: mgr, Bus: channels.NewBus()}
+	ctx := tools.WithAgentName(context.Background(), "doc-agent")
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: "alice", TenantID: "A"})
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}}
+	})
+	seed := func(path string) string {
+		t.Helper()
+		var ids [2]string
+		for i, in := range []map[string]any{
+			{"op": "create_document", "scope": "tenant", "title": "Doc " + path, "path": path},
+			{"op": "create_chunk", "scope": "tenant", "title": "Clause", "body": "supplier audit clause"},
+		} {
+			if i == 1 {
+				in["document_id"] = ids[0]
+			}
+			b, _ := json.Marshal(in)
+			res, err := d.Execute(ctx, b)
+			if err != nil || res.IsError {
+				t.Fatalf("Document %v: %v %s", in["op"], err, res.Text)
+			}
+			var out map[string]any
+			_ = json.Unmarshal([]byte(res.Text), &out)
+			if i == 0 {
+				ids[0], _ = out["document_id"].(string)
+			} else {
+				ids[1], _ = out["id"].(string)
+			}
+		}
+		if err := fs.MemoryEmbedSet(context.Background(), "A", store.MemoryScopeTenant, "", "doc.chunk:"+ids[1],
+			store.MemoryEmbedding{Provider: "test", Model: "stub", Dimension: 4, Vector: []float32{1, 0, 0, 0}}); err != nil {
+			t.Fatalf("MemoryEmbedSet: %v", err)
+		}
+		return ids[1]
+	}
+	norm, report := seed("/qg/norms/t1"), seed("/qg/reports/t1")
+	code, out, raw := searchRaw(t, s, "A", `{"query":"audit","scope":"tenant","top_k":50,"under_paths":["/qg/norms"]}`)
+	if code != http.StatusOK {
+		t.Fatalf("status %d: %s", code, raw)
+	}
+	got := entryKeys(out)
+	if !got["doc.chunk:"+norm] || got["doc.chunk:"+report] {
+		t.Errorf("entries = %v, want the tenant norm chunk %s and not the report %s", got, norm, report)
+	}
+	if echo, _ := out["filter"].(map[string]any); echo == nil || echo["matched_documents"] != float64(1) {
+		t.Errorf("filter echo = %v, want matched_documents 1", out["filter"])
 	}
 }
