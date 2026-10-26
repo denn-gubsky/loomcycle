@@ -112,3 +112,58 @@ func (d *Document) documentTablesAbsent(ctx context.Context, key sqlmem.ScopeKey
 	}
 	return false, err
 }
+
+var _ documentHitReader = (*Document)(nil)
+
+// ReadableDocumentChunks answers the Memory tool's access-control question for
+// the document hits of a search or recall (memory_document_acl.go): which of
+// chunkIDs, in the memory scope (scope, scopeID), the caller on ctx may read.
+// The answer is Document op=search's listing filter: a chunk is readable when it
+// belongs to a document and the caller may read that document at every name it
+// is filed under. A chunk with no document row is not, as on Document op=search.
+//
+// The scope goes through resolveScope, as every Document read does, and nothing
+// is provisioned: a scope with no document tables holds no readable chunk.
+func (d *Document) ReadableDocumentChunks(ctx context.Context, scope store.MemoryScope, scopeID string, chunkIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if d == nil || d.Store == nil || d.SqlMem == nil || len(chunkIDs) == 0 {
+		return out, nil
+	}
+	key, mscope, err := d.resolveScope(ctx, string(scope))
+	if err != nil {
+		return nil, err
+	}
+	if mscope != scope || docMemScopeID(mscope, key) != scopeID {
+		return nil, fmt.Errorf("document access check: memory scope %s/%q is not document scope %s/%q", scope, scopeID, mscope, docMemScopeID(mscope, key))
+	}
+	empty, err := d.documentTablesAbsent(ctx, key)
+	if err != nil || empty {
+		return out, err
+	}
+	meta, err := d.chunkMetaByIDs(ctx, key, chunkIDs)
+	if err != nil {
+		return nil, err
+	}
+	acl := d.newDocACL(ctx, key)
+	readable := map[string]bool{}
+	for _, id := range chunkIDs {
+		docID := meta[id].documentID
+		if docID == "" {
+			continue
+		}
+		ok, seen := readable[docID]
+		if !seen {
+			ok = true
+			if acl != nil {
+				if ok, err = acl.readable(ctx, docID); err != nil {
+					return nil, err
+				}
+			}
+			readable[docID] = ok
+		}
+		if ok {
+			out[id] = true
+		}
+	}
+	return out, nil
+}

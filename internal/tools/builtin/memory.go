@@ -1630,6 +1630,11 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		}
 		return errFrom(fmt.Sprintf("search: %s", err), err), nil
 	}
+	// A document the caller's access-control set denies it reading is left out,
+	// as Document op=search leaves it out (memory_document_acl.go).
+	if err := m.dropUnreadableSearchHits(ctx, scope, scopeID, &res, nil); err != nil {
+		return errFrom("search: access control: "+err.Error(), err), nil
+	}
 
 	entries := make([]map[string]any, 0, len(res.Entries))
 
@@ -1898,6 +1903,9 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	res, err := layer.Recall(ctx, scope, scopeID, rq)
 	if err != nil {
 		return errFrom(fmt.Sprintf("recall: %s", err), err), nil
+	}
+	if err := m.dropUnreadableRecallHits(ctx, scope, scopeID, &res, nil); err != nil {
+		return errFrom("recall: access control: "+err.Error(), err), nil
 	}
 	// RFC CV P1 — REACH THROUGH TO THE SOURCE. A recalled fact now carries the
 	// verbatim span it was distilled from, when one was recorded.
