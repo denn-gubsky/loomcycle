@@ -1183,6 +1183,9 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if in.Key == "" {
 		return errValidation("get: missing required field: key (or path)", "Pass key, or the path it was registered at."), nil
 	}
+	if res, refused := m.gateTenantDocumentGet(ctx, scope, scopeID, in.Key); refused {
+		return res, nil
+	}
 	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -1349,6 +1352,9 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// Refused rather than silently re-prefixed: a write that lands somewhere other
 	// than where the caller asked is worse than one that does not land.
 	if res, refused := refuseUnitWrite("set", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("set", in.Key); refused {
 		return res, nil
 	}
 	if strings.HasPrefix(in.Key, store.TraceTurnKeyPrefix) {
@@ -1570,6 +1576,10 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	sources, serr := memrank.ParseSources(in.Sources)
 	if serr != nil {
 		return errValidation(fmt.Sprintf("search: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
+	}
+	sources, refusal := gateTenantDocumentSearch(ctx, "search", scope, in.Prefix, sources, !in.documentFilter().IsZero(), false)
+	if refusal != nil {
+		return *refusal, nil
 	}
 	rerank := rerankOptions(ctx)
 	sq := memrank.SearchQuery{
@@ -1850,6 +1860,10 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	sources, serr := memrank.ParseSources(in.Sources)
 	if serr != nil {
 		return errValidation(fmt.Sprintf("recall: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
+	}
+	sources, refusal := gateTenantDocumentSearch(ctx, "recall", scope, "", sources, !in.documentFilter().IsZero(), true)
+	if refusal != nil {
+		return *refusal, nil
 	}
 	rerank := rerankOptions(ctx)
 	rq := memrank.RecallQuery{
@@ -2505,6 +2519,13 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	// returns nil. So the k/v half stamped nothing, silently, and reported success.
 	// The translation added for merge has to be carried by every consumer of the id.
 	ref := m.resolveFactChunk(ctx, in)
+	if !ref.resolved {
+		// Not a natural key: the key is the row itself, and a prose chunk body is not
+		// the Memory tool's to retire.
+		if res, refused := m.refuseDocumentRowRemoval(ctx, "supersede", scope, scopeID, in.Key); refused {
+			return res, nil
+		}
+	}
 	bodyTenant, bodyScope, bodyScopeID, bodyKey := tenantID, scope, scopeID, in.Key
 	if ref.resolved {
 		bodyTenant, bodyScope, bodyScopeID, bodyKey = ref.bodyTenant, ref.bodyScope, ref.bodyScopeID, ref.bodyKey
@@ -2666,6 +2687,9 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Key == "" {
 		return errValidation("delete: missing required field: key", "Pass the key to delete."), nil
 	}
+	if res, refused := m.refuseDocumentRowRemoval(ctx, "delete", scope, scopeID, in.Key); refused {
+		return res, nil
+	}
 	// RFC BL P1: a read_only core block refuses delete too — otherwise an agent
 	// could erase an operator-seeded read-only block. limit_bytes is moot for a
 	// delete, so pass -1 to skip the size check.
@@ -2690,10 +2714,14 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 		// should paginate via the prefix.
 		limit = 1000
 	}
+	if !tenantDocumentsReadable(ctx, scope) && inDocumentNamespace(in.Prefix) {
+		return tenantDocumentReadRefusal("list"), nil
+	}
 	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, in.Prefix, limit)
 	if err != nil {
 		return errFrom(fmt.Sprintf("list: %s", err), err), nil
 	}
+	entries = m.dropTenantDocumentRows(ctx, scope, scopeID, entries)
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, map[string]any{
@@ -2715,6 +2743,9 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	// RFC BL P1: a read_only core block refuses incr too. limit_bytes is moot
 	// for a bounded-width number, so pass -1 to skip the size check.
 	if res, refused := refuseUnitWrite("incr", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("incr", in.Key); refused {
 		return res, nil
 	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "incr", -1); err != nil {
@@ -2782,6 +2813,9 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 	if res, refused := refuseUnitWrite("merge", in.Key); refused {
 		return res, nil
 	}
+	if res, refused := refuseChunkBodyWrite("merge", in.Key); refused {
+		return res, nil
+	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
 		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
@@ -2843,6 +2877,9 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the appended value.
 	if res, refused := refuseUnitWrite("append_dedupe", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("append_dedupe", in.Key); refused {
 		return res, nil
 	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
@@ -2924,6 +2961,9 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the trimmed value.
 	if res, refused := refuseUnitWrite("bounded_list", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("bounded_list", in.Key); refused {
 		return res, nil
 	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {
