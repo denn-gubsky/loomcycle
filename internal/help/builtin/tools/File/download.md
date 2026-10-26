@@ -16,7 +16,8 @@ A URL with a query string may be a credential, so results show its query as
 
 ## Arguments
 
-- `url` — the absolute `http` or `https` URL to fetch.
+- `url` — the absolute `http` or `https` URL to fetch, exactly as given; taken
+  from JSON, the value only, without the quote marks around it.
 - `to` — where to keep it. Omit it for the inbox (`documents/` or `images/` by
   type). `volume:inbox:<folder>/` picks an inbox folder,
   `volume:inbox:<folder>/<name>` a name there. `volume:<name>:<path>` saves
@@ -48,6 +49,9 @@ media_type}`.
 - `to` is in a volume and you do not hold Write, the volume is read-only, its
   folder does not exist, or a file is there and `overwrite` is not set.
 - A header looks like a credential.
+- `url` holds a character a URL never holds unencoded (a quote, a space, `<`,
+  `>`, a backslash or a backtick). Nothing was fetched: repeat the call with the
+  URL corrected.
 
 ## Examples
 
