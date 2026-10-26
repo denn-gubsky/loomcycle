@@ -1359,31 +1359,10 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if m.MaxValueBytes > 0 && len(in.Value) > m.MaxValueBytes {
 		return errBusiness(fmt.Sprintf("set: value (%d bytes) exceeds max %d bytes", len(in.Value), m.MaxValueBytes), memoryCapNext), nil
 	}
-	// THE TRACE NAMESPACE IS SERVER-ONLY. A row's class decides whether it reaches an
-	// unfiltered search and whether erasure has to find it, so an agent must not be
-	// able to elect its own writes into a class with different retrieval semantics —
-	// a `trace.turn:` key from a tool call would be hidden from every default search
-	// by the very exclusion that makes the class safe.
-	//
-	// Refused rather than silently re-prefixed: a write that lands somewhere other
-	// than where the caller asked is worse than one that does not land.
-	if res, refused := refuseUnitWrite("set", in.Key); refused {
+	// The namespaces the server or the Document tool writes, and a declared core
+	// block's read_only / limit_bytes (memory_key_rules.go).
+	if res, refused := MemorySetRefusal(ctx, "set", scope, in.Key, len(in.Value)); refused {
 		return res, nil
-	}
-	if res, refused := refuseChunkBodyWrite("set", in.Key); refused {
-		return res, nil
-	}
-	if strings.HasPrefix(in.Key, store.TraceTurnKeyPrefix) {
-		return errValidation("set: the "+store.TraceTurnKeyPrefix+" namespace is written by the "+
-			"server when it indexes a conversation turn, and cannot be written through this tool — "+
-			"use an ordinary key", ""), nil
-	}
-	// RFC BL P1: a write to a reserved `core/<label>` key is gated by the
-	// agent's core-block config — read_only refuses the write entirely,
-	// limit_bytes caps it (mirroring the quota refusal below). Undeclared
-	// core/* keys pass through as normal memory.
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "set", len(in.Value)); err != nil {
-		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	// Quota math charges only the k/v row's key + value bytes;
 	// embeddings are excluded per RFC §8. Operators don't pay for
@@ -2790,14 +2769,8 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Key == "" {
 		return errValidation("delete: missing required field: key", "Pass the key to delete."), nil
 	}
-	if res, refused := m.refuseDocumentRowRemoval(ctx, "delete", scope, scopeID, in.Key); refused {
+	if res, refused := m.deleteRefusal(ctx, "delete", scope, scopeID, in.Key); refused {
 		return res, nil
-	}
-	// RFC BL P1: a read_only core block refuses delete too — otherwise an agent
-	// could erase an operator-seeded read-only block. limit_bytes is moot for a
-	// delete, so pass -1 to skip the size check.
-	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "delete", -1); err != nil {
-		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
 	deleted, err := m.backend(ctx).Delete(ctx, scope, scopeID, in.Key)
 	if err != nil {

@@ -273,11 +273,21 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// writeDocumentRowRefusal answers a refused write to a document row: the
-// Memory tool's reason, and where the write goes instead.
-func writeDocumentRowRefusal(w http.ResponseWriter, res tools.Result) {
-	writeJSONError(w, http.StatusBadRequest, "document_row",
-		res.Text+". Write or remove a chunk with POST /v1/_document (update_chunk, delete_chunk).")
+// writeKeyRuleRefusal answers a write the Memory tool's key rule refused with
+// the tool's reason, and reports whether it wrote one: a refusal of no caller-
+// fixable class (a row that could not be read) is the caller's to answer as a
+// fault. A document row's refusal says where the write goes instead.
+func writeKeyRuleRefusal(w http.ResponseWriter, key string, res tools.Result) bool {
+	if res.Error == nil || (res.Error.Category != tools.CategoryValidation && res.Error.Category != tools.CategoryBusiness) {
+		return false
+	}
+	if builtin.IsDocumentRowKey(key) {
+		writeJSONError(w, http.StatusBadRequest, "document_row",
+			res.Text+". Write or remove a chunk with POST /v1/_document (update_chunk, delete_chunk).")
+		return true
+	}
+	writeJSONError(w, http.StatusBadRequest, "reserved_key", res.Text)
+	return true
 }
 
 // unreadableDocumentKeys returns the keys among entries the caller may not
@@ -390,13 +400,6 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"scope_id and key are required")
 		return
 	}
-	// A chunk body or a derived unit is written through the Document routes, so
-	// the revision check and the scope grants apply; the Memory tool refuses the
-	// same writes. For every caller: it is the namespace, not an access decision.
-	if res, refused := builtin.DocumentRowWriteRefusal("put", key); refused {
-		writeDocumentRowRefusal(w, res)
-		return
-	}
 	var body memoryEntryPutBody
 	// Bound the body to the configured per-value limit (default 64 KiB)
 	// plus JSON-envelope headroom; 0 (values uncapped) falls back to a
@@ -421,6 +424,14 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	if !json.Valid(body.Value) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_value",
 			"value must be valid JSON")
+		return
+	}
+	// The Memory tool's write rule for this key, the one its set applies: the
+	// namespaces the server or the Document routes write are refused for every
+	// caller (it is the namespace, not an access decision). The core-block rule
+	// reads the blocks declared on a run, and a request is not one.
+	if res, refused := builtin.MemorySetRefusal(r.Context(), "put", store.MemoryScope(scope), key, len(body.Value)); refused {
+		writeKeyRuleRefusal(w, key, res)
 		return
 	}
 	embed := body.Embed
@@ -513,17 +524,16 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tenantID := s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant"))
-	// A derived unit or a prose chunk body is removed through the Document routes,
-	// so the chunk and its text go together; a consolidated fact's body row stays
-	// deletable by its id. A row that cannot be classified is not removed.
-	if res, refused := builtin.DocumentRowRemovalRefusal(r.Context(), s.store, tenantID, store.MemoryScope(scope),
+	// The Memory tool's delete rule for this key: a derived unit or a prose chunk
+	// body is removed through the Document routes, so the chunk and its text go
+	// together; a consolidated fact's body row stays deletable by its id. A row
+	// that cannot be classified is not removed.
+	if res, refused := builtin.MemoryDeleteRefusal(r.Context(), s.store, tenantID, store.MemoryScope(scope),
 		adminMemoryStoreScopeID(scope, scopeID), "delete", key); refused {
-		if res.Error != nil && res.Error.Category == tools.CategoryValidation {
-			writeDocumentRowRefusal(w, res)
-			return
+		if !writeKeyRuleRefusal(w, key, res) {
+			slog.Error("memory delete could not classify the row", "scope", scope, "scope_id", scopeID, "key", key, "err", res.Text)
+			writeJSONError(w, http.StatusInternalServerError, "internal", "delete failed")
 		}
-		slog.Error("memory delete could not classify the row", "scope", scope, "scope_id", scopeID, "key", key, "err", res.Text)
-		writeJSONError(w, http.StatusInternalServerError, "internal", "delete failed")
 		return
 	}
 	if _, err := s.store.MemoryDelete(r.Context(), tenantID, store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
