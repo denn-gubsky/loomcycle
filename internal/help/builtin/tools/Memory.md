@@ -98,7 +98,9 @@ and writes only the scope it names.
   every non-SQL op.
 
 A `user`-scope recall does not see `tenant` knowledge, and the other way
-round; to consult both, make two calls. `Context op=self` reports which scopes
+round; to consult both, make two calls. Documents are the exception:
+`search` and `recall` take `documents_scope` to rank another scope's
+documents together with this scope's results in one call. `Context op=self` reports which scopes
 this run may use. For the full model, read `{"op":"help","topic":"scopes"}`.
 
 ## Values, sizes and times
