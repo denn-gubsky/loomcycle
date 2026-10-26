@@ -92,9 +92,10 @@ Markdown file; counts that do not apply to the format are left out.
 `yield_chars_per_page` is given when the page count is known; a low value
 means the pages are mostly pictures (a scan) rather than text.
 `low_yield_pages` lists a PDF's likely scanned pages. After OCR, `ocr` is
-`{mode, engine, provider, model, pages, units, status, input_tokens,
-output_tokens, cost, currency}`: the pages read, the model calls made, what
-they used, and `ok` or `partial`.
+`{mode, engine, provider, model, pages, pages_sent, units, status,
+input_tokens, output_tokens, cost, currency}`: the pages read, the pages sent
+to the model (a call that failed after reaching it still counts against the
+cap), the model calls that answered, what they used, and `ok` or `partial`.
 
 A dry run returns `{dry_run, ocr, source, pages, page_numbers, units, engine,
 provider, model, est_tokens, est_input_tokens, est_output_tokens, est_cost,
@@ -168,7 +169,7 @@ The same scan with OCR, after asking what it would cost:
 
 ```json result
 {"ref": "volume:inbox:extracted/scan-2026-10.md", "format": "pdf", "pages": 3, "low_yield_pages": [1, 2, 3],
- "ocr": {"mode": "auto", "engine": "vision", "provider": "anthropic", "model": "claude-sonnet-4-6", "pages": [1, 2, 3],
+ "ocr": {"mode": "auto", "engine": "vision", "provider": "anthropic", "model": "claude-sonnet-4-6", "pages": [1, 2, 3], "pages_sent": 3,
          "units": 1, "status": "ok", "input_tokens": 4920, "output_tokens": 2310, "cost": 0.049, "currency": "USD"},
  "excerpt": "<file_content path=\"volume:inbox:extracted/scan-2026-10.md\" truncated=\"false\">\n# scan-2026-10\n…\n## Page 1\n\nПРОТОКОЛ №3\n…\n</file_content>"}
 ```
