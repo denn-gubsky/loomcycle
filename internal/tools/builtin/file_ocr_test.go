@@ -693,3 +693,38 @@ func TestOCR_RefusalBeforeTheModelGivesThePagesBack(t *testing.T) {
 		t.Fatalf("%d ledger rows, want only the successful call's", n)
 	}
 }
+
+// The event says why a pass failed or stopped early, so an operator reading
+// the run sees the cause and not only "failed": the engine's error on a failed
+// call, the cap on a pass the budget stopped, nothing on a pass that finished.
+func TestOCR_EventSaysWhyAPassFailedOrStopped(t *testing.T) {
+	x := ocrRun(t, config.OCRConfig{MaxPagesPerCall: 1}, &config.AgentTranscription{OCR: "auto", MaxPagesPerRun: 1})
+	x.engine.failOn, x.engine.failBilled = 1, true
+	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
+	x.extract(t, map[string]any{"path": ref}) // the engine call fails
+	x.extract(t, map[string]any{"path": ref}) // the cap stops the retry
+	ev := x.transcriptionEvents()
+	if len(ev) != 2 {
+		t.Fatalf("events = %+v, want 2", ev)
+	}
+	if ev[0].Status != "failed" || ev[0].Error == "" {
+		t.Errorf("failed pass: status %q, error %q; want the engine's reason", ev[0].Status, ev[0].Error)
+	}
+	if !strings.Contains(ev[1].Error, "max_pages_per_run") {
+		t.Errorf("cap-stopped pass: error %q, want it to name max_pages_per_run", ev[1].Error)
+	}
+	for _, e := range ev {
+		if strings.ContainsAny(e.Error, "\r\n") || len(e.Error) > maxEventErrorLen {
+			t.Errorf("error %q is not one bounded line", e.Error)
+		}
+	}
+
+	ok := ocrRun(t, config.OCRConfig{}, &config.AgentTranscription{OCR: "auto"})
+	okRef := ok.keep(t, "skan.pdf", scannedPDF(t, 1))
+	if _, _, res := ok.extract(t, map[string]any{"path": okRef}); res.IsError {
+		t.Fatalf("clean pass failed: %s", res.Text)
+	}
+	if ev := ok.transcriptionEvents(); len(ev) != 1 || ev[0].Status != "ok" || ev[0].Error != "" {
+		t.Errorf("clean pass event = %+v, want ok with no error", ev)
+	}
+}

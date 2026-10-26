@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
@@ -568,6 +569,23 @@ func demoteHeadings(md string) string {
 
 // ---- results and events ----
 
+// maxEventErrorLen bounds the reason a transcription event carries: enough for
+// an engine's error line, never a dump of a provider's response body.
+const maxEventErrorLen = 300
+
+// eventError folds a reason to one line and cuts it to maxEventErrorLen.
+func eventError(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > maxEventErrorLen {
+		cut := maxEventErrorLen - len("…")
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
+	}
+	return s
+}
+
 // ocrSummary is the "ocr" object of an extract result.
 func (p *ocrPass) summary(mode transcribe.OCRMode) map[string]any {
 	out := map[string]any{
@@ -583,13 +601,18 @@ func (p *ocrPass) summary(mode transcribe.OCRMode) map[string]any {
 
 // event reports the pass, counting what ran: the pages of every call that
 // reached the model (those the budget keeps) and the tokens the calls
-// reported, as the ledger rows do. The failure reason is returned by the
-// extract call (ocrFailure), not carried here.
+// reported, as the ledger rows do. A pass that failed or stopped early also
+// says why (the cap, the engine's error, or a cutting failure), on one line.
 func (p *ocrPass) event(ctx context.Context, src, out string) providers.Event {
 	info := &providers.TranscriptionInfo{
 		Ref: src, Out: out, Purpose: transcribe.PurposeOCR, Engine: p.plan.Engine,
 		Provider: p.plan.Provider, Model: p.plan.Model, Pages: p.sent,
 		InputTokens: p.in, OutputTokens: p.out, Status: p.status(), RunID: tools.RunID(ctx),
+	}
+	if info.Status != "ok" {
+		if err := p.failure(); err != nil {
+			info.Error = eventError(err.Error())
+		}
 	}
 	if p.priced {
 		c := p.cost
