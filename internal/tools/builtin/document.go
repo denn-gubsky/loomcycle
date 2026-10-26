@@ -1246,7 +1246,7 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, key 
 // candidate would be a cross-database round trip from each of the four call sites
 // that label a row.
 func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string) error {
-	scopeID := key.ScopeID
+	scopeID := docMemScopeID(mscope, key)
 	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
@@ -1272,7 +1272,14 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 	// not clear class or the source ids either. The extra point read costs nothing
 	// next to the embedding call this function already makes.
 	prov := store.MemoryProvenance{Origin: origin}
-	if prev, perr := d.Store.MemoryProvenanceGet(ctx, tenant, mscope, scopeID, bodyKey); perr == nil {
+	prev, perr := d.Store.MemoryProvenanceGet(ctx, tenant, mscope, scopeID, bodyKey)
+	if legacy, ok := legacyDocMemScopeID(mscope, key); ok && perr != nil {
+		// One-release fallback (see legacyDocMemScopeID): a body an old replica wrote
+		// carries its provenance at the old scope id, and a rewrite here must not
+		// reclassify a fact as prose by dropping it.
+		prev, perr = d.Store.MemoryProvenanceGet(ctx, tenant, mscope, legacy, bodyKey)
+	}
+	if perr == nil {
 		if prov.Origin == "" {
 			prov.Origin = prev.Origin
 		}
@@ -1309,7 +1316,7 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 // skipped; and a sniffed kind would misread a prose chunk that opens with the word
 // "pie". The chunk type is the only authoritative answer, so callers supply it.
 func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.MemoryScope, key sqlmem.ScopeKey, bodyKey, chunkID, chunkType, body string) {
-	scopeID := key.ScopeID
+	scopeID := docMemScopeID(mscope, key)
 	if d.Embedder == nil {
 		return
 	}
@@ -1355,10 +1362,15 @@ func (d *Document) embedBody(ctx context.Context, tenant string, mscope store.Me
 // body row unreadable and a fields-only `update_chunk` wrote the emptiness
 // back. A transient store error reaches the same end, which is why the guard
 // belongs here rather than in the tenant fix.
-func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, scopeID, chunkID string) (chunkBody, error) {
-	entry, err := d.Store.MemoryGet(ctx, direntTenant(ctx), mscope, scopeID, chunkBodyKey(chunkID))
+func (d *Document) readBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID string) (chunkBody, error) {
+	tenant := direntTenant(ctx)
+	entry, err := d.Store.MemoryGet(ctx, tenant, mscope, docMemScopeID(mscope, key), chunkBodyKey(chunkID))
+	var nf *store.ErrNotFound
+	if legacy, ok := legacyDocMemScopeID(mscope, key); ok && err != nil && asNotFound(err, &nf) {
+		// One-release fallback: see legacyDocMemScopeID.
+		entry, err = d.Store.MemoryGet(ctx, tenant, mscope, legacy, chunkBodyKey(chunkID))
+	}
 	if err != nil {
-		var nf *store.ErrNotFound
 		if asNotFound(err, &nf) {
 			return chunkBody{}, nil
 		}
@@ -1694,7 +1706,7 @@ func (d *Document) SetChunkStatus(ctx context.Context, scope, chunkID, status st
 	if err := d.mirrorRootFacets(ctx, key, chunkID); err != nil {
 		return err
 	}
-	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", chunkID)
+	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "update_chunk", chunkID)
 	return nil
 }
 
@@ -1804,7 +1816,7 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			// same constraint delete_chunk works under.
 			_ = d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, rootID)
 			_ = d.exec(ctx, key, `DELETE FROM documents WHERE id = ?`, docID)
-			_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(rootID))
+			_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(rootID))
 			return errFrom("create_document: the root's entity metadata could not be written, "+
 				"so nothing was created: "+err.Error(), err), nil
 		}
@@ -1939,6 +1951,38 @@ func direntScopeID(key sqlmem.ScopeKey) string {
 	return key.ScopeID
 }
 
+// docMemScopeID is the Memory-plane scope id of a document row — a chunk body, a
+// derived unit, their embeddings — in the scope (mscope, key).
+//
+// The same split as direntScopeID, for the k/v plane: SQL Memory keys a tenant
+// scope by the tenant, the Memory plane by "" with tenant_id carrying the
+// identity. A tenant-scope Memory read looks at "", so a document row keyed by the
+// SQL Memory id is invisible to it — which is how tenant documents were stored
+// until this mapping existed (see legacyDocMemScopeID). Every Memory-plane call
+// for a document row takes its scope id from here;
+// TestDocumentRows_MemoryScopeIDGoesThroughDocMemScopeID holds the package to it.
+func docMemScopeID(mscope store.MemoryScope, key sqlmem.ScopeKey) string {
+	if mscope == store.MemoryScopeTenant {
+		return ""
+	}
+	return key.ScopeID
+}
+
+// legacyDocMemScopeID is where an older binary keyed a tenant document row: the SQL
+// Memory scope id (the tenant, or "default" for the empty tenant). ok is false for
+// every other scope, whose ids never differed.
+//
+// ONE-RELEASE FALLBACK — delete in the next minor release, with its two callers
+// (readBody, writeBodyAs). The store migration moves these rows and a boot sweep
+// repeats it; this covers the rows a replica still on the old binary writes during
+// a rolling upgrade, until the next boot sweeps them.
+func legacyDocMemScopeID(mscope store.MemoryScope, key sqlmem.ScopeKey) (string, bool) {
+	if mscope != store.MemoryScopeTenant || key.ScopeID == "" {
+		return "", false
+	}
+	return key.ScopeID, true
+}
+
 // registerDocDirent names a document in the Path tree (a `document` dirent).
 func (d *Document) registerDocDirent(ctx context.Context, key sqlmem.ScopeKey, docID, rawPath string) (string, error) {
 	canonical, err := normalizePath(rawPath)
@@ -2052,7 +2096,7 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		// Colour is decoration, so a read fault degrades to "no scheme" rather
 		// than failing the whole get — matching the getChunkRow probe above.
 		// Content reads (get_chunk, export_md) propagate instead.
-		rootBody, _ := d.readBody(ctx, mscope, key.ScopeID, rootID)
+		rootBody, _ := d.readBody(ctx, mscope, key, rootID)
 		enabled, scheme := docColorMeta(rootBody)
 		resp["color_enabled"] = enabled
 		if len(scheme) > 0 {
@@ -2242,7 +2286,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 			}
 			// Decoration inside a list loop: one unreadable root must not fail
 			// the whole summary. See the colour note in getDocument.
-			rootBody, _ := d.readBody(ctx, mscope, key.ScopeID, dm.root)
+			rootBody, _ := d.readBody(ctx, mscope, key, dm.root)
 			enabled, scheme := docColorMeta(rootBody)
 			entry["color_enabled"] = enabled
 			if len(scheme) > 0 {
@@ -2328,8 +2372,8 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Bodies AFTER commit (separate store; best-effort — an orphaned body is
 	// invisible dead k/v, never reachable once its chunk row is gone).
 	for _, id := range ids {
-		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(id))
-		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, id)
+		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(id))
+		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), id)
 	}
 	n := len(ids)
 	// Drop any Path-tree dirent(s) pointing at this document — best-effort, by
@@ -2503,7 +2547,7 @@ func (d *Document) createChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errFrom("create_chunk: tags: "+err.Error(), err), nil
 		}
 	}
-	d.publishChange(ctx, mscope, key.ScopeID, in.DocumentID, "create_chunk", id)
+	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), in.DocumentID, "create_chunk", id)
 	return d.getChunk(ctx, key, mscope, docInput{ID: id})
 }
 
@@ -2521,7 +2565,7 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// Surface a body-read fault instead of returning the chunk with an empty
 	// body: a silent empty read is indistinguishable from a deleted body, which
 	// is exactly how the v1.33.0 tenant regression went unnoticed.
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	cb, err := d.readBody(ctx, mscope, key, in.ID)
 	if err != nil {
 		return errFrom("get_chunk: body: "+err.Error(), err), nil
 	}
@@ -2684,7 +2728,7 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// This is a fields-only write, but writeBody rewrites the body too — so a
 	// failed read here would blank the caption. Refuse instead of persisting a
 	// body we could not read.
-	cb, rerr := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	cb, rerr := d.readBody(ctx, mscope, key, in.ID)
 	if rerr != nil {
 		return errFrom("set_asset: body: "+rerr.Error(), rerr), nil
 	}
@@ -2708,7 +2752,7 @@ func (d *Document) setAsset(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if err := d.mirrorRootFacets(ctx, key, in.ID); err != nil {
 		return errFrom("set_asset: "+err.Error(), err), nil
 	}
-	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "set_asset", in.ID)
+	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "set_asset", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
 }
 
@@ -2881,7 +2925,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// persisting the loss. This is the exact path that blanked a
 			// document root under the v1.33.0 tenant regression: a fields-only
 			// colour-scheme write, on a chunk whose body had become unreadable.
-			stored, rerr := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+			stored, rerr := d.readBody(ctx, mscope, key, in.ID)
 			if rerr != nil {
 				return errFrom("update_chunk: body: "+rerr.Error(), rerr), nil
 			}
@@ -2948,7 +2992,7 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		// a root re-embedded the whole document on a status-only update.
 		d.reindexSubtree(ctx, key, mscope, row.DocumentID, in.ID)
 	}
-	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "update_chunk", in.ID)
+	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "update_chunk", in.ID)
 	return d.getChunk(ctx, key, mscope, docInput{ID: in.ID})
 }
 
@@ -3060,10 +3104,10 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	// Bodies after commit (best-effort; see delete_document).
 	for _, cid := range ids {
-		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkBodyKey(cid))
-		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, cid)
+		_, _ = d.Store.MemoryDelete(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkBodyKey(cid))
+		d.deleteUnitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), cid)
 	}
-	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "delete_chunk", in.ID)
+	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "delete_chunk", in.ID)
 	return jsonResult(map[string]any{"deleted": true, "cascade_deleted_descendants": len(ids) - 1})
 }
 
@@ -3159,7 +3203,7 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.NewParentID != row.ParentID {
 		d.reindexSubtree(ctx, key, store.MemoryScope(key.Scope), row.DocumentID, in.ID)
 	}
-	d.publishChange(ctx, store.MemoryScope(key.Scope), key.ScopeID, row.DocumentID, "move_chunk", in.ID)
+	d.publishChange(ctx, store.MemoryScope(key.Scope), docMemScopeID(store.MemoryScope(key.Scope), key), row.DocumentID, "move_chunk", in.ID)
 	return jsonResult(map[string]any{"ok": true, "id": in.ID, "new_parent_id": in.NewParentID, "position": pos})
 }
 
@@ -3232,7 +3276,7 @@ func (d *Document) reorderChunk(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}); err != nil {
 		return errFrom("reorder_chunk: "+err.Error(), err), nil
 	}
-	d.publishChange(ctx, mscope, key.ScopeID, row.DocumentID, "reorder_chunk", in.ID)
+	d.publishChange(ctx, mscope, docMemScopeID(mscope, key), row.DocumentID, "reorder_chunk", in.ID)
 	return jsonResult(map[string]any{"reordered": true, "id": in.ID, "direction": in.Direction})
 }
 
@@ -3616,7 +3660,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if filter != nil {
 		sq.IDs, sq.ExcludeIDs = filter.ids, filter.excludeIDs
 	}
-	res, err := d.searchBackend().Search(ctx, mscope, key.ScopeID, sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
+	res, err := d.searchBackend().Search(ctx, mscope, docMemScopeID(mscope, key), sq, memrank.DefaultRankConfig(), memrank.DedupConfig{})
 	if err != nil {
 		return errFrom("search: "+err.Error(), err), nil
 	}
@@ -3733,7 +3777,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	// to embed — the same predicate embedBody skips on write — so it has no
 	// neighbours; return an empty set rather than an error (a section/parent chunk
 	// legitimately has no body).
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, in.ID)
+	cb, err := d.readBody(ctx, mscope, key, in.ID)
 	if err != nil {
 		return errFrom("related: body: "+err.Error(), err), nil
 	}
@@ -3753,7 +3797,7 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 	// topK+1: a chunk is its own nearest neighbour, so the search ranks self first;
 	// ask for one extra to leave room to drop it and still return topK others.
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID, sf, vec[0], topK+1)
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), sf, vec[0], topK+1)
 	if err != nil {
 		return errFrom("related: search: "+err.Error(), err), nil
 	}
@@ -3845,8 +3889,8 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	// Scan chunk bodies from the k/v Memory plane, keyed on the SAME
 	// tenant/scope/scope_id writeBody wrote them under (direntTenant + mscope +
-	// key.ScopeID) — reading a different plane would silently return zero hits.
-	entries, listTruncated, err := d.Store.MemoryList(ctx, direntTenant(ctx), mscope, key.ScopeID, "doc.chunk:", unlinkedMentionScanCap)
+	// docMemScopeID) — reading a different plane would silently return zero hits.
+	entries, listTruncated, err := d.Store.MemoryList(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), "doc.chunk:", unlinkedMentionScanCap)
 	if err != nil {
 		return errFrom("unlinked_mentions: scan: "+err.Error(), err), nil
 	}
@@ -4261,7 +4305,7 @@ func (d *Document) expandTransclusions(ctx context.Context, key sqlmem.ScopeKey,
 			// Unresolved, would loop, or too deep → leave the embed literal.
 			b.WriteString(token)
 		default:
-			cb, err := d.readBody(ctx, mscope, key.ScopeID, targetID)
+			cb, err := d.readBody(ctx, mscope, key, targetID)
 			if err != nil {
 				b.WriteString(token) // a store fault degrades gracefully
 				continue
@@ -4386,7 +4430,7 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 		if level > 6 {
 			level = 6
 		}
-		cb, rerr := d.readBody(ctx, mscope, key.ScopeID, row.ID)
+		cb, rerr := d.readBody(ctx, mscope, key, row.ID)
 		if rerr != nil {
 			walkErr = rerr
 			return
@@ -4983,7 +5027,7 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 		if row.ID == rootID {
 			continue // the root container is not canvas content
 		}
-		cb, rerr := d.readBody(ctx, mscope, key.ScopeID, row.ID)
+		cb, rerr := d.readBody(ctx, mscope, key, row.ID)
 		if rerr != nil {
 			return errFrom("export_canvas: body: "+rerr.Error(), rerr), nil
 		}

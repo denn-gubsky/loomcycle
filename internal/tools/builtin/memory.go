@@ -348,7 +348,7 @@ const memoryInputSchema = `{
     "embed":      {"type": "boolean", "description": "v0.9.0 set-only: when true, also generates and stores an embedding so this row is reachable via op=search."},
     "embed_text": {"type": "string", "description": "v0.9.0 set-only: the text to embed when embed=true. Defaults to the JSON-stringified value when omitted."},
     "query":      {"type": "string", "description": "v0.9.0 search-only: the text to embed and use as the similarity query."},
-    "under_paths":          {"type": "array", "items": {"type": "string"}, "description": "search / recall (user or agent scope; refused on tenant — use the Document tool's search there): return only the document chunks of documents named at or under ANY of these Path-tree paths, in this scope's own tree. Narrows DOCUMENTS only — facts and notes the same search returns are unaffected — and is applied before ranking, so the best document matches come from that part of the tree. Needs a search that can return documents (no sources, or sources including documents); recall must ask for documents explicitly. The response carries a filter block saying what the paths resolved to — matched_documents 0 means the path names nothing here, not that nothing relevant was found."},
+    "under_paths":          {"type": "array", "items": {"type": "string"}, "description": "search / recall (any scope; on tenant the agent needs sql_scopes [tenant] as well as memory_scopes [tenant], as for a tenant document): return only the document chunks of documents named at or under ANY of these Path-tree paths, in this scope's own tree. Narrows DOCUMENTS only — facts and notes the same search returns are unaffected — and is applied before ranking, so the best document matches come from that part of the tree. Needs a search that can return documents (no sources, or sources including documents); recall must ask for documents explicitly. The response carries a filter block saying what the paths resolved to — matched_documents 0 means the path names nothing here, not that nothing relevant was found."},
     "exclude_under_paths":  {"type": "array", "items": {"type": "string"}, "description": "search / recall: never return the document chunks of documents named at or under these Path-tree paths (e.g. reports this agent or another wrote, so its own output is not recalled as evidence). Documents only, as under_paths."},
     "document_ids":         {"type": "array", "items": {"type": "string"}, "description": "search / recall: return only the document chunks of these documents. Documents only, as under_paths."},
     "exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / recall: never return the document chunks of these documents. Documents only, as under_paths. For chunk-level filters (type, status, tags, a validity instant) use the Document tool's search."},
@@ -1183,6 +1183,9 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if in.Key == "" {
 		return errValidation("get: missing required field: key (or path)", "Pass key, or the path it was registered at."), nil
 	}
+	if res, refused := m.gateTenantDocumentGet(ctx, scope, scopeID, in.Key); refused {
+		return res, nil
+	}
 	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -1349,6 +1352,9 @@ func (m *Memory) execSet(ctx context.Context, scope store.MemoryScope, scopeID s
 	// Refused rather than silently re-prefixed: a write that lands somewhere other
 	// than where the caller asked is worse than one that does not land.
 	if res, refused := refuseUnitWrite("set", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("set", in.Key); refused {
 		return res, nil
 	}
 	if strings.HasPrefix(in.Key, store.TraceTurnKeyPrefix) {
@@ -1570,6 +1576,10 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 	sources, serr := memrank.ParseSources(in.Sources)
 	if serr != nil {
 		return errValidation(fmt.Sprintf("search: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
+	}
+	sources, refusal := gateTenantDocumentSearch(ctx, "search", scope, in.Prefix, sources, !in.documentFilter().IsZero(), false)
+	if refusal != nil {
+		return *refusal, nil
 	}
 	rerank := rerankOptions(ctx)
 	sq := memrank.SearchQuery{
@@ -1850,6 +1860,10 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 	sources, serr := memrank.ParseSources(in.Sources)
 	if serr != nil {
 		return errValidation(fmt.Sprintf("recall: %s", serr), "Pass sources as any of facts, notes, documents, or traces on its own."), nil
+	}
+	sources, refusal := gateTenantDocumentSearch(ctx, "recall", scope, "", sources, !in.documentFilter().IsZero(), true)
+	if refusal != nil {
+		return *refusal, nil
 	}
 	rerank := rerankOptions(ctx)
 	rq := memrank.RecallQuery{
@@ -2505,6 +2519,13 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 	// returns nil. So the k/v half stamped nothing, silently, and reported success.
 	// The translation added for merge has to be carried by every consumer of the id.
 	ref := m.resolveFactChunk(ctx, in)
+	if !ref.resolved {
+		// Not a natural key: the key is the row itself, and a prose chunk body is not
+		// the Memory tool's to retire.
+		if res, refused := m.refuseDocumentRowRemoval(ctx, "supersede", scope, scopeID, in.Key); refused {
+			return res, nil
+		}
+	}
 	bodyTenant, bodyScope, bodyScopeID, bodyKey := tenantID, scope, scopeID, in.Key
 	if ref.resolved {
 		bodyTenant, bodyScope, bodyScopeID, bodyKey = ref.bodyTenant, ref.bodyScope, ref.bodyScopeID, ref.bodyKey
@@ -2551,14 +2572,11 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 type factChunkRef struct {
 	doc      *Document
 	scopeKey sqlmem.ScopeKey
-	// THE BODY'S OWN COORDINATES, not the ones the Memory tool resolved. A chunk
-	// body is written by Document at (direntTenant, its memory scope, the SQL Memory
-	// key's ScopeID) — and under scope=tenant that ScopeID is the tenant, while the
-	// Memory tool deliberately uses "" there because the tenant_id column already
-	// carries the identity. Stamping the row at Memory's coordinates would miss it
-	// for every tenant-scope fact: the same silent miss this op exists to fix, one
-	// keying plane over. Under agent and user scope the two agree, which is exactly
-	// why this has to be taken from the body's own key rather than assumed.
+	// THE BODY'S OWN COORDINATES, taken from the Document tool's mapping
+	// (docMemScopeID) rather than assumed to be the ones the Memory tool resolved.
+	// They agree in every scope today; they did not for tenant scope while chunk
+	// bodies were keyed by the SQL Memory scope id, and stamping the row at the
+	// wrong coordinates misses it silently — the miss this op exists to fix.
 	bodyTenant  string
 	bodyScope   store.MemoryScope
 	bodyScopeID string
@@ -2593,7 +2611,7 @@ func (m *Memory) resolveFactChunk(ctx context.Context, in memoryInput) factChunk
 		doc: doc, scopeKey: skey, chunkID: chunkID,
 		bodyTenant:  direntTenant(ctx),
 		bodyScope:   mscope,
-		bodyScopeID: skey.ScopeID,
+		bodyScopeID: docMemScopeID(mscope, skey),
 		bodyKey:     memrank.DocumentChunkKeyPrefix + chunkID,
 		resolved:    true,
 	}
@@ -2669,6 +2687,9 @@ func (m *Memory) execDelete(ctx context.Context, scope store.MemoryScope, scopeI
 	if in.Key == "" {
 		return errValidation("delete: missing required field: key", "Pass the key to delete."), nil
 	}
+	if res, refused := m.refuseDocumentRowRemoval(ctx, "delete", scope, scopeID, in.Key); refused {
+		return res, nil
+	}
 	// RFC BL P1: a read_only core block refuses delete too — otherwise an agent
 	// could erase an operator-seeded read-only block. limit_bytes is moot for a
 	// delete, so pass -1 to skip the size check.
@@ -2693,10 +2714,14 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 		// should paginate via the prefix.
 		limit = 1000
 	}
+	if !tenantDocumentsReadable(ctx, scope) && inDocumentNamespace(in.Prefix) {
+		return tenantDocumentReadRefusal("list"), nil
+	}
 	entries, truncated, err := m.backend(ctx).List(ctx, scope, scopeID, in.Prefix, limit)
 	if err != nil {
 		return errFrom(fmt.Sprintf("list: %s", err), err), nil
 	}
+	entries = m.dropTenantDocumentRows(ctx, scope, scopeID, entries)
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, map[string]any{
@@ -2718,6 +2743,9 @@ func (m *Memory) execIncr(ctx context.Context, scope store.MemoryScope, scopeID 
 	// RFC BL P1: a read_only core block refuses incr too. limit_bytes is moot
 	// for a bounded-width number, so pass -1 to skip the size check.
 	if res, refused := refuseUnitWrite("incr", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("incr", in.Key); refused {
 		return res, nil
 	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "incr", -1); err != nil {
@@ -2785,6 +2813,9 @@ func (m *Memory) execMerge(ctx context.Context, scope store.MemoryScope, scopeID
 	if res, refused := refuseUnitWrite("merge", in.Key); refused {
 		return res, nil
 	}
+	if res, refused := refuseChunkBodyWrite("merge", in.Key); refused {
+		return res, nil
+	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "merge", -1); err != nil {
 		return errBusiness(err.Error(), "Write a different key; this core block is operator-configured."), nil
 	}
@@ -2846,6 +2877,9 @@ func (m *Memory) execAppendDedupe(ctx context.Context, scope store.MemoryScope, 
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the appended value.
 	if res, refused := refuseUnitWrite("append_dedupe", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("append_dedupe", in.Key); refused {
 		return res, nil
 	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "append_dedupe", -1); err != nil {
@@ -2927,6 +2961,9 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 	// RFC BL P1: refuse a read_only core block before mutating; the size caps
 	// run inside the reducer, on the trimmed value.
 	if res, refused := refuseUnitWrite("bounded_list", in.Key); refused {
+		return res, nil
+	}
+	if res, refused := refuseChunkBodyWrite("bounded_list", in.Key); refused {
 		return res, nil
 	}
 	if err := enforceCoreBlockWrite(ctx, scope, in.Key, "bounded_list", -1); err != nil {

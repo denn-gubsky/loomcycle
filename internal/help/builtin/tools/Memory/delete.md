@@ -18,6 +18,11 @@ name the entry was given with `set`'s `path`; remove that with `Path op=rm`.
 
 ## Errors
 
+- `delete: doc.chunk:… is a Document chunk body, which is removed through the
+  Document tool ...` — delete or retire a document chunk with the Document tool
+  (`delete_chunk`, `supersede_chunk`). A consolidated fact addressed by its
+  `doc.chunk:` id is not refused. `doc.unit:` keys are refused too: derived
+  search units are written and removed by the server only.
 - `delete: missing required field: key`.
 - `Memory.delete: core block "persona" ... is read_only` — the operator owns
   that key; you may not delete it.

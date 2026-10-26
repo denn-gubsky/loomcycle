@@ -80,7 +80,7 @@ func (g *graphBodies) prefetch(ctx context.Context, ids []string, from, n int, r
 		go func(i int, id string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			cb, err := g.d.readBody(ctx, g.mscope, g.key.ScopeID, id)
+			cb, err := g.d.readBody(ctx, g.mscope, g.key, id)
 			if err != nil {
 				// Omitted, never an error: a recall that loses one excerpt is still the
 				// recall the caller asked for, and the title is still there.

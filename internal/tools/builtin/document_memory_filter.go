@@ -49,21 +49,10 @@ func (d *Document) ResolveDocumentFilter(ctx context.Context, op string, scope s
 	if err != nil {
 		return memrank.DocumentFilterResult{}, &documentFilterRefusal{docFail(op+": document filter: ", err)}
 	}
-	// A TENANT document's bodies are not in the keyspace a tenant-scope Memory
-	// call reads: they are written under the SQL Memory scope id (the tenant),
-	// while the Memory tool's tenant scope id is empty (see resolveScope's tenant
-	// branch and writeBodyAs). A filter there could never match a document the
-	// search can return, so it is refused rather than resolved — after the gate,
-	// which provisions nothing.
-	if scope == store.MemoryScopeTenant {
-		return memrank.DocumentFilterResult{}, &documentFilterRefusal{errValidation(
-			op+": document filters are not available on a tenant-scope Memory call — tenant documents are not searchable through this scope",
-			"Drop the document filter, or search the tenant's documents with the Document tool's search (scope tenant), which takes the same filters.")}
-	}
-	if mscope != scope || key.ScopeID != scopeID {
+	if mscope != scope || docMemScopeID(mscope, key) != scopeID {
 		// Both tools derive the scope id from the same run identity; a mismatch
 		// means the two would read different trees, so nothing is resolved.
-		return memrank.DocumentFilterResult{}, fmt.Errorf("document filter: memory scope %s/%q is not document scope %s/%q", scope, scopeID, mscope, key.ScopeID)
+		return memrank.DocumentFilterResult{}, fmt.Errorf("document filter: memory scope %s/%q is not document scope %s/%q", scope, scopeID, mscope, docMemScopeID(mscope, key))
 	}
 	empty, err := d.documentTablesAbsent(ctx, key)
 	if err != nil {

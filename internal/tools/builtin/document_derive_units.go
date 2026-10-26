@@ -195,7 +195,7 @@ func (d *Document) deriveDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		rep.ChunksExamined++
 		sum := sha256.Sum256([]byte(text))
 		sha := hex.EncodeToString(sum[:])
-		existing := d.unitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkID)
+		existing := d.unitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkID)
 		if unitsCurrent(existing, sha, kinds) {
 			rep.UpToDate++
 			continue
@@ -279,7 +279,7 @@ func lastChunkBefore(rows [][]any, chunkID string) string {
 // unitKindsFor is the kinds a document asks for: its root's own index_units wins,
 // else the deepest marked subtree ANY of its names lies under, else none.
 func (d *Document) unitKindsFor(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, rootID string, paths []string, gen config.UnitGeneratorConfig) []string {
-	if cb, err := d.readBody(ctx, mscope, key.ScopeID, rootID); err == nil && len(cb.Fields) > 0 {
+	if cb, err := d.readBody(ctx, mscope, key, rootID); err == nil && len(cb.Fields) > 0 {
 		var f struct {
 			IndexUnits json.RawMessage `json:"index_units"`
 		}
@@ -370,7 +370,7 @@ func (d *Document) unitSourceText(ctx context.Context, mscope store.MemoryScope,
 	if chunkType == "image" || chunkType == "mermaid" {
 		return "", false
 	}
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, chunkID)
+	cb, err := d.readBody(ctx, mscope, key, chunkID)
 	if err != nil {
 		return "", false
 	}

@@ -21,6 +21,10 @@ Expired entries are never listed.
 
 ## Errors
 
+- `list: reading tenant documents through Memory needs sql_scopes: [tenant] as
+  well as memory_scopes: [tenant] ...` — the prefix is inside the document
+  namespace (`doc.chunk:` / `doc.unit:`). Without that grant a `tenant` list
+  with any other prefix simply leaves the tenant's document rows out.
 - `Memory tool: scope "tenant" not in this agent's memory_scopes [...]` — not
   granted; retrying is pointless.
 - `list: ...` wraps a storage failure; retrying is reasonable.

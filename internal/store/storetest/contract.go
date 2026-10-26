@@ -274,6 +274,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryOrphanRepairScopeIDFilter", testMemoryOrphanRepairScopeIDFilter},
 		{"MemoryOrphanEmptyTargetRefused", testMemoryOrphanEmptyTargetRefused},
 		{"MemoryLegacyTenantStatsOnlyMixed", testMemoryLegacyTenantStatsOnlyMixed},
+		{"MigrateTenantDocumentRows_IdempotentAndReportsStrays", testMigrateTenantDocumentRowsIdempotentAndReportsStrays},
 		{"MemoryIncrementIsAtomicUnderConcurrency", testMemoryIncrementIsAtomicUnderConcurrency},
 		// v0.12.x — MemoryAtomicUpdate primitive backing the new
 		// reducer ops (Memory.merge / append_dedupe / bounded_list).
@@ -17821,5 +17822,142 @@ func testRetentionOverrides(t *testing.T, s store.Store) {
 	}
 	if had, _ := s.RetentionOverrideDelete(ctx, "acme", "gone"); had {
 		t.Error("an expired override was still stored after a later put")
+	}
+}
+
+// testMigrateTenantDocumentRowsIdempotentAndReportsStrays: tenant document rows an
+// older binary keyed by the SQL Memory scope id (the tenant, "default" for the
+// empty tenant) move to scope_id "" with their embeddings; a conflict keeps the
+// later write; a row at any other scope id is a stray, left and reported; nothing
+// that is not a tenant document row moves; a second call moves nothing.
+//
+// "default" is sqlmem.ScopeTenant(""), restated because the store cannot import
+// SQL Memory; the Document tool's migration test seeds it through that function.
+func testMigrateTenantDocumentRowsIdempotentAndReportsStrays(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	const ts = store.MemoryScopeTenant
+	set := func(tenant string, scope store.MemoryScope, scopeID, key, val string) {
+		t.Helper()
+		if err := s.MemorySet(ctx, tenant, scope, scopeID, key, json.RawMessage(`"`+val+`"`), 0); err != nil {
+			t.Fatalf("seed %s/%s/%s/%s: %v", tenant, scope, scopeID, key, err)
+		}
+		// updated_at decides a conflict; keep successive writes apart on every tier.
+		time.Sleep(3 * time.Millisecond)
+	}
+	embed := func(tenant, scopeID, key string) {
+		t.Helper()
+		if !s.SupportsVectors() {
+			return
+		}
+		if err := s.MemoryEmbedSet(ctx, tenant, ts, scopeID, key, store.MemoryEmbedding{
+			Provider: "p", Model: "m", Dimension: 4, Vector: floats32(1, 0, 0, 0), EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("seed embedding %s: %v", key, err)
+		}
+	}
+	get := func(tenant string, scope store.MemoryScope, scopeID, key string) (string, bool) {
+		t.Helper()
+		e, err := s.MemoryGet(ctx, tenant, scope, scopeID, key)
+		if err != nil {
+			return "", false
+		}
+		return strings.Trim(string(e.Value), `"`), true
+	}
+
+	set("tnt", ts, "tnt", "doc.chunk:a", "A")
+	embed("tnt", "tnt", "doc.chunk:a")
+	set("tnt", ts, "tnt", "doc.unit:a:summary:0", "UNIT")
+	set("", ts, "default", "doc.chunk:d", "DEFAULT")
+	// Conflict, destination newer: the destination stays.
+	set("tnt", ts, "tnt", "doc.chunk:c", "OLD-c")
+	set("tnt", ts, "", "doc.chunk:c", "NEW-c")
+	embed("tnt", "", "doc.chunk:c")
+	// Conflict, old row newer: it replaces the destination.
+	set("tnt", ts, "", "doc.chunk:c2", "OLD-dest-c2")
+	set("tnt", ts, "tnt", "doc.chunk:c2", "NEW-legacy-c2")
+	embed("tnt", "tnt", "doc.chunk:c2")
+	// Conflict, old row newer but its body BLANK — what an old replica writes back
+	// after reading a moved body as empty: the destination stays. Fields alone do
+	// not make a body non-empty.
+	if err := s.MemorySet(ctx, "tnt", ts, "", "doc.chunk:blank", json.RawMessage(`{"body":"the real text"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Millisecond)
+	if err := s.MemorySet(ctx, "tnt", ts, "tnt", "doc.chunk:blank", json.RawMessage(`{"body":"","fields":{"k":"v"}}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Millisecond)
+	// Not moved: a stray scope id, a non-document key, another scope.
+	set("tnt", ts, "other", "doc.chunk:s", "STRAY")
+	set("tnt", ts, "tnt", "notes/x", "NOTE")
+	set("tnt", store.MemoryScopeUser, "tnt", "doc.chunk:u", "USER")
+
+	rep, err := s.MigrateTenantDocumentRows(ctx)
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if rep.Moved != 4 {
+		t.Errorf("moved %d rows, want 4 (a, its unit, the default tenant's, c2): %+v", rep.Moved, rep)
+	}
+	if rep.Conflicts != 3 || len(rep.ConflictSample) != 3 {
+		t.Fatalf("conflicts = %d %+v, want c, c2 and blank", rep.Conflicts, rep.ConflictSample)
+	}
+	kept := map[string]bool{}
+	for _, c := range rep.ConflictSample {
+		kept[c.Key] = c.KeptOld
+	}
+	if kept["doc.chunk:c"] || !kept["doc.chunk:c2"] || kept["doc.chunk:blank"] {
+		t.Errorf("conflict outcomes = %v, want c and blank kept at the destination and c2 taken from the old row", kept)
+	}
+	if e, err := s.MemoryGet(ctx, "tnt", ts, "", "doc.chunk:blank"); err != nil || !strings.Contains(string(e.Value), "the real text") {
+		t.Errorf("a newer BLANK old-keyspace body replaced the destination: %s (%v)", e.Value, err)
+	}
+	if _, ok := get("tnt", ts, "tnt", "doc.chunk:blank"); ok {
+		t.Error("the blank old-keyspace row was left behind")
+	}
+	if rep.Strays != 1 || len(rep.StraySample) != 1 ||
+		rep.StraySample[0] != (store.TenantDocumentRowRef{TenantID: "tnt", ScopeID: "other", Key: "doc.chunk:s"}) {
+		t.Errorf("strays = %d %+v, want the one at scope_id other", rep.Strays, rep.StraySample)
+	}
+
+	for _, w := range []struct{ tenant, key, val string }{
+		{"tnt", "doc.chunk:a", "A"}, {"tnt", "doc.unit:a:summary:0", "UNIT"}, {"", "doc.chunk:d", "DEFAULT"},
+		{"tnt", "doc.chunk:c", "NEW-c"}, {"tnt", "doc.chunk:c2", "NEW-legacy-c2"},
+	} {
+		if v, ok := get(w.tenant, ts, "", w.key); !ok || v != w.val {
+			t.Errorf("%q/%s at \"\" = %q (present %v), want %q", w.tenant, w.key, v, ok, w.val)
+		}
+	}
+	for _, g := range []struct{ tenant, scopeID, key string }{
+		{"tnt", "tnt", "doc.chunk:a"}, {"tnt", "tnt", "doc.unit:a:summary:0"}, {"", "default", "doc.chunk:d"},
+		{"tnt", "tnt", "doc.chunk:c"}, {"tnt", "tnt", "doc.chunk:c2"},
+	} {
+		if _, ok := get(g.tenant, ts, g.scopeID, g.key); ok {
+			t.Errorf("%q/%s still at the old scope id %q", g.tenant, g.key, g.scopeID)
+		}
+	}
+	if _, ok := get("tnt", ts, "other", "doc.chunk:s"); !ok {
+		t.Error("the stray moved; it must stay where it is")
+	}
+	if _, ok := get("tnt", ts, "tnt", "notes/x"); !ok {
+		t.Error("a non-document key moved")
+	}
+	if _, ok := get("tnt", store.MemoryScopeUser, "tnt", "doc.chunk:u"); !ok {
+		t.Error("a user-scope row moved")
+	}
+	if s.SupportsVectors() {
+		for _, k := range []string{"doc.chunk:a", "doc.chunk:c", "doc.chunk:c2"} {
+			if _, err := s.MemoryEmbedGet(ctx, "tnt", ts, "", k); err != nil {
+				t.Errorf("embedding of %s not at \"\": %v", k, err)
+			}
+		}
+	}
+
+	again, err := s.MigrateTenantDocumentRows(ctx)
+	if err != nil {
+		t.Fatalf("second migrate: %v", err)
+	}
+	if again.Moved != 0 || again.Conflicts != 0 || again.Strays != 1 {
+		t.Errorf("second call = %+v, want nothing moved and the stray reported again", again)
 	}
 }

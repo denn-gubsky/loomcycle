@@ -81,7 +81,7 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	// which had NO writer in this plane at all, because the run id is on the context
 	// and the session id is not.
 	in.bodyOrigin = originForEntityWrite(ctx)
-	if prov, ok := d.resolveChunkPending(ctx, mscope, key.ScopeID, in.FromPending); ok {
+	if prov, ok := d.resolveChunkPending(ctx, mscope, docMemScopeID(mscope, key), in.FromPending); ok {
 		if prov.Origin != "" {
 			in.bodyOrigin = prov.Origin
 		}
@@ -169,7 +169,7 @@ func (d *Document) updateChunkForUpsert(ctx context.Context, key sqlmem.ScopeKey
 	if in.Body != "" || len(in.Fields) > 0 {
 		body, fields := in.Body, in.Fields
 		if in.Body == "" || len(in.Fields) == 0 {
-			cur, rerr := d.readBody(ctx, mscope, key.ScopeID, chunkID)
+			cur, rerr := d.readBody(ctx, mscope, key, chunkID)
 			if rerr != nil {
 				return rerr
 			}

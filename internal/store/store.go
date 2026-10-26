@@ -3039,6 +3039,21 @@ type MemoryStore interface {
 	// non-global orphan.
 	MemoryOrphanRepair(ctx context.Context, targetTenant string, scopeIDs []string) (MemoryOrphanReport, error)
 
+	// MigrateTenantDocumentRows moves tenant-scope document rows (doc.chunk: and
+	// doc.unit: keys, with their embeddings) from the scope_id an older binary
+	// wrote them at — the SQL Memory scope id, which is tenant_id, or "default"
+	// for the empty tenant — to scope_id "", where a tenant-scope Memory read
+	// looks. Mirrors postgres migration 0114; the boot sweep calls it again so the
+	// rows a replica on the old binary writes during a rolling upgrade move too.
+	//
+	// A row at any other non-empty scope_id is a stray: left where it is and
+	// reported. A row whose destination is already occupied is a conflict: the
+	// one updated later is kept, the other deleted, and the pair reported — never
+	// a failure — except that an old-keyspace chunk body whose `body` is empty
+	// never replaces the destination (an old replica writes one back after
+	// reading a moved body as empty). Idempotent: a second call moves nothing.
+	MigrateTenantDocumentRows(ctx context.Context) (TenantDocumentKeyspaceReport, error)
+
 	// MemoryLegacyTenantStats reports the two numbers that decide whether a
 	// deployment is actually affected by the missing RFC BL backfill, for the
 	// boot warning.
@@ -5100,6 +5115,42 @@ type MemoryOrphanGroup struct {
 
 // MemoryOrphanReport summarizes rows stranded at the legacy "" tenant, for both
 // the read-only scan and the applied repair.
+// TenantDocumentKeyspaceReport is what MigrateTenantDocumentRows did. The
+// samples are capped at TenantDocumentReportSampleCap; the counts are not.
+type TenantDocumentKeyspaceReport struct {
+	// Moved counts memory rows moved to scope_id "" (their embeddings move with
+	// them).
+	Moved int `json:"moved"`
+	// Conflicts counts old-keyspace rows whose destination already existed.
+	Conflicts      int                         `json:"conflicts"`
+	ConflictSample []TenantDocumentRowConflict `json:"conflict_sample,omitempty"`
+	// Strays counts tenant document rows at a scope_id that is neither "" nor
+	// the old SQL Memory scope id. They are left in place.
+	Strays      int                    `json:"strays"`
+	StraySample []TenantDocumentRowRef `json:"stray_sample,omitempty"`
+}
+
+// TenantDocumentReportSampleCap bounds each sample list of a
+// TenantDocumentKeyspaceReport.
+const TenantDocumentReportSampleCap = 20
+
+// TenantDocumentRowRef names one memory row.
+type TenantDocumentRowRef struct {
+	TenantID string `json:"tenant_id"`
+	ScopeID  string `json:"scope_id"`
+	Key      string `json:"key"`
+}
+
+// TenantDocumentRowConflict is one key present at both the old scope id and
+// "". KeptOld reports which survived: true = the old-keyspace row was newer (and
+// not a blank chunk body) and replaced the destination, false = the destination
+// was kept.
+type TenantDocumentRowConflict struct {
+	TenantID string `json:"tenant_id"`
+	Key      string `json:"key"`
+	KeptOld  bool   `json:"kept_old"`
+}
+
 type MemoryOrphanReport struct {
 	// Orphaned counts movable non-global rows at "" (collisions included).
 	Orphaned int `json:"orphaned"`

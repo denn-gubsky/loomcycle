@@ -50,6 +50,48 @@ agent's `memory_scopes` and its `sql_scopes`; without both, the Document
 tool refuses `scope:tenant` with a clear message. Documents are still
 tenant-*isolated*: the SQL Memory scope key carries the authoritative tenant.
 
+**Where tenant chunk bodies live.** A chunk body (`doc.chunk:<id>`), its
+derived units (`doc.unit:`) and their embeddings are Memory rows. In the tenant
+scope they are keyed like every other tenant Memory row — `scope_id` empty, the
+`tenant_id` column carrying the identity — so `Memory op=search` / `recall` /
+`get` at `scope: tenant` reach them. (SQL Memory keeps the tenant as its scope
+id; it cannot key on an empty component.) Releases before this one keyed these
+rows by the SQL Memory scope id instead (the tenant, or `default` for the empty
+tenant), where no tenant-scope Memory read looked:
+
+- Postgres migration `0114` moves them, embeddings included; SQLite does the same
+  on open, and every boot repeats it to catch rows a replica on the older binary
+  wrote during a rolling upgrade. The boot log reports rows moved, conflicts
+  (both coordinates held the key — the later write is kept, except that an
+  old-keyspace chunk body whose `body` is empty never replaces the destination;
+  fields alone do not count as content) and strays (a tenant document row at any
+  other scope id, left where it is).
+- For one release a tenant body read that misses retries the old scope id, so a
+  chunk an older replica just wrote reads correctly before the next boot moves it.
+- Snapshot restore re-keys an older snapshot's tenant document rows the same way.
+- During a rolling upgrade an older replica reads a moved body as empty. If it
+  writes that emptiness back (a fields-only `update_chunk`), the blank row lands
+  at the old scope id and the next sweep discards it in favour of the moved body;
+  a real edit made through an older replica is kept if it is the later write. The
+  older replica still shows tenant documents as empty until it is upgraded.
+  Rolling the binary back past `0114` needs the rows moved back by hand (the down
+  migration is a no-op).
+
+**Memory and document rows.** Because chunk bodies share the Memory keyspace,
+the Memory tool keeps them behind the Document tool's checks:
+
+- Writes: `set`, `incr`, `merge`, `append_dedupe` and `bounded_list` refuse a
+  `doc.chunk:` (and `doc.unit:`) key with a validation error; `delete` and
+  `supersede` refuse a unit and a provenance-free (prose) chunk body. A
+  consolidated fact's body carries provenance, and the consolidation pass may
+  still retire or remove a fact by its `doc.chunk:` id.
+- Tenant reads: reading tenant document rows through Memory needs
+  `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]`, the pair the
+  Document tool needs. Without it, a call that asks for documents (`documents` in
+  `sources`, a `doc.chunk:` prefix, a document filter, a `get` of a prose body)
+  is a permission error naming the grant; a search or list that does not ask
+  leaves the document class out. Facts, notes and traces are unaffected.
+
 ### Concurrency, hierarchy, querying
 
 - **Optimistic concurrency.** `update_chunk` takes the chunk's current
@@ -251,13 +293,13 @@ Kinds combine with AND, values within a list with OR; a singular and its plural 
 
 **The same filters on `Memory op=search` and `op=recall`.** A caller that recalls through the Memory tool — where chunk bodies come back beside facts and notes — can aim the documents half with `under_paths`, `exclude_under_paths`, `document_ids` and `exclude_document_ids` (lists only; the chunk-level predicates stay on `Document op=search`). The Memory tool does not reach SQL Memory: it holds the Document tool as a `DocumentFilterResolver` (`internal/memory`), wired at boot and read at call time, which runs the same resolution above — access-control narrowing, inversion and the cap included — in the SQL Memory scope matching the call's memory scope, and returns the chunk-id lists `SearchQuery` already takes.
 
-- **Scope gate.** Resolving is a SQL Memory read, so it goes through the Document tool's own scope gate (`resolveScope`: the grants and the isolated-member confinement) and provisions nothing — a scope with no SQL Memory or no document tables simply matches nothing. A gate refusal is reported as `Document op=search` reports it: a **permission** error naming the missing grant (e.g. `sql_scopes: [tenant]`) or the confinement. `user` and `agent` scope only: a tenant document's chunk bodies are keyed by the SQL Memory scope id (the tenant), not the empty scope id a tenant-scope Memory call reads, so a tenant-scope Memory search cannot return tenant documents and, once the gate has passed, its document filters are refused with a **validation** error; tenant documents are searched with `Document op=search` (scope `tenant`).
+- **Scope gate.** Resolving is a SQL Memory read, so it goes through the Document tool's own scope gate (`resolveScope`: the grants and the isolated-member confinement) and provisions nothing — a scope with no SQL Memory or no document tables simply matches nothing. A gate refusal is reported as `Document op=search` reports it: a **permission** error naming the missing grant (e.g. `sql_scopes: [tenant]`) or the confinement. Every scope, each in its own tree: on `tenant` the filters resolve in the tenant's SQL Memory tree, and need both tenant grants — a tenant-scope Memory call without `sql_scopes: [tenant]` is refused with the **permission** error of the tenant read rule above before anything is resolved.
 
 - **Documents only.** In a mixed search the lists must not drop a note or a fact for not being a chunk id, so the store filter carries `IDsPrefixes` (`doc.chunk:`, `doc.unit:`): only provenance-free rows under those namespaces are held to the lists, the segment cut after whichever prefix matched; a fact homed in a chunk carries provenance and passes. A search on exactly the chunk namespace (Document `search`) keeps the plain rule.
 - **Accepted only where documents can come back.** No `sources` or `sources` including `documents` on `search`; on `recall`, whose default is facts and notes, `documents` must be asked for. Otherwise the call is refused with a validation error naming the selector — never run with a filter it would ignore. Refused too when no resolver is wired or SQL Memory is off ("documents not configured on this server"), and when the agent's memory backend is not this server's in-process one (a remote backend cannot interpret the ids).
 - **Nothing matched.** A documents-only call answers `{entries|memories: [], filter}` without embedding; a mixed call keeps its facts and notes and drops the document class at the store (an empty id list would mean "everything").
 - **Response.** The same `filter: {applied, matched_documents, matched_chunks, inverted}` block beside `entries` / `memories`, only when a filter was given. A path is a name in one scope's tree, so a caller recalling in several scopes makes one call per scope and gets each scope's own counts.
-- **Off-run search.** The operator console's `POST /v1/_memory/search` takes the same four lists (TS `memorySearch`: `underPaths`, `excludeUnderPaths`, `documentIds`, `excludeDocumentIds`) and answers with the same `filter` block, only when a filter was sent. It runs the Memory tool's own resolution step with the Document tool as resolver, under the caller's authoritative identity: the principal's tenant, the request's `scope_id` as the subject, the operator-plane grants the off-run Document routes use, and the principal's access-control set for the narrowing. A refusal is answered by its class: `400 invalid_filter` (validation, including tenant scope), `403 permission_denied`, `400 filter_unavailable` (no SQL Memory, filter too wide).
+- **Off-run search.** The operator console's `POST /v1/_memory/search` takes the same four lists (TS `memorySearch`: `underPaths`, `excludeUnderPaths`, `documentIds`, `excludeDocumentIds`) and answers with the same `filter` block, only when a filter was sent. It runs the Memory tool's own resolution step with the Document tool as resolver, under the caller's authoritative identity: the principal's tenant, the request's `scope_id` as the subject, the operator-plane grants the off-run Document routes use, and the principal's access-control set for the narrowing. A refusal is answered by its class: `400 invalid_filter` (validation), `403 permission_denied`, `400 filter_unavailable` (no SQL Memory, filter too wide). A `tenant` search resolves its filter in the tenant's tree.
 
 ### The opt-in rerank — memory.reranker + memory_rerank
 

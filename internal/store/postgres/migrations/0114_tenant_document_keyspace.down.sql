@@ -1,0 +1,11 @@
+-- Reverses 0114 — except it does not, deliberately.
+--
+-- The forward migration moves tenant document rows from the SQL Memory scope id
+-- to ''. Moving them back would also move every row the new code wrote at '', and
+-- a conflict the forward pass resolved deleted one side, which no reverse can
+-- bring back. The rows at '' are where a tenant-scope Memory read looks; a binary
+-- from before 0114 reads tenant document bodies at the old scope id and would see
+-- them empty, so rolling the binary back past this migration needs the rows moved
+-- by hand (UPDATE memory/memory_embeddings SET scope_id = <the tenant, or
+-- 'default'> for tenant-scope doc.chunk:/doc.unit: keys).
+SELECT 1;

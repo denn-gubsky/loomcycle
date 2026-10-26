@@ -194,7 +194,7 @@ func (d *Document) HomeFactsUnderSubjects(ctx context.Context, tenantID string,
 		// transaction, and an orphaned body is invisible dead k/v where an orphaned
 		// row would not be.
 		if target.dropRoot != "" {
-			_, _ = d.Store.MemoryDelete(ctx, tenantID, scope, key.ScopeID, chunkBodyKey(target.dropRoot))
+			_, _ = d.Store.MemoryDelete(ctx, tenantID, scope, docMemScopeID(scope, key), chunkBodyKey(target.dropRoot))
 		}
 		// The Path-tree name LAST, and only for a document this run created: a failure
 		// here leaves the facts correctly homed and merely unnamed, which is the

@@ -30,6 +30,10 @@ just cannot re-read its source.
 
 ## Errors
 
+- `get: reading tenant documents through Memory needs sql_scopes: [tenant] as
+  well as memory_scopes: [tenant] ...` — the key is a tenant document's chunk
+  body (or a derived unit) and the agent lacks the second grant the Document tool
+  would need for it. Consolidated facts are readable without it.
 - `get: missing required field: key (or path)` — pass one of them.
 - `get: no such path: /prefs/voice` — nothing is named at that path in THIS
   scope. Check the scope, or list with `Path op=ls`. Retrying is pointless.

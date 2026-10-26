@@ -239,10 +239,8 @@ func TestMemorySearch_DocumentFilterRefusedWithoutDocuments(t *testing.T) {
 // TestMemoryRecall_ExcludeUnderPathsReachesEveryScope — a path is a per-scope
 // name: the same filter, recalled in each scope, resolves in THAT scope's tree,
 // and each answer reports its own scope's counts. (A Memory call reads one scope;
-// a caller consulting several makes one call per scope.) The user and agent
-// scopes: those are the two whose document bodies share the Memory tool's scope
-// id (a tenant document's bodies are keyed by the SQL Memory tenant id, which a
-// tenant-scope Memory call does not read — a separate, pre-existing split).
+// a caller consulting several makes one call per scope.) The tenant scope has its
+// own test (TestMemorySearch_GrantedTenantDocumentFilterResolvesInTheTenantTree).
 func TestMemoryRecall_ExcludeUnderPathsReachesEveryScope(t *testing.T) {
 	mc := newMemDocCorpus(t)
 	// The agent scope's own documents under the same two paths.
@@ -354,21 +352,33 @@ func TestMemorySearch_TenantDocumentFilterIsRefusedAndProvisionsNothing(t *testi
 	}
 }
 
-// TestMemorySearch_GrantedTenantDocumentFilterIsAValidationRefusal — with both
-// tenant grants the scope gate passes, and the filter is still refused, as a
-// validation error: a tenant document's bodies are not in the keyspace a
-// tenant-scope Memory call reads, so no filter there could match one.
-func TestMemorySearch_GrantedTenantDocumentFilterIsAValidationRefusal(t *testing.T) {
+// TestMemorySearch_GrantedTenantDocumentFilterResolvesInTheTenantTree — with
+// both tenant grants a tenant-scope Memory search takes the document filters, and
+// they resolve in the tenant's own tree: the paths name the tenant's documents,
+// and the hits are the tenant's chunk bodies.
+func TestMemorySearch_GrantedTenantDocumentFilterResolvesInTheTenantTree(t *testing.T) {
 	mc := newMemDocCorpus(t) // holds memory_scopes and sql_scopes [tenant]
-	r := mc.mem(`{"op":"search","scope":"tenant","query":"norm clause","under_paths":["/qg/norms"]}`)
-	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryValidation {
-		t.Errorf("granted tenant-scope document filter = %s (%+v), want a validation refusal", r.Text, r.Error)
+	tenantDoc := func(path string) string {
+		return mc.exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "Doc", "path": path})["document_id"].(string)
 	}
-	if !strings.Contains(r.Text, "not available on a tenant-scope Memory call") {
-		t.Errorf("refusal = %s, want the tenant-scope explanation", r.Text)
+	tChunk := func(doc string) string {
+		return mc.exec(map[string]any{"op": "create_chunk", "scope": "tenant", "document_id": doc, "title": "P", "body": "norm clause"})["id"].(string)
 	}
-	if scopeExists(t, mc.d, mc.ctx, "tenant") {
-		t.Error("the refused filter provisioned the tenant's SQL Memory scope")
+	norm, report := tChunk(tenantDoc("/qg/norms/t1")), tChunk(tenantDoc("/qg/reports/t1"))
+	got, echo := mc.keys(`{"op":"search","scope":"tenant","query":"norm clause","top_k":50,"under_paths":["/qg/norms"]}`)
+	if !got[chunkBodyKey(norm)] {
+		t.Errorf("the tenant norm chunk is missing: %v", got)
+	}
+	if got[chunkBodyKey(report)] {
+		t.Errorf("the tenant report chunk, outside the path, came back: %v", got)
+	}
+	for _, k := range chunkKeys(append(append([]string{}, mc.norms...), mc.reports...)) {
+		if got[k] {
+			t.Errorf("a user-scope chunk %s came back from a tenant search", k)
+		}
+	}
+	if echo == nil || echoInt(echo, "matched_documents") != 1 {
+		t.Errorf("echo = %v, want matched_documents 1 (the tenant tree's own count)", echo)
 	}
 }
 

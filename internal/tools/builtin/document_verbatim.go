@@ -105,7 +105,7 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 	if len(vec) == 0 {
 		return errTransient("verbatim_answer: embed: embedder returned no vector", "Try again; if it keeps failing, ask an operator to check the embedder."), nil
 	}
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key),
 		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], verbatimSearchTopK)
 	if err != nil {
 		return errFrom("verbatim_answer: "+err.Error(), err), nil
@@ -146,7 +146,7 @@ func (d *Document) verbatimAnswer(ctx context.Context, key sqlmem.ScopeKey, msco
 	// better match to quote a verified worse one would answer with something we know is
 	// not the closest thing we have — verified, and wrong.
 	best := facts[0]
-	cb, berr := d.readBody(ctx, mscope, key.ScopeID, best.id)
+	cb, berr := d.readBody(ctx, mscope, key, best.id)
 	if berr != nil {
 		return errFrom("verbatim_answer: "+berr.Error(), berr), nil
 	}

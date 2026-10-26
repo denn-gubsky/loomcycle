@@ -241,7 +241,7 @@ func TestEmbedBody_MermaidChunkEmbedsLabelsNotSource(t *testing.T) {
 		t.Errorf("embed text is raw diagram source, not labels: %q", got)
 	}
 	// And the BODY is untouched — only the embedded text differs.
-	stored, rerr := d.readBody(ctx, store.MemoryScopeUser, "u1", chunkID)
+	stored, rerr := d.readBody(ctx, store.MemoryScopeUser, sqlmem.ScopeKey{Scope: "user", ScopeID: "u1"}, chunkID)
 	if rerr != nil {
 		t.Fatalf("readBody: %v", rerr)
 	}

@@ -28,6 +28,11 @@ had already retired it. A key that matches no fact also returns `{ok: true}`.
 
 ## Errors
 
+- `supersede: doc.chunk:… is a Document chunk body, which is removed through the
+  Document tool ...` — delete or retire a document chunk with the Document tool
+  (`delete_chunk`, `supersede_chunk`). A consolidated fact addressed by its
+  `doc.chunk:` id is not refused. `doc.unit:` keys are refused too: derived
+  search units are written and removed by the server only.
 - `memory: supersede requires the memory_consolidation grant ...` — this
   agent is not a consolidator. Retrying is pointless.
 - `supersede: not lease owner — take this target's lease with cursor_lease
