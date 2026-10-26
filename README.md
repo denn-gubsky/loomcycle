@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.122.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.123.0.</em>
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.122) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.123) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -55,9 +55,9 @@ release-by-release view see [`REVISIONS.md`](REVISIONS.md) and the
 | Capability | What you get |
 |---|---|
 | **Providers** | Anthropic, OpenAI, DeepSeek, Gemini, Ollama (cloud + local) over native HTTP with no vendor SDK, behind one `Provider` interface. Config-driven `providers:` map, per-tier/effort routing, user-tier fallback cascade, `PinAfterSuccess`, model aliases and `model_pattern` globs. Plus a synthetic **`code-js`** provider (deterministic, zero token cost) and a **mock** provider for load tests. Model aliases now carry **`kind: chat \| decision \| embedder`**; a wrong-slot wire fails config load with a named error. |
-| **Built-in tools** | Read / Write / Edit / Grep / Glob / NotebookEdit / HTTP / WebFetch / WebSearch / Bash / Agent / Skill / Memory / Recall / Channel / History / Path / Document / AgentDef / SkillDef / TeamDef / **Decision** / **Crypto** (keys the model never sees: held by loomcycle or in Vault / AWS KMS / Google Cloud KMS) / **Git** (no `git` process, push credential held by the runtime) / **File** (files tools return, kept in a run inbox; download, upload, extract DOCX / XLSX / PPTX / HTML / PDF to Markdown, import as a Document) / Evaluation / Interruption / Context. |
+| **Built-in tools** | Read / Write / Edit / Grep / Glob / NotebookEdit / HTTP / WebFetch / WebSearch / Bash / Agent / Skill / Memory / Recall / Channel / History / Path / Document / AgentDef / SkillDef / TeamDef / **Decision** / **Crypto** (keys the model never sees: held by loomcycle or in Vault / AWS KMS / Google Cloud KMS) / **Git** (no `git` process, push credential held by the runtime) / **File** (files tools return, kept in a run inbox; download, upload, extract DOCX / XLSX / PPTX / HTML / PDF to Markdown, OCR scanned pages and images through a vision model, import as a Document) / Evaluation / Interruption / Context. |
 | **Memory** | Four facets on one tool: key-value, **vector** (sqlite-vec / pgvector), **SQL** (a per-scope database, sqlite + postgres tiers), and the agentic **bi-temporal entity graph** with **subject-document identity** — the subject IS its own Document in the Path tree at `/entities/<type>/<name>`, placement is one decision, both halves of a fact land together. Rows carry `observed_at` (when a thing was said) and `valid_at`/`invalid_at` (when it was true), so an `as_of` query reads the timeline at any past instant and a correction never destroys the record. Every row carries a provenance envelope: tenant, session, run, agent, model, compaction generation, server-stamped `origin`, source-quote span. An optional `recall_attach_traces` runtime grant reattaches source turns to a facts recall — **LoCoMo paired-benchmark retrieval final 0.74**. |
-| **Documents & paths** | Chunked-graph **Documents** (chunk bodies in Memory, structure in SQL Memory) with **per-piece derived search units** — a chunk with a heading, prose, code block and transclusion generates one embedding per piece, so a query for the code block does not compete with the heading for the same vector. **Documents retrieval final 0.966.** Inline `[[name]]` links become graph edges, `![[…]]` embeds transclude, plus backlinks / related / unlinked-mentions discovery, a per-chunk body-history with diff, queryable tags and type/status, images and Mermaid diagrams, and Markdown + JSON Canvas import/export — all addressed through a Unix-like **Path** VFS. |
+| **Documents & paths** | Chunked-graph **Documents** (chunk bodies in Memory, structure in SQL Memory) with **per-piece derived search units** — a chunk with a heading, prose, code block and transclusion generates one embedding per piece, so a query for the code block does not compete with the heading for the same vector. **Documents retrieval final 0.966.** Inline `[[name]]` links become graph edges, `![[…]]` embeds transclude, plus backlinks / related / unlinked-mentions discovery, a per-chunk body-history with diff, queryable tags and type/status, search filtered by path, document, type, status, tag and `as_of` inside every retrieval leg, a validity period on any chunk, images and Mermaid diagrams, and Markdown + JSON Canvas import/export — all addressed through a Unix-like **Path** VFS. |
 | **Substrate** | Content-addressed (SHA-256), runtime-mutable, tenant-scoped defs pushed at boot: Agent / Skill / **Team** / MCPServer / Schedule / Webhook / MemoryBackend / A2A / Volume / Credential / OperatorToken / **HookDef**. Authored over every transport; verify-or-fork across deployments. |
 | **Teams** | A multi-agent workflow is a state machine. A **TeamDef** carries its own **local agents, skills, channels, schedules, and webhooks** as one file, plus declared `variables` a start sets. Template-and-capture between states (`${steps.triage.answer}` interpolates a prior answer, `capture: {as: priority}` names a variable). Schedules and webhooks can start a Team directly. `TeamDef op=verify` returns `severity: refused \| unrunnable \| advisory` with JSON paths at fault, before saving. A visual **LoomBoard canvas** renders states as nodes with live run visualisation, drag-to-inject channel and variable nodes, and a Check button that calls verify without saving. |
 | **Decision tool** | A model that cannot say the wrong word. Answers typed questions with calibrated probabilities over a fixed set of options; cannot write prose, cannot invent an answer that is not in the option set. Three question types: `choice` (2–26 options), `noul` (yes/no with probability of yes), `score` (ordered levels). 1–64 questions per call. Inside a run via Context grant; outside via `POST /v1/_decide`, gRPC `Decide`, MCP `decision`, `decide()` in TS and Python. Powers the memory reranker and the cascade verifier. |
@@ -65,7 +65,7 @@ release-by-release view see [`REVISIONS.md`](REVISIONS.md) and the
 | **Bundled tools** | The ~80 MB binary ships with the dev tools agents need (Python, Go, Rust, Node, git, gh, curl, jq, sqlite3) and a **headless Chromium** in-process. An agent that needs to compile, run tests, scrape a page, submit a form, or take a screenshot does not need an external sidecar, a separate toolbox image, or a Playwright install. Volumes default to **ephemeral per-run** — intermediate files are cleared when the run ends; durable mounts are opt-in via the operator's `volumes:` config. |
 | **Isolation** | Per-agent ro/rw filesystem **Volumes** (sandbox-by-default, ephemeral-per-run default), an in-process **Bashbox**, and a **sandboxed code-execution** sidecar for untrusted multi-tenant workloads. |
 | **Triggers** | Scheduler (no 10-minute cap, every replica can run slots, DB-claimed to avoid double-fire), inbound **Webhooks** (HMAC verify-before-parse), and **A2A** peer interop. |
-| **Multi-tenancy** | Per-principal bearer tokens bound to an authoritative `(tenant, subject, scopes)`; per-route HTTP and per-RPC gRPC gates; tenant isolation across both the state and definition planes. **Access control**: ACL rule lists, nested groups and bindings with explicit deny over allow, asked at every gate and per instance, intersected with an agent's grants inside the run, and rolled out through `LOOMCYCLE_ACL` (`compat` → `shadow` → `enforce`). Per-tenant credentials **plus per-user credential self-service** (every user manages its own `scope=user` API tokens from any transport), per-scope usage/cost attribution, token budgets, data-retention + subject-erasure surfaces, and a derived **directory** (who is here, what do we hold for them). Single-tenant stays the default. |
+| **Multi-tenancy** | Per-principal bearer tokens bound to an authoritative `(tenant, subject, scopes)`; per-route HTTP and per-RPC gRPC gates; **Web UI sign-in** to a server-side session through a token, password (invitations, resets, TOTP), OIDC or OAuth gate, with an optional strict mode; tenant isolation across both the state and definition planes. **Access control**: ACL rule lists, nested groups and bindings with explicit deny over allow, asked at every gate and per instance, intersected with an agent's grants inside the run, and rolled out through `LOOMCYCLE_ACL` (`compat` → `shadow` → `enforce`). Per-tenant credentials **plus per-user credential self-service** (every user manages its own `scope=user` API tokens from any transport), per-scope usage/cost attribution, token budgets, data-retention + subject-erasure surfaces, and a derived **directory** (who is here, what do we hold for them). Single-tenant stays the default. |
 | **Context** | **Three retention modes**: `append` (baseline, every turn kept), `recap` (reasoning kept, log evicted), **stateful** (JSON-schema-validated state Σ carried forward, everything else evicted). A tier-routed `context.mode: auto` picks the mode from the resolved provider (schema-free recap on a local backend, structured stateful on a frontier API). An opt-in `context.recall` harvests each evicted span into a run-scoped embedded index and gives the agent a free-text **`Recall`** tool over it, falling back to durable memory. An opt-in `harvest_to_memory` bridges those spans into durable memory for future runs. Working range on a 200-turn chat: about one-fifth of baseline tokens at stateful on a task-shaped run. Plus context-transform plugins including a secret **redactor**, and `{{memory:…}}` / `{{tool:…}}` prompt expansion. |
 | **Tool-usage harness** | Small local models call tools reliably. 159 per-operation help articles under `tools/<Tool>/<op>.md`; every failed tool-call error carries the operation's schema plus one worked example inlined into the error body; the stateful memo keeps the failing call and the help response together in the next turn's context. On a four-model benchmark against v1.100, both stateful models (cloud `deepseek-v4-flash` and local `ornith-1.5:35b`) hit **10 of 10 tasks**. |
 | **Snapshots** | A snapshot now carries **the whole deployment**: users and budgets, schedules, webhooks, memory peers, document sources, volume mounts, the Path tree, and the consolidation queue. HMAC-signed secret references instead of literal secrets. Restore re-validates every definition against the current runtime version; a missing field or an unresolvable credential is flagged at a specific JSON path. One `loomcycle snapshot create` + `restore` moves a working deployment to a new VM. |
@@ -201,26 +201,29 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.122.0) adds access control: ACL rule lists, nested
-groups and bindings, with explicit deny over allow, asked at every HTTP, gRPC
-and MCP gate and intersected with an agent's own grants inside the run. It rolls
-out through `LOOMCYCLE_ACL` (`compat` by default, then `shadow`, then
-`enforce`), and is managed from a Settings → Access console, over every
-transport, a `loomcycle acl` command and both adapters, or declared in config.
-The rules also bind definition writes, Document, Path and credential calls and
-team walks per instance, resumed and restarted runs, and runs a schedule,
-webhook or A2A peer fires; a subject erasure removes the subject's memberships
-and bindings and revokes its member tokens; and the Web UI shows the pages the
-caller's gates admit. A new `Git` tool does repository work in a bound volume
-with the push credential held by the runtime. Files a tool returns (MCP blocks,
-opted-in base64, binary HTTP and WebFetch bodies) are kept in a run inbox, and a
-`File` tool keeps, downloads and uploads them, extracts DOCX, XLSX, PPTX, HTML
-and PDF to Markdown and imports the result as a Document; an MCP `file` tool
-reaches a run's inbox from outside it. The server can serve a newer Web UI from
-a verified bundle, on disk or fetched by URL and pinned by SHA-256, and every
-runtime log line is now levelled slog. It also adds per-agent shell
-credentials, run metrics in the Web UI and the embedder and decision models on
-the Routing page. See [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.123.0) signs people in to the Web UI: a sign-in
+creates a server-side session, so the browser never holds the API token and
+sign-out ends the session on the server. Besides the token paste box there are
+a password gate with invitations, resets and an authenticator, an OIDC gate
+(Google Workspace, Entra, Okta, Keycloak, Cognito, IAM Identity Center, Auth0)
+with an approval queue and explicit account linking, and an OAuth gate for
+GitHub, GitLab and Gitea; `auth.mode: strict` offers only the gates an operator
+lists. `File op=extract` can OCR a scanned PDF or an image through a vision
+model when the operator configures it and the agent opts in, with page caps,
+ledger rows and a `transcription` run event. Document search and related can be
+aimed at part of a scope by path, document, type, status, tag and `as_of`, any
+chunk can carry a validity period, and Memory search and recall take the same
+path filters. A request error no longer takes a model away from every run, and
+signed-URL credentials are masked in stored transcripts. See the upgrade notes
+in [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.122.0 added access control: ACL rule lists, nested groups and
+bindings with explicit deny over allow, asked at every gate and intersected with
+an agent's grants inside the run, rolled out through `LOOMCYCLE_ACL`. It also
+added a `Git` tool, kept files that tools return in a run inbox with a `File`
+tool to extract and import them, served newer Web UI bundles without a new
+binary, levelled every log line, and added per-agent shell credentials. See
+[`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.121.0 added embeddings on Amazon Bedrock:
 `memory.embedder` could use Cohere Embed, signed with a Bedrock provider's AWS

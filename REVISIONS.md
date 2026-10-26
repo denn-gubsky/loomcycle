@@ -8,6 +8,172 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.123.0
+
+*Web UI sign-in, OCR on extract, filtered Document search, and fixes to provider health. **The Web UI now signs people in to a server-side session**: the browser holds an opaque cookie and never the API token, sign-out ends the session on the server, and `auth.mode: strict` offers only the sign-in options an operator lists. **Three new sign-in gates** sit beside the token paste box: a password gate with invitations, resets, an authenticator and an `auth:manage` scope for a website that provisions its own users; an OIDC gate (Google Workspace, Entra, Okta, Keycloak, Cognito, IAM Identity Center, Auth0 or any provider) with an approval queue and explicit account linking; and an OAuth gate for GitHub, GitLab and Gitea. **`File op=extract` can OCR a scanned PDF or an image** through a vision model, when the operator configures it and the agent opts in, with page caps, ledger rows and a new `transcription` run event on every transport; speech-to-text is not in this release. **`Document op=search` and `op=related` can be aimed at part of a scope** (path, document, type, status, tag, `as_of`) inside every retrieval leg, ordinary chunks can carry their own `valid_at`/`invalid_at`, `graph_recall` returns chunk text, and Memory search and recall take the same path filters. Tenant document rows move to the keyspace Memory reads, so a tenant-scope Memory search now finds tenant documents. Also: a request error no longer takes a model away from every run, an operator-key refusal is confirmed by a probe before its provider is taken out, Haiku 5.x no longer fails on sampling settings, `shadow` access control reports in-run narrowing and no longer applies skill denies, and signed-URL credentials are masked in stored transcripts. **Read the upgrade notes: five migrations, a session cookie that replaces the bearer cookie, an older Web UI bundle that is refused, Memory writes to document bodies that are refused, and several behaviour changes.***
+
+A minor release: #2116 to #2148.
+- Web UI sign-in (RFC FA): server-side sessions and strict mode (#2121), the password gate and `auth:manage` (#2123), the OIDC gate, the identity core, approval and linking (#2133), the OAuth gate (#2136), and fixes (#2141, #2145) and docs (#2137);
+- transcription (RFC FG): the substrate, config, the `transcriber` model kind, `per_minute` pricing and the ledger's `purpose` (#2143), the agent editor field (#2144), and OCR on `File op=extract` with the `transcription` event (#2147);
+- filtered Document and Memory search (RFC FI): search and related filters (#2129), chunk validity periods (#2130), Memory search and recall filters (#2134, #2139), `graph_recall` bodies and dates (#2138), `list_facts` `as_of` (#2140), and two Postgres query-plan fixes (#2131, #2135);
+- one tenant keyspace for document rows (RFC FJ): the migration, sweep and read fallback (#2142), and three related keying fixes (#2146);
+- provider and model health (#2118, #2119, #2124);
+- access control: `shadow` reports in-run narrowing and stops applying skill denies (#2124);
+- signed-URL credentials masked at rest (#2124);
+- deployment docs: access-control settings for TrueNAS and loomcycle.cloud (#2117);
+- loomcycle.cloud's own deployment, which the release tag carries to that host and not into the binary: the plan for its move to the password gate (#2120, #2122, #2128), the password gate in its config (#2125), and its landing page's sign-up and team console (#2126, #2127);
+- #2116 fills the v1.122.0 notes' PR range, and #2148 is these notes.
+- `@loomcycle/client` and the Python adapter are 1.123.0.
+  - **TS** gains optional fields and types only, no method changes: `WhoamiAuth` and an optional `auth` on `WhoamiResponse` (#2121); the `transcription` event type, `TranscriptionInfo` and `AgentEvent.transcription` (#2147); `AgentTranscription` and `transcription` on `AgentDefOverlay` (#2143); the Document search and related filter arguments, `body_chars`, `valid_at` and `invalid_at` on `DocumentToolInput`, and `DocumentSearchFilter`, `DocumentSearchHit`, `DocumentSearchResult` and `DocumentRelatedResult` (#2129, #2130, #2138); and `underPaths`, `excludeUnderPaths`, `documentIds` and `excludeDocumentIds` on `MemorySearchInput`, with `filter` (`MemorySearchDocumentFilter`) on `MemorySearchResponse` (#2139).
+  - **Python** unwraps the `transcription` event into `TranscriptionInfo` (#2147); the `document()` and `memory()` docstrings describe the new arguments.
+
+### Web UI sign-in: sessions, strict mode and gates (#2121, #2123, #2133, #2136, #2137, #2141, #2145)
+
+The Web UI kept the pasted API bearer in its cookie. It set that cookie without checking the bearer (from `?token=` too), and signing out cleared only the browser's copy, so the browser held the API credential and nothing could revoke it. CSRF rested on `SameSite` alone, and there was no way to sign in except by pasting a token.
+
+- **Server-side sessions** (#2121). A sign-in creates a session; the browser holds an opaque HttpOnly cookie, and the server stores only the SHA-256 of its id.
+  - A session made from a pasted token re-checks that token on every request: retiring it, changing a principal's secret or changing `LOOMCYCLE_AUTH_TOKEN` ends the session, and the session always carries the token's current scopes. A changed token pepper ends every session, and so does a different User-Agent.
+  - `auth.session`: `idle` (default 8h), `absolute` (default 7 days), `reauth_window` (default 15m). Ended sessions are deleted hourly. Sessions are never snapshotted.
+  - The cookie is `__Host-lc_session` over HTTPS. Behind a TLS terminator, a `https://` `LOOMCYCLE_PUBLIC_URL` with a matching `Host`, or a loopback peer, counts as HTTPS; no forwarded header is trusted. Over plain HTTP it is `lc_session`, with a warning.
+  - **CSRF:** a cookie-authenticated write must carry `X-Loomcycle-UI: 1` and come from the server's own origin; a WebSocket upgrade needs the same origin, and so does the login route. Requests with an `Authorization` header are not affected.
+  - **Sign-out:** `POST /v1/_auth/logout` revokes the session, clears the cookies and sends `Clear-Site-Data`.
+  - `GET /v1/_me` gains an `auth` block (`mode`, and for a session `gate`, `amr`, `auth_time`, `session_expires_at`), and `/ui/login-config.json` reports the mode and the gates.
+  - Audited `auth_login`, `auth_login_failed`, `auth_logout`, `auth_session_expired` and `auth_session_revoked`, never with a credential or session id.
+- **`auth.mode`** (env `LOOMCYCLE_AUTH_MODE`): `token`, the default, keeps the paste box as before. `strict` offers only the listed gates, turns off the login handoff and the old bearer cookie and WebSocket subprotocol bearer, and needs HTTPS for the cookie unless `LOOMCYCLE_UI_INSECURE_COOKIES=1`. Strict mode with no interactive gate fails the load, strict mode with no credential refuses to boot, and a reload cannot lower the mode.
+- **The password gate, `kind: password`** (#2123). loomcycle keeps the password; the person types it only on loomcycle's own pages (`/ui/login`, `/ui/invite`, `/ui/reset`, `/ui/account`), and no management route takes one.
+  - Argon2id, peppered with a key derived from `LOOMCYCLE_SECRET_KEY` (`LOOMCYCLE_SECRET_KEY_PREVIOUS` keeps verifying during a rotation). The gate needs `LOOMCYCLE_SECRET_KEY` and `LOOMCYCLE_PUBLIC_URL`, or the config fails to load.
+  - Policy after NIST SP 800-63B-4: 15 characters as the only factor, 8 with an authenticator, no composition rules; the 10,000 most common passwords and an operator `denylist_file` are refused.
+  - Logins are unique per gate across tenants, so the form asks for no tenant. A new user's subject is `<gate>:<random>`.
+  - Throttling per account (backoff, then lockout), per client address and per address and login, kept in the store so every replica sees it. `auth.trusted_proxies` and `auth.client_ip_header` say which proxies may name the client.
+  - TOTP with ten single-use recovery codes. A reset never clears it.
+  - Invite and reset links carry their code in the URL fragment (`/ui/invite#…`, `/ui/reset#…`), so a code reaches no access log.
+  - **Management** under `/v1/_authgate/{gate}/`: invites, resets, credential removal, login rename, identities and tenant status.
+  - **`auth:manage`**, a new scope for a website's user-management token. It must be the token's only scope, reaches only those routes and the `/v1/_users` list, create, update and delete, and is refused over gRPC. It may bootstrap a tenant's owner once, only while the tenant has never had a user, and is refused every change to a user above the gate's provisioning floor; `manager_may_recover_owners` lifts that for owner recovery only. A bootstrapped owner is bound to `builtin:tenant-operator`, and its session is its tenant's operator.
+- **The OIDC gate, `kind: oidc`** (#2133). A confidential client: loomcycle redeems the code and verifies the ID token, and the provider's tokens never reach the browser.
+  - Presets `google` (`allowed_domains` required), `entra`, `cognito`, `okta`, `keycloak`, `identity-center`, `auth0` and `generic`. Code flow with PKCE S256, `state` and `nonce`, asymmetric signatures only, and a key refetch at most once a minute.
+  - The redirect URI is `<LOOMCYCLE_PUBLIC_URL>/v1/_auth/complete/<gate>`. The client secret comes only from `client_secret_env`.
+  - **Identity core**, shared with the OAuth gate: the subject is always `<gate>:<sub>`, never the e-mail. `identity_map` places a person in one tenant (or maps a claim through `allowed_tenants`) and `provision` is `never`, `known` (default) or `auto` at `auth.lifecycle.new_user`. Only a `trusted` gate may grant more than that floor or sync groups, and group sync adds and removes only in the gate's own `<gate>:` groups.
+  - **Approval:** `new_user.status: pending` lets a new person reach an "awaiting approval" page and nothing else until an operator approves them in the Users console (`POST /v1/_users/{subject}/approve`).
+  - **Linking** another gate's account is explicit, from the user's own session, through a fresh sign-in at the provider; never inferred from an e-mail. `DELETE /v1/_users/{subject}/identities/{gate}` unlinks.
+  - Tokens a gate issues are tagged `issued_by_gate`, live at most `new_user.token_ttl`, and cannot be rotated.
+- **The OAuth gate, `kind: oauth`** (#2136, #2145), for providers that issue no ID token: presets `github` (with GitHub Enterprise through `base_url`), `gitlab`, `gitea` and `generic`.
+  - The subject is `<gate>:<numeric user id>`, never the login name, which its owner can rename. An `identity_map` that names `login`, `name` or `username` fails to load.
+  - An e-mail is used only when the provider marks it verified and `trust_email` is on (default on for github.com and gitlab.com, off for self-managed instances and `generic`).
+  - Groups come only from `allowed_orgs`; `require_org` refuses anyone outside them.
+  - A `github` or `gitlab` gate on the public instance loads only with `allowed_orgs` and `require_org: true`, or with `allow_any_account: true`. A `base_url` that names the public host counts as the public instance (#2145).
+  - An OAuth session cannot link or unlink accounts: an OAuth provider cannot prove a recent sign-in (#2145).
+- **Web UI:** the login page shows one button per gate and a password form; new pages for invites, resets, the account (password, authenticator, sign-in methods) and pending approval; an approve action in the Users console. Its UI API level is now 2.
+- See "Web UI sign-in" and the three gate sections in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) (#2137), and the routes in `api/openapi.yaml`.
+
+### OCR on File extract, and the transcription substrate (#2143, #2144, #2147)
+
+A scanned board paper or a photographed page is a PDF or image with no text layer: `extract` returned near-empty pages, and the agent could not read the bytes it must never hold.
+
+- **`File op=extract` takes `ocr: never | auto | always`, `language` and `dry_run`** (#2147). `auto` OCRs only the pages whose text yield is below `ocr_min_chars_per_page`; `always` every page; an image whenever OCR is on. `never` keeps the old output and lists the low-yield pages.
+  - The output is one `## Page N` per page in order, text pages keeping their text and OCR'd pages the transcript, under an `ocr engine=… provider=… model=… pages=…` header. The excerpt stays fenced as untrusted file content, and `import` keeps the page fields.
+  - **The agent's `transcription.ocr` is the ceiling,** and it defaults to `never`: a call may ask for less, never more.
+  - The model is resolved through `transcription.ocr.tier` (default `middle`) or a pinned alias, with vision support, tenant keys and the operator-key restriction checked before any call.
+  - Claude models, direct or on Bedrock, get a page range as a PDF `document` block. Image-only models (Ollama and the like) get one rasterised page at a time through the operator's `rasterize` helper, and refuse a PDF without one. The `document` block is sent only on this call; an ordinary request carrying one is still refused.
+  - A PDF is cut into ranges of at most `max_pages_per_call`. Images are passed through when the model takes them, or scaled under a 64 MiB decode budget.
+  - **Caps and spend:** pages are reserved on the run and run tree before each call, and a cap stops the pass with what was written kept. A call that reached the model keeps its pages counted even if it failed. Each call is a ledger row with `purpose: ocr`, its tokens and cost. `dry_run` estimates pages, tokens and cost without calling a model.
+- **The `transcription` event** (#2147): one per extract that ran or estimated OCR, with the source and output refs, purpose, engine, provider and model, pages, tokens, cost (absent when unpriced), status `ok | partial | failed`, `error`, `dry_run` and `run_id`, never the text. On SSE and stream re-attach, as a transcript row (never replayed as model input), on gRPC (`Event.transcription`, field 24, `TranscriptionInfo`), in both adapters, and as one line in the Web UI's run views (`⟲ OCR scan.pdf · 12 pages · claude-haiku-5-5 · $0.04 · ok`).
+- **The substrate** (#2143), which speech-to-text will use as is:
+  - a top-level `transcription:` block with `ocr` (engine `vision` or `off`, tier or model, languages, per-call and per-run page caps, the optional `rasterize` helper, a prompt override) and `stt` (engine `openai-audio` or `off`, provider, model, language, vocabulary, minute caps, chunking, the optional `media` helper). Absent, both are off. `command`, `http` and `gemini-audio` are refused as not available yet;
+  - a model kind `transcriber` beside `chat`, `decision` and `embedder`, required for `stt.model`;
+  - `per_minute` on a model price, billed by the second;
+  - a per-agent `transcription` block (`ocr`, `stt`, `max_pages_per_run`, `max_minutes_per_run`) in yaml and the AgentDef overlay, part of the content hash, not overridable per run. A cap above the operator's is refused; at run time the lower applies. The agent editor has the field (#2144);
+  - `purpose` (`chat`, `ocr`, `stt`) and `audio_seconds` on the usage ledger and its archive. `/v1/_usage`, the adapters' reports and budgets are unchanged;
+  - a helper runner for operator commands: no shell, each placeholder fills one argument, a value never starts an argument with `-`, the environment scrubbed, a fenced working directory, a timeout that kills the process group, and capped output.
+- **Not included:** speech-to-text calls (the `stt` part is configured and validated but nothing calls it yet), a per-run override, usage reports by purpose, and transcription cost in the Web UI's run totals.
+- See "Transcription — OCR and speech-to-text" (§9h) in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the File tool in [`docs/TOOLS.md`](docs/TOOLS.md).
+
+### Filtered Document and Memory search (#2129, #2130, #2131, #2134, #2135, #2138, #2139, #2140)
+
+One document scope often holds several corpora: board files, regulations in several editions, decisions, a quality gate's own reports. `search` and `related` could not be aimed at one of them, and a post-filter cannot work: each retrieval leg keeps 51 rows, so for wording common to every corpus the pool can hold none of the wanted one. A clause could not carry the period it was in force without becoming a fact.
+
+- **`Document op=search` and `op=related` filters** (#2129): `under_path(s)`, `exclude_under_path(s)`, `document_id(s)`, `exclude_document_ids`, `type(s)` (widened to subtypes), `status(es)`, `tag`, `tag_prefix` and `as_of`. They are resolved once per call and applied inside every leg before its limit, so the rerank pool holds only matching chunks.
+  - The response carries a `filter` echo (`applied`, `matched_documents`, `matched_chunks`, `type_expanded_to`, `inverted`) only when a filter was named; a filter-free call is byte-identical.
+  - A match over half the scope is sent as its complement. A list over `LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS` (default 50,000) is refused as `filter_too_wide`, never silently post-filtered.
+  - For a caller whose access-control rules can deny part of the scope, the set is narrowed to what it may read before it is counted or sent, so no count moves when a denied document changes.
+- **A validity period on any chunk** (#2130): `valid_at` and `invalid_at` (unix ns, half-open) on `create_chunk` and `update_chunk` (`null` clears an end), reported only when set. `as_of` on `search`, `related` and now `query_chunks` requires the chunk's own period and, for a fact, its fact period. `export_md`, `import_md`, `sync` and `diff_remote` carry them. An empty interval is refused. A scope's chunk table gains the two columns when its schema is next ensured.
+- **`graph_recall`** (#2138) returns up to 600 characters of an ordinary chunk's body (`body`, with `body_truncated`); facts stay title-only. `body_chars` sets the length (`0` for titles only, up to 4000 on every row), and `budget_chars` counts bodies. It now honours a chunk's own dates: an ordinary row reports its own `valid_at`/`invalid_at`, a fact with both reports its own as `chunk_valid_at`/`chunk_invalid_at`, and both `as_of` and the default "true now" leave out an ended or future chunk.
+- **`list_facts` with `as_of`** checks a fact chunk's own dates too (#2140). Its default is unchanged, because `sync` lists through it.
+- **`Memory op=search` and `op=recall`** take `under_paths`, `exclude_under_paths`, `document_ids` and `exclude_document_ids` (#2134). They narrow document rows only; facts and notes pass untouched. A filter on a call that cannot return documents, without SQL Memory, or on a remote memory backend is refused, never ignored. A scope the Document tool would refuse is a permission error naming the missing grant (#2139).
+- **`POST /v1/_memory/search`**, the console's off-run search, takes the same four filters (#2139).
+- **Postgres plans** (#2131, #2135): a statement carrying an id list is planned on each execution (a cached generic plan took 18.4 s where a custom one took 9 ms), and a denylist is an anti-join, which brought a 20,000-id exclusion on 100,000 rows from 4.9 s to 0.26 s on the vector leg.
+- See "Filtered search" and the chunk validity period in [`docs/DOCUMENTS.md`](docs/DOCUMENTS.md), and the Document and Memory help articles.
+
+### One tenant keyspace for document rows (#2142, #2146)
+
+A tenant document's chunk bodies, derived units and embeddings were written at the SQL Memory scope id (the tenant, or `default`), while a tenant-scope Memory read uses an empty scope id. So `Memory op=search`, `recall` and `get` at `scope: tenant`, and the Memory console, never saw a tenant document.
+
+- **Migration 0114** (Postgres; sqlite on open) moves the rows to where Memory reads tenant, embeddings with them. A conflict keeps the later row, except that an empty old body never replaces a moved one; a row at any other scope id is a stray, left in place and logged.
+- **Every boot re-runs the move,** which catches rows an older replica writes during a rolling upgrade. A tenant body read that misses falls back to the old scope id for this release. Restoring an older snapshot re-keys its tenant document rows.
+- **Tenant document filters** on Memory search and recall now resolve in the tenant's tree (they were refused before).
+- **Document rows stay behind the Document tool's checks.** Memory `set`, `incr`, `merge`, `append_dedupe` and `bounded_list` refuse a `doc.chunk:` key in every scope, as they already refused `doc.unit:`. `delete` and `supersede` refuse a unit or a prose chunk body; a fact body can still be superseded or deleted by its chunk id. Reading tenant document rows through Memory needs `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]`; a selector-free search or list leaves documents out, so it reads what it read before.
+- **Three keying fixes** (#2146): the derive-units pass now finds tenant documents by their paths, the placement guard reads the tenant tree, and Postgres orphan repair moves rows that carry embeddings instead of failing on the foreign key.
+
+### Provider and model health (#2118, #2119, #2124)
+
+- **A request error no longer stalls a model for every run** (#2119). Any non-429 error used to mark the model stalled for everyone, so one agent's malformed request (on v1.122.0, the `chat` bundle's temperature on Haiku 5.5) gave every other agent on the tier `503 no reachable provider with a non-stalled model` until the next probe. Now 400, 401, 403 and 422 do not stall; 404, 5xx, transport and stream errors still do.
+- **An operator-key refusal is confirmed before its provider is taken out** (#2124). A 401 or a key error on the operator's own key starts that provider's probe in the background, once at a time, and the provider is marked unreachable only if the probe is refused too. A 403 about one model's access (on Bedrock, an unsubscribed model) does not count, and a tenant's or user's own key refused affects only that run.
+- **A 429 in the fallback path** puts the model in the rate-limit cooldown instead of stalling it (#2124).
+- **Haiku 5.x** gets the rules of the other 5.x models (#2118): `temperature`, `top_p` and `top_k` are dropped with the existing warning instead of failing every run with a 400, and an `effort` hint is now sent as `output_config.effort`, with adaptive thinking for medium and high. Haiku 4.5 and earlier keep their sampling.
+- **Forced `tool_choice`:** Sonnet 5.5 refuses `any` and `tool`, so the forcing is dropped there, as on Opus 5.5 and Fable 5.1 (#2119). On Bedrock, Sonnet 5 keeps a forced choice and is sent `thinking: {type: disabled}` for that call (#2124).
+
+### Access control in shadow mode (#2124)
+
+`LOOMCYCLE_ACL=shadow` reported only request-level divergences, so the preview before `enforce` missed what the rules would do inside a run. Now each narrowing `enforce` would apply at run start (a tool withheld, a volume made read-only or dropped, a memory, SQL memory or history scope dropped, a skill deny) and each `spawn agent:` it would refuse is logged and audited `acl_shadow_diverged`, with the run id (`acl_run_id`) and an `outcome` that tells a deny from no match. Once per question per run tree; a resumed run records again. **Fix:** shadow applied explicit skill denies, contrary to "shadow changes nothing"; it now reports them and leaves `skills:` as it was.
+
+### Signed URLs masked at rest (#2124)
+
+A pre-authenticated URL a tool returned (seen live: a SharePoint upload session's `tempauth`) was stored in the clear in run transcripts. The at-rest redactor now masks the value and keeps the name: `tempauth=[redacted:signed-url]`.
+
+- Always: `tempauth`, `sig`, `X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `X-Goog-Signature`, `X-Goog-Credential`, `access_token` (also in a fragment) and `token`. CloudFront `Signature` only beside `Key-Pair-Id` or `Policy`, and an OAuth `code` only beside `state`.
+- Raw, `&amp;` and percent-encoded forms; a value ends only at a real boundary.
+- Exact values are now masked before any pattern: environment secrets, then runtime-registered values, then signed-URL parameters, then patterns, so a heuristic cannot split a registered secret.
+- At rest only: the live stream is unchanged, so an agent can still pass the URL to `File`.
+
+### Deployment (#2117, #2120, #2122, #2125 to #2128)
+
+- **TrueNAS** (#2117): the compose file sets `LOOMCYCLE_ACL: "shadow"`, the overlay example has a commented `acls:`/`groups:`/`acl_bindings:` block, and `INSTALL.md` gains an access-control section and troubleshooting rows.
+- **loomcycle.cloud** (`cloud-deployment/`, carried to that host by the release tag; nothing here is in the binary): access-control settings and a `dynamic` volume (#2117), the password gate in its config (#2125), and its landing page's sign-up and team console, which hand out invite and reset links through an `auth:manage` token instead of minting tenant tokens with the admin token (#2126, #2127, #2120, #2122, #2128).
+
+### Upgrade notes
+
+- **Five migrations** (Postgres; sqlite creates or rebuilds at boot): **0110** Web UI sessions, **0111** the password gate (users' logins, credentials, authenticators, invites, resets, throttles and the tenant bootstrap marker), **0112** the OIDC and OAuth gates' login states, a session's sign-in time and `issued_by_gate` on operator tokens, **0113** `purpose` and `audio_seconds` on `token_usage` and `usage_archive` (the archive's key gains `purpose`; sqlite rebuilds that table; old rows read `chat` and 0), and **0114** the tenant document keyspace (its down migration is a no-op, so rolling the binary back past it needs the rows moved by hand).
+- **During a rolling upgrade,** a replica still on v1.122.0 reads already-moved tenant document bodies as empty, and a tenant document it writes lands at the old scope id until the next boot's sweep moves it. Upgrade all replicas together where you can.
+- **Web UI sign-in:**
+  - **A signed-in browser keeps working** in `token` mode: the old bearer cookie is read for this release only (logged) and never set again; signing in again moves it to a session. It is not read in `strict` mode.
+  - **`/ui?token=…` no longer signs anyone in;** it redirects to the login page. Paste the token at the prompt.
+  - **A Web UI bundle built for an earlier server** (`LOOMCYCLE_WEBUI_DIR`, `LOOMCYCLE_WEBUI_BUNDLE_URL`) sends no `X-Loomcycle-UI` header, so the server's UI API level is now 2 and such a bundle is refused in favour of the built-in UI.
+  - **A script that drives the UI's cookie routes** must send `X-Loomcycle-UI: 1` and a same-origin request. API calls with an `Authorization` header are unchanged.
+  - **Behind a TLS terminator,** set `LOOMCYCLE_PUBLIC_URL=https://<public host>` so the cookie is `__Host-lc_session`; leave a Cloudflare Tunnel's `Host` header alone. Over plain HTTP the cookie is `lc_session` with a warning in `token` mode.
+  - **`strict` mode** needs an interactive gate and HTTPS for the cookie (or `LOOMCYCLE_UI_INSECURE_COOKIES=1`); a reload cannot lower it. The browser extension loses its WebSocket subprotocol bearer there.
+  - **A password gate** needs `LOOMCYCLE_SECRET_KEY` and `LOOMCYCLE_PUBLIC_URL`, or the config fails to load. Password-gate config takes effect on restart.
+  - **Snapshots carry no sign-in material:** sessions, logins, passwords, authenticators, recovery codes, invites, resets and identities stay behind. Users and the tenant bootstrap markers travel; a restored user has no login until one is issued on the target.
+- **Behaviour changes:**
+  - **`LOOMCYCLE_ACL=shadow` no longer applies explicit skill denies** to a run; it reports them. In shadow a run keeps every grant. `compat` and `enforce` are unchanged.
+  - **Haiku 5.x:** `temperature`, `top_p` and `top_k` are dropped (with a warning) instead of failing the run, and `effort` now engages adaptive thinking at medium and high, which uses more tokens. Sonnet 5.5 drops a forced `tool_choice`; Bedrock Sonnet 5 turns thinking off for a forced one.
+  - **A 400, 401, 403 or 422 no longer marks a model stalled.** A broken operator key takes its provider out only once a probe confirms it, and a 429 in the fallback path cools the model instead of stalling it.
+  - **Signed URLs are masked in stored transcripts.** A resumed or restored run replays them masked; they have expired by then in practice.
+  - **`File op=extract` can OCR, off unless both sides opt in:** the operator configures `transcription.ocr` and the agent sets `transcription.ocr: auto` or `always`. OCR calls are billed and recorded in the ledger with `purpose: ocr`.
+  - **Memory writes to document rows are refused:** `set`, `incr`, `merge`, `append_dedupe` and `bounded_list` on a `doc.chunk:` key in any scope, and `delete` or `supersede` of a unit or prose chunk body. Use the Document tool.
+  - **A tenant-scope Memory search can return tenant documents** when it asks for them, and then needs `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]`.
+  - **`graph_recall` returns chunk bodies by default** and leaves out ordinary chunks whose own period has ended or not begun. `body_chars: 0` gives the old shape.
+  - **An OAuth session cannot link or unlink accounts.** Link from a password or OIDC session.
+- **New environment variables:** `LOOMCYCLE_AUTH_MODE` (`token` or `strict`, the fleet default; a config `auth.mode` that would lower it fails the load), `LOOMCYCLE_UI_INSECURE_COOKIES` and `LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS` (default 50,000). A gate's client secret is read from the variable its `client_secret_env` names.
+- **New config:** the top-level `auth:` block (`mode`, `session`, `gates`, `lifecycle`, `trusted_proxies`, `client_ip_header`) and `transcription:` block; the model kind `transcriber`; `per_minute` in `pricing:`; the agent field `transcription`.
+- **New wire surface, all additive:**
+  - HTTP: `POST /ui/session`, `POST /v1/_auth/logout`, `GET /v1/_auth/login/{gate}`, `/v1/_auth/complete/{gate}`, the invite, reset, account, password and TOTP routes under `/v1/_auth/`, `/v1/_authgate/{gate}/…`, `POST /v1/_users/{subject}/approve`, `DELETE /v1/_users/{subject}/identities/{gate}`; `auth` on `/v1/_me`; the four document filters and `filter` on `POST /v1/_memory/search`.
+  - The `auth:manage` scope.
+  - gRPC: `TranscriptionInfo` and `Event.transcription` (field 24).
+  - The `transcription` event on SSE and in the transcript.
+  - Tool arguments: `ocr`, `language` and `dry_run` on `File op=extract`; the search filters on `Document op=search` and `op=related`; `valid_at` and `invalid_at` on Document chunks; `as_of` on `query_chunks`; `body_chars` on `graph_recall`; the document filters on `Memory op=search` and `op=recall`.
+  - New audit actions: the sign-in and session events, the password-gate events (`auth_invite_created`, `auth_login_locked`, `auth_manage_refused`, `auth_owner_bound` and the rest), and `auth_groups_synced`.
+- **New Go dependencies:** `github.com/go-jose/go-jose/v4` and `golang.org/x/oauth2` (sign-in gates), and `golang.org/x/image` as a direct dependency (OCR image scaling).
+- **Images:** a minor tag rebuilds every image. All are at 1.123.0, for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser` and the sandbox images. The Web UI is built into the binary, so the sign-in pages need the new image.
+
 ## What's in v1.122.0
 
 *Access control, a Git tool, files from tools kept as files, and Web UI bundles that ship without a new binary. **Authority can now be written per user and per group: ACL rule lists, nested groups and bindings, with explicit deny over allow**, asked at every HTTP, gRPC and MCP gate and intersected with an agent's own grants inside the run. It rolls out through `LOOMCYCLE_ACL` (`compat` by default, then `shadow`, then `enforce`), so nothing changes until an operator writes a list or switches mode. Lists, groups and bindings are managed from a new Settings → Access console, over HTTP, gRPC, MCP, a `loomcycle acl` command and both adapters, and can be declared in config. The line is complete apart from the gaps listed under "Not included": definition writes, Document, Path and credential calls, team walks and their cancels ask about the instance they name; a resumed, restored or restarted run keeps its caller's rules; a scheduled, webhook or A2A run is narrowed by its owner's; a subject erasure removes the subject's memberships and bindings and revokes its member tokens; members reach over gRPC what HTTP admits; and the Web UI shows the pages the caller's gates admit. **A new `Git` tool** does repository work in a bound volume without starting `git` and with the push credential held by the runtime. **Files a tool returns are kept in a run inbox** instead of being dropped or mangled: MCP image and blob blocks, opted-in base64 text, and binary HTTP and WebFetch responses. A `File` tool inspects and keeps them, downloads and uploads by URL, extracts DOCX, XLSX, PPTX, HTML and PDF to Markdown, and imports the result as a Document; an MCP `file` tool reaches a run's inbox from outside it. **The server can serve a newer Web UI** from a verified bundle in a directory or fetched by URL and pinned by SHA-256. **Every runtime log line is now levelled slog.** Also in this release: per-agent shell credentials, run metrics in the Web UI, the embedder and decision models on the Routing page, and a fix for rotating per-user tokens. **Read the upgrade notes: one migration, tool results that now land on disk, a reserved volume name, erasure revoking tokens, agent-limited tokens that can no longer start team walks, log lines that changed shape, and `go install` no longer works.***
