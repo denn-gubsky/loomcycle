@@ -914,7 +914,8 @@ const (
 	UsageByUser     UsageDimension = "user"
 	UsageByProvider UsageDimension = "provider"
 	UsageByModel    UsageDimension = "model"
-	UsageBySource   UsageDimension = "source" // credential_source (operator|tenant|user)
+	UsageBySource   UsageDimension = "source"  // credential_source (operator|tenant|user)
+	UsageByPurpose  UsageDimension = "purpose" // chat | ocr | stt (UsagePurpose*)
 )
 
 // UsageQuery filters + groups a usage report.
@@ -942,6 +943,7 @@ type UsageAggregate struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model,omitempty"`
 	CredentialSource string `json:"credential_source,omitempty"`
+	Purpose          string `json:"purpose,omitempty"`
 
 	InputTokens         int64 `json:"input_tokens"`
 	OutputTokens        int64 `json:"output_tokens"`
@@ -959,18 +961,36 @@ type UsageAggregate struct {
 	Currency      string  `json:"currency,omitempty"`
 	CallCount     int64   `json:"call_count"`
 	UnpricedCalls int64   `json:"unpriced_calls"`
+
+	// AudioSeconds is the summed audio the group's speech-to-text calls
+	// transcribed — the unit their per-minute price is computed from, which
+	// the token counts cannot show. omitempty: a group with no STT call sends
+	// no key, so a report over chat-only usage is byte-identical to one from
+	// before transcription.
+	AudioSeconds float64 `json:"audio_seconds,omitempty"`
 }
 
-// UsageCanonicalDims is the fixed order the report's 5 dimension columns are
+// UsageCanonicalDims is the fixed order the report's 6 dimension columns are
 // SELECTed + scanned in, shared by both backends so the scan target order can't
 // drift from the query. A grouped dimension SELECTs its column; an ungrouped one
-// SELECTs ” — keeping the result a fixed 13-column shape regardless of group_by.
-var UsageCanonicalDims = []UsageDimension{UsageByTenant, UsageByUser, UsageByProvider, UsageByModel, UsageBySource}
+// SELECTs ” — keeping the result a fixed 15-column shape regardless of group_by.
+var UsageCanonicalDims = []UsageDimension{UsageByTenant, UsageByUser, UsageByProvider, UsageByModel, UsageBySource, UsageByPurpose}
 
-// UsageDimColumn maps a whitelisted dimension to its token_usage column name.
-// The whitelist IS the SQL-injection guard — only these five map to a column, so
-// a caller-supplied group_by can never inject arbitrary SQL. ok=false rejects an
-// unknown dimension.
+// UsageDimNames is the comma-joined list of the whitelisted dimensions, in
+// canonical order — what a refusal of an unknown group_by tells the caller is
+// allowed, derived here so the transports cannot list a stale set.
+func UsageDimNames() string {
+	names := make([]string, len(UsageCanonicalDims))
+	for i, d := range UsageCanonicalDims {
+		names[i] = string(d)
+	}
+	return strings.Join(names, ",")
+}
+
+// UsageDimColumn maps a whitelisted dimension to its column name, the same in
+// token_usage and usage_archive. The whitelist IS the SQL-injection guard — only
+// these six map to a column, so a caller-supplied group_by can never inject
+// arbitrary SQL. ok=false rejects an unknown dimension.
 func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 	switch d {
 	case UsageByTenant:
@@ -983,6 +1003,8 @@ func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 		return "model", true
 	case UsageBySource:
 		return "credential_source", true
+	case UsageByPurpose:
+		return "purpose", true
 	}
 	return "", false
 }
@@ -990,7 +1012,7 @@ func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 // UsageGroupColumns builds a usage report's per-dimension SELECT expressions and
 // GROUP BY column list, in UsageCanonicalDims order: a grouped dimension emits its
 // column into BOTH lists; an ungrouped one emits the literal ” into dimExprs only,
-// keeping the SELECT a fixed 5-dimension shape regardless of group_by. Shared by
+// keeping the SELECT a fixed 6-dimension shape regardless of group_by. Shared by
 // both backends so the scan-target order can't drift from the query — and it's
 // dialect-independent (no ?/$N placeholders, no day-floor math, which genuinely
 // differ between backends and are NOT shared).

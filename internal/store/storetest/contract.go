@@ -646,6 +646,7 @@ func Run(t *testing.T, factory Factory) {
 		// Transcription ledger columns: purpose + audio seconds.
 		{"TokenUsagePurposeRoundTrip", testTokenUsagePurposeRoundTrip},
 		{"UsageRollupAcrossPurposes", testUsageRollupAcrossPurposes},
+		{"UsageReportByPurpose", testUsageReportByPurpose},
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},
