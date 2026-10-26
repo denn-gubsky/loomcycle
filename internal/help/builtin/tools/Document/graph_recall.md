@@ -43,8 +43,9 @@ hops: a two-step question needs `hops: 2`, a three-step one `hops: 4`.**
   consult user and tenant facts, make two calls.
 
 Without `as_of` you get what is true now: a fact whose `invalid_at` has passed,
-including every superseded fact, is left out. A chunk's own dates do not filter
-this default; a chunk whose own `invalid_at` has passed comes back with
+including every superseded fact, is left out. So is a chunk whose own dates put
+it out of force now (its own `invalid_at` has passed, or its own `valid_at` is
+still ahead). `include_retired: true` brings both back; an ended one is marked
 `retired: true`.
 
 For a cheap structural walk — which chunks are connected, and how — pass
