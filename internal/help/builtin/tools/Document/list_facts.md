@@ -23,7 +23,9 @@ name and not a `document_id`.**
 - `document_id` — only facts filed in this document.
 - `source_run_id` — only facts whose recorded source run is this run id:
   what was learned from that conversation. Rarely used.
-- `as_of` — unix nanos: facts true at that moment (see `graph_recall`).
+- `as_of` — unix nanos: facts true at that moment (see `graph_recall`). A fact
+  whose chunk also has its own `valid_at`/`invalid_at` must be inside both its
+  fact dates and its own dates.
 - `include_retired` — `true` also returns superseded and ended facts.
 - `include_refuted` — `true` also returns facts judged `unsupported`.
 - `limit` — default 50, at most 200.
