@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -98,4 +99,50 @@ func TestMemorySearch_ACLLimitedWithoutDocumentsConfiguredReturnsNoDocument(t *t
 			t.Errorf("%s: an unrestricted caller lost a document: %v", body, got)
 		}
 	}
+}
+
+// A consolidated fact can be homed in a chunk of a document: its body row is a
+// doc.chunk: row WITH provenance, so it classifies as a fact, not as prose.
+// Document op=search hides it like any other chunk of a denied document, so a
+// Memory search must too — which hits are checked is decided by the key, never by
+// the row's class.
+func TestMemorySearch_ACLDeniedDocumentHidesItsFactChunks(t *testing.T) {
+	m, open, limited, s := memACLCorpus(t)
+	// The real stores read each hit's origin with it; the shared fake does not,
+	// and without it every chunk row would classify as prose and this test could
+	// not tell a class-based check from a key-based one.
+	m.Store = &originStore{Store: m.Store}
+	v, _ := json.Marshal("savepoint nesting secret fact")
+	if err := m.Store.MemorySetProvenance(context.Background(), "tnt", store.MemoryScopeTenant, "", chunkBodyKey(s.secretChunk), v, 0,
+		store.MemoryProvenance{Origin: "consolidator", Class: "decision"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := []string{
+		`{"op":"search","scope":"tenant","query":"savepoint nesting","top_k":50}`,
+		`{"op":"search","scope":"tenant","query":"savepoint nesting","top_k":50,"sources":["facts"]}`,
+		`{"op":"recall","scope":"tenant","query":"savepoint nesting","top_k":50}`,
+	}
+	for _, body := range calls {
+		if got := memHitKeys(t, m, limited, body); got[chunkBodyKey(s.secretChunk)] {
+			t.Errorf("%s: a fact homed in a read-denied document came back: %v", body, got)
+		}
+		if got := memHitKeys(t, m, open, body); !got[chunkBodyKey(s.secretChunk)] {
+			t.Errorf("%s: an unrestricted caller lost the fact: %v", body, got)
+		}
+	}
+}
+
+// originStore fills each vector hit's Origin from its provenance row, as the real
+// stores' search legs do.
+type originStore struct{ store.Store }
+
+func (o *originStore) MemoryEmbedSearch(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string,
+	f store.MemorySearchFilter, query []float32, topK int) ([]store.MemorySearchEntry, error) {
+	rows, err := o.Store.MemoryEmbedSearch(ctx, tenantID, scope, scopeID, f, query, topK)
+	for i := range rows {
+		if prov, perr := o.MemoryProvenanceGet(ctx, tenantID, scope, scopeID, rows[i].Key); perr == nil {
+			rows[i].Origin = prov.Origin
+		}
+	}
+	return rows, err
 }

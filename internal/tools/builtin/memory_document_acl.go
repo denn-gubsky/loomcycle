@@ -10,21 +10,25 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// Access control on the document hits of a Memory search or recall.
+// Access control on the chunk hits of a Memory search or recall.
 //
-// Chunk bodies share the memory keyspace, so a Memory search returns document
-// prose beside facts and notes. Document op=search leaves out every hit whose
-// document the caller's access-control set denies it reading (document_acl.go);
-// without the same rule here, a Memory search is a second door to those
-// documents. So a document hit is kept only when Document op=search would have
-// kept it: its chunk belongs to a document, and the caller may read that
-// document at every name it is filed under.
+// Chunk bodies share the memory keyspace, so a Memory search returns rows keyed
+// doc.chunk: beside facts and notes. Document op=search leaves out every chunk
+// whose document the caller's access-control set denies it reading
+// (document_acl.go); without the same rule here, a Memory search is a second door
+// to those documents. So a chunk hit is kept only when Document op=search would
+// have kept it: the chunk belongs to a document, and the caller may read that
+// document at every name it is filed under. A chunk with no document row is left
+// out, as Document op=search leaves it out.
+//
+// WHICH HITS ARE CHECKED IS DECIDED BY THE KEY, NEVER BY THE ROW'S CLASS. A fact
+// a consolidator homed in a chunk is a doc.chunk: row with provenance — it
+// classifies as a fact, yet it sits in a document, and Document op=search hides
+// it with the rest of a denied document. Choosing by class let it through.
 //
 // Only for a caller whose set CAN deny reading some document of the scope. A run
 // with no set, or one whose set leaves the scope's documents alone, gets exactly
 // the answer it got before: no lookup is made and nothing is dropped.
-//
-// Facts homed in a chunk are not document hits (they carry provenance) and pass.
 
 // documentHitReader is the Document tool's side: which of these chunks may the
 // caller read. It owns the chunk → document mapping and the Path-tree names the
@@ -54,8 +58,8 @@ func documentReadLimited(ctx context.Context, scope store.MemoryScope, scopeID s
 	return a.limitsReading(ctx)
 }
 
-// readableDocumentHits returns a predicate over chunk ids: false for a document
-// hit of (scope, scopeID) the caller may not read. A nil predicate means nothing
+// readableDocumentHits returns a predicate over chunk ids: false for a chunk hit
+// of (scope, scopeID) the caller may not read. A nil predicate means nothing
 // is left out — the caller's set cannot deny anything here, or there are no
 // document hits to ask about.
 func (m *Memory) readableDocumentHits(ctx context.Context, scope store.MemoryScope, scopeID string, chunkIDs []string) (func(string) bool, error) {
@@ -80,20 +84,18 @@ func (m *Memory) readableDocumentHits(ctx context.Context, scope store.MemorySco
 	return func(id string) bool { return readable[id] }, nil
 }
 
-// documentHitChunkID is the chunk id of a document-class hit, or "" for any
-// other row (a fact, a note, a trace, a fact homed in a chunk).
-func documentHitChunkID(key string, kind store.MemoryRowClass) string {
-	if kind != store.MemoryRowDocument {
-		return ""
+// documentHitChunkID is the chunk a hit's key lies in — a chunk body's own id, or
+// the chunk of a derived unit — or "" for a key outside the document namespace
+// (a fact or note under its own key, a trace). Whatever the row's class.
+func documentHitChunkID(key string) string {
+	if id, ok := strings.CutPrefix(key, memrank.DocumentChunkKeyPrefix); ok {
+		return id
 	}
-	id, ok := strings.CutPrefix(key, memrank.DocumentChunkKeyPrefix)
-	if !ok {
-		return ""
-	}
+	id, _ := memrank.UnitChunkID(key)
 	return id
 }
 
-// dropUnreadableSearchHits removes from res the document hits of (scope, scopeID)
+// dropUnreadableSearchHits removes from res the chunk hits of (scope, scopeID)
 // the caller may not read, keeping every index-aligned slice aligned. inScope
 // reports whether entry i is from that scope (nil: all are).
 func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.MemoryScope, scopeID string,
@@ -103,7 +105,7 @@ func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.Memor
 		if inScope != nil && !inScope(i) {
 			continue
 		}
-		if id := documentHitChunkID(e.Key, memrank.Class(e)); id != "" {
+		if id := documentHitChunkID(e.Key); id != "" {
 			ids = append(ids, id)
 		}
 	}
@@ -114,7 +116,7 @@ func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.Memor
 	n := 0
 	for i, e := range res.Entries {
 		if inScope == nil || inScope(i) {
-			if id := documentHitChunkID(e.Key, memrank.Class(e)); id != "" && !keep(id) {
+			if id := documentHitChunkID(e.Key); id != "" && !keep(id) {
 				continue
 			}
 		}
@@ -145,7 +147,7 @@ func (m *Memory) dropUnreadableRecallHits(ctx context.Context, scope store.Memor
 		if inScope != nil && !inScope(i) {
 			continue
 		}
-		if id := documentHitChunkID(f.ID, f.Kind); id != "" {
+		if id := documentHitChunkID(f.ID); id != "" {
 			ids = append(ids, id)
 		}
 	}
@@ -156,7 +158,7 @@ func (m *Memory) dropUnreadableRecallHits(ctx context.Context, scope store.Memor
 	kept := res.Facts[:0:0]
 	for i, f := range res.Facts {
 		if inScope == nil || inScope(i) {
-			if id := documentHitChunkID(f.ID, f.Kind); id != "" && !keep(id) {
+			if id := documentHitChunkID(f.ID); id != "" && !keep(id) {
 				continue
 			}
 		}
