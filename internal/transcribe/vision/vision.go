@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"strings"
 	"time"
@@ -56,6 +57,12 @@ type Engine struct {
 	cfg      config.OCRConfig
 	resolve  Resolver
 	provider func(id string) (providers.Provider, error)
+	// decode is image.Decode; a test counts its calls.
+	decode func(io.Reader) (image.Image, string, error)
+	// decodeSlot admits one image decode at a time. It hangs off the engine,
+	// not a package variable: the server builds one engine, so this bounds
+	// the process, and a test's engine has its own.
+	decodeSlot chan struct{}
 }
 
 // New builds the engine.
@@ -66,7 +73,8 @@ func New(o Options) (*Engine, error) {
 	if o.Config.Engine != config.OCREngineVision {
 		return nil, fmt.Errorf("vision OCR: transcription.ocr.engine is %q, not %s", o.Config.Engine, config.OCREngineVision)
 	}
-	return &Engine{cfg: o.Config, resolve: o.Resolve, provider: o.Provider}, nil
+	return &Engine{cfg: o.Config, resolve: o.Resolve, provider: o.Provider,
+		decode: image.Decode, decodeSlot: make(chan struct{}, 1)}, nil
 }
 
 func (e *Engine) Name() string { return config.OCREngineVision }
@@ -150,7 +158,7 @@ func (e *Engine) OCR(ctx context.Context, plan transcribe.Plan, unit transcribe.
 		}
 		req.Documents = []providers.DocumentInput{{MediaType: "application/pdf", Data: base64.StdEncoding.EncodeToString(data)}}
 	case strings.HasPrefix(unit.MediaType, "image/"):
-		img, mt, err := prepareImage(data, unit.MediaType)
+		img, mt, err := e.prepareImage(ctx, data, unit.MediaType)
 		if err != nil {
 			return res, err
 		}

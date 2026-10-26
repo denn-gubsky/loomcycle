@@ -2,8 +2,10 @@ package vision
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/gif" // decoders for DecodeConfig / Decode
 	"image/jpeg"
 	"image/png"
@@ -20,10 +22,53 @@ import (
 // rendered at 150 dpi (A4: 1240×1754) is only slightly reduced.
 const MaxImageEdge = 1568
 
-// maxDecodePixels refuses to decode an image whose header claims more pixels
-// than this: a few bytes of PNG can declare a picture that would take
-// gigabytes to hold.
-const maxDecodePixels = 64 << 20
+// MaxDecodeBytes bounds the memory one decode may take: the decoded pixels,
+// width × height × the bytes per pixel the header's colour model implies.
+// A pixel bound alone is not enough: a 16-bit RGBA PNG holds 8 bytes a pixel,
+// so a header claiming 64 MP would decode to half a gigabyte. 64 MiB is
+// 4096 × 4096 at 4 bytes: a 300 dpi A4 scan (8.7 MP) or a phone photo (12 MP)
+// at 8 bits per channel fits with room to spare.
+//
+// A 16-bit-per-channel image is held to the same budget rather than given one
+// of its own, so a 12 MP 16-bit photo (96 MiB) is refused with advice to save
+// it at 8 bits: the extra depth carries nothing a model reads text from, and
+// a separate allowance would double what one call may hold.
+const MaxDecodeBytes = 4096 * 4096 * 4
+
+// ImageTooLargeError refuses an image whose decoded size would pass
+// MaxDecodeBytes, judged from its header before anything is decoded.
+type ImageTooLargeError struct {
+	Width, Height, BytesPerPixel int
+	Limit                        int64
+}
+
+func (e *ImageTooLargeError) Error() string {
+	msg := fmt.Sprintf("the image is %d×%d pixels at %d bytes a pixel (%d MiB decoded), over the %d MiB limit for decoding an image to scale it",
+		e.Width, e.Height, e.BytesPerPixel, int64(e.Width)*int64(e.Height)*int64(e.BytesPerPixel)>>20, e.Limit>>20)
+	if e.BytesPerPixel > 4 {
+		msg += "; it is stored at 16 bits per channel: save it at 8 bits per channel"
+	} else {
+		msg += "; send a smaller image"
+	}
+	return msg
+}
+
+// bytesPerPixel is what the decoder allocates per pixel for an image of
+// colour model m. An unknown model is taken at the most any takes.
+func bytesPerPixel(m color.Model) int {
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	switch m {
+	case color.GrayModel, color.AlphaModel:
+		return 1
+	case color.Gray16Model, color.Alpha16Model:
+		return 2
+	case color.RGBAModel, color.NRGBAModel, color.YCbCrModel, color.NYCbCrAModel, color.CMYKModel:
+		return 4
+	}
+	return 8
+}
 
 // sendable are the types every vision driver takes (the run input's image
 // whitelist).
@@ -32,18 +77,31 @@ var sendable = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif
 // prepareImage returns the image as it is sent: unchanged when the model
 // takes its type and it fits MaxImageEdge, otherwise decoded, scaled to fit
 // and encoded again (JPEG stays JPEG; everything else becomes PNG).
-func prepareImage(data []byte, mediaType string) ([]byte, string, error) {
+func (e *Engine) prepareImage(ctx context.Context, data []byte, mediaType string) ([]byte, string, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("the image could not be read: %v", err)
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || int64(cfg.Width)*int64(cfg.Height) > maxDecodePixels {
-		return nil, "", fmt.Errorf("the image is %d×%d pixels, over the %d-pixel limit", cfg.Width, cfg.Height, maxDecodePixels)
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return nil, "", fmt.Errorf("the image header says %d×%d pixels", cfg.Width, cfg.Height)
 	}
+	// Sent as it is: never decoded, so its size costs nothing here.
 	if sendable[mediaType] && max(cfg.Width, cfg.Height) <= MaxImageEdge {
 		return data, mediaType, nil
 	}
-	src, _, err := image.Decode(bytes.NewReader(data))
+	bpp := bytesPerPixel(cfg.ColorModel)
+	if int64(cfg.Width)*int64(cfg.Height)*int64(bpp) > MaxDecodeBytes {
+		return nil, "", &ImageTooLargeError{Width: cfg.Width, Height: cfg.Height, BytesPerPixel: bpp, Limit: MaxDecodeBytes}
+	}
+	// One decode at a time per engine, so concurrent OCR calls cannot add
+	// their peaks up: MaxDecodeBytes is then what decoding holds at most.
+	select {
+	case e.decodeSlot <- struct{}{}:
+		defer func() { <-e.decodeSlot }()
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	}
+	src, _, err := e.decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, "", fmt.Errorf("the image could not be decoded: %v", err)
 	}
