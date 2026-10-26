@@ -5799,7 +5799,9 @@ export interface LibrarySkillDefinition {
  *  internal/api/http.marshalStaticMCPServer (transport + url + headers
  *  for http/streamable-http; command/args/env/pool_size for stdio;
  *  tools narrowing; discovered_tools cached from the pool
- *  inspector when ready). */
+ *  inspector when ready). Secret-bearing values come back masked as
+ *  "****": every header value (an auth scheme is kept, "Bearer ****"),
+ *  every env value, and the url's userinfo, query values and fragment. */
 export interface LibraryMcpServerDefinition {
   transport?: "http" | "streamable-http" | "stdio";
   url?: string;

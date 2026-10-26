@@ -737,6 +737,11 @@ jobs:
       - name: Install @loomcycle/library deps
         working-directory: packages/library
         run: npm ci
+      # The web typecheck compiles the aliased source but never runs the
+      # package's own unit tests (the editor's masked-secret guard among them).
+      - name: Test @loomcycle/library
+        working-directory: packages/library
+        run: npm run typecheck && npm test
       # @loomcycle/explorer (RFC AZ) is consumed from SOURCE via a Vite alias
       # the same way — install its react / @loomcycle/client deps before the web
       # steps (packages/explorer/node_modules is gitignored → absent on checkout).

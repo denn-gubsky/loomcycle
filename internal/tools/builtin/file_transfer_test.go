@@ -606,3 +606,54 @@ func TestFileTransfer_UserInfoAndBareTokenRegisteredAtTheFloor(t *testing.T) {
 		t.Errorf("registered = %v", tf.registered)
 	}
 }
+
+func TestParseTransferURL_RefusesCharactersAURLCannotHold(t *testing.T) {
+	for _, raw := range []string{
+		`https://tenant.sharepoint.com/up?tempauth=abc"`, // the closing quote of a JSON string copied with the value
+		`"https://tenant.sharepoint.com/up?tempauth=abc"`,
+		`https://tenant.sharepoint.com/up?tempauth=abc def`,
+		"https://tenant.sharepoint.com/up?tempauth=abc\tdef",
+		`https://tenant.sharepoint.com/up?tempauth=<abc>`,
+		`https://tenant.sharepoint.com/up?tempauth=abc\`,
+		"https://tenant.sharepoint.com/up?tempauth=abc`",
+	} {
+		if _, err := parseTransferURL(raw); err == nil {
+			t.Errorf("parseTransferURL(%q) accepted", raw)
+		} else if strings.Contains(err.Error(), "abc") {
+			t.Errorf("parseTransferURL(%q) error repeats the URL: %v", raw, err)
+		}
+	}
+	// What real pre-authenticated URLs contain stays accepted: a Graph upload
+	// session's quoted guid and b! drive id, percent-encoded quotes, and the
+	// surrounding whitespace a copy may add.
+	for _, raw := range []string{
+		`https://tenant.sharepoint.com/_api/v2.0/drives/b!YN35/items/015H/uploadSession?guid='d421d317'&overwrite=False&dc=0&tempauth=v1.eyJhbGciOi.x_y-z`,
+		`https://example.com/a%22b?q=%3Cx%3E`,
+		" https://example.com/a.pdf\n",
+	} {
+		if _, err := parseTransferURL(raw); err != nil {
+			t.Errorf("parseTransferURL(%q): %v", raw, err)
+		}
+	}
+}
+
+func TestFileUpload_StrayQuoteRefusedBeforeAnyRequest(t *testing.T) {
+	r, ctx, _ := transferRun(t, inbox.Service{})
+	kept := inbox.Capture(r.Ctx, inbox.Item{Name: "board.pdf", Origin: "o"}, binaryPDF)
+	srv, hits := countingServer(t, nil, nil)
+	tf := newTransferFile(localHTTP())
+
+	_, res := tf.exec(t, ctx, map[string]any{"op": "upload", "from": kept.Record.Ref, "url": srv.URL + `/up?tempauth=session-secret"`})
+	if !res.IsError {
+		t.Fatal("an upload URL ending in a quote was accepted")
+	}
+	if hits.Load() != 0 {
+		t.Errorf("hits = %d, want no request", hits.Load())
+	}
+	if !strings.Contains(res.Text, "quote") || strings.Contains(res.Text, "session-secret") {
+		t.Errorf("error = %q, want it to name the quote and not repeat the URL", res.Text)
+	}
+	if len(tf.registered) != 0 {
+		t.Errorf("registered %v for a refused URL", tf.registered)
+	}
+}

@@ -74,7 +74,11 @@ func (h *HTTP) transferClient(ctx context.Context, rule redirectRule, seen func(
 // password is refused: a credential goes in a pre-authenticated URL, not
 // beside it. The host is checked by the caller, against hostPermitted.
 func parseTransferURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	if err := checkURLChars(raw); err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return nil, errors.New("url must be an absolute http or https URL")
 	}
@@ -85,6 +89,35 @@ func parseTransferURL(raw string) (*url.URL, error) {
 		return nil, errors.New("url must not carry a user or password")
 	}
 	return u, nil
+}
+
+// checkURLChars refuses a character a URL never holds unencoded. url.Parse
+// lets these through in a path or query, and each one is a copying slip:
+// a model that takes an upload session's uploadUrl from JSON may keep the
+// string's closing quote, and SharePoint then answers 401 "invalid
+// signature", which reads as an expired session rather than a typo. Naming
+// the character lets the call be repeated with the same, still valid, URL.
+// The error never repeats the URL: its query may be the credential.
+func checkURLChars(s string) error {
+	for i, r := range s {
+		var name string
+		switch {
+		case r == '"':
+			name = `a double quote (")`
+		case r == '<' || r == '>' || r == '`':
+			name = fmt.Sprintf("%q", r)
+		case r == '\\':
+			name = "a backslash"
+		case r == ' ':
+			name = "a space"
+		case r < 0x20 || r == 0x7f:
+			name = "a control character"
+		default:
+			continue
+		}
+		return fmt.Errorf("url contains %s at byte %d of %d, which a URL never holds unencoded; pass the URL value alone, without the quote marks around it in JSON or anything after it", name, i+1, len(s))
+	}
+	return nil
 }
 
 // transferError renders a request error with its URL masked. net/http's
