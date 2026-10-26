@@ -6554,13 +6554,24 @@ func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.Ru
 		row.DurationMs, row.TTFTMs, row.LoadMs = tm.DurationMs, tm.TTFTMs, tm.LoadMs
 		row.PrefillMs, row.DecodeMs, row.QueueMs = tm.PrefillMs, tm.DecodeMs, tm.QueueMs
 	}
-	if err := s.store.RecordCallUsage(ctx, row); err != nil {
-		slog.Error("store: RecordCallUsage failed", "run_id", runID, "iteration", iteration, "err", err)
+	crossed, _ := s.appendUsageRow(ctx, row)
+	return crossed
+}
+
+// appendUsageRow writes one ledger row and counts its tokens against the
+// month-to-date budgets of the row's tenant and user, returning the tiers the
+// row newly crossed. The budgets are counted even when the write fails: usage
+// telemetry must never fail a run, and an unrecorded call still spent tokens.
+// The write error is logged and returned for callers that report it.
+func (s *Server) appendUsageRow(ctx context.Context, row store.TokenUsageRow) ([]providers.LimitInfo, error) {
+	err := s.store.RecordCallUsage(ctx, row)
+	if err != nil {
+		slog.Error("store: RecordCallUsage failed", "run_id", row.RunID, "iteration", row.Iteration, "err", err)
 	}
 	// RFC AW: increment the month-to-date budget counters + report any tier this
 	// call newly crossed (in-flight crossing). Nil-safe (no-op tracker → nil).
-	total := int64(u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens)
-	return s.limits.Add(rid.TenantID, rid.UserID, total)
+	total := int64(row.InputTokens + row.OutputTokens + row.CacheCreationTokens + row.CacheReadTokens)
+	return s.limits.Add(row.TenantID, row.UserID, total), err
 }
 
 // SeedLimits loads the RFC AW token-budget counters + ceilings from the store at
