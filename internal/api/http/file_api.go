@@ -144,20 +144,9 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 	if res, ok := fileTwinInboxOnly(in); !ok {
 		return res, nil
 	}
-	if s.store == nil {
-		return connector.ToolResult{}, errors.New("file requires persistence (no Store configured)")
-	}
-
-	run, err := s.tenantStore(ctx).GetRun(ctx, in.RunID)
-	var nf *store.ErrNotFound
-	switch {
-	case errors.As(err, &nf):
-		return fileTwinNotFound(in.RunID), nil
-	case err != nil:
-		return connector.ToolResult{}, err
-	}
-	if !runOwnershipOK(ctx, run) || !s.allowlistReachesRow(ctx, run) {
-		return fileTwinNotFound(in.RunID), nil
+	run, res, ok, err := s.fileTwinReadableRun(ctx, in.RunID)
+	if err != nil || !ok {
+		return res, err
 	}
 
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
@@ -168,27 +157,13 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 			"Read it with stat or ls, or import a Markdown file of it into your own documents."), nil
 	}
 
-	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg())
+	box, res, ok := s.fileTwinHoldInbox(ctx, run)
 	if !ok {
-		return fileTwinRefusal(tools.CategoryBusiness, "file: no dynamic_root volume is configured, so no run keeps files",
-			"An operator must mark one volume dynamic_root: true."), nil
-	}
-	// A sub-run shares its tree's inbox. A chain that cannot be followed
-	// leaves the run its own root, where no inbox is found: never a guess at
-	// another tree's.
-	root, _ := resumedRootRunID(ctx, s.store.GetRun, run)
-
-	// Held for the call, so a tree that ends meanwhile is purged after it
-	// rather than under it (the last hold pays the purge).
-	release := s.holdRunTree(root)
-	defer release()
-
-	dir := dynvol.DerivedEphemeralPath(dynRoot, root, inbox.Name)
-	if res, ok := s.fileTwinInboxPresent(ctx, run, root, dir); !ok {
 		return res, nil
 	}
+	defer box.release()
 
-	tctx, res, ok := s.fileTwinCtx(ctx, in, root, dir, dynRoot, p, admin || owner)
+	tctx, res, ok := s.fileTwinCtx(ctx, in, box.root, box.dir, box.dynRoot, p, admin || owner)
 	if !ok {
 		return res, nil
 	}
@@ -197,6 +172,56 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 		return connector.ToolResult{}, err
 	}
 	return s.dispatchBuiltin(tctx, builtin.FileToolName, body)
+}
+
+// fileTwinReadableRun reads the run named runID through the gate every run
+// read uses (get_run's): the caller's tenant, an isolated member's own runs, a
+// restricted token's agents. A run the caller may not read is the same
+// not-found a missing run gets. err is a store fault.
+func (s *Server) fileTwinReadableRun(ctx context.Context, runID string) (store.Run, connector.ToolResult, bool, error) {
+	if s.store == nil {
+		return store.Run{}, connector.ToolResult{}, false, errors.New("file requires persistence (no Store configured)")
+	}
+	run, err := s.tenantStore(ctx).GetRun(ctx, runID)
+	var nf *store.ErrNotFound
+	switch {
+	case errors.As(err, &nf):
+		return store.Run{}, fileTwinNotFound(runID), false, nil
+	case err != nil:
+		return store.Run{}, connector.ToolResult{}, false, err
+	}
+	if !runOwnershipOK(ctx, run) || !s.allowlistReachesRow(ctx, run) {
+		return store.Run{}, fileTwinNotFound(runID), false, nil
+	}
+	return run, connector.ToolResult{}, true, nil
+}
+
+// fileTwinInbox is a readable run's tree inbox, held: release must be called.
+type fileTwinInbox struct {
+	root, dir, dynRoot string
+	release            func()
+}
+
+// fileTwinHoldInbox finds the inbox of run's tree and holds the tree, so a
+// tree that ends meanwhile is purged after the caller is done rather than
+// under it (the last hold pays the purge). When it is not ok, nothing is held.
+func (s *Server) fileTwinHoldInbox(ctx context.Context, run store.Run) (fileTwinInbox, connector.ToolResult, bool) {
+	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg())
+	if !ok {
+		return fileTwinInbox{}, fileTwinRefusal(tools.CategoryBusiness, "file: no dynamic_root volume is configured, so no run keeps files",
+			"An operator must mark one volume dynamic_root: true."), false
+	}
+	// A sub-run shares its tree's inbox. A chain that cannot be followed
+	// leaves the run its own root, where no inbox is found: never a guess at
+	// another tree's.
+	root, _ := resumedRootRunID(ctx, s.store.GetRun, run)
+	release := s.holdRunTree(root)
+	dir := dynvol.DerivedEphemeralPath(dynRoot, root, inbox.Name)
+	if res, ok := s.fileTwinInboxPresent(ctx, run, root, dir); !ok {
+		release()
+		return fileTwinInbox{}, res, false
+	}
+	return fileTwinInbox{root: root, dir: dir, dynRoot: dynRoot, release: release}, connector.ToolResult{}, true
 }
 
 // fileTwinAdmin reports whether the caller is an admin of the run for the
