@@ -383,3 +383,69 @@ describe("memorySearch document filters", () => {
     expect(res2.filter).toBeUndefined();
   });
 });
+
+describe("memorySearch documents_scope", () => {
+  it("sends documents_scope + documents_scope_id snake_cased, only when set, and types the per-entry scope", async () => {
+    const twoScopes = {
+      scope: "user",
+      scope_id: "u1",
+      documents_scope: "tenant",
+      documents_scope_id: "",
+      entries: [
+        {
+          key: "doc.chunk:c1",
+          value: "Suppliers are audited every 12 months",
+          score: 0.74,
+          rank_score: 0.031,
+          embedded_with: { provider: "openai", model: "m" },
+          kind: "document",
+          chunk_id: "c1",
+          scope: "tenant",
+        },
+        {
+          key: "notes/audit",
+          value: "asked for the schedule",
+          score: 0.69,
+          rank_score: 0.029,
+          embedded_with: { provider: "openai", model: "m" },
+          kind: "note",
+          scope: "user",
+        },
+      ],
+      query_embedding_dim: 3,
+      truncated: false,
+      filter: { applied: { under_paths: ["/norms"] }, matched_documents: 1, matched_chunks: 4, inverted: false, scope: "tenant" },
+    } satisfies MemorySearchResponse;
+    const plain = {
+      scope: "user",
+      scope_id: "u1",
+      entries: [],
+      query_embedding_dim: 3,
+      truncated: false,
+    } satisfies MemorySearchResponse;
+    const { client, fetchMock } = makeClient([jsonResponse(twoScopes), jsonResponse(plain)]);
+
+    const res = await client.memorySearch({
+      query: "q",
+      scope: "user",
+      scopeId: "u1",
+      documentsScope: "tenant",
+      documentsScopeId: "ignored-for-tenant",
+      underPaths: ["/norms"],
+    });
+    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body));
+    expect(body.documents_scope).toBe("tenant");
+    expect(body.documents_scope_id).toBe("ignored-for-tenant");
+    expect("documentsScope" in body).toBe(false);
+    expect("documentsScopeId" in body).toBe(false);
+    expect(res.entries.map((e) => e.scope)).toEqual(["tenant", "user"]);
+    expect(res.documents_scope).toBe("tenant");
+    expect(res.filter?.scope).toBe("tenant");
+
+    // Unset: neither key is sent.
+    await client.memorySearch({ query: "q", scope: "user", scopeId: "u1" });
+    const body2 = JSON.parse(String(fetchMock.mock.calls[1]![1]?.body));
+    expect("documents_scope" in body2).toBe(false);
+    expect("documents_scope_id" in body2).toBe(false);
+  });
+});

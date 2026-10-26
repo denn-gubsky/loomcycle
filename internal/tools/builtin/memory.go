@@ -1592,7 +1592,7 @@ func (m *Memory) execSearch(ctx context.Context, scope store.MemoryScope, scopeI
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
 	}
-	var legPlan *documentsLegPlan
+	var legPlan *DocumentsLegPlan
 	if in.DocumentsScope != "" {
 		plan, refusal := m.planDocumentsLeg(ctx, "search", in, sources)
 		if refusal != nil {
@@ -1920,7 +1920,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 		Rerank:    rerank,
 		NoUnits:   noUnits(ctx),
 	}
-	var legPlan *documentsLegPlan
+	var legPlan *DocumentsLegPlan
 	if in.DocumentsScope != "" {
 		plan, refusal := m.planDocumentsLeg(ctx, "recall", in, sources)
 		if refusal != nil {

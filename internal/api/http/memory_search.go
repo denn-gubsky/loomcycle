@@ -17,6 +17,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -57,6 +58,13 @@ type memorySearchRequest struct {
 	ExcludeUnderPaths  []string `json:"exclude_under_paths,omitempty"`
 	DocumentIDs        []string `json:"document_ids,omitempty"`
 	ExcludeDocumentIDs []string `json:"exclude_document_ids,omitempty"`
+	// DocumentsScope also searches the DOCUMENTS of a second scope in the same
+	// call, ranked with this scope's results into one list (the in-run Memory
+	// tool's documents_scope). DocumentsScopeID names its subject, as ScopeID
+	// names the first scope's: required for agent and user, ignored for tenant.
+	// The tenant is the caller's own, never the body's.
+	DocumentsScope   string `json:"documents_scope,omitempty"`
+	DocumentsScopeID string `json:"documents_scope_id,omitempty"`
 }
 
 func (b memorySearchRequest) documentFilter() memrank.DocumentFilter {
@@ -101,6 +109,9 @@ type memorySearchResultEntry struct {
 	// one did (the chunk appears once however many of its units matched) — the same
 	// field the in-run Memory and Document searches carry.
 	MatchedUnit *memrank.MatchedUnit `json:"matched_unit,omitempty"`
+	// Scope is the scope the hit came from — on every entry when the request
+	// searched a second scope's documents, and absent otherwise.
+	Scope string `json:"scope,omitempty"`
 }
 
 type memorySearchResponse struct {
@@ -115,6 +126,11 @@ type memorySearchResponse struct {
 	// Filter is what a document filter resolved to — present only when the
 	// request carried one, so a filter-free response is byte-identical.
 	Filter *builtin.MemoryDocFilterEcho `json:"filter,omitempty"`
+	// DocumentsScope / DocumentsScopeID echo the second scope searched for
+	// documents and its store scope id ("" for tenant) — present only when one
+	// was, so a one-scope response is byte-identical.
+	DocumentsScope   string  `json:"documents_scope,omitempty"`
+	DocumentsScopeID *string `json:"documents_scope_id,omitempty"`
 }
 
 // handleMemorySearch serves POST /v1/_memory/search.
@@ -186,6 +202,14 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_sources", serr.Error())
 		return
 	}
+	// documents_scope equal to scope (same subject) is documents added to
+	// sources and nothing else; a different one is planned below, after this
+	// scope's own filter.
+	legScope, legStoreScopeID, sources, dsErr := memorySearchDocumentsScope(body, storeScopeID, sources)
+	if dsErr != nil {
+		writeJSONError(w, http.StatusBadRequest, dsErr.code, dsErr.msg)
+		return
+	}
 	sq := memrank.SearchQuery{
 		QueryText: body.Query, Prefix: "", TopK: topK,
 		Sources: sources,
@@ -196,7 +220,8 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	var filterEcho *builtin.MemoryDocFilterEcho
 	docCtx := memorySearchFilterCtx(r, body.Scope, storeScopeID)
 	docs := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-	if df := body.documentFilter(); !df.IsZero() {
+	// With a second scope, the document filter aims at its documents instead.
+	if df := body.documentFilter(); !df.IsZero() && legScope == "" {
 		p, refusal := builtin.PlanMemoryDocumentFilter(docCtx, docs, "search",
 			store.MemoryScope(body.Scope), storeScopeID, df, sq, builtin.MemorySourcesWhy("", sources))
 		if refusal != nil {
@@ -221,6 +246,29 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Apply(&sq)
+	}
+	// The second scope's documents, through the Document tool's gate for that
+	// scope under the caller's identity — the same gate, grants and subject
+	// rules the first scope's filter and /v1/_document use — so this reaches
+	// no document the caller could not search there. A refusal refuses the
+	// whole call; it never answers from one scope.
+	var legCtx context.Context
+	var legPlan *builtin.DocumentsLegPlan
+	if legScope != "" {
+		legCtx = memorySearchFilterCtx(r, string(legScope), legStoreScopeID)
+		plan, refusal := builtin.PlanDocumentsLeg(legCtx, docs, "search", legScope, legStoreScopeID, body.documentFilter())
+		if refusal != nil {
+			status, code := memorySearchFilterRefusalStatus(*refusal)
+			if status == http.StatusInternalServerError {
+				slog.Warn("memory search documents_scope failed", "documents_scope", legScope, "documents_scope_id", body.DocumentsScopeID, "err", refusal.Text)
+				writeJSONError(w, status, code, "search failed")
+				return
+			}
+			writeJSONError(w, status, code, refusal.Text)
+			return
+		}
+		legPlan, sq.Documents = plan, plan.Leg()
+		filterEcho = plan.FilterEcho()
 	}
 	res, err := backend.Search(ctx, store.MemoryScope(body.Scope), storeScopeID, sq, rankCfg, dedupCfg)
 	if err != nil {
@@ -249,24 +297,44 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	// through its derived unit go too. A caller whose set denies no document
 	// gets the old answer with no lookup. A failed check fails the search; the
 	// hits are never returned unchecked.
-	if err := builtin.DropUnreadableSearchHits(docCtx, docs, store.MemoryScope(body.Scope), storeScopeID, &res, nil); err != nil {
+	// With a second scope each scope's hits are checked in that scope, under
+	// the identity its documents resolved with.
+	if err := builtin.DropUnreadableSearchHits(docCtx, docs, store.MemoryScope(body.Scope), storeScopeID, &res,
+		hitsFrom(legPlan, res.Scopes, store.MemoryScope(body.Scope), store.MemoryScope(body.Scope))); err != nil {
 		slog.Error("memory search access check failed", "scope", body.Scope, "scope_id", body.ScopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "search failed")
 		return
+	}
+	if legPlan != nil {
+		if err := builtin.DropUnreadableSearchHits(legCtx, docs, legScope, legStoreScopeID, &res,
+			hitsFrom(legPlan, res.Scopes, store.MemoryScope(body.Scope), legScope)); err != nil {
+			slog.Error("memory search access check failed", "documents_scope", legScope, "documents_scope_id", body.DocumentsScopeID, "err", err)
+			writeJSONError(w, http.StatusInternalServerError, "internal", "search failed")
+			return
+		}
 	}
 
 	entries := make([]memorySearchResultEntry, 0, len(res.Entries))
 
 	// Collect the document hits' chunk ids up front so their labels resolve in ONE
 	// batched query rather than one per row.
-	var docChunkIDs []string
-	for _, e := range res.Entries {
+	var docChunkIDs, legChunkIDs []string
+	for i, e := range res.Entries {
 		if memrank.Class(e) == store.MemoryRowDocument {
-			docChunkIDs = append(docChunkIDs, strings.TrimPrefix(e.Key, docChunkKeyPrefix))
+			id := strings.TrimPrefix(e.Key, docChunkKeyPrefix)
+			if legPlan != nil && hitScope(res.Scopes, i, store.MemoryScope(body.Scope)) == legScope {
+				legChunkIDs = append(legChunkIDs, id)
+			} else {
+				docChunkIDs = append(docChunkIDs, id)
+			}
 		}
 	}
 	labels := builtin.ChunkLabelsFor(ctx, s.sqlMem, tenantFromCtx(r.Context()),
 		store.MemoryScope(body.Scope), storeScopeID, docChunkIDs)
+	var legLabels map[string]builtin.ChunkLabel
+	if len(legChunkIDs) > 0 {
+		legLabels = builtin.ChunkLabelsFor(ctx, s.sqlMem, tenantFromCtx(r.Context()), legScope, legStoreScopeID, legChunkIDs)
+	}
 
 	for i, e := range res.Entries {
 		entry := memorySearchResultEntry{
@@ -287,9 +355,16 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		// not read here — but the chunk's document + heading are, because a page of
 		// opaque `doc.chunk:<hex>` keys cannot be attributed without a fetch per row.
 		// One batched, best-effort query above; a fault costs the labels, not the hit.
+		if legPlan != nil {
+			entry.Scope = string(hitScope(res.Scopes, i, store.MemoryScope(body.Scope)))
+		}
 		if entry.Kind == string(store.MemoryRowDocument) {
 			entry.ChunkID = strings.TrimPrefix(e.Key, docChunkKeyPrefix)
-			if lb, ok := labels[entry.ChunkID]; ok {
+			from := labels
+			if legPlan != nil && entry.Scope == string(legScope) {
+				from = legLabels
+			}
+			if lb, ok := from[entry.ChunkID]; ok {
 				entry.Document, entry.Title = lb.Document, lb.Title
 			}
 		}
@@ -299,7 +374,7 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, entry)
 	}
 
-	writeJSON(w, http.StatusOK, memorySearchResponse{
+	out := memorySearchResponse{
 		TimeFilter:        res.TimeFilter,
 		Scope:             body.Scope,
 		ScopeID:           storeScopeID,
@@ -307,7 +382,67 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 		QueryEmbeddingDim: res.QueryEmbeddingDim,
 		Truncated:         res.Truncated,
 		Filter:            filterEcho,
-	})
+	}
+	if legPlan != nil {
+		out.DocumentsScope, out.DocumentsScopeID = string(legScope), &legStoreScopeID
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// memorySearchRefusal is a 400 the documents_scope check answers with.
+type memorySearchRefusal struct{ code, msg string }
+
+// memorySearchDocumentsScope validates documents_scope. Equal to scope with
+// the same subject, it adds documents to sources (when sources names kinds at
+// all — an empty selector already spans documents) and returns no second
+// scope, so the call is exactly that one. Otherwise it returns the second
+// scope and its store scope id. The same scope with a different subject is
+// refused: hits name their scope, not their subject, so the caller could not
+// tell the two apart.
+func memorySearchDocumentsScope(body memorySearchRequest, storeScopeID string, sources []memrank.Source) (store.MemoryScope, string, []memrank.Source, *memorySearchRefusal) {
+	if body.DocumentsScope == "" {
+		return "", "", sources, nil
+	}
+	if !validAdminMemoryScope(body.DocumentsScope) {
+		return "", "", nil, &memorySearchRefusal{"invalid_documents_scope", "documents_scope must be one of: agent, user, tenant"}
+	}
+	legStoreScopeID := adminMemoryStoreScopeID(body.DocumentsScope, body.DocumentsScopeID)
+	if body.DocumentsScope == body.Scope {
+		if strings.TrimSpace(body.DocumentsScopeID) != "" && legStoreScopeID != storeScopeID {
+			return "", "", nil, &memorySearchRefusal{"invalid_documents_scope",
+				"documents_scope names the same scope as scope with a different documents_scope_id; search the other subject in a second call"}
+		}
+		if len(sources) == 0 || slices.Contains(sources, memrank.SourceDocuments) {
+			return "", "", sources, nil
+		}
+		return "", "", append(slices.Clone(sources), memrank.SourceDocuments), nil
+	}
+	if adminMemoryScopeIDRequired(body.DocumentsScope) && strings.TrimSpace(body.DocumentsScopeID) == "" {
+		return "", "", nil, &memorySearchRefusal{"missing_documents_scope_id", "documents_scope_id is required when documents_scope is agent or user"}
+	}
+	if slices.Contains(sources, memrank.SourceTraces) {
+		return "", "", nil, &memorySearchRefusal{"invalid_documents_scope",
+			"documents_scope cannot be combined with sources [traces]; search conversation turns on their own"}
+	}
+	return store.MemoryScope(body.DocumentsScope), legStoreScopeID, sources, nil
+}
+
+// hitScope is the scope of result i: the backend's report when a second scope
+// was searched, else the call's own.
+func hitScope(scopes []store.MemoryScope, i int, own store.MemoryScope) store.MemoryScope {
+	if i < len(scopes) && scopes[i] != "" {
+		return scopes[i]
+	}
+	return own
+}
+
+// hitsFrom selects the results from scope want, for a check made per scope;
+// nil — every result — when no second scope was searched.
+func hitsFrom(legPlan *builtin.DocumentsLegPlan, scopes []store.MemoryScope, own, want store.MemoryScope) func(int) bool {
+	if legPlan == nil {
+		return nil
+	}
+	return func(i int) bool { return hitScope(scopes, i, own) == want }
 }
 
 // memorySearchFilterCtx is the identity a document filter resolves under, and

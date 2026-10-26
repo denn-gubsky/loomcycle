@@ -63,6 +63,28 @@ func (m *Memory) refuseDocumentRowRemoval(ctx context.Context, op string, scope 
 		"so the chunk and its text go together", docNamespaceHint), true
 }
 
+// DocumentRowWriteRefusal is the Memory tool's refusal of a value write to a
+// document row — a derived unit or a chunk body — for the off-run memory key
+// routes, which write the same keyspace and must refuse what this tool refuses.
+func DocumentRowWriteRefusal(op, key string) (tools.Result, bool) {
+	if res, refused := refuseUnitWrite(op, key); refused {
+		return res, true
+	}
+	return refuseChunkBodyWrite(op, key)
+}
+
+// DocumentRowRemovalRefusal is the Memory tool's refusal of a removal of a
+// derived unit or a prose chunk body, for the off-run memory key routes: the row
+// is read from st in tenantID. A fact's body row passes, and so does a key with
+// no row. A row that cannot be classified is refused with a failure that is not
+// a validation one, so the caller answers it as a fault and removes nothing.
+func DocumentRowRemovalRefusal(ctx context.Context, st store.Store, tenantID string, scope store.MemoryScope, scopeID, op, key string) (tools.Result, bool) {
+	// isProseChunkBody reads the tenant off the run identity; this caller has no
+	// run, so the identity carries only the tenant the route resolved.
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: tenantID})
+	return (&Memory{Store: st}).refuseDocumentRowRemoval(ctx, op, scope, scopeID, key)
+}
+
 // isProseChunkBody reports whether key is a chunk body row with no provenance.
 // A missing row is not one.
 func (m *Memory) isProseChunkBody(ctx context.Context, scope store.MemoryScope, scopeID, key string) (bool, error) {

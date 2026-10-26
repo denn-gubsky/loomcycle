@@ -2651,11 +2651,12 @@ export interface MemorySearchInput {
    *
    *  The four document filters need a search that can return documents (no
    *  `sources`, or `sources` including `"documents"`; otherwise 400
-   *  `invalid_filter`), are refused on `scope: "tenant"` (400 `invalid_filter`),
-   *  and need SQL Memory on the server (400 `filter_unavailable`). They resolve in
-   *  the caller's own tenant. The response then carries {@link
-   *  MemorySearchResponse.filter}. For chunk-level filters (type, status, tags, a
-   *  validity instant) use `document({ op: "search" })`. */
+   *  `invalid_filter`) and SQL Memory on the server (400 `filter_unavailable`).
+   *  They resolve in the caller's own tenant. With a {@link documentsScope}
+   *  different from `scope` they aim at that scope's documents instead. The
+   *  response then carries {@link MemorySearchResponse.filter}. For chunk-level
+   *  filters (type, status, tags, a validity instant) use
+   *  `document({ op: "search" })`. */
   underPaths?: string[];
   /** Never return the chunks of documents named at or under these paths (sent as
    *  `exclude_under_paths`). Documents only, as {@link underPaths}. */
@@ -2666,6 +2667,23 @@ export interface MemorySearchInput {
   /** Never return the chunks of these documents (sent as
    *  `exclude_document_ids`). Documents only, as {@link underPaths}. */
   excludeDocumentIds?: string[];
+  /** Also search the DOCUMENTS of this scope in the same call (sent as
+   *  `documents_scope`): for example a user's own notes together with the
+   *  tenant's reference documents. Both are ranked into one list under one
+   *  `topK`, and each entry then carries {@link MemorySearchEntry.scope}. Only
+   *  documents come from this scope; facts and notes still come from `scope`.
+   *  The four document filters aim at this scope's documents.
+   *
+   *  Equal to `scope` (and {@link documentsScopeId} omitted or equal to
+   *  `scopeId`), it is the same as adding `"documents"` to `sources`. It cannot
+   *  be combined with `sources: ["traces"]` (400 `invalid_documents_scope`). A
+   *  caller whose access does not reach that scope's documents gets 403. */
+  documentsScope?: "agent" | "user" | "tenant";
+  /** The subject of {@link documentsScope} (sent as `documents_scope_id`): the
+   *  agent name or user id. Required when `documentsScope` is `"agent"` or
+   *  `"user"` and differs from `scope`; ignored for `"tenant"`. The tenant is
+   *  always the caller's own. */
+  documentsScopeId?: string;
 }
 
 /** What a document filter on {@link LoomcycleClient.memorySearch} resolved to —
@@ -2688,6 +2706,9 @@ export interface MemorySearchDocumentFilter {
    *  false while access-control rules can deny the caller reading part of the
    *  scope — the counts then cover only documents it may read. */
   inverted: boolean;
+  /** The scope the filter resolved in — present when it aimed at a
+   *  {@link MemorySearchInput.documentsScope} different from `scope`. */
+  scope?: "agent" | "user" | "tenant";
 }
 
 /** The observed-time predicate on {@link MemorySearchInput}. Timestamps are
@@ -2759,6 +2780,10 @@ export interface MemorySearchEntry {
    *  units — a description, claim or question generated for it — rather than its
    *  own text. The chunk appears once however many of its units matched. */
   matched_unit?: { kind: "description" | "claim" | "question"; text: string };
+  /** The scope this hit came from — present on every entry when the request
+   *  set a {@link MemorySearchInput.documentsScope} different from `scope`, so
+   *  the caller's own memory can be told from the other scope's documents. */
+  scope?: "agent" | "user" | "tenant";
 }
 
 export interface MemorySearchResponse {
@@ -2777,6 +2802,11 @@ export interface MemorySearchResponse {
   /** What the document filter resolved to — present only when one was sent
    *  ({@link MemorySearchInput.underPaths} and its siblings). */
   filter?: MemorySearchDocumentFilter;
+  /** The second scope searched for documents and its store scope id ("" for
+   *  tenant) — present only when the request set a
+   *  {@link MemorySearchInput.documentsScope} different from `scope`. */
+  documents_scope?: "agent" | "user" | "tenant";
+  documents_scope_id?: string;
 }
 
 export interface MemoryTimeFilter {

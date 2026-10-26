@@ -1250,20 +1250,36 @@ class LoomcycleClient:
         before concluding a scope knows nothing, because ``in_window: 0`` with a
         large ``untimed`` means an undated corpus, not an absent answer.
 
-        ``search`` / ``recall`` at ``user`` or ``agent`` scope can also be aimed at
-        part of the scope's documents with ``under_paths``, ``exclude_under_paths``,
-        ``document_ids`` and ``exclude_document_ids`` (lists). They narrow document
-        chunks only — facts and notes in the same search are untouched — and are
-        applied before ranking. They need a search that can return documents (no
-        ``sources``, or ``sources`` including ``"documents"``; ``recall`` must ask for
-        documents explicitly) and are refused otherwise, and on ``tenant`` scope.
-        The reply then carries ``filter: {applied, matched_documents,
-        matched_chunks, inverted}``.
+        ``search`` / ``recall`` can also be aimed at part of the scope's documents
+        with ``under_paths``, ``exclude_under_paths``, ``document_ids`` and
+        ``exclude_document_ids`` (lists). They narrow document chunks only — facts
+        and notes in the same search are untouched — and are applied before
+        ranking. They need a search that can return documents (no ``sources``, or
+        ``sources`` including ``"documents"``; ``recall`` must ask for documents
+        explicitly) and are refused otherwise; on ``tenant`` scope they need both
+        tenant grants. The reply then carries ``filter: {applied,
+        matched_documents, matched_chunks, inverted}``.
+
+        ``documents_scope`` (``"agent"`` / ``"user"`` / ``"tenant"``) also searches
+        the DOCUMENTS of a second scope in the same call — your own notes in
+        ``user`` with the shared reference documents in ``tenant``, say — ranked
+        with this scope's results into one list under one ``top_k``. Each hit then
+        carries ``scope``, and the document filters aim at that scope's documents
+        (the ``filter`` block names it). It needs what the Document tool needs to
+        search that scope's documents, plus that scope in ``memory_scopes``;
+        otherwise the whole call is refused. Equal to ``scope`` it just adds
+        ``"documents"`` to ``sources``.
 
         Example::
 
             await client.memory({"op": "set", "scope": "user", "key": "tone", "value": "concise"})
             got = await client.memory({"op": "get", "scope": "user", "key": "tone"})
+
+            # this user's notes and the tenant's reference documents, one ranked list
+            both = await client.memory({
+                "op": "search", "scope": "user", "documents_scope": "tenant",
+                "query": "supplier audit frequency", "sources": ["notes"],
+            })
 
             # narrow by when it was said, not when it was stored
             hits = await client.memory({
