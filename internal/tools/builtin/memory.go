@@ -1191,6 +1191,17 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if res, refused := m.gateTenantDocumentGet(ctx, scope, scopeID, in.Key); refused {
 		return res, nil
 	}
+	// A row of a document the caller's access-control set denies it reading
+	// reads as a missing one, so the answer does not say the row exists: the
+	// rule Document op=search and this tool's search apply, by key, so a fact
+	// homed in a chunk and a derived unit go with the prose.
+	held, err := unreadableDocumentKeys(ctx, m.hitReader(), scope, scopeID, []string{in.Key})
+	if err != nil {
+		return errFrom("get: access control: "+err.Error(), err), nil
+	}
+	if held[in.Key] {
+		return okJSON(map[string]any{"value": nil, "expires_at": nil})
+	}
 	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
 	if err != nil {
 		var nf *store.ErrNotFound
@@ -2814,8 +2825,22 @@ func (m *Memory) execList(ctx context.Context, scope store.MemoryScope, scopeID 
 		return errFrom(fmt.Sprintf("list: %s", err), err), nil
 	}
 	entries = m.dropTenantDocumentRows(ctx, scope, scopeID, entries)
+	// And the rows of a document the caller's access-control set denies it
+	// reading, as its search leaves them out. The page can come back shorter
+	// than limit; truncated still says whether the store held more.
+	keys := make([]string, len(entries))
+	for i, e := range entries {
+		keys[i] = e.Key
+	}
+	held, err := unreadableDocumentKeys(ctx, m.hitReader(), scope, scopeID, keys)
+	if err != nil {
+		return errFrom("list: access control: "+err.Error(), err), nil
+	}
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
+		if held[e.Key] {
+			continue
+		}
 		out = append(out, map[string]any{
 			"key":        e.Key,
 			"value":      e.Value,
