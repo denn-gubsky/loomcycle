@@ -66,8 +66,11 @@ type fakeOCR struct{}
 
 func (fakeOCR) Name() string                  { return "fake-ocr" }
 func (fakeOCR) Accepts(mediaType string) bool { return strings.HasPrefix(mediaType, "image/") }
-func (fakeOCR) OCR(_ context.Context, u Unit, o OCROptions) (Page, error) {
-	return Page{Number: u.Pages.First, Text: "text in " + o.Language}, nil
+func (fakeOCR) Plan(context.Context, string) (Plan, error) {
+	return Plan{Engine: "fake-ocr", WholePDF: true}, nil
+}
+func (fakeOCR) OCR(_ context.Context, _ Plan, u Unit, o OCROptions) (Result, error) {
+	return Result{Pages: []Page{{Number: u.Pages.First, Text: "text in " + o.Language}}}, nil
 }
 
 type fakeSTT struct{}
@@ -88,9 +91,13 @@ func TestEngines_ImplementTheInterfaces(t *testing.T) {
 	u, _ := NewUnit(bytes.NewReader([]byte("png")), 0, 3, "image/png")
 	u.Pages = PageRange{First: 2, Last: 2}
 	var o OCREngine = fakeOCR{}
-	p, err := o.OCR(context.Background(), u, OCROptions{Language: "uk"})
-	if err != nil || p.Number != 2 || p.Text != "text in uk" {
-		t.Errorf("OCR = %+v, %v", p, err)
+	plan, err := o.Plan(context.Background(), "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := o.OCR(context.Background(), plan, u, OCROptions{Language: "uk"})
+	if err != nil || len(r.Pages) != 1 || r.Pages[0].Number != 2 || r.Pages[0].Text != "text in uk" {
+		t.Errorf("OCR = %+v, %v", r, err)
 	}
 	u.Span = TimeRange{Start: time.Minute, End: 2 * time.Minute}
 	var s STTEngine = fakeSTT{}
