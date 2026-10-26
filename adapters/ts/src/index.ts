@@ -582,6 +582,8 @@ export type {
   ContextTierVerdict,
   ContextDistillDeclinedInfo,
   EffectiveConfigResponse,
+  RunFileInput,
+  RunInboxDownload,
   EffectiveConfigSource,
   EffectiveValue,
   InertContextSetting,
