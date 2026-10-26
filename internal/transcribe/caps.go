@@ -163,6 +163,19 @@ func (b *Budget) ReleaseSeconds(s float64) {
 	b.seconds = max(b.seconds-s, 0)
 }
 
+// AddSeconds counts s seconds a request spent beyond what was reserved for
+// it, without the cap check: the engine reported more audio than the header
+// claimed, and the audio is already transcribed. The count may pass the cap;
+// the run's next reservation is then refused.
+func (b *Budget) AddSeconds(s float64) {
+	if !(s > 0) || math.IsInf(s, 0) {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.seconds += s
+}
+
 // Pages is how many pages the run has reserved.
 func (b *Budget) Pages() int {
 	b.mu.Lock()

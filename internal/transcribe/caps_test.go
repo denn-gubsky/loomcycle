@@ -208,3 +208,20 @@ func TestBudget_ReleaseSecondsGivesBackUnspentAudio(t *testing.T) {
 		t.Errorf("seconds = %v, want 0", b.Seconds())
 	}
 }
+
+// TestBudget_AddSecondsCountsPastTheCap — audio the engine reported beyond
+// the reservation is counted even past the cap, and the next reservation is
+// refused.
+func TestBudget_AddSecondsCountsPastTheCap(t *testing.T) {
+	b := NewBudget(Caps{MaxMinutesPerRun: 1})
+	if err := b.ReserveSeconds(50); err != nil {
+		t.Fatal(err)
+	}
+	b.AddSeconds(30)
+	if b.Seconds() != 80 {
+		t.Errorf("seconds = %v, want 80", b.Seconds())
+	}
+	if err := b.ReserveSeconds(1); !errors.Is(err, ErrCapExceeded) {
+		t.Errorf("a reservation past the cap: %v", err)
+	}
+}

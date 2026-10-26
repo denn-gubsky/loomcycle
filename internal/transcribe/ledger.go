@@ -45,4 +45,6 @@ type Ledger interface {
 	Charge(ctx context.Context, c Charge) (Price, error)
 	// Estimate prices tokens a call has not spent yet (a dry run).
 	Estimate(provider, model string, inputTokens, outputTokens int) Price
+	// EstimateSeconds prices audio a speech call has not transcribed yet.
+	EstimateSeconds(provider, model string, seconds float64) Price
 }

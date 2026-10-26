@@ -50,6 +50,9 @@ type File struct {
 	// OCR lets op=extract read scanned pages and images (file_ocr.go); nil
 	// leaves OCR off.
 	OCR *FileOCR
+	// STT lets op=transcribe (and op=extract on a recording) turn speech into
+	// text (file_transcribe.go); nil leaves speech-to-text off.
+	STT *FileSTT
 }
 
 func (f *File) Name() string { return FileToolName }
@@ -63,7 +66,8 @@ func (f *File) Description() string {
 		"rm (delete one inbox file), clear (empty the inbox, or one folder of it), " +
 		"download (GET a URL into the inbox, or a volume; needs the HTTP tool and its allowlist), upload (PUT or POST a volume file to a URL, whole or in ranges for an upload session), " +
 		"extract (turn a DOCX, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt; " +
-		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost), " +
+		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
+		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
@@ -73,10 +77,10 @@ func (f *File) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "import"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox."},
+			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import"]},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
-			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool."},
+			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name)."},
 			"overwrite": {"type": "boolean", "description": "keep, download: replace an existing file at to. Default false."},
 			"url":       {"type": "string", "description": "download, upload: the absolute http(s) URL. Its host must be on the HTTP allowlist."},
 			"headers":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "download, upload: extra request headers. No credentials: an authorised URL carries its own."},
@@ -91,8 +95,11 @@ func (f *File) InputSchema() json.RawMessage {
 			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000."},
 			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
 			"ocr":           {"type": "string", "enum": ["never", "auto", "always"], "description": "extract: read scanned pages and images with the OCR model. auto: only PDF pages with little or no text; always: every page; never: the text layer only. Default: your agent's setting, which is also the most you may ask for."},
-			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. Default: the operator's."},
-			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything."},
+			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. transcribe: the one language spoken, e.g. uk. Default: the operator's."},
+			"vocabulary":    {"type": "string", "description": "transcribe: names and terms the recording uses, to help the model spell them (one line, at most 400 characters). Default: the operator's."},
+			"diarize":       {"type": "boolean", "description": "transcribe: label who speaks (Speaker 1, Speaker 2…), where the model can. Default: the operator's setting."},
+			"timestamps":    {"type": "string", "enum": ["segments", "none"], "description": "transcribe: segments (default) puts each passage's start time before it; none leaves times out."},
+			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything. transcribe: say how many minutes and requests it would take and what it would cost, without sending anything."},
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes."},
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import: the document store. Default user."},
@@ -117,6 +124,10 @@ type fileInput struct {
 	OCR          string `json:"ocr"`
 	Language     string `json:"language"`
 	DryRun       bool   `json:"dry_run"`
+	// transcribe
+	Vocabulary string `json:"vocabulary"`
+	Diarize    *bool  `json:"diarize"`
+	Timestamps string `json:"timestamps"`
 	// import
 	Title   string   `json:"title"`
 	DocPath string   `json:"doc_path"`
@@ -146,12 +157,14 @@ func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return f.upload(ctx, input)
 	case "extract":
 		return f.extract(ctx, in)
+	case "transcribe":
+		return f.transcribe(ctx, in)
 	case "import":
 		return f.importDoc(ctx, in)
 	case "":
-		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, import."), nil
+		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import."), nil
 	}
-	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, import."), nil
+	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import."), nil
 }
 
 // fileRef parses a path argument: a volume reference, or a bare path that

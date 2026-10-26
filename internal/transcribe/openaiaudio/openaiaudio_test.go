@@ -182,6 +182,10 @@ func TestOpenAIAudio_ClampsMalformedTimes(t *testing.T) {
 	if len(s) != 3 || s[0].Start != 0 || s[0].End != 0 || s[1].End != s[1].Start || s[2].Start != maxSegmentSeconds*time.Second {
 		t.Errorf("segments = %+v", s)
 	}
+	var billed transcribe.STTResult
+	if err := parse([]byte(`{"text":"x","usage":{"type":"duration","seconds":42}}`), time.Minute, &billed); err != nil || billed.Duration != 42*time.Second {
+		t.Errorf("usage seconds: %v %v", billed.Duration, err)
+	}
 	if err := parse([]byte(`<html>`), time.Minute, &res); err == nil {
 		t.Error("a non-JSON answer must be an error")
 	}

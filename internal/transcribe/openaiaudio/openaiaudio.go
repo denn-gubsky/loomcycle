@@ -215,8 +215,14 @@ func parse(body []byte, span time.Duration, res *transcribe.STTResult) error {
 	if w.Duration != nil {
 		res.Duration = seconds(*w.Duration)
 	}
-	if u := w.Usage; u != nil && u.Type == "tokens" && u.InputTokens >= 0 && u.OutputTokens >= 0 {
-		res.InputTokens, res.OutputTokens = u.InputTokens, u.OutputTokens
+	if u := w.Usage; u != nil {
+		switch {
+		case u.Type == "tokens" && u.InputTokens >= 0 && u.OutputTokens >= 0:
+			res.InputTokens, res.OutputTokens = u.InputTokens, u.OutputTokens
+		case u.Type == "duration" && res.Duration == 0:
+			// whisper-1's json answer reports the audio it billed here.
+			res.Duration = seconds(u.Seconds)
+		}
 	}
 	for _, s := range w.Segments {
 		text := strings.TrimSpace(s.Text)
