@@ -524,8 +524,9 @@ func warnLegacyTenantMemory(st store.Store) {
 // every boot so rows a replica on the old binary wrote during a rolling upgrade
 // move too. It is idempotent and best-effort: a failure is logged, never fatal.
 //
-// Delete with the one-release read fallback (legacyDocMemScopeID) in the next
-// minor release.
+// It is the only path that brings such a row back into view: the Document tool
+// reads tenant rows at the tenant keyspace alone, so a row left at the old scope
+// id reads as missing until a boot moves it.
 func sweepTenantDocumentRows(st store.Store) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

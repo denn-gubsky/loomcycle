@@ -112,46 +112,68 @@ func TestMemorySearch_TenantScopeReturnsTenantDocuments(t *testing.T) {
 	t.Errorf("a tenant-scope Memory search over documents did not return the tenant chunk %s: %s", id, r.Text)
 }
 
-// moveToLegacyKeyspace puts a body row back where an older binary wrote it.
-func moveToLegacyKeyspace(t *testing.T, vs *vectorStore, tenant, key string, prov store.MemoryProvenance) {
+// moveToLegacyKeyspace puts a body row and its embedding back where an older
+// binary wrote them: the SQL Memory scope id.
+func moveToLegacyKeyspace(t *testing.T, vs *vectorStore, tenant, key string) {
 	t.Helper()
 	bg := context.Background()
+	legacy := sqlmem.ScopeTenant(tenant)
 	e, err := vs.MemoryGet(bg, tenant, store.MemoryScopeTenant, "", key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := vs.MemorySetProvenance(bg, tenant, store.MemoryScopeTenant, sqlmem.ScopeTenant(tenant), key, e.Value, 0, prov); err != nil {
+	if err := vs.MemorySet(bg, tenant, store.MemoryScopeTenant, legacy, key, e.Value, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := vs.MemoryDelete(bg, tenant, store.MemoryScopeTenant, "", key); err != nil {
 		t.Fatal(err)
 	}
+	emb, err := vs.MemoryEmbedGet(bg, tenant, store.MemoryScopeTenant, "", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.MemoryEmbedSet(bg, tenant, store.MemoryScopeTenant, legacy, key, emb); err != nil {
+		t.Fatal(err)
+	}
+	if err := vs.MemoryEmbedDelete(bg, tenant, store.MemoryScopeTenant, "", key); err != nil {
+		t.Fatal(err)
+	}
 }
 
-// During a rolling upgrade a replica on the old binary still writes the old
-// keyspace, so for one release a tenant body read that misses retries there.
-func TestDocumentTenantBodyRead_FallsBackToTheLegacyScopeID(t *testing.T) {
+// v1.123.0 carried a one-release read fallback to the old scope id; it is gone.
+// A tenant document row still at the SQL Memory scope id is not read by the
+// Document tool: get_chunk reports no body and search does not return the chunk.
+// Only the store's MigrateTenantDocumentRows (migration 0114, the SQLite open
+// path, the boot sweep) brings such a row back into view — that move is pinned by
+// the store contract's MigrateTenantDocumentRows_IdempotentAndReportsStrays and by
+// TestDocumentSearch_TenantResultsUnchangedByTheMigration.
+func TestDocumentTenantBodyRead_IgnoresTheOldScopeID(t *testing.T) {
 	for _, tc := range []struct{ name, tenant string }{{"named tenant", "tnt"}, {"default tenant", ""}} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, vs, ctx := tenantDocFixture(t, tc.tenant, "quorum", "board")
 			id := tenantChunk(t, d, ctx, "quorum of the board")
-			moveToLegacyKeyspace(t, vs, tc.tenant, chunkBodyKey(id), store.MemoryProvenance{Origin: "consolidator"})
-
-			got := docRun(t, d, ctx, map[string]any{"op": "get_chunk", "scope": "tenant", "id": id})
-			if got["body"] != "quorum of the board" {
-				t.Fatalf("get_chunk body = %v, want the body still at the old scope id", got["body"])
+			search := map[string]any{"op": "search", "scope": "tenant", "query": "quorum board", "top_k": 10}
+			found := func() bool {
+				rows, _ := docRun(t, d, ctx, search)["chunks"].([]any)
+				for _, r := range rows {
+					if r.(map[string]any)["chunk_id"] == id {
+						return true
+					}
+				}
+				return false
+			}
+			// Non-vacuous: at the tenant keyspace the chunk is found.
+			if !found() {
+				t.Fatal("search does not find the chunk before it is moved; the absence below would prove nothing")
 			}
 
-			// A body rewrite lands in the new keyspace and keeps the provenance the
-			// old row carried, so a fact edited mid-upgrade stays a fact.
-			rev := got["revision"]
-			docRun(t, d, ctx, map[string]any{"op": "update_chunk", "scope": "tenant", "id": id, "revision": rev, "body": "quorum of two thirds"})
-			prov, err := vs.MemoryProvenanceGet(context.Background(), tc.tenant, store.MemoryScopeTenant, "", chunkBodyKey(id))
-			if err != nil {
-				t.Fatalf("rewritten body not in the new keyspace: %v", err)
+			moveToLegacyKeyspace(t, vs, tc.tenant, chunkBodyKey(id))
+
+			if got := docRun(t, d, ctx, map[string]any{"op": "get_chunk", "scope": "tenant", "id": id}); got["body"] != "" {
+				t.Errorf("get_chunk body = %v, want empty: a row at the old scope id must not be read", got["body"])
 			}
-			if prov.Origin != "consolidator" {
-				t.Errorf("rewritten body origin = %q, want the old row's %q", prov.Origin, "consolidator")
+			if found() {
+				t.Errorf("search returned chunk %s from the old scope id", id)
 			}
 		})
 	}
