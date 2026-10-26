@@ -5573,22 +5573,47 @@ func (s *Store) MemoryOrphanRepair(ctx context.Context, targetTenant string, sco
 	if len(scopeIDs) > 0 {
 		filter = " AND scope_id = ANY($3)"
 	}
-	tag, err := tx.Exec(ctx,
-		`UPDATE memory SET tenant_id = $1
-		  WHERE tenant_id = '' AND scope <> 'global'`+filter+`
+	moveMemory := `UPDATE memory SET tenant_id = $1
+		  WHERE tenant_id = '' AND scope <> 'global'` + filter + `
 		    AND NOT EXISTS (
 		      SELECT 1 FROM memory t
 		       WHERE t.tenant_id = $2 AND t.scope = memory.scope
-		         AND t.scope_id = memory.scope_id AND t.key = memory.key)`,
-		append([]any{targetTenant, targetTenant}, anyScopeIDs(scopeIDs)...)...,
-	)
-	if err != nil {
-		return store.MemoryOrphanReport{}, fmt.Errorf("memory orphan repair: %w", err)
+		         AND t.scope_id = memory.scope_id AND t.key = memory.key)`
+	args := append([]any{targetTenant, targetTenant}, anyScopeIDs(scopeIDs)...)
+
+	// memory_embeddings references memory by the full key, tenant_id included, with
+	// no ON UPDATE action: re-stamping memory alone is refused for every orphan that
+	// carries an embedding. Both tables move in ONE statement, so the foreign key is
+	// checked at its end, when both sides carry the new tenant. The same NOT EXISTS
+	// leaves a collision's embedding where its row stays. The table exists only where
+	// pgvector loaded.
+	var hasEmbeddings bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('memory_embeddings') IS NOT NULL`).Scan(&hasEmbeddings); err != nil {
+		return store.MemoryOrphanReport{}, fmt.Errorf("memory orphan repair: probe memory_embeddings: %w", err)
+	}
+	var moved int64
+	if hasEmbeddings {
+		moveEmbeddings := `UPDATE memory_embeddings SET tenant_id = $1
+		  WHERE tenant_id = '' AND scope <> 'global'` + filter + `
+		    AND NOT EXISTS (
+		      SELECT 1 FROM memory t
+		       WHERE t.tenant_id = $2 AND t.scope = memory_embeddings.scope
+		         AND t.scope_id = memory_embeddings.scope_id AND t.key = memory_embeddings.key)`
+		if err := tx.QueryRow(ctx, `WITH m AS (`+moveMemory+` RETURNING 1), e AS (`+moveEmbeddings+` RETURNING 1)
+			SELECT COUNT(*) FROM m`, args...).Scan(&moved); err != nil {
+			return store.MemoryOrphanReport{}, fmt.Errorf("memory orphan repair: %w", err)
+		}
+	} else {
+		tag, err := tx.Exec(ctx, moveMemory, args...)
+		if err != nil {
+			return store.MemoryOrphanReport{}, fmt.Errorf("memory orphan repair: %w", err)
+		}
+		moved = tag.RowsAffected()
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return store.MemoryOrphanReport{}, fmt.Errorf("commit memory orphan repair: %w", err)
 	}
-	rep.Applied, rep.Moved = true, int(tag.RowsAffected())
+	rep.Applied, rep.Moved = true, int(moved)
 	return rep, nil
 }
 

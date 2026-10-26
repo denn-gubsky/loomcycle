@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -208,10 +207,13 @@ func (m *Memory) typesForSubject(ctx context.Context, scope store.MemoryScope, s
 	// Hardcoding `user` made the guard silently unable to fire for an agent-scoped
 	// caller — it would query a partition that agent never writes to, find nothing, and
 	// report no conflict.
-	key := sqlmem.ScopeKey{
-		Tenant:  sqlScopeTenant(ctx),
-		Scope:   string(scope),
-		ScopeID: scopeID,
+	//
+	// The SQL key comes from the Memory scope through docScopeKeyFor, the mapping
+	// the Document tool's own scopes follow: a tenant caller's Memory scope id is
+	// "", which SQL Memory cannot key on — it keys the tenant scope by the tenant.
+	key, ok := docScopeKeyFor(tools.RunIdentity(ctx).TenantID, scope, scopeID)
+	if !ok {
+		return nil
 	}
 	res, err := d.query(ctx, key,
 		`SELECT DISTINCT coalesce(c.type, '') FROM chunks c

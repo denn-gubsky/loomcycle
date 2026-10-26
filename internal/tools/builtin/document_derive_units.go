@@ -438,7 +438,7 @@ func kindOption(kind string) string {
 // documentPaths maps each document id to EVERY Path-tree path naming it.
 func (d *Document) documentPaths(ctx context.Context, key sqlmem.ScopeKey) map[string][]string {
 	out := map[string][]string{}
-	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, key.ScopeID, "/")
+	rows, err := d.Store.DirentListUnder(ctx, direntTenant(ctx), key.Scope, direntScopeID(key), "/")
 	if err != nil {
 		return out
 	}
