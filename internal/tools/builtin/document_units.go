@@ -97,14 +97,14 @@ func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, unit
 		keep[k] = true
 		v, _ := json.Marshal(memrank.UnitValue{ChunkID: chunkID, Kind: u.Kind, Text: text,
 			Model: src.Model, BodyRevision: src.BodyRevision, BodySHA256: src.BodySHA256, UnitCount: len(units)})
-		if err := d.Store.MemorySet(ctx, tenant, mscope, key.ScopeID, k, v, 0); err != nil {
+		if err := d.Store.MemorySet(ctx, tenant, mscope, docMemScopeID(mscope, key), k, v, 0); err != nil {
 			return written, fmt.Errorf("derived units: write %s: %w", k, err)
 		}
-		if idx := d.unitIndexText(ctx, key, chunkID, text); idx != "" && !d.embedText(ctx, tenant, mscope, key.ScopeID, k, idx) {
+		if idx := d.unitIndexText(ctx, key, chunkID, text); idx != "" && !d.embedText(ctx, tenant, mscope, docMemScopeID(mscope, key), k, idx) {
 			// Best-effort like every document embed: the row stands, unindexed, and
 			// the re-index pass picks it up. The key may have held an older unit, and
 			// its vector must not stand for this one's text.
-			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, k)
+			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), k)
 			slog.WarnContext(ctx, "document: unit written but not embedded", "key", k)
 		}
 		written++
@@ -112,9 +112,9 @@ func (d *Document) ReplaceUnits(ctx context.Context, scope, chunkID string, unit
 	// Only now that the whole set is written: the units it did not overwrite. A
 	// delete that fails leaves a unit of another set behind, which the next pass
 	// reads as stale.
-	for _, u := range d.unitsOf(ctx, tenant, mscope, key.ScopeID, chunkID) {
+	for _, u := range d.unitsOf(ctx, tenant, mscope, docMemScopeID(mscope, key), chunkID) {
 		if !keep[u.Key] {
-			_, _ = d.Store.MemoryDelete(ctx, tenant, mscope, key.ScopeID, u.Key)
+			_, _ = d.Store.MemoryDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), u.Key)
 		}
 	}
 	return written, nil
@@ -172,12 +172,12 @@ func (d *Document) deleteUnitsOf(ctx context.Context, tenant string, mscope stor
 // reindexUnitsOf re-embeds one chunk's units under its current header — part of the
 // subtree re-index a rename or a move triggers, since a unit's header is its chunk's.
 func (d *Document) reindexUnitsOf(ctx context.Context, tenant string, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID string) {
-	for _, u := range d.unitsOf(ctx, tenant, mscope, key.ScopeID, chunkID) {
+	for _, u := range d.unitsOf(ctx, tenant, mscope, docMemScopeID(mscope, key), chunkID) {
 		var v memrank.UnitValue
 		_ = json.Unmarshal(u.Value, &v)
 		if idx := d.unitIndexText(ctx, key, chunkID, v.Text); idx != "" &&
-			!d.indexCurrent(ctx, tenant, mscope, key.ScopeID, u.Key, idx) {
-			d.embedText(ctx, tenant, mscope, key.ScopeID, u.Key, idx)
+			!d.indexCurrent(ctx, tenant, mscope, docMemScopeID(mscope, key), u.Key, idx) {
+			d.embedText(ctx, tenant, mscope, docMemScopeID(mscope, key), u.Key, idx)
 		}
 	}
 }
@@ -193,7 +193,7 @@ func (d *Document) UnitsForChunk(ctx context.Context, scope, chunkID string) ([]
 		return nil, err
 	}
 	var out []memrank.UnitValue
-	for _, u := range d.unitsOf(ctx, direntTenant(ctx), mscope, key.ScopeID, chunkID) {
+	for _, u := range d.unitsOf(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), chunkID) {
 		var v memrank.UnitValue
 		if json.Unmarshal(u.Value, &v) == nil {
 			out = append(out, v)

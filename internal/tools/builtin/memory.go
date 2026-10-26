@@ -2551,14 +2551,11 @@ func (m *Memory) execSupersede(ctx context.Context, scope store.MemoryScope, sco
 type factChunkRef struct {
 	doc      *Document
 	scopeKey sqlmem.ScopeKey
-	// THE BODY'S OWN COORDINATES, not the ones the Memory tool resolved. A chunk
-	// body is written by Document at (direntTenant, its memory scope, the SQL Memory
-	// key's ScopeID) — and under scope=tenant that ScopeID is the tenant, while the
-	// Memory tool deliberately uses "" there because the tenant_id column already
-	// carries the identity. Stamping the row at Memory's coordinates would miss it
-	// for every tenant-scope fact: the same silent miss this op exists to fix, one
-	// keying plane over. Under agent and user scope the two agree, which is exactly
-	// why this has to be taken from the body's own key rather than assumed.
+	// THE BODY'S OWN COORDINATES, taken from the Document tool's mapping
+	// (docMemScopeID) rather than assumed to be the ones the Memory tool resolved.
+	// They agree in every scope today; they did not for tenant scope while chunk
+	// bodies were keyed by the SQL Memory scope id, and stamping the row at the
+	// wrong coordinates misses it silently — the miss this op exists to fix.
 	bodyTenant  string
 	bodyScope   store.MemoryScope
 	bodyScopeID string
@@ -2593,7 +2590,7 @@ func (m *Memory) resolveFactChunk(ctx context.Context, in memoryInput) factChunk
 		doc: doc, scopeKey: skey, chunkID: chunkID,
 		bodyTenant:  direntTenant(ctx),
 		bodyScope:   mscope,
-		bodyScopeID: skey.ScopeID,
+		bodyScopeID: docMemScopeID(mscope, skey),
 		bodyKey:     memrank.DocumentChunkKeyPrefix + chunkID,
 		resolved:    true,
 	}

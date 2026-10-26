@@ -159,7 +159,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			// Recorded so the operator can act on it, then skipped.
 			if memrank.IsInertEntityStatus(c.status) {
 				if name != "" {
-					body, _ := d.readBody(ctx, mscope, key.ScopeID, c.id)
+					body, _ := d.readBody(ctx, mscope, key, c.id)
 					proposals = append(proposals, memrank.OntologyProposal{
 						ChunkID: c.id, Name: name, Parent: parentName,
 						Fields: memrank.ParseOntologyFields(body.Body),
@@ -180,7 +180,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				walk(c.id, parentName, depth)
 				continue
 			}
-			body, _ := d.readBody(ctx, mscope, key.ScopeID, c.id)
+			body, _ := d.readBody(ctx, mscope, key, c.id)
 			// The scope directive is read on THIS path too, not only from the
 			// whole-document Markdown. This is the reader the live ontology actually
 			// goes through — one chunk per type — so a declaration parsed in only one
@@ -228,7 +228,7 @@ func (d *Document) ontologyEntityName(ctx context.Context, mscope store.MemorySc
 	if n := memrank.TrimOntologyName(c.title); n != "" {
 		return n
 	}
-	body, err := d.readBody(ctx, mscope, key.ScopeID, c.id)
+	body, err := d.readBody(ctx, mscope, key, c.id)
 	if err != nil {
 		return ""
 	}

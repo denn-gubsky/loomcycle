@@ -82,7 +82,7 @@ func (d *Document) setRemote(ctx context.Context, key sqlmem.ScopeKey, mscope st
 	}
 	// Merge the binding into the root chunk's fields (round-trips via readBody /
 	// get_document). Read the current fields so we don't blank a color scheme.
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, root)
+	cb, err := d.readBody(ctx, mscope, key, root)
 	if err != nil {
 		return errFrom("set_remote: read root fields: "+err.Error(), err), nil
 	}
@@ -260,7 +260,7 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 		if !ok {
 			continue
 		}
-		cb, berr := d.readBody(ctx, mscope, key.ScopeID, kc.ID)
+		cb, berr := d.readBody(ctx, mscope, key, kc.ID)
 		if berr != nil {
 			return nil, berr
 		}
@@ -1011,7 +1011,7 @@ func (d *Document) readRemoteBinding(ctx context.Context, key sqlmem.ScopeKey, m
 	if err != nil {
 		return "", "", err
 	}
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, root)
+	cb, err := d.readBody(ctx, mscope, key, root)
 	if err != nil {
 		return "", "", err
 	}

@@ -204,7 +204,7 @@ func (d *Document) SubjectProposal(ctx context.Context, scope, chunkID string) (
 	if err != nil || len(res.Rows) == 0 || asStr(res.Rows[0][0]) != SubjectProposalChunkType {
 		return false, SubjectProposalFields{}, ""
 	}
-	body, _ := d.readBody(ctx, mscope, key.ScopeID, chunkID)
+	body, _ := d.readBody(ctx, mscope, key, chunkID)
 	var f SubjectProposalFields
 	if len(body.Fields) > 0 {
 		_ = json.Unmarshal(body.Fields, &f)

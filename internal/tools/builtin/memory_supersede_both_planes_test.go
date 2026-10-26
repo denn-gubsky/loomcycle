@@ -218,7 +218,7 @@ func TestMemorySupersede_ClosesATenantScopeFactToo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveScope(tenant): %v", err)
 	}
-	_, gerr := m.Store.MemoryGet(ctx, direntTenant(ctx), mscope, skey.ScopeID,
+	_, gerr := m.Store.MemoryGet(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, skey),
 		memory.DocumentChunkKeyPrefix+chunkID)
 	var nf *store.ErrNotFound
 	if !errors.As(gerr, &nf) {

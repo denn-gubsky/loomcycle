@@ -80,7 +80,7 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 		// ONE walk over "doc." covers chunk bodies and then their derived units:
 		// every doc.chunk: key sorts before every doc.unit: key, so the cursor stays a
 		// single key. Any other doc.* key is not Document material and is stepped over.
-		page, err := d.Store.MemoryListAfter(ctx, tenant, mscope, key.ScopeID, documentRowsPrefix, cursor, reindexPage)
+		page, err := d.Store.MemoryListAfter(ctx, tenant, mscope, docMemScopeID(mscope, key), documentRowsPrefix, cursor, reindexPage)
 		if err != nil {
 			return rep, err
 		}
@@ -91,7 +91,7 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 				continue
 			}
 			rep.Examined++
-			stored, gerr := d.Store.MemoryEmbedGet(ctx, tenant, mscope, key.ScopeID, row.Key)
+			stored, gerr := d.Store.MemoryEmbedGet(ctx, tenant, mscope, docMemScopeID(mscope, key), row.Key)
 			hasStored := gerr == nil
 			if gerr != nil && !isNotFound(gerr) {
 				// A store that cannot answer (no vector support) cannot be re-indexed at
@@ -104,13 +104,13 @@ func (d *Document) ReindexScope(ctx context.Context, scope, after string, limit 
 			case want == "":
 				rep.Unindexed++
 				if !dryRun {
-					if err := d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, row.Key); err != nil {
+					if err := d.Store.MemoryEmbedDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), row.Key); err != nil {
 						rep.fail(row.Key)
 					}
 				}
 			default:
 				rep.Reindexed++
-				if !dryRun && !d.embedText(ctx, tenant, mscope, key.ScopeID, row.Key, want) {
+				if !dryRun && !d.embedText(ctx, tenant, mscope, docMemScopeID(mscope, key), row.Key, want) {
 					rep.Reindexed--
 					rep.fail(row.Key)
 				}

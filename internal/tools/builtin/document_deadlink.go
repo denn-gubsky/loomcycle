@@ -172,7 +172,7 @@ func (d *Document) ReconcileDeadLinks(ctx context.Context, key sqlmem.ScopeKey, 
 			continue
 		}
 		for _, tenant := range bodyTenantsFor(key.Tenant) {
-			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, key.ScopeID, u.key); removed {
+			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), u.key); removed {
 				break
 			}
 		}
@@ -189,7 +189,7 @@ func (d *Document) ReconcileDeadLinks(ctx context.Context, key sqlmem.ScopeKey, 
 		// non-empty tenant so the single-tenant default is "default", while the k/v
 		// plane wrote those same rows under "". Try both; the first hit wins.
 		for _, tenant := range bodyTenantsFor(key.Tenant) {
-			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, key.ScopeID, b.key); removed {
+			if removed, _ := d.Store.MemoryDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), b.key); removed {
 				break
 			}
 		}
@@ -258,13 +258,13 @@ func (d *Document) memoryKeysUnder(ctx context.Context, key sqlmem.ScopeKey, msc
 	prefix string, chunkOf func(string) string) ([]chunkBodyRow, error) {
 	var out []chunkBodyRow
 	for _, tenant := range bodyTenantsFor(key.Tenant) {
-		entries, truncated, err := d.Store.MemoryList(ctx, tenant, mscope, key.ScopeID, prefix, chunkBodyListLimit)
+		entries, truncated, err := d.Store.MemoryList(ctx, tenant, mscope, docMemScopeID(mscope, key), prefix, chunkBodyListLimit)
 		if err != nil {
 			return nil, err
 		}
 		if truncated {
 			return nil, fmt.Errorf("deadlink: more than %d %s rows in scope %s/%s — refusing to reconcile a partial listing",
-				chunkBodyListLimit, prefix, mscope, key.ScopeID)
+				chunkBodyListLimit, prefix, mscope, docMemScopeID(mscope, key))
 		}
 		for _, e := range entries {
 			if id := chunkOf(e.Key); id != "" {

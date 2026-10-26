@@ -422,7 +422,7 @@ func (d *Document) graphSemanticSeeds(ctx context.Context, key sqlmem.ScopeKey, 
 		return nil
 	}
 	mscope := store.MemoryScope(key.Scope)
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, key.ScopeID,
+	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key),
 		store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}, vec[0], topK)
 	if err != nil {
 		// A store with no vector index answers the title way rather than not at all.

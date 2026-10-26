@@ -47,56 +47,11 @@ var memoryPlaneFields = map[string]bool{
 	"bodyScopeID": true,
 }
 
-// knownSQLScopeIDOnMemoryPlane is the census: the sites that still hand the SQL
+// knownSQLScopeIDOnMemoryPlane holds the sites still allowed to hand the SQL
 // Memory scope id to the Memory plane, by file and enclosing function, with the
-// number of such calls in each. It may only shrink.
-var knownSQLScopeIDOnMemoryPlane = map[string]int{
-	"document_deadlink.go:(*Document).memoryKeysUnder":         1,
-	"document_deadlink.go:(*Document).ReconcileDeadLinks":      2,
-	"document_derive_units.go:(*Document).deriveDocument":      1,
-	"document_derive_units.go:(*Document).unitKindsFor":        1,
-	"document_derive_units.go:(*Document).unitSourceText":      1,
-	"document_entity.go:(*Document).updateChunkForUpsert":      1,
-	"document_entity.go:(*Document).upsertChunk":               1,
-	"document_fact_home.go:(*Document).HomeFactsUnderSubjects": 1,
-	"document_graph.go:(*Document).graphSemanticSeeds":         1,
-	"document_image.go:(*Document).ListUndescribedAssets":      1,
-	"document_image.go:(*Document).SetAssetDescription":        1,
-	"document_index_text.go:(*Document).reindexChunk":          5,
-	"document_ontology.go:(*Document).ontologyEntityName":      1,
-	"document_ontology.go:(*Document).ontologyForKey":          2,
-	"document_prune.go:(*Document).cascadeDeleteChunks":        2,
-	"document_reindex.go:(*Document).ReindexScope":             4,
-	"document_subject_proposal.go:(*Document).SubjectProposal": 1,
-	"document_sync.go:(*Document).loadLocalSnapshot":           1,
-	"document_sync.go:(*Document).readRemoteBinding":           1,
-	"document_sync.go:(*Document).setRemote":                   1,
-	"document_units.go:(*Document).reindexUnitsOf":             3,
-	"document_units.go:(*Document).ReplaceUnits":               5,
-	"document_units.go:(*Document).UnitsForChunk":              1,
-	"document_verbatim.go:(*Document).verbatimAnswer":          2,
-	"document.go:(*Document).createChunk":                      1,
-	"document.go:(*Document).createDocument":                   1,
-	"document.go:(*Document).deleteChunk":                      3,
-	"document.go:(*Document).deleteDocument":                   2,
-	"document.go:(*Document).documentsSummary":                 1,
-	"document.go:(*Document).embedBody":                        2,
-	"document.go:(*Document).expandTransclusions":              1,
-	"document.go:(*Document).exportCanvas":                     1,
-	"document.go:(*Document).getChunk":                         1,
-	"document.go:(*Document).getDocument":                      1,
-	"document.go:(*Document).moveChunk":                        1,
-	"document.go:(*Document).related":                          2,
-	"document.go:(*Document).renderChunkTree":                  1,
-	"document.go:(*Document).reorderChunk":                     1,
-	"document.go:(*Document).searchChunks":                     1,
-	"document.go:(*Document).setAsset":                         2,
-	"document.go:(*Document).SetChunkStatus":                   1,
-	"document.go:(*Document).unlinkedMentions":                 1,
-	"document.go:(*Document).updateChunk":                      2,
-	"document.go:(*Document).writeBodyAs":                      3,
-	"memory.go:(*Memory).resolveFactChunk":                     1,
-}
+// number of such calls in each. It was the census (45 functions) when the guard
+// landed and is empty now; it may only shrink.
+var knownSQLScopeIDOnMemoryPlane = map[string]int{}
 
 func TestDocumentRows_MemoryScopeIDGoesThroughDocMemScopeID(t *testing.T) {
 	sites, scanned := scanMemoryPlaneSites(t, ".")

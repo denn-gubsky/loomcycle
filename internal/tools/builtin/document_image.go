@@ -190,7 +190,7 @@ func (d *Document) ListUndescribedAssets(ctx context.Context, scope string, limi
 		}
 		// Best-effort: a caption that cannot be read only costs the prompt some
 		// context, so it must not drop the asset from the pass.
-		if cb, err := d.readBody(ctx, mscope, key.ScopeID, a.ChunkID); err == nil {
+		if cb, err := d.readBody(ctx, mscope, key, a.ChunkID); err == nil {
 			if typ, _, _, _ := classifyMediaBody(cb.Body); typ == "" {
 				a.Caption = strings.TrimSpace(cb.Body)
 			}
@@ -224,7 +224,7 @@ func (d *Document) SetAssetDescription(ctx context.Context, scope, chunkID, desc
 	// Re-embed from the STORED body, not from a caller-supplied caption: the body is
 	// the authority on what the caption currently is, and a describe pass must not
 	// be able to rewrite it.
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, chunkID)
+	cb, err := d.readBody(ctx, mscope, key, chunkID)
 	if err != nil {
 		return err
 	}

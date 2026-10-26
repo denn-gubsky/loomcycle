@@ -196,7 +196,12 @@ func ChunkIndexTextForRow(ctx context.Context, mgr *sqlmem.Manager, tenant strin
 	// unit is a Document row too: an admin re-embed that treated it as a plain row
 	// would embed its JSON envelope.
 	d := &Document{SqlMem: mgr}
-	key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenant), Scope: string(mscope), ScopeID: scopeID}
+	// The Memory scope id is not the SQL Memory one for tenant scope ("" against the
+	// tenant), so the tree is found through the one mapping that knows both.
+	key, ok := docScopeKeyFor(tenant, mscope, scopeID)
+	if !ok {
+		key = sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenant), Scope: string(mscope), ScopeID: scopeID}
+	}
 	return d.rowIndexText(ctx, key, row)
 }
 
@@ -411,7 +416,7 @@ const reindexChunkRechecks = 3
 // rewritten continuously is indexed by each of its writers anyway.
 func (d *Document) reindexChunk(ctx context.Context, tenant string, key sqlmem.ScopeKey, mscope store.MemoryScope, id, chunkType string) {
 	bodyKey := chunkBodyKey(id)
-	cb, err := d.readBody(ctx, mscope, key.ScopeID, id)
+	cb, err := d.readBody(ctx, mscope, key, id)
 	if err != nil {
 		slog.WarnContext(ctx, "document: re-index of a chunk could not read its body", "chunk_id", id, "err", err)
 		return
@@ -419,19 +424,19 @@ func (d *Document) reindexChunk(ctx context.Context, tenant string, key sqlmem.S
 	text := d.chunkIndexText(ctx, key, id, chunkType, cb.Body)
 	for recheck := 0; ; recheck++ {
 		switch {
-		case d.indexCurrent(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
+		case d.indexCurrent(ctx, tenant, mscope, docMemScopeID(mscope, key), bodyKey, text):
 			return // nothing stored, so nothing newer was overwritten
 		case text == "":
 			// Nothing may stay indexed for a chunk that derives to nothing (see embedBody).
-			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, key.ScopeID, bodyKey)
-		case !d.embedText(ctx, tenant, mscope, key.ScopeID, bodyKey, text):
+			_ = d.Store.MemoryEmbedDelete(ctx, tenant, mscope, docMemScopeID(mscope, key), bodyKey)
+		case !d.embedText(ctx, tenant, mscope, docMemScopeID(mscope, key), bodyKey, text):
 			slog.WarnContext(ctx, "document: re-index of a chunk: embed failed", "chunk_id", id)
 			return
 		}
 		if recheck == reindexChunkRechecks {
 			return
 		}
-		now, err := d.readBody(ctx, mscope, key.ScopeID, id)
+		now, err := d.readBody(ctx, mscope, key, id)
 		if err != nil {
 			return
 		}

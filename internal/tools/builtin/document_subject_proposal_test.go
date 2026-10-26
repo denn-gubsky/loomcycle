@@ -307,7 +307,7 @@ func TestAdoptSubjectProposal_DoesNotBackfillFactsFromOtherScopes(t *testing.T) 
 	if r.IsError {
 		t.Fatalf("the adopted dossier is missing: %s", r.Text)
 	}
-	body, _ := d.readBody(grantedTenantCtx(ctx), store.MemoryScopeTenant, tenantKey.ScopeID, asStr(got["root_chunk_id"]))
+	body, _ := d.readBody(grantedTenantCtx(ctx), store.MemoryScopeTenant, tenantKey, asStr(got["root_chunk_id"]))
 	if !strings.Contains(body.Body, "BEFORE adoption") {
 		t.Errorf("the adopted entity does not record that earlier facts stayed behind: %q", body.Body)
 	}
