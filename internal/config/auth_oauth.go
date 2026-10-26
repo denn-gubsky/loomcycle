@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -174,6 +175,12 @@ func resolveOAuthGate(c *Config, name string, g AuthGateConfig) (*AuthOAuthGate,
 		if o.BaseURL, err = providerURL(where+".base_url", g.BaseURL); err != nil {
 			return nil, err
 		}
+		// A base_url naming the public instance IS the public instance. Left
+		// as written it would read as self-managed and skip the open-sign-in
+		// rule below, so it is folded into the preset's default.
+		if publicOAuthInstance(o.Preset, o.BaseURL) {
+			o.BaseURL = ""
+		}
 	}
 	switch o.Preset {
 	case OAuthPresetGitHub, OAuthPresetGitLab:
@@ -246,4 +253,30 @@ func resolveOAuthGate(c *Config, name string, g AuthGateConfig) (*AuthOAuthGate,
 		o.TrustEmail = *g.TrustEmail
 	}
 	return o, nil
+}
+
+// publicOAuthHosts are the hosts of the public instances the github and gitlab
+// presets default to: anyone can hold an account there.
+var publicOAuthHosts = map[string][]string{
+	OAuthPresetGitHub: {"github.com", "www.github.com", "api.github.com"},
+	OAuthPresetGitLab: {"gitlab.com", "www.gitlab.com"},
+}
+
+// publicOAuthInstance reports whether base names the preset's public instance,
+// however its host is spelled (case, a trailing dot, the default port).
+func publicOAuthInstance(preset, base string) bool {
+	u, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	if p := u.Port(); p != "" && p != "443" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	for _, h := range publicOAuthHosts[preset] {
+		if host == h {
+			return true
+		}
+	}
+	return false
 }

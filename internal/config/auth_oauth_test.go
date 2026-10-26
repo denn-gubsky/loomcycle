@@ -125,3 +125,28 @@ func TestResolveAuth_PublicOAuthPresetsRefuseOpenSignInUnlessChosen(t *testing.T
 		}
 	}
 }
+
+// A base_url that names the public instance is the public instance: it must not
+// skip the open-sign-in rule that an empty base_url gets.
+func TestResolveAuth_PublicOAuthBaseURLIsThePublicInstance(t *testing.T) {
+	for preset, urls := range map[string][]string{
+		"github": {"https://github.com", "https://GitHub.com/", "https://www.github.com", "https://api.github.com", "https://github.com.:443"},
+		"gitlab": {"https://gitlab.com", "https://GITLAB.com/", "https://www.gitlab.com"},
+	} {
+		for _, u := range urls {
+			c := oauthGateConfig(t, AuthGateConfig{Preset: preset, AuthGateOAuthConfig: AuthGateOAuthConfig{BaseURL: u}})
+			err := resolveAuth(c)
+			if err == nil || !strings.Contains(err.Error(), "allow_any_account") {
+				t.Fatalf("%s base_url %s: err = %v, want the open-sign-in refusal", preset, u, err)
+			}
+			c = oauthGateConfig(t, AuthGateConfig{Preset: preset, AuthGateOAuthConfig: AuthGateOAuthConfig{
+				BaseURL: u, AllowedOrgs: []string{"acme"}, RequireOrg: true}})
+			if err := resolveAuth(c); err != nil {
+				t.Fatalf("%s base_url %s with require_org: %v", preset, u, err)
+			}
+			if g := c.ResolvedAuth.Gates[0].OAuth; g.BaseURL != "" || !g.TrustEmail {
+				t.Fatalf("%s base_url %s: resolved base_url %q trust_email %v, want the public instance", preset, u, g.BaseURL, g.TrustEmail)
+			}
+		}
+	}
+}
