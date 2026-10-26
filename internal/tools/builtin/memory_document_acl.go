@@ -132,6 +132,10 @@ func UnreadableDocumentKeys(ctx context.Context, docs *Document, scope store.Mem
 	if docs != nil {
 		reader = docs
 	}
+	return unreadableDocumentKeys(ctx, reader, scope, scopeID, keys)
+}
+
+func unreadableDocumentKeys(ctx context.Context, reader documentHitReader, scope store.MemoryScope, scopeID string, keys []string) (map[string]bool, error) {
 	var ids []string
 	for _, k := range keys {
 		if id := documentHitChunkID(k); id != "" {

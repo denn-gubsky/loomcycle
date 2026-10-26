@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -272,6 +273,13 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeDocumentRowRefusal answers a refused write to a document row: the
+// Memory tool's reason, and where the write goes instead.
+func writeDocumentRowRefusal(w http.ResponseWriter, res tools.Result) {
+	writeJSONError(w, http.StatusBadRequest, "document_row",
+		res.Text+". Write or remove a chunk with POST /v1/_document (update_chunk, delete_chunk).")
+}
+
 // unreadableDocumentKeys returns the keys among entries the caller may not
 // read because each is a chunk body or derived unit of a document its
 // access-control set denies it reading (builtin.UnreadableDocumentKeys); nil
@@ -380,6 +388,13 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
+		return
+	}
+	// A chunk body or a derived unit is written through the Document routes, so
+	// the revision check and the scope grants apply; the Memory tool refuses the
+	// same writes. For every caller: it is the namespace, not an access decision.
+	if res, refused := builtin.DocumentRowWriteRefusal("put", key); refused {
+		writeDocumentRowRefusal(w, res)
 		return
 	}
 	var body memoryEntryPutBody
@@ -497,7 +512,21 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 			"scope_id and key are required")
 		return
 	}
-	if _, err := s.store.MemoryDelete(r.Context(), s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant")), store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
+	tenantID := s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant"))
+	// A derived unit or a prose chunk body is removed through the Document routes,
+	// so the chunk and its text go together; a consolidated fact's body row stays
+	// deletable by its id. A row that cannot be classified is not removed.
+	if res, refused := builtin.DocumentRowRemovalRefusal(r.Context(), s.store, tenantID, store.MemoryScope(scope),
+		adminMemoryStoreScopeID(scope, scopeID), "delete", key); refused {
+		if res.Error != nil && res.Error.Category == tools.CategoryValidation {
+			writeDocumentRowRefusal(w, res)
+			return
+		}
+		slog.Error("memory delete could not classify the row", "scope", scope, "scope_id", scopeID, "key", key, "err", res.Text)
+		writeJSONError(w, http.StatusInternalServerError, "internal", "delete failed")
+		return
+	}
+	if _, err := s.store.MemoryDelete(r.Context(), tenantID, store.MemoryScope(scope), adminMemoryStoreScopeID(scope, scopeID), key); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}

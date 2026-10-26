@@ -38,6 +38,8 @@ func Route(required, method, path string) bool {
 //   - user create + roster mutation + user-token minting (/v1/_users*) — escalation
 //   - per-subject erasure (/v1/_erasure) — destructive
 //   - budget WRITES (PUT/DELETE /v1/_limits) — cost-control bypass (GET stays open)
+//   - the memory maintenance sweeps (IsMemoryMaintenancePath) — bulk rewrites and
+//     embedder/model spend
 func CarvedOut(method, path string) bool {
 	switch {
 	case path == "/v1/_users" && method == http.MethodPost:
@@ -71,9 +73,26 @@ func CarvedOut(method, path string) bool {
 	// refused.
 	case path == "/v1/_memory/changes" || path == "/v1/_document/changes":
 		return true
+	// The memory maintenance sweeps rewrite a whole scope's rows — re-embed,
+	// backfill, purge, collapse, re-home — and several spend the operator's
+	// embedder or model budget per row. Each is an operator's decision, as the
+	// handlers' dry-run defaults and tenant checks assume; a member reaches its
+	// memory through the key routes and the search, not these.
+	case IsMemoryMaintenancePath(path):
+		return true
 	// Crypto with the tenant's keys: a member who could decrypt with them could
 	// read whatever the tenant sealed, and sign as the tenant. Operators only.
 	case path == "/v1/_crypto":
+		return true
+	}
+	return false
+}
+
+// IsMemoryMaintenancePath matches the memory maintenance sweeps.
+func IsMemoryMaintenancePath(path string) bool {
+	switch path {
+	case "/v1/_memory/reembed", "/v1/_memory/backfill_embeddings", "/v1/_memory/backfill_traces",
+		"/v1/_memory/purge_stale_embeddings", "/v1/_memory/collapse_facts", "/v1/_memory/home_facts":
 		return true
 	}
 	return false
