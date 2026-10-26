@@ -47,3 +47,63 @@ func TestPricing_Cost(t *testing.T) {
 		t.Errorf("currency fallback = %q, want USD", cur)
 	}
 }
+
+// TestPricing_CostSecondsPerMinute — an audio row is priced per minute of
+// audio (seconds/60 × per_minute), with the same currency and unpriced
+// semantics as a token row.
+func TestPricing_CostSecondsPerMinute(t *testing.T) {
+	p := PricingConfig{
+		Currency: "USD",
+		Models: map[string]ModelPrice{
+			"openai/whisper-1":    {PerMinute: 0.006},
+			"speaches/large-v3":   {PerMinute: 0, Currency: "EUR"},
+			"openai/gpt-4o-audio": {Input: 2.5, PerMinute: 0.01, Currency: "GBP"},
+		},
+	}
+
+	// 90 s at $0.006/min = $0.009.
+	cost, cur, ok := p.CostSeconds("openai", "whisper-1", 90)
+	if !ok || cur != "USD" || !approx(cost, 0.009) {
+		t.Errorf("priced = (%v, %q, %v), want (0.009, USD, true)", cost, cur, ok)
+	}
+
+	// Per-model currency overrides the table default.
+	if cost, cur, ok := p.CostSeconds("openai", "gpt-4o-audio", 60); !ok || cur != "GBP" || !approx(cost, 0.01) {
+		t.Errorf("currency override = (%v, %q, %v), want (0.01, GBP, true)", cost, cur, ok)
+	}
+
+	// A listed self-hosted model at zero is a genuine zero cost, not unpriced.
+	if cost, cur, ok := p.CostSeconds("speaches", "large-v3", 600); !ok || cur != "EUR" || cost != 0 {
+		t.Errorf("zero-priced = (%v, %q, %v), want (0, EUR, true)", cost, cur, ok)
+	}
+
+	// Absent pair, and an empty table, are unpriced.
+	if cost, cur, ok := p.CostSeconds("openai", "whisper-9", 60); ok || cur != "" || cost != 0 {
+		t.Errorf("unpriced = (%v, %q, %v), want (0, \"\", false)", cost, cur, ok)
+	}
+	if _, _, ok := (PricingConfig{}).CostSeconds("openai", "whisper-1", 60); ok {
+		t.Error("empty table must not price anything")
+	}
+
+	// The token path ignores per_minute: a model priced for both bills tokens
+	// by the token prices only.
+	if cost, _, _ := p.Cost("openai", "gpt-4o-audio", 1_000_000, 0, 0, 0); !approx(cost, 2.5) {
+		t.Errorf("token cost = %v, want 2.5 (per_minute must not leak into Cost)", cost)
+	}
+}
+
+// TestPricing_PerMinuteReadFromYAML — the unit is read from the pricing block.
+func TestPricing_PerMinuteReadFromYAML(t *testing.T) {
+	cfg, err := LoadLayers(Layer{Name: "op", Data: []byte(`
+defaults: { provider: anthropic, model: x }
+pricing:
+  models:
+    "openai/whisper-1": { per_minute: 0.006 }
+`)})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Pricing.Models["openai/whisper-1"].PerMinute; got != 0.006 {
+		t.Errorf("per_minute = %v, want 0.006", got)
+	}
+}
