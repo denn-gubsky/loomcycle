@@ -194,9 +194,10 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	// A document filter is resolved to chunk ids BEFORE the search, and only when
 	// one was given: a filter-free search stays on exactly the old path.
 	var filterEcho *builtin.MemoryDocFilterEcho
+	docCtx := memorySearchFilterCtx(r, body.Scope, storeScopeID)
+	docs := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	if df := body.documentFilter(); !df.IsZero() {
-		p, refusal := builtin.PlanMemoryDocumentFilter(memorySearchFilterCtx(r, body.Scope, storeScopeID),
-			&builtin.Document{Store: s.store, SqlMem: s.sqlMem}, "search",
+		p, refusal := builtin.PlanMemoryDocumentFilter(docCtx, docs, "search",
 			store.MemoryScope(body.Scope), storeScopeID, df, sq, builtin.MemorySourcesWhy("", sources))
 		if refusal != nil {
 			status, code := memorySearchFilterRefusalStatus(*refusal)
@@ -238,6 +239,18 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Warn("memory search failed", "scope", body.Scope, "scope_id", body.ScopeID, "err", err)
+		writeJSONError(w, http.StatusInternalServerError, "internal", "search failed")
+		return
+	}
+	// A document the caller's access-control set denies it reading is left out,
+	// as Document op=search and the Memory tool in a run leave it out: chunk
+	// bodies share this keyspace, so without it this search is a second door to
+	// them. Checked by key, so a fact homed in a denied chunk and a chunk found
+	// through its derived unit go too. A caller whose set denies no document
+	// gets the old answer with no lookup. A failed check fails the search; the
+	// hits are never returned unchecked.
+	if err := builtin.DropUnreadableSearchHits(docCtx, docs, store.MemoryScope(body.Scope), storeScopeID, &res, nil); err != nil {
+		slog.Error("memory search access check failed", "scope", body.Scope, "scope_id", body.ScopeID, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "internal", "search failed")
 		return
 	}
@@ -297,7 +310,8 @@ func (s *Server) handleMemorySearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// memorySearchFilterCtx is the identity a document filter resolves under: the
+// memorySearchFilterCtx is the identity a document filter resolves under, and
+// the one the hits' document access check runs under: the
 // principal's own tenant (as the search itself), the requested scope's subject,
 // and the operator-plane grants the off-run Document routes run with
 // (substrateBrowseCtx → substrateAdminCtx). The principal stays on ctx, so the

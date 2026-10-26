@@ -58,11 +58,21 @@ func documentReadLimited(ctx context.Context, scope store.MemoryScope, scopeID s
 	return a.limitsReading(ctx)
 }
 
+// hitReader is the Memory tool's Document side, or nil when it has none.
+// Read HERE, at use: boot assigns the resolver before it is fully bound.
+func (m *Memory) hitReader() documentHitReader {
+	reader, ok := m.DocumentFilters.(documentHitReader)
+	if !ok {
+		return nil
+	}
+	return reader
+}
+
 // readableDocumentHits returns a predicate over chunk ids: false for a chunk hit
 // of (scope, scopeID) the caller may not read. A nil predicate means nothing
 // is left out — the caller's set cannot deny anything here, or there are no
-// document hits to ask about.
-func (m *Memory) readableDocumentHits(ctx context.Context, scope store.MemoryScope, scopeID string, chunkIDs []string) (func(string) bool, error) {
+// document hits to ask about. reader nil: no Document tool to ask.
+func readableDocumentHits(ctx context.Context, reader documentHitReader, scope store.MemoryScope, scopeID string, chunkIDs []string) (func(string) bool, error) {
 	if len(chunkIDs) == 0 {
 		return nil, nil
 	}
@@ -70,9 +80,7 @@ func (m *Memory) readableDocumentHits(ctx context.Context, scope store.MemorySco
 	if err != nil || !limited {
 		return nil, err
 	}
-	// Read HERE, at use: boot assigns the resolver before it is fully bound.
-	reader, ok := m.DocumentFilters.(documentHitReader)
-	if !ok || reader == nil {
+	if reader == nil {
 		// Fail closed: with no Document tool there is no way to tell which
 		// document a chunk belongs to, so none can be shown to be readable.
 		return func(string) bool { return false }, nil
@@ -95,10 +103,65 @@ func documentHitChunkID(key string) string {
 	return id
 }
 
-// dropUnreadableSearchHits removes from res the chunk hits of (scope, scopeID)
-// the caller may not read, keeping every index-aligned slice aligned. inScope
-// reports whether entry i is from that scope (nil: all are).
+// DropUnreadableSearchHits removes from res the chunk hits of (scope, scopeID)
+// the caller on ctx may not read, as the Memory tool's search does: the off-run
+// POST /v1/_memory/search shares it, so the two cannot drift. docs answers which
+// document a chunk belongs to (nil: none can be shown readable to a caller whose
+// set limits reading, and its document hits are dropped). inScope reports
+// whether entry i is from that scope (nil: all are); call it once per scope a
+// search read. Every index-aligned slice of res stays aligned, Scopes included.
+// On an error res is left as it was, and the caller must fail the search
+// rather than answer with hits it could not check.
+func DropUnreadableSearchHits(ctx context.Context, docs *Document, scope store.MemoryScope, scopeID string,
+	res *memrank.SearchResult, inScope func(int) bool) error {
+	var reader documentHitReader
+	if docs != nil {
+		reader = docs
+	}
+	return dropUnreadableSearchHits(ctx, reader, scope, scopeID, res, inScope)
+}
+
+// UnreadableDocumentKeys returns the keys among keys, all of the memory scope
+// (scope, scopeID), that the caller on ctx may not read: a chunk body or a
+// derived unit whose document its set denies it reading, chosen by key as
+// DropUnreadableSearchHits chooses. It is that function's rule for the routes
+// that read memory rows by key rather than by search. nil: nothing is held back.
+// docs as there; an error must fail the read.
+func UnreadableDocumentKeys(ctx context.Context, docs *Document, scope store.MemoryScope, scopeID string, keys []string) (map[string]bool, error) {
+	var reader documentHitReader
+	if docs != nil {
+		reader = docs
+	}
+	var ids []string
+	for _, k := range keys {
+		if id := documentHitChunkID(k); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	keep, err := readableDocumentHits(ctx, reader, scope, scopeID, ids)
+	if err != nil || keep == nil {
+		return nil, err
+	}
+	var out map[string]bool
+	for _, k := range keys {
+		if id := documentHitChunkID(k); id != "" && !keep(id) {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[k] = true
+		}
+	}
+	return out, nil
+}
+
+// dropUnreadableSearchHits is the Memory tool's DropUnreadableSearchHits, asking
+// its own Document side.
 func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.MemoryScope, scopeID string,
+	res *memrank.SearchResult, inScope func(int) bool) error {
+	return dropUnreadableSearchHits(ctx, m.hitReader(), scope, scopeID, res, inScope)
+}
+
+func dropUnreadableSearchHits(ctx context.Context, reader documentHitReader, scope store.MemoryScope, scopeID string,
 	res *memrank.SearchResult, inScope func(int) bool) error {
 	var ids []string
 	for i, e := range res.Entries {
@@ -109,7 +172,7 @@ func (m *Memory) dropUnreadableSearchHits(ctx context.Context, scope store.Memor
 			ids = append(ids, id)
 		}
 	}
-	keep, err := m.readableDocumentHits(ctx, scope, scopeID, ids)
+	keep, err := readableDocumentHits(ctx, reader, scope, scopeID, ids)
 	if err != nil || keep == nil {
 		return err
 	}
@@ -159,7 +222,7 @@ func (m *Memory) dropUnreadableRecallHits(ctx context.Context, scope store.Memor
 			ids = append(ids, id)
 		}
 	}
-	keep, err := m.readableDocumentHits(ctx, scope, scopeID, ids)
+	keep, err := readableDocumentHits(ctx, m.hitReader(), scope, scopeID, ids)
 	if err != nil || keep == nil {
 		return err
 	}
