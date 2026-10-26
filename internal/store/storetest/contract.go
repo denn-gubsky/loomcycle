@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -253,6 +254,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedCascadesOnDelete", testMemoryEmbedCascadesOnDelete},
 		{"MemoryEmbedListMissing", testMemoryEmbedListMissing},
 		{"MemorySearchFilterExcludesPrefix", testMemorySearchFilterExcludesPrefix},
+		{"MemorySearchImportOriginIsDocumentClass", testMemorySearchImportOriginIsDocumentClass},
 		{"MemoryEmbedDelete", testMemoryEmbedDelete},
 		// RFC BL P2: the background-consolidation substrate.
 		{"MemorySupersedeHidesFromReads", testMemorySupersedeHidesFromReads},
@@ -16374,6 +16376,93 @@ func testMemorySearchFilterExcludesPrefix(t *testing.T, s store.Store) {
 		for _, r := range lex {
 			if strings.HasPrefix(r.Key, "doc.chunk:") && r.Origin == "" {
 				t.Errorf("the full-text leg ignored ExcludeDocumentPrefix and returned prose %s", r.Key)
+			}
+		}
+	}
+}
+
+// testMemorySearchImportOriginIsDocumentClass pins where an IMPORTED chunk body
+// falls. Its origin says who wrote it (an import of a file or an email), so the
+// column is not empty — but it is document text, not a distilled fact. Every
+// predicate that splits facts from prose must put it with the prose: the fact
+// selector must not return it, the documents selector must, and the document-class
+// exclusion and the id lists must treat it as a document row. Both legs, for the
+// RRF reason testMemorySearchFilterExcludesPrefix gives.
+func testMemorySearchImportOriginIsDocumentClass(t *testing.T, s store.Store) {
+	if !vectorRefusalCheck(t, s) {
+		return
+	}
+	ctx := context.Background()
+	const sid = "importclass"
+	v, _ := json.Marshal("imported minutes of the board meeting")
+	write := func(key, origin string) {
+		t.Helper()
+		if err := s.MemorySetProvenance(ctx, "", store.MemoryScopeUser, sid, key, v, 0,
+			store.MemoryProvenance{Origin: origin}); err != nil {
+			t.Fatalf("MemorySetProvenance %s: %v", key, err)
+		}
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeUser, sid, key, store.MemoryEmbedding{
+			Provider: "test", Model: "m", Dimension: 4,
+			Vector: floats32(1, 0, 0, 0), EmbedText: "imported minutes", CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("MemoryEmbedSet %s: %v", key, err)
+		}
+	}
+	write("doc.chunk:imp1", store.OriginImport)
+	write("doc.chunk:prose1", "")
+	write("doc.chunk:fact1", "consolidator")
+	write("memory/note", "")
+
+	keysOf := func(rows []store.MemorySearchEntry) []string {
+		out := make([]string, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, r.Key)
+		}
+		sort.Strings(out)
+		return out
+	}
+	q := floats32(1, 0, 0, 0)
+	search := func(name string, f store.MemorySearchFilter) []string {
+		t.Helper()
+		rows, err := s.MemoryEmbedSearch(ctx, "", store.MemoryScopeUser, sid, f, q, 10)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return keysOf(rows)
+	}
+
+	if got := search("facts", store.MemorySearchFilter{Provenance: store.ProvenanceRequired}); !reflect.DeepEqual(got, []string{"doc.chunk:fact1"}) {
+		t.Errorf("ProvenanceRequired returned %v, want only the distilled fact — an imported body is not a fact", got)
+	}
+	if got := search("documents", store.MemorySearchFilter{KeyPrefix: "doc.chunk:", Provenance: store.ProvenanceAbsent}); !reflect.DeepEqual(got, []string{"doc.chunk:imp1", "doc.chunk:prose1"}) {
+		t.Errorf("the documents selector returned %v, want the imported body beside the prose", got)
+	}
+	if got := search("not prose", store.MemorySearchFilter{ExcludeDocumentPrefix: "doc.chunk:"}); !reflect.DeepEqual(got, []string{"doc.chunk:fact1", "memory/note"}) {
+		t.Errorf("ExcludeDocumentPrefix returned %v, want the imported body excluded with the prose", got)
+	}
+	// The id lists hold every DOCUMENT row to them; an imported body is one, so a
+	// list that does not name it drops it, as it drops unlisted prose.
+	if got := search("ids", store.MemorySearchFilter{IDs: []string{"prose1"}, IDsPrefixes: []string{"doc.chunk:"}}); !reflect.DeepEqual(got, []string{"doc.chunk:fact1", "doc.chunk:prose1", "memory/note"}) {
+		t.Errorf("IDs with IDsPrefixes returned %v, want the unlisted imported body held to the list", got)
+	}
+	if got := search("exclude ids", store.MemorySearchFilter{ExcludeIDs: []string{"imp1"}, IDsPrefixes: []string{"doc.chunk:"}}); slices.Contains(got, "doc.chunk:imp1") {
+		t.Errorf("ExcludeIDs with IDsPrefixes returned %v, want the excluded imported body gone", got)
+	}
+
+	if s.SupportsFullText() {
+		for _, tc := range []struct {
+			name string
+			f    store.MemorySearchFilter
+		}{
+			{"fulltext facts", store.MemorySearchFilter{Provenance: store.ProvenanceRequired}},
+			{"fulltext not prose", store.MemorySearchFilter{ExcludeDocumentPrefix: "doc.chunk:"}},
+		} {
+			rows, err := s.MemoryFullTextSearch(ctx, "", store.MemoryScopeUser, sid, tc.f, "imported minutes", 10)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got := keysOf(rows); slices.Contains(got, "doc.chunk:imp1") {
+				t.Errorf("%s returned the imported body (%v)", tc.name, got)
 			}
 		}
 	}
