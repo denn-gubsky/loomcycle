@@ -160,6 +160,7 @@ def test_transcription_event_unwraps_the_record():
             status="partial",
             dry_run=True,
             run_id="run-2",
+            error="max_pages_per_run reached",
         ),
     )
     ev = AgentEvent._from_proto(proto)
@@ -180,6 +181,7 @@ def test_transcription_event_unwraps_the_record():
         status="partial",
         dry_run=True,
         run_id="run-2",
+        error="max_pages_per_run reached",
     )
     # An unpriced pass is not a free one: cost stays None, not 0.0.
     stt = AgentEvent._from_proto(

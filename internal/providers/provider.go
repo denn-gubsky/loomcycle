@@ -1826,6 +1826,10 @@ type TranscriptionInfo struct {
 	Status string `json:"status"`
 	// DryRun marks an estimate: no engine was called and nothing was spent.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Error says why a pass failed or stopped early, for the operator: set on
+	// "failed", and on "partial" when a cap or an engine error stopped it. Never
+	// a secret, a URL's query or the file's content.
+	Error string `json:"error,omitempty"`
 	// RunID is the run whose tool call made the pass.
 	RunID string `json:"run_id,omitempty"`
 }

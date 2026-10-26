@@ -29,14 +29,26 @@ export function transcriptionDetail(t: TranscriptionEventInfo): string {
   if (t.input_tokens || t.output_tokens) lines.push(`tokens: ${t.input_tokens ?? 0} in / ${t.output_tokens ?? 0} out`);
   lines.push(`cost: ${t.cost !== undefined && t.cost !== null ? money(t.cost, t.currency) : "unpriced"}`);
   lines.push(`status: ${t.status}${t.dry_run ? " (dry run — an estimate, nothing was spent)" : ""}`);
+  if (t.error) lines.push(`error: ${t.error}`);
   if (t.run_id) lines.push(`run_id: ${t.run_id}`);
   return lines.join("\n");
 }
 
+// outcome is the line's last part: the status, with a short form of the
+// reason when the pass failed or stopped early. The whole reason is in the
+// expanded view.
 function outcome(t: TranscriptionEventInfo): string {
-  const status = t.status || "?";
+  let status = t.status || "?";
+  if (t.error && (status === "failed" || status === "partial")) status += `: ${shorten(t.error, ERROR_ON_LINE)}`;
   if (!t.dry_run) return status;
-  return status === "ok" ? "estimate" : `estimate · ${status}`;
+  return t.status === "ok" ? "estimate" : `estimate · ${status}`;
+}
+
+const ERROR_ON_LINE = 60;
+
+function shorten(s: string, max: number): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
 }
 
 function unitsOf(t: TranscriptionEventInfo): string {

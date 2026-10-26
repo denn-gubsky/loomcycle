@@ -657,6 +657,10 @@ export interface TranscriptionInfo {
   dry_run?: boolean;
   /** The run whose tool call made the pass. */
   run_id?: string;
+  /** Why the pass failed or stopped early (set on `"failed"`, and on
+   *  `"partial"` when a cap or an engine error stopped it). Never a secret, a
+   *  URL's query or the file's content. */
+  error?: string;
 }
 
 export interface LimitInfo {

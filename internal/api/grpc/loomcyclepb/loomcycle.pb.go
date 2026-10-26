@@ -6285,6 +6285,7 @@ type TranscriptionInfo struct {
 	Status        string                 `protobuf:"bytes,13,opt,name=status,proto3" json:"status,omitempty"`                // ok | partial | failed
 	DryRun        bool                   `protobuf:"varint,14,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"` // an estimate: no engine was called, nothing was spent
 	RunId         string                 `protobuf:"bytes,15,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`     // the run whose tool call made the pass
+	Error         string                 `protobuf:"bytes,16,opt,name=error,proto3" json:"error,omitempty"`                  // why it failed or stopped early; never a secret, a URL query or file content
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6420,6 +6421,13 @@ func (x *TranscriptionInfo) GetDryRun() bool {
 func (x *TranscriptionInfo) GetRunId() string {
 	if x != nil {
 		return x.RunId
+	}
+	return ""
+}
+
+func (x *TranscriptionInfo) GetError() string {
+	if x != nil {
+		return x.Error
 	}
 	return ""
 }
@@ -13704,7 +13712,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x12\x16\n" +
 	"\x06sha256\x18\x04 \x01(\tR\x06sha256\x12\x16\n" +
 	"\x06origin\x18\x05 \x01(\tR\x06origin\x12\x15\n" +
-	"\x06run_id\x18\x06 \x01(\tR\x05runId\"\x99\x03\n" +
+	"\x06run_id\x18\x06 \x01(\tR\x05runId\"\xaf\x03\n" +
 	"\x11TranscriptionInfo\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\tR\x03ref\x12\x10\n" +
 	"\x03out\x18\x02 \x01(\tR\x03out\x12\x18\n" +
@@ -13721,7 +13729,8 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bcurrency\x18\f \x01(\tR\bcurrency\x12\x16\n" +
 	"\x06status\x18\r \x01(\tR\x06status\x12\x17\n" +
 	"\adry_run\x18\x0e \x01(\bR\x06dryRun\x12\x15\n" +
-	"\x06run_id\x18\x0f \x01(\tR\x05runIdB\a\n" +
+	"\x06run_id\x18\x0f \x01(\tR\x05runId\x12\x14\n" +
+	"\x05error\x18\x10 \x01(\tR\x05errorB\a\n" +
 	"\x05_cost\"\x8c\x01\n" +
 	"\rAdmissionInfo\x12\x16\n" +
 	"\x06reason\x18\x01 \x01(\tR\x06reason\x12\x1a\n" +

@@ -2213,7 +2213,7 @@ func eventToProto(ev providers.Event) *loomcyclepb.Event {
 			InputTokens: int64(tr.InputTokens), OutputTokens: int64(tr.OutputTokens),
 			// proto3 optional, so an unpriced pass (nil) stays apart from a free one.
 			Cost:     tr.Cost,
-			Currency: tr.Currency, Status: tr.Status, DryRun: tr.DryRun, RunId: tr.RunID,
+			Currency: tr.Currency, Status: tr.Status, DryRun: tr.DryRun, RunId: tr.RunID, Error: tr.Error,
 		}
 	}
 	if hd := ev.HookDecision; hd != nil {

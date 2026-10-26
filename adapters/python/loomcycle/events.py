@@ -220,6 +220,7 @@ class TranscriptionInfo:
     currency: str = ""
     dry_run: bool = False  # an estimate: no engine was called, nothing was spent
     run_id: str = ""  # the run whose tool call made the pass
+    error: str = ""  # why it failed or stopped early; never a secret, a URL query or file content
 
 
 @dataclass(frozen=True)
@@ -567,6 +568,7 @@ class AgentEvent:
                 currency=t.currency,
                 dry_run=t.dry_run,
                 run_id=t.run_id,
+                error=t.error,
             )
         adm: Optional[AdmissionInfo] = None
         if ev.HasField("admission"):

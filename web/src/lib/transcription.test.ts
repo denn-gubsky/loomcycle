@@ -75,6 +75,22 @@ describe("transcription", () => {
     expect(transcriptionDetail({ ...ocr, cost: undefined })).toContain("cost: unpriced");
   });
 
+  it("says why a failed or partial pass stopped, shortened on the line and whole when expanded", () => {
+    const failed = { ...ocr, status: "failed", pages: 0, cost: undefined, error: "engine: 429 rate limited" };
+    expect(transcriptionLine(failed)).toBe("⟲ OCR scan.pdf · claude-haiku-5-5 · failed: engine: 429 rate limited");
+    const long = "max_pages_per_run reached after page 50 of 120; the remaining pages were not sent to the engine\nretry later";
+    const partial = transcriptionLine({ ...ocr, status: "partial", pages: 50, error: long });
+    expect(partial.startsWith("⟲ OCR scan.pdf · 50 pages · claude-haiku-5-5 · $0.04 · partial: max_pages_per_run reached")).toBe(true);
+    expect(partial.endsWith("…")).toBe(true);
+    expect(partial).not.toContain("\n");
+    expect(partial.length).toBeLessThan(140);
+    expect(transcriptionDetail({ ...ocr, status: "partial", error: long })).toContain(`error: ${long}`);
+    // A dry run that would fail says so, with its reason.
+    expect(transcriptionLine({ ...ocr, dry_run: true, status: "failed", error: "not a scan" })).toBe(
+      "⟲ OCR scan.pdf · 12 pages · claude-haiku-5-5 · ~$0.04 · estimate · failed: not a scan",
+    );
+  });
+
   it("falls back to a bare label without a payload", () => {
     expect(transcriptionLine(undefined)).toBe("transcription");
   });

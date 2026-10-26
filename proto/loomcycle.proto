@@ -1800,6 +1800,7 @@ message TranscriptionInfo {
   string status = 13;        // ok | partial | failed
   bool dry_run = 14;         // an estimate: no engine was called, nothing was spent
   string run_id = 15;        // the run whose tool call made the pass
+  string error = 16;         // why it failed or stopped early; never a secret, a URL query or file content
 }
 
 // AdmissionInfo is the payload on type=queued and type=admitted frames. Mirrors

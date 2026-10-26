@@ -353,6 +353,7 @@ export interface TranscriptionEventInfo {
   status: string; // "ok" | "partial" | "failed"
   dry_run?: boolean; // an estimate: no engine was called, nothing was spent
   run_id?: string; // the run whose tool call made the pass
+  error?: string; // why it failed or stopped early (failed, or a partial a cap or engine error stopped)
 }
 
 export interface AdmissionEventInfo {
