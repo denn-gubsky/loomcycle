@@ -182,8 +182,9 @@ By default the fact reads (`list_facts`, `graph_recall`) return what is true
 now. `as_of` asks what was true at a past moment: a fact matches when its
 `valid_at` is unset or at or before that moment, and its `invalid_at` is unset
 or after it — so a fact corrected later still answers a question about before
-the correction. On `graph_recall` a chunk with its own `valid_at`/`invalid_at`
-must contain the moment too. `include_retired: true` drops the time filter
+the correction. A chunk with its own `valid_at`/`invalid_at` must contain the
+moment too; on `graph_recall` it must also contain the present when there is no
+`as_of`. `include_retired: true` drops the time filter
 entirely. A fact a
 judge marked `unsupported` is withheld from these reads until you pass
 `include_refuted: true`; it is never deleted.

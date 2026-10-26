@@ -445,7 +445,17 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	// thing on both surfaces. The INNER JOIN makes m.chunk_id non-null, so the
 	// clause's `m.chunk_id IS NULL OR ...` disjunct is inert here (which is
 	// correct: a JOINed row always has a sidecar). Empty when include_retired.
-	if temporal, targs := graphTemporalClause(in); temporal != "" {
+	//
+	// as_of is the shared both-intervals rule: a fact chunk that carries its own
+	// valid_at/invalid_at must contain the instant on both. The "true now" default
+	// deliberately stays sidecar-only here, unlike graph_recall's: document sync
+	// enumerates a peer's keyed chunks through this op's default, so filtering it
+	// on a chunk's own dates would stop a repealed edition from syncing.
+	temporal, targs := graphTemporalClause(in)
+	if in.AsOf != nil && !in.IncludeRetired {
+		temporal, targs = asOfClause(*in.AsOf)
+	}
+	if temporal != "" {
 		where = append(where, temporal)
 		args = append(args, targs...)
 	}
