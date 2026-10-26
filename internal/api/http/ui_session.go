@@ -298,6 +298,11 @@ func (s *Server) gateFor(g config.AuthGate) (authgate.Gate, error) {
 			return og, nil
 		}
 		return nil, fmt.Errorf("auth gate %q: the OIDC gate is misconfigured", g.Name)
+	case config.AuthGateKindOAuth:
+		if og, _, ok := s.oauthGateNamed(g.Name); ok {
+			return og, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the OAuth gate is misconfigured", g.Name)
 	}
 	return nil, fmt.Errorf("auth gate %q: kind %q has no implementation", g.Name, g.Kind)
 }

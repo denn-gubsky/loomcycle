@@ -222,13 +222,16 @@ func observedCondition(f store.MemorySearchFilter, args []any) (string, []any) {
 // ExcludeIDs. Shared by both legs for the reason observedCondition is: RRF fuses
 // them, so a predicate one leg skipped would be a predicate not applied.
 //
-// The lists bind as text[] and the probe is `= ANY` / `<> ALL`, which Postgres
-// hashes for a large array, so it costs a hash lookup per row on a scan the
-// cosine ORDER BY already pays in full. No index on the expression is wanted:
-// there is no index to use on this scan either way.
+// The lists bind as text[]. The allowlist probe is `= ANY` and the denylist an
+// anti-join (see below); Postgres hashes either for a large list, so each costs a
+// hash lookup per row on a scan the cosine ORDER BY already pays in full. No index
+// on the expression is wanted: there is no index to use on this scan either way.
 func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) {
 	if len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 {
 		return "", args
+	}
+	if len(f.IDsPrefixes) > 0 {
+		return idSegmentDocumentCondition(f, args)
 	}
 	args = append(args, f.KeyPrefix)
 	seg := "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
@@ -237,11 +240,61 @@ func idSegmentCondition(f store.MemorySearchFilter, args []any) (string, []any) 
 		args = append(args, f.IDs)
 		cond += " AND " + seg + " = ANY($" + strconv.Itoa(len(args)) + "::text[])"
 	}
+	// The denylist is an anti-join against the unnested list, not `seg <> ALL(list)`.
+	// The planner estimates `<> ALL` as one `<>` selectivity per element multiplied
+	// together (0.995 each, with no statistics on the expression), so a list of a
+	// thousand ids or more is estimated at ONE row however many survive. On that
+	// estimate it joins memory first and sorts after, evaluating the projection —
+	// `embedding::text` included — for every surviving row on one core: 4.9 s
+	// instead of 0.28 s on 100,000 rows with 20,000 ids excluded. `NOT (seg =
+	// ANY(list))` is estimated the same way. The anti-join is estimated as a join
+	// (about half the rows), which keeps the parallel top-N plan the unfiltered
+	// search uses. Same rows either way: a Go []string binds no NULL element, which
+	// is the one case where `<> ALL` and NOT EXISTS differ.
 	if len(f.ExcludeIDs) > 0 {
 		args = append(args, f.ExcludeIDs)
-		cond += " AND " + seg + " <> ALL($" + strconv.Itoa(len(args)) + "::text[])"
+		cond += " AND NOT EXISTS (SELECT 1 FROM unnest($" + strconv.Itoa(len(args)) + "::text[]) AS excl(id) WHERE excl.id = " + seg + ")"
 	}
 	return cond, args
+}
+
+// idSegmentDocumentCondition is idSegmentCondition confined to the document
+// class of f.IDsPrefixes: a row with provenance, or in none of the namespaces,
+// passes; a provenance-free row in one of them must have its id segment — the
+// text after THAT prefix — pass the lists. The provenance test is the one
+// ExcludeDocumentPrefix uses, so "document row" means the same thing in both.
+//
+// Each list binds ONCE and every namespace's disjunct refers to it, so a mixed
+// search sends the list once per leg, as a single-namespace search does.
+func idSegmentDocumentCondition(f store.MemorySearchFilter, args []any) (string, []any) {
+	idsArg, exclArg := "", ""
+	if len(f.IDs) > 0 {
+		args = append(args, f.IDs)
+		idsArg = "$" + strconv.Itoa(len(args)) + "::text[]"
+	}
+	if len(f.ExcludeIDs) > 0 {
+		args = append(args, f.ExcludeIDs)
+		exclArg = "$" + strconv.Itoa(len(args)) + "::text[]"
+	}
+	outside := make([]string, 0, len(f.IDsPrefixes))
+	inside := make([]string, 0, len(f.IDsPrefixes))
+	for _, p := range f.IDsPrefixes {
+		args = append(args, likePrefixPattern(p))
+		like := "me.key LIKE $" + strconv.Itoa(len(args))
+		args = append(args, p)
+		seg := "split_part(substr(me.key, char_length($" + strconv.Itoa(len(args)) + "::text) + 1), ':', 1)"
+		outside = append(outside, "NOT "+like)
+		test := "(" + like
+		if idsArg != "" {
+			test += " AND " + seg + " = ANY(" + idsArg + ")"
+		}
+		if exclArg != "" {
+			test += " AND " + seg + " <> ALL(" + exclArg + ")"
+		}
+		inside = append(inside, test+")")
+	}
+	return " AND (coalesce(m.origin, '') <> '' OR (" + strings.Join(outside, " AND ") + ") OR " +
+		strings.Join(inside, " OR ") + ")", args
 }
 
 // planPerExecution makes a statement that binds an id list run on a plan built for

@@ -355,6 +355,12 @@ func (b *boot) buildTools() {
 	cryptoTool.Docs = documentTool
 	// RFC FF: File op=import builds a document through the Document tool.
 	fileTool.Docs = documentTool
+	// RFC FI P3: Memory search / recall resolve their document filters
+	// (under_paths, …) through the Document tool. Assigned now, before the
+	// Document tool's Store and SqlMem are bound below; the Memory tool reads the
+	// field when a search runs, and the Document tool reads its own dependencies
+	// then too, so nothing is captured half-built.
+	memoryTool.DocumentFilters = documentTool
 	// RFC FB P2: the Git tool signs commits and tags through the Crypto
 	// tool, within the run's crypto_scopes, counted and audited as a
 	// Crypto op.

@@ -1711,7 +1711,7 @@ auth:
 - **Identity map.** The subject is always `<gate>:<sub>` — never the e-mail. An identity lands in the configured tenant or, with `tenant_claim`, in the tenant `allowed_tenants` maps its claim to; anything else is refused, never the shared tenant. `provision: known` admits only users an operator created (subject `<gate>:<sub>`); `auto` creates them at `auth.lifecycle.new_user` (the floor, which may not be tenant reach). A gate's `identity_map.new_user` may go beyond the floor (tenant reach, more groups, `active` over a `pending` floor) and its `groups` block may sync groups only with `trusted: true`.
 - **Group sync.** `identity_map.groups: {claim: groups, provision: true, map: {hr-admins: admins}}` adds and removes the user's memberships, at every login, in the groups whose `external_id` is `<gate>:<provider name>` only; local groups and other gates' groups are never touched. Audited `auth_groups_synced`.
 - **Approval queue.** `new_user.status: pending` (recommended for strict deployments) lets a new person sign in to an "awaiting approval" page and nothing else, until an operator approves them in the Users console (`POST /v1/_users/{subject}/approve`).
-- **Linking.** A user links another gate's account from the account page, within `auth.session.reauth_window` of signing in, through a fresh provider sign-in; never inferred from an e-mail. `DELETE /v1/_users/{subject}/identities/{gate}` unlinks.
+- **Linking.** A user links another gate's account from the account page, within `auth.session.reauth_window` of signing in, through a fresh provider sign-in; never inferred from an e-mail. Only a password or identity-gate session may link (not a pasted-token session). `DELETE /v1/_users/{subject}/identities/{gate}` unlinks.
 - **Issued tokens.** Tokens a gate issues for non-browser clients are tagged `issued_by_gate`, live at most `new_user.token_ttl` (and `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`), and cannot be rotated.
 
 ### Password gate — `kind: password` (RFC FA P2)
@@ -1741,11 +1741,11 @@ A password gate needs **`LOOMCYCLE_SECRET_KEY`** (the password pepper and the ke
 - **Policy** (NIST SP 800-63B-4): at least 15 characters when the password is the only factor, 8 with an authenticator; no composition rules, no expiry, paste allowed, Unicode-normalised. Refused: the built-in list of the 10,000 most common passwords (SecLists, MIT), the lines of `password.denylist_file` (one per line, `#` comments, compared case-insensitively), and the person's own login or e-mail.
 - **Logins** are unique per gate across every tenant, compared after Unicode normalisation and case folding (`Alice@Example.com` and `alice@example.com` are one login), so the login form asks for no tenant. A user the gate creates gets the subject `<gate>:<random>`; the login is an attribute and can be renamed without moving the user's data.
 - **Sign-in and throttling.** An unknown login, a wrong password, a locked account and a disabled user get the same `401 invalid_credentials`, after the same Argon2id work. Failures are counted per account (a short backoff from the fourth, then a lockout of `lockout_minutes` at `max_failures`, audited `auth_login_locked`), per client address, and per client address and login together (so a client guessing one account slows itself there first); invite and reset links are throttled per link too. The counters are in the store, so every replica sees them. An account with an authenticator is asked for its 6-digit code (or a recovery code) only after the password was right; a code is accepted once.
-- **The client address behind a proxy.** Throttling (and the audit's source address) needs the real client, not the proxy every request arrives from. `auth.trusted_proxies` lists the proxies allowed to say who the client is, and `auth.client_ip_header` the header they say it in; without a header, the right-most `X-Forwarded-For` entry that is not a trusted proxy is used. A request from any other peer is taken at its own address, whatever headers it sends. The server warns at boot when a password gate runs with an `https` `LOOMCYCLE_PUBLIC_URL` and no `trusted_proxies`.
+- **The client address behind a proxy.** Throttling (and the audit's source address) needs the real client, not the proxy every request arrives from. `auth.trusted_proxies` lists the proxies allowed to say who the client is, and `auth.client_ip_header` the header they say it in; without a header, the right-most `X-Forwarded-For` entry that is not a trusted proxy is used. A request from any other peer is taken at its own address, whatever headers it sends. The server warns at boot when a password gate runs with an `https` `LOOMCYCLE_PUBLIC_URL` and no `trusted_proxies`. Trust only the proxy's own fixed address: any other container that can reach loomcycle could otherwise forge the header (`cloud-deployment/` pins cloudflared on a dedicated `edge` network for this).
 
   | Deployment | Set |
   |---|---|
-  | Cloudflare Tunnel (`cloudflared` in its own container) | `auth.trusted_proxies: [<the cloudflared container network, e.g. 172.18.0.0/16>]`, `auth.client_ip_header: CF-Connecting-IP` |
+  | Cloudflare Tunnel (`cloudflared` in its own container) | `auth.trusted_proxies: [<cloudflared's fixed address>/32]`, `auth.client_ip_header: CF-Connecting-IP` |
   | `tailscale serve` on the same machine | `auth.trusted_proxies: [127.0.0.1, "::1"]` (it sends `X-Forwarded-For`) |
   | Direct (browsers connect to loomcycle itself) | nothing |
 - **Authenticator (TOTP).** Enrolled on the invite page when `require_mfa` is set (optional otherwise), or later on `/ui/account`. Ten single-use recovery codes are shown once. `require_mfa` on a gate refuses a sign-in without one, and the authenticator cannot be removed there. Elsewhere removing it leaves the password as the only factor, so a password that was long enough only beside it (8–14 characters) must be replaced in the same request.
@@ -1784,6 +1784,44 @@ Refusals are `403 target_beyond_floor`, audited `auth_manage_refused`. A link an
 **Person-facing routes** (loomcycle's own pages call them; each is same-origin with `X-Loomcycle-UI: 1`): `POST /v1/_auth/complete/{gate}` (sign in: `login`, `password`, `otp`), `POST /v1/_auth/invite/info` and `POST /v1/_auth/invite`, `POST /v1/_auth/reset/info` and `POST /v1/_auth/reset`, and on a password session `GET /v1/_auth/account`, `POST /v1/_auth/password`, `POST /v1/_auth/totp/begin`, `POST /v1/_auth/totp/confirm`, `DELETE /v1/_auth/totp` — each change re-asks the current password (and code). The pages are `/ui/login`, `/ui/invite`, `/ui/reset` and `/ui/account`.
 
 **Audit** (with `LOOMCYCLE_AUDIT_LOG_PATH`): `auth_invite_created`, `auth_invite_revoked`, `auth_invite_redeemed`, `auth_reset_issued`, `auth_password_set`, `auth_credential_removed`, `auth_login_renamed`, `auth_totp_enrolled`, `auth_totp_removed`, `auth_login_locked`, `auth_manage_refused`, `auth_manage_recovery`, `auth_owner_bound`, besides the sign-in events above — with the gate, tenant, subject and caller, never a code, link or password. Dead invites and resets are deleted a week after they stop working; idle throttle counters hourly.
+
+### OAuth gate — `kind: oauth` (RFC FA P5)
+
+**Why a separate kind, not OIDC.** GitHub, GitLab and Gitea sign people in with OAuth 2.0 but issue no signed ID token, so there is nothing to verify the way the OIDC gate does. The OAuth gate runs the same redirect login (code + PKCE, a `state` bound to the browser's login cookie, `GET /v1/_auth/login/{gate}` → the provider → `GET /v1/_auth/complete/{gate}`), then asks the provider's API who the person is. Everything after that — `identity_map`, provisioning, group sync, the Web UI session — is the OIDC gate's, unchanged.
+
+```yaml
+auth:
+  gates:
+    gh:
+      kind: oauth
+      preset: github                  # github | gitlab | gitea | generic
+      label: "Sign in with GitHub"
+      client_id: Iv1.0123abcd
+      client_secret_env: LOOMCYCLE_GATE_GH_SECRET   # an env var NAME; a literal is refused
+      # base_url: https://ghe.example # GitHub Enterprise / self-hosted GitLab; required for gitea
+      allowed_orgs: [acme]            # only these orgs (and their teams, as acme/<team>) become groups
+      require_org: true               # refuse a person in none of them
+      trusted: true                   # needed for identity_map.groups
+      identity_map: { tenant: acme, provision: auto, groups: { provision: true } }
+    sso:
+      kind: oauth
+      preset: generic
+      client_id: loomcycle
+      client_secret_env: LOOMCYCLE_GATE_SSO_SECRET
+      auth_url: https://sso.example/authorize
+      token_url: https://sso.example/token
+      userinfo_url: https://sso.example/userinfo
+      claims: { subject: sub, email: email, email_verified: email_verified, name: name, groups: roles }
+      allowed_orgs: [staff]           # generic: the group values admitted
+      identity_map: { tenant: acme, provision: known }
+```
+
+- **The subject** is `<gate>:<the provider's numeric user id>` — never the login name, which its owner can rename and someone else can then take. An `identity_map` may use only `sub`, a verified e-mail's domain and the gate's own groups; one that names `login`, `name` or `username` fails to load.
+- **E-mail** is recorded only when the provider says it is verified: on GitHub the primary *and* verified address from `/user/emails` (the public profile address is ignored); on GitLab the primary address only when `/api/v4/user/emails` lists it with its own `confirmed_at` (the account's `confirmed_at` is not enough); for `generic` only a JSON `true` in the `email_verified` claim. And only when `trust_email` is on: its default is on for github.com and gitlab.com and **off** for a self-managed instance (`base_url`) and for `generic`, whose address confirmation loomcycle cannot see. An `identity_map` that picks the tenant from the e-mail domain (`tenant_claim: email_domain`) is only as safe as the provider's confirmation: use it only with a provider that enforces it.
+- **Who may sign in.** On public github.com or gitlab.com anyone has an account, so a `github` or `gitlab` gate without `base_url` refuses to load unless it sets `allowed_orgs` with `require_org: true`, or says `allow_any_account: true` to admit any account there on purpose (as the OIDC `google` preset requires `allowed_domains`). A self-managed instance (`base_url`) controls its own accounts and is not held to this.
+- **Groups.** An organisation, team or group becomes a loomcycle group only when `allowed_orgs` lists it (GitHub/Gitea: the org and `org/team`; GitLab: a group path under a listed top-level group; generic: the listed values of `claims.groups`). With no `allowed_orgs` the gate asserts no groups and does not even read memberships. Syncing them into loomcycle groups needs `trusted: true` and `identity_map.groups`, as on the OIDC gate. GitLab asks for `read_api` only when `allowed_orgs` is set.
+- **Needs** `LOOMCYCLE_PUBLIC_URL` (the redirect URI is `<public URL>/v1/_auth/complete/<gate>` — register exactly that with the provider) and an `identity_map`. `base_url`, `auth_url`, `token_url` and `userinfo_url` must be `https` (http only on loopback). `scopes` replaces the preset's; `token_auth: basic | post` picks how the client authenticates at the token endpoint.
+- **Account linking** through an OAuth gate is refused: an OAuth provider cannot prove that the person signed in afresh, which linking requires. Link through an OIDC or password gate.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 

@@ -142,7 +142,9 @@ type Server struct {
 	// oidcGates caches the OIDC gates (RFC FA P1) built from the config;
 	// oidcHTTP is their client for provider calls (nil: a 10s default).
 	oidcGates oidcGateCache
-	oidcHTTP  *http.Client
+	// oauthGates caches the OAuth gates (RFC FA P5); they share oidcHTTP.
+	oauthGates oauthGateCache
+	oidcHTTP   *http.Client
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration

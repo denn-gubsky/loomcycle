@@ -67,6 +67,29 @@ no longer describes it), and `false` comes with a `rerank_reason` —
 `not_supported_by_memory_backend`. A `false` is never an error: the results are
 the search's own order. You cannot request or switch off the rerank.
 
+## Aiming at documents
+
+When the scope holds more than one kind of document and only part of them
+should answer, aim the search with `under_paths`, `exclude_under_paths`,
+`document_ids` and `exclude_document_ids` (lists; a path means a document named
+at or under it, in this scope's own Path tree). They narrow **document chunks
+only** — facts and notes the same search returns are not touched — and they
+are applied before ranking, so the best document matches come from the part of
+the tree you named rather than being crowded out by the rest.
+
+They need a search that can return documents: no `sources`, or `sources` that
+include `documents`. On a `[facts]`, `[notes]` or `[traces]` search, or a
+`prefix` outside the document namespace, they are refused rather than ignored.
+They work on `user` and `agent` scope; a `tenant`-scope Memory search does not
+reach the tenant's documents, so there they are refused too — search tenant
+documents with the Document tool's `search`, which takes the same filters.
+
+The answer then carries `filter: {applied, matched_documents, matched_chunks,
+inverted}` — what the filter resolved to. `matched_documents: 0` means the path
+names no document here (check the spelling or the scope), not that nothing
+relevant was found. For chunk-level filters — type, status, tags, a validity
+instant — use the Document tool's `search`.
+
 ## Errors
 
 - `search: missing required field: query`.
@@ -80,6 +103,10 @@ the search's own order. You cannot request or switch off the rerank.
   the allowed sets above.
 - `search: memory: none of the requested sources were recognised ...` —
   check the spelling: `facts`, `notes`, `documents`, `traces`.
+- `search: under_paths narrows the documents a search returns, and sources [facts]
+  cannot return documents` — add `documents` to `sources`, or drop the filter.
+- `search: documents not configured on this server ...` — this server has no
+  documents to aim at; search without the document filter.
 - `search: when.from "October" is not an RFC3339 timestamp` — resolve dates
   yourself, e.g. `2025-10-01T00:00:00Z`.
 
@@ -101,6 +128,13 @@ Search only the tenant's shared documents:
 
 ```json
 {"op": "search", "scope": "tenant", "query": "refund policy for annual plans", "sources": ["documents"]}
+```
+
+Search everything this user knows about a decision, but keep the gates' own
+reports out of the documents it can return:
+
+```json
+{"op": "search", "scope": "user", "query": "approval of protocol 86", "exclude_under_paths": ["/qg/reports"]}
 ```
 
 Find what was actually said in conversations during a week, favouring recent turns:

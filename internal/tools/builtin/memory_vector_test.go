@@ -160,7 +160,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		if filter.ExcludeUnitPrefix != "" && strings.HasPrefix(key, filter.ExcludeUnitPrefix) {
 			continue // derived search units, as the real stores drop them
 		}
-		if !idSegmentPasses(filter, key) {
+		if !idSegmentPasses(filter, key, fakeOrigin(ctx, v.Store, tenantID, scope, scopeID, key, filter)) {
 			continue // outside the id list, as the postgres predicate drops it
 		}
 		// Filter expired base rows.
@@ -195,11 +195,28 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 // idSegmentPasses is the postgres id-segment predicate in Go: the key text after
 // KeyPrefix up to the next ':' must be in IDs (when set) and not in ExcludeIDs.
 // A fake that ignored the lists would make every filter assertion vacuous.
-func idSegmentPasses(f store.MemorySearchFilter, key string) bool {
+//
+// With IDsPrefixes set only the document class of those namespaces is held to the
+// lists — a provenance-free row under one of them, segment after that prefix —
+// and origin (the row's provenance writer) is what tells a fact from prose.
+func idSegmentPasses(f store.MemorySearchFilter, key, origin string) bool {
 	if len(f.IDs) == 0 && len(f.ExcludeIDs) == 0 {
 		return true
 	}
-	seg, _, _ := strings.Cut(strings.TrimPrefix(key, f.KeyPrefix), ":")
+	prefix := f.KeyPrefix
+	if len(f.IDsPrefixes) > 0 {
+		prefix = ""
+		for _, p := range f.IDsPrefixes {
+			if strings.HasPrefix(key, p) {
+				prefix = p
+				break
+			}
+		}
+		if prefix == "" || origin != "" {
+			return true
+		}
+	}
+	seg, _, _ := strings.Cut(strings.TrimPrefix(key, prefix), ":")
 	in := func(list []string) bool {
 		for _, id := range list {
 			if id == seg {
@@ -212,6 +229,19 @@ func idSegmentPasses(f store.MemorySearchFilter, key string) bool {
 		return false
 	}
 	return !in(f.ExcludeIDs)
+}
+
+// fakeOrigin is a row's provenance writer, read only when the filter needs it
+// (IDsPrefixes), so every other fake search reads exactly what it did before.
+func fakeOrigin(ctx context.Context, s store.Store, tenantID string, scope store.MemoryScope, scopeID, key string, f store.MemorySearchFilter) string {
+	if len(f.IDsPrefixes) == 0 {
+		return ""
+	}
+	p, err := s.MemoryProvenanceGet(ctx, tenantID, scope, scopeID, key)
+	if err != nil {
+		return ""
+	}
+	return p.Origin
 }
 
 func (v *vectorStore) MemoryEmbedListByModel(ctx context.Context, _ string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {
