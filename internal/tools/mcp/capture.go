@@ -17,11 +17,18 @@ import (
 // so an image-only result reached the model as an empty string. A resource
 // that carries text is text, and a resource link is shown as one line the
 // agent can act on.
-func renderResult(ctx context.Context, server, tool string, res *CallToolResult, pol ResultPolicy) string {
+//
+// args are the call's arguments: a file the result does not name is named
+// from them (callArgName), and only then after the tool.
+func renderResult(ctx context.Context, server, tool string, args json.RawMessage, res *CallToolResult, pol ResultPolicy) string {
 	if res == nil {
 		return ""
 	}
 	origin := "mcp:" + server + "/" + tool
+	fallback := tool
+	if n := inbox.SanitizeName(callArgName(args)); n != "" {
+		fallback = n
+	}
 	// Joined by JoinTextContent's rule, so a text-only result reads exactly
 	// as it always did.
 	var out strings.Builder
@@ -29,17 +36,17 @@ func renderResult(ctx context.Context, server, tool string, res *CallToolResult,
 		if i > 0 && out.Len() > 0 {
 			out.WriteString("\n")
 		}
-		out.WriteString(renderBlock(ctx, origin, tool, b, pol))
+		out.WriteString(renderBlock(ctx, origin, fallback, b, pol))
 	}
 	return out.String()
 }
 
-// renderBlock is one block's text.
-func renderBlock(ctx context.Context, origin, tool string, b ContentBlock, pol ResultPolicy) string {
+// renderBlock is one block's text. fallback names a file the block does not.
+func renderBlock(ctx context.Context, origin, fallback string, b ContentBlock, pol ResultPolicy) string {
 	switch b.Type {
 	case "text":
 		if pol.CaptureBase64 {
-			return captureTextBase64(ctx, origin, tool, b.Text, pol.minBytes())
+			return captureTextBase64(ctx, origin, fallback, b.Text, pol.minBytes())
 		}
 		return b.Text
 	case "image", "audio":
@@ -50,7 +57,7 @@ func renderBlock(ctx context.Context, origin, tool string, b ContentBlock, pol R
 		if err := json.Unmarshal(b.Raw, &blk); err != nil {
 			return fmt.Sprintf("[file not kept: the %s block could not be read: %v · from %s]", b.Type, err, origin)
 		}
-		it := inbox.Item{MediaType: blk.MimeType, Origin: origin, Fallback: tool}
+		it := inbox.Item{MediaType: blk.MimeType, Origin: origin, Fallback: fallback}
 		if b.Type == "audio" {
 			it.Dir = inbox.DirDocuments
 		}
@@ -70,7 +77,7 @@ func renderBlock(ctx context.Context, origin, tool string, b ContentBlock, pol R
 		r := blk.Resource
 		switch {
 		case r.Blob != nil:
-			return captureBase64(ctx, inbox.Item{Name: r.URI, MediaType: r.MimeType, Origin: origin, Fallback: tool}, *r.Blob)
+			return captureBase64(ctx, inbox.Item{Name: r.URI, MediaType: r.MimeType, Origin: origin, Fallback: fallback}, *r.Blob)
 		case r.Text != nil:
 			if r.URI == "" {
 				return *r.Text
@@ -101,6 +108,34 @@ func renderBlock(ctx context.Context, origin, tool string, b ContentBlock, pol R
 		return "[link: " + strings.Join(fields, " · ") + "]"
 	}
 	return fmt.Sprintf("[content of type %q not shown · from %s]", b.Type, origin)
+}
+
+// callArgNameKeys are the call arguments that name the file a download tool
+// returns, most specific first: a path may name the folder the file is in,
+// so it ranks last. Matched without regard to case.
+var callArgNameKeys = []string{"filename", "file_name", "name", "path"}
+
+// callArgName is the file name a call's arguments give, "" when none does.
+// Only a top-level string is taken; the caller keeps its last segment,
+// sanitised, as it does for any name.
+func callArgName(args json.RawMessage) string {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(args, &m) != nil {
+		return ""
+	}
+	for _, want := range callArgNameKeys {
+		for k, v := range m {
+			if !strings.EqualFold(k, want) {
+				continue
+			}
+			var s string
+			// A name is short; anything longer is not one.
+			if json.Unmarshal(v, &s) == nil && strings.TrimSpace(s) != "" && len(s) <= 1024 {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // captureBase64 decodes a block's base64 payload and keeps it in the inbox.
