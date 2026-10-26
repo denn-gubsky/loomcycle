@@ -334,10 +334,13 @@ class LoomcycleClient:
         tenant: str = "",
     ) -> Mapping[str, Any]:
         """Aggregated token-usage + cost report (RFC AV). Group by any of
-        ``tenant``/``user``/``provider``/``model``/``source`` over an optional
-        RFC3339 window (``from_time``/``to_time``); group by ``source`` for the
-        operator-vs-tenant split. Tenant-scoped server-side (a tenant principal
-        sees only its own tenant; ``tenant`` is an admin-only focus). Returns
+        ``tenant``/``user``/``provider``/``model``/``source``/``purpose`` over an
+        optional RFC3339 window (``from_time``/``to_time``); group by ``source``
+        for the operator-vs-tenant split, by ``purpose`` to see what OCR and
+        speech-to-text cost (``chat``/``ocr``/``stt``). Each row's
+        ``audio_seconds`` is the audio its speech-to-text calls transcribed.
+        Tenant-scoped server-side (a tenant principal sees only its own tenant;
+        ``tenant`` is an admin-only focus). Returns
         ``{"group_by": [...], "rows": [{...}, ...]}``."""
         try:
             resp = await self._stub.UsageReport(
@@ -368,6 +371,8 @@ class LoomcycleClient:
                     "currency": r.currency,
                     "call_count": r.call_count,
                     "unpriced_calls": r.unpriced_calls,
+                    "purpose": r.purpose,
+                    "audio_seconds": r.audio_seconds,
                 }
                 for r in resp.rows
             ],
