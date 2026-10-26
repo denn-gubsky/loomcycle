@@ -30,7 +30,8 @@ import (
 // A pre-authenticated URL (a Microsoft Graph download or upload-session URL)
 // is a credential for as long as it lives. Results show it with its query as
 // "?…", the run's redactor is given the whole URL so a transcript that echoes
-// it is masked, and an inbox record names only the host.
+// it is masked, and an inbox record keeps it without user information and
+// with its credential-bearing query parameters masked.
 
 const (
 	// fileTransferTimeout bounds one download or upload end to end; waiting
@@ -248,7 +249,9 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	origin := "download:" + u.Hostname()
 
 	if to.volume == inbox.Name {
-		it := inbox.Item{Name: name, MediaType: resp.Header.Get("Content-Type"), Origin: origin, Fallback: "download"}
+		// The URL is recorded masked (inbox.Record.URL), so an import of the
+		// file can link back to it without keeping a credential.
+		it := inbox.Item{Name: name, MediaType: resp.Header.Get("Content-Type"), Origin: origin, Fallback: "download", URL: u.String()}
 		if p := strings.Trim(to.path, "/"); p != "" && p != "." {
 			if strings.HasSuffix(to.path, "/") {
 				it.Dir = p

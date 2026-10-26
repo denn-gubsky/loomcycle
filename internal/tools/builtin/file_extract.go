@@ -134,7 +134,15 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, info.Size())); err != nil {
 		return errTransient(fmt.Sprintf("extract: reading %s failed", r.raw), "Try again."), nil
 	}
-	origin := "extract:" + sourceOrigin(ctx, r, rel, hex.EncodeToString(sum.Sum(nil)))
+	digest := hex.EncodeToString(sum.Sum(nil))
+	origin := "extract:" + sourceOrigin(ctx, r, rel, digest)
+	// The record of the file read, while its bytes still hash to it, rides on
+	// the extracted text's record: an import of that text says what it came
+	// from. Read here, before extraction, from the bytes that are extracted.
+	var from *inbox.Record
+	if rec, ok := recordFor(ctx, r, rel, digest); ok {
+		from = capturedOriginal(rec)
+	}
 
 	slug := inbox.SanitizeName(strings.TrimSuffix(name, path.Ext(name)))
 	if slug == "" {
@@ -195,7 +203,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 
 	// ctx, not xctx: an OCR pass may well outlast the extraction's bound.
-	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted}, []byte(md))
+	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted, ExtractedFrom: from}, []byte(md))
 	if !kept.Kept {
 		return errBusiness("extract: the extracted text could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
 	}
@@ -250,6 +258,21 @@ func sourceOrigin(ctx context.Context, r dataRef, rel, digest string) string {
 		return "volume"
 	}
 	return "volume:" + r.volume
+}
+
+// capturedOriginal is the capture a trusted record stands for: the file an
+// extraction read when the record is of extracted text, the record itself
+// when it is of a file a tool returned. nil for text extracted from a file
+// that was never captured (one of the agent's own volumes): nothing about
+// that file was recorded.
+func capturedOriginal(rec inbox.Record) *inbox.Record {
+	if rec.ExtractedFrom != nil {
+		return rec.ExtractedFrom
+	}
+	if strings.HasPrefix(rec.Origin, "extract:") {
+		return nil
+	}
+	return &rec
 }
 
 // fileContentBlock fences a document's text for the model: everything in it

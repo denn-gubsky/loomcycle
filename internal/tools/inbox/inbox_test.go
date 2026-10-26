@@ -263,3 +263,46 @@ func TestShared_OneValuePerTree(t *testing.T) {
 		t.Fatal("a context with no inbox has a shared value")
 	}
 }
+
+// A download's URL is kept so an import can link back to it, but never in a
+// form that still authorises a request: no user information, and the signed
+// parameters masked.
+func TestInbox_RecordURLIsMasked(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	const secret = "0123456789abcdefSECRET"
+	res := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "download:files.example",
+		URL: "https://user:pa55word@files.example/dl/a.pdf?id=7&tempauth=" + secret + "&sig=" + secret + "&X-Amz-Signature=" + secret}, pdf)
+	if !res.Kept {
+		t.Fatal(res.Stub)
+	}
+	u := res.Record.URL
+	if strings.Contains(u, secret) || strings.Contains(u, "pa55word") || strings.Contains(u, "user@") {
+		t.Errorf("record URL keeps a credential: %q", u)
+	}
+	if !strings.HasPrefix(u, "https://files.example/dl/a.pdf?id=7&tempauth=[redacted") {
+		t.Errorf("record URL = %q", u)
+	}
+	got, ok := inbox.Lookup(r.Ctx, res.Record.Path)
+	if !ok || got.URL != u {
+		t.Errorf("looked-up record URL = %q", got.URL)
+	}
+	// What is not a URL is not kept at all.
+	if res := inbox.Capture(r.Ctx, inbox.Item{Name: "b.pdf", URL: "not a url ?token=" + secret}, pdf); res.Record.URL != "" {
+		t.Errorf("a non-URL was recorded: %q", res.Record.URL)
+	}
+}
+
+// The record of an extracted file carries its source's record one level deep.
+func TestInbox_ExtractedFromIsOneLevel(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	grand := &inbox.Record{Path: "documents/x.pdf"}
+	src := inbox.Record{Path: "documents/a.pdf", SHA256: "abc", Origin: "mcp:m/get", ExtractedFrom: grand}
+	res := inbox.Capture(r.Ctx, inbox.Item{Name: "a.md", MediaType: "text/markdown", Origin: "extract:mcp:m/get", ExtractedFrom: &src}, []byte("# A\n"))
+	from := res.Record.ExtractedFrom
+	if from == nil || from.Path != "documents/a.pdf" || from.SHA256 != "abc" || from.ExtractedFrom != nil {
+		t.Errorf("extracted_from = %+v", from)
+	}
+	if src.ExtractedFrom != grand {
+		t.Error("the caller's record was changed")
+	}
+}
