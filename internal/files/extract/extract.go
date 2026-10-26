@@ -162,7 +162,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, PDF{}, HTML{}, CSV{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a
