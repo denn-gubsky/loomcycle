@@ -73,6 +73,11 @@ type Result struct {
 	// carried one; it wins over the pricing table.
 	ReportedCost     float64
 	ReportedCurrency string
+	// Reached is true once the engine sent its request to the model, also when
+	// the call then failed (a stream cut mid-answer, a timeout, an empty reply
+	// at the token ceiling): such a call may have been billed, so the pages it
+	// carried stay counted. False only for a refusal before any request.
+	Reached bool
 }
 
 // STTEngine turns one cut of audio (or a video the engine accepts whole) into

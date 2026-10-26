@@ -217,7 +217,10 @@ type ocrPass struct {
 	text     map[int]string // page → transcript
 	done     []int          // pages transcribed, in order
 	units    int            // engine calls that answered
-	in, out  int            // tokens reported by the calls made
+	// sent counts the pages of every call that reached the model, failed
+	// ones included: what stays reserved, and what the event reports.
+	sent     int
+	in, out  int // tokens reported by the calls made
 	cost     float64
 	currency string
 	priced   bool
@@ -348,13 +351,20 @@ func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh i
 		res, err := f.OCR.Engine.OCR(ctx, plan, unit, opts)
 		f.charge(ctx, p, res)
 		if err != nil {
-			// The pages were reserved for a call that read nothing: a
-			// failure is not spend, so give them back.
-			run.ReleasePages(len(u.pages))
-			tree.ReleasePages(len(u.pages))
+			// Pages go back only for a call that provably consumed nothing:
+			// refused before any request, with no usage. A call that reached
+			// the model may have been billed, and giving its pages back would
+			// let a retry loop pay again and again under the cap.
+			if !res.Reached && res.InputTokens == 0 && res.OutputTokens == 0 && res.ReportedCost == 0 {
+				run.ReleasePages(len(u.pages))
+				tree.ReleasePages(len(u.pages))
+			} else {
+				p.sent += len(u.pages)
+			}
 			p.callErr = err
 			return p
 		}
+		p.sent += len(u.pages)
 		p.units++
 		for i, orig := range u.pages {
 			t := noOCRText
@@ -562,7 +572,7 @@ func demoteHeadings(md string) string {
 func (p *ocrPass) summary(mode transcribe.OCRMode) map[string]any {
 	out := map[string]any{
 		"mode": string(mode), "engine": p.plan.Engine, "provider": p.plan.Provider, "model": p.plan.Model,
-		"pages": append([]int{}, p.done...), "units": p.units, "status": p.status(),
+		"pages": append([]int{}, p.done...), "pages_sent": p.sent, "units": p.units, "status": p.status(),
 		"input_tokens": p.in, "output_tokens": p.out,
 	}
 	if p.priced {
@@ -571,13 +581,14 @@ func (p *ocrPass) summary(mode transcribe.OCRMode) map[string]any {
 	return out
 }
 
-// ocrEvent reports the pass, counting what ran: the pages transcribed and the
-// tokens of the calls made, as the ledger rows do. The failure reason is
-// returned by the extract call (ocrFailure), not carried here.
+// event reports the pass, counting what ran: the pages of every call that
+// reached the model (those the budget keeps) and the tokens the calls
+// reported, as the ledger rows do. The failure reason is returned by the
+// extract call (ocrFailure), not carried here.
 func (p *ocrPass) event(ctx context.Context, src, out string) providers.Event {
 	info := &providers.TranscriptionInfo{
 		Ref: src, Out: out, Purpose: transcribe.PurposeOCR, Engine: p.plan.Engine,
-		Provider: p.plan.Provider, Model: p.plan.Model, Pages: len(p.done),
+		Provider: p.plan.Provider, Model: p.plan.Model, Pages: p.sent,
 		InputTokens: p.in, OutputTokens: p.out, Status: p.status(), RunID: tools.RunID(ctx),
 	}
 	if p.priced {

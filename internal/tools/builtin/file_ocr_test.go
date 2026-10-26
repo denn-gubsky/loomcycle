@@ -54,7 +54,10 @@ type fakeOCR struct {
 	plan    transcribe.Plan
 	planErr error
 	failOn  int // the call number that fails, 0 for none
-	reply   func(call, pos int) string
+	// failBilled makes that failure one that reached the model and was
+	// billed for its tokens; otherwise it is refused before any call.
+	failBilled bool
+	reply      func(call, pos int) string
 
 	mu    sync.Mutex
 	plans int
@@ -93,7 +96,12 @@ func (f *fakeOCR) OCR(_ context.Context, plan transcribe.Plan, u transcribe.Unit
 	call := len(f.units)
 	f.mu.Unlock()
 	if call == f.failOn {
-		// Refused before it read anything: nothing reported, nothing billed.
+		if f.failBilled {
+			// The model read the pages and the stream broke mid-answer.
+			return transcribe.Result{Provider: plan.Provider, Model: plan.Model, Reached: true, InputTokens: 500 * n},
+				errors.New("the stream ended mid-answer")
+		}
+		// Refused before any model call: nothing reported, nothing billed.
 		return transcribe.Result{Provider: plan.Provider, Model: plan.Model}, errors.New("the model is overloaded")
 	}
 	res := transcribe.Result{Provider: plan.Provider, Model: plan.Model, InputTokens: 1000 * n, OutputTokens: 100 * n}
@@ -637,5 +645,51 @@ func TestExtract_ImageOnlyEngineRasterisesEachPage(t *testing.T) {
 		if strings.HasPrefix(e.Name(), ".ocr-") {
 			t.Errorf("scratch folder %s left behind", e.Name())
 		}
+	}
+}
+
+// A call that reached the model keeps its pages counted even when it then
+// failed: it may have been billed, and giving the pages back would let an
+// agent retry without limit, paying each time. Its usage is still charged.
+func TestOCR_BilledFailureKeepsItsPages(t *testing.T) {
+	x := ocrRun(t, config.OCRConfig{MaxPagesPerCall: 1}, &config.AgentTranscription{OCR: "auto", MaxPagesPerRun: 1})
+	x.engine.failOn, x.engine.failBilled = 1, true
+	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
+	if _, _, res := x.extract(t, map[string]any{"path": ref}); !res.IsError {
+		t.Fatal("the failed call succeeded")
+	}
+	if ch := x.ledger.all(); len(ch) != 1 || ch[0].InputTokens != 500 {
+		t.Fatalf("charges = %+v, want the failed call's 500 tokens", ch)
+	}
+	_, _, res := x.extract(t, map[string]any{"path": ref})
+	if !res.IsError || !strings.Contains(res.Text, "max_pages_per_run") {
+		t.Fatalf("a retry after a billed failure was not held to the cap: %s", res.Text)
+	}
+	if n := len(x.engine.sent()); n != 1 {
+		t.Fatalf("%d engine calls, want 1: the retry must stop before its call", n)
+	}
+	// One event per extract: the billed failure counts its page and tokens;
+	// the retry stopped by the cap sent nothing.
+	ev := x.transcriptionEvents()
+	if len(ev) != 2 || ev[0].Status != "failed" || ev[0].Pages != 1 || ev[0].InputTokens != 500 ||
+		ev[1].Status != "failed" || ev[1].Pages != 0 || ev[1].InputTokens != 0 {
+		t.Errorf("events = %+v, want the billed page and tokens counted, then nothing", ev)
+	}
+}
+
+// A call refused before any model call consumed nothing: its pages are given
+// back, so a retry fits the cap.
+func TestOCR_RefusalBeforeTheModelGivesThePagesBack(t *testing.T) {
+	x := ocrRun(t, config.OCRConfig{MaxPagesPerCall: 1}, &config.AgentTranscription{OCR: "auto", MaxPagesPerRun: 1})
+	x.engine.failOn = 1
+	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
+	if _, _, res := x.extract(t, map[string]any{"path": ref}); !res.IsError {
+		t.Fatal("the refused call succeeded")
+	}
+	if _, _, res := x.extract(t, map[string]any{"path": ref}); res.IsError {
+		t.Fatalf("a retry after a refusal that spent nothing was held to the cap: %s", res.Text)
+	}
+	if n := len(x.ledger.all()); n != 1 {
+		t.Fatalf("%d ledger rows, want only the successful call's", n)
 	}
 }

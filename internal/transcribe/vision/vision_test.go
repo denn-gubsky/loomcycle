@@ -298,3 +298,26 @@ func markerIn(t *testing.T, req providers.Request) string {
 	j := strings.Index(p[i:], ">>>")
 	return p[i : i+j+3]
 }
+
+// The result says whether the call reached the model: a refusal before any
+// model call did not (its pages can be given back), a call that was made did,
+// even when it then failed.
+func TestVision_ResultSaysWhetherTheModelWasReached(t *testing.T) {
+	m := &fakeModel{caps: imageOnlyModel}
+	e := engineWith(t, m, config.OCRConfig{})
+	plan, _ := e.Plan(context.Background(), "image/png")
+	res, err := e.OCR(context.Background(), plan, pdfUnit(t, 1, 1), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
+	if err == nil || res.Reached || len(m.calls()) != 0 {
+		t.Fatalf("a PDF to an image-only model: reached %v, err %v, calls %d", res.Reached, err, len(m.calls()))
+	}
+	m.stop = "max_tokens" // empty and cut: an error after the call
+	res, err = e.OCR(context.Background(), plan, imageUnit(t, pngOf(t, 4, 4), "image/png"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
+	if err == nil || !res.Reached {
+		t.Fatalf("a failed call that was made: reached %v, err %v", res.Reached, err)
+	}
+	m.stop = ""
+	res, err = e.OCR(context.Background(), plan, imageUnit(t, pngOf(t, 4, 4), "image/png"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
+	if err != nil || !res.Reached {
+		t.Fatalf("a successful call: reached %v, err %v", res.Reached, err)
+	}
+}
