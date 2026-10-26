@@ -265,8 +265,7 @@ func TestShared_OneValuePerTree(t *testing.T) {
 }
 
 // A download's URL is kept so an import can link back to it, but never in a
-// form that still authorises a request: no user information, and the signed
-// parameters masked.
+// form that still authorises a request: no user information, no query.
 func TestInbox_RecordURLIsMasked(t *testing.T) {
 	r := inboxtest.New(t, "root-1", inbox.Service{})
 	const secret = "0123456789abcdefSECRET"
@@ -279,7 +278,7 @@ func TestInbox_RecordURLIsMasked(t *testing.T) {
 	if strings.Contains(u, secret) || strings.Contains(u, "pa55word") || strings.Contains(u, "user@") {
 		t.Errorf("record URL keeps a credential: %q", u)
 	}
-	if !strings.HasPrefix(u, "https://files.example/dl/a.pdf?id=7&tempauth=[redacted") {
+	if u != "https://files.example/dl/a.pdf?…" {
 		t.Errorf("record URL = %q", u)
 	}
 	got, ok := inbox.Lookup(r.Ctx, res.Record.Path)
@@ -304,5 +303,25 @@ func TestInbox_ExtractedFromIsOneLevel(t *testing.T) {
 	}
 	if src.ExtractedFrom != grand {
 		t.Error("the caller's record was changed")
+	}
+}
+
+// A credential can sit in any query parameter, not only the ones the signed
+// URL rule names, so a URL the runtime records keeps no query value at all:
+// scheme, host and path, a "?…" where the query was, no fragment.
+func TestInbox_RecordURLKeepsNoQueryValue(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	const secret = "0123456789abcdefSECRET"
+	res := inbox.Capture(r.Ctx, inbox.Item{Name: "a.pdf", Origin: "download:files.example",
+		URL: "https://files.example/dl/a.pdf?code=" + secret + "&k=" + secret + "#frag=" + secret}, pdf)
+	if !res.Kept {
+		t.Fatal(res.Stub)
+	}
+	if want := "https://files.example/dl/a.pdf?…"; res.Record.URL != want {
+		t.Errorf("record URL = %q, want %q", res.Record.URL, want)
+	}
+	plain := inbox.Capture(r.Ctx, inbox.Item{Name: "b.pdf", URL: "https://files.example/dl/b.pdf#x"}, pdf)
+	if want := "https://files.example/dl/b.pdf"; plain.Record.URL != want {
+		t.Errorf("record URL without a query = %q, want %q", plain.Record.URL, want)
 	}
 }

@@ -37,7 +37,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
-	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -133,9 +132,8 @@ type Record struct {
 	Page  int `json:"page,omitempty"`
 	Slide int `json:"slide,omitempty"`
 	// URL is where a download came from, kept so an import can link back to
-	// it: without user information, and with its credential-bearing query
-	// parameters masked (redact.MaskSignedURL) — never the URL that still
-	// authorises a request.
+	// it: scheme, host and path only, with "?…" where a query was — never
+	// the URL that still authorises a request (recordURL).
 	URL string `json:"url,omitempty"`
 	// ExtractedFrom is the record of the file this one was extracted from,
 	// copied when the extraction read bytes that still hashed to it: what an
@@ -160,7 +158,7 @@ type Item struct {
 	Fallback string
 	// Page and Slide place a picture an extraction found (see Record).
 	Page, Slide int
-	// URL is a download's URL; it is recorded masked (see Record.URL).
+	// URL is a download's URL; it is recorded without its query (see Record.URL).
 	URL string
 	// ExtractedFrom is the trusted record of the file an extraction read.
 	ExtractedFrom *Record
@@ -357,9 +355,13 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 	}, nil
 }
 
-// recordURL is the form of a URL a record keeps: no user information, and
-// the credential-bearing query parameters masked. "" for what is not a URL,
-// rather than a string that might hold a credential in clear.
+// recordURL is the form of a URL a record keeps: scheme, host and path, and
+// "?…" where a query was. No query value is kept, not even masked: a
+// pre-authenticated link's credential can sit in any parameter, and a mask
+// by parameter name finds only the ones it knows (a Graph download URL's
+// tempauth, but not a server's own ?k= or ?code=). The fragment and any user
+// information go too. "" for what is not a URL, rather than a string that
+// might hold a credential in clear.
 func recordURL(raw string) string {
 	if raw == "" {
 		return ""
@@ -368,8 +370,11 @@ func recordURL(raw string) string {
 	if err != nil || u.Host == "" {
 		return ""
 	}
-	u.User = nil
-	return redact.MaskSignedURL(u.String())
+	out := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
+	if u.RawQuery != "" || u.ForceQuery {
+		out += "?…"
+	}
+	return out
 }
 
 // extractedFrom copies a source record one level deep: the original file,
