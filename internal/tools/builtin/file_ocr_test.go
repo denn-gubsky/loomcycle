@@ -701,7 +701,11 @@ func TestExtract_RasterizeScratchSwappedForSymlinkReadsNothingOutside(t *testing
 	x.engine.plan.WholePDF = false
 	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
 	_, _, res := x.extract(t, map[string]any{"path": ref})
-	if !res.IsError || !strings.Contains(res.Text, "wrote no PNG") {
+	// The extract must refuse. How the swapped-out folder reads through the
+	// Root differs by OS: an empty listing ("wrote no PNG") on macOS, a
+	// failed readdir on Linux. Either way nothing outside the inbox is read,
+	// which the checks below pin.
+	if !res.IsError || !strings.Contains(res.Text, "rendering page 1") {
 		t.Fatalf("a page read through the swapped-in link: %s", res.Text)
 	}
 	if n := len(x.engine.sent()); n != 0 {
@@ -795,10 +799,11 @@ func TestOCR_EventSaysWhyAPassFailedOrStopped(t *testing.T) {
 	}
 }
 
-// A usage row that cannot be recorded is logged without the store's error
-// text, which can carry request data, but with what the operator needs to
-// reconcile it: the run, provider, model, the tokens and the error's class.
-// The extract itself still succeeds; the call was made.
+// A usage row that cannot be recorded is logged as a fixed line — no store
+// error text (it can quote the request) and no run-derived values — and the
+// extract result counts it beside the provider, model and tokens it already
+// reports, so the run's transcript holds what an operator needs to reconcile
+// the ledger. The extract itself still succeeds; the call was made.
 func TestOCR_LedgerFailureLogsTheClassNotTheErrorText(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -808,16 +813,20 @@ func TestOCR_LedgerFailureLogsTheClassNotTheErrorText(t *testing.T) {
 	x := ocrRun(t, config.OCRConfig{}, agentOCR("auto"))
 	x.ledger.err = errors.New("insert token_usage: header Authorization=sk-planted-secret")
 	ref := x.keep(t, "skan.pdf", scannedPDF(t, 1))
-	if _, _, res := x.extract(t, map[string]any{"path": ref}); res.IsError {
+	_, _, res := x.extract(t, map[string]any{"path": ref})
+	if res.IsError {
 		t.Fatalf("a lost usage row failed the extract: %s", res.Text)
 	}
 	out := buf.String()
 	if strings.Contains(out, "sk-planted-secret") || strings.Contains(out, "Authorization") {
 		t.Fatalf("the ledger error's text was logged: %s", out)
 	}
-	for _, want := range []string{"usage could not be recorded", `"provider":"anthropic"`, `"model":"claude-x"`, `"input_tokens":1000`, `"kind":`} {
-		if !strings.Contains(out, want) {
-			t.Errorf("log lacks %s: %s", want, out)
+	if !strings.Contains(out, "usage could not be recorded") {
+		t.Errorf("no warning logged: %s", out)
+	}
+	for _, want := range []string{`"usage_unrecorded":1`, `"provider":"anthropic"`, `"model":"claude-x"`, `"input_tokens":1000`} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("result lacks %s: %s", want, res.Text)
 		}
 	}
 }

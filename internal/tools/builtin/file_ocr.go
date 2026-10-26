@@ -19,7 +19,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -228,9 +227,13 @@ type ocrPass struct {
 	cost     float64
 	currency string
 	priced   bool
-	capErr   *transcribe.CapError
-	callErr  error // an engine call failed
-	err      error // cutting, rendering or a unit too large
+	// unrecorded counts calls whose usage row could not be written: the
+	// result reports it beside the provider, model and tokens, so the run's
+	// transcript holds what an operator needs to reconcile the ledger.
+	unrecorded int
+	capErr     *transcribe.CapError
+	callErr    error // an engine call failed
+	err        error // cutting, rendering or a unit too large
 }
 
 func (p *ocrPass) status() string {
@@ -279,13 +282,13 @@ func (f *File) charge(ctx context.Context, p *ocrPass, res transcribe.Result) {
 		})
 		if err != nil {
 			// The call is made and paid for; failing the extract would not
-			// unspend it. The row is lost, and the operator is told enough to
-			// reconcile it. Not the error's text: a store error can quote the
-			// request it failed on, and this is a log line.
-			slog.Warn("transcription: the OCR call's usage could not be recorded",
-				"run_id", tools.RunID(ctx), "provider", provider, "model", model,
-				"input_tokens", res.InputTokens, "output_tokens", res.OutputTokens,
-				"kind", ledgerErrKind(err))
+			// unspend it. The row is lost: the log says so, and the result
+			// (persisted in the run's transcript, beside its provider, model
+			// and tokens) counts it for reconciling. The log line carries no
+			// request-derived value: a store error can quote the request it
+			// failed on, and run data reaching a log is what CodeQL flags.
+			p.unrecorded++
+			slog.Warn("transcription: an OCR call's usage could not be recorded; the extract result counts it under ocr.usage_unrecorded")
 		}
 	}
 	if price.Priced {
@@ -297,15 +300,6 @@ func (f *File) charge(ctx context.Context, p *ocrPass, res transcribe.Result) {
 			p.priced = true
 		}
 	}
-}
-
-// ledgerErrKind is the runtime's category for a ledger failure (cancelled,
-// timeout, …), or "unclassified": a stable label to log in place of the text.
-func ledgerErrKind(err error) string {
-	if info, ok := errclassify.CategoryOf(err); ok {
-		return string(info.Category)
-	}
-	return "unclassified"
 }
 
 // ocrUnit is one engine call's input: its bytes, their type, and the
@@ -671,6 +665,9 @@ func (p *ocrPass) summary(mode transcribe.OCRMode) map[string]any {
 		"mode": string(mode), "engine": p.plan.Engine, "provider": p.plan.Provider, "model": p.plan.Model,
 		"pages": append([]int{}, p.done...), "pages_sent": p.sent, "units": p.units, "status": p.status(),
 		"input_tokens": p.in, "output_tokens": p.out,
+	}
+	if p.unrecorded > 0 {
+		out["usage_unrecorded"] = p.unrecorded
 	}
 	if p.priced {
 		out["cost"], out["currency"] = p.cost, p.currency
