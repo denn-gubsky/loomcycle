@@ -287,3 +287,40 @@ func TestRun_WorkingDirectoryStaysInsideTheRoot(t *testing.T) {
 		t.Errorf("Run with no root succeeded, want refused")
 	}
 }
+
+// TestRun_AValueNeverStartsAnArgumentWithADash — what decides is the argument
+// built so far, not where the placeholder sits: a value after an empty value
+// (or an empty quoted literal) still begins its argument, so a leading '-'
+// there is refused. Two placeholders with no literal between them are refused
+// outright, at validation. A dash the template itself supplies stays allowed.
+func TestRun_AValueNeverStartsAnArgumentWithADash(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	for name, c := range map[string]struct {
+		template string
+		vars     map[string]string
+	}{
+		"adjacent, first empty":          {`touch ` + marker + ` {a}{b}`, map[string]string{"a": "", "b": "-o/etc/x"}},
+		"empty literal, then value":      {`touch ` + marker + ` ''{b}`, map[string]string{"b": "-o/etc/x"}},
+		"adjacent across an empty quote": {`touch ` + marker + ` {a}""{b}`, map[string]string{"a": "", "b": "-x"}},
+		"a lone dash as a value":         {`touch ` + marker + ` {b}`, map[string]string{"b": "-"}},
+	} {
+		if _, err := Run(context.Background(), spec(t, c.template, c.vars)); err == nil {
+			t.Errorf("%s: Run(%q) succeeded, want refused", name, c.template)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%s: the command ran", name)
+		}
+	}
+	for _, tmpl := range []string{`x {a}{b}`, `x pre{a}{b}`, `x {a}''{b}`, `x "{a}{b}"`} {
+		if err := Validate(tmpl, []string{"a", "b"}); err == nil {
+			t.Errorf("Validate(%q) = nil, want adjacent placeholders refused", tmpl)
+		}
+	}
+
+	// Guards: a dash from the template, and an ordinary path.
+	res := mustRun(t, spec(t, `printf "[%s]\n" -o{out} {in} --x={a}`,
+		map[string]string{"out": "-", "in": "/inbox/documents/scan.pdf", "a": "-y"}))
+	if want := "[-o-]\n[/inbox/documents/scan.pdf]\n[--x=-y]\n"; string(res.Stdout) != want {
+		t.Errorf("stdout = %q, want %q", res.Stdout, want)
+	}
+}
