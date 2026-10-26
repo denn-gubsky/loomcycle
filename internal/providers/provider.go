@@ -109,6 +109,13 @@ type Capabilities struct {
 	// SupportsEffort is coarse here but refined per-call in the driver.
 	SupportsVision bool
 
+	// SupportsDocumentInput signals that the driver sends Request.Documents —
+	// a PDF read whole by the model — on the wire. Only the transcription
+	// path fills that field (see Request.Documents); a driver without it
+	// would drop the document and answer the prompt alone, so a caller must
+	// check this before setting it.
+	SupportsDocumentInput bool
+
 	// SupportsToolChoice signals that this provider has a WIRE parameter for
 	// constraining which tool the model may call (RFC DG). Coarse, like
 	// SupportsVision: per-model and per-request nuance is refined inside the
@@ -342,6 +349,17 @@ type Request struct {
 	// text. A driver that cannot apply it sends nothing for it.
 	OutputFormat *OutputFormat `json:"-"`
 
+	// Documents are PDFs the model reads whole, placed before the content of
+	// the request's first user message (Anthropic `document` blocks). They are
+	// OUT-OF-BAND ONLY: the transcription path's OCR call sets them from bytes
+	// the runtime cut out of a kept file, and nothing else does. The loop never
+	// fills this field, a user turn cannot carry a document (its content
+	// whitelist is text and images), and json:"-" keeps every decoder of a
+	// Request — the LLM gateway's included — from filling it from a body. A
+	// driver that does not report Capabilities.SupportsDocumentInput ignores
+	// it, which is why the caller checks that first.
+	Documents []DocumentInput `json:"-"`
+
 	// OnEvent, when set, is called for events that occur BEFORE the
 	// response channel exists — most importantly, EventRetry frames
 	// fired during a 429 retry sleep. Optional; the loop populates this
@@ -355,6 +373,13 @@ type Request struct {
 	// extends the rate-limit wait. SSE writes are fine; do not perform
 	// network IO from here.
 	OnEvent func(Event) `json:"-"`
+}
+
+// DocumentInput is one PDF of Request.Documents. Data is the raw base64 of the
+// file with NO "data:" prefix, as for an image block.
+type DocumentInput struct {
+	MediaType string // application/pdf
+	Data      string
 }
 
 // Message is one turn in the conversation.
