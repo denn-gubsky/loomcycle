@@ -7,6 +7,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"image"
+	"image/color"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -262,5 +263,67 @@ func TestVision_DecodeEstimateIsPerFormat(t *testing.T) {
 				t.Fatalf("err = %v, decoded %d times; want it decoded", err, d.calls.Load())
 			}
 		})
+	}
+}
+
+// jpegWith is SOI, then the given segments as written, then a start of scan.
+func jpegWith(parts ...[]byte) []byte {
+	b := []byte{0xFF, 0xD8}
+	for _, p := range parts {
+		b = append(b, p...)
+	}
+	return append(b, 0xFF, 0xDA, 0x00, 0x08)
+}
+
+// sofSegment is a start-of-frame segment of the given marker.
+func sofSegment(marker byte, w, h uint16, comps int) []byte {
+	return jpegHeader(marker, w, h, comps, false)[2 : len(jpegHeader(marker, w, h, comps, false))-4]
+}
+
+// The cheap JPEG estimate must be PROVED by a strict walk that finds exactly
+// one baseline frame before the scan. Anything image/jpeg reads more
+// leniently than that walk — junk bytes it skips, an FF 00 it ignores, a
+// second frame header — is budgeted at the worst case, never at a guess.
+func TestVision_JPEGEstimateFailsClosed(t *testing.T) {
+	const side = 2500
+	ycc := image.Config{Width: side, Height: side, ColorModel: color.YCbCrModel}
+	cmyk := image.Config{Width: side, Height: side, ColorModel: color.CMYKModel}
+	for _, c := range []struct {
+		name string
+		data []byte
+		cfg  image.Config
+		want int
+	}{
+		{"junk before a progressive frame", jpegWith([]byte{0x00, 0x13, 0x37}, sofSegment(0xC2, side, side, 3)), ycc, jpegWorstCase},
+		{"FF 00 before a baseline frame", jpegWith([]byte{0xFF, 0x00}, sofSegment(0xC0, side, side, 3)), ycc, jpegWorstCase},
+		{"two frame headers", jpegWith(sofSegment(0xC0, side, side, 3), sofSegment(0xC2, side, side, 3)), ycc, jpegWorstCase},
+		{"no frame header", jpegWith(), ycc, jpegWorstCase},
+		{"clean progressive", jpegWith(sofSegment(0xC2, side, side, 3)), ycc, 4 + 4*3},
+		{"clean progressive CMYK", jpegWith(sofSegment(0xC2, side, side, 4)), cmyk, 8 + 4*4},
+		{"clean baseline CMYK", jpegWith(sofSegment(0xC0, side, side, 4)), cmyk, 8},
+		{"clean baseline", jpegWith(sofSegment(0xC0, side, side, 3)), ycc, 4},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got, _ := decodeCost(c.data, "jpeg", c.cfg); got != c.want {
+				t.Errorf("decodeCost = %d bytes a pixel, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// End to end: a progressive JPEG that image/jpeg reads past junk bytes is
+// refused before decoding at a size its cheapest reading would allow.
+func TestVision_JunkPrefixedProgressiveJPEGRefusedBeforeDecoding(t *testing.T) {
+	const side = 2500 // 6.25 MP: 8 bytes a pixel would pass, the worst case does not
+	data := jpegWith([]byte{0x00, 0x13, 0x37}, sofSegment(0xC2, side, side, 3))
+	if cfg, format, err := image.DecodeConfig(bytes.NewReader(data)); err != nil || format != "jpeg" || cfg.Width != side {
+		t.Fatalf("image/jpeg does not read the fixture: %v %s %+v", err, format, cfg)
+	}
+	d := &countingDecoder{}
+	e, plan := countingEngine(t, d)
+	_, err := e.OCR(context.Background(), plan, imageUnit(t, data, "image/jpeg"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
+	var tooLarge *ImageTooLargeError
+	if !errors.As(err, &tooLarge) || d.calls.Load() != 0 {
+		t.Fatalf("err = %v, decoded %d times; want a refusal before decoding", err, d.calls.Load())
 	}
 }

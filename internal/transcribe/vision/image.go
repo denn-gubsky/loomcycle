@@ -77,80 +77,115 @@ func bytesPerPixel(m color.Model) int {
 // header only, and says how to send a smaller decode:
 //
 //   - PNG: the output image (bytesPerPixel), twice over when interlaced
-//     (Adam7 keeps a buffer per pass beside the output);
-//   - JPEG: the output image, 8 bytes when it has 4 components (CMYK/YCCK
-//     decode to planes and are converted into a second CMYK image), plus,
-//     when progressive, the coefficient buffer image/jpeg keeps for every
-//     component: 64 int32 per 8×8 block, 4 bytes a pixel each;
+//     (Adam7 keeps a buffer per pass beside the output); an IHDR not where
+//     image/png reads it is taken at the worst case, 2 × 8;
+//   - JPEG: see jpegCost;
 //   - any other format (GIF, WebP, BMP): 8 bytes a pixel, the most any
 //     output takes, since their decoders' buffers are not characterised.
 func decodeCost(data []byte, format string, cfg image.Config) (int, string) {
 	out := bytesPerPixel(cfg.ColorModel)
 	switch format {
 	case "png":
-		advice := "send a smaller image"
-		if out > 4 {
-			advice = "it is stored at 16 bits per channel: save it at 8 bits per channel"
-		}
-		if pngInterlaced(data) {
+		interlaced, ok := pngInterlaced(data)
+		switch {
+		case !ok:
+			return 2 * 8, "send a smaller image"
+		case interlaced:
 			return 2 * out, "it is interlaced: save it without interlacing, or smaller"
-		}
-		return out, advice
-	case "jpeg":
-		progressive, comps, ok := jpegFrame(data)
-		if !ok {
-			return 8, "send a smaller image"
-		}
-		if comps == 4 {
-			out = 8
-		}
-		if progressive {
-			return out + 4*comps, "it is a progressive JPEG: save it as a baseline JPEG, or smaller"
+		case out > 4:
+			return out, "it is stored at 16 bits per channel: save it at 8 bits per channel"
 		}
 		return out, "send a smaller image"
+	case "jpeg":
+		return jpegCost(data, cfg)
 	}
 	return 8, "send a smaller image, or a PNG or JPEG"
 }
 
-// pngInterlaced reads the IHDR interlace byte: the signature (8), the chunk's
-// length and type (8), then 12 bytes into the IHDR data.
-func pngInterlaced(data []byte) bool {
-	return len(data) > 28 && string(data[12:16]) == "IHDR" && data[28] != 0
+// jpegWorstCase is the most a JPEG decode holds per pixel in image/jpeg: a
+// progressive 4-component (CMYK/YCCK) file keeps 64 int32 coefficients per
+// 8×8 block for each of its 4 components (16 bytes a pixel) beside planes
+// converted into a second, CMYK, image (8).
+const jpegWorstCase = 8 + 4*4
+
+// jpegCost is a JPEG's decode estimate. The component count is the
+// decoder's own (DecodeConfig's colour model). Whether the file is
+// progressive is not trusted to a lenient read: the cheap, baseline estimate
+// holds only when a strict walk proves exactly one SOF0/SOF1 frame before the
+// first scan. image/jpeg skips junk bytes and "FF 00" that a strict walk
+// stops at, so anything that walk cannot read is budgeted at the worst case
+// rather than at a guess a crafted file could steer.
+func jpegCost(data []byte, cfg image.Config) (int, string) {
+	comps, out := 0, 0
+	switch cfg.ColorModel {
+	case color.GrayModel:
+		comps, out = 1, 1
+	case color.YCbCrModel:
+		comps, out = 3, 4
+	case color.CMYKModel:
+		// Decoded to planes, then converted into a CMYK image.
+		comps, out = 4, 8
+	default:
+		return jpegWorstCase, "send a smaller image"
+	}
+	progressive, ok := jpegFrameStrict(data)
+	switch {
+	case !ok:
+		return jpegWorstCase, "send a smaller image, saved as a plain baseline JPEG"
+	case progressive:
+		return out + 4*comps, "it is a progressive JPEG: save it as a baseline JPEG, or smaller"
+	}
+	return out, "send a smaller image"
 }
 
-// jpegFrame finds the start-of-frame segment by walking the marker segments
-// from the start, and reports whether it is progressive and how many
-// components it has. ok is false when no frame header is found before the
-// first scan or the end.
-func jpegFrame(data []byte) (progressive bool, comps int, ok bool) {
-	i := 2 // after SOI
-	for i+4 <= len(data) {
-		if data[i] != 0xFF {
-			return false, 0, false
+// pngInterlaced reads the IHDR interlace byte where image/png reads it: the
+// first chunk, after the signature (8) and the chunk's length and type (8),
+// 12 bytes into its data. ok is false when it is not there or not 0 or 1.
+func pngInterlaced(data []byte) (interlaced, ok bool) {
+	if len(data) <= 28 || string(data[12:16]) != "IHDR" || data[28] > 1 {
+		return false, false
+	}
+	return data[28] == 1, true
+}
+
+// jpegFrameStrict walks the marker segments from SOI, each starting exactly
+// "FF xx" with xx a marker, up to the first scan, and reports whether the one
+// frame header found is progressive. ok is false for anything else: a byte
+// out of place, a fill byte, "FF 00", a segment running past the end, no
+// frame header, or more than one.
+func jpegFrameStrict(data []byte) (progressive, ok bool) {
+	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
+		return false, false
+	}
+	frames := 0
+	i := 2
+	for {
+		if i+4 > len(data) || data[i] != 0xFF {
+			return false, false
 		}
 		m := data[i+1]
-		if m == 0xFF { // fill byte
-			i++
-			continue
-		}
-		if m == 0xD8 || (m >= 0xD0 && m <= 0xD7) || m == 0x01 { // no length
-			i += 2
-			continue
+		switch {
+		case m == 0xDA: // start of scan: the header is complete
+			if frames != 1 {
+				return false, false
+			}
+			return progressive, true
+		case m == 0x00, m == 0xFF, m == 0x01, m == 0xD8, m == 0xD9, m >= 0xD0 && m <= 0xD7:
+			// Fill, stuffing, standalone markers and a second SOI or an EOI
+			// have no place between SOI and the first scan here.
+			return false, false
 		}
 		n := int(data[i+2])<<8 | int(data[i+3])
-		switch m {
-		case 0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF:
-			// SOFn: precision(1) height(2) width(2) components(1).
-			if i+9 >= len(data) {
-				return false, 0, false
-			}
-			return m == 0xC2 || m == 0xC6 || m == 0xCA || m == 0xCE, int(data[i+9]), true
-		case 0xDA, 0xD9: // a scan or the end before any frame
-			return false, 0, false
+		if n < 2 || i+2+n > len(data) {
+			return false, false
+		}
+		// SOFn is 0xC0–0xCF except DHT (C4), JPG (C8) and DAC (CC).
+		if m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC {
+			frames++
+			progressive = m != 0xC0 && m != 0xC1
 		}
 		i += 2 + n
 	}
-	return false, 0, false
 }
 
 // sendable are the types every vision driver takes (the run input's image
