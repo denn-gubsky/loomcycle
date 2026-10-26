@@ -152,13 +152,32 @@ func TestMemorySearchEndpoint_DocumentFiltersAimAtTheDocumentsScope(t *testing.T
 
 // TestMemorySearchEndpoint_DocumentsScopeEqualToScopeIsSugar — documents_scope
 // naming the call's own scope and subject is documents added to sources: the
-// answer is byte-identical to that call, and with no sources (which already
-// span documents) to the call without it.
+// store is asked exactly what that call asks it, and the answer is the same
+// bytes. With no sources (which already span documents) it is the call without
+// it. The store double does not apply sources itself, so the legs it was sent
+// are compared, not only the answers.
 func TestMemorySearchEndpoint_DocumentsScopeEqualToScopeIsSugar(t *testing.T) {
 	s, fs, mgr := docFilterServer(t)
 	seedDocAt(t, fs, mgr, "A", "alice", "/qg/norms/u1")
 	seedSearchRow(t, fs.searchVectorStore, "A", "alice", "notes/n1", `"supplier audit note"`)
-
+	search := func(body string) ([]byte, string) {
+		t.Helper()
+		fs.mu.Lock()
+		fs.filters = nil
+		fs.mu.Unlock()
+		code, _, raw := searchRaw(t, s, "A", body)
+		if code != http.StatusOK {
+			t.Fatalf("status %d: %s", code, raw)
+		}
+		legs, _ := json.Marshal(fs.filters)
+		return raw, string(legs)
+	}
+	// The instrument can tell documents from no documents.
+	_, without := search(`{"query":"audit","scope":"user","scope_id":"alice","sources":["facts","notes"]}`)
+	_, with := search(`{"query":"audit","scope":"user","scope_id":"alice","sources":["facts","notes","documents"]}`)
+	if without == with {
+		t.Fatal("the store legs do not distinguish sources with and without documents; the comparison below would be vacuous")
+	}
 	for name, pair := range map[string][2]string{
 		"sources gain documents": {
 			`{"query":"audit","scope":"user","scope_id":"alice","sources":["facts","notes"],"documents_scope":"user"}`,
@@ -169,10 +188,10 @@ func TestMemorySearchEndpoint_DocumentsScopeEqualToScopeIsSugar(t *testing.T) {
 			`{"query":"audit","scope":"user","scope_id":"alice"}`,
 		},
 	} {
-		c1, _, sugar := searchRaw(t, s, "A", pair[0])
-		c2, _, plain := searchRaw(t, s, "A", pair[1])
-		if c1 != http.StatusOK || c2 != http.StatusOK {
-			t.Fatalf("%s: status %d / %d: %s / %s", name, c1, c2, sugar, plain)
+		sugar, sugarLegs := search(pair[0])
+		plain, plainLegs := search(pair[1])
+		if sugarLegs != plainLegs {
+			t.Errorf("%s: the store was asked something else\n got: %s\nwant: %s", name, sugarLegs, plainLegs)
 		}
 		if !bytes.Equal(sugar, plain) {
 			t.Errorf("%s: sugar answer differs\n got: %s\nwant: %s", name, sugar, plain)
