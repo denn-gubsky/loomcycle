@@ -105,6 +105,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		// and the parent blocks an inherit_core_blocks child picks up.
 		CoreBlocks:       tools.CoreBlocksPolicyValue{Blocks: src.CoreBlocks},
 		Decision:         def.Decision,
+		Transcription:    def.Transcription,
 		History:          narrowHistoryByACL(ctx, acl, s.historyPolicyForAgent(ctx, def)),
 		Channel:          s.channelPolicyForAgent(ctx, def),
 		Interruption:     live.holder,
