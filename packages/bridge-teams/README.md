@@ -22,7 +22,7 @@ Teams ──▶ Bot Connector ──HTTPS /api/messages──▶ teams-bridge �
 
 - **Only the bridge is public.** loomcycle stays on your private network.
 - **One interactive run per Teams conversation.** The bridge acknowledges each message at once and renders the reply in the background, so a long agent turn never times out a Teams request.
-- **Per-user tokens.** loomcycle makes a token's subject authoritative over a request's `user_id`, so one service token cannot act for many users. The bridge holds a tenant-operator token and uses it for two things only: registering each Teams user (`teams-<entra object id>`) and minting that user a short-lived token. A user's token can start only the configured agent, may set no per-run override except `interactive`, and is rate-limited. Tokens live in memory only.
+- **Per-user tokens.** loomcycle makes a token's subject authoritative over a request's `user_id`, so one service token cannot act for many users. The bridge holds a tenant-operator token and uses it for two things only: registering each Teams user (`teams-<entra object id>`) and minting that user a short-lived token. A user's token can start only the configured agent, may set no per-run override except `interactive`, and is rate-limited. Tokens live in memory only. As a loomcycle gate (below) the bridge holds no token at all.
 
 ## Setup
 
@@ -63,7 +63,7 @@ Configuration is by environment:
 | `CLIENT_ID`, `CLIENT_SECRET`, `TENANT_ID` | The bot's Entra app | required |
 | `PORT` | Listen port | `3978` |
 | `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
-| `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required |
+| `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `TEAMS_BRIDGE_ALLOWED_TENANTS` | Comma list of Entra tenant ids allowed to use the bot | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
@@ -80,6 +80,38 @@ With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams
 1. In `appPackage/manifest.json`, replace the `${{...}}` placeholders. `BOT_ID` is the Entra app's client id.
 2. Replace `color.png` (192×192) and `outline.png` (32×32, white on transparent) with your own icons if you like.
 3. Zip the three files (no folder) and upload the zip in Teams (**Apps → Manage your apps → Upload an app**) or through the Teams admin center.
+
+## As a loomcycle gate
+
+Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it signs who is talking with its own key, and loomcycle provisions the user and issues the token. A stolen bridge can then only speak for Teams users, never act as a tenant operator. Set `BRIDGE_GATE` and the bridge runs this way; without it, it runs with `LOOMCYCLE_TOKEN` as before.
+
+1. Make a key pair. The private half goes to the bridge only:
+
+   ```bash
+   node -e 'const {privateKey,publicKey}=require("node:crypto").generateKeyPairSync("ed25519");
+   console.log("BRIDGE_GATE_KEY=" + JSON.stringify(privateKey.export({format:"jwk"})));
+   console.log("public_key: " + JSON.stringify(publicKey.export({format:"jwk"})))'
+   ```
+
+2. Register the gate in loomcycle, in the tenant the bridge used, **before** you switch the bridge:
+
+   ```yaml
+   auth:
+     gates:
+       teams:
+         kind: external
+         public_key: { kty: OKP, crv: Ed25519, x: "<the public x>" }
+         issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
+         identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: teams- }
+   ```
+
+   `legacy_subject_prefix: teams-` keeps the people the bridge already served: each person's first message through the gate links the user the bridge made (`teams-<entra object id>`, a group chat's or channel's `teams-conv-<hash>`), so their history, memory and documents stay theirs. Without it they would start again as new users `teams:<entra object id>`. New people are `teams:<entra object id>` either way.
+
+3. Reconfigure the bridge: set `BRIDGE_GATE=teams`, `BRIDGE_GATE_AUDIENCE` (loomcycle's `LOOMCYCLE_PUBLIC_URL`) and `BRIDGE_GATE_KEY`, and remove `LOOMCYCLE_TOKEN` and `BRIDGE_USER_ACCESS_MODE`, which a gate bridge refuses. Then retire the old operator token. The other `BRIDGE_GATE_*` settings are in `@loomcycle/bridge-core`'s README.
+
+   With `BRIDGE_STORE=file:<path>`, keep the store file: from `@loomcycle/bridge-core` 0.3.1 a conversation stored under its token-mode subject is carried over to the gate's subject the next time it is used, keeping its session and its owner.
+
+As a gate the bridge also tells loomcycle about groups and leavers. Every person, group chat and channel is in the loomcycle group `teams:teams-tenant-<entra tenant id>` of its organisation, which an operator can bind permissions to; it takes `trusted: true` on the gate and an `identity_map.groups` block. (A channel gets no team group: the bridge keeps no team id.) A person who uninstalls the app from their 1:1 chat is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. Until loomcycle has taken the revoke the bridge answers Teams with an error, so the Bot Connector delivers the uninstall again.
 
 ## Group chats and channels
 

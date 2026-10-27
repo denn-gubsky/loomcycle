@@ -35,6 +35,16 @@ trap cleanup EXIT INT TERM
 cd "$REPO"
 go build -o "$TEST_DIR/loomcycle" ./cmd/loomcycle
 mkdir -p "$TEST_DIR/home"
+# The bridge can be an external gate: a fresh Ed25519 key per run, its public
+# half pinned in the config, its private half handed to the gate test only.
+node -e '
+const { generateKeyPairSync } = require("node:crypto");
+const fs = require("node:fs");
+const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+fs.writeFileSync(process.argv[1], JSON.stringify(privateKey.export({ format: "jwk" })), { mode: 0o600 });
+fs.writeFileSync(process.argv[2], JSON.stringify(publicKey.export({ format: "jwk" })));
+' "$TEST_DIR/gate.key.jwk" "$TEST_DIR/gate.pub.jwk"
+sed "s|__GATE_PUBLIC_JWK__|$(cat "$TEST_DIR/gate.pub.jwk")|" "$HERE/loomcycle.yaml" > "$TEST_DIR/loomcycle.yaml"
 # env -i + a scratch HOME: the boot must not pick up the developer's own
 # ~/.config/loomcycle or .env files.
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
@@ -44,7 +54,8 @@ env -i PATH="$PATH" HOME="$TEST_DIR/home" \
   LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$PORT" \
   LOOMCYCLE_AUTH_TOKEN="$ADMIN_TOKEN" \
   LOOMCYCLE_TEAMS_BRIDGE_IT_TOKEN="$TOKEN" \
-  "$TEST_DIR/loomcycle" --config "$HERE/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
+  LOOMCYCLE_PUBLIC_URL="$BASE" \
+  "$TEST_DIR/loomcycle" --config "$TEST_DIR/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
 PID=$!
 healthy=""
 for _ in $(seq 1 100); do
@@ -57,7 +68,9 @@ done
 
 cd "$PKG"
 status=0
-TEAMS_BRIDGE_IT_BASE_URL="$BASE" TEAMS_BRIDGE_IT_TOKEN="$TOKEN" npx vitest run test/integration || status=$?
+TEAMS_BRIDGE_IT_BASE_URL="$BASE" TEAMS_BRIDGE_IT_TOKEN="$TOKEN" TEAMS_BRIDGE_IT_ADMIN="$ADMIN_TOKEN" \
+  TEAMS_BRIDGE_IT_GATE_KEY="$(cat "$TEST_DIR/gate.key.jwk")" \
+  npx vitest run test/integration || status=$?
 if [[ $status -ne 0 ]]; then
   show_log
   # Where the server's runs are waiting: SIGQUIT makes the Go runtime write

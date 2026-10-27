@@ -168,7 +168,51 @@ export class FakeTeams implements BridgePort<ConversationRef> {
   }
 }
 
+/** FakeGate is loomcycle's external-gate surface (/v1/_auth/assert, revoke):
+ *  it reads each posted JWT's payload (the real server verifies the
+ *  signature; these tests are about what the bridge asserts) and issues
+ *  "tok-<gate>:<sub>-<n>" tokens. Set revokeStatus to refuse revokes. */
+export class FakeGate {
+  readonly asserts: Array<{ gate: string; payload: Record<string, unknown> }> = [];
+  readonly revokes: Array<{ gate: string; payload: Record<string, unknown> }> = [];
+  revokeStatus = 204;
+  private seq = 0;
+
+  fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const body = JSON.parse(String(init?.body ?? "{}")) as { gate: string; assertion?: string; request?: string };
+    const jwt = body.assertion ?? body.request ?? "";
+    const payload = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString() || "{}") as Record<string, unknown>;
+    if (url.pathname === "/v1/_auth/revoke") {
+      this.revokes.push({ gate: body.gate, payload });
+      return this.revokeStatus === 204
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify({ code: "revoke_failed", error: "x" }), { status: this.revokeStatus });
+    }
+    this.asserts.push({ gate: body.gate, payload });
+    const subject = `${body.gate}:${String(payload.sub)}`;
+    return new Response(
+      JSON.stringify({ token: `tok-${subject}-${++this.seq}`, expires_at: new Date(Date.now() + 12 * 3600_000).toISOString(), subject, tenant: "acme" }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+}
+
 export const silentLogger: Logger = { info() {}, warn() {}, error() {} };
+
+/** RecordingLogger keeps every line, to check what a failure logs. */
+export class RecordingLogger implements Logger {
+  readonly lines: Array<{ level: string; msg: string; attrs?: Record<string, unknown> }> = [];
+  info(msg: string, attrs?: Record<string, unknown>): void {
+    this.lines.push({ level: "info", msg, attrs });
+  }
+  warn(msg: string, attrs?: Record<string, unknown>): void {
+    this.lines.push({ level: "warn", msg, attrs });
+  }
+  error(msg: string, attrs?: Record<string, unknown>): void {
+    this.lines.push({ level: "error", msg, attrs });
+  }
+}
 
 /** waitFor polls until cond holds, failing the test after a short while. */
 export async function waitFor(cond: () => boolean, what = "condition"): Promise<void> {

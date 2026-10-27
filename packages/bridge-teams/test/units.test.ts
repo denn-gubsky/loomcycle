@@ -1,11 +1,19 @@
 import { createHash } from "node:crypto";
 
-import { ConfigError, VERB, type CanonicalCard } from "@loomcycle/bridge-core";
+import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard } from "@loomcycle/bridge-core";
 import { describe, expect, it } from "vitest";
 
 import { parseCardAction, questionCard, renderCard } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
-import { conversationSubject, identify, NOT_AVAILABLE_TEXT, subjectFor } from "../src/identity.js";
+import {
+  conversationSubject,
+  groupsOf,
+  identify,
+  NOT_AVAILABLE_TEXT,
+  personSub,
+  subjectFor,
+  uninstalledSub,
+} from "../src/identity.js";
 
 const T = "11111111-1111-1111-1111-111111111111";
 const U = "AAAAAAAA-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -65,6 +73,88 @@ describe("identity", () => {
   });
 });
 
+describe("identity as a loomcycle gate", () => {
+  const act = (type: string, conv = "19:chan@thread.tacv2;messageid=111") => ({
+    from: { aadObjectId: U, name: "Al" },
+    conversation: { id: conv, tenantId: T.toUpperCase(), conversationType: type },
+  });
+
+  it("asserts a person under their lower-cased Entra object id", () => {
+    expect(personSub(U)).toBe("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    expect(personSub(" not-a-guid ")).toBeUndefined();
+  });
+
+  it("names a person <gate>:<object id> and a shared conversation <gate>:conv:<hash>", () => {
+    expect(identify(act("personal", "a:1"), new Set([T]), "teams")).toMatchObject({
+      ok: true,
+      scope: "personal",
+      speaker: { subject: "teams:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", trust: "trusted" },
+      runAs: { subject: "teams:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", name: "Al" },
+    });
+    const channel = identify(act("channel"), new Set([T]), "teams");
+    expect(channel).toMatchObject({
+      ok: true,
+      scope: "channel",
+      speaker: { subject: "teams:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" },
+      runAs: { subject: gateSharedSubject("teams", T, "19:chan@thread.tacv2"), name: "Teams channel" },
+    });
+    // Another thread of the channel is the channel's one identity, as in token mode.
+    expect(channel.ok && channel.runAs.subject).toBe(conversationSubject(T, "19:chan@thread.tacv2;messageid=222", "teams"));
+  });
+
+  it("without a gate, people and shared chats keep the subjects the bridge always gave them", () => {
+    const own = identify(act("personal", "a:1"), new Set([T]));
+    expect(own.ok && [own.speaker.subject, own.runAs.subject]).toEqual([subjectFor(U), subjectFor(U)]);
+    const shared = identify(act("groupChat", "19:g@thread.v2"), new Set([T]));
+    expect(shared.ok && shared.runAs.subject).toBe(sharedSubject("teams", T, "19:g@thread.v2"));
+  });
+
+  // loomcycle's identity_map.legacy_subject_prefix links a gate's first login
+  // to the user named prefix + platform id with ':' read as '-'. With
+  // "teams-", that must be exactly the user the token-mode bridge made, or a
+  // switched bridge would give everyone a new, empty account.
+  it("maps every gate subject onto its token-mode subject under legacy_subject_prefix teams-", () => {
+    const legacy = (gateSubject: string) => `teams-${gateSubject.slice("teams:".length).replaceAll(":", "-")}`;
+    const tenants = new Set([T]);
+    for (const [type, conv] of [
+      ["personal", "a:1"],
+      ["groupChat", "19:g@thread.v2"],
+      ["channel", "19:chan@thread.tacv2;messageid=111"],
+    ] as const) {
+      const asGate = identify(act(type, conv), tenants, "teams");
+      const asToken = identify(act(type, conv), tenants);
+      if (!asGate.ok || !asToken.ok) throw new Error(`${type} not identified`);
+      expect(legacy(asGate.speaker.subject)).toBe(asToken.speaker.subject);
+      expect(legacy(asGate.runAs.subject)).toBe(asToken.runAs.subject);
+    }
+  });
+
+  it("puts every run identity in its tenant's group, from the stored reference only", () => {
+    expect(groupsOf({ conversation: { tenantId: T.toUpperCase() } })).toEqual([`teams-tenant-${T}`]);
+    // A channel's reference holds no team id, so it gets the tenant group only.
+    expect(groupsOf({ conversation: { id: "19:chan@thread.tacv2", conversationType: "channel", tenantId: T } } as never)).toEqual([`teams-tenant-${T}`]);
+    // No tenant: nothing is asserted, so loomcycle syncs no groups.
+    expect(groupsOf({ conversation: {} })).toBeUndefined();
+    expect(groupsOf({ conversation: { tenantId: " " } })).toBeUndefined();
+  });
+
+  it("takes an uninstall from a person's own chat in an allowed tenant as them leaving", () => {
+    const tenants = new Set([T]);
+    const remove = (type?: string, tenant = T, action = "remove") => ({
+      action,
+      from: { aadObjectId: U },
+      conversation: { id: "a:1", tenantId: tenant, ...(type ? { conversationType: type } : {}) },
+    });
+    expect(uninstalledSub(remove("personal"), tenants)).toBe(personSub(U));
+    expect(uninstalledSub(remove(), tenants)).toBe(personSub(U));
+    expect(uninstalledSub(remove("personal", T, "add"), tenants)).toBeUndefined();
+    expect(uninstalledSub(remove("groupChat"), tenants)).toBeUndefined();
+    expect(uninstalledSub(remove("channel"), tenants)).toBeUndefined();
+    expect(uninstalledSub(remove("personal", "22222222-2222-2222-2222-222222222222"), tenants)).toBeUndefined();
+    expect(uninstalledSub({ ...remove("personal"), from: { aadObjectId: "bot" } }, tenants)).toBeUndefined();
+  });
+});
+
 describe("config", () => {
   const base = {
     LOOMCYCLE_BASE_URL: "http://loomcycle:8787/",
@@ -79,6 +169,21 @@ describe("config", () => {
     expect(cfg.shared.loomcycleBaseUrl).toBe("http://loomcycle:8787");
     expect([...cfg.allowedTenants]).toEqual([T]);
     expect(cfg.shared).toMatchObject({ tokenTtlSeconds: 43200, userAccessMode: "isolated", idleMinutes: 1440, store: "memory", dev: false, port: 3978 });
+  });
+
+  it("is a gate only when BRIDGE_GATE is set; otherwise it keeps its loomcycle token", () => {
+    const cfg = loadConfig(base);
+    expect(cfg.shared.gate).toBeUndefined();
+    expect(cfg.shared.loomcycleToken).toBe("t");
+
+    const { LOOMCYCLE_TOKEN: _t, ...noToken } = base;
+    const gateEnv = { ...noToken, BRIDGE_GATE: "teams", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_KEY: "{}" };
+    const gated = loadConfig(gateEnv);
+    expect(gated.shared.gate).toMatchObject({ name: "teams", audience: "https://lc.example" });
+    expect(gated.shared.loomcycleToken).toBe("");
+    // A leftover operator token beside the gate key is refused.
+    expect(() => loadConfig({ ...gateEnv, LOOMCYCLE_TOKEN: "t" })).toThrow(/LOOMCYCLE_TOKEN must not be set/);
+    expect(() => loadConfig(noToken)).toThrow(/LOOMCYCLE_TOKEN/);
   });
 
   it("refuses to start without bot credentials unless in dev mode", () => {
