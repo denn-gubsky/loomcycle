@@ -274,10 +274,14 @@ func (s *Server) handleHeaderLogin(w http.ResponseWriter, r *http.Request, cfgGa
 	case errors.Is(err, authgate.ErrNoCredential):
 		writeJSONError(w, http.StatusUnauthorized, "no_assertion", "this request did not come through "+cfgGate.Label)
 		return
+	case err != nil && !errors.Is(err, authgate.ErrInvalidCredential):
+		// The verifier could not judge the assertion (a key endpoint or the
+		// replay record is down): not the person's failure, so not audited
+		// as one, and the answer says to retry.
+		slog.Error("auth: header gate unavailable", "gate", cfgGate.Name, "err", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "gate_unavailable", "the sign-in cannot be checked right now; try again")
+		return
 	case err != nil:
-		if !errors.Is(err, authgate.ErrInvalidCredential) {
-			slog.Error("auth: header gate unavailable", "gate", cfgGate.Name, "err", err)
-		}
 		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
 		return

@@ -306,8 +306,10 @@ func TestALB_UnknownKidStormIsRateLimited(t *testing.T) {
 	k := s.addKey(t, "kid-1")
 	for i := 0; i < 50; i++ {
 		tok := albToken(t, k, albHeaderClaims(fmt.Sprintf("random-%d", i)), albPayload(), true)
-		if _, err := albGate(keys).Verify(context.Background(), tok); !errors.Is(err, authgate.ErrInvalidCredential) {
-			t.Fatalf("unknown kid %d: %v", i, err)
+		// Refused either way: as invalid once AWS said "no such key", or as
+		// a fault (judged nothing) once the fetch budget is spent.
+		if _, err := albGate(keys).Verify(context.Background(), tok); err == nil {
+			t.Fatalf("unknown kid %d verified", i)
 		}
 	}
 	if n := s.fetches.Load(); n > 3 {

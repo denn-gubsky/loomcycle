@@ -2,6 +2,7 @@ package headergate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -81,6 +82,9 @@ func (c *CloudflareAccess) Verify(ctx context.Context, assertion string) (Identi
 		return Identity{}, invalid("cloudflare access: empty or oversized assertion")
 	}
 	claims, err := c.verifier.Verify(ctx, assertion)
+	if errors.Is(err, jwtverify.ErrKeySetUnavailable) {
+		return Identity{}, fmt.Errorf("cloudflare access: %w", err)
+	}
 	if err != nil {
 		return Identity{}, invalid("cloudflare access: %v", err)
 	}

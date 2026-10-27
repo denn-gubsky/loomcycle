@@ -112,7 +112,12 @@ func (f *ForwardAuthHMAC) Verify(ctx context.Context, identity, signature string
 	// authenticated nonce is recorded.
 	expires := replay.EntryExpiry(t, window)
 	if err := f.Replay.Admit(nonce, expires, now); err != nil {
-		return Identity{}, invalid("forward-auth: nonce %v", err)
+		if errors.Is(err, replay.ErrReplayed) {
+			return Identity{}, invalid("forward-auth: nonce %v", err)
+		}
+		// Full: this replica cannot record the nonce, so it refuses, but
+		// the header was good; that is the server's fault, not the proxy's.
+		return Identity{}, fmt.Errorf("forward-auth: nonce: %w", err)
 	}
 	if f.Shared != nil {
 		sum := sha256.Sum256([]byte(nonce))

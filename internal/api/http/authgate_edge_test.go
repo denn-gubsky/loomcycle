@@ -476,3 +476,41 @@ func TestHeaderGate_UnavailableSharedReplayRecordRefusesTheHeader(t *testing.T) 
 		t.Fatal("signed in although the nonce could not be recorded for the other replicas")
 	}
 }
+
+// A verifier fault (here the shared replay record is down) judged nothing: a
+// login answers 503, not a credential refusal, and is not audited as a
+// failed sign-in; a session's request is refused, but the session is not
+// ended, so it works again once the fault clears.
+func TestHeaderGate_VerifierFaultRefusesTheRequestButKeepsTheSession(t *testing.T) {
+	s, st, sink, up := edgeServer(t)
+	c := headerSession(t, s, "alice")
+	down, err := EdgeGatesFromConfig(s.cfg(), EdgeGateDeps{Replay: failingReplay{st}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetEdgeGates(down)
+	failedBefore := countAction(sink, "auth_login_failed")
+	if rec := headerLogin(t, s, viaProxy(t, "bob")); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("login during the fault = %d %s, want 503", rec.Code, rec.Body.String())
+	}
+	if n := countAction(sink, "auth_login_failed"); n != failedBefore {
+		t.Fatalf("a fault was audited as %d failed sign-in(s)", n-failedBefore)
+	}
+	if code, _ := edgeMe(s, c, viaProxy(t, "alice")); code == http.StatusOK {
+		t.Fatal("a session request passed although its assertion could not be checked")
+	}
+	s.SetEdgeGates(up)
+	if code, me := edgeMe(s, c, viaProxy(t, "alice")); code != http.StatusOK {
+		t.Fatalf("session after the fault cleared = %d %v, want it kept", code, me)
+	}
+}
+
+func countAction(sink *recordingSink, action string) int {
+	n := 0
+	for _, a := range actions(sink) {
+		if a == action {
+			n++
+		}
+	}
+	return n
+}

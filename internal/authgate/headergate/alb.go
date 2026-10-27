@@ -123,7 +123,13 @@ func (a *ALB) Verify(ctx context.Context, token string) (Identity, error) {
 	}
 	key, err := a.Keys.Key(ctx, h.Kid)
 	if err != nil {
-		return Identity{}, invalid("aws alb: %v", err)
+		// Only AWS answering "no such key" judges the token. A fetch that
+		// failed, or a spent fetch budget, judged nothing: a fault, so a
+		// session is not ended over it.
+		if errors.Is(err, errNoSuchKey) {
+			return Identity{}, invalid("aws alb: %v", err)
+		}
+		return Identity{}, fmt.Errorf("aws alb: %w", err)
 	}
 	if len(sig) != 64 {
 		return Identity{}, invalid("aws alb: malformed signature")
