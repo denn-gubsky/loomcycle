@@ -7,7 +7,7 @@ import (
 )
 
 // TestMigrate_LegacyTokenReadsFrozenAuthority is the sqlite twin of postgres
-// 0116: a token row written before operator_token_defs.authority existed must
+// 0117: a token row written before operator_token_defs.authority existed must
 // read back frozen ("") after the upgrade, never inherit — an existing token
 // keeps the ceiling it was minted with.
 //

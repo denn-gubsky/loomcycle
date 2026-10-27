@@ -149,6 +149,13 @@ export const agentDefRegistry: DefRegistry = {
         { key: "max_pages_per_run", label: "Max OCR pages per run", group: "Limits", type: "int", min: 1, hint: "At most the operator's transcription.ocr.max_pages_per_run." },
         { key: "max_minutes_per_run", label: "Max audio minutes per run", group: "Limits", type: "int", min: 1, hint: "At most the operator's transcription.stt.max_minutes_per_run." },
       ] },
+    { key: "speech", label: "Speech", group: "Limits", type: "object",
+      hint: "Text-to-speech. The agent may switch it off and may only lower the operator's character cap.",
+      unsetMeans: "on when the operator configured an engine",
+      fields: [
+        { key: "enabled", label: "Speech enabled", group: "Limits", type: "bool", hint: "Whether this agent may turn text into audio." },
+        { key: "max_chars_per_run", label: "Max characters spoken per run", group: "Limits", type: "int", min: 1, hint: "At most the operator's speech.max_chars_per_run." },
+      ] },
     { key: "max_concurrent_children", label: "Max concurrent children", group: "Limits", type: "int", min: 1,
       hint: "How many sub-agents this agent may run in parallel from one fan-out call.",
       unsetMeans: "the global default" },

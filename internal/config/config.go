@@ -274,6 +274,12 @@ type Config struct {
 	// engines are off. Defaults are applied at load (Resolved).
 	Transcription TranscriptionConfig `yaml:"transcription,omitempty"`
 
+	// Speech is the `speech:` block: the text-to-speech engine, the voice to
+	// use per language, the output format and encoder, and the caps
+	// (speech.go). nil (absent) is off. Defaults are applied at load
+	// (Resolved).
+	Speech *SpeechConfig `yaml:"speech,omitempty"`
+
 	// Principals declares static (tenant, subject, scopes) logins, each bound
 	// to a bearer secret held in an env var (RFC AO). The map key is an
 	// informational handle. Lets an operator declare a stable service identity
@@ -900,13 +906,26 @@ type ModelRef struct {
 	ModelPattern string `yaml:"model_pattern"`
 
 	// Kind says what the model is FOR: "chat" (the default; "" is the same),
-	// "decision", "embedder" or "transcriber" (speech-to-text). They are served
-	// by different endpoints, so an alias used where another kind is needed
-	// fails at the first call with whatever the provider says about it; tagged,
-	// it fails config load naming the alias and the place. It is a check on where the alias may be written,
-	// never a routing input.
+	// "decision", "embedder", "transcriber" (speech-to-text) or "synthesizer"
+	// (text-to-speech). They are served by different endpoints, so an alias
+	// used where another kind is needed fails at the first call with whatever
+	// the provider says about it; tagged, it fails config load naming the alias
+	// and the place. It is a check on where the alias may be written, never a
+	// routing input.
 	Kind string `yaml:"kind"`
+
+	// License marks the model's weights: "" (not stated), "commercial" or
+	// "noncommercial" (e.g. CC BY-NC speech voices). Informational: nothing
+	// refuses a noncommercial model; a speech voice using one adds a load
+	// warning, and the Settings panel can read it to warn.
+	License string `yaml:"license"`
 }
+
+// The values ModelRef.License accepts besides "".
+const (
+	ModelLicenseCommercial    = "commercial"
+	ModelLicenseNoncommercial = "noncommercial"
+)
 
 // The kinds a models: alias may declare.
 const (
@@ -918,6 +937,10 @@ const (
 	// embedder only. A File tool's speech-to-text calls are made one at a time
 	// per call, and a provider lane does not count them.
 	ModelKindTranscriber = "transcriber"
+	// ModelKindSynthesizer is a text-to-speech model (speech.voices.*.model).
+	// Not a lane kind either, for the same reason: speech pieces are
+	// synthesised one at a time per run.
+	ModelKindSynthesizer = "synthesizer"
 )
 
 // CheckModelKind refuses a models: alias TAGGED with a kind other than the one
@@ -1806,6 +1829,13 @@ type AgentDef struct {
 	// Content-identifying. Not per-run overridable: that would be a run-request
 	// field on every transport.
 	Transcription *AgentTranscription `yaml:"transcription,omitempty"`
+
+	// Speech is the per-agent `speech:` block: whether the agent may speak
+	// (default yes when the operator configured an engine) and a per-run
+	// character cap that may only LOWER the operator's (a higher one is refused
+	// at load and at AgentDef create/fork). Merged per field like Compaction.
+	// Content-identifying. Not per-run overridable, like Transcription.
+	Speech *AgentSpeech `yaml:"speech,omitempty"`
 
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
@@ -7414,6 +7444,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if !override.Transcription.IsZero() {
 		out.Transcription = MergeAgentTranscription(out.Transcription, override.Transcription)
 	}
+	if !override.Speech.IsZero() {
+		out.Speech = MergeAgentSpeech(out.Speech, override.Speech)
+	}
 	if override.Providers != nil {
 		out.Providers = override.Providers
 	}
@@ -8864,9 +8897,14 @@ func validate(c *Config) error {
 			return fmt.Errorf("models.%s: unknown provider %q", name, ref.Provider)
 		}
 		switch ref.Kind {
-		case "", ModelKindChat, ModelKindDecision, ModelKindEmbedder, ModelKindTranscriber:
+		case "", ModelKindChat, ModelKindDecision, ModelKindEmbedder, ModelKindTranscriber, ModelKindSynthesizer:
 		default:
-			return fmt.Errorf("models.%s: kind %q is not one of chat, decision, embedder, transcriber", name, ref.Kind)
+			return fmt.Errorf("models.%s: kind %q is not one of chat, decision, embedder, transcriber, synthesizer", name, ref.Kind)
+		}
+		switch ref.License {
+		case "", ModelLicenseCommercial, ModelLicenseNoncommercial:
+		default:
+			return fmt.Errorf("models.%s: license %q is not one of commercial, noncommercial", name, ref.License)
 		}
 	}
 	// Library-level tier definitions.
@@ -9041,9 +9079,12 @@ func validate(c *Config) error {
 	if err := ResolveACLConfig(c); err != nil {
 		return err
 	}
-	// Before the agents loop: each agent's transcription caps are judged
-	// against the resolved operator caps.
+	// Before the agents loop: each agent's transcription and speech caps are
+	// judged against the resolved operator caps.
 	if err := resolveTranscription(c); err != nil {
+		return err
+	}
+	if err := resolveSpeech(c); err != nil {
 		return err
 	}
 	for name, agent := range c.Agents {
@@ -9109,6 +9150,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := c.CheckAgentTranscription(agent.Transcription); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := c.CheckAgentSpeech(agent.Speech); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Context.Validate(); err != nil {

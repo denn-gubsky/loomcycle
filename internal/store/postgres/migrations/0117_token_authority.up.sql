@@ -1,4 +1,4 @@
--- 0116_token_authority.up.sql — RFC EY §8: a token's authority mode.
+-- 0117_token_authority.up.sql — RFC EY §8: a token's authority mode.
 --
 -- '' (the default, and every existing row) is a frozen token: its
 -- allowed_scopes are its ceiling, as before. 'inherit' is a per-user token

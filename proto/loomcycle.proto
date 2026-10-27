@@ -2104,10 +2104,10 @@ message UsageAggregate {
   string currency = 11;
   int64 call_count = 12;
   int64 unpriced_calls = 13;
-  // What the calls were for: chat | ocr | stt. Set only when grouped by purpose.
+  // What the calls were for: chat | ocr | stt | tts. Set only when grouped by purpose.
   string purpose = 14;
-  // Summed seconds of audio the group's speech-to-text calls transcribed (the
-  // unit their per-minute price is computed from); 0 when it has none.
+  // Summed seconds of audio the group's speech calls transcribed (stt) or
+  // produced (tts), the unit a per-minute price is computed from; 0 when it has none.
   double audio_seconds = 15;
 }
 

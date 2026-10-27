@@ -9,13 +9,13 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// TestMigrate0116_ExistingTokenReadsFrozenAndDownUpRoundTrips: a token minted
-// at schema version 115 has no authority column. After migrating up it reads
+// TestMigrate0117_ExistingTokenReadsFrozenAndDownUpRoundTrips: a token minted
+// at schema version 116 has no authority column. After migrating up it reads
 // back frozen (""), never inherit — an existing token keeps the ceiling it was
 // minted with. A token minted inherit after the upgrade reads back inherit,
 // and the down migration drops the column cleanly (the row survives; up again
 // reads it frozen, since the mode went with the column).
-func TestMigrate0116_ExistingTokenReadsFrozenAndDownUpRoundTrips(t *testing.T) {
+func TestMigrate0117_ExistingTokenReadsFrozenAndDownUpRoundTrips(t *testing.T) {
 	dsn := pgDSNFromEnv(t)
 	ctx := context.Background()
 	schema := uniqueSchemaName(t)
@@ -35,9 +35,9 @@ func TestMigrate0116_ExistingTokenReadsFrozenAndDownUpRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Migrate(115); err != nil {
+	if err := m.Migrate(116); err != nil {
 		closeMigrator(m)
-		t.Fatalf("migrate to 115: %v", err)
+		t.Fatalf("migrate to 116: %v", err)
 	}
 	closeMigrator(m)
 
@@ -49,13 +49,13 @@ func TestMigrate0116_ExistingTokenReadsFrozenAndDownUpRoundTrips(t *testing.T) {
 		(def_id, name, tenant_id, subject, token_hash, allowed_scopes, created_at)
 		VALUES ('def_old', 'u-alice', 'acme', 'alice', 'h-old', '["substrate:user"]', now())`); err != nil {
 		seed.Close()
-		t.Fatalf("seed a pre-0116 token: %v", err)
+		t.Fatalf("seed a pre-0117 token: %v", err)
 	}
 	seed.Close()
 
 	st, err := Open(ctx, Config{DSN: storeDSN, MaxOpenConns: 4, AutoMigrate: true})
 	if err != nil {
-		t.Fatalf("Open (migrating up from 115): %v", err)
+		t.Fatalf("Open (migrating up from 116): %v", err)
 	}
 	defer st.Close()
 
@@ -68,7 +68,7 @@ func TestMigrate0116_ExistingTokenReadsFrozenAndDownUpRoundTrips(t *testing.T) {
 		return row.Authority
 	}
 	if got := authority("h-old"); got != "" {
-		t.Errorf("pre-0116 token authority after migrating = %q, want frozen (\"\")", got)
+		t.Errorf("pre-0117 token authority after migrating = %q, want frozen (\"\")", got)
 	}
 	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
 		DefID: "def_new", Name: "u-alice", TenantID: "acme", Subject: "alice", TokenHash: "h-new",
@@ -85,8 +85,8 @@ func TestMigrate0116_ExistingTokenReadsFrozenAndDownUpRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeMigrator(down)
-	if err := down.Migrate(115); err != nil {
-		t.Fatalf("migrate down to 115: %v", err)
+	if err := down.Migrate(116); err != nil {
+		t.Fatalf("migrate down to 116: %v", err)
 	}
 	var cols int
 	if err := admin.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
