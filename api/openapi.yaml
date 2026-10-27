@@ -1276,7 +1276,10 @@ paths:
         request the session authenticates must carry a valid assertion for
         the same person, or the session ends. `401 no_assertion` when the
         request did not come through the proxy; `401 invalid_credentials` for
-        a refused assertion, an untrusted peer or a refused identity.
+        a refused assertion, an untrusted peer or a refused identity;
+        `503 gate_unavailable` when the gate cannot check the assertion right
+        now (its key endpoint or the replay record is down). In that case a
+        session request is refused but the session is kept.
       operationId: passwordSignIn
       security: []
       parameters:
