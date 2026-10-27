@@ -713,6 +713,54 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (tenant_id, subject)
 		)`,
 		`CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL`,
+		// RFC FL P0 app sign-in. Mirrors postgres migration 0119 (see
+		// 0119_oauth_app_sign_in.up.sql): authorization codes, refresh-token
+		// families and their refresh tokens — hashes only.
+		`CREATE TABLE IF NOT EXISTS oauth_codes (
+			code_hash      TEXT    PRIMARY KEY,
+			client_id      TEXT    NOT NULL,
+			redirect_uri   TEXT    NOT NULL,
+			code_challenge TEXT    NOT NULL,
+			tenant_id      TEXT    NOT NULL,
+			subject        TEXT    NOT NULL,
+			gate           TEXT    NOT NULL,
+			amr            TEXT    NOT NULL DEFAULT '[]',
+			session_hash   TEXT    NOT NULL DEFAULT '',
+			scope_cap      TEXT    NOT NULL DEFAULT '[]',
+			restrictions   TEXT    NOT NULL DEFAULT '',
+			created_at     INTEGER NOT NULL,
+			expires_at     INTEGER NOT NULL,
+			consumed_at    INTEGER,
+			family_id      TEXT    NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS oauth_codes_by_expiry ON oauth_codes(expires_at)`,
+		`CREATE INDEX IF NOT EXISTS oauth_codes_by_client ON oauth_codes(client_id) WHERE consumed_at IS NULL`,
+		`CREATE TABLE IF NOT EXISTS oauth_refresh_families (
+			family_id           TEXT    PRIMARY KEY,
+			client_id           TEXT    NOT NULL DEFAULT '',
+			tenant_id           TEXT    NOT NULL DEFAULT '',
+			subject             TEXT    NOT NULL DEFAULT '',
+			gate                TEXT    NOT NULL DEFAULT '',
+			amr                 TEXT    NOT NULL DEFAULT '[]',
+			scope_cap           TEXT    NOT NULL DEFAULT '[]',
+			restrictions        TEXT    NOT NULL DEFAULT '',
+			created_at          INTEGER NOT NULL,
+			last_used_at        INTEGER NOT NULL,
+			idle_expires_at     INTEGER NOT NULL,
+			absolute_expires_at INTEGER NOT NULL,
+			revoked_at          INTEGER,
+			revoke_reason       TEXT    NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS oauth_refresh_families_by_client ON oauth_refresh_families(client_id) WHERE revoked_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS oauth_refresh_families_by_subject ON oauth_refresh_families(tenant_id, subject)`,
+		`CREATE INDEX IF NOT EXISTS oauth_refresh_families_by_expiry ON oauth_refresh_families(absolute_expires_at)`,
+		`CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+			token_hash TEXT    PRIMARY KEY,
+			family_id  TEXT    NOT NULL,
+			created_at INTEGER NOT NULL,
+			used_at    INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS oauth_refresh_tokens_by_family ON oauth_refresh_tokens(family_id)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER
@@ -1671,6 +1719,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		// reads back 0. Mirrors postgres 0116; no key changes.
 		`ALTER TABLE token_usage ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE usage_archive ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
+		// The app sign-in an access token came from (RFC FL): its client and
+		// refresh-token family, '' for every other token. Mirrors postgres
+		// 0119; the indexes are in addIndexes.
+		`ALTER TABLE operator_token_defs ADD COLUMN oauth_client TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE operator_token_defs ADD COLUMN oauth_family TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -1948,6 +2001,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS memory_by_source_session ON memory(tenant_id, source_session_id) WHERE source_session_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_by_observed_at ON memory(tenant_id, scope, scope_id, observed_at) WHERE observed_at IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS memory_by_valid_at ON memory(tenant_id, scope, scope_id, valid_at) WHERE valid_at IS NOT NULL`,
+		// RFC FL: an app sign-in's access tokens, by family and by client.
+		`CREATE INDEX IF NOT EXISTS operator_token_defs_by_oauth_family ON operator_token_defs(oauth_family) WHERE oauth_family <> ''`,
+		`CREATE INDEX IF NOT EXISTS operator_token_defs_by_oauth_client ON operator_token_defs(oauth_client) WHERE oauth_client <> ''`,
 	}
 	for _, q := range addIndexes {
 		// Note the asymmetry vs addColumns above: indexes use

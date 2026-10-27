@@ -1744,6 +1744,7 @@ type Store interface {
 	DocumentSourceDefStore
 	OperatorTokenStore
 	UISessionStore
+	OAuthStore
 	EvaluationStore
 	MetricsStore
 	DynamicAgentStore
@@ -4454,6 +4455,57 @@ type UISessionStore interface {
 	UISessionRevokeSubject(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
 }
 
+// OAuthStore persists app sign-ins (RFC FL): the authorization codes, the
+// refresh-token families and their refresh tokens loomcycle issues as an
+// OAuth 2.0 authorization server for its own apps. Codes and refresh tokens
+// are stored by their SHA-256 only. What a code or a family allows, and
+// when it ends, is the auth layer's decision; the store makes the single-use
+// steps atomic so two concurrent presentations never both pass.
+type OAuthStore interface {
+	// OAuthCodeCreate inserts an authorization code. CodeHash, ClientID,
+	// RedirectURI, CodeChallenge, TenantID, Subject, Gate and ExpiresAt are
+	// required.
+	OAuthCodeCreate(ctx context.Context, row OAuthCodeRow) error
+	// OAuthCodeConsume marks the code used, stamping familyID on it, and
+	// returns the row with first=true. A code already used returns its row
+	// (carrying the family the first use stamped) with first=false, so the
+	// caller can revoke what that use produced. ErrNotFound when no such
+	// code exists. Expiry is the caller's to check.
+	OAuthCodeConsume(ctx context.Context, codeHash, familyID string, now time.Time) (row OAuthCodeRow, first bool, err error)
+	// OAuthCodeInvalidateClient marks every unused code of clientID used at
+	// `at` (a retired client's codes stop working at once) and returns how
+	// many it touched.
+	OAuthCodeInvalidateClient(ctx context.Context, clientID string, at time.Time) (int, error)
+	// OAuthFamilyCreate inserts a refresh-token family. ErrConflict when one
+	// with that id exists — including the tombstone OAuthFamilyRevoke leaves
+	// for a family revoked before it was created.
+	OAuthFamilyCreate(ctx context.Context, row OAuthFamilyRow) error
+	// OAuthFamilyGet returns a family, revoked or not. ErrNotFound when none.
+	OAuthFamilyGet(ctx context.Context, familyID string) (OAuthFamilyRow, error)
+	// OAuthFamilyTouch records a refresh on a live family.
+	OAuthFamilyTouch(ctx context.Context, familyID string, lastUsed, idleExpires time.Time) error
+	// OAuthFamilyRevoke revokes a family and reports whether this call did.
+	// A family that does not exist yet is written as a revoked tombstone, so
+	// its later create fails.
+	OAuthFamilyRevoke(ctx context.Context, familyID, reason string, at time.Time) (bool, error)
+	// OAuthFamilyRevokeClient revokes every live family of clientID and
+	// returns their ids.
+	OAuthFamilyRevokeClient(ctx context.Context, clientID, reason string, at time.Time) ([]string, error)
+	// OAuthRefreshCreate inserts a refresh token's hash into its family.
+	OAuthRefreshCreate(ctx context.Context, row OAuthRefreshRow) error
+	// OAuthRefreshUse marks a refresh token used and returns it with
+	// first=true; an already-used one returns first=false (the reuse
+	// signal). ErrNotFound when no such token exists.
+	OAuthRefreshUse(ctx context.Context, tokenHash string, now time.Time) (row OAuthRefreshRow, first bool, err error)
+	// OAuthTokenRetire retires, at `at`, the live access tokens issued through
+	// clientID — only those of familyID when it is set — and returns how many.
+	OAuthTokenRetire(ctx context.Context, clientID, familyID string, at time.Time) (int, error)
+	// OAuthDeleteExpired removes codes that expired before `before`, families
+	// revoked or past their absolute lifetime before it, and those families'
+	// refresh tokens. Nothing it deletes could still authenticate.
+	OAuthDeleteExpired(ctx context.Context, before time.Time) (int, error)
+}
+
 // EvaluationStore persists evaluation scores.
 type EvaluationStore interface {
 	// ---- Evaluation ----
@@ -6620,6 +6672,12 @@ type OperatorTokenDefRow struct {
 	// verified (RFC FA §7); "" for a token an operator or tenant minted. Fixed
 	// at mint, so strict mode can tell a gate-issued user token apart.
 	IssuedByGate string `json:"issued_by_gate,omitempty"`
+	// OAuthClient and OAuthFamily name the app sign-in an access token was
+	// issued through (RFC FL): the OAuth client and the refresh-token family.
+	// "" for every other token. Fixed at mint; a family revoke retires the
+	// token, and the auth layer refuses it once the client is gone.
+	OAuthClient string `json:"oauth_client,omitempty"`
+	OAuthFamily string `json:"oauth_family,omitempty"`
 }
 
 // ValidAt reports whether the row authenticates at t: not retired (or still
@@ -6645,6 +6703,60 @@ func (r OperatorTokenDefRow) ValidUntil() time.Time {
 // tokenFarFuture stands for "never" in ValidUntil. Year 9999 is the largest
 // value both backends and JSON round-trip.
 var tokenFarFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// OAuthCodeRow is one authorization code (RFC FL §2): what it is bound to and
+// whether it was used. CodeHash is the SHA-256 of the code; the code itself
+// is never stored.
+type OAuthCodeRow struct {
+	CodeHash      string
+	ClientID      string
+	RedirectURI   string
+	CodeChallenge string
+	TenantID      string
+	Subject       string
+	Gate          string
+	AMR           []string
+	// SessionHash is the Web UI session that approved the code.
+	SessionHash string
+	// ScopeCap and RestrictionsJSON are the approving session's scopes and
+	// restrictions (with the client's restrictions folded in): no token the
+	// sign-in mints may exceed them.
+	ScopeCap         []string
+	RestrictionsJSON string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	ConsumedAt       time.Time
+	// FamilyID is the refresh-token family the exchange created; "" until
+	// the code is used.
+	FamilyID string
+}
+
+// OAuthFamilyRow is one app sign-in: a user signed in to a client, and every
+// refresh token that sign-in rotated through.
+type OAuthFamilyRow struct {
+	FamilyID          string
+	ClientID          string
+	TenantID          string
+	Subject           string
+	Gate              string
+	AMR               []string
+	ScopeCap          []string
+	RestrictionsJSON  string
+	CreatedAt         time.Time
+	LastUsedAt        time.Time
+	IdleExpiresAt     time.Time
+	AbsoluteExpiresAt time.Time
+	RevokedAt         time.Time
+	RevokeReason      string
+}
+
+// OAuthRefreshRow is one refresh token, by its SHA-256.
+type OAuthRefreshRow struct {
+	TokenHash string
+	FamilyID  string
+	CreatedAt time.Time
+	UsedAt    time.Time
+}
 
 // UISessionRow is one Web UI login session (RFC FA §5).
 //
