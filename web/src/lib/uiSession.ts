@@ -100,6 +100,14 @@ export interface LoginConfig {
   origins: string[];
   /** Why this browser cannot start a session here (e.g. insecure_transport). */
   sessionRefused: string;
+  /** The app an app sign-in (?oauth=) is for, when the server recognises it. */
+  app: LoginApp | null;
+}
+
+/** The app a sign-in hands the person to, and where it will send them. */
+export interface LoginApp {
+  label: string;
+  destination: string;
 }
 
 /** Reads /ui/login-config.json defensively: a field of the wrong shape is
@@ -120,5 +128,13 @@ export function parseLoginConfig(raw: unknown): LoginConfig {
     gates,
     origins: Array.isArray(c.login_origins) ? c.login_origins.filter((o): o is string => typeof o === "string") : [],
     sessionRefused: typeof c.session_refused === "string" ? c.session_refused : "",
+    app: parseLoginApp(c.app),
   };
+}
+
+function parseLoginApp(raw: unknown): LoginApp | null {
+  if (!raw || typeof raw !== "object") return null;
+  const a = raw as Record<string, unknown>;
+  if (typeof a.label !== "string" || a.label === "") return null;
+  return { label: a.label, destination: typeof a.destination === "string" ? a.destination : "" };
 }
