@@ -115,6 +115,9 @@ func (c *CloudflareAccess) Verify(ctx context.Context, assertion string) (Identi
 		}
 		id.Subject, id.Email, id.EmailVerified = "service:"+strings.TrimSpace(cn), "", false
 		id.AMR = []string{"cf-access-service-token"}
+		// The identity map reads the sub claim first; the empty one Access
+		// sends would otherwise hide the service subject.
+		claims["sub"] = id.Subject
 	}
 	return id, nil
 }

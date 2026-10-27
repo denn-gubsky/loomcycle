@@ -18,6 +18,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
+	"github.com/denn-gubsky/loomcycle/internal/authgate/identity"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/jwtverify"
 )
 
@@ -142,6 +143,12 @@ func TestCloudflare_ServiceTokenGetsAServiceSubject(t *testing.T) {
 	}
 	if id.Subject != "service:abc.access" || id.Email != "" {
 		t.Fatalf("identity %+v", id)
+	}
+	// The identity map reads the sub claim before the subject: Access sends
+	// "sub": "" for a service token, which must not hide the service subject.
+	got, err := identity.Subject("cf", nil, authgate.Assertion{Subject: id.Subject, Claims: id.Claims})
+	if err != nil || got != "cf:service:abc.access" {
+		t.Fatalf("mapped subject = %q, %v; want cf:service:abc.access", got, err)
 	}
 }
 

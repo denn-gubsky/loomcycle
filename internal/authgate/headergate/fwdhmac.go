@@ -39,8 +39,8 @@ var hmacNonceRE = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 // ForwardAuthHMAC verifies the forward-auth-hmac preset's header pair.
 type ForwardAuthHMAC struct {
-	// Secret returns the shared secret (read per request, so a rotated
-	// secret takes effect without a restart when its source allows).
+	// Secret returns the shared secret. The server reads it once at boot
+	// from the operator's environment, so rotating it takes a restart.
 	Secret func(ctx context.Context) ([]byte, error)
 	// Window bounds |now - t|; DefaultHMACWindow when zero.
 	Window time.Duration
