@@ -208,6 +208,8 @@ export class FakeSlack {
 export class FakeGate {
   readonly asserts: Array<{ gate: string; payload: Record<string, unknown> }> = [];
   readonly revokes: Array<{ gate: string; payload: Record<string, unknown> }> = [];
+  /** What the next revokes answer, in order; then 204. "hang" never answers. */
+  readonly revokeReplies: Array<number | "hang"> = [];
   private seq = 0;
 
   fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -217,7 +219,9 @@ export class FakeGate {
     const payload = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString() || "{}") as Record<string, unknown>;
     if (url.pathname === "/v1/_auth/revoke") {
       this.revokes.push({ gate: body.gate, payload });
-      return new Response(null, { status: 204 });
+      const reply = this.revokeReplies.shift() ?? 204;
+      if (reply === "hang") return new Promise<Response>(() => {});
+      return new Response(reply === 204 ? null : JSON.stringify({ code: "unavailable" }), { status: reply });
     }
     this.asserts.push({ gate: body.gate, payload });
     const subject = `${body.gate}:${String(payload.sub)}`;

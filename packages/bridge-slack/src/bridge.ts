@@ -36,6 +36,9 @@ export interface SlackBridgeOptions extends BridgeOptions<SlackRef> {
   sleep?: (ms: number) => Promise<void>;
   /** How often a streamed reply is appended to. */
   streamIntervalMs?: number;
+  /** How long a gate waits for loomcycle to take a deactivation before it
+   *  answers Slack with a failure (Slack wants an answer within 3 s). */
+  revokeTimeoutMs?: number;
 }
 
 export interface SlackAdapter extends BridgeAdapter<SlackRef> {
@@ -54,6 +57,7 @@ const MAX_NAMES = 5000;
 /** How long a person's looked-up groups are reused, and how many are kept. */
 const GROUP_CACHE_MS = 10 * 60 * 1000;
 const MAX_GROUP_CACHE = 5000;
+const DEFAULT_REVOKE_TIMEOUT_MS = 2000;
 
 /** A link the agent writes is never unfurled: an unfurl fetches the URL from
  *  Slack's side, which a prompt-injected agent could use to send data out
@@ -64,6 +68,7 @@ const NO_UNFURL = { unfurl_links: false, unfurl_media: false } as const;
 const ok: RawResponse = { status: 200 };
 const unauthorized: RawResponse = { status: 401 };
 const badRequest: RawResponse = { status: 400 };
+const unavailable: RawResponse = { status: 503 };
 
 export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = {}): SlackAdapter {
   const now = opts.now ?? Date.now;
@@ -193,15 +198,26 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
   /** onUserDeleted: a person deactivated in their workspace has left it, and
    *  the bridge, as the gate for Slack, tells loomcycle so (RFC FA §3.7c):
    *  the user is disabled at once and removed per the gate's policy. Coming
-   *  back takes an operator (reactivate: operator). */
-  async function onUserDeleted(gate: NonNullable<BridgeContext<SlackRef>["gate"]>, u: DeletedUser): Promise<void> {
+   *  back takes an operator (reactivate: operator). It reports whether
+   *  loomcycle took the revoke within the timeout. No local deny-list is
+   *  kept: loomcycle disables the revoked user, so a later assert for them
+   *  is refused there. */
+  async function onUserDeleted(gate: NonNullable<BridgeContext<SlackRef>["gate"]>, u: DeletedUser): Promise<boolean> {
     const subject = gate.subjectOf(personSub(u.team, u.user));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error("revoke timed out"), { status: 504 })), opts.revokeTimeoutMs ?? DEFAULT_REVOKE_TIMEOUT_MS);
+    });
     try {
-      await gate.revoke(subject);
+      await Promise.race([gate.revoke(subject), timeout]);
       groupCache.delete(subject);
       log.info("slack user deactivated; revoked in loomcycle", { user: u.user });
+      return true;
     } catch (err) {
       log.warn("slack revoke failed", { status: (err as { status?: number })?.status });
+      return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -229,11 +245,6 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     };
 
     async function handleEvent(env: EventEnvelope): Promise<void> {
-      // Only a gate acts on a deactivation; a token-mode bridge ignores it.
-      if (ctx.gate) {
-        const deleted = readDeletedUser(env, cfg.allowedTeams);
-        if (deleted) return onUserDeleted(ctx.gate, deleted);
-      }
       const r = readEvent(env, me());
       if (r.kind !== "message" || !r.text) return;
       const id = identify(r.fields, policy, await displayName(r.fields));
@@ -283,6 +294,15 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
         }
         // A retry (X-Slack-Retry-Num) carries the same event_id.
         if (typeof env?.event_id === "string" && !seen.add(env.event_id)) return ok;
+        // A deactivation must not be lost: a gate revokes before it answers,
+        // and on a failure answers so Slack retries, with the event id
+        // forgotten so the retry is taken. A token-mode bridge ignores it.
+        const deleted = ctx.gate ? readDeletedUser(env, cfg.allowedTeams) : undefined;
+        if (ctx.gate && deleted) {
+          if (await onUserDeleted(ctx.gate, deleted)) return ok;
+          if (typeof env.event_id === "string") seen.forget(env.event_id);
+          return unavailable;
+        }
         void handleEvent(env).catch(fail("event"));
         return ok;
       },

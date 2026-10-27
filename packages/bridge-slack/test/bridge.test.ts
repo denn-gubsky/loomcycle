@@ -52,7 +52,7 @@ const GATE_SECRET = "s".repeat(40);
 
 /** rig builds the bridge with a loomcycle token, or with o.gate as the
  *  loomcycle gate "slack" (RFC FA §3.5), which holds no token. */
-async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: () => number } = {}): Promise<Rig> {
+async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: () => number; revokeTimeoutMs?: number } = {}): Promise<Rig> {
   const slack = new FakeSlack();
   const gate = new FakeGate();
   const auth = o.gate
@@ -77,6 +77,7 @@ async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: 
     message: { typingEveryMs: 60_000 },
     ...(o.gate ? { gateFetch: gate.fetch, gateKey: keyFromSecret(GATE_SECRET) } : {}),
     ...(o.now ? { now: o.now } : {}),
+    ...(o.revokeTimeoutMs ? { revokeTimeoutMs: o.revokeTimeoutMs } : {}),
   };
   const adapter = createSlackAdapter(cfg, opts);
   let routes: Record<string, Route>;
@@ -638,6 +639,32 @@ describe("slack bridge as a loomcycle gate", () => {
     await r.adapter.groupsFor("slack:t1:ualice", dmRef);
     expect(r.slack.to("users.info")).toHaveLength(2);
     expect(r.lc.calls).toHaveLength(0);
+  });
+
+  // A lost deactivation would leave a departed person able to use the agent:
+  // the revoke happens before Slack is answered, and a failure makes Slack
+  // deliver the event again rather than being swallowed by the dedupe.
+  it("answers a failed revoke with an error, takes the redelivery, then dedupes it", async () => {
+    const r = await rig({}, { gate: true });
+    r.gate.revokeReplies.push(503);
+    const body = userChange({});
+    expect(await r.events(signed(body))).toEqual({ status: 503 });
+    expect(r.gate.revokes).toHaveLength(1);
+    // Slack's retry carries the same event_id: taken again, and revoked.
+    expect(await r.events(signed(body, { headers: { "x-slack-retry-num": "1" } }))).toEqual({ status: 200 });
+    expect(r.gate.revokes).toHaveLength(2);
+    // Once revoked, another delivery is a duplicate.
+    expect(await r.events(signed(body, { headers: { "x-slack-retry-num": "2" } }))).toEqual({ status: 200 });
+    expect(r.gate.revokes).toHaveLength(2);
+  });
+
+  it("answers with an error when loomcycle does not take the revoke in time", async () => {
+    const r = await rig({}, { gate: true, revokeTimeoutMs: 20 });
+    r.gate.revokeReplies.push("hang");
+    const body = userChange({});
+    expect(await r.events(signed(body))).toEqual({ status: 503 });
+    expect(await r.events(signed(body))).toEqual({ status: 200 });
+    expect(r.gate.revokes).toHaveLength(2);
   });
 
   it("revokes nobody for a profile change, another workspace, or an unsigned event", async () => {
