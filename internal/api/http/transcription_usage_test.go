@@ -131,7 +131,7 @@ func TestRecordCallUsage_LoopRowIsUnchangedByPurpose(t *testing.T) {
 	_ = srv.recordCallUsage(context.Background(), "run-loop", rid, "s1", 3, &providers.Usage{
 		InputTokens: 10, OutputTokens: 20, CacheCreationTokens: 3, CacheReadTokens: 4,
 		Provider: "anthropic", Model: "m", CredentialSource: "tenant", CredentialScopeID: "t1",
-	})
+	}, store.UsagePurposeChat)
 	rows, err := st.TokenUsageForRun(context.Background(), "run-loop")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("ledger = %d rows, %v", len(rows), err)
@@ -156,7 +156,7 @@ func TestRecordCallUsage_LoopRowIsUnchangedByPurpose(t *testing.T) {
 func TestUsageReport_UngroupedPurposeAddsOnlyAudioSeconds(t *testing.T) {
 	srv, _ := newUsageTestServer(t)
 	ctx := runCtx("run-rep")
-	_ = srv.recordCallUsage(ctx, "run-rep", tools.RunIdentity(ctx), "s1", 0, &providers.Usage{InputTokens: 100, Provider: "p", Model: "m"})
+	_ = srv.recordCallUsage(ctx, "run-rep", tools.RunIdentity(ctx), "s1", 0, &providers.Usage{InputTokens: 100, Provider: "p", Model: "m"}, store.UsagePurposeChat)
 	if err := srv.RecordTranscriptionUsage(ctx, TranscriptionUsage{Purpose: store.UsagePurposeOCR, Provider: "p", Model: "m", InputTokens: 50}); err != nil {
 		t.Fatal(err)
 	}

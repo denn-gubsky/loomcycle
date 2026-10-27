@@ -91,7 +91,7 @@ func TestSummarize_ReportsTheCallToTheObserver(t *testing.T) {
 	t.Setenv("LOOMCYCLE_MOCK_LATENCY_MS", "0")
 	t.Setenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS", "0")
 	var seen *providers.Usage
-	ctx := providers.WithCallObserver(context.Background(), func(u *providers.Usage) { seen = u })
+	ctx := providers.WithCallObserver(context.Background(), func(_ context.Context, u *providers.Usage) { seen = u })
 	msgs := []providers.Message{{Role: "user", Content: []providers.ContentBlock{{Type: "text", Text: "a long conversation"}}}}
 	if _, err := Summarize(ctx, mock.New(), "mock-generic", msgs, 30); err != nil {
 		t.Fatalf("Summarize: %v", err)

@@ -194,7 +194,7 @@ func newEnv(t *testing.T, o envOptions) *env {
 	}
 	srv := lchttp.New(cfg, noProviders{}, all, concurrency.New(4, 4, 2*time.Second), st)
 	if svc != nil {
-		svc.SetOnUsage(srv.RecordRunSideCallUsage) // as main wires it
+		svc.SetOnUsage(srv.SideCallUsage(store.UsagePurposeDecision)) // as main wires it
 	}
 
 	sealer, err := credential.NewSealer(base64.StdEncoding.EncodeToString(make([]byte, 32)), "")

@@ -63,9 +63,10 @@ type Generator struct {
 	contextTokens int
 	maxOutput     int
 
-	// ObserveCall receives each completed call's usage, timing included, for the
-	// throughput estimate. Set once at boot before any pass runs; nil = not
-	// observed. The calls are not billed here: that is unchanged.
+	// ObserveCall receives each completed call's usage, timing included, with
+	// the ctx the generation was asked under, so the server can charge it and
+	// feed the throughput estimate. Set once at boot before any pass runs; nil =
+	// not observed.
 	ObserveCall providers.CallObserver
 }
 
@@ -215,7 +216,7 @@ func (g *Generator) call(ctx context.Context, prompt string, format *providers.O
 			u.Model = g.model
 		}
 		timer.Stamp(&u) // a call that failed or was cut off stays unstamped
-		g.ObserveCall(&u)
+		g.ObserveCall(ctx, &u)
 	}
 	if callErr == nil && !done {
 		// A stream the timeout cut off closes with neither an error nor a done event;

@@ -190,7 +190,7 @@ func newDecisionEnv(t *testing.T, configured bool) *decisionEnv {
 	srv := lchttp.New(cfg, oneProvider{desks}, all, concurrency.New(4, 4, 2*time.Second), st)
 	srv.SetTeamDefTool(team)
 	if svc != nil {
-		svc.SetOnUsage(srv.RecordRunSideCallUsage) // as main wires it
+		svc.SetOnUsage(srv.SideCallUsage(store.UsagePurposeDecision)) // as main wires it
 	}
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)

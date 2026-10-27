@@ -9,6 +9,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -99,11 +100,11 @@ const bytesPerEstimatedToken = 3
 // tokens back. A failed write is logged and the call still counts on this
 // replica: a budgeting fault never fails a call that was already served.
 //
-// wireUser is the request's own user field, used only when there is no
+// req.UserID is the request's own user field, used only when there is no
 // principal. The call belongs to no run, so it is filed under the caller
 // alone, as an off-run decision is.
-func (s *Server) settleGatewayCall(ctx context.Context, wireUser, providerID, modelID string, m *gatewayMeter) {
-	tenant, user := tenantFromCtx(ctx), auth.SubjectForFairness(ctx, wireUser)
+func (s *Server) settleGatewayCall(ctx context.Context, req *llmChatRequest, providerID, modelID string, m *gatewayMeter) {
+	tenant, user := tenantFromCtx(ctx), auth.SubjectForFairness(ctx, req.UserID)
 	// A report of zero tokens for a call that sent a prompt is not a report:
 	// it is a driver or a provider that did not count. Treating it as "this
 	// call was free" would let any provider that omits its usage serve
@@ -114,7 +115,8 @@ func (s *Server) settleGatewayCall(ctx context.Context, wireUser, providerID, mo
 		u.Provider, u.Model = providerID, modelID
 		// On a ctx that outlives the request: the tokens were spent whether
 		// or not the caller is still there to hear the answer.
-		_ = s.recordCallUsage(context.WithoutCancel(ctx), "", tools.RunIdentityValue{TenantID: tenant, UserID: user}, "", 0, &u)
+		rid := tools.RunIdentityValue{TenantID: tenant, UserID: user, UserTier: req.UserTier, ModelTier: gatewayUsageTier(req)}
+		_ = s.recordCallUsage(context.WithoutCancel(ctx), "", rid, "", 0, &u, store.UsagePurposeGateway)
 		return
 	}
 	est, kept := s.chargeEstimate(ctx, tenant, user, m.inputBytes+m.outputBytes)
@@ -143,4 +145,18 @@ func (s *Server) chargeEstimate(ctx context.Context, tenant, user string, bytes 
 		kept = "not kept across a restart: " + err.Error()
 	}
 	return est, kept
+}
+
+// gatewayUsageTier is the tier a gateway call is recorded under: pinned when
+// the request names its model (the resolver at most finds the provider hosting
+// it), else the tier it was resolved through, "default" when it named none —
+// the same defaulting resolveGatewayRequest applies.
+func gatewayUsageTier(req *llmChatRequest) string {
+	if req.Model != "" {
+		return store.UsageTierPinned
+	}
+	if req.Tier == "" {
+		return "default"
+	}
+	return req.Tier
 }

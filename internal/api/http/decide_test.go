@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -53,12 +54,12 @@ func TestDecision_ABareRunlessDispatchIsStillRefused(t *testing.T) {
 	}
 }
 
-// TestRecordRunSideCallUsage_BillsARunlessCallOnlyWhenAdmitted — a model call
+// TestSideCallUsage_BillsARunlessCallOnlyWhenAdmitted — a model call
 // with no run is charged only when the server admitted it as one
 // (tools.WithMeteredOffRunCall). "No run id" alone records nothing: that is
 // also an operator route dispatching a tool directly (a Memory search's
 // rerank), which must not start being billed.
-func TestRecordRunSideCallUsage_BillsARunlessCallOnlyWhenAdmitted(t *testing.T) {
+func TestSideCallUsage_BillsARunlessCallOnlyWhenAdmitted(t *testing.T) {
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "usage.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +70,7 @@ func TestRecordRunSideCallUsage_BillsARunlessCallOnlyWhenAdmitted(t *testing.T) 
 
 	// An identity, as every admin and MCP dispatch stamps, is not an admission.
 	bare := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", UserID: "alice"})
-	srv.RecordRunSideCallUsage(bare, u)
+	srv.SideCallUsage(store.UsagePurposeDecision)(bare, u)
 	if rows, _ := st.TokenUsageForRun(context.Background(), ""); len(rows) != 0 {
 		t.Fatalf("a run-less call nobody admitted was billed: %+v", rows)
 	}
@@ -78,7 +79,7 @@ func TestRecordRunSideCallUsage_BillsARunlessCallOnlyWhenAdmitted(t *testing.T) 
 	}
 
 	admitted := tools.WithMeteredOffRunCall(bare, tools.MeteredOffRunCallValue{TenantID: "acme", UserID: "alice"})
-	srv.RecordRunSideCallUsage(admitted, u)
+	srv.SideCallUsage(store.UsagePurposeDecision)(admitted, u)
 	rows, err := st.TokenUsageForRun(context.Background(), "")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("rows = %+v, %v; want the one admitted call", rows, err)

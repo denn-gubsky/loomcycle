@@ -902,6 +902,8 @@ func (s *Server) resumePausedRun(run store.Run) error {
 		RootRunID:     rootRunID,     // the tree it was spawned into, not a new one
 		SessionID:     run.SessionID, // restored from the run row, like every other durable field here
 		UserTier:      run.UserTier,
+		ModelTier:     usageModelTier(agentDef),
+		InternalAgent: agentDef.Internal,
 		ParentContext: run.ParentContext,
 		// UserBearer / UserCredentials are intentionally absent — secrets are
 		// never snapshotted, so a resumed run cannot restore them.
