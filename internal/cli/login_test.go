@@ -296,7 +296,9 @@ func assertTokenInNoFile(t *testing.T, dirs []string) {
 	t.Helper()
 	for _, dir := range dirs {
 		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			// Regular files only: the system temp dir holds other processes'
+			// FIFOs and sockets, and opening a FIFO to read it blocks forever.
+			if err != nil || !d.Type().IsRegular() {
 				return nil
 			}
 			info, ierr := d.Info()
