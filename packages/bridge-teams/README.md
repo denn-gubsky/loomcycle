@@ -109,7 +109,7 @@ Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it sign
 
 3. Reconfigure the bridge: set `BRIDGE_GATE=teams`, `BRIDGE_GATE_AUDIENCE` (loomcycle's `LOOMCYCLE_PUBLIC_URL`) and `BRIDGE_GATE_KEY`, and remove `LOOMCYCLE_TOKEN` and `BRIDGE_USER_ACCESS_MODE`, which a gate bridge refuses. Then retire the old operator token. The other `BRIDGE_GATE_*` settings are in `@loomcycle/bridge-core`'s README.
 
-   With `BRIDGE_STORE=file:<path>`, start the gate bridge on a new, empty store file: the old one remembers each conversation under its token-mode subject, which a gate cannot speak for. Only the session pointer is lost; the next message starts a fresh session as the same loomcycle user.
+   With `BRIDGE_STORE=file:<path>`, keep the store file: from `@loomcycle/bridge-core` 0.3.1 a conversation stored under its token-mode subject is carried over to the gate's subject the next time it is used, keeping its session and its owner.
 
 As a gate the bridge also tells loomcycle about groups and leavers. Every person, group chat and channel is in the loomcycle group `teams:teams-tenant-<entra tenant id>` of its organisation, which an operator can bind permissions to; it takes `trusted: true` on the gate and an `identity_map.groups` block. (A channel gets no team group: the bridge keeps no team id.) A person who uninstalls the app from their 1:1 chat is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. Until loomcycle has taken the revoke the bridge answers Teams with an error, so the Bot Connector delivers the uninstall again.
 
