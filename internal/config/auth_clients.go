@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,14 +123,29 @@ func (c AppClient) ServesTenant(tenant string) bool {
 // with everything else exact (RFC 8252 §7.3, where a desktop app listens on a
 // port the OS gives it).
 func (c AppClient) MatchRedirectURI(uri string) bool {
+	_, ok := c.RegisteredRedirectURI(uri)
+	return ok
+}
+
+// RegisteredRedirectURI is the redirect target for uri, built from the
+// client's own registration rather than the caller's string: the registered
+// URI itself, or for a loopback URI the registered one with the caller's port
+// re-written from its parsed number. A uri that does not rebuild to exactly
+// itself (an odd port spelling, say) does not match, so the target always
+// equals what the app sent and is never the app's input.
+func (c AppClient) RegisteredRedirectURI(uri string) (string, bool) {
 	for _, r := range c.RedirectURIs {
 		if r == uri {
-			return true
+			return r, true
 		}
 	}
 	u, err := url.Parse(uri)
 	if err != nil || u.Scheme != "http" || !isLoopbackHost(u.Hostname()) {
-		return false
+		return "", false
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return "", false
 	}
 	for _, r := range c.RedirectURIs {
 		ru, err := url.Parse(r)
@@ -138,10 +154,15 @@ func (c AppClient) MatchRedirectURI(uri string) bool {
 		}
 		if ru.Hostname() == u.Hostname() && ru.EscapedPath() == u.EscapedPath() && ru.RawQuery == u.RawQuery &&
 			ru.User == nil && u.User == nil && u.Fragment == "" && !strings.Contains(uri, "#") {
-			return true
+			target := *ru
+			target.Host = net.JoinHostPort(ru.Hostname(), strconv.Itoa(port))
+			if out := target.String(); out == uri {
+				return out, true
+			}
+			return "", false
 		}
 	}
-	return false
+	return "", false
 }
 
 // OriginAllowed reports whether a browser origin may call the token and
