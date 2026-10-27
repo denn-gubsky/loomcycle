@@ -603,6 +603,9 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			"legacy":       p.Legacy,
 			"token_def_id": p.TokenDefID,
 			"token_suffix": p.TokenSuffix,
+			// RFC EY §8: frozen (scopes are the token's own) or inherit
+			// (its user's current access_mode, re-read on every request).
+			"authority": p.AuthorityMode(),
 		}
 		if !p.Restrictions.IsZero() {
 			principal["restrictions"] = p.Restrictions
