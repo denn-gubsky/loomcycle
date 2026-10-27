@@ -281,8 +281,7 @@ func (i *Identity) lookup(ctx context.Context, c identityCaller, op, subject, gr
 	if c.eff != nil {
 		actorTenant, actorSubject = c.eff.Subject.TenantID, c.eff.Subject.ID
 	}
-	slog.InfoContext(ctx, "identity: lookup", "tenant", c.tenant, "actor", actorSubject, "op", op,
-		"target_subject", subject, "target_group", group, "outcome", outcome, "run_id", tools.RunID(ctx))
+	// The audit event is the record of a lookup; no log line repeats it.
 	if i.Audit == nil {
 		return
 	}
