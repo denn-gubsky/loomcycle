@@ -212,8 +212,9 @@ const (
 	albMaxKeyBytes = 8 << 10
 )
 
-// albKeyURL is AWS's regional key endpoint.
-func albKeyURL(region, kid string) string {
+// ALBKeyURL is AWS's regional key endpoint for one key id (loomcycle doctor
+// probes the endpoint with an empty kid).
+func ALBKeyURL(region, kid string) string {
 	return "https://public-keys.auth.elb." + region + ".amazonaws.com/" + kid
 }
 
@@ -316,7 +317,7 @@ func (k *ALBKeys) spend() bool {
 func (k *ALBKeys) fetch(ctx context.Context, kid string) (*ecdsa.PublicKey, error) {
 	build := k.keyURL
 	if build == nil {
-		build = albKeyURL
+		build = ALBKeyURL
 	}
 	client := k.HTTP
 	if client == nil {

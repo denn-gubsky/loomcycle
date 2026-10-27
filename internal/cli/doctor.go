@@ -160,6 +160,7 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 
 	checkAWSProviders(r, cfg)
 	checkEmbedder(r, cfg)
+	checkEdgeGates(r, cfg)
 
 	storageDetail, storageOK := checkStorageBackend(cfg)
 	if storageOK {
@@ -372,6 +373,9 @@ type configForDoctor interface {
 	// Embedder describes the memory embedder the server would build, or nil
 	// when none is configured. An error is what would stop the server at boot.
 	Embedder() (*DoctorEmbedder, error)
+	// EdgeGateProbes lists the endpoints the configured header and awsiam
+	// sign-in gates reach at sign-in time (RFC FA P3).
+	EdgeGateProbes() []DoctorEdgeProbe
 }
 
 // DoctorEmbedder is the configured memory embedder, as doctor reports it.
