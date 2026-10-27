@@ -80,15 +80,56 @@ type Result struct {
 	Reached bool
 }
 
-// STTEngine turns one cut of audio (or a video the engine accepts whole) into
-// timed segments.
+// STTEngine turns one cut of audio (or a recording the engine accepts whole)
+// into timed segments.
 type STTEngine interface {
 	Name() string
+	// Accepts reports whether the engine reads a file of mediaType whole. A
+	// file it does not, or one over the plan's MaxBytes, is converted and cut
+	// by the media helper first, or refused; never truncated.
 	Accepts(mediaType string) bool
-	// MaxBytes is the endpoint's per-request cap; a larger file is cut by the
-	// media helper or refused, never truncated.
-	MaxBytes() int64
-	Transcribe(ctx context.Context, unit Unit, opts STTOptions) (Segments, error)
+	// Plan resolves, without calling it, the provider and model the engine
+	// would use for the run on ctx and what one request may carry. A
+	// misconfigured engine is refused here, before anything is reserved.
+	Plan(ctx context.Context) (STTPlan, error)
+	// Transcribe makes one request for one unit under plan. Its STTResult
+	// carries what the request spent, also beside an error when the request
+	// got that far.
+	Transcribe(ctx context.Context, plan STTPlan, unit Unit, opts STTOptions) (STTResult, error)
+}
+
+// STTPlan is what a speech engine will use.
+type STTPlan struct {
+	Engine   string
+	Provider string
+	Model    string
+	// MaxBytes is the most one request may carry.
+	MaxBytes int64
+	// Diarizes is true when the model labels speakers.
+	Diarizes bool
+}
+
+// STTResult is one speech request: the segments of its unit, timed from the
+// unit's own start, and what the request spent.
+type STTResult struct {
+	Segments Segments
+	Provider string
+	Model    string
+	// Language is the language the engine reported, when it did.
+	Language string
+	// Duration is the audio the engine reported reading; 0 when it did not.
+	Duration time.Duration
+	// InputTokens and OutputTokens are what a token-billed model reported.
+	InputTokens  int
+	OutputTokens int
+	// CredentialSource is whose key paid ("operator" when empty, "tenant",
+	// "user"); CredentialScopeID names the override's owner.
+	CredentialSource  string
+	CredentialScopeID string
+	// Reached is true once the request was sent, also when it then failed:
+	// the audio it carried may have been billed. False only for a refusal
+	// before any request.
+	Reached bool
 }
 
 // Unit is one engine request's worth of input: a bounded window of a file,

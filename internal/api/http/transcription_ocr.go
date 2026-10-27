@@ -72,10 +72,13 @@ func (l transcriptionLedger) price(c transcribe.Charge) transcribe.Price {
 	var cost float64
 	var cur string
 	var ok bool
-	if c.AudioSeconds > 0 {
-		cost, cur, ok = pricing.CostSeconds(c.Provider, c.Model, c.AudioSeconds)
-	} else {
-		cost, cur, ok = pricing.Cost(c.Provider, c.Model, c.InputTokens, c.OutputTokens, 0, 0)
+	cost, cur, ok = pricing.Cost(c.Provider, c.Model, c.InputTokens, c.OutputTokens, 0, 0)
+	if ok && c.AudioSeconds > 0 {
+		// A speech model is priced by the minute, or by its tokens
+		// (gpt-4o-transcribe): a pair lists the one it is billed by, the
+		// other is zero, so the two add.
+		perMinute, _, _ := pricing.CostSeconds(c.Provider, c.Model, c.AudioSeconds)
+		cost += perMinute
 	}
 	return transcribe.Price{Cost: cost, Currency: cur, Priced: ok}
 }
@@ -93,5 +96,10 @@ func (l transcriptionLedger) Charge(ctx context.Context, c transcribe.Charge) (t
 
 func (l transcriptionLedger) Estimate(provider, model string, in, out int) transcribe.Price {
 	cost, cur, ok := l.s.cfg().Pricing.Cost(provider, model, in, out, 0, 0)
+	return transcribe.Price{Cost: cost, Currency: cur, Priced: ok}
+}
+
+func (l transcriptionLedger) EstimateSeconds(provider, model string, seconds float64) transcribe.Price {
+	cost, cur, ok := l.s.cfg().Pricing.CostSeconds(provider, model, seconds)
 	return transcribe.Price{Cost: cost, Currency: cur, Priced: ok}
 }

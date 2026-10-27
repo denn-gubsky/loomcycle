@@ -145,6 +145,16 @@ func (b *boot) buildServer() {
 		b.fileTool.OCR = fileOCR
 		slog.Info("transcription: OCR enabled", "engine", fileOCR.Config.OCR.Engine, "tier", fileOCR.Config.OCR.Tier, "model", fileOCR.Config.OCR.Model)
 	}
+	// RFC FG: the File tool's speech-to-text, on the same ledger.
+	fileSTT, err := srv.FileSTT()
+	if err != nil {
+		fatal("transcription: building the speech-to-text engine failed", "err", err)
+	}
+	if fileSTT != nil {
+		b.fileTool.STT = fileSTT
+		slog.Info("transcription: speech-to-text enabled", "engine", fileSTT.Config.STT.Engine,
+			"provider", fileSTT.Config.STT.Provider, "model", fileSTT.Config.STT.Model, "media_helper", fileSTT.Config.STT.Media != nil)
+	}
 	// RFC AR: stamp the credential resolver onto each run so a tenant/user's own
 	// provider key (ANTHROPIC_API_KEY, BRAVE_API_KEY, …) overrides the host key.
 	srv.SetCredentialResolver(credResolver)

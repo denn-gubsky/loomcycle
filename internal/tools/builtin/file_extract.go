@@ -125,10 +125,19 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	n, _ := fh.ReadAt(head, 0)
 	name := filepath.Base(rel)
 	mt := inbox.Sniff("", head[:n], name)
+	if isRecording(mt) {
+		// A recording's text is its speech: extract hands it to transcribe,
+		// so an agent need not know which op a file needs.
+		call, res, ok := f.sttRequest(ctx, in)
+		if !ok {
+			return res, nil
+		}
+		return f.transcribeFile(ctx, call, r, rel, fh, info.Size(), mt)
+	}
 	ex, ok := extract.Default().For(mt, name)
 	if !ok {
 		return errValidation(fmt.Sprintf("extract: cannot extract text from %s (%s)", r.raw, mt),
-			"Extract reads DOCX, XLSX, PPTX, PDF, HTML, CSV and TSV, text, Markdown and images."), nil
+			"Extract reads DOCX, XLSX, PPTX, PDF, HTML, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
 	}
 	sum := sha256.New()
 	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, info.Size())); err != nil {
