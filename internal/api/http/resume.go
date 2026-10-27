@@ -668,7 +668,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	var coreBlocks []config.CoreBlock
 	agentDef, coreBlocks = s.applyMemoryInjection(ctx, agentDef, memInject{
 		Tenant: run.TenantID, UserID: run.UserID, AgentName: run.Agent,
-		Tools: allowedTools,
+		Tools: allowedTools, ACL: acl, ACLRemovedTools: aclRemovedTools,
 	})
 
 	// Rebuild the conversation from THIS run's transcript events.
