@@ -201,6 +201,37 @@ export class FakeSlack {
   }
 }
 
+/** FakeGate is loomcycle's external-gate surface (/v1/_auth/assert, revoke):
+ *  it reads each posted JWT's payload (the real server verifies the
+ *  signature; these tests are about what the bridge asserts) and issues
+ *  "tok-<gate>:<sub>-<n>" tokens. */
+export class FakeGate {
+  readonly asserts: Array<{ gate: string; payload: Record<string, unknown> }> = [];
+  readonly revokes: Array<{ gate: string; payload: Record<string, unknown> }> = [];
+  /** What the next revokes answer, in order; then 204. "hang" never answers. */
+  readonly revokeReplies: Array<number | "hang"> = [];
+  private seq = 0;
+
+  fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const body = JSON.parse(String(init?.body ?? "{}")) as { gate: string; assertion?: string; request?: string };
+    const jwt = body.assertion ?? body.request ?? "";
+    const payload = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString() || "{}") as Record<string, unknown>;
+    if (url.pathname === "/v1/_auth/revoke") {
+      this.revokes.push({ gate: body.gate, payload });
+      const reply = this.revokeReplies.shift() ?? 204;
+      if (reply === "hang") return new Promise<Response>(() => {});
+      return new Response(reply === 204 ? null : JSON.stringify({ code: "unavailable" }), { status: reply });
+    }
+    this.asserts.push({ gate: body.gate, payload });
+    const subject = `${body.gate}:${String(payload.sub)}`;
+    return new Response(
+      JSON.stringify({ token: `tok-${subject}-${++this.seq}`, expires_at: new Date(Date.now() + 12 * 3600_000).toISOString(), subject, tenant: "acme" }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+}
+
 /** Every form of Slack mention that pings people, as an agent (or a prompt
  *  injection through it) might write them. */
 export const MENTION_FORMS = ["<!channel>", "<!here>", "<!everyone>", "<!subteam^S0123>", "<@U0123ABC>", "@channel", "@here", "@everyone", "@Here"];

@@ -20,7 +20,7 @@ Slack ──HTTPS /slack/events, /slack/actions──▶ bridge-slack ──priv
 - **Only the bridge is public.** loomcycle stays on your private network.
 - **No Slack SDK.** The bridge checks Slack's request signature itself and calls the Web API with `fetch`.
 - **Ack first.** Slack wants an answer within three seconds, so the bridge answers at once and works after. A retried event (`X-Slack-Retry-Num`) is recognised by its `event_id` and taken once.
-- **Per-user tokens.** The bridge holds a tenant-operator token and uses it only to register each Slack user (`slack-<team id>-<user id>`) and mint them a short-lived token that can start only the configured agent.
+- **Per-user tokens.** The bridge holds a tenant-operator token and uses it only to register each Slack user (`slack-<team id>-<user id>`) and mint them a short-lived token that can start only the configured agent. As a loomcycle gate (below) the bridge holds no token at all.
 
 ## Setup
 
@@ -63,7 +63,7 @@ Configuration is by environment. The shared variables (every bridge reads them):
 | Variable | Meaning | Default |
 |---|---|---|
 | `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
-| `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required |
+| `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
 | `BRIDGE_RATE_PER_MINUTE`, `BRIDGE_RATE_BURST` | Runs a user may start per minute, and the burst | `6`, `10` |
@@ -83,6 +83,43 @@ Slack's own:
 | `SLACK_BRIDGE_SHARED_TRUST` | How a channel's or group DM's speakers are marked: `trusted` or `untrusted` | `trusted` |
 | `SLACK_BRIDGE_STREAMING` | `1` streams DM answers; `0` sends one message per turn | `1` |
 | `SLACK_BRIDGE_API_BASE_URL` | Slack's Web API (https; plain http only to localhost, for a local fake) | `https://slack.com/api` |
+
+## As a loomcycle gate
+
+Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it signs who is talking with its own key, and loomcycle provisions the user and issues the token. A stolen bridge can then only speak for Slack users, never act as a tenant operator. Set `BRIDGE_GATE` and the bridge runs this way; without it, it runs with `LOOMCYCLE_TOKEN` as before.
+
+1. Make a key pair. The private half goes to the bridge only:
+
+   ```bash
+   node -e 'const {privateKey,publicKey}=require("node:crypto").generateKeyPairSync("ed25519");
+   console.log("BRIDGE_GATE_KEY=" + JSON.stringify(privateKey.export({format:"jwk"})));
+   console.log("public_key: " + JSON.stringify(publicKey.export({format:"jwk"})))'
+   ```
+
+2. Register the gate in loomcycle, in the tenant the bridge used:
+
+   ```yaml
+   auth:
+     gates:
+       slack:
+         kind: external
+         public_key: { kty: OKP, crv: Ed25519, x: "<the public x>" }
+         issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
+         identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: slack- }
+   ```
+
+   `legacy_subject_prefix: slack-` keeps the people the bridge already served: each person's first message through the gate links the user the bridge made (`slack-t0123abcd-u0456efgh`, a channel's `slack-conv-<hash>`), so their history, memory and documents stay theirs. Without it they would start again as new users `slack:t0123abcd:u0456efgh`. New people are `slack:<team>:<user>` either way, lower-cased.
+
+3. Reconfigure the bridge: set `BRIDGE_GATE=slack`, `BRIDGE_GATE_AUDIENCE` (loomcycle's `LOOMCYCLE_PUBLIC_URL`) and `BRIDGE_GATE_KEY`, and remove `LOOMCYCLE_TOKEN` and `BRIDGE_USER_ACCESS_MODE`, which a gate bridge refuses. Then retire the old operator token. The other `BRIDGE_GATE_*` settings are in `@loomcycle/bridge-core`'s README.
+
+Do it in this order: the gate, with its prefix, must be in loomcycle before the bridge switches, or the first messages would make new, empty users.
+
+As a gate the bridge also tells loomcycle about groups and leavers, which it takes `trusted: true` on the gate and an `identity_map.groups` block to use. The groups, which an operator maps (`group_map`) and binds permissions to, are:
+
+- a channel's or group DM's own user: `slack-team-<team>` and `slack-channel-<team>-<channel>`;
+- a person: `slack-team-<team>`, plus `slack-team-<team>-admins` when Slack says they are an admin or owner of that workspace. A guest account (single- or multi-channel, or from another organisation) is in `slack-team-<team>-guests` only. Reading this takes the `users:read` scope; without it, or for a deleted account or a bot, the bridge asserts no groups, and loomcycle changes none.
+
+A person deactivated in an allowed workspace is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. For that, subscribe to the `user_change` event and grant `users:read`. The bridge revokes before it answers Slack; if loomcycle does not take it, Slack is answered with an error and delivers the event again.
 
 ## Conversations
 

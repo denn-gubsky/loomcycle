@@ -25,6 +25,11 @@ export class SeenSet {
     return true;
   }
 
+  /** forget drops id, so a redelivery of it is taken again. */
+  forget(id: string): void {
+    this.seen.delete(id);
+  }
+
   get size(): number {
     return this.seen.size;
   }

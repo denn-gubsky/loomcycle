@@ -5,7 +5,7 @@
 // the thread: a channel's memory spans its threads while each thread is its
 // own run. A DM is one conversation, thread or not.
 
-import { sharedSubject, type Identified, type Scope, type Trust } from "@loomcycle/bridge-core";
+import { gateSharedSubject, sharedSubject, type Identified, type Scope, type Trust } from "@loomcycle/bridge-core";
 
 /** A DM, a group DM, or a channel (public or private). */
 export type ChannelType = "im" | "mpim" | "channel";
@@ -45,6 +45,12 @@ export interface InboundFields {
 export interface TrustPolicy {
   allowedTeams: ReadonlySet<string>;
   sharedTrust: Trust;
+  /** The bridge's gate name in loomcycle (RFC FA §3.7d): a person is
+   *  "<gate>:<team>:<user>", a shared conversation "<gate>:conv:<hash>".
+   *  Unset for a bridge with a loomcycle token: "slack-<team>-<user>" and
+   *  "slack-conv-<hash>", the subjects a gate's legacy_subject_prefix
+   *  ("slack-", ':' read as '-') links to on a first login. */
+  gate?: string;
 }
 
 export const NOT_ALLOWED_NOTICE = "This bot isn't enabled for this Slack workspace. Ask your administrator to allow it.";
@@ -71,6 +77,13 @@ export function refOf(f: InboundFields): SlackRef {
  *  lower-cased, so one person always maps to one user. */
 export function subjectFor(team: string, user: string): string {
   return `slack-${team}-${user}`.toLowerCase();
+}
+
+/** personSub is the platform id a person is asserted under: their own team
+ *  and user id, lower-cased like subjectFor. loomcycle makes it the subject
+ *  "<gate>:<team>:<user>". */
+export function personSub(team: string, user: string): string {
+  return `${team}:${user}`.toLowerCase();
 }
 
 /** teamsAllowed says whether every team id the request carries is allowed.
@@ -110,7 +123,7 @@ export function identify(f: InboundFields, policy: TrustPolicy, displayName: str
   if (f.speakerTeam === undefined) return { ok: false, reason: "no_user" };
   // The speaker's own team names them, so a Slack Connect guest keeps one
   // identity whichever workspace they write in.
-  const subject = subjectFor(f.speakerTeam, f.user);
+  const subject = policy.gate ? `${policy.gate}:${personSub(f.speakerTeam, f.user)}` : subjectFor(f.speakerTeam, f.user);
   const trust: Trust = guest ? "untrusted" : scope === "personal" ? "trusted" : policy.sharedTrust;
   const speaker = { subject, name: displayName, trust, ...(guest ? { guest: true } : {}) };
   if (scope === "personal") return { ok: true, speaker, scope, conversationId, runAs: { subject, name: displayName } };
@@ -120,7 +133,9 @@ export function identify(f: InboundFields, policy: TrustPolicy, displayName: str
     scope,
     conversationId,
     runAs: {
-      subject: sharedSubject("slack", f.team.toLowerCase(), f.channel.toLowerCase()),
+      subject: policy.gate
+        ? gateSharedSubject(policy.gate, f.team.toLowerCase(), f.channel.toLowerCase())
+        : sharedSubject("slack", f.team.toLowerCase(), f.channel.toLowerCase()),
       name: scope === "group" ? `Slack group DM ${f.channel}` : `Slack channel ${f.channel}`,
     },
   };

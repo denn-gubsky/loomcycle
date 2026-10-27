@@ -82,6 +82,31 @@ export function readEvent(env: EventEnvelope, self: SelfIds): ReadEvent {
   };
 }
 
+/** A person deactivated in their workspace: their team and user id. */
+export interface DeletedUser {
+  team: string;
+  user: string;
+}
+
+/** readDeletedUser reads a `user_change` event whose user is deleted
+ *  (deactivated), the only one the bridge acts on: as a gate it tells
+ *  loomcycle the person is gone. Every team id it carries must be allowed:
+ *  the envelope's and the user's own. Anything else is undefined. */
+export function readDeletedUser(env: EventEnvelope, allowedTeams: ReadonlySet<string>): DeletedUser | undefined {
+  if (env.type !== "event_callback") return undefined;
+  // user_change carries a user object where a message carries an id.
+  const ev = env.event as { type?: unknown; user?: unknown } | undefined;
+  if (ev?.type !== "user_change" || typeof ev.user !== "object" || ev.user === null) return undefined;
+  const u = ev.user as { id?: unknown; team_id?: unknown; deleted?: unknown };
+  if (u.deleted !== true) return undefined;
+  const user = str(u.id);
+  const team = str(u.team_id);
+  const envTeam = str(env.team_id);
+  if (!user || !team || !envTeam) return undefined;
+  if (!allowedTeams.has(team.toUpperCase()) || !allowedTeams.has(envTeam.toUpperCase())) return undefined;
+  return { team, user };
+}
+
 /** speakerTeamOf is the speaker's own team. Slack's reference examples show
  *  neither `user_team` nor `team` on these events, so one that names none is
  *  taken for the delivered-for workspace's, except in a channel shared with

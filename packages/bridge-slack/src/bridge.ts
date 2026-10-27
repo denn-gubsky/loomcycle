@@ -23,8 +23,8 @@ import {
 import { SlackApi, slackErrorCode } from "./api.js";
 import { renderCard } from "./cards.js";
 import type { SlackConfig } from "./config.js";
-import { cleanName, identify, refOf, teamsAllowed, type InboundFields, type SlackRef, type TrustPolicy } from "./identity.js";
-import { readAction, readEvent, type BlockActionsPayload, type EventEnvelope, type SelfIds } from "./inbound.js";
+import { cleanName, identify, personSub, refOf, teamsAllowed, type InboundFields, type SlackRef, type TrustPolicy } from "./identity.js";
+import { readAction, readDeletedUser, readEvent, type BlockActionsPayload, type DeletedUser, type EventEnvelope, type SelfIds } from "./inbound.js";
 import { SeenSet } from "./seen.js";
 import { SlackStream } from "./stream.js";
 import { escapeMrkdwn, MAX_MESSAGE_CHARS, neutralise } from "./text.js";
@@ -36,13 +36,17 @@ export interface SlackBridgeOptions extends BridgeOptions<SlackRef> {
   sleep?: (ms: number) => Promise<void>;
   /** How often a streamed reply is appended to. */
   streamIntervalMs?: number;
+  /** How long a gate waits for loomcycle to take a deactivation before it
+   *  answers Slack with a failure (Slack wants an answer within 3 s). */
+  revokeTimeoutMs?: number;
 }
 
 export interface SlackAdapter extends BridgeAdapter<SlackRef> {
   /** Learns the bot's own user id with auth.test; start() calls it. */
   learnSelf(): Promise<SelfIds>;
   /** The two routes, served by start(); exposed for a server of your own and for tests. */
-  routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log">): Record<string, Route>;
+  routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log" | "gate">): Record<string, Route>;
+  groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined>;
 }
 
 const SLACK_HOOKS_ORIGIN = "https://hooks.slack.com";
@@ -50,6 +54,10 @@ const SLACK_HOOKS_ORIGIN = "https://hooks.slack.com";
 const SEEN_TTL_MS = 60 * 60_000;
 const NAME_TTL_MS = 60 * 60_000;
 const MAX_NAMES = 5000;
+/** How long a person's looked-up groups are reused, and how many are kept. */
+const GROUP_CACHE_MS = 10 * 60 * 1000;
+const MAX_GROUP_CACHE = 5000;
+const DEFAULT_REVOKE_TIMEOUT_MS = 2000;
 
 /** A link the agent writes is never unfurled: an unfurl fetches the URL from
  *  Slack's side, which a prompt-injected agent could use to send data out
@@ -60,15 +68,21 @@ const NO_UNFURL = { unfurl_links: false, unfurl_media: false } as const;
 const ok: RawResponse = { status: 200 };
 const unauthorized: RawResponse = { status: 401 };
 const badRequest: RawResponse = { status: 400 };
+const unavailable: RawResponse = { status: 503 };
 
 export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = {}): SlackAdapter {
   const now = opts.now ?? Date.now;
   const log: Logger = opts.logger ?? consoleLogger;
   const api = new SlackApi({ baseUrl: cfg.apiBaseUrl, token: cfg.botToken, fetch: opts.fetch, sleep: opts.sleep });
-  const policy: TrustPolicy = { allowedTeams: cfg.allowedTeams, sharedTrust: cfg.sharedTrust };
+  const policy: TrustPolicy = {
+    allowedTeams: cfg.allowedTeams,
+    sharedTrust: cfg.sharedTrust,
+    ...(cfg.shared.gate ? { gate: cfg.shared.gate.name } : {}),
+  };
   const seen = new SeenSet(SEEN_TTL_MS, 10_000, now);
   const names = new Map<string, { name: string; at: number }>();
   const apiOrigin = new URL(cfg.apiBaseUrl).origin;
+  const groupCache = new Map<string, { groups: string[]; until: number }>();
   let self: SelfIds | undefined;
   let namesRefused = false;
 
@@ -124,6 +138,89 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     }
   }
 
+  /** groupsFor is what loomcycle is told about a run identity's groups
+   *  (RFC FA §3.7d), named from what Slack knows; an operator maps them
+   *  (group_map). A shared conversation's own user is in its workspace's
+   *  group and its channel's. A person (a DM) is in their own workspace's
+   *  group, and its admins group when users.info says they administer or own
+   *  it — believed only when the account is that workspace's own: under
+   *  Enterprise Grid or Slack Connect the flags may be another team's. A
+   *  guest (restricted, ultra-restricted, or a stranger) is in the guests
+   *  group only. A deleted account or a bot, and a lookup that fails (no
+   *  users:read scope, say), assert nothing, so loomcycle never removes a
+   *  group on a guess. Cached per person for a while: a token is asked for
+   *  rarely, but a restart asks for all of them at once. */
+  async function groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined> {
+    if (ref.channelType !== "im") {
+      const team = ref.team.toLowerCase();
+      return [`slack-team-${team}`, `slack-channel-${team}-${ref.channel.toLowerCase()}`];
+    }
+    const gate = cfg.shared.gate?.name;
+    if (!gate || !subject.startsWith(`${gate}:`)) return undefined;
+    const [team, user, ...rest] = subject.slice(gate.length + 1).split(":");
+    if (!team || !user || rest.length > 0) return undefined;
+    const at = now();
+    const hit = groupCache.get(subject);
+    if (hit && hit.until > at) return hit.groups;
+    let info: {
+      team_id?: unknown;
+      deleted?: unknown;
+      is_bot?: unknown;
+      is_restricted?: unknown;
+      is_ultra_restricted?: unknown;
+      is_stranger?: unknown;
+      is_admin?: unknown;
+      is_owner?: unknown;
+    };
+    try {
+      // The subject is lower-cased; Slack's ids are upper case.
+      const r = await api.call("users.info", { user: user.toUpperCase() });
+      info = (r.user ?? {}) as typeof info;
+    } catch (err) {
+      log.warn("could not read a Slack user's groups", { error: slackErrorCode(err) ?? (err as Error)?.name });
+      return undefined;
+    }
+    if (info.deleted === true || info.is_bot === true) return undefined;
+    let groups: string[];
+    if (info.is_restricted === true || info.is_ultra_restricted === true || info.is_stranger === true) {
+      groups = [`slack-team-${team}-guests`];
+    } else {
+      groups = [`slack-team-${team}`];
+      const own = typeof info.team_id === "string" && info.team_id.toLowerCase() === team;
+      if (own && (info.is_admin === true || info.is_owner === true)) groups.push(`slack-team-${team}-admins`);
+    }
+    groupCache.delete(subject);
+    groupCache.set(subject, { groups, until: at + GROUP_CACHE_MS });
+    if (groupCache.size > MAX_GROUP_CACHE) groupCache.delete(groupCache.keys().next().value!);
+    return groups;
+  }
+
+  /** onUserDeleted: a person deactivated in their workspace has left it, and
+   *  the bridge, as the gate for Slack, tells loomcycle so (RFC FA §3.7c):
+   *  the user is disabled at once and removed per the gate's policy. Coming
+   *  back takes an operator (reactivate: operator). It reports whether
+   *  loomcycle took the revoke within the timeout. No local deny-list is
+   *  kept: loomcycle disables the revoked user, so a later assert for them
+   *  is refused there. */
+  async function onUserDeleted(gate: NonNullable<BridgeContext<SlackRef>["gate"]>, u: DeletedUser): Promise<boolean> {
+    const subject = gate.subjectOf(personSub(u.team, u.user));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error("revoke timed out"), { status: 504 })), opts.revokeTimeoutMs ?? DEFAULT_REVOKE_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([gate.revoke(subject), timeout]);
+      groupCache.delete(subject);
+      log.info("slack user deactivated; revoked in loomcycle", { user: u.user });
+      return true;
+    } catch (err) {
+      log.warn("slack revoke failed", { status: (err as { status?: number })?.status });
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function authentic(req: RawRequest): boolean {
     return cfg.shared.dev || verifySlackRequest(req, cfg.signingSecret, now());
   }
@@ -140,7 +237,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     }
   }
 
-  function routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log">): Record<string, Route> {
+  function routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log" | "gate">): Record<string, Route> {
     const { router } = ctx;
     const me = () => {
       if (!self) throw new Error("learnSelf has not run");
@@ -197,6 +294,15 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
         }
         // A retry (X-Slack-Retry-Num) carries the same event_id.
         if (typeof env?.event_id === "string" && !seen.add(env.event_id)) return ok;
+        // A deactivation must not be lost: a gate revokes before it answers,
+        // and on a failure answers so Slack retries, with the event id
+        // forgotten so the retry is taken. A token-mode bridge ignores it.
+        const deleted = ctx.gate ? readDeletedUser(env, cfg.allowedTeams) : undefined;
+        if (ctx.gate && deleted) {
+          if (await onUserDeleted(ctx.gate, deleted)) return ok;
+          if (typeof env.event_id === "string") seen.forget(env.event_id);
+          return unavailable;
+        }
         void handleEvent(env).catch(fail("event"));
         return ok;
       },
@@ -233,6 +339,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     port,
     learnSelf,
     routes,
+    groupsFor,
     async start(ctx) {
       await learnSelf();
       await ctx.serve(routes(ctx));

@@ -1,10 +1,10 @@
-import { ConfigError, sharedSubject, VERB, type CanonicalCard, type RawRequest } from "@loomcycle/bridge-core";
+import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard, type RawRequest } from "@loomcycle/bridge-core";
 import { describe, expect, it } from "vitest";
 
 import { retryAfterMs, SlackApi, SlackApiError } from "../src/api.js";
 import { renderCard, MAX_BUTTON_LABEL } from "../src/cards.js";
 import { loadConfig } from "../src/config.js";
-import { conversationIdOf, identify, NOT_ALLOWED_NOTICE, refOf, teamsAllowed, type InboundFields, type TrustPolicy } from "../src/identity.js";
+import { conversationIdOf, identify, NOT_ALLOWED_NOTICE, personSub, refOf, subjectFor, teamsAllowed, type InboundFields, type TrustPolicy } from "../src/identity.js";
 import { CARD_BLOCK_ID, cleanInbound, readAction, readEvent, type EventEnvelope } from "../src/inbound.js";
 import { SeenSet } from "../src/seen.js";
 import { SlackStream } from "../src/stream.js";
@@ -86,6 +86,21 @@ describe("config", () => {
     expect(cfg).toMatchObject({ sharedTrust: "untrusted", streaming: false, apiBaseUrl: "http://127.0.0.1:9999/api" });
   });
 
+  it("is a gate only when BRIDGE_GATE is set; otherwise it keeps its loomcycle token", () => {
+    const { LOOMCYCLE_TOKEN: _token, ...noToken } = base;
+    const gateEnv = { ...noToken, BRIDGE_GATE: "slack", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_KEY: "{}" };
+    const gate = loadConfig(gateEnv);
+    expect(gate.shared.gate?.name).toBe("slack");
+    expect(gate.shared.loomcycleToken).toBe("");
+    // A gate holds no loomcycle token: a leftover one is refused.
+    expect(() => loadConfig({ ...gateEnv, LOOMCYCLE_TOKEN: "t" })).toThrow(/LOOMCYCLE_TOKEN must not be set/);
+    // Without BRIDGE_GATE the token is still required, and used.
+    expect(() => loadConfig(noToken)).toThrow(/LOOMCYCLE_TOKEN/);
+    const cfg = loadConfig(base);
+    expect(cfg.shared.gate).toBeUndefined();
+    expect(cfg.shared.loomcycleToken).toBe("t");
+  });
+
   it("is closed by default: no allow-list, no start", () => {
     const { SLACK_BRIDGE_ALLOWED_TEAMS: _, ...rest } = base;
     expect(() => loadConfig(rest)).toThrow(/SLACK_BRIDGE_ALLOWED_TEAMS is required/);
@@ -138,6 +153,44 @@ describe("identity", () => {
       speaker: { subject: "slack-t1-ualice", name: "Alice", trust: "trusted" },
       runAs: { subject: "slack-t1-ualice" },
     });
+  });
+
+  it("as a gate, names a person <gate>:<team>:<user> and a channel <gate>:conv:<hash>", () => {
+    const gate: TrustPolicy = { ...policy, gate: "slack" };
+    expect(personSub("T1", "UALICE")).toBe("t1:ualice");
+    expect(identify(fields(), gate, "Alice")).toMatchObject({
+      ok: true,
+      speaker: { subject: "slack:t1:ualice" },
+      runAs: { subject: "slack:t1:ualice" },
+    });
+    const ch = identify(fields({ channel: "C1", channelType: "channel" }), gate, "Alice");
+    expect(ch).toMatchObject({ ok: true, speaker: { subject: "slack:t1:ualice" }, runAs: { subject: gateSharedSubject("slack", "t1", "c1") } });
+    // The gate name is the operator's, not always "slack".
+    expect(identify(fields(), { ...policy, gate: "acme-slack" }, "Alice")).toMatchObject({ runAs: { subject: "acme-slack:t1:ualice" } });
+  });
+
+  // loomcycle's legacy_subject_prefix "slack-" links a first gate login to
+  // prefix + the platform id with every ':' read as '-'. That must be exactly
+  // the subject the token-mode bridge gave the same person or channel, or the
+  // switch to gate mode would hand everyone a new, empty account.
+  it("as a gate, maps through legacy_subject_prefix slack- onto the token-mode subjects", () => {
+    const legacy = (subject: string, gate: string) => `slack-${subject.slice(`${gate}:`.length).replaceAll(":", "-")}`;
+    for (const gateName of ["slack", "acme-slack"]) {
+      const gate: TrustPolicy = { ...policy, gate: gateName };
+      for (const f of [fields(), fields({ user: "U0AB12CD" })]) {
+        const asGate = identify(f, gate, "A");
+        const asToken = identify(f, policy, "A");
+        expect(asToken.ok && asToken.runAs.subject).toBe(subjectFor("T1", f.user));
+        expect(asGate.ok && legacy(asGate.runAs.subject, gateName)).toBe(asToken.ok && asToken.runAs.subject);
+      }
+      for (const channelType of ["channel", "mpim"] as const) {
+        const f = fields({ channel: "C0XYZ", channelType });
+        const asGate = identify(f, gate, "A");
+        const asToken = identify(f, policy, "A");
+        expect(asToken.ok && asToken.runAs.subject).toBe(sharedSubject("slack", "t1", "c0xyz"));
+        expect(asGate.ok && legacy(asGate.runAs.subject, gateName)).toBe(asToken.ok && asToken.runAs.subject);
+      }
+    }
   });
 
   it("makes a DM one conversation, threads or not", () => {
