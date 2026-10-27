@@ -629,6 +629,19 @@ func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, ro
 		return auth.Principal{}, false, false
 	}
 	bound := func(credHash string) bool { return macEqual(credentialMAC(id, h, credHash), row.CredMAC) }
+	return s.boundCredentialPrincipal(ctx, row, bound, pending)
+}
+
+// boundCredentialPrincipal re-resolves the credential row names, accepting it
+// only when bound says its current hash is the one the caller bound to. The
+// session binds with a MAC keyed by its id; a device approval binds with one
+// keyed by the device code, so its redemption can re-check the credential
+// without ever holding the session id.
+func (s *Server) boundCredentialPrincipal(ctx context.Context, row store.UISessionRow, bound func(credHash string) bool, pending *bool) (p auth.Principal, ok, definitive bool) {
+	h, err := s.hasher()
+	if err != nil {
+		return auth.Principal{}, false, false
+	}
 	switch row.CredKind {
 	case credKindToken:
 		tr, err := s.store.OperatorTokenDefGet(ctx, row.CredRef)
