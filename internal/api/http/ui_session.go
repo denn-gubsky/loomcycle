@@ -620,6 +620,11 @@ func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, ro
 		if !ok {
 			return auth.Principal{}, false, true
 		}
+		// A gate-issued token pasted into the UI holds only while its user
+		// is active, as on the API (gateTokenUserActive).
+		if !s.gateTokenUserActive(ctx, p) {
+			return auth.Principal{}, false, false
+		}
 		return s.enrichPrincipal(ctx, p), true, true
 	case credKindPrincipal:
 		for _, d := range s.cfg().ResolvedPrincipals {

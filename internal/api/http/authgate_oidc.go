@@ -90,12 +90,16 @@ func (s *Server) oidcGateNamed(name string) (*oidc.Gate, config.AuthGate, bool) 
 	return gate, g, true
 }
 
-// redirectGateNamed is the redirect gate of that name (OIDC; OAuth next).
+// redirectGateNamed is the redirect gate of that name: OIDC, OAuth, or an
+// external gate that takes a browser (one with a callback_url).
 func (s *Server) redirectGateNamed(name string) (redirectGate, config.AuthGate, bool) {
 	if g, cfg, ok := s.oidcGateNamed(name); ok {
 		return g, cfg, true
 	}
 	if g, cfg, ok := s.oauthGateNamed(name); ok {
+		return g, cfg, true
+	}
+	if g, cfg, ok := s.externalRedirectGate(name); ok {
 		return g, cfg, true
 	}
 	return nil, config.AuthGate{}, false
@@ -118,6 +122,9 @@ func gateAllowedReturnTo(g config.AuthGate) []string {
 	}
 	if g.OAuth != nil {
 		return g.OAuth.AllowedReturnTo
+	}
+	if g.External != nil {
+		return g.External.AllowedReturnTo
 	}
 	return nil
 }
@@ -273,6 +280,12 @@ func (s *Server) handleRedirectComplete(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	if !s.authConfigured(ctx) {
 		writeJSONError(w, http.StatusConflict, "open_mode", "authentication is off on this server; no session is needed")
+		return
+	}
+	// An external gate returns the browser with a signed assertion, not a
+	// provider code (authgate_external.go).
+	if g, ok := s.externalGate(name); ok {
+		s.completeExternalLogin(w, r, g)
 		return
 	}
 	gate, cfg, ok := s.redirectGateNamed(name)

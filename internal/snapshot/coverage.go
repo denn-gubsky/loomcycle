@@ -217,6 +217,15 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "not carried: hashes of single-use sign-up codes; a restored live invite would admit a sign-up (or attach a password to a user) on the target"},
 	"auth_resets": {Kind: coverNever, Backends: onBoth,
 		Reason: "not carried: hashes of single-use password-reset codes; a restored live reset would set a user's password on the target"},
+	// RFC FA P4: the replay cache holds only labels of assertions already
+	// used here, and a removal is a schedule (unbind, erase) for THIS
+	// deployment's lifecycle policy. The users section carries the disabled
+	// status, so a restored removed user stays disabled; the target's
+	// operator re-starts the removal if its later stages are wanted there.
+	"auth_assertion_jtis": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "minutes-long replay cache of external-gate assertions used on THIS deployment"},
+	"auth_removals": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "the source's removal schedule (unbind/erase due times); the carried users keep their disabled status"},
 	"retention_overrides": {Kind: coverNever, Backends: onBoth,
 		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 

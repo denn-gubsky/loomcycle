@@ -1666,7 +1666,7 @@ auth:
 
 - **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `LOOMCYCLE_UI_LOGIN_ORIGINS` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
 - **`auth.mode: strict`** offers only the listed gates. The paste box exists only if a `kind: token` gate is listed, the handoff is off, the old bearer cookie and the WebSocket subprotocol bearer are not read, and Web UI sessions need HTTPS (see below). Strict mode with no interactive gate fails the load (nobody could sign in); strict mode with no credential at all refuses to boot. A config reload cannot lower the mode (audited `auth_downgrade_refused`); that takes a restart. API bearers are unaffected.
-- **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)) and `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)); the other kinds the RFC names are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
+- **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)) `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)), `kind: oauth` (GitHub, GitLab, Gitea or a generic OAuth provider — see [OAuth gate](#oauth-gate--kind-oauth-rfc-fa-p5)) and `kind: external` (a separate process, such as a chat bridge, that signs who it is talking to — see [External gate](#external-gate--kind-external-rfc-fa-p4)); the other kinds the RFC names (`header`, `awsiam`, `device`) are refused as not yet supported. A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
 - **`auth.session`.** `idle` (default 8h) ends a session after that long without a request; `absolute` (default 7 days) caps it whatever the activity. Shortening either applies to sessions already issued. `reauth_window` (default 15m) is validated now and used once sensitive actions ask for a recent sign-in.
 - **A session never outlives or out-reaches its token.** A session made from a pasted token re-checks that token on every request: retiring or expiring a minted token, changing a principal's secret, removing it, or changing `LOOMCYCLE_AUTH_TOKEN` ends the session on its next request, and the session always carries the token's **current** scopes. A changed token pepper (`LOOMCYCLE_OPERATOR_TOKEN_PEPPER` / `LOOMCYCLE_SECRET_KEY`) ends every session. A browser that presents the cookie with a different User-Agent ends it too.
 
@@ -1822,6 +1822,49 @@ auth:
 - **Groups.** An organisation, team or group becomes a loomcycle group only when `allowed_orgs` lists it (GitHub/Gitea: the org and `org/team`; GitLab: a group path under a listed top-level group; generic: the listed values of `claims.groups`). With no `allowed_orgs` the gate asserts no groups and does not even read memberships. Syncing them into loomcycle groups needs `trusted: true` and `identity_map.groups`, as on the OIDC gate. GitLab asks for `read_api` only when `allowed_orgs` is set.
 - **Needs** `LOOMCYCLE_PUBLIC_URL` (the redirect URI is `<public URL>/v1/_auth/complete/<gate>` — register exactly that with the provider) and an `identity_map`. `base_url`, `auth_url`, `token_url` and `userinfo_url` must be `https` (http only on loopback). `scopes` replaces the preset's; `token_auth: basic | post` picks how the client authenticates at the token endpoint.
 - **Account linking** through an OAuth gate is refused: an OAuth provider cannot prove that the person signed in afresh, which linking requires. Link through an OIDC or password gate.
+
+### External gate — `kind: external` (RFC FA P4)
+
+**Why.** A chat bridge, a website or a broker in front of an identity provider loomcycle has never heard of already knows who it is talking to. As an external gate it says so in a JWT signed with its own key, and loomcycle does the rest: it checks the signature, provisions the user by the gate's `identity_map`, and issues the token. The gate holds no loomcycle token, so a stolen bridge cannot act as an operator. It can only assert people inside its own `identity_map`.
+
+```yaml
+auth:
+  gates:
+    telegram:
+      kind: external
+      public_key: { kty: OKP, crv: Ed25519, x: "<the gate key's public x>" }   # or P-256 (ES256)
+      # hmac_secret_env: LOOMCYCLE_GATE_TG_SECRET   # instead of public_key, for a co-located gate
+      issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
+      identity_map: { tenant: acme, provision: auto }
+      # on_removed: { unbind_after: 72h }           # this gate's removal policy, over auth.lifecycle.on_removed
+    hr:
+      kind: external
+      public_key: { kty: EC, crv: P-256, x: "…", y: "…" }
+      callback_url: https://hr-sso.example/loomcycle/login   # a browser login starts here
+      allowed_return_to: [https://app.example/welcome]
+      identity_map: { tenant: acme, provision: known }
+```
+
+- **Routes.** None takes a bearer: the gate's signature is the authentication. Each verifies under that gate's key only, checks `aud` (`LOOMCYCLE_PUBLIC_URL`, required), a lifetime of at most five minutes, the route's purpose (`lc_use`) and a single-use `jti` shared by every replica. Failures are throttled per client source and refused with one opaque error, and audited; a request the gate's key signed still goes through from a throttled source.
+  - `POST /v1/_auth/assert {gate, assertion}` — the person's issued token, held to `issued_token` (an assertion can only narrow it). This is what a bridge does per person.
+  - `POST /v1/_auth/revoke {gate, request}` — the person is gone; they are removed by the removal policy below. A gate can revoke only users linked to it.
+  - `POST /v1/_auth/sync {gate, request}` — bulk provisioning and group sync. With `complete: true`, from a gate whose `identity_map` says `authoritative_for_users`, the users it omits are removed. A complete sync of nobody is refused, and so is one that would remove more than `max_sync_removals` (a count, `25`, or a share of the gate's linked users, `20%`; default 10%, never fewer than 5): `409 sync_removal_limit`, and nothing changes. One sync lists at most 10,000 users, so a gate with more cannot send a complete sync yet.
+  - With `callback_url`: `GET /v1/_auth/login/{gate}` sends the browser to the gate with a one-time `login_state`, and the gate sends it back to `/v1/_auth/complete/{gate}` with the assertion. The state is bound to the browser that began the login.
+  - `GET /v1/_authgate` (admin) lists the gates with each key's fingerprint, never the key; `?probe=1` also reads each gate's `/.well-known/loomcycle-authgate`.
+- **What a gate may not say.** The tenant and the reach come from the `identity_map`, not the assertion. Only a gate marked `trusted: true` may assert an `access_mode` or groups, and only its own `<gate>:` groups. The sign-in method it reports is not taken: its sessions and tokens show `amr: [ext]`, so a gate can never stand in for a second factor. Its `auth_time` is never later than when it signed.
+- **Keys.** `public_key` is an Ed25519 or P-256 public JWK. `hmac_secret_env` names a `LOOMCYCLE_*` env var holding an HS256 secret (at least 32 bytes); a literal or a `$cred:` reference is refused. A key is its gate's alone: two gates with the same key (one public key, or one secret under one env var or two) fail the load, since the gate's name is only a claim the key holder writes, and so does an `hmac_secret_env` that also holds a principal's `token_env` or a gate's `client_secret_env`. A gate is registered in config only: its key is a trust anchor, and one an API call could add is one a stolen admin token could add too.
+- **Issued tokens** stop the moment their user is not `active` (disabled, revoked, pending), or their gate is taken out of the config, checked on every request on every replica. `issued_token.ttl` is at most 30 days; `max_active` (0–100) caps a user's live tokens, retiring the oldest.
+- **Removal.** A revoke, an authoritative sync, or (with `auth.lifecycle.dormant_after`) no sign-in through any gate for that long starts a removal in three stages that never skip:
+
+  ```yaml
+  auth:
+    lifecycle:
+      on_removed: { disable: at_once, unbind_after: 7d, erase_after: never, reactivate: operator }
+      dormant_after: never     # or e.g. 90d; at least 24h
+  ```
+
+  **Disable** at once: sessions end, issued tokens retire, nothing is deleted. **Unbind** after `unbind_after`: gate-managed group memberships and the user's own ACL bindings go, and the login identities stay, so a returning person is recognised. **Erase** after `erase_after` (at least 24h): the subject erasure, by default never (an operator runs it), and only with `LOOMCYCLE_AUDIT_LOG_PATH` set. The due times are fixed when the removal starts. An operator who sets the user `active` again re-enables them at the new-user defaults, not their old groups.
+- **A bridge as a gate.** `@loomcycle/bridge-core` 0.3 and later can run a bridge this way: its README lists the `BRIDGE_GATE*` settings. A person is the loomcycle user `<gate>:<platform id>`.
 
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 

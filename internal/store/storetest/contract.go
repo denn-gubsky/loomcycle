@@ -557,6 +557,11 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthorityRaisingWritesRevokeManagerIssuedLinks", testAuthorityRaisingWritesRevokeManagerIssuedLinks},
 		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},
 		{"TenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant", testTenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant},
+		// RFC FA P4 external gates and the removal policy.
+		{"AuthAssertionUseOnceIsOncePerGateAndAtomic", testAuthAssertionUseOnceIsOncePerGateAndAtomic},
+		{"AuthRemovalStagesNeverSkip", testAuthRemovalStagesNeverSkip},
+		{"AuthDormantCandidatesUseTheNewestLoginOfAnyGate", testAuthDormantCandidatesUseTheNewestLoginOfAnyGate},
+		{"UISessionRevokeSubjectEndsOnlyThatSubjectsSessions", testUISessionRevokeSubjectEndsOnlyThatSubjectsSessions},
 		// RFC AL Path primitive — the dirent (path tree) substrate.
 		{"DirentCreateAndGet", testDirentCreateAndGet},
 		{"DirentListOneLevel", testDirentListOneLevel},

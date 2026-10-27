@@ -198,6 +198,10 @@ type AuthIdentityStore interface {
 	// UserIdentityDelete removes the subject's identity at gate (an account
 	// unlink) and reports whether one went.
 	UserIdentityDelete(ctx context.Context, tenantID, subject, gate string) (bool, error)
+	// UserIdentityListGate returns every identity at gate, in every tenant,
+	// ordered by (tenant_id, subject). An authoritative gate's sync diffs
+	// what it asserts against it. Empty slice when there are none.
+	UserIdentityListGate(ctx context.Context, gate string) ([]UserIdentityRow, error)
 }
 
 // Login-state purposes.
@@ -393,7 +397,8 @@ type PasswordGateStore interface {
 	TenantBootstrapMark(ctx context.Context, row TenantBootstrapRow) error
 
 	// AuthSubjectDelete removes every gate row of a subject: identities,
-	// credentials, TOTP, recovery codes, and its invites and resets. Called
+	// credentials, TOTP, recovery codes, its invites and resets, and its
+	// removal (auth_removals). Called
 	// when the user is deleted, so a login never outlives its user.
 	AuthSubjectDelete(ctx context.Context, tenantID, subject string) error
 }

@@ -5,8 +5,10 @@
 // page never sees a provider token; all it does is link to the start route
 // and, after a failure, show the opaque reason the server put in ?error=.
 
-/** The kinds that sign in by redirecting to a provider. */
-export const REDIRECT_GATE_KINDS = ["oidc", "oauth"];
+/** The kinds that sign in by redirecting to a provider: an OIDC or OAuth
+ *  provider, or an external gate (RFC FA §3.5) that sends the browser back
+ *  signed in. */
+export const REDIRECT_GATE_KINDS = ["oidc", "oauth", "external"];
 
 /** The start URL of a redirect login. returnTo must be a /ui path (the server
  *  refuses anything else); reauth asks the provider to authenticate again. */

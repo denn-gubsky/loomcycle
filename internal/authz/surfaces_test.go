@@ -13,6 +13,15 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 	}{
 		{"POST", "/v1/runs", typeLevel("run", "agent"), true},
 		{"GET", "/v1/runs", typeLevel("read", "run"), true},
+		// RFC FA P4: the gate list is governed; the external gate's own
+		// routes authenticate by the gate's signature, before any principal.
+		{"GET", "/v1/_authgate", instance("read", "runtime", "config"), true},
+		{"GET", "/v1/_authgate/local/invites", instance("manage", "principal", "user:*"), true},
+		{"POST", "/v1/_auth/assert", Surface{}, false},
+		{"POST", "/v1/_auth/revoke", Surface{}, false},
+		{"POST", "/v1/_auth/sync", Surface{}, false},
+		{"GET", "/v1/_auth/complete/hr", Surface{}, false},
+		{"GET", "/v1/_auth/login/hr", Surface{}, false},
 		{"POST", "/v1/runs:batch", typeLevel("run", "agent"), true},
 		{"GET", "/v1/runs/r1/stream", typeLevel("read", "run"), true},
 		{"POST", "/v1/runs/r1/input", typeLevel("steer", "run"), true},

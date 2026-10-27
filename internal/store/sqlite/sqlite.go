@@ -682,6 +682,30 @@ func (s *Store) migrate(ctx context.Context) error {
 			expires_at        INTEGER NOT NULL,
 			consumed_at       INTEGER
 		)`,
+		// RFC FA P4 external gates. Mirrors postgres migration 0115 (see
+		// 0115_auth_external_gates.up.sql): the shared assertion replay
+		// cache and the user removal stage machine.
+		`CREATE TABLE IF NOT EXISTS auth_assertion_jtis (
+			gate       TEXT    NOT NULL,
+			jti        TEXT    NOT NULL,
+			expires_at INTEGER NOT NULL,
+			PRIMARY KEY (gate, jti)
+		)`,
+		`CREATE INDEX IF NOT EXISTS auth_assertion_jtis_by_expiry ON auth_assertion_jtis(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS auth_removals (
+			tenant_id     TEXT    NOT NULL DEFAULT '',
+			subject       TEXT    NOT NULL,
+			gate          TEXT    NOT NULL DEFAULT '',
+			reason        TEXT    NOT NULL,
+			disabled_at   INTEGER NOT NULL,
+			unbind_due_at INTEGER NOT NULL,
+			erase_due_at  INTEGER,
+			unbound_at    INTEGER,
+			erased_at     INTEGER,
+			created_by    TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (tenant_id, subject)
+		)`,
+		`CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER
@@ -1697,7 +1721,7 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	// The same split one plane over: tenant document rows (chunk bodies, derived
 	// units) keyed by the SQL Memory scope id, where a tenant-scope Memory read
-	// never looks. Mirrors postgres migration 0114; the boot sweep runs it again
+	// never looks. Mirrors postgres migration 0115; the boot sweep runs it again
 	// and logs what it did, so the report is not repeated here.
 	if _, err := s.MigrateTenantDocumentRows(ctx); err != nil {
 		return fmt.Errorf("migrate tenant document rows: %w", err)

@@ -274,6 +274,18 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		default:
 			return instance("manage", "principal", "user:"+rest[1]), true
 		}
+	case name == "authgate" && len(rest) == 1:
+		// RFC FA P4: GET /v1/_authgate lists the configured gates and probes
+		// the external ones: the deployment's sign-in configuration.
+		return instance("read", "runtime", "config"), true
+	case name == "auth":
+		// RFC FA: the /v1/_auth/* routes run before any principal exists.
+		// The sign-in, invite and reset posts establish one; an external
+		// gate's login return, assert, revoke and sync are authenticated by
+		// the gate's own signature under its pinned key and held to its
+		// identity_map; logout ends the caller's own session; the account
+		// routes act on the caller's own credentials. No ACL question fits.
+		return Surface{}, false
 	case name == "authgate":
 		// RFC FA P2: the password gate's invites, resets and logins provision
 		// access for users. Every route asks `manage`, reads included: who

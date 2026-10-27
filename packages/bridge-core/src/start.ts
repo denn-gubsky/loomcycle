@@ -18,7 +18,8 @@ import { consoleLogger, type BridgePort, type ClientFactory, type Logger } from 
 import type { MessageSinkOptions, StreamSinkOptions } from "./renderer.js";
 import { ConversationRouter } from "./router.js";
 import { storeFromSpec, type ConversationStore } from "./store.js";
-import { TokenBroker } from "./tokens.js";
+import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
+import { TokenBroker, type TokenSource } from "./tokens.js";
 
 export interface BridgeContext<TRef> {
   config: SharedConfig;
@@ -27,6 +28,9 @@ export interface BridgeContext<TRef> {
   log: Logger;
   /** Serve routes on the configured port, with GET /healthz beside them. */
   serve(routes: Record<string, Route>, opts?: { maxBodyBytes?: number }): Promise<http.Server>;
+  /** Set when the bridge is a loomcycle gate: subjectOf names a platform id's
+   *  loomcycle subject, revoke tells loomcycle the identity is gone. */
+  gate?: { subjectOf(sub: string): string; revoke(subject: string): Promise<void> };
 }
 
 export interface BridgeAdapter<TRef> {
@@ -37,6 +41,9 @@ export interface BridgeAdapter<TRef> {
   start(ctx: BridgeContext<TRef>): Promise<void>;
   /** Stop receiving. The core stops its own server, if one was served. */
   stop?(): Promise<void>;
+  /** A gate bridge's groups for a run identity, from its conversation's
+   *  reply reference (RFC FA §3.7d). undefined asserts none. */
+  groupsFor?(subject: string, ref: TRef): Promise<string[] | undefined>;
 }
 
 export interface BridgeOptions<TRef> {
@@ -47,6 +54,10 @@ export interface BridgeOptions<TRef> {
   stream?: StreamSinkOptions;
   message?: MessageSinkOptions;
   now?: () => number;
+  /** A gate bridge's key, instead of reading it from the environment (tests). */
+  gateKey?: GateKey;
+  /** The fetch a gate bridge reaches loomcycle's /v1/_auth routes with (tests). */
+  gateFetch?: typeof fetch;
 }
 
 export interface Bridge<TRef> {
@@ -73,15 +84,40 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     ...(adapter.port.createStream ? { createStream: (ref: TRef) => adapter.port.createStream!(ref) } : {}),
   };
 
-  const broker = new TokenBroker(clients(cfg.loomcycleToken), {
-    agent: cfg.agent,
-    tokenName: `${adapter.platform.name}-bridge`,
-    ttlSeconds: cfg.tokenTtlSeconds,
-    ratePerMinute: cfg.ratePerMinute,
-    rateBurst: cfg.rateBurst,
-    accessMode: cfg.userAccessMode,
-    now: opts.now,
-  });
+  // A gate bridge asks loomcycle for its users' tokens; any other bridge
+  // mints them with its own operator token.
+  const gateBroker = cfg.gate
+    ? new GateBroker(
+        {
+          baseUrl: cfg.loomcycleBaseUrl,
+          gate: cfg.gate.name,
+          audience: cfg.gate.audience,
+          token: {
+            agents: [cfg.agent],
+            // `interactive` is itself a lockable override, and the bridge
+            // must set it; every other per-run setting stays the agent's.
+            overrides: ["interactive"],
+            ratePerMinute: cfg.ratePerMinute,
+            rateBurst: cfg.rateBurst,
+            ttlSeconds: cfg.tokenTtlSeconds,
+          },
+          fetch: opts.gateFetch,
+          now: opts.now,
+        },
+        adapter.groupsFor ? (subject, ref) => adapter.groupsFor!(subject, ref as TRef) : undefined,
+      )
+    : undefined;
+  const broker: TokenSource =
+    gateBroker ??
+    new TokenBroker(clients(cfg.loomcycleToken), {
+      agent: cfg.agent,
+      tokenName: `${adapter.platform.name}-bridge`,
+      ttlSeconds: cfg.tokenTtlSeconds,
+      ratePerMinute: cfg.ratePerMinute,
+      rateBurst: cfg.rateBurst,
+      accessMode: cfg.userAccessMode,
+      now: opts.now,
+    });
   const deps: ConversationDeps<TRef> = {
     platform: adapter.platform,
     capabilities: adapter.capabilities,
@@ -106,6 +142,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     router,
     health,
     log,
+    ...(gateBroker ? { gate: { subjectOf: (sub: string) => gateBroker.subjectOf(sub), revoke: (subject: string) => gateBroker.revoke(subject) } } : {}),
     async serve(routes, o) {
       if (server) throw new Error("serve called twice");
       server = createBridgeServer({ routes, health, log, maxBodyBytes: o?.maxBodyBytes });
@@ -120,6 +157,8 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     health,
     async start() {
       if (cfg.dev) log.warn(`BRIDGE_DEV=1: inbound requests are NOT authenticated; never use this in production`);
+      // The gate key is read once, here, and held in memory.
+      if (gateBroker && cfg.gate) gateBroker.ready(opts.gateKey ?? (await loadGateKey(cfg.gate.keyEnv)));
       await adapter.start(ctx);
       sweeper = setInterval(() => void router.sweepIdle(), 60_000);
       sweeper.unref?.();

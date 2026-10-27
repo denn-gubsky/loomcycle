@@ -4740,12 +4740,19 @@ func (s *Server) Mux() http.Handler {
 	// the X-Loomcycle-UI header, and is throttled per source, code and
 	// account. The self-service routes need a password-gate session, through
 	// authMiddleware (whose CSRF check covers cookie-authenticated writes).
-	mux.Handle("POST /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handlePasswordLogin)))
-	// RFC FA P1: redirect logins (OIDC). Unauthenticated: the start is
-	// throttled per source and the callback needs this browser's login
-	// cookie plus a single-use state (authgate_oidc.go).
+	mux.Handle("POST /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleAuthComplete)))
+	// RFC FA P1: redirect logins (OIDC, and external gates with a
+	// callback_url). Unauthenticated: the start is throttled per source and
+	// the callback needs this browser's login cookie plus a single-use state
+	// (authgate_oidc.go, authgate_external.go).
 	mux.Handle("GET /v1/_auth/login/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleRedirectLogin)))
 	mux.Handle("GET /v1/_auth/complete/{gate}", recoveryMiddleware(http.HandlerFunc(s.handleRedirectComplete)))
+	// RFC FA P4 — external gates' non-browser routes. No bearer: the gate's
+	// signature under its pinned key is the authentication.
+	mux.Handle("POST /v1/_auth/assert", recoveryMiddleware(http.HandlerFunc(s.handleAuthAssert)))
+	mux.Handle("POST /v1/_auth/revoke", recoveryMiddleware(http.HandlerFunc(s.handleAuthRevoke)))
+	mux.Handle("POST /v1/_auth/sync", recoveryMiddleware(http.HandlerFunc(s.handleAuthSync)))
+	mux.Handle("GET /v1/_authgate", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateList))))
 	mux.Handle("POST /v1/_auth/invite/info", recoveryMiddleware(http.HandlerFunc(s.handleInviteInfo)))
 	mux.Handle("POST /v1/_auth/invite", recoveryMiddleware(http.HandlerFunc(s.handleRedeemInvite)))
 	mux.Handle("POST /v1/_auth/reset/info", recoveryMiddleware(http.HandlerFunc(s.handleResetInfo)))

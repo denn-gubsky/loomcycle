@@ -1049,6 +1049,7 @@ func (s *Store) AuthSubjectDelete(ctx context.Context, tenantID, subject string)
 		`DELETE FROM user_recovery_codes WHERE tenant_id = ?1 AND subject = ?2`,
 		`DELETE FROM auth_invites WHERE tenant_id = ?1 AND (subject = ?2 OR redeemed_subject = ?2)`,
 		`DELETE FROM auth_resets WHERE tenant_id = ?1 AND subject = ?2`,
+		`DELETE FROM auth_removals WHERE tenant_id = ?1 AND subject = ?2`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, tenantID, subject); err != nil {
 			return fmt.Errorf("auth subject delete: %w", err)

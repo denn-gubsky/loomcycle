@@ -63,7 +63,7 @@ const tokenGateLabel = "Access token"
 // who copied an example learns why it does not load yet.
 var laterGateKinds = map[string]bool{
 	"header": true,
-	"awsiam": true, "device": true, "external": true,
+	"awsiam": true, "device": true,
 }
 
 var authGateNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
@@ -141,6 +141,9 @@ type AuthGateConfig struct {
 	TokenAuth       string   `yaml:"token_auth,omitempty"`
 	// The OAuth gate's own keys (kind: oauth, auth_oauth.go).
 	AuthGateOAuthConfig `yaml:",inline"`
+
+	// External holds the kind: external keys (auth_external.go).
+	External AuthExternalGateConfig `yaml:",inline"`
 }
 
 // AuthGateInvitesConfig holds Go durations.
@@ -184,6 +187,8 @@ type AuthGate struct {
 	OIDC *AuthOIDCGate
 	// OAuth is set for kind: oauth.
 	OAuth *AuthOAuthGate
+	// External is set for kind: external.
+	External *AuthExternalGate
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -221,6 +226,9 @@ type AuthPolicy struct {
 	// Lifecycle is the validated auth.lifecycle.new_user (zero: the
 	// defaults; read it through NewUserFloor).
 	Lifecycle AuthNewUser
+	// Removal is the validated removal policy (read it through
+	// RemovalPolicy).
+	Removal AuthRemovalPolicy
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -255,7 +263,15 @@ func (p AuthPolicy) SessionAbsolute() time.Duration {
 // is added (D1: configuring other gates never takes it away in token mode). In
 // strict mode only the listed gates are offered.
 func (p AuthPolicy) LoginGates() []AuthGate {
-	out := append([]AuthGate(nil), p.Gates...)
+	var out []AuthGate
+	for _, g := range p.Gates {
+		// An external gate with no callback_url only asserts for non-browser
+		// clients (a bridge): there is nothing to offer a person.
+		if g.External != nil && !g.External.Interactive() {
+			continue
+		}
+		out = append(out, g)
+	}
 	if _, listed := p.listedTokenGate(); !listed && !p.Strict() {
 		out = append(out, AuthGate{Name: AuthGateKindToken, Kind: AuthGateKindToken, Label: tokenGateLabel})
 	}
@@ -363,6 +379,9 @@ func resolveAuth(c *Config) error {
 	if p.Lifecycle, err = resolveLifecycle(c.Auth.Lifecycle); err != nil {
 		return err
 	}
+	if p.Removal, err = resolveRemoval(c); err != nil {
+		return err
+	}
 	if p.Idle > p.Absolute {
 		return fmt.Errorf("auth.session: idle (%s) is longer than absolute (%s)", p.Idle, p.Absolute)
 	}
@@ -412,12 +431,14 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindOAuth:
 			interactive++
+		case kind == AuthGateKindExternal:
+			// Interactive only with a callback_url; counted below.
 		case laterGateKinds[kind]:
-			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password and oidc are", name, kind)
+			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password, oidc, oauth and external are", name, kind)
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password or oidc)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc or external)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password or oidc)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc or external)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
@@ -458,12 +479,32 @@ func resolveAuth(c *Config) error {
 				return err
 			}
 		}
+		var ext *AuthExternalGate
+		if kind != AuthGateKindExternal && hasExternalKeys(g) {
+			return fmt.Errorf("auth.gates.%s: public_key, hmac_secret_env, callback_url, probe_url, issued_token "+
+				"and on_removed apply only to kind: external", name)
+		}
+		if kind == AuthGateKindExternal {
+			if hasPasswordOnlyKeys(g) {
+				return fmt.Errorf("auth.gates.%s: the password gate's keys (require_mfa, invites, resets, password, "+
+					"new_user, manager_may_recover_owners) do not apply to kind: external; use identity_map.new_user", name)
+			}
+			if idm, err = resolveIdentityMap(name, g.IdentityMap, p.NewUserFloor(), g.Trusted); err != nil {
+				return err
+			}
+			if ext, err = resolveExternalGate(c, name, g, p.RemovalPolicy()); err != nil {
+				return err
+			}
+			if ext.Interactive() {
+				interactive++
+			}
+		}
 		var pw *AuthPasswordGate
 		if kind == AuthGateKindPassword {
 			if pw, err = resolvePasswordGate(c, name, g, p.Strict()); err != nil {
 				return err
 			}
-		} else if kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && hasPasswordKeys(g) {
+		} else if kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && hasPasswordKeys(g) {
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
 		}
@@ -474,10 +515,13 @@ func resolveAuth(c *Config) error {
 				label = tokenGateLabel
 			}
 		}
-		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth, Identity: idm})
+		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth, Identity: idm, External: ext})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
+	}
+	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
+		return err
 	}
 	// Strict mode with no gate a person can sign in through would lock
 	// everyone out of the Web UI.

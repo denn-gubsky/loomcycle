@@ -1694,6 +1694,7 @@ type Store interface {
 	AuthIdentityStore
 	PasswordGateStore
 	AuthLoginStateStore
+	AuthLifecycleStore
 	SnapshotStore
 	SnapshotReadStore
 	SnapshotRestoreStore
@@ -4424,6 +4425,11 @@ type UISessionStore interface {
 	// authenticate at `before` — revoked, idle-expired or past its absolute
 	// lifetime — and returns how many went.
 	UISessionDeleteExpired(ctx context.Context, before time.Time) (int, error)
+	// UISessionRevokeSubject ends every live session of (tenantID, subject)
+	// at `at` and returns how many it ended. A user's removal calls it, so a
+	// disabled user is signed out everywhere at once rather than at each
+	// session's next request.
+	UISessionRevokeSubject(ctx context.Context, tenantID, subject string, at time.Time) (int, error)
 }
 
 // EvaluationStore persists evaluation scores.

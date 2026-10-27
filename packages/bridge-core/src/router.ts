@@ -67,7 +67,7 @@ export class ConversationRouter<TRef> {
     for (const rec of await this.deps.store.list().catch(() => [])) {
       if (!rec.agentId || this.convs.has(rec.conversationId) || now - rec.lastActivityAt < idleMs) continue;
       try {
-        const token = await this.deps.broker.tokenFor(rec.runSubject, rec.runName);
+        const token = await this.deps.broker.tokenFor(rec.runSubject, rec.runName, rec.ref);
         await this.deps.clients(token).cancelAgent(rec.agentId, { reason: `${this.deps.platform.name}-bridge: idle` });
         await this.deps.store.put({ ...rec, agentId: undefined, runId: undefined });
       } catch (err) {

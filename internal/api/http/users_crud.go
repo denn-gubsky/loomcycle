@@ -283,6 +283,26 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// RFC FA §3.7c: re-enabling a user the removal policy disabled re-enters
+	// it at the new-user defaults, never at its old groups; the rest of the
+	// patch then applies as asked.
+	if req.Status != nil && *req.Status == "active" {
+		by := ""
+		if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+			by = p.Subject
+		}
+		switch err := s.reactivateRemoved(r.Context(), tenant, subject, by); {
+		case err == nil:
+			req.Status = nil
+		case errors.Is(err, errNoRemoval):
+		case isNotFound(err):
+			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
+			return
+		default:
+			writeJSONError(w, http.StatusInternalServerError, "user_reactivate_failed", err.Error())
+			return
+		}
+	}
 	patch := store.UserPatch{
 		DisplayName: req.DisplayName,
 		AccessMode:  req.AccessMode,

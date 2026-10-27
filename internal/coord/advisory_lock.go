@@ -181,6 +181,11 @@ var (
 	// LockKeyAuthGateSweeper gates the hourly delete of the password gate's
 	// dead invites and resets and its idle throttle counters (RFC FA P2).
 	LockKeyAuthGateSweeper int64
+	// LockKeyAuthLifecycleSweeper gates the hourly removal-policy tick (RFC
+	// FA §3.7c): dormant users disabled, due removals unbound or erased.
+	// One replica at a time, so a user is never unbound or erased twice
+	// concurrently.
+	LockKeyAuthLifecycleSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -245,6 +250,7 @@ func init() {
 	LockKeyExpiredTokenSweeper = fnvKey("expired_token_sweeper")
 	LockKeyUISessionSweeper = fnvKey("ui_session_sweeper")
 	LockKeyAuthGateSweeper = fnvKey("auth_gate_sweeper")
+	LockKeyAuthLifecycleSweeper = fnvKey("auth_lifecycle_sweeper")
 }
 
 // fnvKey hashes a sweeper-name string to a stable int64 lock key.

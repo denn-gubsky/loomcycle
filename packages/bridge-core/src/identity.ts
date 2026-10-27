@@ -59,6 +59,16 @@ export type Identified =
  *  threads pass the channel alone, so the channel's memory spans its threads
  *  while each thread is its own conversation. */
 export function sharedSubject(platform: string, ...parts: string[]): string {
-  const h = createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32);
-  return `${platform}-conv-${h}`;
+  return `${platform}-conv-${convHash(parts)}`;
+}
+
+/** gateSharedSubject is sharedSubject for a bridge that is a loomcycle gate:
+ *  "<gate>:conv:<hash>", the subject loomcycle gives the platform id
+ *  "conv:<hash>" (RFC FA §3.7d). */
+export function gateSharedSubject(gate: string, ...parts: string[]): string {
+  return `${gate}:conv:${convHash(parts)}`;
+}
+
+function convHash(parts: string[]): string {
+  return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32);
 }

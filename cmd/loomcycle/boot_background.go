@@ -551,6 +551,15 @@ func (b *boot) startStoreSweepers() {
 			})
 	}
 
+	// User removal policy (RFC FA §3.7c): disables users dormant past
+	// auth.lifecycle.dormant_after and advances each removal by one stage
+	// (unbind, then erase only when erase_after is set). Hourly, one
+	// replica per cluster per tick.
+	if storeIface != nil && b.srv != nil {
+		go runAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthLifecycleSweeper, "auth-lifecycle",
+			func(ctx context.Context) { b.srv.AuthLifecycleSweep(ctx, time.Now()) })
+	}
+
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
 	// goroutine only matters for keeping the table small over the

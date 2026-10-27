@@ -845,6 +845,141 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_auth/assert:
+    post:
+      tags: [auth]
+      summary: Exchange an external gate's assertion for an issued token.
+      description: |
+        Unauthenticated: the gate's signature under its pinned key is the
+        authentication. `assertion` is a JWT (`iss` = the gate, `aud` = this
+        server's issuer URL, `lc_use: assert`, `jti`, `iat`, `exp` at most 5
+        minutes later; `sub` the person's id at the gate; optional `name`,
+        `email`, `email_verified`, `groups`, `tenant`, `access_mode` — honoured
+        on a trusted gate only — and `token` {agents, overrides,
+        rate_per_minute, rate_burst, ttl_seconds}, which can only narrow the
+        gate's `issued_token` ceiling). The user is provisioned per the gate's
+        identity_map; the token is the user's own member reach, short-lived,
+        tagged with the gate, and stops the moment the user is not active.
+        Refusals are throttled per client source.
+      operationId: externalAssert
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [gate, assertion]
+              properties:
+                gate: { type: string }
+                assertion: { type: string }
+      responses:
+        "200":
+          description: The issued token, shown once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  subject: { type: string }
+                  tenant: { type: string }
+        "400": { description: "`invalid_token_request`: the token claim asks for more than the gate allows." }
+        "401": { description: "`invalid_assertion` (opaque, whatever the reason; audited)." }
+        "403": { description: "`awaiting_approval`: the user is pending." }
+        "429": { description: "`throttled`." }
+        "503": { description: "`gate_unavailable`: the gate's key or the replay cache cannot be read." }
+  /v1/_auth/revoke:
+    post:
+      tags: [auth]
+      summary: An external gate removes one of its users.
+      description: |
+        `request` is a JWT like an assertion with `lc_use: revoke` and `sub`
+        the person's id at the gate. A user linked to this gate is disabled at
+        once (sessions and issued tokens end on the next request, every
+        replica) and removed per the gate's removal policy (unbind, then erase
+        only if erase_after is set). Any other sub gets the same 204.
+      operationId: externalRevoke
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [gate, request]
+              properties:
+                gate: { type: string }
+                request: { type: string }
+      responses:
+        "204": { description: Done (or nothing to do). }
+        "401": { description: "`invalid_assertion`." }
+        "429": { description: "`throttled`." }
+  /v1/_auth/sync:
+    post:
+      tags: [auth]
+      summary: An external gate reconciles its users and groups in bulk.
+      description: |
+        `request` is a JWT with `lc_use: sync`, no `sub`, `users`
+        [{sub, name?, email?, email_verified?, groups?, tenant?,
+        access_mode?}] (at most 10000) and `complete`. Each user is
+        provisioned and its gate groups synced as at a login; repeating a sync
+        changes nothing. With `complete: true` on a gate whose identity_map is
+        `authoritative_for_users`, users linked to the gate that the list
+        omits are removed per the gate's removal policy. A complete sync of no
+        users is refused.
+      operationId: externalSync
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [gate, request]
+              properties:
+                gate: { type: string }
+                request: { type: string }
+      responses:
+        "200":
+          description: Counts only.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  updated: { type: integer }
+                  refused: { type: integer }
+                  removed: { type: integer }
+                  unchanged: { type: integer }
+        "400": { description: "`empty_complete_sync`." }
+        "401": { description: "`invalid_assertion`." }
+        "429": { description: "`throttled`." }
+  /v1/_authgate:
+    get:
+      tags: [authgate]
+      summary: List the configured gates (admin), optionally probing external ones.
+      description: |
+        Each gate's name, kind, label, whether a browser can sign in through
+        it, its identity map's tenant and provisioning; an external gate's key
+        (algorithm, kid, fingerprint — never key material), callback and
+        discovery URLs and removal timing. `?probe=1` fetches each external
+        gate's `/.well-known/loomcycle-authgate` (5 s, no redirects) and
+        reports whether its name and key match the registration. Gates are
+        registered in config only.
+      operationId: listAuthGates
+      parameters:
+        - { name: probe, in: query, required: false, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200":
+          description: The gates.
+          content: { application/json: { schema: { type: object, properties: { gates: { type: array, items: { type: object } } } } } }
+        "403": { description: Not an admin. }
   /v1/_authgate/{gate}/invites:
     parameters:
       - { $ref: "#/components/parameters/Gate" }
@@ -1039,13 +1174,18 @@ paths:
   /v1/_auth/login/{gate}:
     get:
       tags: [auth]
-      summary: Start a sign-in through an OIDC gate (a top-level navigation).
+      summary: Start a sign-in through a redirect gate — OIDC, OAuth or external (a top-level navigation).
       description: |
-        RFC FA P1. Unauthenticated; throttled per client source. Sets a short
+        RFC FA P1/P4. Unauthenticated; throttled per client source. Sets a short
         `__Host-lc_login` (or `lc_login` over HTTP) cookie bound to a single-use
-        state and answers 303 to the provider (code + PKCE S256 + nonce). A
-        refusal is a 303 to `/ui/login?error=<code>` (`return_to_refused`,
-        `too_many_attempts`, `insecure_transport`, `gate_unavailable`).
+        state and answers 303 to the provider (OIDC/OAuth: code + PKCE S256,
+        and a nonce for OIDC). For an external gate the 303 is to the gate's
+        `callback_url` with `login_state`, `aud` (this server's issuer URL, its
+        LOOMCYCLE_PUBLIC_URL) and `complete` (where the gate sends the browser
+        back, carrying the state); an external gate without a `callback_url`
+        has no browser sign-in (404). A refusal is a 303 to
+        `/ui/login?error=<code>` (`return_to_refused`, `too_many_attempts`,
+        `insecure_transport`, `gate_unavailable`).
       operationId: redirectSignInStart
       security: []
       parameters:
@@ -1058,21 +1198,29 @@ paths:
   /v1/_auth/complete/{gate}:
     get:
       tags: [auth]
-      summary: The OIDC provider's callback.
+      summary: Finish a browser sign-in through a redirect gate (OIDC, OAuth or external).
       description: |
-        Needs this browser's login cookie and the single-use state. Verifies the
-        ID token, provisions the user by the gate's identity map and answers 303
-        with the session cookie to `return_to` (a pending user to `/ui/pending`);
-        a refusal is a 303 to `/ui/login?error=<code>`. A link login (started by
-        POST /v1/_users/{subject}/identities) returns to `/ui/account`.
+        Needs this browser's login cookie and the single-use state. An OIDC or
+        OAuth provider comes back with `code` and `state`: the code is
+        exchanged, the identity verified. An external gate comes back with
+        `?assertion=<JWT>` (`lc_use: login`, carrying the `login_state` it was
+        given), which must be live, this gate's, and bound to this browser's
+        login cookie; a same-site gate may POST it as a form field instead.
+        The user is provisioned by the gate's identity map and the answer is a
+        303 with the session cookie to `return_to` (a pending user to
+        `/ui/pending`); a refusal is a 303 to `/ui/login?error=<code>`. A link
+        login (started by POST /v1/_users/{subject}/identities) returns to
+        `/ui/account`. `Referrer-Policy: no-referrer`.
       operationId: redirectSignInComplete
       security: []
       parameters:
         - { $ref: "#/components/parameters/Gate" }
         - { name: code, in: query, schema: { type: string } }
         - { name: state, in: query, schema: { type: string } }
+        - { name: assertion, in: query, schema: { type: string } }
       responses:
         "303": { description: Into the Web UI, or back to the login page with an error code. }
+        "429": { description: "`throttled` (external gates)." }
     post:
       tags: [auth]
       summary: Sign in through a password gate (the login form's post).
