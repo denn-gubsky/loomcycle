@@ -25,6 +25,8 @@ one entry. A missing key starts from `[]`.
 - `append_dedupe: the doc.chunk: namespace holds Document chunk bodies ...` — a chunk
   body is edited through the Document tool (`update_chunk`), which checks its
   revision and scope grants. Use an ordinary key for your own data.
+- `append_dedupe: the trace.turn: namespace is written by the server ...` — the server
+  indexes conversation turns under that prefix. Use an ordinary key.
 - `append_dedupe: existing value is not a JSON array (use set to overwrite)`
   — the key holds something else. Retrying is pointless.
 - `append_dedupe: value is not valid JSON` — send text as a plain string,

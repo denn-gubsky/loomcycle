@@ -6,19 +6,22 @@ import TenantCombobox from "../components/TenantCombobox";
 // UsageView — GET /v1/_usage (RFC AV).
 //
 // Token usage + money spent from the per-call ledger (∪ the compact archive),
-// grouped by any of tenant / user / provider / model / source. The
+// grouped by any of tenant / user / provider / model / source / purpose. The
 // operator-vs-tenant split is just `source` in the grouping: an operator-key run
 // bills the operator AND counts as tenant consumption; a tenant-key run counts
 // for the tenant only. Tenant-scoped by the API (a tenant operator sees only its
-// own tenant; admin sees all + an optional tenant focus).
+// own tenant; admin sees all + an optional tenant focus). `purpose` splits chat
+// from OCR and speech-to-text calls; the latter are priced per minute, so a
+// report holding any shows their audio minutes.
 
-// The five whitelisted dimensions, in the server's canonical column order.
-const DIMENSIONS: { key: string; label: string }[] = [
+// The six whitelisted dimensions, in the server's canonical column order.
+export const DIMENSIONS: { key: string; label: string }[] = [
   { key: "tenant", label: "tenant" },
   { key: "user", label: "user" },
   { key: "provider", label: "provider" },
   { key: "model", label: "model" },
   { key: "source", label: "source" },
+  { key: "purpose", label: "purpose" },
 ];
 
 // toRFC3339 converts an <input type="datetime-local"> value (local time) to the
@@ -42,9 +45,21 @@ function fmtCost(cost: number, currency?: string): string {
   return `${cost.toFixed(digits)} ${cur}`;
 }
 
+// fmtAudioMinutes renders transcribed audio seconds as minutes, the unit
+// speech-to-text is priced in.
+export function fmtAudioMinutes(seconds: number): string {
+  return `${(seconds / 60).toFixed(1)} min`;
+}
+
+// totalAudioSeconds sums the rows' audio; 0 means the report has no
+// speech-to-text calls and the audio column stays hidden.
+export function totalAudioSeconds(rows: UsageAggregate[]): number {
+  return rows.reduce((sum, r) => sum + (r.audio_seconds ?? 0), 0);
+}
+
 // dimValue returns the cell text for a dimension on a row ("—" when blank, e.g.
 // an operator row has an empty scope, or a dimension not grouped).
-function dimValue(row: UsageAggregate, key: string): string {
+export function dimValue(row: UsageAggregate, key: string): string {
   switch (key) {
     case "tenant":
       return row.tenant_id || "—";
@@ -56,6 +71,8 @@ function dimValue(row: UsageAggregate, key: string): string {
       return row.model || "—";
     case "source":
       return row.credential_source || "—";
+    case "purpose":
+      return row.purpose || "—";
   }
   return "";
 }
@@ -144,6 +161,7 @@ export default function UsageView() {
   // still arrive as JSON null; guard so a no-usage report never crashes the page
   // on `.length`/`.map` (mirrors LimitsView's `resp.limits ?? []`).
   const rows = resp?.rows ?? [];
+  const audioSeconds = totalAudioSeconds(rows);
 
   return (
     <div className="usage-view">
@@ -152,7 +170,8 @@ export default function UsageView() {
           <h1>usage</h1>
           <p className="usage-sub">
             Token usage &amp; cost from the per-call ledger. Group by{" "}
-            <code>source</code> for the operator-vs-tenant split.
+            <code>source</code> for the operator-vs-tenant split, by{" "}
+            <code>purpose</code> for what OCR and speech-to-text cost.
           </p>
         </div>
       </div>
@@ -235,6 +254,14 @@ export default function UsageView() {
               </div>
             </>
           )}
+          {audioSeconds > 0 && (
+            <div className="usage-stat">
+              <span className="usage-stat-label">audio transcribed</span>
+              <span className="usage-stat-value">
+                {fmtAudioMinutes(audioSeconds)}
+              </span>
+            </div>
+          )}
           {totals.unpriced > 0 && (
             <div className="usage-stat usage-warn">
               <span className="usage-stat-label">unpriced calls</span>
@@ -255,6 +282,7 @@ export default function UsageView() {
                 <th className="num">input</th>
                 <th className="num">output</th>
                 <th className="num">cache</th>
+                {audioSeconds > 0 && <th className="num">audio</th>}
                 <th className="num">calls</th>
                 <th className="num">cost</th>
               </tr>
@@ -272,6 +300,11 @@ export default function UsageView() {
                   <td className="num">
                     {fmtTokens(r.cache_creation_tokens + r.cache_read_tokens)}
                   </td>
+                  {audioSeconds > 0 && (
+                    <td className="num">
+                      {r.audio_seconds ? fmtAudioMinutes(r.audio_seconds) : "—"}
+                    </td>
+                  )}
                   <td className="num">
                     {r.call_count}
                     {r.unpriced_calls > 0 && (

@@ -102,6 +102,14 @@ var extTypes = map[string]string{
 	".json": "application/json",
 	".vtt":  "text/vtt",
 	".srt":  "application/x-subrip",
+	// Recordings whose bytes a sniffer does not know (FLAC, a bare AAC)
+	// or knows only as a generic container.
+	".m4a":  "audio/mp4",
+	".flac": "audio/flac",
+	".opus": "audio/ogg",
+	".oga":  "audio/ogg",
+	".mp3":  "audio/mpeg",
+	".wav":  "audio/wav",
 }
 
 // The extension a file of each type is given when its name has none. A
@@ -133,6 +141,7 @@ var typeExts = map[string]string{
 	"audio/wav":                     ".wav",
 	"audio/wave":                    ".wav",
 	"audio/ogg":                     ".ogg",
+	"audio/flac":                    ".flac",
 	"audio/mp4":                     ".m4a",
 	"video/mp4":                     ".mp4",
 	"video/webm":                    ".webm",

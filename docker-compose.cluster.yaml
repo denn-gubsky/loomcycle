@@ -24,7 +24,7 @@
 services:
   postgres:
     # Any Postgres ≥ 14 works; 16 here is just a tested default.
-    image: postgres:16
+    image: postgres:18
     container_name: loomcycle-cluster-pg
     restart: unless-stopped
     environment:

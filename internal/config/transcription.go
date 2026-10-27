@@ -95,7 +95,13 @@ type STTConfig struct {
 	MaxMinutesPerRun    int    `yaml:"max_minutes_per_run"`
 	ChunkMinutes        int    `yaml:"chunk_minutes"`
 	ChunkOverlapSeconds int    `yaml:"chunk_overlap_seconds"`
-	// Media is the demux/split helper (ffmpeg or equivalent).
+	// TimeoutSeconds bounds one engine request and one media conversion. A
+	// whisper server on a CPU host can take several minutes for a ten-minute
+	// chunk and sends nothing until it is done, so this is long by default.
+	TimeoutSeconds int `yaml:"timeout_s"`
+	// Media is the converter (ffmpeg or equivalent) that turns a recording
+	// into a mono WAV the runtime can cut: `{in}` is the recording, `{out}`
+	// the WAV it must write.
 	Media *HelperCommand `yaml:"media,omitempty"`
 }
 
@@ -124,6 +130,7 @@ const (
 	TranscriptionDefaultMaxMinutesPerRun  = 300
 	TranscriptionDefaultChunkMinutes      = 10
 	TranscriptionDefaultChunkOverlapSecs  = 2
+	TranscriptionDefaultSTTTimeoutSecs    = 1800
 )
 
 // OCREnabled reports whether an OCR engine is configured and not off.
@@ -171,6 +178,7 @@ func (t TranscriptionConfig) Resolved() TranscriptionConfig {
 		s.MaxMinutesPerCall = orDefaultInt(s.MaxMinutesPerCall, min(TranscriptionDefaultMaxMinutesPerCall, s.MaxMinutesPerRun))
 		s.ChunkMinutes = orDefaultInt(s.ChunkMinutes, min(TranscriptionDefaultChunkMinutes, s.MaxMinutesPerCall))
 		s.ChunkOverlapSeconds = orDefaultInt(s.ChunkOverlapSeconds, TranscriptionDefaultChunkOverlapSecs)
+		s.TimeoutSeconds = orDefaultInt(s.TimeoutSeconds, TranscriptionDefaultSTTTimeoutSecs)
 		out.STT = &s
 	}
 	return out
@@ -315,6 +323,9 @@ func (c *Config) validateSTT(s *STTConfig) error {
 			}
 			return fmt.Errorf("%s.model: models.%s is kind: %s, and a model of kind: %s is needed here", place, s.Model, kind, ModelKindTranscriber)
 		}
+		if ref.Model == "" {
+			return fmt.Errorf("%s.model: models.%s must name its model with model:; a transcriber is not chosen from a provider's catalog", place, s.Model)
+		}
 		if ref.Provider != "" && s.Provider != "" && ref.Provider != s.Provider {
 			return fmt.Errorf("%s.model: models.%s is served by provider %q, not by %s.provider %q", place, s.Model, ref.Provider, place, s.Provider)
 		}
@@ -346,6 +357,7 @@ func (c *Config) validateSTT(s *STTConfig) error {
 		{"max_minutes_per_run", s.MaxMinutesPerRun},
 		{"chunk_minutes", s.ChunkMinutes},
 		{"chunk_overlap_seconds", s.ChunkOverlapSeconds},
+		{"timeout_s", s.TimeoutSeconds},
 	} {
 		if f.v < 0 {
 			return fmt.Errorf("%s.%s must be >= 0 (0 = the default), got %d", place, f.name, f.v)
@@ -354,6 +366,11 @@ func (c *Config) validateSTT(s *STTConfig) error {
 	if s.Media != nil {
 		if err := s.Media.validate(place + ".media"); err != nil {
 			return err
+		}
+		// The runtime cuts the converted WAV itself, so the converter must
+		// write to the file it is handed.
+		if !strings.Contains(s.Media.Command, "{out}") {
+			return fmt.Errorf("%s.media.command must reference {out}, the WAV file the converter writes (e.g. ffmpeg -i {in} -ac 1 -ar 16000 -f wav {out})", place)
 		}
 	}
 	return nil

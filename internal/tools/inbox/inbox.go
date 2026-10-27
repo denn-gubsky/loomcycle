@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -130,6 +131,14 @@ type Record struct {
 	// the extractor says, and an import gives the image chunk the same.
 	Page  int `json:"page,omitempty"`
 	Slide int `json:"slide,omitempty"`
+	// URL is where a download came from, kept so an import can link back to
+	// it: scheme, host and path only, with "?…" where a query was — never
+	// the URL that still authorises a request (recordURL).
+	URL string `json:"url,omitempty"`
+	// ExtractedFrom is the record of the file this one was extracted from,
+	// copied when the extraction read bytes that still hashed to it: what an
+	// import of the extracted text says the document came from.
+	ExtractedFrom *Record `json:"extracted_from,omitempty"`
 }
 
 // Item is one file a producer hands over.
@@ -149,6 +158,10 @@ type Item struct {
 	Fallback string
 	// Page and Slide place a picture an extraction found (see Record).
 	Page, Slide int
+	// URL is a download's URL; it is recorded without its query (see Record.URL).
+	URL string
+	// ExtractedFrom is the trusted record of the file an extraction read.
+	ExtractedFrom *Record
 }
 
 // Result is what a capture produced: the stub the model sees and, when the
@@ -327,17 +340,52 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		return fail(fmt.Errorf("could not keep the file: %v", err))
 	}
 	return Record{
-		Ref:        Ref(final),
-		Path:       final,
-		MediaType:  mt,
-		Size:       cw.n,
-		SHA256:     hex.EncodeToString(sum.Sum(nil)),
-		Origin:     it.Origin,
-		RunID:      tools.RunID(ctx),
-		CapturedAt: time.Now().UTC(),
-		Page:       max(it.Page, 0),
-		Slide:      max(it.Slide, 0),
+		Ref:           Ref(final),
+		Path:          final,
+		MediaType:     mt,
+		Size:          cw.n,
+		SHA256:        hex.EncodeToString(sum.Sum(nil)),
+		Origin:        it.Origin,
+		RunID:         tools.RunID(ctx),
+		CapturedAt:    time.Now().UTC(),
+		Page:          max(it.Page, 0),
+		Slide:         max(it.Slide, 0),
+		URL:           recordURL(it.URL),
+		ExtractedFrom: extractedFrom(it.ExtractedFrom),
 	}, nil
+}
+
+// recordURL is the form of a URL a record keeps: scheme, host and path, and
+// "?…" where a query was. No query value is kept, not even masked: a
+// pre-authenticated link's credential can sit in any parameter, and a mask
+// by parameter name finds only the ones it knows (a Graph download URL's
+// tempauth, but not a server's own ?k= or ?code=). The fragment and any user
+// information go too. "" for what is not a URL, rather than a string that
+// might hold a credential in clear.
+func recordURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	out := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
+	if u.RawQuery != "" || u.ForceQuery {
+		out += "?…"
+	}
+	return out
+}
+
+// extractedFrom copies a source record one level deep: the original file,
+// not a chain of every extraction between it and this one.
+func extractedFrom(r *Record) *Record {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.ExtractedFrom = nil
+	return &c
 }
 
 // ensure provisions the inbox the first time the tree needs it and returns

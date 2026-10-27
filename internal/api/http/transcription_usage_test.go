@@ -149,10 +149,11 @@ func TestRecordCallUsage_LoopRowIsUnchangedByPurpose(t *testing.T) {
 	}
 }
 
-// TestUsageReport_ResponseIsUnchangedByPurpose is a GUARD: /v1/_usage carries
-// the same fields whatever purposes the ledger holds, and counts an STT row as
-// a priced call with no tokens.
-func TestUsageReport_ResponseIsUnchangedByPurpose(t *testing.T) {
+// TestUsageReport_UngroupedPurposeAddsOnlyAudioSeconds is a GUARD: a report not
+// grouped by purpose carries the same fields whatever purposes the ledger
+// holds, except that a group with speech-to-text calls also carries their
+// audio_seconds; it counts an STT row as a priced call with no tokens.
+func TestUsageReport_UngroupedPurposeAddsOnlyAudioSeconds(t *testing.T) {
 	srv, _ := newUsageTestServer(t)
 	ctx := runCtx("run-rep")
 	_ = srv.recordCallUsage(ctx, "run-rep", tools.RunIdentity(ctx), "s1", 0, &providers.Usage{InputTokens: 100, Provider: "p", Model: "m"})
@@ -196,8 +197,15 @@ func TestUsageReport_ResponseIsUnchangedByPurpose(t *testing.T) {
 			if !reflect.DeepEqual(keys, wantNoCur) {
 				t.Errorf("row keys = %v, want %v", keys, wantNoCur)
 			}
-		} else if !reflect.DeepEqual(keys, wantKeys) {
-			t.Errorf("row keys = %v, want %v", keys, wantKeys)
+		} else {
+			// The priced group is the STT call alone: it gains audio_seconds.
+			wantSTT := append([]string{"audio_seconds"}, wantKeys...)
+			if !reflect.DeepEqual(keys, wantSTT) {
+				t.Errorf("row keys = %v, want %v", keys, wantSTT)
+			}
+			if r["audio_seconds"] != 60.0 {
+				t.Errorf("audio_seconds = %v, want 60", r["audio_seconds"])
+			}
 		}
 		calls += r["call_count"].(float64)
 		unpriced += r["unpriced_calls"].(float64)

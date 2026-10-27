@@ -16,6 +16,8 @@ runtime does the reading; the file's bytes never pass through you.
 | CSV, TSV | one table |
 | text, Markdown | the text; Markdown keeps its structure, without raw HTML or embedded images |
 | PNG, JPEG, GIF, WebP, BMP | a one-section Markdown file that embeds the image |
+| VTT, SRT captions | a timed transcript: a section per ten minutes, `**Speaker** [hh:mm:ss] text` paragraphs, a speaker from each WebVTT voice tag (a Teams meeting's transcript reads this way, with no speech model) |
+| audio, video | handed to `transcribe` (see File/transcribe): the speech-to-text model writes the transcript |
 
 Pictures are kept as `volume:inbox:extracted/<name>/img-<n>.<ext>` and the
 Markdown links them there, so `import` can attach them to a document; each

@@ -212,6 +212,13 @@ func isParamNameByte(c byte) bool {
 	return c == '-' || c == '_' || ('0' <= c && c <= '9') || ('a' <= c|0x20 && c|0x20 <= 'z')
 }
 
+// MaskSignedURL masks the credential-bearing query parameters of the URLs in
+// s (tempauth, sig, X-Amz-Signature, access_token, …) by the rule a Redactor
+// applies to signed URLs at rest, without a Redactor: for a URL the runtime
+// stores on purpose, as a link back to where a document came from. Idempotent;
+// the rest of the URL is left as it was.
+func MaskSignedURL(s string) string { return maskSignedURLParams(s) }
+
 // maskSignedURLParams applies Tier C to s.
 func maskSignedURLParams(s string) string {
 	if !hasSignedParamCandidate(s) {

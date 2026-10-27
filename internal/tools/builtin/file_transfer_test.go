@@ -268,9 +268,14 @@ func TestFileDownload_RedactsQueryInResult(t *testing.T) {
 	if !slices.Contains(tf.registered, secret) || slices.Contains(tf.registered, "7") {
 		t.Errorf("the redactor was not given the URL's token alone: %v", tf.registered)
 	}
+	// The record keeps the URL as a link back for an import, without its
+	// query: no value of it, credential or not.
 	rec, ok := inbox.Lookup(r.Ctx, "documents/board.pdf")
-	if b, _ := json.Marshal(rec); !ok || strings.Contains(string(b), secret) || strings.Contains(string(b), "UniqueId") {
+	if b, _ := json.Marshal(rec); !ok || strings.Contains(string(b), secret) {
 		t.Errorf("inbox record = %s", b)
+	}
+	if want := srv.URL + "/_layouts/15/download.aspx/board.pdf?…"; rec.URL != want {
+		t.Errorf("record URL = %q, want %q", rec.URL, want)
 	}
 	// A failed download's error does not show it either.
 	gone := httptest.NewServer(http.NotFoundHandler())
