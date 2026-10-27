@@ -99,7 +99,7 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
 		return fmt.Errorf("end sessions: %w", err)
 	}
-	started, err := s.store.AuthRemovalStart(ctx, policy.Start(tenant, subject, gate, reason, by, now))
+	started, err := s.store.AuthRemovalStart(ctx, removalRow(policy.Start(now), tenant, subject, gate, reason, by))
 	if err != nil {
 		return fmt.Errorf("record removal: %w", err)
 	}
@@ -227,7 +227,7 @@ func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now
 		s.recordLifecycleEvent("auth_removal_cancelled", r.TenantID, r.Subject, r.Gate, "user_not_disabled", lifecycleActor)
 		return true, nil
 	}
-	switch lifecycle.Next(r, now) {
+	switch lifecycle.Next(removalTiming(r), now) {
 	case lifecycle.StageUnbind:
 		changed, err := s.unbindSubject(ctx, r.TenantID, r.Subject, false)
 		if changed {
@@ -328,4 +328,16 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	}
 	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
 	return nil
+}
+
+// removalRow and removalTiming convert between the store's removal row and
+// the lifecycle package's timing, which stays below storage.
+func removalRow(t lifecycle.Removal, tenant, subject, gate, reason, by string) store.AuthRemovalRow {
+	return store.AuthRemovalRow{TenantID: tenant, Subject: subject, Gate: gate, Reason: reason, CreatedBy: by,
+		DisabledAt: t.DisabledAt, UnbindDueAt: t.UnbindDueAt, EraseDueAt: t.EraseDueAt, UnboundAt: t.UnboundAt, ErasedAt: t.ErasedAt}
+}
+
+func removalTiming(r store.AuthRemovalRow) lifecycle.Removal {
+	return lifecycle.Removal{DisabledAt: r.DisabledAt, UnbindDueAt: r.UnbindDueAt, EraseDueAt: r.EraseDueAt,
+		UnboundAt: r.UnboundAt, ErasedAt: r.ErasedAt}
 }

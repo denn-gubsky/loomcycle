@@ -416,9 +416,15 @@ func TestExternalAssert_RefusalsAreThrottledPerSource(t *testing.T) {
 	if last != http.StatusTooManyRequests {
 		t.Fatalf("after 25 refused assertions: %d, want 429", last)
 	}
-	// A valid assertion from the throttled source waits too.
-	if code, _ := f.assert(t, "tg", g.sign(t, "assert", nil, nil)); code != http.StatusTooManyRequests {
-		t.Fatalf("valid assertion from a throttled source: %d", code)
+	// An assertion the gate's key signed is not junk and goes through: the
+	// block slows refusals, and a source shared with a stranger (a NAT, a
+	// proxy) must not let the stranger's junk shut the gate out.
+	if code, _ := f.assert(t, "tg", g.sign(t, "assert", nil, nil)); code != http.StatusOK {
+		t.Fatalf("valid assertion from a throttled source: %d, want 200", code)
+	}
+	// Junk from the blocked source is still refused as throttled.
+	if code, _ := f.assert(t, "tg", "not-a-jwt"); code != http.StatusTooManyRequests {
+		t.Fatalf("junk from a throttled source: %d, want 429", code)
 	}
 }
 
@@ -505,6 +511,58 @@ func TestExternalSync_AnAuthoritativeCompleteSyncRemovesOnlyTheMissing(t *testin
 	// Not complete: nobody is removed.
 	if code, body := sync([]string{"1"}, false); code != http.StatusOK || body["removed"] != float64(0) {
 		t.Fatalf("partial sync: %d %v", code, body)
+	}
+}
+
+// A complete sync that would remove more of the gate's users than its ceiling
+// allows is refused whole: a compromised gate, or one whose platform API
+// returned only its first page, must not disable everyone in one request.
+// The default ceiling is 10% of the gate's linked users, and never fewer than
+// five; max_sync_removals sets another.
+func TestExternalSync_ACompleteSyncOverTheRemovalCeilingRemovesNobody(t *testing.T) {
+	m := acmeMap()
+	m.AuthoritativeForUsers = true
+	g := newExtGate(t, "tg", m, config.AuthExternalGate{})
+	f := extFixture(t, g)
+	ctx := context.Background()
+	sync := func(users []string) (int, map[string]any) {
+		list := []map[string]any{}
+		for _, u := range users {
+			list = append(list, map[string]any{"sub": u})
+		}
+		return f.post(t, "/v1/_auth/sync", map[string]string{"gate": "tg", "request": g.sign(t, "sync",
+			map[string]any{"users": list, "complete": true}, func(c *jwt.Claims) { c.Subject = "" })})
+	}
+	all := make([]string, 0, 40)
+	for i := 1; i <= 40; i++ {
+		all = append(all, fmt.Sprint(i))
+	}
+	if code, body := sync(all); code != http.StatusOK || body["created"] != float64(40) {
+		t.Fatalf("first sync: %d %v", code, body)
+	}
+	// 39 of 40 missing: over the default ceiling (max(5, 10% of 40) = 5).
+	if code, body := sync(all[:1]); code != http.StatusConflict || body["code"] != "sync_removal_limit" {
+		t.Fatalf("a sync dropping 39 of 40: %d %v, want 409 sync_removal_limit", code, body)
+	}
+	for _, sub := range all {
+		if u, _ := f.st.UserGet(ctx, "acme", "tg:"+sub); u.Status != "active" {
+			t.Fatalf("tg:%s is %q after a refused sync, want active", sub, u.Status)
+		}
+	}
+	// Five missing is within it.
+	if code, body := sync(all[5:]); code != http.StatusOK || body["removed"] != float64(5) {
+		t.Fatalf("a sync dropping 5 of 40: %d %v", code, body)
+	}
+	// A gate may set its own ceiling.
+	g.cfg.External.MaxSyncRemovals = 50
+	cfg := f.srv.cfg()
+	for i := range cfg.ResolvedAuth.Gates {
+		if cfg.ResolvedAuth.Gates[i].Name == "tg" {
+			cfg.ResolvedAuth.Gates[i] = g.cfg
+		}
+	}
+	if code, body := sync(all[5:6]); code != http.StatusOK || body["removed"] != float64(34) {
+		t.Fatalf("a sync under a raised ceiling: %d %v", code, body)
 	}
 }
 
@@ -625,6 +683,28 @@ func TestExternalLogin_TheLoginStateIsBoundToTheBrowserThatBeganIt(t *testing.T)
 	}
 	if resp.Header.Get("Referrer-Policy") != "no-referrer" {
 		t.Fatal("the complete page lets the assertion leak through Referer")
+	}
+}
+
+// An assertion carried to another browser's login does not use it up: the
+// login_state is checked before the jti is recorded, so a third party who
+// sees a victim's in-flight return URL and completes it under a login of
+// their own is refused, and the victim's own return still signs them in.
+func TestExternalLogin_AnAssertionMisdeliveredToAnotherLoginIsNotSpent(t *testing.T) {
+	g := newExtGate(t, "hr", acmeMap(), config.AuthExternalGate{CallbackURL: "https://gate.example/login",
+		AllowedReturnTo: []string{"https://app.example/welcome"}})
+	f := extFixture(t, g)
+	alice, mallory := browserFor(t), browserFor(t)
+	_, stateA := beginLogin(t, f, alice, "hr", "https://app.example/welcome")
+	_, stateM := beginLogin(t, f, mallory, "hr", "")
+	assertion := g.sign(t, "login", map[string]any{"login_state": stateA}, nil)
+	if resp := completeLogin(t, f, mallory, "hr", stateM, assertion); !refusedToLoginPage(resp) {
+		t.Fatalf("alice's assertion under mallory's login: %d → %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp := completeLogin(t, f, alice, "hr", stateA, assertion); resp.StatusCode != http.StatusSeeOther ||
+		resp.Header.Get("Location") != "https://app.example/welcome" {
+		t.Fatalf("alice's own return after the misdelivery: %d → %q (the assertion was spent)",
+			resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 

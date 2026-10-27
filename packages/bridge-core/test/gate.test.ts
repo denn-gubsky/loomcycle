@@ -242,3 +242,21 @@ describe("gate key loading", () => {
     await expect(loadGateKey({})).rejects.toThrow(/required/);
   });
 });
+
+describe("keyFromPrivate with malformed key material", () => {
+  it("never echoes the key into the error a start-up crash would log", () => {
+    const secretish = "SECRETSECRETSECRET";
+    for (const material of [`{"kty":"OKP","d":${secretish}`, `-----BEGIN PRIVATE KEY-----\n${secretish}\n-----END PRIVATE KEY-----`]) {
+      let message = "";
+      try {
+        keyFromPrivate(material);
+      } catch (err) {
+        message = String((err as Error).message);
+      }
+      expect(message).not.toBe("");
+      // Node quotes only a prefix of the input ("SECRETSECR…"), so look for
+      // any piece of it.
+      expect(message).not.toContain("SECRET");
+    }
+  });
+});

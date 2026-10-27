@@ -3,8 +3,6 @@ package lifecycle
 import (
 	"testing"
 	"time"
-
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 const day = 24 * time.Hour
@@ -14,7 +12,7 @@ const day = 24 * time.Hour
 // after the unbind is ever due.
 func TestNext_StagesNeverSkip(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	r := Policy{UnbindAfter: 7 * day, EraseAfter: 30 * day}.Start("acme", "alice", "tg", "revoked", "gate:tg", t0)
+	r := Policy{UnbindAfter: 7 * day, EraseAfter: 30 * day}.Start(t0)
 	if got := Next(r, t0.Add(6*day)); got != StageNone {
 		t.Fatalf("before unbind_after: %q", got)
 	}
@@ -33,7 +31,7 @@ func TestNext_StagesNeverSkip(t *testing.T) {
 		t.Fatalf("erased: %q", got)
 	}
 
-	never := Policy{UnbindAfter: 7 * day}.Start("acme", "bob", "", "dormant", "", t0)
+	never := Policy{UnbindAfter: 7 * day}.Start(t0)
 	if !never.EraseDueAt.IsZero() {
 		t.Fatalf("erase_after never scheduled an erase at %v", never.EraseDueAt)
 	}
@@ -45,14 +43,14 @@ func TestNext_StagesNeverSkip(t *testing.T) {
 
 func TestPolicyStart_ErasesNoEarlierThanTheUnbind(t *testing.T) {
 	t0 := time.Now()
-	r := Policy{UnbindAfter: 7 * day, EraseAfter: day}.Start("a", "s", "", "operator", "", t0)
+	r := Policy{UnbindAfter: 7 * day, EraseAfter: day}.Start(t0)
 	if r.EraseDueAt.Before(r.UnbindDueAt) {
 		t.Fatalf("erase due %v before unbind due %v", r.EraseDueAt, r.UnbindDueAt)
 	}
 }
 
 func TestMissing_ListsOnlyIdentitiesTheSyncNoLongerAsserts(t *testing.T) {
-	ids := []store.UserIdentityRow{
+	ids := []Identity{
 		{TenantID: "b", Subject: "tg:3", ExternalSubject: "3"},
 		{TenantID: "a", Subject: "tg:1", ExternalSubject: "1"},
 		{TenantID: "a", Subject: "tg:2", ExternalSubject: "2"},

@@ -191,3 +191,59 @@ func TestResolveExternalGate_StrictCountsOnlyABrowserGate(t *testing.T) {
 		t.Fatalf("discovery default = %q", d)
 	}
 }
+
+// One gate's key never verifies another gate's assertions (RFC FA §8.1). The
+// gate's name is only a claim (iss), so two gates on one key would let either
+// sign as the other — an untrusted bridge as a trusted, authoritative gate.
+// The load refuses a key two gates share, and an HMAC secret env var that
+// already holds another credential.
+func TestResolveExternalGate_AGateKeyIsThatGatesAlone(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TEST_GATE_A", strings.Repeat("a", 40))
+	t.Setenv("LOOMCYCLE_TEST_GATE_B", strings.Repeat("a", 40))
+	t.Setenv("LOOMCYCLE_TEST_GATE_C", strings.Repeat("c", 40))
+	idm := &AuthIdentityMapConfig{Tenant: "acme"}
+	hmacGate := func(env string) AuthGateConfig {
+		g := AuthGateConfig{Kind: "external", IdentityMap: idm}
+		g.External.HMACSecretEnv = env
+		return g
+	}
+	pub := edJWK(t)
+	pubGate := func() AuthGateConfig {
+		g := AuthGateConfig{Kind: "external", IdentityMap: idm}
+		g.External.PublicKey = pub
+		return g
+	}
+	for name, gates := range map[string]map[string]AuthGateConfig{
+		"one env, two gates":        {"tg": hmacGate("LOOMCYCLE_TEST_GATE_A"), "corp": hmacGate("LOOMCYCLE_TEST_GATE_A")},
+		"one secret under two envs": {"tg": hmacGate("LOOMCYCLE_TEST_GATE_A"), "corp": hmacGate("LOOMCYCLE_TEST_GATE_B")},
+		"one public key, two gates": {"tg": pubGate(), "corp": pubGate()},
+	} {
+		c := &Config{Auth: AuthConfig{Gates: gates}}
+		c.Env.PublicURL = "https://lc.example"
+		if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "same key") {
+			t.Errorf("%s: err = %v, want a refusal naming the shared key", name, err)
+		}
+	}
+	// Distinct keys load.
+	c := &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"tg": hmacGate("LOOMCYCLE_TEST_GATE_A"), "corp": hmacGate("LOOMCYCLE_TEST_GATE_C"), "hr": pubGate()}}}
+	c.Env.PublicURL = "https://lc.example"
+	if err := resolveAuth(c); err != nil {
+		t.Fatalf("distinct keys: %v", err)
+	}
+	// A principal's bearer env is not a gate secret: whoever holds that bearer
+	// could forge the gate's assertions.
+	c = &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"tg": hmacGate("LOOMCYCLE_TEST_GATE_C")}},
+		Principals: map[string]PrincipalDef{"ops": {TokenEnv: "LOOMCYCLE_TEST_GATE_C"}}}
+	c.Env.PublicURL = "https://lc.example"
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "another credential") {
+		t.Errorf("a principal's token_env as a gate secret: %v", err)
+	}
+	// Nor an identity provider's client secret.
+	og := AuthGateConfig{Kind: "oauth", Preset: "github", ClientID: "cid", ClientSecretEnv: "LOOMCYCLE_TEST_GATE_C", IdentityMap: idm}
+	og.AllowAnyAccount = true
+	c = &Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"tg": hmacGate("LOOMCYCLE_TEST_GATE_C"), "gh": og}}}
+	c.Env.PublicURL = "https://lc.example"
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "another credential") {
+		t.Errorf("an OAuth client secret as a gate secret: %v", err)
+	}
+}

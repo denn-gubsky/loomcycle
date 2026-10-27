@@ -26,6 +26,9 @@ const (
 	// minDormantAfter keeps a typo ("90m") from disabling every user on the
 	// next sweep.
 	minDormantAfter = 24 * time.Hour
+	// minEraseAfter keeps a typo ("7m" for 7d) from erasing a revoked user
+	// on the next sweep: an erasure cannot be undone.
+	minEraseAfter   = 24 * time.Hour
 	maxLifecycleAge = 10 * 365 * 24 * time.Hour
 	// ReactivateOperator: only an operator re-enables a removed user.
 	ReactivateOperator = "operator"
@@ -119,6 +122,9 @@ func resolveRemoval(c *Config) (AuthRemovalPolicy, error) {
 		}
 		if e != "never" && r.EraseAfter == 0 {
 			return r, fmt.Errorf("auth.lifecycle.on_removed.erase_after: must be positive, or never")
+		}
+		if r.EraseAfter > 0 && r.EraseAfter < minEraseAfter {
+			return r, fmt.Errorf("auth.lifecycle.on_removed.erase_after: at least %s, or never", minEraseAfter)
 		}
 		if r.EraseAfter > 0 && r.EraseAfter < r.UnbindAfter {
 			return r, fmt.Errorf("auth.lifecycle.on_removed.erase_after (%s) is before unbind_after (%s): the stages never skip", r.EraseAfter, r.UnbindAfter)

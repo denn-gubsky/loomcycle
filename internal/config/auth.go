@@ -520,6 +520,9 @@ func resolveAuth(c *Config) error {
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
 	}
+	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
+		return err
+	}
 	// Strict mode with no gate a person can sign in through would lock
 	// everyone out of the Web UI.
 	if p.Strict() && interactive == 0 {

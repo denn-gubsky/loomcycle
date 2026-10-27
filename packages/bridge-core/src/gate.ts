@@ -34,13 +34,28 @@ export function keyFromPrivate(material: string, kid?: string): GateKey {
   const text = material.trim();
   let key: KeyObject;
   let jwkKid: string | undefined;
+  // A parse error may quote the input, and this input is the private key: it
+  // would land in a start-up crash log. Every failure gets a fixed message.
   if (text.startsWith("{")) {
-    const jwk = JSON.parse(text) as Record<string, string>;
+    let jwk: Record<string, string>;
+    try {
+      jwk = JSON.parse(text) as Record<string, string>;
+    } catch {
+      throw new Error("the gate key is not valid JSON (a JWK)");
+    }
     if (!jwk.d) throw new Error("the gate key JWK has no private part (d)");
     jwkKid = jwk.kid;
-    key = createPrivateKey({ key: jwk, format: "jwk" });
+    try {
+      key = createPrivateKey({ key: jwk, format: "jwk" });
+    } catch {
+      throw new Error("the gate key JWK is not a valid private key");
+    }
   } else {
-    key = createPrivateKey(text);
+    try {
+      key = createPrivateKey(text);
+    } catch {
+      throw new Error("the gate key is not a valid private key (a JWK, or a PKCS#8 PEM)");
+    }
   }
   const type = key.asymmetricKeyType;
   const id = kid ?? jwkKid;
@@ -53,8 +68,8 @@ export function keyFromPrivate(material: string, kid?: string): GateKey {
   throw new Error("the gate key must be Ed25519 or P-256");
 }
 
-/** keyFromSecret builds an HS256 key for a gate that shares a `$cred:` secret
- *  with a co-located loomcycle. At least 32 bytes, as loomcycle requires. */
+/** keyFromSecret builds an HS256 key for a gate that shares a secret with a
+ *  co-located loomcycle (its hmac_secret_env; never a `$cred:` credential). At least 32 bytes, as loomcycle requires. */
 export function keyFromSecret(secret: string): GateKey {
   const buf = Buffer.from(secret, "utf8");
   if (buf.length < 32) throw new Error("the gate secret must be at least 32 bytes");

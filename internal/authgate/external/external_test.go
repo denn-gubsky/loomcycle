@@ -267,7 +267,7 @@ func TestVerify_ALoginNeedsItsStateAndNothingElseCarriesOne(t *testing.T) {
 func TestVerify_TheKeyDecidesTheAlgorithmNotTheHeader(t *testing.T) {
 	ed := edSigner(t)
 	v := verifier("tg", ed.pub, &memReplay{})
-	pub := []byte(ed.pub.verify.(ed25519.PublicKey))
+	pub := []byte(ed.pub.VerificationKey().(ed25519.PublicKey))
 	confused := signer{alg: jose.HS256, key: append(pub, pub...)}
 	tok := confused.sign(t, claimsFor("tg", time.Now()), map[string]any{"lc_use": "assert"})
 	if _, err := v.Verify(context.Background(), tok, UseAssert); !errors.Is(err, ErrInvalid) {

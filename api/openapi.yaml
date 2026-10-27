@@ -845,27 +845,6 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
-  /v1/_auth/login/{gate}:
-    get:
-      tags: [auth]
-      summary: Start a browser sign-in through an external gate.
-      description: |
-        Records a one-time login state (10 minutes) bound to this browser by
-        the `__Host-lc_login` cookie (`lc_login` over plain HTTP), then
-        redirects (303) to the gate's `callback_url` with `login_state`, `aud`
-        (this server's issuer URL, its LOOMCYCLE_PUBLIC_URL) and `complete`
-        (where the gate sends the browser back). `return_to` must be a `/ui`
-        path or exactly one of the gate's `allowed_return_to`.
-      operationId: externalSignInBegin
-      security: []
-      parameters:
-        - { $ref: "#/components/parameters/Gate" }
-        - { name: return_to, in: query, required: false, schema: { type: string } }
-      responses:
-        "303": { description: To the gate's callback_url. }
-        "400": { description: "`return_to_refused`." }
-        "403": { description: "`insecure_transport`." }
-        "404": { description: "`gate_unavailable`: no such gate, or one without a browser sign-in." }
   /v1/_auth/assert:
     post:
       tags: [auth]
@@ -1195,13 +1174,18 @@ paths:
   /v1/_auth/login/{gate}:
     get:
       tags: [auth]
-      summary: Start a sign-in through an OIDC gate (a top-level navigation).
+      summary: Start a sign-in through a redirect gate — OIDC, OAuth or external (a top-level navigation).
       description: |
-        RFC FA P1. Unauthenticated; throttled per client source. Sets a short
+        RFC FA P1/P4. Unauthenticated; throttled per client source. Sets a short
         `__Host-lc_login` (or `lc_login` over HTTP) cookie bound to a single-use
-        state and answers 303 to the provider (code + PKCE S256 + nonce). A
-        refusal is a 303 to `/ui/login?error=<code>` (`return_to_refused`,
-        `too_many_attempts`, `insecure_transport`, `gate_unavailable`).
+        state and answers 303 to the provider (OIDC/OAuth: code + PKCE S256,
+        and a nonce for OIDC). For an external gate the 303 is to the gate's
+        `callback_url` with `login_state`, `aud` (this server's issuer URL, its
+        LOOMCYCLE_PUBLIC_URL) and `complete` (where the gate sends the browser
+        back, carrying the state); an external gate without a `callback_url`
+        has no browser sign-in (404). A refusal is a 303 to
+        `/ui/login?error=<code>` (`return_to_refused`, `too_many_attempts`,
+        `insecure_transport`, `gate_unavailable`).
       operationId: redirectSignInStart
       security: []
       parameters:

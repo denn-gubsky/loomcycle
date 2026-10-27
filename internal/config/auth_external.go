@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
-	"github.com/denn-gubsky/loomcycle/internal/authgate/external"
+	"github.com/denn-gubsky/loomcycle/internal/auth/gatekey"
 )
 
 // RFC FA §3.5: an external gate — a separate process (a bridge, a website, a
@@ -47,9 +48,13 @@ type AuthExternalGateConfig struct {
 	CallbackURL   string `yaml:"callback_url,omitempty"`
 	// ProbeURL is where the gate serves /.well-known/loomcycle-authgate;
 	// default: callback_url's origin.
-	ProbeURL    string                 `yaml:"probe_url,omitempty"`
-	IssuedToken *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
-	OnRemoved   *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
+	ProbeURL string `yaml:"probe_url,omitempty"`
+	// MaxSyncRemovals caps the users one complete sync may remove: a count
+	// ("25") or a share of the gate's linked users ("20%"). Default: 10%,
+	// never fewer than five.
+	MaxSyncRemovals string                 `yaml:"max_sync_removals,omitempty"`
+	IssuedToken     *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
+	OnRemoved       *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
 }
 
 // AuthIssuedTokenConfig is the ceiling of the tokens a gate gets issued.
@@ -69,7 +74,7 @@ type AuthExternalGate struct {
 	// Key is the pinned verification key: a public key from this config,
 	// or an HS256 secret from the env var HMACSecretEnv names. Both are
 	// operator-controlled; nothing a tenant can write verifies an identity.
-	Key             external.Key
+	Key             gatekey.Key
 	HMACSecretEnv   string
 	CallbackURL     string
 	DiscoveryURL    string
@@ -80,9 +85,36 @@ type AuthExternalGate struct {
 	TokenTTL          time.Duration
 	TokenRestrictions auth.Restrictions
 	MaxActive         int
+	// MaxSyncRemovals / MaxSyncRemovalsPercent: the complete-sync removal
+	// ceiling, a count or a percentage of the gate's linked users (one is
+	// set; neither is the default, SyncRemovalCeiling).
+	MaxSyncRemovals        int
+	MaxSyncRemovalsPercent int
 	// Removal is the gate's removal policy: the deployment's, with the
 	// gate's on_removed over it.
 	Removal AuthRemovalPolicy
+}
+
+// Default complete-sync removal ceiling: 10% of the gate's linked users,
+// and never fewer than five, so a small deployment can still offboard a few
+// people in one sync.
+const (
+	defaultSyncRemovalPercent = 10
+	minSyncRemovalCeiling     = 5
+)
+
+// SyncRemovalCeiling is how many users one complete sync may remove, of
+// linked users linked to the gate. A sync over it is refused whole: a gate
+// that is compromised, or whose platform API returned only a first page,
+// must not disable everyone in one request.
+func (g *AuthExternalGate) SyncRemovalCeiling(linked int) int {
+	switch {
+	case g.MaxSyncRemovals > 0:
+		return g.MaxSyncRemovals
+	case g.MaxSyncRemovalsPercent > 0:
+		return linked * g.MaxSyncRemovalsPercent / 100
+	}
+	return max(minSyncRemovalCeiling, linked*defaultSyncRemovalPercent/100)
 }
 
 // Interactive reports whether a browser can sign in through the gate.
@@ -131,7 +163,7 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		if err != nil {
 			return nil, fmt.Errorf("%s.public_key: %w", where, err)
 		}
-		if out.Key, err = external.ParsePublicJWK(raw); err != nil {
+		if out.Key, err = gatekey.ParsePublicJWK(raw); err != nil {
 			return nil, fmt.Errorf("%s.public_key: %w", where, err)
 		}
 	case e.HMACSecretEnv != "":
@@ -147,12 +179,26 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 			return nil, fmt.Errorf("%s.hmac_secret_env: %s is empty", where, env)
 		}
 		var err error
-		if out.Key, err = external.HMACKey([]byte(secret)); err != nil {
+		if out.Key, err = gatekey.HMACKey([]byte(secret)); err != nil {
 			return nil, fmt.Errorf("%s.hmac_secret_env: %w", where, err)
 		}
 		out.HMACSecretEnv = env
 	default:
 		return nil, fmt.Errorf("%s: public_key (an Ed25519 or P-256 public JWK) or hmac_secret_env is required", where)
+	}
+	if v := strings.TrimSpace(e.MaxSyncRemovals); v != "" {
+		n, pct := strings.CutSuffix(v, "%")
+		k, err := strconv.Atoi(strings.TrimSpace(n))
+		switch {
+		case err != nil || k < 1:
+			return nil, fmt.Errorf("%s.max_sync_removals: %q must be a positive count (25) or percentage (20%%)", where, v)
+		case pct && k > 100:
+			return nil, fmt.Errorf("%s.max_sync_removals: %q is over 100%%", where, v)
+		case pct:
+			out.MaxSyncRemovalsPercent = k
+		default:
+			out.MaxSyncRemovals = k
+		}
 	}
 	var err error
 	if e.CallbackURL != "" {
@@ -233,4 +279,46 @@ func mergeOnRemoved(base, over AuthOnRemovedConfig) AuthOnRemovedConfig {
 		base.Reactivate = over.Reactivate
 	}
 	return base
+}
+
+// checkExternalGateKeysExclusive refuses an external gate key that is not that
+// gate's alone (RFC FA §8.1: one gate's key never verifies another's). A gate
+// is named in its assertions' iss, which the key holder writes, so two gates
+// on one key — the same public key, or the same HMAC secret under one env var
+// or two — would let either gate sign as the other: an untrusted bridge as a
+// trusted, authoritative gate. And an HMAC secret env var that also holds a
+// principal's bearer or an identity provider's client secret would let
+// whoever holds that credential forge the gate's assertions.
+func checkExternalGateKeysExclusive(c *Config, gates []AuthGate) error {
+	other := map[string]string{}
+	for name, pd := range c.Principals {
+		if env := strings.TrimSpace(pd.TokenEnv); env != "" {
+			other[env] = "principals." + name + ".token_env"
+		}
+	}
+	for name, g := range c.Auth.Gates {
+		if env := strings.TrimSpace(g.ClientSecretEnv); env != "" {
+			other[env] = "auth.gates." + name + ".client_secret_env"
+		}
+	}
+	var ext []AuthGate
+	for _, g := range gates {
+		if g.External == nil {
+			continue
+		}
+		if env := g.External.HMACSecretEnv; env != "" {
+			if what, ok := other[env]; ok {
+				return fmt.Errorf("auth.gates.%s.hmac_secret_env: %s already holds another credential (%s); "+
+					"give the gate a secret of its own", g.Name, env, what)
+			}
+		}
+		for _, prev := range ext {
+			if prev.External.Key.Same(g.External.Key) {
+				return fmt.Errorf("auth.gates.%s and auth.gates.%s have the same key: either could sign as the other; "+
+					"give each gate a key of its own", prev.Name, g.Name)
+			}
+		}
+		ext = append(ext, g)
+	}
+	return nil
 }

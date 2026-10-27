@@ -2,14 +2,14 @@
 // each stage of a removed user's removal is due, which stage comes next, and
 // which users an authoritative gate's sync no longer asserts. The HTTP server
 // carries the decisions out (internal/api/http/authgate_lifecycle.go); keeping
-// them here keeps the "a stage never skips" rule in one testable place.
+// them here keeps the "a stage never skips" rule in one testable place. The
+// package stays below storage: it reads its own Removal and Identity, and the
+// server converts at its store seam.
 package lifecycle
 
 import (
 	"sort"
 	"time"
-
-	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Policy is a removal's timing, fixed when the removal starts.
@@ -20,10 +20,21 @@ type Policy struct {
 	EraseAfter time.Duration
 }
 
-// Start is the removal row for a user disabled at `at`.
-func (p Policy) Start(tenant, subject, gate, reason, by string, at time.Time) store.AuthRemovalRow {
-	r := store.AuthRemovalRow{TenantID: tenant, Subject: subject, Gate: gate, Reason: reason, CreatedBy: by,
-		DisabledAt: at, UnbindDueAt: at.Add(p.UnbindAfter)}
+// Removal is the timing of one user's removal: when it was disabled, when
+// each later stage is due, and when each happened (zero: not yet). A zero
+// EraseDueAt means only an operator erases.
+type Removal struct {
+	DisabledAt  time.Time
+	UnbindDueAt time.Time
+	EraseDueAt  time.Time
+	UnboundAt   time.Time
+	ErasedAt    time.Time
+}
+
+// Start is the timing of a removal whose user is disabled at `at`. The due
+// times are fixed here, so a later policy change never moves them.
+func (p Policy) Start(at time.Time) Removal {
+	r := Removal{DisabledAt: at, UnbindDueAt: at.Add(p.UnbindAfter)}
 	if p.EraseAfter > 0 {
 		r.EraseDueAt = at.Add(p.EraseAfter)
 		if r.EraseDueAt.Before(r.UnbindDueAt) {
@@ -48,7 +59,7 @@ const (
 // Next is the one stage due for r at now. The erase is never next while the
 // unbind has not happened, whatever the clock says, and never at all without
 // an EraseDueAt (an operator erases).
-func Next(r store.AuthRemovalRow, now time.Time) Stage {
+func Next(r Removal, now time.Time) Stage {
 	switch {
 	case r.UnboundAt.IsZero():
 		if !now.Before(r.UnbindDueAt) {
@@ -60,15 +71,23 @@ func Next(r store.AuthRemovalRow, now time.Time) Stage {
 	return StageNone
 }
 
+// Identity is what Missing reads of an identity linked to a gate: the
+// loomcycle user it is, and its subject at the gate.
+type Identity struct {
+	TenantID        string
+	Subject         string
+	ExternalSubject string
+}
+
 // Missing returns the identities at a gate whose external subject the gate's
 // complete sync no longer lists: the users it says are gone. Sorted by
 // (tenant, subject). An identity the gate lists stays, wherever it is.
-func Missing(existing []store.UserIdentityRow, asserted []string) []store.UserIdentityRow {
+func Missing(existing []Identity, asserted []string) []Identity {
 	keep := make(map[string]bool, len(asserted))
 	for _, s := range asserted {
 		keep[s] = true
 	}
-	var out []store.UserIdentityRow
+	var out []Identity
 	for _, id := range existing {
 		if !keep[id.ExternalSubject] {
 			out = append(out, id)

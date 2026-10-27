@@ -25,13 +25,6 @@ package external
 
 import (
 	"context"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/elliptic"
-	_ "crypto/sha256" // registers crypto.SHA256 for the thumbprint
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,6 +32,8 @@ import (
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/denn-gubsky/loomcycle/internal/auth/gatekey"
 )
 
 // Use is what an assertion is for. Each route accepts exactly one, so a JWT
@@ -79,7 +74,6 @@ const (
 	maxGroups       = 256
 	maxGroupLen     = 128
 	maxSyncUsers    = 10000
-	minHMACSecret   = 32
 )
 
 var (
@@ -93,94 +87,15 @@ var (
 	ErrUnavailable = errors.New("external gate: replay cache unavailable")
 )
 
-// Key is a gate's pinned verification key and the one algorithm it verifies.
-type Key struct {
-	alg    jose.SignatureAlgorithm
-	verify any
-	kid    string
-	thumb  string
-}
+// Key is a gate's pinned verification key (internal/auth/gatekey, where the
+// config loader can parse and compare it too).
+type Key = gatekey.Key
 
-// Algorithm is the JWS algorithm this key verifies (EdDSA, ES256 or HS256).
-func (k Key) Algorithm() string { return string(k.alg) }
-
-// KeyID is the JWK's kid, when it had one.
-func (k Key) KeyID() string { return k.kid }
-
-// Fingerprint identifies the key without revealing it: the RFC 7638
-// thumbprint of a public key, or a label for an HMAC secret (whose digest
-// would be an offline-guessable verifier for the secret). For listings and
-// for comparing with what a gate's discovery document says.
-func (k Key) Fingerprint() string { return k.thumb }
-
-// Symmetric reports whether the key is a shared HMAC secret.
-func (k Key) Symmetric() bool { return k.alg == jose.HS256 }
-
-// ParsePublicJWK parses the operator's pinned key: an Ed25519 (kty OKP) or a
-// P-256 (kty EC) PUBLIC JWK. A private key is refused — config holds only what
-// verifies, and a private key there would let anyone who reads the config
-// mint assertions.
-func ParsePublicJWK(raw []byte) (Key, error) {
-	if hasPrivatePart(raw) {
-		return Key{}, errors.New("the JWK holds a private key (\"d\"); register only the public key")
-	}
-	var jwk jose.JSONWebKey
-	if err := jwk.UnmarshalJSON(raw); err != nil {
-		return Key{}, fmt.Errorf("not a JWK: %w", err)
-	}
-	if !jwk.Valid() || !jwk.IsPublic() {
-		return Key{}, errors.New("the JWK is not a valid public key")
-	}
-	var alg jose.SignatureAlgorithm
-	switch pk := jwk.Key.(type) {
-	case ed25519.PublicKey:
-		alg = jose.EdDSA
-	case *ecdsa.PublicKey:
-		if pk.Curve != elliptic.P256() {
-			return Key{}, errors.New("an EC key must be on P-256 (ES256)")
-		}
-		alg = jose.ES256
-	default:
-		return Key{}, errors.New("the key must be Ed25519 (kty OKP) or P-256 (kty EC)")
-	}
-	if jwk.Algorithm != "" && jwk.Algorithm != string(alg) {
-		return Key{}, fmt.Errorf("the JWK says alg %q but the key is for %s", jwk.Algorithm, alg)
-	}
-	if jwk.Use != "" && jwk.Use != "sig" {
-		return Key{}, fmt.Errorf("the JWK's use is %q, not sig", jwk.Use)
-	}
-	tp, err := jwk.Thumbprint(crypto.SHA256)
-	if err != nil {
-		return Key{}, err
-	}
-	return Key{alg: alg, verify: jwk.Key, kid: jwk.KeyID, thumb: "sha256:" + base64.RawURLEncoding.EncodeToString(tp)}, nil
-}
-
-// hasPrivatePart reports whether a JWK object carries a private member. go-jose
-// would parse such a key as a private key and verify with its public half;
-// refusing it outright is clearer.
-func hasPrivatePart(raw []byte) bool {
-	var m map[string]json.RawMessage
-	if json.Unmarshal(raw, &m) != nil {
-		return false
-	}
-	for _, k := range []string{"d", "p", "q", "dp", "dq", "qi", "k"} {
-		if _, ok := m[k]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// HMACKey makes a key from a shared secret, for a gate that runs beside
-// loomcycle and holds the same `$cred:` credential. At least 32 bytes: HS256
-// is only as strong as its secret.
-func HMACKey(secret []byte) (Key, error) {
-	if len(secret) < minHMACSecret {
-		return Key{}, fmt.Errorf("an HMAC secret must be at least %d bytes, got %d", minHMACSecret, len(secret))
-	}
-	return Key{alg: jose.HS256, verify: append([]byte(nil), secret...), thumb: "hmac-sha256"}, nil
-}
+// ParsePublicJWK and HMACKey build a Key; see internal/auth/gatekey.
+var (
+	ParsePublicJWK = gatekey.ParsePublicJWK
+	HMACKey        = gatekey.HMACKey
+)
 
 // ReplayCache records jtis. UseOnce stores (gate, jti) until `until` and
 // reports whether it was new; false means the jti was already used. now is
@@ -285,25 +200,35 @@ type wireClaims struct {
 // a log line (never for the client: tell it only that the assertion was
 // refused).
 func (v *Verifier) Verify(ctx context.Context, compact string, use Use) (Claims, error) {
-	if v == nil || v.Key.verify == nil || v.Gate == "" || v.Audience == "" || v.Replay == nil {
+	return v.VerifyFor(ctx, compact, use, nil)
+}
+
+// VerifyFor is Verify with one more check, accept, that runs after the
+// signature and claims hold and BEFORE the jti is recorded: an assertion it
+// refuses is not used up. A browser login passes its login-state comparison
+// here, so an assertion carried to someone else's login is refused without
+// costing its rightful browser the sign-in (RFC FA §8.1: a jti is recorded
+// only after authN and authZ). An accept refusal is ErrInvalid.
+func (v *Verifier) VerifyFor(ctx context.Context, compact string, use Use, accept func(Claims) error) (Claims, error) {
+	if v == nil || v.Key.VerificationKey() == nil || v.Gate == "" || v.Audience == "" || v.Replay == nil {
 		return Claims{}, fmt.Errorf("%w: verifier is not configured", ErrInvalid)
 	}
 	if compact == "" || len(compact) > MaxCompactBytes {
 		return Claims{}, fmt.Errorf("%w: empty or oversized", ErrInvalid)
 	}
-	tok, err := jwt.ParseSigned(compact, []jose.SignatureAlgorithm{v.Key.alg})
+	tok, err := jwt.ParseSigned(compact, []jose.SignatureAlgorithm{v.Key.JOSEAlgorithm()})
 	if err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	if len(tok.Headers) != 1 {
 		return Claims{}, fmt.Errorf("%w: want exactly one signature", ErrInvalid)
 	}
-	if kid := tok.Headers[0].KeyID; kid != "" && v.Key.kid != "" && kid != v.Key.kid {
+	if kid := tok.Headers[0].KeyID; kid != "" && v.Key.KeyID() != "" && kid != v.Key.KeyID() {
 		return Claims{}, fmt.Errorf("%w: kid %q is not the gate's key", ErrInvalid, kid)
 	}
 	var std jwt.Claims
 	var wc wireClaims
-	if err := tok.Claims(v.Key.verify, &std, &wc); err != nil {
+	if err := tok.Claims(v.Key.VerificationKey(), &std, &wc); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	now := time.Now()
@@ -313,6 +238,11 @@ func (v *Verifier) Verify(ctx context.Context, compact string, use Use) (Claims,
 	c, err := v.check(std, wc, use, now)
 	if err != nil {
 		return Claims{}, err
+	}
+	if accept != nil {
+		if err := accept(c); err != nil {
+			return Claims{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
 	}
 	// Last, after the signature, aud and exp held: only an assertion this
 	// gate signed reaches the cache, so nobody else can grow it or burn a

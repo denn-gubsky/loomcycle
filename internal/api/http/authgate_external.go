@@ -162,12 +162,19 @@ func (s *Server) verifyGateRequest(w http.ResponseWriter, r *http.Request, use e
 		writeJSONError(w, http.StatusConflict, "open_mode", "authentication is off on this server")
 		return config.AuthGate{}, external.Claims{}, false
 	}
+	// A blocked source is still verified: a request the gate's key signed is
+	// not junk, and a source shared with a stranger (a NAT, a proxy) must not
+	// let the stranger's refusals shut the gate out. Only a refusal from a
+	// blocked source answers 429; verifying a JWT is cheap next to what the
+	// block guards (the body is capped, the replay cache is reached only by a
+	// signed assertion).
 	srcKey := s.gateSourceKey(r)
-	if s.sourceBlocked(ctx, srcKey) {
-		writeJSONError(w, http.StatusTooManyRequests, "throttled", "too many refused requests; try again later")
-		return config.AuthGate{}, external.Claims{}, false
-	}
+	blocked := s.sourceBlocked(ctx, srcKey)
 	refuse := func(gate, reason string) {
+		if blocked {
+			writeJSONError(w, http.StatusTooManyRequests, "throttled", "too many refused requests; try again later")
+			return
+		}
 		s.recordSourceFailure(ctx, srcKey, gateSourceBlockFor)
 		s.recordAuthEvent(audit.Event{Action: "auth_assertion_refused", AuthGate: gate, AuthReason: reason, SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusUnauthorized, "invalid_assertion", "the assertion was refused")
@@ -273,6 +280,36 @@ func (s *Server) handleAuthSync(w http.ResponseWriter, r *http.Request) {
 	listed := make([]string, 0, len(c.Users))
 	for _, u := range c.Users {
 		listed = append(listed, u.Subject)
+	}
+	// Who a complete sync removes is decided, and held to the gate's ceiling,
+	// before anyone is provisioned, so a refused sync changes nothing.
+	var remove []lifecycle.Identity
+	if c.Complete && g.Identity.AuthoritativeForUsers {
+		ids, err := s.store.UserIdentityListGate(ctx, g.Name)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "sync_failed", "the sync stopped part-way; it is safe to repeat")
+			return
+		}
+		linked := make([]lifecycle.Identity, len(ids))
+		for i, id := range ids {
+			linked[i] = lifecycle.Identity{TenantID: id.TenantID, Subject: id.Subject, ExternalSubject: id.ExternalSubject}
+		}
+		for _, id := range lifecycle.Missing(linked, listed) {
+			if _, err := s.store.AuthRemovalGet(ctx, id.TenantID, id.Subject); err == nil {
+				res.Unchanged++
+				continue
+			}
+			remove = append(remove, id)
+		}
+		if ceiling := g.External.SyncRemovalCeiling(len(ids)); len(remove) > ceiling {
+			s.recordAuthEvent(audit.Event{Action: "auth_gate_sync_refused", AuthGate: g.Name, SourceAddr: s.clientSource(r),
+				AuthReason: fmt.Sprintf("would remove %d of %d users, over the ceiling of %d", len(remove), len(ids), ceiling)})
+			writeJSONError(w, http.StatusConflict, "sync_removal_limit", fmt.Sprintf(
+				"this sync would remove %d users, over the gate's ceiling of %d (max_sync_removals); nothing was changed", len(remove), ceiling))
+			return
+		}
+	}
+	for _, u := range c.Users {
 		uc := external.Claims{Gate: c.Gate, Subject: u.Subject, Email: u.Email, EmailVerified: u.EmailVerified,
 			DisplayName: u.DisplayName, Groups: u.Groups, Tenant: u.Tenant, AccessMode: u.AccessMode,
 			AuthTime: c.IssuedAt, Expiry: c.Expiry}
@@ -290,27 +327,16 @@ func (s *Server) handleAuthSync(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if c.Complete && g.Identity.AuthoritativeForUsers {
-		ids, err := s.store.UserIdentityListGate(ctx, g.Name)
-		if err != nil {
+	for _, id := range remove {
+		if err := s.removeThroughGate(ctx, g, id.TenantID, id.Subject, store.RemovalReasonSync); err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			slog.Error("auth: sync removal failed", "gate", g.Name, "err", err)
 			writeJSONError(w, http.StatusInternalServerError, "sync_failed", "the sync stopped part-way; it is safe to repeat")
 			return
 		}
-		for _, id := range lifecycle.Missing(ids, listed) {
-			if _, err := s.store.AuthRemovalGet(ctx, id.TenantID, id.Subject); err == nil {
-				res.Unchanged++
-				continue
-			}
-			if err := s.removeThroughGate(ctx, g, id.TenantID, id.Subject, store.RemovalReasonSync); err != nil {
-				if isNotFound(err) {
-					continue
-				}
-				slog.Error("auth: sync removal failed", "gate", g.Name, "err", err)
-				writeJSONError(w, http.StatusInternalServerError, "sync_failed", "the sync stopped part-way; it is safe to repeat")
-				return
-			}
-			res.Removed++
-		}
+		res.Removed++
 	}
 	s.recordAuthEvent(audit.Event{Action: "auth_gate_synced", AuthGate: g.Name, SourceAddr: s.clientSource(r),
 		AuthReason: fmt.Sprintf("created %d, updated %d, refused %d, removed %d", res.Created, res.Updated, res.Refused, res.Removed)})
@@ -569,17 +595,21 @@ func (s *Server) completeExternalLogin(w http.ResponseWriter, r *http.Request, g
 		loginRedirect(w, r, name, "gate_unavailable")
 		return
 	}
-	c, err := v.Verify(ctx, assertion, external.UseLogin)
+	// The login state is compared inside the verification, before the jti is
+	// recorded, so an assertion carried to another browser's login is not
+	// used up by the attempt.
+	c, err := v.VerifyFor(ctx, assertion, external.UseLogin, func(c external.Claims) error {
+		if subtle.ConstantTimeCompare([]byte(c.LoginState), []byte(ls.State)) != 1 {
+			return errors.New("the assertion was made for another login")
+		}
+		return nil
+	})
 	if errors.Is(err, external.ErrUnavailable) {
 		loginRedirect(w, r, name, "gate_unavailable")
 		return
 	}
 	if err != nil {
 		refuse(err.Error())
-		return
-	}
-	if subtle.ConstantTimeCompare([]byte(c.LoginState), []byte(ls.State)) != 1 {
-		refuse("the assertion was made for another login")
 		return
 	}
 	if s.sessionRefusal(r) != "" {

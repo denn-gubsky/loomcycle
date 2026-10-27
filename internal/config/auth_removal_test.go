@@ -55,10 +55,12 @@ func TestResolveRemoval_RefusesWhatItCannotHonour(t *testing.T) {
 		"erase before unbind":      {on: AuthOnRemovedConfig{UnbindAfter: "7d", EraseAfter: "1d"}, audit: true, want: "never skip"},
 		"erase with no audit sink": {on: AuthOnRemovedConfig{EraseAfter: "30d"}, want: "LOOMCYCLE_AUDIT_LOG_PATH"},
 		"erase zero":               {on: AuthOnRemovedConfig{EraseAfter: "0s"}, audit: true, want: "positive"},
-		"reactivate auto":          {on: AuthOnRemovedConfig{Reactivate: "auto"}, want: "not supported yet"},
-		"reactivate unknown":       {on: AuthOnRemovedConfig{Reactivate: "sometimes"}, want: "want operator"},
-		"dormant too short":        {dormant: "90m", want: "at least"},
-		"dormant garbage":          {dormant: "quarterly", want: "not a duration"},
+		// A typo for 7d must not erase a revoked user within the hour.
+		"erase too soon":     {on: AuthOnRemovedConfig{UnbindAfter: "0s", EraseAfter: "7m"}, audit: true, want: "at least"},
+		"reactivate auto":    {on: AuthOnRemovedConfig{Reactivate: "auto"}, want: "not supported yet"},
+		"reactivate unknown": {on: AuthOnRemovedConfig{Reactivate: "sometimes"}, want: "want operator"},
+		"dormant too short":  {dormant: "90m", want: "at least"},
+		"dormant garbage":    {dormant: "quarterly", want: "not a duration"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := removalCfg(tc.on, tc.dormant)
