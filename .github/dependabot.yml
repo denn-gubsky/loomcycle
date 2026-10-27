@@ -18,6 +18,9 @@
 #   and examples/ compose files are illustrations; neither is scanned.
 # - The golang base images track the Go line CI builds with (ci.yml,
 #   release.yml, go.mod); moving to a new Go minor is a toolchain decision.
+# - modernc.org/sqlite 1.61.x: v1.61.0 (with modernc.org/libc v1.79.0) makes
+#   CI's race jobs report data races inside encoding/json, and v1.60.1 does not
+#   (#2173, closed). Drop the ignore once a release passes the race jobs.
 
 version: 2
 
@@ -41,6 +44,10 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # See the header: 1.61.x trips the race jobs.
+      - dependency-name: "modernc.org/sqlite"
+        versions: ["1.61.x"]
     groups:
       # gbash and its contrib/awk and contrib/jq modules release in lockstep;
       # one PR moves all three, apart from every other Go update. A group listed
