@@ -278,22 +278,6 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		// RFC FA P4: GET /v1/_authgate lists the configured gates and probes
 		// the external ones: the deployment's sign-in configuration.
 		return instance("read", "runtime", "config"), true
-	case name == "auth":
-		// RFC FA: the /v1/_auth/* routes run before any principal exists.
-		// The sign-in, invite and reset posts establish one; an external
-		// gate's login return, assert, revoke and sync are authenticated by
-		// the gate's own signature under its pinned key and held to its
-		// identity_map; logout ends the caller's own session; the account
-		// routes act on the caller's own credentials. No ACL question fits.
-		return Surface{}, false
-	case name == "authgate":
-		// RFC FA P2: the password gate's invites, resets and logins provision
-		// access for users. Every route asks `manage`, reads included: who
-		// holds an open invite is the operator's business, and a grant of
-		// roster reads must not reach it.
-		return instance("manage", "principal", "user:*"), true
-	case name == "tenants":
-		return instance("read", "runtime", "tenants"), true
 	case name == "auth" && len(rest) >= 2 && rest[1] == "tenant-policies":
 		// RFC FA P5: a tenant's gate policy is deployment administration.
 		return instance(readOrManage(method), "runtime", "tenants"), true
@@ -312,6 +296,22 @@ func HTTPSurface(method, path string) (Surface, bool) {
 	case name == "auth" && len(rest) == 3 && rest[1] == "token" && rest[2] == "revoke":
 		// RFC FA P5: a bearer retiring itself (`loomcycle logout`).
 		return instance("manage", "principal", "token:self"), true
+	case name == "auth":
+		// RFC FA: the /v1/_auth/* routes run before any principal exists.
+		// The sign-in, invite and reset posts establish one; an external
+		// gate's login return, assert, revoke and sync are authenticated by
+		// the gate's own signature under its pinned key and held to its
+		// identity_map; logout ends the caller's own session; the account
+		// routes act on the caller's own credentials. No ACL question fits.
+		return Surface{}, false
+	case name == "authgate":
+		// RFC FA P2: the password gate's invites, resets and logins provision
+		// access for users. Every route asks `manage`, reads included: who
+		// holds an open invite is the operator's business, and a grant of
+		// roster reads must not reach it.
+		return instance("manage", "principal", "user:*"), true
+	case name == "tenants":
+		return instance("read", "runtime", "tenants"), true
 	case name == "snapshots":
 		return instance(readOrManage(method), "runtime", "snapshot"), true
 	case name == "pause", name == "resume":
