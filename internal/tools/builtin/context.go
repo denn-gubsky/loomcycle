@@ -43,6 +43,9 @@ import (
 //	doc         — detailed schema/docstring for one tool by name
 //	permissions — gates that apply to the caller (tool ACL, host policy, scopes)
 //	agents / lineage / evaluations / channels / help / time
+//	can / reach — "may I?" and "what may I?" against the run's own access
+//	              rules (context_identity.go); self's `identity` block reports
+//	              the user row, groups and applied lists behind them
 //
 // (A former `history` op was removed — superseded by the standalone History
 // tool, which adds owner scopes + listing/search/annotation; see its docs.)
@@ -121,7 +124,8 @@ const contextDescription = `Runtime and self introspection, with call instructio
 	`Do NOT use it to browse or read past chats — that is History. ` +
 	`Also answers "what tools do I have? what other agents exist? what's my def's lineage and evaluation history? ` +
 	`what runtime concepts and recipes does loomcycle document? what time is it / how long have I been running?". ` +
-	`Operations: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities. ` +
+	`Operations: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities, can, reach. ` +
+	`op=can answers "may I do this?" (an action on a resource) from your access rules before you try it, and op=reach lists what of one type your rules allow and deny. ` +
 	`op=guide is a compact "how to call your tools" digest — per tool the op enum + required args + a usage hint — the fast way to avoid tool-call mistakes. ` +
 	`Use op=capabilities to find out what this deployment actually supports (vector/full-text memory, SQL memory, ` +
 	`documents, bash, sandbox, scheduler, webhooks, search providers, consolidation) BEFORE calling something that ` +
@@ -136,14 +140,18 @@ const contextDescription = `Runtime and self introspection, with call instructio
 const contextInputSchema = `{
   "type": "object",
   "properties": {
-    "op":              {"type": "string", "enum": ["self","tools","guide","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","state","capabilities"], "description": "Which introspection op to run."},
+    "op":              {"type": "string", "enum": ["self","tools","guide","doc","permissions","agents","lineage","evaluations","channels","help","time","compact","state","capabilities","can","reach"], "description": "Which introspection op to run."},
     "name":            {"type": "string", "description": "doc only: the tool name to fetch detailed docs for."},
     "prefix":          {"type": "string", "description": "agents / channels: optional name prefix filter."},
     "def_id":          {"type": "string", "description": "lineage / evaluations: the agent_defs row id to inspect. Use Context.agents to discover def_ids first."},
     "depth":           {"type": "integer", "description": "lineage only: max depth to walk in each direction (default 10, cap 100)."},
     "include_lineage": {"type": "boolean", "description": "evaluations only: include ancestors' evaluations in the aggregate (default false)."},
     "topic":           {"type": "string", "description": "help only: the topic name to fetch detailed content for. A tool's article is named after the tool (Path); one of its operations is <Tool>/<op> (Path/ls), with call examples. Omitted = return the topic index (name + description for each available topic)."},
-    "query":           {"type": "string", "description": "help only: hybrid search across help topic SECTIONS; returns the top matches as {topic_slug, heading, snippet, score}. Then fetch a match's full content with topic=<topic_slug>. When set, topic is ignored."}
+    "query":           {"type": "string", "description": "help only: hybrid search across help topic SECTIONS; returns the top matches as {topic_slug, heading, snippet, score}. Then fetch a match's full content with topic=<topic_slug>. When set, topic is ignored."},
+    "action":          {"type": "string", "description": "can / reach: the action to ask about, a verb of the resource type (run, read, write, invoke, use, ...)."},
+    "resource":        {"type": "object", "description": "can only: the resource to ask about. type is a resource type (agent, tool, volume, memory, document, ...); id is its name in that type's shape (agent chat/support, memory tenant, document tenant:/kb/x). Omit id to ask about the type as a whole.", "properties": {"type": {"type": "string"}, "id": {"type": "string"}}, "required": ["type"], "additionalProperties": false},
+    "queries":         {"type": "array", "maxItems": 32, "description": "can only: up to 32 questions at once, each {action, resource}, instead of action + resource.", "items": {"type": "object", "properties": {"action": {"type": "string"}, "resource": {"type": "object", "properties": {"type": {"type": "string"}, "id": {"type": "string"}}, "required": ["type"], "additionalProperties": false}}, "required": ["action", "resource"], "additionalProperties": false}},
+    "type":            {"type": "string", "description": "reach only: the resource type to list your allow and deny patterns for (agent, tool, volume, ...)."}
   },
   "required": ["op"],
   "additionalProperties": false
@@ -158,6 +166,12 @@ type contextInput struct {
 	IncludeLineage bool   `json:"include_lineage,omitempty"`
 	Topic          string `json:"topic,omitempty"`
 	Query          string `json:"query,omitempty"`
+	// can / reach. None of these names a subject or a tenant: both ops answer
+	// for the run's own identity only.
+	Action   string       `json:"action,omitempty"`
+	Resource *canResource `json:"resource,omitempty"`
+	Queries  []canQuery   `json:"queries,omitempty"`
+	Type     string       `json:"type,omitempty"`
 }
 
 // Name implements tools.Tool.
@@ -205,10 +219,14 @@ func (c *Context) Execute(ctx context.Context, raw json.RawMessage) (tools.Resul
 		return c.execState(ctx)
 	case "capabilities":
 		return c.execCapabilities(ctx)
+	case "can":
+		return c.execCan(ctx, in)
+	case "reach":
+		return c.execReach(ctx, in)
 	case "":
 		return errValidation("missing required field: op", "Pass `op`: for example op=self, op=tools or op=help."), nil
 	default:
-		return errValidation(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities)", in.Op), ""), nil
+		return errValidation(fmt.Sprintf("unknown op %q (must be one of: self, tools, guide, doc, permissions, agents, lineage, evaluations, channels, help, time, compact, state, capabilities, can, reach)", in.Op), ""), nil
 	}
 }
 
@@ -618,6 +636,13 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		}
 		out["principal"] = principal
 	}
+	// identity: the person this run acts for, as the deployment knows them —
+	// their user row, their groups and the access lists that apply — read by
+	// the run's own identity only (context_identity.go). The flat `principal`
+	// block above stays as it was for its existing readers.
+	if id := c.identityReport(ctx); id != nil {
+		out["identity"] = id
+	}
 	// loomcycle: which BUILD is running. An agent (or an MCP client deciding
 	// whether a feature exists) otherwise has no way to ask, and "unknown"
 	// values are themselves the useful signal that the binary was built outside
@@ -888,6 +913,10 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			// The sql_* ops and Document's tenant scope check this grant, not
 			// allowed_scopes; without it the model sees half its memory policy.
 			"sql_scopes": tools.PolicyOf(ctx).SqlMem.AllowedScopes,
+			// The scopes above this run may read but not write: the access rules
+			// of the user who started it deny the write.
+			"read_only_scopes":     memPol.ReadOnlyScopes,
+			"sql_read_only_scopes": tools.PolicyOf(ctx).SqlMem.ReadOnlyScopes,
 		},
 		"history_scopes": tools.PolicyOf(ctx).History.Scopes,
 		"channels": map[string]any{

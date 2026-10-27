@@ -97,31 +97,41 @@ func collectAclDefs(d Dialect, rows Rows) ([]store.AclDefRow, error) {
 	return out, rows.Err()
 }
 
-// AclDefPut validates the rules, computes the hash and catalog version, and
-// inserts or updates the row with a version bump.
-func AclDefPut(ctx context.Context, db DB, row store.AclDefRow) (store.AclDefRow, error) {
+// aclDefContent is the validation every list write runs — a valid, non-builtin
+// name, a bounded description, a non-empty rule list this build's catalog
+// accepts — and returns the compacted rules and their hash.
+func aclDefContent(row store.AclDefRow) (compact, sha string, err error) {
 	if !authz.ValidName(row.Name) {
-		return store.AclDefRow{}, fmt.Errorf("acl def put: %q is not a valid name", row.Name)
+		return "", "", fmt.Errorf("%q is not a valid name", row.Name)
 	}
 	if authz.IsBuiltin(row.Name) {
-		return store.AclDefRow{}, fmt.Errorf("acl def put: %q is a built-in name", row.Name)
+		return "", "", fmt.Errorf("%q is a built-in name", row.Name)
 	}
 	if len(row.Description) > authz.MaxDescriptionBytes {
-		return store.AclDefRow{}, fmt.Errorf("acl def put: description is longer than %d bytes", authz.MaxDescriptionBytes)
+		return "", "", fmt.Errorf("description is longer than %d bytes", authz.MaxDescriptionBytes)
 	}
 	rules, err := authz.ParseRules(row.Rules)
 	if err != nil {
-		return store.AclDefRow{}, fmt.Errorf("acl def put: %w", err)
+		return "", "", err
 	}
 	if len(rules) == 0 {
-		return store.AclDefRow{}, fmt.Errorf("acl def put: no rules; an empty list grants and denies nothing and is a mistake")
+		return "", "", fmt.Errorf("no rules; an empty list grants and denies nothing and is a mistake")
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, row.Rules); err != nil {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, row.Rules); err != nil {
+		return "", "", err
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	return buf.String(), hex.EncodeToString(sum[:]), nil
+}
+
+// AclDefPut validates the rules, computes the hash and catalog version, and
+// inserts or updates the row with a version bump.
+func AclDefPut(ctx context.Context, db DB, row store.AclDefRow) (store.AclDefRow, error) {
+	compact, sha, err := aclDefContent(row)
+	if err != nil {
 		return store.AclDefRow{}, fmt.Errorf("acl def put: %w", err)
 	}
-	sum := sha256.Sum256(compact.Bytes())
-	sha := hex.EncodeToString(sum[:])
 	d := db.Dialect()
 	now := d.TimeArg(time.Now().UTC())
 	err = db.InTx(ctx, func(tx Querier) error {
@@ -138,7 +148,7 @@ func AclDefPut(ctx context.Context, db DB, row store.AclDefRow) (store.AclDefRow
 			    description = excluded.description,
 			    updated_at = excluded.updated_at,
 			    retired_at = NULL`,
-			row.TenantID, row.Name, sha, authz.CatalogVersion, compact.String(), row.Description, now, now, row.CreatedBy); err != nil {
+			row.TenantID, row.Name, sha, authz.CatalogVersion, compact, row.Description, now, now, row.CreatedBy); err != nil {
 			return err
 		}
 		return bumpAclVersion(ctx, tx, row.TenantID)
@@ -279,17 +289,31 @@ func groupExists(ctx context.Context, q Querier, tenantID, name string) (bool, e
 }
 
 func GroupMemberAdd(ctx context.Context, db DB, row store.GroupMemberRow) error {
+	inserted, err := insertGroupMember(ctx, db, row, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		return &store.ErrConflict{Kind: "group_member", ID: row.MemberKind + ":" + row.MemberID}
+	}
+	return nil
+}
+
+// insertGroupMember validates and inserts one edge stamped addedAt, bumping
+// the tenant's version; (false, nil) when the edge is already there.
+func insertGroupMember(ctx context.Context, db DB, row store.GroupMemberRow, addedAt time.Time) (bool, error) {
 	if row.MemberKind != store.GroupMemberUser && row.MemberKind != store.GroupMemberGroup {
-		return fmt.Errorf("group member add: member_kind must be user or group, got %q", row.MemberKind)
+		return false, fmt.Errorf("group member add: member_kind must be user or group, got %q", row.MemberKind)
 	}
 	if row.MemberID == "" || len(row.MemberID) > authz.MaxSubjectIDBytes {
-		return fmt.Errorf("group member add: member_id is empty or longer than %d bytes", authz.MaxSubjectIDBytes)
+		return false, fmt.Errorf("group member add: member_id is empty or longer than %d bytes", authz.MaxSubjectIDBytes)
 	}
 	if row.MemberKind == store.GroupMemberGroup && row.MemberID == row.GroupName {
-		return fmt.Errorf("group member add: group %q cannot be a member of itself", row.GroupName)
+		return false, fmt.Errorf("group member add: group %q cannot be a member of itself", row.GroupName)
 	}
 	d := db.Dialect()
-	return db.InTx(ctx, func(tx Querier) error {
+	var inserted bool
+	err := db.InTx(ctx, func(tx Querier) error {
 		if ok, err := groupExists(ctx, tx, row.TenantID, row.GroupName); err != nil {
 			return err
 		} else if !ok {
@@ -312,15 +336,14 @@ func GroupMemberAdd(ctx context.Context, db DB, row store.GroupMemberRow) error 
 		}
 		n, err := tx.Exec(ctx, `INSERT INTO user_group_members (tenant_id, group_name, member_kind, member_id, added_at, added_by)
 			VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, group_name, member_kind, member_id) DO NOTHING`,
-			row.TenantID, row.GroupName, row.MemberKind, row.MemberID, d.TimeArg(time.Now().UTC()), row.AddedBy)
-		if err != nil {
+			row.TenantID, row.GroupName, row.MemberKind, row.MemberID, d.TimeArg(addedAt), row.AddedBy)
+		if err != nil || n == 0 {
 			return err
 		}
-		if n == 0 {
-			return &store.ErrConflict{Kind: "group_member", ID: row.MemberKind + ":" + row.MemberID}
-		}
+		inserted = true
 		return bumpAclVersion(ctx, tx, row.TenantID)
 	})
+	return inserted, err
 }
 
 func GroupMemberRemove(ctx context.Context, db DB, tenantID, groupName, memberKind, memberID string) (bool, error) {

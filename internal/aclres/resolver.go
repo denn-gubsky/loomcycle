@@ -279,12 +279,13 @@ func (r *Resolver) input(ctx context.Context, subj authz.Subject, version int64)
 	staticDirect, staticGraph := static.GroupsOf(subj.TenantID, subj.ID)
 	direct = append(direct, staticDirect...)
 	var groups []string
+	var via map[string]string
 	if len(direct) > 0 {
 		graph, err := r.st.GroupGraph(ctx, subj.TenantID)
 		if err != nil {
 			return authz.Input{}, fmt.Errorf("group graph: %w", err)
 		}
-		groups = authz.Closure(authz.MergeGraph(graph, staticGraph), direct)
+		groups, via = authz.ClosureVia(authz.MergeGraph(graph, staticGraph), direct)
 	}
 	rows, err := r.st.AclBindingsFor(ctx, subj.TenantID, subj.ID, groups, subj.TokenDefID)
 	if err != nil {
@@ -295,11 +296,13 @@ func (r *Resolver) input(ctx context.Context, subj authz.Subject, version int64)
 		Now:     r.now(),
 		Version: version,
 		ACLs:    map[string]authz.ACLVersion{},
+		Via:     via,
 	}
 	// The class baseline, and the run-plane deny list for an RFC EF-confined
 	// token, are bound tenant-wide and resolved from the built-in table.
 	baselines := authz.Baselines()
 	base := baselineName(class)
+	in.Baseline = base
 	in.Bindings = append(in.Bindings, authz.Binding{ACL: base, SubjectKind: authz.SubjectTenant})
 	in.ACLs[base] = authz.ACLVersion{ACL: baselines[base]}
 	if runPlane {

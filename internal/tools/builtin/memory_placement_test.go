@@ -188,6 +188,24 @@ func TestMemoryPlacement_UngrantedTenantPlacesNothing(t *testing.T) {
 	}
 }
 
+// A scope the run holds read-only (its caller may not write it) is no place to
+// put a fact: the write that follows would be refused, so placement leaves the
+// fact in the caller's scope and says the grant is missing.
+func TestMemoryPlacement_ReadOnlyTenantPlacesNothing(t *testing.T) {
+	m, ctx := placementFixture(t, true)
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory.ReadOnlyScopes = []string{"tenant"}
+		rp.SqlMem.ReadOnlyScopes = []string{"tenant"}
+	})
+	got := placements(t, m, ctx, `{"op":"placement","scope":"user","items":[{"type":"service","subject":"checkout-api"}]}`)
+	if got[0]["moved"] != false || got[0]["scope"] != "user" {
+		t.Errorf("a read-only tenant scope must not receive a placement: %v", got[0])
+	}
+	if s, _ := got[0]["reason"].(string); !strings.Contains(s, "not granted") {
+		t.Errorf("the reason should name the missing grant, got %q", s)
+	}
+}
+
 func TestMemoryPlacement_RefusesAnEmptyOrOversizedBatch(t *testing.T) {
 	m, ctx := placementFixture(t, true)
 	if r := memExecJSON(t, m, ctx, `{"op":"placement","scope":"user"}`); !r.IsError {

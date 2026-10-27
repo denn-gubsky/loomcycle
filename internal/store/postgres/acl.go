@@ -109,6 +109,38 @@ func (s *Store) AclVersion(ctx context.Context, tenantID string) (int64, error) 
 	return sqlshared.AclVersion(ctx, s.shared(), tenantID)
 }
 
+func (s *Store) SnapshotReadAcl(ctx context.Context) (store.AclSnapshot, error) {
+	return sqlshared.SnapshotReadAcl(ctx, s.shared())
+}
+
+func (s *Store) SnapshotRestoreAclDef(ctx context.Context, row store.AclDefRow) (bool, error) {
+	return sqlshared.SnapshotRestoreAclDef(ctx, s.shared(), row)
+}
+
+func (s *Store) SnapshotRestoreGroup(ctx context.Context, row store.GroupRow) (bool, error) {
+	return sqlshared.SnapshotRestoreGroup(ctx, s.shared(), row)
+}
+
+// SnapshotRestoreGroupMember revokes a user member's manager-issued links
+// before a real insert, as GroupMemberAdd does.
+func (s *Store) SnapshotRestoreGroupMember(ctx context.Context, row store.GroupMemberRow) (bool, error) {
+	return sqlshared.SnapshotRestoreGroupMember(ctx, s.shared(), row, func() error {
+		if row.MemberKind != store.GroupMemberUser {
+			return nil
+		}
+		_, err := s.AuthRevokeManagerIssued(ctx, row.TenantID, row.MemberID, time.Now().UTC())
+		return err
+	})
+}
+
+// SnapshotRestoreAclBinding revokes the bound user's manager-issued links
+// before a real insert of a live binding, as AclBindingPut does.
+func (s *Store) SnapshotRestoreAclBinding(ctx context.Context, row store.AclBindingRow) (bool, error) {
+	return sqlshared.SnapshotRestoreAclBinding(ctx, s.shared(), row, func() error {
+		return revokeForBinding(ctx, s, row)
+	})
+}
+
 // revokeForBinding closes the manager-issued links of the user an ACL binding
 // grants to: the subject of a user binding, or the owner of a token binding's
 // token def. A binding to a token def that does not exist grants no user

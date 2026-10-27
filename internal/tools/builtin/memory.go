@@ -657,6 +657,17 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	// {agent,user,run} gate keyed off SqlMemPolicy), NOT the k/v resolveScope
 	// — which is gated on memory_scopes and rejects `run`. Dispatch them
 	// before the k/v scope resolution so a SQL op never trips the k/v gate.
+	if memoryWriteOps[in.Op] {
+		pol := tools.PolicyOf(ctx)
+		readOnly := pol.Memory.ReadOnlyScopes
+		if strings.HasPrefix(in.Op, "sql_") {
+			readOnly = pol.SqlMem.ReadOnlyScopes
+		}
+		if contains(readOnly, in.Scope) {
+			return errPermission(fmt.Sprintf("Memory tool: scope %q is read-only for this run — the access rules of the user who started it do not allow writing it, so op %s is refused", in.Scope, in.Op),
+				"Read from this scope only, or write to a scope this run may write; an operator can change the user's access rules."), nil
+		}
+	}
 	switch in.Op {
 	case "sql_query":
 		return m.execSqlQuery(ctx, in)
@@ -721,6 +732,22 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	default:
 		return errValidation(fmt.Sprintf("unknown op %q (must be one of: get, set, delete, list, incr, search, merge, append_dedupe, bounded_list, add, recall, placement, cursor_get, cursor_scan, cursor_lease, cursor_advance, cursor_release, supersede, pending_drain, pending_ack, sql_query, sql_exec, sql_begin, sql_commit, sql_rollback)", in.Op), ""), nil
 	}
+}
+
+// memoryWriteOps are the ops that change a scope — its values, its
+// consolidation queue (pending_ack marks rows consumed) or its consolidation
+// cursor (a lease or an advance moves what the next pass reads). Each is
+// refused on a scope the run holds read-only (RFC EY §3.7: the caller may read
+// the keyspace but not write it). A consolidation op is a write because
+// advancing the watermark or acking the queue without the facts landing would
+// lose the conversation for good. TestMemoryOps_EveryOpIsClassified holds
+// every op in the schema to this set or the reads it lists.
+var memoryWriteOps = map[string]bool{
+	"set": true, "delete": true, "incr": true, "merge": true, "append_dedupe": true, "bounded_list": true,
+	"add": true, "supersede": true, "pending_ack": true,
+	"cursor_lease": true, "cursor_advance": true, "cursor_release": true,
+	// sql_commit and sql_rollback finish a transaction only sql_begin opens.
+	"sql_exec": true, "sql_begin": true,
 }
 
 // resolveScope validates the requested scope against the agent's
