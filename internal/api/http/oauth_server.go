@@ -207,8 +207,10 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		oauthErrorPage(w, http.StatusBadRequest, "Unknown app", "The app that sent you here is not registered with this server.")
 		return
 	}
-	redirectURI := q["redirect_uri"]
-	if redirectURI == "" || !client.MatchRedirectURI(redirectURI) {
+	// The redirect target is the client's registered URI (RegisteredRedirectURI
+	// rebuilds it from the registration), never the request's string.
+	redirectURI, redirectOK := client.RegisteredRedirectURI(q["redirect_uri"])
+	if !redirectOK {
 		s.recordAuthEvent(audit.Event{Action: "oauth_refused", AuthClient: client.ID, AuthReason: "redirect_uri", SourceAddr: s.clientSource(r)})
 		oauthErrorPage(w, http.StatusBadRequest, "Invalid sign-in link",
 			"The address this sign-in would return to is not one the app "+client.Label+" registered.")

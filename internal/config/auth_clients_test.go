@@ -165,3 +165,33 @@ auth:
 		t.Fatalf("err = %v, want the redirect refusal naming the key", err)
 	}
 }
+
+// The redirect target is built from the registration, never the caller's
+// string: a loopback port is re-written from its number, and a URI that does
+// not rebuild to exactly itself does not match.
+func TestAppClient_RegisteredRedirectURIIsBuiltFromTheRegistration(t *testing.T) {
+	cl, err := ResolveAppClient("x", "app", AuthClientConfig{Kind: "public", RedirectURIs: []string{
+		"https://board.example.com/auth/callback", "http://127.0.0.1/callback",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		"https://board.example.com/auth/callback": "https://board.example.com/auth/callback",
+		"http://127.0.0.1:61234/callback":         "http://127.0.0.1:61234/callback",
+	} {
+		if got, ok := cl.RegisteredRedirectURI(in); !ok || got != want {
+			t.Errorf("RegisteredRedirectURI(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{
+		"http://127.0.0.1:061234/callback", // rebuilds as :61234
+		"http://127.0.0.1:0/callback",
+		"http://127.0.0.1:70000/callback",
+		"http://127.0.0.1:/callback",
+	} {
+		if got, ok := cl.RegisteredRedirectURI(bad); ok {
+			t.Errorf("RegisteredRedirectURI(%q) = %q, matched; want refused", bad, got)
+		}
+	}
+}
