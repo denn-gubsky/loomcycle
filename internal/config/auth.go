@@ -75,6 +75,9 @@ type AuthConfig struct {
 	Mode    string                    `yaml:"mode,omitempty"`
 	Session AuthSessionConfig         `yaml:"session,omitempty"`
 	Gates   map[string]AuthGateConfig `yaml:"gates,omitempty"`
+	// Clients are the apps that sign people in through loomcycle's gates
+	// (RFC FL): OAuth 2.0 clients of the authorization server at /v1/_oauth.
+	Clients map[string]AuthClientConfig `yaml:"clients,omitempty"`
 	// Lifecycle is the deployment's defaults for users a gate creates.
 	Lifecycle AuthLifecycleConfig `yaml:"lifecycle,omitempty"`
 	// TrustedProxies are the CIDRs of the reverse proxies in front of the
@@ -229,6 +232,9 @@ type AuthPolicy struct {
 	// Removal is the validated removal policy (read it through
 	// RemovalPolicy).
 	Removal AuthRemovalPolicy
+	// Clients are the validated auth.clients, sorted by id (read one through
+	// Client).
+	Clients []AppClient
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -525,6 +531,9 @@ func resolveAuth(c *Config) error {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
 	}
 	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
+		return err
+	}
+	if err := resolveAuthClients(c, &p); err != nil {
 		return err
 	}
 	// Strict mode with no gate a person can sign in through would lock
