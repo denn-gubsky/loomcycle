@@ -8,7 +8,7 @@ export { DEFAULT_API_BASE_URL, DEFAULT_PORT, loadConfig, WEBHOOK_PATH } from "./
 export type { TelegramConfig } from "./config.js";
 export { escapeHtml, markdownToHtml } from "./format.js";
 export { addressedText, displayName, hasNonTextContent, identify, NOT_ALLOWED_NOTICE, refFor, TEXT_ONLY_NOTICE, topicOf, USER_NOT_ALLOWED_NOTICE } from "./identity.js";
-export type { AccessPolicy, BotInfo, TelegramRef, TgCallbackQuery, TgChat, TgEntity, TgMessage, TgUpdate, TgUser } from "./identity.js";
+export type { AccessPolicy, BotInfo, TelegramRef, TgCallbackQuery, TgChat, TgChatMemberUpdated, TgEntity, TgMessage, TgUpdate, TgUser } from "./identity.js";
 export { MAX_MESSAGE_CHARS, TelegramPort } from "./port.js";
 export type { OutgoingMessage, TelegramPortOptions } from "./port.js";
 export { DEFAULT_TIMING, TelegramStream } from "./stream.js";

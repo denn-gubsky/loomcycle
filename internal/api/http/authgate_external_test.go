@@ -800,3 +800,79 @@ func TestAuthgateList_ShowsGatesAndProbesExternalOnes(t *testing.T) {
 		t.Fatalf("a tenant operator listed the gates: %d", code)
 	}
 }
+
+// A bridge that becomes a gate keeps its people: with legacy_subject_prefix,
+// the first login of "12345" links the user the bridge made as
+// "telegram-12345" (and a group chat's "conv:<h>" its "telegram-conv-<h>"),
+// so their runs, memory and documents stay theirs. The gate's revoke then
+// reaches that user through the link.
+func TestExternalAssert_ALegacyPrefixLinksTheUserTheBridgeMadeBefore(t *testing.T) {
+	m := acmeMap()
+	m.LegacySubjectPrefix = "telegram-"
+	g := newExtGate(t, "telegram", m, config.AuthExternalGate{})
+	f := extFixture(t, g)
+	ctx := context.Background()
+	for _, s := range []string{"telegram-12345", "telegram-conv-abc"} {
+		if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: s, AccessMode: "isolated", Status: "active", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ { // the first login links, the second finds the link
+		code, body := f.assert(t, "telegram", g.sign(t, "assert", nil, nil))
+		if code != http.StatusOK || body["subject"] != "telegram-12345" {
+			t.Fatalf("assert %d: %d %v", i, code, body)
+		}
+	}
+	code, body := f.assert(t, "telegram", g.sign(t, "assert", nil, func(c *jwt.Claims) { c.Subject = "conv:abc" }))
+	if code != http.StatusOK || body["subject"] != "telegram-conv-abc" {
+		t.Fatalf("group chat: %d %v", code, body)
+	}
+	for _, s := range []string{"telegram:12345", "telegram:conv:abc"} {
+		if _, err := f.st.UserGet(ctx, "acme", s); !isNotFound(err) {
+			t.Fatalf("a second user %s was made beside the linked one: %v", s, err)
+		}
+	}
+	if code, _ := f.post(t, "/v1/_auth/revoke", map[string]string{"gate": "telegram", "request": g.sign(t, "revoke", nil, nil)}); code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", code)
+	}
+	if u, _ := f.st.UserGet(ctx, "acme", "telegram-12345"); u.Status != "disabled" {
+		t.Fatalf("the revoke missed the linked user: %q", u.Status)
+	}
+}
+
+// The prefix links only a user nothing else signs in as: one with a password
+// or an identity at another gate is a person, not a bridge's, and the gate
+// gets its own "<gate>:<sub>" user instead. Without the prefix nothing links.
+func TestExternalAssert_ALegacyPrefixNeverTakesAUserWithItsOwnSignIn(t *testing.T) {
+	ctx := context.Background()
+	m := acmeMap()
+	m.LegacySubjectPrefix = "telegram-"
+	g := newExtGate(t, "telegram", m, config.AuthExternalGate{})
+	other := newExtGate(t, "other", acmeMap(), config.AuthExternalGate{})
+	plain := newExtGate(t, "plain", acmeMap(), config.AuthExternalGate{})
+	f := extFixture(t, g, other, plain)
+	for _, s := range []string{"telegram-1", "telegram-2", "telegram-3"} {
+		if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: s, AccessMode: "isolated", Status: "active", CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.st.UserCredentialSet(ctx, store.UserCredentialRow{TenantID: "acme", Subject: "telegram-1", Kind: store.CredentialKindPassword,
+		PHC: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA", UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.UserIdentityCreate(ctx, store.UserIdentityRow{TenantID: "acme", Subject: "telegram-2", Gate: "other",
+		Issuer: "other", ExternalSubject: "9", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for sub, want := range map[string]string{"1": "telegram:1", "2": "telegram:2"} {
+		code, body := f.assert(t, "telegram", g.sign(t, "assert", nil, func(c *jwt.Claims) { c.Subject = sub }))
+		if code != http.StatusOK || body["subject"] != want {
+			t.Fatalf("sub %s: %d %v, want %s", sub, code, body, want)
+		}
+	}
+	// A gate without the prefix never links, whatever subjects exist.
+	code, body := f.assert(t, "plain", plain.sign(t, "assert", nil, func(c *jwt.Claims) { c.Subject = "3" }))
+	if code != http.StatusOK || body["subject"] != "plain:3" {
+		t.Fatalf("no prefix: %d %v", code, body)
+	}
+}

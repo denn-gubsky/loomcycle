@@ -247,3 +247,29 @@ func TestResolveExternalGate_AGateKeyIsThatGatesAlone(t *testing.T) {
 		t.Errorf("an OAuth client secret as a gate secret: %v", err)
 	}
 }
+
+// legacy_subject_prefix names the subjects a bridge made before it was a gate
+// ("telegram-42"); only an external gate takes it, and the prefix cannot reach
+// into a gate's "<gate>:" namespace.
+func TestResolveExternalGate_LegacySubjectPrefixIsAnExternalGatesAlone(t *testing.T) {
+	g := AuthGateConfig{Kind: "external", IdentityMap: &AuthIdentityMapConfig{Tenant: "acme", LegacySubjectPrefix: "telegram-"}}
+	g.External.PublicKey = edJWK(t)
+	c := externalCfg(g)
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ResolvedAuth.Gates[0].Identity.LegacySubjectPrefix; got != "telegram-" {
+		t.Fatalf("prefix = %q", got)
+	}
+	for _, bad := range []string{"telegram", "tg:", "tele gram-", "-", "telegram:x-"} {
+		g.IdentityMap = &AuthIdentityMapConfig{Tenant: "acme", LegacySubjectPrefix: bad}
+		if err := resolveAuth(externalCfg(g)); err == nil || !strings.Contains(err.Error(), "legacy_subject_prefix") {
+			t.Errorf("prefix %q: err = %v", bad, err)
+		}
+	}
+	oc := oidcConfig(t, "", AuthGateConfig{Issuer: "https://idp.example", Preset: "keycloak",
+		IdentityMap: &AuthIdentityMapConfig{Tenant: "acme", LegacySubjectPrefix: "telegram-"}})
+	if err := resolveAuth(oc); err == nil || !strings.Contains(err.Error(), "legacy_subject_prefix") {
+		t.Fatalf("an oidc gate took legacy_subject_prefix: %v", err)
+	}
+}

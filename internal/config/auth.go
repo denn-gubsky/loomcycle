@@ -480,6 +480,10 @@ func resolveAuth(c *Config) error {
 			}
 		}
 		var ext *AuthExternalGate
+		if kind != AuthGateKindExternal && g.IdentityMap != nil && strings.TrimSpace(g.IdentityMap.LegacySubjectPrefix) != "" {
+			// It links a bridge's pre-gate users; a sign-in provider has none.
+			return fmt.Errorf("auth.gates.%s.identity_map.legacy_subject_prefix applies only to kind: external", name)
+		}
 		if kind != AuthGateKindExternal && hasExternalKeys(g) {
 			return fmt.Errorf("auth.gates.%s: public_key, hmac_secret_env, callback_url, probe_url, issued_token "+
 				"and on_removed apply only to kind: external", name)

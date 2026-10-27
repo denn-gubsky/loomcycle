@@ -1,4 +1,4 @@
-import { ConfigError, sharedSubject, VERB, type CanonicalCard, type RawRequest } from "@loomcycle/bridge-core";
+import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard, type RawRequest } from "@loomcycle/bridge-core";
 import { describe, expect, it } from "vitest";
 
 import { MAX_RETRY_AFTER_SECONDS, TelegramApi, TelegramError, isParseError } from "../src/api.js";
@@ -14,7 +14,9 @@ const SECRET = "s3cret_value-1";
 
 const baseEnv = {
   LOOMCYCLE_BASE_URL: "http://loomcycle.internal:8787",
-  LOOMCYCLE_TOKEN: "lc-tenant-token",
+  BRIDGE_GATE: "telegram",
+  BRIDGE_GATE_AUDIENCE: "https://lc.example",
+  BRIDGE_GATE_KEY: "{}",
   BRIDGE_AGENT: "helper",
   TELEGRAM_BOT_TOKEN: TOKEN,
   TELEGRAM_BRIDGE_WEBHOOK_SECRET: SECRET,
@@ -40,6 +42,15 @@ describe("config", () => {
     expect([...cfg.allowedUsers]).toEqual(["42", "43"]);
     expect(cfg.allowAnyone).toBe(false);
     expect(cfg.setWebhook).toBe(false);
+  });
+
+  it("is a gate only when BRIDGE_GATE is set; otherwise it keeps its loomcycle token", () => {
+    expect(loadConfig(baseEnv).gate?.name).toBe("telegram");
+    const tokenEnv = { ...baseEnv, BRIDGE_GATE: undefined, BRIDGE_GATE_AUDIENCE: undefined, BRIDGE_GATE_KEY: undefined };
+    expect(problems(tokenEnv).join("\n")).toMatch(/LOOMCYCLE_TOKEN/);
+    const cfg = loadConfig({ ...tokenEnv, LOOMCYCLE_TOKEN: "lc-tenant-token" });
+    expect(cfg.gate).toBeUndefined();
+    expect(cfg.loomcycleToken).toBe("lc-tenant-token");
   });
 
   it("refuses to start open to anyone unless told so", () => {
@@ -161,6 +172,7 @@ const policy = (p: Partial<AccessPolicy> = {}): AccessPolicy => ({
   allowAnyone: false,
   trustedChats: new Set(),
   groupRequireUsers: false,
+  gate: "telegram",
   ...p,
 });
 
@@ -173,10 +185,10 @@ describe("identity", () => {
   it("a private chat is the person's own, trusted conversation", () => {
     expect(identify(privateChat, alice, undefined, policy())).toEqual({
       ok: true,
-      speaker: { subject: "telegram-42", name: "Alice Smith", trust: "trusted" },
+      speaker: { subject: "telegram:42", name: "Alice Smith", trust: "trusted" },
       scope: "personal",
       conversationId: "tg:42",
-      runAs: { subject: "telegram-42", name: "Alice Smith" },
+      runAs: { subject: "telegram:42", name: "Alice Smith" },
     });
   });
 
@@ -184,11 +196,21 @@ describe("identity", () => {
     const id = identify(group, alice, undefined, policy());
     expect(id).toEqual({
       ok: true,
-      speaker: { subject: "telegram-42", name: "Alice Smith", trust: "untrusted" },
+      speaker: { subject: "telegram:42", name: "Alice Smith", trust: "untrusted" },
       scope: "group",
       conversationId: "tg:-100500",
-      runAs: { subject: sharedSubject("telegram", "-100500"), name: "Telegram group -100500" },
+      runAs: { subject: gateSharedSubject("telegram", "-100500"), name: "Telegram group -100500" },
     });
+  });
+
+  it("without a gate, people and groups keep the subjects the bridge always gave them", () => {
+    // The subjects a gate's legacy_subject_prefix links to on a first login.
+    const { gate: _gate, ...tokenMode } = policy();
+    const own = identify(privateChat, alice, undefined, tokenMode);
+    expect(own.ok && [own.speaker.subject, own.runAs.subject]).toEqual(["telegram-42", "telegram-42"]);
+    const shared = identify(group, alice, undefined, tokenMode);
+    expect(shared.ok && shared.runAs.subject).toBe(sharedSubject("telegram", "-100500"));
+    expect(shared.ok && shared.runAs.subject).toBe(`telegram-${gateSharedSubject("telegram", "-100500").slice("telegram:".length).replace(":", "-")}`);
   });
 
   it("an operator-trusted group's speakers are trusted", () => {
