@@ -387,14 +387,20 @@ func isThematicBreak(body string) bool {
 	return n >= 3
 }
 
-// isLinkDefinition reports a link reference definition, "[label]: url".
-// A footnote definition ("[^1]: text") is not one: its text is content.
+// isLinkDefinition reports a link reference definition, "[label]: url" with
+// an optional quoted title. "[Note]: remember this" is prose, not one: its
+// second word is not a title. A footnote definition ("[^1]: text") is not one
+// either: its text is content.
 func isLinkDefinition(body string) bool {
 	if !strings.HasPrefix(body, "[") || strings.HasPrefix(body, "[^") {
 		return false
 	}
 	end := strings.Index(body, "]:")
-	return end > 1 && !strings.ContainsAny(body[1:end], "[]") && strings.TrimSpace(body[end+2:]) != ""
+	if end <= 1 || strings.ContainsAny(body[1:end], "[]") {
+		return false
+	}
+	rest := strings.Fields(body[end+2:])
+	return len(rest) == 1 || len(rest) > 1 && strings.ContainsRune("\"'(", rune(rest[1][0]))
 }
 
 // isTableDelimiter reports a GFM table delimiter row, "| --- | :-: |". It

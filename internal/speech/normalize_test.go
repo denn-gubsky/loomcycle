@@ -35,6 +35,8 @@ func TestNormalize_MarkdownBecomesSpeakableText(t *testing.T) {
 		{"link keeps text", "See [the docs](https://example.com/docs \"Docs\") today.", "See the docs today."},
 		{"link with parens in url", "[wiki](https://en.wikipedia.org/wiki/Go_(language)) page", "wiki page"},
 		{"reference link", "Read [the guide][g].\n\n[g]: https://example.com", "Read the guide."},
+		{"titled reference definition dropped", "Text.\n\n[g]: https://x.org \"Title\"", "Text."},
+		{"prose after a label is kept", "[Note]: remember this", "Note: remember this"},
 		{"image keeps alt", "![A cat](cat.png) sleeps.", "A cat sleeps."},
 		{"emphasis in link text", "[**bold** link](x)", "bold link"},
 		{"footnote ref dropped", "Claim[^1] holds.", "Claim holds."},
