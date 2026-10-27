@@ -58,8 +58,7 @@ type Principal struct {
 	IssuedByGate string
 	// Login is how the person signed in, for a principal a Web UI session
 	// authenticated (RFC FA §5); nil for a bearer. It is provenance for the
-	// person's own agents to report, never consulted by a gate. A pointer so
-	// Principal stays comparable.
+	// person's own agents to report, never consulted by a gate.
 	Login *Login
 }
 
