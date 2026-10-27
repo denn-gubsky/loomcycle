@@ -6312,7 +6312,7 @@ export type UsageDimension =
   | "provider"
   | "model"
   | "source"
-  /** What the calls were for: chat | ocr | stt. */
+  /** What the calls were for: chat | ocr | stt | tts. */
   | "purpose";
 
 /** One grouped row of a usage report; only the grouped dimensions are set. */
@@ -6323,7 +6323,7 @@ export interface UsageAggregate {
   model?: string;
   /** operator | tenant | user */
   credential_source?: string;
-  /** chat | ocr | stt — set when grouped by `purpose`. */
+  /** chat | ocr | stt | tts — set when grouped by `purpose`. */
   purpose?: string;
   input_tokens: number;
   output_tokens: number;
@@ -6333,8 +6333,8 @@ export interface UsageAggregate {
   currency?: string;
   call_count: number;
   unpriced_calls: number;
-  /** Seconds of audio the group's speech-to-text calls transcribed (the unit
-   *  their per-minute price is computed from); absent when it has none. */
+  /** Seconds of audio the group's speech calls transcribed (stt) or produced
+   *  (tts), the unit a per-minute price is computed from; absent when it has none. */
   audio_seconds?: number;
 }
 
