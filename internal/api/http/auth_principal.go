@@ -1718,6 +1718,10 @@ func isTenantConfinedDefPath(path string) bool {
 		// the gRPC/MCP ones (both grant ScopeTenant) and leaving the
 		// tenant-scoping in handleListDocumentSourceDefNames dead for tenant tokens.
 		"/v1/_documentsourcedef",
+		// RFC FL P0b — app clients: a tenant operator registers its own
+		// tenant's, an admin any tenant's (the implementation confines the
+		// tenant and opaque-404s another's). Carved out of member access.
+		"/v1/_clientdef",
 		// RFC AH Phase 2a — the dynamic-volume substrate is tenant-confined
 		// (write-stamps the caller's tenant + opaque-404s cross-tenant), so
 		// it joins the ScopeTenant set. No /names sub-path: the list op

@@ -4507,6 +4507,10 @@ func (s *Server) Mux() http.Handler {
 	// RFC CE DocumentSourceDef substrate. Same operator-admin-only dispatch
 	// shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_documentsourcedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocumentSourceDef))))
+	// RFC FL P0b — runtime-registered app clients (ClientDef): an admin for
+	// any tenant, a tenant operator for its own (the handler confines it).
+	mux.Handle("POST /v1/_clientdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateClientDef))))
+	mux.Handle("GET /v1/_clientdef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListClientDefNames))))
 	// RFC L OSS multi-tenant authorization — OperatorTokenDef admin.
 	mux.Handle("POST /v1/_operatortokendef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateOperatorTokenDef))))
 	// Whoami — the Web UI's role source (any authenticated principal).

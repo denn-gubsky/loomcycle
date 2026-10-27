@@ -181,6 +181,13 @@ var handlersByName = map[string]toolHandler{
 	"authz": wrapACL("authz", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Authz(ctx, in)
 	}),
+	// The apps that sign people in through this server's gates (OAuth
+	// clients). Like the access-control tools, the implementation takes the
+	// caller's authority from the authenticated principal, so ctx is passed
+	// as is (clientdef_tool.go).
+	clientDefToolName: wrapACL(clientDefToolName, func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.ClientDef(ctx, in)
+	}),
 	"evaluation": wrapBuiltin("evaluation", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.Evaluation(ctx, in)
 	}),

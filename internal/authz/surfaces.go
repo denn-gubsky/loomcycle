@@ -432,6 +432,8 @@ func GRPCSurface(rpc string) (Surface, bool) {
 		return instance("read", "def", "memorybackend/*"), true
 	case "DocumentSourceDef":
 		return instance("read", "def", "documentsource/*"), true
+	case "ClientDef":
+		return instance("read", "def", "client/*"), true
 	case "VolumeDef":
 		return instance("read", "def", "volume/*"), true
 	case "TeamDef":

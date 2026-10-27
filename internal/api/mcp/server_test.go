@@ -318,6 +318,10 @@ func (m *mockConnector) WebhookDef(context.Context, json.RawMessage) (connector.
 func (m *mockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) ClientDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 func (m *mockConnector) DocumentSourceDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -504,8 +508,8 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 	if err := json.Unmarshal(resps[0].Result, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(result.Tools) != 65 {
-		t.Errorf("got %d tools, want 65 (+file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+	if len(result.Tools) != 66 {
+		t.Errorf("got %d tools, want 66 (+clientdef; +file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {

@@ -58,6 +58,10 @@ func CarvedOut(method, path string) bool {
 	// member learns its own reach from /v1/_me and /v1/_authz/explain.
 	case IsACLManagementPath(path):
 		return true
+	// RFC FL: an app client decides where people's sign-in codes go — the
+	// operator's to register, never a member's.
+	case path == "/v1/_clientdef" || path == "/v1/_clientdef/names":
+		return true
 	// Switching storage back on for a no-trace agent is the operator's call:
 	// a member who could do it could read what its colleagues' runs said.
 	// Reading the list stays operator-only too; it names what is being
