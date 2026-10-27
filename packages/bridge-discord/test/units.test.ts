@@ -1,13 +1,15 @@
 import { verify } from "node:crypto";
 
-import { ConfigError, sharedSubject, VERB, type CanonicalCard, type Logger } from "@loomcycle/bridge-core";
+import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard, type Logger } from "@loomcycle/bridge-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscordApi, DiscordApiError, USER_AGENT } from "../src/api.js";
+import { eventsRoute } from "../src/events.js";
+import { GROUP_CACHE_MS, GroupLookup, MAX_GROUP_LOOKUPS } from "../src/groups.js";
 import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, neutraliseLinks, parseCustomId, renderCard } from "../src/cards.js";
 import { commandSpecs, registerCommands } from "../src/commands.js";
 import { loadConfig } from "../src/config.js";
-import { identify, NOT_HERE, NOT_IN_DMS, NOT_IN_SERVER, type Fences } from "../src/identity.js";
+import { identify, NOT_HERE, NOT_IN_DMS, NOT_IN_SERVER, personSub, type Fences } from "../src/identity.js";
 import type { Interaction } from "../src/interaction.js";
 import { CONTINUED, DiscordPort, TOKEN_LIFETIME_MS } from "../src/port.js";
 import { publicKeyFromHex, verifyInteraction } from "../src/verify.js";
@@ -35,6 +37,18 @@ describe("config", () => {
 
   it("is closed by default: neither a server nor DMs is refused", () => {
     expect(() => loadConfig(base)).toThrow(/closed by default/);
+  });
+
+  it("is a gate only when BRIDGE_GATE is set; otherwise it keeps its loomcycle token", () => {
+    const tokenMode = loadConfig({ ...base, DISCORD_BRIDGE_ALLOW_DMS: "1" });
+    expect(tokenMode.gate).toBeUndefined();
+    expect(tokenMode.loomcycleToken).toBe("t");
+    const gateEnv = { ...base, LOOMCYCLE_TOKEN: undefined, DISCORD_BRIDGE_ALLOW_DMS: "1", BRIDGE_GATE: "discord", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_KEY: "{}" };
+    const gate = loadConfig(gateEnv);
+    expect(gate.gate?.name).toBe("discord");
+    expect(gate.loomcycleToken).toBe("");
+    // A gate bridge holds no loomcycle token: a leftover one is refused.
+    expect(() => loadConfig({ ...gateEnv, LOOMCYCLE_TOKEN: "t" })).toThrow(/LOOMCYCLE_TOKEN must not be set/);
   });
 
   it("reads the fences and defaults", () => {
@@ -167,6 +181,43 @@ describe("identity", () => {
   it("gives a thread its own conversation and its parent channel's memory", () => {
     const id = identify(inGuild(GUILD, { channel: { id: THREAD, type: 11, parent_id: CHANNEL } }), fences);
     expect(id).toMatchObject({ ok: true, conversationId: `dc:${GUILD}:${THREAD}`, runAs: { subject: sharedSubject("discord", GUILD, CHANNEL) } });
+  });
+
+  it("as a gate, runs a person as <gate>:<id> and a channel as <gate>:conv:<hash>", () => {
+    const gate = { ...fences, gate: "discord" };
+    expect(identify(dm(), gate)).toMatchObject({ ok: true, speaker: { subject: `discord:${USER}` }, runAs: { subject: `discord:${USER}` } });
+    expect(identify(inGuild(GUILD), gate)).toMatchObject({
+      ok: true,
+      speaker: { subject: `discord:${USER}` },
+      runAs: { subject: gateSharedSubject("discord", GUILD, CHANNEL) },
+    });
+    const thread = identify(inGuild(GUILD, { channel: { id: THREAD, type: 11, parent_id: CHANNEL } }), gate);
+    expect(thread).toMatchObject({ ok: true, runAs: { subject: gateSharedSubject("discord", GUILD, CHANNEL) } });
+  });
+
+  // loomcycle's identity_map.legacy_subject_prefix "discord-" links a first
+  // gate login to the user prefix + sub, with ':' read as '-'. That user must
+  // be the one the token-mode bridge made, or the person starts over.
+  it("as a gate, the legacy prefix turns each sub into the subject the token-mode bridge used", () => {
+    const legacy = (sub: string) => `discord-${sub.replaceAll(":", "-")}`;
+    const gate = { ...fences, gate: "discord" };
+    const subOf = (subject: string) => subject.slice("discord:".length);
+
+    const person = identify(dm(), gate);
+    const personBefore = identify(dm(), fences);
+    if (!person.ok || !personBefore.ok) throw new Error("refused");
+    expect(subOf(person.runAs.subject)).toBe(personSub(USER));
+    expect(legacy(subOf(person.runAs.subject))).toBe(personBefore.runAs.subject);
+    expect(personBefore.runAs.subject).toBe(`discord-${USER}`);
+
+    for (const channel of [{ id: CHANNEL, type: 0 }, { id: THREAD, type: 11, parent_id: CHANNEL }]) {
+      const shared = identify(inGuild(GUILD, { channel }), gate);
+      const sharedBefore = identify(inGuild(GUILD, { channel }), fences);
+      if (!shared.ok || !sharedBefore.ok) throw new Error("refused");
+      expect(subOf(shared.runAs.subject)).toMatch(/^conv:[0-9a-f]{32}$/);
+      expect(legacy(subOf(shared.runAs.subject))).toBe(sharedBefore.runAs.subject);
+      expect(sharedBefore.runAs.subject).toBe(sharedSubject("discord", GUILD, CHANNEL));
+    }
   });
 
   it("refuses a server not allowed, and DMs when they are off, with a notice", () => {
@@ -303,6 +354,142 @@ describe("masked links", () => {
     });
     expect(q.content).not.toMatch(/\]\(/);
     expect(renderCard({ kind: "result", message: "Answered: [y](https://evil.example)" }).content).toBe("Answered: y (<https://evil.example>)");
+  });
+});
+
+describe("groups", () => {
+  const ROLE = "600000000000000006";
+  const ROLE_2 = "600000000000000007";
+  const person = `discord:${USER}`;
+  const channel = gateSharedSubject("discord", GUILD, CHANNEL);
+  const make = (trusted: string[], d = new FakeDiscord()) => {
+    let t = 1_760_000_000_000;
+    const api = new DiscordApi({ baseUrl: d.base, applicationId: APP, botToken: "secret-bot", log: silentLogger, fetch: d.fetch, sleep: async () => {} });
+    const lookup = new GroupLookup({ api, gate: "discord", trustedGuilds: new Set(trusted), now: () => t });
+    return { d, lookup, advance: (ms: number) => (t += ms) };
+  };
+  const memberCalls = (d: FakeDiscord) => d.to(/^GET \/guilds\/\d+\/members\/\d+$/);
+
+  it("puts a channel's own user in its server's group, and asserts nothing for a ref stored without one", async () => {
+    const { d, lookup } = make([GUILD]);
+    expect(await lookup.groupsFor(channel, { channelId: CHANNEL, guildId: GUILD })).toEqual([`dc-guild-${GUILD}`]);
+    expect(await lookup.groupsFor(channel, { channelId: CHANNEL })).toBeUndefined();
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("puts a person in each trusted server they are a member of, and a group per role, asked with the bot token", async () => {
+    const { d, lookup } = make([OTHER_GUILD, GUILD]);
+    d.on(new RegExp(`GET /guilds/${GUILD}/members/${USER}$`), { status: 200, body: { roles: [ROLE, ROLE_2, "not-a-role"] } });
+    d.on(new RegExp(`GET /guilds/${OTHER_GUILD}/members/${USER}$`), { status: 200, body: { roles: [] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${GUILD}`, `dc-role-${ROLE}`, `dc-role-${ROLE_2}`, `dc-guild-${OTHER_GUILD}`]);
+    // Sorted, so the order (and so the request pattern) is stable.
+    expect(memberCalls(d).map((c) => [c.path, c.authorization])).toEqual([
+      [`/guilds/${GUILD}/members/${USER}`, "Bot secret-bot"],
+      [`/guilds/${OTHER_GUILD}/members/${USER}`, "Bot secret-bot"],
+    ]);
+  });
+
+  it("reads a 404 as not a member, unless Discord says the server itself is unknown", async () => {
+    const { d, lookup } = make([GUILD, OTHER_GUILD]);
+    d.on(new RegExp(`/guilds/${GUILD}/`), { status: 404, body: { code: 10007, message: "Unknown Member" } });
+    d.on(new RegExp(`/guilds/${OTHER_GUILD}/`), { status: 200, body: { roles: [ROLE] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${OTHER_GUILD}`, `dc-role-${ROLE}`]);
+
+    const other = make([GUILD]);
+    other.d.on(/members/, { status: 404, body: { code: 10004, message: "Unknown Guild" } });
+    expect(await other.lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+  });
+
+  it("asserts nothing when any lookup fails, so loomcycle removes no group on a guess", async () => {
+    for (const status of [403, 500, 401]) {
+      const { d, lookup } = make([GUILD, OTHER_GUILD]);
+      d.on(new RegExp(`/guilds/${OTHER_GUILD}/`), { status, body: { code: 50001 } });
+      expect(await lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+    }
+    // A 429 is waited out by the API client like any other call.
+    const { d, lookup } = make([GUILD]);
+    d.on(/members/, { status: 429, body: { retry_after: 0.01 } });
+    d.on(/members/, { status: 200, body: { roles: [] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${GUILD}`]);
+    expect(memberCalls(d)).toHaveLength(2);
+  });
+
+  it("asserts nothing for a member Discord says is a bot", async () => {
+    const { d, lookup } = make([GUILD]);
+    d.on(/members/, { status: 200, body: { user: { id: USER, bot: true }, roles: [ROLE] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+  });
+
+  it("asserts no groups with no trusted servers, and nothing at all past the lookup limit", async () => {
+    const none = make([]);
+    expect(await none.lookup.groupsFor(person, { channelId: DM })).toEqual([]);
+    const many = Array.from({ length: MAX_GROUP_LOOKUPS + 1 }, (_, i) => `2000000000000001${String(i).padStart(2, "0")}`);
+    const over = make(many);
+    expect(await over.lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+    expect(over.d.calls).toHaveLength(0);
+    const at = make(many.slice(0, MAX_GROUP_LOOKUPS));
+    expect(await at.lookup.groupsFor(person, { channelId: DM })).toHaveLength(MAX_GROUP_LOOKUPS);
+  });
+
+  it("reuses a person's groups for ten minutes, and forgets them on demand", async () => {
+    const { d, lookup, advance } = make([GUILD]);
+    d.on(/members/, { status: 200, body: { roles: [ROLE] } });
+    const first = await lookup.groupsFor(person, { channelId: DM });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual(first);
+    expect(memberCalls(d)).toHaveLength(1);
+    advance(GROUP_CACHE_MS - 1);
+    await lookup.groupsFor(person, { channelId: DM });
+    expect(memberCalls(d)).toHaveLength(1);
+    advance(1);
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${GUILD}`]);
+    expect(memberCalls(d)).toHaveLength(2);
+    lookup.forget(person);
+    await lookup.groupsFor(person, { channelId: DM });
+    expect(memberCalls(d)).toHaveLength(3);
+  });
+
+  it("asserts nothing for a subject that is not one of the gate's", async () => {
+    const { d, lookup } = make([GUILD]);
+    expect(await lookup.groupsFor(`discord-${USER}`, { channelId: DM })).toBeUndefined();
+    expect(await lookup.groupsFor("other:conv:abc", { channelId: CHANNEL, guildId: GUILD })).toBeUndefined();
+    expect(d.calls).toHaveLength(0);
+  });
+});
+
+describe("events", () => {
+  const key = appKey();
+  const t = 1_760_000_000_000;
+  const request = (payload: object) => {
+    const body = JSON.stringify(payload);
+    return { method: "POST", path: "/discord/events", query: new URLSearchParams(), headers: signedHeaders(key.privateKey, body, String(t / 1000)), body: Buffer.from(body) };
+  };
+  const deauthorized = { version: 1, application_id: APP, type: 1, event: { type: "APPLICATION_DEAUTHORIZED", data: { user: { id: USER } } } };
+
+  it("answers 503, not 204, when loomcycle's revoke does not finish in time", async () => {
+    const route = eventsRoute({
+      key: publicKeyFromHex(key.publicHex),
+      gate: { subjectOf: (s) => `discord:${s}`, revoke: () => new Promise(() => {}) },
+      forget: () => {},
+      log: silentLogger,
+      now: () => t,
+      revokeTimeoutMs: 20,
+    });
+    expect((await route(request(deauthorized))).status).toBe(503);
+  });
+
+  it("revokes the person named by the event's user, and answers 204 once it is done", async () => {
+    const revoked: string[] = [];
+    const forgotten: string[] = [];
+    const route = eventsRoute({
+      key: publicKeyFromHex(key.publicHex),
+      gate: { subjectOf: (s) => `discord:${s}`, revoke: async (s) => void revoked.push(s) },
+      forget: (s) => forgotten.push(s),
+      log: silentLogger,
+      now: () => t,
+    });
+    expect(await route(request(deauthorized))).toMatchObject({ status: 204 });
+    expect(revoked).toEqual([`discord:${USER}`]);
+    expect(forgotten).toEqual([`discord:${USER}`]);
   });
 });
 

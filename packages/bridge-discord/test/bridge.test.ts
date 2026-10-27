@@ -4,14 +4,14 @@
 
 import net from "node:net";
 
-import { UNTRUSTED_KIND, type Bridge, type Logger } from "@loomcycle/bridge-core";
+import { gateSharedSubject, keyFromSecret, UNTRUSTED_KIND, type Bridge, type Logger } from "@loomcycle/bridge-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createDiscordBridge } from "../src/bridge.js";
 import type { DiscordConfig } from "../src/config.js";
 import type { DiscordRef } from "../src/port.js";
 import { appKey, FakeDiscord, signedHeaders, type AppKey } from "./discord.js";
-import { FakeLoomcycle, settle, waitFor, type StartedRun } from "./fakes.js";
+import { FakeGate, FakeLoomcycle, settle, waitFor, type StartedRun } from "./fakes.js";
 
 const APP = "100000000000000001";
 const GUILD = "200000000000000002";
@@ -212,6 +212,12 @@ describe("discord bridge over HTTP", () => {
     expect(discord.calls).toHaveLength(0);
   });
 
+  it("serves no Webhook Events route without a gate, so nothing it is sent can revoke anyone", async () => {
+    const body = JSON.stringify({ version: 1, application_id: APP, type: 1, event: { type: "APPLICATION_DEAUTHORIZED", data: { user: { id: ALICE } } } });
+    const res = await fetch(`${base}/discord/events`, { method: "POST", headers: signedHeaders(key.privateKey, body, String(Math.floor(now / 1000))), body });
+    expect(res.status).toBe(404);
+  });
+
   it("runs /ask in a DM as the person and puts the answer in the deferred response", async () => {
     const ix = dmCommand("ask", "hello there");
     await ask(ix);
@@ -404,5 +410,174 @@ describe("discord bridge over HTTP", () => {
     await post(guildCommand("200000000000000099", "ask", "hi", ALICE, "Alice"));
     const all = logs.join("\n");
     for (const secret of [BOT_TOKEN, ix.token, "my secret plan", "the secret answer", "admin-token"]) expect(all).not.toContain(secret);
+  });
+});
+
+// RFC FA §3.7d: as a loomcycle gate the bridge holds no loomcycle token. It
+// asserts who is talking (and the groups Discord knows them in), and a person
+// who removes the app is revoked.
+describe("discord bridge as a loomcycle gate", () => {
+  const ROLE = "600000000000000006";
+  let key: AppKey;
+  let lc: FakeLoomcycle;
+  let discord: FakeDiscord;
+  let gate: FakeGate;
+  let bridge: Bridge<DiscordRef>;
+  let base: string;
+  let now: number;
+  let seq: number;
+
+  beforeEach(async () => {
+    key = appKey();
+    lc = new FakeLoomcycle();
+    discord = new FakeDiscord();
+    gate = new FakeGate();
+    now = Date.now();
+    seq = 0;
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    const cfg: DiscordConfig = {
+      loomcycleBaseUrl: "http://loomcycle.invalid",
+      loomcycleToken: "",
+      gate: { name: "discord", audience: "https://lc.example", keyEnv: {} },
+      agent: "helper",
+      tokenTtlSeconds: 43200,
+      ratePerMinute: 6,
+      rateBurst: 10,
+      userAccessMode: "isolated",
+      idleMinutes: 1440,
+      store: "memory",
+      port,
+      // Webhook Events are verified even so: what they do is revoke.
+      dev: true,
+      applicationId: APP,
+      publicKey: key.publicHex,
+      botToken: BOT_TOKEN,
+      allowedGuilds: new Set([GUILD, OPEN_GUILD]),
+      allowDms: true,
+      trustedGuilds: new Set([GUILD]),
+      registerCommands: false,
+      apiBaseUrl: discord.base,
+    };
+    bridge = createDiscordBridge(cfg, {
+      clients: (token) => lc.client(token),
+      fetch: discord.fetch,
+      gateFetch: gate.fetch,
+      gateKey: keyFromSecret("s".repeat(40)),
+      logger: { info() {}, warn() {}, error() {} },
+      now: () => now,
+      message: { typingEveryMs: 60_000 },
+    });
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    for (const r of lc.runs) r.events.end();
+    await bridge.stop();
+  });
+
+  /** The run reports itself and waits for the next message, as a live one does. */
+  function idle(run: StartedRun) {
+    run.events.push({ type: "session", session_id: "sess-1" });
+    run.events.push({ type: "agent", run_id: "run-1", agent_id: "agent-run-1", session_id: "sess-1", parent_agent_id: null });
+    run.events.push({ type: "awaiting_input" });
+  }
+
+  async function postTo(path: string, payload: object, opts: { sign?: boolean } = {}) {
+    const body = JSON.stringify(payload);
+    const headers = opts.sign === false ? { "content-type": "application/json" } : signedHeaders(key.privateKey, body, String(Math.floor(now / 1000)));
+    const res = await fetch(`${base}${path}`, { method: "POST", headers, body });
+    return { status: res.status, text: await res.text(), contentType: res.headers.get("content-type") };
+  }
+
+  function command(where: "dm" | "guild", prompt: string) {
+    const id = `90000000000000${String(++seq).padStart(4, "0")}`;
+    const place =
+      where === "dm"
+        ? { context: 1, channel: { id: DM, type: 1 }, user: { id: ALICE, username: "alice", global_name: "Alice" } }
+        : { context: 0, guild_id: GUILD, channel: { id: CHANNEL, type: 0 }, member: { user: { id: ALICE, username: "alice", global_name: "Alice" }, nick: null } };
+    return { id, application_id: APP, type: 2, token: `itok-${id}`, ...place, data: { name: "ask", type: 1, options: [{ name: "prompt", type: 3, value: prompt }] } };
+  }
+
+  const deauthorized = (userId: string) => ({
+    version: 1,
+    application_id: APP,
+    type: 1,
+    event: { type: "APPLICATION_DEAUTHORIZED", timestamp: new Date(now).toISOString(), data: { user: { id: userId, username: "alice" } } },
+  });
+
+  it("asserts the person, with their trusted servers and roles, and mints nothing itself", async () => {
+    discord.on(new RegExp(`GET /guilds/${GUILD}/members/${ALICE}$`), { status: 200, body: { roles: [ROLE] } });
+    expect((await postTo("/discord/interactions", command("dm", "hello"))).status).toBe(200);
+    await waitFor(() => lc.runs.length === 1, "the run");
+    expect(lc.runs[0].token).toMatch(new RegExp(`^tok-discord:${ALICE}-`));
+    expect(lc.createdUsers).toEqual([]);
+    expect(lc.mints).toEqual([]);
+    expect(gate.asserts).toHaveLength(1);
+    expect(gate.asserts[0].gate).toBe("discord");
+    expect(gate.asserts[0].payload).toMatchObject({ iss: "discord", aud: "https://lc.example", sub: ALICE, name: "Alice", lc_use: "assert",
+      groups: [`dc-guild-${GUILD}`, `dc-role-${ROLE}`], token: { agents: ["helper"], overrides: ["interactive"] } });
+  });
+
+  it("asserts a channel as conv:<hash>, in its server's group", async () => {
+    expect((await postTo("/discord/interactions", command("guild", "hello channel"))).status).toBe(200);
+    await waitFor(() => lc.runs.length === 1, "the run");
+    const g = gate.asserts.at(-1)!;
+    expect(g.payload.sub).toBe(gateSharedSubject("discord", GUILD, CHANNEL).slice("discord:".length));
+    expect(g.payload.groups).toEqual([`dc-guild-${GUILD}`]);
+    // A channel's own user needs no membership lookup.
+    expect(discord.to(/members/)).toHaveLength(0);
+  });
+
+  it("asserts no groups for a person when a membership lookup fails", async () => {
+    discord.on(/members/, { status: 500, body: {} });
+    await postTo("/discord/interactions", command("dm", "hello"));
+    await waitFor(() => lc.runs.length === 1, "the run");
+    expect("groups" in gate.asserts.at(-1)!.payload).toBe(false);
+  });
+
+  it("refuses an unsigned or wrongly signed Webhook Event, and answers Discord's PING with 204", async () => {
+    expect((await postTo("/discord/events", deauthorized(ALICE), { sign: false })).status).toBe(401);
+    const body = JSON.stringify(deauthorized(ALICE));
+    const forged = signedHeaders(appKey().privateKey, body, String(Math.floor(now / 1000)));
+    expect((await fetch(`${base}/discord/events`, { method: "POST", headers: forged, body })).status).toBe(401);
+    const ping = await postTo("/discord/events", { version: 1, application_id: APP, type: 0 });
+    expect(ping).toEqual({ status: 204, text: "", contentType: "application/json" });
+    await settle();
+    expect(gate.revokes).toEqual([]);
+  });
+
+  it("revokes a person who removed the app, and only on that event", async () => {
+    discord.on(/members/, { status: 200, body: { roles: [] } });
+    await postTo("/discord/interactions", command("dm", "hello"));
+    await waitFor(() => lc.runs.length === 1, "the run");
+    idle(lc.runs[0]);
+    await settle();
+    expect(discord.to(/members/)).toHaveLength(1);
+
+    const other = { ...deauthorized(ALICE), event: { type: "APPLICATION_AUTHORIZED", data: { user: { id: BOB } } } };
+    expect((await postTo("/discord/events", other)).status).toBe(204);
+    expect((await postTo("/discord/events", { ...deauthorized("not-an-id") })).status).toBe(204);
+    const res = await postTo("/discord/events", deauthorized(ALICE));
+    expect(res).toMatchObject({ status: 204, text: "" });
+    // The 204 came after loomcycle took the revoke, never before.
+    expect(gate.revokes).toHaveLength(1);
+    expect(gate.revokes[0]).toMatchObject({ gate: "discord", payload: { sub: ALICE, lc_use: "revoke" } });
+    await settle();
+    expect(gate.revokes).toHaveLength(1);
+
+    // Their cached groups went with them: a return is looked up afresh.
+    await postTo("/discord/interactions", command("dm", "back again"));
+    await waitFor(() => gate.asserts.length === 2, "the second assert");
+    expect(discord.to(/members/)).toHaveLength(2);
+  });
+
+  // Revocation must not fail open: a revoke loomcycle did not take is not
+  // acknowledged, so Discord delivers the event again.
+  it("answers 503 when loomcycle fails the revoke, and 204 on the redelivery that succeeds", async () => {
+    gate.revokeStatus = 500;
+    expect((await postTo("/discord/events", deauthorized(ALICE))).status).toBe(503);
+    expect((await postTo("/discord/events", deauthorized(ALICE))).status).toBe(204);
+    expect(gate.revokes.map((r) => r.payload.sub)).toEqual([ALICE, ALICE]);
   });
 });

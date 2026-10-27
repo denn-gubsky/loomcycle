@@ -30,6 +30,12 @@ export class DiscordApiError extends Error {
   }
 }
 
+/** The parts of a guild member object the bridge reads; shape-checked at use. */
+export interface GuildMember {
+  roles?: unknown;
+  user?: { id?: string; bot?: boolean };
+}
+
 /** Discord asks bot clients to identify themselves this way. */
 export const USER_AGENT = "DiscordBot (https://github.com/denn-gubsky/loomcycle, 0.1.0)";
 
@@ -69,6 +75,12 @@ export class DiscordApi {
 
   typing(channelId: string): Promise<unknown> {
     return this.call("POST", `/channels/${channelId}/typing`, "POST channels/typing", undefined, true);
+  }
+
+  /** guildMember reads one member of a server (their roles), with the bot
+   *  token. A person not in the server is a 404. */
+  guildMember(guildId: string, userId: string): Promise<GuildMember | undefined> {
+    return this.call("GET", `/guilds/${guildId}/members/${userId}`, "GET guilds/members", undefined, true) as Promise<GuildMember | undefined>;
   }
 
   /** putCommands replaces the application's commands: globally, or in one server. */

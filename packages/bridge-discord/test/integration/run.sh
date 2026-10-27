@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Boots a real loomcycle (mock provider, sqlite, no keys), then runs the
 # bridge's built CLI against it with a fake Discord API on localhost: a signed
-# interaction in, the reply the bridge sends Discord out.
+# interaction in, the reply the bridge sends Discord out. The bridge runs
+# first with a loomcycle token, then as a loomcycle gate.
 # Usage: packages/bridge-discord/test/integration/run.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +17,7 @@ TOKEN="it-$(openssl rand -hex 16)"
 ADMIN_TOKEN="it-admin-$(openssl rand -hex 16)"
 cleanup() {
   [[ -n "${PID:-}" ]] && { kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; }
-  rm -f "$TEST_DIR/loomcycle"
+  rm -f "$TEST_DIR/loomcycle" "$TEST_DIR/gate.key.jwk"
   echo "logs: $TEST_DIR/boot.log"
 }
 trap cleanup EXIT INT TERM
@@ -24,6 +25,16 @@ trap cleanup EXIT INT TERM
 cd "$REPO"
 go build -o "$TEST_DIR/loomcycle" ./cmd/loomcycle
 mkdir -p "$TEST_DIR/home"
+# The bridge is an external gate: a fresh Ed25519 key per run, its public
+# half pinned in the config, its private half handed to the bridge only.
+node -e '
+const { generateKeyPairSync } = require("node:crypto");
+const fs = require("node:fs");
+const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+fs.writeFileSync(process.argv[1], JSON.stringify(privateKey.export({ format: "jwk" })), { mode: 0o600 });
+fs.writeFileSync(process.argv[2], JSON.stringify(publicKey.export({ format: "jwk" })));
+' "$TEST_DIR/gate.key.jwk" "$TEST_DIR/gate.pub.jwk"
+sed "s|__GATE_PUBLIC_JWK__|$(cat "$TEST_DIR/gate.pub.jwk")|" "$HERE/loomcycle.yaml" > "$TEST_DIR/loomcycle.yaml"
 # env -i + a scratch HOME: the boot must not pick up the developer's own
 # ~/.config/loomcycle or .env files.
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
@@ -32,7 +43,8 @@ env -i PATH="$PATH" HOME="$TEST_DIR/home" \
   LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$PORT" \
   LOOMCYCLE_AUTH_TOKEN="$ADMIN_TOKEN" \
   LOOMCYCLE_DISCORD_BRIDGE_IT_TOKEN="$TOKEN" \
-  "$TEST_DIR/loomcycle" --config "$HERE/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
+  LOOMCYCLE_PUBLIC_URL="$BASE" \
+  "$TEST_DIR/loomcycle" --config "$TEST_DIR/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 100); do
   curl -fsS "$BASE/healthz" >/dev/null 2>&1 && break
@@ -42,4 +54,6 @@ done
 
 cd "$PKG"
 npm run build >/dev/null
-DISCORD_BRIDGE_IT_BASE_URL="$BASE" DISCORD_BRIDGE_IT_TOKEN="$TOKEN" npx vitest run test/integration
+DISCORD_BRIDGE_IT_BASE_URL="$BASE" DISCORD_BRIDGE_IT_ADMIN="$ADMIN_TOKEN" DISCORD_BRIDGE_IT_TOKEN="$TOKEN" \
+  DISCORD_BRIDGE_IT_GATE_KEY="$(cat "$TEST_DIR/gate.key.jwk")" \
+  npx vitest run test/integration
