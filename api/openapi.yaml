@@ -992,7 +992,7 @@ paths:
                 tenant: { type: string }
                 content_sha256: { type: string }
       responses:
-        "200": { description: The client (or `{clients}` for list). }
+        "200": { description: "The client (or `{clients}` for list)." }
         "403": { description: "Needs substrate:tenant; `acl_denied`." }
         "422": { description: "`tool_refused`: a refused op (invalid client, taken name, not found, a config client)." }
   /v1/_clientdef/names:
