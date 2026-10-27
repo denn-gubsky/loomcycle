@@ -12,6 +12,7 @@ TypeScript client for the [loomcycle](https://github.com/denn-gubsky/loomcycle) 
 
 ### What's new since v0.8.18
 
+- **Sign in with loomcycle (apps)** (RFC FL) — `LoomcycleOAuth` (also `client.oauth`) drives loomcycle's own OAuth sign-in for an app: `beginAuthorize` / `completeAuthorize` (PKCE S256, state and RFC 9207 `iss` checked), `refresh`, `revoke`, `discover`. A new `tokenProvider` client option (instead of `authToken`) takes short-lived bearers; `OAuthTokenProvider` refreshes before expiry and once after a 401. ClientDef methods register the apps: `createClientDef` / `updateClientDef` / `getClientDef` / `listClientDefs` / `retireClientDef` / `verifyClientDef` / `listClientDefNames`. See [Sign in with loomcycle (apps)](#sign-in-with-loomcycle-apps). Additive — an `authToken` client is unchanged.
 - **Breaking — `tools` replaces `allowedTools`** — the per-run tool allowlist is now a single canonical key. The `runStreaming` / `continueSession` option is renamed from `allowedTools` to **`tools`**, and the `AgentDefOverlay` + library wire field is likewise **`tools`**, matching the loomcycle YAML rename and aligning with Claude Code agent frontmatter. No dual-key fallback — update call sites to `runStreaming({ …, tools: [...] })`. Requires a loomcycle server carrying the same rename.
 - **Path/Document browse-by-subject + the full Document op set** (v1.12.1, RFC AS/AK) — `path(input, opts)` and `document(input, opts)` accept optional `scopeId` / `tenant` browse overrides, sent as `?scope_id=` / `?tenant=` query params (the server reads them from the URL and re-checks authorization — a tenant principal's `tenant` is ignored, `scopeId` picks any subject it may see); omit both to browse your own subject (byte-identical to the pre-RFC-AS request). `DocumentToolInput.op` now covers all 16 backend ops — adds **`set_path`** (attach/re-home a Path-tree name for an existing document), **`export_md`** (render to Markdown; `include_metadata: false` for clean human-facing output), and **`import_md`** (build a document from export_md-shaped `markdown`). Additive — existing `path()` / `document()` callers are unchanged.
 - **`interactiveSession` / `sendRunInput` / `streamRunByID` + the `interactive` flag** (v1.1.1, RFC AI) — the interactive agentic session, the adapter port of the Web UI's run terminal. Pass `interactive: true` to `runStreaming` / `continueSession` to start a **persistent** run that parks at end_turn (an `awaiting_input` frame) instead of ending; **`sendRunInput(runId, text)`** steers it (the response arrives on the same stream); **`streamRunByID(runId, {fromSeq})`** re-attaches by run_id (the operator's prior turns replay as `steer` events, `user_input.source === "replay"`, so a cold client — e.g. another device — reconstructs the whole conversation). The high-level **`client.interactiveSession({agent, segments})`** returns an `InteractiveSession` with `events()` / `send()` / `cancel()`; **`attachInteractiveSession(runId)`** resumes one. The `AgentEvent` union gains `awaiting_input` / `steer` / `context_compaction`.
@@ -584,6 +585,129 @@ const pending = (await client.listUsers({ tenant: "acme" })).users.filter((u) =>
 for (const u of pending) await client.approveUser(u.user_id, { tenant: "acme" });
 
 const { url } = await client.createInvite("password", { email: "carol@example.com", ttl: "72h" }, { tenant: "acme" });
+```
+
+### Sign in with loomcycle (apps)
+
+An app built on this client does not need a pasted token: it can send the person to loomcycle's own login page, where they sign in through whatever gates the operator configured, and get back a short-lived access token for that same user (RFC FL). It is the OAuth 2.0 authorization code flow with PKCE S256: the app holds no secret, never sees a password, and is authorized exactly as the user is anywhere else. The server side needs `LOOMCYCLE_PUBLIC_URL` and the app registered as a client — in the config's `auth.clients` or at runtime with `createClientDef` (below); see `docs/CONFIGURATION.md`, "App sign-in".
+
+`LoomcycleOAuth` (also `client.oauth`) runs on Web Crypto and `fetch`, so the same code serves a browser SPA, a Chrome extension and a Tauri or Node app. On Node 18, which has no global `crypto`, pass `crypto: require("node:crypto").webcrypto`.
+
+| Method | Route | Returns |
+|---|---|---|
+| `beginAuthorize({clientId, redirectUri, state?})` | — (builds `GET /v1/_oauth/authorize?…`) | `{url, verifier, state}` — persist `verifier` and `state`, then send the person to `url` |
+| `completeAuthorize({...parseAuthorizeResponse(href), expectedState, verifier, clientId, redirectUri})` | `POST /v1/_oauth/token` | `OAuthTokenSet` — `{access_token, refresh_token, token_type, expires_in, expires_at}` (`expires_at` in ms since the epoch) |
+| `refresh({refreshToken, clientId})` | `POST /v1/_oauth/token` | a new `OAuthTokenSet`; the old refresh token is spent |
+| `revoke({token, clientId})` | `POST /v1/_oauth/revoke` | void — a refresh token ends the whole sign-in |
+| `discover()` | `GET /.well-known/oauth-authorization-server` | `OAuthServerMetadata` (RFC 8414), cached |
+
+`completeAuthorize` refuses, before the code is used, a redirect whose `state` is not the one this sign-in sent (`state_mismatch`) or whose `iss` names another server (`issuer_mismatch`, RFC 9207; the issuer comes from the `issuer` option or from `discover()`), and throws a redirect's `error` (`access_denied` with `pending` for a user awaiting approval). Every failure is an `OAuthError` whose `code` is the OAuth error code.
+
+A browser SPA:
+
+```ts
+import { LoomcycleClient, LoomcycleOAuth, OAuthTokenProvider, parseAuthorizeResponse } from "@loomcycle/client";
+
+const baseUrl = "https://loom.example.com";
+const clientId = "loomboard";
+const redirectUri = `${location.origin}/auth/callback`; // registered exactly
+const oauth = new LoomcycleOAuth({ baseUrl });
+
+// "Sign in" button:
+const req = await oauth.beginAuthorize({ clientId, redirectUri });
+sessionStorage.setItem("lc_sign_in", JSON.stringify({ verifier: req.verifier, state: req.state }));
+location.assign(req.url);
+
+// On /auth/callback:
+const saved = JSON.parse(sessionStorage.getItem("lc_sign_in") ?? "{}");
+sessionStorage.removeItem("lc_sign_in");
+const tokens = await oauth.completeAuthorize({
+  ...parseAuthorizeResponse(location.href),
+  expectedState: saved.state,
+  verifier: saved.verifier,
+  clientId,
+  redirectUri,
+});
+history.replaceState(null, "", "/"); // the code is spent; drop it from the address bar
+
+const provider = new OAuthTokenProvider({
+  oauth,
+  clientId,
+  tokens,
+  onTokens: (t) => saveTokens(t), // persist every rotated set
+  onSignedOut: () => showSignIn(),
+});
+const client = new LoomcycleClient({ baseUrl, tokenProvider: provider });
+console.log((await client.whoami()).subject);
+
+// "Sign out":
+await provider.signOut();
+```
+
+A Chrome extension does the same with `chrome.identity.launchWebAuthFlow({url: req.url, interactive: true})`, which resolves with the redirect URL to hand to `parseAuthorizeResponse`; register `https://<extension-id>.chromiumapp.org/` as the redirect URI and `chrome-extension://<extension-id>` as an allowed origin.
+
+A desktop app (Tauri, Electron, a CLI) uses a loopback redirect: register `http://127.0.0.1/callback` and the server accepts it on any port (RFC 8252). In Node:
+
+```ts
+import { createServer } from "node:http";
+
+const server = createServer();
+await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+const port = (server.address() as { port: number }).port;
+const redirectUri = `http://127.0.0.1:${port}/callback`;
+
+const req = await oauth.beginAuthorize({ clientId: "loomboard-desktop", redirectUri });
+openInSystemBrowser(req.url); // e.g. Tauri's shell.open, Electron's shell.openExternal
+
+const href = await new Promise<string>((resolve) =>
+  server.on("request", (r, res) => {
+    res.end("Signed in. You can close this window.");
+    resolve(`http://127.0.0.1:${port}${r.url}`);
+  }),
+);
+server.close();
+const tokens = await oauth.completeAuthorize({
+  ...parseAuthorizeResponse(href),
+  expectedState: req.state,
+  verifier: req.verifier,
+  clientId: "loomboard-desktop",
+  redirectUri,
+});
+```
+
+A Tauri app may register a private-use scheme instead (`loomboard://auth/callback`) and pass the deep link it receives to `parseAuthorizeResponse`. Token calls made from its webview send the origin `tauri://localhost`, which the client must list in `allowed_origins`; calls from the Rust or Node side send none.
+
+**The token provider.** `new LoomcycleClient({ tokenProvider })` (instead of `authToken`; passing both throws) asks the provider for the bearer on every request, `connectClientTools` included. `OAuthTokenProvider` refreshes 60 s before the access token expires (`refreshSkewMs`), and once after a 401: the request is retried a single time with the new token, never more. Concurrent requests share one refresh. Any other source of short-lived tokens can implement `TokenProvider` (`getToken`, optional `onUnauthorized`).
+
+Things to know:
+
+- **Persist every rotated set.** A refresh spends the old refresh token, and presenting a spent one again ends the whole sign-in (reuse detection). `onTokens` is called before the new token is used.
+- **One provider per sign-in.** Two providers, or two browser tabs, refreshing the same refresh token end it the same way. Share one, or sign each tab in separately.
+- **Never log a token or put one in a URL.** The helper sends codes, verifiers and tokens only in POST bodies, with no cookie and no `Authorization` header; keep the `verifier` in session storage, not the URL, and clear it after the exchange.
+- **An ended sign-in** (revoked, expired, its client retired) reaches `onSignedOut` once, when its refresh token is refused; requests then fail with an `OAuthError` (or the server's 401 as `AuthError`). Send the person to sign in again.
+
+**Registering apps (ClientDef).** A tenant operator (`substrate:tenant`) registers its own tenant's apps; an admin any tenant's, or one for every tenant (`tenant: ""`, the default). Config clients are listed read only, and another tenant's client reads as not found. A refusal raises `SubstrateToolRefusedError`.
+
+| Method | Route | Returns |
+|---|---|---|
+| `createClientDef(name, client, {description?, tenant?}?)` | `POST /v1/_clientdef` `op: create` | `ClientDefRecord` |
+| `updateClientDef(name, client, {description?}?)` | `op: update` | `ClientDefRecord`, a new version; unexchanged codes stop working |
+| `getClientDef({name} \| {def_id})` | `op: get` | `AppClientEntry` (`source: "def"` or `"config"`) |
+| `listClientDefs({tenant?}?)` | `op: list` | `{clients: AppClientEntry[]}` |
+| `retireClientDef(name)` | `op: retire` | `{name, retired}` — its sign-ins are revoked and their tokens retired |
+| `verifyClientDef(name, {contentSha256?}?)` | `op: verify` | `ClientDefVerifyResult` |
+| `listClientDefNames({tenant?}?)` | `GET /v1/_clientdef/names` | `{names: ClientDefNameSummary[]}` |
+| `clientDef(input)` | `POST /v1/_clientdef` | the op dispatch, as sent |
+
+```ts
+await admin.createClientDef("loomboard", {
+  kind: "public",
+  label: "Loomboard",
+  redirect_uris: ["https://board.example.com/auth/callback", "http://127.0.0.1/callback"],
+  allowed_origins: ["https://board.example.com"],
+  access_token_ttl: "1h",
+  refresh: { idle: "7d", absolute: "30d" },
+}, { tenant: "acme" });
 ```
 
 ### Decision models
