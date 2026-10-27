@@ -991,6 +991,9 @@ func (m *mockConnector) Document(context.Context, json.RawMessage) (connector.To
 func (m *mockConnector) History(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) Identity(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) Decision(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
