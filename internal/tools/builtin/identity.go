@@ -182,6 +182,11 @@ type identityCaller struct {
 	// operator or admin not confined to the run plane, or the operator of an
 	// unauthenticated deployment calling from outside a run.
 	operator bool
+	// isolated: the person the run acts for is an isolated user, sandboxed to
+	// their own scope. Such users are typically the separate customers of one
+	// tenant, so they do not browse it: even public information about anyone
+	// else needs the grant to read principals (mayReadPublic).
+	isolated bool
 }
 
 func identityCallerOf(ctx context.Context) identityCaller {
@@ -192,6 +197,9 @@ func identityCallerOf(ctx context.Context) identityCaller {
 		c.subject = subject
 	}
 	p, hasPrincipal := auth.PrincipalFromContext(ctx)
+	c.isolated = tools.RunIdentity(ctx).Isolated ||
+		(eff != nil && strings.HasPrefix(eff.Subject.Class, "isolated")) ||
+		(eff == nil && auth.IsIsolated(p, hasPrincipal))
 	switch {
 	case eff != nil:
 		c.operator = aclres.IsOperatorClass(eff.Subject.Class)
@@ -243,6 +251,12 @@ func principalGroup(name string) authz.Resource {
 // mayRead: authority information about a person — status, groups, can.
 func (c identityCaller) mayRead(ctx context.Context, subject string) bool {
 	return c.isSelf(subject) || c.allows(ctx, "read", principalUser(subject), c.operator)
+}
+
+// mayReadPublic: what anyone holding the tool may read about a person — but
+// an isolated caller only about themselves, unless granted the directory.
+func (c identityCaller) mayReadPublic(ctx context.Context, subject string) bool {
+	return !c.isolated || c.mayRead(ctx, subject)
 }
 
 // mayManage: what is held about a person, and their access mode.
@@ -357,6 +371,10 @@ func (i *Identity) profile(ctx context.Context, c identityCaller, in identityInp
 	self := c.isSelf(in.Subject)
 	if !found && !self {
 		i.lookup(ctx, c, "profile", in.Subject, "", "not_found")
+		return identityNotFound("user"), nil
+	}
+	if !c.mayReadPublic(ctx, in.Subject) {
+		i.lookup(ctx, c, "profile", in.Subject, "", "refused")
 		return identityNotFound("user"), nil
 	}
 	if !self {
@@ -552,6 +570,9 @@ func (i *Identity) users(ctx context.Context, c identityCaller, in identityInput
 			continue
 		}
 		if inGroup != nil && !inGroup[subject] {
+			continue
+		}
+		if !c.mayReadPublic(ctx, subject) {
 			continue
 		}
 		if len(rows) == limit {

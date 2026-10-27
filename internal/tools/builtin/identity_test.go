@@ -194,6 +194,37 @@ func TestIdentityProfile_ReturnsThePublicSectionAndNamesOnly(t *testing.T) {
 	}
 }
 
+// An isolated user is sandboxed to their own scope: they do not browse the
+// tenant's people, even the public profiles, unless granted the directory.
+func TestIdentity_AnIsolatedUserSeesOnlyThemselves(t *testing.T) {
+	f := newIdentityFixture(t)
+	if err := f.st.UserUpdate(context.Background(), "acme", "erin", store.UserPatch{AccessMode: ptrString("isolated")}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := aclres.New(f.st, authz.ModeCompat, 0).Resolve(context.Background(), auth.Principal{
+		TenantID: "acme", Subject: "erin", TokenDefID: "def_erin", Scopes: []string{auth.ScopeUser},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := authz.WithTransport(authz.WithMode(context.Background(), authz.ModeCompat), "http")
+	ctx = auth.WithPrincipal(ctx, p)
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "acme", UserID: "erin", AgentID: "a_1", Isolated: true})
+	ctx = tools.WithRunPolicy(tools.WithRunID(ctx, "r_iso"), tools.RunPolicy{ACL: p.Effective})
+	i := f.tool(authz.ModeCompat)
+	_, res := callIdentity(t, i, ctx, `{"op":"profile","subject":"dave"}`)
+	wantNotFound(t, res, "an isolated user reading another's profile")
+	out, res := callIdentity(t, i, ctx, `{"op":"users"}`)
+	if res.IsError || len(out["users"].([]any)) != 1 || out["users"].([]any)[0].(map[string]any)["subject"] != "erin" {
+		t.Errorf("an isolated user lists %s, want only themselves", res.Text)
+	}
+	if out, res := callIdentity(t, i, ctx, `{"op":"profile","subject":"erin"}`); res.IsError || out["subject"] != "erin" {
+		t.Errorf("an isolated user's own profile: %s", res.Text)
+	}
+}
+
+func ptrString(s string) *string { return &s }
+
 // A lookup reads, and never provisions, the other person's profile.
 func TestIdentityProfile_DoesNotProvisionAMissingProfile(t *testing.T) {
 	f := newIdentityFixture(t)
