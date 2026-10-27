@@ -3576,6 +3576,7 @@ func (s *runState) iteration(ctx context.Context, iter int) loopExit {
 	turnCtx := s.armTurn(iterCtx)
 
 	req := s.buildRequest(reqSystem, reqMessages)
+	liveToolSchema(iterCtx, &req)
 	// The timer is started here and handed down rather than returned with
 	// the turn: a pointer that leaves callModel would be a heap allocation on
 	// every model call.
@@ -3860,6 +3861,33 @@ func (s *runState) outboundContext(iterCtx context.Context, iter int) ([]provide
 		reqSystem, reqMessages = cs, cm
 	}
 	return reqSystem, reqMessages, loopExit{}
+}
+
+// liveToolSchema withholds from this call the tools the run's caller may no
+// longer invoke (LOOMCYCLE_ACL_LIVE; a no-op without it). A forced
+// tool_choice that names a withheld tool, or asks for any tool when none is
+// left, falls back to auto: a provider refuses a choice the schema cannot
+// satisfy, and the dispatcher refuses the call anyway.
+func liveToolSchema(ctx context.Context, req *providers.Request) {
+	specs := tools.LiveToolSpecs(ctx, req.Tools)
+	if len(specs) == len(req.Tools) {
+		return
+	}
+	req.Tools = specs
+	switch req.ToolChoice.Mode {
+	case providers.ToolChoiceRequired:
+		if len(specs) == 0 {
+			req.ToolChoice = providers.ToolChoice{}
+		}
+	case providers.ToolChoiceTool:
+		offered := false
+		for _, sp := range specs {
+			offered = offered || sp.Name == req.ToolChoice.Name
+		}
+		if !offered {
+			req.ToolChoice = providers.ToolChoice{}
+		}
+	}
 }
 
 // armTurn arms the cancel of the turn about to start and returns its ctx.

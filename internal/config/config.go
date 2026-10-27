@@ -4170,6 +4170,11 @@ type Env struct {
 	// how long a replica trusts a compiled ACL set before re-reading the
 	// tenant's acl_version; a bus message drops it sooner.
 	ACLCacheTTLSeconds int
+	// ACLLive (LOOMCYCLE_ACL_LIVE=1, default off) makes a run re-read its
+	// caller's ACL set during the run — at each iteration and before each
+	// tool call — and narrow by the current rules within the set it started
+	// with (RFC EY §3.7, Q-B). Off: the set is frozen at the run's start.
+	ACLLive bool
 	// OperatorKeyRestriction (LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1) is the
 	// RFC AX deployment gate. Default OFF ⇒ byte-identical behavior for every
 	// existing token (a granular token minted before providers:operator-key
@@ -5462,6 +5467,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
 		ACLMode:                     os.Getenv("LOOMCYCLE_ACL"),
 		ACLCacheTTLSeconds:          getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),
+		ACLLive:                     os.Getenv("LOOMCYCLE_ACL_LIVE") == "1",
 		PublicConfig:                os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
 		AllowOpenMode:               os.Getenv("LOOMCYCLE_ALLOW_OPEN_MODE") == "1",
 		DataDir:                     getenvDefault("LOOMCYCLE_DATA_DIR", "./data"),
