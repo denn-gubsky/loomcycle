@@ -3576,7 +3576,13 @@ func (s *runState) iteration(ctx context.Context, iter int) loopExit {
 	turnCtx := s.armTurn(iterCtx)
 
 	req := s.buildRequest(reqSystem, reqMessages)
-	liveToolSchema(iterCtx, &req)
+	// code-js replays its script from the start against the tools it is
+	// offered, so a tool withdrawn mid-run would undefine a call the script
+	// already made and fail the run. It keeps its schema; the dispatcher
+	// refuses the call (acl_denied), which the script reads as a failed call.
+	if s.opts.Provider.ID() != codeJSProviderID {
+		liveToolSchema(iterCtx, &req)
+	}
 	// The timer is started here and handed down rather than returned with
 	// the turn: a pointer that leaves callModel would be a heap allocation on
 	// every model call.
