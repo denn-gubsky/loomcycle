@@ -7,7 +7,7 @@ describe("userCodeFromHash", () => {
     expect(userCodeFromHash("#bcdfghjk")).toBe("BCDFGHJK");
   });
   it("ignores anything else in the fragment", () => {
-    for (const bad of ["", "#", "#<script>", "#BCDF-GHJK-XX", "#lci_abc"]) {
+    for (const bad of ["", "#", "#<script>", "#BCDF-GHJK-XX", "#lci_abc", "#%E0%A4%A"]) {
       expect(userCodeFromHash(bad)).toBe("");
     }
   });

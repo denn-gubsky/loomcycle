@@ -49,7 +49,13 @@ export const decideDevice = (userCode: string, approve: boolean, f: typeof fetch
 
 /** The code a verification link carries in its fragment ("#BCDF-GHJK"), or "". */
 export function userCodeFromHash(hash: string): string {
-  const raw = decodeURIComponent(hash.startsWith("#") ? hash.slice(1) : hash).trim();
+  let raw: string;
+  try {
+    raw = decodeURIComponent(hash.startsWith("#") ? hash.slice(1) : hash).trim();
+  } catch {
+    // A malformed escape ("#%E0") is no code, not a crash of the page.
+    return "";
+  }
   return /^[A-Za-z]{4}-?[A-Za-z]{4}$/.test(raw) ? raw.toUpperCase() : "";
 }
 
