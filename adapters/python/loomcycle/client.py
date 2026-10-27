@@ -941,6 +941,24 @@ class LoomcycleClient:
         :meth:`agent_def`."""
         return await self._dispatch_substrate("OperatorTokenDef", input)
 
+    async def client_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the ClientDef substrate tool — the apps that sign people in
+        through this server's gates (RFC FL), registered at runtime beside
+        the config's ``auth.clients``. Op-discriminated: ``create`` /
+        ``update`` (``name``, ``client`` — the same fields as a config
+        client: ``kind``, ``label``, ``redirect_uris``, ``allowed_origins``,
+        ``access_token_ttl``, ``refresh``, ``restrictions`` — and
+        ``description``), ``get`` (``name`` or ``def_id``), ``list``,
+        ``retire`` (``name``), ``verify`` (``name``, ``content_sha256``).
+        A tenant operator (``substrate:tenant``) registers its own tenant's
+        apps; an admin any tenant's, or one for every tenant (``tenant``,
+        ``""`` the default). Config clients are read only here, and another
+        tenant's client reads as not found. ``list`` answers
+        ``{"clients": [...]}``, config clients marked ``"source": "config"``.
+        Mirror of :meth:`agent_def`; same error contract. The sign-in flow
+        itself is the TypeScript adapter's (``LoomcycleOAuth``)."""
+        return await self._dispatch_substrate("ClientDef", input)
+
     # ---- Access control: groups, rule lists, bindings, decisions (RFC EY / EZ) ----
     #
     # Op-dispatched JSON over the GroupDef / AclDef / AclBinding / Authz RPCs,
