@@ -318,7 +318,9 @@ func (s *Server) triggerOwnerCtx(ctx context.Context, owner *authz.SubjectRef, a
 // exactly as the members of a walk an agent starts inherit that run's. So
 // each member is narrowed by the owner's set, asked `spawn agent:` for it,
 // and records it for a resume. A trigger's start has no principal on ctx
-// (runner.TeamWalkStarter); the transport is the trigger's own.
+// (runner.TeamWalkStarter); the transport is the trigger's own. A team
+// subscription's walk is bound the same way by its promoter
+// (subscriptionOwnerCtx).
 //
 // No owner, or no resolver wired: ctx as it is, as triggerOwnerCtx. A set
 // that cannot be compiled refuses the start with ErrACLUnavailable; a deny,
@@ -465,11 +467,11 @@ func emitACLRemovedTools(removed []string, emit func(providers.Event)) {
 // plane, or a recorded caller.
 //
 // A set already on the policy is kept: an enclosing run's (a walk an agent
-// starts is bound by that run's originating caller) or a trigger owner's
-// (triggerWalkOwnerCtx). Inside a run with no set, nothing is stamped either:
-// the run's caller had none, and a principal on its ctx is not the run's
-// authority. No set to stamp (open mode, a team subscription's walk): ctx as
-// it is.
+// starts is bound by that run's originating caller) or a trigger owner's or
+// a subscription promoter's (triggerWalkOwnerCtx). Inside a run with no set,
+// nothing is stamped either: the run's caller had none, and a principal on
+// its ctx is not the run's authority. No set to stamp (open mode, a
+// subscription with no recorded promoter): ctx as it is.
 func stampWalkStarterACL(ctx context.Context) context.Context {
 	if tools.PolicyOf(ctx).ACL != nil || tools.RunID(ctx) != "" {
 		return ctx
