@@ -1,6 +1,10 @@
 # Integration fixture for @loomcycle/bridge-teams: one interactive-capable
-# agent on the cost-free mock provider, and the bridge's own tenant-operator
-# principal (it only registers users and mints their tokens).
+# agent on the cost-free mock provider, and both ways the bridge can run: the
+# tenant-operator principal of a token-mode bridge (it registers users and
+# mints their tokens), and the external gate it becomes (RFC FA §3.5), which
+# holds no loomcycle token: it signs who is talking with its own key, whose
+# public half run.sh writes below. legacy_subject_prefix links each person's
+# first gate login to the user the token-mode bridge made.
 provider_priority: [mock]
 tiers:
   middle:
@@ -12,6 +16,14 @@ principals:
     subject: teams-bridge
     scopes: [substrate:tenant]
     token_env: LOOMCYCLE_TEAMS_BRIDGE_IT_TOKEN
+
+auth:
+  gates:
+    teams:
+      kind: external
+      public_key: __GATE_PUBLIC_JWK__
+      issued_token: { ttl: 1h, agents: [helper], overrides: [interactive] }
+      identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: teams- }
 
 agents:
   helper:
