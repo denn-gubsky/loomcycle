@@ -116,7 +116,8 @@ func TestMintUserToken_ExplicitAuthorityOverridesTheDefault(t *testing.T) {
 		seedUser(t, st, "acme", "alice", "isolated", "active")
 		code, out, row := rawMint(t, s, st, tc.body)
 		if code != http.StatusCreated || row.Authority != tc.want {
-			t.Errorf("flag=%v body %s: status %d stored %q, want %q (%v)", tc.flag, tc.body, code, row.Authority, tc.want, out)
+			// Never the whole response: a 201 carries the minted bearer.
+			t.Errorf("flag=%v body %s: status %d stored %q, want %q (%v)", tc.flag, tc.body, code, row.Authority, tc.want, out["error"])
 		}
 	}
 	s, st := tokenAuthServer(t, "legacy")
