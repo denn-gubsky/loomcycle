@@ -24,7 +24,9 @@ Three layers, each opened by a grant of the person you act for:
 
 Without an explicit grant, a tenant operator reads everyone and a member
 reads only themselves and the groups they are in (without the other
-members). Someone you may not look up reads as `identity_not_found`, exactly
+members). If the person you act for is an isolated user, even public profiles
+of others need that grant: without it you see only them. Someone you may not
+look up reads as `identity_not_found`, exactly
 like someone who does not exist, so a refusal tells you nothing about them.
 
 ## The Public section
