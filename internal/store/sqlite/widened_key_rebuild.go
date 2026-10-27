@@ -14,11 +14,17 @@ import "context"
 // the rollup's ON CONFLICT names the seven-column key, which an old table does
 // not have at all. No row collides under the new key — it is the old one plus
 // a column every pre-existing row holds as 'chat'.
+//
+// It then gained tier and user_tier (postgres 0118) for the same reason, so a
+// database is on one of two old keys; both are listed, and a rebuild from
+// either lands on the current one. Every pre-existing row holds an empty
+// string in both.
 var widenedLegacyKeys = []struct {
 	table string
 	key   []string
 }{
 	{"usage_archive", []string{"period_start", "tenant_id", "user_id", "provider", "model", "credential_source"}},
+	{"usage_archive", []string{"period_start", "tenant_id", "user_id", "provider", "model", "credential_source", "purpose"}},
 }
 
 // rebuildWidenedKeys rebuilds every table still on a key in widenedLegacyKeys

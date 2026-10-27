@@ -156,8 +156,7 @@ func TestUsagePurpose_AnUpgradedLedgerReadsChatAndKeysTheArchiveByPurpose(t *tes
 	if a := archiveByPurpose(t, st, "t-up"); len(a) != 1 || a[store.UsagePurposeChat] != (archivedPurpose{calls: 4, tokens: 40}) {
 		t.Fatalf("legacy archive after upgrade = %+v, want one chat row of 4 calls / 40 tokens", a)
 	}
-	has, err := hasConstraintKey(ctx, st.db, "usage_archive",
-		[]string{"period_start", "tenant_id", "user_id", "provider", "model", "credential_source", "purpose"})
+	has, err := hasConstraintKey(ctx, st.db, "usage_archive", currentUsageArchiveKey)
 	if err != nil || !has {
 		t.Fatalf("upgraded usage_archive key includes purpose = %v, %v", has, err)
 	}

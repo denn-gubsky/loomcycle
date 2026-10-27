@@ -171,7 +171,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			audio_seconds         REAL NOT NULL DEFAULT 0,
 			-- The characters a text-to-speech call sent to its engine; 0 on
 			-- every other row. Mirrors postgres 0116.
-			input_chars           INTEGER NOT NULL DEFAULT 0
+			input_chars           INTEGER NOT NULL DEFAULT 0,
+			-- The model tier the call was resolved through ('pinned' for an
+			-- agent that names its model) and the run's user tier; '' when
+			-- unknown. Mirrors postgres 0118.
+			tier                  TEXT NOT NULL DEFAULT '',
+			user_tier             TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)`,
@@ -205,7 +210,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			-- Summed like audio_seconds; the key is unchanged. Mirrors
 			-- postgres 0116.
 			input_chars           INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source, purpose)
+			-- Tier and user tier join the key, so an archived day keeps
+			-- them apart; rebuildWidenedKeys swaps an older key for this
+			-- one. Mirrors postgres 0118.
+			tier                  TEXT NOT NULL DEFAULT '',
+			user_tier             TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source, purpose, tier, user_tier)
 		)`,
 		`CREATE INDEX IF NOT EXISTS usage_archive_tenant_period ON usage_archive(tenant_id, period_start)`,
 		// RFC AW — per-scope token budgets (soft + hard). A row's absence =
@@ -1671,6 +1681,13 @@ func (s *Store) migrate(ctx context.Context) error {
 		// reads back 0. Mirrors postgres 0116; no key changes.
 		`ALTER TABLE token_usage ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE usage_archive ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
+		// The model tier and user tier a row was spent under. A row from
+		// before reads back ''. Mirrors postgres 0118; the archive's key
+		// gains both in rebuildWidenedKeys.
+		`ALTER TABLE token_usage ADD COLUMN tier TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE token_usage ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE usage_archive ADD COLUMN tier TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE usage_archive ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -2249,8 +2266,8 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
 			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
-			purpose, audio_seconds, input_chars
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			purpose, audio_seconds, input_chars, tier, user_tier
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.RunID, nilIfEmpty(row.SessionID), row.TenantID, nilIfEmpty(row.UserID),
 		nilIfEmpty(row.AgentID), nilIfEmpty(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
@@ -2258,7 +2275,7 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 		costArg, nilIfEmpty(row.CostCurrency), ts.UnixNano(),
 		nilIfZeroMs(row.DurationMs), nilIfZeroMs(row.TTFTMs), nilIfZeroMs(row.LoadMs),
 		nilIfZeroMs(row.PrefillMs), nilIfZeroMs(row.DecodeMs), nilIfZeroMs(row.QueueMs),
-		purpose, audioSeconds, row.InputChars,
+		purpose, audioSeconds, row.InputChars, row.Tier, row.UserTier,
 	)
 	return err
 }
@@ -2316,7 +2333,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
 			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
-			purpose, audio_seconds, input_chars
+			purpose, audio_seconds, input_chars, tier, user_tier
 		 FROM token_usage WHERE run_id = ? ORDER BY iteration ASC, id ASC`,
 		runID,
 	)
@@ -2337,7 +2354,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &tsNano,
 			&dur, &ttft, &load, &prefill, &decode, &queue,
-			&r.Purpose, &r.AudioSeconds, &r.InputChars,
+			&r.Purpose, &r.AudioSeconds, &r.InputChars, &r.Tier, &r.UserTier,
 		); err != nil {
 			return nil, err
 		}
@@ -2756,16 +2773,16 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	defer func() { _ = tx.Rollback() }()
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source, purpose,
+		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source, purpose, tier, user_tier,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, call_count, unpriced_calls, audio_seconds, input_chars)
-		SELECT (ts/?)*? AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose,
+		SELECT (ts/?)*? AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose, tier, user_tier,
 			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
 			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
 			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds), SUM(input_chars)
 		FROM token_usage WHERE ts < ?
-		GROUP BY period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose
-		ON CONFLICT(period_start, tenant_id, user_id, provider, model, credential_source, purpose) DO UPDATE SET
+		GROUP BY period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose, tier, user_tier
+		ON CONFLICT(period_start, tenant_id, user_id, provider, model, credential_source, purpose, tier, user_tier) DO UPDATE SET
 			input_tokens          = input_tokens + excluded.input_tokens,
 			output_tokens         = output_tokens + excluded.output_tokens,
 			cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,

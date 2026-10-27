@@ -834,7 +834,20 @@ type TokenUsageRow struct {
 	// unit a per-million-characters price is computed from. 0 on every other
 	// row, and on every row written before it existed.
 	InputChars int64
+
+	// Tier is the model tier the call was resolved through ("low", "middle",
+	// "high", …), UsageTierPinned for an agent that names its model, "" when
+	// unknown (a row from before tiers were recorded, or a call with no agent
+	// behind it). UserTier is the run's user tier, "" when it has none. Both
+	// are kept by the archive, so a tier report reaches past the detail window.
+	Tier     string
+	UserTier string
 }
+
+// UsageTierPinned is TokenUsageRow.Tier for a call whose agent names its
+// provider and model instead of a tier, and for a gateway call that names a
+// model.
+const UsageTierPinned = "pinned"
 
 // The values TokenUsageRow.Purpose takes. A new purpose is added, never a
 // renamed one: the value is stored on every row and is a usage-report
@@ -844,7 +857,59 @@ const (
 	UsagePurposeOCR  = "ocr"
 	UsagePurposeSTT  = "stt"
 	UsagePurposeTTS  = "tts"
+
+	// A raw model call through the LLM gateway, made with no run.
+	UsagePurposeGateway = "gateway"
+	// The model calls of a run of an `internal:` agent — today the memory
+	// consolidation pass and the extractor runs it spawns.
+	UsagePurposeConsolidation = "consolidation"
+	// The rerank a Memory or Document search runs over its candidates.
+	UsagePurposeRerank = "rerank"
+	// A Decision tool call or a POST /v1/_decide.
+	UsagePurposeDecision = "decision"
+	// A compaction summary (manual, automatic or an agent's own request).
+	UsagePurposeCompaction = "compaction"
+	// A recap: a chat's short summary, or a run's reasoning recap.
+	UsagePurposeRecap = "recap"
+	// Document unit generation (memory.unit_generator).
+	UsagePurposeUnitGeneration = "unit_generation"
+	// Describing a Document's image with a vision model.
+	UsagePurposeImageDescription = "image_description"
 )
+
+// The two classes a purpose belongs to. Foreground is what a person or a
+// caller asked a model for; background is what the runtime asked a model for
+// in order to serve it.
+const (
+	UsageClassForeground = "foreground"
+	UsageClassBackground = "background"
+)
+
+// usagePurposeClass is every purpose a ledger row may carry, with its class.
+// It is the only list of them: NormalizeUsageRow refuses a purpose missing
+// here, and a report's class is read from it rather than stored, so the two
+// cannot disagree.
+var usagePurposeClass = map[string]string{
+	UsagePurposeChat:             UsageClassForeground,
+	UsagePurposeGateway:          UsageClassForeground,
+	UsagePurposeOCR:              UsageClassBackground,
+	UsagePurposeSTT:              UsageClassBackground,
+	UsagePurposeTTS:              UsageClassBackground,
+	UsagePurposeConsolidation:    UsageClassBackground,
+	UsagePurposeRerank:           UsageClassBackground,
+	UsagePurposeDecision:         UsageClassBackground,
+	UsagePurposeCompaction:       UsageClassBackground,
+	UsagePurposeRecap:            UsageClassBackground,
+	UsagePurposeUnitGeneration:   UsageClassBackground,
+	UsagePurposeImageDescription: UsageClassBackground,
+}
+
+// UsagePurposeClass returns the class of a purpose, and false for a purpose no
+// ledger row may carry.
+func UsagePurposeClass(purpose string) (string, bool) {
+	c, ok := usagePurposeClass[purpose]
+	return c, ok
+}
 
 // NormalizeUsageRow returns the purpose and audio seconds a ledger insert
 // writes for row: an empty purpose is chat, and an unknown purpose, a
@@ -858,9 +923,10 @@ func NormalizeUsageRow(row TokenUsageRow) (purpose string, audioSeconds float64,
 	switch purpose {
 	case "":
 		purpose = UsagePurposeChat
-	case UsagePurposeChat, UsagePurposeOCR, UsagePurposeSTT, UsagePurposeTTS:
 	default:
-		return "", 0, fmt.Errorf("usage row: unknown purpose %q", row.Purpose)
+		if _, ok := usagePurposeClass[purpose]; !ok {
+			return "", 0, fmt.Errorf("usage row: unknown purpose %q", row.Purpose)
+		}
 	}
 	s := row.AudioSeconds
 	if s < 0 || math.IsNaN(s) || math.IsInf(s, 0) {

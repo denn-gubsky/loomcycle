@@ -660,6 +660,9 @@ func Run(t *testing.T, factory Factory) {
 		// Text-to-speech ledger rows: purpose tts + input characters.
 		{"TokenUsageTTSRoundTrip", testTokenUsageTTSRoundTrip},
 		{"UsageReportTTSPurpose", testUsageReportTTSPurpose},
+		// Tier columns and the wider purpose list.
+		{"TokenUsageTierRoundTrip", testTokenUsageTierRoundTrip},
+		{"UsageRollupAcrossTiers", testUsageRollupAcrossTiers},
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},
