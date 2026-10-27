@@ -104,15 +104,22 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
         // FA §3.7c): the user is disabled at once and removed per the gate's
         // policy. The activity arrives on the same Bot Connector-authenticated
         // route as a message, and passes the same tenant fence.
+        //
+        // The revoke is awaited before Teams is answered, and a failed one
+        // fails the turn: the SDK answers a handler that throws with a 500,
+        // so the Bot Connector redelivers the activity instead of the person
+        // staying active in loomcycle (fail closed, not open). The error
+        // thrown carries a fixed message: the SDK logs it.
         app.on("install.remove", async ({ activity }) => {
           const sub = uninstalledSub(activity, cfg.allowedTenants);
           if (!sub) return;
           try {
             await g.revoke(g.subjectOf(sub));
-            ctx.log.info("teams user uninstalled the app; revoked in loomcycle", { conversation: activity.conversation?.id });
           } catch (err) {
             ctx.log.warn("teams revoke failed", { status: (err as { status?: number })?.status });
+            throw new Error("teams-bridge: the revoke did not reach loomcycle; Teams will redeliver");
           }
+          ctx.log.info("teams user uninstalled the app; revoked in loomcycle", { conversation: activity.conversation?.id });
         });
       }
       await app.start(shared.port);

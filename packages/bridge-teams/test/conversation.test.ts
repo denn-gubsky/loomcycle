@@ -490,8 +490,9 @@ describe("teams bridge as a loomcycle gate", () => {
 
   it("revokes a person who uninstalls the app from their own chat, and nothing else", async () => {
     await start();
+    // Acknowledged only once loomcycle has the revoke.
     expect((await uninstall()).status).toBe(200);
-    await waitFor(() => gate.revokes.length === 1, "revoke");
+    expect(gate.revokes).toHaveLength(1);
     expect(gate.revokes[0]).toMatchObject({ gate: "teams", payload: { iss: "teams", sub: ALICE, lc_use: "revoke" } });
 
     // An install, an uninstall from a group chat or a team, and one from a
@@ -505,13 +506,20 @@ describe("teams bridge as a loomcycle gate", () => {
     expect(lc.calls).toEqual([]);
   });
 
-  it("logs only the status when loomcycle refuses a revoke", async () => {
+  // Revocation must not fail open: a revoke loomcycle did not take is answered
+  // with a 5xx, so the Bot Connector redelivers the uninstall.
+  it("answers a failed revoke with a 5xx, logging only the status", async () => {
     const log = new RecordingLogger();
     gate.revokeStatus = 500;
     await start({ logger: log });
-    await uninstall();
-    await waitFor(() => log.lines.some((l) => l.msg === "teams revoke failed"), "the warning");
+    expect((await uninstall()).status).toBe(500);
+    expect(gate.revokes).toHaveLength(1);
     expect(log.lines.find((l) => l.msg === "teams revoke failed")).toEqual({ level: "warn", msg: "teams revoke failed", attrs: { status: 500 } });
+
+    // The redelivery, once loomcycle takes it, is acknowledged.
+    gate.revokeStatus = 204;
+    expect((await uninstall()).status).toBe(200);
+    expect(gate.revokes).toHaveLength(2);
   });
 
   it("with a loomcycle token, ignores an uninstall as it always has", async () => {
