@@ -8,9 +8,8 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 
 const LOOMCYCLE = process.env.TELEGRAM_BRIDGE_IT_BASE_URL;
-const ADMIN = process.env.TELEGRAM_BRIDGE_IT_ADMIN;
-const GATE_KEY = process.env.TELEGRAM_BRIDGE_IT_GATE_KEY;
-if (!LOOMCYCLE || !ADMIN || !GATE_KEY) throw new Error("run me through run.sh");
+const LC_TOKEN = process.env.TELEGRAM_BRIDGE_IT_TOKEN;
+if (!LOOMCYCLE || !LC_TOKEN) throw new Error("run me through run.sh");
 
 const BOT_TOKEN = `4242:${randomBytes(12).toString("hex")}`;
 const SECRET = `it_${randomBytes(12).toString("hex")}`;
@@ -43,10 +42,7 @@ const bridge = spawn(process.execPath, [fileURLToPath(new URL("../../dist/cli.js
     PATH: process.env.PATH,
     HOME: process.env.TELEGRAM_BRIDGE_IT_HOME,
     LOOMCYCLE_BASE_URL: LOOMCYCLE,
-    // A gate bridge: no loomcycle token, only its own signing key.
-    BRIDGE_GATE: "telegram",
-    BRIDGE_GATE_AUDIENCE: LOOMCYCLE,
-    BRIDGE_GATE_KEY: GATE_KEY,
+    LOOMCYCLE_TOKEN: LC_TOKEN,
     BRIDGE_AGENT: "helper",
     PORT: String(BRIDGE_PORT),
     TELEGRAM_BOT_TOKEN: BOT_TOKEN,
@@ -124,17 +120,8 @@ try {
   await new Promise((r) => setTimeout(r, 1000));
   check(sent(-100777).length === 1, "group chatter and a bot's message got no answer");
 
-  // loomcycle provisioned the person and the group under the gate's
-  // subjects, created by the gate (RFC FA §3.5).
-  const users = await (await fetch(`${LOOMCYCLE}/v1/_users?tenant=acme`, { headers: { authorization: `Bearer ${ADMIN}` } })).json();
-  const subjects = (users.users ?? []).filter((u) => u.registered).map((u) => u.user_id);
-  console.log("     users:", JSON.stringify(subjects));
-  check(subjects.includes("telegram:42"), "the private chat's person is the gate-provisioned user telegram:42");
-  check(subjects.some((s) => s.startsWith("telegram:conv:")), "the group runs as its own gate-provisioned user");
-
   const logs = bridgeLog.join("");
-  check(!logs.includes(BOT_TOKEN.split(":")[1]) && !logs.includes(SECRET) && !logs.includes("Hello from Telegram") && !logs.includes(JSON.parse(GATE_KEY).d) && !logs.includes("lct_"),
-    "no token, secret, gate key, issued token or message text in the bridge's logs");
+  check(!logs.includes(BOT_TOKEN.split(":")[1]) && !logs.includes(SECRET) && !logs.includes("Hello from Telegram"), "no token, secret or message text in the bridge's logs");
   check(calls.every((c) => c.tokenOk), "every Bot API call carried the token in its path");
 } finally {
   bridge.kill("SIGTERM");

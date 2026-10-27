@@ -8,10 +8,7 @@ import { parseCallbackData, renderCard } from "./cards.js";
 import { WEBHOOK_PATH, type TelegramConfig } from "./config.js";
 import {
   addressedText,
-  chatGroup,
-  adminGroup,
   conversationIdOf,
-  personSub,
   hasNonTextContent,
   identify,
   refFor,
@@ -20,7 +17,6 @@ import {
   type AccessPolicy,
   type BotInfo,
   type TgCallbackQuery,
-  type TgChatMemberUpdated,
   type TgMessage,
   type TgUpdate,
   type TelegramRef,
@@ -35,13 +31,6 @@ export interface TelegramBridgeOptions extends BridgeOptions<TelegramRef> {
   sleep?: (ms: number) => Promise<void>;
   timing?: Partial<StreamTiming>;
 }
-
-/** At most this many trusted chats are asked about a person's membership;
- *  past it the bridge asserts no groups for people (a group chat's own user
- *  still gets its chat's). */
-const MAX_GROUP_LOOKUPS = 20;
-/** How long a person's looked-up groups are reused. */
-const GROUP_CACHE_MS = 10 * 60 * 1000;
 
 /** answerCallbackQuery's text limit. */
 const MAX_CALLBACK_TEXT = 200;
@@ -69,8 +58,6 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
   /** "<conversation id>|<subject>" → that speaker's latest message id there. */
   private readonly lastMessages = new Map<string, number>();
   private bot?: BotInfo;
-  private readonly groupCache = new Map<string, { groups: string[]; until: number }>();
-  private readonly now?: () => number;
   private ctx?: BridgeContext<TelegramRef>;
   private readonly log: Logger;
 
@@ -81,7 +68,6 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
   ) {
     // The core logs with the same logger (its default is consoleLogger too).
     this.log = opts.logger ?? consoleLogger;
-    this.now = opts.now;
     this.capabilities = { streaming: cfg.streaming ? ("personal-only" as const) : ("never" as const), maxMessageChars: MAX_MESSAGE_CHARS };
     this.tgPort = new TelegramPort({
       api,
@@ -100,36 +86,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       allowAnyone: cfg.allowAnyone,
       trustedChats: cfg.trustedChats,
       groupRequireUsers: cfg.groupRequireUsers,
-      gate: cfg.gate?.name ?? "telegram",
     };
-  }
-
-  /** groupsFor is what loomcycle is told about a run identity's groups
-   *  (RFC FA §3.7d). A group chat's own user is in that chat's group. A
-   *  person (a private chat) is in the group of each trusted chat they are a
-   *  member of, and its admins group when they administer it, looked up with
-   *  getChatMember. A lookup that fails, or more trusted chats than are
-   *  worth asking about, asserts nothing, so loomcycle never removes a group
-   *  on a guess. Cached per person for a while: a token is asked for rarely,
-   *  but a restart asks for all of them at once. */
-  async groupsFor(subject: string, ref: TelegramRef): Promise<string[] | undefined> {
-    if (ref.chatId < 0) return [chatGroup(ref.chatId)];
-    if (this.cfg.trustedChats.size === 0) return [];
-    if (this.cfg.trustedChats.size > MAX_GROUP_LOOKUPS) return undefined;
-    const now = (this.now ?? Date.now)();
-    const hit = this.groupCache.get(subject);
-    if (hit && hit.until > now) return hit.groups;
-    const out: string[] = [];
-    for (const chat of [...this.cfg.trustedChats].sort()) {
-      const m = await this.api.call<{ status?: string; is_member?: boolean }>("getChatMember", { chat_id: chat, user_id: ref.chatId });
-      const status = m?.status ?? "";
-      const member = status === "creator" || status === "administrator" || status === "member" || (status === "restricted" && m?.is_member === true);
-      if (member) out.push(chatGroup(chat));
-      if (status === "creator" || status === "administrator") out.push(adminGroup(chat));
-    }
-    this.groupCache.set(subject, { groups: out, until: now + GROUP_CACHE_MS });
-    if (this.groupCache.size > MAX_LAST_MESSAGES) this.groupCache.delete(this.groupCache.keys().next().value!);
-    return out;
   }
 
   async start(ctx: BridgeContext<TelegramRef>): Promise<void> {
@@ -144,7 +101,7 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
     }
     await ctx.serve({ [`POST ${WEBHOOK_PATH}`]: (req) => this.webhook(req) });
     if (this.cfg.setWebhook && this.cfg.publicUrl) {
-      const allowed = ["message", "callback_query", "my_chat_member"];
+      const allowed = ["message", "callback_query"];
       await this.api.call("setWebhook", {
         url: `${this.cfg.publicUrl}${WEBHOOK_PATH}`,
         secret_token: this.cfg.webhookSecret,
@@ -178,24 +135,6 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
   private async handle(u: TgUpdate): Promise<void> {
     if (u.message) await this.onMessage(u.message);
     else if (u.callback_query) await this.onCallback(u.callback_query);
-    else if (u.my_chat_member) await this.onMyChatMember(u.my_chat_member);
-  }
-
-  /** onMyChatMember: a person who blocks the bot in their private chat has
-   *  left it, and the bridge, as the gate for Telegram, tells loomcycle so
-   *  (RFC FA §3.7c): the user is disabled at once and removed per the gate's
-   *  policy. Coming back takes an operator (reactivate: operator). */
-  private async onMyChatMember(u: TgChatMemberUpdated): Promise<void> {
-    const gate = this.ctx?.gate;
-    if (!gate || u.chat?.type !== "private" || !u.from || u.from.is_bot || u.chat.id !== u.from.id) return;
-    if (u.new_chat_member?.status !== "kicked") return;
-    try {
-      await gate.revoke(gate.subjectOf(personSub(u.from.id)));
-      this.groupCache.delete(gate.subjectOf(personSub(u.from.id)));
-      this.log.info("telegram user blocked the bot; revoked in loomcycle", { chat: u.chat.id });
-    } catch (err) {
-      this.log.warn("telegram revoke failed", { status: (err as { status?: number })?.status });
-    }
   }
 
   private async onMessage(msg: TgMessage): Promise<void> {

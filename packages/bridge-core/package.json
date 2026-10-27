@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/bridge-core",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "The shared core of the loomcycle bridges (RFC EQ): each person on a chat platform talks to a loomcycle interactive agent as their own loomcycle user, with per-user tokens, conversations, streamed replies, question and review cards, and an idle sweep. A bridge package adds one platform.",
   "license": "Apache-2.0",

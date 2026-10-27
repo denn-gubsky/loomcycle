@@ -69,7 +69,7 @@ function httpsBase(reader: EnvReader, name: string, value: string | undefined, o
  *  problem at once. */
 export function loadConfig(env: Env = process.env): TelegramConfig {
   const reader = new EnvReader(env);
-  const shared = loadSharedConfig(reader, { port: DEFAULT_PORT, gate: true });
+  const shared = loadSharedConfig(reader, { port: DEFAULT_PORT });
 
   const botToken = reader.required("TELEGRAM_BOT_TOKEN", "from @BotFather");
   // The value is never echoed: a problem names the variable only.

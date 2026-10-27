@@ -15,7 +15,7 @@ This package is for writing one more.
 
 ## What the core does
 
-- **Per-user tokens.** The bridge holds one `substrate:tenant` token. It registers each person as a loomcycle user, `<platform>-<id>`. It mints each of them a short-lived token that can start only the configured agent, interactively, at a bounded rate. Tokens are kept in memory only; a restart mints fresh ones.
+- **Per-user tokens.** The bridge holds one `substrate:tenant` token. It registers each person as a loomcycle user, `<platform>-<id>`. It mints each of them a short-lived token that can start only the configured agent, interactively, at a bounded rate. Tokens are kept in memory only; a restart mints fresh ones. A platform package can instead run the bridge as a loomcycle **gate** (below), which holds no loomcycle token at all.
 - **Conversations.** One conversation drives one interactive run at a time. A second message steers the live run. After a restart, the next message continues the stored session in a new run, so nothing is replayed.
 - **Turns.** Where the platform can stream, the answer shows as it is written. Elsewhere the bridge shows a typing indicator, then sends one message per turn, split at the platform's size limit.
 - **Cards.** A question the agent asks, and an answer held for review, are sent as platform-neutral cards: a question with up to six options, or a review with approve and send-back. The platform package renders them. Each button has a short id, so a platform with a small button payload sends only the id.
@@ -50,6 +50,30 @@ Every bridge reads these, then its platform's own:
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
 | `BRIDGE_DEV` | `1` turns the platform's request authentication off, for local testing only | unset |
 | `PORT` | Listen port | per platform |
+
+### As a loomcycle gate
+
+A platform package that opts in (`loadSharedConfig(reader, { port, gate: true })`) runs the bridge as an external gate of loomcycle. The bridge then holds no loomcycle token. It signs who is talking with its own key, and loomcycle checks the signature, provisions the user by the gate's `identity_map`, and issues the short-lived token. What a new user may reach, and which groups they join, is set in loomcycle, not in the bridge.
+
+| Variable | Meaning |
+|---|---|
+| `BRIDGE_GATE` | The gate's name in loomcycle's `auth.gates`. A person is the loomcycle user `<gate>:<id>`. |
+| `BRIDGE_GATE_AUDIENCE` | loomcycle's `LOOMCYCLE_PUBLIC_URL`, which every signed assertion names. `https://`, or `http://` to localhost only. |
+| `BRIDGE_GATE_KEY` | The bridge's Ed25519 or ES256 private key, as a JWK. loomcycle holds only the public half, pinned in the gate's `public_key`. |
+| `BRIDGE_GATE_SECRET` | Instead of a key pair, an HMAC secret shared with a co-located loomcycle (`hmac_secret_env` in the gate). Set one of the two. |
+| `BRIDGE_GATE_KEY_ID` | The `kid` sent in each assertion's header; defaults to the JWK's own `kid`. When both sides name one, loomcycle refuses a mismatch. Optional. |
+
+`LOOMCYCLE_TOKEN` and `BRIDGE_USER_ACCESS_MODE` are refused in this mode: the first would be an unused credential left deployed, and the second is the gate's `identity_map.new_user.access_mode` in loomcycle. The matching loomcycle side:
+
+```yaml
+auth:
+  gates:
+    telegram:
+      kind: external
+      public_key: { kty: OKP, crv: Ed25519, x: "<the bridge key's public x>" }
+      issued_token: { ttl: 12h, agents: [helper], overrides: [interactive] }
+      identity_map: { tenant: acme, provision: auto }
+```
 
 ## Writing a platform package
 

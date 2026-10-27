@@ -1,7 +1,7 @@
 // Who sent a Telegram update, whether they may use the bot, and how far their
 // words are trusted. Pure functions over the Bot API's own shapes.
 
-import { gateSharedSubject, type Identified, type Trust } from "@loomcycle/bridge-core";
+import { sharedSubject, type Identified, type Trust } from "@loomcycle/bridge-core";
 
 /** The few Bot API fields the bridge reads. */
 export interface TgUser {
@@ -47,19 +47,10 @@ export interface TgCallbackQuery {
   data?: string;
 }
 
-/** The bot's own membership changing in a chat (Bot API ChatMemberUpdated):
- *  in a private chat, "kicked" means the person blocked the bot. */
-export interface TgChatMemberUpdated {
-  chat: TgChat;
-  from: TgUser;
-  new_chat_member?: { status?: string };
-}
-
 export interface TgUpdate {
   update_id: number;
   message?: TgMessage;
   callback_query?: TgCallbackQuery;
-  my_chat_member?: TgChatMemberUpdated;
 }
 
 /** Where a reply goes. Plain JSON: it is kept in the conversation store. */
@@ -76,26 +67,6 @@ export interface AccessPolicy {
   trustedChats: ReadonlySet<string>;
   /** A group member must also be in allowedUsers, even with allowAnyone. */
   groupRequireUsers: boolean;
-  /** The bridge's gate name in loomcycle (RFC FA §3.7d): a person is
-   *  "<gate>:<telegram id>", a group "<gate>:conv:<hash>". */
-  gate: string;
-}
-
-/** personSub is the platform id a person is asserted under: loomcycle makes
- *  it the subject "<gate>:<id>". */
-export function personSub(userId: number): string {
-  return String(userId);
-}
-
-/** chatGroup names the platform group of a chat's members, and adminGroup
- *  that of its administrators. loomcycle keeps them as "<gate>:tg-chat-<id>"
- *  external groups, which an operator maps (group_map) and binds ACLs to. */
-export function chatGroup(chatId: number | string): string {
-  return `tg-chat-${chatId}`;
-}
-
-export function adminGroup(chatId: number | string): string {
-  return `tg-chat-${chatId}-admins`;
 }
 
 export const NOT_ALLOWED_NOTICE = "Sorry, this bot isn't available here. Ask its operator to allow this chat.";
@@ -136,7 +107,7 @@ export function identify(chat: TgChat, from: TgUser | undefined, threadId: numbe
 
   const chatKey = String(chat.id);
   const conversationId = conversationIdOf(chat.id, threadId);
-  const subject = `${policy.gate}:${personSub(from.id)}`;
+  const subject = `telegram-${from.id}`;
   const name = displayName(from);
 
   if (chat.type === "private") {
@@ -164,7 +135,7 @@ export function identify(chat: TgChat, from: TgUser | undefined, threadId: numbe
       scope: "group",
       conversationId,
       // The chat's memory spans its topics; each topic is its own session.
-      runAs: { subject: gateSharedSubject(policy.gate, chatKey), name: `Telegram group ${chatKey}` },
+      runAs: { subject: sharedSubject("telegram", chatKey), name: `Telegram group ${chatKey}` },
     };
   }
 

@@ -3,13 +3,13 @@
 
 import net from "node:net";
 
-import { gateSharedSubject, keyFromSecret, MemoryStore, type Bridge } from "@loomcycle/bridge-core";
+import { MemoryStore, sharedSubject, type Bridge } from "@loomcycle/bridge-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createTelegramBridge } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
 import { NOT_ALLOWED_NOTICE, type TelegramRef, type TgUpdate } from "../src/identity.js";
-import { FakeGate, FakeLoomcycle, FakeTelegram, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
+import { FakeLoomcycle, FakeTelegram, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const SECRET = "hook_secret-1";
 
@@ -32,7 +32,6 @@ const group = { id: -100500, type: "supergroup", title: "Team" };
 describe("telegram bridge", () => {
   let lc: FakeLoomcycle;
   let tg: FakeTelegram;
-  let gate: FakeGate;
   let bridge: Bridge<TelegramRef>;
   let base: string;
   let nextUpdate = 1;
@@ -42,9 +41,7 @@ describe("telegram bridge", () => {
     base = `http://127.0.0.1:${port}`;
     const cfg = loadConfig({
       LOOMCYCLE_BASE_URL: "http://loomcycle.test",
-      BRIDGE_GATE: "telegram",
-      BRIDGE_GATE_AUDIENCE: "https://lc.example",
-      BRIDGE_GATE_SECRET: "s".repeat(40),
+      LOOMCYCLE_TOKEN: "tenant-token",
       BRIDGE_AGENT: "helper",
       TELEGRAM_BOT_TOKEN: "123:abc",
       TELEGRAM_BRIDGE_WEBHOOK_SECRET: SECRET,
@@ -56,8 +53,6 @@ describe("telegram bridge", () => {
     bridge = createTelegramBridge(cfg, {
       clients: lc.client,
       fetch: tg.fetch,
-      gateFetch: gate.fetch,
-      gateKey: keyFromSecret("s".repeat(40)),
       sleep: async () => {},
       logger: silentLogger,
       store: new MemoryStore(),
@@ -71,7 +66,6 @@ describe("telegram bridge", () => {
   beforeEach(() => {
     lc = new FakeLoomcycle();
     tg = new FakeTelegram();
-    gate = new FakeGate();
   });
 
   afterEach(async () => {
@@ -129,19 +123,11 @@ describe("telegram bridge", () => {
   it("answers a private message: a run as the user, then the reply in the chat", async () => {
     await start();
     const run = await sayAndStart(message("hello there"));
-    expect(run.token).toMatch(/^tok-telegram:42-/);
+    expect(run.token).toMatch(/^tok-telegram-42-/);
     expect(run.opts).toMatchObject({ agent: "helper", interactive: true });
     expect(run.opts.segments).toEqual([{ role: "user", content: [{ type: "trusted-text", text: "hello there" }] }]);
-    // The bridge is a loomcycle gate: it registers nobody and mints
-    // nothing; it asserts who is talking and loomcycle issues the token.
-    expect(lc.createdUsers).toEqual([]);
-    expect(lc.mints).toEqual([]);
-    expect(gate.asserts).toHaveLength(1);
-    expect(gate.asserts[0]!.gate).toBe("telegram");
-    expect(gate.asserts[0]!.payload).toMatchObject({ iss: "telegram", aud: "https://lc.example", sub: "42", name: "Alice", lc_use: "assert",
-      token: { agents: ["helper"], overrides: ["interactive"] } });
-    // No trusted chats: a person is asserted in no chat group.
-    expect(gate.asserts[0]!.payload.groups).toEqual([]);
+    expect(lc.createdUsers).toEqual([{ subject: "telegram-42", display_name: "Alice", access_mode: "isolated" }]);
+    expect(lc.mints[0]!.opts.name).toBe("telegram-bridge");
 
     run.events.push({ type: "text", text: "Hi **Alice**" });
     run.events.push({ type: "awaiting_input" });
@@ -256,7 +242,7 @@ describe("telegram bridge", () => {
     await start();
     const mention = { entities: [{ type: "mention", offset: 0, length: 8 }] };
     const run = await sayAndStart(message("@LoomBot summarise this thread", alice, group, mention));
-    expect(run.token).toContain(gateSharedSubject("telegram", "-100500"));
+    expect(run.token).toContain(sharedSubject("telegram", "-100500"));
     expect(run.opts.segments).toEqual([{ role: "user", content: [{ type: "untrusted-block", kind: "user_input", text: "[Alice] summarise this thread" }] }]);
     // Chatter not addressed to the bot is not read at all.
     await post(message("unrelated chatter", bob, group));
@@ -303,7 +289,7 @@ describe("telegram bridge", () => {
     await waitFor(() => tg.callsTo("answerCallbackQuery").length === 2, "callbacks answered");
     await waitFor(() => tg.callsTo("editMessageText").length === 2, "cards closed");
 
-    expect(lc.callsTo("resolveInterrupt").map((c) => c.args)).toEqual([["run-1", "int-1", { answer: "b.txt", resolvedBy: "telegram:42" }]]);
+    expect(lc.callsTo("resolveInterrupt").map((c) => c.args)).toEqual([["run-1", "int-1", { answer: "b.txt", resolvedBy: "telegram-42" }]]);
     const edits = tg.callsTo("editMessageText").map((c) => c.params);
     expect(edits).toContainEqual({ chat_id: 42, message_id: 100, link_preview_options: { is_disabled: true }, text: "Answered: b.txt", parse_mode: "HTML" });
     for (const e of edits) expect(e.reply_markup).toBeUndefined();
@@ -320,7 +306,7 @@ describe("telegram bridge", () => {
 
     await post(message("Alice Smith"));
     await waitFor(() => lc.callsTo("resolveInterrupt").length === 1, "answer");
-    expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-2", { answer: "Alice Smith", resolvedBy: "telegram:42" }]);
+    expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-2", { answer: "Alice Smith", resolvedBy: "telegram-42" }]);
   });
 
   it("in an untrusted group, a free-text question offers only Decline and no reply prompt", async () => {
@@ -368,14 +354,14 @@ describe("telegram bridge", () => {
     const toBot = { reply_to_message: { from: tg.bot } };
     await post(message("Alice Smith", alice, group, toBot));
     await waitFor(() => lc.callsTo("resolveInterrupt").length === 1, "answer via the prompt");
-    expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-4", { answer: "Alice Smith", resolvedBy: "telegram:42" }]);
+    expect(lc.callsTo("resolveInterrupt")[0]!.args).toEqual(["run-1", "int-4", { answer: "Alice Smith", resolvedBy: "telegram-42" }]);
 
     // So does a reply to the card, which is the bot's message too.
     run.events.push({ type: "interruption_pending", interruption: ask("int-5") });
     await waitFor(() => tg.callsTo("sendMessage").length === 4, "second card and prompt");
     await post(message("Smith", alice, group, toBot));
     await waitFor(() => lc.callsTo("resolveInterrupt").length === 2, "answer via the card");
-    expect(lc.callsTo("resolveInterrupt")[1]!.args).toEqual(["run-1", "int-5", { answer: "Smith", resolvedBy: "telegram:42" }]);
+    expect(lc.callsTo("resolveInterrupt")[1]!.args).toEqual(["run-1", "int-5", { answer: "Smith", resolvedBy: "telegram-42" }]);
   });
 
   it("a press by someone other than the card's owner is refused in the callback answer", async () => {
@@ -403,47 +389,12 @@ describe("telegram bridge", () => {
     expect(tg.callsTo("sendMessage")).toHaveLength(1);
   });
 
-  // RFC FA §3.7d: the bridge tells loomcycle the groups it knows — a group's
-  // own user is in its chat group; a person is in the groups of the trusted
-  // chats Telegram says they belong to, and their admins groups.
-  it("asserts a group's chat group and a person's trusted-chat memberships", async () => {
-    tg.reply.getChatMember = (p) =>
-      ({ ok: true, result: { status: p.chat_id === "-100500" ? "administrator" : p.chat_id === "-100600" ? "member" : "left" } }) as object;
-    await start({ TELEGRAM_BRIDGE_TRUSTED_CHATS: "-100500,-100600,-100700", TELEGRAM_BRIDGE_ALLOWED_CHATS: "-100500" });
-    await sayAndStart(message("hello"));
-    expect(gate.asserts.at(-1)!.payload.groups).toEqual(["tg-chat--100500", "tg-chat--100500-admins", "tg-chat--100600"]);
-    await sayAndStart(message("@LoomBot hi", alice, group, { entities: [{ type: "mention", offset: 0, length: 8 }] }));
-    const g = gate.asserts.at(-1)!;
-    expect(g.payload.sub).toBe(gateSharedSubject("telegram", "-100500").slice("telegram:".length));
-    expect(g.payload.groups).toEqual(["tg-chat--100500"]);
-  });
-
-  it("asserts no groups for a person when a membership lookup fails", async () => {
-    tg.reply.getChatMember = () => ({ ok: false, error_code: 400, description: "chat not found" }) as object;
-    await start({ TELEGRAM_BRIDGE_TRUSTED_CHATS: "-100500" });
-    await sayAndStart(message("hello"));
-    expect("groups" in gate.asserts.at(-1)!.payload).toBe(false);
-  });
-
-  // A person who blocks the bot is gone as far as the gate knows: loomcycle
-  // is told (a signed revoke) and disables them.
-  it("revokes a person who blocks the bot in their private chat", async () => {
-    await start();
-    await post({ update_id: nextUpdate++, my_chat_member: { chat: privateChat(), from: alice, new_chat_member: { status: "kicked" } } });
-    await waitFor(() => gate.revokes.length === 1, "revoke");
-    expect(gate.revokes[0]).toMatchObject({ gate: "telegram", payload: { sub: "42", lc_use: "revoke" } });
-    // A group's membership change is not a person leaving the bot.
-    await post({ update_id: nextUpdate++, my_chat_member: { chat: group, from: alice, new_chat_member: { status: "kicked" } } });
-    await settle();
-    expect(gate.revokes).toHaveLength(1);
-  });
-
   it("sets the webhook with its secret and the updates it handles", async () => {
     await start({ TELEGRAM_BRIDGE_SET_WEBHOOK: "1", TELEGRAM_BRIDGE_PUBLIC_URL: "https://bot.example.com" });
     expect(tg.callsTo("setWebhook")[0]!.params).toEqual({
       url: "https://bot.example.com/telegram/webhook",
       secret_token: SECRET,
-      allowed_updates: ["message", "callback_query", "my_chat_member"],
+      allowed_updates: ["message", "callback_query"],
     });
   });
 });

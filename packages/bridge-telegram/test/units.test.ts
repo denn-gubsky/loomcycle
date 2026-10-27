@@ -1,4 +1,4 @@
-import { ConfigError, gateSharedSubject, VERB, type CanonicalCard, type RawRequest } from "@loomcycle/bridge-core";
+import { ConfigError, sharedSubject, VERB, type CanonicalCard, type RawRequest } from "@loomcycle/bridge-core";
 import { describe, expect, it } from "vitest";
 
 import { MAX_RETRY_AFTER_SECONDS, TelegramApi, TelegramError, isParseError } from "../src/api.js";
@@ -14,9 +14,7 @@ const SECRET = "s3cret_value-1";
 
 const baseEnv = {
   LOOMCYCLE_BASE_URL: "http://loomcycle.internal:8787",
-  BRIDGE_GATE: "telegram",
-  BRIDGE_GATE_AUDIENCE: "https://lc.example",
-  BRIDGE_GATE_KEY: "{}",
+  LOOMCYCLE_TOKEN: "lc-tenant-token",
   BRIDGE_AGENT: "helper",
   TELEGRAM_BOT_TOKEN: TOKEN,
   TELEGRAM_BRIDGE_WEBHOOK_SECRET: SECRET,
@@ -163,7 +161,6 @@ const policy = (p: Partial<AccessPolicy> = {}): AccessPolicy => ({
   allowAnyone: false,
   trustedChats: new Set(),
   groupRequireUsers: false,
-  gate: "telegram",
   ...p,
 });
 
@@ -176,10 +173,10 @@ describe("identity", () => {
   it("a private chat is the person's own, trusted conversation", () => {
     expect(identify(privateChat, alice, undefined, policy())).toEqual({
       ok: true,
-      speaker: { subject: "telegram:42", name: "Alice Smith", trust: "trusted" },
+      speaker: { subject: "telegram-42", name: "Alice Smith", trust: "trusted" },
       scope: "personal",
       conversationId: "tg:42",
-      runAs: { subject: "telegram:42", name: "Alice Smith" },
+      runAs: { subject: "telegram-42", name: "Alice Smith" },
     });
   });
 
@@ -187,10 +184,10 @@ describe("identity", () => {
     const id = identify(group, alice, undefined, policy());
     expect(id).toEqual({
       ok: true,
-      speaker: { subject: "telegram:42", name: "Alice Smith", trust: "untrusted" },
+      speaker: { subject: "telegram-42", name: "Alice Smith", trust: "untrusted" },
       scope: "group",
       conversationId: "tg:-100500",
-      runAs: { subject: gateSharedSubject("telegram", "-100500"), name: "Telegram group -100500" },
+      runAs: { subject: sharedSubject("telegram", "-100500"), name: "Telegram group -100500" },
     });
   });
 
