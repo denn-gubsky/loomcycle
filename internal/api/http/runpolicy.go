@@ -79,6 +79,8 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 	// here, after the definition's own defaults resolved; the tool set was
 	// narrowed by the entry point that built src.Tools.
 	acl := src.ACL
+	memScopes := tools.NarrowScopesByACL(ctx, acl, "memory", tools.EffectiveMemoryScopes(ctx, def.MemoryScopes))
+	sqlScopes := tools.NarrowScopesByACL(ctx, acl, "sqlmem", tools.EffectiveSqlScopes(ctx, def.SqlScopes))
 	return tools.RunPolicy{
 		Tools:             toolNames(src.Tools),
 		ToolPatterns:      def.Tools, // raw globs for the Skill subset check
@@ -87,7 +89,8 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		EphemeralWritable: !src.EphemeralReadOnly && def.EphemeralVolumes != config.EphemeralVolumesReadOnly,
 		VolumeDef:         s.volumeDefPolicyForAgent(def),
 		Memory: tools.MemoryPolicyValue{
-			AllowedScopes:      tools.NarrowScopesByACL(ctx, acl, "memory", tools.EffectiveMemoryScopes(ctx, def.MemoryScopes)),
+			AllowedScopes:      memScopes,
+			ReadOnlyScopes:     tools.ReadOnlyScopesByACL(ctx, acl, "memory", memScopes),
 			QuotaBytes:         def.MemoryQuotaBytes,
 			Backend:            def.MemoryBackend,
 			Consolidation:      def.MemoryConsolidation,
@@ -98,8 +101,9 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		},
 		// RFC AA: the agent's SQL Memory ACL. Empty sql_scopes → default-deny.
 		SqlMem: tools.SqlMemPolicyValue{
-			AllowedScopes: tools.NarrowScopesByACL(ctx, acl, "sqlmem", tools.EffectiveSqlScopes(ctx, def.SqlScopes)),
-			QuotaBytes:    def.SqlQuotaBytes,
+			AllowedScopes:  sqlScopes,
+			ReadOnlyScopes: tools.ReadOnlyScopesByACL(ctx, acl, "sqlmem", sqlScopes),
+			QuotaBytes:     def.SqlQuotaBytes,
 		},
 		// RFC BL P1: read by the Memory tool to enforce read_only/limit_bytes,
 		// and the parent blocks an inherit_core_blocks child picks up.

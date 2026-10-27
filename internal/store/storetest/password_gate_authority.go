@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -197,6 +198,21 @@ func testAuthorityRaisingWritesRevokeManagerIssuedLinks(t *testing.T, s store.St
 				_, err := s.AclBindingPut(ctx, store.AclBindingRow{TenantID: "acme", ACLName: "admin", SubjectKind: "token", SubjectID: "def-tok"})
 				return err
 			}},
+		// A snapshot restore that adds the same authority is the same write.
+		{name: "SnapshotRestoreGroupMemberUser", subject: "restored-member", write: func() error {
+			ok, err := s.SnapshotRestoreGroupMember(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "admins", MemberKind: store.GroupMemberUser, MemberID: "restored-member"})
+			if err == nil && !ok {
+				err = errors.New("the membership was not inserted")
+			}
+			return err
+		}},
+		{name: "SnapshotRestoreAclBindingUser", subject: "restored-bound", write: func() error {
+			ok, err := s.SnapshotRestoreAclBinding(ctx, store.AclBindingRow{BindingID: "aclb_restored", TenantID: "acme", ACLName: "admin", SubjectKind: "user", SubjectID: "restored-bound"})
+			if err == nil && !ok {
+				err = errors.New("the binding was not inserted")
+			}
+			return err
+		}},
 		{name: "UserUpdateToTenant", subject: "promoted", write: func() error {
 			return s.UserUpdate(ctx, "acme", "promoted", store.UserPatch{AccessMode: &tenantMode})
 		}},
@@ -261,6 +277,29 @@ func testNonRaisingWritesKeepManagerIssuedLinks(t *testing.T, s store.Store) {
 	}
 	if r, i := erinLive(); !r || !i {
 		t.Errorf("after a display-name and an isolated update: reset live %v, invite live %v; want both live", r, i)
+	}
+
+	// Re-restoring a membership and a binding the store already holds, and
+	// restoring a binding that is retired, grant nothing new.
+	if err := s.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "parent", MemberKind: store.GroupMemberUser, MemberID: "fay"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AclBindingPut(ctx, store.AclBindingRow{BindingID: "aclb_fay", TenantID: "acme", ACLName: "admin", SubjectKind: "user", SubjectID: "fay"}); err != nil {
+		t.Fatal(err)
+	}
+	fayLive := pwgSeedManagerLinks(t, s, "acme", "fay")
+	if ok, err := s.SnapshotRestoreGroupMember(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "parent", MemberKind: store.GroupMemberUser, MemberID: "fay"}); err != nil || ok {
+		t.Errorf("re-restore membership = (%v, %v); want (false, nil)", ok, err)
+	}
+	if ok, err := s.SnapshotRestoreAclBinding(ctx, store.AclBindingRow{BindingID: "aclb_fay", TenantID: "acme", ACLName: "admin", SubjectKind: "user", SubjectID: "fay"}); err != nil || ok {
+		t.Errorf("re-restore binding = (%v, %v); want (false, nil)", ok, err)
+	}
+	if ok, err := s.SnapshotRestoreAclBinding(ctx, store.AclBindingRow{BindingID: "aclb_fay_retired", TenantID: "acme", ACLName: "admin", SubjectKind: "user", SubjectID: "fay",
+		RetiredAt: time.Now().UTC()}); err != nil || !ok {
+		t.Errorf("restore retired binding = (%v, %v); want (true, nil)", ok, err)
+	}
+	if r, i := fayLive(); !r || !i {
+		t.Errorf("after re-restoring held rows and a retired binding: reset live %v, invite live %v; want both live", r, i)
 	}
 }
 

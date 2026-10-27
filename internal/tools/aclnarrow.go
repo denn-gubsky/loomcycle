@@ -66,8 +66,8 @@ func NarrowVolumesByACL(ctx context.Context, eff *authz.Effective, v VolumePolic
 
 // NarrowScopesByACL keeps the scopes of a keyspace type (memory, sqlmem,
 // history) the principal may read; a scope it may not read is dropped
-// whole. A write-only denial is not expressible in the policy values yet
-// and is left to a later per-call check.
+// whole. A scope it may read but not write stays, and ReadOnlyScopesByACL
+// names it.
 func NarrowScopesByACL(ctx context.Context, eff *authz.Effective, typ string, scopes []string) []string {
 	if len(scopes) == 0 || (eff == nil && authz.ModeFrom(ctx) != authz.ModeEnforce) {
 		return scopes
@@ -75,6 +75,26 @@ func NarrowScopesByACL(ctx context.Context, eff *authz.Effective, typ string, sc
 	out := make([]string, 0, len(scopes))
 	for _, sc := range scopes {
 		if aclPermits(ctx, eff, "read", authz.Resource{Type: typ, Name: scopeResourceName(sc)}) {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+// ReadOnlyScopesByACL returns the scopes of a writable keyspace type (memory,
+// sqlmem) the principal may not write, out of the scopes NarrowScopesByACL
+// kept — the policy value's ReadOnlyScopes. Mode-aware like the rest: compat
+// lists a scope only under an explicit write deny, enforce lists every scope
+// no rule lets it write, shadow lists none (ShadowACLNarrowing reports them).
+// Unlike a volume, write here does not imply read: a scope the principal may
+// write but not read was already dropped whole.
+func ReadOnlyScopesByACL(ctx context.Context, eff *authz.Effective, typ string, scopes []string) []string {
+	if len(scopes) == 0 || (eff == nil && authz.ModeFrom(ctx) != authz.ModeEnforce) {
+		return nil
+	}
+	var out []string
+	for _, sc := range scopes {
+		if !aclPermits(ctx, eff, "write", authz.Resource{Type: typ, Name: scopeResourceName(sc)}) {
 			out = append(out, sc)
 		}
 	}
@@ -126,7 +146,8 @@ type ACLShadowDivergence struct {
 
 // ShadowACLNarrowing names what the narrowing helpers above would take from
 // a run's policy under enforce — each tool withheld, each volume made
-// read-only or dropped, each memory, SQL-memory or history scope dropped, and
+// read-only or dropped, each memory, SQL-memory or history scope dropped,
+// each memory or SQL-memory scope made read-only, and
 // each skill deny it would append to the agent's patterns (every skill when
 // no rule allows one) — given the policy shadow mode built,
 // which took nothing. Outside shadow mode, or with no compiled set, it
@@ -172,13 +193,19 @@ func ShadowACLNarrowing(ctx context.Context, p RunPolicy) []ACLShadowDivergence 
 		}
 	}
 	for _, ks := range []struct {
-		typ    string
-		scopes []string
-	}{{"memory", p.Memory.AllowedScopes}, {"sqlmem", p.SqlMem.AllowedScopes}, {"history", p.History.Scopes}} {
+		typ      string
+		scopes   []string
+		writable bool
+	}{{"memory", p.Memory.AllowedScopes, true}, {"sqlmem", p.SqlMem.AllowedScopes, true}, {"history", p.History.Scopes, false}} {
 		for _, sc := range ks.scopes {
 			res := authz.Resource{Type: ks.typ, Name: scopeResourceName(sc)}
+			// As NarrowScopesByACL then ReadOnlyScopesByACL: an unreadable
+			// scope is dropped (recorded as the read refused); a readable one
+			// that may not be written becomes read-only.
 			if d, no := refused("read", res); no {
 				add("read", res, d)
+			} else if d, no := refused("write", res); ks.writable && no {
+				add("write", res, d)
 			}
 		}
 	}

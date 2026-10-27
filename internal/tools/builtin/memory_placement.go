@@ -105,10 +105,10 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 			SubjectTypes:  subjectTypes[subj],
 			SelfNames:     selfNames,
 			Isolated:      ident.Isolated,
-			GrantedScopes: policy.AllowedScopes,
+			GrantedScopes: policy.WritableScopes(), // a read-only scope would refuse the placed fact
 			// sql_scopes too: a tenant placement also writes the chunk mirror, which is a
 			// Document write and gated on both planes.
-			GrantedSqlScopes: tools.PolicyOf(ctx).SqlMem.AllowedScopes,
+			GrantedSqlScopes: tools.PolicyOf(ctx).SqlMem.WritableScopes(),
 			// The curator gate's two inputs (RFC CV decision 6).
 			SubjectKnownToTenant: knownToTenant[subj],
 			CuratorWrite:         curator,
@@ -127,8 +127,8 @@ func (m *Memory) execPlacement(ctx context.Context, callerScope store.MemoryScop
 		"placements":         out,
 		"moved":              moved,
 		"caller_scope":       string(callerScope),
-		"granted_scopes":     policy.AllowedScopes,
-		"granted_sql_scopes": tools.PolicyOf(ctx).SqlMem.AllowedScopes,
+		"granted_scopes":     policy.WritableScopes(),
+		"granted_sql_scopes": tools.PolicyOf(ctx).SqlMem.WritableScopes(),
 	})
 }
 

@@ -142,6 +142,9 @@ func capture(ctx context.Context, s store.Store, opts CaptureOptions) (*store.Sn
 	if err := captureTokenLimits(ctx, s, envelope.CreatedAt, &envelope.Sections.TokenLimits); err != nil {
 		return nil, nil, nil, err
 	}
+	if err := captureACL(ctx, s, &envelope.Sections.ACL); err != nil {
+		return nil, nil, nil, err
+	}
 	if err := captureAgentDefs(ctx, s, &envelope.Sections.AgentDefs); err != nil {
 		return nil, nil, nil, err
 	}

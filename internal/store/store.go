@@ -2683,6 +2683,12 @@ type SnapshotReadStore interface {
 	// parent_path, name). DirentList and DirentListUnder are per-tree.
 	SnapshotReadDirents(ctx context.Context) ([]DirentRow, error)
 
+	// SnapshotReadAcl returns every tenant's RFC EY rows — lists, groups,
+	// memberships and bindings, retired ones too — each ordered by tenant
+	// then its key, for snapshot determinism. AclDefList and friends are
+	// per-tenant.
+	SnapshotReadAcl(ctx context.Context) (AclSnapshot, error)
+
 	// SnapshotReadChannelMessages returns every channel_messages row.
 	// Filters out expired rows. Ordered by (channel ASC, scope ASC,
 	// scope_id ASC, visible_at ASC, id ASC) — matches the natural
@@ -2893,6 +2899,24 @@ type SnapshotRestoreStore interface {
 	// never rolls back a newer target budget; `inserted` is true only on the
 	// first write.
 	SnapshotRestoreTokenLimit(ctx context.Context, row TokenLimitRow) (bool, error)
+
+	// SnapshotRestoreAclDef / SnapshotRestoreGroup / SnapshotRestoreGroupMember
+	// / SnapshotRestoreAclBinding insert one RFC EY row keeping its version,
+	// timestamps and author. Each re-runs the write surface's validation
+	// (names, the rule list against THIS build's catalog, membership
+	// existence and the nesting cap, the binding's shape), so an envelope
+	// cannot store a row no author here could have. A row already on its key
+	// — (tenant_id, name) for a list or group, the full edge for a
+	// membership, binding_id for a binding — is left alone and `inserted` is
+	// false: the live row stands, as in every other section. A real insert
+	// bumps the tenant's acl_version in the same transaction, so a cached set
+	// on any replica sees it on its next version check. A user membership or
+	// a live user/token binding first revokes that user's manager-issued
+	// links (AuthRevokeManagerIssued), as GroupMemberAdd and AclBindingPut do.
+	SnapshotRestoreAclDef(ctx context.Context, row AclDefRow) (bool, error)
+	SnapshotRestoreGroup(ctx context.Context, row GroupRow) (bool, error)
+	SnapshotRestoreGroupMember(ctx context.Context, row GroupMemberRow) (bool, error)
+	SnapshotRestoreAclBinding(ctx context.Context, row AclBindingRow) (bool, error)
 }
 
 // MemoryStore persists key/value Memory rows and their provenance.
