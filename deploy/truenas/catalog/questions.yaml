@@ -1005,6 +1005,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_ACL_LIVE
+            label: LOOMCYCLE_ACL_LIVE
+            description: 'A run in flight follows its caller''s access rules as they change: what they no longer allow is withdrawn at the next model or tool call, and nothing the run started without is given (default off: the rules a run starts with hold until it ends). (example: 1)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS
             label: LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS
             description: '(example: 300)'
