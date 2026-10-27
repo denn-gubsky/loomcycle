@@ -70,6 +70,7 @@ function goFunc(rel: string, name: string): string {
 const USERS = "internal/api/http/users.go";
 const CRUD = "internal/api/http/users_crud.go";
 const STORE = "internal/store/store.go";
+const LINK = "internal/api/http/authgate_link.go";
 
 /** TS interface → the Go struct whose JSON it receives (or, for a request
  *  body, the struct the server decodes it into), and the Go keys the TS
@@ -79,6 +80,7 @@ const PAIRS: Array<[string, [string, string], string[]?]> = [
   ["UserRecord", [CRUD, "wireUserRecord"]],
   ["CreateUserBody", [CRUD, "createUserRequest"]],
   ["UpdateUserBody", [CRUD, "updateUserRequest"]],
+  ["UserIdentity", [LINK, "wireUserIdentity"]],
 ];
 
 describe.skipIf(!haveGo)("user and sign-in gate types match the Go wire structs", () => {

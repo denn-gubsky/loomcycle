@@ -145,6 +145,7 @@ import type {
   MintedUserToken,
   UserTokenMeta,
   ListUserTokensResponse,
+  UserIdentitiesResponse,
   RunnableAgentsResponse,
   LLMChatOptions,
   LLMChatResponse,
@@ -1395,8 +1396,10 @@ export class LoomcycleClient {
   //
   // A tenant operator (substrate:tenant) manages the first-class users in its
   // OWN tenant and mints/lists/revokes bearer tokens for them. The tenant is
-  // always server-derived from the authenticated principal — never sent — so
-  // there is no tenant field on any of these calls. Requires a persistent store
+  // server-derived from the authenticated principal. `opts.tenant` (sent as
+  // ?tenant=) names another only for an admin token, and for an `auth:manage`
+  // credential, which must name one (400 `tenant_required` otherwise); a
+  // tenant operator always acts in its own tenant. Requires a persistent store
   // (503 otherwise).
 
   /** Register a first-class user in the caller's own tenant. `access_mode`
@@ -1405,24 +1408,28 @@ export class LoomcycleClient {
    *  (tenant, subject). */
   async createUser(
     body: CreateUserBody,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<UserRecord> {
-    return postJSON<UserRecord>(this.ctx, "/v1/_users", body, opts);
+    return postJSON<UserRecord>(this.ctx, this.aclPath("/v1/_users", opts?.tenant), body, {
+      signal: opts?.signal,
+    });
   }
 
   /** Patch mutable fields on a user in the caller's own tenant. An omitted key
    *  leaves the column unchanged. Disabling a user (status:"disabled") also
-   *  revokes its delegated tokens server-side. Cross-tenant target → 404. */
+   *  revokes its delegated tokens server-side. A pending user is activated by
+   *  {@link approveUser}, not here (409 `use_approve`). Cross-tenant target →
+   *  404. */
   async updateUser(
     subject: string,
     body: UpdateUserBody,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<UserRecord> {
     return patchJSON<UserRecord>(
       this.ctx,
-      `/v1/_users/${encodeURIComponent(subject)}`,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}`, opts?.tenant),
       body,
-      opts,
+      { signal: opts?.signal },
     );
   }
 
@@ -1430,11 +1437,72 @@ export class LoomcycleClient {
    *  delegated tokens are retired first so the bearer cannot outlive the row.
    *  Owned data (runs / sessions / memory) is left intact — this is not
    *  erasure ({@link erasureExecute}). Cross-tenant target → 404. */
-  async deleteUser(subject: string, opts?: { signal?: AbortSignal }): Promise<void> {
+  async deleteUser(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
     return deleteRequest(
       this.ctx,
-      `/v1/_users/${encodeURIComponent(subject)}`,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}`, opts?.tenant),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Approve a user awaiting approval: `pending` → `active`
+   *  (`POST /v1/_users/{subject}/approve`). A sign-in gate configured with
+   *  `new_user.status: pending` provisions people who can sign in but are
+   *  refused everything until this call. Returns the updated record. 409
+   *  `not_pending` for a user that is not pending; 404 for an unknown or
+   *  cross-tenant subject. An `auth:manage` credential may approve only a user
+   *  at its floor (403 `target_beyond_floor`). */
+  async approveUser(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<UserRecord> {
+    return postJSON<UserRecord>(
+      this.ctx,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}/approve`, opts?.tenant),
+      undefined,
+      { signal: opts?.signal },
+    );
+  }
+
+  /** The identity-provider accounts a user signs in with
+   *  (`GET /v1/_users/{subject}/identities`): one row per linked gate, never a
+   *  secret. A user reads its own; a tenant operator or an admin reads any in
+   *  the tenant. Password-gate logins, with whether a password and an
+   *  authenticator are set, are {@link listGateIdentities}. */
+  async listUserIdentities(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<UserIdentitiesResponse> {
+    return jsonFetch<UserIdentitiesResponse>(
+      this.ctx,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}/identities`, opts?.tenant),
       opts,
+    );
+  }
+
+  /** Unlink one identity-provider account from a user
+   *  (`DELETE /v1/_users/{subject}/identities/{gate}`, 204). Sessions made
+   *  through it end on their next request. For a tenant operator or an admin;
+   *  a user unlinking its own account must do it from a recently
+   *  signed-in Web UI session, so a bearer is refused (403
+   *  `link_needs_own_session`). A password gate's login is removed with
+   *  {@link removeGateCredentials} instead (409 `password_gate`). 404
+   *  `identity_not_found` when no account of that gate is linked. */
+  async unlinkUserIdentity(
+    subject: string,
+    gate: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      this.aclPath(
+        `/v1/_users/${encodeURIComponent(subject)}/identities/${encodeURIComponent(gate)}`,
+        opts?.tenant,
+      ),
+      { signal: opts?.signal },
     );
   }
 

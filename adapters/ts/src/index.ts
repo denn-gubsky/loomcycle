@@ -268,6 +268,8 @@ export type {
   TokenRestrictions,
   UserTokenMeta,
   ListUserTokensResponse,
+  UserIdentity,
+  UserIdentitiesResponse,
   // RFC BY: runnable-agent discovery (v1.51.0+)
   RunnableAgent,
   RunnableAgentsResponse,

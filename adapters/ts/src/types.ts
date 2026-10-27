@@ -2412,6 +2412,27 @@ export interface ListUserTokensResponse {
   tokens: UserTokenMeta[];
 }
 
+/** One identity-provider account a user signs in with, from
+ *  GET /v1/_users/{subject}/identities. Never a secret. */
+export interface UserIdentity {
+  /** The configured sign-in gate. */
+  gate: string;
+  /** The provider's issuer, when it reports one. */
+  issuer?: string;
+  /** The account's subject at the provider. */
+  external_subject: string;
+  email?: string;
+  email_verified: boolean;
+  created_at: string;
+  /** Absent until the account has been used to sign in. */
+  last_login_at?: string;
+}
+
+export interface UserIdentitiesResponse {
+  subject: string;
+  identities: UserIdentity[];
+}
+
 // ---- RFC BY: runnable-agent discovery (v1.51.0+) ----
 
 /** One entry in the runnable-agent catalog — the name to run + its tier.
