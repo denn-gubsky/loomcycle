@@ -13,11 +13,13 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authgate/awsiam"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/headergate"
+	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
 	"github.com/denn-gubsky/loomcycle/internal/awsauth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -354,21 +356,112 @@ func TestAWSIAMAssert_ARNOutsideAllowedARNsIsRefusedAndNothingProvisioned(t *tes
 	}
 }
 
-func TestAWSIAMAssert_RepeatedFailuresFromOneSourceAreThrottled(t *testing.T) {
+// blockSource spends the free refusals of assertReq's source on the shared
+// assert route, with logins that are not even well-formed.
+func blockSource(t *testing.T, s *Server) {
+	t.Helper()
+	for i := 0; i <= password.SourceFree; i++ {
+		assertReq(s, []byte(`{"gate":"ci"}`))
+	}
+	if rec := assertReq(s, []byte(`{"gate":"ci"}`)); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("after %d refusals the source gets %d, want 429", password.SourceFree+1, rec.Code)
+	}
+}
+
+// Refusals from one source are throttled in the bucket the external gates use
+// on this route (one shared count, so the throttle does not tell the two
+// kinds apart either), and a blocked source's refusal answers 429.
+func TestAWSIAMAssert_RepeatedFailuresFromOneSourceAnswer429(t *testing.T) {
 	s, _, _, e := edgeServer(t)
 	f := newSTS(t, "arn:aws:iam::123456789012:user/alice") // never allowed
 	pointGateAtSTS(e, f)
 	var last int
-	for i := 0; i < assertSourceFree+3; i++ {
+	for i := 0; i <= password.SourceFree+1; i++ {
 		last = assertReq(s, stsLoginBody(t, "ci", time.Now(), "lc.acme.test")).Code
 	}
 	if last != http.StatusTooManyRequests {
-		t.Fatalf("after %d failures the source gets %d, want 429", assertSourceFree+3, last)
+		t.Fatalf("after %d failures the source gets %d, want 429", password.SourceFree+2, last)
 	}
-	calls := f.calls
-	assertReq(s, stsLoginBody(t, "ci", time.Now(), "lc.acme.test"))
-	if f.calls != calls {
-		t.Fatal("a throttled request still reached STS")
+}
+
+// A blocked source is still verified, as on the external path: workloads
+// share an egress address (a NAT gateway, a load balancer), and one of them
+// failing must not lock the others out.
+func TestAWSIAMAssert_BlockedSourceStillSignsInAnAllowedWorkload(t *testing.T) {
+	s, _, _, e := edgeServer(t)
+	pointGateAtSTS(e, newSTS(t, "arn:aws:sts::123456789012:assumed-role/ci-deploy/i-0abc"))
+	blockSource(t, s)
+	if rec := assertReq(s, stsLoginBody(t, "ci", time.Now(), "lc.acme.test")); rec.Code != http.StatusOK {
+		t.Fatalf("an allowed workload behind a blocked address = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+}
+
+// A blocked source holds at most blockedSourceSTSCalls STS calls at once, so
+// its refusals cannot buy unbounded STS traffic; one over the bound is
+// answered 429 without asking STS.
+func TestAWSIAMAssert_BlockedSourceHoldsABoundedNumberOfSTSCalls(t *testing.T) {
+	s, _, _, e := edgeServer(t)
+	release := make(chan struct{})
+	var inSTS atomic.Int32
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inSTS.Add(1)
+		<-release
+		http.Error(w, "no", http.StatusForbidden)
+	}))
+	t.Cleanup(slow.Close)
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	pointGateAtSTS(e, &stsAt{srv: slow})
+	blockSource(t, s)
+	codes := make(chan int, blockedSourceSTSCalls+1)
+	for i := 0; i < blockedSourceSTSCalls+1; i++ {
+		go func() { codes <- assertReq(s, stsLoginBody(t, "ci", time.Now(), "lc.acme.test")).Code }()
+	}
+	// The STS calls park in the fake; the one over the bound comes back first.
+	select {
+	case c := <-codes:
+		if c != http.StatusTooManyRequests {
+			t.Fatalf("the request over the bound = %d, want 429", c)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no request was turned away while the others held STS")
+	}
+	// The others are verified: they reach STS, up to the bound and no more.
+	deadline := time.Now().Add(10 * time.Second)
+	for inSTS.Load() < int32(blockedSourceSTSCalls) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := inSTS.Load(); n != int32(blockedSourceSTSCalls) {
+		t.Fatalf("%d STS calls at once from a blocked source, want exactly %d", n, blockedSourceSTSCalls)
+	}
+	close(release)
+	for i := 0; i < blockedSourceSTSCalls; i++ {
+		if c := <-codes; c != http.StatusTooManyRequests {
+			t.Fatalf("a blocked source's STS refusal = %d, want 429", c)
+		}
+	}
+}
+
+// The shared replay record being down is the server's fault: 503, and never
+// counted against the caller.
+func TestAWSIAMAssert_UnavailableReplayRecordAnswers503AndCountsNothing(t *testing.T) {
+	s, st, _, _ := edgeServer(t)
+	down, err := EdgeGatesFromConfig(s.cfg(), EdgeGateDeps{Replay: failingReplay{st}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetEdgeGates(down)
+	pointGateAtSTS(down, newSTS(t, "arn:aws:sts::123456789012:assumed-role/ci-deploy/i-0abc"))
+	for i := 0; i <= password.SourceFree+1; i++ {
+		rec := assertReq(s, stsLoginBody(t, "ci", time.Now(), "lc.acme.test"))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("attempt %d with the record down = %d %s, want 503", i, rec.Code, rec.Body.String())
+		}
 	}
 }
 

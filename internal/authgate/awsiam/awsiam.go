@@ -134,6 +134,18 @@ func invalid(format string, a ...any) error {
 // login is refused all the same.
 var ErrSTSUnavailable = errors.New("awsiam: STS unavailable")
 
+// ErrRecordUnavailable: the shared replay record could not be written, so a
+// login STS accepted is refused (unrecorded, it could be replayed to another
+// replica). The server's fault: not counted against the caller.
+var ErrRecordUnavailable = errors.New("awsiam: replay record unavailable")
+
+// transportHeaders may not be signed: hop-by-hop headers, and the encodings
+// that would change the answer's bytes.
+var transportHeaders = []string{
+	"accept-encoding", "connection", "content-encoding", "expect", "keep-alive",
+	"proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
+}
+
 // Verify checks a presented request and, if it holds, asks STS who signed it.
 func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 	if g.ServerID == "" || len(g.AllowedARNs) == 0 || g.Replay == nil {
@@ -167,6 +179,15 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 	for _, h := range []string{"host", "x-amz-date", strings.ToLower(ServerIDHeader)} {
 		if !auth.Signs(h) {
 			return Identity{}, invalid("%s is not among the signed headers", h)
+		}
+	}
+	// ask forwards exactly the signed headers, so one that changes how the
+	// request or the answer travels is the caller's choice: a signed
+	// Accept-Encoding got back a 200 this gate could not read, which it
+	// reported as STS being down (uncounted, and the request replayable).
+	for _, h := range transportHeaders {
+		if auth.Signs(h) {
+			return Identity{}, invalid("%s may not be among the signed headers", h)
 		}
 	}
 	if sid := hdr.Values(ServerIDHeader); len(sid) != 1 || sid[0] != g.ServerID {
@@ -219,7 +240,7 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 		ok, err := g.Shared.UseOnce(ctx, g.SharedScope, hex.EncodeToString(sum[:]), expires, now)
 		if err != nil {
 			g.Replay.Release(key)
-			return Identity{}, fmt.Errorf("awsiam: recording the request: %w", err)
+			return Identity{}, fmt.Errorf("%w: %v", ErrRecordUnavailable, err)
 		}
 		if !ok {
 			g.Replay.Commit(key, expires)
@@ -297,19 +318,19 @@ func decodeHeaders(s string) (http.Header, error) {
 	for k, v := range raw {
 		ck := textproto.CanonicalMIMEHeaderKey(k)
 		if _, dup := h[ck]; dup {
-			return nil, invalid("request header %s given twice", ck)
+			return nil, invalid("request header %q given twice", ck)
 		}
 		var vals []string
 		if err := json.Unmarshal(v, &vals); err != nil {
 			var one string
 			if err := json.Unmarshal(v, &one); err != nil {
-				return nil, invalid("request header %s is not a string or a list", ck)
+				return nil, invalid("request header %q is not a string or a list", ck)
 			}
 			vals = []string{one}
 		}
 		for _, x := range vals {
 			if strings.ContainsAny(x, "\r\n\x00") {
-				return nil, invalid("request header %s has a control character", ck)
+				return nil, invalid("request header %q has a control character", ck)
 			}
 		}
 		h[ck] = vals
@@ -370,7 +391,9 @@ func (g *Gate) ask(ctx context.Context, host string, hdr http.Header, auth awsau
 	}
 	arn, account, userID, ok := parseCallerIdentity(raw)
 	if !ok {
-		return Identity{}, fmt.Errorf("%w: unreadable GetCallerIdentity answer", ErrSTSUnavailable)
+		// STS answered; the answer's shape is what the caller's signed
+		// headers asked for. A refusal, not an outage.
+		return Identity{}, invalid("STS answered 200 with nothing this gate can read")
 	}
 	canon, acct, ok := CanonicalARN(arn)
 	if !ok || acct != account {

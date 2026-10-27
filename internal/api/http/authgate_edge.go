@@ -41,7 +41,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/awsiam"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/headergate"
-	"github.com/denn-gubsky/loomcycle/internal/authgate/password"
 	"github.com/denn-gubsky/loomcycle/internal/authgate/replay"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -354,6 +353,10 @@ func (s *Server) edgeSessionHolds(r *http.Request, row store.UISessionRow) (hold
 // maxAssertBody bounds POST /v1/_auth/assert before it is parsed.
 const maxAssertBody = 64 << 10
 
+// blockedSourceSTSCalls is how many STS calls a blocked source may hold at
+// once on this replica.
+const blockedSourceSTSCalls = 2
+
 // awsiamTokenTTL is the issued token's lifetime for an AWS IAM login, before
 // the gate's and the deployment's caps. GetCallerIdentity does not say when
 // the caller's credentials expire, so the token takes the default life of an
@@ -398,23 +401,23 @@ func (s *Server) handleAuthAssert(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAWSIAMAssert(w http.ResponseWriter, r *http.Request, cfgGate config.AuthGate, g *awsiam.Gate, raw []byte) {
 	ctx := r.Context()
 	ip := s.clientSource(r)
-	key, err := s.assertSourceKey(cfgGate.Name, ip)
-	if err != nil {
-		slog.Error("auth: assert throttle key", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "the assertion could not be applied; retry")
-		return
-	}
-	// Every refused attempt counts against the source, so a stream of junk —
-	// each of which can cost this server an STS call — slows itself down.
-	if s.sourceBlocked(ctx, key) {
-		writeJSONError(w, http.StatusTooManyRequests, "throttled", "too many refused requests; try again later")
-		return
-	}
-	// The answers are the external gates' (handleExternalAssert), word for
-	// word: the route is shared, and a different refusal here would tell an
-	// unauthenticated caller which names are AWS IAM gates.
+	// The external gates' throttle (verifyGateRequest), bucket and all: the
+	// route is shared, so one count covers it, and a refusal here looks like
+	// one there — word for word, and in when it turns into a 429 — so an
+	// unauthenticated caller cannot tell which names are AWS IAM gates.
+	//
+	// A blocked source is still verified, as there: workloads share egress
+	// addresses (a NAT gateway; a load balancer, without
+	// auth.trusted_proxies), and one of them failing must not lock the others
+	// out. Only its refusals answer 429.
+	key := s.gateSourceKey(r)
+	blocked := s.sourceBlocked(ctx, key)
 	refuse := func(reason string) {
-		s.recordSourceFailure(ctx, key, assertSourceBlockFor)
+		if blocked {
+			writeJSONError(w, http.StatusTooManyRequests, "throttled", "too many refused requests; try again later")
+			return
+		}
+		s.recordSourceFailure(ctx, key, gateSourceBlockFor)
 		if reason != "" {
 			s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, AuthReason: reason, SourceAddr: ip})
 		}
@@ -425,11 +428,28 @@ func (s *Server) handleAWSIAMAssert(w http.ResponseWriter, r *http.Request, cfgG
 		refuse("malformed login")
 		return
 	}
+	// Unlike an external gate's JWT, each check costs an STS call, which an
+	// unauthenticated caller can make this server send. A blocked source may
+	// hold only a few at once, so its refusals cannot buy unbounded STS
+	// traffic; the one over the bound is turned away unasked.
+	if blocked {
+		release, ok := s.stsCalls.acquire(key, blockedSourceSTSCalls)
+		if !ok {
+			writeJSONError(w, http.StatusTooManyRequests, "throttled", "too many refused requests; try again later")
+			return
+		}
+		defer release()
+	}
 	id, err := g.Verify(ctx, d)
 	switch {
 	case awsiam.IsUnavailable(err):
 		slog.Warn("auth: STS unavailable for an AWS IAM login", "gate", cfgGate.Name, "err", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "sts_unavailable", "AWS STS could not be reached; try again")
+		return
+	case errors.Is(err, awsiam.ErrRecordUnavailable):
+		// The server's fault, not the caller's: not counted.
+		slog.Error("auth: AWS IAM replay record unavailable (refusing)", "gate", cfgGate.Name, "err", err)
+		writeJSONError(w, http.StatusServiceUnavailable, "gate_unavailable", "the assertion cannot be checked right now")
 		return
 	case err != nil:
 		refuse(err.Error())
@@ -467,23 +487,29 @@ func (s *Server) handleAWSIAMAssert(w http.ResponseWriter, r *http.Request, cfgG
 	writeJSON(w, http.StatusOK, assertResponse{Token: tok, ExpiresAt: row.ExpiresAt.UTC(), Subject: login.Subject, Tenant: login.TenantID})
 }
 
-// assertSourceKey is the throttle key for a client address at an assertion
-// gate, hashed under the token pepper so the store holds no address.
-func (s *Server) assertSourceKey(gate, ip string) (string, error) {
-	h, err := s.hasher()
-	if err != nil {
-		return "", err
-	}
-	return "src:assert:" + gate + ":" + h.Hash("assert-source\x00"+throttleSourceKey(ip)), nil
+// inFlight counts, per key, the work in progress on this replica.
+type inFlight struct {
+	mu sync.Mutex
+	n  map[string]int
 }
 
-// assertSourceFree: machines share addresses less than people behind an
-// office NAT do, so fewer free failures than the login form allows.
-const assertSourceFree = 5
-
-// assertSourceBlockFor is the per-source backoff for assertion failures: a
-// few free (a workload retrying with stale credentials), then exponential up
-// to the password gate's default lockout.
-func assertSourceBlockFor(n int) time.Duration {
-	return password.Backoff(n, assertSourceFree, password.DefaultLockout)
+// acquire takes one of max slots for key; ok=false when all are taken. The
+// release must be called exactly once.
+func (f *inFlight) acquire(key string, max int) (release func(), ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n[key] >= max {
+		return nil, false
+	}
+	if f.n == nil {
+		f.n = make(map[string]int)
+	}
+	f.n[key]++
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.n[key]--; f.n[key] <= 0 {
+			delete(f.n, key)
+		}
+	}, true
 }

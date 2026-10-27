@@ -147,6 +147,8 @@ type Server struct {
 	oidcHTTP   *http.Client
 	// edgeGates are the kind: header and kind: awsiam gates (RFC FA P3).
 	edgeGates edgeGatesHolder
+	// stsCalls bounds a blocked source's concurrent AWS IAM checks.
+	stsCalls inFlight
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration
