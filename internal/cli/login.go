@@ -125,7 +125,7 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, d lo
 		return failOp(stderr, "starting the login at %s: %v", server, err)
 	}
 	if status != http.StatusOK {
-		return failOp(stderr, "the server refused to start a device login (HTTP %d): %s", status, truncate(body, 200))
+		return failOp(stderr, "the server refused to start a device login (HTTP %d): %s", status, serverText(body, 200))
 	}
 	if da.DeviceCode == "" || da.UserCode == "" || da.VerificationURI == "" {
 		return failOp(stderr, "the server's device-login answer is incomplete")
@@ -183,7 +183,7 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, d lo
 		case tok.Error == "expired_token":
 			return failOp(stderr, "the code expired before it was approved; run `loomcycle login` again")
 		default:
-			return failOp(stderr, "the server refused the login (HTTP %d): %s", status, truncate(body, 200))
+			return failOp(stderr, "the server refused the login (HTTP %d): %s", status, serverText(body, 200))
 		}
 	}
 }
@@ -221,7 +221,7 @@ func runLogout(ctx context.Context, args []string, stdout, stderr io.Writer, d l
 		return failOp(stderr, "retiring the token on %s: %v (it is still stored; --forget removes it anyway)", server, err)
 	default:
 		return failOp(stderr, "the server did not retire the token (HTTP %d): %s (it is still stored; --forget removes it anyway)",
-			status, truncate(body, 200))
+			status, serverText(body, 200))
 	}
 	if err := st.Delete(ctx, server); err != nil {
 		return failOp(stderr, "%v", err)
@@ -260,7 +260,7 @@ func runAuthStatus(ctx context.Context, args []string, stdout, stderr io.Writer,
 		return 1
 	}
 	if status != http.StatusOK {
-		return failOp(stderr, "GET /v1/_me answered HTTP %d: %s", status, truncate(body, 200))
+		return failOp(stderr, "GET /v1/_me answered HTTP %d: %s", status, serverText(body, 200))
 	}
 	var me struct {
 		TenantID string   `json:"tenant_id"`
@@ -341,6 +341,19 @@ func storedUpstreamToken(ctx context.Context, server string, open func() (tokenS
 		return "", err.Error(), false
 	}
 	return tok, "", true
+}
+
+// serverText is a server's response body as it may be quoted to the
+// terminal: capped at max bytes, every byte printableASCII would refuse
+// replaced by '?', so a hostile server cannot rewrite what the person sees.
+func serverText(b []byte, max int) string {
+	s := []byte(truncate(b, max))
+	for i, c := range s {
+		if c < 0x20 || c > 0x7e {
+			s[i] = '?'
+		}
+	}
+	return string(s)
 }
 
 func printableASCII(s string) bool {

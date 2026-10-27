@@ -459,6 +459,30 @@ func TestLogin_RefusesAVerificationLinkWithControlCharacters(t *testing.T) {
 	}
 }
 
+// A refusal's body is quoted to the terminal, so a hostile server's escape
+// sequences must not reach it — the same filter as the link and user code.
+func TestLogin_RefusalBodyIsPrintedWithoutControlCharacters(t *testing.T) {
+	isolateHome(t)
+	hostile := "denied\x1b]0;pwned\x07\x1b[2J\r\n" + strings.Repeat("x", 400)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(hostile))
+	}))
+	defer srv.Close()
+	var sleeps []time.Duration
+	var out, errb bytes.Buffer
+	if rc := runLogin(context.Background(), []string{"--url", srv.URL}, &out, &errb, testDeps(t, newFakeKeychainTool(), "darwin", &sleeps)); rc == 0 {
+		t.Fatal("a refused start reported success")
+	}
+	msg := strings.TrimRight(errb.String(), "\n")
+	if !printableASCII(msg) {
+		t.Fatalf("printed control characters: %q", msg)
+	}
+	if !strings.Contains(msg, "denied") || strings.Contains(msg, strings.Repeat("x", 201)) {
+		t.Fatalf("want the body's start, capped at 200 bytes: %q", msg)
+	}
+}
+
 func TestStoredUpstreamToken_ReadsTheLoginTokenAndNeverStartsAFlow(t *testing.T) {
 	tool := newFakeKeychainTool()
 	tool.items["https://lc.example"] = testIssuedToken
