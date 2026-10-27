@@ -65,7 +65,11 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
   const now = opts.now ?? Date.now;
   const log: Logger = opts.logger ?? consoleLogger;
   const api = new SlackApi({ baseUrl: cfg.apiBaseUrl, token: cfg.botToken, fetch: opts.fetch, sleep: opts.sleep });
-  const policy: TrustPolicy = { allowedTeams: cfg.allowedTeams, sharedTrust: cfg.sharedTrust };
+  const policy: TrustPolicy = {
+    allowedTeams: cfg.allowedTeams,
+    sharedTrust: cfg.sharedTrust,
+    ...(cfg.shared.gate ? { gate: cfg.shared.gate.name } : {}),
+  };
   const seen = new SeenSet(SEEN_TTL_MS, 10_000, now);
   const names = new Map<string, { name: string; at: number }>();
   const apiOrigin = new URL(cfg.apiBaseUrl).origin;

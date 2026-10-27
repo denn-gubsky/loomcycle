@@ -27,7 +27,9 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 export function loadConfig(env: Env = process.env): SlackConfig {
   const r = new EnvReader(env);
-  const shared = loadSharedConfig(r, { port: DEFAULT_PORT });
+  // A gate only when BRIDGE_GATE names one: a bridge deployed with a
+  // loomcycle token keeps running as it was until it is reconfigured.
+  const shared = loadSharedConfig(r, { port: DEFAULT_PORT, gate: r.get("BRIDGE_GATE") !== undefined });
 
   const botToken = r.required("SLACK_BOT_TOKEN", "the app's Bot User OAuth Token");
   // Never echo the value: only say what kind of token it is not.
