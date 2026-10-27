@@ -761,6 +761,23 @@ func (s *Store) migrate(ctx context.Context) error {
 			used_at    INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS oauth_refresh_tokens_by_family ON oauth_refresh_tokens(family_id)`,
+		// RFC FL P0b runtime app clients. Mirrors postgres migration 0120
+		// (see 0120_client_defs.up.sql).
+		`CREATE TABLE IF NOT EXISTS client_defs (
+			def_id            TEXT    PRIMARY KEY,
+			name              TEXT    NOT NULL,
+			tenant_id         TEXT    NOT NULL DEFAULT '',
+			version           INTEGER NOT NULL,
+			definition        TEXT    NOT NULL,
+			content_sha256    TEXT    NOT NULL,
+			description       TEXT    NOT NULL DEFAULT '',
+			created_at        INTEGER NOT NULL,
+			created_by        TEXT    NOT NULL DEFAULT '',
+			created_by_tenant TEXT    NOT NULL DEFAULT '',
+			retired_at        INTEGER,
+			UNIQUE (name, version)
+		)`,
+		`CREATE INDEX IF NOT EXISTS client_defs_by_tenant ON client_defs(tenant_id)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

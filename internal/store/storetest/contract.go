@@ -538,6 +538,11 @@ func Run(t *testing.T, factory Factory) {
 		{"OAuthTokenRetireRetiresOnlyThatSignIn", testOAuthTokenRetireRetiresOnlyThatSignIn},
 		{"OAuthDeleteExpiredKeepsWhatCanStillAuthenticate", testOAuthDeleteExpiredKeepsWhatCanStillAuthenticate},
 		{"OAuthSubjectDeleteRemovesItsSignIns", testOAuthSubjectDeleteRemovesItsSignIns},
+		// RFC FL P0b runtime app clients (client_defs.go).
+		{"ClientDefVersionsAndTheNewestLiveIsActive", testClientDefVersionsAndTheNewestLiveIsActive},
+		{"ClientDefNameBelongsToOneTenant", testClientDefNameBelongsToOneTenant},
+		{"ClientDefRetireTakesEveryVersionOutOfForce", testClientDefRetireTakesEveryVersionOutOfForce},
+		{"ClientDefConcurrentCreatesHaveOneOwner", testClientDefConcurrentCreatesHaveOneOwner},
 		{"UserStatusPendingIsStored", testUserStatusPendingIsStored},
 		{"UserIdentityTakenLoginAndSecondIdentityAtGateConflict", testUserIdentityTakenLoginAndSecondIdentityAtGateConflict},
 		{"UserIdentityRenameToTakenNameConflictsAndKeepsOldName", testUserIdentityRenameToTakenNameConflictsAndKeepsOldName},

@@ -1745,6 +1745,7 @@ type Store interface {
 	OperatorTokenStore
 	UISessionStore
 	OAuthStore
+	ClientDefStore
 	EvaluationStore
 	MetricsStore
 	DynamicAgentStore
@@ -4509,6 +4510,29 @@ type OAuthStore interface {
 	OAuthDeleteExpired(ctx context.Context, before time.Time) (int, error)
 }
 
+// ClientDefStore persists runtime-registered app clients (RFC FL P0b). A
+// client's name is its OAuth client_id, so a name belongs to one tenant across
+// the deployment. Versions are append-only; the newest unretired version is
+// the client in force.
+type ClientDefStore interface {
+	// ClientDefCreate appends a version of row.Name (version = newest + 1)
+	// and returns the stored row. ErrConflict when any row of that name —
+	// retired or not — belongs to another tenant. DefID, Name, Definition and
+	// ContentSHA256 are required.
+	ClientDefCreate(ctx context.Context, row ClientDefRow) (ClientDefRow, error)
+	// ClientDefGet returns one version by def_id. ErrNotFound when none.
+	ClientDefGet(ctx context.Context, defID string) (ClientDefRow, error)
+	// ClientDefGetActive returns the version of name in force: the newest,
+	// when it is not retired. ErrNotFound otherwise.
+	ClientDefGetActive(ctx context.Context, name string) (ClientDefRow, error)
+	// ClientDefList returns the version in force of every live client,
+	// sorted by name.
+	ClientDefList(ctx context.Context) ([]ClientDefRow, error)
+	// ClientDefRetire retires every live version of name at `at` and reports
+	// whether any was live.
+	ClientDefRetire(ctx context.Context, name string, at time.Time) (bool, error)
+}
+
 // EvaluationStore persists evaluation scores.
 type EvaluationStore interface {
 	// ---- Evaluation ----
@@ -6706,6 +6730,23 @@ func (r OperatorTokenDefRow) ValidUntil() time.Time {
 // tokenFarFuture stands for "never" in ValidUntil. Year 9999 is the largest
 // value both backends and JSON round-trip.
 var tokenFarFuture = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// ClientDefRow is one version of a runtime-registered app client. TenantID ""
+// is a client an admin registered for every tenant. Definition is the
+// client's JSON (the auth.clients entry shape); the auth layer validates it.
+type ClientDefRow struct {
+	DefID           string
+	Name            string
+	TenantID        string
+	Version         int
+	Definition      string
+	ContentSHA256   string
+	Description     string
+	CreatedAt       time.Time
+	CreatedBy       string
+	CreatedByTenant string
+	RetiredAt       time.Time
+}
 
 // OAuthCodeRow is one authorization code (RFC FL §2): what it is bound to and
 // whether it was used. CodeHash is the SHA-256 of the code; the code itself
