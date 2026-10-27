@@ -93,7 +93,7 @@ type mintUserTokenRequest struct {
 func (s *Server) storedAuthority(requested string) (string, error) {
 	switch requested {
 	case "":
-		if s.cfg().Env.TokenAuthorityInherit {
+		if c := s.cfg(); c != nil && c.Env.TokenAuthorityInherit {
 			return auth.AuthorityInherit, nil
 		}
 		return "", nil
