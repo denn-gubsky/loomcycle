@@ -45,6 +45,9 @@ const (
 	// actionLink: the user exists (an operator registered it); the identity
 	// is linked at this first login.
 	actionLink
+	// actionLinkLegacy: actionLink to the user a bridge made before it was
+	// a gate (identity_map.legacy_subject_prefix).
+	actionLinkLegacy
 	// actionCreate: neither exists and the gate provisions (auto).
 	actionCreate
 )
@@ -119,10 +122,46 @@ func (s *Server) resolveAssertion(ctx context.Context, g config.AuthGate, a auth
 	case !isNotFound(err):
 		return identity.Target{}, 0, err
 	}
+	if legacy, ok, err := s.legacyUser(ctx, g, fresh); err != nil {
+		return identity.Target{}, 0, err
+	} else if ok {
+		return legacy, actionLinkLegacy, nil
+	}
 	if m.Provision != config.ProvisionAuto {
 		return identity.Target{}, 0, refused("unknown user (provision: known)")
 	}
 	return fresh, actionCreate, nil
+}
+
+// legacyUser finds the user a bridge made for this identity before it was a
+// gate. Only a user nothing else signs in as qualifies: one with a password
+// or an identity at any gate is a person's own account, and the prefix is the
+// operator's word about the bridge's subjects, not about theirs.
+func (s *Server) legacyUser(ctx context.Context, g config.AuthGate, fresh identity.Target) (identity.Target, bool, error) {
+	subject, ok := identity.LegacySubject(g.Name, g.Identity, fresh.Subject)
+	if !ok {
+		return identity.Target{}, false, nil
+	}
+	if _, err := s.store.UserGet(ctx, fresh.TenantID, subject); err != nil {
+		if isNotFound(err) {
+			return identity.Target{}, false, nil
+		}
+		return identity.Target{}, false, err
+	}
+	ids, err := s.store.UserIdentityListSubject(ctx, fresh.TenantID, subject)
+	if err != nil {
+		return identity.Target{}, false, err
+	}
+	if len(ids) > 0 {
+		return identity.Target{}, false, nil
+	}
+	switch _, err := s.store.UserCredentialGet(ctx, fresh.TenantID, subject, store.CredentialKindPassword); {
+	case err == nil:
+		return identity.Target{}, false, nil
+	case !isNotFound(err):
+		return identity.Target{}, false, err
+	}
+	return identity.Target{TenantID: fresh.TenantID, Subject: subject}, true, nil
 }
 
 // provisionOrRefuse resolves an assertion and makes it a user: it creates the
@@ -193,6 +232,10 @@ func (s *Server) provision(ctx context.Context, g config.AuthGate, a authgate.As
 		} else if err != nil {
 			return out, err
 		}
+	}
+	if action == actionLinkLegacy {
+		s.recordAuthEvent(audit.Event{Action: "auth_identity_linked", AuthGate: g.Name, TargetTenant: tgt.TenantID,
+			TargetSubject: tgt.Subject, AuthReason: "legacy subject"})
 	}
 	if out.Created {
 		s.joinFloorGroups(ctx, g, tgt, m.NewUser.Groups)

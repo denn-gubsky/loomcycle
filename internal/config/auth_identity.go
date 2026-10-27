@@ -81,6 +81,9 @@ var DefaultNewUserGroups = []string{"everyone", "new-users"}
 var (
 	identityClaimRE  = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,63}$`)
 	identityTenantRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+	// legacySubjectPrefixRE ends in '-' and holds no ':', so a legacy
+	// subject can never name a user in any gate's "<gate>:" namespace.
+	legacySubjectPrefixRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}-$`)
 )
 
 // AuthLifecycleConfig is `auth.lifecycle`. The removal policy keys
@@ -119,6 +122,10 @@ type AuthIdentityMapConfig struct {
 	// AuthoritativeForUsers: a user the gate stops asserting is removed per
 	// the lifecycle removal policy (used by the gates that sync users).
 	AuthoritativeForUsers bool `yaml:"authoritative_for_users,omitempty"`
+	// LegacySubjectPrefix (external gates only) links a first login to the
+	// user a bridge made before it was a gate: prefix + the subject value,
+	// ':' read as '-' ("42" → "telegram-42", "conv:ab" → "telegram-conv-ab").
+	LegacySubjectPrefix string `yaml:"legacy_subject_prefix,omitempty"`
 }
 
 // AuthIdentityGroupsConfig is identity_map.groups.
@@ -160,6 +167,8 @@ type AuthIdentityMap struct {
 	// access_mode or sync groups (D12).
 	Trusted               bool
 	AuthoritativeForUsers bool
+	// LegacySubjectPrefix: see AuthIdentityMapConfig.LegacySubjectPrefix.
+	LegacySubjectPrefix string
 }
 
 // defaultLifecycle is the deployment floor when auth.lifecycle is absent.
@@ -366,6 +375,12 @@ func resolveIdentityMap(gate string, m *AuthIdentityMapConfig, floor AuthNewUser
 		return nil, fmt.Errorf("%s.new_user: %s goes beyond auth.lifecycle.new_user and needs trusted: true on the gate", where, what)
 	}
 	out.NewUser = nu
+	if p := strings.TrimSpace(m.LegacySubjectPrefix); p != "" {
+		if !legacySubjectPrefixRE.MatchString(p) {
+			return nil, fmt.Errorf("%s.legacy_subject_prefix: %q must be letters, digits, - and _, ending in - (e.g. telegram-)", where, p)
+		}
+		out.LegacySubjectPrefix = p
+	}
 	return out, nil
 }
 

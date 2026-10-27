@@ -129,6 +129,21 @@ func Subject(gate string, m *config.AuthIdentityMap, a authgate.Assertion) (stri
 	return gate + ":" + v, nil
 }
 
+// LegacySubject is the subject a bridge gave this identity before it became
+// a gate: the map's legacy prefix + the value of subject ("<gate>:<value>"),
+// with ':' read as '-', the bridges' token-mode form. ok is false when the
+// map has no prefix.
+func LegacySubject(gate string, m *config.AuthIdentityMap, subject string) (string, bool) {
+	if m == nil || m.LegacySubjectPrefix == "" {
+		return "", false
+	}
+	v, found := strings.CutPrefix(subject, gate+":")
+	if !found || v == "" {
+		return "", false
+	}
+	return m.LegacySubjectPrefix + strings.ReplaceAll(v, ":", "-"), true
+}
+
 // Resolve maps an assertion to the (tenant, subject) a NEW identity would get.
 // An identity already linked keeps the subject its user_identities row names;
 // the caller still checks the tenant against Tenant.
