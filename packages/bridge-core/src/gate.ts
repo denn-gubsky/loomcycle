@@ -16,6 +16,7 @@ import { createHmac, createPrivateKey, randomUUID, sign as cryptoSign, type KeyO
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
+import { trimTrailingSlashes } from "./text.js";
 import type { TokenSource } from "./tokens.js";
 
 /** The JWS algorithms a gate key signs with; loomcycle derives the same one
@@ -286,7 +287,7 @@ export class GateClient {
   }
 
   private async post(path: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const res = await this.fetchFn(`${this.opts.baseUrl.replace(/\/+$/, "")}${path}`, {
+    const res = await this.fetchFn(`${trimTrailingSlashes(this.opts.baseUrl)}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

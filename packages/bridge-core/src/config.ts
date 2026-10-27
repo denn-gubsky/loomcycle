@@ -4,6 +4,8 @@
 // refusal lists every problem at once, and the bridge refuses to start rather
 // than run half-configured.
 
+import { trimTrailingSlashes } from "./text.js";
+
 export type AccessMode = "isolated" | "tenant";
 
 export interface SharedConfig {
@@ -127,7 +129,7 @@ export class EnvReader {
  *  It does not throw: call `reader.check()` once the platform's own keys are
  *  read too, so every problem is reported together. */
 export function loadSharedConfig(reader: EnvReader, defaults: { port: number; gate?: boolean }): SharedConfig {
-  const loomcycleBaseUrl = reader.required("LOOMCYCLE_BASE_URL").replace(/\/+$/, "");
+  const loomcycleBaseUrl = trimTrailingSlashes(reader.required("LOOMCYCLE_BASE_URL"));
   const gate = defaults.gate ? loadGateConfig(reader) : undefined;
   // A gate bridge holds no loomcycle credential at all: a leftover operator
   // token beside the gate key is refused, so it cannot stay deployed unused.
@@ -168,7 +170,7 @@ const GATE_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 function loadGateConfig(reader: EnvReader): GateConfig {
   const name = reader.required("BRIDGE_GATE", "the gate's name in loomcycle's auth.gates");
   if (name && !GATE_NAME.test(name)) reader.problems.push("BRIDGE_GATE must be a loomcycle gate name (lowercase letters, digits, - and _)");
-  const audience = reader.required("BRIDGE_GATE_AUDIENCE", "loomcycle's LOOMCYCLE_PUBLIC_URL").replace(/\/+$/, "");
+  const audience = trimTrailingSlashes(reader.required("BRIDGE_GATE_AUDIENCE", "loomcycle's LOOMCYCLE_PUBLIC_URL"));
   if (audience) {
     let ok = false;
     try {

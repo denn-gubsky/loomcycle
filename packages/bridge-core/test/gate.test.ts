@@ -203,6 +203,20 @@ describe("gate configuration", () => {
     }
   });
 
+  it("trims trailing slashes in linear time, whatever the URL holds", () => {
+    // A run of slashes that is not at the end made /\/+$/ quadratic: 50k of
+    // them took seconds. The URLs come from the environment, but a gate
+    // bridge should not hang at start on a malformed value.
+    const slashes = "/".repeat(50_000);
+    const r = new EnvReader({ ...base, LOOMCYCLE_BASE_URL: `http://lc${slashes}x`, BRIDGE_GATE_AUDIENCE: `https://lc.example${slashes}x` });
+    const started = Date.now();
+    loadSharedConfig(r, { port: 1, gate: true });
+    expect(Date.now() - started).toBeLessThan(500);
+
+    const ok = new EnvReader({ ...base, LOOMCYCLE_BASE_URL: "http://lc///" });
+    expect(loadSharedConfig(ok, { port: 1, gate: true }).loomcycleBaseUrl).toBe("http://lc");
+  });
+
   it("leaves a bridge that is not a gate exactly as it was", () => {
     const r = new EnvReader({ LOOMCYCLE_BASE_URL: "http://lc", LOOMCYCLE_TOKEN: "lct_x", BRIDGE_AGENT: "chat" });
     const cfg = loadSharedConfig(r, { port: 1 });

@@ -33,3 +33,11 @@ export function splitMessage(text: string, max: number): string[] {
   if (rest.length > 0) out.push(rest);
   return out;
 }
+
+/** trimTrailingSlashes drops every "/" at the end of a URL. A loop, not
+ *  /\/+$/: that regex is quadratic on a long run of slashes not at the end. */
+export function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end--;
+  return url.slice(0, end);
+}
