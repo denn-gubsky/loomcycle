@@ -68,8 +68,14 @@ type Sections struct {
 	// Users and TokenLimits restore first: nothing references them by foreign
 	// key, but the users must be in place before a token is re-minted, and the
 	// budgets before a resumed run makes its next call.
-	Users          UsersSection          `json:"users"`
-	TokenLimits    TokenLimitsSection    `json:"token_limits"`
+	Users       UsersSection       `json:"users"`
+	TokenLimits TokenLimitsSection `json:"token_limits"`
+	// ACL is the RFC EY access control: rule lists, groups, memberships and
+	// bindings. Restored right after the users and before anything a resumed
+	// or re-queued run does, because those runs are re-narrowed by their
+	// caller's CURRENT set — a set the restore had not brought back yet would
+	// resume them on the target's rows instead of the source's.
+	ACL            ACLSection            `json:"acl"`
 	AgentDefs      AgentDefsSection      `json:"agent_defs"`
 	AgentDefActive AgentDefActiveSection `json:"agent_def_active"`
 	SkillDefs      SkillDefsSection      `json:"skill_defs"`
@@ -216,6 +222,75 @@ type UserEntry struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	CreatedBy   string    `json:"created_by,omitempty"`
+}
+
+// ACLSection carries every tenant's RFC EY rows. None holds a secret: a rule
+// list names resources and verbs, a membership or binding names a subject, a
+// group or a token DEFINITION id (never a bearer). The per-tenant acl_version
+// counter does not travel; each restored row bumps the target's own.
+type ACLSection struct {
+	Version  string            `json:"version"`
+	Lists    []ACLListEntry    `json:"lists"`
+	Groups   []ACLGroupEntry   `json:"groups"`
+	Members  []ACLMemberEntry  `json:"members"`
+	Bindings []ACLBindingEntry `json:"bindings"`
+}
+
+// ACLListEntry mirrors an acl_defs row. The content hash and catalog version
+// do not travel: the target re-validates the rules against its own catalog
+// and computes both, so a list it cannot enforce is refused, not stored inert.
+type ACLListEntry struct {
+	TenantID    string          `json:"tenant_id,omitempty"`
+	Name        string          `json:"name"`
+	Version     int             `json:"version"`
+	Rules       json.RawMessage `json:"rules"`
+	Description string          `json:"description,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	CreatedBy   string          `json:"created_by,omitempty"`
+	// RetiredAt is set on a retired list; a later write un-retires it, so
+	// it travels like a live one.
+	RetiredAt *time.Time `json:"retired_at,omitempty"`
+}
+
+// ACLGroupEntry mirrors a user_groups row. ExternalID marks a group an
+// identity provider manages (RFC FA); it is an id there, not a credential.
+type ACLGroupEntry struct {
+	TenantID    string    `json:"tenant_id,omitempty"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	ExternalID  string    `json:"external_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedBy   string    `json:"created_by,omitempty"`
+}
+
+// ACLMemberEntry mirrors a user_group_members edge: MemberID (a subject, or a
+// group name) is a member of Group.
+type ACLMemberEntry struct {
+	TenantID   string    `json:"tenant_id,omitempty"`
+	Group      string    `json:"group"`
+	MemberKind string    `json:"member_kind"`
+	MemberID   string    `json:"member_id"`
+	AddedAt    time.Time `json:"added_at"`
+	AddedBy    string    `json:"added_by,omitempty"`
+}
+
+// ACLBindingEntry mirrors an acl_bindings row. A token binding names a token
+// DEFINITION id; the token itself never travels (operator_token_defs is
+// never-snapshot), so on another deployment such a binding matches nothing
+// until a token with that def id exists there — which only a restore in place
+// gives back.
+type ACLBindingEntry struct {
+	BindingID   string     `json:"binding_id"`
+	TenantID    string     `json:"tenant_id,omitempty"`
+	ACL         string     `json:"acl"`
+	SubjectKind string     `json:"subject_kind"`
+	SubjectID   string     `json:"subject_id,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CreatedBy   string     `json:"created_by,omitempty"`
+	RetiredAt   *time.Time `json:"retired_at,omitempty"`
 }
 
 // TokenLimitsSection carries every per-scope token budget and, optionally, the

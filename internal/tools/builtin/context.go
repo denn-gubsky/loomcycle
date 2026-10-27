@@ -910,6 +910,10 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 			// The sql_* ops and Document's tenant scope check this grant, not
 			// allowed_scopes; without it the model sees half its memory policy.
 			"sql_scopes": tools.PolicyOf(ctx).SqlMem.AllowedScopes,
+			// The scopes above this run may read but not write: the access rules
+			// of the user who started it deny the write.
+			"read_only_scopes":     memPol.ReadOnlyScopes,
+			"sql_read_only_scopes": tools.PolicyOf(ctx).SqlMem.ReadOnlyScopes,
 		},
 		"history_scopes": tools.PolicyOf(ctx).History.Scopes,
 		"channels": map[string]any{

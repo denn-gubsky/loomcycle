@@ -215,3 +215,78 @@ func TestUsageReport_UngroupedPurposeAddsOnlyAudioSeconds(t *testing.T) {
 		t.Errorf("report totals = (calls %v, unpriced %v, input %v), want (3, 2, 150)", calls, unpriced, tokens)
 	}
 }
+
+// TestRecordTranscriptionUsage_WritesATTSUnitWithCharsAndSecondsOutsideTheBudget
+// — a text-to-speech unit lands on the run's ledger with purpose tts, the
+// characters it sent, the seconds it produced and the cost the caller priced;
+// its characters and seconds are not tokens, so the token budget counters move
+// only by the OCR unit's tokens beside it. (The budget half is a GUARD: what
+// keeps tokens off a TTS unit is the refusal tested below.)
+func TestRecordTranscriptionUsage_WritesATTSUnitWithCharsAndSecondsOutsideTheBudget(t *testing.T) {
+	srv, st := newUsageTestServer(t)
+	ctx := runCtx("run-tts")
+
+	if err := srv.RecordTranscriptionUsage(ctx, TranscriptionUsage{
+		Purpose: store.UsagePurposeOCR, Provider: "anthropic", Model: "claude-vision", InputTokens: 40, OutputTokens: 10,
+	}); err != nil {
+		t.Fatalf("record OCR: %v", err)
+	}
+	if err := srv.RecordTranscriptionUsage(ctx, TranscriptionUsage{
+		Purpose: store.UsagePurposeTTS, Provider: "openai", Model: "tts-1",
+		CredentialSource: "tenant", CredentialScopeID: "t1",
+		InputChars: 4380, AudioSeconds: 312.4, Cost: 0.0657, Currency: "USD", Priced: true,
+	}); err != nil {
+		t.Fatalf("record TTS: %v", err)
+	}
+
+	rows, err := st.TokenUsageForRun(context.Background(), "run-tts")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("ledger = %d rows, %v; want 2", len(rows), err)
+	}
+	tts := rows[1]
+	if tts.Purpose != store.UsagePurposeTTS || tts.InputChars != 4380 || tts.AudioSeconds != 312.4 ||
+		tts.InputTokens != 0 || tts.OutputTokens != 0 || tts.Cost != 0.0657 || tts.CostCurrency != "USD" ||
+		tts.CredentialSource != "tenant" || tts.CredentialScopeID != "t1" {
+		t.Errorf("tts row = %+v; want purpose tts, 4380 chars, 312.4 s, no tokens, 0.0657 USD, tenant-paid", tts)
+	}
+	if tts.TenantID != "t1" || tts.UserID != "u1" || tts.AgentID != "clerk" || tts.SessionID != "s1" {
+		t.Errorf("tts row not charged to the run's identity: %+v", tts)
+	}
+	if ocr := rows[0]; ocr.InputChars != 0 {
+		t.Errorf("ocr row carries %d input chars, want 0", ocr.InputChars)
+	}
+	for _, sc := range []struct{ scope, id string }{{"operator", ""}, {"tenant", "t1"}, {"user", "u1"}} {
+		if used := srv.limits.UsedFor(sc.scope, "t1", sc.id); used != 50 {
+			t.Errorf("%s budget counter = %d, want 50 (the OCR tokens only)", sc.scope, used)
+		}
+	}
+}
+
+// TestRecordTranscriptionUsage_RefusesUnitsATTSUnitCannotCarry — tokens on a
+// TTS unit, characters on an STT or OCR unit and a negative character count
+// are refused and nothing is written.
+func TestRecordTranscriptionUsage_RefusesUnitsATTSUnitCannotCarry(t *testing.T) {
+	srv, st := newUsageTestServer(t)
+	ctx := runCtx("run-tts-bad")
+	ok := TranscriptionUsage{Purpose: store.UsagePurposeTTS, Provider: "p", Model: "m", InputChars: 10, AudioSeconds: 1}
+	for name, mut := range map[string]func(*TranscriptionUsage){
+		"tts with input tokens":  func(u *TranscriptionUsage) { u.InputTokens = 5 },
+		"tts with output tokens": func(u *TranscriptionUsage) { u.OutputTokens = 5 },
+		"negative chars":         func(u *TranscriptionUsage) { u.InputChars = -1 },
+		"stt with chars":         func(u *TranscriptionUsage) { u.Purpose = store.UsagePurposeSTT },
+		"ocr with chars":         func(u *TranscriptionUsage) { u.Purpose, u.AudioSeconds = store.UsagePurposeOCR, 0 },
+		"tts negative seconds":   func(u *TranscriptionUsage) { u.AudioSeconds = -1 },
+	} {
+		u := ok
+		mut(&u)
+		if err := srv.RecordTranscriptionUsage(ctx, u); err == nil {
+			t.Errorf("%s: recorded, want refused", name)
+		}
+	}
+	if rows, _ := st.TokenUsageForRun(context.Background(), "run-tts-bad"); len(rows) != 0 {
+		t.Errorf("a refused unit was written: %+v", rows)
+	}
+	if err := srv.RecordTranscriptionUsage(ctx, ok); err != nil {
+		t.Errorf("the valid TTS unit: %v", err)
+	}
+}

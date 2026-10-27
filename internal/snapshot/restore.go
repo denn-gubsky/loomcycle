@@ -141,6 +141,10 @@ type RestoreOptions struct {
 type RestoreResult struct {
 	UsersRestored                  int      `json:"users_restored"`
 	TokenLimitsRestored            int      `json:"token_limits_restored"`
+	ACLListsRestored               int      `json:"acl_lists_restored"`
+	ACLGroupsRestored              int      `json:"acl_groups_restored"`
+	ACLMembersRestored             int      `json:"acl_members_restored"`
+	ACLBindingsRestored            int      `json:"acl_bindings_restored"`
 	UsageCarryRestored             int      `json:"usage_carry_restored"`
 	AgentDefsRestored              int      `json:"agent_defs_restored"`
 	AgentDefActiveRestored         int      `json:"agent_def_active_restored"`
@@ -227,6 +231,7 @@ func (r RestoreResult) Counts() map[string]int {
 // restore order matches the section FK dependency graph:
 //
 //	users, token_limits (first: before any definition or resumed run)
+//	acl               groups → members → lists → bindings (before any run)
 //	agent_defs        → agent_def_active (FK: name → agent_defs.def_id)
 //	volume_defs       (path derived under this host's dynamic root)
 //	memory_backend_defs, document_source_defs → their active pointers
@@ -364,6 +369,15 @@ func Restore(ctx context.Context, s store.Store, raw []byte, opts RestoreOptions
 			now = opts.Now
 		}
 		restoreTokenLimits(ctx, s, &sec, now(), &result)
+	}
+	// acl: after the users its memberships and bindings name, and before the
+	// paused and queued runs, which are re-narrowed by their caller's set.
+	if rawSection, ok := sections[migrations.SectionACL]; ok {
+		var sec ACLSection
+		if err := decodeWithMigration(migrations.SectionACL, rawSection, &sec); err != nil {
+			return result, err
+		}
+		restoreACL(ctx, s, &sec, &result)
 	}
 
 	// The definitions this restore brings back that name credentials; the

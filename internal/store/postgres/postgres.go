@@ -576,8 +576,8 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
 			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
-			purpose, audio_seconds
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+			purpose, audio_seconds, input_chars
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 		row.RunID, nullableText(row.SessionID), row.TenantID, nullableText(row.UserID),
 		nullableText(row.AgentID), nullableText(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
@@ -585,7 +585,7 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 		costArg, nullableText(row.CostCurrency), ts,
 		nullableMs(row.DurationMs), nullableMs(row.TTFTMs), nullableMs(row.LoadMs),
 		nullableMs(row.PrefillMs), nullableMs(row.DecodeMs), nullableMs(row.QueueMs),
-		purpose, audioSeconds,
+		purpose, audioSeconds, row.InputChars,
 	)
 	if err != nil {
 		return fmt.Errorf("record call usage: %w", err)
@@ -649,7 +649,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
 			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
-			purpose, audio_seconds
+			purpose, audio_seconds, input_chars
 		 FROM token_usage WHERE run_id = $1 ORDER BY iteration ASC, id ASC`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("token usage for run: %w", err)
@@ -667,7 +667,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &r.TS,
 			&dur, &ttft, &load, &prefill, &decode, &queue,
-			&r.Purpose, &r.AudioSeconds,
+			&r.Purpose, &r.AudioSeconds, &r.InputChars,
 		); err != nil {
 			return nil, fmt.Errorf("scan token usage: %w", err)
 		}
@@ -1079,11 +1079,11 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source, purpose,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, call_count, unpriced_calls, audio_seconds)
+			cost, cost_currency, call_count, unpriced_calls, audio_seconds, input_chars)
 		SELECT date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose,
 			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
 			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
-			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds)
+			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds), SUM(input_chars)
 		FROM token_usage WHERE ts < $1
 		GROUP BY date_trunc('day', ts AT TIME ZONE 'UTC') AT TIME ZONE 'UTC', tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose
 		ON CONFLICT (period_start, tenant_id, user_id, provider, model, credential_source, purpose) DO UPDATE SET
@@ -1095,7 +1095,8 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 			cost_currency         = CASE WHEN usage_archive.cost_currency = '' THEN excluded.cost_currency ELSE usage_archive.cost_currency END,
 			call_count            = usage_archive.call_count + excluded.call_count,
 			unpriced_calls        = usage_archive.unpriced_calls + excluded.unpriced_calls,
-			audio_seconds         = usage_archive.audio_seconds + excluded.audio_seconds`,
+			audio_seconds         = usage_archive.audio_seconds + excluded.audio_seconds,
+			input_chars           = usage_archive.input_chars + excluded.input_chars`,
 		olderThan,
 	); err != nil {
 		return 0, fmt.Errorf("rollup usage: %w", err)
