@@ -114,6 +114,9 @@ var layers = []layer{
 			"internal/search",
 			"internal/sigv1",
 			"internal/skillmatch",
+			// Text-to-speech pure helpers (Markdown normaliser, splitter, WAV
+			// joiner, caps): stdlib only. The engine and the File tool sit above.
+			"internal/speech",
 			"internal/statepatch",
 			"internal/steer",
 			"internal/teamspec",
