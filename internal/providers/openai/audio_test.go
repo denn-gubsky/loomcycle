@@ -136,3 +136,36 @@ func TestTranscribeAudio_ErrorNamesTheStatus(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestTranscribeAudio_ErrorStatusIsClassified — a refusal carries its status in
+// the "<name> <code>:" shape the shared classifier reads, so a 400 is permanent,
+// a 5xx retryable, and a refused operator key is recognised as the operator's.
+// The name was two words ("openai audio 400:"), which the classifier does not
+// match, so every transcription error classified as unknown.
+func TestTranscribeAudio_ErrorStatusIsClassified(t *testing.T) {
+	status := http.StatusBadRequest
+	body := `{"error":"unsupported format"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, body, status)
+	}))
+	defer srv.Close()
+	req := providers.AudioRequest{Model: "m", File: []byte("x"), Filename: "a.wav"}
+
+	d := New("host-key", srv.URL, streamhttp.Options{}, srv.Client())
+	_, err := d.TranscribeAudio(context.Background(), req)
+	if got := providers.ClassifyError(err); got != providers.ErrorClassPermanent {
+		t.Errorf("a 400 classified %v (err %v)", got, err)
+	}
+
+	status = http.StatusServiceUnavailable
+	_, err = d.TranscribeAudio(context.Background(), req)
+	if got := providers.ClassifyError(err); got != providers.ErrorClassRetryable {
+		t.Errorf("a 503 classified %v (err %v)", got, err)
+	}
+
+	status, body = http.StatusUnauthorized, `{"error":{"code":"invalid_api_key"}}`
+	_, err = d.TranscribeAudio(context.Background(), req)
+	if !providers.OperatorKeyRefused(err) {
+		t.Errorf("a refused operator key was not recognised: %v", err)
+	}
+}
