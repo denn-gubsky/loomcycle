@@ -21,6 +21,10 @@
 # - modernc.org/sqlite 1.61.x: v1.61.0 (with modernc.org/libc v1.79.0) makes
 #   CI's race jobs report data races inside encoding/json, and v1.60.1 does not
 #   (#2173, closed). Drop the ignore once a release passes the race jobs.
+# - github.com/a2aproject/a2a-go/v2 2.7.x: v2.7.0 serves A2A protocol 1.0 only
+#   and refuses a 0.3 request with VERSION_NOT_SUPPORTED, so every A2A peer
+#   still on 0.3 (and the A2A test suite) is refused (#2164 merged red).
+#   Moving to it is a protocol decision with its own change, not a bump.
 
 version: 2
 
@@ -48,6 +52,9 @@ updates:
       # See the header: 1.61.x trips the race jobs.
       - dependency-name: "modernc.org/sqlite"
         versions: ["1.61.x"]
+      # See the header: 2.7.x refuses A2A protocol 0.3.
+      - dependency-name: "github.com/a2aproject/a2a-go/v2"
+        versions: ["2.7.x"]
     groups:
       # gbash and its contrib/awk and contrib/jq modules release in lockstep;
       # one PR moves all three, apart from every other Go update. A group listed
