@@ -209,3 +209,22 @@ func TestResolveAuth_EdgeGateTakesTrusted(t *testing.T) {
 		t.Fatalf("trusted header gate promoting new users: %v", err)
 	}
 }
+
+// Header gates of one preset read the same headers, and the edge filter
+// strips a gate's headers from a peer outside ITS CIDRs before the next gate
+// looks: two such gates behind different proxies would refuse each other's
+// people. So they must trust the same proxies, or the load fails.
+func TestResolveAuth_SamePresetHeaderGatesMustTrustTheSameProxies(t *testing.T) {
+	a, b := hmacGateConfig(), hmacGateConfig()
+	b.SecretEnv = "LOOMCYCLE_GATE_OTHER_SECRET"
+	b.TrustedProxyCIDRs = []string{"10.9.0.0/16"}
+	err := resolveAuth(edgeConfig("", map[string]AuthGateConfig{"a": a, "b": b}))
+	if err == nil || !strings.Contains(err.Error(), "trusted_proxy_cidrs") {
+		t.Fatalf("resolveAuth = %v, want the shared-header refusal", err)
+	}
+	// The same proxies: fine.
+	b.TrustedProxyCIDRs = []string{"127.0.0.1"}
+	mustResolve(t, edgeConfig("", map[string]AuthGateConfig{"a": a, "b": b}))
+	// Different presets read different headers: fine behind different proxies.
+	mustResolve(t, edgeConfig("", map[string]AuthGateConfig{"a": a, "cf": cfGateConfig()}))
+}

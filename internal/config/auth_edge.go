@@ -287,3 +287,49 @@ func publicURLHost(u string) string {
 	}
 	return ""
 }
+
+// checkHeaderGatesShareProxies refuses two header gates of one preset behind
+// different proxies. Gates of a preset read the same headers, and the edge
+// filter removes a gate's headers from a peer outside that gate's CIDRs
+// before the next gate looks, so the second gate's proxy would never be
+// heard: its people refused, its sessions ended on their first request.
+// Different presets read different headers and may sit behind any proxies.
+func checkHeaderGatesShareProxies(gates []AuthGate) error {
+	first := map[string]AuthGate{}
+	for _, g := range gates {
+		if g.Header == nil {
+			continue
+		}
+		f, seen := first[g.Header.Preset]
+		if !seen {
+			first[g.Header.Preset] = g
+			continue
+		}
+		if !samePrefixes(f.Header.TrustedProxyCIDRs, g.Header.TrustedProxyCIDRs) {
+			return fmt.Errorf("auth.gates.%s and auth.gates.%s: both are preset %s, so they read the same headers, and "+
+				"they must list the same trusted_proxy_cidrs (a header one gate does not trust from a peer is removed "+
+				"before the other gate sees it)", f.Name, g.Name, g.Header.Preset)
+		}
+	}
+	return nil
+}
+
+func samePrefixes(a, b []netip.Prefix) bool {
+	set := func(ps []netip.Prefix) map[netip.Prefix]bool {
+		m := make(map[netip.Prefix]bool, len(ps))
+		for _, p := range ps {
+			m[p.Masked()] = true
+		}
+		return m
+	}
+	sa, sb := set(a), set(b)
+	if len(sa) != len(sb) {
+		return false
+	}
+	for p := range sa {
+		if !sb[p] {
+			return false
+		}
+	}
+	return true
+}
