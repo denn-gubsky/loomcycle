@@ -21,7 +21,7 @@ import (
 //	  gates:
 //	    telegram:
 //	      kind: external
-//	      public_key: { kty: OKP, crv: Ed25519, x: "…" }   # or hmac_secret: "$cred:telegram-gate"
+//	      public_key: { kty: OKP, crv: Ed25519, x: "…" }   # or hmac_secret_env: LOOMCYCLE_GATE_TG_SECRET
 //	      callback_url: https://gate.internal/login         # optional: a browser login starts there
 //	      allowed_return_to: [https://www.example.com/app]  # where a browser login may land
 //	      issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 }, max_active: 2 }
