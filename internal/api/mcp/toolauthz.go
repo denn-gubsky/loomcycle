@@ -107,8 +107,9 @@ var tenantConfinableTools = map[string]bool{
 	// (toolRequiredScope): it uses the tenant's keys.
 	"crypto": true,
 	// file (RFC FF D16): a run's inbox, read through get_run's tenant and
-	// owner gate; the writing ops need the run's owner or an admin, and keep
-	// reaches only the caller's own tenant's volumes. It needs runs:read by
+	// owner gate; the writing ops need the run's owner or an admin (a tenant
+	// operator is one for its own tenant's runs), and keep reaches only the
+	// caller's own tenant's volumes. It needs runs:read by
 	// name (toolRequiredScope), as get_run does.
 	"file": true,
 

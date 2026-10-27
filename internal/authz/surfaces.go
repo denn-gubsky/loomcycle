@@ -77,6 +77,10 @@ func HTTPSurface(method, path string) (Surface, bool) {
 			return typeLevel("run", "agent"), true // PATCH / DELETE a configured draft
 		}
 		switch rest[2] {
+		// The File twin and the inbox download: a read of the run. The twin
+		// asks the owner (or an admin) for its writing ops itself.
+		case "file", "inbox":
+			return typeLevel("read", "run"), true
 		case "stream", "config", "prompt", "effective-config", "interrupts":
 			if len(rest) == 5 && rest[4] == "resolve" {
 				return typeLevel("steer", "run"), true
