@@ -354,3 +354,27 @@ func mustHasher(t *testing.T, s *Server) auth.TokenHasher {
 	}
 	return h
 }
+
+// GET /v1/_authgate tells an admin which gates a browser can sign in through:
+// the device gate is not one (its logins are approved through another gate).
+func TestAuthgateList_ADeviceGateIsNotABrowserSignIn(t *testing.T) {
+	s, _, _ := deviceServer(t)
+	rec := httptest.NewRecorder()
+	s.handleAuthgateList(rec, httptest.NewRequest(http.MethodGet, "/v1/_authgate", nil))
+	var got struct {
+		Gates []struct {
+			Name        string `json:"name"`
+			Interactive bool   `json:"interactive"`
+		} `json:"gates"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, g := range got.Gates {
+		seen[g.Name] = g.Interactive
+	}
+	if want := map[string]bool{"cli": false, "local": true, "paste": true}; fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("interactive by gate = %v, want %v", seen, want)
+	}
+}
