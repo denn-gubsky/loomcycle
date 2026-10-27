@@ -28,11 +28,11 @@ var _ providers.AudioTranscriber = (*Driver)(nil)
 // stream's first byte comes in seconds.
 func (d *Driver) TranscribeAudio(ctx context.Context, req providers.AudioRequest) (providers.AudioResponse, error) {
 	if req.Model == "" || len(req.File) == 0 || req.Filename == "" {
-		return providers.AudioResponse{}, errors.New("openai audio: a model, a file and its name are required")
+		return providers.AudioResponse{}, errors.New("openai-audio: a model, a file and its name are required")
 	}
 	body, contentType, err := audioForm(req)
 	if err != nil {
-		return providers.AudioResponse{}, fmt.Errorf("openai audio: build request: %w", err)
+		return providers.AudioResponse{}, fmt.Errorf("openai-audio: build request: %w", err)
 	}
 	// RFC AR/AX: the key and whose it is, once per call, as Call resolves it.
 	apiKey, credSource, credScopeID, err := d.resolveKey(ctx)
@@ -67,20 +67,20 @@ func (d *Driver) TranscribeAudio(ctx context.Context, req providers.AudioRequest
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return providers.AudioResponse{}, err
 		}
-		return providers.AudioResponse{}, fmt.Errorf("openai audio: http: %w", err)
+		return providers.AudioResponse{}, fmt.Errorf("openai-audio: http: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return providers.AudioResponse{}, providers.WithKeySource(
-			fmt.Errorf("openai audio %d: %s", resp.StatusCode, strings.TrimSpace(string(preview))), credSource)
+			fmt.Errorf("openai-audio %d: %s", resp.StatusCode, strings.TrimSpace(string(preview))), credSource)
 	}
 	out, err := io.ReadAll(io.LimitReader(resp.Body, providers.MaxAudioResponseBytes+1))
 	if err != nil {
-		return providers.AudioResponse{}, fmt.Errorf("openai audio: reading the answer: %w", err)
+		return providers.AudioResponse{}, fmt.Errorf("openai-audio: reading the answer: %w", err)
 	}
 	if len(out) > providers.MaxAudioResponseBytes {
-		return providers.AudioResponse{}, fmt.Errorf("openai audio: the answer is over %d bytes", providers.MaxAudioResponseBytes)
+		return providers.AudioResponse{}, fmt.Errorf("openai-audio: the answer is over %d bytes", providers.MaxAudioResponseBytes)
 	}
 	return providers.AudioResponse{Body: out, CredentialSource: credSource, CredentialScopeID: credScopeID}, nil
 }
