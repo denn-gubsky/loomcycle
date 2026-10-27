@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import LogoutView from "./LogoutView";
-import { handleLogoutClick } from "../components/SettingsMenu";
+import { handleLogoutClick } from "../components/AccountMenu";
 import { signOut } from "../lib/uiSession";
 
 // /ui/logout is reachable by a link from any site, and the page's own

@@ -1,6 +1,6 @@
 import type { ConcurrencyStatsResult, ConcurrencyStatsResponse, LaneStat, ProviderGateStat } from "../api";
 
-// Pure derivations for the Settings → Lanes tab (GET /v1/_concurrency/stats),
+// Pure derivations for the Lanes page (GET /v1/_concurrency/stats),
 // kept out of the component so the empty-state choice and the formatting are
 // testable without rendering.
 

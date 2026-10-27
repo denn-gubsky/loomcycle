@@ -19,7 +19,7 @@ const ACL_TABS: ReadonlySet<string> = new Set<AccessTab>(["groups", "policies", 
 export default function AccessView() {
   const principal = usePrincipal();
   // A null principal = open mode / pre-resolution → admin-equivalent, as in
-  // SettingsView; Layout renders this only once the principal has resolved.
+  // SectionPage; Layout renders this only once the principal has resolved.
   const isAdmin = !principal || principal.is_admin;
   const visible = visibleGroupItems(
     "g-access",

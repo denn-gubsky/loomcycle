@@ -9,13 +9,13 @@ import {
   rotateOperatorToken,
 } from "../api";
 
-// TokenManager is the Settings → Tokens panel (RFC L token minting, web-reachable
+// TokenManager is the Access → Tokens page (RFC L token minting, web-reachable
 // for no-shell deployments — RFC AR/TrueNAS). It mirrors the `loomcycle
 // operator-token` CLI: generate a tenant/operator token (shown ONCE), list the
 // existing tokens (one row per tenant and name), rotate, and retire. Rotate and
 // retire act on the row's current def_id, never on the name. Admin-only — the backend gates
-// POST /v1/_operatortokendef at substrate:admin and SettingsView only renders
-// this for an is_admin principal, so this is the redundant client-side half.
+// POST /v1/_operatortokendef at substrate:admin and the nav only offers
+// /access/tokens to an is_admin principal, so this is the redundant client-side half.
 const DEFAULT_SCOPES = ["substrate:tenant"];
 
 export default function TokenManager() {

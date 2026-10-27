@@ -1,22 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import {
-  Archive,
-  CircleUser,
-  Eraser,
-  Gauge,
-  HeartPulse,
-  KeyRound,
-  Layers,
-  LogOut,
-  type LucideIcon,
-  Network,
-  Package,
-  Power,
-  Split,
-  Wrench,
-} from "lucide-react";
-import { type SettingsMenuItem, type Section, isMenuItemCurrent } from "../lib/settingsSections";
+import { CircleUser, KeyRound, LogOut, type LucideIcon } from "lucide-react";
+import { type AccountMenuItem, accountMenuItems, isMenuItemCurrent } from "../lib/accountMenu";
+import { type Surfaces } from "../lib/visibility";
 import { signOut } from "../lib/uiSession";
 
 /** The menu's "Log out": sign out from this click, and fall back to the
@@ -31,48 +17,36 @@ export async function handleLogoutClick(
   if (!(await out())) go(href);
 }
 
-// A Record over Section, not a lookup with a fallback: adding a section without
-// an icon is then a type error here rather than a blank row in the menu.
-const SECTION_ICONS: Record<Section, LucideIcon> = {
-  credentials: KeyRound,
-  limits: Gauge,
-  routing: Split,
-  ontology: Network,
-  retention: Archive,
-  erasure: Eraser,
-  presets: Package,
-  runtime: Power,
-  lanes: Layers,
-  maintenance: Wrench,
-  health: HeartPulse,
-};
-
-const LINK_ICONS: Record<Extract<SettingsMenuItem, { kind: "link" }>["id"], LucideIcon> = {
+// A Record over the link ids, not a lookup with a fallback: adding a link
+// without an icon is then a type error here rather than a blank row in the menu.
+const LINK_ICONS: Record<Extract<AccountMenuItem, { kind: "link" }>["id"], LucideIcon> = {
   account: CircleUser,
   "my-credentials": KeyRound,
 };
 
-// SettingsMenu is a top-bar menu button: the gear (the viewer's Settings
-// sections) and the account menu (Your account, the viewer's own pages, Log out)
-// are both one of these, with their own rows.
+// AccountMenu is the top bar's rightmost control: a button that opens the
+// viewer's own pages (Your account, My credentials) and Log out.
 //
-// The button is lit while the menu is open, on a page it lists, and anywhere
-// under `litPrefix` (the gear's /settings, whose bare address has no row).
+// Rendered for EVERY role: Log out lives only here, so even a viewer with no
+// other row gets the menu. The button is lit while the menu is open and on a
+// page it lists — the left nav does not mark these pages, so nothing else does.
 //
 // Follows the ARIA menu-button pattern: Enter / Space / ArrowDown open onto the
 // first item (ArrowUp onto the last), the arrows wrap, Home / End jump, Escape
 // closes and returns focus to the button, Tab closes and moves on.
-export default function SettingsMenu({
-  items,
-  label,
-  Icon: TriggerIcon,
-  litPrefix,
+export default function AccountMenu({
+  isAdmin,
+  hasTenantScope,
+  surfaces,
+  signedIn,
 }: {
-  items: SettingsMenuItem[];
-  label: string;
-  Icon: LucideIcon;
-  litPrefix?: string;
+  isAdmin: boolean;
+  hasTenantScope: boolean;
+  surfaces?: Surfaces;
+  signedIn: boolean;
 }) {
+  const items = accountMenuItems(isAdmin, hasTenantScope, surfaces, signedIn);
+  const label = "Account";
   // null = closed; otherwise the index to focus on opening.
   const [openAt, setOpenAt] = useState<number | null>(null);
   const open = openAt !== null;
@@ -142,10 +116,7 @@ export default function SettingsMenu({
         type="button"
         className={
           "settings-gear" +
-          // Lit while open, under litPrefix, and on a page the menu links to —
-          // the left nav does not mark these pages, so nothing else does.
           (open ||
-          (litPrefix !== undefined && pathname.startsWith(litPrefix)) ||
           items.some((i) => isMenuItemCurrent(i, pathname))
             ? " active"
             : "")
@@ -166,7 +137,7 @@ export default function SettingsMenu({
           }
         }}
       >
-        <TriggerIcon size={16} />
+        <CircleUser size={16} />
       </button>
       {open && (
         <div className="settings-menu-list" role="menu" id={menuId} aria-label={label}>
@@ -174,7 +145,7 @@ export default function SettingsMenu({
             const setRef = (el: HTMLAnchorElement | null) => {
               itemRefs.current[i] = el;
             };
-            // A rule wherever the group changes: sections | linked pages | Log out.
+            // A rule before Log out, so the way out reads apart from the pages.
             const startsGroup = i > 0 && items[i - 1].kind !== item.kind;
             const sep = startsGroup && <div className="settings-menu-sep" role="separator" />;
             if (item.kind === "logout") {
@@ -199,7 +170,7 @@ export default function SettingsMenu({
                 </div>
               );
             }
-            const Icon = item.kind === "section" ? SECTION_ICONS[item.id] : LINK_ICONS[item.id];
+            const Icon = LINK_ICONS[item.id];
             return (
               <div key={item.kind + ":" + item.id} role="none">
                 {sep}

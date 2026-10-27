@@ -201,7 +201,7 @@ func seedTenantOntology(t *testing.T, d *Document, ctx context.Context) {
 	}
 }
 
-// grantedTenantCtx is the OPERATOR's authority — what Settings → Ontology runs with.
+// grantedTenantCtx is the OPERATOR's authority — what the Ontology page runs with.
 // Reads and adoptions in these tests use it; the proposals deliberately do not.
 func grantedTenantCtx(ctx context.Context) context.Context {
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {

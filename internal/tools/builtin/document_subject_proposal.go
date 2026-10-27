@@ -96,7 +96,7 @@ func (d *Document) proposeSubject(ctx context.Context, in docInput) (tools.Resul
 	}
 	if read.DocumentID == "" || read.RootChunkID == "" {
 		return errBusiness("propose_subject: this tenant has no ontology document yet — an "+
-			"operator opens Settings → Ontology once to create it", ""), nil
+			"operator opens the Ontology page once to create it", ""), nil
 	}
 	// Already filed, in either state. An accepted one is gone (the entity replaced it),
 	// so reaching here means pending or rejected — and a rejected twin means the
@@ -130,7 +130,7 @@ func (d *Document) proposeSubject(ctx context.Context, in docInput) (tools.Resul
 	return jsonResult(map[string]any{
 		"proposed": subject, "chunk_id": out["id"], "natural_key": naturalKey,
 		"note": "Filed as a suggestion, not in force. Facts about this subject stay in the " +
-			"scope that learned them until an operator adopts it in Settings → Ontology.",
+			"scope that learned them until an operator adopts it in the Ontology page.",
 	})
 }
 

@@ -3493,7 +3493,7 @@ agents:
             unadopted.length + " (" + shown +
             (unadopted.length > 8 ? ", …" : "") +
             ") — " + (st.subject_proposed > 0
-              ? st.subject_proposed + " filed for adoption in Settings → Ontology; accept one " +
+              ? st.subject_proposed + " filed for adoption in the Ontology page; accept one " +
                 "and its facts place automatically from the next pass"
               : "create the entity in tenant scope once to share what is learned about it"));
         }
@@ -4267,7 +4267,7 @@ agents:
     # makes it safe to run against a real store.
     #
     # ON DEMAND, not scheduled. A curator filing proposals nobody reads is clutter
-    # with a cron job; the Settings → Ontology panel links here with the prompt
+    # with a cron job; the Ontology page links here with the prompt
     # staged, so a pass happens because somebody asked for one. Add a schedule once
     # its proposals are ones you actually accept.
     #

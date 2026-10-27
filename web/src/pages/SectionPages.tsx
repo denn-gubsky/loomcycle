@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
-import { resolveSection, settingsHref, visibleSections } from "../lib/settingsSections";
+import { Link, Navigate, useParams } from "react-router-dom";
+import { canSee, grantOf, hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
+import { NAV_ITEMS } from "../components/navItems";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
@@ -38,49 +38,66 @@ import LanesView from "./LanesView";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
 
-// SettingsView is the Settings hub (top-bar gear). It web-reaches the critical
-// `loomcycle` CLI + tenant surfaces so a no-shell deployment (TrueNAS — RFC AR)
-// stays operable. Visible to admins AND substrate:tenant operators (the gear is
-// rendered for both in Layout); the tabs are filtered by scope:
-//   - tenant-visible (admin + substrate:tenant): credentials (enter your own
-//     provider API keys — RFC AR), limits (per-scope token budgets, RFC AW),
-//     routing (the resolved model cascade), ontology (the tenant entity types +
-//     the draft→confirmed gate). Their data is tenant-scoped server-side — a
-//     tenant operator sees only its own tenant.
-//   - admin-only: presets (RFC AQ), runtime (pause/resume), lanes (live run
-//     queue + provider lanes), maintenance, health.
-// Users, access control and token minting are pages of /access (AccessView).
-// The backend gates every surface too (defence in depth). Surfaces with their
-// own pages (snapshots, audit) are linked, not duplicated.
-export default function SettingsView() {
+// The tenant's and the runtime's configuration pages — what the Settings hub
+// (the top bar's gear) used to hold as tabs. Each is now a page of its own in the
+// left nav's groups (credentials in connections, ontology in knowledge, limits
+// and routing in cost & models, retention and erasure in compliance, the
+// operator plane in system), at /<section>; /settings/<section> redirects there.
+// They web-reach the critical `loomcycle` CLI + tenant surfaces so a no-shell
+// deployment (TrueNAS — RFC AR) stays operable.
+//
+// Data is tenant-scoped server-side (a tenant operator sees only its own
+// tenant), and the backend gates every surface too (defence in depth).
+export const SECTION_IDS = [
+  "credentials",
+  "limits",
+  "routing",
+  "ontology",
+  "retention",
+  "erasure",
+  "presets",
+  "runtime",
+  "lanes",
+  "maintenance",
+  "health",
+] as const;
+
+export type SectionId = (typeof SECTION_IDS)[number];
+
+// SettingsRedirect keeps the hub's old addresses working: /settings/<section> is
+// now /<section>. A bare /settings, or a section that no longer exists there,
+// goes to the start page.
+export function SettingsRedirect() {
+  const { section } = useParams<{ section?: string }>();
+  return <Navigate to={settingsRedirectTarget(section)} replace />;
+}
+
+export function settingsRedirectTarget(section: string | undefined): string {
+  return section && (SECTION_IDS as readonly string[]).includes(section) ? "/" + section : "/";
+}
+
+// SectionPage renders one section, for a viewer the nav would show it to. The nav
+// hides it from anyone else, so this is reached only by a pasted link — and a
+// blank page reads as broken rather than as forbidden, so it says which it is.
+export default function SectionPage({ id }: { id: SectionId }) {
   const principal = usePrincipal();
   // A null principal = open mode / pre-resolution → admin-equivalent (matches
   // handleWhoami's open-mode synthetic admin). Layout only renders this view
   // once the principal has resolved, so this reflects the real role.
   const isAdmin = !principal || principal.is_admin;
-  const hasTenantScope = principalHasTenantScope(principal?.scopes);
-  const visible = visibleSections(isAdmin, hasTenantScope, surfacesOf(principal));
-  // The tab lives in the URL (/settings/<section>) so the top bar's settings menu
-  // can deep-link one and the back button walks tabs. It is re-resolved against
-  // what the principal can see on every render: an absent, unknown or
-  // not-permitted section falls back to the first visible tab rather than
-  // rendering a panel whose every call 403s. Selection is a preference;
-  // visibility is a rule.
-  const { section } = useParams<{ section?: string }>();
-  const navigate = useNavigate();
-  const active = resolveSection(section, visible);
+  const item = NAV_ITEMS.find((it) => it.id === id);
+  const allowed =
+    !!item &&
+    canSee(item.vis, isAdmin, principalHasTenantScope(principal?.scopes), grantOf(surfacesOf(principal), id));
 
-  if (visible.length === 0) {
-    // Reachable by direct URL only — the top bar's menu lists no section for this viewer —
-    // but "no tabs at all" renders as a blank page, which reads as broken rather
-    // than as forbidden. Say which it is.
+  if (!allowed) {
     return (
       <div className="settings-view">
         <div className="settings-panel">
-          <h2>Settings</h2>
+          <h2>{item?.label ?? id}</h2>
           <p className="settings-help">
-            Nothing here is available to your access level. Settings administers a
-            tenant or the operator plane; your token holds neither.
+            This page is not available to your access level: it administers a tenant or the operator
+            plane, and your token holds neither.
           </p>
         </div>
       </div>
@@ -89,30 +106,18 @@ export default function SettingsView() {
 
   return (
     <div className="settings-view">
-      <nav className="settings-tabs">
-        {visible.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={"settings-tab" + (active === s.id ? " active" : "")}
-            onClick={() => navigate(settingsHref(s.id))}
-          >
-            {s.label}
-          </button>
-        ))}
-      </nav>
       <div className="settings-body">
-        {active === "credentials" && <CredentialsPanel />}
-        {active === "limits" && <LimitsView />}
-        {active === "routing" && <RoutingView />}
-        {active === "ontology" && <OntologySection />}
-        {active === "retention" && <RetentionSection />}
-        {active === "erasure" && <ErasureSection />}
-        {active === "presets" && <PresetsSection />}
-        {active === "runtime" && <RuntimeSection />}
-        {active === "lanes" && <LanesView />}
-        {active === "maintenance" && <MaintenanceSection />}
-        {active === "health" && <HealthSection />}
+        {id === "credentials" && <CredentialsPanel />}
+        {id === "limits" && <LimitsView />}
+        {id === "routing" && <RoutingView />}
+        {id === "ontology" && <OntologySection />}
+        {id === "retention" && <RetentionSection />}
+        {id === "erasure" && <ErasureSection />}
+        {id === "presets" && <PresetsSection />}
+        {id === "runtime" && <RuntimeSection />}
+        {id === "lanes" && <LanesView />}
+        {id === "maintenance" && <MaintenanceSection />}
+        {id === "health" && <HealthSection />}
       </div>
     </div>
   );

@@ -113,9 +113,8 @@ TrueNAS app — the same lifecycle is in the Web UI: sign in with an admin
 (root) token and open **Access → Tokens** in the left menu. Generate (the
 secret is revealed once with a copy button), list, rotate, and retire — backed
 by the same `POST /v1/_operatortokendef`. The Tokens page is **admin-only** (a
-`substrate:tenant` session never sees it); the Settings hub (the gear, top
-right) surfaces the embedded **Presets**, **Runtime** (pause/resume), and
-**Health**.
+`substrate:tenant` session never sees it); the menu's system group has the
+embedded **Presets**, **Runtime** (pause/resume), and **Health**.
 
 ## Rotation grace
 

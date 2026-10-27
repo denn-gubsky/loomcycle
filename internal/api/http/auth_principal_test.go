@@ -328,7 +328,7 @@ func TestRequiredScopeFor(t *testing.T) {
 		{"POST", "/v1/_documentsourcedef", auth.ScopeTenant},
 		{"GET", "/v1/_documentsourcedef/names", auth.ScopeTenant},
 		// RFC AQ: the embedded preset/env-template read endpoints fall under the
-		// /v1/_* operator-admin default (the Settings hub is admin-only).
+		// /v1/_* operator-admin default (the operator plane is admin-only).
 		{"GET", "/v1/_presets", auth.ScopeAdmin},
 		{"GET", "/v1/_presets/base", auth.ScopeAdmin},
 		{"GET", "/v1/_env_template", auth.ScopeAdmin},

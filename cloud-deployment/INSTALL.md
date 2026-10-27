@@ -413,7 +413,7 @@ the order; the notes after it are what changed underneath you.
    The runtime image is pulled now, not built: `loomcycle.Dockerfile` is gone.
 5. **Verify.** `curl -s https://app.loomcycle.cloud/healthz` reports `1.108.0`.
    In the runtime log, the resolve probe lists the Ollama models, and there is no
-   `kind` warning. Settings → Routing shows which Gemini model each pattern alias
+   `kind` warning. The Web UI's Routing page shows which Gemini model each pattern alias
    resolved to. `GET /v1/_decide/models` lists `decide` and `decide-deep`.
 6. **Backfill embeddings** if this deployment had no embedder before. Rows written
    earlier have no vector and are not found by semantic search until

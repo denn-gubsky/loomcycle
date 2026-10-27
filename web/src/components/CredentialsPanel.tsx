@@ -27,7 +27,7 @@ import {
 } from "../lib/cryptoKeys";
 
 // CredentialsPanel is the shared RFC AR credential UI, used in two places:
-//   - the operator Settings hub (full: tenant + user scopes, a scope selector);
+//   - the tenant credentials page (full: tenant + user scopes, a scope selector);
 //   - the standalone "My Credentials" page (userOnly: the caller's own scope=user
 //     tokens, no scope selector), which RFC CN opens to every user login incl.
 //     isolated substrate:user users.

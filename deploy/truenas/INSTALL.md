@@ -377,7 +377,7 @@ peer's credential, and a team walk by whoever started it or the trigger's author
   unnarrowed until you re-save them (create again, fork, or edit their hook).
 - A token limited to certain agents can no longer start team walks
   (`builtin:run-plane` denies `run team:*`, in `compat` too).
-- Erasing a user (Settings → Erasure) now also revokes their member tokens and
+- Erasing a user (the Erasure page) now also revokes their member tokens and
   removes their group memberships and bindings. Config-declared memberships stay —
   remove them from the overlay.
 - Snapshots don't carry lists, groups or bindings. After restoring on another

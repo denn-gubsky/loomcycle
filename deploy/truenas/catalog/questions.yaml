@@ -126,7 +126,7 @@ questions:
     label: Additional environment variables
     description: |
       Any other non-secret knob from the env catalogue — see `loomcycle env-template`
-      (or the Settings → Presets panel in the Web UI). e.g. LOOMCYCLE_BASH_ENABLED,
+      (or the Presets page in the Web UI). e.g. LOOMCYCLE_BASH_ENABLED,
       LOOMCYCLE_HTTP_HOST_ALLOWLIST, OLLAMA_BASE_URL.
     group: Runtime Options
     schema:

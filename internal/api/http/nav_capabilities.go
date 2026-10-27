@@ -8,16 +8,16 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
 
-// navSurface is one Web UI page — a left-nav item, a Settings section or a
-// settings-menu link — and the route its page loads first. GET /v1/_me
+// navSurface is one Web UI page — a left-nav item or an account-menu link —
+// and the route its page loads first. GET /v1/_me
 // reports, per page, whether the caller may reach that route, so the UI
 // shows the pages a principal can actually use instead of guessing from its
 // role (RFC EZ §4). The route is the page's PRIMARY call: the one whose
 // refusal leaves the page with nothing to show.
 type navSurface struct {
 	// ID is the page's id in the Web UI: NavItem.id in
-	// web/src/components/navItems.ts, Section or AccountLinkId in
-	// web/src/lib/settingsSections.ts. TestNavSurfaces_CoverEveryWebUIPage
+	// web/src/components/navItems.ts or AccountLinkId in
+	// web/src/lib/accountMenu.ts. TestNavSurfaces_CoverEveryWebUIPage
 	// holds the two lists equal.
 	ID     string
 	Method string
@@ -65,9 +65,9 @@ var navSurfaces = []navSurface{
 	// catalog, which it reads from the policies route.
 	{ID: "simulator", Method: "POST", Path: "/v1/_acldef"},
 	{ID: "tokens", Method: "POST", Path: "/v1/_operatortokendef"},
-	// Settings sections. Credentials is the tenant's credential authoring;
-	// a member's own credentials are the account menu's my-credentials
-	// page below.
+	// The pages that were the Settings hub's tabs, now in the left nav's
+	// groups. Credentials is the tenant's credential authoring; a member's
+	// own credentials are the account menu's my-credentials page below.
 	{ID: "credentials", Method: "POST", Path: "/v1/_credentialdef", Operator: true},
 	{ID: "limits", Method: "GET", Path: "/v1/_limits"},
 	{ID: "routing", Method: "GET", Path: "/v1/_routing"},

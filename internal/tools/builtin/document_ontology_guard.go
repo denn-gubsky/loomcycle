@@ -158,7 +158,7 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	}
 	if read.DocumentID == "" || read.RootChunkID == "" {
 		return errBusiness("propose_entity: this tenant has no ontology document yet — an "+
-			"operator opens Settings → Ontology once to create it", ""), nil
+			"operator opens the Ontology page once to create it", ""), nil
 	}
 	for _, t := range read.Terms {
 		if strings.EqualFold(t.Name, name) {
@@ -256,7 +256,7 @@ func (d *Document) createOntologyProposal(ctx context.Context, key sqlmem.ScopeK
 		"chunk_id":  out["id"],
 		"parent_id": parentID,
 		"note": "Filed as a suggestion, not in force. An operator accepts or rejects it in " +
-			"Settings → Ontology; nothing changes for any run until they do.",
+			"the Ontology page; nothing changes for any run until they do.",
 	})
 }
 
