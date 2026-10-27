@@ -22,8 +22,10 @@ type usageReportResponse struct {
 //
 // Query params (all optional):
 //
-//	group_by=tenant,source,provider,model,user   dimensions to group by
-//	                                              (default: tenant,source)
+//	group_by=tenant,user,provider,model,source,purpose
+//	               dimensions to group by (default: tenant,source); purpose
+//	               splits chat from OCR and speech-to-text calls, and a group
+//	               with speech-to-text calls carries their audio_seconds
 //	from=RFC3339   ts >= from
 //	to=RFC3339     ts <= to
 //	tenant=acme    admin-only focus on one tenant (a tenant operator is always
@@ -58,7 +60,7 @@ func (s *Server) handleUsageReport(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, ok := store.UsageDimColumn(store.UsageDimension(part)); !ok {
 			writeJSONError(w, http.StatusBadRequest, "bad_request",
-				"unknown group_by dimension: "+part+" (allowed: tenant,user,provider,model,source)")
+				"unknown group_by dimension: "+part+" (allowed: "+store.UsageDimNames()+")")
 			return
 		}
 		query.GroupBy = append(query.GroupBy, store.UsageDimension(part))

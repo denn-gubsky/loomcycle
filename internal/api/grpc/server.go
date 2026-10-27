@@ -655,7 +655,7 @@ func (s *Server) UsageReport(ctx context.Context, req *loomcyclepb.UsageReportRe
 	var q store.UsageQuery
 	for _, g := range req.GetGroupBy() {
 		if _, ok := store.UsageDimColumn(store.UsageDimension(g)); !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "unknown group_by dimension: %s (allowed: tenant,user,provider,model,source)", g)
+			return nil, status.Errorf(codes.InvalidArgument, "unknown group_by dimension: %s (allowed: %s)", g, store.UsageDimNames())
 		}
 		q.GroupBy = append(q.GroupBy, store.UsageDimension(g))
 	}
@@ -703,6 +703,8 @@ func (s *Server) UsageReport(ctx context.Context, req *loomcyclepb.UsageReportRe
 			Currency:            r.Currency,
 			CallCount:           r.CallCount,
 			UnpricedCalls:       r.UnpricedCalls,
+			Purpose:             r.Purpose,
+			AudioSeconds:        r.AudioSeconds,
 		})
 	}
 	return out, nil

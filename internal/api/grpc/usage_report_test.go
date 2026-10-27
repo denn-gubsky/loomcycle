@@ -74,3 +74,44 @@ func TestGrpcUsageReport(t *testing.T) {
 		t.Errorf("bad group_by code=%s, want InvalidArgument", status.Code(err))
 	}
 }
+
+// TestGrpcUsageReport_GroupByPurposeCarriesPurposeAndAudioSeconds — the gRPC
+// twin of group_by=purpose: one row per purpose, each carrying its purpose, and
+// the speech-to-text row the audio seconds it transcribed.
+func TestGrpcUsageReport_GroupByPurposeCarriesPurposeAndAudioSeconds(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	ctx := context.Background()
+	for _, r := range []store.TokenUsageRow{
+		{RunID: "r", TenantID: "acme", Provider: "p", Model: "m", CredentialSource: "operator",
+			InputTokens: 100, Cost: 1, CostCurrency: "USD"},
+		{RunID: "r", TenantID: "acme", Provider: "p", Model: "m", CredentialSource: "operator",
+			InputTokens: 300, Cost: 0.3, CostCurrency: "USD", Purpose: store.UsagePurposeOCR},
+		{RunID: "r", TenantID: "acme", Provider: "w", Model: "w", CredentialSource: "operator",
+			Cost: 0.5, CostCurrency: "USD", Purpose: store.UsagePurposeSTT, AudioSeconds: 75},
+	} {
+		if err := st.RecordCallUsage(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := adapter.UsageReport(scopedCtx("acme", "ops", auth.ScopeAdmin),
+		&loomcyclepb.UsageReportRequest{GroupBy: []string{"purpose"}})
+	if err != nil {
+		t.Fatalf("UsageReport(group_by=purpose): %v", err)
+	}
+	byPurpose := map[string]*loomcyclepb.UsageAggregate{}
+	for _, r := range resp.GetRows() {
+		byPurpose[r.GetPurpose()] = r
+	}
+	if len(byPurpose) != 3 {
+		t.Fatalf("rows by purpose = %v, want chat, ocr and stt", resp.GetRows())
+	}
+	if r := byPurpose["ocr"]; r.GetInputTokens() != 300 || r.GetCost() != 0.3 || r.GetAudioSeconds() != 0 {
+		t.Errorf("ocr row = %v, want 300 tokens, cost 0.3, no audio", r)
+	}
+	if r := byPurpose["stt"]; r.GetCallCount() != 1 || r.GetAudioSeconds() != 75 {
+		t.Errorf("stt row = %v, want 1 call with 75 audio seconds", r)
+	}
+	if r := byPurpose["chat"]; r.GetInputTokens() != 100 {
+		t.Errorf("chat row = %v, want 100 tokens", r)
+	}
+}
