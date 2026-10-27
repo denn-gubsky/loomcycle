@@ -27,6 +27,20 @@
  *     mintUserToken(subject, opts?): Promise<MintedUserToken>   // delegated token
  *     listUserTokens(subject, opts?): Promise<ListUserTokensResponse>
  *     revokeUserToken(subject, defId, opts?): Promise<{def_id, retired_at}>
+ *     approveUser(subject, opts?): Promise<UserRecord>           // pending → active (RFC FA)
+ *     listUserIdentities(subject, opts?): Promise<UserIdentitiesResponse>
+ *     unlinkUserIdentity(subject, gate, opts?): Promise<void>
+ *
+ *     // Sign-in gates + the password gate's management API (RFC FA)
+ *     listAuthGates(opts?): Promise<AuthGateListResponse>        // admin token only
+ *     createInvite(gate, body, opts?): Promise<CreatedInvite>    // one-time link, shown once
+ *     listInvites(gate, opts?): Promise<AuthInviteListResponse>
+ *     revokeInvite(gate, inviteId, opts?): Promise<void>
+ *     createPasswordReset(gate, subject, opts?): Promise<CreatedPasswordReset>
+ *     removeGateCredentials(gate, subject, opts?): Promise<void>
+ *     renameGateLogin(gate, subject, login, opts?): Promise<{subject, login}>
+ *     listGateIdentities(gate, subject, opts?): Promise<GateIdentitiesResponse>
+ *     getGateTenantStatus(gate, opts?): Promise<GateTenantStatus>
  *     runnableAgents(opts?): Promise<RunnableAgentsResponse>    // RFC BY (v1.51.0) — agents I can run
  *     whoami(): Promise<WhoamiResponse>               // RFC L principal (v0.17.0)
  *
