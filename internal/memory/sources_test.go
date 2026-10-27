@@ -206,6 +206,25 @@ func TestClass_LabelsRowsFromTheirOwnColumns(t *testing.T) {
 	}
 }
 
+// An imported document's body rows carry an origin (the import that wrote them),
+// yet they are document text: the label must say document, never fact, or an
+// imported email or PDF would be served as something the agent had learned.
+func TestClass_ImportOriginIsADocumentNotAFact(t *testing.T) {
+	for _, tc := range []struct {
+		key, origin string
+		want        store.MemoryRowClass
+	}{
+		{"doc.chunk:abc", store.OriginImport, store.MemoryRowDocument},
+		{"scratch/todo", store.OriginImport, store.MemoryRowNote},
+		{"doc.chunk:abc", "consolidator", store.MemoryRowFact},
+	} {
+		got := Class(store.MemorySearchEntry{MemoryEntry: store.MemoryEntry{Key: tc.key}, Origin: tc.origin})
+		if got != tc.want {
+			t.Errorf("Class(key=%q origin=%q) = %q, want %q", tc.key, tc.origin, got, tc.want)
+		}
+	}
+}
+
 // TestSearchQueryFilter_DualWriteNeverSelectsAFactTwice is the invariant the
 // FactsAreChunkHomed constant exists for.
 //

@@ -93,7 +93,10 @@ the Memory tool keeps them behind the Document tool's checks:
   (`PUT` / `DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}`) apply the
   same rule to every caller and answer `400 document_row`, pointing at
   `/v1/_document`; they share the Memory tool's whole write rule, so a
-  `trace.turn:` key is refused there as well (`400 reserved_key`).
+  `trace.turn:` key is refused there as well (`400 reserved_key`), and a
+  `core/` key (a core memory block, which an operator seeds) is written or
+  removed there only by a tenant operator or an admin (`403 permission_denied`
+  for a member).
 - Tenant reads: reading tenant document rows through Memory needs
   `sql_scopes: [tenant]` as well as `memory_scopes: [tenant]`, the pair the
   Document tool needs. Without it, a call that asks for documents (`documents` in

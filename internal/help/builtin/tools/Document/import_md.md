@@ -27,6 +27,18 @@ existing one.** A new document always gets a Path-tree name.
   at the newest one — so pass `path` when the title is not unique.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
+- `source_url`, `source_kind`, `source_title` — new document only: where the
+  text came from, such as the email whose body you are importing. Naming any
+  of them marks the document as imported: its text is then found by document
+  search but never treated as something you learned, and its root records the
+  source as `provenance` (shown by `get_document` and `export_md`).
+  `source_url` is the item's http(s) web link — an email's `webLink`, a
+  SharePoint file's `webUrl` — never a download or upload link; at most 2048
+  bytes, with no user name or password, and a signature or token in its query
+  is masked before it is kept. `source_kind` is `sharepoint`, `email`,
+  `attachment`, `web` or `other` (the default) and tags the document
+  `source/<kind>`. `source_title` is the source's own name, such as the
+  email's subject: one line, at most 300 characters.
 
 Markdown written by `export_md` with metadata also carries:
 
@@ -54,7 +66,8 @@ plain link. Tags are not read from Markdown; add them afterwards with
 ## Returns
 
 `{document_id, root_chunk_id, chunks_created, image_chunks, skipped,
-skipped_images}` — `skipped` counts the pictures that stayed links and
+skipped_images}`, plus `provenance` for an import that names a source —
+`skipped` counts the pictures that stayed links and
 `skipped_images` says why for the first of them. For an import into an existing
 document, `root_chunk_id` is the chunk you imported under. The new document's
 path is not in the result; use `get_document` or `Path` `ls` to see it.
@@ -66,6 +79,9 @@ path is not in the result; use `get_document` or `Path` `ls` to see it.
   add a heading; plain text alone has nothing to become a chunk.
 - `import_md: no such document: ...` / `no such parent chunk: ...` — the
   target is not in this scope.
+- A source that is not valid (a URL that is not http(s), has a user name or
+  password, or is too long; a `source_kind` not in the list), or a source with
+  `document_id`: a source describes a whole new document. Nothing is written.
 - The import is not all-or-nothing. If it fails part-way, the chunks created so
   far stay; for a new document, `delete_document` it and import again.
 - In the tenant scope, the shared ontology document refuses imports from
@@ -87,6 +103,12 @@ Add a section, with its own sub-section, under an existing chunk:
 
 ```json
 {"op": "import_md", "document_id": "b4407b522dc11495d3de371311db17f0", "parent_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "markdown": "## Rollback plan\n\nRestore from the snapshot.\n\n### Who decides\n\nThe on-call lead."}
+```
+
+Import an email's body, linked back to the message:
+
+```json
+{"op": "import_md", "path": "/mail/2026/board-minutes", "source_url": "https://outlook.office365.com/owa/?ItemID=AAMkAGI2&exvsurl=1&viewmodel=ReadMessageItem", "source_kind": "email", "source_title": "Board minutes, 21 October", "markdown": "# Board minutes, 21 October\n\nThe budget was approved."}
 ```
 
 Set a chunk's type and status on the way in:

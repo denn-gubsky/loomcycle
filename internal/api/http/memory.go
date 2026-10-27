@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -273,6 +275,30 @@ func (s *Server) handleGetMemoryEntry(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// memoryOperatorCaller reports whether the caller is one the memory maintenance
+// sweeps admit: open mode, or a principal holding substrate:tenant (an admin and
+// the legacy operator hold it through substrate:admin). A tenant member reaches
+// the key routes on the member path without holding it.
+func memoryOperatorCaller(ctx context.Context) bool {
+	p, ok := auth.PrincipalFromContext(ctx)
+	return !ok || auth.HasScope(p.Scopes, auth.ScopeTenant)
+}
+
+// refuseMemberCoreKey refuses a write or a removal of a core/<label> key by a
+// caller that is not an operator, and reports whether it did. Such a key holds
+// a core memory block, which an operator seeds and agents read through their
+// prompt; the Memory tool's own rule reads the blocks a run declares, and a
+// request declares none, so without this a member could rewrite every agent's
+// block.
+func refuseMemberCoreKey(w http.ResponseWriter, r *http.Request, key string) bool {
+	if !strings.HasPrefix(key, memrank.CoreBlockKeyPrefix) || memoryOperatorCaller(r.Context()) {
+		return false
+	}
+	writeJSONError(w, http.StatusForbidden, "permission_denied",
+		key+" holds a core memory block, which an operator seeds for agents to read; only a tenant operator or an admin writes or removes one")
+	return true
+}
+
 // writeKeyRuleRefusal answers a write the Memory tool's key rule refused with
 // the tool's reason, and reports whether it wrote one: a refusal of no caller-
 // fixable class (a row that could not be read) is the caller's to answer as a
@@ -400,6 +426,9 @@ func (s *Server) handlePutMemoryEntry(w http.ResponseWriter, r *http.Request) {
 			"scope_id and key are required")
 		return
 	}
+	if refuseMemberCoreKey(w, r, key) {
+		return
+	}
 	var body memoryEntryPutBody
 	// Bound the body to the configured per-value limit (default 64 KiB)
 	// plus JSON-envelope headroom; 0 (values uncapped) falls back to a
@@ -521,6 +550,9 @@ func (s *Server) handleDeleteMemoryEntry(w http.ResponseWriter, r *http.Request)
 	if (adminMemoryScopeIDRequired(scope) && strings.TrimSpace(scopeID) == "") || strings.TrimSpace(key) == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_path",
 			"scope_id and key are required")
+		return
+	}
+	if refuseMemberCoreKey(w, r, key) {
 		return
 	}
 	tenantID := s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant"))

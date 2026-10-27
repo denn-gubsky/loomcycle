@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -37,32 +39,55 @@ func TestMemoryKeyPut_TraceTurnRefusedForEveryCaller(t *testing.T) {
 	}
 }
 
-// TestMemoryKeyWrites_RefuseExactlyWhatTheToolRefuses — per namespace, a PUT
-// and a DELETE on the key route are refused exactly when the Memory tool's set
-// and delete are, for a caller with no run (the core-block rule reads the run's
-// declared blocks, which an off-run caller does not carry, so core/ writes).
+// TestMemoryKeyWrites_RefuseExactlyWhatTheToolRefuses — per namespace, every
+// value-writing op of the Memory tool refuses the same keys, and a PUT and a
+// DELETE on the key route are refused exactly when the tool's set and delete
+// are, for a caller with no run (the core-block rule reads the run's declared
+// blocks, which an off-run caller does not carry). A member's core/ write is
+// refused by the route's own operator rule, which
+// TestMemoryKeyRoutes_CoreKeysAreOperatorOnly covers.
 func TestMemoryKeyWrites_RefuseExactlyWhatTheToolRefuses(t *testing.T) {
 	c := newACLSearchCorpus(t)
-	keys := []string{
-		"trace.turn:sess-1:1700000000",
-		"doc.chunk:" + c.report, // prose body
-		"doc.chunk:" + c.fact,   // a consolidated fact's body
-		"doc.chunk:never-written",
-		memrank.UnitKey(c.unit, memrank.UnitClaim, 0),
-		"core/persona",
-		"memory/decision/plain",
-		"notes/plain",
+	unit := memrank.UnitKey(c.unit, memrank.UnitClaim, 0)
+	// keys names each namespace; a key with no row yet gets a per-op suffix, so
+	// one op's write cannot change what the next op meets.
+	keys := []struct {
+		base    string
+		hasRow  bool
+		refused bool
+	}{
+		{"trace.turn:sess-1:1700000000", false, true},
+		{"doc.chunk:" + c.report, true, true}, // prose body
+		{"doc.chunk:" + c.fact, true, true},   // a consolidated fact's body
+		{"doc.chunk:never-written", false, true},
+		{unit, true, true},
+		{"core/persona", false, false},
+		{"memory/decision/plain", false, false},
+		{"notes/plain", false, false},
+	}
+	keyFor := func(base string, hasRow bool, op string) string {
+		if hasRow || base == "doc.chunk:never-written" {
+			return base
+		}
+		return base + "-" + op
 	}
 	tool := &builtin.Memory{Store: c.s.store}
 	toolCtx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "A", UserID: "alice"})
 	toolCtx = tools.UpdateRunPolicy(toolCtx, func(rp *tools.RunPolicy) {
 		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}}
 	})
+	valueOps := map[string]map[string]any{
+		"set":           {"value": "probe"},
+		"incr":          {"delta": 1},
+		"merge":         {"value": map[string]any{"a": 1}},
+		"append_dedupe": {"value": "probe"},
+		"bounded_list":  {"value": "probe", "limit": 3},
+	}
 	toolRefuses := func(op, key string) bool {
 		t.Helper()
 		in := map[string]any{"op": op, "scope": "user", "key": key}
-		if op == "set" {
-			in["value"] = "probe"
+		for k, v := range valueOps[op] {
+			in[k] = v
 		}
 		b, _ := json.Marshal(in)
 		res, err := tool.Execute(toolCtx, b)
@@ -71,30 +96,89 @@ func TestMemoryKeyWrites_RefuseExactlyWhatTheToolRefuses(t *testing.T) {
 		}
 		return res.IsError
 	}
-	// The tool's own answers, pinned, so a misconfigured tool that refused
-	// everything (or nothing) could not make the comparison pass.
-	wantSet := map[string]bool{keys[0]: true, keys[1]: true, keys[2]: true, keys[3]: true, keys[4]: true,
-		keys[5]: false, keys[6]: false, keys[7]: false}
-	for _, key := range keys {
-		if got := toolRefuses("set", key); got != wantSet[key] {
-			t.Fatalf("the tool's set on %s refuses=%v, want %v", key, got, wantSet[key])
+	// The tool's own answers, pinned for every value op, so a misconfigured
+	// tool that refused everything (or nothing) could not make the comparison
+	// pass, and no op can refuse a different set of keys than set does.
+	for op := range valueOps {
+		for _, k := range keys {
+			key := keyFor(k.base, k.hasRow, op)
+			if got := toolRefuses(op, key); got != k.refused {
+				t.Errorf("the tool's %s on %s refuses=%v, want %v", op, key, got, k.refused)
+			}
 		}
 	}
 	for name, p := range everyCaller() {
-		for _, key := range keys {
-			wantPut := toolRefuses("set", key)
+		for _, k := range keys {
+			if name == "member" && strings.HasPrefix(k.base, "core/") {
+				continue
+			}
+			key := keyFor(k.base, k.hasRow, "put")
 			rec := memoryKeyWrite(t, c.s, p, http.MethodPut, key, `{"value":"probe"}`)
-			if gotPut := rec.Code == http.StatusBadRequest; gotPut != wantPut || (!wantPut && rec.Code != http.StatusOK) {
-				t.Errorf("%s PUT %s: %d %s; the tool's set refuses=%v", name, key, rec.Code, rec.Body.String(), wantPut)
+			if gotPut := rec.Code == http.StatusBadRequest; gotPut != k.refused || (!k.refused && rec.Code != http.StatusOK) {
+				t.Errorf("%s PUT %s: %d %s; the tool's set refuses=%v", name, key, rec.Code, rec.Body.String(), k.refused)
 			}
 		}
 	}
 	// Delete last: it removes what it is allowed to.
-	for _, key := range keys {
+	for _, k := range keys {
+		key := keyFor(k.base, k.hasRow, "set")
 		wantDel := toolRefuses("delete", key)
-		rec := memoryKeyWrite(t, c.s, everyCaller()["member"], http.MethodDelete, key, "")
+		rec := memoryKeyWrite(t, c.s, everyCaller()["tenant operator"], http.MethodDelete, key, "")
 		if gotDel := rec.Code == http.StatusBadRequest; gotDel != wantDel || (!wantDel && rec.Code != http.StatusNoContent) {
-			t.Errorf("member DELETE %s: %d %s; the tool's delete refuses=%v", key, rec.Code, rec.Body.String(), wantDel)
+			t.Errorf("tenant operator DELETE %s: %d %s; the tool's delete refuses=%v", key, rec.Code, rec.Body.String(), wantDel)
 		}
+	}
+}
+
+// TestMemoryKeyRoutes_CoreKeysAreOperatorOnly — a core/<label> key holds a core
+// memory block, which an operator seeds; agents read it through their prompt.
+// Over the key routes only the callers the memory maintenance sweeps admit (a
+// tenant operator, an admin, open mode) write or remove one. A member's own
+// keys are unaffected.
+func TestMemoryKeyRoutes_CoreKeysAreOperatorOnly(t *testing.T) {
+	c := newACLSearchCorpus(t)
+	callers := everyCaller()
+	ctx := context.Background()
+	key := "core/persona"
+	if err := c.s.store.MemorySet(ctx, "A", store.MemoryScopeUser, "alice", key, []byte(`"seeded by the operator"`), 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		body := ""
+		if method == http.MethodPut {
+			body = `{"value":"rewritten by a member"}`
+		}
+		rec := memoryKeyWrite(t, c.s, callers["member"], method, key, body)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), `"code":"permission_denied"`) ||
+			!strings.Contains(rec.Body.String(), "operator") {
+			t.Errorf("member %s %s: %d %s, want 403 permission_denied naming the operator", method, key, rec.Code, rec.Body.String())
+		}
+		if got, err := c.s.store.MemoryGet(ctx, "A", store.MemoryScopeUser, "alice", key); err != nil || string(got.Value) != `"seeded by the operator"` {
+			t.Errorf("member %s %s: the block changed: %s (err %v)", method, key, got.Value, err)
+		}
+	}
+	if rec := memoryKeyWrite(t, c.s, callers["member"], http.MethodPut, "notes/member-own", `{"value":"mine"}`); rec.Code != http.StatusOK {
+		t.Errorf("member PUT a plain key: %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"tenant operator", "admin"} {
+		if rec := memoryKeyWrite(t, c.s, callers[name], http.MethodPut, key, `{"value":"seeded"}`); rec.Code != http.StatusOK {
+			t.Errorf("%s PUT %s: %d %s, want 200", name, key, rec.Code, rec.Body.String())
+		}
+		if rec := memoryKeyWrite(t, c.s, callers[name], http.MethodDelete, key, ""); rec.Code != http.StatusNoContent {
+			t.Errorf("%s DELETE %s: %d %s, want 204", name, key, rec.Code, rec.Body.String())
+		}
+	}
+	// Open mode: no principal on the request, the operator is whoever calls.
+	if c.s.cfgHolder == nil {
+		c.s.cfgHolder = config.NewHolder(&config.Config{})
+	}
+	req := httptest.NewRequest(http.MethodPut, "/v1/_memory/scopes/user/alice/keys/"+key, strings.NewReader(`{"value":"open"}`))
+	req.SetPathValue("scope", "user")
+	req.SetPathValue("scope_id", "alice")
+	req.SetPathValue("key", key)
+	rec := httptest.NewRecorder()
+	c.s.handlePutMemoryEntry(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("open mode PUT %s: %d %s, want 200", key, rec.Code, rec.Body.String())
 	}
 }

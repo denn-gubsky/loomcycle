@@ -15,7 +15,9 @@ import (
 const coreBlockNext = "Write a different key; this core block is operator-configured."
 
 // MemorySetRefusal is the rule for writing a value at key in scope, valueLen
-// bytes long. Refused for every caller: a derived unit, a chunk body, and a
+// bytes long (-1 when the op cannot report it up front: incr, merge,
+// append_dedupe and bounded_list, which check the size in their reducer). Every
+// value-writing op of the tool calls it. Refused for every caller: a derived unit, a chunk body, and a
 // conversation-turn trace — namespaces the server or the Document tool writes.
 // A declared core block (core/<label>) refuses a write when it is read_only or
 // the value exceeds its limit_bytes; the blocks are the ones declared on the

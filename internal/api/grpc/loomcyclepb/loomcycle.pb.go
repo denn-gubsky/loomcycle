@@ -7865,7 +7865,7 @@ func (x *ListChildRunsResponse) GetNextCursor() string {
 }
 
 // UsageReportRequest mirrors GET /v1/_usage query params. group_by is a subset
-// of {tenant,user,provider,model,source}; an unknown dimension is rejected. from
+// of {tenant,user,provider,model,source,purpose}; an unknown dimension is rejected. from
 // / to are RFC3339 (empty = unbounded). tenant is an admin-only focus (ignored
 // for a scoped principal, which is confined to its own tenant).
 type UsageReportRequest struct {
@@ -7954,8 +7954,13 @@ type UsageAggregate struct {
 	Currency            string                 `protobuf:"bytes,11,opt,name=currency,proto3" json:"currency,omitempty"`
 	CallCount           int64                  `protobuf:"varint,12,opt,name=call_count,json=callCount,proto3" json:"call_count,omitempty"`
 	UnpricedCalls       int64                  `protobuf:"varint,13,opt,name=unpriced_calls,json=unpricedCalls,proto3" json:"unpriced_calls,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// What the calls were for: chat | ocr | stt. Set only when grouped by purpose.
+	Purpose string `protobuf:"bytes,14,opt,name=purpose,proto3" json:"purpose,omitempty"`
+	// Summed seconds of audio the group's speech-to-text calls transcribed (the
+	// unit their per-minute price is computed from); 0 when it has none.
+	AudioSeconds  float64 `protobuf:"fixed64,15,opt,name=audio_seconds,json=audioSeconds,proto3" json:"audio_seconds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UsageAggregate) Reset() {
@@ -8075,6 +8080,20 @@ func (x *UsageAggregate) GetCallCount() int64 {
 func (x *UsageAggregate) GetUnpricedCalls() int64 {
 	if x != nil {
 		return x.UnpricedCalls
+	}
+	return 0
+}
+
+func (x *UsageAggregate) GetPurpose() string {
+	if x != nil {
+		return x.Purpose
+	}
+	return ""
+}
+
+func (x *UsageAggregate) GetAudioSeconds() float64 {
+	if x != nil {
+		return x.AudioSeconds
 	}
 	return 0
 }
@@ -13851,7 +13870,7 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bgroup_by\x18\x01 \x03(\tR\agroupBy\x12\x1b\n" +
 	"\tfrom_time\x18\x02 \x01(\tR\bfromTime\x12\x17\n" +
 	"\ato_time\x18\x03 \x01(\tR\x06toTime\x12\x16\n" +
-	"\x06tenant\x18\x04 \x01(\tR\x06tenant\"\xc3\x03\n" +
+	"\x06tenant\x18\x04 \x01(\tR\x06tenant\"\x82\x04\n" +
 	"\x0eUsageAggregate\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1a\n" +
@@ -13867,7 +13886,9 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\bcurrency\x18\v \x01(\tR\bcurrency\x12\x1d\n" +
 	"\n" +
 	"call_count\x18\f \x01(\x03R\tcallCount\x12%\n" +
-	"\x0eunpriced_calls\x18\r \x01(\x03R\runpricedCalls\"b\n" +
+	"\x0eunpriced_calls\x18\r \x01(\x03R\runpricedCalls\x12\x18\n" +
+	"\apurpose\x18\x0e \x01(\tR\apurpose\x12#\n" +
+	"\raudio_seconds\x18\x0f \x01(\x01R\faudioSeconds\"b\n" +
 	"\x13UsageReportResponse\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x03(\tR\agroupBy\x120\n" +
 	"\x04rows\x18\x02 \x03(\v2\x1c.loomcycle.v1.UsageAggregateR\x04rows\"\xd2\x01\n" +
