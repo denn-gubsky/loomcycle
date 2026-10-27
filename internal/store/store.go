@@ -4497,6 +4497,9 @@ type OAuthStore interface {
 	// first=true; an already-used one returns first=false (the reuse
 	// signal). ErrNotFound when no such token exists.
 	OAuthRefreshUse(ctx context.Context, tokenHash string, now time.Time) (row OAuthRefreshRow, first bool, err error)
+	// OAuthRefreshGet returns a refresh token without using it (revocation
+	// reads which family it names). ErrNotFound when none.
+	OAuthRefreshGet(ctx context.Context, tokenHash string) (OAuthRefreshRow, error)
 	// OAuthTokenRetire retires, at `at`, the live access tokens issued through
 	// clientID — only those of familyID when it is set — and returns how many.
 	OAuthTokenRetire(ctx context.Context, clientID, familyID string, at time.Time) (int, error)

@@ -286,6 +286,14 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		// identity_map; logout ends the caller's own session; the account
 		// routes act on the caller's own credentials. No ACL question fits.
 		return Surface{}, false
+	case name == "oauth":
+		// RFC FL: the app sign-in routes run before any principal exists.
+		// authorize signs the person in through the login page and its
+		// session; token and revoke are authenticated by the code (with its
+		// PKCE verifier) or the refresh token itself, bound to its client.
+		// What they hand out is the signed-in user's own token, which every
+		// later request is authorized as. No ACL question fits.
+		return Surface{}, false
 	case name == "authgate":
 		// RFC FA P2: the password gate's invites, resets and logins provision
 		// access for users. Every route asks `manage`, reads included: who

@@ -544,7 +544,11 @@ func (s *Server) gateTokenUserActive(ctx context.Context, p auth.Principal) bool
 	if p.IssuedByGate == "" {
 		return true
 	}
-	if _, ok := s.configuredGate(p.IssuedByGate); !ok {
+	if _, ok := s.issuingGate(p.IssuedByGate); !ok {
+		return false
+	}
+	// An app's token (RFC FL) also stands only while its client does.
+	if !s.appTokenStands(ctx, p) {
 		return false
 	}
 	if s.store == nil {
@@ -660,6 +664,8 @@ func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Princ
 		TokenDefID:   row.DefID,
 		Restrictions: restrictions,
 		IssuedByGate: row.IssuedByGate,
+		OAuthClient:  row.OAuthClient,
+		OAuthFamily:  row.OAuthFamily,
 	}, true, validUntil
 }
 

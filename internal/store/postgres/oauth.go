@@ -50,6 +50,10 @@ func (s *Store) OAuthRefreshUse(ctx context.Context, tokenHash string, now time.
 	return sqlshared.OAuthRefreshUse(ctx, s.shared(), tokenHash, now)
 }
 
+func (s *Store) OAuthRefreshGet(ctx context.Context, tokenHash string) (store.OAuthRefreshRow, error) {
+	return sqlshared.OAuthRefreshGet(ctx, s.shared(), tokenHash)
+}
+
 func (s *Store) OAuthTokenRetire(ctx context.Context, clientID, familyID string, at time.Time) (int, error) {
 	return sqlshared.OAuthTokenRetire(ctx, s.shared(), clientID, familyID, at)
 }

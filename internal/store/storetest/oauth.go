@@ -207,6 +207,19 @@ func testOAuthRefreshUseIsOnceAndReportsReuse(t *testing.T, s store.Store) {
 	if _, _, err := s.OAuthRefreshUse(ctx, "never", now); !errors.As(err, &nf) {
 		t.Fatalf("unknown refresh: %v", err)
 	}
+	// A read leaves the token as it was.
+	if err := s.OAuthRefreshCreate(ctx, store.OAuthRefreshRow{TokenHash: "r-2", FamilyID: "fam-1", CreatedAt: pwgT0}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.OAuthRefreshGet(ctx, "r-2"); err != nil || got.FamilyID != "fam-1" || !got.UsedAt.IsZero() {
+		t.Fatalf("get = %+v, %v", got, err)
+	}
+	if _, first, err := s.OAuthRefreshUse(ctx, "r-2", now); err != nil || !first {
+		t.Fatalf("use after get: first=%v %v", first, err)
+	}
+	if _, err := s.OAuthRefreshGet(ctx, "never"); !errors.As(err, &nf) {
+		t.Fatalf("unknown refresh get: %v", err)
+	}
 }
 
 func testOAuthTokenRetireRetiresOnlyThatSignIn(t *testing.T, s store.Store) {

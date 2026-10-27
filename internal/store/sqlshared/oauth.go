@@ -290,6 +290,18 @@ func OAuthRefreshUse(ctx context.Context, db DB, tokenHash string, now time.Time
 	return out, first, nil
 }
 
+// OAuthRefreshGet returns a refresh token without using it.
+func OAuthRefreshGet(ctx context.Context, db DB, tokenHash string) (store.OAuthRefreshRow, error) {
+	var out store.OAuthRefreshRow
+	d := db.Dialect()
+	err := db.QueryRow(ctx, `SELECT token_hash, family_id, created_at, used_at FROM oauth_refresh_tokens WHERE token_hash = ?`,
+		tokenHash).Scan(&out.TokenHash, &out.FamilyID, d.TimeDest(&out.CreatedAt), &nullTimeDest{&out.UsedAt})
+	if err != nil {
+		return store.OAuthRefreshRow{}, NotFound(err, "oauth_refresh", "<hash>")
+	}
+	return out, nil
+}
+
 // OAuthTokenRetire retires the live access tokens of a client (of one family
 // when familyID is set).
 func OAuthTokenRetire(ctx context.Context, db DB, clientID, familyID string, at time.Time) (int, error) {

@@ -266,6 +266,9 @@ func (s *Server) loginConfig(r *http.Request) webui.LoginConfig {
 	if s.sessionRefusal(r) != "" {
 		lc.SessionRefused = "insecure_transport"
 	}
+	if label, dest, ok := s.loginApp(r); ok {
+		lc.App = &webui.LoginApp{Label: label, Destination: dest}
+	}
 	return lc
 }
 
@@ -761,6 +764,8 @@ func (s *Server) whoamiAuth(ctx context.Context, open bool) map[string]any {
 			out["status"] = store.UserStatusPending
 		}
 		out["session_expires_at"] = sessionExpiresAt(*a.session, s.cfg().ResolvedAuth).UTC()
+		return out
 	}
+	s.whoamiApp(ctx, out)
 	return out
 }

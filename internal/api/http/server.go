@@ -4762,6 +4762,17 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("POST /v1/_auth/totp/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPBegin))))
 	mux.Handle("POST /v1/_auth/totp/confirm", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPConfirm))))
 	mux.Handle("DELETE /v1/_auth/totp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPRemove))))
+	// RFC FL — loomcycle as an OAuth 2.0 authorization server for its own apps.
+	// No bearer on any of them: authorize signs the person in through the
+	// login page and the session cookie; token and revoke are authenticated by
+	// the code (with its PKCE verifier) or the refresh token itself; the
+	// metadata is public. Each is throttled per client and source.
+	mux.Handle("GET /v1/_oauth/authorize", recoveryMiddleware(http.HandlerFunc(s.handleOAuthAuthorize)))
+	mux.Handle("POST /v1/_oauth/token", recoveryMiddleware(http.HandlerFunc(s.handleOAuthToken)))
+	mux.Handle("OPTIONS /v1/_oauth/token", recoveryMiddleware(http.HandlerFunc(s.handleOAuthPreflight)))
+	mux.Handle("POST /v1/_oauth/revoke", recoveryMiddleware(http.HandlerFunc(s.handleOAuthRevoke)))
+	mux.Handle("OPTIONS /v1/_oauth/revoke", recoveryMiddleware(http.HandlerFunc(s.handleOAuthPreflight)))
+	mux.Handle("GET /.well-known/oauth-authorization-server", recoveryMiddleware(http.HandlerFunc(s.handleOAuthMetadata)))
 	// OpenAPI contract (RFC CD Part A) — served UNAUTHENTICATED, like /ui:
 	// the machine-readable contract is non-secret and must be discoverable
 	// for codegen, while the data behind it still goes through authMiddleware.

@@ -55,6 +55,11 @@ type Principal struct {
 	// status on every request it authenticates, so a disable or a gate's
 	// revoke holds at once on every replica, whatever the sweeper did.
 	IssuedByGate string
+	// OAuthClient and OAuthFamily name the app sign-in (RFC FL) the token
+	// came from: the OAuth client and the refresh-token family. "" for every
+	// other credential. Such a token stands only while the client does.
+	OAuthClient string
+	OAuthFamily string
 }
 
 type ctxKeyPrincipal struct{}
