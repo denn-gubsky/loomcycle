@@ -173,6 +173,10 @@ func (e *Effective) Within(ceiling *Effective) *Effective {
 	}
 	out := *e
 	out.ceiling = ceiling
+	if e.ceiling != nil {
+		// e is already held to a ceiling: keep it, under the new one too.
+		out.ceiling = e.ceiling.Within(ceiling)
+	}
 	return &out
 }
 
