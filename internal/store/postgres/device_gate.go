@@ -17,7 +17,8 @@ import (
 )
 
 const deviceAuthCols = `device_code_hash, user_code_hash, client_id, source_addr, created_at, expires_at,
-	interval_ms, last_polled_at, status, decided_tenant, decided_subject, decided_gate, decided_at, redeemed_at`
+	interval_ms, last_polled_at, status, decided_tenant, decided_subject, decided_gate, decided_at,
+	decided_session, decided_cred_mac, decided_not_after, redeemed_at`
 
 type deviceAuthScanner interface{ Scan(dest ...any) error }
 
@@ -26,16 +27,18 @@ func scanDeviceAuth(sc deviceAuthScanner, extra ...any) (store.DeviceAuthRow, er
 		row                     store.DeviceAuthRow
 		intervalMS              int64
 		polled, decided, redeem *time.Time
+		notAfter                *time.Time
 	)
 	dest := []any{&row.DeviceCodeHash, &row.UserCodeHash, &row.ClientID, &row.SourceAddr,
 		&row.CreatedAt, &row.ExpiresAt, &intervalMS, &polled, &row.Status, &row.DecidedTenant,
-		&row.DecidedSubject, &row.DecidedGate, &decided, &redeem}
+		&row.DecidedSubject, &row.DecidedGate, &decided, &row.DecidedSession, &row.DecidedCredMAC, &notAfter, &redeem}
 	if err := sc.Scan(append(dest, extra...)...); err != nil {
 		return store.DeviceAuthRow{}, err
 	}
 	row.CreatedAt, row.ExpiresAt = row.CreatedAt.UTC(), row.ExpiresAt.UTC()
 	row.Interval = time.Duration(intervalMS) * time.Millisecond
 	row.LastPolledAt, row.DecidedAt, row.RedeemedAt = gateTime(polled), gateTime(decided), gateTime(redeem)
+	row.DecidedNotAfter = gateTime(notAfter)
 	return row, nil
 }
 
@@ -50,10 +53,11 @@ func (s *Store) DeviceAuthCreate(ctx context.Context, row store.DeviceAuthRow) e
 	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO device_authorizations (`+deviceAuthCols+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		row.DeviceCodeHash, row.UserCodeHash, row.ClientID, row.SourceAddr,
 		gateStamp(row.CreatedAt).UTC(), row.ExpiresAt.UTC(), row.Interval.Milliseconds(), nullTime(row.LastPolledAt),
-		status, row.DecidedTenant, row.DecidedSubject, row.DecidedGate, nullTime(row.DecidedAt), nullTime(row.RedeemedAt))
+		status, row.DecidedTenant, row.DecidedSubject, row.DecidedGate, nullTime(row.DecidedAt),
+		row.DecidedSession, row.DecidedCredMAC, nullTime(row.DecidedNotAfter), nullTime(row.RedeemedAt))
 	if err != nil {
 		if gateUniqueViolation(err) {
 			return &store.ErrConflict{Kind: "device_auth", ID: "<hash>"}
@@ -101,15 +105,18 @@ func (s *Store) DeviceAuthPoll(ctx context.Context, deviceCodeHash string, now t
 
 // DeviceAuthDecide implements store.DeviceAuthStore.
 func (s *Store) DeviceAuthDecide(ctx context.Context, userCodeHash string, d store.DeviceAuthDecision) (bool, error) {
+	if err := d.Validate(); err != nil {
+		return false, err
+	}
 	status := store.DeviceAuthDenied
 	if d.Approve {
 		status = store.DeviceAuthApproved
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE device_authorizations SET status = $2, decided_tenant = $3, decided_subject = $4, decided_gate = $5,
-			decided_at = $6
+			decided_at = $6, decided_session = $7, decided_cred_mac = $8, decided_not_after = $9
 		WHERE user_code_hash = $1 AND status = 'pending' AND expires_at > $6`,
-		userCodeHash, status, d.TenantID, d.Subject, d.Gate, d.At.UTC())
+		userCodeHash, status, d.TenantID, d.Subject, d.Gate, d.At.UTC(), d.Session, d.CredMAC, nullTime(d.NotAfter))
 	if err != nil {
 		return false, fmt.Errorf("device_auth decide: %w", err)
 	}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -45,7 +46,16 @@ type DeviceAuthRow struct {
 	DecidedSubject string
 	DecidedGate    string
 	DecidedAt      time.Time
-	RedeemedAt     time.Time
+	// An approval also pins what the approving session stood on, so the
+	// redemption can re-check it and the token cannot outlive it:
+	// DecidedSession is the session's hash, DecidedCredMAC binds the
+	// credential the session was made from (keyed by the device code, not the
+	// session id), and DecidedNotAfter is the latest instant the issued token
+	// may live to. Empty / zero on a denial.
+	DecidedSession  string
+	DecidedCredMAC  string
+	DecidedNotAfter time.Time
+	RedeemedAt      time.Time
 }
 
 // Live reports whether the row can still be decided or redeemed at now.
@@ -58,6 +68,20 @@ type DeviceAuthDecision struct {
 	Subject  string
 	Gate     string
 	At       time.Time
+	// Session, CredMAC and NotAfter are required on an approval (see
+	// DeviceAuthRow.DecidedSession): the store refuses an approval without
+	// them, so no token is ever issued unbounded by its approver.
+	Session  string
+	CredMAC  string
+	NotAfter time.Time
+}
+
+// Validate refuses an approval that does not pin its approving session.
+func (d DeviceAuthDecision) Validate() error {
+	if d.Approve && (d.Session == "" || d.CredMAC == "" || d.NotAfter.IsZero()) {
+		return errors.New("device_auth: an approval needs the approving session, its credential binding and a not-after time")
+	}
+	return nil
 }
 
 // DeviceAuthStore persists device authorizations (RFC FA §7, RFC 8628).

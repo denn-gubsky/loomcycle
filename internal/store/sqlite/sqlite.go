@@ -724,6 +724,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			decided_subject  TEXT    NOT NULL DEFAULT '',
 			decided_gate     TEXT    NOT NULL DEFAULT '',
 			decided_at       INTEGER,
+			decided_session  TEXT    NOT NULL DEFAULT '',
+			decided_cred_mac TEXT    NOT NULL DEFAULT '',
+			decided_not_after INTEGER,
 			redeemed_at      INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS device_authorizations_by_expiry ON device_authorizations(expires_at)`,

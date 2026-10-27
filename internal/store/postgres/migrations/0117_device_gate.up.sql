@@ -19,6 +19,13 @@
 -- gate names, never empty. Admin-managed; the config's auth.tenant_policies
 -- is the floor a row can only narrow.
 --
+-- An approval pins the approving Web UI session: decided_session is its
+-- hash, decided_cred_mac binds the credential it was made from (keyed by the
+-- device code), and decided_not_after caps the issued token's lifetime at the
+-- session's absolute end and that credential's expiry. The redemption
+-- re-checks the session and the credential, so no token is issued after
+-- either ended.
+--
 -- No FK: neither table references a user row; a device row names who decided
 -- for the approval page and the issued token, and is gone within minutes.
 
@@ -37,6 +44,9 @@ CREATE TABLE IF NOT EXISTS device_authorizations (
     decided_subject  TEXT        NOT NULL DEFAULT '',
     decided_gate     TEXT        NOT NULL DEFAULT '',
     decided_at       TIMESTAMPTZ,
+    decided_session  TEXT        NOT NULL DEFAULT '',
+    decided_cred_mac TEXT        NOT NULL DEFAULT '',
+    decided_not_after TIMESTAMPTZ,
     redeemed_at      TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS device_authorizations_by_expiry ON device_authorizations (expires_at);

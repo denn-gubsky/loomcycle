@@ -87,6 +87,14 @@ func testDeviceAuthPollSlowsDownEarlyPollsOnly(t *testing.T, s store.Store) {
 	}
 }
 
+// pinnedApproval is an approval through gate "local" that pins its session.
+func pinnedApproval(tenant, subject string, at, notAfter time.Time) store.DeviceAuthDecision {
+	return store.DeviceAuthDecision{
+		Approve: true, TenantID: tenant, Subject: subject, Gate: "local", At: at,
+		Session: "sess-" + subject, CredMAC: "mac-" + subject, NotAfter: notAfter,
+	}
+}
+
 func testDeviceAuthDecideOnceAndRedeemOnce(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	now := time.Now()
@@ -97,13 +105,20 @@ func testDeviceAuthDecideOnceAndRedeemOnce(t *testing.T, s store.Store) {
 	if _, ok, err := s.DeviceAuthRedeem(ctx, "d1", now); err != nil || ok {
 		t.Fatalf("redeem pending: ok=%v err=%v", ok, err)
 	}
-	alice := store.DeviceAuthDecision{Approve: true, TenantID: "acme", Subject: "alice", Gate: "local", At: now}
+	// An approval that does not pin its approving session is refused, and
+	// leaves the row pending for a proper one.
+	unpinned := store.DeviceAuthDecision{Approve: true, TenantID: "acme", Subject: "alice", Gate: "local", At: now}
+	if ok, err := s.DeviceAuthDecide(ctx, "u1", unpinned); err == nil || ok {
+		t.Fatalf("unpinned approval: ok=%v err=%v, want refused", ok, err)
+	}
+	notAfter := now.Add(time.Hour)
+	alice := pinnedApproval("acme", "alice", now, notAfter)
 	if ok, err := s.DeviceAuthDecide(ctx, "u1", alice); err != nil || !ok {
 		t.Fatalf("approve: ok=%v err=%v", ok, err)
 	}
 	// Bob cannot take it over, approve or deny.
 	for _, d := range []store.DeviceAuthDecision{
-		{Approve: true, TenantID: "acme", Subject: "bob", Gate: "local", At: now},
+		pinnedApproval("acme", "bob", now, notAfter),
 		{Approve: false, TenantID: "acme", Subject: "bob", Gate: "local", At: now},
 	} {
 		if ok, err := s.DeviceAuthDecide(ctx, "u1", d); err != nil || ok {
@@ -138,8 +153,12 @@ func testDeviceAuthDecideOnceAndRedeemOnce(t *testing.T, s store.Store) {
 	}
 	w := wins[0]
 	if w.Status != store.DeviceAuthRedeemed || w.DecidedTenant != "acme" || w.DecidedSubject != "alice" ||
-		w.DecidedGate != "local" || w.RedeemedAt.IsZero() {
+		w.DecidedGate != "local" || w.RedeemedAt.IsZero() ||
+		w.DecidedSession != "sess-alice" || w.DecidedCredMAC != "mac-alice" {
 		t.Errorf("redeemed row = %+v", w)
+	}
+	if d := w.DecidedNotAfter.Sub(notAfter); d < -time.Millisecond || d > time.Millisecond {
+		t.Errorf("redeemed row's not-after = %v, want %v", w.DecidedNotAfter, notAfter)
 	}
 	got, err := s.DeviceAuthGetByUserCode(ctx, "u1")
 	if err != nil || got.Status != store.DeviceAuthRedeemed {
@@ -156,7 +175,7 @@ func testDeviceAuthExpiredOrDeniedCannotBeDecidedOrRedeemed(t *testing.T, s stor
 		t.Fatal(err)
 	}
 	late := now.Add(2 * time.Minute)
-	if ok, err := s.DeviceAuthDecide(ctx, "u1", store.DeviceAuthDecision{Approve: true, TenantID: "acme", Subject: "alice", Gate: "local", At: late}); err != nil || ok {
+	if ok, err := s.DeviceAuthDecide(ctx, "u1", pinnedApproval("acme", "alice", late, late.Add(time.Hour))); err != nil || ok {
 		t.Fatalf("approve after expiry: ok=%v err=%v", ok, err)
 	}
 	// Approved in time, redeemed too late.
@@ -167,7 +186,7 @@ func testDeviceAuthExpiredOrDeniedCannotBeDecidedOrRedeemed(t *testing.T, s stor
 	}()); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := s.DeviceAuthDecide(ctx, "u2", store.DeviceAuthDecision{Approve: true, TenantID: "acme", Subject: "alice", Gate: "local", At: now}); !ok {
+	if ok, _ := s.DeviceAuthDecide(ctx, "u2", pinnedApproval("acme", "alice", now, now.Add(time.Hour))); !ok {
 		t.Fatal("approve in time failed")
 	}
 	if _, ok, err := s.DeviceAuthRedeem(ctx, "d2", late); err != nil || ok {

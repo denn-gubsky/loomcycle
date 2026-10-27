@@ -463,18 +463,29 @@ func (s *Server) handleDeviceApprove(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "approve must be true or false")
 		return
 	}
+	var pin devicePin
 	if *req.Approve {
-		if err := s.deviceApprovalAllowed(ctx, sess); err != nil {
+		err := s.deviceApprovalAllowed(ctx, sess)
+		if err == nil {
+			pin, err = s.pinDeviceApproval(r, sess, row.DeviceCodeHash)
+		}
+		if err != nil {
 			s.recordAuthEvent(audit.Event{
 				Action: "auth_login_failed", ActorTenant: sess.TenantID, ActorSubject: sess.Subject,
 				AuthGate: dg.Name, AuthReason: deviceRefusalReason(err), SourceAddr: s.clientSource(r),
 			})
+			if !errors.Is(err, errDeviceRefused) {
+				slog.Error("auth: device approval check failed", "err", err)
+				writeJSONError(w, http.StatusInternalServerError, "device_unavailable", "device login is unavailable")
+				return
+			}
 			writeJSONError(w, http.StatusForbidden, "device_not_allowed", "this account cannot approve a device login")
 			return
 		}
 	}
 	decided, err := s.store.DeviceAuthDecide(ctx, uh, store.DeviceAuthDecision{
 		Approve: *req.Approve, TenantID: sess.TenantID, Subject: sess.Subject, Gate: sess.Gate, At: time.Now(),
+		Session: pin.session, CredMAC: pin.credMAC, NotAfter: pin.notAfter,
 	})
 	if err != nil {
 		slog.Error("auth: device decision failed", "err", err)
@@ -537,16 +548,154 @@ func (s *Server) deviceApprovalAllowed(ctx context.Context, sess *store.UISessio
 	return nil
 }
 
+// devicePin is what an approval records of the session that approved it (see
+// store.DeviceAuthRow.DecidedSession).
+type devicePin struct {
+	session  string
+	credMAC  string
+	notAfter time.Time
+}
+
+// deviceCredMAC binds a device approval to the credential hash its session was
+// made from, keyed by the pepper and the device code, so the redemption can
+// re-check the credential without the session id (which the server never
+// stores) and a row copied to another code binds nothing.
+func deviceCredMAC(h auth.TokenHasher, deviceCodeHash, credHash string) string {
+	return h.Hash("loomcycle/device-cred/v1:" + deviceCodeHash + "\x00" + credHash)
+}
+
+// sessionAbsoluteEnd is the latest a session can live to however active it
+// stays: its absolute expiry, held to the configured lifetime.
+func sessionAbsoluteEnd(row store.UISessionRow, policy config.AuthPolicy) time.Time {
+	end := row.AbsoluteExpiresAt
+	if t := row.CreatedAt.Add(policy.SessionAbsolute()); t.Before(end) {
+		end = t
+	}
+	return end
+}
+
+// pinDeviceApproval records, at approval, what the approving session stands
+// on: the session itself, its credential (re-resolved through the session's
+// own binding, as on every request) and the latest the issued token may live
+// to — the session's absolute end, or sooner the expiry of the token the
+// session was made from.
+//
+// The cap is the ABSOLUTE end, not the idle one: idle expiry slides with use,
+// so the session could legitimately reach its absolute end, and a CLI token
+// held to an eight-hour idle window would be no login at all. What must not
+// happen is a token outliving everything its approver could have reached — a
+// session about to end, or a pasted token about to expire, laundered into a
+// fresh full-length token. That would also let a chain of device logins
+// extend one credential forever.
+func (s *Server) pinDeviceApproval(r *http.Request, sess *store.UISessionRow, deviceCodeHash string) (devicePin, error) {
+	ctx := r.Context()
+	h, err := s.hasher()
+	if err != nil {
+		return devicePin{}, err
+	}
+	id, ok := s.sessionIDFromCookie(r)
+	if !ok || !macEqual(sessionHash(id), sess.SessionHash) {
+		return devicePin{}, fmt.Errorf("%w: session_unbound", errDeviceRefused)
+	}
+	var (
+		credHash string
+		pending  bool
+	)
+	_, ok, definitive := s.boundCredentialPrincipal(ctx, *sess, func(c string) bool {
+		if macEqual(credentialMAC(id, h, c), sess.CredMAC) {
+			credHash = c
+			return true
+		}
+		return false
+	}, &pending)
+	if !ok || pending || credHash == "" {
+		if !definitive {
+			return devicePin{}, errors.New("re-reading the approving session's credential failed")
+		}
+		return devicePin{}, fmt.Errorf("%w: session_credential_gone", errDeviceRefused)
+	}
+	notAfter := sessionAbsoluteEnd(*sess, s.cfg().ResolvedAuth)
+	// Only a token row carries an expiry; a password, an identity, a config
+	// principal and the legacy secret do not.
+	if sess.CredKind == credKindToken {
+		tr, err := s.store.OperatorTokenDefGet(ctx, sess.CredRef)
+		if err != nil {
+			return devicePin{}, err
+		}
+		if !tr.ExpiresAt.IsZero() && tr.ExpiresAt.Before(notAfter) {
+			notAfter = tr.ExpiresAt
+		}
+	}
+	if !time.Now().Before(notAfter) {
+		return devicePin{}, fmt.Errorf("%w: session_ending", errDeviceRefused)
+	}
+	return devicePin{session: sess.SessionHash, credMAC: deviceCredMAC(h, deviceCodeHash, credHash), notAfter: notAfter}, nil
+}
+
+// deviceApprovalLifetime re-checks at redemption what the approval pinned:
+// the approving session must still be live and not ended, and the credential
+// it was made from must still resolve as the one bound at approval (a retired
+// or expired token, a changed password or an unlinked identity all fail). It
+// returns how long the token may live: up to the pinned not-after, truncated
+// to the second so the stamp a moment later stays inside it.
+func (s *Server) deviceApprovalLifetime(ctx context.Context, row store.DeviceAuthRow, now time.Time) (time.Duration, error) {
+	if row.DecidedSession == "" || row.DecidedCredMAC == "" || row.DecidedNotAfter.IsZero() {
+		return 0, fmt.Errorf("%w: approval_unpinned", errDeviceRefused)
+	}
+	sess, err := s.store.UISessionGet(ctx, row.DecidedSession)
+	if err != nil {
+		if isNotFound(err) {
+			return 0, fmt.Errorf("%w: approving_session_ended", errDeviceRefused)
+		}
+		return 0, err
+	}
+	if !sess.RevokedAt.IsZero() || !now.Before(sessionExpiresAt(sess, s.cfg().ResolvedAuth)) ||
+		sess.TenantID != row.DecidedTenant || sess.Subject != row.DecidedSubject {
+		return 0, fmt.Errorf("%w: approving_session_ended", errDeviceRefused)
+	}
+	h, err := s.hasher()
+	if err != nil {
+		return 0, err
+	}
+	var pending bool
+	_, ok, definitive := s.boundCredentialPrincipal(ctx, sess, func(c string) bool {
+		return macEqual(deviceCredMAC(h, row.DeviceCodeHash, c), row.DecidedCredMAC)
+	}, &pending)
+	if !ok || pending {
+		// Fail closed either way: the code is already spent, and a token the
+		// server could not tie to a live credential is not issued.
+		if !definitive {
+			return 0, fmt.Errorf("%w: approving_credential_unverified", errDeviceRefused)
+		}
+		return 0, fmt.Errorf("%w: approving_credential_gone", errDeviceRefused)
+	}
+	left := row.DecidedNotAfter.Sub(now).Truncate(time.Second)
+	if left <= 0 {
+		return 0, fmt.Errorf("%w: approving_session_ended", errDeviceRefused)
+	}
+	return left, nil
+}
+
 // issueDeviceToken mints the token a redeemed device code yields: for the
 // person who approved it, through the gate their session came from (its
 // token_ttl and the tenant's gate policy apply, and the token is tagged with
-// it), at most the device gate's own lifetime, with its rate restriction.
+// it), at most the device gate's own lifetime and never past what the
+// approving session could reach (deviceApprovalLifetime), with its rate
+// restriction.
 func (s *Server) issueDeviceToken(ctx context.Context, dg config.AuthGate, row store.DeviceAuthRow) (string, store.OperatorTokenDefRow, error) {
+	left, err := s.deviceApprovalLifetime(ctx, row, time.Now())
+	if err != nil {
+		return "", store.OperatorTokenDefRow{}, err
+	}
+	ttl := dg.Device.TokenTTL
+	if ttl <= 0 || left < ttl {
+		ttl = left
+	}
 	var r auth.Restrictions
 	if d := dg.Device; d.RatePerMinute > 0 {
 		r.Rate = &auth.RateLimit{PerMinute: d.RatePerMinute, Burst: d.RateBurst}
 	}
-	tok, issued, err := s.issueGateToken(ctx, row.DecidedTenant, row.DecidedSubject, row.DecidedGate, dg.Device.TokenTTL, r)
+	tok, issued, err := s.issueGateToken(ctx, row.DecidedTenant, row.DecidedSubject, row.DecidedGate, ttl, r)
 	switch {
 	case errors.Is(err, errGateTokenUser):
 		return "", issued, fmt.Errorf("%w: user_not_active", errDeviceRefused)
