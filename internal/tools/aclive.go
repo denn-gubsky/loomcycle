@@ -155,7 +155,7 @@ func narrowPolicyByACL(ctx context.Context, p RunPolicy, eff *authz.Effective) R
 // appendNew is base with each of add not already in it, in order; base is
 // copied, never appended to in place.
 func appendNew(base, add []string) []string {
-	seen := make(map[string]bool, len(base)+len(add))
+	seen := make(map[string]bool, len(base))
 	out := append([]string(nil), base...)
 	for _, s := range base {
 		seen[s] = true
