@@ -5649,17 +5649,17 @@ button.primary:disabled {
   background: var(--accent);
   color: white;
 }
+/* The tree | chunk split is a Splitter (grid columns + a draggable handle that
+   draws the border). The single row is bounded so each pane scrolls on its own. */
 .doc-split {
   flex: 1;
-  display: flex;
   min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
 }
 .doc-chunktree {
-  width: 40%;
-  max-width: 360px;
+  flex: 1;
   overflow: auto;
   padding: 8px;
-  border-right: 1px solid var(--border);
   min-height: 0;
 }
 .doc-content {
@@ -5688,8 +5688,9 @@ button.primary:disabled {
 }
 .doc-content-controls {
   display: flex;
+  flex-wrap: wrap; /* a narrow pane (the splitter allows one) wraps, never clips */
   align-items: center;
-  gap: 12px;
+  gap: 6px 12px;
 }
 /* Direct-child only, so the nested .doc-mode-toggle keeps its segmented look. */
 .doc-content-controls > button {
@@ -5708,6 +5709,51 @@ button.primary:disabled {
 .doc-content-controls > button.danger {
   color: var(--danger);
   border-color: var(--danger);
+}
+/* Edit is the main action on a chunk, so it is filled orange to stand out from
+   the outlined controls. One soft light orange in both themes (the light
+   theme's --running is a dim amber that reads as brown on a filled button). */
+.doc-content-controls > button.chunk-edit {
+  background: #f8c58c;
+  border-color: #eeac62;
+  color: #3d2408;
+  font-weight: 600;
+}
+.doc-content-controls > button.chunk-edit:hover {
+  filter: brightness(1.08);
+}
+/* The chunks above the selected one: an Up button to the parent, then a crumb
+   per level back to the root. Reuses the document trail's crumb styles. */
+.chunk-ancestry {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: var(--lc-text-sm, 13px);
+  min-width: 0;
+}
+.chunk-ancestry-up {
+  flex: none;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+/* A deep chunk in a narrow pane wraps its crumbs onto more lines rather than
+   cutting every title to a few letters (each crumb still caps at 28ch). */
+.chunk-ancestry .doc-trail-list {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.chunk-ancestry-up:hover {
+  border-color: var(--accent);
+}
+.chunk-ancestry button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 /* The selected-chunk view (chunk body OR assembled markdown) scrolls
    independently of the fixed head — both modes can be long. */

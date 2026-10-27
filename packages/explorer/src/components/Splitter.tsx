@@ -103,7 +103,13 @@ export default function Splitter({
       ref={containerRef}
       className={`splitter ${className ?? ""} ${dragging ? "dragging" : ""}`}
       style={{
-        gridTemplateColumns: `${leftWidth}px ${HANDLE_WIDTH}px 1fr`,
+        // The drag clamps against the container, but a remembered width can come
+        // from a wider host (the document viewer is both a full page and a pane
+        // inside the Path console) or a since-narrowed window — so CSS clamps it
+        // again against the container as it is now.
+        gridTemplateColumns: `min(${leftWidth}px, calc(100% - ${
+          minRightWidth + HANDLE_WIDTH
+        }px)) ${HANDLE_WIDTH}px 1fr`,
       }}
     >
       <div className="splitter-pane splitter-left">{children[0]}</div>
