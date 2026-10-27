@@ -346,6 +346,28 @@ func TestAgentDefCreate_ReadOnlyHeldVolumeIsNotGrantedReadWrite(t *testing.T) {
 	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/new", `{"volumes":["work"]}`), "ro volume", "read-only")
 }
 
+// A memory or SQL scope the author holds read-only (its caller's rules deny
+// the write) is no grant to hand out: memory_scopes and sql_scopes grant
+// write, so a new agent naming it is refused. A core block only READS its
+// scope, so the author's read reach still covers one.
+func TestAgentDefCreate_ReadOnlyHeldScopeIsNotGrantedAsAMemoryScope(t *testing.T) {
+	tool, ctx := ceilingFixture(t)
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user"}, ReadOnlyScopes: []string{"user"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"agent", "user"}, ReadOnlyScopes: []string{"user"}}
+	})
+	const rest = `"history_scope":["self"],"volumes":["default"]`
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{"memory_scopes":["user"],`+rest+`}`), "read-only memory scope", "memory_scopes:")
+	wantRefused(t, agentDefOp(t, tool, ctx, "create", "sdlc/x", `{"sql_scopes":["user"],"memory_scopes":["agent"],`+rest+`}`), "read-only sql scope", "sql_scopes:")
+	if res := agentDefOp(t, tool, ctx, "create", "sdlc/writable", `{"memory_scopes":["agent"],"sql_scopes":["agent"],`+rest+`}`); res.IsError {
+		t.Errorf("a scope the author may write was refused: %s", res.Text)
+	}
+	if res := agentDefOp(t, tool, ctx, "create", "sdlc/block", `{"memory_scopes":["agent"],"sql_scopes":["agent"],`+rest+
+		`,"core_blocks":[{"label":"brief","scope":"user"}]}`); res.IsError {
+		t.Errorf("a core block reading a read-only scope was refused: %s", res.Text)
+	}
+}
+
 // A fork keeps what the version it forks holds — rewriting only the prompt of
 // a wide agent is not a widening — may narrow it, and may not add anything
 // neither the forker nor that version holds.

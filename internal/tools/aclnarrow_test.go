@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -109,6 +110,64 @@ func TestNarrowScopesByACL(t *testing.T) {
 	}
 }
 
+// A scope the rules let the principal read but not write is kept by
+// NarrowScopesByACL and named by ReadOnlyScopesByACL: compat on an explicit
+// write deny, enforce whenever no rule allows the write, shadow never, and a
+// run with no set only under enforce.
+func TestReadOnlyScopesByACL_NamesTheReadableScopesItMayNotWrite(t *testing.T) {
+	denyWrite := compiledSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"memory:tenant", "sqlmem:user"}})
+	compat := modeCtx(authz.ModeCompat)
+	kept := NarrowScopesByACL(compat, denyWrite, "memory", []string{"user", "tenant"})
+	if !reflect.DeepEqual(kept, []string{"user", "tenant"}) {
+		t.Fatalf("a write deny dropped a readable scope: %v", kept)
+	}
+	if got := ReadOnlyScopesByACL(compat, denyWrite, "memory", kept); !reflect.DeepEqual(got, []string{"tenant"}) {
+		t.Errorf("memory compat = %v, want [tenant]", got)
+	}
+	if got := ReadOnlyScopesByACL(compat, denyWrite, "sqlmem", []string{"user", "agent"}); !reflect.DeepEqual(got, []string{"user"}) {
+		t.Errorf("sqlmem compat = %v, want [user]", got)
+	}
+	readOnly := compiledSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"memory:*"}},
+		authz.Rule{Effect: authz.Allow, Actions: []string{"write"}, Resources: []string{"memory:user"}})
+	if got := ReadOnlyScopesByACL(modeCtx(authz.ModeEnforce), readOnly, "memory", []string{"user", "tenant"}); !reflect.DeepEqual(got, []string{"tenant"}) {
+		t.Errorf("memory enforce = %v, want [tenant]", got)
+	}
+	if got := ReadOnlyScopesByACL(compat, readOnly, "memory", []string{"user", "tenant"}); got != nil {
+		t.Errorf("compat with no write deny = %v, want none", got)
+	}
+	if got := ReadOnlyScopesByACL(modeCtx(authz.ModeShadow), denyWrite, "memory", []string{"tenant"}); got != nil {
+		t.Errorf("shadow = %v, want none (shadow narrows nothing)", got)
+	}
+	// ...and shadow names what enforce would make read-only instead.
+	readDenyWrite := compiledSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"memory:*", "sqlmem:*"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"memory:tenant", "sqlmem:user"}})
+	shadow := divergenceKeys(ShadowACLNarrowing(modeCtx(authz.ModeShadow), shadowPolicy(readDenyWrite)))
+	for _, want := range []string{"write memory:tenant deny", "write sqlmem:user deny"} {
+		if !slices.Contains(shadow, want) {
+			t.Errorf("shadow divergences %q lack %q", shadow, want)
+		}
+	}
+	if got := ReadOnlyScopesByACL(compat, nil, "memory", []string{"tenant"}); got != nil {
+		t.Errorf("compat, no set = %v", got)
+	}
+	if got := ReadOnlyScopesByACL(modeCtx(authz.ModeEnforce), nil, "memory", []string{"tenant"}); !reflect.DeepEqual(got, []string{"tenant"}) {
+		t.Errorf("enforce, no set = %v, want every scope read-only (fail closed)", got)
+	}
+}
+
+func TestWritableScopes_AreTheAllowedScopesLessTheReadOnlyOnes(t *testing.T) {
+	m := MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}, ReadOnlyScopes: []string{"tenant"}}
+	if got := m.WritableScopes(); !reflect.DeepEqual(got, []string{"agent", "user"}) {
+		t.Errorf("memory writable = %v", got)
+	}
+	s := SqlMemPolicyValue{AllowedScopes: []string{"user"}}
+	if got := s.WritableScopes(); !reflect.DeepEqual(got, []string{"user"}) {
+		t.Errorf("sql writable with none read-only = %v", got)
+	}
+}
+
 func TestNarrowSkillsByACL(t *testing.T) {
 	eff := compiledSet(t,
 		authz.Rule{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"skill:support/**", "skill:seo"}},
@@ -182,7 +241,11 @@ func TestShadowACLNarrowing_NamesWhatEnforceWouldTake(t *testing.T) {
 		"invoke tool:Write no_match",
 		"write volume:shared no_match",
 		"read volume:secrets deny",
+		// memory:user and sqlmem:user are allowed read only: enforce makes
+		// them read-only.
+		"write memory:user no_match",
 		"read memory:tenant no_match",
+		"write sqlmem:user no_match",
 		"invoke skill:* no_match",
 	}
 	if !reflect.DeepEqual(got, want) {
