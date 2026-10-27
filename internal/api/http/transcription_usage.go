@@ -12,15 +12,20 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// TranscriptionUsage is one OCR or speech-to-text engine call to charge: what
-// served it, who paid, how much it read, and what it cost.
+// TranscriptionUsage is one OCR, speech-to-text or text-to-speech engine call
+// to charge: what served it, who paid, how much it read or produced, and what
+// it cost. Text-to-speech shares the type rather than having its own so the
+// three speech-and-vision units go through one validation and one charge
+// path, and cannot drift on who is charged or what a priced unit needs.
 //
 // The caller prices the call — an STT model by the minute (pricing
-// CostSeconds), a vision OCR call by its tokens like any chat call — and passes
-// the result. Priced false records no cost (stored NULL, "unpriced"), distinct
-// from a priced zero.
+// CostSeconds), a TTS model by the minute or by the million characters, a
+// vision OCR call by its tokens like any chat call — and passes the result.
+// Priced false records no cost (stored NULL, "unpriced"), distinct from a
+// priced zero.
 type TranscriptionUsage struct {
-	// Purpose is store.UsagePurposeOCR or store.UsagePurposeSTT.
+	// Purpose is store.UsagePurposeOCR, store.UsagePurposeSTT or
+	// store.UsagePurposeTTS.
 	Purpose  string
 	Provider string
 	Model    string
@@ -30,11 +35,18 @@ type TranscriptionUsage struct {
 	CredentialScopeID string
 
 	// Tokens, for an engine that reports them (a vision OCR call; an audio
-	// model that counts audio in tokens). They count against the token budgets.
+	// model that counts audio in tokens). They count against the token
+	// budgets. A TTS unit carries none: the speech endpoint reports no
+	// tokens, and its characters and seconds are not tokens, so it adds
+	// nothing to a token budget.
 	InputTokens  int
 	OutputTokens int
-	// AudioSeconds is the audio an STT call transcribed. Must be 0 for OCR.
+	// AudioSeconds is the audio an STT call transcribed or a TTS call
+	// produced. Must be 0 for OCR.
 	AudioSeconds float64
+	// InputChars is the text a TTS call sent to the engine, in characters.
+	// Must be 0 for OCR and STT.
+	InputChars int64
 
 	Cost     float64
 	Currency string
@@ -42,7 +54,9 @@ type TranscriptionUsage struct {
 }
 
 // validate refuses a unit the ledger could not mean: chat is the loop's
-// purpose, seconds only describe audio, and a priced cost needs its currency.
+// purpose, seconds only describe audio, characters only describe text sent to
+// a speech engine, a TTS unit has no tokens, and a priced cost needs its
+// currency.
 func (u TranscriptionUsage) validate() error {
 	switch u.Purpose {
 	case store.UsagePurposeOCR:
@@ -50,8 +64,18 @@ func (u TranscriptionUsage) validate() error {
 			return errors.New("transcription usage: an OCR unit carries no audio seconds")
 		}
 	case store.UsagePurposeSTT:
+	case store.UsagePurposeTTS:
+		if u.InputTokens != 0 || u.OutputTokens != 0 {
+			return errors.New("transcription usage: a TTS unit carries no tokens")
+		}
 	default:
-		return fmt.Errorf("transcription usage: purpose %q is not ocr or stt", u.Purpose)
+		return fmt.Errorf("transcription usage: purpose %q is not ocr, stt or tts", u.Purpose)
+	}
+	if u.InputChars != 0 && u.Purpose != store.UsagePurposeTTS {
+		return errors.New("transcription usage: only a TTS unit carries input characters")
+	}
+	if u.InputChars < 0 {
+		return errors.New("transcription usage: input characters cannot be negative")
 	}
 	if u.Provider == "" || u.Model == "" {
 		return errors.New("transcription usage: provider and model are required")
@@ -70,12 +94,13 @@ func (u TranscriptionUsage) validate() error {
 	return nil
 }
 
-// RecordTranscriptionUsage writes one OCR or STT engine call to the usage
+// RecordTranscriptionUsage writes one OCR, STT or TTS engine call to the usage
 // ledger, charged the way RecordRunSideCallUsage charges a tool's model call:
 // to the run on ctx, or to the caller of an admitted off-run call; with
 // neither, nothing is recorded and nil is returned. Its tokens count against
-// the token budgets like any call; an STT unit's seconds do not (budgets count
-// tokens), and its cost reaches the run's cost summary through the ledger.
+// the token budgets like any call; an STT or TTS unit's seconds and
+// characters do not (budgets count tokens), and its cost reaches the run's
+// cost summary through the ledger.
 //
 // A crossed budget tier is not announced here — there is no event stream at a
 // tool call's depth — and the run's next loop call that crosses reports it.
@@ -114,6 +139,7 @@ func (s *Server) RecordTranscriptionUsage(ctx context.Context, u TranscriptionUs
 		OutputTokens:      u.OutputTokens,
 		Purpose:           u.Purpose,
 		AudioSeconds:      u.AudioSeconds,
+		InputChars:        u.InputChars,
 		TS:                time.Now(),
 	}
 	if u.Priced {

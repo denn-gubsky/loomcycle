@@ -33,6 +33,11 @@ type RestoreRefresh struct {
 	// to queue again. Only these: a queued row already in the store has a live
 	// waiter, which a second start would race.
 	QueuedRunIDs []string
+	// ACLTenants are the tenants whose access-control rows this restore
+	// wrote, sorted. Their acl_version already moved in the store; the
+	// caller also drops every replica's cached sets for them at once rather
+	// than at each cache's next version check.
+	ACLTenants []string
 }
 
 // CarriedUsage is growth in one (tenant, user) usage carry for Month.

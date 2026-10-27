@@ -252,6 +252,14 @@ type Transcription struct {
 	MaxMinutesPerRun int    `json:"max_minutes_per_run,omitempty"`
 }
 
+// Speech mirrors config.AgentSpeech locally (the agents package stays
+// config-free). json: tags are LOAD-BEARING for content_sha256. Enabled is a
+// pointer so an explicit false hashes apart from unset.
+type Speech struct {
+	Enabled        *bool `json:"enabled,omitempty"`
+	MaxCharsPerRun int   `json:"max_chars_per_run,omitempty"`
+}
+
 // Compaction mirrors config.Compaction locally (the agents package stays
 // config-free). json: tags mirror the persisted snake_case and are LOAD-BEARING
 // for content_sha256. Pointers so an unset field omits.

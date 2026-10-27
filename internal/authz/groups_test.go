@@ -45,6 +45,37 @@ func TestClosure_TerminatesOnACycleAtTheDepthCap(t *testing.T) {
 	}
 }
 
+func TestClosureVia_NamesTheGroupOneStepCloserToTheSubject(t *testing.T) {
+	g := GroupGraph{
+		"all":     {"staff", "contractors"},
+		"staff":   {"support", "eng"},
+		"support": {"support-l2"},
+		"eng":     nil,
+	}
+	got, via := ClosureVia(g, []string{"support-l2", "eng"})
+	if want := Closure(g, []string{"support-l2", "eng"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ClosureVia groups = %v, Closure = %v", got, want)
+	}
+	want := map[string]string{
+		"support-l2": ViaDirect,
+		"eng":        ViaDirect,
+		"support":    "support-l2",
+		// staff is reached through eng and through support at different
+		// depths; eng is one hop, so it wins.
+		"staff": "eng",
+		"all":   "staff",
+	}
+	if !reflect.DeepEqual(via, want) {
+		t.Errorf("via = %v, want %v", via, want)
+	}
+	// A group that is both direct and reachable through another reads as
+	// direct.
+	_, via = ClosureVia(g, []string{"support", "staff"})
+	if via["staff"] != ViaDirect {
+		t.Errorf("a direct group read as via %q", via["staff"])
+	}
+}
+
 func TestValidateGroupGraph(t *testing.T) {
 	if err := ValidateGroupGraph(GroupGraph{"a": {"b"}, "b": {"c"}, "c": nil}); err != nil {
 		t.Errorf("acyclic: %v", err)

@@ -71,6 +71,17 @@ Present when they apply:
   token itself. When `is_admin` is true inside a run, `admin_in_run: false`
   says the admin's reach does not apply here: you read and change your own
   tenant's definitions (and read the shared ones), like any tenant's run.
+- `identity` — the person this run acts for, as the deployment knows them:
+  `tenant_id`, `subject`, and from their user record `display_name`,
+  `access_mode`, `status` and `created_at` (absent when there is no record,
+  as for an operator token or a credential of another tenant); `groups` — each `{name, via, description?,
+  external_id?}`, where `via` is `direct` or the group through which they are
+  a member; and `acl` — `{mode, version, baseline, lists, missing_acls,
+  removed_tools}`, where each of `lists` is `{name, version, bound_to: {kind,
+  id?}}`, the access list that applies and what it is bound to (the user, a
+  group, their token, or the whole tenant). **When `status` is `pending`, the
+  account is not approved yet: do not do real work for it — tell the user**
+  (`status_note` says the same). Absent when the run acts for nobody.
 - `loomcycle` (`version`, `commit`, `build_time`) and `server`
   (`listen_addr`, `url`).
 
