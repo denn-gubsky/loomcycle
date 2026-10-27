@@ -5,6 +5,8 @@ import { consoleLogger, createBridge, type Bridge, type BridgeAdapter, type Brid
 import { DiscordApi } from "./api.js";
 import { HELP_TEXT, registerCommands } from "./commands.js";
 import type { DiscordConfig } from "./config.js";
+import { EVENTS_PATH, eventsRoute } from "./events.js";
+import { GroupLookup } from "./groups.js";
 import { interactionRoute } from "./interactions.js";
 import { DiscordPort, type DiscordRef } from "./port.js";
 import { publicKeyFromHex } from "./verify.js";
@@ -40,6 +42,7 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
     dev: cfg.dev,
     ...(cfg.gate ? { gate: cfg.gate.name } : {}),
   };
+  const groups = cfg.gate ? new GroupLookup({ api, gate: cfg.gate.name, trustedGuilds: cfg.trustedGuilds, now }) : undefined;
 
   const adapter: BridgeAdapter<DiscordRef> = {
     // `/ask prompt:/help` reaches the core as "/help": answer with the same
@@ -50,14 +53,19 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
     capabilities: { streaming: "never", maxMessageChars: MAX_MESSAGE_CHARS },
     port,
     async start(ctx) {
+      const gate = ctx.gate;
       await ctx.serve({
         "POST /discord/interactions": interactionRoute({ cfg: fences, key, port, api, router: ctx.router, log: ctx.log, now, inlineCardMs: opts.inlineCardMs }),
+        // Webhook Events only for a gate, which is what tells loomcycle of a
+        // person who removed the app.
+        ...(gate ? { [`POST ${EVENTS_PATH}`]: eventsRoute({ key, gate, forget: (s) => groups?.forget(s), log: ctx.log, now }) } : {}),
       });
       if (cfg.registerCommands) await registerCommands(api, cfg, ctx.log);
     },
     async stop() {
       port.stop();
     },
+    ...(groups ? { groupsFor: (subject: string, ref: DiscordRef) => groups.groupsFor(subject, ref) } : {}),
   };
   return createBridge(cfg, adapter, { ...opts, logger: log });
 }

@@ -71,6 +71,12 @@ export class DiscordApi {
     return this.call("POST", `/channels/${channelId}/typing`, "POST channels/typing", undefined, true);
   }
 
+  /** guildMember reads one member of a server (their roles), with the bot
+   *  token. A person not in the server is a 404. */
+  guildMember(guildId: string, userId: string): Promise<{ roles?: unknown } | undefined> {
+    return this.call("GET", `/guilds/${guildId}/members/${userId}`, "GET guilds/members", undefined, true) as Promise<{ roles?: unknown } | undefined>;
+  }
+
   /** putCommands replaces the application's commands: globally, or in one server. */
   putCommands(commands: CommandSpec[], guildId?: string): Promise<unknown> {
     const path = guildId

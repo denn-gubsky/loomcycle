@@ -4,6 +4,7 @@ import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscordApi, DiscordApiError, USER_AGENT } from "../src/api.js";
+import { GROUP_CACHE_MS, GroupLookup, MAX_GROUP_LOOKUPS } from "../src/groups.js";
 import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, neutraliseLinks, parseCustomId, renderCard } from "../src/cards.js";
 import { commandSpecs, registerCommands } from "../src/commands.js";
 import { loadConfig } from "../src/config.js";
@@ -352,6 +353,99 @@ describe("masked links", () => {
     });
     expect(q.content).not.toMatch(/\]\(/);
     expect(renderCard({ kind: "result", message: "Answered: [y](https://evil.example)" }).content).toBe("Answered: y (<https://evil.example>)");
+  });
+});
+
+describe("groups", () => {
+  const ROLE = "600000000000000006";
+  const ROLE_2 = "600000000000000007";
+  const person = `discord:${USER}`;
+  const channel = gateSharedSubject("discord", GUILD, CHANNEL);
+  const make = (trusted: string[], d = new FakeDiscord()) => {
+    let t = 1_760_000_000_000;
+    const api = new DiscordApi({ baseUrl: d.base, applicationId: APP, botToken: "secret-bot", log: silentLogger, fetch: d.fetch, sleep: async () => {} });
+    const lookup = new GroupLookup({ api, gate: "discord", trustedGuilds: new Set(trusted), now: () => t });
+    return { d, lookup, advance: (ms: number) => (t += ms) };
+  };
+  const memberCalls = (d: FakeDiscord) => d.to(/^GET \/guilds\/\d+\/members\/\d+$/);
+
+  it("puts a channel's own user in its server's group, and asserts nothing for a ref stored without one", async () => {
+    const { d, lookup } = make([GUILD]);
+    expect(await lookup.groupsFor(channel, { channelId: CHANNEL, guildId: GUILD })).toEqual([`dc-guild-${GUILD}`]);
+    expect(await lookup.groupsFor(channel, { channelId: CHANNEL })).toBeUndefined();
+    expect(d.calls).toHaveLength(0);
+  });
+
+  it("puts a person in each trusted server they are a member of, and a group per role, asked with the bot token", async () => {
+    const { d, lookup } = make([OTHER_GUILD, GUILD]);
+    d.on(new RegExp(`GET /guilds/${GUILD}/members/${USER}$`), { status: 200, body: { roles: [ROLE, ROLE_2, "not-a-role"] } });
+    d.on(new RegExp(`GET /guilds/${OTHER_GUILD}/members/${USER}$`), { status: 200, body: { roles: [] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${GUILD}`, `dc-role-${ROLE}`, `dc-role-${ROLE_2}`, `dc-guild-${OTHER_GUILD}`]);
+    // Sorted, so the order (and so the request pattern) is stable.
+    expect(memberCalls(d).map((c) => [c.path, c.authorization])).toEqual([
+      [`/guilds/${GUILD}/members/${USER}`, "Bot secret-bot"],
+      [`/guilds/${OTHER_GUILD}/members/${USER}`, "Bot secret-bot"],
+    ]);
+  });
+
+  it("reads a 404 as not a member, unless Discord says the server itself is unknown", async () => {
+    const { d, lookup } = make([GUILD, OTHER_GUILD]);
+    d.on(new RegExp(`/guilds/${GUILD}/`), { status: 404, body: { code: 10007, message: "Unknown Member" } });
+    d.on(new RegExp(`/guilds/${OTHER_GUILD}/`), { status: 200, body: { roles: [ROLE] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${OTHER_GUILD}`, `dc-role-${ROLE}`]);
+
+    const other = make([GUILD]);
+    other.d.on(/members/, { status: 404, body: { code: 10004, message: "Unknown Guild" } });
+    expect(await other.lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+  });
+
+  it("asserts nothing when any lookup fails, so loomcycle removes no group on a guess", async () => {
+    for (const status of [403, 500, 401]) {
+      const { d, lookup } = make([GUILD, OTHER_GUILD]);
+      d.on(new RegExp(`/guilds/${OTHER_GUILD}/`), { status, body: { code: 50001 } });
+      expect(await lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+    }
+    // A 429 is waited out by the API client like any other call.
+    const { d, lookup } = make([GUILD]);
+    d.on(/members/, { status: 429, body: { retry_after: 0.01 } });
+    d.on(/members/, { status: 200, body: { roles: [] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${GUILD}`]);
+    expect(memberCalls(d)).toHaveLength(2);
+  });
+
+  it("asserts no groups with no trusted servers, and nothing at all past the lookup limit", async () => {
+    const none = make([]);
+    expect(await none.lookup.groupsFor(person, { channelId: DM })).toEqual([]);
+    const many = Array.from({ length: MAX_GROUP_LOOKUPS + 1 }, (_, i) => `2000000000000001${String(i).padStart(2, "0")}`);
+    const over = make(many);
+    expect(await over.lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+    expect(over.d.calls).toHaveLength(0);
+    const at = make(many.slice(0, MAX_GROUP_LOOKUPS));
+    expect(await at.lookup.groupsFor(person, { channelId: DM })).toHaveLength(MAX_GROUP_LOOKUPS);
+  });
+
+  it("reuses a person's groups for ten minutes, and forgets them on demand", async () => {
+    const { d, lookup, advance } = make([GUILD]);
+    d.on(/members/, { status: 200, body: { roles: [ROLE] } });
+    const first = await lookup.groupsFor(person, { channelId: DM });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual(first);
+    expect(memberCalls(d)).toHaveLength(1);
+    advance(GROUP_CACHE_MS - 1);
+    await lookup.groupsFor(person, { channelId: DM });
+    expect(memberCalls(d)).toHaveLength(1);
+    advance(1);
+    expect(await lookup.groupsFor(person, { channelId: DM })).toEqual([`dc-guild-${GUILD}`]);
+    expect(memberCalls(d)).toHaveLength(2);
+    lookup.forget(person);
+    await lookup.groupsFor(person, { channelId: DM });
+    expect(memberCalls(d)).toHaveLength(3);
+  });
+
+  it("asserts nothing for a subject that is not one of the gate's", async () => {
+    const { d, lookup } = make([GUILD]);
+    expect(await lookup.groupsFor(`discord-${USER}`, { channelId: DM })).toBeUndefined();
+    expect(await lookup.groupsFor("other:conv:abc", { channelId: CHANNEL, guildId: GUILD })).toBeUndefined();
+    expect(d.calls).toHaveLength(0);
   });
 });
 
