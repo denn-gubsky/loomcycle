@@ -179,7 +179,7 @@ func runLogin(ctx context.Context, args []string, stdout, stderr io.Writer, d lo
 			// RFC 8628 §3.5: this and every later poll waits 5 s longer.
 			interval += 5 * time.Second
 		case tok.Error == "access_denied":
-			return failOp(stderr, "the login was denied in the browser")
+			return failOp(stderr, "the login was denied in the browser, or its approval no longer holds (the approving session ended); run `loomcycle login` again")
 		case tok.Error == "expired_token":
 			return failOp(stderr, "the code expired before it was approved; run `loomcycle login` again")
 		default:
