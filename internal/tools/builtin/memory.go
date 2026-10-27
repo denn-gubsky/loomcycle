@@ -3103,7 +3103,9 @@ func (m *Memory) execBoundedList(ctx context.Context, scope store.MemoryScope, s
 // concat for arrays — replace; no add for numbers — replace). Used
 // by execMerge.
 func deepMerge(base, overlay map[string]any) map[string]any {
-	out := make(map[string]any, len(base)+len(overlay))
+	// Sized for base only: a summed capacity is an allocation-size-overflow
+	// finding, and the map grows as overlay adds keys.
+	out := make(map[string]any, len(base))
 	for k, v := range base {
 		out[k] = v
 	}
