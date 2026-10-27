@@ -8,6 +8,59 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.125.0
+
+*Speech-to-text and the files line's follow-ups. **`File op=transcribe` turns recordings into timed transcripts** through a whisper server (self-hosted speaches or whisper.cpp, or OpenAI), and Teams VTT/SRT captions are read with no engine at all. **Imported documents say where they came from:** their text is stamped origin `import` (document text, never a fact) and the root keeps a server-written `provenance` with the captured file and a link back to the SharePoint item, email or URL. **The `File` tool has an HTTP route and a captured file can be downloaded** over HTTP and from the Web UI, safely typed so nothing captured renders on loomcycle's origin. **Usage reports split by purpose** (chat, OCR, speech-to-text) with audio seconds. And the Memory key routes now apply the Memory tool's write rules, closing several ways to write document rows and server-only keys from outside a run.*
+
+Since v1.124.0: #2153–#2162, plus dependency bumps (#2164, #2166, #2167, #2171).
+- `@loomcycle/client` and the Python adapter move to 1.125.0. TS gains `runFile` and `downloadRunInboxFile`; both gain the `purpose` usage dimension and `audio_seconds`.
+
+### Speech-to-text: `File op=transcribe` (#2160)
+
+A recording that reaches an agent as a mail attachment (a meeting MP4, a voice note) had no way to become text: `transcribe` was an unknown op and `extract` on an M4A said it could not extract text.
+
+- `File op=transcribe` (`path`, `language`, `vocabulary`, `diarize`, `timestamps`, `to`, `dry_run`) sends the recording to the operator's `transcription.stt` engine, `openai-audio`: any server with the OpenAI `/v1/audio/transcriptions` shape (speaches, whisper.cpp, OpenAI, Groq). `extract` on audio or video hands the file to it. The transcript is Markdown in the inbox's `extracted/`: a section per piece, a passage per segment with its start time, `**Speaker N**` labels where the model separates speakers. The excerpt is fenced as untrusted.
+- A PCM WAV is cut by the runtime into `chunk_minutes` pieces (default 10) under 25 MB, each reaching 2 s back; the overlap's repeat is removed. With `stt.media.command` (ffmpeg) every other format is converted to WAV first. Without it, a file goes whole only if the engine reads it and it fits; otherwise it is refused naming the setting. Nothing is truncated.
+- A header's length is a claim: a WAV is measured from its samples (a byte rate that disagrees with the sample format is refused), any other format counts at least its size at 8 kbit/s, and the ledger records what the engine reports it heard. Minutes are reserved on the run and the run tree before the first request.
+- One ledger row per request (`purpose=stt`, `audio_seconds`, `per_minute` pricing), one `transcription` event per pass, `dry_run` estimates.
+- `stt.timeout_s` (default 1800) bounds one request on a client with no response-header timeout, for CPU-only whisper hosts.
+- **VTT and SRT captions** are read by `extract` with no engine; `<v Speaker>` tags become speaker labels (a transcribed Teams meeting).
+- **New image `loomcycle-media`**: the same binary on Debian slim with `ffmpeg` and `poppler-utils` (for `stt.media.command` and `ocr.rasterize.command` in containers), amd64 and arm64, on Docker Hub and GHCR, built on minor tags.
+
+### Imported documents carry their origin and a source link (#2161)
+
+- Every chunk body of an imported document is a memory row with origin `import`. A row is now a fact when its origin is set **and is not** `import`, so imports stay in `sources=documents` and are never returned as facts.
+- The root keeps one server-written field, `provenance`: the captured file's `file`, `media_type`, `sha256`, `captured_from` (`mcp:<server>/<tool>`, `download:<host>`, …), `captured_at` and `run_id` (while the bytes still hash to the capture record), and an optional link the agent names: `File op=import` takes `source: {url, kind, title}`, `Document op=import_md` takes `source_url` / `source_kind` / `source_title` (for an email body). `kind` is `sharepoint`, `email`, `attachment`, `web` or `other`; the url is http(s), at most 2 KiB, with signed query parameters masked. A `source/<kind>` tag is added; `get_document` and `export_md` report it.
+- Only the runtime writes `provenance`: every chunk write path drops a caller's value and keeps the stored one, and it is shown only while the document's text carries the `import` origin.
+- A captured file the MCP result does not name is named from the call's `fileName` / `filename` / `name` / `path` argument before the tool's name, so an ms-365 `download-bytes` import is no longer titled "download-bytes". A `download`'s recorded URL keeps no query value at all.
+
+### The `File` tool over HTTP, and inbox downloads (#2158)
+
+- `POST /v1/runs/{run_id}/file` runs the MCP `file` tool's ops on a run's inbox (scope `runs:read`; the writing ops need the run's owner or an admin).
+- `GET|HEAD /v1/runs/{run_id}/inbox/{path}` downloads one captured file to anyone who may read the run, with ranges. Every response is an attachment with `nosniff`, `Content-Security-Policy: sandbox; default-src 'none'` and `no-store`; HTML, SVG, XML and scripts are served as `application/octet-stream`. `X-Loomcycle-SHA256` and `X-Loomcycle-Origin` report the bytes and the tool that returned them.
+- A tenant operator (`substrate:tenant`) now counts as an admin for the writing ops (`extract`, `keep`, `rm`, `clear`) on runs of its own tenant.
+- The Web UI run views get a download button on each captured file; the TS client gets `runFile` and `downloadRunInboxFile`.
+
+### Usage by purpose (#2159)
+
+`GET /v1/_usage?group_by=purpose` returns one row per purpose (`chat`, `ocr`, `stt`), combinable with the other dimensions and kept apart in the rolled-up archive. Every row carries `audio_seconds`, omitted when zero, so a chat-only report is unchanged. On gRPC (`UsageAggregate.purpose` / `audio_seconds`), the TS and Python clients and the Web UI Usage page.
+
+### Memory: the key routes follow the Memory tool's rules (#2153–#2157, #2162)
+
+- **Document access control on Memory's other doors.** `POST /v1/_memory/search` and the memory key reads (`GET …/keys/{key}`, the keys list) returned a document's chunk bodies, homed facts and derived units to a caller the document access control denies; they now drop what that caller may not read, as Document search does (#2154).
+- **Writes.** `PUT` / `DELETE /v1/_memory/scopes/{scope}/{scope_id}/keys/{key}` could overwrite or delete a document's chunk body past the Document tool's checks, write the server-only `doc.unit:` and `trace.turn:` namespaces, and change `core/` blocks; the routes now apply the Memory tool's write rule for every namespace through one shared check, and `core/` keys are operator-only there. The Memory tool's `incr`, `merge`, `append_dedupe` and `bounded_list` now refuse `trace.turn:` as `set` does (#2156, #2157, #2162). Tool `get`/`list` and the sweeps were closed the same way (#2156).
+- **`documents_scope` reaches the admin search and the clients**: `POST /v1/_memory/search` takes it, the TS and Python clients document it, and the help articles teach it (#2155).
+- The one-release read fallback for tenant document rows at their pre-v1.123 scope id is removed (#2153). A replica older than v1.123.0 must not run beside this release.
+
+### Upgrade notes
+
+- **No migration.** Configuration is unchanged unless you turn on speech-to-text (`transcription.stt`).
+- **Facts vs imports:** a memory row with origin `import` is no longer counted as a fact. No release before this one wrote that origin, so existing data is unaffected.
+- **Memory key routes:** a client that wrote `doc.chunk:`, `doc.unit:`, `trace.turn:` or (as a non-operator) `core/` keys through `PUT`/`DELETE …/keys/{key}` is now refused; use the Document and Memory tools.
+- **Rolling upgrades:** do not run a pre-v1.123.0 replica beside this release (#2153).
+- **Cluster compose:** `docker-compose.cluster.yaml` stays on Postgres 16. A dependency bot moved it to 18, but the 18 image refuses a volume mounted at `/var/lib/postgresql/data` and an existing 16 data directory needs `pg_upgrade` or a dump and restore; this release reverts that line. Any Postgres ≥ 14 works.
+- **Images:** a minor tag rebuilds every image, all at 1.125.0 for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser`, the sandbox images, and the new `loomcycle-media`.
+
 ## What's in v1.124.0
 
 *Fixes on the v1.123 line and one Memory feature. **The Library no longer shows a static MCP server's secrets:** a header such as `Bearer ${LOOMCYCLE_MS365_MCP_TOKEN}` in `mcp_servers` reached every admin and tenant operator, and the Web UI Library page, as the live token. **`File` download and upload refuse a URL with a stray quote or space** before any request, so a model that copies an upload session's URL out of JSON with its closing quote is told so and can retry, instead of getting a misleading 401 from SharePoint. **Memory search and recall can also read another scope's documents in the same call** (`documents_scope`), with one shared ranking, and the document access control now applies to the document hits Memory returns.*

@@ -2567,13 +2567,17 @@ See [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) for the request and answer f
 
 ## 9h. Transcription — OCR and speech-to-text
 
-> **OCR runs; speech-to-text does not yet.** OCR on `File op=extract` runs since this release (see the `File` tool in `docs/TOOLS.md`). Speech-to-text calls arrive in a later release, which reads the `stt` part of this block as it is.
+> **OCR and speech-to-text both run.** OCR on `File op=extract`, speech-to-text on `File op=transcribe` (and `extract` on a recording); see the `File` tool in `docs/TOOLS.md`. The `command`, `http` and `gemini-audio` engines arrive in a later release.
 
-Scans, photos of documents and recordings carry no text an extractor can read. The `transcription:` block names the engines that will turn them into text, and what a run may spend. Absent, both engines are off.
+Scans, photos of documents and recordings carry no text an extractor can read. The `transcription:` block names the engines that turn them into text, and what a run may spend. Absent, both engines are off.
 
 ```yaml
+providers:
+  whisper-local:              # any server with the OpenAI /v1/audio/transcriptions shape
+    driver: openai
+    base_url: http://speaches:8000/v1   # includes /v1
 models:
-  whisper: { provider: whisper-local, model: large-v3, kind: transcriber }
+  whisper: { provider: whisper-local, model: <the model id your server serves>, kind: transcriber }
 
 transcription:
   ocr:
@@ -2590,7 +2594,7 @@ transcription:
   stt:
     engine: openai-audio      # required: openai-audio | off
     provider: whisper-local   # required for openai-audio: a provider on the openai driver
-    model: whisper            # required for openai-audio: an alias tagged kind: transcriber
+    model: whisper            # required for openai-audio: an alias tagged kind: transcriber, naming a model
     language: uk              # default uk; exactly one code
     vocabulary: ""            # optional names and terms; folded to one line, at most 400 characters
     diarize: auto             # auto | on | off, default auto
@@ -2598,13 +2602,17 @@ transcription:
     max_minutes_per_run: 300  # default 300
     chunk_minutes: 10         # default 10 (never above max_minutes_per_call)
     chunk_overlap_seconds: 2  # default 2; 0 means the default
-    media: { command: "ffmpeg -i {in} -ac 1 -ar 16000 -f wav {out}" }   # optional; must contain {in}
+    timeout_s: 1800           # default 1800; one engine request and one conversion
+    media: { command: "ffmpeg -nostdin -loglevel error -i {in} -ac 1 -ar 16000 -f wav {out}" }   # optional; must contain {in} and {out}
 ```
 
-- `loomcycle validate` fails on an unknown key, a missing `engine`, a negative number, a per-call cap above its per-run cap, an unknown language code, an OCR `model` that is not a chat alias, an STT `provider` not on the `openai` driver, an STT `model` not tagged `kind: transcriber` (or served by another provider), and a helper command without `{in}`.
+- `loomcycle validate` fails on an unknown key, a missing `engine`, a negative number, a per-call cap above its per-run cap, an unknown language code, an OCR `model` that is not a chat alias, an STT `provider` not on the `openai` driver, an STT `model` not tagged `kind: transcriber` (or served by another provider, or given as a `model_pattern`), an OCR helper command without `{in}`, and a `media` command without `{in}` and `{out}`.
 - `command` and `http` (both engines) and `gemini-audio` (STT) are refused as not available yet.
 - Whether the OCR model can read images is checked when the engine is built, not at load.
-- Speech-to-text is priced per minute of audio: `pricing.models."<provider>/<model>": { per_minute: 0.006 }`, billed by the second.
+- **Speech-to-text, how a recording is sent.** A PCM WAV is cut by the runtime into `chunk_minutes` pieces under 25 MB each, every piece after the first reaching `chunk_overlap_seconds` back; the overlap's repeat is removed. With `media.command` every other format is converted to a mono 16 kHz WAV first (the converter runs without a shell, scrubbed env, on a copy in a scratch folder of the inbox), then cut. Without it, a file goes whole only if the engine reads its format, it is under 25 MB and within `max_minutes_per_call`; otherwise the call is refused naming `transcription.stt.media.command` — never truncated.
+- **Minutes.** A WAV is measured from its samples (a header whose byte rate disagrees with its sample format is refused). Anything else counts at least its size at 8 kbit/s and at least its header's claim, so a header can only over-count; the counter and the ledger are then reconciled to the duration the engine reports. Minutes are reserved on the run and the run tree before the first request and given back for pieces never sent.
+- **A CPU-only whisper host.** The audio request uses a client with no response-header timeout, bounded by `timeout_s` (default 30 minutes); a 10-minute piece can take several minutes on CPU. A `large-v3-turbo` model (int8) is the CPU choice, `large-v3` with a GPU; the model id is whatever the whisper server lists. In containers, the `denngubsky/loomcycle-media:<version>` image (the same binary on Debian slim with `ffmpeg` and `poppler-utils`, amd64 and arm64) carries the converter and the PDF renderer.
+- Speech-to-text is priced per minute of audio: `pricing.models."<provider>/<model>": { per_minute: 0.006 }`, billed by the second, plus token prices for a model that reports tokens (e.g. `gpt-4o-transcribe`).
 
 **Per agent.** An agent opts in to OCR and may lower the caps:
 
@@ -2623,6 +2631,8 @@ agents:
 - The block is set in yaml or the AgentDef overlay, merges per field on a fork, and is part of the agent's content hash. A run cannot override it.
 
 **What a run reports.** Each OCR or speech-to-text pass a `File` tool call makes emits one `transcription` event: on the SSE stream, as a transcript row, on gRPC as `Event.transcription` (`TranscriptionInfo`), typed in the TS and Python clients (`AgentEvent.transcription`), and as one line in the Web UI's run views (`⟲ OCR scan.pdf · 12 pages · claude-haiku-5-5 · $0.04 · ok`). It carries the source `ref` and the `out` ref of the Markdown written, `purpose` (`ocr` | `stt`), `engine`, the `provider` and `model` called, `pages` or `seconds`, `input_tokens` and `output_tokens`, `cost` and `currency` (absent when the pair is unpriced, which is not the same as free), `status` (`ok`; `partial` when a cap or an engine error stopped it after some units, and what was written stays; `failed`), `dry_run` (an estimate: no engine was called and nothing was spent), `error` (why the pass failed or stopped early: set on `failed`, and on `partial` when a cap or an engine error stopped it; never a secret, a URL's query or the file's content) and the `run_id` whose tool call made it. Never the text. It is a record for the operator, not model input: a resumed run's conversation does not include it.
+
+**What it costs.** OCR and speech-to-text calls land in the same usage ledger as chat calls, tagged with a `purpose` (`chat` | `ocr` | `stt`). `GET /v1/_usage?group_by=purpose` returns one row per purpose; purpose combines with the other dimensions (`group_by=tenant,purpose`, `provider,model,purpose`, …), and the rolled-up archive keeps purposes apart, so older windows split too. Every row also carries `audio_seconds` — the audio its speech-to-text calls transcribed — and a row with none omits the key, so a chat-only report reads as before. The gRPC `UsageReport` RPC (`UsageAggregate.purpose` / `audio_seconds`), the TS `usageReport({ groupBy: ["purpose"] })` and Python `usage_report(group_by=["purpose"])` clients, and the Web UI Usage page (a purpose chip, an "audio transcribed" total and an audio column in minutes) all carry it. Allowed dimensions: `tenant,user,provider,model,source,purpose`.
 
 ---
 

@@ -23,8 +23,11 @@
 
 services:
   postgres:
-    # Any Postgres ≥ 14 works; 16 here is just a tested default.
-    image: postgres:18
+    # Any Postgres ≥ 14 works; 16 here is just a tested default. Moving to 18
+    # is not a tag bump: its image refuses a volume at /var/lib/postgresql/data
+    # (it keeps data under /var/lib/postgresql/18/docker), and an existing 16
+    # data directory needs pg_upgrade or a dump and restore.
+    image: postgres:16
     container_name: loomcycle-cluster-pg
     restart: unless-stopped
     environment:
