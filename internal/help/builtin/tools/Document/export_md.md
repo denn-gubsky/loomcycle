@@ -29,7 +29,11 @@ pass `false` for clean Markdown a person will read.
 
 ## Returns
 
-`{markdown, document_id, title}`.
+`{markdown, document_id, title}`, plus `provenance` for an imported document
+(see `get_document`). Clean Markdown (`include_metadata: false`) also says
+where an imported document came from, in a `> Source: … · File: …` line under
+its title. Re-importing an export does not carry the provenance over: name the
+source again on `import_md` if the new document should keep it.
 
 Headings stop at `######`: chunks nested deeper than six levels all render at
 level six, so re-importing such a document flattens them. Tags are not part of

@@ -1,0 +1,39 @@
+# Dockerfile.media — goreleaser variant: the loomcycle binary plus the helper
+# programs transcription runs, opt-in per deployment.
+#
+# Why: the File tool's transcription calls operator-configured host commands
+# — ffmpeg to turn a recording (or a video's sound) into a WAV it can cut into
+# pieces (transcription.stt.media.command), and poppler's pdftoppm to render a
+# PDF's pages for an OCR model that reads images only
+# (transcription.ocr.rasterize.command). The default image is distroless and
+# has neither; this one does, so a containerised deployment sets
+#
+#   transcription.stt.media.command:     ffmpeg -nostdin -i {in} -ac 1 -ar 16000 -f wav {out}
+#   transcription.ocr.rasterize.command: pdftoppm -r 150 -png {in} {out_prefix}
+#
+# and nothing else changes. The helpers run without a shell, with a scrubbed
+# environment, in a scratch folder of the run's inbox.
+#
+# Debian slim rather than distroless: ffmpeg and poppler bring shared
+# libraries. The same pre-built binary as Dockerfile.release (goreleaser
+# builds every arch; this only COPYs it), the same nonroot uid 65532 and the
+# same entrypoint. Published to docker.io/denngubsky/loomcycle-media.
+FROM debian:bookworm-slim
+
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg poppler-utils; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --gid 65532 nonroot; \
+    useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin nonroot
+
+COPY loomcycle /usr/local/bin/loomcycle
+COPY LICENSE NOTICE /usr/share/doc/loomcycle/
+
+USER 65532:65532
+WORKDIR /
+EXPOSE 8787
+ENTRYPOINT ["/usr/local/bin/loomcycle"]

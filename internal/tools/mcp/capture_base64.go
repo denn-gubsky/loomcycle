@@ -52,18 +52,18 @@ const base64MaxDepth = 64
 // string that decodes to bytes that are neither is an opaque token — a
 // cursor, a signature, an encrypted blob the caller passes back — and is
 // left alone, since replacing it would break the next call that needs it.
-func captureTextBase64(ctx context.Context, origin, tool, text string, minBytes int) string {
+func captureTextBase64(ctx context.Context, origin, fallback, text string, minBytes int) string {
 	if len(text) < minBytes {
 		return text // no candidate can be shorter than the block holding it
 	}
 	trimmed := strings.TrimSpace(text)
 	if json.Valid([]byte(trimmed)) {
-		if out, ok := captureJSONBase64(ctx, origin, tool, text, minBytes); ok {
+		if out, ok := captureJSONBase64(ctx, origin, fallback, text, minBytes); ok {
 			return out
 		}
 		return text
 	}
-	stub, ok := keepBase64(ctx, origin, tool, trimmed, fileMeta{}, minBytes)
+	stub, ok := keepBase64(ctx, origin, fallback, trimmed, fileMeta{}, minBytes)
 	if !ok {
 		return text
 	}
@@ -113,7 +113,7 @@ type jsonSpan struct {
 // so key order, spacing and escapes stay byte-identical. Candidates are
 // judged when their object closes, because a sibling naming the file may
 // come after the bytes. ok is false when nothing was kept.
-func captureJSONBase64(ctx context.Context, origin, tool, text string, minBytes int) (string, bool) {
+func captureJSONBase64(ctx context.Context, origin, fallback, text string, minBytes int) (string, bool) {
 	type replacement struct {
 		start, end int
 		with       string
@@ -121,7 +121,7 @@ func captureJSONBase64(ctx context.Context, origin, tool, text string, minBytes 
 	var repls []replacement
 	judge := func(f *jsonFrame) {
 		for _, c := range f.cands {
-			if stub, ok := keepBase64(ctx, origin, tool, c.value, f.meta, minBytes); ok {
+			if stub, ok := keepBase64(ctx, origin, fallback, c.value, f.meta, minBytes); ok {
 				repls = append(repls, replacement{c.start, c.end, jsonQuote(stub)})
 			}
 		}
@@ -234,7 +234,7 @@ func jsonQuote(s string) string {
 // keepBase64 keeps s in the inbox when it is a base64 file, and returns the
 // stub that stands for it. ok is false when s is not one, and then nothing
 // was written.
-func keepBase64(ctx context.Context, origin, tool, s string, meta fileMeta, minBytes int) (string, bool) {
+func keepBase64(ctx context.Context, origin, fallback, s string, meta fileMeta, minBytes int) (string, bool) {
 	if len(s) < minBytes || !base64Alphabet(s) {
 		return "", false
 	}
@@ -251,7 +251,7 @@ func keepBase64(ctx context.Context, origin, tool, s string, meta fileMeta, minB
 		// kept as a .txt and stubbed like any other file.
 		mediaType = "text/plain"
 	}
-	res := inbox.Capture(ctx, inbox.Item{Name: meta.name, MediaType: mediaType, Origin: origin, Fallback: tool}, raw)
+	res := inbox.Capture(ctx, inbox.Item{Name: meta.name, MediaType: mediaType, Origin: origin, Fallback: fallback}, raw)
 	return res.Stub, true
 }
 

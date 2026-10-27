@@ -77,9 +77,11 @@ type fakeSTT struct{}
 
 func (fakeSTT) Name() string        { return "fake-stt" }
 func (fakeSTT) Accepts(string) bool { return true }
-func (fakeSTT) MaxBytes() int64     { return 25 << 20 }
-func (fakeSTT) Transcribe(_ context.Context, u Unit, o STTOptions) (Segments, error) {
-	return Segments{{Start: u.Span.Start, End: u.Span.End, Speaker: "Speaker 1", Text: o.Language}}, nil
+func (fakeSTT) Plan(context.Context) (STTPlan, error) {
+	return STTPlan{Engine: "fake-stt", MaxBytes: 25 << 20}, nil
+}
+func (fakeSTT) Transcribe(_ context.Context, _ STTPlan, u Unit, o STTOptions) (STTResult, error) {
+	return STTResult{Segments: Segments{{Start: u.Span.Start, End: u.Span.End, Speaker: "Speaker 1", Text: o.Language}}}, nil
 }
 
 var (
@@ -101,8 +103,12 @@ func TestEngines_ImplementTheInterfaces(t *testing.T) {
 	}
 	u.Span = TimeRange{Start: time.Minute, End: 2 * time.Minute}
 	var s STTEngine = fakeSTT{}
-	segs, err := s.Transcribe(context.Background(), u, STTOptions{Language: "uk", Diarize: DiarizeAuto})
-	if err != nil || len(segs) != 1 || segs[0].Start != time.Minute || segs[0].Text != "uk" {
-		t.Errorf("Transcribe = %+v, %v", segs, err)
+	sp, err := s.Plan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Transcribe(context.Background(), sp, u, STTOptions{Language: "uk", Diarize: DiarizeAuto})
+	if segs := res.Segments; err != nil || len(segs) != 1 || segs[0].Start != time.Minute || segs[0].Text != "uk" {
+		t.Errorf("Transcribe = %+v, %v", res, err)
 	}
 }

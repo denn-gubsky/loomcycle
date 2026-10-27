@@ -59,6 +59,9 @@ var ifaceKinds = map[string]ifaceKind{
 	"ModelStructuredOutputEnforcer": optional,
 	"ModelIdentifier":               optional,
 	"RunEnder":                      optional,
+	// AudioTranscriber is reached past the lane wrapper: the provider lanes
+	// count chat calls, not speech-to-text requests.
+	"AudioTranscriber": optional,
 	// RequestAuth rides in DriverOptions to the driver that uses it.
 	"RequestAuth": notOnProvider,
 }

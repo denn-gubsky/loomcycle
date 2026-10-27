@@ -157,12 +157,22 @@ func (s *Store) MemoryEmbedGet(ctx context.Context, tenantID string, scope store
 func provenanceCondition(c store.MemoryProvenanceConstraint) string {
 	switch c {
 	case store.ProvenanceRequired:
-		return " AND coalesce(m.origin, '') <> ''"
+		return " AND " + pgFactOrigin
 	case store.ProvenanceAbsent:
-		return " AND coalesce(m.origin, '') = ''"
+		return " AND " + pgNoFactOrigin
 	}
 	return ""
 }
+
+// pgFactOrigin and pgNoFactOrigin are store.IsFactOrigin in SQL: a row is a
+// fact when its origin is set and is not an import's. Every predicate here that
+// splits facts from prose uses one of them, so the split cannot drift between
+// the constraint, the document-class exclusion and the id lists. The import
+// origin is a constant, never input, so it is spelled into the statement.
+const (
+	pgFactOrigin   = "coalesce(m.origin, '') NOT IN ('', '" + store.OriginImport + "')"
+	pgNoFactOrigin = "coalesce(m.origin, '') IN ('', '" + store.OriginImport + "')"
+)
 
 // observedCondition appends the RFC CL observed-time window. The bounds arrive
 // ALREADY WIDENED by the caller's slack — the store owns no window policy, so the
@@ -308,12 +318,12 @@ func idSegmentDocumentCondition(f store.MemorySearchFilter, args []any) (string,
 			outside[i] = "NOT " + likes[i]
 			inside[i] = "(" + likes[i] + " AND " + segs[i] + " = ANY(" + idsArg + "))"
 		}
-		cond += " AND (coalesce(m.origin, '') <> '' OR (" + strings.Join(outside, " AND ") + ") OR " +
+		cond += " AND (" + pgFactOrigin + " OR (" + strings.Join(outside, " AND ") + ") OR " +
 			strings.Join(inside, " OR ") + ")"
 	}
 	if len(f.ExcludeIDs) > 0 {
 		args = append(args, f.ExcludeIDs)
-		docSeg := "CASE WHEN coalesce(m.origin, '') <> '' THEN NULL"
+		docSeg := "CASE WHEN " + pgFactOrigin + " THEN NULL"
 		for i := range likes {
 			docSeg += " WHEN " + likes[i] + " THEN " + segs[i]
 		}
@@ -439,7 +449,7 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	// would exclude the facts this query is for.
 	if filter.ExcludeDocumentPrefix != "" {
 		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
-		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND coalesce(m.origin, '') = '')"
+		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND " + pgNoFactOrigin + ")"
 	}
 	// Raw turns, dropped unless the caller ASKED for them. The namespace alone is the
 	// whole predicate: a trace is never anything else, so unlike the document class
@@ -586,7 +596,7 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	}
 	if filter.ExcludeDocumentPrefix != "" {
 		args = append(args, likePrefixPattern(filter.ExcludeDocumentPrefix))
-		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND coalesce(m.origin, '') = '')"
+		prefixCondition += " AND NOT (me.key LIKE $" + strconv.Itoa(len(args)) + " AND " + pgNoFactOrigin + ")"
 	}
 	// Raw turns, dropped unless the caller ASKED for them. The namespace alone is the
 	// whole predicate: a trace is never anything else, so unlike the document class

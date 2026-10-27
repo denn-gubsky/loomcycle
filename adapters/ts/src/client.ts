@@ -1138,8 +1138,10 @@ export class LoomcycleClient {
   }
 
   /** Aggregated token-usage + cost report (RFC AV). Group by any of
-   *  tenant/user/provider/model/source over an optional time window; group by
-   *  `source` for the operator-vs-tenant split. Tenant-scoped server-side: a
+   *  tenant/user/provider/model/source/purpose over an optional time window;
+   *  group by `source` for the operator-vs-tenant split, by `purpose` to see
+   *  what OCR and speech-to-text cost (a row's `audio_seconds` is the audio its
+   *  speech-to-text calls transcribed). Tenant-scoped server-side: a
    *  tenant principal sees only its own tenant (the `tenant` focus is
    *  admin-only). Mirrors `GET /v1/_usage`. */
   async usageReport(opts?: {

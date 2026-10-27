@@ -915,7 +915,8 @@ const (
 	ModelKindEmbedder = "embedder"
 	// ModelKindTranscriber is a speech-to-text model (transcription.stt.model).
 	// It is not a lane kind: providers.<id>.lanes takes chat, decision and
-	// embedder only, since nothing calls a transcriber yet.
+	// embedder only. A File tool's speech-to-text calls are made one at a time
+	// per call, and a provider lane does not count them.
 	ModelKindTranscriber = "transcriber"
 )
 

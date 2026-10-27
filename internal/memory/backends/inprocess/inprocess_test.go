@@ -182,11 +182,11 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, _ string, scope sto
 		origin := v.origins[vsKey(scope, id, r.key)]
 		switch filter.Provenance {
 		case store.ProvenanceRequired:
-			if strings.TrimSpace(origin) == "" {
-				continue // a note: no known writer distilled it
+			if !store.IsFactOrigin(origin) {
+				continue // a note or document text: no known writer distilled it
 			}
 		case store.ProvenanceAbsent:
-			if strings.TrimSpace(origin) != "" {
+			if store.IsFactOrigin(origin) {
 				continue // a fact
 			}
 		}

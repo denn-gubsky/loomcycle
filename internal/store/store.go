@@ -914,7 +914,8 @@ const (
 	UsageByUser     UsageDimension = "user"
 	UsageByProvider UsageDimension = "provider"
 	UsageByModel    UsageDimension = "model"
-	UsageBySource   UsageDimension = "source" // credential_source (operator|tenant|user)
+	UsageBySource   UsageDimension = "source"  // credential_source (operator|tenant|user)
+	UsageByPurpose  UsageDimension = "purpose" // chat | ocr | stt (UsagePurpose*)
 )
 
 // UsageQuery filters + groups a usage report.
@@ -942,6 +943,7 @@ type UsageAggregate struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model,omitempty"`
 	CredentialSource string `json:"credential_source,omitempty"`
+	Purpose          string `json:"purpose,omitempty"`
 
 	InputTokens         int64 `json:"input_tokens"`
 	OutputTokens        int64 `json:"output_tokens"`
@@ -959,18 +961,36 @@ type UsageAggregate struct {
 	Currency      string  `json:"currency,omitempty"`
 	CallCount     int64   `json:"call_count"`
 	UnpricedCalls int64   `json:"unpriced_calls"`
+
+	// AudioSeconds is the summed audio the group's speech-to-text calls
+	// transcribed — the unit their per-minute price is computed from, which
+	// the token counts cannot show. omitempty: a group with no STT call sends
+	// no key, so a report over chat-only usage is byte-identical to one from
+	// before transcription.
+	AudioSeconds float64 `json:"audio_seconds,omitempty"`
 }
 
-// UsageCanonicalDims is the fixed order the report's 5 dimension columns are
+// UsageCanonicalDims is the fixed order the report's 6 dimension columns are
 // SELECTed + scanned in, shared by both backends so the scan target order can't
 // drift from the query. A grouped dimension SELECTs its column; an ungrouped one
-// SELECTs ” — keeping the result a fixed 13-column shape regardless of group_by.
-var UsageCanonicalDims = []UsageDimension{UsageByTenant, UsageByUser, UsageByProvider, UsageByModel, UsageBySource}
+// SELECTs ” — keeping the result a fixed 15-column shape regardless of group_by.
+var UsageCanonicalDims = []UsageDimension{UsageByTenant, UsageByUser, UsageByProvider, UsageByModel, UsageBySource, UsageByPurpose}
 
-// UsageDimColumn maps a whitelisted dimension to its token_usage column name.
-// The whitelist IS the SQL-injection guard — only these five map to a column, so
-// a caller-supplied group_by can never inject arbitrary SQL. ok=false rejects an
-// unknown dimension.
+// UsageDimNames is the comma-joined list of the whitelisted dimensions, in
+// canonical order — what a refusal of an unknown group_by tells the caller is
+// allowed, derived here so the transports cannot list a stale set.
+func UsageDimNames() string {
+	names := make([]string, len(UsageCanonicalDims))
+	for i, d := range UsageCanonicalDims {
+		names[i] = string(d)
+	}
+	return strings.Join(names, ",")
+}
+
+// UsageDimColumn maps a whitelisted dimension to its column name, the same in
+// token_usage and usage_archive. The whitelist IS the SQL-injection guard — only
+// these six map to a column, so a caller-supplied group_by can never inject
+// arbitrary SQL. ok=false rejects an unknown dimension.
 func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 	switch d {
 	case UsageByTenant:
@@ -983,6 +1003,8 @@ func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 		return "model", true
 	case UsageBySource:
 		return "credential_source", true
+	case UsageByPurpose:
+		return "purpose", true
 	}
 	return "", false
 }
@@ -990,7 +1012,7 @@ func UsageDimColumn(d UsageDimension) (col string, ok bool) {
 // UsageGroupColumns builds a usage report's per-dimension SELECT expressions and
 // GROUP BY column list, in UsageCanonicalDims order: a grouped dimension emits its
 // column into BOTH lists; an ungrouped one emits the literal ” into dimExprs only,
-// keeping the SELECT a fixed 5-dimension shape regardless of group_by. Shared by
+// keeping the SELECT a fixed 6-dimension shape regardless of group_by. Shared by
 // both backends so the scan-target order can't drift from the query — and it's
 // dialect-independent (no ?/$N placeholders, no day-floor math, which genuinely
 // differ between backends and are NOT shared).
@@ -4828,8 +4850,9 @@ type MemorySearchFilter struct {
 	// at the same time as the others.
 	ExcludeUnitPrefix string
 
-	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT provenance —
-	// which is exactly the document class, and nothing else.
+	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT fact
+	// provenance (IsFactOrigin false: no origin, or an import's) — which is
+	// exactly the document class, and nothing else.
 	//
 	// It exists because ExcludeKeyPrefix stopped being able to express "not prose".
 	// That worked only while the chunk namespace held nothing but prose; a fact
@@ -4901,7 +4924,7 @@ type MemorySearchFilter struct {
 	ExcludeIDs []string
 	// IDsPrefixes confines IDs / ExcludeIDs to the DOCUMENT CLASS of these
 	// namespaces: a row is held to the lists only when its key begins with one of
-	// them AND it carries no provenance, and its id segment is then the text after
+	// them AND it carries no fact provenance (IsFactOrigin), and its id segment is then the text after
 	// THAT prefix. Every other row — a note, a fact (provenance; a fact homed in a
 	// chunk shares the chunk prefix, as ExcludeDocumentPrefix explains), a row in
 	// any other namespace — passes the lists untouched.
@@ -4930,12 +4953,32 @@ type MemoryProvenanceConstraint uint8
 const (
 	// ProvenanceAny is the zero value: no constraint.
 	ProvenanceAny MemoryProvenanceConstraint = iota
-	// ProvenanceRequired matches rows with a non-empty origin — distilled by a
-	// known writer (the consolidator).
+	// ProvenanceRequired matches rows whose origin makes them a fact
+	// (IsFactOrigin) — distilled by a known writer (the consolidator).
 	ProvenanceRequired
-	// ProvenanceAbsent matches rows with no origin — written directly by an agent.
+	// ProvenanceAbsent matches every other row: no origin (written directly by an
+	// agent) or OriginImport (an imported document's text).
 	ProvenanceAbsent
 )
+
+// OriginImport is the origin stamped on the body rows of an imported document: a
+// file or an email turned into a Document. It names its writer like any origin,
+// but what it labels is document text, not a distilled fact.
+const OriginImport = "import"
+
+// IsFactOrigin reports whether a row's origin makes it a FACT: a known writer
+// distilled it. The one rule every fact/prose split shares — ClassifyMemoryRow,
+// the provenance constraints both backends render, the memory backend's source
+// filters — so the label and the filter cannot disagree.
+//
+// An empty origin is an agent's own note or authored prose. OriginImport is not
+// empty, but the rows it labels are document text someone imported: a fact only
+// ever comes from distillation, so an import's label can lower trust (keep text
+// out of fact recall) and never raise it.
+func IsFactOrigin(origin string) bool {
+	o := strings.TrimSpace(origin)
+	return o != "" && o != OriginImport
+}
 
 // MemoryRowClass labels what kind of remembered thing a row is, so a caller can tell
 // "the user told me this" from "this is written down in a document" (RFC BW §4b).
@@ -4989,7 +5032,7 @@ func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
 	if strings.HasPrefix(key, TraceTurnKeyPrefix) {
 		return MemoryRowTrace
 	}
-	if strings.TrimSpace(origin) != "" {
+	if IsFactOrigin(origin) {
 		return MemoryRowFact
 	}
 	if documentKeyPrefix != "" && strings.HasPrefix(key, documentKeyPrefix) {

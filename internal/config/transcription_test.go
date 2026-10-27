@@ -15,6 +15,7 @@ providers:
 models:
   whisper: { provider: whisper-local, model: large-v3, kind: transcriber }
   whisper-free: { model: large-v3, kind: transcriber }
+  whisper-pattern: { provider: whisper-local, model_pattern: "large-*", kind: transcriber }
   whisper-elsewhere: { provider: openai, model: whisper-1, kind: transcriber }
   talker: { provider: anthropic, model: claude-x, kind: chat }
   plain: { provider: anthropic, model: claude-y }
@@ -58,7 +59,7 @@ transcription:
 	}
 	wantSTT := STTConfig{
 		Engine: "openai-audio", Provider: "whisper-local", Model: "whisper", Language: "uk", Diarize: "auto",
-		MaxMinutesPerCall: 120, MaxMinutesPerRun: 300, ChunkMinutes: 10, ChunkOverlapSeconds: 2,
+		MaxMinutesPerCall: 120, MaxMinutesPerRun: 300, ChunkMinutes: 10, ChunkOverlapSeconds: 2, TimeoutSeconds: 1800,
 	}
 	if cfg.Transcription.STT == nil || !reflect.DeepEqual(*cfg.Transcription.STT, wantSTT) {
 		t.Errorf("stt = %+v, want %+v", cfg.Transcription.STT, wantSTT)
@@ -160,6 +161,9 @@ func TestTranscriptionConfig_RefusesBadValues(t *testing.T) {
 		{"stt chunk above per call", "stt: { engine: off, chunk_minutes: 30, max_minutes_per_call: 20 }", []string{"chunk_minutes (30)", "max_minutes_per_call (20)"}},
 		{"stt overlap not under chunk", "stt: { engine: off, chunk_minutes: 1, chunk_overlap_seconds: 60 }", []string{"chunk_overlap_seconds (60)", "chunk_minutes"}},
 		{"stt media without in", "stt: { engine: off, media: { command: \"ffmpeg -f wav {out}\" } }", []string{"transcription.stt.media.command", "{in}"}},
+		{"stt media without out", "stt: { engine: off, media: { command: \"ffmpeg -i {in} -f wav out.wav\" } }", []string{"transcription.stt.media.command", "{out}"}},
+		{"stt negative timeout", "stt: { engine: off, timeout_s: -1 }", []string{"transcription.stt.timeout_s"}},
+		{"stt model a pattern alias", "stt: { engine: openai-audio, provider: whisper-local, model: whisper-pattern }", []string{"transcription.stt.model", "must name its model"}},
 		// block
 		{"unknown sub-block", "tts: { engine: off }", []string{"transcription", `unknown key "tts"`}},
 	} {

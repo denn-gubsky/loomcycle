@@ -471,7 +471,8 @@ func (q SearchQuery) selectorFilter() (store.MemorySearchFilter, error) {
 		// included, so "documents" used to return distilled facts — and the label
 		// agreed with the filter only because both were wrong in the same way. A
 		// fact's body row now carries an origin, so excluding provenance is what
-		// makes this selector mean prose.
+		// makes this selector mean prose. An imported document's body carries the
+		// import origin, which is not a fact's (store.IsFactOrigin), so it stays here.
 		f.Provenance = store.ProvenanceAbsent
 	case facts && !notes:
 		f.Provenance = store.ProvenanceRequired
