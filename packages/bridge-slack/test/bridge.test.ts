@@ -567,12 +567,40 @@ describe("slack bridge as a loomcycle gate", () => {
 
   it("puts a workspace admin or owner in its admins group, and a member not", async () => {
     const r = await rig({}, { gate: true });
-    r.slack.reply("users.info", { json: { ok: true, user: { id: "UADMIN", is_admin: true } } }, { json: { ok: true, user: { id: "UOWNER", is_owner: true } } });
+    r.slack.reply(
+      "users.info",
+      { json: { ok: true, user: { id: "UADMIN", team_id: "T1", is_admin: true } } },
+      { json: { ok: true, user: { id: "UOWNER", team_id: "T1", is_owner: true } } },
+    );
     expect(await r.adapter.groupsFor("slack:t1:uadmin", dmRef)).toEqual(["slack-team-t1", "slack-team-t1-admins"]);
     expect(await r.adapter.groupsFor("slack:t1:uowner", dmRef)).toEqual(["slack-team-t1", "slack-team-t1-admins"]);
     expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
     // Slack's ids are upper case; the subject's are not.
     expect(r.slack.to("users.info").map((c) => c.body)).toEqual([{ user: "UADMIN" }, { user: "UOWNER" }, { user: "UALICE" }]);
+  });
+
+  it("believes admin and owner flags only from the subject's own workspace", async () => {
+    const r = await rig({}, { gate: true });
+    // Enterprise Grid or Slack Connect: the flags may be another team's.
+    r.slack.reply(
+      "users.info",
+      { json: { ok: true, user: { id: "UALICE", team_id: "T9", is_admin: true, is_owner: true } } },
+      { json: { ok: true, user: { id: "UBOB", is_admin: true } } },
+    );
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
+    expect(await r.adapter.groupsFor("slack:t1:ubob", dmRef)).toEqual(["slack-team-t1"]);
+  });
+
+  it("puts a guest in the guests group only, and asserts nothing for a deleted account or a bot", async () => {
+    const r = await rig({}, { gate: true });
+    for (const flag of ["is_restricted", "is_ultra_restricted", "is_stranger"]) {
+      r.slack.reply("users.info", { json: { ok: true, user: { id: "UG", team_id: "T1", is_admin: true, [flag]: true } } });
+      expect(await r.adapter.groupsFor(`slack:t1:u${flag.replaceAll("_", "")}`, dmRef), flag).toEqual(["slack-team-t1-guests"]);
+    }
+    for (const flag of ["deleted", "is_bot"]) {
+      r.slack.reply("users.info", { json: { ok: true, user: { id: "UX", team_id: "T1", [flag]: true } } });
+      expect(await r.adapter.groupsFor(`slack:t1:u${flag.replaceAll("_", "")}`, dmRef), flag).toBeUndefined();
+    }
   });
 
   it("asserts nothing for a subject that is not a person of this gate's", async () => {
@@ -593,7 +621,7 @@ describe("slack bridge as a loomcycle gate", () => {
     expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
     expect(r.slack.to("users.info")).toHaveLength(2);
     t += 2 * 60_000;
-    r.slack.reply("users.info", { json: { ok: true, user: { id: "UALICE", is_admin: true } } });
+    r.slack.reply("users.info", { json: { ok: true, user: { id: "UALICE", team_id: "T1", is_admin: true } } });
     expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1", "slack-team-t1-admins"]);
     expect(r.slack.to("users.info")).toHaveLength(3);
   });

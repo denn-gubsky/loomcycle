@@ -138,10 +138,13 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
    *  (group_map). A shared conversation's own user is in its workspace's
    *  group and its channel's. A person (a DM) is in their own workspace's
    *  group, and its admins group when users.info says they administer or own
-   *  it. A lookup that fails (no users:read scope, say) asserts nothing, so
-   *  loomcycle never removes a group on a guess. Cached per person for a
-   *  while: a token is asked for rarely, but a restart asks for all of them
-   *  at once. */
+   *  it — believed only when the account is that workspace's own: under
+   *  Enterprise Grid or Slack Connect the flags may be another team's. A
+   *  guest (restricted, ultra-restricted, or a stranger) is in the guests
+   *  group only. A deleted account or a bot, and a lookup that fails (no
+   *  users:read scope, say), assert nothing, so loomcycle never removes a
+   *  group on a guess. Cached per person for a while: a token is asked for
+   *  rarely, but a restart asks for all of them at once. */
   async function groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined> {
     if (ref.channelType !== "im") {
       const team = ref.team.toLowerCase();
@@ -154,7 +157,16 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     const at = now();
     const hit = groupCache.get(subject);
     if (hit && hit.until > at) return hit.groups;
-    let info: { is_admin?: unknown; is_owner?: unknown };
+    let info: {
+      team_id?: unknown;
+      deleted?: unknown;
+      is_bot?: unknown;
+      is_restricted?: unknown;
+      is_ultra_restricted?: unknown;
+      is_stranger?: unknown;
+      is_admin?: unknown;
+      is_owner?: unknown;
+    };
     try {
       // The subject is lower-cased; Slack's ids are upper case.
       const r = await api.call("users.info", { user: user.toUpperCase() });
@@ -163,8 +175,15 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
       log.warn("could not read a Slack user's groups", { error: slackErrorCode(err) ?? (err as Error)?.name });
       return undefined;
     }
-    const groups = [`slack-team-${team}`];
-    if (info.is_admin === true || info.is_owner === true) groups.push(`slack-team-${team}-admins`);
+    if (info.deleted === true || info.is_bot === true) return undefined;
+    let groups: string[];
+    if (info.is_restricted === true || info.is_ultra_restricted === true || info.is_stranger === true) {
+      groups = [`slack-team-${team}-guests`];
+    } else {
+      groups = [`slack-team-${team}`];
+      const own = typeof info.team_id === "string" && info.team_id.toLowerCase() === team;
+      if (own && (info.is_admin === true || info.is_owner === true)) groups.push(`slack-team-${team}-admins`);
+    }
     groupCache.delete(subject);
     groupCache.set(subject, { groups, until: at + GROUP_CACHE_MS });
     if (groupCache.size > MAX_GROUP_CACHE) groupCache.delete(groupCache.keys().next().value!);
