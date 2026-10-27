@@ -354,8 +354,8 @@ type Server struct {
 	limits *limits.Tracker
 
 	// throughput is the RFC DT per-(provider, model) speed estimate, fed from
-	// every timed call recordCallUsage sees (plus the summarizer / unit-generator
-	// / describe calls that record no usage). nil when timeout_scaling.mode is
+	// every timed call recordCallUsage sees (the summaries and Document jobs
+	// included, through the call observers). nil when timeout_scaling.mode is
 	// off; its methods are nil-safe. Seeded from the ledger at boot via
 	// SeedThroughput (main.go). Reported only — no timeout reads it.
 	throughput *throughput.Estimator
