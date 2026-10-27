@@ -72,6 +72,13 @@ func TestWithin_KeepsTheCurrentIdentityAndBothSetsDenies(t *testing.T) {
 	if cur.Within(nil) != cur || cur.Within(cur) != cur {
 		t.Error("Within(nil) and Within(self) must return the set itself")
 	}
+	// Held twice, a set answers to both ceilings.
+	denyRead := compile(t, subj, []Binding{{ACL: "r", SubjectKind: SubjectTenant}},
+		mustACL(t, `{"name":"r","rules":[{"effect":"deny","actions":["invoke"],"resources":["tool:Read"]}]}`))
+	if ask(cur.Within(start).Within(denyRead), "invoke", "skill", "old-x") != Denied ||
+		ask(cur.Within(start).Within(denyRead), "invoke", "tool", "Read") != Denied {
+		t.Error("a set held twice lost one of its ceilings")
+	}
 	// A scope question: the ceiling's deny on part of the scope refuses it.
 	memStart := compile(t, subj, []Binding{{ACL: "m", SubjectKind: SubjectTenant}},
 		mustACL(t, `{"name":"m","rules":[{"effect":"deny","actions":["read"],"resources":["document:tenant:/hr/**"]}]}`))
