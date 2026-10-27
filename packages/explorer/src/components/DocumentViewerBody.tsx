@@ -11,6 +11,7 @@ import type {
 import { readImageAsBase64, imageFileFromPaste } from "../lib/imageUpload";
 import { useExplorerData } from "../lib/dataLayer";
 import { landingChunk, type DocLocation } from "../lib/docTrail";
+import { chunkAncestors } from "../lib/chunkAncestry";
 import {
   docColor,
   effectiveScheme,
@@ -31,6 +32,7 @@ import DocUnavailable from "./DocUnavailable";
 import HistoryModal from "./HistoryModal";
 import Markdown from "./Markdown";
 import MermaidDiagram from "./Mermaid";
+import Splitter from "./Splitter";
 
 // imageAlt derives an image chunk's alt text: the fields.alt override, else the
 // chunk title, else a generic label (RFC BO).
@@ -149,6 +151,12 @@ export default function DocumentViewerBody({
   const selectedIsRoot = useMemo(
     () => !!selectedDetail && !selectedDetail.parent_id,
     [selectedDetail],
+  );
+  // The levels above the selected chunk, root first. The ↑/↓ buttons reorder a
+  // chunk among its siblings, so climbing back up gets its own breadcrumb.
+  const ancestors = useMemo(
+    () => chunkAncestors(chunks, selectedDetail?.id),
+    [chunks, selectedDetail],
   );
 
   // Color (RFC BN). rootChunkId comes from the meta (or the loaded root chunk);
@@ -669,7 +677,14 @@ export default function DocumentViewerBody({
       {unavailable ? (
         <DocUnavailable documentId={documentId} scope={scope} detail={loadErr ?? undefined} />
       ) : (
-        <div className="doc-split">
+        // The tree/chunk border is draggable; the width is remembered per browser.
+        <Splitter
+          className="doc-split"
+          defaultLeftWidth={320}
+          minLeftWidth={160}
+          minRightWidth={320}
+          storageKey="loomcycle.explorer.split.doc"
+        >
           <div className="doc-chunktree">
             {loading && chunks.length === 0 ? (
               <div className="empty">
@@ -690,6 +705,41 @@ export default function DocumentViewerBody({
             {selectedDetail ? (
               <>
                 <div className="doc-content-head">
+                  {ancestors.length > 0 && (
+                    <nav className="chunk-ancestry" aria-label="Chunks above this one">
+                      <button
+                        type="button"
+                        className="chunk-ancestry-up"
+                        onClick={() => setSelectedId(ancestors[ancestors.length - 1].id)}
+                        title={`Up to ${ancestors[ancestors.length - 1].title || "(untitled)"}`}
+                      >
+                        ↰ Up
+                      </button>
+                      <ol className="doc-trail-list">
+                        {ancestors.map((a) => (
+                          <li className="doc-trail-item" key={a.id}>
+                            <button
+                              type="button"
+                              className="doc-trail-crumb"
+                              onClick={() => setSelectedId(a.id)}
+                              title={a.title || "(untitled)"}
+                            >
+                              {a.title || "(untitled)"}
+                            </button>
+                          </li>
+                        ))}
+                        <li className="doc-trail-item">
+                          <span
+                            className="doc-trail-current"
+                            aria-current="location"
+                            title={selectedDetail.title || "(untitled)"}
+                          >
+                            {selectedDetail.title || "(untitled)"}
+                          </span>
+                        </li>
+                      </ol>
+                    </nav>
+                  )}
                   <h3>{selectedDetail.title || "(untitled)"}</h3>
                   <div className="doc-content-meta">
                     {selectedDetail.type && <span className="chunk-badge">{selectedDetail.type}</span>}
@@ -733,7 +783,11 @@ export default function DocumentViewerBody({
                         markdown
                       </button>
                     </div>
-                    <button type="button" onClick={() => setEditing(selectedDetail)}>
+                    <button
+                      type="button"
+                      className="chunk-edit"
+                      onClick={() => setEditing(selectedDetail)}
+                    >
                       edit
                     </button>
                     {/* RFC BS — read-only edit history (revisions + version view + diff). */}
@@ -840,7 +894,7 @@ export default function DocumentViewerBody({
               </div>
             )}
           </div>
-        </div>
+        </Splitter>
       )}
       {assistantOpen && renderAssistant && (
         <div className="doc-assistant">
