@@ -193,6 +193,33 @@ func TestContextSelf_IdentityOfASubjectWithNoRowInTheRunsTenantHasNoRowFields(t 
 	}
 }
 
+// A credential of another tenant running in this one reads no directory row
+// here: the run tenant's row under the same subject id is somebody else's.
+func TestContextSelf_IdentityOfAnotherTenantsCredentialReadsNoRowsInTheRunsTenant(t *testing.T) {
+	st := identityStore(t)
+	p, err := aclres.New(st, authz.ModeCompat, 0).Resolve(context.Background(), auth.Principal{
+		TenantID: "globex", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingStore{Store: st}
+	ctx := auth.WithPrincipal(context.Background(), p)
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "acme", UserID: "alice"})
+	ctx = tools.WithRunPolicy(ctx, tools.RunPolicy{ACL: p.Effective})
+	out, res := callContext(t, &Context{Store: rec}, ctx, `{"op":"self"}`)
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	id, _ := out["identity"].(map[string]any)
+	if _, ok := id["display_name"]; ok || strings.Contains(res.Text, "Alice Doe") {
+		t.Errorf("a globex credential in an acme run read acme's alice: %v", id)
+	}
+	if len(rec.users)+len(rec.group) != 0 {
+		t.Errorf("directory reads across the tenant line: users %v groups %v", rec.users, rec.group)
+	}
+}
+
 // Open mode (no principal, no set): no identity block; the flat ids remain.
 func TestContextSelf_NoIdentityBlockWithoutASubject(t *testing.T) {
 	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "acme", UserID: "u1"})

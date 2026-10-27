@@ -44,20 +44,21 @@ type canQuery struct {
 	Resource *canResource `json:"resource"`
 }
 
-// identitySubject returns the subject the run acts for and its compiled set:
-// the set's subject when the run carries one (inside a run it is the
-// originating principal's, inherited down the spawn tree), else the
-// authenticated principal's. "" when there is neither — open mode, or a
-// trigger that runs under a definition rather than a person.
-func identitySubject(ctx context.Context) (string, *authz.Effective) {
-	eff := tools.CallerACL(ctx)
+// identitySubject returns the subject the run acts for, the tenant that
+// subject belongs to, and its compiled set: the set's subject when the run
+// carries one (inside a run it is the originating principal's, inherited down
+// the spawn tree), else the authenticated principal's. "" when there is
+// neither — open mode, or a trigger that runs under a definition rather than
+// a person.
+func identitySubject(ctx context.Context) (subject, subjectTenant string, eff *authz.Effective) {
+	eff = tools.CallerACL(ctx)
 	if eff != nil && eff.Subject.ID != "" {
-		return eff.Subject.ID, eff
+		return eff.Subject.ID, eff.Subject.TenantID, eff
 	}
 	if p, ok := auth.PrincipalFromContext(ctx); ok && p.Subject != "" {
-		return p.Subject, eff
+		return p.Subject, p.TenantID, eff
 	}
-	return "", eff
+	return "", "", eff
 }
 
 // identityReport is op=self's `identity` block: the user row of the run's own
@@ -69,13 +70,18 @@ func identitySubject(ctx context.Context) (string, *authz.Effective) {
 // logged and leaves them out too — op=self must not fail because a directory
 // read did.
 func (c *Context) identityReport(ctx context.Context) map[string]any {
-	subject, eff := identitySubject(ctx)
+	subject, subjectTenant, eff := identitySubject(ctx)
 	if subject == "" {
 		return nil
 	}
 	tenant := tools.RunIdentity(ctx).TenantID
 	out := map[string]any{"tenant_id": tenant, "subject": subject}
-	if c.Store != nil {
+	// The directory rows are read only when the subject belongs to the run's
+	// tenant. A credential of another tenant running here (an operator
+	// focused on a tenant) has no row in it, and a row there under the same
+	// subject id would be someone else's.
+	readRows := c.Store != nil && subjectTenant == tenant
+	if readRows {
 		row, err := c.Store.UserGet(ctx, tenant, subject)
 		switch {
 		case err == nil:
@@ -97,14 +103,14 @@ func (c *Context) identityReport(ctx context.Context) map[string]any {
 		// no groups or lists to report.
 		return out
 	}
-	out["groups"] = c.identityGroups(ctx, tenant, eff)
+	out["groups"] = c.identityGroups(ctx, tenant, eff, readRows)
 	out["acl"] = identityACL(ctx, eff)
 	return out
 }
 
 // identityGroups lists the set's (closed) groups with how the subject is in
 // each and, from the group rows, their description and external id.
-func (c *Context) identityGroups(ctx context.Context, tenant string, eff *authz.Effective) []map[string]any {
+func (c *Context) identityGroups(ctx context.Context, tenant string, eff *authz.Effective, readRows bool) []map[string]any {
 	names := append([]string(nil), eff.Subject.Groups...)
 	sort.Strings(names)
 	via := eff.GroupVia()
@@ -114,7 +120,7 @@ func (c *Context) identityGroups(ctx context.Context, tenant string, eff *authz.
 		if v, ok := via[name]; ok {
 			g["via"] = v
 		}
-		if c.Store != nil && i < maxIdentityGroupRows {
+		if readRows && i < maxIdentityGroupRows {
 			row, err := c.Store.GroupGet(ctx, tenant, name)
 			switch {
 			case err == nil:
