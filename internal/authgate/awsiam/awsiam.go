@@ -216,7 +216,7 @@ func (g *Gate) Verify(ctx context.Context, d LoginData) (Identity, error) {
 	if g.Shared != nil {
 		// Another replica may have been handed the same request.
 		sum := sha256.Sum256([]byte(auth.Signature))
-		ok, err := g.Shared.AuthReplayAdmit(ctx, g.SharedScope, hex.EncodeToString(sum[:]), expires, now)
+		ok, err := g.Shared.UseOnce(ctx, g.SharedScope, hex.EncodeToString(sum[:]), expires, now)
 		if err != nil {
 			g.Replay.Release(key)
 			return Identity{}, fmt.Errorf("awsiam: recording the request: %w", err)

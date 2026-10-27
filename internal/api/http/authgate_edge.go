@@ -61,9 +61,9 @@ type edgeGatesHolder struct{ p atomic.Pointer[EdgeGates] }
 // EdgeGateDeps are what building the edge gates needs from the boot.
 type EdgeGateDeps struct {
 	// Replay records accepted one-time values (STS signatures, forward-auth
-	// nonces) for every replica. Nil keeps replay protection to this
-	// replica.
-	Replay store.AuthReplayStore
+	// nonces) for every replica, in the external gates' assertion record.
+	// Nil keeps replay protection to this replica.
+	Replay store.AuthLifecycleStore
 }
 
 // Names lists the gates, sorted.
@@ -100,7 +100,7 @@ func EdgeGatesFromConfig(cfg *config.Config, deps EdgeGateDeps) (*EdgeGates, err
 				Replay: replay.New(0),
 			}
 			if deps.Replay != nil {
-				ag.Shared, ag.SharedScope = deps.Replay, "awsiam:"+g.Name
+				ag.Shared, ag.SharedScope = storeReplayCache{deps.Replay}, "awsiam:"+g.Name
 			}
 			e.awsiam[g.Name] = ag
 		}
@@ -137,7 +137,7 @@ func buildHeaderGate(g config.AuthGate, deps EdgeGateDeps) (*headergate.Gate, er
 		}
 		f := &headergate.ForwardAuthHMAC{Secret: secret, Replay: replay.New(0)}
 		if deps.Replay != nil {
-			f.Shared, f.SharedScope = deps.Replay, "fwdhmac:"+g.Name
+			f.Shared, f.SharedScope = storeReplayCache{deps.Replay}, "fwdhmac:"+g.Name
 		}
 		return headergate.NewForwardAuthGate(f, h.TrustedProxyCIDRs), nil
 	}

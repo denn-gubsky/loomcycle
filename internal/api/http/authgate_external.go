@@ -56,7 +56,8 @@ const (
 )
 
 // storeReplayCache is the replay cache every replica shares: the store's
-// auth_assertion_jtis table.
+// auth_assertion_jtis table. The external gates key it by gate name; the
+// edge gates (authgate_edge.go) by "awsiam:<gate>" and "fwdhmac:<gate>".
 type storeReplayCache struct{ st store.AuthLifecycleStore }
 
 func (c storeReplayCache) UseOnce(ctx context.Context, gate, jti string, until, now time.Time) (bool, error) {

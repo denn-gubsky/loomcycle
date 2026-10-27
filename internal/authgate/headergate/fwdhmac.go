@@ -116,7 +116,7 @@ func (f *ForwardAuthHMAC) Verify(ctx context.Context, identity, signature string
 	}
 	if f.Shared != nil {
 		sum := sha256.Sum256([]byte(nonce))
-		ok, err := f.Shared.AuthReplayAdmit(ctx, f.SharedScope, hex.EncodeToString(sum[:]), expires, now)
+		ok, err := f.Shared.UseOnce(ctx, f.SharedScope, hex.EncodeToString(sum[:]), expires, now)
 		if err != nil {
 			// Fail closed, and not as the caller's fault: unrecorded, the
 			// header could be replayed to another replica.

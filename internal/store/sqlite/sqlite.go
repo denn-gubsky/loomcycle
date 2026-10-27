@@ -706,15 +706,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (tenant_id, subject)
 		)`,
 		`CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL`,
-		// RFC FA P3: one-time credential values already accepted (postgres
-		// 0118 explains why). expires_at is unix nanoseconds.
-		`CREATE TABLE IF NOT EXISTS auth_replay (
-			scope      TEXT    NOT NULL,
-			key_hash   TEXT    NOT NULL,
-			expires_at INTEGER NOT NULL,
-			PRIMARY KEY (scope, key_hash)
-		)`,
-		`CREATE INDEX IF NOT EXISTS auth_replay_by_expiry ON auth_replay(expires_at)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

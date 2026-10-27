@@ -432,7 +432,7 @@ func hasAction(sink *recordingSink, action string) bool {
 // failingReplay is a shared replay record whose store is down.
 type failingReplay struct{ store.Store }
 
-func (failingReplay) AuthReplayAdmit(context.Context, string, string, time.Time, time.Time) (bool, error) {
+func (failingReplay) AuthAssertionUseOnce(context.Context, string, string, time.Time, time.Time) (bool, error) {
 	return false, fmt.Errorf("store down")
 }
 

@@ -469,14 +469,14 @@ func TestForwardAuth_HeaderAtTheWindowEdgeCannotBeReplayedLater(t *testing.T) {
 	}
 }
 
-// sharedRecord stands in for store.AuthReplayStore.
+// sharedRecord stands in for the store's shared replay record.
 type sharedRecord struct {
 	mu   sync.Mutex
 	seen map[string]time.Time
 	err  error
 }
 
-func (s *sharedRecord) AuthReplayAdmit(_ context.Context, scope, key string, expires, now time.Time) (bool, error) {
+func (s *sharedRecord) UseOnce(_ context.Context, scope, key string, expires, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {

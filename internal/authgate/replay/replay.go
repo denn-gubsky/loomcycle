@@ -4,7 +4,8 @@
 //
 // The cache is in-process and bounded. It answers for one replica only: a
 // gate whose credential can be replayed against a second replica within its
-// window records it in the store as well (store.AuthReplayStore).
+// window records it in the store as well (the auth_assertion_jtis table the
+// external gates use, through Shared).
 //
 // Two ways in. Admit is for a value whose credential is already
 // authenticated (the forward-auth HMAC was checked first). Reserve / Commit /
@@ -23,12 +24,14 @@ import (
 	"time"
 )
 
-// Shared is the cross-replica record of admitted values
-// (store.AuthReplayStore): check-and-insert of (scope, key) until expires,
-// false when it is already there and live. A gate records in it after its
-// own cache, so a value one replica accepted is refused by every other.
+// Shared is the cross-replica record of admitted values: check-and-insert
+// of (scope, key) until expires, false when it is already there and live. A
+// gate records in it after its own cache, so a value one replica accepted is
+// refused by every other. The store's AuthAssertionUseOnce backs it, the
+// record the external gates keep their jtis in: a scope here is
+// "<kind>:<gate>", which no gate name can equal (a name holds no ':').
 type Shared interface {
-	AuthReplayAdmit(ctx context.Context, scope, key string, expires, now time.Time) (bool, error)
+	UseOnce(ctx context.Context, scope, key string, expires, now time.Time) (bool, error)
 }
 
 var (
