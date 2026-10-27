@@ -553,6 +553,39 @@ const why = await client.authzExplain({
 console.log(why.decision.outcome, why.traces);
 ```
 
+### Users and sign-in gates (RFC FA)
+
+First-class users and how people sign in. A user's `status` (`UserStatus`) is `active`, `disabled` or `pending`: a sign-in gate configured with `new_user.status: pending` provisions people who can sign in but are refused everything until an operator approves them. `createUser` / `updateUser` accept only `active` and `disabled`; a pending user is activated by `approveUser` (a PATCH to `active` is a 409 `use_approve`). `whoami().auth.status` is `"pending"` for such a session.
+
+The tenant is your own. `opts.tenant` names another for an admin token, and for an `auth:manage` credential (a website's), which must name one (400 `tenant_required`) and is held to the gate's new-user floor; a tenant operator always acts in its own tenant. Every call needs a persistent store.
+
+| Method | Route | Returns |
+|---|---|---|
+| `createUser(body, opts?)` / `updateUser(subject, body, opts?)` / `deleteUser(subject, opts?)` | `POST /v1/_users` / `PATCH` / `DELETE /v1/_users/{subject}` | `UserRecord` / `UserRecord` / void |
+| `approveUser(subject, opts?)` | `POST /v1/_users/{subject}/approve` | `UserRecord`, now `active`; 409 `not_pending` otherwise |
+| `listUserIdentities(subject, opts?)` | `GET /v1/_users/{subject}/identities` | `UserIdentitiesResponse` — the identity-provider accounts a user signs in with; a user reads its own |
+| `unlinkUserIdentity(subject, gate, opts?)` | `DELETE /v1/_users/{subject}/identities/{gate}` | void; for an operator — a user unlinks its own only from its browser session |
+| `listAuthGates({probe?}?)` | `GET /v1/_authgate` | `AuthGateListResponse` — every configured gate, never key material. **Admin token only** |
+| `createInvite(gate, body, opts?)` | `POST /v1/_authgate/{gate}/invites` | `CreatedInvite` — `{invite_id, url, expires_at}`; the URL is shown once |
+| `listInvites(gate, opts?)` | `GET /v1/_authgate/{gate}/invites` | `AuthInviteListResponse` — `state` is `live` / `redeemed` / `revoked` / `expired`; never a code |
+| `revokeInvite(gate, inviteId, opts?)` | `DELETE /v1/_authgate/{gate}/invites/{id}` | void; 409 `invite_not_live` |
+| `createPasswordReset(gate, subject, opts?)` | `POST /v1/_authgate/{gate}/resets` | `CreatedPasswordReset` — a one-time link that sets a new password |
+| `removeGateCredentials(gate, subject, opts?)` | `DELETE /v1/_authgate/{gate}/credentials/{subject}` | void — password, authenticator and recovery codes go; the login stays |
+| `renameGateLogin(gate, subject, login, opts?)` | `PATCH /v1/_authgate/{gate}/logins/{subject}` | `{subject, login}`; 409 `login_taken` |
+| `listGateIdentities(gate, subject, opts?)` | `GET /v1/_authgate/{gate}/identities?subject=` | `GateIdentitiesResponse` — logins, `has_password`, `has_totp` |
+| `getGateTenantStatus(gate, opts?)` | `GET /v1/_authgate/{gate}/tenant-status` | `GateTenantStatus` — whether the tenant has, or ever had, a user, and whether an owner invite is live |
+
+None of these takes a password: the person sets their own through the invite or reset link. Hand the link's `url` to the person and do not log it — its fragment is the one-time code.
+
+Signing in, signing out and a person's own password or authenticator are not here. Those routes (`POST /ui/session`, `POST /v1/_auth/logout`, the password login, redeeming an invite or a reset, `/v1/_auth/account`, `/v1/_auth/password`, `/v1/_auth/totp`) establish or act on a browser's cookie session and accept only same-origin requests from loomcycle's own Web UI. A bearer has no session to end: retire a delegated user token with `revokeUserToken`, an operator token with `operatorTokenDef`.
+
+```ts
+const pending = (await client.listUsers({ tenant: "acme" })).users.filter((u) => u.status === "pending");
+for (const u of pending) await client.approveUser(u.user_id, { tenant: "acme" });
+
+const { url } = await client.createInvite("password", { email: "carol@example.com", ttl: "72h" }, { tenant: "acme" });
+```
+
 ### Decision models
 
 Ask a **decision model** typed questions about a piece of text and get each answer with its probabilities. A decision model does not write: it reads the `state` you give it and answers a choice, a yes/no or a score, so there is no reply to parse and a call costs a few output tokens. Use it to route, gate, rank or grade text you already have. No run is involved; the tokens are charged to the caller and count against its token budget.

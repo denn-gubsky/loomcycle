@@ -145,6 +145,14 @@ import type {
   MintedUserToken,
   UserTokenMeta,
   ListUserTokensResponse,
+  UserIdentitiesResponse,
+  AuthGateListResponse,
+  CreateInviteBody,
+  CreatedInvite,
+  AuthInviteListResponse,
+  CreatedPasswordReset,
+  GateIdentitiesResponse,
+  GateTenantStatus,
   RunnableAgentsResponse,
   LLMChatOptions,
   LLMChatResponse,
@@ -1395,8 +1403,10 @@ export class LoomcycleClient {
   //
   // A tenant operator (substrate:tenant) manages the first-class users in its
   // OWN tenant and mints/lists/revokes bearer tokens for them. The tenant is
-  // always server-derived from the authenticated principal — never sent — so
-  // there is no tenant field on any of these calls. Requires a persistent store
+  // server-derived from the authenticated principal. `opts.tenant` (sent as
+  // ?tenant=) names another only for an admin token, and for an `auth:manage`
+  // credential, which must name one (400 `tenant_required` otherwise); a
+  // tenant operator always acts in its own tenant. Requires a persistent store
   // (503 otherwise).
 
   /** Register a first-class user in the caller's own tenant. `access_mode`
@@ -1405,24 +1415,28 @@ export class LoomcycleClient {
    *  (tenant, subject). */
   async createUser(
     body: CreateUserBody,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<UserRecord> {
-    return postJSON<UserRecord>(this.ctx, "/v1/_users", body, opts);
+    return postJSON<UserRecord>(this.ctx, this.aclPath("/v1/_users", opts?.tenant), body, {
+      signal: opts?.signal,
+    });
   }
 
   /** Patch mutable fields on a user in the caller's own tenant. An omitted key
    *  leaves the column unchanged. Disabling a user (status:"disabled") also
-   *  revokes its delegated tokens server-side. Cross-tenant target → 404. */
+   *  revokes its delegated tokens server-side. A pending user is activated by
+   *  {@link approveUser}, not here (409 `use_approve`). Cross-tenant target →
+   *  404. */
   async updateUser(
     subject: string,
     body: UpdateUserBody,
-    opts?: { signal?: AbortSignal },
+    opts?: { tenant?: string; signal?: AbortSignal },
   ): Promise<UserRecord> {
     return patchJSON<UserRecord>(
       this.ctx,
-      `/v1/_users/${encodeURIComponent(subject)}`,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}`, opts?.tenant),
       body,
-      opts,
+      { signal: opts?.signal },
     );
   }
 
@@ -1430,10 +1444,232 @@ export class LoomcycleClient {
    *  delegated tokens are retired first so the bearer cannot outlive the row.
    *  Owned data (runs / sessions / memory) is left intact — this is not
    *  erasure ({@link erasureExecute}). Cross-tenant target → 404. */
-  async deleteUser(subject: string, opts?: { signal?: AbortSignal }): Promise<void> {
+  async deleteUser(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
     return deleteRequest(
       this.ctx,
-      `/v1/_users/${encodeURIComponent(subject)}`,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}`, opts?.tenant),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Approve a user awaiting approval: `pending` → `active`
+   *  (`POST /v1/_users/{subject}/approve`). A sign-in gate configured with
+   *  `new_user.status: pending` provisions people who can sign in but are
+   *  refused everything until this call. Returns the updated record. 409
+   *  `not_pending` for a user that is not pending; 404 for an unknown or
+   *  cross-tenant subject. An `auth:manage` credential may approve only a user
+   *  at its floor (403 `target_beyond_floor`). */
+  async approveUser(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<UserRecord> {
+    return postJSON<UserRecord>(
+      this.ctx,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}/approve`, opts?.tenant),
+      undefined,
+      { signal: opts?.signal },
+    );
+  }
+
+  /** The identity-provider accounts a user signs in with
+   *  (`GET /v1/_users/{subject}/identities`): one row per linked gate, never a
+   *  secret. A user reads its own; a tenant operator or an admin reads any in
+   *  the tenant. Password-gate logins, with whether a password and an
+   *  authenticator are set, are {@link listGateIdentities}. */
+  async listUserIdentities(
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<UserIdentitiesResponse> {
+    return jsonFetch<UserIdentitiesResponse>(
+      this.ctx,
+      this.aclPath(`/v1/_users/${encodeURIComponent(subject)}/identities`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** Unlink one identity-provider account from a user
+   *  (`DELETE /v1/_users/{subject}/identities/{gate}`, 204). Sessions made
+   *  through it end on their next request. For a tenant operator or an admin;
+   *  a user unlinking its own account must do it from a recently
+   *  signed-in Web UI session, so a bearer is refused (403
+   *  `link_needs_own_session`). A password gate's login is removed with
+   *  {@link removeGateCredentials} instead (409 `password_gate`). 404
+   *  `identity_not_found` when no account of that gate is linked. */
+  async unlinkUserIdentity(
+    subject: string,
+    gate: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      this.aclPath(
+        `/v1/_users/${encodeURIComponent(subject)}/identities/${encodeURIComponent(gate)}`,
+        opts?.tenant,
+      ),
+      { signal: opts?.signal },
+    );
+  }
+
+  // ---- RFC FA: sign-in gates + the password gate's management API ----
+  //
+  // Invitations, reset links, credential removal, login renames and a user's
+  // logins at a password gate, addressed by the gate's configured name. None
+  // takes a password: the person sets their own through the link. A tenant
+  // operator manages its own tenant, an admin any (`opts.tenant`, defaulting
+  // to its own), and an `auth:manage` credential any tenant it names — it
+  // must name one (400 `tenant_required`) and is held to the gate's new-user
+  // floor. A gate that is not a password gate is a 404 `gate_not_found`.
+  // Requires a persistent store (503 otherwise).
+
+  /** Every configured sign-in gate (`GET /v1/_authgate`): kind, label,
+   *  whether a browser can sign in through it, its identity map and an
+   *  external gate's key fingerprint and removal timing — never key
+   *  material. **Admin token only.** `probe: true` also fetches each
+   *  external gate's discovery document (bounded) and compares it with the
+   *  registration. */
+  async listAuthGates(opts?: {
+    probe?: boolean;
+    signal?: AbortSignal;
+  }): Promise<AuthGateListResponse> {
+    const q = opts?.probe ? "?probe=1" : "";
+    return jsonFetch<AuthGateListResponse>(this.ctx, `/v1/_authgate${q}`, opts);
+  }
+
+  /** Invite a person to sign in through a password gate
+   *  (`POST /v1/_authgate/{gate}/invites`). Without `subject` the invite
+   *  makes a new user, at the gate's new-user floor unless the gate is
+   *  trusted; with one it gives that existing user a login (409
+   *  `credential_exists` if it has one — issue a reset instead). Returns the
+   *  one-time link, shown once. */
+  async createInvite(
+    gate: string,
+    body: CreateInviteBody,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<CreatedInvite> {
+    return postJSON<CreatedInvite>(
+      this.ctx,
+      `/v1/_authgate/${encodeURIComponent(gate)}/invites`,
+      withTenant(body, opts?.tenant),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** A password gate's invites in the tenant, live and past
+   *  (`GET /v1/_authgate/{gate}/invites`), never their codes. An admin naming
+   *  no tenant lists every tenant's. */
+  async listInvites(
+    gate: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<AuthInviteListResponse> {
+    return jsonFetch<AuthInviteListResponse>(
+      this.ctx,
+      this.aclPath(`/v1/_authgate/${encodeURIComponent(gate)}/invites`, opts?.tenant),
+      opts,
+    );
+  }
+
+  /** Revoke a live invite (`DELETE /v1/_authgate/{gate}/invites/{id}`, 204).
+   *  409 `invite_not_live` when it was already redeemed, revoked or expired;
+   *  another tenant's invite is a 404. */
+  async revokeInvite(
+    gate: string,
+    inviteId: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      this.aclPath(
+        `/v1/_authgate/${encodeURIComponent(gate)}/invites/${encodeURIComponent(inviteId)}`,
+        opts?.tenant,
+      ),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Issue a one-time link that sets a new password for a user with a login
+   *  at the gate (`POST /v1/_authgate/{gate}/resets`). A user with an
+   *  authenticator still needs a code from it. Completing the reset ends the
+   *  user's sessions from the old password and retires its delegated tokens.
+   *  404 `login_not_found` when the user has no login at the gate. */
+  async createPasswordReset(
+    gate: string,
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<CreatedPasswordReset> {
+    return postJSON<CreatedPasswordReset>(
+      this.ctx,
+      `/v1/_authgate/${encodeURIComponent(gate)}/resets`,
+      withTenant({ subject }, opts?.tenant),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Remove a user's password, authenticator and recovery codes at a gate
+   *  (`DELETE /v1/_authgate/{gate}/credentials/{subject}`, 204). The login
+   *  stays reserved, so a later {@link createPasswordReset} restores access. */
+  async removeGateCredentials(
+    gate: string,
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<void> {
+    return deleteRequest(
+      this.ctx,
+      this.aclPath(
+        `/v1/_authgate/${encodeURIComponent(gate)}/credentials/${encodeURIComponent(subject)}`,
+        opts?.tenant,
+      ),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** Change the login a user signs in with at a gate
+   *  (`PATCH /v1/_authgate/{gate}/logins/{subject}`). The subject does not
+   *  change, so nothing the user owns moves. Returns the normalised login;
+   *  409 `login_taken` when another user has it. */
+  async renameGateLogin(
+    gate: string,
+    subject: string,
+    login: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<{ subject: string; login: string }> {
+    return patchJSON<{ subject: string; login: string }>(
+      this.ctx,
+      `/v1/_authgate/${encodeURIComponent(gate)}/logins/${encodeURIComponent(subject)}`,
+      withTenant({ login }, opts?.tenant),
+      { signal: opts?.signal },
+    );
+  }
+
+  /** A user's logins at every gate, and whether it has a password and a
+   *  confirmed authenticator (`GET /v1/_authgate/{gate}/identities`) — never
+   *  a secret. `gate` must name a password gate. */
+  async listGateIdentities(
+    gate: string,
+    subject: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GateIdentitiesResponse> {
+    return jsonFetch<GateIdentitiesResponse>(
+      this.ctx,
+      this.aclPath(`/v1/_authgate/${encodeURIComponent(gate)}/identities`, opts?.tenant, {
+        subject,
+      }),
+      opts,
+    );
+  }
+
+  /** Whether the tenant has, or ever had, a user and whether an owner invite
+   *  is live (`GET /v1/_authgate/{gate}/tenant-status`) — what deciding on an
+   *  owner invite needs, and nothing about who the users are. */
+  async getGateTenantStatus(
+    gate: string,
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<GateTenantStatus> {
+    return jsonFetch<GateTenantStatus>(
+      this.ctx,
+      this.aclPath(`/v1/_authgate/${encodeURIComponent(gate)}/tenant-status`, opts?.tenant),
       opts,
     );
   }
@@ -4681,6 +4917,13 @@ function defWriteInput(
   if (opts?.description) input.description = opts.description;
   if (opts?.promote !== undefined) input.promote = opts.promote;
   return input;
+}
+
+/** A password-gate management body with the tenant the caller named. The
+ *  POST/PATCH routes read the tenant from the body where the others read
+ *  ?tenant=; like aclPath, an empty tenant is left out. */
+function withTenant<T extends object>(body: T, tenant?: string): T & { tenant?: string } {
+  return tenant ? { ...body, tenant } : body;
 }
 
 function signalOpts(opts?: { signal?: AbortSignal }): { signal?: AbortSignal } | undefined {

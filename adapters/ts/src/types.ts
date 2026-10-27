@@ -2302,7 +2302,8 @@ export interface UserSummary {
   registered?: boolean;
   display_name?: string;
   access_mode?: string; // "tenant" | "isolated"
-  status?: string; // "active" | "disabled"
+  /** The registered user's status; `""` for a subject seen only in runs. */
+  status?: UserStatus | (string & {});
 }
 
 export interface ListUsersResponse {
@@ -2311,14 +2312,29 @@ export interface ListUsersResponse {
 
 // ---- RFC BX Phase 2: tenant-owned users + delegated per-user tokens (v1.50.0+) ----
 
-/** One first-class users-table row (POST/PATCH /v1/_users). The tenant is
- *  server-derived from the authenticated principal, never sent. */
+/** A first-class user's status.
+ *
+ *  - `active` — the user may do what its access mode and bindings allow.
+ *  - `disabled` — refused everywhere; its delegated tokens are retired.
+ *  - `pending` — provisioned by a sign-in gate whose new users await
+ *    approval: the person can sign in, but every request is refused until
+ *    {@link LoomcycleClient.approveUser} makes the user `active`. Only a gate
+ *    puts a user here and only the approval takes one out, so createUser and
+ *    updateUser refuse it.
+ *
+ *  Fields typed `UserStatus | (string & {})` still accept a status a newer
+ *  server adds. */
+export type UserStatus = "active" | "disabled" | "pending";
+
+/** One first-class users-table row (POST/PATCH /v1/_users). The tenant is the
+ *  authenticated principal's, or the one an admin or `auth:manage` caller
+ *  names with `opts.tenant`; it is never in the body. */
 export interface UserRecord {
   tenant_id: string;
   subject: string;
   display_name: string;
   access_mode: string; // "tenant" | "isolated"
-  status: string; // "active" | "disabled"
+  status: UserStatus | (string & {});
   created_at: string;
   created_by: string;
 }
@@ -2329,7 +2345,8 @@ export interface CreateUserBody {
   /** "tenant" (default) collaborates on the tenant's shared primitives;
    *  "isolated" confines the member to its own user scope. */
   access_mode?: string;
-  status?: string; // default "active" server-side
+  /** Default `active`. `pending` is refused (400 `invalid_status`). */
+  status?: "active" | "disabled" | (string & {});
 }
 
 /** PATCH body — an omitted key leaves the column unchanged; a present key
@@ -2337,7 +2354,10 @@ export interface CreateUserBody {
 export interface UpdateUserBody {
   display_name?: string;
   access_mode?: string;
-  status?: string;
+  /** `disabled` also retires the user's delegated tokens. `pending` is
+   *  refused (400 `invalid_status`), and `active` on a pending user with 409
+   *  `use_approve`: call {@link LoomcycleClient.approveUser} instead. */
+  status?: "active" | "disabled" | (string & {});
 }
 
 /** The show-once result of POST /v1/_users/{subject}/tokens. `token` is the
@@ -2392,6 +2412,190 @@ export interface ListUserTokensResponse {
   tokens: UserTokenMeta[];
 }
 
+/** One identity-provider account a user signs in with, from
+ *  GET /v1/_users/{subject}/identities. Never a secret. */
+export interface UserIdentity {
+  /** The configured sign-in gate. */
+  gate: string;
+  /** The provider's issuer, when it reports one. */
+  issuer?: string;
+  /** The account's subject at the provider. */
+  external_subject: string;
+  email?: string;
+  email_verified: boolean;
+  created_at: string;
+  /** Absent until the account has been used to sign in. */
+  last_login_at?: string;
+}
+
+export interface UserIdentitiesResponse {
+  subject: string;
+  identities: UserIdentity[];
+}
+
+// ---- RFC FA: sign-in gates and the password gate's management API ----
+
+/** A sign-in gate's kind. Fields typed with it still accept a kind a newer
+ *  server adds. */
+export type AuthGateKind = "token" | "password" | "oidc" | "oauth" | "external" | (string & {});
+
+/** One configured sign-in gate, from GET /v1/_authgate. Never key material. */
+export interface AuthGate {
+  name: string;
+  kind: AuthGateKind;
+  label: string;
+  /** Whether a browser can sign in through it. */
+  interactive: boolean;
+  /** The gate's identity map, when it has one: whether it may provision
+   *  beyond the new-user floor, the tenant it maps to (or the claim naming
+   *  it) and how it provisions users. */
+  trusted?: boolean;
+  tenant?: string;
+  tenant_claim?: string;
+  provision?: string;
+  /** An external gate's signing key. */
+  key?: AuthGateKey;
+  callback_url?: string;
+  discovery_url?: string;
+  /** With `probe: true`: what the external gate's discovery document said. */
+  probe?: AuthGateProbe;
+  /** An external gate's removal timing. */
+  on_removed?: AuthGateRemoval;
+}
+
+/** An external gate's key as configured: algorithm, key id and fingerprint,
+ *  or for an HMAC secret the NAME of the env var holding it — never a key. */
+export interface AuthGateKey {
+  alg: string;
+  kid?: string;
+  fingerprint?: string;
+  secret_env?: string;
+}
+
+/** Durations, e.g. `168h0m0s`; `erase_after` may be `never`. */
+export interface AuthGateRemoval {
+  unbind_after: string;
+  erase_after: string;
+}
+
+export interface AuthGateProbe {
+  reachable: boolean;
+  /** The discovery document's HTTP status. */
+  status?: number;
+  /** A failure class (`unreachable`, `status`, …), never the response. */
+  error?: string;
+  name_matches: boolean;
+  key_matches: boolean;
+  capabilities?: string[];
+}
+
+export interface AuthGateListResponse {
+  gates: AuthGate[];
+}
+
+/** POST /v1/_authgate/{gate}/invites. The tenant is `opts.tenant`, not a
+ *  field here. */
+export interface CreateInviteBody {
+  /** An existing user to give a login at this gate. It keeps its access mode
+   *  and groups: the invite may restate but never raise them. Omitted, the
+   *  invite makes a new user when it is redeemed. */
+  subject?: string;
+  /** A new user's access mode, `tenant` or `isolated`; default the gate's
+   *  new-user floor. Beyond the floor only on a trusted gate (403
+   *  `beyond_floor` otherwise). */
+  access_mode?: string;
+  /** Groups for the new user; each must exist in the tenant. */
+  groups?: string[];
+  /** Fix the login the invitee gets; otherwise the invitee picks one (409
+   *  `login_taken` if it is in use at the gate). */
+  login?: string;
+  email?: string;
+  /** How long the link lives, as a Go duration (`72h`); default and maximum
+   *  are the gate's. */
+  ttl?: string;
+  /** Where the person lands after redeeming: a path on the server, or one
+   *  of the gate's `allowed_return_to`. */
+  return_to?: string;
+}
+
+/** A one-time invite link. `url` carries the code in its fragment: hand it to
+ *  the person and do not log it. It is shown once — listing invites never
+ *  returns it. */
+export interface CreatedInvite {
+  invite_id: string;
+  url: string;
+  expires_at: string;
+}
+
+export type AuthInviteState = "live" | "redeemed" | "revoked" | "expired";
+
+/** One invite from GET /v1/_authgate/{gate}/invites. Never its code. */
+export interface AuthInvite {
+  invite_id: string;
+  gate: string;
+  tenant_id: string;
+  /** Set for an invite to an existing user. */
+  subject?: string;
+  access_mode?: string;
+  groups: string[];
+  login?: string;
+  email?: string;
+  return_to?: string;
+  /** The owner invite of a tenant that has never had a user. */
+  bootstrap?: boolean;
+  created_by?: string;
+  created_at: string;
+  expires_at: string;
+  state: AuthInviteState;
+  redeemed_at?: string;
+  redeemed_subject?: string;
+  revoked_at?: string;
+}
+
+export interface AuthInviteListResponse {
+  invites: AuthInvite[];
+}
+
+/** A one-time password-reset link; like {@link CreatedInvite}, `url`
+ *  carries the code and is shown once. */
+export interface CreatedPasswordReset {
+  reset_id: string;
+  url: string;
+  expires_at: string;
+}
+
+/** A user's login at one gate, from GET /v1/_authgate/{gate}/identities. */
+export interface GateIdentity {
+  gate: string;
+  login: string;
+  email?: string;
+  email_verified: boolean;
+  created_at: string;
+  last_login_at?: string;
+  /** Whether the user has a password set. */
+  has_password: boolean;
+  /** Whether the user has a confirmed authenticator. */
+  has_totp: boolean;
+}
+
+export interface GateIdentitiesResponse {
+  tenant_id: string;
+  subject: string;
+  identities: GateIdentity[];
+}
+
+/** GET /v1/_authgate/{gate}/tenant-status: what a website needs to decide
+ *  on an owner (bootstrap) invite, and nothing about who the users are. */
+export interface GateTenantStatus {
+  tenant_id: string;
+  /** Whether the tenant has a user now. */
+  has_users: boolean;
+  /** Whether it has ever had one; once true, no owner invite or owner create
+   *  by an `auth:manage` credential is possible again. */
+  bootstrapped: boolean;
+  bootstrap_invite_live: boolean;
+}
+
 // ---- RFC BY: runnable-agent discovery (v1.51.0+) ----
 
 /** One entry in the runnable-agent catalog — the name to run + its tier.
@@ -2432,6 +2636,8 @@ export interface WhoamiResponse {
   /** How the caller signed in. Absent on a server that predates Web UI
    *  sessions. */
   auth?: WhoamiAuth;
+  /** What narrows the caller's token below its scopes, when anything does. */
+  restrictions?: TokenRestrictions;
 }
 
 /** GET /v1/_me's sign-in block. `mode` is always present; the rest only when
@@ -2447,6 +2653,10 @@ export interface WhoamiAuth {
   auth_time?: string;
   /** When the session stops authenticating unless renewed by activity. */
   session_expires_at?: string;
+  /** `pending` when the session's user awaits approval: every other request
+   *  the session makes is refused until the user is approved. Absent
+   *  otherwise. */
+  status?: "pending";
 }
 
 /** GET /v1/_me's capability summary. Bounded and non-secret: a fixed list of

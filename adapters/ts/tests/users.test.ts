@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LoomcycleError } from "../src/errors.js";
+import type { UserStatus } from "../src/index.js";
 import {
   errorResponse,
   jsonResponse,
@@ -9,8 +10,9 @@ import {
 
 // RFC BX Phase 2 (loomcycle v1.50.0) — tenant-owned users + delegated per-user
 // token minting. Thin REST wrappers over /v1/_users; these tests pin the wire
-// shape (verb, URL, body) + the typed error surface. The tenant is always
-// server-derived from the bearer, so it never appears on the wire here.
+// shape (verb, URL, body) + the typed error surface. The tenant is derived
+// from the bearer; only `opts.tenant` (an admin's or an auth:manage
+// credential's choice) puts it on the wire, as ?tenant=, never in a body.
 
 describe("createUser", () => {
   it("POSTs the body to /v1/_users", async () => {
@@ -228,5 +230,119 @@ describe("revokeUserToken", () => {
     await expect(
       client.revokeUserToken("alice", "def_xyz"),
     ).rejects.toBeInstanceOf(LoomcycleError);
+  });
+});
+
+const BOB = {
+  tenant_id: "acme",
+  subject: "bob",
+  display_name: "Bob",
+  access_mode: "isolated",
+  status: "active",
+  created_at: "2026-10-27T00:00:00Z",
+  created_by: "gate:sso",
+};
+
+describe("user CRUD with opts.tenant", () => {
+  it("createUser sends the tenant as ?tenant=, not in the body", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(BOB, 201)]);
+    await client.createUser({ subject: "bob" }, { tenant: "acme" });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users?tenant=acme");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ subject: "bob" });
+  });
+
+  it("updateUser and deleteUser send the tenant as ?tenant=", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(BOB), noContentResponse()]);
+    await client.updateUser("bob", { status: "disabled" }, { tenant: "acme" });
+    await client.deleteUser("bob", { tenant: "acme" });
+    const [patchURL, patchInit] = fetchMock.mock.calls[0]!;
+    expect(patchURL).toBe("http://test-loomcycle:8787/v1/_users/bob?tenant=acme");
+    expect(patchInit.method).toBe("PATCH");
+    expect(JSON.parse(patchInit.body as string)).toEqual({ status: "disabled" });
+    const [delURL, delInit] = fetchMock.mock.calls[1]!;
+    expect(delURL).toBe("http://test-loomcycle:8787/v1/_users/bob?tenant=acme");
+    expect(delInit.method).toBe("DELETE");
+  });
+
+  it("leaves the URL bare without a tenant", async () => {
+    const { client, fetchMock } = makeClient([noContentResponse()]);
+    await client.deleteUser("bob");
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_users/bob");
+  });
+});
+
+describe("pending users", () => {
+  it("listUsers surfaces a user awaiting approval as status pending", async () => {
+    const { client } = makeClient([
+      jsonResponse({
+        users: [
+          { user_id: "bob", running_count: 0, total_count: 0, last_started_at: "0001-01-01T00:00:00Z",
+            registered: true, display_name: "Bob", access_mode: "isolated", status: "pending" },
+        ],
+      }),
+    ]);
+    const { users } = await client.listUsers();
+    const awaiting = users.filter((u) => u.status === "pending").map((u) => u.user_id);
+    expect(awaiting).toEqual(["bob"]);
+  });
+
+  it("UserStatus names all three statuses", () => {
+    // Compile-time: a status missing from the union fails typecheck:tests.
+    const all: UserStatus[] = ["active", "disabled", "pending"];
+    expect(all).toHaveLength(3);
+  });
+});
+
+describe("approveUser", () => {
+  it("POSTs to /v1/_users/{subject}/approve with no body and returns the active record", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(BOB)]);
+    const rec = await client.approveUser("bob", { tenant: "acme" });
+    expect(rec.status).toBe("active");
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users/bob/approve?tenant=acme");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+  });
+
+  it("surfaces a user that is not pending as a 409 with code not_pending", async () => {
+    const { client } = makeClient([
+      errorResponse(409, `{"code":"not_pending","error":"this user is not awaiting approval"}`),
+    ]);
+    const err = await client.approveUser("bob").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(409);
+    expect((err as LoomcycleError).code).toBe("not_pending");
+  });
+});
+
+describe("listUserIdentities", () => {
+  it("GETs /v1/_users/{subject}/identities and returns the linked accounts", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        subject: "bob",
+        identities: [
+          { gate: "sso", issuer: "https://idp.example", external_subject: "00u1", email: "bob@example.com",
+            email_verified: true, created_at: "2026-10-27T00:00:00Z" },
+        ],
+      }),
+    ]);
+    const resp = await client.listUserIdentities("bob");
+    expect(resp.identities[0]!.gate).toBe("sso");
+    expect(resp.identities[0]!.last_login_at).toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users/bob/identities");
+    expect(init.method).toBe("GET");
+  });
+});
+
+describe("unlinkUserIdentity", () => {
+  it("DELETEs /v1/_users/{subject}/identities/{gate}, encoding both", async () => {
+    const { client, fetchMock } = makeClient([noContentResponse()]);
+    await client.unlinkUserIdentity("a/b", "sso one", { tenant: "acme" });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://test-loomcycle:8787/v1/_users/a%2Fb/identities/sso%20one?tenant=acme");
+    expect(init.method).toBe("DELETE");
   });
 });
