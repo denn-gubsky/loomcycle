@@ -6598,6 +6598,13 @@ type OperatorTokenDefRow struct {
 	// verified (RFC FA §7); "" for a token an operator or tenant minted. Fixed
 	// at mint, so strict mode can tell a gate-issued user token apart.
 	IssuedByGate string `json:"issued_by_gate,omitempty"`
+	// Authority is how the token's scopes are decided (RFC EY §8): "" for a
+	// frozen token, whose AllowedScopes are its ceiling, or "inherit" for a
+	// per-user token whose ceiling is re-derived from its user's CURRENT
+	// access_mode on every request (AllowedScopes then records only what the
+	// user held at mint). Fixed at mint and copied by a rotation. The store
+	// keeps it opaque; the auth layer refuses a value it does not know.
+	Authority string `json:"authority,omitempty"`
 }
 
 // ValidAt reports whether the row authenticates at t: not retired (or still
