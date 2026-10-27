@@ -623,3 +623,27 @@ func TestFileTwin_KeepRefusesAnIsolatedOwner(t *testing.T) {
 		t.Errorf("a refused keep wrote a file: %v", err)
 	}
 }
+
+// The tree's root names a folder under dynamic_root. A stored parent id is
+// not trusted as a path segment: a sub-run whose recorded parent is ".." is
+// the missing run's not-found, never a look at dynamic_root's own folders.
+func TestFileTwin_StoredParentIDIsNotAPathSegment(t *testing.T) {
+	f := newFileTwinFixture(t)
+	ctx := context.Background()
+	sess, err := f.st.CreateSession(ctx, "acme", "agent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.CreateRun(ctx, sess.ID, store.RunIdentity{ID: "..", TenantID: "acme", UserID: "alice"}); err != nil {
+		t.Fatalf("plant a parent row with a path-segment id: %v", err)
+	}
+	child := f.run(t, "acme", "alice", "..")
+
+	_, got, isErr := f.call(t, twinAdmin, map[string]any{"run_id": child, "op": "ls"})
+	if !isErr {
+		t.Fatalf("ls on a run whose parent id is \"..\" answered: %s", got)
+	}
+	if want := fileTwinNotFound(child).Text; got != want {
+		t.Errorf("reply = %q, want the missing run's %q", got, want)
+	}
+}

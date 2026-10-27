@@ -215,8 +215,14 @@ func (s *Server) fileTwinHoldInbox(ctx context.Context, run store.Run) (fileTwin
 	// leaves the run its own root, where no inbox is found: never a guess at
 	// another tree's.
 	root, _ := resumedRootRunID(ctx, s.store.GetRun, run)
-	release := s.holdRunTree(root)
+	// The root's id names a folder under dynamic_root. The run's own id was
+	// checked at the wire, but a parent's comes from a stored row, so check it
+	// again here rather than trust the store with a path segment.
 	dir := dynvol.DerivedEphemeralPath(dynRoot, root, inbox.Name)
+	if !validIdent(root) || dynvol.AssertInsideRoot(dynRoot, dir) != nil {
+		return fileTwinInbox{}, fileTwinNotFound(run.ID), false
+	}
+	release := s.holdRunTree(root)
 	if res, ok := s.fileTwinInboxPresent(ctx, run, root, dir); !ok {
 		release()
 		return fileTwinInbox{}, res, false
@@ -272,6 +278,9 @@ func (s *Server) fileTwinInboxPresent(ctx context.Context, run store.Run, root, 
 			break
 		}
 	}
+	// #nosec G703 -- dir is derived, never taken from input: dynamic_root (operator
+	// config) + "_ephemeral" + a run id checked against [A-Za-z0-9_-] and kept
+	// inside the root (fileTwinHoldInbox) + the reserved name "inbox".
 	fi, statErr := os.Lstat(dir)
 	if recorded && statErr == nil && fi.IsDir() {
 		return connector.ToolResult{}, true
