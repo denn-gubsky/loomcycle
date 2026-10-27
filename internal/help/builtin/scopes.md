@@ -125,3 +125,7 @@ agent):
 
 None of these is fixed by retrying. `{"op":"self"}` on the Context tool shows
 the full picture before you try.
+
+Access rules can refuse what your scopes allow — another agent, a tool, a
+shared scope. Ask `{"op":"can"}` on the Context tool before you plan a path
+that depends on one, rather than discovering the refusal halfway through.

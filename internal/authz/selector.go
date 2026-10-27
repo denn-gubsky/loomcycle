@@ -76,6 +76,23 @@ func parseSelector(sel string) (selector, error) {
 	}
 }
 
+// ValidateResourceName checks a resource name a caller asks a question about
+// against typ's selector shape (the scope of a scoped or enum type, the
+// segments of a glob), with the bounds a selector has: no `..`, no control
+// characters, at most MaxSelectorBytes. AnyInstance is valid for every type.
+// It reads nothing; a question built from untrusted text passes it before it
+// reaches the engine.
+func ValidateResourceName(typ, name string) error {
+	if _, ok := catalogByName[typ]; !ok {
+		return fmt.Errorf("%q is not a catalog type", typ)
+	}
+	if name == "" {
+		return fmt.Errorf("a resource name is required (use %s for every instance)", AnyInstance)
+	}
+	_, err := parseSelector(typ + ":" + name)
+	return err
+}
+
 // parseGlob splits a pattern on `/` and validates each segment. It returns
 // the literal form when the pattern carries no metacharacter. A leading `/`
 // (a document path) is dropped so `/kb/**` and `kb/**` are one pattern. A
