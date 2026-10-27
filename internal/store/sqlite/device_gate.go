@@ -1,7 +1,7 @@
 package sqlite
 
 // device_gate.go — RFC FA P5 device authorizations and per-tenant gate
-// policies. Mirrors postgres migration 0117; times are unix nanos.
+// policies. Mirrors postgres migration 0118; times are unix nanos.
 
 import (
 	"context"

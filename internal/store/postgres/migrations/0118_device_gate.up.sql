@@ -1,4 +1,4 @@
--- 0117_device_gate.up.sql — RFC FA P5: device login (RFC 8628) and the
+-- 0118_device_gate.up.sql — RFC FA P5: device login (RFC 8628) and the
 -- per-tenant gate policy.
 --
 -- device_authorizations holds no usable code. device_code_hash is the

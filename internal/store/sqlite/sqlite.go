@@ -707,7 +707,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL`,
 		// RFC FA P5 device login and per-tenant gate policy. Mirrors
-		// postgres migration 0117 (see 0117_device_gate.up.sql for the
+		// postgres migration 0118 (see 0118_device_gate.up.sql for the
 		// design); times are unix nanos, interval_ms milliseconds.
 		`CREATE TABLE IF NOT EXISTS device_authorizations (
 			device_code_hash TEXT    PRIMARY KEY,

@@ -1,7 +1,7 @@
 package postgres
 
 // device_gate.go — RFC FA P5 device authorizations and per-tenant gate
-// policies (migration 0117).
+// policies (migration 0118).
 
 import (
 	"context"
