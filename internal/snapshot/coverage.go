@@ -252,6 +252,8 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "consolidation watermarks and a lease owned by a source replica"},
 	"auth_login_states": {Kind: coverNever, Backends: onBoth,
 		Reason: "not carried: ten-minute half-finished redirect logins bound to one browser on THIS deployment"},
+	"auth_replay": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "not carried: hashes of one-time credential values the source accepted in the last minutes; they expire long before a restore matters"},
 	"auth_throttle": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "not carried: short-lived login-failure counters of the source (no secret); they mean nothing on an instance that did not see the failures"},
 	"process_samples": {Kind: coverOmitted, Backends: onBoth,

@@ -550,6 +550,8 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthResetCreateSupersedesEarlierLiveReset", testAuthResetCreateSupersedesEarlierLiveReset},
 		{"AuthResetCompleteConsumesOnceAndReplacesCredential", testAuthResetCompleteConsumesOnceAndReplacesCredential},
 		{"AuthThrottleWindowBlockAndExpiry", testAuthThrottleWindowBlockAndExpiry},
+		{"AuthReplayAdmitsOncePerWindow", testAuthReplayAdmitsOncePerWindow},
+		{"AuthReplayConcurrentAdmitsAdmitOne", testAuthReplayConcurrentAdmitsAdmitOne},
 		{"AuthInviteAndResetDeleteExpiredKeepLiveRows", testAuthInviteAndResetDeleteExpiredKeepLiveRows},
 		{"AuthSubjectDeleteRemovesOnlyThatSubjectsRows", testAuthSubjectDeleteRemovesOnlyThatSubjectsRows},
 		{"AuthInviteAndResetRoundTripIssuedByManager", testAuthInviteAndResetRoundTripIssuedByManager},

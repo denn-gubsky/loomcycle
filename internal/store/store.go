@@ -1695,6 +1695,7 @@ type Store interface {
 	PasswordGateStore
 	AuthLoginStateStore
 	AuthLifecycleStore
+	AuthReplayStore
 	SnapshotStore
 	SnapshotReadStore
 	SnapshotRestoreStore
