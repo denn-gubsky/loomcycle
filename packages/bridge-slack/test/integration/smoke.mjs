@@ -188,6 +188,19 @@ try {
   check("the person and the channel kept their users", after.includes("slack-t1-ualice") && after.includes(legacyChannel));
   check("the gate made no second user for either", !after.some((s) => s.startsWith("slack:")));
 
+  // A deactivation is revoked before Slack is answered, through the identity
+  // the gate linked: the legacy user is disabled, the channel's is not.
+  const statusOf = async (subject) => {
+    const users = await (await fetch(`${LOOMCYCLE}/v1/_users?tenant=acme`, { headers: { authorization: `Bearer ${ADMIN}` } })).json();
+    return (users.users ?? []).find((u) => u.user_id === subject)?.status;
+  };
+  const statusBefore = await statusOf("slack-t1-ualice");
+  const revoked = await post("/slack/events", event({ type: "user_change", user: { id: "UALICE", team_id: "T1", deleted: true } }));
+  const statusAfter = await statusOf("slack-t1-ualice");
+  console.log(`     slack-t1-ualice status: ${statusBefore} -> ${statusAfter}`);
+  check("a deactivated person is revoked in loomcycle", revoked.status === 200 && statusAfter !== statusBefore && statusAfter !== "active", `status ${revoked.status}`);
+  check("the channel's user is untouched", (await statusOf(legacyChannel)) === statusBefore);
+
   check(
     "bridge log carries no token, gate key, issued token or text",
     !bridgeLog.includes("xoxb-smoke-test") && !bridgeLog.includes(LC_TOKEN) && !bridgeLog.includes(JSON.parse(GATE_KEY).d) && !bridgeLog.includes("lct_") && !bridgeLog.includes("hello there"),
