@@ -25,6 +25,10 @@
 #   and refuses a 0.3 request with VERSION_NOT_SUPPORTED, so every A2A peer
 #   still on 0.3 (and the A2A test suite) is refused (#2164 merged red).
 #   Moving to it is a protocol decision with its own change, not a bump.
+# - postgres majors in compose files: a new major is not a tag bump. The 18
+#   image refuses a volume at /var/lib/postgresql/data, and an existing data
+#   directory needs pg_upgrade or a dump and restore (#2163 and #2180 each
+#   moved the cluster compose to 18). Minor and patch updates still arrive.
 
 version: 2
 
@@ -192,6 +196,9 @@ updates:
       prefix: "chore(deps)"
     ignore:
       - dependency-name: "denngubsky/*"
+      # See the header: a Postgres major needs a data migration.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
     groups:
       compose-minor-patch:
         applies-to: version-updates
