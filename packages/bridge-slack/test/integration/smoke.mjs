@@ -1,6 +1,11 @@
 // Drives the built Slack bridge CLI against a real loomcycle (run.sh boots
 // it) with signed Slack requests, while a fake Slack Web API records what the
 // bridge sends back. Prints each step; exits non-zero on the first failure.
+//
+// Two phases, as a live deployment moves: the bridge first runs with a
+// loomcycle token and makes its users ("slack-t1-ualice", a channel's
+// "slack-conv-<hash>"), then restarts as the loomcycle gate, whose
+// legacy_subject_prefix links each first login to the user it already had.
 
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
@@ -10,7 +15,10 @@ import { fileURLToPath } from "node:url";
 
 const PKG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const LOOMCYCLE = process.env.SLACK_BRIDGE_IT_BASE_URL;
+const ADMIN = process.env.SLACK_BRIDGE_IT_ADMIN;
 const LC_TOKEN = process.env.SLACK_BRIDGE_IT_TOKEN;
+const GATE_KEY = process.env.SLACK_BRIDGE_IT_GATE_KEY;
+if (!LOOMCYCLE || !ADMIN || !LC_TOKEN || !GATE_KEY) throw new Error("run me through run.sh");
 const SLACK_PORT = 18972;
 const BRIDGE_PORT = 18973;
 const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}`;
@@ -36,23 +44,31 @@ const slack = http.createServer((req, res) => {
 });
 await new Promise((r) => slack.listen(SLACK_PORT, "127.0.0.1", r));
 
-const bridge = spawn(process.execPath, [path.join(PKG, "dist/cli.js")], {
-  env: {
-    PATH: process.env.PATH,
-    LOOMCYCLE_BASE_URL: LOOMCYCLE,
-    LOOMCYCLE_TOKEN: LC_TOKEN,
-    BRIDGE_AGENT: "helper",
-    SLACK_BOT_TOKEN: "xoxb-smoke-test",
-    SLACK_SIGNING_SECRET: SECRET,
-    SLACK_BRIDGE_ALLOWED_TEAMS: "T1",
-    SLACK_BRIDGE_API_BASE_URL: `http://127.0.0.1:${SLACK_PORT}/api`,
-    PORT: String(BRIDGE_PORT),
-  },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+let bridge;
 let bridgeLog = "";
-bridge.stdout.on("data", (d) => (bridgeLog += d));
-bridge.stderr.on("data", (d) => (bridgeLog += d));
+function startBridge(auth) {
+  bridgeLog = "";
+  bridge = spawn(process.execPath, [path.join(PKG, "dist/cli.js")], {
+    env: {
+      PATH: process.env.PATH,
+      LOOMCYCLE_BASE_URL: LOOMCYCLE,
+      ...auth,
+      BRIDGE_AGENT: "helper",
+      SLACK_BOT_TOKEN: "xoxb-smoke-test",
+      SLACK_SIGNING_SECRET: SECRET,
+      SLACK_BRIDGE_ALLOWED_TEAMS: "T1",
+      SLACK_BRIDGE_API_BASE_URL: `http://127.0.0.1:${SLACK_PORT}/api`,
+      PORT: String(BRIDGE_PORT),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  bridge.stdout.on("data", (d) => (bridgeLog += d));
+  bridge.stderr.on("data", (d) => (bridgeLog += d));
+}
+async function stopBridge() {
+  bridge.kill("SIGTERM");
+  await new Promise((r) => bridge.once("exit", r));
+}
 
 let failed = false;
 function check(what, cond, detail = "") {
@@ -82,8 +98,30 @@ function post(route, body, { sign = true, headers = {} } = {}) {
 const to = (m) => calls.filter((c) => c.method === m);
 let ev = 0;
 const event = (event, team = "T1") => JSON.stringify({ type: "event_callback", team_id: team, event_id: `EvSmoke${++ev}`, event });
+async function userSubjects() {
+  const users = await (await fetch(`${LOOMCYCLE}/v1/_users?tenant=acme`, { headers: { authorization: `Bearer ${ADMIN}` } })).json();
+  return (users.users ?? []).filter((u) => u.registered).map((u) => u.user_id);
+}
 
 try {
+  // Phase 1: the bridge as it ran before, with a loomcycle token.
+  startBridge({ LOOMCYCLE_TOKEN: LC_TOKEN });
+  check("token-mode bridge is up", await until(() => /slack-bridge listening/.test(bridgeLog)), bridgeLog.trim().split("\n")[0]);
+  await post("/slack/events", event({ type: "message", channel_type: "im", channel: "D1", user: "UALICE", text: "hello before the gate", ts: "1700000000.000100", team: "T1" }));
+  check("token-mode DM answered", await until(() => to("chat.stopStream").length === 1));
+  await post("/slack/events", event({ type: "app_mention", channel: "C1", user: "UALICE", text: "<@UBOT> before the gate", ts: "1700000001.000100", team: "T1" }));
+  check("token-mode channel answered", await until(() => to("chat.postMessage").some((c) => c.body.channel === "C1")));
+  await sleep(1500);
+  const before = await userSubjects();
+  console.log(`     users before the gate: ${JSON.stringify(before)}`);
+  const legacyChannel = before.find((s) => s.startsWith("slack-conv-"));
+  check("token mode made slack-t1-ualice and the channel's slack-conv-* user", before.includes("slack-t1-ualice") && !!legacyChannel);
+  await stopBridge();
+  calls.length = 0;
+
+  // Phase 2: the same bridge as the loomcycle gate: no loomcycle token, only
+  // its own signing key.
+  startBridge({ BRIDGE_GATE: "slack", BRIDGE_GATE_AUDIENCE: LOOMCYCLE, BRIDGE_GATE_KEY: GATE_KEY });
   check("bridge is up", await until(() => /slack-bridge listening/.test(bridgeLog)), bridgeLog.trim().split("\n")[0]);
   check("learned itself with auth.test", to("auth.test").length === 1);
 
@@ -129,11 +167,11 @@ try {
   console.log(`     channel reply: ${JSON.stringify(ch?.body.markdown_text)}`);
 
   // Bot messages and a foreign workspace.
-  const before = calls.length;
+  const callsBefore = calls.length;
   await post("/slack/events", event({ type: "message", channel_type: "im", channel: "D1", user: "UBOT", text: "echo", ts: "1700000300.000100" }));
   await post("/slack/events", event({ type: "message", channel_type: "im", channel: "D1", user: "UX", bot_id: "B2", text: "beep", ts: "1700000300.000200" }));
   await sleep(800);
-  check("bot messages dropped", calls.length === before);
+  check("bot messages dropped", calls.length === callsBefore);
   await post("/slack/events", event({ type: "message", channel_type: "im", channel: "D9", user: "UEVE", text: "hi", ts: "1700000400.000100", team: "T2" }, "T2"));
   check("foreign workspace told once", await until(() => to("chat.postMessage").some((c) => c.body.channel === "D9")));
 
@@ -142,9 +180,20 @@ try {
 
   const health = await (await fetch(`${BRIDGE}/healthz`)).json();
   console.log(`     /healthz: ${JSON.stringify(health)}`);
-  check("bridge log carries no token or text", !bridgeLog.includes("xoxb-smoke-test") && !bridgeLog.includes(LC_TOKEN) && !bridgeLog.includes("hello there"));
+
+  // The gate linked each first login to the user the bridge made before, so
+  // the person and the channel keep their history: no slack:* user appears.
+  const after = await userSubjects();
+  console.log(`     users after the gate: ${JSON.stringify(after)}`);
+  check("the person and the channel kept their users", after.includes("slack-t1-ualice") && after.includes(legacyChannel));
+  check("the gate made no second user for either", !after.some((s) => s.startsWith("slack:")));
+
+  check(
+    "bridge log carries no token, gate key, issued token or text",
+    !bridgeLog.includes("xoxb-smoke-test") && !bridgeLog.includes(LC_TOKEN) && !bridgeLog.includes(JSON.parse(GATE_KEY).d) && !bridgeLog.includes("lct_") && !bridgeLog.includes("hello there"),
+  );
 } finally {
-  bridge.kill("SIGTERM");
+  if (bridge.exitCode === null) await stopBridge();
   slack.close();
 }
 console.log(failed ? "SMOKE FAILED" : "SMOKE PASSED");

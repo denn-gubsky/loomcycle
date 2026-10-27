@@ -23,6 +23,16 @@ trap cleanup EXIT INT TERM
 cd "$REPO"
 go build -o "$TEST_DIR/loomcycle" ./cmd/loomcycle
 mkdir -p "$TEST_DIR/home"
+# The bridge is an external gate: a fresh Ed25519 key per run, its public
+# half pinned in the config, its private half handed to the bridge only.
+node -e '
+const { generateKeyPairSync } = require("node:crypto");
+const fs = require("node:fs");
+const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+fs.writeFileSync(process.argv[1], JSON.stringify(privateKey.export({ format: "jwk" })), { mode: 0o600 });
+fs.writeFileSync(process.argv[2], JSON.stringify(publicKey.export({ format: "jwk" })));
+' "$TEST_DIR/gate.key.jwk" "$TEST_DIR/gate.pub.jwk"
+sed "s|__GATE_PUBLIC_JWK__|$(cat "$TEST_DIR/gate.pub.jwk")|" "$HERE/loomcycle.yaml" > "$TEST_DIR/loomcycle.yaml"
 # env -i + a scratch HOME: the boot must not pick up the developer's own
 # ~/.config/loomcycle or .env files.
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
@@ -31,7 +41,8 @@ env -i PATH="$PATH" HOME="$TEST_DIR/home" \
   LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$PORT" \
   LOOMCYCLE_AUTH_TOKEN="$ADMIN_TOKEN" \
   LOOMCYCLE_SLACK_BRIDGE_IT_TOKEN="$TOKEN" \
-  "$TEST_DIR/loomcycle" --config "$HERE/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
+  LOOMCYCLE_PUBLIC_URL="$BASE" \
+  "$TEST_DIR/loomcycle" --config "$TEST_DIR/loomcycle.yaml" > "$TEST_DIR/boot.log" 2>&1 &
 PID=$!
 for _ in $(seq 1 100); do
   curl -fsS "$BASE/healthz" >/dev/null 2>&1 && break
@@ -41,4 +52,6 @@ done
 
 cd "$PKG"
 npm run build >/dev/null
-SLACK_BRIDGE_IT_BASE_URL="$BASE" SLACK_BRIDGE_IT_TOKEN="$TOKEN" node "$HERE/smoke.mjs"
+SLACK_BRIDGE_IT_BASE_URL="$BASE" SLACK_BRIDGE_IT_ADMIN="$ADMIN_TOKEN" SLACK_BRIDGE_IT_TOKEN="$TOKEN" \
+  SLACK_BRIDGE_IT_GATE_KEY="$(cat "$TEST_DIR/gate.key.jwk")" \
+  node "$HERE/smoke.mjs"
