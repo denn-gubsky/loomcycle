@@ -4,6 +4,7 @@ import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscordApi, DiscordApiError, USER_AGENT } from "../src/api.js";
+import { eventsRoute } from "../src/events.js";
 import { GROUP_CACHE_MS, GroupLookup, MAX_GROUP_LOOKUPS } from "../src/groups.js";
 import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, neutraliseLinks, parseCustomId, renderCard } from "../src/cards.js";
 import { commandSpecs, registerCommands } from "../src/commands.js";
@@ -413,6 +414,12 @@ describe("groups", () => {
     expect(memberCalls(d)).toHaveLength(2);
   });
 
+  it("asserts nothing for a member Discord says is a bot", async () => {
+    const { d, lookup } = make([GUILD]);
+    d.on(/members/, { status: 200, body: { user: { id: USER, bot: true }, roles: [ROLE] } });
+    expect(await lookup.groupsFor(person, { channelId: DM })).toBeUndefined();
+  });
+
   it("asserts no groups with no trusted servers, and nothing at all past the lookup limit", async () => {
     const none = make([]);
     expect(await none.lookup.groupsFor(person, { channelId: DM })).toEqual([]);
@@ -446,6 +453,43 @@ describe("groups", () => {
     expect(await lookup.groupsFor(`discord-${USER}`, { channelId: DM })).toBeUndefined();
     expect(await lookup.groupsFor("other:conv:abc", { channelId: CHANNEL, guildId: GUILD })).toBeUndefined();
     expect(d.calls).toHaveLength(0);
+  });
+});
+
+describe("events", () => {
+  const key = appKey();
+  const t = 1_760_000_000_000;
+  const request = (payload: object) => {
+    const body = JSON.stringify(payload);
+    return { method: "POST", path: "/discord/events", query: new URLSearchParams(), headers: signedHeaders(key.privateKey, body, String(t / 1000)), body: Buffer.from(body) };
+  };
+  const deauthorized = { version: 1, application_id: APP, type: 1, event: { type: "APPLICATION_DEAUTHORIZED", data: { user: { id: USER } } } };
+
+  it("answers 503, not 204, when loomcycle's revoke does not finish in time", async () => {
+    const route = eventsRoute({
+      key: publicKeyFromHex(key.publicHex),
+      gate: { subjectOf: (s) => `discord:${s}`, revoke: () => new Promise(() => {}) },
+      forget: () => {},
+      log: silentLogger,
+      now: () => t,
+      revokeTimeoutMs: 20,
+    });
+    expect((await route(request(deauthorized))).status).toBe(503);
+  });
+
+  it("revokes the person named by the event's user, and answers 204 once it is done", async () => {
+    const revoked: string[] = [];
+    const forgotten: string[] = [];
+    const route = eventsRoute({
+      key: publicKeyFromHex(key.publicHex),
+      gate: { subjectOf: (s) => `discord:${s}`, revoke: async (s) => void revoked.push(s) },
+      forget: (s) => forgotten.push(s),
+      log: silentLogger,
+      now: () => t,
+    });
+    expect(await route(request(deauthorized))).toMatchObject({ status: 204 });
+    expect(revoked).toEqual([`discord:${USER}`]);
+    expect(forgotten).toEqual([`discord:${USER}`]);
   });
 });
 

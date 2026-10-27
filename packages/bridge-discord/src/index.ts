@@ -1,5 +1,5 @@
 export { DiscordApi, DiscordApiError, retryAfterMs, USER_AGENT } from "./api.js";
-export type { CommandSpec, DiscordApiOptions } from "./api.js";
+export type { CommandSpec, DiscordApiOptions, GuildMember } from "./api.js";
 export { createDiscordBridge, MAX_MESSAGE_CHARS } from "./bridge.js";
 export type { DiscordBridgeOptions } from "./bridge.js";
 export { customIdOf, parseCustomId, renderCard, textMessage } from "./cards.js";

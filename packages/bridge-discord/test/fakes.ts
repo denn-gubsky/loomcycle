@@ -138,7 +138,8 @@ export class FakeLoomcycle {
 export class FakeGate {
   readonly asserts: Array<{ gate: string; payload: Record<string, unknown> }> = [];
   readonly revokes: Array<{ gate: string; payload: Record<string, unknown> }> = [];
-  /** Set to answer the next revoke with this status. */
+  /** Set to answer the next revoke with this status (loomcycle's 500 is
+   *  "revoke_failed"; it answers 204 even for a sub it never knew). */
   revokeStatus = 204;
   private seq = 0;
 
@@ -151,7 +152,7 @@ export class FakeGate {
       this.revokes.push({ gate: body.gate, payload });
       const status = this.revokeStatus;
       this.revokeStatus = 204;
-      return new Response(status === 204 ? null : JSON.stringify({ code: "unknown_identity" }), { status });
+      return new Response(status === 204 ? null : JSON.stringify({ code: "revoke_failed" }), { status });
     }
     this.asserts.push({ gate: body.gate, payload });
     const subject = `${body.gate}:${String(payload.sub)}`;

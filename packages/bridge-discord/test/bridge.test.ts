@@ -560,7 +560,8 @@ describe("discord bridge as a loomcycle gate", () => {
     expect((await postTo("/discord/events", { ...deauthorized("not-an-id") })).status).toBe(204);
     const res = await postTo("/discord/events", deauthorized(ALICE));
     expect(res).toMatchObject({ status: 204, text: "" });
-    await waitFor(() => gate.revokes.length === 1, "the revoke");
+    // The 204 came after loomcycle took the revoke, never before.
+    expect(gate.revokes).toHaveLength(1);
     expect(gate.revokes[0]).toMatchObject({ gate: "discord", payload: { sub: ALICE, lc_use: "revoke" } });
     await settle();
     expect(gate.revokes).toHaveLength(1);
@@ -571,9 +572,12 @@ describe("discord bridge as a loomcycle gate", () => {
     expect(discord.to(/members/)).toHaveLength(2);
   });
 
-  it("still answers 204 when loomcycle refuses the revoke", async () => {
-    gate.revokeStatus = 404;
+  // Revocation must not fail open: a revoke loomcycle did not take is not
+  // acknowledged, so Discord delivers the event again.
+  it("answers 503 when loomcycle fails the revoke, and 204 on the redelivery that succeeds", async () => {
+    gate.revokeStatus = 500;
+    expect((await postTo("/discord/events", deauthorized(ALICE))).status).toBe(503);
     expect((await postTo("/discord/events", deauthorized(ALICE))).status).toBe(204);
-    await waitFor(() => gate.revokes.length === 1, "the revoke");
+    expect(gate.revokes.map((r) => r.payload.sub)).toEqual([ALICE, ALICE]);
   });
 });

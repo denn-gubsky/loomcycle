@@ -6,8 +6,14 @@
 //
 // Discord signs these exactly as it signs interactions (Ed25519 over the
 // timestamp header then the raw body, with the application's public key). It
-// wants a 204 with no body within 3 seconds, so the revoke runs after the
-// answer. A redelivered event revokes again, which changes nothing.
+// wants a 204 with no body within 3 seconds, and redelivers an event that got
+// anything else for up to 10 minutes.
+//
+// Revocation must not fail open: the 204 is sent only once loomcycle has
+// taken the revoke. A failed revoke, or one slower than Discord waits, is
+// answered 503 so Discord delivers it again; a repeated revoke changes
+// nothing (loomcycle answers 204 for a person it has already removed, or
+// never knew).
 
 import { header, type Logger, type RawResponse, type Route } from "@loomcycle/bridge-core";
 import type { KeyObject } from "node:crypto";
@@ -44,10 +50,17 @@ export interface EventDeps {
   forget(subject: string): void;
   log: Logger;
   now: () => number;
+  /** How long the answer waits for loomcycle's revoke (tests). */
+  revokeTimeoutMs?: number;
 }
 
 // Discord asks for a Content-Type even on the empty answer.
 const NO_CONTENT: RawResponse = { status: 204, headers: { "content-type": "application/json" } };
+const RETRY_LATER: RawResponse = { status: 503, body: "revoke not applied; retry" };
+/** Inside Discord's 3 seconds, with room for the answer to travel. */
+const REVOKE_TIMEOUT_MS = 2500;
+
+class RevokeTimeout extends Error {}
 
 export function eventsRoute(deps: EventDeps): Route {
   return async (req) => {
@@ -66,12 +79,26 @@ export function eventsRoute(deps: EventDeps): Route {
     if (!isSnowflake(userId)) return NO_CONTENT;
     const subject = deps.gate.subjectOf(personSub(userId));
     deps.forget(subject);
-    setImmediate(() => {
-      deps.gate.revoke(subject).then(
-        () => deps.log.info("discord user removed the app; revoked in loomcycle", { user: userId }),
-        (err: unknown) => deps.log.warn("discord revoke failed", { status: (err as { status?: number })?.status }),
-      );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new RevokeTimeout()), deps.revokeTimeoutMs ?? REVOKE_TIMEOUT_MS);
     });
+    const revoke = deps.gate.revoke(subject);
+    try {
+      await Promise.race([revoke, timeout]);
+    } catch (err) {
+      if (err instanceof RevokeTimeout) {
+        // It may still land; the redelivery repeats it either way.
+        revoke.catch((late: unknown) => deps.log.warn("discord revoke failed", { status: (late as { status?: number })?.status }));
+        deps.log.warn("discord revoke timed out; Discord will redeliver", {});
+      } else {
+        deps.log.warn("discord revoke failed; Discord will redeliver", { status: (err as { status?: number })?.status });
+      }
+      return RETRY_LATER;
+    } finally {
+      clearTimeout(timer);
+    }
+    deps.log.info("discord user removed the app; revoked in loomcycle", { user: userId });
     return NO_CONTENT;
   };
 }

@@ -2,7 +2,7 @@
 // knows, named as platform groups. loomcycle keeps them as "<gate>:<group>"
 // external groups, which an operator maps (group_map) and binds ACLs to.
 
-import { DiscordApiError, type DiscordApi } from "./api.js";
+import { DiscordApiError, type DiscordApi, type GuildMember } from "./api.js";
 import { isSnowflake } from "./config.js";
 import { guildGroup, roleGroup } from "./identity.js";
 import type { DiscordRef } from "./port.js";
@@ -55,7 +55,7 @@ export class GroupLookup {
     if (hit && hit.until > now) return hit.groups;
     const out: string[] = [];
     for (const guild of [...trusted].sort()) {
-      let member: { roles?: unknown } | undefined;
+      let member: GuildMember | undefined;
       try {
         member = await this.opts.api.guildMember(guild, sub);
       } catch (err) {
@@ -64,6 +64,8 @@ export class GroupLookup {
         if (err instanceof DiscordApiError && err.status === 404 && err.code !== UNKNOWN_GUILD) continue;
         return undefined;
       }
+      // A bot is never a person the gate speaks for: no groups for it at all.
+      if (member?.user?.bot) return undefined;
       out.push(guildGroup(guild));
       const roles = Array.isArray(member?.roles) ? member.roles : [];
       for (const role of roles) if (isSnowflake(role)) out.push(roleGroup(role));
