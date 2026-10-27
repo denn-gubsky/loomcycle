@@ -38,7 +38,9 @@ malformed `id` is refused before anything is evaluated.
   it equals `decision`. With `mode` `compat`, `no_match` is not a refusal:
   `fallback: "scopes"` says your scopes and your agent's own grants decide,
   so `allowed` is `true` and `op=self` / `op=permissions` tell you the rest.
-  A `deny` is a refusal in every mode.
+  With `mode` `shadow` the rules are only being observed: your scopes and
+  grants decide every question (`fallback: "scopes"`). A `deny` is a refusal
+  in `compat` and `enforce`.
 - `reasons` — every rule that matched, `{acl, rule, effect, version?}`,
   denies first: the list and the rule number to quote to an operator.
 

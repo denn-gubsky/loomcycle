@@ -74,7 +74,7 @@ Present when they apply:
 - `identity` — the person this run acts for, as the deployment knows them:
   `tenant_id`, `subject`, and from their user record `display_name`,
   `access_mode`, `status` and `created_at` (absent when there is no record,
-  as for an operator token); `groups` — each `{name, via, description?,
+  as for an operator token or a credential of another tenant); `groups` — each `{name, via, description?,
   external_id?}`, where `via` is `direct` or the group through which they are
   a member; and `acl` — `{mode, version, baseline, lists, missing_acls,
   removed_tools}`, where each of `lists` is `{name, version, bound_to: {kind,
