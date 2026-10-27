@@ -5191,6 +5191,17 @@ export interface AgentTranscription {
   max_minutes_per_run?: number;
 }
 
+/** An agent's text-to-speech settings. It can switch speech off for the agent
+ *  and lower the operator's per-run character cap; it can never raise it or
+ *  pick an engine, a model or a voice list. */
+export interface AgentSpeech {
+  /** Whether the agent may speak. Default `true` when the operator configured
+   *  an engine; `false` switches it off for this agent. */
+  enabled?: boolean;
+  /** At most the operator's `speech.max_chars_per_run`. */
+  max_chars_per_run?: number;
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -5391,6 +5402,8 @@ export interface AgentDefOverlay {
   compaction?: AgentCompaction;
   /** OCR and speech-to-text settings, merged per field. */
   transcription?: AgentTranscription;
+  /** Text-to-speech settings, merged per field. */
+  speech?: AgentSpeech;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared

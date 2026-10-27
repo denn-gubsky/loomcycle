@@ -165,6 +165,12 @@ var agentDefOverridability = map[string]overridability{
 	// against the operator's).
 	"Transcription": notOverridable,
 
+	// Whether the agent may speak, and its per-run character cap: same
+	// reasoning as Transcription — the author's cost decision, and no run-request
+	// field for it on every transport in the first phase; when one lands it is
+	// runMayNarrow.
+	"Speech": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,

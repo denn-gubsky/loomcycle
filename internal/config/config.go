@@ -1830,6 +1830,13 @@ type AgentDef struct {
 	// field on every transport.
 	Transcription *AgentTranscription `yaml:"transcription,omitempty"`
 
+	// Speech is the per-agent `speech:` block: whether the agent may speak
+	// (default yes when the operator configured an engine) and a per-run
+	// character cap that may only LOWER the operator's (a higher one is refused
+	// at load and at AgentDef create/fork). Merged per field like Compaction.
+	// Content-identifying. Not per-run overridable, like Transcription.
+	Speech *AgentSpeech `yaml:"speech,omitempty"`
+
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
 	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
@@ -7426,6 +7433,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	if !override.Transcription.IsZero() {
 		out.Transcription = MergeAgentTranscription(out.Transcription, override.Transcription)
 	}
+	if !override.Speech.IsZero() {
+		out.Speech = MergeAgentSpeech(out.Speech, override.Speech)
+	}
 	if override.Providers != nil {
 		out.Providers = override.Providers
 	}
@@ -9129,6 +9139,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := c.CheckAgentTranscription(agent.Transcription); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := c.CheckAgentSpeech(agent.Speech); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := agent.Context.Validate(); err != nil {
