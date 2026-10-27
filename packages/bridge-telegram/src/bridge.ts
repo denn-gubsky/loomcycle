@@ -166,6 +166,19 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       return { status: 200 };
     }
     if (typeof update?.update_id !== "number" || !this.seen.firstTime(update.update_id)) return { status: 200 };
+    // A person blocking the bot is answered only once loomcycle has the
+    // revoke: a 5xx makes Telegram deliver it again, so a failed revoke is
+    // retried rather than lost and the person kept active. It is one quick
+    // call, well inside Telegram's webhook timeout.
+    if (update.my_chat_member) {
+      try {
+        await this.onMyChatMember(update.my_chat_member);
+        return { status: 200 };
+      } catch {
+        this.seen.forget(update.update_id);
+        return { status: 500 };
+      }
+    }
     // Answer now, work after: Telegram retries a slow webhook.
     void this.handle(update).catch((err: unknown) => {
       this.log.error("telegram update failed", {
@@ -179,13 +192,13 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
   private async handle(u: TgUpdate): Promise<void> {
     if (u.message) await this.onMessage(u.message);
     else if (u.callback_query) await this.onCallback(u.callback_query);
-    else if (u.my_chat_member) await this.onMyChatMember(u.my_chat_member);
   }
 
   /** onMyChatMember: a person who blocks the bot in their private chat has
    *  left it, and the bridge, as the gate for Telegram, tells loomcycle so
    *  (RFC FA §3.7c): the user is disabled at once and removed per the gate's
-   *  policy. Coming back takes an operator (reactivate: operator). */
+   *  policy. Coming back takes an operator (reactivate: operator). A revoke
+   *  that fails throws, so the webhook asks Telegram to deliver it again. */
   private async onMyChatMember(u: TgChatMemberUpdated): Promise<void> {
     const gate = this.ctx?.gate;
     if (!gate || u.chat?.type !== "private" || !u.from || u.from.is_bot || u.chat.id !== u.from.id) return;
@@ -195,7 +208,8 @@ class TelegramAdapter implements BridgeAdapter<TelegramRef> {
       this.groupCache.delete(gate.subjectOf(personSub(u.from.id)));
       this.log.info("telegram user blocked the bot; revoked in loomcycle", { chat: u.chat.id });
     } catch (err) {
-      this.log.warn("telegram revoke failed", { status: (err as { status?: number })?.status });
+      this.log.warn("telegram revoke failed; Telegram will deliver it again", { status: (err as { status?: number })?.status });
+      throw err;
     }
   }
 

@@ -438,6 +438,24 @@ describe("telegram bridge", () => {
     expect(gate.revokes).toHaveLength(1);
   });
 
+  // A revoke that does not reach loomcycle must not be lost: the update is
+  // answered with a 5xx, so Telegram delivers it again, and the redelivery
+  // is not taken for a duplicate.
+  it("answers a block whose revoke failed with a 5xx, and revokes on the redelivery", async () => {
+    await start();
+    gate.failRevokes = 1;
+    const update = { update_id: nextUpdate++, my_chat_member: { chat: privateChat(), from: alice, new_chat_member: { status: "kicked" } } };
+    expect((await post(update)).status).toBe(500);
+    expect(gate.revokes).toHaveLength(0);
+    expect((await post(update)).status).toBe(200);
+    expect(gate.revokes).toHaveLength(1);
+    expect(gate.revokes[0]).toMatchObject({ payload: { sub: "42" } });
+    // Once done, a further redelivery is a duplicate.
+    expect((await post(update)).status).toBe(200);
+    await settle();
+    expect(gate.revokes).toHaveLength(1);
+  });
+
   it("sets the webhook with its secret and the updates it handles", async () => {
     await start({ TELEGRAM_BRIDGE_SET_WEBHOOK: "1", TELEGRAM_BRIDGE_PUBLIC_URL: "https://bot.example.com" });
     expect(tg.callsTo("setWebhook")[0]!.params).toEqual({

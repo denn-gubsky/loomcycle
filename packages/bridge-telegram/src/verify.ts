@@ -39,4 +39,9 @@ export class SeenSet {
     this.seen.set(id, t);
     return true;
   }
+
+  /** forget drops id, so a redelivery of an update that failed is handled. */
+  forget(id: number): void {
+    this.seen.delete(id);
+  }
 }
