@@ -14,8 +14,6 @@ export type Section =
   | "ontology"
   | "retention"
   | "erasure"
-  | "access"
-  | "tokens"
   | "presets"
   | "runtime"
   | "lanes"
@@ -50,15 +48,12 @@ export const SECTIONS: SectionDef[] = [
   { id: "ontology", label: "Ontology", vis: "tenant" },
   { id: "retention", label: "Retention", vis: "tenant" },
   { id: "erasure", label: "Erasure", vis: "tenant" },
-  // RFC EY/EZ access control: /v1/_groups*, /v1/_acldef, /v1/_aclbinding* are
-  // operator-only for members and tenant-confined (substrate:tenant reaches
-  // them; admin focuses a tenant with ?tenant=).
-  { id: "access", label: "Access", vis: "tenant" },
-  // ScopeAdmin: token minting has no tenant axis and is deliberately excluded from
-  // the tenant-confined def set; presets/runtime/lanes/health fall through to the
-  // /v1/_* catch-all; and repair-tenant is explicitly admin because it rewrites rows
-  // across every scope in one statement.
-  { id: "tokens", label: "Tokens", vis: "admin" },
+  // Access control (groups, policies, bindings, the simulator) and token minting
+  // are pages of /access in the left nav's access group, with users — not tabs here.
+  //
+  // ScopeAdmin: presets/runtime/lanes/health fall through to the /v1/_* catch-all;
+  // and repair-tenant is explicitly admin because it rewrites rows across every
+  // scope in one statement.
   { id: "presets", label: "Presets", vis: "admin" },
   { id: "runtime", label: "Runtime", vis: "admin" },
   { id: "lanes", label: "Lanes", vis: "admin" },
@@ -86,7 +81,7 @@ export function settingsHref(id: Section): string {
 //
 // The param is a preference; visibility is a rule. An absent, unknown or
 // not-permitted section falls back to the first tab the viewer CAN see, so a
-// pasted /settings/tokens link opens a tenant operator's own first tab rather
+// pasted /settings/presets link opens a tenant operator's own first tab rather
 // than a panel whose every call 403s. undefined = the viewer sees no tab at all.
 export function resolveSection(
   param: string | undefined,
@@ -97,60 +92,64 @@ export function resolveSection(
 
 export const LOGOUT_HREF = "/ui/logout";
 
-// A page of its own that is reached from the settings menu rather than the left
-// nav. NOT a hub section: it has no tab in SettingsView and no /settings/<id>
-// address — the menu simply links to it.
-export type MenuLinkId = "users";
+// The viewer's own pages, in the top bar's account menu. Each is a page of its
+// own, reached from that menu rather than the left nav. "Your account" is not in
+// this list: it is shown for every signed-in session (accountMenuItems), so it
+// has no page in the server's capability summary — and this list is what the
+// summary is held equal to.
+export type AccountLinkId = "my-credentials";
 
-export interface MenuLinkDef {
-  id: MenuLinkId;
+export interface AccountLinkDef {
+  id: AccountLinkId;
   label: string;
   href: string;
   // Same three-tier class, assigned from the route gate like the sections above.
   vis: Visibility;
 }
 
-export const MENU_LINKS: MenuLinkDef[] = [
-  // The tenant-operator users console (manage first-class users + mint/revoke
-  // their bearer tokens). "tenant": the /v1/_users(/…) routes are ScopeTenant and
-  // the handlers confine to the caller's own tenant (a tenant operator sees only
-  // its own users; admin sees all + ?tenant= focus).
-  { id: "users", label: "Users", href: "/users", vis: "tenant" },
+export const ACCOUNT_LINKS: AccountLinkDef[] = [
+  // RFC CN — every login (incl. an isolated substrate:user user) can self-serve
+  // its OWN scope=user API tokens here; the operator Settings → Credentials tab
+  // (tenant authoring) stays separate.
+  { id: "my-credentials", label: "My credentials", href: "/my-credentials", vis: "all" },
 ];
 
-// One row of the top bar's settings menu.
+export const ACCOUNT_HREF = "/account";
+
+// One row of a top-bar menu: a settings section, one of the viewer's own pages,
+// or Log out.
 export type SettingsMenuItem =
   | { kind: "section"; id: Section; label: string; href: string }
-  | { kind: "link"; id: MenuLinkId; label: string; href: string }
+  | { kind: "link"; id: AccountLinkId | "account"; label: string; href: string }
   | { kind: "logout"; label: string; href: string };
 
-// settingsMenuItems is the menu for a viewer, in three groups: their settings
-// sections (the hub's tabs), then the linked pages, then Log out. The menu draws
-// a rule wherever `kind` changes, so the groups read as groups.
-//
-// Linked pages sit in their own group, after the sections: the sections are tabs
-// of one page and a link leaves it, and mixing them would suggest a "Users" tab
-// the hub does not have.
-//
-// LOG OUT IS UNCONDITIONAL. The menu replaced a standalone sign-out button that
-// every role had, so the menu is now the only way out of a session: a delegated
-// user, who has no settings section and no linked page, must still get a menu,
-// holding that one row.
+// settingsMenuItems is the gear's menu: the viewer's settings sections (the hub's
+// tabs), and nothing else. Empty for a viewer with no section, who then gets no
+// gear — their pages and Log out are in the account menu.
 export function settingsMenuItems(
   isAdmin: boolean,
   hasTenantScope: boolean,
   surfaces?: Surfaces,
 ): SettingsMenuItem[] {
+  return visibleSections(isAdmin, hasTenantScope, surfaces).map(
+    (s): SettingsMenuItem => ({ kind: "section", id: s.id, label: s.label, href: settingsHref(s.id) }),
+  );
+}
+
+// accountMenuItems is the account menu: Your account (for a signed-in session —
+// an open-mode server has nobody signed in), the viewer's own pages, then Log out.
+//
+// LOG OUT IS UNCONDITIONAL: this menu is the only way out of a session, so every
+// role gets it, holding at least that row.
+export function accountMenuItems(
+  isAdmin: boolean,
+  hasTenantScope: boolean,
+  surfaces: Surfaces | undefined,
+  signedIn: boolean,
+): SettingsMenuItem[] {
   return [
-    ...visibleSections(isAdmin, hasTenantScope, surfaces).map(
-      (s): SettingsMenuItem => ({
-        kind: "section",
-        id: s.id,
-        label: s.label,
-        href: settingsHref(s.id),
-      }),
-    ),
-    ...MENU_LINKS.filter((l) => canSee(l.vis, isAdmin, hasTenantScope, grantOf(surfaces, l.id))).map(
+    ...(signedIn ? [{ kind: "link", id: "account", label: "Your account", href: ACCOUNT_HREF } as const] : []),
+    ...ACCOUNT_LINKS.filter((l) => canSee(l.vis, isAdmin, hasTenantScope, grantOf(surfaces, l.id))).map(
       (l): SettingsMenuItem => ({ kind: "link", id: l.id, label: l.label, href: l.href }),
     ),
     { kind: "logout", label: "Log out", href: LOGOUT_HREF },
@@ -158,7 +157,7 @@ export function settingsMenuItems(
 }
 
 // isMenuItemCurrent says whether a menu row is the page being shown — what the
-// menu marks, and what lights the gear. A section matches its exact address; a
+// menu marks, and what lights its button. A section matches its exact address; a
 // linked page also matches anything beneath it.
 export function isMenuItemCurrent(item: SettingsMenuItem, pathname: string): boolean {
   switch (item.kind) {

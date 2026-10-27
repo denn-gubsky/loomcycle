@@ -271,7 +271,7 @@ services:
 2. **Health**: the app reports healthy (the `loomcycle health` check passes).
 3. **Web UI**: browse `http://<truenas>:8787/ui`, sign in with `LOOMCYCLE_AUTH_TOKEN`
    → super-admin.
-4. **Mint a tenant token** (no shell): the gear (top-right) → **Settings → Tokens** →
+4. **Mint a tenant token** (no shell): the left menu → **Access → Tokens** →
    Generate (name, tenant, `substrate:tenant`) → copy the once-shown secret.
 
 ## Phase 7 — Ingress (Cloudflare Tunnel)
@@ -333,8 +333,8 @@ Every token class has a built-in list (`builtin:admin`, `builtin:tenant-operator
 so `enforce` with no rules written behaves like `compat`. The one difference: under
 `enforce` an isolated user (`substrate:user`) may not list its tenant's users.
 
-**2. Write rules** — either in the Web UI (**Settings → Access**: the Groups,
-Policies and Bindings tabs, and a Simulator that answers "may this user do this?"
+**2. Write rules** — either in the Web UI (the left menu's **Access** group: the
+Groups, Policies and Bindings pages, and a Simulator that answers "may this user do this?"
 with every rule it considered, against the saved rules or a draft), or declared in
 the overlay `loomcycle.yaml` next to `volumes:`. Config rows are
 read-only in the UI; a stored list with the same name shadows a config one.
@@ -458,7 +458,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
 | Crash-loop ending `config: load failed err="volumes.dynamic: path \"/mnt/dynamic\" must already exist …"` | The overlay declares the `dynamic` volume but the app has no mount at `/mnt/dynamic` (an install made from a compose before v1.122.0). Create the dataset owned by 65532 (Phase 2) and add the mount (Phase 5: `…/dynamic:/mnt/dynamic`, or *Additional storage* in the wizard). To boot first, comment out the `dynamic:` block. |
 | A tool's file shows as `[file not kept: no dynamic_root volume is configured …]` | The overlay has no `dynamic_root: true` volume, or its mount is missing — add the `dynamic` entry (Phase 3) and its mount (Phase 5). |
-| `403 {"code":"acl_denied", …}` on a request that worked before | A rule denies it, or (under `enforce`) no rule allows it. The body names the rules that denied; **Settings → Access → Simulator** shows every rule considered. Back to `shadow` while you fix the list. |
+| `403 {"code":"acl_denied", …}` on a request that worked before | A rule denies it, or (under `enforce`) no rule allows it. The body names the rules that denied; **Access → Simulator** shows every rule considered. Back to `shadow` while you fix the list. |
 | `503 acl_unavailable` | The caller's rules could not be read (a database fault). Under `enforce` the request is refused rather than admitted; a paused run stays paused and a schedule tries again next tick. Check the Postgres connection. |
 | Log lines `authz: acl_shadow_diverged …` | `shadow` mode found a request the rules would answer differently from the scope gates. Each line names the action and resource: adjust the list, or accept the change before `enforce`. |
 | `toomanyrequests: You have reached your pull rate limit` | Docker Hub anonymous quota exhausted — see below. |

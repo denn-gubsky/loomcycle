@@ -191,7 +191,7 @@ datasets must be `chown`ed to 65532:65532.**
   to register the Document Assistant (needs `LOOMCYCLE_SQLMEM_ENABLED=1` + a `middle`
   tier). Browse them with `loomcycle presets` or the Web UI **Settings → Presets**.
 - **Mint tenant tokens from the Web UI** (no shell needed): sign in with the admin
-  (root) token, click the gear → **Settings → Tokens** ([`operator-tokens`](../internal/help/builtin/operator-tokens.md)).
+  (root) token, open **Access → Tokens** in the left menu ([`operator-tokens`](../internal/help/builtin/operator-tokens.md)).
 
 ## Access control
 
@@ -209,7 +209,7 @@ or the wizard's *Advanced environment options* (Route B):
   `enforce` with no rules written behaves like `compat`.
 
 The mode is read at startup, so restart the app after changing it. Write rules in
-the Web UI (**Settings → Access**) or declare `acls:` / `groups:` / `acl_bindings:`
+the Web UI (the **Access** group in the left menu: groups, policies, bindings) or declare `acls:` / `groups:` / `acl_bindings:`
 in the overlay (commented example in
 [`loomcycle.overlay.example.yaml`](../deploy/truenas/loomcycle.overlay.example.yaml)).
 [`INSTALL.md`](../deploy/truenas/INSTALL.md#access-control--rule-lists-groups-and-bindings)

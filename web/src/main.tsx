@@ -18,7 +18,7 @@ import AuditView from "./pages/AuditView";
 import RoutingView from "./pages/RoutingView";
 import UsageView from "./pages/UsageView";
 import LimitsView from "./pages/LimitsView";
-import UsersView from "./pages/UsersView";
+import AccessView from "./pages/AccessView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
 import IntegrationsView from "./pages/IntegrationsView";
@@ -102,7 +102,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           </Route>
           <Route path="volumes/persistent" element={<VolumesView />} />
           <Route path="volumes/ephemeral" element={<VolumesView />} />
-          <Route path="paths" element={<PathTreeView />} />
+          {/* The Path tree is shown as Documents; /paths is its old address. */}
+          <Route path="documents" element={<PathTreeView />} />
+          <Route path="paths" element={<Navigate to="/documents" replace />} />
           <Route path="documents/:documentId" element={<DocumentsView />} />
           <Route path="channels" element={<ChannelsView />} />
           <Route path="schedules" element={<SchedulesView />} />
@@ -113,7 +115,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="routing" element={<RoutingView />} />
           <Route path="usage" element={<UsageView />} />
           <Route path="limits" element={<LimitsView />} />
-          <Route path="users" element={<UsersView />} />
+          {/* Users, access control and tokens are sections of /access; their
+              old addresses (the settings menu's Users, Settings → Access and
+              Tokens) still land on them. */}
+          <Route path="access/:section?" element={<AccessView />} />
+          <Route path="users" element={<Navigate to="/access/users" replace />} />
+          <Route path="settings/access" element={<Navigate to="/access/groups" replace />} />
+          <Route path="settings/tokens" element={<Navigate to="/access/tokens" replace />} />
           <Route path="activity" element={<ActivityMonitor />} />
           {/* :section deep-links a hub tab (the top bar's settings menu). */}
           <Route path="settings/:section?" element={<SettingsView />} />

@@ -45,7 +45,7 @@ volumes:
 
 # Access control: rule lists, groups and bindings, read with LOOMCYCLE_ACL set to
 # compat, shadow or enforce (the compose). Declared here they are read-only in
-# Settings → Access, where you can also write them; a stored list with the same
+# the Web UI's Access pages, where you can also write them; a stored list with the same
 # name shadows a declared one. A malformed entry fails the boot, naming it. See
 # INSTALL.md, "Access control".
 #
