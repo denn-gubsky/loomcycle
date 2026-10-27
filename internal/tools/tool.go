@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -678,8 +679,14 @@ func AgentName(ctx context.Context) string {
 //     trust posture as AllowedScopes.
 type MemoryPolicyValue struct {
 	AllowedScopes []string
-	QuotaBytes    int
-	Backend       string
+	// ReadOnlyScopes are the AllowedScopes this run may read but not write:
+	// the originating caller's access lists do not let it write
+	// memory:<scope> (RFC EY §3.7). The Memory tool refuses every mutating op
+	// on them. Server-derived at run start, like AllowedScopes; empty for a
+	// run with no access lists.
+	ReadOnlyScopes []string
+	QuotaBytes     int
+	Backend        string
 	// Consolidation is the RFC BL P2 `memory_consolidation` grant — it gates the
 	// Memory tool's consolidation control ops (cursor lease/advance, pending
 	// drain/ack, supersede) SEPARATELY from AllowedScopes. Default-deny: false
@@ -726,7 +733,35 @@ type MemoryPolicyValue struct {
 // decides which scopes exist.
 type SqlMemPolicyValue struct {
 	AllowedScopes []string
-	QuotaBytes    int
+	// ReadOnlyScopes are the AllowedScopes the caller's access lists do not
+	// let this run write (sqlmem:<scope>): sql_query still runs there,
+	// sql_exec and sql_begin do not. See MemoryPolicyValue.ReadOnlyScopes.
+	ReadOnlyScopes []string
+	QuotaBytes     int
+}
+
+// WritableScopes is AllowedScopes without ReadOnlyScopes: where a write may
+// land. A scope the run holds only for reading is no grant to write.
+func (p MemoryPolicyValue) WritableScopes() []string {
+	return withoutScopes(p.AllowedScopes, p.ReadOnlyScopes)
+}
+
+// WritableScopes is AllowedScopes without ReadOnlyScopes.
+func (p SqlMemPolicyValue) WritableScopes() []string {
+	return withoutScopes(p.AllowedScopes, p.ReadOnlyScopes)
+}
+
+func withoutScopes(all, drop []string) []string {
+	if len(drop) == 0 {
+		return all
+	}
+	out := make([]string, 0, len(all))
+	for _, s := range all {
+		if !slices.Contains(drop, s) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // CoreBlocksPolicyValue carries the resolved core memory blocks that apply to

@@ -513,6 +513,9 @@ func Run(t *testing.T, factory Factory) {
 		{"AclVersionBumpsOnEveryWrite", testAclVersionBumpsOnEveryWrite},
 		{"AclEraseSubjectRemovesOnlyThatSubjectsRows", testAclEraseSubjectRemovesOnlyThatSubjectsRows},
 		{"AclEraseTokenBindingsRemovesOnlyThoseTokensRows", testAclEraseTokenBindingsRemovesOnlyThoseTokensRows},
+		{"AclSnapshotReadsEveryTenantAndRestoresEveryField", testAclSnapshotReadsEveryTenantAndRestoresEveryField},
+		{"AclSnapshotRestoreLeavesHeldRowsAlone", testAclSnapshotRestoreLeavesHeldRowsAlone},
+		{"AclSnapshotRestoreRefusesWhatNoAuthorCouldWrite", testAclSnapshotRestoreRefusesWhatNoAuthorCouldWrite},
 		// RFC FA Web UI login sessions.
 		{"UISessionCreateGetRoundTrip", testUISessionCreateGetRoundTrip},
 		{"UISessionRevokeIsOnceAndTouchSkipsRevoked", testUISessionRevokeIsOnceAndTouchSkipsRevoked},

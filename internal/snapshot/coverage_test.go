@@ -277,6 +277,10 @@ const (
 	markInviteCode  = "dp0mark-invite-code-hash"
 	markResetCode   = "dp0mark-reset-code-hash"
 	markThrottleKey = "dp0mark-throttle-key"
+	markACLList     = "dp0mark-acl-list"
+	markGroup       = "dp0mark-group"
+	markMember      = "dp0mark-group-member"
+	markBinding     = "aclb_dp0mark"
 	plantedEnvName  = "LOOMCYCLE_DP0_PLANTED_KEY"
 )
 
@@ -398,6 +402,18 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 	_, _, err = s.AuthThrottleRecordFailure(ctx, markThrottleKey, now, time.Hour, func(int) time.Duration { return 0 })
 	must("auth_throttle", err)
 
+	// RFC EY authority rows: names and ids, and they travel.
+	_, err = s.AclDefPut(ctx, store.AclDefRow{TenantID: "acme", Name: markACLList,
+		Rules: json.RawMessage(`[{"effect":"deny","actions":["invoke"],"resources":["tool:Bash"]}]`)})
+	must("acl_defs", err)
+	_, err = s.GroupPut(ctx, store.GroupRow{TenantID: "acme", Name: markGroup})
+	must("user_groups", err)
+	must("user_group_members", s.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: markGroup,
+		MemberKind: store.GroupMemberUser, MemberID: markMember}))
+	_, err = s.AclBindingPut(ctx, store.AclBindingRow{BindingID: markBinding, TenantID: "acme", ACLName: markACLList,
+		SubjectKind: "group", SubjectID: markGroup})
+	must("acl_bindings", err)
+
 	return []plantedRow{
 		{table: "credential_defs", absent: []string{markCredName, markCredCipher}},
 		{table: "operator_token_defs", absent: []string{markTokName, markTokSubject, markTokHash, "otd_dp0mark"}},
@@ -426,6 +442,10 @@ func plantNeverSnapshotRows(t *testing.T, s store.Store) []plantedRow {
 		{table: "auth_invites", absent: []string{markInviteCode, "inv_dp0mark"}},
 		{table: "auth_resets", absent: []string{markResetCode, "rst_dp0mark"}},
 		{table: "auth_throttle", absent: []string{markThrottleKey}},
+		{table: "acl_defs", present: []string{markACLList, `"resources":["tool:Bash"]`}},
+		{table: "user_groups", present: []string{`"name":"` + markGroup + `"`}},
+		{table: "user_group_members", present: []string{markMember}},
+		{table: "acl_bindings", present: []string{markBinding}},
 	}
 }
 

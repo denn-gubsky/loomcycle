@@ -545,6 +545,13 @@ func (s *Server) postRestoreRefresh(ctx context.Context, result *snapshot.Restor
 	for _, c := range result.Refresh.UsageCarried {
 		s.limits.AddCarried(c.Month, c.TenantID, c.UserID, c.Tokens)
 	}
+	// Restored access-control rows bumped each tenant's acl_version in the
+	// store, but a replica re-reads that version only once per cache TTL. Drop
+	// the cached sets now, here and on every replica, before a resumed run is
+	// re-narrowed by its caller's set — and audit it like any ACL write.
+	for _, tenant := range result.Refresh.ACLTenants {
+		s.aclChanged(ctx, tenant, "acl_restored", "snapshot")
+	}
 }
 
 // refreshRestoredLimits pushes each budget the restore wrote as the store

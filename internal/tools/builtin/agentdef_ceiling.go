@@ -236,10 +236,15 @@ func (a *AgentDef) ceilVolumes(ctx context.Context, def mergedDef, base *mergedD
 
 func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
 	pol := tools.PolicyOf(ctx).Memory
-	ceiling := pol.AllowedScopes
+	// memory_scopes grants write, so a scope the author holds read-only (its
+	// caller may not write it) is outside the ceiling, as a read-only volume
+	// is. A core block only reads its scope, so blocks keep the read reach.
+	ceiling := pol.WritableScopes()
+	readReach := pol.AllowedScopes
 	consolidation, includeTurns, attachTraces := pol.Consolidation, pol.RecallIncludeTurns, pol.RecallAttachTraces
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveMemoryScopes(ctx, base.MemoryScopes))
+		readReach = scopeUnion(readReach, tools.EffectiveMemoryScopes(ctx, base.MemoryScopes))
 		consolidation = consolidation || base.MemoryConsolidation
 		includeTurns = includeTurns || base.RecallIncludeTurns
 		attachTraces = attachTraces || base.RecallAttachTraces
@@ -254,7 +259,7 @@ func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string
 	// A core block is read into the prompt at its own scope whatever the
 	// memory_scopes say, so its scope is reach like a memory scope — and the
 	// forked version's blocks are its own, memory_scopes or not.
-	blockCeiling := ceiling
+	blockCeiling := readReach
 	if base != nil {
 		for _, b := range base.CoreBlocks {
 			blockCeiling = scopeUnion(blockCeiling, []string{b.Scope})
@@ -285,7 +290,8 @@ func ceilMemory(ctx context.Context, def mergedDef, base *mergedDef, held string
 }
 
 func ceilSQL(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	ceiling := tools.PolicyOf(ctx).SqlMem.AllowedScopes
+	// sql_scopes grants write: a scope held read-only is outside the ceiling.
+	ceiling := tools.PolicyOf(ctx).SqlMem.WritableScopes()
 	if base != nil {
 		ceiling = scopeUnion(ceiling, tools.EffectiveSqlScopes(ctx, base.SqlScopes))
 	}

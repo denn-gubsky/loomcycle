@@ -183,6 +183,11 @@ func contextOpIsStatic(op string) (static, known bool) {
 		return true, true
 	case "self", "agents", "lineage", "evaluations", "channels", "time", "compact", "state":
 		return false, true
+	// can / reach answer from rules that may carry a time window, and the
+	// rollout mode can change on a reload: an answer kept from an earlier
+	// step could be wrong by the next one.
+	case "can", "reach":
+		return false, true
 	}
 	return false, false
 }

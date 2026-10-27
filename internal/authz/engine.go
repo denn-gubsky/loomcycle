@@ -117,6 +117,23 @@ type Input struct {
 	// Version is the tenant's acl_version the inputs were read at; the
 	// cache keys on it.
 	Version int64
+	// Baseline names the built-in list the resolver bound for the subject's
+	// token class (one of the Baseline* names), "" when none was. Reported,
+	// never consulted: the list applies through its binding like any other.
+	Baseline string
+	// Via says, per group of Subject.Groups, how the subject is in it
+	// (ClosureVia). Reported, never consulted; nil when the compiler of the
+	// input did not record it.
+	Via map[string]string
+}
+
+// AppliedList is one binding that contributed to an Effective set, with the
+// version of the list it resolved to (0 for a built-in or config-declared
+// list, which have none).
+type AppliedList struct {
+	Name    string
+	Version int
+	Binding Binding
 }
 
 // compiledRule is one rule of one ACL, ready to match.
@@ -154,6 +171,13 @@ type Effective struct {
 	// missing is the ACL names bound but not supplied (retired or unknown),
 	// which match nothing and which the doctor should name.
 	missing []string
+	// lists is applied with each binding's resolved list version, in
+	// binding order, leaving out the bindings whose list is missing. It
+	// answers "which lists apply to me, through what" without the store.
+	lists []AppliedList
+	// baseline and via are copied from the Input; see there.
+	baseline string
+	via      map[string]string
 	// ceiling, when set, is a set every answer is also held to (Within): a
 	// run that re-reads its caller's rules mid-run is never allowed more than
 	// it started with.
@@ -213,13 +237,22 @@ func meetOutcome(a, b Outcome) Outcome {
 // nothing and is reported in Missing: a retired list silently granting is
 // the failure this refuses.
 func Compile(in Input) (*Effective, error) {
-	e := &Effective{Subject: in.Subject, Version: in.Version, byType: map[string]*typeRules{}}
+	e := &Effective{Subject: in.Subject, Version: in.Version, byType: map[string]*typeRules{}, baseline: in.Baseline}
+	if len(in.Via) > 0 {
+		e.via = make(map[string]string, len(in.Via))
+		for g, v := range in.Via {
+			e.via[g] = v
+		}
+	}
 	seenACL := map[string]bool{}
 	for _, b := range in.Bindings {
 		if !b.AppliesTo(in.Subject) || !b.Active(in.Now) {
 			continue
 		}
 		e.applied = append(e.applied, b)
+		if av, ok := in.ACLs[b.ACL]; ok {
+			e.lists = append(e.lists, AppliedList{Name: b.ACL, Version: av.Version, Binding: b})
+		}
 		if seenACL[b.ACL] {
 			continue // the same list bound twice contributes once
 		}
@@ -287,6 +320,27 @@ func (e *Effective) Missing() []string { return append([]string(nil), e.missing.
 
 // Applied returns the bindings that contributed to the set.
 func (e *Effective) Applied() []Binding { return append([]Binding(nil), e.applied...) }
+
+// Lists returns the bindings that contributed with the version of the list
+// each resolved to; a binding to a missing list is in Missing instead.
+func (e *Effective) Lists() []AppliedList { return append([]AppliedList(nil), e.lists...) }
+
+// Baseline names the built-in list bound for the subject's token class, ""
+// when the set was compiled without one.
+func (e *Effective) Baseline() string { return e.baseline }
+
+// GroupVia returns how the subject is in each of its groups (ClosureVia),
+// or nil when the set was compiled without that record.
+func (e *Effective) GroupVia() map[string]string {
+	if e.via == nil {
+		return nil
+	}
+	out := make(map[string]string, len(e.via))
+	for g, v := range e.via {
+		out[g] = v
+	}
+	return out
+}
 
 // Decide answers one request against the compiled set.
 //
@@ -459,6 +513,44 @@ func (e *Effective) DenyPatterns(typ, action string) []string {
 		}
 	}
 	return out
+}
+
+// AllowPatterns is DenyPatterns' twin: the names of every UNCONDITIONAL
+// allow selector on typ for action, as written. A conditional allow is left
+// out, as a conditional deny is there (HasConditionalRules reports both).
+func (e *Effective) AllowPatterns(typ, action string) []string {
+	tr := e.byType[typ]
+	if tr == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range tr.allow {
+		if r.when != nil || !r.actions[action] {
+			continue
+		}
+		for _, s := range r.sels {
+			out = append(out, s.raw)
+		}
+	}
+	return out
+}
+
+// HasConditionalRules reports whether a rule on typ for action carries a
+// condition, so its answer depends on the request and no pattern list can
+// state it.
+func (e *Effective) HasConditionalRules(typ, action string) bool {
+	tr := e.byType[typ]
+	if tr == nil {
+		return false
+	}
+	for _, rules := range [][]*compiledRule{tr.deny, tr.allow} {
+		for _, r := range rules {
+			if r.when != nil && r.actions[action] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Quick is the hot-path form of Decide for a condition-free question about

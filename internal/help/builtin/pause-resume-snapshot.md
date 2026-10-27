@@ -57,6 +57,8 @@ sections, grouped:
 
 - **Identities and budgets:** `users`, and `token_limits` with this
   month's usage.
+- **Access control:** `acl` — rule lists, groups, group memberships and
+  list bindings, every tenant's.
 - **Definitions,** each kind with its active pointers where it has
   them: agents, skills, teams, hooks, MCP servers, channels, webhooks,
   schedules, A2A agents and server cards, memory backends, document
@@ -169,6 +171,29 @@ on the source is near it on the target. The carried total is kept as the
 larger of the carry already stored and the snapshot's, so restoring the
 same snapshot twice counts it once. Usage from an earlier month is not
 carried: the budget window has rolled over.
+
+### Access control
+
+`acl` restores right after the users and before any paused or queued
+run, because those runs are narrowed again by their caller's current
+access lists. Groups come first, then memberships, rule lists and
+bindings, each under its own tenant, retired lists and bindings
+included. A list, group, membership or binding the target already has on
+the same name (or binding id) stands; when the target's list of a name
+has different rules from the snapshot's, a warning says the live list
+was kept — re-author it if the snapshot is right. Every row is checked
+as if an author wrote it here: a rule this version does not know, a
+membership in a group that is not here, or a nesting cycle is skipped
+with a warning. Counters: `acl_lists`, `acl_groups`, `acl_members`,
+`acl_bindings`.
+
+The restore drops every replica's cached access sets for the tenants it
+wrote, so the restored lists apply to the next request, and records an
+`acl_restored` audit event per tenant. A binding to an operator token
+names the token's definition id; tokens themselves never travel, so on
+another instance such a binding applies to nobody until it is re-bound
+to a token minted there. Lists declared in the config file are not in a
+snapshot: they come from the target's own config.
 
 ### Definitions: agents, skills, teams, hooks, MCP servers, channels
 
