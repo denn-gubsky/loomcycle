@@ -409,6 +409,7 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefVersionMonotonicUnderContention", testTeamDefVersionMonotonicUnderContention},
 		{"TeamDefActivePointerIdempotent", testTeamDefActivePointerIdempotent},
 		{"TeamDefActivePointerCarriesItsPromoter", testTeamDefActivePointerCarriesItsPromoter},
+		{"TeamDefActivePointerRecordsItsACLOwner", testTeamDefActivePointerRecordsItsACLOwner},
 		{"TeamDefRetireReversible", testTeamDefRetireReversible},
 		{"TeamDefDelete", testTeamDefDelete},
 		{"TeamDefDeleteDropsItsOwnChannels", testTeamDefDeleteDropsItsOwnChannels},
