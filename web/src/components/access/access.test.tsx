@@ -27,13 +27,14 @@ const noop = () => {};
 const html = (el: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(el);
 
 describe("AccessConsoleFrame", () => {
-  it("shows the mode with its sentence, the tenant it acts in, and the four tabs", () => {
-    const out = html(createElement(AccessConsoleFrame, { mode: "shadow", tenantLabel: "acme", tab: "policies", onTab: noop }));
+  it("shows the section's title, the mode with its sentence and the tenant it acts in", () => {
+    const out = html(createElement(AccessConsoleFrame, { mode: "shadow", tenantLabel: "acme", tab: "policies" }));
+    expect(out).toContain("<h2>Access · Policies</h2>");
     expect(out).toContain("mode <code>shadow</code>");
     expect(out).toContain("every disagreement is logged and audited");
     expect(out).toContain("tenant: <code>acme</code>");
-    for (const t of ["Groups", "Policies", "Bindings", "Simulator"]) expect(out).toContain(`>${t}</button>`);
-    expect(out).toContain('class="settings-tab active">Policies');
+    // The sections are pages in the left nav now, not a tab strip here.
+    expect(out).not.toContain("settings-tab");
   });
 });
 

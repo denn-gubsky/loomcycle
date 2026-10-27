@@ -127,7 +127,7 @@ services:
       # would answer differently (`acl_shadow_diverged`). enforce lets the rules
       # decide (403 acl_denied; 503 acl_unavailable if they can't be read). Run
       # shadow until the log is quiet, then switch to enforce. Read at startup:
-      # restart the app after a change. Write rules in Settings → Access, or in
+      # restart the app after a change. Write rules in the Web UI's Access pages, or in
       # the overlay's acls: / groups: / acl_bindings: blocks — see INSTALL.md.
       LOOMCYCLE_ACL: "shadow"
       # LOOMCYCLE_ACL_CACHE_TTL_SECONDS: "5"   # how long compiled rules are trusted (0 = every request)

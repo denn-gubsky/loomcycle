@@ -16,7 +16,7 @@ import (
 // refusal leaves the page with nothing to show.
 type navSurface struct {
 	// ID is the page's id in the Web UI: NavItem.id in
-	// web/src/components/navItems.ts, Section or MenuLinkId in
+	// web/src/components/navItems.ts, Section or AccountLinkId in
 	// web/src/lib/settingsSections.ts. TestNavSurfaces_CoverEveryWebUIPage
 	// holds the two lists equal.
 	ID     string
@@ -40,7 +40,6 @@ var navSurfaces = []navSurface{
 	// The left nav.
 	{ID: "run", Method: "POST", Path: "/v1/runs"},
 	{ID: "runs", Method: "GET", Path: "/v1/users/{subject}/agents"},
-	{ID: "my-credentials", Method: "POST", Path: "/v1/_credentialdef"},
 	{ID: "library", Method: "GET", Path: "/v1/_library/agents"},
 	{ID: "integrations", Method: "GET", Path: "/v1/_webhookdef/names"},
 	{ID: "volumes", Method: "GET", Path: "/v1/_volumes"},
@@ -54,18 +53,27 @@ var navSurfaces = []navSurface{
 	{ID: "audit", Method: "GET", Path: "/v1/_events"},
 	{ID: "usage", Method: "GET", Path: "/v1/_usage"},
 	{ID: "activity", Method: "GET", Path: "/v1/_metrics/summary"},
+	// The left nav's access group: each section of /access is gated by the
+	// route it loads first, so an operator an ACL denies the rule lists
+	// still manages users.
+	{ID: "users", Method: "GET", Path: "/v1/_users", Operator: true},
+	{ID: "groups", Method: "GET", Path: "/v1/_groups"},
+	{ID: "policies", Method: "POST", Path: "/v1/_acldef"},
+	{ID: "bindings", Method: "GET", Path: "/v1/_aclbinding"},
+	// The simulator's own route asks no ACL question (any principal may ask
+	// about itself), and the page cannot build a question without the rule
+	// catalog, which it reads from the policies route.
+	{ID: "simulator", Method: "POST", Path: "/v1/_acldef"},
+	{ID: "tokens", Method: "POST", Path: "/v1/_operatortokendef"},
 	// Settings sections. Credentials is the tenant's credential authoring;
-	// a member's own credentials are the my-credentials page above.
+	// a member's own credentials are the account menu's my-credentials
+	// page below.
 	{ID: "credentials", Method: "POST", Path: "/v1/_credentialdef", Operator: true},
 	{ID: "limits", Method: "GET", Path: "/v1/_limits"},
 	{ID: "routing", Method: "GET", Path: "/v1/_routing"},
 	{ID: "ontology", Method: "GET", Path: "/v1/_ontology"},
 	{ID: "retention", Method: "GET", Path: "/v1/_retention"},
 	{ID: "erasure", Method: "GET", Path: "/v1/_erasure"},
-	// Access opens on its policies; the groups and bindings tabs sit behind
-	// the same operator-only gate.
-	{ID: "access", Method: "POST", Path: "/v1/_acldef"},
-	{ID: "tokens", Method: "POST", Path: "/v1/_operatortokendef"},
 	{ID: "presets", Method: "GET", Path: "/v1/_presets"},
 	{ID: "runtime", Method: "GET", Path: "/v1/_state"},
 	{ID: "lanes", Method: "GET", Path: "/v1/_concurrency/stats"},
@@ -74,8 +82,8 @@ var navSurfaces = []navSurface{
 	// of the operator's runtime panel, so it is anchored on the runtime
 	// state route rather than shown to every principal.
 	{ID: "health", Method: "GET", Path: "/v1/_state"},
-	// Settings-menu links.
-	{ID: "users", Method: "GET", Path: "/v1/_users", Operator: true},
+	// The account menu's links.
+	{ID: "my-credentials", Method: "POST", Path: "/v1/_credentialdef"},
 }
 
 // whoamiEffective is GET /v1/_me's capability summary: bounded by the
