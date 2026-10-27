@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
@@ -55,6 +56,21 @@ type Principal struct {
 	// status on every request it authenticates, so a disable or a gate's
 	// revoke holds at once on every replica, whatever the sweeper did.
 	IssuedByGate string
+	// Login is how the person signed in, for a principal a Web UI session
+	// authenticated (RFC FA §5); nil for a bearer. It is provenance for the
+	// person's own agents to report, never consulted by a gate. A pointer so
+	// Principal stays comparable.
+	Login *Login
+}
+
+// Login is the sign-in provenance of a Web UI session: the configured gate
+// the person came through, the authentication methods that gate reported
+// (RFC 8176 style) and when they last authenticated. It carries no session
+// id, hash or credential reference.
+type Login struct {
+	Gate     string
+	AMR      []string
+	AuthTime time.Time
 }
 
 type ctxKeyPrincipal struct{}
