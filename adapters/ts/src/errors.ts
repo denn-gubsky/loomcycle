@@ -507,3 +507,16 @@ export class SubstrateToolRefusedError extends LoomcycleError {
     this.tool = opts?.tool ?? "";
   }
 }
+
+/** A device login ({@link LoomcycleClient.deviceLogin}) that ended without a
+ *  token. `code` is the server's RFC 8628 error: `access_denied` (the person
+ *  denied it, or the approval no longer holds — the approving session ended
+ *  or its credential was retired), `expired_token` (nobody approved it in
+ *  time), or another refusal. Start a new login; the same one never
+ *  succeeds. */
+export class DeviceLoginError extends LoomcycleError {
+  constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
+    super(message, opts);
+    this.name = "DeviceLoginError";
+  }
+}

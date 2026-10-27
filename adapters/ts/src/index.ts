@@ -735,6 +735,9 @@ export type {
   AuthzSimulateRequest,
   AuthzSimulateResult,
   AuthzSimulateResponse,
+  DeviceLoginPrompt,
+  DeviceLoginOptions,
+  DeviceLoginResult,
 } from "./types.js";
 
 export {
@@ -744,6 +747,7 @@ export {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
+  DeviceLoginError,
   NotFoundError,
   InsufficientScopeError,
   InvalidArgumentError,

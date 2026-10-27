@@ -2437,7 +2437,7 @@ export interface UserIdentitiesResponse {
 
 /** A sign-in gate's kind. Fields typed with it still accept a kind a newer
  *  server adds. */
-export type AuthGateKind = "token" | "password" | "oidc" | "oauth" | "external" | (string & {});
+export type AuthGateKind = "token" | "password" | "oidc" | "oauth" | "external" | "device" | (string & {});
 
 /** One configured sign-in gate, from GET /v1/_authgate. Never key material. */
 export interface AuthGate {
@@ -7851,4 +7851,35 @@ export interface AuthzSimulateResponse {
   results: AuthzSimulateResult[];
   /** Lists the draft's bindings name that no layer has. */
   missing_acls: string[] | null;
+}
+
+// ---- Device login (RFC 8628, a `kind: device` sign-in gate) ----
+
+/** What to show the person: open `verificationUri` and type `userCode`, or
+ *  open `verificationUriComplete`, which carries the code. */
+export interface DeviceLoginPrompt {
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  /** Seconds until the code expires. */
+  expiresIn: number;
+}
+
+export interface DeviceLoginOptions {
+  /** How the client names itself on the approval page (default "loomcycle-ts"). */
+  clientId?: string;
+  /** Called once with the code to show; polling starts after it returns. */
+  onPrompt: (prompt: DeviceLoginPrompt) => void | Promise<void>;
+  signal?: AbortSignal;
+}
+
+/** The token issued to the person who approved the login: their own member
+ *  token, never wider than the session they approved from and never living
+ *  past it. Keep it in an OS credential store, never a plain file. */
+export interface DeviceLoginResult {
+  accessToken: string;
+  tokenType: string;
+  /** Seconds until the token expires. */
+  expiresIn?: number;
+  scope?: string[];
 }
