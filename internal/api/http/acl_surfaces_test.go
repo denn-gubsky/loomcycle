@@ -35,6 +35,10 @@ var aclUngovernedRoutes = map[string]bool{
 	// The redirect gates' login start and provider callback establish a
 	// session (no principal yet).
 	"GET /v1/_auth/login/{gate}": true, "GET /v1/_auth/complete/{gate}": true,
+	// RFC FA P4: an external gate's assert, revoke and sync carry no bearer —
+	// the gate's signature under its pinned key authenticates them, and what
+	// they do is held to the gate's identity_map.
+	"POST /v1/_auth/assert": true, "POST /v1/_auth/revoke": true, "POST /v1/_auth/sync": true,
 	"GET /.well-known/agent-card.json/extended": true,
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.

@@ -72,6 +72,12 @@ func (s *Server) recordLifecycleEvent(action, tenant, subject, gate, reason, by 
 // stages); the disable is re-applied either way, so a retried call finishes
 // what a failed one began. *store.ErrNotFound when the user does not exist.
 func (s *Server) startRemoval(ctx context.Context, tenant, subject, gate, reason, by string) error {
+	return s.startRemovalWith(ctx, s.removalPolicy(), tenant, subject, gate, reason, by)
+}
+
+// startRemovalWith is startRemoval on a given removal timing (a gate's own
+// on_removed).
+func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, tenant, subject, gate, reason, by string) error {
 	u, err := s.store.UserGet(ctx, tenant, subject)
 	if err != nil {
 		return err
@@ -93,7 +99,7 @@ func (s *Server) startRemoval(ctx context.Context, tenant, subject, gate, reason
 	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
 		return fmt.Errorf("end sessions: %w", err)
 	}
-	started, err := s.store.AuthRemovalStart(ctx, s.removalPolicy().Start(tenant, subject, gate, reason, by, now))
+	started, err := s.store.AuthRemovalStart(ctx, policy.Start(tenant, subject, gate, reason, by, now))
 	if err != nil {
 		return fmt.Errorf("record removal: %w", err)
 	}
@@ -155,6 +161,13 @@ func (s *Server) unbindSubject(ctx context.Context, tenant, subject string, allG
 func (s *Server) AuthLifecycleSweep(ctx context.Context, now time.Time) {
 	if s.store == nil {
 		return
+	}
+	// The external gates' replay cache: a jti whose assertion can no longer
+	// verify has nothing left to guard.
+	if n, err := s.store.AuthAssertionDeleteExpired(ctx, now); err != nil {
+		slog.Error("auth-lifecycle sweep: assertion replay cache", "err", err)
+	} else if n > 0 {
+		slog.Info("auth-lifecycle sweep: dropped used assertion ids", "rows", n)
 	}
 	policy := s.cfg().ResolvedAuth.RemovalPolicy()
 	if policy.DormantAfter > 0 {

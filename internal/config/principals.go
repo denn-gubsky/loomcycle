@@ -261,12 +261,24 @@ func denyDeclaredPrincipalBearers(layers []Layer) {
 			Principals map[string]struct {
 				TokenEnv string `yaml:"token_env"`
 			} `yaml:"principals"`
+			// An external gate's HMAC secret (RFC FA P4) is a credential
+			// that verifies identities: denied from expansion the same way.
+			Auth struct {
+				Gates map[string]struct {
+					HMACSecretEnv string `yaml:"hmac_secret_env"`
+				} `yaml:"gates"`
+			} `yaml:"auth"`
 		}
 		// A partial decode still yields the names it reached.
 		_ = yaml.Unmarshal(raw, &doc)
 		for _, p := range doc.Principals {
 			if p.TokenEnv != "" {
 				principalBearerEnvs.add(p.TokenEnv)
+			}
+		}
+		for _, g := range doc.Auth.Gates {
+			if g.HMACSecretEnv != "" {
+				principalBearerEnvs.add(g.HMACSecretEnv)
 			}
 		}
 	}

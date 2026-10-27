@@ -235,7 +235,7 @@ export class GateClient {
         ...(t.ttlSeconds ? { ttl_seconds: t.ttlSeconds } : {}),
       };
     }
-    const body = await this.post("/v1/_auth/assert", { assertion: this.sign("assert", claims) });
+    const body = await this.post("/v1/_auth/assert", { gate: this.opts.gate, assertion: this.sign("assert", claims) });
     const token = typeof body.token === "string" ? body.token : "";
     if (!token) throw new GateError(502, "no_token");
     const parsed = typeof body.expires_at === "string" ? Date.parse(body.expires_at) : NaN;
@@ -253,7 +253,7 @@ export class GateClient {
    *  tokens end and the removal policy takes over. The cached token goes too. */
   async revoke(sub: string): Promise<void> {
     this.cache.delete(sub);
-    await this.post("/v1/_auth/revoke", { request: this.sign("revoke", { sub }) });
+    await this.post("/v1/_auth/revoke", { gate: this.opts.gate, request: this.sign("revoke", { sub }) });
   }
 
   /** sync reconciles users and groups in bulk. With complete, users is every
@@ -267,7 +267,7 @@ export class GateClient {
       ...(u.groups ? { groups: u.groups } : {}),
       ...(u.accessMode ? { access_mode: u.accessMode } : {}),
     }));
-    return this.post("/v1/_auth/sync", { request: this.sign("sync", { users: list, ...(opts.complete ? { complete: true } : {}) }) });
+    return this.post("/v1/_auth/sync", { gate: this.opts.gate, request: this.sign("sync", { users: list, ...(opts.complete ? { complete: true } : {}) }) });
   }
 
   private async post(path: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {

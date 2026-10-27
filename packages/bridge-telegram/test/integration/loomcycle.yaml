@@ -1,17 +1,20 @@
 # Smoke-test fixture for @loomcycle/bridge-telegram: one interactive-capable
-# agent on the cost-free mock provider, and the bridge's own tenant-operator
-# principal (it only registers users and mints their tokens).
+# agent on the cost-free mock provider, and the bridge registered as an
+# external gate (RFC FA §3.5). The bridge holds no loomcycle token: it signs
+# who is talking with its own key, whose public half run.sh writes below, and
+# loomcycle provisions the user and issues the token.
 provider_priority: [mock]
 tiers:
   middle:
     - { provider: mock, model: mock-generic }
 
-principals:
-  telegram-bridge:
-    tenant: acme
-    subject: telegram-bridge
-    scopes: [substrate:tenant]
-    token_env: LOOMCYCLE_TELEGRAM_BRIDGE_IT_TOKEN
+auth:
+  gates:
+    telegram:
+      kind: external
+      public_key: __GATE_PUBLIC_JWK__
+      issued_token: { ttl: 1h, agents: [helper], overrides: [interactive] }
+      identity_map: { tenant: acme, provision: auto }
 
 agents:
   helper:

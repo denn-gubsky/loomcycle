@@ -499,6 +499,9 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	}
 	hash := h.Hash(bearer)
 	if p, found, ok := s.tokenCache.get(hash); ok {
+		if found && !s.gateTokenUserActive(ctx, p) {
+			return auth.Principal{}, false
+		}
 		if found {
 			p = s.enrichPrincipal(ctx, p)
 		}
@@ -513,6 +516,9 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if cacheable {
 		s.tokenCache.put(hash, p, found, validUntil)
 	}
+	if found && !s.gateTokenUserActive(ctx, p) {
+		return auth.Principal{}, false
+	}
 	if found {
 		// The RFC EY set is resolved OUTSIDE the token cache: it has its own
 		// cache keyed on the tenant's acl_version, so a binding change reaches
@@ -520,6 +526,30 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 		p = s.enrichPrincipal(ctx, p)
 	}
 	return p, found
+}
+
+// gateTokenUserActive is the on-use half of the removal policy (RFC FA
+// §3.7c): a token a gate issued authenticates only while its user is active,
+// read from the store on every request — after the token cache, so neither a
+// cached resolution nor a removal whose token retire failed part-way can
+// carry a disabled (or revoked, or pending) user past it, on any replica.
+// Fails closed: a status that cannot be read refuses the request. Other
+// credentials are not affected.
+func (s *Server) gateTokenUserActive(ctx context.Context, p auth.Principal) bool {
+	if p.IssuedByGate == "" {
+		return true
+	}
+	if s.store == nil {
+		return false
+	}
+	u, err := s.store.UserGet(ctx, p.TenantID, p.Subject)
+	if err != nil {
+		if !isNotFound(err) && ctx.Err() == nil {
+			slog.Error("auth: reading a gate token's user failed (refusing)", "err", err)
+		}
+		return false
+	}
+	return u.Status == "active"
 }
 
 // resolvePrincipalUncached is the resolution itself: token substrate
@@ -621,6 +651,7 @@ func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Princ
 		Scopes:       row.AllowedScopes,
 		TokenDefID:   row.DefID,
 		Restrictions: restrictions,
+		IssuedByGate: row.IssuedByGate,
 	}, true, validUntil
 }
 
