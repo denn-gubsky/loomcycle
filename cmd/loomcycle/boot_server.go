@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/decisionbuild"
 	"github.com/denn-gubsky/loomcycle/internal/lookup"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
@@ -401,6 +402,12 @@ func (b *boot) wireServerCatalog() {
 	// have a backing object. Nil-safe — endpoints return 503 when
 	// no embedder is configured.
 	srv.SetEmbedder(embedder)
+	// Every embedder call is a usage row. The hook is on the observer every
+	// subsystem shares, so it covers them all; calls made before this line (a
+	// boot-time index build) are not billed — there is nobody to bill them to.
+	if oe, ok := embedder.(*providers.ObservedEmbedder); ok {
+		oe.SetOnCall(srv.RecordEmbedCall)
+	}
 }
 
 // wireBuses builds the system channel publisher, the steering registry,

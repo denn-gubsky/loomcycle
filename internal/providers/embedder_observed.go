@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -86,6 +87,9 @@ type ObservedEmbedder struct {
 	lastOK       time.Time
 	lastFail     time.Time
 	lastFailKind string
+
+	// onCall receives each call's consumption (SetOnCall); nil = not reported.
+	onCall atomic.Pointer[func(ctx context.Context, c EmbedCall)]
 }
 
 var (
@@ -105,17 +109,52 @@ func ObserveEmbedder(e Embedder) *ObservedEmbedder {
 }
 
 func (o *ObservedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	vecs, err := o.inner.Embed(ctx, texts)
+	callCtx, acc := WithEmbedTokens(ctx)
+	vecs, err := o.inner.Embed(callCtx, texts)
 	o.record(err)
+	o.report(ctx, texts, acc, err)
 	return vecs, err
 }
 
 // EmbedQuery is Embed for a search query: the same outcome bookkeeping, then
 // the inner embedder's query mode when it has one.
 func (o *ObservedEmbedder) EmbedQuery(ctx context.Context, texts []string) ([][]float32, error) {
-	vecs, err := EmbedQuery(ctx, o.inner, texts)
+	callCtx, acc := WithEmbedTokens(ctx)
+	vecs, err := EmbedQuery(callCtx, o.inner, texts)
 	o.record(err)
+	o.report(ctx, texts, acc, err)
 	return vecs, err
+}
+
+// SetOnCall installs the hook each call's consumption is handed to — the
+// server's usage ledger. It is set at boot after the server exists, while
+// consumers may already hold this embedder, so it is swapped atomically.
+func (o *ObservedEmbedder) SetOnCall(f func(ctx context.Context, c EmbedCall)) {
+	o.onCall.Store(&f)
+}
+
+// report hands one call's consumption to the hook, and adds its tokens to an
+// accumulator an outer caller put on ctx (the embeddings gateway reads it to
+// decide whether the call still needs an estimate). A failed call is reported
+// only if the provider counted tokens for it: a call that never reached the
+// model consumed nothing worth a row.
+func (o *ObservedEmbedder) report(ctx context.Context, texts []string, acc *EmbedTokens, err error) {
+	tokens, reported := acc.Total()
+	if reported {
+		ReportEmbedTokens(ctx, tokens)
+	}
+	if err != nil && !reported {
+		return
+	}
+	f := o.onCall.Load()
+	if f == nil || *f == nil {
+		return
+	}
+	(*f)(ctx, EmbedCall{
+		Provider: o.inner.Provider(), Model: o.inner.Model(),
+		Texts: len(texts), Chars: charsOf(texts),
+		InputTokens: tokens, TokensReported: reported,
+	})
 }
 
 // record books one call's outcome.

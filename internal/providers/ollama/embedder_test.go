@@ -297,3 +297,39 @@ func TestOllamaEmbedder_RegisteredUnderBothIds(t *testing.T) {
 		}
 	}
 }
+
+// TestOllamaEmbedder_ReportsPromptEvalCount — /api/embed's prompt_eval_count
+// reaches the call's accumulator; an answer without it reports nothing.
+func TestOllamaEmbedder_ReportsPromptEvalCount(t *testing.T) {
+	withCount := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var doc map[string]any
+		_ = json.Unmarshal([]byte(vectorsJSON("nomic-embed-text", [][]float32{{1, 0}, {0, 1}})), &doc)
+		if withCount {
+			doc["prompt_eval_count"] = 9
+		} else {
+			delete(doc, "prompt_eval_count")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	defer srv.Close()
+	e := newEmbedder(t, srv, providers.EmbedderOptions{})
+
+	ctx, acc := providers.WithEmbedTokens(context.Background())
+	if _, err := e.Embed(ctx, []string{"a", "b"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if n, ok := acc.Total(); !ok || n != 9 {
+		t.Errorf("reported tokens = %d (%v), want 9", n, ok)
+	}
+
+	withCount = false
+	ctx, acc = providers.WithEmbedTokens(context.Background())
+	if _, err := e.Embed(ctx, []string{"a", "b"}); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if n, ok := acc.Total(); ok {
+		t.Errorf("an answer with no count reported %d tokens", n)
+	}
+}

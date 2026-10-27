@@ -20,6 +20,8 @@ func TestNormalizeUsageRow_AcceptsEachPurposeWithItsOwnUnits(t *testing.T) {
 		{TokenUsageRow{Purpose: UsagePurposeSTT, AudioSeconds: 60}, UsagePurposeSTT},
 		{TokenUsageRow{Purpose: UsagePurposeTTS, InputChars: 4380, AudioSeconds: 312.4}, UsagePurposeTTS},
 		{TokenUsageRow{Purpose: UsagePurposeTTS}, UsagePurposeTTS},
+		{TokenUsageRow{Purpose: UsagePurposeEmbedding, InputChars: 812, InputTokens: 190}, UsagePurposeEmbedding},
+		{TokenUsageRow{Purpose: UsagePurposeEmbedding, InputChars: 812}, UsagePurposeEmbedding},
 	} {
 		p, s, err := NormalizeUsageRow(tc.row)
 		if err != nil || p != tc.wantPurpose || s != tc.row.AudioSeconds {
@@ -38,6 +40,7 @@ func TestNormalizeUsageRow_RefusesUnitsTheirPurposeCannotCarry(t *testing.T) {
 		"chars on empty (chat)": {InputChars: 1},
 		"chars on chat":         {Purpose: UsagePurposeChat, InputChars: 1},
 		"chars on ocr":          {Purpose: UsagePurposeOCR, InputChars: 1},
+		"seconds on embedding":  {Purpose: UsagePurposeEmbedding, AudioSeconds: 1},
 		"chars on stt":          {Purpose: UsagePurposeSTT, InputChars: 1, AudioSeconds: 1},
 		"seconds on chat":       {AudioSeconds: 1},
 		"seconds on ocr":        {Purpose: UsagePurposeOCR, AudioSeconds: 1},

@@ -18,7 +18,7 @@ func testTokenUsageTierRoundTrip(t *testing.T, s store.Store) {
 	purposes := []string{
 		store.UsagePurposeGateway, store.UsagePurposeConsolidation, store.UsagePurposeRerank,
 		store.UsagePurposeDecision, store.UsagePurposeCompaction, store.UsagePurposeRecap,
-		store.UsagePurposeUnitGeneration, store.UsagePurposeImageDescription,
+		store.UsagePurposeUnitGeneration, store.UsagePurposeImageDescription, store.UsagePurposeEmbedding,
 	}
 	rows := []store.TokenUsageRow{
 		{RunID: run, TenantID: "tt", Iteration: 0, Provider: "anthropic", Model: "m",
