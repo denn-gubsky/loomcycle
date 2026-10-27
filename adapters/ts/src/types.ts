@@ -5191,6 +5191,17 @@ export interface AgentTranscription {
   max_minutes_per_run?: number;
 }
 
+/** An agent's text-to-speech settings. It can switch speech off for the agent
+ *  and lower the operator's per-run character cap; it can never raise it or
+ *  pick an engine, a model or a voice list. */
+export interface AgentSpeech {
+  /** Whether the agent may speak. Default `true` when the operator configured
+   *  an engine; `false` switches it off for this agent. */
+  enabled?: boolean;
+  /** At most the operator's `speech.max_chars_per_run`. */
+  max_chars_per_run?: number;
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -5391,6 +5402,8 @@ export interface AgentDefOverlay {
   compaction?: AgentCompaction;
   /** OCR and speech-to-text settings, merged per field. */
   transcription?: AgentTranscription;
+  /** Text-to-speech settings, merged per field. */
+  speech?: AgentSpeech;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared
@@ -6299,7 +6312,7 @@ export type UsageDimension =
   | "provider"
   | "model"
   | "source"
-  /** What the calls were for: chat | ocr | stt. */
+  /** What the calls were for: chat | ocr | stt | tts. */
   | "purpose";
 
 /** One grouped row of a usage report; only the grouped dimensions are set. */
@@ -6310,7 +6323,7 @@ export interface UsageAggregate {
   model?: string;
   /** operator | tenant | user */
   credential_source?: string;
-  /** chat | ocr | stt — set when grouped by `purpose`. */
+  /** chat | ocr | stt | tts — set when grouped by `purpose`. */
   purpose?: string;
   input_tokens: number;
   output_tokens: number;
@@ -6320,8 +6333,8 @@ export interface UsageAggregate {
   currency?: string;
   call_count: number;
   unpriced_calls: number;
-  /** Seconds of audio the group's speech-to-text calls transcribed (the unit
-   *  their per-minute price is computed from); absent when it has none. */
+  /** Seconds of audio the group's speech calls transcribed (stt) or produced
+   *  (tts), the unit a per-minute price is computed from; absent when it has none. */
   audio_seconds?: number;
 }
 

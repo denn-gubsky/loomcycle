@@ -523,6 +523,7 @@ export type {
   AgentSampling,
   AgentCompaction,
   AgentTranscription,
+  AgentSpeech,
   AgentContext,
   TierCandidate,
   CoreBlock,

@@ -25,6 +25,9 @@ Four calls answer most questions before you make a mistake:
 
 - **Use Context** to look before you act: check a scope, a tool's arguments,
   whether a feature exists, what time it is, how full your context window is.
+- **Ask `can` before you plan a path your access rules may refuse** — running
+  another agent, writing a shared scope, using a tool — rather than trying it
+  and failing. `reach` lists what of one kind your rules allow at all.
 - **Do not use Context** to read past conversations. That is the `History`
   tool.
 - **Do not use Context** to create or change agents, skills or channels. That
@@ -51,6 +54,8 @@ Every operation takes `op`. Fetch one operation's article, with examples, as
 | `time` | the current time and how long this run has been going | — |
 | `compact` | ask for your own context to be compacted at the next step | — |
 | `state` | your recorded structured state (stateful runs only) | — |
+| `can` | whether your access rules allow an action on a resource | `action` + `resource`, or `queries` |
+| `reach` | the allow and deny patterns your rules hold for one resource type | `type`, `action` |
 
 ## What Context never shows
 

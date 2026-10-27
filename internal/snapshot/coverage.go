@@ -159,27 +159,28 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "travels as the aggregate month-to-date total, not as rows",
 		Cache:  "limits.Tracker (month-to-date counters seeded at boot)"},
 	"users": {Kind: coverSection, Section: "users", Secrets: "none", Backends: onBoth},
-	// RFC EY access control (P1). Authority rows, no secret material; their
-	// envelope section is a later phase of the RFC, so a snapshot restored
-	// on another instance carries no ACL rows yet and the operator re-authors
-	// (or re-declares in config) what the source had. Stated here rather
-	// than left unclassified so the gap is a decision, not an accident.
-	"acl_defs": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "RFC EY: ACL rule lists are not yet carried; a snapshot section lands in a later phase"},
-	"user_groups": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "RFC EY: user groups are not yet carried; a snapshot section lands in a later phase"},
-	"user_group_members": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "RFC EY: group memberships are not yet carried; a snapshot section lands in a later phase"},
-	"acl_bindings": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "RFC EY: ACL bindings are not yet carried; a snapshot section lands in a later phase"},
+	// RFC EY access control. Authority rows with no secret material: a list
+	// names resources and verbs, a membership or binding a subject, group or
+	// token DEFINITION id (never a bearer). Every row is re-validated by the
+	// store on restore. The resolver re-reads the store whenever a tenant's
+	// acl_version moves, so the cache it keeps needs no boot-time refill; the
+	// restore bumps that version per row and the caller publishes on the
+	// invalidation topic for the tenants it touched.
+	"acl_bindings":       {Kind: coverSection, Section: "acl", Secrets: "none", Backends: onBoth},
+	"acl_defs":           {Kind: coverSection, Section: "acl", Secrets: "none", Backends: onBoth},
+	"user_group_members": {Kind: coverSection, Section: "acl", Secrets: "none", Backends: onBoth},
+	"user_groups":        {Kind: coverSection, Section: "acl", Secrets: "none", Backends: onBoth},
+	// The counter is never copied: a cache compares it for equality, so
+	// setting the target's to the source's value could make a stale cached
+	// set read as current. Each restored row bumps the target's own instead.
+	"acl_version": {Kind: coverSection, Section: "acl", Secrets: "none", Backends: onBoth,
+		Reason: "not carried as rows: each restored acl row bumps the target's own per-tenant counter"},
 	// RFC FA P5 per-tenant gate policy: names gates of THIS deployment's
-	// config, which a target may not have; like the ACL rows above it is
-	// authority without a section yet. auth.tenant_policies in config is the
-	// durable floor that survives any restore.
+	// config, which a target may not have; it is authority without a section
+	// yet. auth.tenant_policies in config is the durable floor that survives
+	// any restore.
 	"tenant_auth_policies": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC FA P5: per-tenant gate policies name the source config's gates; not yet carried, re-declare in auth.tenant_policies or re-apply after a restore"},
-	"acl_version": {Kind: coverOmitted, Backends: onBoth,
-		Reason: "a per-tenant change counter the replicas' caches key on; re-derived from the next write"},
 	// A volume's stored path is a filesystem grant lookup trusts, so it never
 	// travels: the target derives it under its own dynamic root. lookup reads
 	// the row per resolution, so nothing is cached.

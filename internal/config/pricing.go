@@ -11,15 +11,18 @@ package config
 // PricingConfig is the `pricing:` config block: a default currency + a map of
 // "provider/model" → unit prices. Chat, decision and embedder models are priced
 // per 1M tokens (input / output / cache_write / cache_read); speech-to-text
-// models are priced per minute of audio (per_minute), billed by the second.
-// One model may carry both units; each ledger row is costed by the unit it
-// measures (Cost for token rows, CostSeconds for audio rows).
+// models are priced per minute of audio (per_minute), billed by the second;
+// text-to-speech models are priced per minute of audio produced (per_minute)
+// or per 1M characters of input (per_million_chars). One model may carry
+// several units; each ledger row is costed by the unit it measures (Cost for
+// token rows, CostSeconds for audio seconds, CostChars for input characters).
 //
 //	pricing:
 //	  currency: USD
 //	  models:
 //	    "anthropic/claude-sonnet-4-6": { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 }
 //	    "openai/whisper-1":            { per_minute: 0.006 }
+//	    "openai/tts-1":                { per_million_chars: 15 }
 type PricingConfig struct {
 	// Currency is the default ISO currency for every model without its own
 	// override (e.g. "USD"). Empty defaults to "USD" at compute time.
@@ -30,15 +33,18 @@ type PricingConfig struct {
 }
 
 // ModelPrice is one model's unit prices: per-1M-token prices, one per token
-// bucket (each is billed at a different rate), and a per-minute audio price for
-// speech-to-text models. A per-model Currency overrides the table default.
+// bucket (each is billed at a different rate), a per-minute audio price for
+// speech models, and a per-1M-character input price for text-to-speech models.
+// A per-model Currency overrides the table default.
 type ModelPrice struct {
 	Input      float64 `yaml:"input"`       // $ per 1M input tokens
 	Output     float64 `yaml:"output"`      // $ per 1M output tokens
 	CacheWrite float64 `yaml:"cache_write"` // $ per 1M cache-creation tokens
 	CacheRead  float64 `yaml:"cache_read"`  // $ per 1M cache-read tokens
-	PerMinute  float64 `yaml:"per_minute"`  // $ per minute of audio (speech-to-text)
-	Currency   string  `yaml:"currency,omitempty"`
+	PerMinute  float64 `yaml:"per_minute"`  // $ per minute of audio (speech-to-text, text-to-speech)
+	// PerMillionChars is $ per 1M characters of input text (text-to-speech).
+	PerMillionChars float64 `yaml:"per_million_chars"`
+	Currency        string  `yaml:"currency,omitempty"`
 }
 
 // Cost returns the money cost of a call's token usage under this table, the
@@ -69,6 +75,18 @@ func (p PricingConfig) CostSeconds(provider, model string, seconds float64) (flo
 		return 0, "", false
 	}
 	return seconds / 60 * mp.PerMinute, currency, true
+}
+
+// CostChars returns the money cost of chars characters of text-to-speech
+// input under this table: chars/1e6 × per_million_chars. Currency and the
+// unpriced (ok=false) signal follow Cost exactly: an absent pair is unpriced,
+// a listed pair with no per_million_chars is a genuine zero.
+func (p PricingConfig) CostChars(provider, model string, chars int64) (float64, string, bool) {
+	mp, currency, ok := p.lookup(provider, model)
+	if !ok {
+		return 0, "", false
+	}
+	return float64(chars) / 1e6 * mp.PerMillionChars, currency, true
 }
 
 // lookup finds the pair's prices and its currency (per-model, else the table

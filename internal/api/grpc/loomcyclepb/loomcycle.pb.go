@@ -7954,10 +7954,10 @@ type UsageAggregate struct {
 	Currency            string                 `protobuf:"bytes,11,opt,name=currency,proto3" json:"currency,omitempty"`
 	CallCount           int64                  `protobuf:"varint,12,opt,name=call_count,json=callCount,proto3" json:"call_count,omitempty"`
 	UnpricedCalls       int64                  `protobuf:"varint,13,opt,name=unpriced_calls,json=unpricedCalls,proto3" json:"unpriced_calls,omitempty"`
-	// What the calls were for: chat | ocr | stt. Set only when grouped by purpose.
+	// What the calls were for: chat | ocr | stt | tts. Set only when grouped by purpose.
 	Purpose string `protobuf:"bytes,14,opt,name=purpose,proto3" json:"purpose,omitempty"`
-	// Summed seconds of audio the group's speech-to-text calls transcribed (the
-	// unit their per-minute price is computed from); 0 when it has none.
+	// Summed seconds of audio the group's speech calls transcribed (stt) or
+	// produced (tts), the unit a per-minute price is computed from; 0 when it has none.
 	AudioSeconds  float64 `protobuf:"fixed64,15,opt,name=audio_seconds,json=audioSeconds,proto3" json:"audio_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

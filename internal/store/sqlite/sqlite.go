@@ -164,10 +164,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			prefill_ms            INTEGER,
 			decode_ms             INTEGER,
 			queue_ms              INTEGER,
-			-- What the call was for (chat | ocr | stt) and, for speech-to-text,
-			-- how many seconds of audio it transcribed. Mirrors postgres 0113.
+			-- What the call was for (chat | ocr | stt | tts) and, for speech,
+			-- how many seconds of audio it transcribed or produced. Mirrors
+			-- postgres 0113.
 			purpose               TEXT NOT NULL DEFAULT 'chat',
-			audio_seconds         REAL NOT NULL DEFAULT 0
+			audio_seconds         REAL NOT NULL DEFAULT 0,
+			-- The characters a text-to-speech call sent to its engine; 0 on
+			-- every other row. Mirrors postgres 0116.
+			input_chars           INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_by_run ON token_usage(run_id)`,
 		`CREATE INDEX IF NOT EXISTS token_usage_tenant_ts ON token_usage(tenant_id, ts)`,
@@ -198,6 +202,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			-- this one. Mirrors postgres 0113.
 			purpose               TEXT NOT NULL DEFAULT 'chat',
 			audio_seconds         REAL NOT NULL DEFAULT 0,
+			-- Summed like audio_seconds; the key is unchanged. Mirrors
+			-- postgres 0116.
+			input_chars           INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source, purpose)
 		)`,
 		`CREATE INDEX IF NOT EXISTS usage_archive_tenant_period ON usage_archive(tenant_id, period_start)`,
@@ -1690,6 +1697,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE token_usage ADD COLUMN audio_seconds REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE usage_archive ADD COLUMN purpose TEXT NOT NULL DEFAULT 'chat'`,
 		`ALTER TABLE usage_archive ADD COLUMN audio_seconds REAL NOT NULL DEFAULT 0`,
+		// The characters a TTS call sent to its engine. A row from before
+		// reads back 0. Mirrors postgres 0116; no key changes.
+		`ALTER TABLE token_usage ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE usage_archive ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -2268,8 +2279,8 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
 			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
-			purpose, audio_seconds
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			purpose, audio_seconds, input_chars
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.RunID, nilIfEmpty(row.SessionID), row.TenantID, nilIfEmpty(row.UserID),
 		nilIfEmpty(row.AgentID), nilIfEmpty(row.ParentRunID),
 		row.Iteration, row.Provider, row.Model, row.CredentialSource, row.CredentialScopeID,
@@ -2277,7 +2288,7 @@ func (s *Store) RecordCallUsage(ctx context.Context, row store.TokenUsageRow) er
 		costArg, nilIfEmpty(row.CostCurrency), ts.UnixNano(),
 		nilIfZeroMs(row.DurationMs), nilIfZeroMs(row.TTFTMs), nilIfZeroMs(row.LoadMs),
 		nilIfZeroMs(row.PrefillMs), nilIfZeroMs(row.DecodeMs), nilIfZeroMs(row.QueueMs),
-		purpose, audioSeconds,
+		purpose, audioSeconds, row.InputChars,
 	)
 	return err
 }
@@ -2335,7 +2346,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
 			cost, cost_currency, ts,
 			duration_ms, ttft_ms, load_ms, prefill_ms, decode_ms, queue_ms,
-			purpose, audio_seconds
+			purpose, audio_seconds, input_chars
 		 FROM token_usage WHERE run_id = ? ORDER BY iteration ASC, id ASC`,
 		runID,
 	)
@@ -2356,7 +2367,7 @@ func (s *Store) TokenUsageForRun(ctx context.Context, runID string) ([]store.Tok
 			&r.InputTokens, &r.OutputTokens, &r.CacheCreationTokens, &r.CacheReadTokens,
 			&cost, &costCurrency, &tsNano,
 			&dur, &ttft, &load, &prefill, &decode, &queue,
-			&r.Purpose, &r.AudioSeconds,
+			&r.Purpose, &r.AudioSeconds, &r.InputChars,
 		); err != nil {
 			return nil, err
 		}
@@ -2777,11 +2788,11 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO usage_archive (period_start, tenant_id, user_id, provider, model, credential_source, purpose,
 			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, call_count, unpriced_calls, audio_seconds)
+			cost, cost_currency, call_count, unpriced_calls, audio_seconds, input_chars)
 		SELECT (ts/?)*? AS period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose,
 			SUM(input_tokens), SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
 			SUM(COALESCE(cost,0)), COALESCE(MAX(cost_currency),''),
-			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds)
+			COUNT(*), SUM(CASE WHEN cost IS NULL THEN 1 ELSE 0 END), SUM(audio_seconds), SUM(input_chars)
 		FROM token_usage WHERE ts < ?
 		GROUP BY period_start, tenant_id, COALESCE(user_id,''), provider, model, credential_source, purpose
 		ON CONFLICT(period_start, tenant_id, user_id, provider, model, credential_source, purpose) DO UPDATE SET
@@ -2793,7 +2804,8 @@ func (s *Store) RollupAndPruneUsage(ctx context.Context, olderThan time.Time) (i
 			cost_currency         = CASE WHEN usage_archive.cost_currency = '' THEN excluded.cost_currency ELSE usage_archive.cost_currency END,
 			call_count            = call_count + excluded.call_count,
 			unpriced_calls        = unpriced_calls + excluded.unpriced_calls,
-			audio_seconds         = audio_seconds + excluded.audio_seconds`,
+			audio_seconds         = audio_seconds + excluded.audio_seconds,
+			input_chars           = input_chars + excluded.input_chars`,
 		nanosPerDay, nanosPerDay, cutoff,
 	); err != nil {
 		return 0, err

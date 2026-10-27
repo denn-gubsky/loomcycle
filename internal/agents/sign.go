@@ -253,6 +253,12 @@ type AgentContent struct {
 	// (RFC BA: `skills:` is deliberately NOT a field here — it is the agent's
 	// pattern-allowlist ACL, excluded from the hash. See the package doc.)
 	Sampling *Sampling `json:"sampling,omitempty"`
+	// Speech is the per-agent text-to-speech block (mirrors config.AgentSpeech).
+	// Content-identifying: whether the agent may speak and how much changes
+	// what its runs do and spend. Pointer + omitempty + normalize-collapse so
+	// an agent without it hashes byte-identical to pre-feature rows. Tag
+	// "speech" sorts between sampling and sql_quota_bytes.
+	Speech *Speech `json:"speech,omitempty"`
 	// SqlQuotaBytes / SqlScopes are the SQL-Memory ACL + per-scope byte cap —
 	// content-identifying siblings of MemoryQuotaBytes / MemoryScopes, for the
 	// same reason. omitempty keeps pre-feature rows byte-stable. Tags sort
@@ -407,6 +413,10 @@ func normalize(c *AgentContent) {
 	// An empty transcription block asks for nothing, so it hashes as absent.
 	if c.Transcription != nil && *c.Transcription == (Transcription{}) {
 		c.Transcription = nil
+	}
+	// Same for an empty speech block.
+	if c.Speech != nil && *c.Speech == (Speech{}) {
+		c.Speech = nil
 	}
 	// Same all-nil collapse for compaction (a substrate read of a no-compaction
 	// def yields `"compaction":{}`) → hashes identically to a pre-feature row.

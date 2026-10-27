@@ -62,6 +62,9 @@ var ifaceKinds = map[string]ifaceKind{
 	// AudioTranscriber is reached past the lane wrapper: the provider lanes
 	// count chat calls, not speech-to-text requests.
 	"AudioTranscriber": optional,
+	// SpeechSynthesizer likewise: the lanes count chat calls, not
+	// text-to-speech requests.
+	"SpeechSynthesizer": optional,
 	// RequestAuth rides in DriverOptions to the driver that uses it.
 	"RequestAuth": notOnProvider,
 }

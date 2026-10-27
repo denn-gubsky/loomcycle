@@ -337,8 +337,8 @@ class LoomcycleClient:
         ``tenant``/``user``/``provider``/``model``/``source``/``purpose`` over an
         optional RFC3339 window (``from_time``/``to_time``); group by ``source``
         for the operator-vs-tenant split, by ``purpose`` to see what OCR and
-        speech-to-text cost (``chat``/``ocr``/``stt``). Each row's
-        ``audio_seconds`` is the audio its speech-to-text calls transcribed.
+        speech cost (``chat``/``ocr``/``stt``/``tts``). Each row's
+        ``audio_seconds`` is the audio its speech calls transcribed or produced.
         Tenant-scoped server-side (a tenant principal sees only its own tenant;
         ``tenant`` is an admin-only focus). Returns
         ``{"group_by": [...], "rows": [{...}, ...]}``."""
