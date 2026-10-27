@@ -213,7 +213,7 @@ user_tiers:
 # own quota). SearXNG is KEYLESS (self-hosted) and needs a `base_url`.
 #
 # Availability is tracked by last-outcome (a short cooldown after a failed
-# call) — paid APIs are NOT health-probed. See the Settings → Routing page
+# call) — paid APIs are NOT health-probed. See the Web UI's Routing page
 # (per-provider keyable / available / SELECTED) and `loomcycle help
 # search-providers`.
 #

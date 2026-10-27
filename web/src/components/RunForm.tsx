@@ -29,7 +29,7 @@ export default function RunForm({
   savingDraft?: boolean;
   /**
    * Prefill, for a link that arrives from elsewhere in the UI with a run in mind
-   * (Settings → Ontology's "review suggestions"). STAGED, never submitted: a link
+   * (the Ontology page's "review suggestions"). STAGED, never submitted: a link
    * that spends tokens on click is a surprise, and the operator should see the agent
    * and the prompt before anything runs.
    */

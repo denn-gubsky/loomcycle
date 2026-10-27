@@ -18,7 +18,7 @@ import (
 
 // TestConcurrencyStats_ReportsCallsHeldBackByTheirModelCap — a call waiting
 // for its model's own cap (model_caps) beside a free slot is counted as queued
-// AND as blocked_on_model, on the JSON the Settings → Lanes view reads and on
+// AND as blocked_on_model, on the JSON the Lanes page reads and on
 // the Prometheus series; without the second count a queued call next to a free
 // slot reads as a scheduler stall.
 func TestConcurrencyStats_ReportsCallsHeldBackByTheirModelCap(t *testing.T) {

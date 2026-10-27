@@ -22,9 +22,9 @@ import (
 // answers for. String literals starting "../" so the CI test selector runs
 // this package when one of them changes.
 const (
-	navItemsTS         = "../../../web/src/components/navItems.ts"
-	settingsSectionsTS = "../../../web/src/lib/settingsSections.ts"
-	adapterTypesTS     = "../../../adapters/ts/src/types.ts"
+	navItemsTS     = "../../../web/src/components/navItems.ts"
+	accountMenuTS  = "../../../web/src/lib/accountMenu.ts"
+	adapterTypesTS = "../../../adapters/ts/src/types.ts"
 )
 
 // navClass is one principal class the capability summary is asked for.
@@ -253,7 +253,6 @@ func TestNavSurfaces_EveryEntryRouteIsRegistered(t *testing.T) {
 var (
 	tsIDRe       = regexp.MustCompile(`\bid:\s*"([a-z0-9-]+)"`)
 	tsNavBlockRe = regexp.MustCompile(`(?s)export const NAV_ITEMS[^=]*=\s*\[(.*?)\n\];`)
-	tsSecBlockRe = regexp.MustCompile(`(?s)export const SECTIONS[^=]*=\s*\[(.*?)\n\];`)
 	tsLinkRe     = regexp.MustCompile(`(?s)export const ACCOUNT_LINKS[^=]*=\s*\[(.*?)\n\];`)
 )
 
@@ -281,8 +280,7 @@ func tsIDs(t *testing.T, file string, block *regexp.Regexp) []string {
 func TestNavSurfaces_CoverEveryWebUIPage(t *testing.T) {
 	var ui []string
 	ui = append(ui, tsIDs(t, navItemsTS, tsNavBlockRe)...)
-	ui = append(ui, tsIDs(t, settingsSectionsTS, tsSecBlockRe)...)
-	ui = append(ui, tsIDs(t, settingsSectionsTS, tsLinkRe)...)
+	ui = append(ui, tsIDs(t, accountMenuTS, tsLinkRe)...)
 	if len(ui) < 25 {
 		t.Fatalf("read only %d page ids from the Web UI; the parse is broken: %v", len(ui), ui)
 	}

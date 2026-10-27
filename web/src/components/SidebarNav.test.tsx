@@ -24,8 +24,9 @@ describe("SidebarNav", () => {
   });
 
   it("shows a group the viewer sees one page of as that page alone", () => {
-    // An operator sees usage alone in cost & models, and audit alone in compliance.
-    const html = render("/agents", visibleNavTree(false, true, undefined));
+    // The server lets this operator open usage but not limits or routing, so
+    // cost & models holds one page.
+    const html = render("/agents", visibleNavTree(false, true, { limits: false, routing: false }));
     expect(html).not.toContain('<span class="sidebar-label">cost &amp; models</span>');
     expect(html).toContain('<span class="sidebar-label">usage</span>');
   });

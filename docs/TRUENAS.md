@@ -189,7 +189,7 @@ datasets must be `chown`ed to 65532:65532.**
 - **Presets** (`LOOMCYCLE_PRESETS`, comma-separated, ordered): `base` for the full
   matrix; add `oauth` or `local` to prepend a provider on top; add `document-agent`
   to register the Document Assistant (needs `LOOMCYCLE_SQLMEM_ENABLED=1` + a `middle`
-  tier). Browse them with `loomcycle presets` or the Web UI **Settings → Presets**.
+  tier). Browse them with `loomcycle presets` or the Web UI's **Presets** page.
 - **Mint tenant tokens from the Web UI** (no shell needed): sign in with the admin
   (root) token, open **Access → Tokens** in the left menu ([`operator-tokens`](../internal/help/builtin/operator-tokens.md)).
 

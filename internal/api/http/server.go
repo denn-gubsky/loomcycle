@@ -4422,7 +4422,7 @@ func (s *Server) Mux() http.Handler {
 	// Repair memory rows stranded at the legacy "" tenant by the RFC BL tenant
 	// axis. substrate:admin via the /v1/_* catch-all in requiredScopeFor — it
 	// rewrites rows across every scope in one statement. dry_run defaults true,
-	// so a bare POST reports rather than writes. Reachable from the Settings hub
+	// so a bare POST reports rather than writes. Reachable from the Maintenance page
 	// because the deployments most likely to be affected have no shell.
 	mux.Handle("POST /v1/_memory/repair-tenant", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMemoryOrphanRepair))))
 	// RFC AW — per-scope token budgets (list / upsert / delete). Tenant-scoped
@@ -4470,7 +4470,7 @@ func (s *Server) Mux() http.Handler {
 	// admin-gated `global` keep a tenant operator inside its own tenant.
 	mux.Handle("POST /v1/_history", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHistory))))
 	mux.Handle("POST /v1/_evaluation", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEvaluation))))
-	// RFC AR secure credential store (the Web UI Settings → Credentials panel's
+	// RFC AR secure credential store (the Web UI tenant credentials page's
 	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
 	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust
 	// ctx (the caller's authoritative tenant/subject), NEVER the wire. Uses the
@@ -4560,7 +4560,7 @@ func (s *Server) Mux() http.Handler {
 	mux.Handle("GET /v1/_operatortokendef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListOperatorTokenDefNames))))
 	// RFC AQ — read-only embedded preset/bundle + env-template introspection
 	// (the `loomcycle presets` / `env-template` CLI, web-reachable for the
-	// Settings hub). Admin-gated via the /v1/_* default in requiredScopeFor.
+	// Presets page). Admin-gated via the /v1/_* default in requiredScopeFor.
 	mux.Handle("GET /v1/_presets", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListPresets))))
 	mux.Handle("GET /v1/_presets/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleShowPreset))))
 	mux.Handle("GET /v1/_env_template", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEnvTemplate))))

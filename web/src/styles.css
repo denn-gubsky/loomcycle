@@ -6048,9 +6048,8 @@ button.primary:disabled {
 }
 
 /* ======================================================
- * Settings hub — the top-bar gear's menu → /settings/<section>.
- * Tokens / presets / runtime / health, web-reaching the
- * critical CLI surfaces for no-shell deployments (TrueNAS).
+ * The top bar's account menu button (AccountMenu), and the
+ * settings-panel styles the configuration pages share.
  * ====================================================== */
 .settings-gear {
   display: inline-flex;
@@ -6071,9 +6070,9 @@ button.primary:disabled {
   border-color: var(--lc-accent);
 }
 
-/* Settings menu (SettingsMenu): the gear's drop-down — one row per Settings
-   section, a rule, then Log out. Anchored to the gear's right edge because the
-   gear is the bar's last item. */
+/* Account menu (AccountMenu): the drop-down — the viewer's own pages, a rule,
+   then Log out. Anchored to the button's right edge because the button is the
+   bar's last item. */
 .settings-menu {
   position: relative;
   display: inline-flex;

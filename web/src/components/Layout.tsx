@@ -1,7 +1,7 @@
 import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useOutletContext } from "react-router-dom";
-import { CircleUser, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun } from "lucide-react";
+import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
@@ -10,9 +10,8 @@ import OpenModeBanner from "./OpenModeBanner";
 import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
 import { visibleNavTree } from "./navItems";
 import SidebarNav from "./SidebarNav";
-import { accountMenuItems, settingsMenuItems } from "../lib/settingsSections";
 import Combobox, { type ComboRow } from "./Combobox";
-import SettingsMenu from "./SettingsMenu";
+import AccountMenu from "./AccountMenu";
 import TenantCombobox from "./TenantCombobox";
 
 const USER_ID_KEY = "loomcycle.userId";
@@ -173,7 +172,6 @@ export default function Layout() {
   }
 
   const knownUsers = userOptions(users);
-  const settingsItems = settingsMenuItems(isAdmin, hasTenantScope, surfaces);
 
   return (
     <div className="layout">
@@ -310,18 +308,13 @@ export default function Layout() {
               toggleLabel="Show known users"
             />
           </form>
-          {/* The gear opens the viewer's Settings sections (filtered by role,
-              exactly as the hub's tabs are); a viewer with none gets no gear. The
-              account menu, rightmost, is rendered for EVERY role: it holds Log
-              out, the only way out of a session. The backend gates each surface
-              server-side (defence in depth). */}
-          {settingsItems.length > 0 && (
-            <SettingsMenu items={settingsItems} label="Settings" Icon={Settings} litPrefix="/settings" />
-          )}
-          <SettingsMenu
-            items={accountMenuItems(isAdmin, hasTenantScope, surfaces, !!principal?.auth?.gate && !principal.open_mode)}
-            label="Account"
-            Icon={CircleUser}
+          {/* The account menu, rightmost, is rendered for EVERY role: it holds
+              Log out, the only way out of a session. */}
+          <AccountMenu
+            isAdmin={isAdmin}
+            hasTenantScope={hasTenantScope}
+            surfaces={surfaces}
+            signedIn={!!principal?.auth?.gate && !principal.open_mode}
           />
         </header>
         <OpenModeBanner principal={principal} />

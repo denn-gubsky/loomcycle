@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACCOUNT_LINKS, accountMenuItems, settingsMenuItems } from "../lib/settingsSections";
+import { ACCOUNT_LINKS, accountMenuItems } from "../lib/accountMenu";
 import {
   NAV_GROUPS,
   NAV_ITEMS,
@@ -40,10 +40,29 @@ describe("NAV_ITEMS and NAV_GROUPS", () => {
     const access = NAV_GROUPS.find((g) => g.key === "g-access")!;
     expect(access.items).toEqual(["users", "groups", "policies", "bindings", "simulator", "tokens"]);
     for (const id of access.items) expect(byId(id).to).toBe("/access/" + id);
-    // Nothing about access is left behind in the settings menu.
-    const settings = settingsMenuItems(true, false).map((i) => i.href);
-    expect(settings).not.toContain("/settings/access");
-    expect(settings).not.toContain("/settings/tokens");
+  });
+
+  it("files each former Settings section under its group, at /<section>", () => {
+    const groupOf = (id: string) => NAV_GROUPS.find((g) => g.items.includes(id))?.key;
+    const want: Record<string, string> = {
+      ontology: "g-knowledge",
+      credentials: "g-connections",
+      limits: "g-cost",
+      routing: "g-cost",
+      retention: "g-compliance",
+      erasure: "g-compliance",
+      presets: "g-system",
+      runtime: "g-system",
+      lanes: "g-system",
+      maintenance: "g-system",
+      health: "g-system",
+    };
+    for (const [id, group] of Object.entries(want)) {
+      expect(groupOf(id)).toBe(group);
+      expect(byId(id).to).toBe("/" + id);
+    }
+    // The tenant's credentials and the viewer's own are told apart by name.
+    expect(byId("credentials").label).toBe("tenant credentials");
   });
 });
 

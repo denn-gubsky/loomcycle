@@ -15,9 +15,7 @@ import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
 import AuditView from "./pages/AuditView";
-import RoutingView from "./pages/RoutingView";
 import UsageView from "./pages/UsageView";
-import LimitsView from "./pages/LimitsView";
 import AccessView from "./pages/AccessView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
@@ -28,7 +26,7 @@ import DocumentsView from "./pages/DocumentsView";
 import ChannelsView from "./pages/ChannelsView";
 import SchedulesView from "./pages/SchedulesView";
 import TeamsView from "./pages/TeamsView";
-import SettingsView from "./pages/SettingsView";
+import SectionPage, { SECTION_IDS, SettingsRedirect } from "./pages/SectionPages";
 import MyCredentialsView from "./pages/MyCredentialsView";
 import Layout from "./components/Layout";
 import AgentIdRedirect from "./components/AgentIdRedirect";
@@ -112,9 +110,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="interrupts" element={<InterruptInbox />} />
           <Route path="snapshots" element={<SnapshotsView />} />
           <Route path="audit" element={<AuditView />} />
-          <Route path="routing" element={<RoutingView />} />
           <Route path="usage" element={<UsageView />} />
-          <Route path="limits" element={<LimitsView />} />
           {/* Users, access control and tokens are sections of /access; their
               old addresses (the settings menu's Users, Settings → Access and
               Tokens) still land on them. */}
@@ -123,8 +119,12 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="settings/access" element={<Navigate to="/access/groups" replace />} />
           <Route path="settings/tokens" element={<Navigate to="/access/tokens" replace />} />
           <Route path="activity" element={<ActivityMonitor />} />
-          {/* :section deep-links a hub tab (the top bar's settings menu). */}
-          <Route path="settings/:section?" element={<SettingsView />} />
+          {/* The Settings hub's sections are pages of the left nav; its old
+              addresses, /settings/<section>, land on them. */}
+          {SECTION_IDS.map((id) => (
+            <Route key={id} path={id} element={<SectionPage id={id} />} />
+          ))}
+          <Route path="settings/:section?" element={<SettingsRedirect />} />
           <Route path="*" element={<Navigate to="/agents" replace />} />
         </Route>
       </Routes>

@@ -62,7 +62,7 @@ Each keyed provider resolves its key the same way LLM providers do
 
 1. A **tenant/user CredentialDef** of the provider's env-var name (e.g.
    `SERPER_API_KEY`) — a tenant searches on its own quota. Author it via the
-   `CredentialDef` tool or the Web UI Settings → Credentials page.
+   `CredentialDef` tool or the Web UI's tenant credentials page.
 2. Else the **operator host key** from that env var (unless the run is
    operator-key-restricted).
 
@@ -72,7 +72,7 @@ the circuit tries it again.
 
 ## The routing view
 
-**Settings → Routing** shows the search cascade with, per provider: whether you
+The **Routing** page shows the search cascade with, per provider: whether you
 can key it, whether it's available right now (last-outcome — paid APIs aren't
 health-probed), and which one is **selected** (the first available = what runs
 now). A restricted tenant sees only the providers it can key itself. Same data

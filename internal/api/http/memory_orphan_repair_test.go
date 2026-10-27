@@ -33,7 +33,7 @@ func decodeRepair(t *testing.T, rec *httptest.ResponseRecorder) memoryOrphanRepa
 // TestMemoryOrphanRepair_DryRunIsTheDefault: a POST that omits dry_run must
 // REPORT and not write. This is a bulk row rewrite, so an ambiguous request has
 // to resolve to the read-only reading — an operator poking the endpoint from the
-// Settings hub should never mutate rows by accident.
+// Maintenance page should never mutate rows by accident.
 func TestMemoryOrphanRepair_DryRunIsTheDefault(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), makeBaseConfig())
 	seedLegacyMemory(t, srv, store.MemoryScopeUser, "u1", "doc.chunk:a")

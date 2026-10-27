@@ -513,7 +513,7 @@ func warnLegacyTenantMemory(st store.Store) {
 	}
 	slog.Warn("memory: memory rows are stranded at the legacy \"\" tenant and are UNREADABLE from a tenant-scoped session. "+
 		"RFC BL added the tenant_id column without backfilling pre-existing rows. Symptoms: a Document created before the upgrade lists and exports as headings with EMPTY bodies (its structure lives in SQL Memory, which is partitioned differently), and an agent's pre-upgrade key/value memory reads as absent. "+
-		"Nothing is deleted. Fix: POST /v1/_memory/repair-tenant (substrate:admin) — it reports by default, and applies with {\"dry_run\":false}; the Settings hub exposes it as Maintenance for shell-less deployments. "+
+		"Nothing is deleted. Fix: POST /v1/_memory/repair-tenant (substrate:admin) — it reports by default, and applies with {\"dry_run\":false}; the Web UI exposes it as the Maintenance page for shell-less deployments. "+
 		"With one tenant holding rows, repair_body is the request body for this deployment.",
 		args...)
 }

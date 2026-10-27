@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { retireOperatorToken, rotateOperatorToken } from "../api";
 
-// Settings → Tokens acts on one token by def_id. The server refuses a per-user
+// Access → Tokens acts on one token by def_id. The server refuses a per-user
 // ("u-") name as a rotate or retire target, because the same name can exist in
 // several tenants; sending the name made every u- row fail to rotate or retire.
 

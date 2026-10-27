@@ -8,14 +8,14 @@ import (
 
 // RFC AQ — read-only HTTP introspection of the embedded config presets/bundles
 // and the env catalogue, mirroring the `loomcycle presets` / `env-template` CLI
-// so they're reachable from the Web UI Settings hub (TrueNAS has no shell —
+// so they're reachable from the Web UI's Presets page (TrueNAS has no shell —
 // RFC AR). All three fall under the /v1/_* operator-admin scope gate
-// (requiredScopeFor): admin-only, like the rest of the Settings surface. The
+// (requiredScopeFor): admin-only, like the rest of the operator plane. The
 // content is non-secret (only token_env *names*), so the gate is about keeping
 // the operability hub coherent, not about secrecy.
 
 // handleListPresets serves GET /v1/_presets — the embedded units (presets +
-// bundles) with name/kind/description, for the Settings → Presets list.
+// bundles) with name/kind/description, for the Presets page's list.
 func (s *Server) handleListPresets(w http.ResponseWriter, r *http.Request) {
 	units := embedded.Units()
 	out := make([]map[string]any, 0, len(units))

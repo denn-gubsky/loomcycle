@@ -11,7 +11,7 @@ import {
   sortedProviders,
 } from "../lib/lanes";
 
-// LanesView — Settings → Lanes, a read-only live view of GET
+// LanesView — the Lanes page, a read-only live view of GET
 // /v1/_concurrency/stats: the global run queue, then each capped provider's
 // lanes (chat / decision / embedder) and the models it has in flight.
 //

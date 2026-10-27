@@ -1,5 +1,6 @@
 import {
   Activity,
+  Archive,
   Bell,
   BookOpen,
   Bot,
@@ -7,23 +8,33 @@ import {
   CalendarClock,
   Camera,
   Coins,
+  Eraser,
   FileText,
   FlaskConical,
+  Gauge,
   HardDrive,
+  HeartPulse,
+  KeyRound,
+  Layers,
   Library,
   Link2,
   ListTree,
   type LucideIcon,
+  Network,
+  Package,
   Play,
   Plug,
+  Power,
   Radio,
   ScrollText,
   Server,
   ShieldCheck,
+  Split,
   Ticket,
   Users,
   UsersRound,
   Workflow,
+  Wrench,
 } from "lucide-react";
 import { canSee, grantOf, type Surfaces, type Visibility } from "../lib/visibility";
 
@@ -84,8 +95,15 @@ export const NAV_ITEMS: NavItem[] = [
   { id: "paths", to: "/documents", label: "documents", Icon: FileText, vis: "tenant" },
   { id: "memory", to: "/memory", label: "memory", Icon: Brain, vis: "tenant" },
   { id: "volumes", to: "/volumes/persistent", label: "volumes", Icon: HardDrive, vis: "tenant", match: "/volumes" },
+  // ScopeTenant on the server: /v1/_ontology, /v1/_credentialdef
+  // (isTenantConfinedDefPath), /v1/_limits, /v1/_routing, /v1/_retention and
+  // /v1/_erasure.
+  { id: "ontology", to: "/ontology", label: "ontology", Icon: Network, vis: "tenant" },
   { id: "integrations", to: "/integrations/webhooks", label: "integrations", Icon: Plug, vis: "tenant", match: "/integrations" },
   { id: "channels", to: "/channels", label: "channels", Icon: Radio, vis: "tenant" },
+  // The tenant's credential authoring — distinct from the account menu's My
+  // credentials, which is a viewer's own.
+  { id: "credentials", to: "/credentials", label: "tenant credentials", Icon: KeyRound, vis: "tenant" },
   // Access: who the tenant's people are and what they may do. Each section is a
   // page of /access, gated by the route it loads first (users the user list,
   // groups/policies/bindings/simulator their own ACL routes, tokens operator
@@ -100,13 +118,25 @@ export const NAV_ITEMS: NavItem[] = [
   // ScopeTenant-gated and the handler tenant-scopes the aggregation (a tenant
   // operator sees only its own tenant's spend; admin sees all + ?tenant=).
   { id: "usage", to: "/usage", label: "usage", Icon: Coins, vis: "tenant" },
+  { id: "limits", to: "/limits", label: "limits", Icon: Gauge, vis: "tenant" },
+  { id: "routing", to: "/routing", label: "routing", Icon: Split, vis: "tenant" },
   // audit is tenant-visible (RFC AS): handleListEvents tenant-scopes the result
   // via the event's owning session, so a tenant sees only its own events.
   { id: "audit", to: "/audit", label: "audit", Icon: ScrollText, vis: "tenant" },
+  { id: "retention", to: "/retention", label: "retention", Icon: Archive, vis: "tenant" },
+  { id: "erasure", to: "/erasure", label: "erasure", Icon: Eraser, vis: "tenant" },
+  // ScopeAdmin: the operator plane. Activity, presets, runtime, lanes and health
+  // fall through to the /v1/_* catch-all; repair-tenant (maintenance) is
+  // explicitly admin because it rewrites rows across every scope in one statement.
   { id: "activity", to: "/activity", label: "activity", Icon: Activity, vis: "admin" },
   { id: "snapshots", to: "/snapshots", label: "snapshots", Icon: Camera, vis: "admin" },
+  { id: "runtime", to: "/runtime", label: "runtime", Icon: Power, vis: "admin" },
+  { id: "lanes", to: "/lanes", label: "lanes", Icon: Layers, vis: "admin" },
+  { id: "presets", to: "/presets", label: "presets", Icon: Package, vis: "admin" },
+  { id: "maintenance", to: "/maintenance", label: "maintenance", Icon: Wrench, vis: "admin" },
+  { id: "health", to: "/health", label: "health", Icon: HeartPulse, vis: "admin" },
   // NOTE: the viewer's own pages — Your account, My credentials — are in the top
-  // bar's account menu (ACCOUNT_LINKS in ../lib/settingsSections), not here.
+  // bar's account menu (ACCOUNT_LINKS in ../lib/accountMenu), not here.
 ];
 
 // A zone is a band of the menu: the workspace people use every day, and the
@@ -134,8 +164,20 @@ export interface NavGroup {
 export const NAV_GROUPS: NavGroup[] = [
   { key: "g-runs", label: "runs", Icon: Play, zone: "workspace", items: ["run", "runs", "interrupts"] },
   { key: "g-agents", label: "agents", Icon: Bot, zone: "workspace", items: ["library", "teams", "schedules"] },
-  { key: "g-knowledge", label: "knowledge", Icon: BookOpen, zone: "workspace", items: ["paths", "memory", "volumes"] },
-  { key: "g-connections", label: "connections", Icon: Plug, zone: "workspace", items: ["integrations", "channels"] },
+  {
+    key: "g-knowledge",
+    label: "knowledge",
+    Icon: BookOpen,
+    zone: "workspace",
+    items: ["paths", "memory", "volumes", "ontology"],
+  },
+  {
+    key: "g-connections",
+    label: "connections",
+    Icon: Plug,
+    zone: "workspace",
+    items: ["integrations", "channels", "credentials"],
+  },
   {
     key: "g-access",
     label: "access",
@@ -143,9 +185,15 @@ export const NAV_GROUPS: NavGroup[] = [
     zone: "admin",
     items: ["users", "groups", "policies", "bindings", "simulator", "tokens"],
   },
-  { key: "g-cost", label: "cost & models", Icon: Coins, zone: "admin", items: ["usage"] },
-  { key: "g-compliance", label: "compliance", Icon: ScrollText, zone: "admin", items: ["audit"] },
-  { key: "g-system", label: "system", Icon: Server, zone: "admin", items: ["activity", "snapshots"] },
+  { key: "g-cost", label: "cost & models", Icon: Coins, zone: "admin", items: ["usage", "limits", "routing"] },
+  { key: "g-compliance", label: "compliance", Icon: ScrollText, zone: "admin", items: ["audit", "retention", "erasure"] },
+  {
+    key: "g-system",
+    label: "system",
+    Icon: Server,
+    zone: "admin",
+    items: ["activity", "snapshots", "runtime", "lanes", "presets", "maintenance", "health"],
+  },
 ];
 
 export interface VisibleGroup {

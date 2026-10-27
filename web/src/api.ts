@@ -3233,7 +3233,7 @@ export function userEchoTranscript(seq: number, text: string): TranscriptEvent {
   };
 }
 
-// ─── RFC AQ / RFC L — Settings hub: embedded presets + operator tokens ───────
+// ─── RFC AQ / RFC L — the Presets and Tokens pages: embedded presets + operator tokens
 
 export interface PresetUnit {
   name: string;

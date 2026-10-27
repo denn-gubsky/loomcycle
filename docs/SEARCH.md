@@ -71,7 +71,7 @@ Each keyed provider resolves its key the same way LLM providers do (see
 
 1. A **tenant/user `CredentialDef`** of the provider's env-var name (e.g.
    `SERPER_API_KEY`) — a tenant searches on its own quota. Author it via the
-   `CredentialDef` tool or the Web UI **Settings → Credentials** page.
+   `CredentialDef` tool or the Web UI's **tenant credentials** page.
 2. Else the **operator host key** from that env var (unless the run is
    operator-key-restricted).
 
@@ -80,7 +80,7 @@ the cascade (not a failure).
 
 ## The routing view
 
-**Settings → Routing** shows the search cascade with, per provider, whether you
+The **Routing** page shows the search cascade with, per provider, whether you
 can key it, whether it's available right now, and which one is **selected** (the
 first available = what runs now). Same data over `GET /v1/_routing` (the `search`
 block). Set `LOOMCYCLE_WEBSEARCH_PROVENANCE=1` to also append a `(via searxng)` /
@@ -164,12 +164,12 @@ docker logs loomcycle | grep 'search:'
 
 # c) end-to-end — watch SearXNG receive a real WebSearch:
 docker logs -f searxng 2>&1 | grep 'GET /search'
-#    then run an agent that uses WebSearch (or check Settings → Routing:
+#    then run an agent that uses WebSearch (or check the Routing page:
 #    searxng should show SELECTED). A `GET /search?...&format=json → 200`
 #    line = loomcycle → SearXNG confirmed live.
 ```
 
-If `Settings → Routing` shows `searxng` **SELECTED** and the SearXNG access log
+If the Routing page shows `searxng` **SELECTED** and the SearXNG access log
 shows the `/search?format=json → 200`, it's working end-to-end. If a fallback
 provider is `selected` instead, SearXNG failed the call — re-check the three
 `settings.yml` knobs (usually the `json` format or the limiter).
