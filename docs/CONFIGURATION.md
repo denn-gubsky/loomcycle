@@ -1246,6 +1246,7 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_ACL_CACHE_TTL_SECONDS` | How long a replica trusts a principal's compiled ACL set before re-reading the tenant's `acl_version` (default 5; `0` = re-read on every request). A write on another replica also invalidates it over the cluster bus, so this is the worst-case lag when a bus message is dropped. |
 | `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | Default rotation grace window (default 24h). |
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | The longest lifetime a per-user token may be minted with. Unset = no cap. When set, a mint asking for more is refused, and a mint asking for no lifetime gets this one. See [Token lifetime](#token-lifetime). |
+| `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT` | `1` mints per-user tokens (`POST /v1/_users/{subject}/tokens` and every gate-issued token) with authority `inherit`: their scopes follow the user's **current** `access_mode` on every request, so a promotion or demotion needs no re-mint. Unset (default) = minted `frozen`, exactly as before; a mint may ask for either with `"authority"`. Operator tokens and config principals are always frozen; existing tokens keep their mode. See [Token authority](#token-authority-frozen-or-inherit). |
 | `LOOMCYCLE_RUN_RATE_PER_MINUTE` / `LOOMCYCLE_RUN_RATE_BURST` | A default rate for run starts, for a caller whose token carries none. Unset = no default. Operators are not bound by it. See [Limiting how often a token starts runs](#limiting-how-often-a-token-starts-runs). |
 | `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` | How long an expired token's row is kept before it is deleted (default 7 days; `0` keeps expired rows). Only rows that carry an expiry are ever deleted. |
 | `LOOMCYCLE_LIMITS_ENFORCE` | `strict` makes a hard token budget also stop runs in flight and refuse sub-agents. Unset = checked only when a run starts. See [Strict token budgets](#strict-token-budgets). |
@@ -1413,6 +1414,25 @@ Rules worth knowing:
 - **Mints and revocations of per-user tokens are written to the audit log** when `LOOMCYCLE_AUDIT_LOG_PATH` is set, as operator-token changes already are.
 
 Token listings (`GET /v1/_users/{subject}/tokens`, `operator-token show` / `list`) show `expires_at`, and `active` is false once a token has expired.
+
+### Token authority: frozen or inherit
+
+A per-user token is minted in one of two authority modes (RFC EY §8):
+
+| Mode | The token's scopes | Minted by default for |
+|---|---|---|
+| `frozen` | The grant of the user's `access_mode` **at mint**, fixed for the token's life. | Every token, unless `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT=1`. Operator tokens and config `principals:` are always frozen. |
+| `inherit` | The grant of the user's **current** `access_mode`, re-read on every request the token authenticates. Promote a user from `isolated` to `tenant` and its token reaches the tenant plane on the next request; demote it and the token narrows the same way — no re-mint. | With `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT=1`: per-user tokens a tenant mints (`POST /v1/_users/{subject}/tokens`) and every token an auth gate issues (password, OIDC, OAuth, external gates and the bridges that sign in through them). |
+
+The mint body takes an optional `"authority": "inherit" | "frozen"` to ask for either mode whatever the default; any other value is a `400`. It names no scope: an inherit token's ceiling is still exactly what the user's `access_mode` grants a delegated token, never an operator scope. The mint answer and the token listing carry `"authority": "inherit"` for an inherit token (absent for a frozen one, so a mint with the switch off answers as before), and `scopes` there is the grant at mint. `GET /v1/_me` and `Context op=self` report the caller's `authority` (`inherit` or `frozen`).
+
+Rules worth knowing:
+
+- **An inherit token stands only while its user exists and is `active`.** A disabled, pending or deleted user's inherit token is refused on its next request, on every replica, whatever the resolution cache holds — the user row is read on each request, as for a gate-issued token.
+- **Restrictions still only narrow.** `agents`, `overrides`, `rate` and `retention` stay on the token; a promotion widens the scopes, never the restrictions.
+- **A rotation keeps the mode.** `rotate` of an inherit token (by `--def-id`) mints an inherit token.
+- **Existing tokens keep their mode.** Turning the switch on or off changes only what is minted afterwards; every token minted before this mode existed is frozen.
+- **Cost:** an inherit token costs one indexed user-row read per request; a frozen token costs none.
 
 ### A token on a browser WebSocket
 
