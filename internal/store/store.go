@@ -821,38 +821,59 @@ type TokenUsageRow struct {
 
 	// Purpose is what the call was for: UsagePurposeChat (a model call made by
 	// the loop or a side call — every row before transcription existed),
-	// UsagePurposeOCR or UsagePurposeSTT. "" is written as chat. A row of any
-	// purpose counts its tokens against the budgets the same way; an STT row
-	// carries seconds instead of tokens.
+	// UsagePurposeOCR, UsagePurposeSTT or UsagePurposeTTS. "" is written as
+	// chat. A row of any purpose counts its tokens against the budgets the
+	// same way; an STT or TTS row carries seconds (and TTS characters)
+	// instead of tokens.
 	Purpose string
-	// AudioSeconds is the length of the audio an STT call transcribed, the
-	// unit its per-minute price is computed from. 0 on every other row.
+	// AudioSeconds is the length of the audio an STT call transcribed or a
+	// TTS call produced, the unit a per-minute price is computed from. 0 on
+	// every other row.
 	AudioSeconds float64
+	// InputChars is the characters a TTS call sent to the speech engine, the
+	// unit a per-million-characters price is computed from. 0 on every other
+	// row, and on every row written before it existed.
+	InputChars int64
 }
 
-// The values TokenUsageRow.Purpose takes.
+// The values TokenUsageRow.Purpose takes. A new purpose is added, never a
+// renamed one: the value is stored on every row and is a usage-report
+// dimension clients group by.
 const (
 	UsagePurposeChat = "chat"
 	UsagePurposeOCR  = "ocr"
 	UsagePurposeSTT  = "stt"
+	UsagePurposeTTS  = "tts"
 )
 
 // NormalizeUsageRow returns the purpose and audio seconds a ledger insert
-// writes for row: an empty purpose is chat, and an unknown purpose or a
-// negative or non-finite second count is refused. Both backends call it, so a
-// row neither of them could read back never reaches either table.
+// writes for row: an empty purpose is chat, and an unknown purpose, a
+// negative or non-finite second count, a negative character count, seconds
+// on a purpose that has no audio (chat, ocr) or characters on any purpose but
+// tts is refused. InputChars, once accepted, is written as given. Both
+// backends call it, so a row neither of them could read back, or one whose
+// units contradict its purpose, never reaches either table.
 func NormalizeUsageRow(row TokenUsageRow) (purpose string, audioSeconds float64, err error) {
 	purpose = row.Purpose
 	switch purpose {
 	case "":
 		purpose = UsagePurposeChat
-	case UsagePurposeChat, UsagePurposeOCR, UsagePurposeSTT:
+	case UsagePurposeChat, UsagePurposeOCR, UsagePurposeSTT, UsagePurposeTTS:
 	default:
 		return "", 0, fmt.Errorf("usage row: unknown purpose %q", row.Purpose)
 	}
 	s := row.AudioSeconds
 	if s < 0 || math.IsNaN(s) || math.IsInf(s, 0) {
 		return "", 0, fmt.Errorf("usage row: audio seconds %v is not a duration", s)
+	}
+	if s != 0 && purpose != UsagePurposeSTT && purpose != UsagePurposeTTS {
+		return "", 0, fmt.Errorf("usage row: a %s row carries no audio seconds", purpose)
+	}
+	if row.InputChars < 0 {
+		return "", 0, fmt.Errorf("usage row: input characters %d is negative", row.InputChars)
+	}
+	if row.InputChars != 0 && purpose != UsagePurposeTTS {
+		return "", 0, fmt.Errorf("usage row: a %s row carries no input characters", purpose)
 	}
 	return purpose, s, nil
 }
@@ -915,7 +936,7 @@ const (
 	UsageByProvider UsageDimension = "provider"
 	UsageByModel    UsageDimension = "model"
 	UsageBySource   UsageDimension = "source"  // credential_source (operator|tenant|user)
-	UsageByPurpose  UsageDimension = "purpose" // chat | ocr | stt (UsagePurpose*)
+	UsageByPurpose  UsageDimension = "purpose" // chat | ocr | stt | tts (UsagePurpose*)
 )
 
 // UsageQuery filters + groups a usage report.
@@ -962,11 +983,12 @@ type UsageAggregate struct {
 	CallCount     int64   `json:"call_count"`
 	UnpricedCalls int64   `json:"unpriced_calls"`
 
-	// AudioSeconds is the summed audio the group's speech-to-text calls
-	// transcribed — the unit their per-minute price is computed from, which
-	// the token counts cannot show. omitempty: a group with no STT call sends
-	// no key, so a report over chat-only usage is byte-identical to one from
-	// before transcription.
+	// AudioSeconds is the summed audio the group's speech calls handled —
+	// transcribed by speech-to-text, produced by text-to-speech — the unit
+	// their per-minute price is computed from, which the token counts cannot
+	// show. Group by purpose to tell the two apart. omitempty: a group with no
+	// speech call sends no key, so a report over chat-only usage is
+	// byte-identical to one from before transcription.
 	AudioSeconds float64 `json:"audio_seconds,omitempty"`
 }
 

@@ -3806,7 +3806,7 @@ export interface UsageAggregate {
   provider?: string;
   model?: string;
   credential_source?: string; // operator | tenant | user
-  purpose?: string; // chat | ocr | stt
+  purpose?: string; // chat | ocr | stt | tts
   input_tokens: number;
   output_tokens: number;
   cache_creation_tokens: number;
@@ -3815,8 +3815,8 @@ export interface UsageAggregate {
   currency?: string;
   call_count: number;
   unpriced_calls: number;
-  // Seconds of audio the group's speech-to-text calls transcribed; absent when
-  // it has none.
+  // Seconds of audio the group's speech calls transcribed (stt) or produced
+  // (tts); absent when it has none.
   audio_seconds?: number;
 }
 
