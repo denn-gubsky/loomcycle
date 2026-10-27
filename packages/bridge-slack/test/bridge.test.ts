@@ -1,19 +1,31 @@
 // A Slack request, signed, through the routes, the core's router and a fake
 // loomcycle, to the calls the bridge makes to (a fake) Slack.
 
-import { createBridge, UNTRUSTED_KIND, type RawRequest, type RawResponse, type Route } from "@loomcycle/bridge-core";
+import {
+  createBridge,
+  gateSharedSubject,
+  keyFromSecret,
+  UNTRUSTED_KIND,
+  type BridgeContext,
+  type RawRequest,
+  type RawResponse,
+  type Route,
+} from "@loomcycle/bridge-core";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createSlackAdapter } from "../src/bridge.js";
+import { createSlackAdapter, type SlackAdapter } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
+import type { SlackRef } from "../src/identity.js";
 import { slackSignature } from "../src/verify.js";
-import { FakeLoomcycle, FakeSlack, LIVE_MENTION, MENTION_FORMS, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
+import { FakeGate, FakeLoomcycle, FakeSlack, LIVE_MENTION, MENTION_FORMS, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const SECRET = "test-signing-secret";
 
 interface Rig {
   lc: FakeLoomcycle;
   slack: FakeSlack;
+  gate: FakeGate;
+  adapter: SlackAdapter;
   events: Route;
   actions: Route;
   stop: () => Promise<void>;
@@ -36,11 +48,19 @@ afterEach(async () => {
   }
 });
 
-async function rig(env: Record<string, string> = {}): Promise<Rig> {
+const GATE_SECRET = "s".repeat(40);
+
+/** rig builds the bridge with a loomcycle token, or with o.gate as the
+ *  loomcycle gate "slack" (RFC FA §3.5), which holds no token. */
+async function rig(env: Record<string, string> = {}, o: { gate?: boolean; now?: () => number } = {}): Promise<Rig> {
   const slack = new FakeSlack();
+  const gate = new FakeGate();
+  const auth = o.gate
+    ? { BRIDGE_GATE: "slack", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_SECRET: GATE_SECRET }
+    : { LOOMCYCLE_TOKEN: "admin-token" };
   const cfg = loadConfig({
     LOOMCYCLE_BASE_URL: "http://loomcycle.test",
-    LOOMCYCLE_TOKEN: "admin-token",
+    ...auth,
     BRIDGE_AGENT: "helper",
     SLACK_BOT_TOKEN: "xoxb-test",
     SLACK_SIGNING_SECRET: SECRET,
@@ -49,12 +69,34 @@ async function rig(env: Record<string, string> = {}): Promise<Rig> {
     ...env,
   });
   const lc = new FakeLoomcycle();
-  const opts = { fetch: slack.fetch, logger: silentLogger, clients: lc.client, streamIntervalMs: 5, message: { typingEveryMs: 60_000 } };
+  const opts = {
+    fetch: slack.fetch,
+    logger: silentLogger,
+    clients: lc.client,
+    streamIntervalMs: 5,
+    message: { typingEveryMs: 60_000 },
+    ...(o.gate ? { gateFetch: gate.fetch, gateKey: keyFromSecret(GATE_SECRET) } : {}),
+    ...(o.now ? { now: o.now } : {}),
+  };
   const adapter = createSlackAdapter(cfg, opts);
-  const bridge = createBridge(cfg.shared, adapter, opts);
-  await adapter.learnSelf();
-  const routes = adapter.routes({ router: bridge.router, log: silentLogger });
-  const r = { lc, slack, events: routes["POST /slack/events"], actions: routes["POST /slack/actions"], stop: () => bridge.stop() };
+  let routes: Record<string, Route>;
+  let stop: () => Promise<void>;
+  if (o.gate) {
+    // A gate's key is loaded, and ctx.gate made, by the bridge's start. The
+    // adapter's own start would also listen on a port, which is not needed.
+    let ctx: BridgeContext<SlackRef> | undefined;
+    const bridge = createBridge(cfg.shared, { ...adapter, start: async (c) => void (ctx = c) }, opts);
+    await bridge.start();
+    await adapter.learnSelf();
+    routes = adapter.routes(ctx!);
+    stop = () => bridge.stop();
+  } else {
+    const bridge = createBridge(cfg.shared, adapter, opts);
+    await adapter.learnSelf();
+    routes = adapter.routes({ router: bridge.router, log: silentLogger });
+    stop = () => bridge.stop();
+  }
+  const r = { lc, slack, gate, adapter, events: routes["POST /slack/events"], actions: routes["POST /slack/actions"], stop };
   rigs.push(r);
   return r;
 }
@@ -471,5 +513,127 @@ describe("slack bridge, end to end", () => {
     expect(JSON.stringify(r.slack.to("chat.postMessage")[0].body)).toContain("Reply with your answer");
     await send(r, eventBody(dm("window seat", "100.5")));
     expect(r.lc.callsTo("resolveInterrupt")[0].args).toEqual(["run-1", "q1", { answer: "window seat", resolvedBy: "slack-t1-ualice" }]);
+  });
+});
+
+const userChange = (user: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+  eventBody({ type: "user_change", user: { id: "UALICE", team_id: "T1", name: "ada", deleted: true, ...user }, event_ts: "1.1" }, over);
+
+const dmRef: SlackRef = { team: "T1", channel: "D1", channelType: "im", messageTs: "100.1" };
+
+describe("slack bridge as a loomcycle gate", () => {
+  it("asserts who is talking instead of minting: a DM runs as <gate>:<team>:<user> in its workspace's group", async () => {
+    const r = await rig({}, { gate: true });
+    await send(r, eventBody(dm("hello")));
+    expect(r.lc.runs).toHaveLength(1);
+    expect(r.lc.runs[0].token).toMatch(/^tok-slack:t1:ualice-/);
+    // The bridge registers nobody and mints nothing; loomcycle issues the token.
+    expect(r.lc.createdUsers).toEqual([]);
+    expect(r.lc.mints).toEqual([]);
+    expect(r.gate.asserts).toHaveLength(1);
+    expect(r.gate.asserts[0].gate).toBe("slack");
+    expect(r.gate.asserts[0].payload).toMatchObject({
+      iss: "slack",
+      aud: "https://lc.example",
+      sub: "t1:ualice",
+      name: "Ada",
+      lc_use: "assert",
+      token: { agents: ["helper"], overrides: ["interactive"] },
+      groups: ["slack-team-t1"],
+    });
+  });
+
+  it("runs a channel as its own <gate>:conv:<hash> user, in its workspace's and channel's groups", async () => {
+    const r = await rig({}, { gate: true });
+    await send(r, eventBody(mention("summarise", "200.1")));
+    expect(r.lc.runs).toHaveLength(1);
+    expect(r.lc.runs[0].token).toContain(gateSharedSubject("slack", "t1", "c1"));
+    expect(r.gate.asserts[0].payload).toMatchObject({
+      sub: gateSharedSubject("slack", "t1", "c1").slice("slack:".length),
+      groups: ["slack-team-t1", "slack-channel-t1-c1"],
+    });
+    // A conversation's groups need no Slack lookup.
+    expect(r.slack.to("users.info").map((c) => c.body)).toEqual([{ user: "UALICE" }]);
+  });
+
+  it("asserts no groups for a person when users.info fails", async () => {
+    const r = await rig({}, { gate: true });
+    // The display name's lookup, then the groups'.
+    r.slack.reply("users.info", { json: { ok: false, error: "missing_scope" } }, { json: { ok: false, error: "missing_scope" } });
+    await send(r, eventBody(dm("hello")));
+    expect(r.gate.asserts).toHaveLength(1);
+    expect("groups" in r.gate.asserts[0].payload).toBe(false);
+  });
+
+  it("puts a workspace admin or owner in its admins group, and a member not", async () => {
+    const r = await rig({}, { gate: true });
+    r.slack.reply("users.info", { json: { ok: true, user: { id: "UADMIN", is_admin: true } } }, { json: { ok: true, user: { id: "UOWNER", is_owner: true } } });
+    expect(await r.adapter.groupsFor("slack:t1:uadmin", dmRef)).toEqual(["slack-team-t1", "slack-team-t1-admins"]);
+    expect(await r.adapter.groupsFor("slack:t1:uowner", dmRef)).toEqual(["slack-team-t1", "slack-team-t1-admins"]);
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
+    // Slack's ids are upper case; the subject's are not.
+    expect(r.slack.to("users.info").map((c) => c.body)).toEqual([{ user: "UADMIN" }, { user: "UOWNER" }, { user: "UALICE" }]);
+  });
+
+  it("asserts nothing for a subject that is not a person of this gate's", async () => {
+    const r = await rig({}, { gate: true });
+    for (const subject of ["other:t1:ualice", "slack:t1", "slack:t1:u:x", "slack-t1-ualice"]) {
+      expect(await r.adapter.groupsFor(subject, dmRef), subject).toBeUndefined();
+    }
+    expect(r.slack.to("users.info")).toHaveLength(0);
+  });
+
+  it("reuses a person's groups for ten minutes, and never a failed lookup", async () => {
+    let t = 1_000_000;
+    const r = await rig({}, { gate: true, now: () => t });
+    r.slack.reply("users.info", { json: { ok: false, error: "ratelimited" } });
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toBeUndefined();
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
+    t += 9 * 60_000;
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
+    expect(r.slack.to("users.info")).toHaveLength(2);
+    t += 2 * 60_000;
+    r.slack.reply("users.info", { json: { ok: true, user: { id: "UALICE", is_admin: true } } });
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1", "slack-team-t1-admins"]);
+    expect(r.slack.to("users.info")).toHaveLength(3);
+  });
+
+  // A person deactivated in their workspace is gone as far as the gate knows:
+  // loomcycle is told (a signed revoke) and disables them.
+  it("revokes a person deactivated in an allowed workspace, and drops their cached groups", async () => {
+    const r = await rig({}, { gate: true });
+    expect(await r.adapter.groupsFor("slack:t1:ualice", dmRef)).toEqual(["slack-team-t1"]);
+    expect(await send(r, userChange({}))).toEqual({ status: 200 });
+    await waitFor(() => r.gate.revokes.length === 1, "revoke");
+    expect(r.gate.revokes[0]).toMatchObject({ gate: "slack", payload: { sub: "t1:ualice", lc_use: "revoke" } });
+    // The next lookup asks Slack again.
+    await r.adapter.groupsFor("slack:t1:ualice", dmRef);
+    expect(r.slack.to("users.info")).toHaveLength(2);
+    expect(r.lc.calls).toHaveLength(0);
+  });
+
+  it("revokes nobody for a profile change, another workspace, or an unsigned event", async () => {
+    const r = await rig({}, { gate: true });
+    await send(r, userChange({ deleted: false }));
+    await send(r, userChange({ deleted: "true" }));
+    await send(r, userChange({ team_id: "T2", id: "UBOB" }));
+    await send(r, userChange({}, { team_id: "T2" }));
+    await send(r, userChange({ id: undefined }));
+    const unsigned = userChange({});
+    expect(await r.events({ ...signed(unsigned), headers: {} })).toEqual({ status: 401 });
+    await settle();
+    expect(r.gate.revokes).toEqual([]);
+    expect(r.lc.calls).toHaveLength(0);
+  });
+});
+
+describe("slack bridge with a loomcycle token", () => {
+  it("ignores a deactivation: only a gate tells loomcycle", async () => {
+    const r = await rig();
+    expect(await send(r, userChange({}))).toEqual({ status: 200 });
+    await settle();
+    expect(r.gate.revokes).toEqual([]);
+    expect(r.lc.calls).toHaveLength(0);
+    expect(r.slack.calls.map((c) => c.method)).toEqual(["auth.test"]);
   });
 });

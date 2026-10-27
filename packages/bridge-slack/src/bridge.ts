@@ -23,8 +23,8 @@ import {
 import { SlackApi, slackErrorCode } from "./api.js";
 import { renderCard } from "./cards.js";
 import type { SlackConfig } from "./config.js";
-import { cleanName, identify, refOf, teamsAllowed, type InboundFields, type SlackRef, type TrustPolicy } from "./identity.js";
-import { readAction, readEvent, type BlockActionsPayload, type EventEnvelope, type SelfIds } from "./inbound.js";
+import { cleanName, identify, personSub, refOf, teamsAllowed, type InboundFields, type SlackRef, type TrustPolicy } from "./identity.js";
+import { readAction, readDeletedUser, readEvent, type BlockActionsPayload, type DeletedUser, type EventEnvelope, type SelfIds } from "./inbound.js";
 import { SeenSet } from "./seen.js";
 import { SlackStream } from "./stream.js";
 import { escapeMrkdwn, MAX_MESSAGE_CHARS, neutralise } from "./text.js";
@@ -42,7 +42,8 @@ export interface SlackAdapter extends BridgeAdapter<SlackRef> {
   /** Learns the bot's own user id with auth.test; start() calls it. */
   learnSelf(): Promise<SelfIds>;
   /** The two routes, served by start(); exposed for a server of your own and for tests. */
-  routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log">): Record<string, Route>;
+  routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log" | "gate">): Record<string, Route>;
+  groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined>;
 }
 
 const SLACK_HOOKS_ORIGIN = "https://hooks.slack.com";
@@ -50,6 +51,9 @@ const SLACK_HOOKS_ORIGIN = "https://hooks.slack.com";
 const SEEN_TTL_MS = 60 * 60_000;
 const NAME_TTL_MS = 60 * 60_000;
 const MAX_NAMES = 5000;
+/** How long a person's looked-up groups are reused, and how many are kept. */
+const GROUP_CACHE_MS = 10 * 60 * 1000;
+const MAX_GROUP_CACHE = 5000;
 
 /** A link the agent writes is never unfurled: an unfurl fetches the URL from
  *  Slack's side, which a prompt-injected agent could use to send data out
@@ -73,6 +77,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
   const seen = new SeenSet(SEEN_TTL_MS, 10_000, now);
   const names = new Map<string, { name: string; at: number }>();
   const apiOrigin = new URL(cfg.apiBaseUrl).origin;
+  const groupCache = new Map<string, { groups: string[]; until: number }>();
   let self: SelfIds | undefined;
   let namesRefused = false;
 
@@ -128,6 +133,59 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     }
   }
 
+  /** groupsFor is what loomcycle is told about a run identity's groups
+   *  (RFC FA §3.7d), named from what Slack knows; an operator maps them
+   *  (group_map). A shared conversation's own user is in its workspace's
+   *  group and its channel's. A person (a DM) is in their own workspace's
+   *  group, and its admins group when users.info says they administer or own
+   *  it. A lookup that fails (no users:read scope, say) asserts nothing, so
+   *  loomcycle never removes a group on a guess. Cached per person for a
+   *  while: a token is asked for rarely, but a restart asks for all of them
+   *  at once. */
+  async function groupsFor(subject: string, ref: SlackRef): Promise<string[] | undefined> {
+    if (ref.channelType !== "im") {
+      const team = ref.team.toLowerCase();
+      return [`slack-team-${team}`, `slack-channel-${team}-${ref.channel.toLowerCase()}`];
+    }
+    const gate = cfg.shared.gate?.name;
+    if (!gate || !subject.startsWith(`${gate}:`)) return undefined;
+    const [team, user, ...rest] = subject.slice(gate.length + 1).split(":");
+    if (!team || !user || rest.length > 0) return undefined;
+    const at = now();
+    const hit = groupCache.get(subject);
+    if (hit && hit.until > at) return hit.groups;
+    let info: { is_admin?: unknown; is_owner?: unknown };
+    try {
+      // The subject is lower-cased; Slack's ids are upper case.
+      const r = await api.call("users.info", { user: user.toUpperCase() });
+      info = (r.user ?? {}) as typeof info;
+    } catch (err) {
+      log.warn("could not read a Slack user's groups", { error: slackErrorCode(err) ?? (err as Error)?.name });
+      return undefined;
+    }
+    const groups = [`slack-team-${team}`];
+    if (info.is_admin === true || info.is_owner === true) groups.push(`slack-team-${team}-admins`);
+    groupCache.delete(subject);
+    groupCache.set(subject, { groups, until: at + GROUP_CACHE_MS });
+    if (groupCache.size > MAX_GROUP_CACHE) groupCache.delete(groupCache.keys().next().value!);
+    return groups;
+  }
+
+  /** onUserDeleted: a person deactivated in their workspace has left it, and
+   *  the bridge, as the gate for Slack, tells loomcycle so (RFC FA §3.7c):
+   *  the user is disabled at once and removed per the gate's policy. Coming
+   *  back takes an operator (reactivate: operator). */
+  async function onUserDeleted(gate: NonNullable<BridgeContext<SlackRef>["gate"]>, u: DeletedUser): Promise<void> {
+    const subject = gate.subjectOf(personSub(u.team, u.user));
+    try {
+      await gate.revoke(subject);
+      groupCache.delete(subject);
+      log.info("slack user deactivated; revoked in loomcycle", { user: u.user });
+    } catch (err) {
+      log.warn("slack revoke failed", { status: (err as { status?: number })?.status });
+    }
+  }
+
   function authentic(req: RawRequest): boolean {
     return cfg.shared.dev || verifySlackRequest(req, cfg.signingSecret, now());
   }
@@ -144,7 +202,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     }
   }
 
-  function routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log">): Record<string, Route> {
+  function routes(ctx: Pick<BridgeContext<SlackRef>, "router" | "log" | "gate">): Record<string, Route> {
     const { router } = ctx;
     const me = () => {
       if (!self) throw new Error("learnSelf has not run");
@@ -152,6 +210,11 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     };
 
     async function handleEvent(env: EventEnvelope): Promise<void> {
+      // Only a gate acts on a deactivation; a token-mode bridge ignores it.
+      if (ctx.gate) {
+        const deleted = readDeletedUser(env, cfg.allowedTeams);
+        if (deleted) return onUserDeleted(ctx.gate, deleted);
+      }
       const r = readEvent(env, me());
       if (r.kind !== "message" || !r.text) return;
       const id = identify(r.fields, policy, await displayName(r.fields));
@@ -237,6 +300,7 @@ export function createSlackAdapter(cfg: SlackConfig, opts: SlackBridgeOptions = 
     port,
     learnSelf,
     routes,
+    groupsFor,
     async start(ctx) {
       await learnSelf();
       await ctx.serve(routes(ctx));
