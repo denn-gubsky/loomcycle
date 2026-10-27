@@ -374,12 +374,13 @@ func TestAWSIAMAssert_RepeatedFailuresFromOneSourceAreThrottled(t *testing.T) {
 
 // The assert route is shared with the external gates (RFC FA P4): a name
 // that is no awsiam gate goes to their path, which refuses an unknown name, a
-// header gate and a password gate with one answer, so the route does not
-// say which gates exist.
+// header gate and a password gate with one answer. A malformed login at the
+// awsiam gate itself gets that same answer, so the route does not say which
+// gates exist or which of them is an AWS IAM gate.
 func TestAWSIAMAssert_UnknownGateOrHeaderGateGetsOneOpaqueRefusal(t *testing.T) {
 	s, _, _, _ := edgeServer(t)
 	var first string
-	for _, gate := range []string{"nope", "fwd", "legacy"} {
+	for _, gate := range []string{"nope", "fwd", "legacy", "ci"} {
 		rec := assertReq(s, []byte(`{"gate":"`+gate+`"}`))
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("gate %q: %d, want 401", gate, rec.Code)

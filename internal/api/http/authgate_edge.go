@@ -397,21 +397,24 @@ func (s *Server) handleAWSIAMAssert(w http.ResponseWriter, r *http.Request, cfgG
 	key, err := s.assertSourceKey(cfgGate.Name, ip)
 	if err != nil {
 		slog.Error("auth: assert throttle key", "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "sign-in failed")
+		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "the assertion could not be applied; retry")
 		return
 	}
 	// Every refused attempt counts against the source, so a stream of junk —
 	// each of which can cost this server an STS call — slows itself down.
 	if s.sourceBlocked(ctx, key) {
-		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many failed attempts; wait and try again")
+		writeJSONError(w, http.StatusTooManyRequests, "throttled", "too many refused requests; try again later")
 		return
 	}
+	// The answers are the external gates' (handleExternalAssert), word for
+	// word: the route is shared, and a different refusal here would tell an
+	// unauthenticated caller which names are AWS IAM gates.
 	refuse := func(reason string) {
 		s.recordSourceFailure(ctx, key, assertSourceBlockFor)
 		if reason != "" {
 			s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, AuthReason: reason, SourceAddr: ip})
 		}
-		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
+		writeJSONError(w, http.StatusUnauthorized, "invalid_assertion", "the assertion was refused")
 	}
 	d, err := awsiam.ParseLoginData(raw)
 	if err != nil {
@@ -436,21 +439,21 @@ func (s *Server) handleAWSIAMAssert(w http.ResponseWriter, r *http.Request, cfgG
 		return
 	case err != nil:
 		slog.Error("auth: provisioning an AWS IAM login failed", "gate", cfgGate.Name, "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "sign-in failed")
+		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "the assertion could not be applied; retry")
 		return
 	}
 	if login.Pending {
-		writeJSONError(w, http.StatusForbidden, "awaiting_approval", "this identity awaits an operator's approval")
+		writeJSONError(w, http.StatusForbidden, "awaiting_approval", "the user awaits an operator's approval")
 		return
 	}
 	tok, row, err := s.issueGateToken(ctx, login.TenantID, login.Subject, cfgGate.Name, awsiamTokenTTL, auth.Restrictions{})
 	switch {
 	case errors.Is(err, errGateTokenUser):
-		writeJSONError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
+		writeJSONError(w, http.StatusUnauthorized, "invalid_assertion", "the assertion was refused")
 		return
 	case err != nil:
 		slog.Error("auth: issuing an AWS IAM token failed", "gate", cfgGate.Name, "err", err)
-		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "sign-in failed")
+		writeJSONError(w, http.StatusInternalServerError, "assert_failed", "the assertion could not be applied; retry")
 		return
 	}
 	s.recordAuthEvent(audit.Event{Action: "auth_login", ActorTenant: login.TenantID, ActorSubject: login.Subject,
