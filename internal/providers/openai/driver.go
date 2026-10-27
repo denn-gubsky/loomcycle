@@ -56,7 +56,7 @@ type Driver struct {
 	// = apiKey.
 	auth providers.RequestAuth
 	// audioClient is http without its response-header timeout, built on the
-	// first speech-to-text call (audioHTTP).
+	// first audio call, speech-to-text or text-to-speech (audioHTTP).
 	audioOnce   sync.Once
 	audioClient *http.Client
 }
