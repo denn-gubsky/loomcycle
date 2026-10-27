@@ -269,13 +269,16 @@ func (g *Gate) stsHost(raw string) (host, region string, err error) {
 	if p := u.Port(); p != "" && p != "443" {
 		return "", "", invalid("request URL names a port")
 	}
+	// The host returned is always built from the gate's own constants and
+	// configured regions, never the caller's string: the request to STS is
+	// then addressed by configuration alone, whatever the URL spelled.
 	h := strings.ToLower(u.Hostname())
 	if h == GlobalHost {
 		return GlobalHost, "us-east-1", nil
 	}
 	for _, r := range g.Regions {
-		if h == RegionalHost(r) {
-			return h, r, nil
+		if want := RegionalHost(r); h == want {
+			return want, r, nil
 		}
 	}
 	return "", "", invalid("STS host %q is not allowed", h)
