@@ -452,6 +452,13 @@ func (b *boot) buildTools() {
 	}
 	b.allTools = append(b.allTools, contextTool)
 
+	// The Identity tool: the read-only directory of the run's tenant (other
+	// people's public profiles, and behind the principal grants their groups,
+	// reach and what is held for them). Store, SQL Memory, the access-control
+	// resolver and the audit sink are late-bound below.
+	identityTool := &builtin.Identity{}
+	b.allTools = append(b.allTools, identityTool)
+
 	b.searchRegistry = searchRegistry
 	b.searchResolver = searchResolver
 	b.searchHostKeys = searchHostKeys
@@ -479,6 +486,7 @@ func (b *boot) buildTools() {
 	b.evaluationTool = evaluationTool
 	b.interruptionTool = interruptionTool
 	b.contextTool = contextTool
+	b.identityTool = identityTool
 	b.staticHosts = staticHosts
 }
 

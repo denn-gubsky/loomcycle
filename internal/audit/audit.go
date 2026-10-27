@@ -155,6 +155,19 @@ type Event struct {
 	AuthGroupsAdded      []string `json:"auth_groups_added,omitempty"`
 	AuthGroupsRemoved    []string `json:"auth_groups_removed,omitempty"`
 	AuthTargetAccessMode string   `json:"auth_target_access_mode,omitempty"`
+
+	// --- Directory lookup (Action = "identity_lookup") ---
+	//
+	// A run, or a session on the MCP server, reading what the directory holds
+	// about ANOTHER person or about a group: who asked, about whom, through
+	// which op, and what came of it. The caller is told "not found" for a
+	// refusal and for a miss alike; this record tells them apart. Never any
+	// of the data returned. The person asked about travels in TargetSubject,
+	// a group in TargetName, the tenant in TargetTenant.
+	IdentityOp      string `json:"identity_op,omitempty"`
+	IdentityOutcome string `json:"identity_outcome,omitempty"` // ok | refused | not_found
+	IdentityRunID   string `json:"identity_run_id,omitempty"`
+	IdentityAgent   string `json:"identity_agent,omitempty"`
 }
 
 // Sink records audit events. Record must be safe for concurrent use and

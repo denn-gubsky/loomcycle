@@ -267,6 +267,9 @@ func (b *boot) openSQLMemory() {
 		// Context op=capabilities reports SQL Memory / Documents availability
 		// from the CONSTRUCTED manager, not the config flag.
 		contextTool.SqlMem = sqlMemMgr
+		// The Identity tool reads another person's profile (its Public
+		// section) from their user scope.
+		b.identityTool.SqlMem = sqlMemMgr
 		memoryTool.SqlAudit = sqlAudit
 		memoryTool.SqlAuditMode = cfg.Storage.SqlMemAuditMode
 		// Reuse the server's redactor (same secret-classified env) so an
