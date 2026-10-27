@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"regexp"
 	"slices"
@@ -43,6 +44,23 @@ func TestMemoryOps_EveryOpIsClassified(t *testing.T) {
 		if !slices.Contains(ops, op) {
 			t.Errorf("memoryWriteOps names %q, which the schema does not offer", op)
 		}
+	}
+}
+
+// op=permissions tells the model which of its scopes it may only read, so a
+// refused write is not a surprise.
+func TestContextPermissions_ReportsReadOnlyScopes(t *testing.T) {
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{
+		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"user", "tenant"}, ReadOnlyScopes: []string{"tenant"}},
+		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"user"}, ReadOnlyScopes: []string{"user"}},
+	})
+	out, _ := callContext(t, &Context{}, ctx, `{"op":"permissions"}`)
+	mem := out["memory"].(map[string]any)
+	if got := joinAny(mem["read_only_scopes"]); got != "tenant" {
+		t.Errorf("memory.read_only_scopes = %q, want tenant", got)
+	}
+	if got := joinAny(mem["sql_read_only_scopes"]); got != "user" {
+		t.Errorf("memory.sql_read_only_scopes = %q, want user", got)
 	}
 }
 
