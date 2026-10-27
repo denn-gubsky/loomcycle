@@ -143,7 +143,15 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, info.Size())); err != nil {
 		return errTransient(fmt.Sprintf("extract: reading %s failed", r.raw), "Try again."), nil
 	}
-	origin := "extract:" + sourceOrigin(ctx, r, rel, hex.EncodeToString(sum.Sum(nil)))
+	digest := hex.EncodeToString(sum.Sum(nil))
+	origin := "extract:" + sourceOrigin(ctx, r, rel, digest)
+	// The record of the file read, while its bytes still hash to it, rides on
+	// the extracted text's record: an import of that text says what it came
+	// from. Read here, before extraction, from the bytes that are extracted.
+	var from *inbox.Record
+	if rec, ok := recordFor(ctx, r, rel, digest); ok {
+		from = capturedOriginal(rec)
+	}
 
 	slug := inbox.SanitizeName(strings.TrimSuffix(name, path.Ext(name)))
 	if slug == "" {
@@ -204,7 +212,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 
 	// ctx, not xctx: an OCR pass may well outlast the extraction's bound.
-	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted}, []byte(md))
+	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted, ExtractedFrom: from}, []byte(md))
 	if !kept.Kept {
 		return errBusiness("extract: the extracted text could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
 	}
@@ -261,6 +269,21 @@ func sourceOrigin(ctx context.Context, r dataRef, rel, digest string) string {
 	return "volume:" + r.volume
 }
 
+// capturedOriginal is the capture a trusted record stands for: the file an
+// extraction read when the record is of extracted text, the record itself
+// when it is of a file a tool returned. nil for text extracted from a file
+// that was never captured (one of the agent's own volumes): nothing about
+// that file was recorded.
+func capturedOriginal(rec inbox.Record) *inbox.Record {
+	if rec.ExtractedFrom != nil {
+		return rec.ExtractedFrom
+	}
+	if strings.HasPrefix(rec.Origin, "extract:") {
+		return nil
+	}
+	return &rec
+}
+
 // fileContentBlock fences a document's text for the model: everything in it
 // is the document's, so it is escaped (fence.EscapeUntrusted) and nothing in
 // it can close the block or open a tag of its own.
@@ -313,6 +336,11 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	default:
 		return errValidation("import: scope must be agent, user or tenant", ""), nil
 	}
+	src, err := in.Source.normalize()
+	if err != nil {
+		return errValidation("import: "+err.Error(),
+			"Pass source.url as the item's http(s) web link (a SharePoint webUrl, an email's webLink), and source.kind as one of "+strings.Join(ImportSourceKinds, ", ")+"."), nil
+	}
 	// Import writes a Document as import_md would, so the run must hold
 	// Document and Document's hooks judge it. The scope's own grants are
 	// checked by the Document tool itself, below.
@@ -329,17 +357,27 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		return res, nil
 	}
 	sum := sha256.Sum256(b)
-	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, hex.EncodeToString(sum[:])), "extract:")
+	digest := hex.EncodeToString(sum[:])
+	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, digest), "extract:")
+	prov, titleName := importFileProvenance(ctx, r, rel, digest)
+	if src.URL == "" {
+		// A downloaded file links back to its download, as the record keeps
+		// it: no query.
+		if u, _ := prov.fields[importFieldSourceURL].(string); u != "" {
+			src.URL = u
+		}
+	}
+	prov = prov.withSource(src)
 
 	// The file is untrusted text: no raw HTML or loom metadata acts on the
 	// import. Image references are left to the reader below, which follows
 	// only the ones op=extract wrote.
 	md := extract.Neutralize(string(b), false)
-	md = withRootHeading(md, in.Title, fileTitle(path.Base(rel)))
+	md = withRootHeading(md, in.Title, fileTitle(titleName))
 	md = hoistExtractedImages(md)
 
 	call, _ := json.Marshal(map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath})
-	ictx := withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields)
+	ictx := withImportProvenance(withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields), prov)
 	out, err := f.Docs.Execute(ictx, call)
 	if err != nil {
 		return tools.Result{}, err
@@ -364,6 +402,9 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	if s, ok := imported["skipped_images"]; ok {
 		result["skipped_images"] = s
 	}
+	if p, ok := imported["provenance"]; ok {
+		result["provenance"] = p
+	}
 	tagCall, _ := json.Marshal(map[string]any{"op": "add_tags", "scope": scope, "document_id": docID, "tags": tags})
 	tres, err := f.Docs.Execute(ctx, tagCall)
 	switch {
@@ -377,6 +418,43 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		result["tags"] = t["tags"]
 	}
 	return okJSON(result)
+}
+
+// importFileProvenance is what an import of the file at rel records on the
+// document, from the capture record while the bytes still hash to it
+// (digest): the captured file's name, type, sha256, where it was captured
+// from, when and by which run, and, for a download, its URL as the record
+// keeps it (in source_url, for the caller to keep unless a source is given).
+// For text op=extract wrote, the captured file is the one it was extracted
+// from, whose bytes extract hashed when it read them. titleName is the name
+// a document without a heading is titled after: the captured file's, else
+// the imported file's, never its inbox folder.
+func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (importProvenance, string) {
+	prov := newImportProvenance()
+	titleName := path.Base(filepath.ToSlash(rel))
+	rec, ok := recordFor(ctx, r, rel, digest)
+	if !ok {
+		return prov, titleName
+	}
+	orig := capturedOriginal(rec)
+	if orig == nil {
+		return prov, titleName
+	}
+	f := prov.fields
+	f[importFieldFile] = path.Base(orig.Path)
+	f[importFieldMediaType] = orig.MediaType
+	f[importFieldSHA256] = orig.SHA256
+	f[importFieldCapturedFrom] = orig.Origin
+	if !orig.CapturedAt.IsZero() {
+		f[importFieldCapturedAt] = orig.CapturedAt.UTC().Format(time.RFC3339)
+	}
+	if orig.RunID != "" {
+		f[importFieldRunID] = orig.RunID
+	}
+	if strings.HasPrefix(orig.Origin, "download:") && orig.URL != "" {
+		f[importFieldSourceURL] = orig.URL
+	}
+	return prov, path.Base(orig.Path)
 }
 
 // fileDocumentGrant refuses an import the run could not make with the

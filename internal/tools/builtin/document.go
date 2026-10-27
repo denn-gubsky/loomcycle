@@ -185,7 +185,10 @@ const documentInputSchema = `{
 		"markdown":    {"type": "string", "description": "import_md: an export_md-shaped Markdown document (headings = hierarchy; <!-- loom: ... --> metadata; <!-- loom-edges: ... --> trailer). Omit document_id to create a new document; pass document_id (+ optional parent_id) to import under an existing chunk."},
 		"canvas":      {"type": "object", "description": "import_canvas: a JSON Canvas v1.0 object ({\"nodes\":[...],\"edges\":[...]}) — e.g. the contents of an Obsidian .canvas file. Each node becomes a chunk (positioned via its x/y/width/height); each edge becomes a link. Pass title/path to name the new document."},
 		"source":      {"type": "string", "description": "set_remote: the document_sources name (a peer loomcycle declared in operator config) to bind this document to."},
-		"remote_ref":  {"type": "string", "description": "set_remote: the remote document's path (or id) on the peer. sync reconciles that document's keyed chunks with this one."}
+		"remote_ref":  {"type": "string", "description": "set_remote: the remote document's path (or id) on the peer. sync reconciles that document's keyed chunks with this one."},
+		"source_url":  {"type": "string", "description": "import_md: a link to where the text came from (the email, the SharePoint file, the web page): an http(s) URL, at most 2048 bytes, stored with any signature or token in its query masked. Naming a source marks the document as imported: its text is then never served as a remembered fact. A new document only."},
+		"source_kind": {"type": "string", "enum": ["sharepoint", "email", "attachment", "web", "other"], "description": "import_md: what kind of place the text came from (default other when a source is given). Also tags the document source/<kind>."},
+		"source_title": {"type": "string", "description": "import_md: the source's own name, e.g. an email's subject. One line, at most 300 characters."}
 	},
 	"required": ["op"]
 }`
@@ -375,6 +378,12 @@ type docInput struct {
 	Canvas    json.RawMessage `json:"canvas"`
 	Source    string          `json:"source,omitempty"`     // set_remote: the document_sources name
 	RemoteRef string          `json:"remote_ref,omitempty"` // set_remote: the remote doc's path or id
+	// SourceURL / SourceKind / SourceTitle are import_md's link to where the
+	// document came from (an email, a SharePoint file). Three fields rather
+	// than one `source` object because `source` is set_remote's string.
+	SourceURL   string `json:"source_url,omitempty"`
+	SourceKind  string `json:"source_kind,omitempty"`
+	SourceTitle string `json:"source_title,omitempty"`
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -1246,8 +1255,18 @@ func (d *Document) writeBody(ctx context.Context, mscope store.MemoryScope, key 
 // candidate would be a cross-database round trip from each of the four call sites
 // that label a row.
 func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string) error {
+	return d.putBody(ctx, mscope, key, chunkID, chunkType, body, fields, origin, nil)
+}
+
+// putBody is writeBodyAs with the import provenance the server stamps on an
+// imported document's root (stamped; import_md alone passes it). Every other
+// write is a caller's: the provenance field it gives is dropped and the
+// stored one carried forward, so no write path — create_chunk, update_chunk,
+// set_asset, sync, an import's Markdown metadata — can set or change where a
+// document says it came from. This is the one place every body write goes
+// through, which is why the rule lives here.
+func (d *Document) putBody(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, chunkID, chunkType, body string, fields json.RawMessage, origin string, stamped map[string]any) error {
 	scopeID := docMemScopeID(mscope, key)
-	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	// RFC BL: key chunk bodies on the same tenant the document's dirent + SQL
 	// structure use (direntTenant = the raw RunIdentity tenant), so bodies and
 	// structure never drift across the tenant axis.
@@ -1281,6 +1300,23 @@ func (d *Document) writeBodyAs(ctx context.Context, mscope store.MemoryScope, ke
 		prov.SourceSessionID = prev.SourceSessionID
 		prov.SourceRunID = prev.SourceRunID
 	}
+	if stamped != nil {
+		fields = setProvenanceField(fields, stamped)
+	} else {
+		// Only an imported body can hold provenance, so only its rewrite reads
+		// the stored fields. A failed read refuses the write rather than
+		// erase the provenance the caller could not see.
+		var stored json.RawMessage
+		if perr == nil && prev.Origin == store.OriginImport {
+			cb, err := d.readBody(ctx, mscope, key, chunkID)
+			if err != nil {
+				return err
+			}
+			stored = cb.Fields
+		}
+		fields = carryProvenanceField(fields, stored)
+	}
+	v, _ := json.Marshal(chunkBody{Body: body, Fields: fields})
 	if prov.Origin == "" && prov.Class == "" && prov.SourceSessionID == "" && prov.SourceRunID == "" {
 		if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, bodyKey, v, 0); err != nil {
 			return err
@@ -1776,7 +1812,9 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		rootID, docID, nullIfEmpty(in.Type), nullIfEmpty(in.Status), in.Title, now, now); err != nil {
 		return errFrom("create_document: root chunk: "+err.Error(), err), nil
 	}
-	if err := d.writeBody(ctx, mscope, key, rootID, "", "", nil); err != nil {
+	// bodyOrigin is set only by a server path (import_md stamps an import);
+	// every tool call leaves it empty.
+	if err := d.writeBodyAs(ctx, mscope, key, rootID, "", "", nil, in.bodyOrigin); err != nil {
 		return errFrom("create_document: root body: "+err.Error(), err), nil
 	}
 	// A DOCUMENT'S ROOT CAN BE THE ENTITY ITSELF (RFC CV decision 1). When the
@@ -2078,6 +2116,10 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		resp["color_enabled"] = enabled
 		if len(scheme) > 0 {
 			resp["color_scheme"] = scheme
+		}
+		// Where an imported document came from: its root's provenance field.
+		if p := d.importedProvenance(ctx, mscope, key, rootID, rootBody); p != nil {
+			resp["provenance"] = p
 		}
 		// WHAT THE TREE CANNOT REACH. When this document's root is a subject, a fact
 		// about it AND about something else is filed under the other one — the tree
@@ -4335,9 +4377,27 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	}
 	includeMeta := in.IncludeMetadata == nil || *in.IncludeMetadata
 
+	// An imported document's provenance (its root's fields) is in the result
+	// either way. A metadata export carries it in the root's loom comment
+	// already; a clean one says it in a line under the title.
+	var prov map[string]any
+	if len(roots) > 0 {
+		rootBody, rerr := d.readBody(ctx, mscope, key, roots[0].ID)
+		if rerr != nil {
+			return errFrom("export_md: body: "+rerr.Error(), rerr), nil
+		}
+		prov = d.importedProvenance(ctx, mscope, key, roots[0].ID, rootBody)
+	}
+
 	var b strings.Builder
 	if err := d.renderChunkTree(ctx, key, mscope, &b, roots, byParent, 0, includeMeta); err != nil {
 		return errFrom("export_md: body: "+err.Error(), err), nil
+	}
+	if line := provenanceLine(prov); line != "" && !includeMeta {
+		md := b.String()
+		head, rest, _ := strings.Cut(md, "\n")
+		b.Reset()
+		b.WriteString(head + "\n\n" + line + "\n" + rest)
 	}
 
 	// Edges trailer — the free-form graph edges originating from this document's
@@ -4357,7 +4417,11 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 	}
 
-	return jsonResult(map[string]any{"markdown": b.String(), "document_id": docID, "title": title})
+	out := map[string]any{"markdown": b.String(), "document_id": docID, "title": title}
+	if prov != nil {
+		out["provenance"] = prov
+	}
+	return jsonResult(out)
 }
 
 // loadChunkTree reads a document's chunks grouped for a depth-first walk:
@@ -4718,6 +4782,31 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			return *r, nil
 		}
 	}
+	// An IMPORT: the File tool's (provenance on the context) or one that names
+	// its source. Its chunk bodies carry the import origin, so the text is
+	// searched as a document and never served as a fact, and its root carries
+	// where it came from.
+	prov, imported := importProvenanceFrom(ctx)
+	src, err := ImportSource{URL: in.SourceURL, Kind: in.SourceKind, Title: in.SourceTitle}.normalize()
+	if err != nil {
+		return errValidation("import_md: "+err.Error()+". Nothing was imported.",
+			"Pass source_url as an http(s) link without a user name or password, and source_kind as one of "+strings.Join(ImportSourceKinds, ", ")+"."), nil
+	}
+	if !src.empty() {
+		if in.DocumentID != "" {
+			return errValidation("import_md: a source describes a whole document, so it is taken only when the import makes a new one. Nothing was imported.",
+				"Omit document_id to import as a new document, or omit the source fields."), nil
+		}
+		if !imported {
+			prov = newImportProvenance()
+			imported = true
+		}
+		prov = prov.withSource(src)
+	}
+	bodyOrigin := ""
+	if imported {
+		bodyOrigin = store.OriginImport
+	}
 	oldToNew := map[string]string{}
 	type frame struct {
 		level int
@@ -4761,13 +4850,19 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		// New document: the first heading is the root chunk.
 		first := chunks[0]
 		load(&first)
-		cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: titleOrUntitled(first.title), Path: in.Path})
+		var stamp map[string]any
+		var tags []string
+		if imported {
+			stamp = prov.fields
+			tags = prov.tags()
+		}
+		cd, _ := d.createDocument(ctx, key, mscope, docInput{Title: titleOrUntitled(first.title), Path: in.Path, Tags: tags, bodyOrigin: bodyOrigin})
 		if cd.IsError {
 			return cd, nil
 		}
 		docID = resultField(cd, "document_id")
 		rootID = resultField(cd, "root_chunk_id")
-		if err := d.writeBody(ctx, mscope, key, rootID, first.typ, first.body, first.fields); err != nil {
+		if err := d.putBody(ctx, mscope, key, rootID, first.typ, first.body, first.fields, bodyOrigin, stamp); err != nil {
 			return errFrom("import_md: root body: "+err.Error(), err), nil
 		}
 		if first.typ != "" || first.status != "" {
@@ -4825,7 +4920,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		cc, _ := d.createChunk(ctx, key, mscope, docInput{
 			DocumentID: docID, ParentID: parent, Title: titleOrUntitled(c.title),
 			Type: c.typ, Status: c.status, Body: c.body, Fields: c.fields,
-			ValidAt: c.validAt, InvalidAt: c.invalidAt,
+			ValidAt: c.validAt, InvalidAt: c.invalidAt, bodyOrigin: bodyOrigin,
 		})
 		if cc.IsError {
 			return cc, nil
@@ -4854,6 +4949,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 
 	out := map[string]any{"document_id": docID, "root_chunk_id": rootID, "chunks_created": created,
 		"image_chunks": imageChunks, "skipped": skipped}
+	if imported && in.DocumentID == "" {
+		out["provenance"] = prov.fields
+	}
 	if len(skippedWhy) > 0 {
 		out["skipped_images"] = skippedWhy
 	}

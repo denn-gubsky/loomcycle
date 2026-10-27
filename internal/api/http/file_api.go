@@ -53,6 +53,9 @@ type fileTwinArgs struct {
 	DocPath      string   `json:"doc_path,omitempty"`
 	Scope        string   `json:"scope,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
+	// Source is import's link to where the document came from; the File
+	// tool checks and masks it.
+	Source *builtin.ImportSource `json:"source,omitempty"`
 }
 
 type fileTwinInput struct {

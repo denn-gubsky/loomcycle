@@ -4850,8 +4850,9 @@ type MemorySearchFilter struct {
 	// at the same time as the others.
 	ExcludeUnitPrefix string
 
-	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT provenance —
-	// which is exactly the document class, and nothing else.
+	// ExcludeDocumentPrefix drops rows that are chunk bodies WITHOUT fact
+	// provenance (IsFactOrigin false: no origin, or an import's) — which is
+	// exactly the document class, and nothing else.
 	//
 	// It exists because ExcludeKeyPrefix stopped being able to express "not prose".
 	// That worked only while the chunk namespace held nothing but prose; a fact
@@ -4923,7 +4924,7 @@ type MemorySearchFilter struct {
 	ExcludeIDs []string
 	// IDsPrefixes confines IDs / ExcludeIDs to the DOCUMENT CLASS of these
 	// namespaces: a row is held to the lists only when its key begins with one of
-	// them AND it carries no provenance, and its id segment is then the text after
+	// them AND it carries no fact provenance (IsFactOrigin), and its id segment is then the text after
 	// THAT prefix. Every other row — a note, a fact (provenance; a fact homed in a
 	// chunk shares the chunk prefix, as ExcludeDocumentPrefix explains), a row in
 	// any other namespace — passes the lists untouched.
@@ -4952,12 +4953,32 @@ type MemoryProvenanceConstraint uint8
 const (
 	// ProvenanceAny is the zero value: no constraint.
 	ProvenanceAny MemoryProvenanceConstraint = iota
-	// ProvenanceRequired matches rows with a non-empty origin — distilled by a
-	// known writer (the consolidator).
+	// ProvenanceRequired matches rows whose origin makes them a fact
+	// (IsFactOrigin) — distilled by a known writer (the consolidator).
 	ProvenanceRequired
-	// ProvenanceAbsent matches rows with no origin — written directly by an agent.
+	// ProvenanceAbsent matches every other row: no origin (written directly by an
+	// agent) or OriginImport (an imported document's text).
 	ProvenanceAbsent
 )
+
+// OriginImport is the origin stamped on the body rows of an imported document: a
+// file or an email turned into a Document. It names its writer like any origin,
+// but what it labels is document text, not a distilled fact.
+const OriginImport = "import"
+
+// IsFactOrigin reports whether a row's origin makes it a FACT: a known writer
+// distilled it. The one rule every fact/prose split shares — ClassifyMemoryRow,
+// the provenance constraints both backends render, the memory backend's source
+// filters — so the label and the filter cannot disagree.
+//
+// An empty origin is an agent's own note or authored prose. OriginImport is not
+// empty, but the rows it labels are document text someone imported: a fact only
+// ever comes from distillation, so an import's label can lower trust (keep text
+// out of fact recall) and never raise it.
+func IsFactOrigin(origin string) bool {
+	o := strings.TrimSpace(origin)
+	return o != "" && o != OriginImport
+}
 
 // MemoryRowClass labels what kind of remembered thing a row is, so a caller can tell
 // "the user told me this" from "this is written down in a document" (RFC BW §4b).
@@ -5011,7 +5032,7 @@ func ClassifyMemoryRow(key, origin, documentKeyPrefix string) MemoryRowClass {
 	if strings.HasPrefix(key, TraceTurnKeyPrefix) {
 		return MemoryRowTrace
 	}
-	if strings.TrimSpace(origin) != "" {
+	if IsFactOrigin(origin) {
 		return MemoryRowFact
 	}
 	if documentKeyPrefix != "" && strings.HasPrefix(key, documentKeyPrefix) {
