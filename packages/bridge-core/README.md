@@ -75,6 +75,8 @@ auth:
       identity_map: { tenant: acme, provision: auto }
 ```
 
+**Switching a bridge that ran with a token.** Its users are `<platform>-<id>`; as a gate the same people are `<gate>:<id>`. Set `identity_map.legacy_subject_prefix: <platform>-` on the gate, before the bridge is switched, and each person's first login links the user the bridge made, so their history, memory and documents stay theirs. The bridge's own store carries over too: a conversation stored under a `<platform>-<id>` subject moves to the gate's subject of the same identity the next time it is used, keeping its session and its owner. A conversation nobody writes to again keeps its old subject, and the bridge's idle sweep cannot end a run it left parked (it logs `could not end a stale run`) until the conversation is used again.
+
 ## Writing a platform package
 
 A platform package supplies a `BridgeAdapter`:

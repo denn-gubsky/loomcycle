@@ -30,4 +30,4 @@ export { GateBroker, GateClient, GateError, keyFromPrivate, keyFromSecret, loadG
 export type { Exec, GateAlg, GateClientOptions, GateIdentity, GateKey, GroupsFor, TokenRequest } from "./gate.js";
 export type { GateConfig } from "./config.js";
 export type { TokenSource } from "./tokens.js";
-export { gateSharedSubject } from "./identity.js";
+export { gateSharedSubject, legacySubject } from "./identity.js";

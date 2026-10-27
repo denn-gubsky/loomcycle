@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { isButtonInput, VERB, type CanonicalCard, type CardInput } from "../src/cards.js";
 import { UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "../src/conversation.js";
-import { sharedSubject, type Identified, type Scope, type Trust } from "../src/identity.js";
+import { gateSharedSubject, sharedSubject, type Identified, type Scope, type Trust } from "../src/identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "../src/platform.js";
 import { ConversationRouter } from "../src/router.js";
 import { MemoryStore } from "../src/store.js";
@@ -196,6 +196,99 @@ describe("bridge conversation", () => {
     expect(lc.runs).toHaveLength(1);
     expect(lc.runs[0].kind).toBe("continue");
     expect(lc.runs[0].opts).toMatchObject({ sessionId: "sess-old" });
+  });
+
+  // A bridge that ran with a loomcycle token and is switched to a gate finds
+  // its stored conversations under the token-mode subjects ("test-alice").
+  // A gate gets tokens only for its own "<gate>:" subjects, so such a record
+  // is carried over to the gate's subjects the first time it is used, and
+  // keeps its session and its owner.
+  describe("a bridge switched from a token to a gate", () => {
+    /** gateIdent is ident as a gate bridge identifies the same people. */
+    function gateIdent(user: string, name: string, conv = "conv-1", scope: Scope = "personal"): Identified {
+      const subject = `test:${user}`;
+      return {
+        ok: true,
+        speaker: { subject, name, trust: "trusted" },
+        scope,
+        conversationId: conv,
+        runAs: scope === "personal" ? { subject, name } : { subject: gateSharedSubject("test", "org", conv), name: "Test group" },
+      };
+    }
+
+    /** gateRouter's broker refuses any subject that is not the gate's, as
+     *  bridge-core's GateBroker does. */
+    function gateRouter() {
+      const r = makeRouter();
+      const deps = (r as unknown as { deps: { broker: { tokenFor: (s: string) => Promise<string>; forget: (s: string) => void } } }).deps;
+      const inner = deps.broker;
+      deps.broker = {
+        tokenFor: (s: string) => (s.startsWith("test:") ? inner.tokenFor(s) : Promise.reject(new Error(`subject ${s} is not one of gate test's`))),
+        forget: (s: string) => inner.forget(s),
+      };
+      return r;
+    }
+
+    it("continues a person's stored session as the gate's subject", async () => {
+      await store.put({
+        conversationId: "conv-1",
+        scope: "personal",
+        ref: refFor(),
+        ownerSubject: "test-alice",
+        ownerName: "Alice",
+        runSubject: "test-alice",
+        runName: "Alice",
+        sessionId: "sess-old",
+        lastActivityAt: now,
+      });
+      router = gateRouter();
+      await say("still there?", gateIdent("alice", "Alice"));
+
+      expect(lc.runs).toHaveLength(1);
+      expect(lc.runs[0].kind).toBe("continue");
+      expect(lc.runs[0].opts).toMatchObject({ sessionId: "sess-old" });
+      expect(await store.get("conv-1")).toMatchObject({ runSubject: "test:alice", ownerSubject: "test:alice" });
+    });
+
+    it("keeps a shared conversation's owner, and no one else becomes it", async () => {
+      await store.put({
+        conversationId: "conv-g",
+        scope: "group",
+        ref: refFor("conv-g"),
+        ownerSubject: "test-alice",
+        ownerName: "Alice",
+        runSubject: sharedSubject("test", "org", "conv-g"),
+        runName: "Test group",
+        sessionId: "sess-old",
+        lastActivityAt: now,
+      });
+      router = gateRouter();
+      await say("/new", gateIdent("bob", "Bob", "conv-g", "group"));
+      expect(platform.messages().at(-1)).toBe("Only Alice, who started this conversation, can do that.");
+      expect(await store.get("conv-g")).toMatchObject({ ownerSubject: "test-alice", runSubject: gateSharedSubject("test", "org", "conv-g") });
+
+      await say("/new", gateIdent("alice", "Alice", "conv-g", "group"));
+      expect(platform.messages().at(-1)).toBe("Starting fresh: your next message begins a new conversation.");
+      expect(await store.get("conv-g")).toMatchObject({ ownerSubject: "test:alice" });
+    });
+
+    it("never carries a record over to a different person", async () => {
+      await store.put({
+        conversationId: "conv-1",
+        scope: "personal",
+        ref: refFor(),
+        ownerSubject: "test-alice",
+        ownerName: "Alice",
+        runSubject: "test-alice",
+        runName: "Alice",
+        lastActivityAt: now,
+      });
+      router = makeRouter();
+      // A token-mode subject is never rewritten, and a different gate
+      // subject is not the stored person's.
+      await say("hi", gateIdent("mallory", "Mallory"));
+      expect(await store.get("conv-1")).toMatchObject({ runSubject: "test-alice", ownerSubject: "test-alice" });
+    });
   });
 
   it("/new ends the run and starts the next conversation in a fresh session", async () => {

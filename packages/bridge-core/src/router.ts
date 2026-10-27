@@ -34,6 +34,7 @@ export class ConversationRouter<TRef> {
     }
     const conv = await this.conversation(id, ref);
     conv.updateRef(ref);
+    conv.adoptGateSubjects(id.runAs, id.speaker);
     conv.onMessage(id.speaker, text).catch((err: unknown) => {
       this.deps.log.error("message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       this.deps.port
@@ -48,6 +49,7 @@ export class ConversationRouter<TRef> {
     this.deps.health?.inbound();
     if (!id.ok) return { message: id.notice ?? "This bot isn't available to you." };
     const conv = await this.conversation(id, ref);
+    conv.adoptGateSubjects(id.runAs, id.speaker);
     return conv.onCardAction(id.speaker, input);
   }
 
