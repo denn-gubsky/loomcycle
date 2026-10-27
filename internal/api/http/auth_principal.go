@@ -1325,13 +1325,13 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeTenant
 	case strings.HasPrefix(path, "/v1/_authz/"):
 		return ""
-	// RFC FA P2: a signed-in person's own account (password, authenticator).
-	// Any principal reaches the handler, which serves only a password-gate
-	// Web UI session and re-authenticates every change.
 	// RFC FA P5: which gates a tenant's people must use is the deployment
 	// admin's decision, not the tenant's own.
 	case path == "/v1/_auth/tenant-policies", strings.HasPrefix(path, "/v1/_auth/tenant-policies/"):
 		return auth.ScopeAdmin
+	// RFC FA P2: a signed-in person's own account (password, authenticator).
+	// Any principal reaches the handler, which serves only a password-gate
+	// Web UI session and re-authenticates every change.
 	case strings.HasPrefix(path, "/v1/_auth/"):
 		return ""
 	// Tenant enumeration. ScopeAdmin, and the HANDLER re-checks: the counts are

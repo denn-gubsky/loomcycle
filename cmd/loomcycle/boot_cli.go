@@ -298,7 +298,7 @@ func thinClientToken(ctx context.Context, upstream string) string {
 		slog.Info("mcp: thin client using the token from `loomcycle login`", "url", upstream)
 		return tok
 	}
-	slog.Warn("mcp: no upstream token (set LOOMCYCLE_MCP_UPSTREAM_TOKEN, or run `loomcycle login --url "+upstream+
-		"` in a terminal); continuing without one, which only an open-mode upstream accepts", "reason", why)
+	slog.Warn("mcp: no upstream token (set LOOMCYCLE_MCP_UPSTREAM_TOKEN, or run `loomcycle login --url <url>` "+
+		"in a terminal); continuing without one, which only an open-mode upstream accepts", "url", upstream, "reason", why)
 	return ""
 }
