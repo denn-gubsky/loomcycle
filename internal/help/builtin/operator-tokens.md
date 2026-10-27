@@ -109,13 +109,13 @@ meta-tool, and the TS client's `operatorTokenDef()`.
 ### From the Web UI (no shell)
 
 When the binary's CLI isn't reachable — a packaged deployment such as the
-TrueNAS app — the same lifecycle is in the **Settings hub**: sign in with an
-admin (root) token, click the **gear** (top-right), and open **Tokens**.
-Generate (the secret is revealed once with a copy button), list, rotate, and
-retire — backed by the same `POST /v1/_operatortokendef`. The gear and the
-Tokens panel are **admin-only** (a `substrate:tenant` session never sees them);
-the Settings hub also surfaces the embedded **Presets**, **Runtime**
-(pause/resume), and **Health**.
+TrueNAS app — the same lifecycle is in the Web UI: sign in with an admin
+(root) token and open **Access → Tokens** in the left menu. Generate (the
+secret is revealed once with a copy button), list, rotate, and retire — backed
+by the same `POST /v1/_operatortokendef`. The Tokens page is **admin-only** (a
+`substrate:tenant` session never sees it); the Settings hub (the gear, top
+right) surfaces the embedded **Presets**, **Runtime** (pause/resume), and
+**Health**.
 
 ## Rotation grace
 

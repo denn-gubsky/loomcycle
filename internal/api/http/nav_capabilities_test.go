@@ -148,7 +148,8 @@ func TestWhoamiEffective_PinsTheClassDifferences(t *testing.T) {
 	member := navSurfacesOf(t, url, freeBearer)
 	for id, want := range map[string]bool{
 		"run": true, "runs": true, "my-credentials": true, "channels": true, "library": true,
-		"snapshots": false, "activity": false, "access": false, "users": false, "credentials": false, "tokens": false,
+		"snapshots": false, "activity": false, "users": false, "credentials": false, "tokens": false,
+		"groups": false, "policies": false, "bindings": false, "simulator": false,
 	} {
 		if member[id] != want {
 			t.Errorf("member without an ACL: %s = %v, want %v", id, member[id], want)
@@ -160,13 +161,13 @@ func TestWhoamiEffective_PinsTheClassDifferences(t *testing.T) {
 	}
 
 	op := navSurfacesOf(t, url, "tok-nav-op")
-	if !op["access"] || !op["users"] || !op["credentials"] || op["tokens"] || op["snapshots"] {
+	if !op["policies"] || !op["groups"] || !op["bindings"] || !op["simulator"] || !op["users"] || !op["credentials"] || op["tokens"] || op["snapshots"] {
 		t.Errorf("tenant operator: %v", op)
 	}
 	bind(t, st, "no-acl-reads", "user", "op2")
 	op2 := navSurfacesOf(t, url, "tok-nav-op2")
-	if op2["access"] || !op2["users"] {
-		t.Errorf("operator denied read def:acl/*: access=%v users=%v", op2["access"], op2["users"])
+	if op2["policies"] || !op2["users"] {
+		t.Errorf("operator denied read def:acl/*: policies=%v users=%v", op2["policies"], op2["users"])
 	}
 
 	iso := navSurfacesOf(t, url, "tok-nav-iso")
@@ -253,7 +254,7 @@ var (
 	tsIDRe       = regexp.MustCompile(`\bid:\s*"([a-z0-9-]+)"`)
 	tsNavBlockRe = regexp.MustCompile(`(?s)export const NAV_ITEMS[^=]*=\s*\[(.*?)\n\];`)
 	tsSecBlockRe = regexp.MustCompile(`(?s)export const SECTIONS[^=]*=\s*\[(.*?)\n\];`)
-	tsLinkRe     = regexp.MustCompile(`(?s)export const MENU_LINKS[^=]*=\s*\[(.*?)\n\];`)
+	tsLinkRe     = regexp.MustCompile(`(?s)export const ACCOUNT_LINKS[^=]*=\s*\[(.*?)\n\];`)
 )
 
 func tsIDs(t *testing.T, file string, block *regexp.Regexp) []string {

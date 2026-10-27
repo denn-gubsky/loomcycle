@@ -253,6 +253,70 @@ textarea::placeholder {
   justify-content: center;
   padding: 8px 0;
 }
+/* The menu's hierarchy: zones (workspace / administration) of collapsible groups.
+   A group's pages are indented under its heading; collapsed to icons, the groups
+   are separated by a rule instead. */
+.nav-zone,
+.nav-group,
+.nav-group-items,
+.nav-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-zone + .nav-zone {
+  margin-top: 10px;
+}
+.nav-zone-label {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.nav-group-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.nav-group-head:hover {
+  color: var(--fg);
+  background: var(--bg-soft-2);
+}
+.nav-group-head.has-current {
+  color: var(--fg);
+}
+.nav-group-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.sidebar-nav a.nav-leaf-nested {
+  padding: 6px 10px 6px 28px;
+  gap: 10px;
+}
+.sidebar-nav .nav-group-head:focus-visible,
+.sidebar-nav a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.nav-rail-sep {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
 .sidebar-toggle {
   display: flex;
   align-items: center;
@@ -7753,14 +7817,11 @@ button.doc-ref-target.external {
 }
 
 /* ============================================================
- * RFC EZ — the Access console (Settings → Access), the shared
+ * RFC EZ — the Access console (/access), the shared
  * access-refusal notice, the Users page's access column and the
  * /run notice of ACL-withheld tools. Themed via the --lc-* tokens
  * only, so light and dark both follow tokens.css.
  * ============================================================ */
-.acl-console .acl-tabs {
-  margin-top: var(--lc-space-2);
-}
 .acl-mode {
   display: flex;
   flex-wrap: wrap;

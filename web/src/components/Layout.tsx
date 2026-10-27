@@ -1,14 +1,16 @@
 import { hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { useEffect, useState } from "react";
-import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
-import { Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
+import { Link, Outlet, useOutletContext } from "react-router-dom";
+import { CircleUser, Moon, PanelLeftClose, PanelLeftOpen, Settings, Sun } from "lucide-react";
 import { Principal, UserSummary, getHealth, getWhoami, listUsers } from "../api";
 import { useTheme } from "../hooks/useTheme";
 import PauseControls from "./PauseControls";
 import NoTraceOverrideBanner from "./NoTraceOverrideBanner";
 import OpenModeBanner from "./OpenModeBanner";
 import { type UserOption, appliedUserId, filterUsers, userOptions } from "../lib/userOptions";
-import { visibleNavItems } from "./navItems";
+import { visibleNavTree } from "./navItems";
+import SidebarNav from "./SidebarNav";
+import { accountMenuItems, settingsMenuItems } from "../lib/settingsSections";
 import Combobox, { type ComboRow } from "./Combobox";
 import SettingsMenu from "./SettingsMenu";
 import TenantCombobox from "./TenantCombobox";
@@ -171,6 +173,7 @@ export default function Layout() {
   }
 
   const knownUsers = userOptions(users);
+  const settingsItems = settingsMenuItems(isAdmin, hasTenantScope, surfaces);
 
   return (
     <div className="layout">
@@ -180,14 +183,7 @@ export default function Layout() {
             and access-control lists would say to the page's primary request —
             and the role class (RFC AS §4) is the fallback for a page it does not
             answer. The server still enforces every route (defence in depth). */}
-        <nav className="sidebar-nav">
-          {visibleNavItems(isAdmin, hasTenantScope, surfaces).map(({ to, label, Icon }) => (
-            <NavLink key={to} to={to} title={label}>
-              <Icon size={18} className="sidebar-icon" />
-              <span className="sidebar-label">{label}</span>
-            </NavLink>
-          ))}
-        </nav>
+        <SidebarNav tree={visibleNavTree(isAdmin, hasTenantScope, surfaces)} collapsed={navCollapsed} />
         <button
           type="button"
           className="sidebar-toggle"
@@ -314,12 +310,19 @@ export default function Layout() {
               toggleLabel="Show known users"
             />
           </form>
-          {/* Settings menu — rightmost. The gear opens the viewer's Settings
-              sections (filtered by role, exactly as the hub's tabs are) and ends
-              in Log out. Rendered for EVERY role: Log out lives only here, so a
-              delegated user with no section still gets the menu. The backend
-              gates each surface server-side (defence in depth). */}
-          <SettingsMenu isAdmin={isAdmin} hasTenantScope={hasTenantScope} surfaces={surfaces} />
+          {/* The gear opens the viewer's Settings sections (filtered by role,
+              exactly as the hub's tabs are); a viewer with none gets no gear. The
+              account menu, rightmost, is rendered for EVERY role: it holds Log
+              out, the only way out of a session. The backend gates each surface
+              server-side (defence in depth). */}
+          {settingsItems.length > 0 && (
+            <SettingsMenu items={settingsItems} label="Settings" Icon={Settings} litPrefix="/settings" />
+          )}
+          <SettingsMenu
+            items={accountMenuItems(isAdmin, hasTenantScope, surfaces, !!principal?.auth?.gate && !principal.open_mode)}
+            label="Account"
+            Icon={CircleUser}
+          />
         </header>
         <OpenModeBanner principal={principal} />
         {(isAdmin || hasTenantScope) && <NoTraceOverrideBanner />}

@@ -37,8 +37,6 @@ import { CredentialsPanel } from "../components/CredentialsPanel";
 import LanesView from "./LanesView";
 import LimitsView from "./LimitsView";
 import RoutingView from "./RoutingView";
-import TokenManager from "../components/TokenManager";
-import AccessConsole from "../components/access/AccessConsole";
 
 // SettingsView is the Settings hub (top-bar gear). It web-reaches the critical
 // `loomcycle` CLI + tenant surfaces so a no-shell deployment (TrueNAS — RFC AR)
@@ -49,8 +47,9 @@ import AccessConsole from "../components/access/AccessConsole";
 //     routing (the resolved model cascade), ontology (the tenant entity types +
 //     the draft→confirmed gate). Their data is tenant-scoped server-side — a
 //     tenant operator sees only its own tenant.
-//   - admin-only: tokens (minting, RFC L), presets (RFC AQ), runtime
-//     (pause/resume), lanes (live run queue + provider lanes), health.
+//   - admin-only: presets (RFC AQ), runtime (pause/resume), lanes (live run
+//     queue + provider lanes), maintenance, health.
+// Users, access control and token minting are pages of /access (AccessView).
 // The backend gates every surface too (defence in depth). Surfaces with their
 // own pages (snapshots, audit) are linked, not duplicated.
 export default function SettingsView() {
@@ -109,8 +108,6 @@ export default function SettingsView() {
         {active === "ontology" && <OntologySection />}
         {active === "retention" && <RetentionSection />}
         {active === "erasure" && <ErasureSection />}
-        {active === "access" && <AccessConsole />}
-        {active === "tokens" && <TokenManager />}
         {active === "presets" && <PresetsSection />}
         {active === "runtime" && <RuntimeSection />}
         {active === "lanes" && <LanesView />}
@@ -451,7 +448,7 @@ function OntologySection() {
             Edit ontology →
           </Link>
         ) : (
-          <Link to="/paths">{state?.path ?? "/memory/ontology"}</Link>
+          <Link to="/documents">{state?.path ?? "/memory/ontology"}</Link>
         )}
         {" "}
         <span className="settings-muted-inline">

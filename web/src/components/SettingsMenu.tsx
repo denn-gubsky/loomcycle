@@ -13,20 +13,10 @@ import {
   Network,
   Package,
   Power,
-  Settings,
-  ShieldCheck,
   Split,
-  Ticket,
-  Users,
   Wrench,
 } from "lucide-react";
-import {
-  type MenuLinkId,
-  type Section,
-  isMenuItemCurrent,
-  settingsMenuItems,
-} from "../lib/settingsSections";
-import { type Surfaces } from "../lib/visibility";
+import { type SettingsMenuItem, type Section, isMenuItemCurrent } from "../lib/settingsSections";
 import { signOut } from "../lib/uiSession";
 
 /** The menu's "Log out": sign out from this click, and fall back to the
@@ -50,8 +40,6 @@ const SECTION_ICONS: Record<Section, LucideIcon> = {
   ontology: Network,
   retention: Archive,
   erasure: Eraser,
-  access: ShieldCheck,
-  tokens: Ticket,
   presets: Package,
   runtime: Power,
   lanes: Layers,
@@ -59,35 +47,32 @@ const SECTION_ICONS: Record<Section, LucideIcon> = {
   health: HeartPulse,
 };
 
-const LINK_ICONS: Record<MenuLinkId, LucideIcon> = {
-  users: Users,
+const LINK_ICONS: Record<Extract<SettingsMenuItem, { kind: "link" }>["id"], LucideIcon> = {
+  account: CircleUser,
+  "my-credentials": KeyRound,
 };
 
-// SettingsMenu is the top bar's rightmost control: a button that opens a vertical
-// menu of the viewer's Settings sections, then the pages reached from here
-// rather than the left nav (Users), ending in Log out.
+// SettingsMenu is a top-bar menu button: the gear (the viewer's Settings
+// sections) and the account menu (Your account, the viewer's own pages, Log out)
+// are both one of these, with their own rows.
 //
-// Rendered for EVERY role. The sections are filtered by role (the same list the
-// hub's tabs use), but Log out is not — it replaced a standalone sign-out button —
-// so a delegated user, who has no section, gets a one-row account menu rather
-// than no way to end the session.
+// The button is lit while the menu is open, on a page it lists, and anywhere
+// under `litPrefix` (the gear's /settings, whose bare address has no row).
 //
 // Follows the ARIA menu-button pattern: Enter / Space / ArrowDown open onto the
 // first item (ArrowUp onto the last), the arrows wrap, Home / End jump, Escape
 // closes and returns focus to the button, Tab closes and moves on.
 export default function SettingsMenu({
-  isAdmin,
-  hasTenantScope,
-  surfaces,
+  items,
+  label,
+  Icon: TriggerIcon,
+  litPrefix,
 }: {
-  isAdmin: boolean;
-  hasTenantScope: boolean;
-  surfaces?: Surfaces;
+  items: SettingsMenuItem[];
+  label: string;
+  Icon: LucideIcon;
+  litPrefix?: string;
 }) {
-  const items = settingsMenuItems(isAdmin, hasTenantScope, surfaces);
-  // Anything besides Log out makes this a settings menu; Log out alone makes it
-  // an account menu.
-  const hasSections = items.some((i) => i.kind !== "logout");
   // null = closed; otherwise the index to focus on opening.
   const [openAt, setOpenAt] = useState<number | null>(null);
   const open = openAt !== null;
@@ -150,9 +135,6 @@ export default function SettingsMenu({
     }
   };
 
-  const label = hasSections ? "Settings" : "Account";
-  const TriggerIcon = hasSections ? Settings : CircleUser;
-
   return (
     <div className="settings-menu" ref={rootRef}>
       <button
@@ -160,11 +142,10 @@ export default function SettingsMenu({
         type="button"
         className={
           "settings-gear" +
-          // Lit while open, anywhere in the hub (a bare /settings has no row of
-          // its own), and on a page the menu links to — the left nav used to
-          // mark that page, and now nothing else does.
+          // Lit while open, under litPrefix, and on a page the menu links to —
+          // the left nav does not mark these pages, so nothing else does.
           (open ||
-          pathname.startsWith("/settings") ||
+          (litPrefix !== undefined && pathname.startsWith(litPrefix)) ||
           items.some((i) => isMenuItemCurrent(i, pathname))
             ? " active"
             : "")

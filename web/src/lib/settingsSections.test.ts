@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LOGOUT_HREF,
   SECTIONS,
+  accountMenuItems,
   isMenuItemCurrent,
   resolveSection,
   settingsHref,
@@ -12,7 +13,7 @@ import {
 const labels = (items: { label: string }[]) => items.map((i) => i.label);
 
 describe("settingsMenuItems", () => {
-  it("gives an admin every section, then Log out last", () => {
+  it("gives an admin every section, and nothing but sections", () => {
     expect(labels(settingsMenuItems(true, false))).toEqual([
       "Credentials",
       "Limits",
@@ -20,19 +21,15 @@ describe("settingsMenuItems", () => {
       "Ontology",
       "Retention",
       "Erasure",
-      "Access",
-      "Tokens",
       "Presets",
       "Runtime",
       "Lanes",
       "Maintenance",
       "Health",
-      "Users",
-      "Log out",
     ]);
   });
 
-  it("gives a tenant operator the tenant-gated sections only, then Log out", () => {
+  it("gives a tenant operator the tenant-gated sections only", () => {
     expect(labels(settingsMenuItems(false, true))).toEqual([
       "Credentials",
       "Limits",
@@ -40,34 +37,11 @@ describe("settingsMenuItems", () => {
       "Ontology",
       "Retention",
       "Erasure",
-      "Access",
-      "Users",
-      "Log out",
     ]);
   });
 
-  it("links Users as a page of its own, after the sections and not as a hub tab", () => {
-    for (const [isAdmin, hasTenant] of [
-      [true, false],
-      [false, true],
-    ] as const) {
-      const items = settingsMenuItems(isAdmin, hasTenant);
-      expect(items.at(-2)).toEqual({ kind: "link", id: "users", label: "Users", href: "/users" });
-    }
-    // Not a tab: the hub must not grow a section the menu merely links to.
-    expect(SECTIONS.map((s) => s.id as string)).not.toContain("users");
-    expect(resolveSection("users", visibleSections(true, false))).toBe("credentials");
-  });
-
-  it("keeps Users from a delegated user, who cannot call the users API", () => {
-    expect(settingsMenuItems(false, false).some((i) => i.kind === "link")).toBe(false);
-  });
-
-  it("still lets a delegated user log out, with no section to administer", () => {
-    // The standalone sign-out button is gone; this row is the only way out.
-    expect(settingsMenuItems(false, false)).toEqual([
-      { kind: "logout", label: "Log out", href: LOGOUT_HREF },
-    ]);
+  it("is empty for a delegated user, who then gets no gear at all", () => {
+    expect(settingsMenuItems(false, false)).toEqual([]);
   });
 
   it("lists exactly the sections the hub shows the same viewer", () => {
@@ -76,27 +50,47 @@ describe("settingsMenuItems", () => {
       [false, true],
       [false, false],
     ] as const) {
-      const menu = settingsMenuItems(isAdmin, hasTenant).flatMap((i) =>
-        i.kind === "section" ? [i.id] : [],
-      );
+      const menu = settingsMenuItems(isAdmin, hasTenant).map((i) => (i.kind === "section" ? i.id : ""));
       expect(menu).toEqual(visibleSections(isAdmin, hasTenant).map((s) => s.id));
     }
   });
 });
 
+describe("accountMenuItems", () => {
+  it("gives a signed-in viewer Your account, their own pages, then Log out", () => {
+    expect(accountMenuItems(true, false, undefined, true)).toEqual([
+      { kind: "link", id: "account", label: "Your account", href: "/account" },
+      { kind: "link", id: "my-credentials", label: "My credentials", href: "/my-credentials" },
+      { kind: "logout", label: "Log out", href: LOGOUT_HREF },
+    ]);
+  });
+
+  it("offers no Your account where nobody is signed in (open mode)", () => {
+    expect(labels(accountMenuItems(true, false, undefined, false))).toEqual(["My credentials", "Log out"]);
+  });
+
+  it("still lets a viewer the server denies their credentials log out", () => {
+    // This menu is the only way out of a session.
+    expect(accountMenuItems(false, false, { "my-credentials": false }, false)).toEqual([
+      { kind: "logout", label: "Log out", href: LOGOUT_HREF },
+    ]);
+  });
+});
+
 describe("isMenuItemCurrent", () => {
-  const items = settingsMenuItems(true, false);
+  const items = [...settingsMenuItems(true, false), ...accountMenuItems(true, false, undefined, true)];
   const current = (pathname: string) =>
     items.filter((i) => isMenuItemCurrent(i, pathname)).map((i) => i.label);
 
-  it("marks the open section, the Users page, and never Log out", () => {
+  it("marks the open section, the viewer's own page, and never Log out", () => {
     expect(current("/settings/limits")).toEqual(["Limits"]);
-    expect(current("/users")).toEqual(["Users"]);
+    expect(current("/account")).toEqual(["Your account"]);
+    expect(current("/my-credentials")).toEqual(["My credentials"]);
     expect(current("/agents")).toEqual([]);
   });
 
   it("does not mistake a path that merely starts like a linked page", () => {
-    expect(current("/users-archive")).toEqual([]);
+    expect(current("/account-archive")).toEqual([]);
   });
 });
 
@@ -121,8 +115,8 @@ describe("settings deep links", () => {
   });
 
   it("does not open an admin-only section for a tenant operator", () => {
-    expect(resolveSection("tokens", visibleSections(false, true))).toBe("credentials");
-    expect(resolveSection("tokens", visibleSections(true, false))).toBe("tokens");
+    expect(resolveSection("presets", visibleSections(false, true))).toBe("credentials");
+    expect(resolveSection("presets", visibleSections(true, false))).toBe("presets");
   });
 
   it("resolves nothing for a viewer with no sections", () => {
@@ -131,26 +125,21 @@ describe("settings deep links", () => {
 });
 
 describe("settings visibility from the server's capability summary", () => {
-  const all = Object.fromEntries(
-    [...SECTIONS.map((s) => s.id as string), "users"].map((id) => [id, true]),
-  );
+  const all = Object.fromEntries(SECTIONS.map((s) => [s.id as string, true]));
 
-  it("hides Access from an operator denied read def:acl/*", () => {
-    const op = { ...all, access: false, tokens: false, presets: false, runtime: false, lanes: false, maintenance: false, health: false };
-    expect(visibleSections(false, true, op).map((s) => s.id)).not.toContain("access");
-    expect(labels(settingsMenuItems(false, true, op))).not.toContain("Access");
-    // The rest of the operator's tabs are unaffected.
+  it("hides a section the server denies, and leaves the rest", () => {
+    const op = { ...all, ontology: false, presets: false, runtime: false, lanes: false, maintenance: false, health: false };
+    expect(visibleSections(false, true, op).map((s) => s.id)).not.toContain("ontology");
+    expect(labels(settingsMenuItems(false, true, op))).not.toContain("Ontology");
     expect(visibleSections(false, true, op).map((s) => s.id)).toContain("limits");
   });
 
-  it("gives an admin every section and Users", () => {
+  it("gives an admin every section", () => {
     expect(visibleSections(true, false, all)).toEqual(SECTIONS);
-    expect(labels(settingsMenuItems(true, false, all))).toContain("Users");
   });
 
-  it("governs the Users link by the server's answer too", () => {
-    expect(labels(settingsMenuItems(false, true, { ...all, users: false }))).not.toContain("Users");
-    expect(labels(settingsMenuItems(false, false, { users: true }))).toContain("Users");
+  it("governs My credentials by the server's answer too", () => {
+    expect(labels(accountMenuItems(false, false, { "my-credentials": false }, true))).not.toContain("My credentials");
   });
 
   it("falls back to the role rule without a summary", () => {
