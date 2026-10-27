@@ -1,13 +1,13 @@
 import { verify } from "node:crypto";
 
-import { ConfigError, sharedSubject, VERB, type CanonicalCard, type Logger } from "@loomcycle/bridge-core";
+import { ConfigError, gateSharedSubject, sharedSubject, VERB, type CanonicalCard, type Logger } from "@loomcycle/bridge-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DiscordApi, DiscordApiError, USER_AGENT } from "../src/api.js";
 import { customIdOf, FREE_TEXT_HINT, MAX_CUSTOM_ID, neutraliseLinks, parseCustomId, renderCard } from "../src/cards.js";
 import { commandSpecs, registerCommands } from "../src/commands.js";
 import { loadConfig } from "../src/config.js";
-import { identify, NOT_HERE, NOT_IN_DMS, NOT_IN_SERVER, type Fences } from "../src/identity.js";
+import { identify, NOT_HERE, NOT_IN_DMS, NOT_IN_SERVER, personSub, type Fences } from "../src/identity.js";
 import type { Interaction } from "../src/interaction.js";
 import { CONTINUED, DiscordPort, TOKEN_LIFETIME_MS } from "../src/port.js";
 import { publicKeyFromHex, verifyInteraction } from "../src/verify.js";
@@ -35,6 +35,18 @@ describe("config", () => {
 
   it("is closed by default: neither a server nor DMs is refused", () => {
     expect(() => loadConfig(base)).toThrow(/closed by default/);
+  });
+
+  it("is a gate only when BRIDGE_GATE is set; otherwise it keeps its loomcycle token", () => {
+    const tokenMode = loadConfig({ ...base, DISCORD_BRIDGE_ALLOW_DMS: "1" });
+    expect(tokenMode.gate).toBeUndefined();
+    expect(tokenMode.loomcycleToken).toBe("t");
+    const gateEnv = { ...base, LOOMCYCLE_TOKEN: undefined, DISCORD_BRIDGE_ALLOW_DMS: "1", BRIDGE_GATE: "discord", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_KEY: "{}" };
+    const gate = loadConfig(gateEnv);
+    expect(gate.gate?.name).toBe("discord");
+    expect(gate.loomcycleToken).toBe("");
+    // A gate bridge holds no loomcycle token: a leftover one is refused.
+    expect(() => loadConfig({ ...gateEnv, LOOMCYCLE_TOKEN: "t" })).toThrow(/LOOMCYCLE_TOKEN must not be set/);
   });
 
   it("reads the fences and defaults", () => {
@@ -167,6 +179,43 @@ describe("identity", () => {
   it("gives a thread its own conversation and its parent channel's memory", () => {
     const id = identify(inGuild(GUILD, { channel: { id: THREAD, type: 11, parent_id: CHANNEL } }), fences);
     expect(id).toMatchObject({ ok: true, conversationId: `dc:${GUILD}:${THREAD}`, runAs: { subject: sharedSubject("discord", GUILD, CHANNEL) } });
+  });
+
+  it("as a gate, runs a person as <gate>:<id> and a channel as <gate>:conv:<hash>", () => {
+    const gate = { ...fences, gate: "discord" };
+    expect(identify(dm(), gate)).toMatchObject({ ok: true, speaker: { subject: `discord:${USER}` }, runAs: { subject: `discord:${USER}` } });
+    expect(identify(inGuild(GUILD), gate)).toMatchObject({
+      ok: true,
+      speaker: { subject: `discord:${USER}` },
+      runAs: { subject: gateSharedSubject("discord", GUILD, CHANNEL) },
+    });
+    const thread = identify(inGuild(GUILD, { channel: { id: THREAD, type: 11, parent_id: CHANNEL } }), gate);
+    expect(thread).toMatchObject({ ok: true, runAs: { subject: gateSharedSubject("discord", GUILD, CHANNEL) } });
+  });
+
+  // loomcycle's identity_map.legacy_subject_prefix "discord-" links a first
+  // gate login to the user prefix + sub, with ':' read as '-'. That user must
+  // be the one the token-mode bridge made, or the person starts over.
+  it("as a gate, the legacy prefix turns each sub into the subject the token-mode bridge used", () => {
+    const legacy = (sub: string) => `discord-${sub.replaceAll(":", "-")}`;
+    const gate = { ...fences, gate: "discord" };
+    const subOf = (subject: string) => subject.slice("discord:".length);
+
+    const person = identify(dm(), gate);
+    const personBefore = identify(dm(), fences);
+    if (!person.ok || !personBefore.ok) throw new Error("refused");
+    expect(subOf(person.runAs.subject)).toBe(personSub(USER));
+    expect(legacy(subOf(person.runAs.subject))).toBe(personBefore.runAs.subject);
+    expect(personBefore.runAs.subject).toBe(`discord-${USER}`);
+
+    for (const channel of [{ id: CHANNEL, type: 0 }, { id: THREAD, type: 11, parent_id: CHANNEL }]) {
+      const shared = identify(inGuild(GUILD, { channel }), gate);
+      const sharedBefore = identify(inGuild(GUILD, { channel }), fences);
+      if (!shared.ok || !sharedBefore.ok) throw new Error("refused");
+      expect(subOf(shared.runAs.subject)).toMatch(/^conv:[0-9a-f]{32}$/);
+      expect(legacy(subOf(shared.runAs.subject))).toBe(sharedBefore.runAs.subject);
+      expect(sharedBefore.runAs.subject).toBe(sharedSubject("discord", GUILD, CHANNEL));
+    }
   });
 
   it("refuses a server not allowed, and DMs when they are off, with a notice", () => {

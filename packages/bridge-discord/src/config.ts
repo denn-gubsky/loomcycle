@@ -62,7 +62,9 @@ function guilds(reader: EnvReader, name: string): Set<string> {
 
 export function loadConfig(env: Env = process.env): DiscordConfig {
   const reader = new EnvReader(env);
-  const shared = loadSharedConfig(reader, { port: DEFAULT_PORT });
+  // A gate only when BRIDGE_GATE names one: a bridge deployed with a
+  // loomcycle token keeps running as it was until it is reconfigured.
+  const shared = loadSharedConfig(reader, { port: DEFAULT_PORT, gate: reader.get("BRIDGE_GATE") !== undefined });
 
   const applicationId = reader.required("DISCORD_APPLICATION_ID");
   if (applicationId && !isSnowflake(applicationId)) reader.problems.push("DISCORD_APPLICATION_ID must be the application's numeric id");

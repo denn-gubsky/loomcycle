@@ -21,6 +21,9 @@ import { MAX_CONTENT, neutraliseLinks, renderCard, textMessage, type MessageBody
  *  interaction the port holds for it (see deliver), else the bot token. */
 export interface DiscordRef {
   channelId: string;
+  /** The server the channel is in; absent in a DM, and in a ref stored by a
+   *  bridge before 0.3. Only a gate bridge reads it (its channel's groups). */
+  guildId?: string;
 }
 
 export const TOKEN_LIFETIME_MS = 15 * 60_000;

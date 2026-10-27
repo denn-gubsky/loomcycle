@@ -32,6 +32,14 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
   });
   const port = new DiscordPort(api, log, { now });
   const key = publicKeyFromHex(cfg.publicKey);
+  const fences = {
+    applicationId: cfg.applicationId,
+    allowedGuilds: cfg.allowedGuilds,
+    allowDms: cfg.allowDms,
+    trustedGuilds: cfg.trustedGuilds,
+    dev: cfg.dev,
+    ...(cfg.gate ? { gate: cfg.gate.name } : {}),
+  };
 
   const adapter: BridgeAdapter<DiscordRef> = {
     // `/ask prompt:/help` reaches the core as "/help": answer with the same
@@ -43,7 +51,7 @@ export function createDiscordBridge(cfg: DiscordConfig, opts: DiscordBridgeOptio
     port,
     async start(ctx) {
       await ctx.serve({
-        "POST /discord/interactions": interactionRoute({ cfg, key, port, api, router: ctx.router, log: ctx.log, now, inlineCardMs: opts.inlineCardMs }),
+        "POST /discord/interactions": interactionRoute({ cfg: fences, key, port, api, router: ctx.router, log: ctx.log, now, inlineCardMs: opts.inlineCardMs }),
       });
       if (cfg.registerCommands) await registerCommands(api, cfg, ctx.log);
     },

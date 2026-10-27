@@ -8,13 +8,13 @@ import type { DiscordApi } from "./api.js";
 import { NO_MENTIONS, parseCustomId, renderCard, SUPPRESS_EMBEDS, textMessage } from "./cards.js";
 import { HELP_TEXT, MAX_PROMPT_CHARS } from "./commands.js";
 import { isSnowflake, type DiscordConfig } from "./config.js";
-import { identify, NOT_HERE, placeOf } from "./identity.js";
+import { identify, NOT_HERE, placeOf, type Fences, type Place } from "./identity.js";
 import { CallbackType, EPHEMERAL, InteractionType, type Interaction } from "./interaction.js";
 import type { DeferOptions, DiscordPort, DiscordRef } from "./port.js";
 import { verifyInteraction } from "./verify.js";
 
 export interface InteractionDeps {
-  cfg: Pick<DiscordConfig, "applicationId" | "allowedGuilds" | "allowDms" | "trustedGuilds" | "dev">;
+  cfg: Fences & Pick<DiscordConfig, "dev">;
   key: KeyObject;
   port: DiscordPort;
   api: DiscordApi;
@@ -67,6 +67,11 @@ function ephemeral(text: string): RawResponse {
   return json({ type: CallbackType.CHANNEL_MESSAGE_WITH_SOURCE, data: { ...textMessage(text), flags: EPHEMERAL | SUPPRESS_EMBEDS } });
 }
 
+/** refOf is where replies go, as the conversation store keeps it. */
+function refOf(place: Place): DiscordRef {
+  return place.guildId ? { channelId: place.channelId, guildId: place.guildId } : { channelId: place.channelId };
+}
+
 function promptOf(ix: Interaction): string {
   const v = ix.data?.options?.find((o) => o.name === "prompt")?.value;
   return typeof v === "string" ? v.trim().slice(0, MAX_PROMPT_CHARS) : "";
@@ -89,7 +94,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
     if (text === undefined) return ephemeral("Unknown command. Try /help.");
     if (!text) return ephemeral("Write something after /ask.");
     const place = placeOf(ix)!;
-    const ref: DiscordRef = { channelId: place.channelId };
+    const ref = refOf(place);
     port.track(ix.id, ix.token, place.channelId, FALLBACK[name]);
     // After this response is written: the core's first reply edits the
     // deferred message, which must exist by then.
@@ -116,7 +121,7 @@ export function interactionRoute(deps: InteractionDeps): Route {
       return ephemeral(id.notice ?? NOT_HERE);
     }
     const place = placeOf(ix)!;
-    const ref: DiscordRef = { channelId: place.channelId };
+    const ref = refOf(place);
     // Its token also carries the agent's next messages in this channel.
     port.track(ix.id, ix.token, place.channelId);
     const work = deps.router.onCardAction(id, ref, input).catch((err: unknown): CardResult => {
