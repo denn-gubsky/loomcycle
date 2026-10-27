@@ -502,6 +502,18 @@ Each unit is stored as a memory row keyed `doc.unit:<chunk>:<kind>:<n>` and embe
 
 **Cost.** Two model calls per chunk: one for the description, and one JSON call for claims and questions. On a local qwen3.6 (`effort: low`) that measured 12.3 s per chunk and 8.6 units per chunk.
 
+## Imported documents — origin and source link
+
+A document built from an outside file or message says so, and points back to where it came from.
+
+- **`import_md` with a source.** `source_url`, `source_kind` (`sharepoint`, `email`, `attachment`, `web`, `other`; default `other`) and `source_title` mark the document as imported — for example an email body an agent imports as Markdown. The url must be http(s), at most 2 KiB, with no user information; signed query parameters are masked and the fragment is dropped. Pass the item's web link (a SharePoint item's `webUrl`, a message's `webLink`), never a download or upload link. A source cannot be combined with `document_id` (an import under an existing chunk). Without a source, `import_md` imports as before, unmarked.
+- **`File op=import`** (an extracted file from a run's inbox) takes the same link as `source: {url, kind, title}` and adds what the runtime recorded when the file was captured, while the bytes still hash to that record: `file`, `media_type`, `sha256`, `captured_from` (`mcp:<server>/<tool>`, `download:<host>`, `http`, `webfetch`), `captured_at`, `run_id`. A downloaded file with no source links to its download URL as recorded (scheme, host, path; `?…` for any query).
+- **Where it is kept.** One field on the root chunk, `provenance`, plus a `source/<kind>` tag. `get_document` and `export_md` report it; a clean export adds a `> Source: … · File: …` line under the title.
+- **Only the runtime writes it.** Every chunk write — create, update, set_asset, upsert, sync, and loom metadata in imported Markdown, on every transport — drops a caller's `provenance` and keeps the stored one, and it is shown only while the root's text carries the `import` origin. Sync between peers and re-importing an export do not carry it over (name the source again on the re-import).
+- **Imported text is document text, never a fact.** Each chunk body of an imported document is a memory row with origin `import`. A row is a fact when its origin is set and is **not** `import`, so imports are found by `Memory op=search` with `sources=documents` and never returned by the fact surfaces.
+
+Since #2161 (`/loomcycle/rfcs/files-by-reference` D18).
+
 ## Caveats
 
 - **SQL Memory required** (`LOOMCYCLE_SQLMEM_ENABLED=1`).

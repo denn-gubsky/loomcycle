@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.124.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.125.0.</em>
 </p>
 
 <p align="center">
@@ -201,7 +201,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.124.0) is fixes and one Memory feature: the Library
+The most recent line (v1.125.0) adds speech-to-text: `File op=transcribe` turns
+recordings into timed transcripts through a whisper server, and Teams captions
+are read with no engine. Imported documents now record where they came from
+(the captured file and a link to the SharePoint item, email or URL) and are
+never treated as facts, a captured file can be downloaded over HTTP and from
+the Web UI, usage reports split by purpose, and the Memory key routes apply
+the Memory tool's write rules. See [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.124.0 was fixes and one Memory feature: the Library
 no longer shows a static MCP server's secrets, `File` refuses a download or
 upload URL with a stray quote before sending it, and Memory search and recall
 can read another scope's documents in the same call, with the document access
