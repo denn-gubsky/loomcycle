@@ -1208,11 +1208,11 @@ func (s *Server) authzSubjectSet(ctx context.Context, tenant string, ref *authzS
 	if s.aclResolver == nil {
 		return nil, http.StatusServiceUnavailable, "no access-control resolver is wired"
 	}
-	scopes := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeChannelPublish, auth.ScopeChannelRead}
-	if row, err := s.store.UserGet(ctx, tenant, ref.ID); err == nil && row.AccessMode == "isolated" {
-		scopes = []string{auth.ScopeUser}
+	accessMode := ""
+	if row, err := s.store.UserGet(ctx, tenant, ref.ID); err == nil {
+		accessMode = row.AccessMode
 	}
-	other, err := s.aclResolver.Resolve(ctx, auth.Principal{TenantID: tenant, Subject: ref.ID, Scopes: scopes})
+	other, err := s.aclResolver.Resolve(ctx, aclres.RowPrincipal(tenant, ref.ID, accessMode))
 	if err != nil || other.Effective == nil {
 		return nil, http.StatusServiceUnavailable, "the subject's access-control set could not be read"
 	}
