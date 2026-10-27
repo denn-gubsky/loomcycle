@@ -4694,6 +4694,11 @@ func (s *Server) Mux() http.Handler {
 	// Re-attach to a running (or finished) run's event stream — the operator
 	// leaves the interactive /run terminal and returns to the same live run.
 	mux.Handle("GET /v1/runs/{run_id}/stream", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunStream))))
+	// The files a run's tools returned, kept in its tree's inbox: the File
+	// twin's ops, and one file's bytes to save (file_routes.go). GET also
+	// answers HEAD.
+	mux.Handle("POST /v1/runs/{run_id}/file", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunFile))))
+	mux.Handle("GET /v1/runs/{run_id}/inbox/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInboxFile))))
 	// Read one run by its run id — GET /v1/agents/{agent_id}'s shape. The
 	// agent route cannot address a team walk (`team:<name>`) nor tell one walk
 	// of a team from another.

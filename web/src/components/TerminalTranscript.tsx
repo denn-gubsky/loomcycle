@@ -6,6 +6,7 @@ import type {
   TranscriptEvent,
 } from "../api";
 import { fileCapturedLine } from "../lib/fileCaptured";
+import { InboxDownloadButton } from "./InboxDownloadButton";
 import { transcriptionDetail, transcriptionLine } from "../lib/transcription";
 import { toolResultId } from "../lib/toolSettlement";
 import { promptSegments } from "../lib/transcriptPayload";
@@ -112,6 +113,7 @@ function TerminalRow({ line }: { line: FormattedLine }) {
         // stopPropagation so selecting text in the expanded output doesn't
         // collapse the row.
         <div className="tl-detail" onClick={(e) => e.stopPropagation()}>
+          {line.download && <InboxDownloadButton runId={line.download.runId} fileRef={line.download.ref} />}
           {line.full ?? line.payload}
         </div>
       )}
@@ -128,6 +130,7 @@ export interface FormattedLine {
   collapsible?: boolean; // tool results — scaffold + expand on click
   full?: string;         // full (multi-line) detail shown when expanded
   defaultOpen?: boolean; // start expanded (e.g. errors — actionable)
+  download?: { runId: string; ref: string }; // a kept file the expanded row offers to save
 }
 
 // coalesceTextTerminal merges adjacent text + thinking events into
@@ -313,7 +316,11 @@ export function formatLine(row: TranscriptEvent): FormattedLine {
       if (!f) return { key, ts, kind, cls: "tl-other", payload: oneLine(JSON.stringify(ev)) };
       const full = [`ref: ${f.ref}`, `media_type: ${f.media_type}`, `size: ${f.size}`, `sha256: ${f.sha256}`, `origin: ${f.origin}`];
       if (f.run_id) full.push(`run_id: ${f.run_id}`);
-      return { key, ts, kind, cls: "tl-tool", collapsible: true, payload: fileCapturedLine(f), full: full.join("\n") };
+      const runId = f.run_id || row.run_id;
+      return {
+        key, ts, kind, cls: "tl-tool", collapsible: true, payload: fileCapturedLine(f), full: full.join("\n"),
+        download: f.ref && runId ? { runId, ref: f.ref } : undefined,
+      };
     }
     case "transcription": {
       // One OCR or speech-to-text pass a tool call made: what it read and

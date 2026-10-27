@@ -75,6 +75,8 @@ import type {
   ContinueOptions,
   RunOverrideOptions,
   EffectiveConfigResponse,
+  RunFileInput,
+  RunInboxDownload,
   AgentOverridableResponse,
   RetuneRunResponse,
   RunConfigResponse,
@@ -672,6 +674,62 @@ export class LoomcycleClient {
       `/v1/runs/${encodeURIComponent(runId)}/effective-config`,
       opts,
     );
+  }
+
+  /** Run one File-tool op on a run's inbox from outside the run — the files the
+   *  run's tools returned. Mirrors `POST /v1/runs/{run_id}/file`, the HTTP twin
+   *  of the MCP `file` tool. Ops: stat, ls, extract, import, keep, rm, clear.
+   *  The response is the op's own JSON (narrow as needed).
+   *
+   *  Needs `runs:read`, and works on any run you can read; another tenant's run
+   *  is an opaque {@link NotFoundError}. extract, keep, rm and clear write, so
+   *  they need the run's owner or an admin — a tenant operator counts as one
+   *  for its own tenant's runs; anyone else gets a
+   *  {@link SubstrateToolRefusedError}, as does a refused op. */
+  async runFile<T = unknown>(
+    runId: string,
+    input: RunFileInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<T> {
+    return postJSON<T>(this.ctx, `/v1/runs/${encodeURIComponent(runId)}/file`, input, opts);
+  }
+
+  /** Download one file of a run's inbox. Mirrors
+   *  `GET /v1/runs/{run_id}/inbox/{path}` (HEAD with `head: true`). `path` is
+   *  relative to the inbox root (`documents/a.pdf`) or a reference
+   *  (`volume:inbox:documents/a.pdf`).
+   *
+   *  Any reader of the run may download (`runs:read`). `range` is sent as the
+   *  Range header (`bytes=0-1023`). The inbox is deleted when its run ends, so
+   *  a finished run's file — like a missing file, run, or another tenant's run —
+   *  is a {@link NotFoundError}. */
+  async downloadRunInboxFile(
+    runId: string,
+    path: string,
+    opts?: { range?: string; head?: boolean; signal?: AbortSignal },
+  ): Promise<RunInboxDownload> {
+    const rel = path.replace(/^volume:inbox:/, "");
+    const encoded = rel.split("/").map(encodeURIComponent).join("/");
+    const headers: Record<string, string> = {};
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    if (opts?.range) headers.Range = opts.range;
+    const resp = await this.ctx.fetchImpl(
+      `${this.ctx.baseUrl}/v1/runs/${encodeURIComponent(runId)}/inbox/${encoded}`,
+      { method: opts?.head ? "HEAD" : "GET", headers, signal: opts?.signal },
+    );
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    const bytes = opts?.head ? new Uint8Array() : new Uint8Array(await resp.arrayBuffer());
+    return {
+      bytes,
+      status: resp.status,
+      contentType: resp.headers.get("Content-Type") ?? "",
+      filename: dispositionFilename(resp.headers.get("Content-Disposition")) ?? rel.split("/").pop() ?? "",
+      sha256: resp.headers.get("X-Loomcycle-SHA256") ?? "",
+      origin: resp.headers.get("X-Loomcycle-Origin") ?? "",
+      headers: resp.headers,
+    };
   }
 
   /** Which per-run overrides a run of `name` may set, for this caller — what a
@@ -4537,6 +4595,22 @@ export class LoomcycleClient {
   ): Promise<CryptoResultByOp[R["op"]]> {
     return postJSON<CryptoResultByOp[R["op"]]>(this.ctx, "/v1/_crypto", input, opts);
   }
+}
+
+/** The file name of an RFC 8187 `filename*=UTF-8''…` Content-Disposition, or
+ *  a plain quoted `filename="…"`; undefined when there is neither. */
+function dispositionFilename(header: string | null): string | undefined {
+  if (!header) return undefined;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]!.trim());
+    } catch {
+      return undefined;
+    }
+  }
+  const plain = /filename="([^"]*)"/i.exec(header);
+  return plain ? plain[1] : undefined;
 }
 
 /** Lightweight SSE parser tailored to the run-state stream. Each

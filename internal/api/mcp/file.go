@@ -77,7 +77,7 @@ const fileMCPDescription = "Inspect and manage the files a RUN's tools returned,
 	"import (build a Document in YOUR own scopes from such a Markdown file, its pictures as image chunks), " +
 	"keep (copy a file into a read-write dynamic volume of your tenant: volume:<name>:<path>), rm (delete one file), clear (empty the inbox, or one folder of it). " +
 	"Paths are volume:inbox:<path>, or a bare path in the inbox; no other volume is reachable here except keep's target. " +
-	"Works on a run you can read with get_run; another tenant's run is not found. extract, keep, rm and clear write, so only the run's owner or an admin may make them. " +
+	"Works on a run you can read with get_run; another tenant's run is not found. extract, keep, rm and clear write, so only the run's owner or an admin may make them; a tenant operator counts as an admin for the runs of its own tenant. " +
 	"The inbox exists only while the run tree does: it is deleted when the run ends, so keep what must outlive it. Every call is strict: a field the tool does not take is refused. " +
 	"Do NOT use it to download or upload a URL: that needs a run's HTTP allowlist, so give the agent the File and HTTP tools instead. " +
 	"Do NOT use it to read a document's text whole: extract returns an excerpt, and import makes a document you read with the document tool."

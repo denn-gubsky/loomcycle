@@ -88,15 +88,28 @@ func (f *fileTwinFixture) run(t *testing.T, tenant, user, parent string) string 
 // registered in this process, as a running tree is.
 func (f *fileTwinFixture) capture(t *testing.T, root, tenant, name, origin string, data []byte, live bool) inbox.Record {
 	t.Helper()
-	set, release := f.srv.treeSets.acquire(root)
 	if !live {
+		set, release := f.srv.treeSets.acquire(root)
 		defer release()
+		return f.captureInto(t, set, root, tenant, inbox.Item{Name: name, Origin: origin}, data)
 	}
+	return f.captureItem(t, root, tenant, inbox.Item{Name: name, Origin: origin}, data)
+}
+
+// captureItem keeps it into a live tree, the item as given.
+func (f *fileTwinFixture) captureItem(t *testing.T, root, tenant string, it inbox.Item, data []byte) inbox.Record {
+	t.Helper()
+	set, _ := f.srv.treeSets.acquire(root)
+	return f.captureInto(t, set, root, tenant, it, data)
+}
+
+func (f *fileTwinFixture) captureInto(t *testing.T, set *tools.EphemeralVolumeSet, root, tenant string, it inbox.Item, data []byte) inbox.Record {
+	t.Helper()
 	ctx := tools.WithEphemeralVolumes(context.Background(), set)
 	ctx = inbox.With(ctx, f.srv.inboxService(), f.srv.treeSets.inbox(root))
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{RootRunID: root, TenantID: tenant})
 	ctx = tools.WithRunID(ctx, root)
-	res := inbox.Capture(ctx, inbox.Item{Name: name, Origin: origin}, data)
+	res := inbox.Capture(ctx, it, data)
 	if !res.Kept {
 		t.Fatalf("capture: %s", res.Stub)
 	}
@@ -120,7 +133,10 @@ var (
 	twinOwner    = auth.Principal{TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}}
 	twinOperator = auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeTenant}}
 	twinOutsider = auth.Principal{TenantID: "evil", Subject: "mallory", Scopes: []string{auth.ScopeTenant}}
-	twinAdmin    = auth.Principal{TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}}
+	// twinReader reads every run of its tenant and owns none of them: neither
+	// the run's owner nor an operator.
+	twinReader = auth.Principal{TenantID: "acme", Subject: "dave", Scopes: []string{auth.ScopeRunsRead}}
+	twinAdmin  = auth.Principal{TenantID: "", Subject: "root", Scopes: []string{auth.ScopeAdmin}}
 )
 
 func (f *fileTwinFixture) call(t *testing.T, p auth.Principal, in map[string]any) (map[string]any, string, bool) {
@@ -193,7 +209,7 @@ func TestFileTwin_AnotherTenantsRunIsNotFound(t *testing.T) {
 }
 
 // rm, clear and extract change the run's inbox: the run's owner and an admin
-// may, a tenant operator who only reads the run may not.
+// may, a member who only reads the run may not.
 func TestFileTwin_ChangingTheInboxNeedsTheOwnerOrAnAdmin(t *testing.T) {
 	f := newFileTwinFixture(t)
 	runID := f.run(t, "acme", "alice", "")
@@ -206,7 +222,7 @@ func TestFileTwin_ChangingTheInboxNeedsTheOwnerOrAnAdmin(t *testing.T) {
 		{"run_id": runID, "op": "clear"},
 		{"run_id": runID, "op": "extract", "path": a.Ref},
 	} {
-		if _, text, isErr := f.call(t, twinOperator, op); !isErr || !strings.Contains(text, "owner or an admin") {
+		if _, text, isErr := f.call(t, twinReader, op); !isErr || !strings.Contains(text, "owner or an admin") {
 			t.Errorf("%v by a non-owner = %s", op["op"], text)
 		}
 	}
@@ -225,6 +241,46 @@ func TestFileTwin_ChangingTheInboxNeedsTheOwnerOrAnAdmin(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(b.Path))); !os.IsNotExist(err) {
 		t.Errorf("admin clear left the file: %v", err)
+	}
+}
+
+// A tenant operator is the admin of its own tenant: it may change the inbox of
+// any run there, as the owner may. Another tenant's operator still gets the
+// not-found a missing run gets, for the writing ops as for the reading ones.
+func TestFileTwin_TenantOperatorChangesItsOwnTenantsInbox(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	a := f.capture(t, runID, "acme", "a.txt", "http", []byte("first file\n"), true)
+	b := f.capture(t, runID, "acme", "b.txt", "http", []byte("second file\n"), true)
+	dir := dynvol.DerivedEphemeralPath(f.dynRoot, runID, inbox.Name)
+
+	for _, in := range []map[string]any{
+		{"run_id": runID, "op": "rm", "path": a.Ref},
+		{"run_id": runID, "op": "clear"},
+	} {
+		_, cross, isErr := f.call(t, twinOutsider, in)
+		in["run_id"] = "run_nosuch"
+		_, missing, _ := f.call(t, twinOutsider, in)
+		in["run_id"] = runID
+		if !isErr || strings.Replace(cross, runID, "X", 1) != strings.Replace(missing, "run_nosuch", "X", 1) {
+			t.Errorf("%v by another tenant's operator = %q, want the missing run's %q", in["op"], cross, missing)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(a.Path))); err != nil {
+		t.Fatalf("another tenant's operator removed the file: %v", err)
+	}
+
+	if _, text, isErr := f.call(t, twinOperator, map[string]any{"run_id": runID, "op": "rm", "path": a.Ref}); isErr {
+		t.Fatalf("tenant operator rm: %s", text)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(a.Path))); !os.IsNotExist(err) {
+		t.Errorf("tenant operator rm left the file: %v", err)
+	}
+	if _, text, isErr := f.call(t, twinOperator, map[string]any{"run_id": runID, "op": "clear"}); isErr {
+		t.Fatalf("tenant operator clear: %s", text)
+	}
+	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(b.Path))); !os.IsNotExist(err) {
+		t.Errorf("tenant operator clear left the file: %v", err)
 	}
 }
 
@@ -342,7 +398,7 @@ func TestFileTwin_KeepNeedsTheOwnerOrAnAdmin(t *testing.T) {
 		{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:new.txt"},
 		{"run_id": runID, "op": "keep", "from": rec.Ref, "to": "volume:docs:minutes.txt", "overwrite": true},
 	} {
-		if _, text, isErr := f.call(t, twinOperator, in); !isErr || !strings.Contains(text, "owner or an admin") {
+		if _, text, isErr := f.call(t, twinReader, in); !isErr || !strings.Contains(text, "owner or an admin") {
 			t.Errorf("keep %v by a reader = %s", in, text)
 		}
 	}
@@ -565,5 +621,29 @@ func TestFileTwin_KeepRefusesAnIsolatedOwner(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(docs, "new.txt")); !os.IsNotExist(err) {
 		t.Errorf("a refused keep wrote a file: %v", err)
+	}
+}
+
+// The tree's root names a folder under dynamic_root. A stored parent id is
+// not trusted as a path segment: a sub-run whose recorded parent is ".." is
+// the missing run's not-found, never a look at dynamic_root's own folders.
+func TestFileTwin_StoredParentIDIsNotAPathSegment(t *testing.T) {
+	f := newFileTwinFixture(t)
+	ctx := context.Background()
+	sess, err := f.st.CreateSession(ctx, "acme", "agent", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.st.CreateRun(ctx, sess.ID, store.RunIdentity{ID: "..", TenantID: "acme", UserID: "alice"}); err != nil {
+		t.Fatalf("plant a parent row with a path-segment id: %v", err)
+	}
+	child := f.run(t, "acme", "alice", "..")
+
+	_, got, isErr := f.call(t, twinAdmin, map[string]any{"run_id": child, "op": "ls"})
+	if !isErr {
+		t.Fatalf("ls on a run whose parent id is \"..\" answered: %s", got)
+	}
+	if want := fileTwinNotFound(child).Text; got != want {
+		t.Errorf("reply = %q, want the missing run's %q", got, want)
 	}
 }

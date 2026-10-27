@@ -333,6 +333,51 @@ export interface RunPromptResponse {
   input: PromptBlock[];
 }
 
+/** Input for {@link LoomcycleClient.runFile} — one File-tool op on the inbox of
+ *  a run, from outside the run (`POST /v1/runs/{run_id}/file`). The run is the
+ *  path's; the fields are the tool's own, snake_case as on the wire. download
+ *  and upload are not offered here: they need a run's HTTP allowlist. */
+export type RunFileInput = {
+  op: "stat" | "ls" | "extract" | "import" | "keep" | "rm" | "clear";
+  /** stat / ls / rm / extract / import: `volume:inbox:<path>`, or a bare path in the inbox. */
+  path?: string;
+  /** keep: the inbox file to copy. */
+  from?: string;
+  /** keep: `volume:<name>:<path>` in a read-write dynamic volume of your tenant. */
+  to?: string;
+  overwrite?: boolean;
+  recursive?: boolean;
+  /** clear: one folder of the inbox to empty instead of all of it. */
+  prefix?: string;
+  images?: boolean;
+  max_rows?: number;
+  excerpt_chars?: number;
+  title?: string;
+  doc_path?: string;
+  scope?: string;
+  tags?: string[];
+};
+
+/** What {@link LoomcycleClient.downloadRunInboxFile} returns: one inbox file's
+ *  bytes and what the server says about them. */
+export interface RunInboxDownload {
+  /** The bytes (empty for a HEAD request). */
+  bytes: Uint8Array;
+  /** 200, or 206 for a range. */
+  status: number;
+  /** The type the server served: the recorded type when it is one a browser
+   *  cannot run, else `application/octet-stream`. */
+  contentType: string;
+  /** The file's name, from Content-Disposition. */
+  filename: string;
+  /** SHA-256 (hex) of the file's bytes as served — the whole file, also for a range. */
+  sha256: string;
+  /** The producer the runtime recorded (`mcp:<server>/<tool>`, `http`, …), or
+   *  `unknown` when the file changed since it was kept. */
+  origin: string;
+  headers: Headers;
+}
+
 /** The reply from `GET /v1/runs/{run_id}/effective-config` — for every
  *  overridable field, the value this run will actually use and which layer
  *  decided it.
