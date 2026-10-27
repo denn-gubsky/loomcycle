@@ -137,7 +137,9 @@ func narrowPolicyByACL(ctx context.Context, p RunPolicy, eff *authz.Effective) R
 	}
 	p.Volumes = NarrowVolumesByACL(ctx, eff, p.Volumes)
 	p.Memory.AllowedScopes = NarrowScopesByACL(ctx, eff, "memory", p.Memory.AllowedScopes)
+	p.Memory.ReadOnlyScopes = appendNew(p.Memory.ReadOnlyScopes, ReadOnlyScopesByACL(ctx, eff, "memory", p.Memory.AllowedScopes))
 	p.SqlMem.AllowedScopes = NarrowScopesByACL(ctx, eff, "sqlmem", p.SqlMem.AllowedScopes)
+	p.SqlMem.ReadOnlyScopes = appendNew(p.SqlMem.ReadOnlyScopes, ReadOnlyScopesByACL(ctx, eff, "sqlmem", p.SqlMem.AllowedScopes))
 	p.History.Scopes = NarrowScopesByACL(ctx, eff, "history", p.History.Scopes)
 	// The start set's skill denies are already on the patterns, and eff
 	// repeats them (it is held to that set): append only the new ones.
@@ -246,6 +248,16 @@ func reportLiveChange(ctx context.Context, raw RunPolicy, old, next *liveState) 
 		gone, _ := diffNames(ks.before, ks.after)
 		for _, sc := range gone {
 			narrowed = append(narrowed, ks.typ+" scope "+sc+" dropped")
+		}
+	}
+	for _, ks := range []struct {
+		typ           string
+		before, after []string
+	}{{"memory", before.Memory.ReadOnlyScopes, after.Memory.ReadOnlyScopes},
+		{"sqlmem", before.SqlMem.ReadOnlyScopes, after.SqlMem.ReadOnlyScopes}} {
+		ro, _ := diffNames(ks.after, ks.before)
+		for _, sc := range ro {
+			narrowed = append(narrowed, ks.typ+" scope "+sc+" read-only")
 		}
 	}
 	if newSkill, _ := diffNames(after.Skill.Patterns, before.Skill.Patterns); len(newSkill) > 0 {

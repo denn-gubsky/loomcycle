@@ -108,7 +108,8 @@ func TestLiveACL_ADenyBoundMidRunWithdrawsOnTheNextCall(t *testing.T) {
 	src.set(liveSet(t,
 		authz.Rule{Effect: authz.Deny, Actions: []string{"invoke"}, Resources: []string{"tool:Bash"}},
 		authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"volume:scratch"}},
-		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"memory:tenant"}}), nil)
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"memory:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"memory:user"}}), nil)
 
 	if got := specNames(LiveToolSpecs(ctx, readBashSpecs)); !reflect.DeepEqual(got, []string{"Read"}) {
 		t.Errorf("next schema = %v, want [Read]", got)
@@ -127,8 +128,8 @@ func TestLiveACL_ADenyBoundMidRunWithdrawsOnTheNextCall(t *testing.T) {
 	if len(p.Volumes.Bindings) != 1 || !p.Volumes.Bindings[0].ReadOnly {
 		t.Errorf("scratch should be read-only now: %+v", p.Volumes)
 	}
-	if !reflect.DeepEqual(p.Memory.AllowedScopes, []string{"user"}) {
-		t.Errorf("memory scopes %v, want [user]", p.Memory.AllowedScopes)
+	if !reflect.DeepEqual(p.Memory.AllowedScopes, []string{"user"}) || !reflect.DeepEqual(p.Memory.ReadOnlyScopes, []string{"user"}) {
+		t.Errorf("memory scopes %v read-only %v, want [user] read-only", p.Memory.AllowedScopes, p.Memory.ReadOnlyScopes)
 	}
 	var bashInert, otherInert int
 	for _, ev := range *events {
@@ -137,7 +138,7 @@ func TestLiveACL_ADenyBoundMidRunWithdrawsOnTheNextCall(t *testing.T) {
 		}
 		if ev.CapabilityInert.Tool == "Bash" {
 			bashInert++
-		} else if strings.Contains(ev.Text, "volume scratch read-only") && strings.Contains(ev.Text, "memory scope tenant dropped") {
+		} else if strings.Contains(ev.Text, "volume scratch read-only") && strings.Contains(ev.Text, "memory scope tenant dropped") && strings.Contains(ev.Text, "memory scope user read-only") {
 			otherInert++
 		}
 	}
