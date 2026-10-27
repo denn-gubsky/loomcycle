@@ -15,7 +15,7 @@ import type { AgentEvent, PromptContent, PromptSegment } from "@loomcycle/client
 
 import { isButtonInput, optionLabels, VERB, type CanonicalCard, type CardAction, type CardButton, type CardInput } from "./cards.js";
 import type { Health } from "./health.js";
-import type { Speaker } from "./identity.js";
+import { legacySubject, type RunAs, type Speaker } from "./identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
 import type { BridgePort, ClientFactory, Logger, RunClient } from "./ports.js";
 import { MessageSink, StreamSink, type MessageSinkOptions, type StreamSinkOptions, type TurnSink } from "./renderer.js";
@@ -121,6 +121,28 @@ export class Conversation<TRef> {
   /** The most recent inbound reference, so replies follow a moved address. */
   updateRef(ref: TRef): void {
     this.rec.ref = ref;
+  }
+
+  /** adoptGateSubjects carries a record a bridge stored while it ran with a
+   *  loomcycle token over to the subjects it has as a gate. Its run subject
+   *  and owner are "<platform>-<id>", and a gate gets tokens only for its own
+   *  "<gate>:<id>" subjects: left as they were, the conversation could not
+   *  run and its owner could not /new or answer its cards. Each is replaced
+   *  only by the gate subject of the same identity, the one loomcycle links
+   *  to that user by legacy_subject_prefix, so the session and memory carry
+   *  on and no one becomes another's owner. Saved in turn with the messages. */
+  adoptGateSubjects(runAs: RunAs, speaker: Speaker): void {
+    const platform = this.deps.platform.name;
+    let changed = false;
+    if (this.rec.runSubject !== runAs.subject && this.rec.runSubject === legacySubject(platform, runAs.subject)) {
+      this.rec.runSubject = runAs.subject;
+      changed = true;
+    }
+    if (this.rec.ownerSubject && this.rec.ownerSubject !== speaker.subject && this.rec.ownerSubject === legacySubject(platform, speaker.subject)) {
+      this.rec.ownerSubject = speaker.subject;
+      changed = true;
+    }
+    if (changed) this.serial(() => this.save()).catch(() => undefined);
   }
 
   onMessage(speaker: Speaker, text: string): Promise<void> {

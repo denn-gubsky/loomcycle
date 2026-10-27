@@ -69,6 +69,17 @@ export function gateSharedSubject(gate: string, ...parts: string[]): string {
   return `${gate}:conv:${convHash(parts)}`;
 }
 
+/** legacySubject is the subject a bridge with a loomcycle token gave the
+ *  identity a gate bridge names "<gate>:<id>": "<platform>-<id>", each ':'
+ *  in the id read as '-' ("telegram:42" was "telegram-42", "telegram:conv:<h>"
+ *  was "telegram-conv-<h>"). It is the rule a gate's legacy_subject_prefix
+ *  links users by (RFC FA D20). undefined for a subject that is not a gate's. */
+export function legacySubject(platform: string, subject: string): string | undefined {
+  const i = subject.indexOf(":");
+  if (i <= 0 || i === subject.length - 1) return undefined;
+  return `${platform}-${subject.slice(i + 1).replaceAll(":", "-")}`;
+}
+
 function convHash(parts: string[]): string {
   return createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32);
 }

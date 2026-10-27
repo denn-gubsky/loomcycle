@@ -9,7 +9,7 @@ import { optionLabels } from "../src/cards.js";
 import { ConfigError, EnvReader, loadSharedConfig } from "../src/config.js";
 import { Health } from "../src/health.js";
 import { close, createBridgeServer, listen } from "../src/http.js";
-import { sharedSubject } from "../src/identity.js";
+import { gateSharedSubject, legacySubject, sharedSubject } from "../src/identity.js";
 import { MessageSink, StreamSink } from "../src/renderer.js";
 import { FileStore } from "../src/store.js";
 import { parseCommand, splitMessage } from "../src/text.js";
@@ -129,6 +129,17 @@ describe("identity", () => {
     expect(sharedSubject("slack", "T1", "C2")).not.toBe(a);
     // The prefix keeps platforms apart even for equal parts.
     expect(sharedSubject("telegram", "T1", "C1").startsWith("telegram-conv-")).toBe(true);
+  });
+
+  // The token-mode subject of a gate subject: the rule loomcycle's
+  // legacy_subject_prefix links users by, so the two must agree.
+  it("names a gate subject's token-mode subject", () => {
+    expect(legacySubject("telegram", "telegram:42")).toBe("telegram-42");
+    expect(legacySubject("slack", "slack:t1:u1")).toBe("slack-t1-u1");
+    expect(legacySubject("telegram", gateSharedSubject("tg", "-100"))).toBe(sharedSubject("telegram", "-100"));
+    expect(legacySubject("telegram", "telegram-42")).toBeUndefined();
+    expect(legacySubject("telegram", ":42")).toBeUndefined();
+    expect(legacySubject("telegram", "telegram:")).toBeUndefined();
   });
 });
 
