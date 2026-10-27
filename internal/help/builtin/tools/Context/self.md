@@ -79,11 +79,28 @@ Present when they apply:
   a member; and `acl` — `{mode, version, baseline, lists, missing_acls,
   removed_tools}`, where each of `lists` is `{name, version, bound_to: {kind,
   id?}}`, the access list that applies and what it is bound to (the user, a
-  group, their token, or the whole tenant). **When `status` is `pending`, the
-  account is not approved yet: do not do real work for it — tell the user**
-  (`status_note` says the same). Absent when the run acts for nobody.
+  group, their token, or the whole tenant). `auth` — how they signed in:
+  `{gate, amr, auth_time}` for a browser sign-in, `{gate}` for a token a sign-in
+  gate issued; absent for an operator token. `identities` — the sign-in
+  accounts linked to them, each `{gate, email_verified, email?,
+  last_login_at?}`; `email` appears only when the gate verified it. Absent
+  when the run acts for nobody.
 - `loomcycle` (`version`, `commit`, `build_time`) and `server`
   (`listen_addr`, `url`).
+
+## A pending account
+
+When `identity.status` is `pending`, an operator has not approved this person
+yet (`status_note` says so too). Treat it as a hard stop, not a hint:
+
+- Tell the user, plainly, that their account is waiting for approval.
+- Do not carry out the task: no sub-agents, no writes to memory or documents,
+  no messages or calls that act for them.
+- Answering what they ask about the account itself is fine. Do not suggest a
+  way around the approval.
+
+Approval happens outside the run; ask `self` again in a later run rather than
+retrying now.
 
 ## Errors
 
