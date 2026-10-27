@@ -195,6 +195,8 @@ export class FakeTelegram {
 export class FakeGate {
   readonly asserts: Array<{ gate: string; payload: Record<string, unknown> }> = [];
   readonly revokes: Array<{ gate: string; payload: Record<string, unknown> }> = [];
+  /** How many of the next revokes loomcycle refuses with a 503. */
+  failRevokes = 0;
   private seq = 0;
 
   fetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -203,6 +205,10 @@ export class FakeGate {
     const jwt = body.assertion ?? body.request ?? "";
     const payload = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString() || "{}") as Record<string, unknown>;
     if (url.pathname === "/v1/_auth/revoke") {
+      if (this.failRevokes > 0) {
+        this.failRevokes--;
+        return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+      }
       this.revokes.push({ gate: body.gate, payload });
       return new Response(null, { status: 204 });
     }
