@@ -118,7 +118,7 @@ const documentInputSchema = `{
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). ONE scope per call — a search, graph_recall or list_facts reads ONLY the scope you name, so a user-scope search never returns tenant chunks and vice versa; consult both by making two calls. agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
-		"title":       {"type": "string"},
+		"title":       {"type": "string", "description": "The document's or chunk's title. update_chunk on the root chunk (root_chunk_id) renames the document; its path stays put (Path op=mv moves it)."},
 		"document_id": {"type": "string", "description": "The document an op works on. search / related: return only this document's chunks."},
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here. search / related: return only chunks of these documents."},
 		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
@@ -881,6 +881,9 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateDocumentFacets(ctx, key); err != nil {
 		return err
 	}
+	if err := d.backfillDocumentTitles(ctx, key); err != nil {
+		return err
+	}
 	if err := d.migrateAssetDescription(ctx, key); err != nil {
 		return err
 	}
@@ -991,6 +994,24 @@ func (d *Document) migrateDocumentFacets(ctx context.Context, key sqlmem.ScopeKe
 	}
 	return d.exec(ctx, key,
 		`UPDATE documents SET status = (SELECT status FROM chunks WHERE chunks.id = documents.root_chunk_id) WHERE status IS NULL`)
+}
+
+// backfillDocumentTitles repairs documents renamed before mirrorRootFacets carried
+// the title: update_chunk/upsert_chunk renamed the root chunk but left
+// documents.title — the copy every listing reads — on the old name.
+//
+// Unlike the type/status backfill above it cannot key on NULL (the drifted row
+// holds a stale value, not a missing one), and it cannot hide behind
+// migrateDocumentFacets' fast path (those columns exist on every scope it must
+// repair). So it runs on every provisioning — once per scope per process, behind
+// the ensureSchema memo — and writes only rows that differ, which makes a second
+// run a no-op. Cost is one PK lookup into chunks per document. A blank root title
+// is skipped, matching the mirror: the row keeps its last name.
+func (d *Document) backfillDocumentTitles(ctx context.Context, key sqlmem.ScopeKey) error {
+	return d.exec(ctx, key,
+		`UPDATE documents SET title = (SELECT c.title FROM chunks c WHERE c.id = documents.root_chunk_id)
+		 WHERE EXISTS (SELECT 1 FROM chunks c WHERE c.id = documents.root_chunk_id
+		                 AND TRIM(c.title) <> '' AND c.title <> documents.title)`)
 }
 
 // migrateFactObservation adds chunk_memory_meta.observed_at, access_count and
@@ -2985,11 +3006,13 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errFrom("update_chunk: tags: "+err.Error(), err), nil
 		}
 	}
-	// If this chunk is a document's root and its type/status just changed, mirror
-	// the new facets onto the documents row (a no-op for a non-root chunk).
+	// If this chunk is a document's root and its title/type/status just changed,
+	// mirror them onto the documents row (a no-op for a non-root chunk). Renaming
+	// the root chunk is how a document is renamed; its Path-tree name stays put.
+	_, hasTitle := present["title"]
 	_, hasType := present["type"]
 	_, hasStatus := present["status"]
-	if hasType || hasStatus {
+	if hasTitle || hasType || hasStatus {
 		if err := d.mirrorRootFacets(ctx, key, in.ID); err != nil {
 			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
@@ -5283,8 +5306,8 @@ func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInp
 // CREATE path there is nothing to add here: upsert delegates the insert to
 // createChunk, which already applies `tags`, and never makes a root chunk. On the
 // UPDATE path (updateChunkForUpsert, which does not touch tags) this replace-sets
-// the tags when supplied and mirrors the documents row if the upserted chunk is a
-// root and its type/status was set.
+// the tags when supplied. Mirroring a root chunk's title/type/status onto the
+// documents row happens inside upsertChunk, so its direct callers get it too.
 func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, raw json.RawMessage) (tools.Result, error) {
 	res, err := d.upsertChunk(ctx, key, mscope, in)
 	if err != nil || res.IsError {
@@ -5303,27 +5326,28 @@ func (d *Document) upsertChunkOp(ctx context.Context, key sqlmem.ScopeKey, mscop
 			return errFrom("upsert_chunk: tags: "+terr.Error(), terr), nil
 		}
 	}
-	// Only worth a mirror when the upsert could have moved a root chunk's facets
-	// (updateChunkForUpsert sets type/status only when supplied); otherwise it is a
-	// guaranteed 0-row UPDATE on the entity tier's hot path.
-	if in.Type != "" || in.Status != "" {
-		if terr := d.mirrorRootFacets(ctx, key, meta.ID); terr != nil {
-			return errFrom("upsert_chunk: "+terr.Error(), terr), nil
-		}
-	}
 	return res, nil
 }
 
-// mirrorRootFacets keeps the documents row's denormalized type/status in step with
-// its root chunk. It is a no-op for a non-root chunk (the WHERE matches nothing),
-// so callers can invoke it unconditionally after a chunk's type/status changes.
+// mirrorRootFacets keeps the documents row's denormalized title/type/status in step
+// with its root chunk. It is a no-op for a non-root chunk (the WHERE matches
+// nothing), so callers can invoke it unconditionally after a chunk's
+// title/type/status changes.
+//
+// The root chunk's title IS the document's name, but get_document,
+// documents_summary, query_documents, export_md and title link resolution all
+// read documents.title — so a rename that skipped this row changed nothing an
+// agent could see. A blank root title keeps the row's last name instead:
+// documents.title is NOT NULL, every listing shows it, and create_document never
+// accepts an empty one either.
 func (d *Document) mirrorRootFacets(ctx context.Context, key sqlmem.ScopeKey, chunkID string) error {
 	return d.exec(ctx, key,
 		`UPDATE documents SET type = (SELECT type FROM chunks WHERE id = ?),
 		                      status = (SELECT status FROM chunks WHERE id = ?),
+		                      title = COALESCE((SELECT title FROM chunks WHERE id = ? AND TRIM(title) <> ''), title),
 		                      updated_at = ?
 		 WHERE root_chunk_id = ?`,
-		chunkID, chunkID, time.Now().UnixNano(), chunkID)
+		chunkID, chunkID, chunkID, time.Now().UnixNano(), chunkID)
 }
 
 // sanitizeTags trims, drops empties, and de-duplicates a tag list (order
