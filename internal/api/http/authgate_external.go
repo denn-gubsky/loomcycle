@@ -105,11 +105,10 @@ func assertionOf(c external.Claims) authgate.Assertion {
 		}
 		claims["groups"] = gs
 	}
-	amr := c.AMR
-	if len(amr) == 0 {
-		amr = []string{"ext"}
-	}
-	return authgate.Assertion{Subject: c.Subject, TenantHint: c.Tenant, AMR: amr, AuthTime: c.AuthTime,
+	// The gate vouches for who the person is, not for how they proved it: an
+	// amr it asserts ("otp", "hwk") is not taken, so a session or token it
+	// produced can never pass for a second factor loomcycle did not see.
+	return authgate.Assertion{Subject: c.Subject, TenantHint: c.Tenant, AMR: []string{"ext"}, AuthTime: c.AuthTime,
 		Email: c.Email, EmailVerified: c.EmailVerified, DisplayName: c.DisplayName, Groups: c.Groups,
 		AccessMode: c.AccessMode, Claims: claims, ExpiresAt: c.Expiry}
 }

@@ -225,9 +225,12 @@ type Claims struct {
 	Tenant string
 	// AccessMode is what the gate asks for; honoured only on a trusted gate.
 	AccessMode string
-	AMR        []string
-	// AuthTime is when the person authenticated at the gate; IssuedAt when
-	// the gate did not say.
+	// AMR is what the gate says about how the person authenticated. It is
+	// parsed but never made a session's or token's amr: loomcycle did not see
+	// that factor (internal/api/http assertionOf).
+	AMR []string
+	// AuthTime is when the person authenticated at the gate, never later
+	// than IssuedAt; IssuedAt when the gate did not say.
 	AuthTime time.Time
 	// LoginState is the one-time state of a browser login (UseLogin only).
 	LoginState string
@@ -366,6 +369,12 @@ func (v *Verifier) check(std jwt.Claims, wc wireClaims, use Use, now time.Time) 
 		at := time.Unix(wc.AuthTime, 0)
 		if at.After(now.Add(ClockSkew)) {
 			return bad("auth_time in the future")
+		}
+		// Never later than iat: a gate may say the person signed in earlier
+		// than it signed (less fresh), never that they did so after it — the
+		// assertion cannot vouch for a moment it did not see.
+		if at.After(iat) {
+			at = iat
 		}
 		c.AuthTime = at
 	}

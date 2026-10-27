@@ -249,6 +249,30 @@ func TestExternalAssert_AnIssuedTokenStopsTheMomentItsUserIsNotActive(t *testing
 	}
 }
 
+// A token stands for the gate that issued it: once the operator takes that
+// gate out of the config, nothing it vouched for authenticates, on the API or
+// pasted into the Web UI — the same rule a gate's browser sessions follow.
+func TestExternalAssert_AnIssuedTokenStopsWhenItsGateIsRemoved(t *testing.T) {
+	g := newExtGate(t, "tg", acmeMap(), config.AuthExternalGate{})
+	f := extFixture(t, g)
+	_, body := f.assert(t, "tg", g.sign(t, "assert", nil, nil))
+	tok := body["token"].(string)
+	if code, _ := bearerCall(t, f.ts, tok, "GET", "/v1/_me", ""); code != http.StatusOK {
+		t.Fatalf("the issued token does not work: %d", code)
+	}
+	cfg := f.srv.cfg()
+	kept := cfg.ResolvedAuth.Gates[:0:0]
+	for _, gate := range cfg.ResolvedAuth.Gates {
+		if gate.Name != "tg" {
+			kept = append(kept, gate)
+		}
+	}
+	cfg.ResolvedAuth.Gates = kept
+	if code, _ := bearerCall(t, f.ts, tok, "GET", "/v1/_me", ""); code != http.StatusUnauthorized {
+		t.Fatalf("a token of a removed gate still authenticated: %d", code)
+	}
+}
+
 // RFC FA §8: a second use of a jti is refused — on the same replica and on
 // another replica sharing the store.
 func TestExternalAssert_ASecondUseOfAJTIIsRefusedOnEveryReplica(t *testing.T) {
@@ -601,6 +625,51 @@ func TestExternalLogin_TheLoginStateIsBoundToTheBrowserThatBeganIt(t *testing.T)
 	}
 	if resp.Header.Get("Referrer-Policy") != "no-referrer" {
 		t.Fatal("the complete page lets the assertion leak through Referer")
+	}
+}
+
+// An external gate vouches for who the person is, not for how they proved
+// it: a session it signs in claims "ext" whatever amr the assertion carries,
+// so it can never pass for a second factor, and its sign-in time is never
+// later than the assertion's own iat, so it cannot look fresher than the
+// moment the gate signed.
+func TestExternalLogin_TheGatesAMRAndAFreshAuthTimeAreNotTakenOnTrust(t *testing.T) {
+	g := newExtGate(t, "hr", acmeMap(), config.AuthExternalGate{CallbackURL: "https://gate.example/login",
+		AllowedReturnTo: []string{"https://app.example/welcome"}})
+	f := extFixture(t, g)
+	alice := browserFor(t)
+	code, state := beginLogin(t, f, alice, "hr", "https://app.example/welcome")
+	if code != http.StatusSeeOther {
+		t.Fatal(code)
+	}
+	iat := time.Now().Add(-90 * time.Second).Truncate(time.Second)
+	assertion := g.sign(t, "login", map[string]any{"login_state": state, "amr": []string{"otp", "hwk"},
+		"auth_time": time.Now().Unix()}, func(c *jwt.Claims) { c.IssuedAt = jwt.NewNumericDate(iat) })
+	if resp := completeLogin(t, f, alice, "hr", state, assertion); resp.StatusCode != http.StatusSeeOther ||
+		resp.Header.Get("Location") != "https://app.example/welcome" {
+		t.Fatalf("complete: %d → %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	req, _ := http.NewRequest("GET", f.ts.URL+"/v1/_me", nil)
+	req.Header.Set("User-Agent", testUA)
+	me, err := alice.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer me.Body.Close()
+	var who struct {
+		Auth struct {
+			AMR      []string  `json:"amr"`
+			AuthTime time.Time `json:"auth_time"`
+		} `json:"auth"`
+	}
+	if err := json.NewDecoder(me.Body).Decode(&who); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(who.Auth.AMR, []string{"ext"}) {
+		t.Errorf("session amr = %v, want [ext]", who.Auth.AMR)
+	}
+	if who.Auth.AuthTime.After(iat) {
+		t.Errorf("session auth_time %v is later than the assertion's iat %v", who.Auth.AuthTime, iat)
 	}
 }
 

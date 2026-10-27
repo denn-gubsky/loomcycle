@@ -535,9 +535,17 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 // carry a disabled (or revoked, or pending) user past it, on any replica.
 // Fails closed: a status that cannot be read refuses the request. Other
 // credentials are not affected.
+//
+// The token also stands only while the gate that issued it is configured: an
+// operator who takes a gate out of the config withdraws its trust, and what it
+// vouched for must not outlive that until its TTL (a gate's browser sessions
+// follow the same rule in identitySessionPrincipal).
 func (s *Server) gateTokenUserActive(ctx context.Context, p auth.Principal) bool {
 	if p.IssuedByGate == "" {
 		return true
+	}
+	if _, ok := s.configuredGate(p.IssuedByGate); !ok {
+		return false
 	}
 	if s.store == nil {
 		return false
