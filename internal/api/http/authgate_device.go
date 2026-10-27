@@ -222,10 +222,22 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusInternalServerError, "server_error", "device login is unavailable")
 		return
 	}
+	// The per-source throttle judges only REFUSALS: a code is looked up first,
+	// and a known one is served however many bad codes its address sent. The
+	// 256-bit device code is its own protection, and blocking before the
+	// lookup would let a guesser behind the same NAT (or IPv6 /64) lock out
+	// every real CLI there. The lookup is accepted rather than rate-limited
+	// separately: it is one primary-key statement, the same order of cost as
+	// the throttle read a blocked request already paid, and the throttle
+	// never reduced how many requests arrive, only what they were told.
 	badKey := deviceKey(h, "poll", throttleSourceKey(s.clientSource(r)))
-	if s.deviceThrottled(ctx, badKey) {
-		oauthError(w, http.StatusTooManyRequests, device.ErrSlowDown, "too many unknown device codes from this address")
-		return
+	refuseUnknown := func() {
+		if s.deviceThrottled(ctx, badKey) {
+			oauthError(w, http.StatusTooManyRequests, device.ErrSlowDown, "too many unknown device codes from this address")
+			return
+		}
+		s.deviceCount(ctx, badKey, deviceBadPollLimit)
+		oauthError(w, http.StatusBadRequest, device.ErrInvalidGrant, "unknown device_code")
 	}
 	form, err := readDeviceForm(r)
 	if err != nil {
@@ -238,16 +250,14 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	}
 	code := form.Get("device_code")
 	if !device.WellFormedDeviceCode(code) {
-		s.deviceCount(ctx, badKey, deviceBadPollLimit)
-		oauthError(w, http.StatusBadRequest, device.ErrInvalidGrant, "unknown device_code")
+		refuseUnknown()
 		return
 	}
 	now := time.Now()
 	row, early, err := s.store.DeviceAuthPoll(ctx, device.HashDeviceCode(code), now, device.SlowDownStep, device.MaxInterval)
 	if err != nil {
 		if isNotFound(err) {
-			s.deviceCount(ctx, badKey, deviceBadPollLimit)
-			oauthError(w, http.StatusBadRequest, device.ErrInvalidGrant, "unknown device_code")
+			refuseUnknown()
 			return
 		}
 		slog.Error("auth: device poll failed", "err", err)

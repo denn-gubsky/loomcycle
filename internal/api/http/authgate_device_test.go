@@ -246,21 +246,40 @@ func TestDeviceLogin_ExpiredDeniedAndForeignClientCodesAreRefused(t *testing.T) 
 
 // device_code brute force is bounded: 256-bit codes, and a source that polls
 // unknown codes is blocked after deviceBadPollLimit tries.
-func TestDeviceLogin_GuessingDeviceCodesIsBlockedPerSource(t *testing.T) {
-	s, _, _ := deviceServer(t)
+func TestDeviceLogin_GuessingDeviceCodesIsBlockedPerSourceButNeverARealCode(t *testing.T) {
+	s, st, _ := deviceServer(t)
 	ds := startDevice(t, s)
+	const nat = "198.51.100.9"
 	for i := 0; i < deviceBadPollLimit; i++ {
 		guess, _, _ := device.NewDeviceCode()
-		if a := pollDevice(t, s, guess, "loomcycle-cli", "198.51.100.9"); a.Error != device.ErrInvalidGrant {
+		if a := pollDevice(t, s, guess, "loomcycle-cli", nat); a.Error != device.ErrInvalidGrant {
 			t.Fatalf("guess %d: %+v", i, a)
 		}
 	}
-	// Blocked now, even with the real code; another source is not.
-	if a := pollDevice(t, s, ds.DeviceCode, "loomcycle-cli", "198.51.100.9"); a.Status != http.StatusTooManyRequests {
-		t.Fatalf("after %d bad polls: %+v", deviceBadPollLimit, a)
+	// The source is blocked for guesses: an unknown code, or a malformed one,
+	// is refused without a lookup verdict.
+	guess, _, _ := device.NewDeviceCode()
+	if a := pollDevice(t, s, guess, "loomcycle-cli", nat); a.Status != http.StatusTooManyRequests {
+		t.Fatalf("unknown code after %d bad polls: %+v", deviceBadPollLimit, a)
 	}
-	if a := pollDevice(t, s, ds.DeviceCode, "loomcycle-cli", "203.0.113.5"); a.Error != device.ErrAuthorizationPending {
-		t.Fatalf("another source: %+v", a)
+	if a := pollDevice(t, s, "not-a-code", "loomcycle-cli", nat); a.Status != http.StatusTooManyRequests {
+		t.Fatalf("malformed code after %d bad polls: %+v", deviceBadPollLimit, a)
+	}
+	// A real code from the same address (someone else behind that NAT) is
+	// still served: the 256-bit code is its own protection, and a guesser
+	// next door must not be able to lock its holder out.
+	if a := pollDevice(t, s, ds.DeviceCode, "loomcycle-cli", nat); a.Error != device.ErrAuthorizationPending {
+		t.Fatalf("real code from the blocked source: %+v", a)
+	}
+	alice, _ := userSession(t, s, st, "acme", "alice", "isolated", "")
+	if rec := decide(s, alice, "/v1/_auth/device/approve", ds.UserCode, yes); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	if err := forcePollable(s.store, ds.DeviceCode); err != nil {
+		t.Fatal(err)
+	}
+	if a := pollDevice(t, s, ds.DeviceCode, "loomcycle-cli", nat); a.Status != http.StatusOK || a.AccessToken == "" {
+		t.Fatalf("approved code from the blocked source: %d %q", a.Status, a.Error)
 	}
 }
 
