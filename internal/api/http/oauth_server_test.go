@@ -593,6 +593,9 @@ func TestOAuthRevoke_RefreshEndsTheFamilyAccessIsRetiredOthersUntouched(t *testi
 	if c, _ := f.bearerMe(t, at); c != http.StatusOK {
 		t.Fatalf("another client revoked board's token: %d", c)
 	}
+	if fam, err := f.st.OAuthFamilyGet(context.Background(), lastEvent(t, f.sink, "oauth_token_issued").AuthRecordID); err != nil || !fam.RevokedAt.IsZero() {
+		t.Fatalf("another client revoked board's sign-in: %+v %v", fam, err)
+	}
 	if rec, _ := f.post(t, "/v1/_oauth/revoke", url.Values{"token": {"lcrt_unknown"}, "client_id": {"board"}}); rec.Code != http.StatusOK {
 		t.Fatalf("unknown token = %d", rec.Code)
 	}
