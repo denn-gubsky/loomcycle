@@ -1867,6 +1867,56 @@ auth:
 - **A bridge as a gate.** `@loomcycle/bridge-core` 0.3 and later can run a bridge this way: its README lists the `BRIDGE_GATE*` settings. A person is the loomcycle user `<gate>:<platform id>`.
 - **Keeping a bridge's existing users.** A bridge that ran with a loomcycle token made its users as `<platform>-<id>` (`telegram-42`, a group chat `telegram-conv-<hash>`). Set `identity_map.legacy_subject_prefix: telegram-` on its gate and a person's first login links that user instead of making `telegram:42`, so their runs, memory and documents stay theirs; the link is audited as `auth_identity_linked` with the reason `legacy subject`. The legacy subject is the prefix plus the platform id with `:` read as `-`. It links only a user in the gate's tenant that has no password and no identity at any gate, so a person's own account is never taken; such a user gets a new `<gate>:<id>` user instead. The prefix ends in `-` and holds no `:`, and only an external gate takes it. Once everyone has signed in through the gate, the prefix can go: the links stay.
 
+### App sign-in — `auth.clients` and ClientDef (RFC FL)
+
+**Why loomcycle signs its apps in, and not each app.** An app such as loomboard (web, Chrome extension, desktop) should not ask a person to paste a token, nor carry its own copy of every gate and its secrets. loomcycle is an **OAuth 2.0 authorization server for its own registered apps**: the app sends the person to loomcycle's sign-in page, which offers exactly the gates configured above, and gets back a short-lived token for that same user in that same tenant. The app never sees a password, a provider secret or the gate configuration, and every call it makes is authorized as the user is anywhere else (`access_mode`, groups, ACL bindings, `pending`/`disabled`). It is not an OpenID Connect provider (no `id_token`) and has no consent screen: only clients the operator registered exist.
+
+```yaml
+auth:
+  clients:
+    loomboard:
+      kind: public                      # no secret; PKCE S256 is mandatory (the only kind)
+      label: loomboard                  # what the sign-in page shows
+      redirect_uris:
+        - https://board.example.com/auth/callback       # web: exact match
+        - https://<extension-id>.chromiumapp.org/        # Chrome extension
+        - http://127.0.0.1/callback                       # desktop: loopback, any port, exact path
+        - loomboard://auth/callback                       # desktop: private-use scheme
+      allowed_origins: [https://board.example.com]      # CORS on /v1/_oauth/token and /revoke only
+      access_token_ttl: 1h              # 1m–24h
+      refresh: { idle: 7d, absolute: 30d }   # Go durations or whole days; absolute ≤ 365d
+      restrictions: {}                  # narrows every token of this client (agents, overrides, rate, retention)
+```
+
+**Redirect URIs** are `https` with a host; `http` only to the loopback literals `127.0.0.1` or `[::1]` (any port at sign-in, path exact — a desktop app listens where the OS lets it); or a private-use scheme that names the app (`loomboard://…`, `com.example.app:/…`). Never `http` to another host, a fragment, a wildcard, userinfo, or a browser scheme (`javascript:`, `data:`, …). They are matched **exactly**. A redirect URI decides where a person's sign-in code goes: list only addresses the app really owns.
+
+**The flow** (authorization code with PKCE; RFC 6749, 7636, 8252, 9700):
+
+1. The app opens `GET /v1/_oauth/authorize?response_type=code&client_id=…&redirect_uri=…&code_challenge=<S256>&code_challenge_method=S256&state=…`. An unknown client or an unregistered `redirect_uri` ends on loomcycle's own error page — it never redirects there.
+2. With no session in this browser, loomcycle sends the person to `/ui/login?oauth=<the request>`; the page names the app and where the sign-in goes, offers the configured gates, and returns to the authorize step once they are signed in. A browser already signed in to the Web UI goes straight through (single sign-on).
+3. loomcycle redirects to `redirect_uri?code=…&state=…&iss=…`. The code is single-use, lives 60 s, and is bound to the client, the exact `redirect_uri`, the PKCE challenge, the user and the session. A `pending` user gets `error=access_denied&error_description=pending` and no code.
+4. The app exchanges it: `POST /v1/_oauth/token` (form-encoded, nothing in the URL) with `grant_type=authorization_code, code, redirect_uri, client_id, code_verifier` → `{access_token, token_type: Bearer, expires_in, refresh_token}`, `Cache-Control: no-store`.
+5. Every `/v1/*` call carries `Authorization: Bearer <access_token>`; `GET /v1/_me` reports `auth.app`, `auth.gate` and `auth.amr`.
+6. `grant_type=refresh_token` rotates the refresh token. Presenting a used one again revokes the whole sign-in (every token it issued). A refresh is refused for a revoked or expired sign-in, a user who is no longer `active`, a client that was removed or retired, and a gate taken out of the config.
+7. `POST /v1/_oauth/revoke` (RFC 7009) — a refresh token ends its sign-in, an access token is retired. Signing out of the Web UI does **not** end app sign-ins.
+
+**The token never exceeds the user**: it is an ordinary gate-issued user token (scopes from the user's `access_mode`, named `u-app-<client>`, tagged with the gate that signed the person in), capped by the signing-in session's own scopes and restrictions and by the client's `restrictions`. The tenant is the session's, never the request's. It stands only while its client does: removing a client from the config or retiring its ClientDef stops its tokens on their next use.
+
+**Metadata** (RFC 8414) is published at `GET /.well-known/oauth-authorization-server` with `issuer` = `LOOMCYCLE_PUBLIC_URL` (404 until that is set). The endpoints are throttled per client and client address. Audit actions: `oauth_code_issued`, `oauth_token_issued`, `oauth_code_reuse`, `oauth_refresh_reuse`, `oauth_revoked`, `oauth_refused`, `oauth_token_refused`.
+
+**Runtime clients (ClientDef).** A client can also be registered at runtime, with the same fields under `client`, through `POST /v1/_clientdef` (`op`: `create`, `update`, `get`, `list`, `retire`, `verify`; `GET /v1/_clientdef/names`), the MCP `clientdef` tool and the gRPC `ClientDef` RPC:
+
+```json
+{"op": "create", "name": "acme-board", "description": "Acme's board",
+ "client": {"kind": "public", "redirect_uris": ["https://board.acme.example/cb"], "allowed_origins": ["https://board.acme.example"]}}
+```
+
+- **Who**: an admin for any tenant (`"tenant": "acme"`), or for every tenant (no `tenant`); a tenant operator (`substrate:tenant`) for its own tenant only, asked the ACL verb `author def:client/<name>`. A member cannot. Config clients are listed read-only and are never changed or retired through the API.
+- **Whom**: a tenant's client signs in only that tenant's people. Anyone else — including a person already signed in to another tenant — is stopped on loomcycle's page and gets no code. Config and every-tenant clients serve every tenant; the token is always confined to the user's own tenant.
+- **The name is the `client_id`**, which travels in every authorize link, so it belongs to one tenant across the deployment: another tenant's create of a taken name (even a retired one) is refused.
+- **After**: `update` writes a new version and voids the client's unused codes; `retire` also revokes every sign-in made through it and retires their access tokens at once, on every replica. Every create, change and retire is audited (`client_def_created|changed|retired`) with its author and redirect URIs.
+- ClientDefs are not carried in snapshots: a restored one would send this deployment's sign-in codes to the source's apps.
+
 ### Declared principals — static `(tenant, user)` logins (RFC AO)
 
 Beyond the legacy `LOOMCYCLE_AUTH_TOKEN` (one identity, subject `default`) and runtime-minted `OperatorTokenDef` tokens, you can **declare** stable service identities in the YAML:
