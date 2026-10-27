@@ -80,6 +80,15 @@ describe("pkceChallenge", () => {
 });
 
 describe("beginAuthorize", () => {
+  it("trims a base URL's trailing slashes in linear time, however many there are", async () => {
+    const fetchMock = mockFetch([]);
+    const started = performance.now();
+    const oauth = new LoomcycleOAuth({ baseUrl: `${BASE}${"/".repeat(200_000)}`, fetch: fetchMock as unknown as typeof fetch });
+    const req = await oauth.beginAuthorize({ clientId: "loomboard", redirectUri: REDIRECT });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(new URL(req.url).pathname).toBe("/v1/_oauth/authorize");
+  });
+
   it("builds the authorize URL with an S256 challenge of the returned verifier", async () => {
     const fetchMock = mockFetch([]);
     const oauth = new LoomcycleOAuth({ baseUrl: `${BASE}/`, fetch: fetchMock as unknown as typeof fetch });

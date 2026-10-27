@@ -73,13 +73,13 @@ export class LoomcycleOAuth {
   private metadata?: Promise<OAuthServerMetadata>;
 
   constructor(opts: LoomcycleOAuthOptions = {}) {
-    this.baseUrl = (opts.baseUrl ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(opts.baseUrl ?? "http://127.0.0.1:8787");
     // Called through a closure, never as this.fetchImpl(...): a browser's
     // fetch called with any other receiver than the window throws.
     const f = opts.fetch;
     this.fetchImpl = f ? (input, init) => f(input, init) : (input, init) => fetch(input, init);
     this.cryptoImpl = opts.crypto;
-    this.issuer = opts.issuer?.replace(/\/+$/, "");
+    this.issuer = opts.issuer === undefined ? undefined : trimTrailingSlashes(opts.issuer);
   }
 
   /** Start a sign-in: a fresh PKCE verifier, its S256 challenge, a state,
@@ -438,4 +438,12 @@ function constantTimeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+/** trimTrailingSlashes drops every trailing "/" in one linear pass (a
+ *  `/\/+$/` replace backtracks on a long run of slashes). */
+function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") end--;
+  return url.slice(0, end);
 }
