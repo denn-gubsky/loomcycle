@@ -1,6 +1,6 @@
 {
   "name": "@loomcycle/bridge-slack",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Slack bot for loomcycle interactive agents (RFC EQ): each Slack user chats with a loomcycle agent as their own loomcycle user, with streamed DM replies, steering, question and review cards in Block Kit, and a workspace allow-list.",
   "license": "Apache-2.0",
