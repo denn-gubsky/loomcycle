@@ -23,8 +23,9 @@ correct, verify and walk those facts.
 - **Use Memory** for a single value under a key, for semantic recall across
   everything a scope remembers, or for plain SQL tables. To search document
   text, use this tool's `search`.
-- **Use Path** to browse or rename document names (`ls /documents`). Path only
-  names a document; reading and writing it is always this tool.
+- **Use Path** to browse or move document paths (`ls /documents`). Path only
+  names a document in the tree; reading and writing it is always this tool.
+  To rename a document's title, `update_chunk` its root chunk's `title`.
 - **Use Read/Write** for files on a volume. A document is not a file.
 
 ## Ids — get these right
@@ -215,7 +216,9 @@ a guessed date is worse than none.
 ## Paths
 
 `create_document` always names the document in the Path tree:
-`/documents/<title>` when you pass no `path`. `get_document`, `delete_document`,
+`/documents/<title>` when you pass no `path`. Renaming the document later (its
+root chunk's `title`) does not move that path; `Path op=mv` does, and
+`set_path` adds another name. `get_document`, `delete_document`,
 `export_md`, `sync` and friends accept `path` instead of `id`, and
 `query_documents`, `query_chunks` and `documents_summary` take `under_path` to
 limit themselves to a subtree. `search` and `related` take `under_path(s)` and
