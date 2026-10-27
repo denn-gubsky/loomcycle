@@ -260,6 +260,7 @@ export type {
   ListUsersResponse,
   UserSummary,
   // RFC BX Phase 2: tenant-owned users + delegated per-user tokens (v1.50.0+)
+  UserStatus,
   UserRecord,
   CreateUserBody,
   UpdateUserBody,

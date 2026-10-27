@@ -2302,7 +2302,8 @@ export interface UserSummary {
   registered?: boolean;
   display_name?: string;
   access_mode?: string; // "tenant" | "isolated"
-  status?: string; // "active" | "disabled"
+  /** The registered user's status; `""` for a subject seen only in runs. */
+  status?: UserStatus | (string & {});
 }
 
 export interface ListUsersResponse {
@@ -2311,14 +2312,29 @@ export interface ListUsersResponse {
 
 // ---- RFC BX Phase 2: tenant-owned users + delegated per-user tokens (v1.50.0+) ----
 
-/** One first-class users-table row (POST/PATCH /v1/_users). The tenant is
- *  server-derived from the authenticated principal, never sent. */
+/** A first-class user's status.
+ *
+ *  - `active` — the user may do what its access mode and bindings allow.
+ *  - `disabled` — refused everywhere; its delegated tokens are retired.
+ *  - `pending` — provisioned by a sign-in gate whose new users await
+ *    approval: the person can sign in, but every request is refused until
+ *    {@link LoomcycleClient.approveUser} makes the user `active`. Only a gate
+ *    puts a user here and only the approval takes one out, so createUser and
+ *    updateUser refuse it.
+ *
+ *  Fields typed `UserStatus | (string & {})` still accept a status a newer
+ *  server adds. */
+export type UserStatus = "active" | "disabled" | "pending";
+
+/** One first-class users-table row (POST/PATCH /v1/_users). The tenant is the
+ *  authenticated principal's, or the one an admin or `auth:manage` caller
+ *  names with `opts.tenant`; it is never in the body. */
 export interface UserRecord {
   tenant_id: string;
   subject: string;
   display_name: string;
   access_mode: string; // "tenant" | "isolated"
-  status: string; // "active" | "disabled"
+  status: UserStatus | (string & {});
   created_at: string;
   created_by: string;
 }
@@ -2329,7 +2345,8 @@ export interface CreateUserBody {
   /** "tenant" (default) collaborates on the tenant's shared primitives;
    *  "isolated" confines the member to its own user scope. */
   access_mode?: string;
-  status?: string; // default "active" server-side
+  /** Default `active`. `pending` is refused (400 `invalid_status`). */
+  status?: "active" | "disabled" | (string & {});
 }
 
 /** PATCH body — an omitted key leaves the column unchanged; a present key
@@ -2337,7 +2354,10 @@ export interface CreateUserBody {
 export interface UpdateUserBody {
   display_name?: string;
   access_mode?: string;
-  status?: string;
+  /** `disabled` also retires the user's delegated tokens. `pending` is
+   *  refused (400 `invalid_status`), and `active` on a pending user with 409
+   *  `use_approve`: call {@link LoomcycleClient.approveUser} instead. */
+  status?: "active" | "disabled" | (string & {});
 }
 
 /** The show-once result of POST /v1/_users/{subject}/tokens. `token` is the
@@ -2432,6 +2452,8 @@ export interface WhoamiResponse {
   /** How the caller signed in. Absent on a server that predates Web UI
    *  sessions. */
   auth?: WhoamiAuth;
+  /** What narrows the caller's token below its scopes, when anything does. */
+  restrictions?: TokenRestrictions;
 }
 
 /** GET /v1/_me's sign-in block. `mode` is always present; the rest only when
@@ -2447,6 +2469,10 @@ export interface WhoamiAuth {
   auth_time?: string;
   /** When the session stops authenticating unless renewed by activity. */
   session_expires_at?: string;
+  /** `pending` when the session's user awaits approval: every other request
+   *  the session makes is refused until the user is approved. Absent
+   *  otherwise. */
+  status?: "pending";
 }
 
 /** GET /v1/_me's capability summary. Bounded and non-secret: a fixed list of
