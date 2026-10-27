@@ -120,6 +120,17 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if uerr := d.updateChunkForUpsert(ctx, key, mscope, existing, in); uerr != nil {
 		return errFrom("upsert_chunk: "+uerr.Error(), uerr), nil
 	}
+	// A keyed chunk can be a document's root (a homed subject's document is rooted
+	// at its subject chunk), so mirror what moved onto the documents row. Here
+	// rather than in the upsert_chunk op handler so remember and sync, which call
+	// this directly, mirror too. Only when updateChunkForUpsert could have moved
+	// one (it sets title/type/status only when supplied); otherwise it is a
+	// guaranteed 0-row UPDATE on the entity tier's hot path.
+	if in.Title != "" || in.Type != "" || in.Status != "" {
+		if merr := d.mirrorRootFacets(ctx, key, existing); merr != nil {
+			return errFrom("upsert_chunk: "+merr.Error(), merr), nil
+		}
+	}
 	if werr := d.writeChunkMeta(ctx, key, existing, in); werr != nil {
 		return errFrom("upsert_chunk: metadata write failed: "+werr.Error(), werr), nil
 	}

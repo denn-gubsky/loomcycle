@@ -14,7 +14,7 @@ successful update adds 1 to the revision.
   `root_chunk_id`).
 - `revision` (required) — the chunk's current revision, an integer.
 - `title`, `type`, `status` — new values. Passing `""` clears `type` or
-  `status`.
+  `status`. The root chunk's `title` is the document's name (see below).
 - `body` — the new Markdown body, replacing the old one whole. Recorded in the
   chunk's history.
 - `fields` — the new fields object, replacing the old one whole (not merged):
@@ -28,6 +28,13 @@ successful update adds 1 to the revision.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Leave a key out to keep its value. Moving a chunk is `move_chunk`, not this.
+
+**To rename a document**, `update_chunk` its root chunk's `title` (the root
+chunk id is `root_chunk_id` from `get_document`). `get_document`,
+`query_documents`, `documents_summary` and `export_md` report the new name. The
+document's path does not move: to move it, use `Path op=mv`; to give it an
+extra name, `set_path`. A `title` of `""` on the root chunk leaves the
+document's name as it was.
 
 ## Returns
 
@@ -51,6 +58,12 @@ revision for your next update.
   operator-only.
 
 ## Examples
+
+Rename a document, at its root chunk's revision 2:
+
+```json
+{"op": "update_chunk", "id": "9e1c3a7d2b5f4e6081a2c3d4e5f60718", "revision": 2, "title": "Launch plan v2"}
+```
 
 Change a chunk's status and body at revision 3:
 
