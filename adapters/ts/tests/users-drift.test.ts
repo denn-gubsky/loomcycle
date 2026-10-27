@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = (rel: string) => fileURLToPath(new URL(`../../../${rel}`, import.meta.url));
@@ -71,6 +71,8 @@ const USERS = "internal/api/http/users.go";
 const CRUD = "internal/api/http/users_crud.go";
 const STORE = "internal/store/store.go";
 const LINK = "internal/api/http/authgate_link.go";
+const MANAGE = "internal/api/http/authgate_manage.go";
+const EXTERNAL = "internal/api/http/authgate_external.go";
 
 /** TS interface → the Go struct whose JSON it receives (or, for a request
  *  body, the struct the server decodes it into), and the Go keys the TS
@@ -81,6 +83,14 @@ const PAIRS: Array<[string, [string, string], string[]?]> = [
   ["CreateUserBody", [CRUD, "createUserRequest"]],
   ["UpdateUserBody", [CRUD, "updateUserRequest"]],
   ["UserIdentity", [LINK, "wireUserIdentity"]],
+  ["AuthGate", [EXTERNAL, "authgateEntry"]],
+  ["AuthGateKey", [EXTERNAL, "authgateKey"]],
+  ["AuthGateRemoval", [EXTERNAL, "authgateRemove"]],
+  ["AuthGateProbe", [EXTERNAL, "authgateProbe"]],
+  ["AuthInvite", [MANAGE, "wireInvite"]],
+  // The tenant rides opts.tenant; the client puts it in the body.
+  ["CreateInviteBody", [MANAGE, "createInviteRequest"], ["tenant"]],
+  ["GateIdentity", [MANAGE, "wireIdentity"]],
 ];
 
 describe.skipIf(!haveGo)("user and sign-in gate types match the Go wire structs", () => {
@@ -107,5 +117,22 @@ describe.skipIf(!haveGo)("user and sign-in gate types match the Go wire structs"
       return def![1]!;
     });
     expect(tsUnion("UserStatus").sort()).toEqual([...new Set([...literals, ...consts])].sort());
+  });
+
+  it("AuthInviteState is every state toWireInvite reports", () => {
+    const body = goFunc(MANAGE, "toWireInvite");
+    const states = [...body.matchAll(/state (?::=|=) "([^"]+)"/g)].map((m) => m[1]!);
+    expect(states.length, "toWireInvite: no state assignments found").toBeGreaterThan(0);
+    expect(tsUnion("AuthInviteState").sort()).toEqual([...new Set(states)].sort());
+  });
+
+  it("AuthGateKind names every gate kind the config defines", () => {
+    const dir = root("internal/config");
+    const kinds = readdirSync(dir)
+      .filter((f) => f.endsWith(".go") && !f.endsWith("_test.go"))
+      .flatMap((f) => [...readFileSync(`${dir}/${f}`, "utf8").matchAll(/^const AuthGateKind\w+ = "([^"]+)"/gm)])
+      .map((m) => m[1]!);
+    expect(kinds.length, "internal/config: no AuthGateKind constants found").toBeGreaterThan(0);
+    expect(tsUnion("AuthGateKind").sort()).toEqual(kinds.sort());
   });
 });
