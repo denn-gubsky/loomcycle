@@ -1075,6 +1075,11 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err := a.Cfg.CheckAgentTranscription(ov.Transcription); err != nil {
 			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 		}
+		// The speech cap is lower-only the same way, judged on the overlay
+		// alone for the same reason.
+		if err := a.Cfg.CheckAgentSpeech(ov.Speech); err != nil {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+		}
 		// A fork can add the override lock and cannot remove it, as it cannot
 		// widen its parent's tools: otherwise forking a locked agent would be
 		// the way to run it with other settings. The lock comes off where it
@@ -1164,6 +1169,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 		return mergedDef{}, err
 	}
 	if err := ov.Transcription.Validate(); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
+	if err := ov.Speech.Validate(); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
 	// Only the overlay is judged: on a fork, applyOverlay lets a pin
@@ -1389,6 +1397,10 @@ type mergedDef struct {
 	// overlay + content-identifying treatment as Compaction; its caps may only
 	// lower the operator's (judged at create/fork by CheckAgentTranscription).
 	Transcription *config.AgentTranscription `json:"transcription,omitempty"`
+	// Speech: the per-agent text-to-speech block. Same PER-FIELD overlay +
+	// content-identifying treatment as Transcription; its cap may only lower
+	// the operator's (judged at create/fork by CheckAgentSpeech).
+	Speech *config.AgentSpeech `json:"speech,omitempty"`
 	// Context: per-agent layered-context / retention block (RFC CR). Same
 	// PER-FIELD overlay + content-identifying treatment as Compaction; also
 	// inherited down the spawn tree.
@@ -1600,6 +1612,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// Transcription merges PER FIELD, same as Compaction.
 	if !ov.Transcription.IsZero() {
 		d.Transcription = config.MergeAgentTranscription(d.Transcription, ov.Transcription)
+	}
+	// Speech merges PER FIELD, same as Transcription.
+	if !ov.Speech.IsZero() {
+		d.Speech = config.MergeAgentSpeech(d.Speech, ov.Speech)
 	}
 	// Context merges PER FIELD, same as Compaction.
 	if !ov.Context.IsZero() {
@@ -1883,6 +1899,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		OutputFormat:          s.OutputFormat.Clone(),
 		Compaction:            s.Compaction.Clone(),
 		Transcription:         s.Transcription.Clone(),
+		Speech:                s.Speech.Clone(),
 		Context:               s.Context.Clone(),
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,
@@ -2126,6 +2143,14 @@ func signFromMergedDef(name string, def mergedDef) string {
 			STT:              tr.STT,
 			MaxPagesPerRun:   tr.MaxPagesPerRun,
 			MaxMinutesPerRun: tr.MaxMinutesPerRun,
+		}
+	}
+	// Speech is content-identifying, same as Transcription.
+	if sp := def.Speech; !sp.IsZero() {
+		c.Speech = &agents.Speech{MaxCharsPerRun: sp.MaxCharsPerRun}
+		if sp.Enabled != nil {
+			v := *sp.Enabled
+			c.Speech.Enabled = &v
 		}
 	}
 	// Context is content-identifying, same as Compaction (RFC CR).

@@ -24,8 +24,9 @@ type usageReportResponse struct {
 //
 //	group_by=tenant,user,provider,model,source,purpose
 //	               dimensions to group by (default: tenant,source); purpose
-//	               splits chat from OCR and speech-to-text calls, and a group
-//	               with speech-to-text calls carries their audio_seconds
+//	               splits chat from OCR, speech-to-text and text-to-speech
+//	               calls, and a group with speech calls carries their
+//	               audio_seconds
 //	from=RFC3339   ts >= from
 //	to=RFC3339     ts <= to
 //	tenant=acme    admin-only focus on one tenant (a tenant operator is always

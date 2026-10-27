@@ -94,6 +94,19 @@ type AclBindingRow struct {
 	RetiredAt time.Time `json:"retired_at,omitempty"`
 }
 
+// AclSnapshot is every tenant's access-control rows, as a snapshot capture
+// reads them (SnapshotReadAcl): retired lists and retired bindings included,
+// since a retired row is still state (a Put un-retires a list; a retired
+// binding still names its subject for erasure). acl_version is not here: it
+// is a per-replica-cache counter the target bumps on each restored write,
+// never a value to copy.
+type AclSnapshot struct {
+	Defs     []AclDefRow
+	Groups   []GroupRow
+	Members  []GroupMemberRow
+	Bindings []AclBindingRow
+}
+
 // AclStore persists RFC EY groups, ACL rule lists and bindings.
 type AclStore interface {
 	// AclDefPut creates the (tenant_id, name) list or updates it in place,

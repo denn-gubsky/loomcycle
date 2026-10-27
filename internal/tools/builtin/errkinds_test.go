@@ -33,7 +33,7 @@ var classifiedToolFiles = []string{
 	// Decision
 	"decision.go",
 	// Path, Channel, Context, Agent, Skill
-	"pathtool.go", "channel.go", "context.go", "context_capabilities.go", "context_guide.go", "agent.go", "skill.go",
+	"pathtool.go", "channel.go", "context.go", "context_capabilities.go", "context_guide.go", "context_identity.go", "agent.go", "skill.go",
 }
 
 // unclassifiedFailures finds, in one file, every failure built without a

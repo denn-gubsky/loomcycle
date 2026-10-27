@@ -513,6 +513,9 @@ func Run(t *testing.T, factory Factory) {
 		{"AclVersionBumpsOnEveryWrite", testAclVersionBumpsOnEveryWrite},
 		{"AclEraseSubjectRemovesOnlyThatSubjectsRows", testAclEraseSubjectRemovesOnlyThatSubjectsRows},
 		{"AclEraseTokenBindingsRemovesOnlyThoseTokensRows", testAclEraseTokenBindingsRemovesOnlyThoseTokensRows},
+		{"AclSnapshotReadsEveryTenantAndRestoresEveryField", testAclSnapshotReadsEveryTenantAndRestoresEveryField},
+		{"AclSnapshotRestoreLeavesHeldRowsAlone", testAclSnapshotRestoreLeavesHeldRowsAlone},
+		{"AclSnapshotRestoreRefusesWhatNoAuthorCouldWrite", testAclSnapshotRestoreRefusesWhatNoAuthorCouldWrite},
 		// RFC FA Web UI login sessions.
 		{"UISessionCreateGetRoundTrip", testUISessionCreateGetRoundTrip},
 		{"UISessionRevokeIsOnceAndTouchSkipsRevoked", testUISessionRevokeIsOnceAndTouchSkipsRevoked},
@@ -654,6 +657,9 @@ func Run(t *testing.T, factory Factory) {
 		{"TokenUsagePurposeRoundTrip", testTokenUsagePurposeRoundTrip},
 		{"UsageRollupAcrossPurposes", testUsageRollupAcrossPurposes},
 		{"UsageReportByPurpose", testUsageReportByPurpose},
+		// Text-to-speech ledger rows: purpose tts + input characters.
+		{"TokenUsageTTSRoundTrip", testTokenUsageTTSRoundTrip},
+		{"UsageReportTTSPurpose", testUsageReportTTSPurpose},
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},

@@ -2577,6 +2577,7 @@ models:
 | the `decision:` block, a memory reranker with `kind: decision` | `decision` |
 | `memory.embedder.model` | `embedder` |
 | `transcription.stt.model` (§9h) | `transcriber` — the tag is required here; an untagged alias is refused |
+| `speech.voices.<language>.model` (§9i) | `synthesizer` — the tag is required here; an untagged alias is refused |
 
 - A tagged alias in the wrong place **fails config load**; the error names the alias, its kind and the place.
 - An **untagged** alias used as a decision model or an embedder still loads, with a warning at boot and in `loomcycle validate` naming the alias and the tag to add. A later release will make this a failure, so tag them now.
@@ -2677,6 +2678,59 @@ agents:
 **What a run reports.** Each OCR or speech-to-text pass a `File` tool call makes emits one `transcription` event: on the SSE stream, as a transcript row, on gRPC as `Event.transcription` (`TranscriptionInfo`), typed in the TS and Python clients (`AgentEvent.transcription`), and as one line in the Web UI's run views (`⟲ OCR scan.pdf · 12 pages · claude-haiku-5-5 · $0.04 · ok`). It carries the source `ref` and the `out` ref of the Markdown written, `purpose` (`ocr` | `stt`), `engine`, the `provider` and `model` called, `pages` or `seconds`, `input_tokens` and `output_tokens`, `cost` and `currency` (absent when the pair is unpriced, which is not the same as free), `status` (`ok`; `partial` when a cap or an engine error stopped it after some units, and what was written stays; `failed`), `dry_run` (an estimate: no engine was called and nothing was spent), `error` (why the pass failed or stopped early: set on `failed`, and on `partial` when a cap or an engine error stopped it; never a secret, a URL's query or the file's content) and the `run_id` whose tool call made it. Never the text. It is a record for the operator, not model input: a resumed run's conversation does not include it.
 
 **What it costs.** OCR and speech-to-text calls land in the same usage ledger as chat calls, tagged with a `purpose` (`chat` | `ocr` | `stt`). `GET /v1/_usage?group_by=purpose` returns one row per purpose; purpose combines with the other dimensions (`group_by=tenant,purpose`, `provider,model,purpose`, …), and the rolled-up archive keeps purposes apart, so older windows split too. Every row also carries `audio_seconds` — the audio its speech-to-text calls transcribed — and a row with none omits the key, so a chat-only report reads as before. The gRPC `UsageReport` RPC (`UsageAggregate.purpose` / `audio_seconds`), the TS `usageReport({ groupBy: ["purpose"] })` and Python `usage_report(group_by=["purpose"])` clients, and the Web UI Usage page (a purpose chip, an "audio transcribed" total and an audio column in minutes) all carry it. Allowed dimensions: `tenant,user,provider,model,source,purpose`.
+
+## 9i. Speech — text-to-speech
+
+> **Configuration only in this release.** The block is read and validated, so `loomcycle validate` catches a bad value now; nothing speaks yet. `File op=speak` and the `POST /v1/audio/speech` gateway route arrive in later releases.
+
+The `speech:` block names the engine that turns text into audio, which model and voice speak each language, the output format and what a run may spend. Absent, speech is off.
+
+```yaml
+providers:
+  speech-local:               # any server with the OpenAI /v1/audio/speech shape (speaches, ptts, Kokoro-FastAPI, Ollama, OpenAI)
+    driver: openai
+    base_url: http://speaches:8000/v1   # includes /v1
+  phonon-local:
+    driver: openai
+    base_url: http://ptts:8880/v1
+models:
+  tts-uk: { provider: speech-local, model: speaches-ai/piper-uk_UA-ukrainian_tts-medium, kind: synthesizer }
+  phonon: { provider: phonon-local, model: phonon, kind: synthesizer, license: commercial }
+
+speech:
+  engine: openai-speech       # required: openai-speech | off
+  default_language: uk        # required for openai-speech; one code, and it must have a voices entry
+  voices:                     # language → model + voice; the only list a model may choose from
+    uk: { model: tts-uk, voice: ukrainian_tts }
+    en: { model: phonon, voice: Hadley, alternates: [Zoey, Easton, Freya] }
+  format: ogg                 # ogg (Opus) | mp3 | wav — default ogg when encode is set, else wav
+  encode: { command: "ffmpeg -nostdin -loglevel error -i {in} -c:a libopus -b:a 32k {out}" }   # needed for ogg and mp3; must contain {in} and {out}
+  max_chars_per_call: 4000    # default 4000; at most 4096, what one speech request accepts
+  max_chars_per_run: 100000   # default 100000
+  max_seconds_per_run: 3600   # default 3600
+  timeout_s: 600              # default 600; one engine request and one encode
+```
+
+- A voice's `model` must be a `models:` alias tagged `kind: synthesizer` that names its `provider` and a `model` (not a `model_pattern`), on a provider using the `openai` driver. `voice` is the engine's own voice id (speaches and ptts list them at `GET /v1/audio/voices`; Ollama with `ollama show <model>`); it is not checked against the engine at load. `alternates` are the other voices a caller may pick for that language.
+- Voices are per language because no single self-hosted model speaks every language well; the keys are language codes from the same list as `transcription:` (`uk`, `en`, `fr`, …).
+- The runtime asks every engine for WAV and joins the pieces itself, so `wav` needs nothing. `ogg` and `mp3` go through `encode`, which runs without a shell with a scrubbed env like the transcription helpers; `format: ogg` or `mp3` without `encode` **fails config load** naming `speech.encode` — it is never silently written as WAV.
+- `loomcycle validate` fails on an unknown key (in the block, a voice entry or `encode`), a missing `engine`, `openai-speech` with no voices or no `default_language` (or one with no voices entry), an unknown language code, the same language twice, a voice model of another kind or untagged, with no provider, a pattern, or off the `openai` driver, an empty voice id or one with spaces at its ends or control characters, a repeated alternate, an unknown `format`, an `encode` command without `{in}` and `{out}`, a negative number, `max_chars_per_call` above 4096 or above `max_chars_per_run`.
+- **Licences.** A `models:` alias may carry `license: commercial` or `license: noncommercial` (anything else fails load). Nothing refuses a noncommercial model; a speech voice using one adds a load warning naming it, and the Settings panel will show it. The Phonon 40m voices and its multilingual model are CC BY-NC: keep them off a hosted, paid deployment.
+- **Pricing.** A speech engine priced per character uses `pricing.models."<provider>/<model>": { per_million_chars: 15 }` (OpenAI `tts-1`); one priced by output time uses `per_minute`, as speech-to-text does. A self-hosted engine is free unless you set a price. A pair absent from the table is unpriced, which is not the same as free.
+
+**Per agent.** An agent can switch speech off for itself and lower the per-run character cap:
+
+```yaml
+agents:
+  briefer:
+    speech:
+      enabled: true            # default true when the operator configured an engine; false switches it off
+      max_chars_per_run: 20000 # at most speech.max_chars_per_run
+```
+
+- A cap above the operator's is **refused** at config load and at AgentDef create/fork, naming both values. At run time the lower of the two applies, so an operator who lowers the cap later still binds stored agents.
+- With no engine configured, the agent's setting is accepted and has no effect.
+- The block is set in yaml or the AgentDef overlay, merges per field on a fork, and is part of the agent's content hash (an agent without it hashes as before). A run cannot override it.
 
 ---
 
