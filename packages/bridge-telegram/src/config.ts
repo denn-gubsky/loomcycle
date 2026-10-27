@@ -69,7 +69,9 @@ function httpsBase(reader: EnvReader, name: string, value: string | undefined, o
  *  problem at once. */
 export function loadConfig(env: Env = process.env): TelegramConfig {
   const reader = new EnvReader(env);
-  const shared = loadSharedConfig(reader, { port: DEFAULT_PORT });
+  // A gate only when BRIDGE_GATE names one: a bridge deployed with a
+  // loomcycle token keeps running as it was until it is reconfigured.
+  const shared = loadSharedConfig(reader, { port: DEFAULT_PORT, gate: reader.get("BRIDGE_GATE") !== undefined });
 
   const botToken = reader.required("TELEGRAM_BOT_TOKEN", "from @BotFather");
   // The value is never echoed: a problem names the variable only.

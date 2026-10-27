@@ -1,6 +1,11 @@
 // Run by run.sh: the built bridge CLI against a real loomcycle, with a fake
 // Bot API on loopback. Posts webhook updates as Telegram would and checks
 // what the bridge sends back. Exits non-zero on the first failed check.
+//
+// Two phases, as a live deployment moves: the bridge first runs with a
+// loomcycle token and makes its users ("telegram-42"), then restarts as the
+// loomcycle gate, whose legacy_subject_prefix links each person's first login
+// to the user they already had.
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -8,8 +13,10 @@ import http from "node:http";
 import { fileURLToPath } from "node:url";
 
 const LOOMCYCLE = process.env.TELEGRAM_BRIDGE_IT_BASE_URL;
+const ADMIN = process.env.TELEGRAM_BRIDGE_IT_ADMIN;
 const LC_TOKEN = process.env.TELEGRAM_BRIDGE_IT_TOKEN;
-if (!LOOMCYCLE || !LC_TOKEN) throw new Error("run me through run.sh");
+const GATE_KEY = process.env.TELEGRAM_BRIDGE_IT_GATE_KEY;
+if (!LOOMCYCLE || !ADMIN || !LC_TOKEN || !GATE_KEY) throw new Error("run me through run.sh");
 
 const BOT_TOKEN = `4242:${randomBytes(12).toString("hex")}`;
 const SECRET = `it_${randomBytes(12).toString("hex")}`;
@@ -36,26 +43,34 @@ const api = http.createServer((req, res) => {
 await new Promise((r) => api.listen(API_PORT, "127.0.0.1", r));
 
 const bridgeLog = [];
-const bridge = spawn(process.execPath, [fileURLToPath(new URL("../../dist/cli.js", import.meta.url))], {
-  // A clean environment: only what the bridge is meant to read.
-  env: {
-    PATH: process.env.PATH,
-    HOME: process.env.TELEGRAM_BRIDGE_IT_HOME,
-    LOOMCYCLE_BASE_URL: LOOMCYCLE,
-    LOOMCYCLE_TOKEN: LC_TOKEN,
-    BRIDGE_AGENT: "helper",
-    PORT: String(BRIDGE_PORT),
-    TELEGRAM_BOT_TOKEN: BOT_TOKEN,
-    TELEGRAM_BRIDGE_WEBHOOK_SECRET: SECRET,
-    TELEGRAM_BRIDGE_ALLOWED_USERS: "42",
-    TELEGRAM_BRIDGE_ALLOWED_CHATS: "-100777",
-    TELEGRAM_BRIDGE_API_BASE_URL: `http://127.0.0.1:${API_PORT}`,
-    TELEGRAM_BRIDGE_STREAMING: "1",
-  },
-  stdio: ["ignore", "pipe", "pipe"],
-});
-bridge.stdout.on("data", (d) => bridgeLog.push(String(d)));
-bridge.stderr.on("data", (d) => bridgeLog.push(String(d)));
+let bridge;
+function startBridge(auth) {
+  bridgeLog.length = 0;
+  bridge = spawn(process.execPath, [fileURLToPath(new URL("../../dist/cli.js", import.meta.url))], {
+    // A clean environment: only what the bridge is meant to read.
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.TELEGRAM_BRIDGE_IT_HOME,
+      LOOMCYCLE_BASE_URL: LOOMCYCLE,
+      ...auth,
+      BRIDGE_AGENT: "helper",
+      PORT: String(BRIDGE_PORT),
+      TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+      TELEGRAM_BRIDGE_WEBHOOK_SECRET: SECRET,
+      TELEGRAM_BRIDGE_ALLOWED_USERS: "42",
+      TELEGRAM_BRIDGE_ALLOWED_CHATS: "-100777",
+      TELEGRAM_BRIDGE_API_BASE_URL: `http://127.0.0.1:${API_PORT}`,
+      TELEGRAM_BRIDGE_STREAMING: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  bridge.stdout.on("data", (d) => bridgeLog.push(String(d)));
+  bridge.stderr.on("data", (d) => bridgeLog.push(String(d)));
+}
+async function stopBridge() {
+  bridge.kill("SIGTERM");
+  await new Promise((r) => bridge.once("exit", r));
+}
 
 let failed = false;
 function check(ok, what) {
@@ -83,8 +98,32 @@ const post = (body, secret = SECRET) =>
 const msg = (text, chat, from, extra = {}) => ({ message: { message_id: update, date: 1, chat, from, text, ...extra } });
 const alice = { id: 42, is_bot: false, first_name: "Alice" };
 const sent = (chatId) => calls.filter((c) => (c.method === "sendMessage" || c.method === "editMessageText") && c.params.chat_id === chatId);
+const groupChat = { id: -100777, type: "supergroup", title: "IT" };
+const mention = (text) => msg(text, groupChat, alice, { entities: [{ type: "mention", offset: 0, length: 10 }] });
+async function userSubjects() {
+  const users = await (await fetch(`${LOOMCYCLE}/v1/_users?tenant=acme`, { headers: { authorization: `Bearer ${ADMIN}` } })).json();
+  return (users.users ?? []).filter((u) => u.registered).map((u) => u.user_id);
+}
 
 try {
+  // Phase 1: the bridge as it ran before, with a loomcycle token.
+  startBridge({ LOOMCYCLE_TOKEN: LC_TOKEN });
+  check(await until(() => bridgeLog.join("").includes("telegram-bridge listening"), "the token-mode bridge to start"), "the token-mode bridge started");
+  await post(msg("Hello before the gate", { id: 42, type: "private" }, alice));
+  await until(() => sent(42).length > 0, "a token-mode reply in the private chat");
+  await post(mention("@LoomItBot hello before the gate"));
+  await until(() => sent(-100777).length > 0, "a token-mode reply in the group");
+  await new Promise((r) => setTimeout(r, 1500));
+  const before = await userSubjects();
+  console.log("     users before the gate:", JSON.stringify(before));
+  const legacyGroup = before.find((s) => s.startsWith("telegram-conv-"));
+  check(before.includes("telegram-42") && !!legacyGroup, "token mode made telegram-42 and the group's telegram-conv-* user");
+  await stopBridge();
+  calls.length = 0;
+
+  // Phase 2: the same bridge as the loomcycle gate: no loomcycle token, only
+  // its own signing key.
+  startBridge({ BRIDGE_GATE: "telegram", BRIDGE_GATE_AUDIENCE: LOOMCYCLE, BRIDGE_GATE_KEY: GATE_KEY });
   const healthy = await until(
     () => bridgeLog.join("").includes("telegram-bridge listening"),
     "the bridge to start",
@@ -106,8 +145,7 @@ try {
   check(!!reply?.params.text, "the agent's answer reached the chat");
   check(sent(42).every((c) => c.params.link_preview_options?.is_disabled === true), "link previews disabled on every message and edit");
 
-  const groupChat = { id: -100777, type: "supergroup", title: "IT" };
-  const g = await post(msg("@LoomItBot hello group", groupChat, alice, { entities: [{ type: "mention", offset: 0, length: 10 }] }));
+  const g = await post(mention("@LoomItBot hello group"));
   check(g.status === 200, "group mention acked");
   await until(() => sent(-100777).length > 0, "a reply in the group");
   console.log("     group reply:", JSON.stringify(sent(-100777).at(-1)?.params.text));
@@ -120,12 +158,19 @@ try {
   await new Promise((r) => setTimeout(r, 1000));
   check(sent(-100777).length === 1, "group chatter and a bot's message got no answer");
 
+  // The gate linked each first login to the user the bridge made before, so
+  // the person and the group keep their history: no telegram:* user appears.
+  const subjects = await userSubjects();
+  console.log("     users after the gate:", JSON.stringify(subjects));
+  check(subjects.includes("telegram-42") && subjects.includes(legacyGroup), "the person and the group kept their users");
+  check(!subjects.some((s) => s.startsWith("telegram:")), "the gate made no second user for either");
+
   const logs = bridgeLog.join("");
-  check(!logs.includes(BOT_TOKEN.split(":")[1]) && !logs.includes(SECRET) && !logs.includes("Hello from Telegram"), "no token, secret or message text in the bridge's logs");
+  check(!logs.includes(BOT_TOKEN.split(":")[1]) && !logs.includes(SECRET) && !logs.includes("Hello from Telegram") && !logs.includes(JSON.parse(GATE_KEY).d) && !logs.includes("lct_"),
+    "no token, secret, gate key, issued token or message text in the bridge's logs");
   check(calls.every((c) => c.tokenOk), "every Bot API call carried the token in its path");
 } finally {
-  bridge.kill("SIGTERM");
-  await new Promise((r) => bridge.once("exit", r));
+  if (bridge.exitCode === null) await stopBridge();
   api.close();
   console.log("--- bridge log ---");
   console.log(bridgeLog.join("").trim());

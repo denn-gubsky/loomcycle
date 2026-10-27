@@ -20,7 +20,7 @@ Telegram ──HTTPS webhook /telegram/webhook──▶ bridge-telegram ──pr
 
 - **Only the bridge is public.** loomcycle stays on your private network.
 - **Webhook, not polling.** Telegram posts each update to the bridge with the secret you chose. The bridge checks the secret, answers at once and does the work after, so a long agent turn never times out a webhook.
-- **Per-user tokens.** The bridge holds one tenant-operator token. It uses it only to register each Telegram user (`telegram-<user id>`) and mint them a short-lived token. That token can start only the configured agent, interactively, at a bounded rate.
+- **Per-user tokens.** The bridge holds one tenant-operator token. It uses it only to register each Telegram user (`telegram-<user id>`) and mint them a short-lived token. That token can start only the configured agent, interactively, at a bounded rate. As a loomcycle gate (below) the bridge holds no token at all.
 - **No Telegram SDK.** The bridge calls the Bot API with `fetch`.
 
 ## Setup
@@ -75,7 +75,7 @@ Shared by every bridge:
 | Variable | Meaning | Default |
 |---|---|---|
 | `LOOMCYCLE_BASE_URL` | loomcycle's private URL | required |
-| `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required |
+| `LOOMCYCLE_TOKEN` | The bridge's `substrate:tenant` token | required, unless the bridge is a gate (below) |
 | `BRIDGE_AGENT` | The loomcycle agent every conversation runs | required |
 | `BRIDGE_TOKEN_TTL_SECONDS` | Lifetime of a user's token | `43200` |
 | `BRIDGE_RATE_PER_MINUTE`, `BRIDGE_RATE_BURST` | Runs a user may start per minute, and the burst | `6`, `10` |
@@ -98,12 +98,42 @@ Telegram's own:
 | `TELEGRAM_BRIDGE_TRUSTED_CHATS` | Comma list of group ids whose members are trusted (see Trust) | |
 | `TELEGRAM_BRIDGE_STREAMING` | `1` streams answers in private chats | `0` |
 | `TELEGRAM_BRIDGE_PUBLIC_URL` | The bridge's public `https://` base URL; the webhook is `<url>/telegram/webhook` | |
-| `TELEGRAM_BRIDGE_SET_WEBHOOK` | `1` calls `setWebhook` at start, with the secret and the two update types the bridge handles | unset |
+| `TELEGRAM_BRIDGE_SET_WEBHOOK` | `1` calls `setWebhook` at start, with the secret and the update types the bridge handles | unset |
 | `TELEGRAM_BRIDGE_API_BASE_URL` | The Bot API server, for a [local Bot API server](https://github.com/tdlib/telegram-bot-api). `http://` is accepted only to localhost | `https://api.telegram.org` |
 
 **The bot is closed by default.** With no allow-list and no `TELEGRAM_BRIDGE_ALLOW_ANYONE=1`, the bridge refuses to start: a bot anyone can find must not run on your model keys unless you say so. A private chat passes when its user is in `TELEGRAM_BRIDGE_ALLOWED_USERS`; a group passes when the group is in `TELEGRAM_BRIDGE_ALLOWED_CHATS`, for anyone in it, or with `TELEGRAM_BRIDGE_GROUP_REQUIRE_USERS=1` only for its members who are in `TELEGRAM_BRIDGE_ALLOWED_USERS`. A refused chat hears why, once.
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each chat was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
+
+## As a loomcycle gate
+
+Since 0.3 the bridge can be a loomcycle gate instead of holding a token: it signs who is talking with its own key, and loomcycle provisions the user and issues the token. A stolen bridge can then only speak for Telegram users, never act as a tenant operator. Set `BRIDGE_GATE` and the bridge runs this way; without it, it runs with `LOOMCYCLE_TOKEN` as before.
+
+1. Make a key pair. The private half goes to the bridge only:
+
+   ```bash
+   node -e 'const {privateKey,publicKey}=require("node:crypto").generateKeyPairSync("ed25519");
+   console.log("BRIDGE_GATE_KEY=" + JSON.stringify(privateKey.export({format:"jwk"})));
+   console.log("public_key: " + JSON.stringify(publicKey.export({format:"jwk"})))'
+   ```
+
+2. Register the gate in loomcycle, in the tenant the bridge used:
+
+   ```yaml
+   auth:
+     gates:
+       telegram:
+         kind: external
+         public_key: { kty: OKP, crv: Ed25519, x: "<the public x>" }
+         issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], rate: { per_minute: 6, burst: 10 } }
+         identity_map: { tenant: acme, provision: auto, legacy_subject_prefix: telegram- }
+   ```
+
+   `legacy_subject_prefix: telegram-` keeps the people the bridge already served: each person's first message through the gate links the user the bridge made (`telegram-42`, a group's `telegram-conv-<hash>`), so their history, memory and documents stay theirs. Without it they would start again as new users `telegram:42`. New people are `telegram:<id>` either way.
+
+3. Reconfigure the bridge: set `BRIDGE_GATE=telegram`, `BRIDGE_GATE_AUDIENCE` (loomcycle's `LOOMCYCLE_PUBLIC_URL`) and `BRIDGE_GATE_KEY`, and remove `LOOMCYCLE_TOKEN` and `BRIDGE_USER_ACCESS_MODE`, which a gate bridge refuses. Then retire the old operator token. The other `BRIDGE_GATE_*` settings are in `@loomcycle/bridge-core`'s README.
+
+As a gate the bridge also tells loomcycle about groups and leavers. A person is in the loomcycle group `telegram:tg-chat-<id>` of each trusted chat they belong to (`telegram:tg-chat-<id>-admins` when they administer it), which an operator can bind permissions to; it takes `trusted: true` on the gate and an `identity_map.groups` block. A person who blocks the bot is revoked in loomcycle: disabled at once, then removed by the gate's removal policy. For that Telegram must send `my_chat_member` updates: `TELEGRAM_BRIDGE_SET_WEBHOOK=1` asks for them, or add it to `allowed_updates` when you set the webhook by hand.
 
 ## Groups
 
