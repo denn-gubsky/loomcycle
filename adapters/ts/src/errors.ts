@@ -507,3 +507,36 @@ export class SubstrateToolRefusedError extends LoomcycleError {
     this.tool = opts?.tool ?? "";
   }
 }
+
+/** An app sign-in (RFC FL) failed. `code` is the OAuth error code: one the
+ *  server sent (`invalid_grant`, `invalid_client`, `access_denied`,
+ *  `temporarily_unavailable`, …, RFC 6749 §4.1.2.1 / §5.2), or one the client
+ *  decided on before trusting a response:
+ *  - `state_mismatch`: the redirect's `state` is not the one this sign-in
+ *    sent — a forged or crossed response; nothing was exchanged.
+ *  - `issuer_mismatch`: the redirect's `iss` names another server (RFC 9207).
+ *  - `invalid_response`: the server's answer is not a token response.
+ *  - `signed_out`: the sign-in ended (its refresh token was refused); sign in
+ *    again.
+ *  `invalid_grant` on a refresh means the same: the sign-in is over. */
+export class OAuthError extends LoomcycleError {
+  /** The server's `error_description`, when it sent one. */
+  readonly errorDescription?: string;
+  constructor(
+    code: string,
+    opts?: { status?: number; bodyText?: string; errorDescription?: string },
+  ) {
+    super(
+      opts?.errorDescription ? `loomcycle sign-in: ${code}: ${opts.errorDescription}` : `loomcycle sign-in: ${code}`,
+      { status: opts?.status, bodyText: opts?.bodyText, code },
+    );
+    this.name = "OAuthError";
+    this.errorDescription = opts?.errorDescription;
+  }
+
+  /** `temporarily_unavailable` (and a 429 throttle) clear on their own; every
+   *  other sign-in failure needs the person or the app to act. */
+  override get retryable(): boolean {
+    return this.code === "temporarily_unavailable";
+  }
+}

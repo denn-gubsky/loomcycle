@@ -27,6 +27,7 @@
 import type { _FetchContext } from "./fetch-helpers.js";
 import {
   authHeaders,
+  authorizedFetch,
   deleteRequest,
   deleteJSON,
   jsonFetch,
@@ -37,6 +38,7 @@ import {
 } from "./fetch-helpers.js";
 import { parseSSE } from "./stream.js";
 import { InteractiveSession } from "./interactive.js";
+import { LoomcycleOAuth } from "./oauth.js";
 import {
   ClientToolHost,
   clientToolsURL,
@@ -275,6 +277,15 @@ import type {
   GroupMemberChange,
   GroupMemberKind,
   GroupRow,
+  AppClientConfig,
+  AppClientEntry,
+  ClientDefInput,
+  ClientDefListResponse,
+  ClientDefNamesResponse,
+  ClientDefRecord,
+  ClientDefRetireResult,
+  ClientDefVerifyResult,
+  TokenProvider,
 } from "./types.js";
 
 /** samplingToWire maps the camelCase SamplingOptions to the snake_case wire
@@ -408,12 +419,31 @@ function applyOverridesToWire(body: Record<string, unknown>, opts: RunOverrideOp
 export class LoomcycleClient {
   private ctx: _FetchContext;
 
+  private readonly tokenProvider?: TokenProvider;
+  private oauthHelper?: LoomcycleOAuth;
+  private readonly rawFetch?: typeof fetch;
+
   constructor(opts: ClientOptions = {}) {
+    if (opts.authToken && opts.tokenProvider) {
+      throw new TypeError("LoomcycleClient: pass authToken or tokenProvider, not both");
+    }
+    const fetchImpl = opts.fetch ?? fetch;
+    this.rawFetch = opts.fetch;
+    this.tokenProvider = opts.tokenProvider;
     this.ctx = {
       baseUrl: (opts.baseUrl ?? "http://127.0.0.1:8787").replace(/\/$/, ""),
       authToken: opts.authToken,
-      fetchImpl: opts.fetch ?? fetch,
+      // With a provider, ctx.authToken stays unset and the wrapper sets the
+      // header on every request, so no method needs to know.
+      fetchImpl: opts.tokenProvider ? authorizedFetch(fetchImpl, opts.tokenProvider) : fetchImpl,
     };
+  }
+
+  /** The app sign-in helper (RFC FL) for this server: same base URL and
+   *  fetch, never this client's bearer. See {@link LoomcycleOAuth}. */
+  get oauth(): LoomcycleOAuth {
+    this.oauthHelper ??= new LoomcycleOAuth({ baseUrl: this.ctx.baseUrl, fetch: this.rawFetch });
+    return this.oauthHelper;
   }
 
   // ---- Run lifecycle ----
@@ -1947,7 +1977,11 @@ export class LoomcycleClient {
    *  `.close()` to stop. Uses the global WebSocket (browsers, Node 22+); pass
    *  `WebSocketImpl` (e.g. the `ws` package) on older Node. */
   connectClientTools(opts: ConnectClientToolsOptions): ClientToolHost {
-    const host = new ClientToolHost(clientToolsURL(this.ctx.baseUrl), this.ctx.authToken, opts);
+    // A provider is asked on every (re)connect, so a host outliving one
+    // access token reconnects with the next.
+    const provider = this.tokenProvider;
+    const auth = provider ? () => provider.getToken() : this.ctx.authToken;
+    const host = new ClientToolHost(clientToolsURL(this.ctx.baseUrl), auth, opts);
     host.start();
     return host;
   }
@@ -2805,6 +2839,91 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
+  }
+
+  // ---- App clients (RFC FL ClientDef) ----
+  //
+  // The apps that sign people in through this server's gates, registered at
+  // runtime beside the config's `auth.clients`. A tenant operator
+  // (substrate:tenant) registers its own tenant's; an admin any tenant's, or
+  // one for every tenant. Config clients are read only here, and another
+  // tenant's client answers as not found. A refusal raises
+  // SubstrateToolRefusedError. Each method posts to `POST /v1/_clientdef`.
+
+  /** The ClientDef op dispatch, as sent: `{op, name?, def_id?, client?,
+   *  description?, tenant?, content_sha256?}`. The typed methods below are
+   *  the usual way in. */
+  async clientDef(input: ClientDefInput, opts?: { signal?: AbortSignal }): Promise<unknown> {
+    return postJSON<unknown>(this.ctx, "/v1/_clientdef", input, opts);
+  }
+
+  /** Register an app (`op: "create"`). Its redirect URIs and origins are
+   *  checked as strictly as a config client's. `tenant` is for an admin: the
+   *  tenant whose people it signs in, "" (the default) for every tenant. */
+  async createClientDef(
+    name: string,
+    client: AppClientConfig,
+    opts?: { description?: string; tenant?: string; signal?: AbortSignal },
+  ): Promise<ClientDefRecord> {
+    const input: ClientDefInput = { op: "create", name, client };
+    if (opts?.description !== undefined) input.description = opts.description;
+    if (opts?.tenant !== undefined) input.tenant = opts.tenant;
+    return (await this.clientDef(input, signalOpts(opts))) as ClientDefRecord;
+  }
+
+  /** Change an app (`op: "update"`): a new version, whole. Codes issued
+   *  under the old version that were not exchanged yet stop working. */
+  async updateClientDef(
+    name: string,
+    client: AppClientConfig,
+    opts?: { description?: string; signal?: AbortSignal },
+  ): Promise<ClientDefRecord> {
+    const input: ClientDefInput = { op: "update", name, client };
+    if (opts?.description !== undefined) input.description = opts.description;
+    return (await this.clientDef(input, signalOpts(opts))) as ClientDefRecord;
+  }
+
+  /** One app by name (a config client too) or one version by `def_id`
+   *  (`op: "get"`). */
+  async getClientDef(
+    ref: { name?: string; def_id?: string },
+    opts?: { signal?: AbortSignal },
+  ): Promise<AppClientEntry> {
+    return (await this.clientDef({ op: "get", ...ref }, opts)) as AppClientEntry;
+  }
+
+  /** The apps the caller may see, config ones included (`op: "list"`). An
+   *  admin may focus one tenant with `tenant` ("" = the every-tenant ones). */
+  async listClientDefs(opts?: { tenant?: string; signal?: AbortSignal }): Promise<ClientDefListResponse> {
+    const input: ClientDefInput = { op: "list" };
+    if (opts?.tenant !== undefined) input.tenant = opts.tenant;
+    return (await this.clientDef(input, signalOpts(opts))) as ClientDefListResponse;
+  }
+
+  /** Take an app out of service (`op: "retire"`): its unused codes are
+   *  voided, its sign-ins revoked and their access tokens retired. The name
+   *  is not reusable. */
+  async retireClientDef(name: string, opts?: { signal?: AbortSignal }): Promise<ClientDefRetireResult> {
+    return (await this.clientDef({ op: "retire", name }, opts)) as ClientDefRetireResult;
+  }
+
+  /** Whether an app is deployed and, with `contentSha256`, whether it matches
+   *  (`op: "verify"`). An absent app answers `deployed: false`. */
+  async verifyClientDef(
+    name: string,
+    opts?: { contentSha256?: string; signal?: AbortSignal },
+  ): Promise<ClientDefVerifyResult> {
+    const input: ClientDefInput = { op: "verify", name };
+    if (opts?.contentSha256) input.content_sha256 = opts.contentSha256;
+    return (await this.clientDef(input, signalOpts(opts))) as ClientDefVerifyResult;
+  }
+
+  /** The apps the caller may see, by name (`GET /v1/_clientdef/names`). An
+   *  admin may focus one tenant with `tenant`; unlike the other families'
+   *  name lists, `""` is a focus too (the every-tenant apps). */
+  async listClientDefNames(opts?: { tenant?: string; signal?: AbortSignal }): Promise<ClientDefNamesResponse> {
+    const q = opts?.tenant !== undefined ? `?tenant=${encodeURIComponent(opts.tenant)}` : "";
+    return jsonFetch<ClientDefNamesResponse>(this.ctx, `/v1/_clientdef/names${q}`, opts);
   }
 
   // ---- Def name enumeration (GET /v1/_<family>def/names) ----

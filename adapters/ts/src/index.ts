@@ -129,6 +129,19 @@
  *     listVolumes(): Promise<PersistentVolumesResponse>
  *     listEphemeralVolumes(): Promise<EphemeralVolumesResponse>
  *
+ *     // App clients (RFC FL ClientDef; tenant operator or admin)
+ *     clientDef(input): Promise<unknown>                          // POST /v1/_clientdef
+ *     createClientDef / updateClientDef(name, client, opts?): Promise<ClientDefRecord>
+ *     getClientDef({name | def_id}): Promise<AppClientEntry>
+ *     listClientDefs(opts?): Promise<ClientDefListResponse>
+ *     retireClientDef(name): Promise<ClientDefRetireResult>
+ *     verifyClientDef(name, {contentSha256}?): Promise<ClientDefVerifyResult>
+ *     listClientDefNames(opts?): Promise<ClientDefNamesResponse> // GET /v1/_clientdef/names
+ *
+ *     // App sign-in (RFC FL) — also standalone as `new LoomcycleOAuth(...)`
+ *     oauth: LoomcycleOAuth   // beginAuthorize / completeAuthorize / refresh / revoke / discover
+ *     new LoomcycleClient({ tokenProvider: new OAuthTokenProvider(...) })  // refreshes on its own
+ *
  *     // Agent Teams (RFC AP — TeamDef substrate; tenant-confined)
  *     listTeams(): Promise<ListTeamsResponse>
  *     renderTeamDiagram(name, opts?): Promise<TeamDiagram>
@@ -208,6 +221,8 @@ export type {
   WebSocketLike,
   WebSocketCtor,
 } from "./client-tools.js";
+export { LoomcycleOAuth, OAuthTokenProvider, parseAuthorizeResponse, pkceChallenge } from "./oauth.js";
+export type { LoomcycleOAuthOptions, OAuthTokenProviderOptions } from "./oauth.js";
 
 export type {
   // Run lifecycle
@@ -736,6 +751,28 @@ export type {
   AuthzSimulateRequest,
   AuthzSimulateResult,
   AuthzSimulateResponse,
+  // App sign-in + app clients (RFC FL)
+  OAuthServerMetadata,
+  OAuthTokenResponse,
+  OAuthTokenSet,
+  BeginAuthorizeOptions,
+  AuthorizeRequest,
+  AuthorizeResponseParams,
+  CompleteAuthorizeOptions,
+  RefreshTokenOptions,
+  RevokeTokenOptions,
+  TokenProvider,
+  AppClientRefresh,
+  AppClientConfig,
+  ClientDefInput,
+  ClientDefRecord,
+  ConfigAppClient,
+  AppClientEntry,
+  ClientDefListResponse,
+  ClientDefVerifyResult,
+  ClientDefRetireResult,
+  ClientDefNameSummary,
+  ClientDefNamesResponse,
 } from "./types.js";
 
 export {
@@ -751,6 +788,7 @@ export {
   ChannelCursorRegressionError,
   LoomcycleError,
   NotPausedError,
+  OAuthError,
   PauseNotConfiguredError,
   PerUserQuotaExhaustedError,
   PromptTooLargeError,

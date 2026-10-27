@@ -10,7 +10,7 @@
  * the boring fetch + error-translation machinery lives here.
  */
 
-import type { AuthzReason } from "./types.js";
+import type { AuthzReason, TokenProvider } from "./types.js";
 import {
   AclDeniedError,
   AgentIDInUseError,
@@ -57,6 +57,35 @@ export interface _FetchContext {
   baseUrl: string;
   authToken: string | undefined;
   fetchImpl: typeof fetch;
+}
+
+/** authorizedFetch wraps a fetch so every request carries the provider's
+ *  current bearer (replacing whatever Authorization the caller set), and a
+ *  401 is retried once with the token `onUnauthorized` hands back — never
+ *  twice, so a token the server keeps refusing cannot loop. A request whose
+ *  body is a stream is not retried: the stream was consumed by the first
+ *  send. */
+export function authorizedFetch(inner: typeof fetch, provider: TokenProvider): typeof fetch {
+  return async (input, init) => {
+    const token = await provider.getToken();
+    const first = await inner(input, withBearer(init, token));
+    if (first.status !== 401 || !provider.onUnauthorized || !replayableBody(init?.body)) return first;
+    const fresh = await provider.onUnauthorized(token);
+    if (!fresh || fresh === token) return first;
+    await first.body?.cancel().catch(() => undefined);
+    return inner(input, withBearer(init, fresh));
+  };
+}
+
+function withBearer(init: RequestInit | undefined, token: string | undefined): RequestInit {
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  else headers.delete("Authorization");
+  return { ...init, headers };
+}
+
+function replayableBody(body: RequestInit["body"]): boolean {
+  return !(typeof ReadableStream !== "undefined" && body instanceof ReadableStream);
 }
 
 /** authHeaders builds the standard request header set: JSON Accept
