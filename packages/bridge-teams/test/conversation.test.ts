@@ -1,11 +1,15 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import http from "node:http";
+import net from "node:net";
 
-import { ConversationRouter, MemoryStore, TokenBroker, VERB } from "@loomcycle/bridge-core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { ConversationRef } from "../src/bridge.js";
+import { ConversationRouter, keyFromSecret, MemoryStore, TokenBroker, VERB, type Logger } from "@loomcycle/bridge-core";
+
+import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../src/bridge.js";
 import { parseCardAction, renderCard } from "../src/cards.js";
+import { loadConfig } from "../src/config.js";
 import { conversationSubject, identify, NOT_AVAILABLE_TEXT, type ActivityIdentityFields } from "../src/identity.js";
-import { FakeLoomcycle, FakeTeams, httpError, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
+import { FakeGate, FakeLoomcycle, FakeTeams, httpError, RecordingLogger, settle, silentLogger, waitFor, type StartedRun } from "./fakes.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
 const ALICE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -353,5 +357,175 @@ describe("teams bridge conversation", () => {
     expect((await store.get("conv-1"))?.sessionId).toBe("sess-1");
     // An idle conversation leaves memory; the store brings it back.
     expect(router.get("conv-1")).toBeUndefined();
+  });
+});
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.once("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const port = (s.address() as net.AddressInfo).port;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+// The whole bridge as a loomcycle gate (RFC FA §3.7d): the Teams SDK app in
+// its local (unauthenticated) mode, activities POSTed to /api/messages, a
+// recording Bot Connector for replies, and a fake loomcycle gate surface.
+describe("teams bridge as a loomcycle gate", () => {
+  const OTHER_TENANT = "22222222-2222-2222-2222-222222222222";
+  const SECRET = "s".repeat(40);
+  let lc: FakeLoomcycle;
+  let gate: FakeGate;
+  let connector: http.Server;
+  let connectorUrl: string;
+  let bridge: TeamsBridge | undefined;
+  let port: number;
+  let seq = 0;
+
+  beforeEach(async () => {
+    lc = new FakeLoomcycle();
+    gate = new FakeGate();
+    connector = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: `act-${++seq}` }));
+      });
+    });
+    await new Promise<void>((r) => connector.listen(0, "127.0.0.1", r));
+    connectorUrl = `http://127.0.0.1:${(connector.address() as net.AddressInfo).port}/`;
+  });
+
+  afterEach(async () => {
+    for (const run of lc.runs) run.events.end();
+    await bridge?.stop();
+    bridge = undefined;
+    await new Promise((r) => connector.close(r));
+  });
+
+  async function start(opts: { asGate?: boolean; logger?: Logger } = {}) {
+    port = await freePort();
+    const auth = opts.asGate === false
+      ? { LOOMCYCLE_TOKEN: ADMIN_TOKEN }
+      : { BRIDGE_GATE: "teams", BRIDGE_GATE_AUDIENCE: "https://lc.example", BRIDGE_GATE_SECRET: SECRET };
+    const cfg = loadConfig({
+      LOOMCYCLE_BASE_URL: "http://loomcycle.test",
+      ...auth,
+      BRIDGE_AGENT: "helper",
+      TEAMS_BRIDGE_ALLOWED_TENANTS: TENANT,
+      BRIDGE_DEV: "1",
+      PORT: String(port),
+    });
+    bridge = createTeamsBridge(cfg, {
+      clients: lc.client,
+      gateFetch: gate.fetch,
+      gateKey: keyFromSecret(SECRET),
+      logger: opts.logger ?? silentLogger,
+      store: new MemoryStore(),
+      stream: { stopPollMs: 5 },
+    });
+    await bridge.start();
+  }
+
+  const post = (activity: Record<string, unknown>) =>
+    fetch(`http://127.0.0.1:${port}/api/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channelId: "msteams",
+        serviceUrl: connectorUrl,
+        timestamp: new Date().toISOString(),
+        id: `in-${++seq}`,
+        from: { id: "29:user", aadObjectId: ALICE, name: "Alice" },
+        recipient: { id: "28:bot", name: "Bot" },
+        conversation: { id: "a:personal", conversationType: "personal", tenantId: TENANT },
+        channelData: { tenant: { id: TENANT } },
+        ...activity,
+      }),
+    });
+
+  const uninstall = (over: Record<string, unknown> = {}) => post({ type: "installationUpdate", action: "remove", ...over });
+
+  /** message posts a message and lets the run it starts announce itself. */
+  async function message(conversation: Record<string, unknown>, text = "hello") {
+    const before = lc.runs.length;
+    const res = post({ type: "message", text, conversation });
+    await waitFor(() => lc.runs.length > before, "a run");
+    announce(lc.runs.at(-1)!, `run-${lc.runs.length}`);
+    expect((await res).status).toBe(200);
+  }
+
+  function announce(run: StartedRun, runId: string) {
+    run.events.push({ type: "session", session_id: `sess-${runId}` });
+    run.events.push({ type: "agent", run_id: runId, agent_id: `agent-${runId}`, session_id: `sess-${runId}`, parent_agent_id: null });
+  }
+
+  it("asserts a person and a shared chat with their tenant's group, and mints nothing", async () => {
+    await start();
+    await message({ id: "a:personal", conversationType: "personal", tenantId: TENANT });
+    expect(gate.asserts).toHaveLength(1);
+    expect(gate.asserts[0]!.gate).toBe("teams");
+    expect(gate.asserts[0]!.payload).toMatchObject({
+      iss: "teams",
+      aud: "https://lc.example",
+      sub: ALICE,
+      name: "Alice",
+      lc_use: "assert",
+      groups: [`teams-tenant-${TENANT}`],
+      token: { agents: ["helper"], overrides: ["interactive"] },
+    });
+    expect(lc.runs[0]!.token).toMatch(new RegExp(`^tok-teams:${ALICE}-`));
+    // The bridge registers nobody and mints nothing: loomcycle does.
+    expect(lc.createdUsers).toEqual([]);
+    expect(lc.mints).toEqual([]);
+
+    await message({ id: "19:g@thread.v2", conversationType: "groupChat", tenantId: TENANT });
+    const g = gate.asserts.at(-1)!;
+    expect(g.payload.sub).toBe(conversationSubject(TENANT, "19:g@thread.v2", "teams").slice("teams:".length));
+    expect(g.payload.groups).toEqual([`teams-tenant-${TENANT}`]);
+  });
+
+  it("revokes a person who uninstalls the app from their own chat, and nothing else", async () => {
+    await start();
+    expect((await uninstall()).status).toBe(200);
+    await waitFor(() => gate.revokes.length === 1, "revoke");
+    expect(gate.revokes[0]).toMatchObject({ gate: "teams", payload: { iss: "teams", sub: ALICE, lc_use: "revoke" } });
+
+    // An install, an uninstall from a group chat or a team, and one from a
+    // tenant outside the fence are not a person leaving the bot.
+    await post({ type: "installationUpdate", action: "add" });
+    await uninstall({ conversation: { id: "19:g@thread.v2", conversationType: "groupChat", tenantId: TENANT } });
+    await uninstall({ conversation: { id: "19:c@thread.tacv2", conversationType: "channel", tenantId: TENANT } });
+    await uninstall({ conversation: { id: "a:x", conversationType: "personal", tenantId: OTHER_TENANT }, channelData: { tenant: { id: OTHER_TENANT } } });
+    await settle();
+    expect(gate.revokes).toHaveLength(1);
+    expect(lc.calls).toEqual([]);
+  });
+
+  it("logs only the status when loomcycle refuses a revoke", async () => {
+    const log = new RecordingLogger();
+    gate.revokeStatus = 500;
+    await start({ logger: log });
+    await uninstall();
+    await waitFor(() => log.lines.some((l) => l.msg === "teams revoke failed"), "the warning");
+    expect(log.lines.find((l) => l.msg === "teams revoke failed")).toEqual({ level: "warn", msg: "teams revoke failed", attrs: { status: 500 } });
+  });
+
+  it("with a loomcycle token, ignores an uninstall as it always has", async () => {
+    await start({ asGate: false });
+    expect((await uninstall()).status).toBe(200);
+    await settle();
+    expect(gate.revokes).toEqual([]);
+    expect(lc.calls).toEqual([]);
+  });
+
+  it("with a loomcycle token, registers and mints for the subjects it always used", async () => {
+    await start({ asGate: false });
+    await message({ id: "a:personal", conversationType: "personal", tenantId: TENANT });
+    expect(gate.asserts).toEqual([]);
+    expect(lc.createdUsers.map((u) => u.subject)).toEqual([`teams-${ALICE}`]);
   });
 });

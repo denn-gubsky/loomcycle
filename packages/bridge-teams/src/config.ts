@@ -17,7 +17,9 @@ export const DEFAULT_PORT = 3978;
 
 export function loadConfig(env: Env = process.env): TeamsConfig {
   const r = new EnvReader(env);
-  const shared = loadSharedConfig(r, { port: DEFAULT_PORT });
+  // A gate only when BRIDGE_GATE names one: a bridge deployed with a
+  // loomcycle token keeps running as it was until it is reconfigured.
+  const shared = loadSharedConfig(r, { port: DEFAULT_PORT, gate: r.get("BRIDGE_GATE") !== undefined });
   const raw = r.required("TEAMS_BRIDGE_ALLOWED_TENANTS");
   const allowedTenants = new Set(r.list("TEAMS_BRIDGE_ALLOWED_TENANTS", { lower: true }));
   if (raw && allowedTenants.size === 0) r.problems.push("TEAMS_BRIDGE_ALLOWED_TENANTS lists no tenant");

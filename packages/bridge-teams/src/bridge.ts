@@ -18,7 +18,7 @@ import { App } from "@microsoft/teams.apps";
 
 import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
-import { identify } from "./identity.js";
+import { groupsOf, identify, uninstalledSub } from "./identity.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
 
@@ -65,6 +65,8 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
     // a stray one must not turn off request validation in production.
     dangerouslyAllowUnauthenticatedRequests: shared.dev,
   });
+  // The bridge's gate name in loomcycle; unset for a bridge with a token.
+  const gate = shared.gate?.name;
 
   const adapter: BridgeAdapter<ConversationRef> = {
     platform: { name: "teams", label: "Teams" },
@@ -75,20 +77,44 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
       send: (ref, activity) => app.sendTo(ref, activity),
       createStream: (ref) => app.createStreamFor(ref),
     },
+    /** groupsFor is what loomcycle is told about a run identity's groups
+     *  (RFC FA §3.7d): the Entra tenant the conversation is in, from its
+     *  stored reference. No lookups: Teams says nothing more without Graph. */
+    async groupsFor(_subject, ref) {
+      return groupsOf(ref);
+    },
     async start(ctx) {
       app.on("message", async ({ activity, ref }) => {
         // Card submits from older clients arrive as messages with no text.
         const text = stripMentionsText(activity) ?? "";
-        await ctx.router.onMessage(identify(activity, cfg.allowedTenants), ref as unknown as ConversationRef, text);
+        await ctx.router.onMessage(identify(activity, cfg.allowedTenants, gate), ref as unknown as ConversationRef, text);
       });
       app.on("card.action", async ({ activity, ref }) => {
         const res = await ctx.router.onCardAction(
-          identify(activity, cfg.allowedTenants),
+          identify(activity, cfg.allowedTenants, gate),
           ref as unknown as ConversationRef,
           parseCardAction(activity.value),
         );
         return toInvokeBody(res ?? { message: "This card is no longer active." });
       });
+      const g = ctx.gate;
+      if (g) {
+        // A person who uninstalls the app from their 1:1 chat has left the
+        // bot, and the bridge, as the gate for Teams, tells loomcycle so (RFC
+        // FA §3.7c): the user is disabled at once and removed per the gate's
+        // policy. The activity arrives on the same Bot Connector-authenticated
+        // route as a message, and passes the same tenant fence.
+        app.on("install.remove", async ({ activity }) => {
+          const sub = uninstalledSub(activity, cfg.allowedTenants);
+          if (!sub) return;
+          try {
+            await g.revoke(g.subjectOf(sub));
+            ctx.log.info("teams user uninstalled the app; revoked in loomcycle", { conversation: activity.conversation?.id });
+          } catch (err) {
+            ctx.log.warn("teams revoke failed", { status: (err as { status?: number })?.status });
+          }
+        });
+      }
       await app.start(shared.port);
     },
     async stop() {
