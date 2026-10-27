@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileCapturedLine, humanBytes } from "./fileCaptured";
+import { fileCapturedLine, humanBytes, inboxDownloadPath } from "./fileCaptured";
 import { formatLine } from "../components/TerminalTranscript";
 
 const info = {
@@ -30,5 +30,13 @@ describe("file_captured", () => {
     });
     expect(l.payload).toBe(fileCapturedLine(info));
     expect(l.full).toContain("sha256: 3f9a1c2b4d5e");
+    // The expanded row offers the file for download, from the run on the row.
+    expect(l.download).toEqual({ runId: "run-1", ref: info.ref });
+  });
+
+  it("downloads from the inbox route, each path segment encoded", () => {
+    expect(inboxDownloadPath("run 1", "volume:inbox:documents/board papers#1.pdf")).toBe(
+      "/v1/runs/run%201/inbox/documents/board%20papers%231.pdf",
+    );
   });
 });

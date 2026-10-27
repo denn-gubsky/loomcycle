@@ -24,3 +24,12 @@ export function humanBytes(n: number): string {
   }
   return `${v.toFixed(1)} ${units[i]}`;
 }
+
+// inboxDownloadPath is the route that serves one inbox file's bytes:
+// GET /v1/runs/{run_id}/inbox/{path}. ref is the event's
+// `volume:inbox:<path>`; each segment is encoded, the slashes kept. Any run of
+// the tree reaches the tree's inbox, so the run that returned the file serves.
+export function inboxDownloadPath(runId: string, ref: string): string {
+  const rel = ref.replace(/^volume:inbox:/, "");
+  return `/v1/runs/${encodeURIComponent(runId)}/inbox/${rel.split("/").map(encodeURIComponent).join("/")}`;
+}
