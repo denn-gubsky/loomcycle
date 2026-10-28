@@ -5,17 +5,24 @@ import { REDIRECT_GATE_KINDS, redirectLoginError, redirectLoginHref } from "../l
 import { afterSignInHref, appReturnTo, appSignInRequest, mayAutoContinue } from "../lib/appSignIn";
 import { signedInDestination } from "../lib/returnPath";
 import { proxyRefusalText, signInThroughProxy } from "../lib/headerGate";
+import {
+  type PasskeyOffer,
+  assertPasskey,
+  passkeyLoginBegin,
+  passkeyLoginComplete,
+  passkeysSupported,
+} from "../lib/passkeys";
 
 // LoginView is the sign-in page. It renders from /ui/login-config.json: the
 // deployment's mode and its gates (name, kind, label) — nothing else about the
 // server is known before sign-in. Each gate kind has its own form: `token`, the
-// paste box (BaseAuthGate), and `password`, a login and password with an
-// authenticator code when the account has one (NaiveAuthGate), `oidc`, a
-// button that starts a sign-in at the identity provider (a top-level
-// navigation; the provider sends the browser back to the server), and
-// `header`, one button for a proxy that already signed the person in
-// (HeaderGate). A gate kind
-// this page does not know is listed but not offered.
+// paste box (BaseAuthGate), and `password`, a login and password with a
+// second factor (an authenticator code or a passkey) when the account has one
+// (NaiveAuthGate), `oidc`, a button that starts a sign-in at the identity
+// provider (a top-level navigation; the provider sends the browser back to
+// the server), `header`, one button for a proxy that already signed the
+// person in (HeaderGate), and `passkey`, a password-less sign-in with a
+// passkey. A gate kind this page does not know is listed but not offered.
 //
 // Signing in creates a server-side session: the browser gets an HttpOnly
 // session cookie and never keeps the token. The token travels once, in an
@@ -147,31 +154,58 @@ function HeaderGateForm({ gate, disabled, next }: { gate: LoginGate; disabled: b
 
 // PasswordGateForm signs in with a login and a password. The login names the
 // account on its own (it is unique per gate), so no tenant is asked. When the
-// account has an authenticator the server asks for its code after the
-// password is accepted, and the form shows that field.
+// account has a second factor the server asks for it after the password is
+// accepted: the form shows the code field, and — for an account with a
+// passkey — a button that confirms with the passkey (each offer is single
+// use; signing in again fetches a new one).
 function PasswordGateForm({ gate, disabled, next }: { gate: LoginGate; disabled: boolean; next: string }) {
   const [login, setLogin] = useState("");
   const [pw, setPw] = useState("");
   const [otp, setOtp] = useState("");
   const [needOtp, setNeedOtp] = useState(false);
+  const [offer, setOffer] = useState<PasskeyOffer | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (login.trim() === "" || pw === "") return;
+  const send = async (webauthn?: { ceremony: string; credential: unknown }) => {
     setBusy(true);
     setError("");
-    const r = await signInWithPassword(gate.name, login, pw, otp);
+    const r = await signInWithPassword(gate.name, login, pw, webauthn ? "" : otp, fetch, webauthn);
     setBusy(false);
     if (r.ok) {
       window.location.href = next;
       return;
     }
+    if (r.refusal.code === "second_factor_required" && r.refusal.webauthn) {
+      setOffer(r.refusal.webauthn);
+      setNeedOtp(r.refusal.otp === true);
+      return;
+    }
+    setOffer(null);
     if (r.refusal.code === "otp_required") {
       setNeedOtp(true);
       if (otp === "") return;
     }
     setError(passwordRefusalText(r.refusal));
+  };
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (login.trim() === "" || pw === "") return;
+    await send();
+  };
+  const usePasskey = async () => {
+    if (!offer) return;
+    let answer = null;
+    try {
+      answer = await assertPasskey(offer);
+    } catch {
+      answer = null;
+    }
+    setOffer(null);
+    if (!answer) {
+      setError(passwordRefusalText({ code: "passkey_cancelled" }));
+      return;
+    }
+    await send(answer);
   };
   return (
     <form onSubmit={submit} aria-label={gate.label}>
@@ -212,11 +246,67 @@ function PasswordGateForm({ gate, disabled, next }: { gate: LoginGate; disabled:
           {error}
         </p>
       )}
+      {offer && passkeysSupported() && (
+        <button className="login-btn" type="button" onClick={usePasskey} disabled={disabled || busy}>
+          Confirm with your passkey
+        </button>
+      )}
       <button className="login-btn" type="submit" disabled={disabled || busy || login.trim() === "" || pw === ""}>
         Sign in
       </button>
       <p className="login-hint">Forgot your password? Ask your administrator for a reset link.</p>
     </form>
+  );
+}
+
+// PasskeyGateForm signs in with a discoverable passkey: the browser offers
+// the accounts this site has passkeys for; nothing is typed. The challenge is
+// bound to this browser and used once.
+function PasskeyGateForm({ gate, disabled, next }: { gate: LoginGate; disabled: boolean; next: string }) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const signIn = async () => {
+    setBusy(true);
+    setError("");
+    const begin = await passkeyLoginBegin(gate.name);
+    if (!begin.ok) {
+      setBusy(false);
+      setError(passwordRefusalText(begin.refusal));
+      return;
+    }
+    let answer = null;
+    try {
+      answer = await assertPasskey(begin.data);
+    } catch {
+      answer = null;
+    }
+    if (!answer) {
+      setBusy(false);
+      setError(passwordRefusalText({ code: "passkey_cancelled" }));
+      return;
+    }
+    const r = await passkeyLoginComplete(gate.name, answer);
+    setBusy(false);
+    if (r.ok) {
+      window.location.href = next;
+      return;
+    }
+    setError(r.refusal.code === "invalid_credentials" ? "That passkey was not accepted." : passwordRefusalText(r.refusal));
+  };
+  if (!passkeysSupported()) {
+    return <p className="login-sub">{gate.label}: this browser cannot use passkeys.</p>;
+  }
+  return (
+    <div aria-label={gate.label}>
+      <button className="login-btn" type="button" onClick={signIn} disabled={disabled || busy}>
+        {gate.label === gate.name ? "Sign in with a passkey" : gate.label}
+      </button>
+      {error && (
+        <p className="login-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -290,6 +380,7 @@ export default function LoginView() {
   const passwordGates = config?.gates.filter((g) => g.kind === "password") ?? [];
   const redirectGates = config?.gates.filter((g) => REDIRECT_GATE_KINDS.includes(g.kind)) ?? [];
   const headerGates = config?.gates.filter((g) => g.kind === "header") ?? [];
+  const passkeyGates = config?.gates.filter((g) => g.kind === "passkey") ?? [];
   const blocked = config?.sessionRefused ?? "";
   const returned = redirectLoginError(new URLSearchParams(window.location.search).get("error") ?? "");
 
@@ -329,6 +420,9 @@ export default function LoginView() {
         {headerGates.map((g) => (
           <HeaderGateForm key={g.name} gate={g} disabled={blocked !== ""} next={next} />
         ))}
+        {passkeyGates.map((g) => (
+          <PasskeyGateForm key={g.name} gate={g} disabled={blocked !== ""} next={next} />
+        ))}
         {passwordGates.map((g) => (
           <PasswordGateForm key={g.name} gate={g} disabled={blocked !== ""} next={next} />
         ))}
@@ -337,7 +431,8 @@ export default function LoginView() {
           !tokenGate &&
           passwordGates.length === 0 &&
           redirectGates.length === 0 &&
-          headerGates.length === 0 && (
+          headerGates.length === 0 &&
+          passkeyGates.length === 0 && (
           <p className="login-sub">
             {config.gates.length === 0
               ? "This server offers no way to sign in to the Web UI."
