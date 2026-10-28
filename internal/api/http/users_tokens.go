@@ -468,6 +468,15 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 			"store not configured; token minting requires a persistent store")
 		return
 	}
+	// RFC FA §4: under auth.strict.user_tokens: gate_only a person's token
+	// comes only from a gate (a device login, an app sign-in); one minted
+	// here would be refused on its first use anyway.
+	if s.gateOnlyMintRefused() {
+		writeJSONError(w, http.StatusForbidden, "user_tokens_gate_only",
+			"this server issues personal tokens only through its sign-in options (auth.strict.user_tokens: gate_only); "+
+				"use `loomcycle login` or an app sign-in")
+		return
+	}
 	subject := strings.TrimSpace(r.PathValue("subject"))
 	if subject == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing_subject", "subject is required")

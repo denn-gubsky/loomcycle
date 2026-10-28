@@ -85,6 +85,9 @@ type AuthConfig struct {
 	// TenantPolicies: tenant → the gates its people must come through
 	// (auth_tenant_policy.go).
 	TenantPolicies map[string]AuthTenantPolicyConfig `yaml:"tenant_policies,omitempty"`
+	// Strict holds what strict mode refuses beyond its defaults
+	// (auth_strict.go).
+	Strict AuthStrictConfig `yaml:"strict,omitempty"`
 }
 
 // AuthSessionConfig holds Go durations ("8h", "15m").
@@ -252,6 +255,9 @@ type AuthPolicy struct {
 	// Clients are the validated auth.clients, sorted by id (read one through
 	// Client).
 	Clients []AppClient
+	// UserTokensGateOnly is auth.strict.user_tokens: gate_only — in strict
+	// mode, a per-user token no gate issued is refused on the API too.
+	UserTokensGateOnly bool
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -604,6 +610,9 @@ func resolveAuth(c *Config) error {
 	if p.Strict() && interactive == 0 {
 		return fmt.Errorf("auth.mode: strict needs at least one interactive gate in auth.gates " +
 			"(e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI")
+	}
+	if err := resolveStrict(c, &p); err != nil {
+		return err
 	}
 	c.ResolvedAuth = p
 	return nil

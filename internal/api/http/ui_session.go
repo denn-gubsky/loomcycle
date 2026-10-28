@@ -370,6 +370,15 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := a.Credential.Principal
+	// RFC FA §4: in strict mode a person signs in through a gate; a
+	// hand-minted per-user token is not a way in, only a gate-issued one.
+	if s.uiRefusesUserToken(r.Context(), p) {
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, AuthReason: "user_token_not_gate_issued",
+			ActorTenant: p.TenantID, ActorSubject: p.Subject, SourceAddr: s.clientSource(r)})
+		writeJSONError(w, http.StatusForbidden, "user_token_refused",
+			"this server signs people in through its sign-in options, not with a personal token")
+		return
+	}
 	ident := sessionIdentity{
 		TenantID: p.TenantID, Subject: p.Subject, Gate: cfgGate.Name, AMR: a.AMR, Credential: a.Credential,
 	}
@@ -690,7 +699,7 @@ func (s *Server) boundCredentialPrincipal(ctx context.Context, row store.UISessi
 			return auth.Principal{}, false, true
 		}
 		p, ok, _ := tokenRowPrincipal(tr, time.Now())
-		if !ok {
+		if !ok || s.uiRefusesUserToken(ctx, p) {
 			return auth.Principal{}, false, true
 		}
 		// A gate-issued token pasted into the UI holds only while its user
