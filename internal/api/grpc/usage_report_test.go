@@ -115,3 +115,63 @@ func TestGrpcUsageReport_GroupByPurposeCarriesPurposeAndAudioSeconds(t *testing.
 		t.Errorf("chat row = %v, want 100 tokens", r)
 	}
 }
+
+// TestGrpcUsageReport_ChartParameters — the gRPC twin of bucket, filters, top
+// and the new dimensions; a scoped principal's filters narrow only within its
+// own tenant, and tenant is not a filter.
+func TestGrpcUsageReport_ChartParameters(t *testing.T) {
+	adapter, st := tenantTestServer(t)
+	ctx := context.Background()
+	for _, r := range []store.TokenUsageRow{
+		{Model: "big", TenantID: "acme", Tier: "high", Cost: 9, InputTokens: 9},
+		{Model: "mid", TenantID: "acme", Tier: "middle", Cost: 3, InputTokens: 3},
+		{Model: "small", TenantID: "acme", Purpose: store.UsagePurposeEmbedding, Cost: 1, InputTokens: 1, InputChars: 40},
+		{Model: "big", TenantID: "evil", Tier: "high", Cost: 100, InputTokens: 100},
+	} {
+		r.RunID, r.Provider, r.CredentialSource, r.CostCurrency = "r", "p", "operator", "USD"
+		if err := st.RecordCallUsage(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acme := scopedCtx("acme", "alice", auth.ScopeTenant)
+
+	resp, err := adapter.UsageReport(acme, &loomcyclepb.UsageReportRequest{
+		GroupBy: []string{"model"}, Bucket: "day", Top: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := resp.GetRows()
+	if resp.GetBucket() != "day" || len(rows) != 2 || rows[0].GetModel() != "big" || rows[0].GetCost() != 9 ||
+		rows[0].GetPeriod() == "" || !rows[1].GetOther() || rows[1].GetCost() != 4 || rows[1].GetInputChars() != 40 {
+		t.Errorf("day buckets, top 1 = %+v, want acme's big (9) then other (4, 40 chars), never evil's", rows)
+	}
+
+	resp, err = adapter.UsageReport(acme, &loomcyclepb.UsageReportRequest{
+		GroupBy: []string{"tier", "class"},
+		Filters: []*loomcyclepb.UsageFilter{{Dimension: "model", Values: []string{"big", "small"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, r := range resp.GetRows() {
+		total += r.GetCost()
+		if r.GetTier() == "high" && r.GetClass() != "foreground" {
+			t.Errorf("high-tier row class = %q, want foreground", r.GetClass())
+		}
+	}
+	if total != 10 {
+		t.Errorf("acme's big+small = %v, want 10 (evil's big must not count)", total)
+	}
+
+	for name, req := range map[string]*loomcyclepb.UsageReportRequest{
+		"tenant as a filter": {Filters: []*loomcyclepb.UsageFilter{{Dimension: "tenant", Values: []string{"evil"}}}},
+		"unknown bucket":     {Bucket: "fortnight"},
+		"unknown dimension":  {Filters: []*loomcyclepb.UsageFilter{{Dimension: "model; DROP TABLE token_usage", Values: []string{"x"}}}},
+	} {
+		if _, err := adapter.UsageReport(acme, req); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: code %s, want InvalidArgument", name, status.Code(err))
+		}
+	}
+}

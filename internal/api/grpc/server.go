@@ -93,6 +93,9 @@ type Server struct {
 	// transports see the identical counters. Nil → used reads 0 + reload no-ops.
 	limits tokenLimitTracker
 
+	// usageDetailSince — see Config.UsageDetailSince. Nil → zero.
+	usageDetailSince func() time.Time
+
 	// authToken is the bearer token clients must present in the
 	// `authorization` gRPC metadata header. Empty means open-mode
 	// (matches the HTTP middleware's "no LOOMCYCLE_AUTH_TOKEN set"
@@ -135,8 +138,13 @@ type Config struct {
 	// usage + cache reload. *internal/api/http.Server exposes it via
 	// LimitsTracker(). May be nil — TokenLimit then reports used=0 and skips the
 	// post-write reload (the store row is still persisted).
-	Limits    tokenLimitTracker
-	AuthToken string
+	Limits tokenLimitTracker
+	// UsageDetailSince reports the oldest instant the per-call usage ledger
+	// holds (zero when nothing is archived), for the UsageReport RPC's hour
+	// buckets and detail_since. *internal/api/http.Server provides it; nil =
+	// zero (every bucket allowed).
+	UsageDetailSince func() time.Time
+	AuthToken        string
 	// ACLMode is the RFC EY rollout mode the gate evaluates under (compat
 	// when unset); it mirrors the HTTP server's.
 	ACLMode authz.Mode
@@ -176,6 +184,7 @@ func New(cfg Config) *Server {
 		connector:         cfg.Connector,
 		runner:            cfg.Runner,
 		limits:            cfg.Limits,
+		usageDetailSince:  cfg.UsageDetailSince,
 		liveRun:           cfg.RunLive,
 		queuePosition:     cfg.QueuePosition,
 		authToken:         cfg.AuthToken,
@@ -652,26 +661,32 @@ func (s *Server) UsageReport(ctx context.Context, req *loomcyclepb.UsageReportRe
 	if s.store == nil {
 		return &loomcyclepb.UsageReportResponse{}, nil
 	}
-	var q store.UsageQuery
-	for _, g := range req.GetGroupBy() {
-		if _, ok := store.UsageDimColumn(store.UsageDimension(g)); !ok {
-			return nil, status.Errorf(codes.InvalidArgument, "unknown group_by dimension: %s (allowed: %s)", g, store.UsageDimNames())
-		}
-		q.GroupBy = append(q.GroupBy, store.UsageDimension(g))
+	params := store.UsageParams{
+		GroupBy: req.GetGroupBy(),
+		From:    req.GetFromTime(),
+		To:      req.GetToTime(),
+		Bucket:  req.GetBucket(),
+		Top:     int(req.GetTop()),
+		TopBy:   req.GetTopBy(),
 	}
-	if v := req.GetFromTime(); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "from_time must be RFC3339: %v", err)
+	for _, f := range req.GetFilters() {
+		// tenant stays the focus field below, with its authority check, as
+		// on HTTP: it is never a filter.
+		if f.GetDimension() == string(store.UsageByTenant) {
+			return nil, status.Errorf(codes.InvalidArgument, "tenant is not a filter; use the tenant field")
 		}
-		q.From = t
+		if params.Filters == nil {
+			params.Filters = map[string][]string{}
+		}
+		params.Filters[f.GetDimension()] = append(params.Filters[f.GetDimension()], f.GetValues()...)
 	}
-	if v := req.GetToTime(); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "to_time must be RFC3339: %v", err)
-		}
-		q.To = t
+	var detailSince time.Time
+	if s.usageDetailSince != nil {
+		detailSince = s.usageDetailSince()
+	}
+	q, err := store.ParseUsageQuery(params, detailSince)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	// Tenant scope: admin/legacy honor the wire focus; a scoped principal is
 	// confined to its own tenant (req.tenant ignored).
@@ -685,11 +700,18 @@ func (s *Server) UsageReport(ctx context.Context, req *loomcyclepb.UsageReportRe
 		return nil, status.Errorf(codes.Internal, "usage report: %v", err)
 	}
 	out := &loomcyclepb.UsageReportResponse{
-		GroupBy: req.GetGroupBy(),
+		GroupBy: make([]string, len(q.GroupBy)),
 		Rows:    make([]*loomcyclepb.UsageAggregate, 0, len(rows)),
+		Bucket:  string(q.Bucket),
+	}
+	for i, g := range q.GroupBy {
+		out.GroupBy[i] = string(g)
+	}
+	if !detailSince.IsZero() {
+		out.DetailSince = detailSince.UTC().Format(time.RFC3339)
 	}
 	for _, r := range rows {
-		out.Rows = append(out.Rows, &loomcyclepb.UsageAggregate{
+		a := &loomcyclepb.UsageAggregate{
 			TenantId:            r.TenantID,
 			UserId:              r.UserID,
 			Provider:            r.Provider,
@@ -705,7 +727,17 @@ func (s *Server) UsageReport(ctx context.Context, req *loomcyclepb.UsageReportRe
 			UnpricedCalls:       r.UnpricedCalls,
 			Purpose:             r.Purpose,
 			AudioSeconds:        r.AudioSeconds,
-		})
+			Tier:                r.Tier,
+			UserTier:            r.UserTier,
+			Agent:               r.AgentID,
+			Class:               r.Class,
+			Other:               r.Other,
+			InputChars:          r.InputChars,
+		}
+		if !r.Period.IsZero() {
+			a.Period = r.Period.UTC().Format(time.RFC3339)
+		}
+		out.Rows = append(out.Rows, a)
 	}
 	return out, nil
 }
