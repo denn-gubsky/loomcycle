@@ -157,6 +157,22 @@ control.
   days; `0` keeps them). A token minted without a lifetime is never
   deleted this way.
 
+## Token authority: frozen or inherit
+
+A per-user token is `frozen` (its scopes are the grant of the user's
+`access_mode` at mint) or `inherit` (its scopes are the grant of the
+user's CURRENT `access_mode`, re-read on every request, so promoting or
+demoting the user needs no new token). Tokens are minted frozen unless
+the operator sets `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT=1`, which makes
+per-user and gate-issued tokens inherit. The per-user mint body may ask
+for either with `"authority": "inherit"` or `"frozen"`. Operator tokens
+are always frozen.
+
+- An inherit token is refused once its user is disabled, pending or
+  deleted. Its restrictions still apply after a promotion.
+- `rotate` keeps the mode. The mint answer and listings show
+  `"authority": "inherit"`; `Context op=self` reports `authority`.
+
 ## Limiting a token to certain agents
 
 `--agents a,b` on `operator-token create` (`agents` on the `create` op,

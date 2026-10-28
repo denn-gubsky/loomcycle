@@ -507,6 +507,9 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		// not grant the token more time — or more reach.
 		ExpiresAt:        prior.ExpiresAt,
 		RestrictionsJSON: prior.RestrictionsJSON,
+		// An inherit token rotated into a frozen one would keep the scopes
+		// its user held at mint, past a demotion since.
+		Authority: prior.Authority,
 	}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
@@ -724,6 +727,11 @@ func operatorTokenRowResponse(row store.OperatorTokenDefRow) map[string]any {
 		// Shown as stored. A record this build cannot read still shows, so an
 		// operator can see why the token is refused at login.
 		m["restrictions"] = json.RawMessage(row.RestrictionsJSON)
+	}
+	if row.Authority != "" {
+		// RFC EY §8: allowed_scopes is then what the user held at mint, not
+		// the token's ceiling.
+		m["authority"] = row.Authority
 	}
 	return m
 }
