@@ -54,6 +54,10 @@ func SQLiteDB(db *sql.DB) DB {
 	return sqliteDB{sqliteQuerier: sqliteQuerier{r: db}, db: db}
 }
 
+// SQLiteConn adapts the pinned connection of a transaction the SQLite
+// backend opened itself (BEGIN IMMEDIATE) so shared statements run inside it.
+func SQLiteConn(conn *sql.Conn) Querier { return sqliteQuerier{r: conn} }
+
 type sqliteQuerier struct{ r sqlRunner }
 
 func (sqliteQuerier) Dialect() Dialect { return SQLite }
@@ -127,6 +131,10 @@ type PgxPool interface {
 func PostgresDB(pool PgxPool) DB {
 	return pgxDB{pgxQuerier: pgxQuerier{r: pool}, pool: pool}
 }
+
+// PostgresTx adapts a transaction the Postgres backend opened itself (to
+// take its own locks first) so shared statements can run inside it.
+func PostgresTx(tx PgxRunner) Querier { return pgxQuerier{r: tx} }
 
 type pgxQuerier struct{ r PgxRunner }
 

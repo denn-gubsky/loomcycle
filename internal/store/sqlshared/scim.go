@@ -31,9 +31,30 @@ func scimAttrs(a string) string {
 	return a
 }
 
-func SCIMUserCreate(ctx context.Context, q Querier, row store.SCIMUserRow) error {
+// SCIMUserCreate is store.SCIMStore.SCIMUserCreate. q is a transaction the
+// backend opened holding its per-(gate, tenant) create lock, so the name
+// check, the count and the insert are one serial step: concurrent creates
+// cannot pass the ceiling together. The name is checked before the insert
+// because a failed statement aborts a Postgres transaction.
+func SCIMUserCreate(ctx context.Context, q Querier, row store.SCIMUserRow, since time.Time, ceiling int) error {
 	if row.Gate == "" || row.TenantID == "" || row.SCIMID == "" || row.Subject == "" || row.UserNameKey == "" {
 		return fmt.Errorf("scim user create: gate, tenant, id, subject and user name are required")
+	}
+	var one int
+	err := q.QueryRow(ctx, `SELECT 1 FROM scim_users WHERE gate = ? AND tenant_id = ? AND user_name_key = ? AND deleted_at IS NULL`,
+		row.Gate, row.TenantID, row.UserNameKey).Scan(&one)
+	switch {
+	case err == nil:
+		return &store.ErrConflict{Kind: "scim_user_name", ID: row.UserName}
+	case !IsNoRows(err):
+		return fmt.Errorf("scim user create: name: %w", err)
+	}
+	n, err := scimUsersCreatedSince(ctx, q, row.Gate, row.TenantID, since)
+	if err != nil {
+		return fmt.Errorf("scim user create: count: %w", err)
+	}
+	if n >= ceiling {
+		return store.ErrSCIMCreateCeiling
 	}
 	d := q.Dialect()
 	now := time.Now().UTC()
@@ -50,13 +71,8 @@ func SCIMUserCreate(ctx context.Context, q Querier, row store.SCIMUserRow) error
 		row.Gate, row.TenantID, row.SCIMID, row.Subject, row.UserName, row.UserNameKey, row.ExternalID, scimAttrs(row.Attributes),
 		row.Version, d.TimeArg(row.CreatedAt), d.TimeArg(row.UpdatedAt)); err != nil {
 		if IsUniqueViolation(err) {
-			// Which unique index fired is not portable; a live name clash is
-			// the one a provider can cause, so look for it first.
-			var one int
-			if e := q.QueryRow(ctx, `SELECT 1 FROM scim_users WHERE gate = ? AND tenant_id = ? AND user_name_key = ? AND deleted_at IS NULL`,
-				row.Gate, row.TenantID, row.UserNameKey).Scan(&one); e == nil {
-				return &store.ErrConflict{Kind: "scim_user_name", ID: row.UserName}
-			}
+			// The name was free under the lock: the subject's live resource
+			// (or the id) is what clashed.
 			return &store.ErrConflict{Kind: "scim_user", ID: row.SCIMID}
 		}
 		return fmt.Errorf("scim user create: %w", err)
@@ -171,13 +187,15 @@ func SCIMRemovalBase(ctx context.Context, q Querier, gate, tenantID string, befo
 	d := q.Dialect()
 	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM user_identities i JOIN users u ON u.tenant_id = i.tenant_id AND u.subject = i.subject
 		WHERE i.gate = ? AND i.tenant_id = ? AND u.created_at < ?
-		AND (u.status <> 'disabled' OR EXISTS (SELECT 1 FROM auth_removals r
-			WHERE r.tenant_id = u.tenant_id AND r.subject = u.subject AND r.disabled_at >= ?))`,
-		gate, tenantID, d.TimeArg(before), d.TimeArg(before)).Scan(&n)
+		AND ((u.status <> 'disabled' AND NOT EXISTS (SELECT 1 FROM scim_users s
+				WHERE s.gate = i.gate AND s.tenant_id = u.tenant_id AND s.subject = u.subject AND s.reactivated_at >= ?))
+			OR EXISTS (SELECT 1 FROM auth_removals r
+				WHERE r.tenant_id = u.tenant_id AND r.subject = u.subject AND r.disabled_at >= ?))`,
+		gate, tenantID, d.TimeArg(before), d.TimeArg(before), d.TimeArg(before)).Scan(&n)
 	return n, err
 }
 
-func SCIMUsersCreatedSince(ctx context.Context, q Querier, gate, tenantID string, since time.Time) (int, error) {
+func scimUsersCreatedSince(ctx context.Context, q Querier, gate, tenantID string, since time.Time) (int, error) {
 	var n int
 	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM scim_users WHERE gate = ? AND tenant_id = ? AND created_at >= ?`,
 		gate, tenantID, q.Dialect().TimeArg(since)).Scan(&n)

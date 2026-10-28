@@ -867,6 +867,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at    INTEGER NOT NULL,
 			updated_at    INTEGER NOT NULL,
 			deleted_at    INTEGER,
+			reactivated_at INTEGER,
 			PRIMARY KEY (gate, tenant_id, scim_id)
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS scim_users_live_name ON scim_users(gate, tenant_id, user_name_key) WHERE deleted_at IS NULL`,
@@ -1872,6 +1873,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// 0123; the indexes are in addIndexes.
 		`ALTER TABLE operator_token_defs ADD COLUMN oauth_client TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE operator_token_defs ADD COLUMN oauth_family TEXT NOT NULL DEFAULT ''`,
+		// The removal's claimed sweeper stage and the user's status before
+		// it (RFC FA P6). Mirrors postgres 0126.
+		`ALTER TABLE auth_removals ADD COLUMN stage TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE auth_removals ADD COLUMN prior_status TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

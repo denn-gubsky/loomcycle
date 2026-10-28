@@ -66,11 +66,14 @@ func (s *Server) recordLifecycleEvent(action, tenant, subject, gate, reason, by 
 }
 
 // startRemoval disables (tenant, subject) and records the removal that will
-// unbind and maybe erase it later. The disable comes first: a removal row
-// that outlived a failed disable would later unbind a user nobody disabled.
-// An existing removal is kept as it is (a repeated revoke never postpones its
-// stages); the disable is re-applied either way, so a retried call finishes
-// what a failed one began. *store.ErrNotFound when the user does not exist.
+// unbind and maybe erase it later — one store transaction
+// (AuthRemovalStart), so a SCIM re-enable racing it either finished first
+// (and this disables the user again under a fresh row) or finds its claim
+// taken over and stops: the answer never says "removed" over an active
+// user. An existing removal is kept as it is (a repeated revoke never
+// postpones its stages). The user's tokens and sessions end after it, on
+// every call, so a retried call finishes what a failed one began.
+// *store.ErrNotFound when the user does not exist.
 func (s *Server) startRemoval(ctx context.Context, tenant, subject, gate, reason, by string) error {
 	return s.startRemovalWith(ctx, s.removalPolicy(), tenant, subject, gate, reason, by)
 }
@@ -83,11 +86,12 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 		return err
 	}
 	now := time.Now().UTC()
-	if u.Status != "disabled" {
-		disabled := "disabled"
-		if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &disabled}); err != nil {
-			return fmt.Errorf("disable: %w", err)
+	started, err := s.store.AuthRemovalStart(ctx, removalRow(policy.Start(now), tenant, subject, gate, reason, by))
+	if err != nil {
+		if isNotFound(err) {
+			return err
 		}
+		return fmt.Errorf("record removal: %w", err)
 	}
 	retired, err := s.retireDelegatedUserTokens(ctx, tenant, subject)
 	for _, row := range retired {
@@ -98,10 +102,6 @@ func (s *Server) startRemovalWith(ctx context.Context, policy lifecycle.Policy, 
 	}
 	if _, err := s.store.UISessionRevokeSubject(ctx, tenant, subject, now); err != nil {
 		return fmt.Errorf("end sessions: %w", err)
-	}
-	started, err := s.store.AuthRemovalStart(ctx, removalRow(policy.Start(now), tenant, subject, gate, reason, by))
-	if err != nil {
-		return fmt.Errorf("record removal: %w", err)
 	}
 	if started || u.Status != "disabled" {
 		s.recordLifecycleEvent("auth_user_disabled", tenant, subject, gate, reason, by)
@@ -211,23 +211,40 @@ func (s *Server) AuthLifecycleSweep(ctx context.Context, now time.Time) {
 	}
 }
 
-// advanceRemoval performs r's one due stage. A user an operator re-enabled
-// (or deleted) meanwhile ends the removal instead: nothing is unbound or
-// erased under a user who is no longer disabled. Reports whether the row
-// changed.
+// advanceRemoval performs r's one due stage. The stage is claimed first, in
+// one store transaction that re-checks the user is still disabled and the
+// removal is no re-enable in progress (AuthRemovalClaimStage); while it is
+// claimed nobody re-enables the user, so nothing is unbound or erased under
+// a user who is active again. A user an operator re-enabled (or deleted)
+// meanwhile ends the removal instead. Reports whether the row changed.
 func (s *Server) advanceRemoval(ctx context.Context, r store.AuthRemovalRow, now time.Time) (bool, error) {
-	u, err := s.store.UserGet(ctx, r.TenantID, r.Subject)
-	if err != nil && !isNotFound(err) {
+	next := lifecycle.Next(removalTiming(r), now)
+	if next == lifecycle.StageNone {
+		return false, nil
+	}
+	stage := store.RemovalStageUnbinding
+	if next == lifecycle.StageErase {
+		stage = store.RemovalStageErasing
+	}
+	claimed, err := s.store.AuthRemovalClaimStage(ctx, r.TenantID, r.Subject, stage)
+	if err != nil {
 		return false, err
 	}
-	if err != nil || u.Status != "disabled" {
+	if !claimed {
+		u, err := s.store.UserGet(ctx, r.TenantID, r.Subject)
+		if err != nil && !isNotFound(err) {
+			return false, err
+		}
+		if err == nil && u.Status == "disabled" {
+			return false, nil // a re-enable in progress: its own outcome decides
+		}
 		if _, err := s.store.AuthRemovalDelete(ctx, r.TenantID, r.Subject); err != nil {
 			return false, err
 		}
 		s.recordLifecycleEvent("auth_removal_cancelled", r.TenantID, r.Subject, r.Gate, "user_not_disabled", lifecycleActor)
 		return true, nil
 	}
-	switch lifecycle.Next(removalTiming(r), now) {
+	switch next {
 	case lifecycle.StageUnbind:
 		changed, err := s.unbindSubject(ctx, r.TenantID, r.Subject, false)
 		if changed {
@@ -279,6 +296,9 @@ func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now t
 // errNoRemoval: the user has no removal to reactivate from.
 var errNoRemoval = errors.New("the user is not being removed")
 
+// errRemovalBusy: the removal is running a stage, or the user was erased.
+var errRemovalBusy = errors.New("the user's removal is running a stage; try again later")
+
 // reactivateRemoved re-enables a removed user at the §3.7a defaults: every
 // group membership and every binding of its own goes, the access mode drops
 // to the floor, the floor groups that exist in the tenant are joined, the
@@ -294,14 +314,29 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 		}
 		return err
 	}
+	if r.Stage != "" || !r.ErasedAt.IsZero() {
+		return errRemovalBusy
+	}
 	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
 		return err
 	}
-	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
+	// Only an idle removal ends: a stage the sweeper claimed meanwhile
+	// keeps the user disabled.
+	ended, err := s.store.AuthRemovalDeleteIdle(ctx, tenant, subject)
+	if err != nil {
 		return fmt.Errorf("end the removal: %w", err)
 	}
-	active := "active"
-	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
+	if !ended {
+		return errRemovalBusy
+	}
+	// A user that was pending when removed still owes its approval: it
+	// comes back pending, never active.
+	restored := "active"
+	if r.PriorStatus == store.UserStatusPending || r.Reason == store.RemovalReasonSCIMPending ||
+		r.Reason == store.RemovalReasonSCIMReactivatingPending {
+		restored = store.UserStatusPending
+	}
+	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &restored}); err != nil {
 		return err
 	}
 	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)

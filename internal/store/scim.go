@@ -66,11 +66,14 @@ type SCIMFilter struct {
 
 // SCIMStore persists SCIM resources (RFC FA P6).
 type SCIMStore interface {
-	// SCIMUserCreate inserts a live user resource.
+	// SCIMUserCreate inserts a live user resource, counted against the
+	// gate's create ceiling in the tenant in the same transaction under a
+	// per-(gate, tenant) lock: ErrSCIMCreateCeiling when `ceiling` resources
+	// were created since `since` (deleted ones included).
 	// *ErrConflict{Kind:"scim_user_name"} when a live resource of the gate
 	// and tenant has the same UserNameKey; *ErrConflict{Kind:"scim_user"}
 	// when the subject already has a live resource.
-	SCIMUserCreate(ctx context.Context, row SCIMUserRow) error
+	SCIMUserCreate(ctx context.Context, row SCIMUserRow, since time.Time, ceiling int) error
 	// SCIMUserGet returns a live resource. *ErrNotFound{Kind:"scim_user"}
 	// for an unknown, another gate's or tenant's, or a deleted one.
 	SCIMUserGet(ctx context.Context, gate, tenantID, scimID string) (SCIMUserRow, error)
@@ -144,15 +147,21 @@ type SCIMStore interface {
 	// *ErrNotFound{Kind:"user"} for an unknown user.
 	SCIMRemoveUser(ctx context.Context, row AuthRemovalRow, since time.Time, ceiling int) (bool, error)
 	// SCIMReactivateClaim is the first half of a SCIM re-enable, in one
-	// transaction: when the subject's CURRENT removal is the gate's with a
+	// transaction (the gate's lock, then the user row, then the removal):
+	// when the user is disabled and its CURRENT removal is the gate's with a
 	// SCIM reason (a claim in progress included, so a retry continues), its
-	// reason becomes the matching "reactivating" one and the user stays
-	// disabled. The caller then resets the user to the floor and finishes
-	// with SCIMReactivate. Any other removal (an operator's, another gate's)
-	// or none answers false and changes nothing. An operator's or another
-	// gate's removal still takes a claimed row over (AuthRemovalStart).
-	SCIMReactivateClaim(ctx context.Context, gate, tenantID, subject string) (bool, error)
-	// SCIMReactivate finishes a claimed re-enable, in one transaction: only
+	// reason becomes the matching "reactivating" one, the resource's
+	// reactivated_at is `at`, and the user stays disabled. The caller then
+	// resets the user to the floor and finishes with SCIMReactivate.
+	// A new claim (not a retry) counts against `ceiling` re-enables since
+	// `since`: ErrSCIMReactivationCeiling. A removal running a sweeper stage,
+	// or of an erased user: ErrRemovalBusy. Any other removal (an
+	// operator's, another gate's) or none answers false and changes
+	// nothing. An operator's or another gate's removal still takes a claimed
+	// row over (AuthRemovalStart).
+	SCIMReactivateClaim(ctx context.Context, gate, tenantID, subject string, at, since time.Time, ceiling int) (bool, error)
+	// SCIMReactivate finishes a claimed re-enable, in one transaction (the
+	// user row locked first, as every removal write does): only
 	// while the CURRENT removal is still the gate's claim does the user
 	// return to the status recorded at removal (active, or pending) and the
 	// row go. Otherwise false, and nothing changes.
@@ -162,20 +171,19 @@ type SCIMStore interface {
 	// SCIM reason, a claim in progress included) is deleted, so the operator
 	// owns the disable and SCIM can never re-enable it — there is no state
 	// in which the status is written and the SCIM row survives. disowned
-	// reports that a SCIM row went. *ErrNotFound when the user does not
+	// reports that a SCIM row went. A pending user — or one under a pending
+	// SCIM removal — is refused with ErrUserPending: a plain disable would
+	// drop the approval it still owes. *ErrNotFound when the user does not
 	// exist.
 	OperatorDisableUser(ctx context.Context, tenantID, subject string) (disowned bool, err error)
 	// SCIMRemovalBase is the base a percentage removal ceiling is taken of:
 	// the users linked to the gate in the tenant who were created before
-	// `before` (the window's start) and are not disabled — or were disabled
-	// by a removal inside the window. Users the provider creates inside the
-	// window cannot raise its own ceiling, and its removals there do not
-	// shrink it.
+	// `before` (the window's start) and either are not disabled and were
+	// not re-enabled by the gate inside the window, or were disabled by a
+	// removal inside the window. Users the provider creates or re-enables
+	// inside the window cannot raise its own ceiling, and its removals
+	// there do not shrink it.
 	SCIMRemovalBase(ctx context.Context, gate, tenantID string, before time.Time) (int, error)
-	// SCIMUsersCreatedSince counts the user resources the gate created in
-	// the tenant since `since`, deleted ones included (a discarded create,
-	// whose user was refused, made no user and is not counted).
-	SCIMUsersCreatedSince(ctx context.Context, gate, tenantID string, since time.Time) (int, error)
 	// SCIMUsersGetMany returns the live resources among ids, keyed by id.
 	// Unknown, deleted and other tenants' ids are absent.
 	SCIMUsersGetMany(ctx context.Context, gate, tenantID string, ids []string) (map[string]SCIMUserRow, error)
@@ -202,3 +210,12 @@ const SCIMRemovalReasons = `'scim', 'scim_pending', 'scim_reactivating', 'scim_r
 
 // ErrSCIMRemovalCeiling: a SCIM gate reached its removal ceiling.
 var ErrSCIMRemovalCeiling = errors.New("store: the SCIM gate's removal ceiling is reached")
+
+// ErrSCIMCreateCeiling: a SCIM gate reached its create ceiling.
+var ErrSCIMCreateCeiling = errors.New("store: the SCIM gate's create ceiling is reached")
+
+// ErrSCIMReactivationCeiling: a SCIM gate reached its re-enable ceiling.
+var ErrSCIMReactivationCeiling = errors.New("store: the SCIM gate's re-enable ceiling is reached")
+
+// ErrUserPending: the user owes an approval a plain status change would drop.
+var ErrUserPending = errors.New("store: the user is awaiting approval")

@@ -52,6 +52,13 @@ func (h *hookStore) OperatorDisableUser(ctx context.Context, tenantID, subject s
 	return h.Store.OperatorDisableUser(ctx, tenantID, subject)
 }
 
+func (h *hookStore) AuthRemovalDeleteIdle(ctx context.Context, tenantID, subject string) (bool, error) {
+	if h.failRemovalDelete {
+		return false, errors.New("injected: removal delete failed")
+	}
+	return h.Store.AuthRemovalDeleteIdle(ctx, tenantID, subject)
+}
+
 func (h *hookStore) SCIMUserGet(ctx context.Context, gate, tenantID, scimID string) (store.SCIMUserRow, error) {
 	h.scimUserGets.Add(1)
 	return h.Store.SCIMUserGet(ctx, gate, tenantID, scimID)
@@ -83,7 +90,7 @@ func seedOldSCIMUser(t *testing.T, f *gateFixture, id string) string {
 		t.Fatal(err)
 	}
 	if err := f.st.SCIMUserCreate(ctx, store.SCIMUserRow{Gate: "okta", TenantID: "acme", SCIMID: id, Subject: sub,
-		UserName: id + "@acme.test", UserNameKey: id + "@acme.test", Attributes: `{}`, CreatedAt: old}); err != nil {
+		UserName: id + "@acme.test", UserNameKey: id + "@acme.test", Attributes: `{}`, CreatedAt: old}, time.Time{}, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 	return sub

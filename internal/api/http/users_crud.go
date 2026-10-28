@@ -294,6 +294,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		switch err := s.reactivateRemoved(r.Context(), tenant, subject, by); {
 		case err == nil:
 			req.Status = nil
+		case errors.Is(err, errRemovalBusy):
+			writeJSONError(w, http.StatusConflict, "removal_in_progress", err.Error())
+			return
 		case errors.Is(err, errNoRemoval):
 		case isNotFound(err):
 			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
@@ -316,6 +319,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		_, disableErr := s.store.OperatorDisableUser(ctx, tenant, subject)
 		if isNotFound(disableErr) {
 			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
+			return
+		}
+		if errors.Is(disableErr, store.ErrUserPending) {
+			// A pending user has no access to take away, and a plain
+			// disable would drop the approval it owes: a later re-enable
+			// would make it active unapproved.
+			writeJSONError(w, http.StatusConflict, "user_pending",
+				"this user is awaiting approval and has no access; approve it, or delete it")
 			return
 		}
 		// Revocation always runs, the disable's failure included: the
