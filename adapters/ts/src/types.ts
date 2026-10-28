@@ -356,7 +356,31 @@ export type RunFileInput = {
   doc_path?: string;
   scope?: string;
   tags?: string[];
+  /** import: where the document came from, kept on it as a link back. */
+  source?: RunFileImportSource;
+  /** import: headings to add by line number, so a file whose structure is only
+   *  in its numbering imports as sections. The file is not changed, so the
+   *  document keeps the record of where it came from. */
+  headings?: RunFileImportHeading[];
 };
+
+/** import's `source`: the item's web link (a SharePoint `webUrl`, an email's
+ *  `webLink`), never a download or upload link. */
+export interface RunFileImportSource {
+  /** An http(s) link, at most 2048 bytes; a signature in its query is masked. */
+  url?: string;
+  kind?: "sharepoint" | "email" | "attachment" | "web" | "other";
+  /** One line, at most 300 characters. */
+  title?: string;
+}
+
+/** One entry of import's `headings`. Lines count from 1 in the file as it is;
+ *  give entries in increasing line order. */
+export type RunFileImportHeading =
+  /** The line itself becomes a heading; `lines` (1–10) joins a wrapped title. */
+  | { line: number; level: 2 | 3 | 4 | 5 | 6; as: "heading"; lines?: number }
+  /** A heading with `title` is inserted before the line, which stays body text. */
+  | { line: number; level: 2 | 3 | 4 | 5 | 6; as: "marker"; title: string };
 
 /** What {@link LoomcycleClient.downloadRunInboxFile} returns: one inbox file's
  *  bytes and what the server says about them. */

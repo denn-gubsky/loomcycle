@@ -617,6 +617,8 @@ export type {
   ContextDistillDeclinedInfo,
   EffectiveConfigResponse,
   RunFileInput,
+  RunFileImportSource,
+  RunFileImportHeading,
   RunInboxDownload,
   EffectiveConfigSource,
   EffectiveValue,

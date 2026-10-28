@@ -21,6 +21,25 @@ describe("runFile", () => {
     expect(JSON.parse(call[1]!.body as string)).toEqual({ op: "stat", path: "volume:inbox:documents/a.pdf" });
   });
 
+  it("sends import's source and headings as the tool takes them", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ document_id: "d1", chunks: 3 })]);
+    await client.runFile("run_1", {
+      op: "import",
+      path: "volume:inbox:extracted/NBU-064.md",
+      source: { url: "https://tenant.sharepoint.com/sites/board/reg.pdf", kind: "sharepoint" },
+      headings: [
+        { line: 593, level: 2, as: "heading" },
+        { line: 594, level: 3, as: "marker", title: "1. Це Положення розроблено…" },
+      ],
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
+    expect(body.headings).toEqual([
+      { line: 593, level: 2, as: "heading" },
+      { line: 594, level: 3, as: "marker", title: "1. Це Положення розроблено…" },
+    ]);
+    expect(body.source.kind).toBe("sharepoint");
+  });
+
   it("raises SubstrateToolRefusedError on the 422 tool refusal", async () => {
     const { client } = makeClient([
       jsonResponse(
