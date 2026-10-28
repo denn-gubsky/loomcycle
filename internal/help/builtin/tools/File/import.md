@@ -33,6 +33,33 @@ link — a SharePoint file's `webUrl`, an email's `webLink` — never a download
 or upload link, which grants access to whoever holds it. A downloaded file
 with no `source` links back to its download address, without the query.
 
+A file you changed after it was captured is no longer the captured file, so
+the document records none of the above: the result says so in
+`provenance_note`, and the document gets no `source/…` tag (a `source` link
+you give is still kept). To add structure to a file and keep its record, use
+`headings` instead of rewriting the file.
+
+**Adding structure.** A text exported from a PDF often shows its structure
+only by numbering ("Стаття 5. …", "3. Організаційна структура …"), never by
+`#` headings, so it would import as one long chunk. `headings` adds the
+headings for you, by line number, while the runtime reads the file unchanged:
+the body is the file's own text, and the document keeps the file's record.
+Each entry is one of:
+
+- `{"line": N, "level": L, "as": "heading"}` — line N itself becomes a
+  heading of level L. Add `"lines": 2` (up to 10) when its title wraps onto
+  the next lines; they are joined with a space.
+- `{"line": N, "level": L, "as": "marker", "title": "…"}` — a heading with
+  `title` is put before line N, and line N stays in the body. Use it for a
+  numbered paragraph (a пункт) whose first line is text, not a title.
+
+Levels are 2 to 6 (the document's title is level 1). Give entries in
+increasing line order, at most 10 000, and do not put one inside a heading's
+wrapped lines. Lines count from 1 in the file as it is — read it, or its
+outline, to find them. The document's `provenance` then also says
+`structured: {headings, by}`, the count and the run that added them, so a
+reader knows the headings were added, not written by the file's author.
+
 Import writes a document, so it needs the Document tool as well as this one,
 and the scope must be one your Document grants allow.
 
@@ -50,13 +77,18 @@ and the scope must be one your Document grants allow.
   `kind` is `sharepoint`, `email`, `attachment`, `web` or `other` (the
   default) and adds the tag `source/<kind>`. `title` is the source's own
   name, such as the email's subject: one line, at most 300 characters.
+- `headings` — headings to add, by line number: `{line, level, as}` with
+  `as` `heading` (plus `lines` for a wrapped title) or `marker` (plus
+  `title`, one line, at most 300 characters). See above.
 
 ## Returns
 
 `{document_id, root_chunk_id, chunks, image_chunks, skipped, skipped_images,
-source, provenance, tags}` — `skipped` counts the pictures that stayed links,
-and `skipped_images` says why for the first of them. `provenance` is what the
-document records of where it came from; `get_document` shows it too.
+source, provenance, provenance_note, tags}` — `skipped` counts the pictures
+that stayed links, and `skipped_images` says why for the first of them.
+`provenance` is what the document records of where it came from;
+`get_document` shows it too. `provenance_note` is there only when the file was
+changed after it was captured.
 
 ## Errors
 
@@ -65,6 +97,10 @@ document records of where it came from; `get_document` shows it too.
 - The scope is not one your Document grants allow.
 - `source` is not valid: a URL that is not http(s), has a user name or
   password, or is too long; or a `kind` not in the list.
+- `headings` is not valid: a line outside the file, entries out of order or
+  inside a heading's wrapped lines, a level not 2 to 6, a heading on a blank
+  line, a marker without a one-line title, or a title over 300 characters.
+  Nothing is imported.
 
 ## Examples
 
@@ -84,4 +120,37 @@ Import the protocol extract wrote, named in the board's folder:
 {"document_id": "d2adb0dc0731a5a6f019fc808854ea28", "root_chunk_id": "1f38094d118618fa34c8c0873e06a704",
  "chunks": 7, "image_chunks": 1, "skipped": 0, "source": "mcp:ms365/get-attachment",
  "tags": ["board", "source/mcp/ms365", "untrusted"]}
+```
+
+Import a law whose articles are only numbered, each article a heading (the
+title of article 2 wraps onto a second line):
+
+```json
+{"op": "import", "path": "volume:inbox:extracted/Zakon-pro-banky.md", "scope": "tenant", "doc_path": "/board/regulations/zakon-pro-banky",
+ "source": {"url": "https://tenant.sharepoint.com/sites/board/Shared%20Documents/zakon.pdf", "kind": "sharepoint"},
+ "headings": [
+   {"line": 12, "level": 2, "as": "heading"},
+   {"line": 31, "level": 2, "as": "heading", "lines": 2},
+   {"line": 58, "level": 2, "as": "heading"}
+ ]}
+```
+
+Import a regulation by sections, with each numbered пункт as a marker under
+its section, so the пункт's own text stays in the body:
+
+```json
+{"op": "import", "path": "volume:inbox:extracted/NBU-064.md", "scope": "tenant", "doc_path": "/board/regulations/nbu-064",
+ "headings": [
+   {"line": 593, "level": 2, "as": "heading"},
+   {"line": 594, "level": 3, "as": "marker", "title": "1. Це Положення розроблено…"},
+   {"line": 601, "level": 3, "as": "marker", "title": "2. Банк забезпечує…"}
+ ]}
+```
+
+```json result
+{"document_id": "8c1e…", "root_chunk_id": "41d2…", "chunks": 4, "image_chunks": 0, "skipped": 0,
+ "source": "mcp:ms365/download-bytes",
+ "provenance": {"origin": "import", "file": "NBU-064.pdf", "sha256": "9f3a…", "captured_from": "mcp:ms365/download-bytes",
+                "captured_at": "2026-10-28T07:12:40Z", "run_id": "run_7c2…", "structured": {"headings": 3, "by": "run_7c2…"}},
+ "tags": ["source/mcp/ms365", "untrusted"]}
 ```
