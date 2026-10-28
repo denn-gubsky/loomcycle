@@ -64,13 +64,13 @@ func ownIdentityRequest(p auth.Principal, r *http.Request) bool {
 }
 
 // userCredentialSession reports whether a session's credential IS its user:
-// a password-gate or identity-gate session, whose principal is the user's
-// own reach. A token-gate session stands for a pasted bearer, which may be
+// a password-gate, identity-gate or passkey-gate session, whose principal is
+// the user's own reach. A token-gate session stands for a pasted bearer, which may be
 // narrower than its user (restricted, fewer scopes); linking from it would
 // hand the user's full reach to every later sign-in through the linked
 // identity — a restricted credential widening itself.
 func userCredentialSession(row *store.UISessionRow) bool {
-	return row != nil && (row.CredKind == credKindPassword || row.CredKind == credKindIdentity)
+	return row != nil && (row.CredKind == credKindPassword || row.CredKind == credKindIdentity || row.CredKind == credKindPasskey)
 }
 
 // principalIsTheUser is the belt to userCredentialSession's braces: the

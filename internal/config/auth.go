@@ -255,6 +255,9 @@ type AuthPolicy struct {
 	// Clients are the validated auth.clients, sorted by id (read one through
 	// Client).
 	Clients []AppClient
+	// Passkeys is the WebAuthn relying party, set when a password or passkey
+	// gate is configured and LOOMCYCLE_PUBLIC_URL can be one (auth_passkey.go).
+	Passkeys *AuthPasskeyRP
 	// UserTokensGateOnly is auth.strict.user_tokens: gate_only — in strict
 	// mode, a per-user token no gate issued is refused on the API too.
 	UserTokensGateOnly bool
@@ -473,10 +476,16 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindAWSIAM:
 			// Machines only: it issues API tokens, never a session.
+		case kind == AuthGateKindPasskey:
+			// Not counted as interactive: a passkey is registered from a
+			// session of another sign-in gate, so it cannot be the only way in.
+			if hasPasskeyGateKeys(g) {
+				return fmt.Errorf("auth.gates.%s: a passkey gate takes only a label", name)
+			}
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam or device)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam, device or passkey)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam or device)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam, device or passkey)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
@@ -610,6 +619,9 @@ func resolveAuth(c *Config) error {
 	if p.Strict() && interactive == 0 {
 		return fmt.Errorf("auth.mode: strict needs at least one interactive gate in auth.gates " +
 			"(e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI")
+	}
+	if err := resolvePasskeys(c, &p); err != nil {
+		return err
 	}
 	if err := resolveStrict(c, &p); err != nil {
 		return err

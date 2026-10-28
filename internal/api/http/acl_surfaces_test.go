@@ -32,6 +32,13 @@ var aclUngovernedRoutes = map[string]bool{
 	"POST /v1/_auth/complete/{gate}": true, "POST /v1/_auth/invite/info": true, "POST /v1/_auth/invite": true,
 	"POST /v1/_auth/reset/info": true, "POST /v1/_auth/reset": true, "GET /v1/_auth/account": true,
 	"POST /v1/_auth/password": true, "POST /v1/_auth/totp/begin": true, "POST /v1/_auth/totp/confirm": true, "DELETE /v1/_auth/totp": true,
+	// RFC FA P6 passkeys: the sign-in start precedes any principal (the
+	// completion is POST /v1/_auth/complete/{gate} above); the management
+	// routes act on the caller's own passkeys only, from its own Web UI
+	// session, like the password and TOTP routes.
+	"POST /v1/_auth/passkey/{gate}/begin": true, "GET /v1/_auth/passkeys": true,
+	"POST /v1/_auth/passkeys/register/begin": true, "POST /v1/_auth/passkeys/register/finish": true,
+	"PATCH /v1/_auth/passkeys/{id}": true, "DELETE /v1/_auth/passkeys/{id}": true,
 	// The redirect gates' login start and provider callback establish a
 	// session (no principal yet).
 	"GET /v1/_auth/login/{gate}": true, "GET /v1/_auth/complete/{gate}": true,

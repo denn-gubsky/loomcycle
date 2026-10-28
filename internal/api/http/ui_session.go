@@ -413,6 +413,9 @@ type sessionIdentity struct {
 	Subject  string
 	Gate     string
 	AMR      []string
+	// Passkey is the credential id a passkey-gate sign-in used (RFC FA P6);
+	// the session is bound to that passkey.
+	Passkey []byte
 	// Credential is the loomcycle bearer the person presented, for a gate that
 	// verifies one (BaseAuthGate). The session then stays bound to it and is
 	// never more than it. Nil for a gate whose verified identity stands on its
@@ -533,6 +536,9 @@ func (s *Server) credentialBinding(ctx context.Context, h auth.TokenHasher, iden
 		// user row it names.
 		if _, ok := s.identityGate(ident.Gate); ok {
 			return s.identitySessionBinding(ctx, ident)
+		}
+		if _, ok := s.passkeyGateNamed(ident.Gate); ok {
+			return s.passkeySessionBinding(ctx, ident)
 		}
 		return "", "", "", fmt.Errorf("%w: gate %q verified an identity with no loomcycle credential", errNoSessionBinding, ident.Gate)
 	}
@@ -728,6 +734,8 @@ func (s *Server) boundCredentialPrincipal(ctx context.Context, row store.UISessi
 		return s.passwordSessionPrincipal(ctx, row, bound)
 	case credKindIdentity:
 		return s.identitySessionPrincipal(ctx, row, bound, pending)
+	case credKindPasskey:
+		return s.passkeySessionPrincipal(ctx, row, bound)
 	case credKindLegacy:
 		secret := s.cfg().Env.AuthToken
 		if secret == "" || !bound(h.Hash(secret)) {

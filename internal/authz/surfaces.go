@@ -302,7 +302,8 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		// gate's login return, assert, revoke and sync are authenticated by
 		// the gate's own signature under its pinned key and held to its
 		// identity_map; logout ends the caller's own session; the account
-		// routes act on the caller's own credentials. No ACL question fits.
+		// routes (password, TOTP, passkeys) act on the caller's own
+		// credentials. No ACL question fits.
 		return Surface{}, false
 	case name == "oauth":
 		// RFC FL: the app sign-in routes run before any principal exists.

@@ -353,6 +353,10 @@ func (s *Server) handleAuthComplete(w http.ResponseWriter, r *http.Request) {
 		s.handleHeaderLogin(w, r, g)
 		return
 	}
+	if g, ok := s.passkeyGateNamed(r.PathValue("gate")); ok {
+		s.handlePasskeyLogin(w, r, g)
+		return
+	}
 	if g, ok := s.externalGate(r.PathValue("gate")); ok {
 		if !s.authConfigured(r.Context()) {
 			writeJSONError(w, http.StatusConflict, "open_mode", "authentication is off on this server; no session is needed")

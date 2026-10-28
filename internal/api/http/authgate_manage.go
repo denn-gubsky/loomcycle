@@ -943,9 +943,9 @@ func (s *Server) gateIdentity(w http.ResponseWriter, ctx context.Context, gate, 
 // --- credentials, logins, identities ---
 
 // handleAuthgateDeleteCredentials serves DELETE
-// /v1/_authgate/{gate}/credentials/{subject}: the user's password, TOTP and
-// recovery codes go, and the login stays reserved so a later reset restores
-// it.
+// /v1/_authgate/{gate}/credentials/{subject}: the user's password, TOTP,
+// recovery codes and passkeys go, and the login stays reserved so a later
+// reset restores it.
 func (s *Server) handleAuthgateDeleteCredentials(w http.ResponseWriter, r *http.Request) {
 	g, _, ok := s.passwordGate(w, r)
 	if !ok || !s.requireStore(w) {
@@ -967,6 +967,13 @@ func (s *Server) handleAuthgateDeleteCredentials(w http.ResponseWriter, r *http.
 	if err == nil {
 		_, err = s.store.UserTOTPDelete(ctx, tenant, subject)
 	}
+	// Passkeys too (RFC FA P6): a lost authenticator is recovered the same
+	// way as a lost phone, and its passkey sessions end with it.
+	var keys int
+	if err == nil {
+		keys, err = s.store.UserPasskeyDeleteSubject(ctx, tenant, subject)
+	}
+	removed = removed || keys > 0
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return

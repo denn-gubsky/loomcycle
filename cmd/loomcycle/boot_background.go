@@ -520,6 +520,13 @@ func (b *boot) startStoreSweepers() {
 				if m > 0 {
 					slog.Info("ui-session sweep: deleted finished login states", "rows", m)
 				}
+				// Begun passkey ceremonies (RFC FA P6): an expired one can
+				// never be answered, so deleting it changes no answer.
+				if c, err := storeIface.WebAuthnCeremonyDeleteExpired(ctx, time.Now()); err != nil {
+					slog.Error("ui-session sweep: deleting passkey ceremonies failed", "err", err)
+				} else if c > 0 {
+					slog.Info("ui-session sweep: deleted expired passkey ceremonies", "rows", c)
+				}
 				// App sign-ins (RFC FL): expired codes and ended refresh
 				// families. An hour's margin keeps a tombstone (a family
 				// revoked before its exchange created it) past any exchange

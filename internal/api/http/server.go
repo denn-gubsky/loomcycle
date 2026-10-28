@@ -4813,6 +4813,15 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /v1/_auth/totp/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPBegin))))
 	mux.Handle("POST /v1/_auth/totp/confirm", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPConfirm))))
 	mux.Handle("DELETE /v1/_auth/totp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPRemove))))
+	// RFC FA P6 passkeys (authgate_passkey.go). The sign-in start runs before
+	// any principal exists (same-origin, throttled); the rest serve only the
+	// person's own Web UI session.
+	mux.Handle("POST /v1/_auth/passkey/{gate}/begin", recoveryMiddleware(http.HandlerFunc(s.handlePasskeyLoginBegin)))
+	mux.Handle("GET /v1/_auth/passkeys", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListPasskeys))))
+	mux.Handle("POST /v1/_auth/passkeys/register/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePasskeyRegisterBegin))))
+	mux.Handle("POST /v1/_auth/passkeys/register/finish", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePasskeyRegisterFinish))))
+	mux.Handle("PATCH /v1/_auth/passkeys/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRenamePasskey))))
+	mux.Handle("DELETE /v1/_auth/passkeys/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRemovePasskey))))
 	// RFC FL — loomcycle as an OAuth 2.0 authorization server for its own apps.
 	// No bearer on any of them: authorize signs the person in through the
 	// login page and the session cookie; token and revoke are authenticated by
