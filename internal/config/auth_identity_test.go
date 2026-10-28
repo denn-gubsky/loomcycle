@@ -161,3 +161,21 @@ func TestResolveAuth_LifecycleResolved(t *testing.T) {
 		t.Fatalf("floor = %+v", f)
 	}
 }
+
+// The header and AWS IAM gates provision users too: auth.lifecycle is the
+// floor their identity maps start from.
+func TestResolveAuth_LifecycleIsTheFloorOfAnEdgeGate(t *testing.T) {
+	c := &Config{Auth: AuthConfig{
+		Lifecycle: AuthLifecycleConfig{NewUser: AuthNewUserConfig{Status: "pending"}},
+		Gates: map[string]AuthGateConfig{"ci": {
+			Kind: "awsiam", ServerID: "lc.acme", AllowedARNs: []string{"arn:aws:iam::123456789012:role/ci-*"},
+			IdentityMap: &AuthIdentityMapConfig{Tenant: "acme", Provision: "auto"},
+		}},
+	}}
+	if err := resolveAuth(c); err != nil {
+		t.Fatalf("lifecycle beside an edge gate: %v", err)
+	}
+	if got := c.ResolvedAuth.Gates[0].Identity.NewUser.Status; got != "pending" {
+		t.Fatalf("the gate's new users get status %q, want the lifecycle floor's pending", got)
+	}
+}

@@ -182,6 +182,43 @@ func testOperatorTokenIssuedByGateRoundTrips(t *testing.T, s store.Store) {
 	}
 }
 
+// RFC EY §8: an inherit token reads back inherit on both lookups, and a row
+// written without the field (every token minted before it existed) reads back
+// frozen ("").
+func testOperatorTokenAuthorityRoundTripsAndDefaultsFrozen(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := store.OperatorTokenDefRow{DefID: "ot-inherit", Name: "u-alice", TenantID: "acme", Subject: "alice",
+		TokenHash: "h-ot-inherit", AllowedScopes: []string{"substrate:user"}, CreatedAt: pwgT0, Authority: "inherit"}
+	if _, err := s.OperatorTokenDefCreate(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	frozen := row
+	frozen.DefID, frozen.TokenHash, frozen.Authority = "ot-frozen", "h-ot-frozen", ""
+	if _, err := s.OperatorTokenDefCreate(ctx, frozen); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.OperatorTokenDefGet(ctx, "ot-inherit"); err != nil || got.Authority != "inherit" {
+		t.Fatalf("Get authority = %q, %v; want inherit", got.Authority, err)
+	}
+	if got, err := s.OperatorTokenDefGetByTokenHash(ctx, "h-ot-inherit"); err != nil || got.Authority != "inherit" {
+		t.Fatalf("GetByTokenHash authority = %q, %v; want inherit", got.Authority, err)
+	}
+	if got, err := s.OperatorTokenDefGetByTokenHash(ctx, "h-ot-frozen"); err != nil || got.Authority != "" {
+		t.Fatalf("frozen token authority = %q, %v; want \"\"", got.Authority, err)
+	}
+	rows, err := s.OperatorTokenDefListBySubject(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, r := range rows {
+		seen[r.DefID] = r.Authority
+	}
+	if seen["ot-inherit"] != "inherit" || seen["ot-frozen"] != "" || len(seen) != 2 {
+		t.Fatalf("listing authority = %v", seen)
+	}
+}
+
 func testUserStatusPendingIsStored(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "google:9", AccessMode: "isolated", Status: store.UserStatusPending}); err != nil {

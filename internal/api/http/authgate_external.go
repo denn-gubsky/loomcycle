@@ -56,7 +56,8 @@ const (
 )
 
 // storeReplayCache is the replay cache every replica shares: the store's
-// auth_assertion_jtis table.
+// auth_assertion_jtis table. The external gates key it by gate name; the
+// edge gates (authgate_edge.go) by "awsiam:<gate>" and "fwdhmac:<gate>".
 type storeReplayCache struct{ st store.AuthLifecycleStore }
 
 func (c storeReplayCache) UseOnce(ctx context.Context, gate, jti string, until, now time.Time) (bool, error) {
@@ -344,9 +345,14 @@ func (s *Server) handleAuthSync(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAuthComplete is POST /v1/_auth/complete/{gate}: the password gate's
-// form post, or a same-site external gate posting its assertion as a form
-// field. Each kind has its own checks.
+// form post, a same-site external gate posting its assertion as a form
+// field, or a header gate's one-button sign-in (the proxy's assertion rides
+// on the request). Each kind has its own checks.
 func (s *Server) handleAuthComplete(w http.ResponseWriter, r *http.Request) {
+	if g, ok := s.configuredGate(r.PathValue("gate")); ok && g.Header != nil {
+		s.handleHeaderLogin(w, r, g)
+		return
+	}
 	if g, ok := s.externalGate(r.PathValue("gate")); ok {
 		if !s.authConfigured(r.Context()) {
 			writeJSONError(w, http.StatusConflict, "open_mode", "authentication is off on this server; no session is needed")
@@ -371,14 +377,15 @@ type assertResponse struct {
 	Tenant    string    `json:"tenant"`
 }
 
-// handleAuthAssert is POST /v1/_auth/assert {gate, assertion}: a non-browser
+// handleExternalAssert is POST /v1/_auth/assert {gate, assertion}: a non-browser
 // client of an external gate (a bridge, per platform user) presents the
 // gate's assertion and receives an issued token for the person (RFC FA §7):
 // short-lived, the user's own member reach, held to the gate's issued_token
 // ceiling and to anything narrower the assertion's `token` claim asks for.
 // The user is provisioned per the identity map first, exactly as at a login;
-// a pending user gets no token.
-func (s *Server) handleAuthAssert(w http.ResponseWriter, r *http.Request) {
+// a pending user gets no token. handleAuthAssert (authgate_edge.go) routes
+// every gate that is not kind: awsiam here.
+func (s *Server) handleExternalAssert(w http.ResponseWriter, r *http.Request) {
 	g, c, ok := s.verifyGateRequest(w, r, external.UseAssert, maxGateBody)
 	if !ok {
 		return

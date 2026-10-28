@@ -2,14 +2,17 @@ import { useEffect, useState } from "react";
 import { type LoginConfig, type LoginGate, parseLoginConfig } from "../lib/uiSession";
 import { refusalText as passwordRefusalText, signInWithPassword } from "../lib/passwordGate";
 import { REDIRECT_GATE_KINDS, redirectLoginError, redirectLoginHref } from "../lib/oidcGate";
+import { proxyRefusalText, signInThroughProxy } from "../lib/headerGate";
 
 // LoginView is the sign-in page. It renders from /ui/login-config.json: the
 // deployment's mode and its gates (name, kind, label) — nothing else about the
 // server is known before sign-in. Each gate kind has its own form: `token`, the
 // paste box (BaseAuthGate), and `password`, a login and password with an
-// authenticator code when the account has one (NaiveAuthGate), and `oidc`, a
+// authenticator code when the account has one (NaiveAuthGate), `oidc`, a
 // button that starts a sign-in at the identity provider (a top-level
-// navigation; the provider sends the browser back to the server). A gate kind
+// navigation; the provider sends the browser back to the server), and
+// `header`, one button for a proxy that already signed the person in
+// (HeaderGate). A gate kind
 // this page does not know is listed but not offered.
 //
 // Signing in creates a server-side session: the browser gets an HttpOnly
@@ -96,6 +99,40 @@ function TokenGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean 
       <p className="login-hint">
         Tokens are minted with <code>loomcycle operator-token create</code>. Lost tokens are rotated, not recovered.
       </p>
+    </form>
+  );
+}
+
+// HeaderGateForm signs in through a proxy that already authenticated the
+// person (Cloudflare Access, an AWS ALB, a forward-auth proxy): the button's
+// request carries the proxy's signed assertion. It never signs in on its own
+// when the page opens.
+function HeaderGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean }) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setBusy(true);
+    const refused = await signInThroughProxy(gate.name);
+    setBusy(false);
+    if (refused === "") {
+      window.location.href = "/ui";
+    } else {
+      setError(proxyRefusalText(refused, gate.label));
+    }
+  };
+  return (
+    <form onSubmit={submit} aria-label={gate.label}>
+      <p className="login-sub">Signed in by {gate.label}.</p>
+      {error && (
+        <p className="login-error" role="alert">
+          {error}
+        </p>
+      )}
+      <button className="login-btn" type="submit" disabled={disabled || busy}>
+        Continue as signed in by {gate.label}
+      </button>
     </form>
   );
 }
@@ -221,6 +258,7 @@ export default function LoginView() {
   const tokenGate = config?.gates.find((g) => g.kind === "token");
   const passwordGates = config?.gates.filter((g) => g.kind === "password") ?? [];
   const redirectGates = config?.gates.filter((g) => REDIRECT_GATE_KINDS.includes(g.kind)) ?? [];
+  const headerGates = config?.gates.filter((g) => g.kind === "header") ?? [];
   const blocked = config?.sessionRefused ?? "";
   const returned = redirectLoginError(new URLSearchParams(window.location.search).get("error") ?? "");
 
@@ -251,11 +289,18 @@ export default function LoginView() {
             </a>
           ),
         )}
+        {headerGates.map((g) => (
+          <HeaderGateForm key={g.name} gate={g} disabled={blocked !== ""} />
+        ))}
         {passwordGates.map((g) => (
           <PasswordGateForm key={g.name} gate={g} disabled={blocked !== ""} />
         ))}
         {tokenGate && <TokenGateForm gate={tokenGate} disabled={blocked !== ""} />}
-        {config !== null && !tokenGate && passwordGates.length === 0 && redirectGates.length === 0 && (
+        {config !== null &&
+          !tokenGate &&
+          passwordGates.length === 0 &&
+          redirectGates.length === 0 &&
+          headerGates.length === 0 && (
           <p className="login-sub">
             {config.gates.length === 0
               ? "This server offers no way to sign in to the Web UI."
