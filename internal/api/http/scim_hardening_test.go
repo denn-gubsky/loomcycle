@@ -45,11 +45,11 @@ func (h *hookStore) AuthRemovalDelete(ctx context.Context, tenantID, subject str
 	return h.Store.AuthRemovalDelete(ctx, tenantID, subject)
 }
 
-func (h *hookStore) SCIMRemovalDisown(ctx context.Context, tenantID, subject string) (bool, error) {
+func (h *hookStore) OperatorDisableUser(ctx context.Context, tenantID, subject string) (bool, error) {
 	if h.failDisown {
-		return false, errors.New("injected: disown failed")
+		return false, errors.New("injected: operator disable failed")
 	}
-	return h.Store.SCIMRemovalDisown(ctx, tenantID, subject)
+	return h.Store.OperatorDisableUser(ctx, tenantID, subject)
 }
 
 func (h *hookStore) SCIMUserGet(ctx context.Context, gate, tenantID, scimID string) (store.SCIMUserRow, error) {
@@ -244,9 +244,9 @@ func TestUsers_AReactivationThatCannotEndTheRemovalLeavesTheUserDisabled(t *test
 	}
 }
 
-// An operator's disable retires the user's delegated tokens even when what
-// follows it (taking the user from SCIM) fails: the revocation never waits
-// on it.
+// An operator's disable retires the user's delegated tokens even when the
+// disable's store write (which also takes the user from SCIM) fails: the
+// revocation never waits on it.
 func TestUsers_ADisableRetiresTokensEvenWhenSCIMDisownFails(t *testing.T) {
 	f := newSCIMFixture(t, scimOpts{})
 	ctx := context.Background()

@@ -141,11 +141,6 @@ func (s *Store) SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject
 	return sqlshared.SCIMGroupsOfSubject(ctx, s.shared(), gate, tenantID, subject)
 }
 
-// SCIMRemovalDisown implements store.SCIMStore.
-func (s *Store) SCIMRemovalDisown(ctx context.Context, tenantID, subject string) (bool, error) {
-	return sqlshared.SCIMRemovalDisown(ctx, s.shared(), tenantID, subject)
-}
-
 // SCIMRemovalBase implements store.SCIMStore.
 func (s *Store) SCIMRemovalBase(ctx context.Context, gate, tenantID string, before time.Time) (int, error) {
 	return sqlshared.SCIMRemovalBase(ctx, s.shared(), gate, tenantID, before)

@@ -163,12 +163,6 @@ func SCIMUserDiscard(ctx context.Context, q Querier, gate, tenantID, scimID stri
 	return err
 }
 
-func SCIMRemovalDisown(ctx context.Context, q Querier, tenantID, subject string) (bool, error) {
-	n, err := q.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ? AND reason IN (`+store.SCIMRemovalReasons+`)`,
-		tenantID, subject)
-	return n > 0, err
-}
-
 func SCIMRemovalBase(ctx context.Context, q Querier, gate, tenantID string, before time.Time) (int, error) {
 	var n int
 	// Not disabled now, or disabled by a removal inside the window: the

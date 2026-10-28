@@ -586,9 +586,10 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	}
 }
 
-// An operator's disable disowns a SCIM removal (any SCIM reason, a claim
-// included) and leaves every other removal alone.
-func testSCIMRemovalDisownTakesOnlySCIMRows(t *testing.T, s store.Store) {
+// An operator's disable disables the user and takes it from SCIM in one
+// write (a SCIM row of any reason, a claim included, goes), and leaves every
+// other removal alone.
+func testOperatorDisableTakesOnlySCIMRows(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	since := now.Add(-24 * time.Hour)
@@ -603,14 +604,20 @@ func testSCIMRemovalDisownTakesOnlySCIMRows(t *testing.T, s store.Store) {
 	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "s2"); !ok || err != nil {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "op", AccessMode: "isolated", Status: "disabled"}); err != nil {
+		t.Fatal(err)
+	}
 	op := store.AuthRemovalRow{TenantID: "acme", Subject: "op", Reason: store.RemovalReasonOperator, DisabledAt: now,
 		UnbindDueAt: now.Add(time.Hour), CreatedBy: "op"}
 	if ok, err := s.AuthRemovalStart(ctx, op); !ok || err != nil {
 		t.Fatalf("seed: %v %v", ok, err)
 	}
 	for _, sub := range []string{"s1", "s2"} {
-		if ok, err := s.SCIMRemovalDisown(ctx, "acme", sub); !ok || err != nil {
+		if ok, err := s.OperatorDisableUser(ctx, "acme", sub); !ok || err != nil {
 			t.Fatalf("disown %s: %v %v", sub, ok, err)
+		}
+		if st := userStatus(t, s, "acme", sub); st != "disabled" {
+			t.Fatalf("%s: status %s", sub, st)
 		}
 		if _, err := s.AuthRemovalGet(ctx, "acme", sub); !pwgNotFound(err) {
 			t.Fatalf("%s: the SCIM row outlived the disown: %v", sub, err)
@@ -619,11 +626,21 @@ func testSCIMRemovalDisownTakesOnlySCIMRows(t *testing.T, s store.Store) {
 			t.Fatalf("%s: SCIM re-enabled a disowned user", sub)
 		}
 	}
-	if ok, err := s.SCIMRemovalDisown(ctx, "acme", "op"); ok || err != nil {
+	if ok, err := s.OperatorDisableUser(ctx, "acme", "op"); ok || err != nil {
 		t.Fatalf("disowned an operator's removal: %v %v", ok, err)
 	}
 	if _, err := s.AuthRemovalGet(ctx, "acme", "op"); err != nil {
 		t.Fatalf("the operator's removal went: %v", err)
+	}
+	// An active user with no removal: disabled, nothing to disown.
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "plain", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.OperatorDisableUser(ctx, "acme", "plain"); ok || err != nil || userStatus(t, s, "acme", "plain") != "disabled" {
+		t.Fatalf("plain disable: %v %v", ok, err)
+	}
+	if _, err := s.OperatorDisableUser(ctx, "acme", "ghost"); !pwgNotFound(err) {
+		t.Fatalf("an unknown user: %v", err)
 	}
 }
 

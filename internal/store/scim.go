@@ -157,10 +157,14 @@ type SCIMStore interface {
 	// return to the status recorded at removal (active, or pending) and the
 	// row go. Otherwise false, and nothing changes.
 	SCIMReactivate(ctx context.Context, gate, tenantID, subject string) (restored string, ok bool, err error)
-	// SCIMRemovalDisown deletes the subject's removal row when it is a SCIM
-	// one (any SCIM reason): an operator's plain disable owns the user from
-	// then on, so SCIM can no longer re-enable it.
-	SCIMRemovalDisown(ctx context.Context, tenantID, subject string) (bool, error)
+	// OperatorDisableUser is an operator's plain disable, in one
+	// transaction: the user is disabled AND a SCIM removal row of it (any
+	// SCIM reason, a claim in progress included) is deleted, so the operator
+	// owns the disable and SCIM can never re-enable it — there is no state
+	// in which the status is written and the SCIM row survives. disowned
+	// reports that a SCIM row went. *ErrNotFound when the user does not
+	// exist.
+	OperatorDisableUser(ctx context.Context, tenantID, subject string) (disowned bool, err error)
 	// SCIMRemovalBase is the base a percentage removal ceiling is taken of:
 	// the users linked to the gate in the tenant who were created before
 	// `before` (the window's start) and are not disabled — or were disabled

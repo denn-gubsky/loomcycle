@@ -177,3 +177,28 @@ func (s *Store) SCIMReactivate(ctx context.Context, gate, tenantID, subject stri
 	}
 	return restored, true, nil
 }
+
+// OperatorDisableUser implements store.SCIMStore.
+func (s *Store) OperatorDisableUser(ctx context.Context, tenantID, subject string) (bool, error) {
+	disowned := false
+	err := s.immediateTx(ctx, func(conn *sql.Conn) error {
+		res, err := conn.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = ? AND subject = ?`, tenantID, subject)
+		if err != nil {
+			return fmt.Errorf("operator disable: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return &store.ErrNotFound{Kind: "user", ID: subject}
+		}
+		del, err := conn.ExecContext(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ? AND reason IN (`+store.SCIMRemovalReasons+`)`,
+			tenantID, subject)
+		if err != nil {
+			return fmt.Errorf("operator disable: removal: %w", err)
+		}
+		n, err := del.RowsAffected()
+		disowned = n > 0
+		return err
+	})
+	return disowned, err
+}

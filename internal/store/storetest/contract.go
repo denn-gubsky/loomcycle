@@ -593,7 +593,7 @@ func Run(t *testing.T, factory Factory) {
 		{"SCIMRemoveUserHoldsTheCeilingUnderConcurrency", testSCIMRemoveUserHoldsTheCeilingUnderConcurrency},
 		{"SCIMRemoveAndReactivateKeepOwnership", testSCIMRemoveAndReactivateKeepOwnership},
 		{"AuthSubjectDeleteRemovesPasskeysAndSCIMRows", testAuthSubjectDeleteRemovesPasskeysAndSCIMRows},
-		{"SCIMRemovalDisownTakesOnlySCIMRows", testSCIMRemovalDisownTakesOnlySCIMRows},
+		{"OperatorDisableTakesOnlySCIMRows", testOperatorDisableTakesOnlySCIMRows},
 		{"SCIMRemovalBaseAndCreatesCountTheWindow", testSCIMRemovalBaseAndCreatesCountTheWindow},
 		{"UserPasskeyDeleteKeepingNeverTakesTheLastUsable", testUserPasskeyDeleteKeepingNeverTakesTheLastUsable},
 		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},
