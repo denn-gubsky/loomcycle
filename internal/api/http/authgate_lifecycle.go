@@ -296,8 +296,9 @@ func (s *Server) eraseRemoved(ctx context.Context, r store.AuthRemovalRow, now t
 // errNoRemoval: the user has no removal to reactivate from.
 var errNoRemoval = errors.New("the user is not being removed")
 
-// errRemovalBusy: the removal is running a stage, or the user was erased.
-var errRemovalBusy = errors.New("the user's removal is running a stage; try again later")
+// errRemovalBusy: the removal is running a stage, the user was erased, or
+// the removal changed while it was being re-enabled.
+var errRemovalBusy = errors.New("the user's removal is running a stage or changed meanwhile; look again, then retry")
 
 // reactivateRemoved re-enables a removed user at the §3.7a defaults: every
 // group membership and every binding of its own goes, the access mode drops
@@ -320,24 +321,14 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
 		return err
 	}
-	// Only an idle removal ends: a stage the sweeper claimed meanwhile
-	// keeps the user disabled.
-	ended, err := s.store.AuthRemovalDeleteIdle(ctx, tenant, subject)
-	if err != nil {
+	// One store transaction ends the removal and re-enables the user, and
+	// only while nothing changed since r was read: a disable, a takeover or
+	// a sweeper stage that landed meanwhile stands. A user that owed an
+	// approval comes back pending, never active.
+	if _, ok, err := s.store.AuthRemovalReactivate(ctx, r); err != nil {
 		return fmt.Errorf("end the removal: %w", err)
-	}
-	if !ended {
+	} else if !ok {
 		return errRemovalBusy
-	}
-	// A user that was pending when removed still owes its approval: it
-	// comes back pending, never active.
-	restored := "active"
-	if r.PriorStatus == store.UserStatusPending || r.Reason == store.RemovalReasonSCIMPending ||
-		r.Reason == store.RemovalReasonSCIMReactivatingPending {
-		restored = store.UserStatusPending
-	}
-	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &restored}); err != nil {
-		return err
 	}
 	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
 	return nil

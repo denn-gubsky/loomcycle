@@ -900,8 +900,10 @@ func testAuthRemovalStageClaimExcludesReEnables(t *testing.T, s store.Store) {
 	if _, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "a", now, since, noCeiling); !errors.Is(err, store.ErrRemovalBusy) {
 		t.Fatalf("a re-enable mid-stage: %v", err)
 	}
-	if ok, _ := s.AuthRemovalDeleteIdle(ctx, "acme", "a"); ok {
-		t.Fatal("a removal mid-stage was deleted")
+	if seen, _ := s.AuthRemovalGet(ctx, "acme", "a"); true {
+		if _, ok, _ := s.AuthRemovalReactivate(ctx, seen); ok {
+			t.Fatal("a removal mid-stage was re-enabled")
+		}
 	}
 	if ok, err := s.AuthRemovalMarkUnbound(ctx, "acme", "a", now); !ok || err != nil {
 		t.Fatalf("mark unbound: %v %v", ok, err)
@@ -932,8 +934,10 @@ func testAuthRemovalStageClaimExcludesReEnables(t *testing.T, s store.Store) {
 	if _, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "c", now, since, noCeiling); !errors.Is(err, store.ErrRemovalBusy) {
 		t.Fatalf("a re-enable of an erased user: %v", err)
 	}
-	if ok, _ := s.AuthRemovalDeleteIdle(ctx, "acme", "c"); ok {
-		t.Fatal("an erased removal was deleted as idle")
+	if seen, _ := s.AuthRemovalGet(ctx, "acme", "c"); true {
+		if _, ok, _ := s.AuthRemovalReactivate(ctx, seen); ok {
+			t.Fatal("an erased user was re-enabled")
+		}
 	}
 	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "on", AccessMode: "isolated", Status: "active"}); err != nil {
 		t.Fatal(err)
@@ -1023,6 +1027,55 @@ func testSCIMRemovalWritesNeverDeadlock(t *testing.T, s store.Store) {
 				t.Fatalf("round %d, writer %d: %v", i, k, err)
 			}
 		}
+	}
+}
+
+// An operator's re-enable is one write over the removal it read: it gives
+// back the status the user had (pending stays pending), and anything that
+// changed since — a takeover, a stage, a re-enable — makes it a no-op.
+func testAuthRemovalReactivateOnlyOverTheRowItRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, u := range []store.UserRow{{Subject: "act", Status: "active"}, {Subject: "pend", Status: store.UserStatusPending},
+		{Subject: "moved", Status: "active"}} {
+		u.TenantID, u.AccessMode = "acme", "isolated"
+		if err := s.UserCreate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.AuthRemovalStart(ctx, store.AuthRemovalRow{TenantID: "acme", Subject: u.Subject, Reason: store.RemovalReasonDormant,
+			DisabledAt: now, UnbindDueAt: now.Add(time.Hour)}); !ok || err != nil {
+			t.Fatalf("start %s: %v %v", u.Subject, ok, err)
+		}
+	}
+	for sub, want := range map[string]string{"act": "active", "pend": store.UserStatusPending} {
+		seen, _ := s.AuthRemovalGet(ctx, "acme", sub)
+		if st, ok, err := s.AuthRemovalReactivate(ctx, seen); !ok || err != nil || st != want {
+			t.Fatalf("%s: %q %v %v, want %q", sub, st, ok, err, want)
+		}
+		if got := userStatus(t, s, "acme", sub); got != want {
+			t.Fatalf("%s: status %s", sub, got)
+		}
+		if _, err := s.AuthRemovalGet(ctx, "acme", sub); !pwgNotFound(err) {
+			t.Fatalf("%s: the removal outlived the re-enable: %v", sub, err)
+		}
+		if _, ok, _ := s.AuthRemovalReactivate(ctx, seen); ok {
+			t.Fatalf("%s: re-enabled twice", sub)
+		}
+	}
+	// Another removal took the row over after it was read: no re-enable.
+	seen, _ := s.AuthRemovalGet(ctx, "acme", "moved")
+	if _, err := s.AuthRemovalDelete(ctx, "acme", "moved"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.AuthRemovalStart(ctx, store.AuthRemovalRow{TenantID: "acme", Subject: "moved", Reason: store.RemovalReasonRevoked,
+		DisabledAt: now.Add(time.Minute), UnbindDueAt: now.Add(time.Hour)}); !ok || err != nil {
+		t.Fatalf("restart: %v %v", ok, err)
+	}
+	if _, ok, err := s.AuthRemovalReactivate(ctx, seen); ok || err != nil {
+		t.Fatalf("a re-enable over a removal that changed: %v %v", ok, err)
+	}
+	if got := userStatus(t, s, "acme", "moved"); got != "disabled" {
+		t.Fatalf("status %s after a refused re-enable", got)
 	}
 }
 

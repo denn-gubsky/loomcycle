@@ -598,6 +598,7 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthRemovalStageClaimExcludesReEnables", testAuthRemovalStageClaimExcludesReEnables},
 		{"SCIMReactivateClaimIsHeldToTheCeiling", testSCIMReactivateClaimIsHeldToTheCeiling},
 		{"SCIMRemovalWritesNeverDeadlock", testSCIMRemovalWritesNeverDeadlock},
+		{"AuthRemovalReactivateOnlyOverTheRowItRead", testAuthRemovalReactivateOnlyOverTheRowItRead},
 		{"SCIMRemovalBaseAndCreatesCountTheWindow", testSCIMRemovalBaseAndCreatesCountTheWindow},
 		{"UserPasskeyDeleteKeepingNeverTakesTheLastUsable", testUserPasskeyDeleteKeepingNeverTakesTheLastUsable},
 		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},

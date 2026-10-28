@@ -163,14 +163,46 @@ func (s *Store) AuthRemovalClaimStage(ctx context.Context, tenantID, subject, st
 	return tag.RowsAffected() > 0, nil
 }
 
-// AuthRemovalDeleteIdle implements store.AuthLifecycleStore.
-func (s *Store) AuthRemovalDeleteIdle(ctx context.Context, tenantID, subject string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = $1 AND subject = $2 AND stage = '' AND erased_at IS NULL`,
-		tenantID, subject)
+// AuthRemovalReactivate implements store.AuthLifecycleStore.
+func (s *Store) AuthRemovalReactivate(ctx context.Context, seen store.AuthRemovalRow) (string, bool, error) {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, fmt.Errorf("auth removal delete: %w", err)
+		return "", false, err
 	}
-	return tag.RowsAffected() > 0, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, seen.TenantID, seen.Subject).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: read user: %w", err)
+	}
+	if status != "disabled" {
+		return "", false, nil
+	}
+	cur, err := scanRemoval(tx.QueryRow(ctx, `SELECT `+removalReadCols+` FROM auth_removals WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`,
+		seen.TenantID, seen.Subject))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: read removal: %w", err)
+	}
+	if cur.Reason != seen.Reason || !cur.DisabledAt.Equal(seen.DisabledAt) || cur.Stage != "" || !cur.ErasedAt.IsZero() {
+		return "", false, nil
+	}
+	restored := store.RestoredStatus(cur)
+	if _, err := tx.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = $1 AND subject = $2`, seen.TenantID, seen.Subject); err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET status = $3 WHERE tenant_id = $1 AND subject = $2`, seen.TenantID, seen.Subject, restored); err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: user: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, err
+	}
+	return restored, true, nil
 }
 
 // AuthRemovalGet implements store.AuthLifecycleStore.

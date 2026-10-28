@@ -58,6 +58,15 @@ type AuthRemovalRow struct {
 	PriorStatus string
 }
 
+// RestoredStatus is the status a re-enable from removal r gives back: pending
+// when the user owed an approval, else active.
+func RestoredStatus(r AuthRemovalRow) string {
+	if r.PriorStatus == UserStatusPending || r.Reason == RemovalReasonSCIMPending || r.Reason == RemovalReasonSCIMReactivatingPending {
+		return UserStatusPending
+	}
+	return "active"
+}
+
 // The stages the sweeper claims (AuthRemovalClaimStage).
 const (
 	RemovalStageUnbinding = "unbinding"
@@ -99,9 +108,15 @@ type AuthLifecycleStore interface {
 	// retry of the same stage claims again). false otherwise. Marking the
 	// stage done clears it.
 	AuthRemovalClaimStage(ctx context.Context, tenantID, subject, stage string) (bool, error)
-	// AuthRemovalDeleteIdle deletes the subject's removal unless it runs a
-	// stage or the user was erased; false when it did not (none, or busy).
-	AuthRemovalDeleteIdle(ctx context.Context, tenantID, subject string) (bool, error)
+	// AuthRemovalReactivate ends a removal and re-enables the user, in ONE
+	// transaction (the user row locked first): only while the user is still
+	// disabled and its removal is still `seen` (same reason and disabled_at),
+	// idle (no stage claimed) and not erased, is the row deleted and the user
+	// set to the status it had — pending when it owed an approval
+	// (PriorStatus pending, or a pending SCIM reason), else active. Anything
+	// changed since `seen` was read answers false and changes nothing, so a
+	// disable or a stage that landed meanwhile is never overwritten.
+	AuthRemovalReactivate(ctx context.Context, seen AuthRemovalRow) (restored string, ok bool, err error)
 	// AuthRemovalGet returns the subject's removal.
 	// *ErrNotFound{Kind:"auth_removal"} when there is none.
 	AuthRemovalGet(ctx context.Context, tenantID, subject string) (AuthRemovalRow, error)

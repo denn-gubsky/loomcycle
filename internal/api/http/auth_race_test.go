@@ -228,3 +228,30 @@ func TestSCIM_ReEnablesAreHeldToTheCeiling(t *testing.T) {
 		t.Fatalf("the re-enable over the ceiling left the user %s", st)
 	}
 }
+
+// An operator's re-enable never overwrites a disable that landed while it
+// was resetting the user: a revoke taking the removal over meanwhile stands,
+// and the re-enable answers 409.
+func TestUsers_AReEnableNeverOverwritesADisableThatLandedMeanwhile(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true})
+	ctx := context.Background()
+	id, sub := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, scimPatchBody(t, scimOff)); code != http.StatusOK {
+		t.Fatalf("remove = %d", code)
+	}
+	h := hook(f)
+	h.onGroupsOfSubject[sub] = func() { // inside the operator's floor reset
+		if err := f.srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Hour}, "acme", sub, "corp", store.RemovalReasonRevoked, "gate:corp"); err != nil {
+			t.Errorf("revoke: %v", err)
+		}
+	}
+	if code, out := f.call(t, bAcmeOp, "PATCH", "/v1/_users/"+sub, `{"status":"active"}`); code != http.StatusConflict || out["code"] != "removal_in_progress" {
+		t.Fatalf("a re-enable over a revoke that landed meanwhile = %d %v, want 409", code, out)
+	}
+	if st := f.status(t, "acme", sub); st != "disabled" {
+		t.Fatalf("status = %s: the re-enable overwrote the revoke", st)
+	}
+	if rm, err := f.st.AuthRemovalGet(ctx, "acme", sub); err != nil || rm.Reason != store.RemovalReasonRevoked {
+		t.Fatalf("removal = %+v %v", rm, err)
+	}
+}

@@ -145,14 +145,48 @@ func (s *Store) AuthRemovalClaimStage(ctx context.Context, tenantID, subject, st
 	return claimed, err
 }
 
-// AuthRemovalDeleteIdle implements store.AuthLifecycleStore.
-func (s *Store) AuthRemovalDeleteIdle(ctx context.Context, tenantID, subject string) (bool, error) {
-	ok, err := s.removalUpdate(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ? AND stage = '' AND erased_at IS NULL`,
-		tenantID, subject)
-	if err != nil {
-		return false, fmt.Errorf("auth removal delete: %w", err)
+// AuthRemovalReactivate implements store.AuthLifecycleStore.
+func (s *Store) AuthRemovalReactivate(ctx context.Context, seen store.AuthRemovalRow) (string, bool, error) {
+	restored := ""
+	err := s.immediateTx(ctx, func(conn *sql.Conn) error {
+		var status string
+		err := conn.QueryRowContext(ctx, `SELECT status FROM users WHERE tenant_id = ? AND subject = ?`, seen.TenantID, seen.Subject).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errNoChange
+		}
+		if err != nil {
+			return fmt.Errorf("auth removal reactivate: read user: %w", err)
+		}
+		if status != "disabled" {
+			return errNoChange
+		}
+		cur, err := scanRemoval(conn.QueryRowContext(ctx, `SELECT `+removalReadCols+` FROM auth_removals WHERE tenant_id = ? AND subject = ?`,
+			seen.TenantID, seen.Subject))
+		if errors.Is(err, sql.ErrNoRows) {
+			return errNoChange
+		}
+		if err != nil {
+			return fmt.Errorf("auth removal reactivate: read removal: %w", err)
+		}
+		if cur.Reason != seen.Reason || !cur.DisabledAt.Equal(seen.DisabledAt) || cur.Stage != "" || !cur.ErasedAt.IsZero() {
+			return errNoChange
+		}
+		restored = store.RestoredStatus(cur)
+		if _, err := conn.ExecContext(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ?`, seen.TenantID, seen.Subject); err != nil {
+			return fmt.Errorf("auth removal reactivate: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `UPDATE users SET status = ? WHERE tenant_id = ? AND subject = ?`, restored, seen.TenantID, seen.Subject); err != nil {
+			return fmt.Errorf("auth removal reactivate: user: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, errNoChange) {
+		return "", false, nil
 	}
-	return ok, nil
+	if err != nil {
+		return "", false, err
+	}
+	return restored, true, nil
 }
 
 // AuthRemovalGet implements store.AuthLifecycleStore.

@@ -52,11 +52,11 @@ func (h *hookStore) OperatorDisableUser(ctx context.Context, tenantID, subject s
 	return h.Store.OperatorDisableUser(ctx, tenantID, subject)
 }
 
-func (h *hookStore) AuthRemovalDeleteIdle(ctx context.Context, tenantID, subject string) (bool, error) {
+func (h *hookStore) AuthRemovalReactivate(ctx context.Context, seen store.AuthRemovalRow) (string, bool, error) {
 	if h.failRemovalDelete {
-		return false, errors.New("injected: removal delete failed")
+		return "", false, errors.New("injected: removal delete failed")
 	}
-	return h.Store.AuthRemovalDeleteIdle(ctx, tenantID, subject)
+	return h.Store.AuthRemovalReactivate(ctx, seen)
 }
 
 func (h *hookStore) SCIMUserGet(ctx context.Context, gate, tenantID, scimID string) (store.SCIMUserRow, error) {
