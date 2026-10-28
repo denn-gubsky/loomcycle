@@ -279,6 +279,42 @@ func (s *Server) subscriptionCtx(ctx context.Context, sub teamSubscription) cont
 	})
 }
 
+// subscriptionOwnerCtx binds a subscribed walk by its promoter's access-control
+// set (RFC EY), as a `delivery: team` schedule or webhook binds its walk by its
+// definition's owner: the promoter's CURRENT set compiled, `run team:<name>`
+// asked for it, and the set put on the walk's run policy, from where every
+// member is narrowed by it, asked `spawn agent:` for it, and records it as
+// acl_origin for a resume (triggerWalkOwnerCtx). Without it the walk's members
+// ran on their agents' full grants, so anyone bound to a deny who could
+// promote a subscribed team could have a walk do what the deny withholds.
+//
+// A deny is an *errACLDenied and an unreadable set ErrACLUnavailable; both are
+// audited, and neither starts a walk.
+//
+// The transport is left unstamped: a sweep arrives on none of authz.Transports,
+// so a rule conditioned on a transport does not hold for it.
+//
+// No owner, as for a trigger with none: a pointer never captured runs isolated
+// (subscriptionCtx); one captured with no subject (open mode) runs as before;
+// and one promoted before the owner was recorded runs as before too — as a
+// schedule written before its acl_owner existed fires as before — warned once
+// per team, because promoting it again is the fix and only the operator can.
+func (s *Server) subscriptionOwnerCtx(ctx context.Context, sub teamSubscription) (context.Context, error) {
+	p := sub.Promoter
+	if p == nil {
+		return ctx, nil
+	}
+	if p.ACLOwnerUnrecorded {
+		if s.aclResolver != nil && s.subUncaptured.first(sub.TenantID+"\x00"+sub.Name+"\x00acl_owner") {
+			slog.Warn("team-subscriptions: the team was promoted before its promoter was recorded, "+
+				"so no access-control rules bind its walks. Promote the team again (TeamDef op=promote) "+
+				"to bind them by the promoter's rules.", "tenant", sub.TenantID, "team", sub.Name)
+		}
+		return ctx, nil
+	}
+	return s.triggerWalkOwnerCtx(ctx, p.ACLOwner, sub.Name)
+}
+
 // warnOnce reports true the first time it sees a key. The zero value works,
 // for the same reason subscriptionBackoff's does.
 type warnOnce struct {
@@ -372,7 +408,16 @@ func (s *Server) runSubscribedTeam(ctx context.Context, sub teamSubscription) er
 	// that outlived a shutdown would hold the pool's close until the SIGKILL.
 	// A shutdown cancels it; its source is not acked, so the next sweep runs
 	// it again.
-	res, err := s.TeamDef(s.subscriptionCtx(ctx, sub), input)
+	walkCtx, err := s.subscriptionOwnerCtx(s.subscriptionCtx(ctx, sub), sub)
+	if err != nil {
+		// A deny, or a set that cannot be read: no walk, the source is not
+		// acked, and the backoff keeps a standing deny from being asked at
+		// tick rate. A binding lifted (or a store back) is picked up on the
+		// next try.
+		s.subBackoff.record(sub.DefID, err)
+		return err
+	}
+	res, err := s.TeamDef(walkCtx, input)
 	if err != nil {
 		s.subBackoff.record(sub.DefID, err)
 		return err

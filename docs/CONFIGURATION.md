@@ -2537,6 +2537,17 @@ on a subscribed source becomes a wave of agent runs. Arrive at it deliberately.
 - **One replica at a time.** Cluster deployments gate each team behind a
   Postgres advisory lock held for the whole walk, so two replicas never dispatch
   the same wave concurrently. Single-replica needs no coordinator.
+- **A walk runs as its promoter.** Nobody asks for a subscribed walk, so it is
+  confined by whoever last promoted the team: that caller's operator-key
+  restriction and isolation, and (with access control, `LOOMCYCLE_ACL`) that
+  caller's rules as they stand at each walk — `run team:<name>` is asked for
+  the promoter, and every member is narrowed by the promoter's rules and asked
+  `spawn agent:` for them. A deny, or rules that cannot be read, starts no walk
+  and leaves the message on the source. Promoting is what arms a team, so
+  re-promoting is how you change whose authority it runs under. A team promoted
+  before the promoter's confinement was recorded runs isolated, and one promoted
+  before the promoter's identity was recorded runs without rules; both log once,
+  and promoting the team again fixes either.
 - **A failing walk backs off** (exponential, capped at 10 minutes, cleared by a
   success). A failed walk does not ack its source, so without this a poison
   message would drive the same failure every tick.
