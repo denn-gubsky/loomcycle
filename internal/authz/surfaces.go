@@ -325,6 +325,12 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		return instance("read", "principal", "group:*"), true
 	case name == "authz":
 		return Surface{}, false
+	case name == "auth" && len(rest) == 2 && rest[1] == "assert":
+		// RFC FA P3: a machine gate's own credential (an AWS workload's
+		// signed GetCallerIdentity) is the authentication. No principal
+		// exists before it to ask an ACL question of, and the token it
+		// issues carries only the user's own reach, which the ACLs govern.
+		return Surface{}, false
 	}
 	return Surface{}, false
 }

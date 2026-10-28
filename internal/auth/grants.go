@@ -56,3 +56,28 @@ const UserTokenNamePrefix = "u-"
 func IsUserTokenName(name string) bool {
 	return len(name) >= len(UserTokenNamePrefix) && name[:len(UserTokenNamePrefix)] == UserTokenNamePrefix
 }
+
+// Token authority modes (RFC EY §8). A FROZEN token's scopes are its ceiling,
+// fixed at mint. An INHERIT token proves its user's identity only: its
+// ceiling is GrantableUserScopes of the user's CURRENT access_mode, re-derived
+// on every request, so a promotion or a demotion reaches it with no re-mint.
+// Only per-user tokens inherit — an operator token or a config principal has
+// no user row to inherit from.
+const (
+	AuthorityFrozen  = "frozen"
+	AuthorityInherit = "inherit"
+)
+
+// TokenInheritsAuthority reads a token row's stored authority: "" (every row
+// minted before the mode existed, and every frozen mint) or AuthorityInherit.
+// Any other value is an error, so a row this build does not understand is
+// refused rather than read as either mode.
+func TokenInheritsAuthority(stored string) (bool, error) {
+	switch stored {
+	case "":
+		return false, nil
+	case AuthorityInherit:
+		return true, nil
+	}
+	return false, fmt.Errorf("auth: unknown token authority %q", stored)
+}

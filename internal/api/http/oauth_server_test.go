@@ -441,6 +441,38 @@ func TestOAuthToken_SessionScopesCapTheAppToken(t *testing.T) {
 	}
 }
 
+// Under LOOMCYCLE_TOKEN_AUTHORITY_INHERIT an app token follows its user's
+// access_mode — unless the signing-in session capped it: an inherit token
+// re-derives its scopes on every request, which would lose the cap and widen
+// a session opened with a narrow pasted token to the user's full scopes.
+func TestOAuthToken_ACappedAppTokenIsFrozenEvenUnderInherit(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	ctx := context.Background()
+	f.s.cfg().Env.TokenAuthorityInherit = true
+
+	// Uncapped: a full session's app token inherits.
+	rec, body := f.exchange(t, f.code(t))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("exchange = %d %v", rec.Code, body)
+	}
+	if p, ok := f.s.resolvePrincipal(ctx, body["access_token"].(string)); !ok || !p.InheritsAuthority {
+		t.Fatalf("uncapped app token: inherit = %v (ok %v), want inherit", p.InheritsAuthority, ok)
+	}
+
+	// Capped: a session on a read-only token of the same user stays frozen
+	// at the session's scopes.
+	seedToken(t, f.st, "lc_read_only_token_for_google_100", "acme", "google:100", []string{auth.ScopeRunsRead}, time.Time{})
+	f.cookie = mustSession(t, f.s, "lc_read_only_token_for_google_100")
+	rec, body = f.exchange(t, f.code(t))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capped exchange = %d %v", rec.Code, body)
+	}
+	p, ok := f.s.resolvePrincipal(ctx, body["access_token"].(string))
+	if !ok || p.InheritsAuthority || len(p.Scopes) != 1 || p.Scopes[0] != auth.ScopeRunsRead {
+		t.Fatalf("capped app token = inherit %v scopes %v (ok %v), want frozen at runs:read", p.InheritsAuthority, p.Scopes, ok)
+	}
+}
+
 // §5.6: authorize is unframeable and only ever redirects to a registered URI.
 func TestOAuthAuthorize_IsUnframeableAndNotCached(t *testing.T) {
 	f := newAppFixture(t, "tenant")

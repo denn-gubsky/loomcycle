@@ -137,6 +137,13 @@ func (s *Server) issueGateTokenFor(ctx context.Context, spec gateTokenSpec) (str
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
 	}
+	// The deployment's default (RFC EY §8, D4): under
+	// LOOMCYCLE_TOKEN_AUTHORITY_INHERIT the token follows its user's
+	// access_mode for its short life, else it is frozen at this grant.
+	authority, err := s.storedAuthority("")
+	if err != nil {
+		return "", store.OperatorTokenDefRow{}, err
+	}
 	if spec.scopeCap != nil {
 		// HasScope, not string equality: a session that holds substrate:admin
 		// holds every member scope too.
@@ -148,6 +155,13 @@ func (s *Server) issueGateTokenFor(ctx context.Context, spec gateTokenSpec) (str
 		}
 		if len(kept) == 0 {
 			return "", store.OperatorTokenDefRow{}, errGateTokenUser
+		}
+		// A session narrower than its user (one opened with a pasted narrow
+		// token) caps the app token; an inherit token would re-derive its
+		// scopes from the user's access_mode on every request and lose that
+		// cap, so a capped token is always frozen.
+		if len(kept) < len(scopes) {
+			authority = ""
 		}
 		scopes = kept
 	}
@@ -167,7 +181,8 @@ func (s *Server) issueGateTokenFor(ctx context.Context, spec gateTokenSpec) (str
 	row, err := s.store.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
 		DefID: newTokenDefID(), Name: name, TenantID: tenant, Subject: subject,
 		TokenHash: hasher.Hash(plaintext), AllowedScopes: scopes, CreatedAt: now, ExpiresAt: now.Add(ttl),
-		RestrictionsJSON: rj, IssuedByGate: gate, OAuthClient: spec.oauthClient, OAuthFamily: spec.oauthFamily,
+		RestrictionsJSON: rj, IssuedByGate: gate, Authority: authority,
+		OAuthClient: spec.oauthClient, OAuthFamily: spec.oauthFamily,
 	})
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
