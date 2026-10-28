@@ -1005,6 +1005,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_TOKEN_AUTHORITY_INHERIT
+            label: LOOMCYCLE_TOKEN_AUTHORITY_INHERIT
+            description: '1 = per-user and gate-issued tokens take their scopes from the user''s CURRENT access_mode on every request (promote or demote with no re-mint). Unset = frozen at mint, as before; operator tokens are always frozen. (example: 1)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_ACL_LIVE
             label: LOOMCYCLE_ACL_LIVE
             description: 'A run in flight follows its caller''s access rules as they change: what they no longer allow is withdrawn at the next model or tool call, and nothing the run started without is given (default off: the rules a run starts with hold until it ends). (example: 1)'

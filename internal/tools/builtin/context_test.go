@@ -1371,6 +1371,9 @@ func TestContextTool_SelfPrincipalAndServer(t *testing.T) {
 	if p["is_admin"] != false || p["legacy"] != false {
 		t.Errorf("principal flags wrong: is_admin=%v legacy=%v", p["is_admin"], p["legacy"])
 	}
+	if p["authority"] != auth.AuthorityFrozen {
+		t.Errorf("principal authority = %v, want frozen for a token minted without inherit", p["authority"])
+	}
 	scopes, _ := p["scopes"].([]any)
 	if len(scopes) != 2 {
 		t.Errorf("principal scopes = %v, want 2", p["scopes"])
@@ -1389,6 +1392,25 @@ func TestContextTool_SelfPrincipalAndServer(t *testing.T) {
 	}
 	if srv["url"] != "https://loomcycle.example.com" {
 		t.Errorf("server.url = %v, want the public url", srv["url"])
+	}
+}
+
+// RFC EY §8: an agent run under an inherit token learns its scopes are its
+// user's current access_mode's, not fixed on the token.
+func TestContextTool_SelfReportsInheritAuthority(t *testing.T) {
+	tool := &Context{Cfg: &config.Config{}}
+	ctx := tools.WithAgentName(context.Background(), "worker")
+	ctx = auth.WithPrincipal(ctx, auth.Principal{
+		TenantID: "acme", Subject: "alice", Scopes: []string{auth.ScopeUser},
+		TokenDefID: "def_alice", InheritsAuthority: true,
+	})
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"self"}`))
+	if res.IsError {
+		t.Fatalf("self: %s", res.Text)
+	}
+	p, _ := decodeResult(t, res.Text)["principal"].(map[string]any)
+	if p["authority"] != auth.AuthorityInherit {
+		t.Errorf("principal authority = %v, want inherit", p["authority"])
 	}
 }
 

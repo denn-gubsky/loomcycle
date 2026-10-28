@@ -4170,6 +4170,16 @@ type Env struct {
 	// how long a replica trusts a compiled ACL set before re-reading the
 	// tenant's acl_version; a bus message drops it sooner.
 	ACLCacheTTLSeconds int
+	// TokenAuthorityInherit (LOOMCYCLE_TOKEN_AUTHORITY_INHERIT=1) makes
+	// "inherit" the default authority of per-user tokens (RFC EY §8, D4): a
+	// tenant's POST /v1/_users/{subject}/tokens and every token an auth gate
+	// issues then take their ceiling from the user's CURRENT access_mode on
+	// each request instead of freezing the scopes it granted at mint. Default
+	// OFF ⇒ those tokens are minted frozen, byte-identical to before; a mint
+	// may still ask for either mode explicitly. Operator tokens and config
+	// principals are always frozen. Existing tokens keep the mode they were
+	// minted with.
+	TokenAuthorityInherit bool
 	// ACLLive (LOOMCYCLE_ACL_LIVE=1, default off) makes a run re-read its
 	// caller's ACL set during the run — at each iteration and before each
 	// tool call — and narrow by the current rules within the set it started
@@ -5467,6 +5477,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
 		ACLMode:                     os.Getenv("LOOMCYCLE_ACL"),
 		ACLCacheTTLSeconds:          getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),
+		TokenAuthorityInherit:       os.Getenv("LOOMCYCLE_TOKEN_AUTHORITY_INHERIT") == "1",
 		ACLLive:                     os.Getenv("LOOMCYCLE_ACL_LIVE") == "1",
 		PublicConfig:                os.Getenv("LOOMCYCLE_PUBLIC_CONFIG") == "1",
 		AllowOpenMode:               os.Getenv("LOOMCYCLE_ALLOW_OPEN_MODE") == "1",

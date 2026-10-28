@@ -118,6 +118,13 @@ func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate strin
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
 	}
+	// The deployment's default (RFC EY §8, D4): under
+	// LOOMCYCLE_TOKEN_AUTHORITY_INHERIT the token follows its user's
+	// access_mode for its short life, else it is frozen at this grant.
+	authority, err := s.storedAuthority("")
+	if err != nil {
+		return "", store.OperatorTokenDefRow{}, err
+	}
 	hasher, err := s.hasher()
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
@@ -130,7 +137,7 @@ func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate strin
 	row, err := s.store.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
 		DefID: newTokenDefID(), Name: gateTokenName(gate), TenantID: tenant, Subject: subject,
 		TokenHash: hasher.Hash(plaintext), AllowedScopes: scopes, CreatedAt: now, ExpiresAt: now.Add(ttl),
-		RestrictionsJSON: rj, IssuedByGate: gate,
+		RestrictionsJSON: rj, IssuedByGate: gate, Authority: authority,
 	})
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
