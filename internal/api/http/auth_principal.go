@@ -115,6 +115,13 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	if auth.IsAuthManager(p) {
 		return auth.ScopeAuthManage, authManageRoute(method, path)
 	}
+	// RFC FA P6: a SCIM credential reaches /scim/v2 and nothing else, and
+	// /scim/v2 is reserved to it — an admin or tenant token is refused
+	// there too: the SCIM tenant is the credential's own, and no other
+	// principal is meant to provision through it.
+	if auth.IsSCIMProvisioner(p) || scimRoute(path) {
+		return auth.ScopeSCIMProvision, auth.IsSCIMProvisioner(p) && scimRoute(path)
+	}
 	required = requiredScopeFor(method, path)
 	if required == "" || auth.HasScope(p.Scopes, required) {
 		return required, true
@@ -1211,6 +1218,10 @@ func requiredScopeFor(method, path string) string {
 	// without the scope (gatewayMemberOK).
 	case isGatewayRoute(path):
 		return auth.ScopeLLMGateway
+	// RFC FA P6: the SCIM service. scopeGate reserves it to a scim:provision
+	// credential before this switch; this is the scope its refusal names.
+	case scimRoute(path):
+		return auth.ScopeSCIMProvision
 	// Whoami — any authenticated principal must be able to learn its own
 	// identity (the Web UI's role source); a tenant token needs it too.
 	case path == "/v1/_me":
@@ -1690,6 +1701,12 @@ func authManageRoute(method, path string) bool {
 
 // authGateRoutePrefix is the password gate's management API.
 const authGateRoutePrefix = "/v1/_authgate/"
+
+// scimRoutePrefix is the SCIM 2.0 service (RFC FA P6), the whole reach of a
+// scim:provision credential.
+const scimRoutePrefix = "/scim/v2/"
+
+func scimRoute(path string) bool { return strings.HasPrefix(path, scimRoutePrefix) }
 
 // isTenantConfinedDefPath matches the substrate def-authoring families that
 // RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined

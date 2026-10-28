@@ -4365,6 +4365,26 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("PATCH /v1/_authgate/{gate}/logins/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRenameLogin))))
 	mux.Handle("GET /v1/_authgate/{gate}/identities", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListIdentities))))
 	mux.Handle("GET /v1/_authgate/{gate}/tenant-status", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateTenantStatus))))
+	// RFC FA P6: inbound SCIM 2.0 (scim.go) through the kind: scim gate.
+	// Reserved to a scim:provision token (scopeGate), which acts in its own
+	// token's tenant only.
+	mux.Handle("GET /scim/v2/ServiceProviderConfig", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMServiceProviderConfig))))
+	mux.Handle("GET /scim/v2/ResourceTypes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMResourceTypes))))
+	mux.Handle("GET /scim/v2/ResourceTypes/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMResourceTypes))))
+	mux.Handle("GET /scim/v2/Schemas", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMSchemas))))
+	mux.Handle("GET /scim/v2/Schemas/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMSchemas))))
+	mux.Handle("GET /scim/v2/Users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMListUsers))))
+	mux.Handle("POST /scim/v2/Users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMCreateUser))))
+	mux.Handle("GET /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMGetUser))))
+	mux.Handle("PUT /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMReplaceUser))))
+	mux.Handle("PATCH /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMPatchUser))))
+	mux.Handle("DELETE /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMDeleteUser))))
+	mux.Handle("GET /scim/v2/Groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMListGroups))))
+	mux.Handle("POST /scim/v2/Groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMCreateGroup))))
+	mux.Handle("GET /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMGetGroup))))
+	mux.Handle("PUT /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMReplaceGroup))))
+	mux.Handle("PATCH /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMPatchGroup))))
+	mux.Handle("DELETE /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMDeleteGroup))))
 	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
 	// _system/* channels. Used by external monitoring (push alerts in
 	// via webhook), ops dashboards (operator-issued alarms), and

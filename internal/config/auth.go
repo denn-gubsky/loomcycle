@@ -209,6 +209,8 @@ type AuthGate struct {
 	// Header is set for kind: header, AWSIAM for kind: awsiam.
 	Header *AuthHeaderGate
 	AWSIAM *AuthAWSIAMGate
+	// SCIM is set for kind: scim.
+	SCIM *AuthSCIMGate
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -302,8 +304,9 @@ func (p AuthPolicy) LoginGates() []AuthGate {
 		if g.External != nil && !g.External.Interactive() {
 			continue
 		}
-		// A device gate is approved through a login gate, never one itself.
-		if g.Kind == AuthGateKindDevice {
+		// A device gate is approved through a login gate, never one itself;
+		// a SCIM gate provisions, it signs nobody in.
+		if g.Kind == AuthGateKindDevice || g.Kind == AuthGateKindSCIM {
 			continue
 		}
 		out = append(out, g)
@@ -448,7 +451,7 @@ func resolveAuth(c *Config) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	tokenGates, interactive, deviceGates := 0, 0, 0
+	tokenGates, interactive, deviceGates, scimGates := 0, 0, 0, 0
 	for _, name := range names {
 		g := c.Auth.Gates[name]
 		if !authGateNameRE.MatchString(name) {
@@ -476,6 +479,9 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindAWSIAM:
 			// Machines only: it issues API tokens, never a session.
+		case kind == AuthGateKindSCIM:
+			// An identity provider's provisioning service, never a sign-in.
+			scimGates++
 		case kind == AuthGateKindPasskey:
 			// Not counted as interactive: a passkey is registered from a
 			// session of another sign-in gate, so it cannot be the only way in.
@@ -483,9 +489,9 @@ func resolveAuth(c *Config) error {
 				return fmt.Errorf("auth.gates.%s: a passkey gate takes only a label", name)
 			}
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam, device or passkey)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam, device, passkey or scim)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam, device or passkey)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam, device, passkey or scim)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
@@ -536,7 +542,7 @@ func resolveAuth(c *Config) error {
 			// It links a bridge's pre-gate users; a sign-in provider has none.
 			return fmt.Errorf("auth.gates.%s.identity_map.legacy_subject_prefix applies only to kind: external", name)
 		}
-		if kind != AuthGateKindExternal && hasExternalKeys(g) {
+		if kind != AuthGateKindExternal && kind != AuthGateKindSCIM && hasExternalKeys(g) {
 			return fmt.Errorf("auth.gates.%s: public_key, hmac_secret_env, callback_url, probe_url, issued_token "+
 				"and on_removed apply only to kind: external", name)
 		}
@@ -571,9 +577,18 @@ func resolveAuth(c *Config) error {
 			if pw, err = resolvePasswordGate(c, name, g, p.Strict()); err != nil {
 				return err
 			}
-		case kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && hasPasswordKeys(g):
+		case kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && kind != AuthGateKindSCIM && hasPasswordKeys(g):
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
+		}
+		var scim *AuthSCIMGate
+		if kind == AuthGateKindSCIM {
+			if hasPasswordOnlyKeys(g) || len(g.AllowedReturnTo) > 0 {
+				return fmt.Errorf("auth.gates.%s: the password gate's keys do not apply to kind: scim; use identity_map.new_user", name)
+			}
+			if scim, idm, err = resolveSCIMGate(c, name, g, p.NewUserFloor(), p.RemovalPolicy()); err != nil {
+				return err
+			}
 		}
 		var dev *AuthDeviceGate
 		if kind == AuthGateKindDevice {
@@ -594,10 +609,13 @@ func resolveAuth(c *Config) error {
 			}
 		}
 		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth,
-			Identity: idm, External: ext, Header: hdr, AWSIAM: aws, Device: dev})
+			Identity: idm, External: ext, Header: hdr, AWSIAM: aws, Device: dev, SCIM: scim})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
+	}
+	if scimGates > 1 {
+		return fmt.Errorf("auth.gates: at most one gate may be kind: scim, got %d", scimGates)
 	}
 	if deviceGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: device, got %d", deviceGates)

@@ -82,6 +82,14 @@ const (
 	// gRPC and every other transport refuse a principal holding only it.
 	ScopeAuthManage = "auth:manage"
 
+	// ScopeSCIMProvision (RFC FA P6) is an identity provider's SCIM 2.0
+	// client credential: it reaches /scim/v2/* and nothing else, in its OWN
+	// token's tenant — never another, never the shared tenant. Like
+	// auth:manage it implies nothing and is minted alone (ValidateScopeSet);
+	// the route list is enforced by the HTTP gate (scimRoute), gRPC refuses
+	// it, and every other transport lacks the scopes it would need.
+	ScopeSCIMProvision = "scim:provision"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -107,6 +115,7 @@ var scopeCatalog = map[string]struct{}{
 	ScopeRunsDelete:           {},
 	ScopeLLMGateway:           {},
 	ScopeAuthManage:           {},
+	ScopeSCIMProvision:        {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -157,20 +166,15 @@ func UnknownScopes(scopes []string) []string {
 	return bad
 }
 
-// ValidateScopeSet refuses a scope set that combines auth:manage with any
-// other scope (RFC FA D16). Callers check UnknownScopes first.
+// ValidateScopeSet refuses a scope set that combines auth:manage or
+// scim:provision with any other scope (RFC FA D16, P6). Callers check
+// UnknownScopes first.
 func ValidateScopeSet(scopes []string) error {
-	manage, other := false, false
-	for _, s := range scopes {
-		if s == ScopeAuthManage {
-			manage = true
-		} else {
-			other = true
+	for _, alone := range []string{ScopeAuthManage, ScopeSCIMProvision} {
+		if slices.Contains(scopes, alone) && slices.ContainsFunc(scopes, func(s string) bool { return s != alone }) {
+			return fmt.Errorf("%s must be a token's only scope: it is a credential confined to its own route list, "+
+				"and combined with another scope it would carry that reach into the other's surfaces", alone)
 		}
-	}
-	if manage && other {
-		return fmt.Errorf("%s must be a token's only scope: it is a cross-tenant user-management credential, "+
-			"and combined with another scope it would carry that reach into the other's surfaces", ScopeAuthManage)
 	}
 	return nil
 }
@@ -180,6 +184,13 @@ func ValidateScopeSet(scopes []string) error {
 // transport admits such a principal only to the user-management routes.
 func IsAuthManager(p Principal) bool {
 	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeAuthManage)
+}
+
+// IsSCIMProvisioner reports whether p is an identity provider's SCIM
+// credential (RFC FA P6): it holds scim:provision, which ValidateScopeSet
+// keeps alone. Every transport admits such a principal only to /scim/v2/*.
+func IsSCIMProvisioner(p Principal) bool {
+	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeSCIMProvision)
 }
 
 // HasScope reports whether the granted set includes want. ScopeAdmin is a

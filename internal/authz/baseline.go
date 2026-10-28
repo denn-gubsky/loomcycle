@@ -18,6 +18,11 @@ const (
 	BaselineIsolated       = "builtin:isolated"
 	BaselineRunPlane       = "builtin:run-plane"
 	BaselineAuthManager    = "builtin:auth-manager"
+	// BaselineSCIMProvisioner is a scim:provision credential's list: the
+	// SCIM service's users and groups, read and managed, which is what
+	// /scim/v2 asks. The scope gate keeps it on /scim/v2, and the service
+	// confines it to its own token's tenant.
+	BaselineSCIMProvisioner = "builtin:scim-provisioner"
 )
 
 // BuiltinPrefix marks a baseline name.
@@ -185,6 +190,12 @@ func Baselines() map[string]ACL {
 		BaselineAuthManager: {Name: BaselineAuthManager, Description: "auth:manage — the user roster and the password gate's invites, resets and logins, nothing else",
 			Rules: []Rule{
 				{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"principal:user:*"}},
+			}},
+		BaselineSCIMProvisioner: {Name: BaselineSCIMProvisioner,
+			Description: "scim:provision — the SCIM 2.0 service of its own tenant: its users and groups, never a token",
+			Rules: []Rule{
+				{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"principal:scim:*"}},
+				{Effect: Deny, Actions: []string{"mint"}, Resources: []string{"principal:*"}},
 			}},
 		BaselineRunPlane: {Name: BaselineRunPlane, Description: "a token limited to certain agents (RFC EF): the run plane only",
 			Rules: []Rule{

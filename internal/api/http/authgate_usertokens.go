@@ -30,7 +30,7 @@ func userTokenCandidate(p auth.Principal) bool {
 	if p.Legacy || p.TokenDefID == "" || strings.HasPrefix(p.TokenDefID, "cfg:") || p.IssuedByGate != "" {
 		return false
 	}
-	return !auth.HasScope(p.Scopes, auth.ScopeTenant) && !auth.IsAuthManager(p)
+	return !auth.HasScope(p.Scopes, auth.ScopeTenant) && !auth.IsAuthManager(p) && !auth.IsSCIMProvisioner(p)
 }
 
 // handMintedUserToken reports whether p is a hand-minted per-user token. A

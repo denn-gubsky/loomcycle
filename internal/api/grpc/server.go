@@ -1186,6 +1186,10 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	if auth.IsAuthManager(p) {
 		return status.Error(codes.PermissionDenied, "an "+auth.ScopeAuthManage+" token reaches only the user-management HTTP routes")
 	}
+	// RFC FA P6: a SCIM credential reaches only /scim/v2 over HTTP.
+	if auth.IsSCIMProvisioner(p) {
+		return status.Error(codes.PermissionDenied, "a "+auth.ScopeSCIMProvision+" token reaches only the /scim/v2 HTTP routes")
+	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
 		// RFC CB member path, as on HTTP (RFC EZ Q1): a NON-ISOLATED principal
