@@ -1,4 +1,4 @@
--- 0122_token_usage_tier.up.sql — the model tier and the user tier a usage row
+-- 0125_token_usage_tier.up.sql — the model tier and the user tier a usage row
 -- was spent under.
 --
 -- A usage report by tier needs both on the row: tier is the model tier the
@@ -12,9 +12,10 @@
 -- did in 0113. Every existing archive row holds '' in both, so the wider key
 -- admits them all.
 --
--- 0122: 0117, 0118 and 0121 are on main, and 0119 and 0120 are held by open
--- pull requests. golang-migrate keeps one version pointer, so a number below
--- one already applied would be skipped on a database past it.
+-- 0125: merged as 0122, which collided with 0122_device_gate_repair and sat
+-- below 0123/0124 already on main. golang-migrate keeps one version pointer
+-- and refuses two files of one version, so it moved above everything merged.
+-- IF [NOT] EXISTS keeps it safe on any database, whatever it ran before.
 --
 -- Non-secret: two labels from operator configuration.
 --
