@@ -411,3 +411,33 @@ func TestOpenAIEmbedder_CustomBaseURLIsDialled(t *testing.T) {
 // dummy var to keep strconv imported (used in helpers above
 // indirectly via the JSON encoder).
 var _ = strconv.Itoa
+
+// TestOpenAIEmbedder_ReportsPromptTokens — each batch's usage.prompt_tokens
+// reaches the call's accumulator, summed across batches.
+func TestOpenAIEmbedder_ReportsPromptTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var doc map[string]any
+		_ = json.Unmarshal(makeEmbeddingResponse(req.Input, 4), &doc)
+		doc["usage"] = map[string]any{"prompt_tokens": 3 * len(req.Input), "total_tokens": 3 * len(req.Input)}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	defer server.Close()
+	e, err := openai.NewEmbedder(providers.EmbedderOptions{
+		APIKey: "k", BaseURL: server.URL, Model: "test-only-model", BatchSize: 2, HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, acc := providers.WithEmbedTokens(context.Background())
+	if _, err := e.Embed(ctx, []string{"a", "b", "c", "d", "e"}); err != nil {
+		t.Fatal(err)
+	}
+	if n, ok := acc.Total(); !ok || n != 15 {
+		t.Errorf("reported tokens = %d (%v), want 15", n, ok)
+	}
+}

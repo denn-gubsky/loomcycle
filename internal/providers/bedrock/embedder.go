@@ -281,6 +281,11 @@ func (e *Embedder) invokeOnce(ctx context.Context, body []byte, n int) ([][]floa
 	if err != nil {
 		return nil, e.errorf("read response: %w", err)
 	}
+	// Bedrock reports what InvokeModel consumed in a header, not the body (a
+	// Cohere answer carries no count of its own).
+	if n, err := strconv.Atoi(resp.Header.Get("X-Amzn-Bedrock-Input-Token-Count")); err == nil && n >= 0 {
+		providers.ReportEmbedTokens(ctx, n)
+	}
 	vecs, err := parseEmbeddings(raw)
 	if err != nil {
 		return nil, e.errorf("%w", err)

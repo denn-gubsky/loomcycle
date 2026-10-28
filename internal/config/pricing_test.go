@@ -195,3 +195,29 @@ pricing:
 		t.Errorf("per_million_chars = %v, want 15", got)
 	}
 }
+
+// TestPricing_CostEmbedding — an embedder call is priced by its tokens when
+// the provider reported them, else by its characters when the pair has a
+// per-character price, and is unpriced (not free) when it has neither.
+func TestPricing_CostEmbedding(t *testing.T) {
+	p := PricingConfig{Currency: "USD", Models: map[string]ModelPrice{
+		"openai/text-embedding-3-small": {Input: 0.02},
+		"gemini/gemini-embedding-001":   {Input: 0.15, PerMillionChars: 0.04},
+		"ollama-local/nomic":            {},
+	}}
+	if c, cur, ok := p.CostEmbedding("openai", "text-embedding-3-small", 1_000_000, true, 0); !ok || cur != "USD" || !approx(c, 0.02) {
+		t.Errorf("by tokens = (%v, %q, %v), want (0.02, USD, true)", c, cur, ok)
+	}
+	if c, cur, ok := p.CostEmbedding("openai", "text-embedding-3-small", 0, false, 5000); ok || cur != "" || c != 0 {
+		t.Errorf("no count, token price only = (%v, %q, %v), want unpriced", c, cur, ok)
+	}
+	if c, _, ok := p.CostEmbedding("gemini", "gemini-embedding-001", 0, false, 2_000_000); !ok || !approx(c, 0.08) {
+		t.Errorf("no count, per-char price = (%v, %v), want (0.08, true)", c, ok)
+	}
+	if c, _, ok := p.CostEmbedding("ollama-local", "nomic", 500, true, 2000); !ok || c != 0 {
+		t.Errorf("listed free model = (%v, %v), want a genuine zero", c, ok)
+	}
+	if _, _, ok := p.CostEmbedding("x", "y", 10, true, 10); ok {
+		t.Errorf("an unlisted pair must be unpriced")
+	}
+}

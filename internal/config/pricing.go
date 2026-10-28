@@ -89,6 +89,25 @@ func (p PricingConfig) CostChars(provider, model string, chars int64) (float64, 
 	return float64(chars) / 1e6 * mp.PerMillionChars, currency, true
 }
 
+// CostEmbedding returns the money cost of one embedder call: by its tokens
+// when the provider reported them (the input price, per 1M tokens), else by
+// its characters when the pair is priced per_million_chars. A listed pair with
+// neither — a token price and no reported count — is unpriced (ok=false)
+// rather than a zero: the call cost something the table cannot say.
+func (p PricingConfig) CostEmbedding(provider, model string, tokens int, tokensReported bool, chars int64) (float64, string, bool) {
+	mp, currency, ok := p.lookup(provider, model)
+	if !ok {
+		return 0, "", false
+	}
+	switch {
+	case tokensReported:
+		return float64(tokens) * mp.Input / 1e6, currency, true
+	case mp.PerMillionChars > 0:
+		return float64(chars) / 1e6 * mp.PerMillionChars, currency, true
+	}
+	return 0, "", false
+}
+
 // lookup finds the pair's prices and its currency (per-model, else the table
 // default, else USD).
 func (p PricingConfig) lookup(provider, model string) (ModelPrice, string, bool) {

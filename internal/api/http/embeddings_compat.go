@@ -15,6 +15,8 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // embeddings_compat.go — v0.11.4 OpenAI Embeddings compatibility
@@ -131,19 +133,27 @@ func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	startedAt := time.Now()
+	// The call is written to the usage ledger by the embedder's own hook
+	// (Server.RecordEmbedCall), charged to the caller named here.
+	tenant, subject := tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.User)
+	embedCtx = tools.WithRunIdentity(embedCtx, tools.RunIdentityValue{TenantID: tenant, UserID: subject})
+	embedCtx, counted := providers.WithEmbedTokens(embedCtx)
 	vectors, err := s.embedder.Embed(embedCtx, texts)
-	// An embedder reports no token count, so the call is counted against the
-	// caller's budget by an estimate from what was sent, as an unreported
-	// chat call is: the budget check above is otherwise all it shares with a
-	// run, and a capped caller could embed without limit. Counted on a
-	// failure too — the texts were sent. Not written to the ledger, which
-	// holds only measured counts.
-	inBytes := 0
-	for _, t := range texts {
-		inBytes += len(t)
-	}
-	if est, kept := s.chargeEstimate(r.Context(), tenantFromCtx(r.Context()), auth.SubjectForFairness(r.Context(), req.User), inBytes); est > 0 {
-		slog.Warn("embeddings: no usage report — counted estimated tokens against the budget, not written to the usage ledger", "estimated_tokens", est, "persisted", kept)
+	// A provider that reported no token count (Gemini, a failure before any
+	// answer) leaves the ledger row with characters only, so the call is
+	// counted against the caller's budget by an estimate from what was sent,
+	// as an unreported chat call is: the budget check above is otherwise all
+	// it shares with a run, and a capped caller could embed without limit.
+	// Counted on a failure too — the texts were sent. A reported count is
+	// already on the budget through the ledger row, so it is not estimated.
+	if _, reported := counted.Total(); !reported {
+		inBytes := 0
+		for _, t := range texts {
+			inBytes += len(t)
+		}
+		if est, kept := s.chargeEstimate(r.Context(), tenant, subject, inBytes); est > 0 {
+			slog.Warn("embeddings: no token count from the provider — counted estimated tokens against the budget", "estimated_tokens", est, "persisted", kept)
+		}
 	}
 	if err != nil {
 		logEmbeddingsRequest(req.Model, s.embedder.Model(), req.User, len(texts), 0, time.Since(startedAt), err)

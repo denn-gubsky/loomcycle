@@ -278,11 +278,15 @@ func (e *Embedder) embedOnce(ctx context.Context, texts []string) ([][]float32, 
 	}
 
 	var doc struct {
-		Model      string      `json:"model"`
-		Embeddings [][]float32 `json:"embeddings"`
+		Model           string      `json:"model"`
+		Embeddings      [][]float32 `json:"embeddings"`
+		PromptEvalCount *int        `json:"prompt_eval_count"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("ollama /api/embed decode: %w", err)
+	}
+	if doc.PromptEvalCount != nil {
+		providers.ReportEmbedTokens(ctx, *doc.PromptEvalCount)
 	}
 	// No per-item index on the wire: position IS the only alignment. A short
 	// (or long) response must fail loudly — silently returning fewer vectors

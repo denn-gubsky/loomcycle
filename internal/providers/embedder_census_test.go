@@ -34,6 +34,9 @@ import (
 var embedderAssertions = map[string]string{
 	// Implemented by *providers.ObservedEmbedder, the outermost wrapper.
 	"internal/api/http/memory_changes.go": "embedderHealthReporter",
+	// The usage-ledger hook is set on the observer, the outermost wrapper, at
+	// boot (SetOnCall), so it sees every call every subsystem makes.
+	"cmd/loomcycle/boot_server.go": "*providers.ObservedEmbedder",
 	// The query-mode helper. Every wrapper implements QueryEmbedder and hands
 	// on through the helper, so asking the outermost value is asking the chain.
 	"internal/providers/embedder.go": "QueryEmbedder",

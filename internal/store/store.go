@@ -876,6 +876,10 @@ const (
 	UsagePurposeUnitGeneration = "unit_generation"
 	// Describing a Document's image with a vision model.
 	UsagePurposeImageDescription = "image_description"
+	// An embedder call: memory and document writes, search queries, re-embeds
+	// and the /v1/embeddings gateway. Carries the characters sent, and the
+	// tokens when the provider reported them.
+	UsagePurposeEmbedding = "embedding"
 )
 
 // The two classes a purpose belongs to. Foreground is what a person or a
@@ -903,6 +907,7 @@ var usagePurposeClass = map[string]string{
 	UsagePurposeRecap:            UsageClassBackground,
 	UsagePurposeUnitGeneration:   UsageClassBackground,
 	UsagePurposeImageDescription: UsageClassBackground,
+	UsagePurposeEmbedding:        UsageClassBackground,
 }
 
 // UsagePurposeClass returns the class of a purpose, and false for a purpose no
@@ -916,7 +921,7 @@ func UsagePurposeClass(purpose string) (string, bool) {
 // writes for row: an empty purpose is chat, and an unknown purpose, a
 // negative or non-finite second count, a negative character count, seconds
 // on a purpose that has no audio (chat, ocr) or characters on any purpose but
-// tts is refused. InputChars, once accepted, is written as given. Both
+// tts and embedding is refused. InputChars, once accepted, is written as given. Both
 // backends call it, so a row neither of them could read back, or one whose
 // units contradict its purpose, never reaches either table.
 func NormalizeUsageRow(row TokenUsageRow) (purpose string, audioSeconds float64, err error) {
@@ -939,7 +944,7 @@ func NormalizeUsageRow(row TokenUsageRow) (purpose string, audioSeconds float64,
 	if row.InputChars < 0 {
 		return "", 0, fmt.Errorf("usage row: input characters %d is negative", row.InputChars)
 	}
-	if row.InputChars != 0 && purpose != UsagePurposeTTS {
+	if row.InputChars != 0 && purpose != UsagePurposeTTS && purpose != UsagePurposeEmbedding {
 		return "", 0, fmt.Errorf("usage row: a %s row carries no input characters", purpose)
 	}
 	return purpose, s, nil

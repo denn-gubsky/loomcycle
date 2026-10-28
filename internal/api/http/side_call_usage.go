@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -95,4 +96,51 @@ func (s *Server) chargeObservedCall(ctx context.Context, runID string, u *provid
 	// finished is spent even if its caller has gone, and a cancelled insert
 	// would drop a row the budget had already counted.
 	_ = s.recordCallUsage(context.WithoutCancel(ctx), runID, rid, rid.SessionID, loop.IterationOf(ctx), u, purpose)
+}
+
+// RecordEmbedCall writes one embedder call to the usage ledger as an
+// embedding row: the characters sent, and the tokens when the provider
+// reported them. It is charged like a background call — to the run on ctx, or
+// to the tenant and user the identity on ctx names (the operator route or the
+// gateway caller that asked for it). Its tokens count against the budgets; a
+// call with no count is recorded by its characters and counts nothing there.
+//
+// The embedder is built once and shared by every subsystem; this is its
+// ObservedEmbedder's call hook, so no call site has to remember to bill.
+func (s *Server) RecordEmbedCall(ctx context.Context, c providers.EmbedCall) {
+	if s.store == nil {
+		return
+	}
+	runID := tools.RunID(ctx)
+	rid := tools.RunIdentity(ctx)
+	parentRunID := ""
+	if rid.RootRunID != "" && rid.RootRunID != runID {
+		parentRunID = rid.RootRunID
+	}
+	row := store.TokenUsageRow{
+		RunID:            runID,
+		SessionID:        rid.SessionID,
+		TenantID:         rid.TenantID,
+		UserID:           rid.UserID,
+		AgentID:          rid.AgentID,
+		ParentRunID:      parentRunID,
+		Iteration:        loop.IterationOf(ctx),
+		Provider:         c.Provider,
+		Model:            c.Model,
+		CredentialSource: "operator", // the shared embedder is built on the operator's key
+		InputTokens:      c.InputTokens,
+		InputChars:       c.Chars,
+		Purpose:          store.UsagePurposeEmbedding,
+		UserTier:         rid.UserTier,
+		TS:               time.Now(),
+	}
+	if cfg := s.cfg(); cfg != nil {
+		if cost, currency, ok := cfg.Pricing.CostEmbedding(c.Provider, c.Model, c.InputTokens, c.TokensReported, c.Chars); ok {
+			row.Cost, row.CostCurrency = cost, currency
+		}
+	}
+	// On a ctx that outlives the caller: the tokens were spent whether or not
+	// the gateway client or the run is still there to hear the answer, and a
+	// cancelled insert would drop a row the budget had already counted.
+	_, _ = s.appendUsageRow(context.WithoutCancel(ctx), row)
 }

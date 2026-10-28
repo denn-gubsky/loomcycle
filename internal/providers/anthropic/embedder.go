@@ -211,9 +211,15 @@ func (e *Embedder) embedOnce(ctx context.Context, texts []string) ([][]float32, 
 			Embedding []float32 `json:"embedding"`
 		} `json:"data"`
 		Model string `json:"model"`
+		Usage *struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		return nil, fmt.Errorf("anthropic embedder (Voyage AI) /v1/embeddings decode: %w", err)
+	}
+	if doc.Usage != nil {
+		providers.ReportEmbedTokens(ctx, doc.Usage.TotalTokens)
 	}
 	if len(doc.Data) != len(texts) {
 		return nil, fmt.Errorf("anthropic embedder (Voyage AI) /v1/embeddings: got %d embeddings for %d inputs", len(doc.Data), len(texts))

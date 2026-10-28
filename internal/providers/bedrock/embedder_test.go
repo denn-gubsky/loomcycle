@@ -40,6 +40,9 @@ type fakeBedrock struct {
 
 	// answer, when set, decides each response; nil = 200 with floats.
 	answer func(n int, b invokeBody) (status int, header http.Header, body string)
+	// tokensPerText, when set, is answered as InvokeModel's input token count
+	// header, per text in the request.
+	tokensPerText int
 	// shape is the 200 response shape: "floats" (default), "by_type", or
 	// "no_type" (a floats list with no response_type).
 	shape string
@@ -104,7 +107,36 @@ func (f *fakeBedrock) serve(w http.ResponseWriter, r *http.Request) {
 		out = map[string]any{"response_type": "embeddings_floats", "embeddings": vecs, "texts": b.Texts}
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if f.tokensPerText > 0 {
+		w.Header().Set("X-Amzn-Bedrock-Input-Token-Count", strconv.Itoa(f.tokensPerText*len(b.Texts)))
+	}
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+// TestEmbed_ReportsTheInputTokenCountHeader — Bedrock reports what each
+// InvokeModel consumed in a header; every batch's count reaches the call's
+// accumulator, and an answer without the header reports nothing.
+func TestEmbed_ReportsTheInputTokenCountHeader(t *testing.T) {
+	f := newFakeBedrock(t)
+	f.tokensPerText = 7
+	e := newTest(t, f, "cohere.embed-multilingual-v3", 0, 2, nil)
+	ctx, acc := providers.WithEmbedTokens(context.Background())
+	if _, err := e.Embed(ctx, texts(5)); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if n, ok := acc.Total(); !ok || n != 35 {
+		t.Errorf("reported tokens = %d (%v), want 35 across the three batches", n, ok)
+	}
+
+	plain := newFakeBedrock(t)
+	e = newTest(t, plain, "cohere.embed-multilingual-v3", 0, 0, nil)
+	ctx, acc = providers.WithEmbedTokens(context.Background())
+	if _, err := e.Embed(ctx, texts(2)); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if n, ok := acc.Total(); ok {
+		t.Errorf("an answer with no count header reported %d tokens", n)
+	}
 }
 
 func readAll(r *http.Request) []byte {
