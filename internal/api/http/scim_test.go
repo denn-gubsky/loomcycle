@@ -305,6 +305,9 @@ func TestSCIM_RemovalsAreHeldToTheCeiling(t *testing.T) {
 	if f.status(t, "acme", "okta:"+ids[2]) != "active" {
 		t.Fatal("the removal over the ceiling went through")
 	}
+	if _, err := f.st.AuthRemovalGet(context.Background(), "acme", "okta:"+ids[2]); !isNotFound(err) {
+		t.Fatalf("a refused removal left a row: %v", err)
+	}
 }
 
 // SCIM never approves a pending user: active:true leaves it pending, and
@@ -357,6 +360,32 @@ func TestSCIM_ReEnablesOnlyAUserItDisabled(t *testing.T) {
 	}
 	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id2, on); code != http.StatusForbidden || f.status(t, "acme", s2) != "disabled" {
 		t.Fatalf("re-enable of an operator's disable = %d, status %s", code, f.status(t, "acme", s2))
+	}
+	// An operator's disable that lands before SCIM's deactivation: SCIM's
+	// changes nothing and owns nothing, so it cannot re-enable later.
+	id4, s4 := f.scimUser(t, bSCIMAcme, "dave@acme.test")
+	if err := f.st.UserUpdate(ctx, "acme", s4, store.UserPatch{Status: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id4, off); code != http.StatusOK {
+		t.Fatalf("active:false on an operator-disabled user = %d", code)
+	}
+	if _, err := f.st.AuthRemovalGet(ctx, "acme", s4); !isNotFound(err) {
+		t.Fatalf("SCIM wrote a removal behind an operator's disable: %v", err)
+	}
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id4, on); code != http.StatusForbidden || f.status(t, "acme", s4) != "disabled" {
+		t.Fatalf("re-enable after an operator's disable = %d, status %s", code, f.status(t, "acme", s4))
+	}
+	// An operator's removal after SCIM's takes it over.
+	id5, s5 := f.scimUser(t, bSCIMAcme, "erin@acme.test")
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id5, off); code != http.StatusOK {
+		t.Fatalf("active:false = %d", code)
+	}
+	if err := f.srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Hour}, "acme", s5, "", store.RemovalReasonOperator, "op"); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id5, on); code != http.StatusForbidden || f.status(t, "acme", s5) != "disabled" {
+		t.Fatalf("re-enable after an operator's removal = %d, status %s", code, f.status(t, "acme", s5))
 	}
 	// Another gate's removal stands.
 	id3, s3 := f.scimUser(t, bSCIMAcme, "carol@acme.test")

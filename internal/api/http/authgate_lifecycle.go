@@ -284,12 +284,6 @@ var errNoRemoval = errors.New("the user is not being removed")
 // to the floor, the floor groups that exist in the tenant are joined, and only
 // then is the user active again. A failure part-way leaves the user disabled.
 func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by string) error {
-	return s.reactivateRemovedAs(ctx, tenant, subject, by, "active")
-}
-
-// reactivateRemovedAs is reactivateRemoved ending at status (active, or
-// pending for a user removed while it awaited approval).
-func (s *Server) reactivateRemovedAs(ctx context.Context, tenant, subject, by, status string) error {
 	r, err := s.store.AuthRemovalGet(ctx, tenant, subject)
 	if err != nil {
 		if isNotFound(err) {
@@ -297,6 +291,25 @@ func (s *Server) reactivateRemovedAs(ctx context.Context, tenant, subject, by, s
 		}
 		return err
 	}
+	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
+		return err
+	}
+	active := "active"
+	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
+		return err
+	}
+	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
+		// The sweeper ends a removal whose user is active; log, don't fail.
+		slog.Warn("auth: reactivated user's removal row not deleted", "tenant", tenant, "subject", subject, "err", err)
+	}
+	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
+	return nil
+}
+
+// resetRemovedToFloor is the §3.7a part of a re-enable: the user's own group
+// memberships and bindings go, its access mode drops to the floor, and it
+// joins the floor groups that exist. Its status is the caller's to set.
+func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by string) error {
 	changed, err := s.unbindSubject(ctx, tenant, subject, true)
 	if err != nil {
 		return err
@@ -324,14 +337,6 @@ func (s *Server) reactivateRemovedAs(ctx context.Context, tenant, subject, by, s
 	if changed {
 		s.aclChanged(ctx, tenant, "removal_reactivated", subject)
 	}
-	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &status}); err != nil {
-		return err
-	}
-	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
-		// The sweeper ends a removal whose user is active; log, don't fail.
-		slog.Warn("auth: reactivated user's removal row not deleted", "tenant", tenant, "subject", subject, "err", err)
-	}
-	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
 	return nil
 }
 

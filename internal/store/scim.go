@@ -117,13 +117,29 @@ type SCIMStore interface {
 	// of, ordered by display key.
 	SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject string) ([]SCIMGroupRow, error)
 
-	// SCIMRemovalReserve records row (a removal the gate starts) only while
-	// the gate has started fewer than ceiling removals in row's tenant since
-	// `since` — the count and the insert under one per-(gate, tenant) lock,
-	// so concurrent removals on any replica cannot pass the ceiling
-	// together. False when the subject already has a removal (nothing
-	// recorded); ErrSCIMRemovalCeiling when the ceiling is reached.
-	SCIMRemovalReserve(ctx context.Context, row AuthRemovalRow, since time.Time, ceiling int) (bool, error)
+	// SCIMRemoveUser is a SCIM gate's removal of one user, all or nothing in
+	// one transaction under a per-(gate, tenant) lock (so concurrent
+	// removals on any replica cannot pass the ceiling together): it counts
+	// the gate's removals in the tenant since `since`, refuses at ceiling
+	// (ErrSCIMRemovalCeiling), else disables the user and writes row with
+	// the reason recording the status it had (RemovalReasonSCIM for active,
+	// RemovalReasonSCIMPending for pending; row.Reason is ignored). It
+	// changes nothing and answers false when the user is disabled already
+	// (a disable SCIM did not do stays someone else's) or has a removal.
+	// *ErrNotFound{Kind:"user"} for an unknown user.
+	SCIMRemoveUser(ctx context.Context, row AuthRemovalRow, since time.Time, ceiling int) (bool, error)
+	// SCIMReactivate ends a removal the gate's SCIM made, in one
+	// transaction: when the subject's CURRENT removal is the gate's with a
+	// SCIM reason, the user returns to the status the reason recorded
+	// (active, or pending) and the removal row goes. Any other removal (an
+	// operator's, another gate's) or none answers false and changes nothing.
+	SCIMReactivate(ctx context.Context, gate, tenantID, subject string) (restored string, ok bool, err error)
+}
+
+// SCIMRemovalReason reports whether reason is one a SCIM gate's removal
+// writes.
+func SCIMRemovalReason(reason string) bool {
+	return reason == RemovalReasonSCIM || reason == RemovalReasonSCIMPending
 }
 
 // ErrSCIMRemovalCeiling: a SCIM gate reached its removal ceiling.

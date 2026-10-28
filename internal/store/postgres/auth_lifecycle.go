@@ -86,7 +86,9 @@ func (s *Store) AuthRemovalStart(ctx context.Context, row store.AuthRemovalRow) 
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO auth_removals (`+removalCols+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, NULL, $8)
-		ON CONFLICT (tenant_id, subject) DO NOTHING`,
+		ON CONFLICT (tenant_id, subject) DO UPDATE SET gate = excluded.gate, reason = excluded.reason,
+			created_by = excluded.created_by
+		WHERE auth_removals.reason IN ('scim', 'scim_pending') AND excluded.reason NOT IN ('scim', 'scim_pending')`,
 		row.TenantID, row.Subject, row.Gate, row.Reason, row.DisabledAt.UTC(), row.UnbindDueAt.UTC(),
 		pgNullTime(row.EraseDueAt), row.CreatedBy)
 	if err != nil {

@@ -63,7 +63,10 @@ type AuthLifecycleStore interface {
 
 	// AuthRemovalStart inserts a removal unless the subject already has one,
 	// and reports whether it did. An existing removal is never restarted,
-	// so a repeated revoke or sync cannot postpone its stages.
+	// so a repeated revoke or sync cannot postpone its stages. One exception:
+	// a removal of any other reason takes over a SCIM gate's (its gate,
+	// reason and created_by; the timings stay), so an operator's or another
+	// gate's removal is never left behind a row SCIM could re-enable.
 	AuthRemovalStart(ctx context.Context, row AuthRemovalRow) (bool, error)
 	// AuthRemovalGet returns the subject's removal.
 	// *ErrNotFound{Kind:"auth_removal"} when there is none.

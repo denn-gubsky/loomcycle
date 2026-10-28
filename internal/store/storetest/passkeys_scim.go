@@ -370,19 +370,35 @@ func testSCIMGroupLifecycle(t *testing.T, s store.Store) {
 	}
 }
 
-// A SCIM removal is reserved under the gate's ceiling, the count and the
-// insert atomic: concurrent reservations never pass it together, and only
-// the gate's own removals in the tenant count.
-func testSCIMRemovalReserveHoldsTheCeilingUnderConcurrency(t *testing.T, s store.Store) {
-	ctx := context.Background()
-	row := func(tenant, subject, gate string, at time.Time) store.AuthRemovalRow {
-		return store.AuthRemovalRow{TenantID: tenant, Subject: subject, Gate: gate, Reason: store.RemovalReasonSCIM,
-			DisabledAt: at, UnbindDueAt: at.Add(time.Hour), CreatedBy: "gate:" + gate}
+// scimRemovalRow is a SCIM gate's removal of subject at now.
+func scimRemovalRow(tenant, subject, gate string, at time.Time) store.AuthRemovalRow {
+	return store.AuthRemovalRow{TenantID: tenant, Subject: subject, Gate: gate, Reason: store.RemovalReasonSCIM,
+		DisabledAt: at, UnbindDueAt: at.Add(time.Hour), CreatedBy: "gate:" + gate}
+}
+
+func userStatus(t *testing.T, s store.Store, tenant, subject string) string {
+	t.Helper()
+	u, err := s.UserGet(context.Background(), tenant, subject)
+	if err != nil {
+		t.Fatalf("user %s: %v", subject, err)
 	}
+	return u.Status
+}
+
+// A SCIM removal is all or nothing under the gate's ceiling: concurrent
+// removals never pass it together, a refused one leaves no row and no status
+// change, and only the gate's own removals in the tenant count.
+func testSCIMRemoveUserHoldsTheCeilingUnderConcurrency(t *testing.T, s store.Store) {
+	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
+	for i := 0; i < 12; i++ {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: fmt.Sprintf("u%d", i), AccessMode: "isolated", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	// Outside the window, another gate's and another tenant's do not count.
-	for _, r := range []store.AuthRemovalRow{row("acme", "old", "okta", now.Add(-48*time.Hour)),
-		row("acme", "x1", "other", now), row("beta", "x2", "okta", now)} {
+	for _, r := range []store.AuthRemovalRow{scimRemovalRow("acme", "old", "okta", now.Add(-48*time.Hour)),
+		scimRemovalRow("acme", "x1", "other", now), scimRemovalRow("beta", "x2", "okta", now)} {
 		if ok, err := s.AuthRemovalStart(ctx, r); !ok || err != nil {
 			t.Fatalf("seed: %v %v", ok, err)
 		}
@@ -390,31 +406,113 @@ func testSCIMRemovalReserveHoldsTheCeilingUnderConcurrency(t *testing.T, s store
 	since := now.Add(-24 * time.Hour)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	ok, refused := 0, 0
+	removed, refused := 0, 0
 	for i := 0; i < 12; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			got, err := s.SCIMRemovalReserve(ctx, row("acme", fmt.Sprintf("u%d", i), "okta", now), since, 3)
+			got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", fmt.Sprintf("u%d", i), "okta", now), since, 3)
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
 			case err == nil && got:
-				ok++
+				removed++
 			case errors.Is(err, store.ErrSCIMRemovalCeiling):
 				refused++
 			default:
-				t.Errorf("reserve %d: %v %v", i, got, err)
+				t.Errorf("remove %d: %v %v", i, got, err)
 			}
 		}(i)
 	}
 	wg.Wait()
-	if ok != 3 || refused != 9 {
-		t.Fatalf("reserved %d and refused %d of 12 under a ceiling of 3", ok, refused)
+	if removed != 3 || refused != 9 {
+		t.Fatalf("removed %d and refused %d of 12 under a ceiling of 3", removed, refused)
 	}
-	// A subject already being removed records nothing, and is not refused.
-	if got, err := s.SCIMRemovalReserve(ctx, row("beta", "x2", "okta", now), since, 5); got || err != nil {
-		t.Fatalf("an existing removal: %v %v", got, err)
+	disabled := 0
+	for i := 0; i < 12; i++ {
+		sub := fmt.Sprintf("u%d", i)
+		st := userStatus(t, s, "acme", sub)
+		_, rerr := s.AuthRemovalGet(ctx, "acme", sub)
+		switch {
+		case st == "disabled" && rerr == nil:
+			disabled++
+		case st == "active" && pwgNotFound(rerr):
+		default:
+			t.Fatalf("%s: status %s, removal %v — a removal must be all or nothing", sub, st, rerr)
+		}
+	}
+	if disabled != 3 {
+		t.Fatalf("%d users disabled, want 3", disabled)
+	}
+	if _, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "nobody", "okta", now), since, 100); !pwgNotFound(err) {
+		t.Fatalf("an unknown user: %v", err)
+	}
+}
+
+// A user disabled by anyone else is not SCIM's to remove or re-enable, a
+// pending user comes back pending, and an operator's removal takes a SCIM
+// removal over.
+func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	since := now.Add(-24 * time.Hour)
+	for _, u := range []store.UserRow{
+		{TenantID: "acme", Subject: "op-off", AccessMode: "isolated", Status: "disabled"},
+		{TenantID: "acme", Subject: "pend", AccessMode: "isolated", Status: store.UserStatusPending},
+		{TenantID: "acme", Subject: "act", AccessMode: "isolated", Status: "active"},
+	} {
+		if err := s.UserCreate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Disabled by an operator first: SCIM writes nothing and cannot re-enable.
+	if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "op-off", "okta", now), since, 10); got || err != nil {
+		t.Fatalf("remove an operator-disabled user: %v %v", got, err)
+	}
+	if _, err := s.AuthRemovalGet(ctx, "acme", "op-off"); !pwgNotFound(err) {
+		t.Fatalf("a SCIM row behind an operator's disable: %v", err)
+	}
+	if _, ok, err := s.SCIMReactivate(ctx, "okta", "acme", "op-off"); ok || err != nil {
+		t.Fatalf("re-enable an operator-disabled user: %v %v", ok, err)
+	}
+	// Pending → removed → re-enabled is pending.
+	if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "pend", "okta", now), since, 10); !got || err != nil {
+		t.Fatalf("remove pending: %v %v", got, err)
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "pend"); rm.Reason != store.RemovalReasonSCIMPending || userStatus(t, s, "acme", "pend") != "disabled" {
+		t.Fatalf("pending removal: %+v, status %s", rm, userStatus(t, s, "acme", "pend"))
+	}
+	if _, ok, _ := s.SCIMReactivate(ctx, "other-gate", "acme", "pend"); ok {
+		t.Fatal("another gate re-enabled the SCIM gate's removal")
+	}
+	if st, ok, err := s.SCIMReactivate(ctx, "okta", "acme", "pend"); !ok || err != nil || st != store.UserStatusPending {
+		t.Fatalf("re-enable pending: %q %v %v", st, ok, err)
+	}
+	if userStatus(t, s, "acme", "pend") != store.UserStatusPending {
+		t.Fatalf("status = %s, want pending", userStatus(t, s, "acme", "pend"))
+	}
+	if _, err := s.AuthRemovalGet(ctx, "acme", "pend"); !pwgNotFound(err) {
+		t.Fatalf("the removal outlived the re-enable: %v", err)
+	}
+	// An operator's removal takes the SCIM removal over: SCIM cannot re-enable.
+	if got, _ := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "act", "okta", now), since, 10); !got {
+		t.Fatal("remove active")
+	}
+	op := store.AuthRemovalRow{TenantID: "acme", Subject: "act", Reason: store.RemovalReasonOperator, DisabledAt: now.Add(time.Minute),
+		UnbindDueAt: now.Add(2 * time.Hour), CreatedBy: "op"}
+	if ok, err := s.AuthRemovalStart(ctx, op); !ok || err != nil {
+		t.Fatalf("an operator's removal over SCIM's: %v %v", ok, err)
+	}
+	rm, _ := s.AuthRemovalGet(ctx, "acme", "act")
+	if rm.Reason != store.RemovalReasonOperator || rm.Gate != "" || !rm.DisabledAt.Equal(now) {
+		t.Fatalf("after the takeover: %+v (the reason and gate move, the timings stay)", rm)
+	}
+	if _, ok, _ := s.SCIMReactivate(ctx, "okta", "acme", "act"); ok {
+		t.Fatal("SCIM re-enabled a user an operator's removal took over")
+	}
+	// A SCIM removal never takes an operator's over.
+	if ok, _ := s.AuthRemovalStart(ctx, scimRemovalRow("acme", "act", "okta", now)); ok {
+		t.Fatal("a SCIM row replaced an operator's")
 	}
 }
 
