@@ -6900,7 +6900,9 @@ a.login-btn {
 
 .routing-tier-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  /* A card is never wider than the column it sits in, so a narrow screen
+     stacks the cards instead of pushing them off the edge. */
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: var(--lc-space-2);
 }
 .routing-tier-card {
@@ -6930,36 +6932,69 @@ a.login-btn {
   flex-direction: column;
   gap: 2px;
 }
+/* One cascade entry: the dot, then the model on a line of its own (it wraps,
+   never truncates — it is what the page is read for), then where it sits in
+   the cascade, its provider and the "selected" badge on a smaller line. */
 .routing-cand {
-  display: flex;
-  align-items: center;
-  gap: var(--lc-space-1);
-  padding: 5px 6px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--lc-space-1);
+  padding: 6px 8px;
   border-radius: var(--lc-radius-sm);
   font-size: var(--lc-text-sm);
 }
 .routing-cand.selected {
   background: var(--lc-accent-soft);
 }
-.routing-cand.unavail .routing-model,
-.routing-cand.unavail .routing-provider {
-  color: var(--lc-text-faint);
+.routing-cand .routing-dot,
+.routing-dot-space {
+  margin-top: 0.45em;
 }
-.routing-rank {
-  font-size: var(--lc-text-xs);
-  color: var(--lc-text-muted);
-  min-width: 4.5em;
+.routing-dot-space {
+  display: inline-block;
+  width: 8px;
 }
-.routing-provider {
-  font-weight: 600;
+.routing-cand-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 .routing-model {
   font-family: var(--lc-font-mono);
-  font-size: 0.9em;
+  font-size: 0.95em;
+  font-weight: 600;
+  color: var(--lc-text);
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.routing-cand-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  font-size: var(--lc-text-xs);
   color: var(--lc-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.routing-rank {
+  color: var(--lc-text-muted);
+}
+.routing-provider {
+  color: var(--lc-text-muted);
+  overflow-wrap: anywhere;
+}
+.routing-provider::before {
+  content: "· ";
+}
+/* An unavailable model stays readable — the red dot says it cannot run; the
+   name is still what the reader came for. */
+.routing-cand.unavail .routing-model {
+  color: var(--lc-text-muted);
+  font-weight: 500;
+}
+.routing-cand.unavail .routing-provider {
+  color: var(--lc-text-faint);
 }
 /* The line under a service-model card: alias, status, vector width. */
 .routing-service-note code {
@@ -6972,6 +7007,9 @@ a.login-btn {
 }
 .routing-selected-badge {
   margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--lc-surface);
   font-size: var(--lc-text-xs);
   font-weight: 600;
   color: var(--lc-accent);
