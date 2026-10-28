@@ -26,6 +26,16 @@ func TestResolveAuth_ASCIMGateTakesItsTenantFromTheToken(t *testing.T) {
 	if g.SCIM.RemovalCeiling(1000) != 3 {
 		t.Fatalf("ceiling = %d", g.SCIM.RemovalCeiling(1000))
 	}
+	if g.SCIM.CreateCeiling() != DefaultSCIMMaxSyncCreates {
+		t.Fatalf("default create ceiling = %d", g.SCIM.CreateCeiling())
+	}
+	set := scimConfig(map[string]AuthGateConfig{"okta": {Kind: AuthGateKindSCIM, External: AuthExternalGateConfig{MaxSyncCreates: 50}}})
+	if err := resolveAuth(set); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := set.ResolvedAuth.SCIMGate(); g.SCIM.CreateCeiling() != 50 {
+		t.Fatalf("create ceiling = %d, want 50", g.SCIM.CreateCeiling())
+	}
 	for _, lg := range c.ResolvedAuth.LoginGates() {
 		if lg.Kind == AuthGateKindSCIM {
 			t.Fatal("a SCIM gate is offered as a sign-in")
@@ -51,10 +61,16 @@ func TestResolveAuth_ASCIMGateRefusesWhatDoesNotApply(t *testing.T) {
 		"public key":   {Kind: AuthGateKindSCIM, External: AuthExternalGateConfig{CallbackURL: "https://idp.example"}},
 		"password key": {Kind: AuthGateKindSCIM, RequireMFA: new(bool)},
 		"bad ceiling":  {Kind: AuthGateKindSCIM, External: AuthExternalGateConfig{MaxSyncRemovals: "0"}},
+		"bad creates":  {Kind: AuthGateKindSCIM, External: AuthExternalGateConfig{MaxSyncCreates: -1}},
 	} {
 		if err := resolveAuth(scimConfig(map[string]AuthGateConfig{"okta": g})); err == nil {
 			t.Errorf("%s: loaded", name)
 		}
+	}
+	// max_sync_creates is a SCIM gate's key only.
+	ext := scimConfig(map[string]AuthGateConfig{"paste": {Kind: AuthGateKindToken, External: AuthExternalGateConfig{MaxSyncCreates: 5}}})
+	if err := resolveAuth(ext); err == nil || !strings.Contains(err.Error(), "max_sync_creates") {
+		t.Errorf("max_sync_creates on a token gate: %v", err)
 	}
 	two := scimConfig(map[string]AuthGateConfig{"a": {Kind: AuthGateKindSCIM}, "b": {Kind: AuthGateKindSCIM}})
 	if err := resolveAuth(two); err == nil || !strings.Contains(err.Error(), "at most one") {

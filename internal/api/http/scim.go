@@ -354,6 +354,21 @@ func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	// The create ceiling bounds how many users one provider adds per window.
+	// It is read before the insert, so concurrent creates may pass it by the
+	// requests in flight; the removal ceiling does not depend on it (its
+	// base excludes the window's creates).
+	created, err := s.store.SCIMUsersCreatedSince(ctx, c.g.Name, c.tenant, time.Now().UTC().Add(-config.SCIMRemovalWindow))
+	if err != nil {
+		scimError(w, http.StatusInternalServerError, "", "could not create the user")
+		return
+	}
+	if limit := c.g.SCIM.CreateCeiling(); created >= limit {
+		s.scimAudit(c, "auth_gate_sync_refused", "", fmt.Sprintf("create over the ceiling of %d in 24h", limit))
+		scimError(w, http.StatusTooManyRequests, "", fmt.Sprintf(
+			"this SCIM gate has created %d users in the last 24 hours, its ceiling (max_sync_creates); try again later", limit))
+		return
+	}
 	// The resource is reserved first: its unique userName decides a race
 	// between two creates before any user is made.
 	row := store.SCIMUserRow{Gate: c.g.Name, TenantID: c.tenant, SCIMID: id, Subject: scimSubject(c, id), UserName: st.userName,
@@ -894,22 +909,19 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 		return &scimRefusal{http.StatusForbidden, "", "this SCIM gate is not authoritative for users (identity_map.authoritative_for_users)"}
 	}
 	internal := &scimRefusal{http.StatusInternalServerError, "", "the user could not be deactivated; repeat it"}
-	ids, err := s.store.UserIdentityListGate(ctx, c.g.Name)
+	now := time.Now().UTC()
+	since := now.Add(-config.SCIMRemovalWindow)
+	// A percentage is of the users the gate had before the window: a
+	// provider cannot raise its own ceiling by creating users first.
+	base, err := s.store.SCIMRemovalBase(ctx, c.g.Name, c.tenant, since)
 	if err != nil {
 		return internal
 	}
-	linked := 0
-	for _, id := range ids {
-		if id.TenantID == c.tenant {
-			linked++
-		}
-	}
 	rp := c.g.SCIM.Removal
-	now := time.Now().UTC()
 	row := removalRow(lifecycle.Policy{UnbindAfter: rp.UnbindAfter, EraseAfter: rp.EraseAfter}.Start(now),
 		c.tenant, subject, c.g.Name, store.RemovalReasonSCIM, "gate:"+c.g.Name)
-	ceiling := c.g.SCIM.RemovalCeiling(linked)
-	started, err := s.store.SCIMRemoveUser(ctx, row, now.Add(-config.SCIMRemovalWindow), ceiling)
+	ceiling := c.g.SCIM.RemovalCeiling(base)
+	started, err := s.store.SCIMRemoveUser(ctx, row, since, ceiling)
 	switch {
 	case errors.Is(err, store.ErrSCIMRemovalCeiling):
 		s.scimAudit(c, "auth_gate_sync_refused", subject, fmt.Sprintf("removal over the ceiling of %d in 24h", ceiling))

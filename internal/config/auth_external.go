@@ -52,9 +52,12 @@ type AuthExternalGateConfig struct {
 	// MaxSyncRemovals caps the users one complete sync may remove: a count
 	// ("25") or a share of the gate's linked users ("20%"). Default: 10%,
 	// never fewer than five.
-	MaxSyncRemovals string                 `yaml:"max_sync_removals,omitempty"`
-	IssuedToken     *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
-	OnRemoved       *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
+	MaxSyncRemovals string `yaml:"max_sync_removals,omitempty"`
+	// MaxSyncCreates (kind: scim only) caps the users the SCIM gate may
+	// create in a tenant per rolling 24 h. Default: 1000.
+	MaxSyncCreates int                    `yaml:"max_sync_creates,omitempty"`
+	IssuedToken    *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
+	OnRemoved      *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
 }
 
 // AuthIssuedTokenConfig is the ceiling of the tokens a gate gets issued.

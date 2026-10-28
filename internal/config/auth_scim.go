@@ -25,6 +25,7 @@ import (
 //	        new_user: { access_mode: tenant, groups: [staff] }
 //	        authoritative_for_users: true   # DELETE / active:false remove users
 //	      max_sync_removals: "10%"          # removals per rolling 24 h
+//	      max_sync_creates: 1000            # creates per rolling 24 h
 //	      on_removed: { unbind_after: 168h }
 //
 // The tenant is the token's: an identity provider never names one. A fixed
@@ -39,22 +40,41 @@ const AuthGateKindSCIM = "scim"
 // AuthSCIMGate is a validated SCIM gate.
 type AuthSCIMGate struct {
 	// MaxSyncRemovals / MaxSyncRemovalsPercent cap the removals (DELETE,
-	// active:false) the gate may start in a tenant per RemovalWindow: a
-	// count, or a share of the gate's linked users in the tenant.
+	// active:false) the gate may start in a tenant per SCIMRemovalWindow: a
+	// count, or a share of the gate's users in the tenant who were linked,
+	// and not disabled, before the window began — so users the provider
+	// creates inside the window never raise its own ceiling.
 	MaxSyncRemovals        int
 	MaxSyncRemovalsPercent int
+	// MaxSyncCreates caps the users the gate may create in a tenant per
+	// SCIMRemovalWindow; 0 is DefaultSCIMMaxSyncCreates.
+	MaxSyncCreates int
 	// Removal is the gate's removal policy (the deployment's, with the
 	// gate's on_removed over it).
 	Removal AuthRemovalPolicy
 }
 
-// SCIMRemovalWindow is the window the removal ceiling counts over.
+// SCIMRemovalWindow is the window the removal and create ceilings count over.
 const SCIMRemovalWindow = 24 * time.Hour
 
+// DefaultSCIMMaxSyncCreates is the create ceiling when max_sync_creates is
+// unset: room for a mid-sized directory's first sync in a day; a larger one
+// raises it for the import.
+const DefaultSCIMMaxSyncCreates = 1000
+
 // RemovalCeiling is how many removals the gate may start in a tenant within
-// SCIMRemovalWindow, of linked users linked to it there.
-func (g *AuthSCIMGate) RemovalCeiling(linked int) int {
-	return syncRemovalCeiling(g.MaxSyncRemovals, g.MaxSyncRemovalsPercent, linked)
+// SCIMRemovalWindow, of base users (see MaxSyncRemovalsPercent).
+func (g *AuthSCIMGate) RemovalCeiling(base int) int {
+	return syncRemovalCeiling(g.MaxSyncRemovals, g.MaxSyncRemovalsPercent, base)
+}
+
+// CreateCeiling is how many users the gate may create in a tenant within
+// SCIMRemovalWindow.
+func (g *AuthSCIMGate) CreateCeiling() int {
+	if g.MaxSyncCreates > 0 {
+		return g.MaxSyncCreates
+	}
+	return DefaultSCIMMaxSyncCreates
 }
 
 // scimTokenTenant stands in for the tenant while a SCIM identity map is
@@ -94,7 +114,10 @@ func resolveSCIMGate(c *Config, name string, g AuthGateConfig, floor AuthNewUser
 	if fixed == "" {
 		idm.Tenant = ""
 	}
-	out := &AuthSCIMGate{}
+	if e.MaxSyncCreates < 0 {
+		return nil, nil, fmt.Errorf("%s.max_sync_creates: %d must be positive", where, e.MaxSyncCreates)
+	}
+	out := &AuthSCIMGate{MaxSyncCreates: e.MaxSyncCreates}
 	if out.MaxSyncRemovals, out.MaxSyncRemovalsPercent, err = parseMaxSyncRemovals(where, e.MaxSyncRemovals); err != nil {
 		return nil, nil, err
 	}

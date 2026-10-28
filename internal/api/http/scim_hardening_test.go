@@ -3,8 +3,10 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -64,6 +66,78 @@ func hook(f *gateFixture) *hookStore {
 	h := &hookStore{Store: f.st, onGroupsOfSubject: map[string]func(){}}
 	f.srv.store = h
 	return h
+}
+
+// seedOldSCIMUser makes a SCIM user the gate linked before the removal
+// window, as an earlier day's sync would have.
+func seedOldSCIMUser(t *testing.T, f *gateFixture, id string) string {
+	t.Helper()
+	ctx := context.Background()
+	old := time.Now().UTC().Add(-72 * time.Hour)
+	sub := "okta:" + id
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active", CreatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.UserIdentityCreate(ctx, store.UserIdentityRow{TenantID: "acme", Subject: sub, Gate: "okta", Issuer: "scim",
+		ExternalSubject: id, CreatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.SCIMUserCreate(ctx, store.SCIMUserRow{Gate: "okta", TenantID: "acme", SCIMID: id, Subject: sub,
+		UserName: id + "@acme.test", UserNameKey: id + "@acme.test", Attributes: `{}`, CreatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	return sub
+}
+
+// A percentage removal ceiling is of the users the gate had before the
+// window: users the provider creates now never raise it.
+func TestSCIM_CreatesInTheWindowDoNotRaiseTheRemovalCeiling(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true})
+	cfg := f.srv.cfg()
+	for i := range cfg.ResolvedAuth.Gates {
+		if cfg.ResolvedAuth.Gates[i].Name == "okta" {
+			cfg.ResolvedAuth.Gates[i].SCIM.MaxSyncRemovalsPercent = 50
+		}
+	}
+	old := []string{seedOldSCIMUser(t, f, "old1"), seedOldSCIMUser(t, f, "old2"), seedOldSCIMUser(t, f, "old3"), seedOldSCIMUser(t, f, "old4")}
+	// Twenty fresh users would make a 50% ceiling 12 if they counted.
+	for i := 0; i < 20; i++ {
+		f.scimUser(t, bSCIMAcme, fmt.Sprintf("fresh%d@acme.test", i))
+	}
+	for i, sub := range old[:3] {
+		want := http.StatusNoContent
+		if i == 2 {
+			want = http.StatusTooManyRequests // 50% of the four users before the window
+		}
+		if code, out := f.call(t, bSCIMAcme, "DELETE", "/scim/v2/Users/"+strings.TrimPrefix(sub, "okta:"), ""); code != want {
+			t.Fatalf("removal %d = %d %v, want %d", i+1, code, out, want)
+		}
+	}
+	if st := f.status(t, "acme", old[2]); st != "active" {
+		t.Fatalf("the removal over the ceiling left the user %s", st)
+	}
+}
+
+// A SCIM gate creates at most max_sync_creates users per window.
+func TestSCIM_CreatesAreHeldToTheCeiling(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{})
+	cfg := f.srv.cfg()
+	for i := range cfg.ResolvedAuth.Gates {
+		if cfg.ResolvedAuth.Gates[i].Name == "okta" {
+			cfg.ResolvedAuth.Gates[i].SCIM.MaxSyncCreates = 2
+		}
+	}
+	f.scimUser(t, bSCIMAcme, "a@acme.test")
+	f.scimUser(t, bSCIMAcme, "b@acme.test")
+	code, out := f.call(t, bSCIMAcme, "POST", "/scim/v2/Users", jsonBody(t, map[string]any{"userName": "c@acme.test"}))
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("a create over the ceiling = %d %v, want 429", code, out)
+	}
+	if rows, _, _ := f.st.SCIMUserList(context.Background(), "okta", "acme", store.SCIMFilter{UserNameKey: "c@acme.test"}, 0, 10); len(rows) != 0 {
+		t.Fatalf("the refused create left a resource: %+v", rows)
+	}
+	// Another tenant's ceiling is its own.
+	f.scimUser(t, bSCIMOther, "c@other.test")
 }
 
 // A SCIM re-enable gives the user nothing before it owns the re-enable: an

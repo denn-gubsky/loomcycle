@@ -542,6 +542,9 @@ func resolveAuth(c *Config) error {
 			// It links a bridge's pre-gate users; a sign-in provider has none.
 			return fmt.Errorf("auth.gates.%s.identity_map.legacy_subject_prefix applies only to kind: external", name)
 		}
+		if kind != AuthGateKindSCIM && g.External.MaxSyncCreates != 0 {
+			return fmt.Errorf("auth.gates.%s.max_sync_creates applies only to kind: scim", name)
+		}
 		if kind != AuthGateKindExternal && kind != AuthGateKindSCIM && hasExternalKeys(g) {
 			return fmt.Errorf("auth.gates.%s: public_key, hmac_secret_env, callback_url, probe_url, issued_token "+
 				"and on_removed apply only to kind: external", name)
