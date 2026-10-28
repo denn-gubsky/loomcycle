@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
 // Config carries the operator-supplied connection settings. DSN is
@@ -2879,7 +2880,7 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefActiveEntry, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id,
-		        promoter_operator_key_restricted, promoter_isolated
+		        promoter_operator_key_restricted, promoter_isolated, promoter_acl_owner
 		 FROM teamdef_active
 		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
@@ -2892,14 +2893,17 @@ func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefA
 			e              store.TeamDefActiveEntry
 			promoter       *string
 			opKey, isolate *bool
+			aclOwner       *string
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID, &opKey, &isolate); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &e.PromotedAt, &promoter, &e.TenantID, &opKey, &isolate, &aclOwner); err != nil {
 			return nil, fmt.Errorf("scan teamdef_active: %w", err)
 		}
 		if promoter != nil {
 			e.PromotedByAgentID = *promoter
 		}
-		e.Promoter = teamDefPromoterFromColumns(opKey, isolate)
+		if e.Promoter, err = teamDefPromoterFromColumns(opKey, isolate, aclOwner); err != nil {
+			return nil, fmt.Errorf("team %q: %w", e.Name, err)
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -3537,11 +3541,16 @@ func (s *Store) SnapshotRestoreTeamDefActive(ctx context.Context, e store.TeamDe
 		promotedAt = time.Now().UTC()
 	}
 	opKey, isolate := teamDefPromoterColumns(e.Promoter)
+	aclOwner, err := sqlshared.TeamDefPromoterACLOwnerRestoreArg(e.Promoter)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
+	}
 	tag, err := s.pool.Exec(ctx,
 		`INSERT INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
-		                            promoter_operator_key_restricted, promoter_isolated) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		                            promoter_operator_key_restricted, promoter_isolated, promoter_acl_owner)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 ON CONFLICT (tenant_id, name) DO NOTHING`,
-		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID), opKey, isolate,
+		e.TenantID, e.Name, e.DefID, promotedAt, nullIfEmpty(e.PromotedByAgentID), opKey, isolate, aclOwner,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
@@ -7585,11 +7594,12 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 			COALESCE(a.def_id, '')                    AS active_def_id,
 			COALESCE(ad.retired, FALSE)               AS active_retired,
 			a.promoter_operator_key_restricted,
-			a.promoter_isolated
+			a.promoter_isolated,
+			a.promoter_acl_owner
 		FROM teamdefs d
 		LEFT JOIN teamdef_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
 		LEFT JOIN teamdefs ad      ON ad.def_id = a.def_id
-		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated, a.promoter_acl_owner
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("team_def list names: %w", err)
@@ -7600,10 +7610,14 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 	for rows.Next() {
 		var ns store.TeamDefNameSummary
 		var opKey, isolate *bool
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired, &opKey, &isolate); err != nil {
+		var aclOwner *string
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired, &opKey, &isolate, &aclOwner); err != nil {
 			return nil, err
 		}
-		ns.ActivePromoter = teamDefPromoterFromColumns(opKey, isolate)
+		var err error
+		if ns.ActivePromoter, err = teamDefPromoterFromColumns(opKey, isolate, aclOwner); err != nil {
+			return nil, fmt.Errorf("team %q: %w", ns.Name, err)
+		}
 		out = append(out, ns)
 	}
 	return out, rows.Err()
@@ -7632,18 +7646,23 @@ func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, pro
 	if rowTenant != tenantID {
 		return fmt.Errorf("teamdef_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
 	}
+	aclOwner, err := sqlshared.TeamDefPromoterACLOwnerArg(promoter.ACLOwner)
+	if err != nil {
+		return err
+	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
-		                            promoter_operator_key_restricted, promoter_isolated)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		                            promoter_operator_key_restricted, promoter_isolated, promoter_acl_owner)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (tenant_id, name) DO UPDATE SET
 		    def_id                           = EXCLUDED.def_id,
 		    promoted_at                      = EXCLUDED.promoted_at,
 		    promoted_by_agent_id             = EXCLUDED.promoted_by_agent_id,
 		    promoter_operator_key_restricted = EXCLUDED.promoter_operator_key_restricted,
-		    promoter_isolated                = EXCLUDED.promoter_isolated`,
+		    promoter_isolated                = EXCLUDED.promoter_isolated,
+		    promoter_acl_owner               = EXCLUDED.promoter_acl_owner`,
 		tenantID, name, defID, time.Now().UTC(), nullableString(promotedByAgentID),
-		promoter.OperatorKeyRestricted, promoter.Isolated,
+		promoter.OperatorKeyRestricted, promoter.Isolated, aclOwner,
 	)
 	if err != nil {
 		return fmt.Errorf("teamdef_active upsert: %w", err)
@@ -7660,14 +7679,23 @@ func teamDefPromoterColumns(p *store.TeamDefPromoter) (opKey, isolated *bool) {
 	return &p.OperatorKeyRestricted, &p.Isolated
 }
 
-// teamDefPromoterFromColumns reads the pair back. Either column NULL means
+// teamDefPromoterFromColumns reads the capture back. Either bit NULL means
 // not captured — never "unrestricted": the two are written together, so a
-// half-written pair is not a state a promote produces.
-func teamDefPromoterFromColumns(opKey, isolated *bool) *store.TeamDefPromoter {
+// half-written pair is not a state a promote produces. The owner column is
+// read only for a captured promoter (sqlshared.SetTeamDefPromoterACLOwner).
+func teamDefPromoterFromColumns(opKey, isolated *bool, aclOwner *string) (*store.TeamDefPromoter, error) {
 	if opKey == nil || isolated == nil {
-		return nil
+		return nil, nil
 	}
-	return &store.TeamDefPromoter{OperatorKeyRestricted: *opKey, Isolated: *isolated}
+	p := &store.TeamDefPromoter{OperatorKeyRestricted: *opKey, Isolated: *isolated}
+	owner := ""
+	if aclOwner != nil {
+		owner = *aclOwner
+	}
+	if err := sqlshared.SetTeamDefPromoterACLOwner(p, aclOwner != nil, owner); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // TeamDefGetActive returns the active row for (tenantID, name).

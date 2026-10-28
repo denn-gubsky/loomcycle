@@ -541,6 +541,13 @@ func (b *boot) startStoreSweepers() {
 				if err == nil {
 					thr, err = storeIface.AuthThrottleDeleteExpired(ctx, now)
 				}
+				// RFC FA P5: device logins live ten minutes; an expired
+				// row only answers "expired" until it goes.
+				if err == nil {
+					var dev int
+					dev, err = storeIface.DeviceAuthDeleteExpired(ctx, now)
+					inv += dev
+				}
 				if err != nil {
 					slog.Error("auth-gate sweep: failed", "err", err)
 					return

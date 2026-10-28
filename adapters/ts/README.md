@@ -574,6 +574,7 @@ The tenant is your own. `opts.tenant` names another for an admin token, and for 
 | `renameGateLogin(gate, subject, login, opts?)` | `PATCH /v1/_authgate/{gate}/logins/{subject}` | `{subject, login}`; 409 `login_taken` |
 | `listGateIdentities(gate, subject, opts?)` | `GET /v1/_authgate/{gate}/identities?subject=` | `GateIdentitiesResponse` — logins, `has_password`, `has_totp` |
 | `getGateTenantStatus(gate, opts?)` | `GET /v1/_authgate/{gate}/tenant-status` | `GateTenantStatus` — whether the tenant has, or ever had, a user, and whether an owner invite is live |
+| `deviceLogin({onPrompt, clientId?, signal?})` | `POST /v1/_auth/device`, then `POST /v1/_auth/device/token` | `DeviceLoginResult` — signs a person in through the server's device gate (RFC 8628): `onPrompt` gets the code to show, the person approves it at `/ui/device`, and the token is theirs, never outliving the session they approved from. Sends no bearer. `DeviceLoginError` (`code` `access_denied` / `expired_token`) otherwise |
 
 None of these takes a password: the person sets their own through the invite or reset link. Hand the link's `url` to the person and do not log it — its fragment is the one-time code.
 

@@ -1,0 +1,27 @@
+-- 0121_teamdef_active_promoter_acl_owner.up.sql — whose access-control set
+-- (RFC EY) binds a team subscription's walks.
+--
+-- An armed subscription starts its team's walks with no caller on ctx, so the
+-- walk has nobody to be narrowed by except whoever PROMOTED the team. 0087
+-- recorded that promoter's two confinement bits but no subject, so the
+-- promoter's ACL set could not be compiled and the walk's members ran on their
+-- agents' full grants. This records the promoter as a schedule's or webhook's
+-- acl_owner is recorded: the authz.SubjectRef JSON (tenant, subject, token def
+-- id, token class — ids only, never a bearer, never the rules).
+--
+-- Three states, written and read through sqlshared (teamdef_promoter.go):
+--   NULL — promoted before this migration: the owner is unknown. The walk runs
+--          as before (on 0087's bits) and the sweep warns until the team is
+--          promoted again — as a trigger definition written before its
+--          acl_owner existed fires as before.
+--   ''   — recorded; no subject's set bound the promoter (open mode).
+--   JSON — the promoter.
+-- NULLABLE with no DEFAULT on purpose: a default would make every existing
+-- pointer read as "recorded, nobody", erasing the difference.
+--
+-- TEXT, not JSONB: the value is opaque to SQL, it is grouped on in
+-- TeamDefListNames, and the sqlite twin stores TEXT.
+--
+-- IF NOT EXISTS: the memory_embeddings repair test rewinds the version pointer
+-- and replays every later migration.
+ALTER TABLE teamdef_active ADD COLUMN IF NOT EXISTS promoter_acl_owner TEXT;

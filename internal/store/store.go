@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/runident"
 	"github.com/denn-gubsky/loomcycle/internal/teamspec"
@@ -1744,6 +1745,8 @@ type Store interface {
 	DocumentSourceDefStore
 	OperatorTokenStore
 	UISessionStore
+	DeviceAuthStore
+	TenantAuthPolicyStore
 	EvaluationStore
 	MetricsStore
 	DynamicAgentStore
@@ -6135,6 +6138,18 @@ type TeamDefNameSummary struct {
 type TeamDefPromoter struct {
 	OperatorKeyRestricted bool `json:"operator_key_restricted,omitempty"`
 	Isolated              bool `json:"isolated,omitempty"`
+	// ACLOwner is whose access-control set (RFC EY) binds the subscription's
+	// walks: the promoter, recorded as a schedule's or webhook's acl_owner is
+	// (tools.AuthorACLOwner). Ids only — the walk compiles that subject's
+	// CURRENT set at each start. nil: no subject's set bound the promoter
+	// (open mode, a run no set binds), and the walks run as before.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
+	// ACLOwnerUnrecorded is set only on a pointer READ back that was promoted
+	// before the owner was recorded (migration 0121): nobody knows whose set
+	// binds it, which is not the same as "nobody's". Its walks run as before,
+	// and the sweep says so until the team is promoted again. A promote
+	// ignores it — a promote always records.
+	ACLOwnerUnrecorded bool `json:"acl_owner_unrecorded,omitempty"`
 }
 
 // TeamDefActiveEntry mirrors SkillDefActiveEntry. Pairs a team

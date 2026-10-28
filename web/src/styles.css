@@ -4464,6 +4464,31 @@ button.primary:disabled {
 .login-check {
   font-size: 0.85rem;
 }
+/* Device login approval (RFC FA P5): what is asking, and a quieter Deny. */
+.login-details {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.8rem;
+  margin: 0;
+  font-size: 0.85rem;
+}
+.login-details dt {
+  opacity: 0.6;
+}
+.login-details dd {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+a.login-btn {
+  text-align: center;
+  text-decoration: none;
+}
+.login-btn.secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border, #2a2f3a);
+}
 
 .role-badge {
   font-size: 0.72rem;

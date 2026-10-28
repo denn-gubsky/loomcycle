@@ -175,6 +175,12 @@ var tableCoverageMap = map[string]tableCoverage{
 	// set read as current. Each restored row bumps the target's own instead.
 	"acl_version": {Kind: coverSection, Section: "acl", Secrets: "none", Backends: onBoth,
 		Reason: "not carried as rows: each restored acl row bumps the target's own per-tenant counter"},
+	// RFC FA P5 per-tenant gate policy: names gates of THIS deployment's
+	// config, which a target may not have; it is authority without a section
+	// yet. auth.tenant_policies in config is the durable floor that survives
+	// any restore.
+	"tenant_auth_policies": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC FA P5: per-tenant gate policies name the source config's gates; not yet carried, re-declare in auth.tenant_policies or re-apply after a restore"},
 	// A volume's stored path is a filesystem grant lookup trusts, so it never
 	// travels: the target derives it under its own dynamic root. lookup reads
 	// the row per resolution, so nothing is cached.
@@ -227,6 +233,10 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "minutes-long replay cache of external-gate assertions used on THIS deployment"},
 	"auth_removals": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "the source's removal schedule (unbind/erase due times); the carried users keep their disabled status"},
+	// RFC FA P5: a device authorization is a ten-minute login in progress; an
+	// approved row redeems into a bearer for whoever holds the device code.
+	"device_authorizations": {Kind: coverNever, Backends: onBoth,
+		Reason: "not carried: in-flight device logins (hashed codes, at most ten minutes old); a restored approved row would mint a token on the target for a device code issued by the source"},
 	"retention_overrides": {Kind: coverNever, Backends: onBoth,
 		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 

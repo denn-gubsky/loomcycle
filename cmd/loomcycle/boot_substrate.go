@@ -263,7 +263,7 @@ func (b *boot) wireAuth() {
 	// The Identity tool compiles another person's set (can, explain) and
 	// reads the config-declared groups through the same resolver.
 	b.identityTool.ACL = aclResolver
-	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds)
+	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds, "live", cfg.Env.ACLLive)
 	// Delegated user-token mints and revocations are recorded to the same
 	// sink as operator-token mutations. Not wired when there is no file: the
 	// handler treats a nil sink as "not recorded".

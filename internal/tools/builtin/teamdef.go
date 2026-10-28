@@ -972,11 +972,16 @@ func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Resul
 // subscription sweep with no caller at all, so this is what its walks are
 // confined by. Every path that sets the pointer (create, fork, promote) goes
 // through here: one that did not would arm a team unrestricted.
+//
+// It also names whose access-control set (RFC EY) binds those walks — the
+// promoter, read as a schedule's or webhook's author is (AuthorACLOwner) — so
+// the sweep can compile that set again at each walk.
 func (t *TeamDef) promoter(ctx context.Context) store.TeamDefPromoter {
 	gateOn := t.OperatorKeyGate != nil && t.OperatorKeyGate()
 	return store.TeamDefPromoter{
 		OperatorKeyRestricted: tools.AuthorOperatorKeyRestricted(ctx, gateOn),
 		Isolated:              tools.AuthorIsolated(ctx),
+		ACLOwner:              tools.AuthorACLOwner(ctx),
 	}
 }
 

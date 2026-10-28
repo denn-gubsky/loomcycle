@@ -84,6 +84,10 @@ func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate strin
 	if !ok {
 		return "", store.OperatorTokenDefRow{}, errGateTokenGate
 	}
+	// RFC FA P5: the tenant's gate policy holds for issued tokens too.
+	if err := s.tenantGateAllowed(ctx, tenant, gate); err != nil {
+		return "", store.OperatorTokenDefRow{}, err
+	}
 	limit := s.gateTokenTTL(g)
 	if s.userTokenMaxTTL > 0 && s.userTokenMaxTTL < limit {
 		limit = s.userTokenMaxTTL
