@@ -1794,6 +1794,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		`ALTER TABLE token_usage ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE usage_archive ADD COLUMN tier TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE usage_archive ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''`,
+		// The app sign-in an access token came from (RFC FL): its client and
+		// refresh-token family, '' for every other token. Mirrors postgres
+		// 0123; the indexes are in addIndexes.
+		`ALTER TABLE operator_token_defs ADD COLUMN oauth_client TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE operator_token_defs ADD COLUMN oauth_family TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
