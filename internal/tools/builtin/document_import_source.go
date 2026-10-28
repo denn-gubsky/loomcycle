@@ -54,6 +54,9 @@ const (
 	importFieldSourceURL    = "source_url"
 	importFieldSourceKind   = "source_kind"
 	importFieldSourceTitle  = "source_title"
+	// importFieldStructured records that a run added headings to the file
+	// on import (File op=import headings): {headings: <n>, by: <run id>}.
+	importFieldStructured = "structured"
 )
 
 // importProvenanceFields are those fields, in the order they are shown.
@@ -61,6 +64,7 @@ var importProvenanceFields = []string{
 	importFieldOrigin, importFieldFile, importFieldMediaType, importFieldSHA256,
 	importFieldCapturedFrom, importFieldCapturedAt, importFieldRunID,
 	importFieldSourceURL, importFieldSourceKind, importFieldSourceTitle,
+	importFieldStructured,
 }
 
 // ImportSource is the link to where an imported document came from, as the

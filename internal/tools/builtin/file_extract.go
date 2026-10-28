@@ -356,10 +356,28 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	if !ok {
 		return res, nil
 	}
+	// Headings are applied to the text read, never to the file: the bytes
+	// still hash to their capture record, so the document keeps it.
+	text := string(b)
+	if len(in.Headings) > 0 {
+		structured, err := applyImportHeadings(text, in.Headings)
+		if err != nil {
+			return errValidation("import: headings: "+err.Error()+". Nothing was imported.",
+				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title."), nil
+		}
+		text = structured
+	}
 	sum := sha256.Sum256(b)
 	digest := hex.EncodeToString(sum[:])
 	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, digest), "extract:")
-	prov, titleName := importFileProvenance(ctx, r, rel, digest)
+	prov, titleName, recorded := importFileProvenance(ctx, r, rel, digest)
+	if len(in.Headings) > 0 {
+		prov.fields[importFieldStructured] = map[string]any{"headings": len(in.Headings), "by": tools.RunID(ctx)}
+	}
+	// An inbox file whose bytes match no record changed after it was
+	// captured: say so, and tag no source rather than source/volume/inbox,
+	// which reads like one.
+	unrecordedInbox := r.kind == refVolume && r.volume == inbox.Name && !recorded
 	if src.URL == "" {
 		// A downloaded file links back to its download, as the record keeps
 		// it: no query.
@@ -372,7 +390,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// The file is untrusted text: no raw HTML or loom metadata acts on the
 	// import. Image references are left to the reader below, which follows
 	// only the ones op=extract wrote.
-	md := extract.Neutralize(string(b), false)
+	md := extract.Neutralize(text, false)
 	md = withRootHeading(md, in.Title, fileTitle(titleName))
 	md = hoistExtractedImages(md)
 
@@ -390,7 +408,11 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		return errTransient("import: could not read the import's result", ""), nil
 	}
 	docID := asStr(imported["document_id"])
-	tags := append(slices.Clone(in.Tags), sourceTag(origin), "untrusted")
+	tags := slices.Clone(in.Tags)
+	if !unrecordedInbox {
+		tags = append(tags, sourceTag(origin))
+	}
+	tags = append(tags, "untrusted")
 	result := map[string]any{
 		"document_id":   docID,
 		"root_chunk_id": imported["root_chunk_id"],
@@ -404,6 +426,9 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	}
 	if p, ok := imported["provenance"]; ok {
 		result["provenance"] = p
+	}
+	if unrecordedInbox {
+		result["provenance_note"] = importNoRecordNote
 	}
 	tagCall, _ := json.Marshal(map[string]any{"op": "add_tags", "scope": scope, "document_id": docID, "tags": tags})
 	tres, err := f.Docs.Execute(ctx, tagCall)
@@ -428,17 +453,18 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 // For text op=extract wrote, the captured file is the one it was extracted
 // from, whose bytes extract hashed when it read them. titleName is the name
 // a document without a heading is titled after: the captured file's, else
-// the imported file's, never its inbox folder.
-func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (importProvenance, string) {
-	prov := newImportProvenance()
-	titleName := path.Base(filepath.ToSlash(rel))
+// the imported file's, never its inbox folder. recorded reports whether the
+// bytes matched a capture record at all.
+func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (prov importProvenance, titleName string, recorded bool) {
+	prov = newImportProvenance()
+	titleName = path.Base(filepath.ToSlash(rel))
 	rec, ok := recordFor(ctx, r, rel, digest)
 	if !ok {
-		return prov, titleName
+		return prov, titleName, false
 	}
 	orig := capturedOriginal(rec)
 	if orig == nil {
-		return prov, titleName
+		return prov, titleName, true
 	}
 	f := prov.fields
 	f[importFieldFile] = path.Base(orig.Path)
@@ -454,7 +480,7 @@ func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (i
 	if strings.HasPrefix(orig.Origin, "download:") && orig.URL != "" {
 		f[importFieldSourceURL] = orig.URL
 	}
-	return prov, path.Base(orig.Path)
+	return prov, path.Base(orig.Path), true
 }
 
 // fileDocumentGrant refuses an import the run could not make with the

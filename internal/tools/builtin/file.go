@@ -108,7 +108,14 @@ func (f *File) InputSchema() json.RawMessage {
 				"url":   {"type": "string", "description": "An http(s) link, at most 2048 bytes. Any signature or token in its query is masked before it is stored."},
 				"kind":  {"type": "string", "enum": ["sharepoint", "email", "attachment", "web", "other"], "description": "What kind of place it is. Default other. The document is also tagged source/<kind>."},
 				"title": {"type": "string", "description": "The source's own name, e.g. the email's subject. One line, at most 300 characters."}
-			}}
+			}},
+			"headings":      {"type": "array", "maxItems": 10000, "description": "import: headings to add to a file whose structure is only in its numbering (a PDF export), so the document gets one section per heading. The file itself is not changed, so the document keeps the record of where the file came from. Give line numbers and titles, in increasing line order; the body text stays the file's own. Nothing is imported if any entry is refused.", "items": {"type": "object", "properties": {
+				"line":  {"type": "integer", "minimum": 1, "description": "The line, counted from 1 in the file as it is."},
+				"level": {"type": "integer", "minimum": 2, "maximum": 6, "description": "The heading level, 2 to 6 (1 is the document's title)."},
+				"as":    {"type": "string", "enum": ["heading", "marker"], "description": "heading: the line itself becomes the heading. marker: a heading with title is inserted before the line, which stays body text."},
+				"lines": {"type": "integer", "minimum": 1, "maximum": 10, "description": "heading: how many lines the title spans when it wraps; they are joined with a space. Default 1."},
+				"title": {"type": "string", "description": "marker: the heading's text, one line, at most 300 characters."}
+			}, "required": ["line", "level", "as"]}}
 		},
 		"required": ["op"]
 	}`)
@@ -139,6 +146,8 @@ type fileInput struct {
 	Scope   string       `json:"scope"`
 	Tags    []string     `json:"tags"`
 	Source  ImportSource `json:"source"`
+	// Headings is structure the runtime adds to the file on import.
+	Headings []ImportHeading `json:"headings"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {

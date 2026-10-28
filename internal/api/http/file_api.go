@@ -57,6 +57,9 @@ type fileTwinArgs struct {
 	// Source is import's link to where the document came from; the File
 	// tool checks and masks it.
 	Source *builtin.ImportSource `json:"source,omitempty"`
+	// Headings is import's structure for the file; the File tool checks it
+	// and refuses the whole import on a bad entry.
+	Headings []builtin.ImportHeading `json:"headings,omitempty"`
 }
 
 type fileTwinInput struct {

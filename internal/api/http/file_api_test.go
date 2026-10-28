@@ -461,6 +461,32 @@ func TestFileTwin_ImportBuildsTheDocumentInTheCallersScope(t *testing.T) {
 	}
 }
 
+// Headings reach the File tool from outside a run too: the twin's own field
+// list takes them, and the document is structured and keeps the capture
+// record of the file it came from.
+func TestFileTwin_ImportTakesHeadings(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.run(t, "acme", "alice", "")
+	rec := f.capture(t, runID, "acme", "reg.md", "mcp:ms365/download-bytes",
+		[]byte("Положення\n1. Загальні положення\n1. Текст пункту.\n2. Ще один пункт.\n"), true)
+	out, text, isErr := f.call(t, twinOperator, map[string]any{"run_id": runID, "op": "import", "path": rec.Ref,
+		"headings": []any{
+			map[string]any{"line": 2, "level": 2, "as": "heading"},
+			map[string]any{"line": 3, "level": 3, "as": "marker", "title": "1. Текст пункту"},
+		}})
+	if isErr {
+		t.Fatalf("import: %s", text)
+	}
+	p, _ := out["provenance"].(map[string]any)
+	s, _ := p["structured"].(map[string]any)
+	if s["headings"] != float64(2) || p["sha256"] != rec.SHA256 {
+		t.Errorf("provenance = %v, want the capture record and 2 structured headings", p)
+	}
+	if n, _ := out["chunks"].(float64); n != 3 {
+		t.Errorf("chunks = %v, want 3 (root, section, пункт)", out["chunks"])
+	}
+}
+
 // download and upload, and paths outside the inbox, are refused before the
 // run is read.
 func TestFileTwin_RefusesTransfersAndPathsOutsideTheInbox(t *testing.T) {
