@@ -714,6 +714,36 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (tenant_id, subject)
 		)`,
 		`CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL`,
+		// RFC FA P5 device login and per-tenant gate policy. Mirrors
+		// postgres migration 0118 (see 0118_device_gate.up.sql for the
+		// design); times are unix nanos, interval_ms milliseconds.
+		`CREATE TABLE IF NOT EXISTS device_authorizations (
+			device_code_hash TEXT    PRIMARY KEY,
+			user_code_hash   TEXT    NOT NULL UNIQUE,
+			client_id        TEXT    NOT NULL,
+			source_addr      TEXT    NOT NULL DEFAULT '',
+			created_at       INTEGER NOT NULL,
+			expires_at       INTEGER NOT NULL,
+			interval_ms      INTEGER NOT NULL,
+			last_polled_at   INTEGER,
+			last_poll_early  INTEGER NOT NULL DEFAULT 0,
+			status           TEXT    NOT NULL DEFAULT 'pending',
+			decided_tenant   TEXT    NOT NULL DEFAULT '',
+			decided_subject  TEXT    NOT NULL DEFAULT '',
+			decided_gate     TEXT    NOT NULL DEFAULT '',
+			decided_at       INTEGER,
+			decided_session  TEXT    NOT NULL DEFAULT '',
+			decided_cred_mac TEXT    NOT NULL DEFAULT '',
+			decided_not_after INTEGER,
+			redeemed_at      INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS device_authorizations_by_expiry ON device_authorizations(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS tenant_auth_policies (
+			tenant_id  TEXT    PRIMARY KEY,
+			gates      TEXT    NOT NULL,
+			updated_at INTEGER NOT NULL,
+			updated_by TEXT    NOT NULL DEFAULT ''
+		)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

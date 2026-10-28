@@ -103,9 +103,10 @@ func TestResolveAuth_RefusesBadValues(t *testing.T) {
 			t.Errorf("%s: loaded", name)
 		}
 	}
-	err := resolveAuth(&Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"later": {Kind: "device"}}}})
-	if err == nil || !strings.Contains(err.Error(), "not supported in this release") {
-		t.Errorf("a later-phase kind must say it is not supported yet; got %v", err)
+	// Every kind the RFC defines is built; anything else is refused as unknown.
+	err := resolveAuth(&Config{Auth: AuthConfig{Gates: map[string]AuthGateConfig{"magic": {Kind: "magic"}}}})
+	if err == nil || !strings.Contains(err.Error(), "unknown kind") {
+		t.Errorf("an unknown kind must be refused as unknown; got %v", err)
 	}
 }
 

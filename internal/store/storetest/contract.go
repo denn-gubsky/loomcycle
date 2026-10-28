@@ -557,6 +557,13 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthThrottleWindowBlockAndExpiry", testAuthThrottleWindowBlockAndExpiry},
 		{"AuthInviteAndResetDeleteExpiredKeepLiveRows", testAuthInviteAndResetDeleteExpiredKeepLiveRows},
 		{"AuthSubjectDeleteRemovesOnlyThatSubjectsRows", testAuthSubjectDeleteRemovesOnlyThatSubjectsRows},
+		// RFC FA P5 device login + per-tenant gate policy.
+		{"DeviceAuthCreateGetRoundTripAndConflict", testDeviceAuthCreateGetRoundTripAndConflict},
+		{"DeviceAuthPollSlowsDownEarlyPollsOnly", testDeviceAuthPollSlowsDownEarlyPollsOnly},
+		{"DeviceAuthDecideOnceAndRedeemOnce", testDeviceAuthDecideOnceAndRedeemOnce},
+		{"DeviceAuthExpiredOrDeniedCannotBeDecidedOrRedeemed", testDeviceAuthExpiredOrDeniedCannotBeDecidedOrRedeemed},
+		{"TenantAuthPolicyPutGetListDeleteAndRevokeSessions", testTenantAuthPolicyPutGetListDeleteAndRevokeSessions},
+		{"TenantAuthPolicyIssuedTokensListsOnlyTheTenantsGateIssuedRows", testTenantAuthPolicyIssuedTokensListsOnlyTheTenantsGateIssuedRows},
 		{"AuthInviteAndResetRoundTripIssuedByManager", testAuthInviteAndResetRoundTripIssuedByManager},
 		{"AuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks", testAuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks},
 		{"AuthorityRaisingWritesRevokeManagerIssuedLinks", testAuthorityRaisingWritesRevokeManagerIssuedLinks},

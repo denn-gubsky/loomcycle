@@ -84,6 +84,13 @@ func dispatchSubcommand() (mcpMode, done bool) {
 			// RFC L — mint / rotate / retire / show / list auth tokens
 			// against the running instance's admin endpoint.
 			os.Exit(cli.RunOperatorToken(os.Args[2:], os.Stdout, os.Stderr))
+		case "login":
+			// RFC FA P5 — device login; the issued token goes to the OS keychain.
+			os.Exit(cli.RunLogin(os.Args[2:], os.Stdout, os.Stderr))
+		case "logout":
+			os.Exit(cli.RunLogout(os.Args[2:], os.Stdout, os.Stderr))
+		case "auth":
+			os.Exit(cli.RunAuth(os.Args[2:], os.Stdout, os.Stderr))
 		case "acl":
 			// RFC EZ — groups, access-control lists, bindings and the authz
 			// questions against the running instance's management routes.
@@ -255,7 +262,7 @@ func runThinClient(upstream string) {
 	defer stopProxy()
 	pc := lcmcp.NewProxyClient(lcmcp.ProxyConfig{
 		Upstream: upstream,
-		Token:    os.Getenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN"),
+		Token:    thinClientToken(proxyCtx, upstream),
 		Logger:   slog.Default(), // stderr; never stdout (stdout is the JSON-RPC wire)
 		// Self-recovery knobs (defaults applied by NewProxyClient when unset).
 		// The thin client boots with NO config load, so these are read straight
@@ -274,4 +281,24 @@ func runThinClient(upstream string) {
 	default:
 		fatal("mcp: proxy ended", "err", err)
 	}
+}
+
+// thinClientToken is the thin client's upstream bearer:
+// LOOMCYCLE_MCP_UPSTREAM_TOKEN when set, else the token `loomcycle login`
+// stored in the OS keychain for this upstream (RFC FA P5). With neither it
+// says how to sign in and runs without a bearer, which only an open-mode
+// upstream accepts. It never starts a login itself: a stdio MCP server's
+// stdout is the JSON-RPC wire, and there is no terminal to show a code on.
+func thinClientToken(ctx context.Context, upstream string) string {
+	if tok := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_TOKEN"); tok != "" {
+		return tok
+	}
+	tok, why, ok := cli.StoredUpstreamToken(ctx, upstream)
+	if ok {
+		slog.Info("mcp: thin client using the token from `loomcycle login`", "url", upstream)
+		return tok
+	}
+	slog.Warn("mcp: no upstream token (set LOOMCYCLE_MCP_UPSTREAM_TOKEN, or run `loomcycle login --url <url>` "+
+		"in a terminal); continuing without one, which only an open-mode upstream accepts", "url", upstream, "reason", why)
+	return ""
 }

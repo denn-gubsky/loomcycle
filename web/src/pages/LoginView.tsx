@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { type LoginConfig, type LoginGate, parseLoginConfig } from "../lib/uiSession";
 import { refusalText as passwordRefusalText, signInWithPassword } from "../lib/passwordGate";
 import { REDIRECT_GATE_KINDS, redirectLoginError, redirectLoginHref } from "../lib/oidcGate";
+import { signedInDestination } from "../lib/returnPath";
 import { proxyRefusalText, signInThroughProxy } from "../lib/headerGate";
 
 // LoginView is the sign-in page. It renders from /ui/login-config.json: the
@@ -65,7 +66,7 @@ function TokenGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean 
     setError("");
     const refused = await signInWithToken(t);
     if (refused === "") {
-      window.location.href = "/ui";
+      window.location.href = signedInDestination(window.location.search);
     } else {
       setError(refusalMessage(refused));
     }
@@ -117,7 +118,7 @@ function HeaderGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean
     const refused = await signInThroughProxy(gate.name);
     setBusy(false);
     if (refused === "") {
-      window.location.href = "/ui";
+      window.location.href = signedInDestination(window.location.search);
     } else {
       setError(proxyRefusalText(refused, gate.label));
     }
@@ -156,7 +157,7 @@ function PasswordGateForm({ gate, disabled }: { gate: LoginGate; disabled: boole
     const r = await signInWithPassword(gate.name, login, pw, otp);
     setBusy(false);
     if (r.ok) {
-      window.location.href = "/ui";
+      window.location.href = signedInDestination(window.location.search);
       return;
     }
     if (r.refusal.code === "otp_required") {
@@ -248,7 +249,7 @@ export default function LoginView() {
         } catch {
           /* opener gone — harmless */
         }
-        window.location.href = "/ui";
+        window.location.href = signedInDestination(window.location.search);
       }
     };
     window.addEventListener("message", onMessage);

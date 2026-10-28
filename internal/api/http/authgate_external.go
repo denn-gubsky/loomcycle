@@ -705,7 +705,9 @@ func (s *Server) handleAuthgateList(w http.ResponseWriter, r *http.Request) {
 	probe := r.URL.Query().Get("probe") == "1"
 	out := []authgateEntry{}
 	for _, g := range s.cfg().ResolvedAuth.Gates {
-		e := authgateEntry{Name: g.Name, Kind: g.Kind, Label: g.Label, Interactive: true}
+		// A device gate is approved through another gate's session; no browser
+		// signs in through it.
+		e := authgateEntry{Name: g.Name, Kind: g.Kind, Label: g.Label, Interactive: g.Kind != config.AuthGateKindDevice}
 		if m := g.Identity; m != nil {
 			e.Trusted, e.Tenant, e.TenantClaim, e.Provision = m.Trusted, m.Tenant, m.TenantClaim, m.Provision
 		}

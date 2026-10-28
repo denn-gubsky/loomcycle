@@ -845,6 +845,227 @@ paths:
         "503":
           description: "`logout_failed`: the session could not be ended; retry."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_auth/device:
+    post:
+      tags: [auth]
+      summary: Start a device login (RFC 8628 §3.1).
+      description: |
+        Needs a `kind: device` gate. Unauthenticated: the person's approval in
+        the Web UI is the credential. Returns the device code (the client keeps
+        it), the user code and the verification link to show the person. Each
+        client address may start a bounded number per 15 minutes.
+      operationId: startDeviceLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id]
+              properties:
+                client_id: { type: string, description: "1-64 of letters, digits, - _ . : — shown on the approval page." }
+                scope: { type: string, description: "Must be absent: the token carries the approver's own scopes." }
+      responses:
+        "200":
+          description: The code pair.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_code: { type: string }
+                  user_code: { type: string, example: BCDF-GHJK }
+                  verification_uri: { type: string }
+                  verification_uri_complete: { type: string }
+                  expires_in: { type: integer }
+                  interval: { type: integer }
+        "400": { description: "RFC 6749 error: `invalid_client`, `invalid_scope`, `invalid_request`." }
+        "404": { description: "`device_login_disabled`: no device gate." }
+        "429": { description: "`slow_down`: too many device logins from this address." }
+  /v1/_auth/device/token:
+    post:
+      tags: [auth]
+      summary: Poll a device login (RFC 8628 §3.4).
+      description: |
+        Answers `authorization_pending` until the person approves, `slow_down`
+        (and a 5 s longer interval from then on) when polled early,
+        `access_denied`, `expired_token`, or `invalid_grant` (unknown or
+        already used). After approval the first poll receives a token issued
+        to the person who approved: their member scopes, tagged with the gate
+        their session came through, at most the device gate's `token_ttl`,
+        that gate's limit and LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS. A code
+        yields one token. A source polling unknown codes is blocked for a while.
+      operationId: pollDeviceLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, device_code, client_id]
+              properties:
+                grant_type: { type: string, enum: ["urn:ietf:params:oauth:grant-type:device_code"] }
+                device_code: { type: string }
+                client_id: { type: string }
+      responses:
+        "200":
+          description: The issued token (shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer }
+                  scope: { type: string }
+        "400": { description: "RFC 6749 error (see above)." }
+        "401": { description: "`invalid_client`: client_id is not the code's." }
+        "429": { description: "`slow_down`: too many unknown codes from this address." }
+  /v1/_auth/device/info:
+    post:
+      tags: [auth]
+      summary: Show what a user code is asking for (Web UI session only).
+      description: |
+        The approval page's lookup: client, source address, times, and the
+        scopes the token would carry (the person's own). The code rides the
+        body. Wrong codes count against the person and their address.
+      operationId: deviceLoginInfo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [user_code], properties: { user_code: { type: string } } }
+      responses:
+        "200": { description: The request to approve. }
+        "403": { description: "`session_required`: not a Web UI session (a bearer cannot approve)." }
+        "404": { description: "`code_invalid`: unknown, expired or already decided." }
+        "429": { description: "`too_many_attempts`." }
+  /v1/_auth/device/approve:
+    post:
+      tags: [auth]
+      summary: Approve or deny a device login (Web UI session only).
+      description: |
+        Needs a Web UI session (any gate) with `X-Loomcycle-UI: 1` from this
+        server's own pages. Refused when the person is not an active user,
+        the session is narrower than the token would be (a restricted pasted
+        token), or the tenant's gate policy does not list the session's gate.
+        A code is decided once.
+      operationId: approveDeviceLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code, approve]
+              properties:
+                user_code: { type: string }
+                approve: { type: boolean }
+      responses:
+        "200": { description: "`{approved}`." }
+        "403": { description: "`session_required`, `device_not_allowed`, or the CSRF refusal." }
+        "404": { description: "`code_invalid`." }
+        "429": { description: "`too_many_attempts`." }
+  /v1/_auth/tenant-policies:
+    get:
+      tags: [auth]
+      summary: List per-tenant gate policies (admin).
+      description: |
+        Every tenant whose people must sign in through named gates, from
+        `auth.tenant_policies` in config and from stored rows. `gates` is what
+        applies: the intersection when both set one (a row only narrows the
+        config). Enforced when a Web UI session is established and when a gate
+        issues a token.
+      operationId: listTenantPolicies
+      responses:
+        "200":
+          description: The policies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policies: { type: array, items: { $ref: "#/components/schemas/TenantPolicy" } }
+        "403": { description: "Not an admin." }
+  /v1/_auth/tenant-policies/{tenant}:
+    parameters:
+      - { name: tenant, in: path, required: true, schema: { type: string } }
+    put:
+      tags: [auth]
+      summary: Set a tenant's gate policy (admin).
+      description: |
+        The tenant's people may then sign in, and be issued tokens, only through
+        these gates. Its live Web UI sessions and gate-issued tokens from any
+        other gate end at once; hand-minted tokens are left alone.
+      operationId: putTenantPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [gates]
+              additionalProperties: false
+              properties:
+                gates: { type: array, minItems: 1, items: { type: string } }
+      responses:
+        "200":
+          description: Stored and applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  policy: { $ref: "#/components/schemas/TenantPolicy" }
+                  sessions_ended: { type: integer }
+                  tokens_retired: { type: integer }
+        "400":
+          description: "`unknown_gate`, `policy_empty` (no gate) or a malformed body."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "Not an admin." }
+        "409":
+          description: "`policy_empty`: nothing in common with the config's policy for the tenant."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    delete:
+      tags: [auth]
+      summary: Remove a tenant's stored gate policy (admin); the config's still applies.
+      operationId: deleteTenantPolicy
+      responses:
+        "200": { description: Removed. }
+        "404": { description: "`policy_not_found`." }
+  /v1/_auth/token/revoke:
+    post:
+      tags: [auth]
+      summary: Retire the bearer this request is made with.
+      description: |
+        `loomcycle logout` calls it with the token `loomcycle login` was issued.
+        Only a delegated user token can retire itself; a config principal, the
+        legacy secret and an operator token (admin or tenant scope) are refused.
+        A Web UI session signs out with `POST /v1/_auth/logout` instead. An
+        agent-restricted token may call it.
+      operationId: selfRevokeToken
+      responses:
+        "200":
+          description: Retired; the token stops authenticating at once.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  def_id: { type: string }
+                  retired_at: { type: string, format: date-time }
+        "400":
+          description: "`use_logout`: a Web UI session cookie authenticated the request."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: "The bearer does not authenticate (already retired, expired or unknown)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: "`not_revocable`: not a delegated user token."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
   /v1/_auth/assert:
     post:
       tags: [auth]
@@ -1541,6 +1762,16 @@ components:
         code: { type: string }
         error: { type: string }
       required: [code, error]
+    TenantPolicy:
+      description: A tenant's gate policy (RFC FA P5).
+      type: object
+      properties:
+        tenant_id: { type: string }
+        gates: { type: array, items: { type: string }, description: "What applies." }
+        config_gates: { type: array, items: { type: string } }
+        stored_gates: { type: array, items: { type: string } }
+        updated_at: { type: string, format: date-time }
+        updated_by: { type: string }
     AuthgateLink:
       description: |
         A one-time link to loomcycle's own invite or reset page. The code is in

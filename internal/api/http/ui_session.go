@@ -371,6 +371,9 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 		TenantID: p.TenantID, Subject: p.Subject, Gate: cfgGate.Name, AMR: a.AMR, Credential: a.Credential,
 	}
 	if err := s.establishSession(w, r, ident); err != nil {
+		if writeTenantPolicyRefusal(w, err) {
+			return
+		}
 		if errors.Is(err, errSessionsUnavailable) {
 			writeJSONError(w, http.StatusServiceUnavailable, "sessions_unavailable", "this server cannot keep Web UI sessions")
 			return
@@ -422,6 +425,12 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 		return errors.New("web ui session: tenant, subject and gate are required")
 	}
 	ctx := r.Context()
+	// RFC FA P5: a tenant whose people must come through named gates.
+	if err := s.tenantGateAllowed(ctx, ident.TenantID, ident.Gate); err != nil {
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", ActorTenant: ident.TenantID, ActorSubject: ident.Subject,
+			AuthGate: ident.Gate, AuthReason: "tenant_policy", SourceAddr: s.clientSource(r)})
+		return err
+	}
 	h, err := s.hasher()
 	if err != nil {
 		return err
@@ -572,6 +581,19 @@ func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, u
 		}
 		return auth.Principal{}, uiAuth{}, false
 	}
+	// RFC FA P5: the tenant's gate policy, on every request: the gate the
+	// session came through, and the gate that issued its token, if one did.
+	for _, gate := range []string{row.Gate, p.IssuedByGate} {
+		if gate == "" {
+			continue
+		}
+		if err := s.tenantGateAllowed(ctx, row.TenantID, gate); err != nil {
+			if errors.Is(err, errTenantGatePolicy) {
+				s.endSession(ctx, r, row, "auth_session_revoked", "tenant_policy")
+			}
+			return auth.Principal{}, uiAuth{}, false
+		}
+	}
 	// A header-gate session lasts only while its proxy still vouches for the
 	// same person on each request (authgate_edge.go).
 	if holds, definitive := s.edgeSessionHolds(r, row); !holds {
@@ -629,6 +651,19 @@ func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, ro
 		return auth.Principal{}, false, false
 	}
 	bound := func(credHash string) bool { return macEqual(credentialMAC(id, h, credHash), row.CredMAC) }
+	return s.boundCredentialPrincipal(ctx, row, bound, pending)
+}
+
+// boundCredentialPrincipal re-resolves the credential row names, accepting it
+// only when bound says its current hash is the one the caller bound to. The
+// session binds with a MAC keyed by its id; a device approval binds with one
+// keyed by the device code, so its redemption can re-check the credential
+// without ever holding the session id.
+func (s *Server) boundCredentialPrincipal(ctx context.Context, row store.UISessionRow, bound func(credHash string) bool, pending *bool) (p auth.Principal, ok, definitive bool) {
+	h, err := s.hasher()
+	if err != nil {
+		return auth.Principal{}, false, false
+	}
 	switch row.CredKind {
 	case credKindToken:
 		tr, err := s.store.OperatorTokenDefGet(ctx, row.CredRef)

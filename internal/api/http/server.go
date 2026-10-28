@@ -608,6 +608,9 @@ type Server struct {
 	// Nil = disabled (direct lookup per request). Wired via
 	// EnableTokenCache from main.go with LOOMCYCLE_AUTH_CACHE_TTL_SECONDS.
 	tokenCache *tokenCache
+	// tenantPolicyCache memoises each tenant's effective gate policy for the
+	// per-request check (RFC FA P5); usable at its zero value.
+	tenantPolicyCache tenantPolicyCache
 	// legacyCookieWarnedAt and plainSessionWarnedAt (unix nanos) rate-limit
 	// the Web UI session warnings (ui_session.go): a browser still on the
 	// legacy bearer cookie, and sessions issued over plain HTTP.
@@ -4746,6 +4749,20 @@ func (s *Server) routes() *http.ServeMux {
 	// authMiddleware so an expired session can still log out; the handler's
 	// CSRF check (custom header + same origin) keeps other sites from it.
 	mux.Handle("POST /v1/_auth/logout", recoveryMiddleware(http.HandlerFunc(s.handleAuthLogout)))
+	// RFC FA P5 — device login (RFC 8628). The CLI's two posts are
+	// unauthenticated (the person's approval is the credential) and
+	// throttled per source; info/approve need a Web UI session, through
+	// authMiddleware (whose CSRF check covers the cookie-authenticated write).
+	mux.Handle("POST /v1/_auth/device", recoveryMiddleware(http.HandlerFunc(s.handleDeviceAuthorize)))
+	mux.Handle("POST /v1/_auth/device/token", recoveryMiddleware(http.HandlerFunc(s.handleDeviceToken)))
+	mux.Handle("POST /v1/_auth/device/info", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeviceInfo))))
+	mux.Handle("POST /v1/_auth/device/approve", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeviceApprove))))
+	// RFC FA P5 — per-tenant gate policies (admin; ScopeAdmin in scopeGate).
+	mux.Handle("GET /v1/_auth/tenant-policies", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTenantPolicies))))
+	mux.Handle("PUT /v1/_auth/tenant-policies/{tenant}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePutTenantPolicy))))
+	mux.Handle("DELETE /v1/_auth/tenant-policies/{tenant}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteTenantPolicy))))
+	// RFC FA P5 — the presented bearer retires itself (`loomcycle logout`).
+	mux.Handle("POST /v1/_auth/token/revoke", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSelfRevokeToken))))
 	// RFC FA P2 — the password gate's person-facing endpoints. The login,
 	// invite and reset posts are unauthenticated (they ESTABLISH a session):
 	// each takes its code in the body (never the URL), is same-origin with

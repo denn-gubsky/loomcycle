@@ -1745,6 +1745,8 @@ type Store interface {
 	DocumentSourceDefStore
 	OperatorTokenStore
 	UISessionStore
+	DeviceAuthStore
+	TenantAuthPolicyStore
 	EvaluationStore
 	MetricsStore
 	DynamicAgentStore
