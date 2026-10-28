@@ -510,24 +510,55 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	if _, ok, _ := s.SCIMReactivate(ctx, "okta", "acme", "act"); ok {
 		t.Fatal("SCIM re-enabled a user an operator's removal took over")
 	}
-	// A removal row behind a user who is still active: SCIM fails closed —
-	// the user is disabled under the row, which stays its owner's.
+	// A removal row behind a user who is still active is stale: SCIM
+	// replaces it with a fresh row — its own timings, none of the stale
+	// deadlines — so the sweeper does not unbind or erase on its next pass.
 	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "stale", AccessMode: "isolated", Status: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	stale := op
-	stale.Subject = "stale"
+	old := now.Add(-10 * 24 * time.Hour)
+	stale := store.AuthRemovalRow{TenantID: "acme", Subject: "stale", Reason: store.RemovalReasonOperator, DisabledAt: old,
+		UnbindDueAt: old.Add(24 * time.Hour), EraseDueAt: old.Add(48 * time.Hour), CreatedBy: "op"}
 	if ok, err := s.AuthRemovalStart(ctx, stale); !ok || err != nil {
 		t.Fatalf("seed a stale row: %v %v", ok, err)
 	}
-	if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "stale", "okta", now), since, 10); !got || err != nil {
+	fresh := scimRemovalRow("acme", "stale", "okta", now)
+	if got, err := s.SCIMRemoveUser(ctx, fresh, since, 10); !got || err != nil {
 		t.Fatalf("remove under a stale row: %v %v", got, err)
 	}
 	if st := userStatus(t, s, "acme", "stale"); st != "disabled" {
 		t.Fatalf("under a stale row the user stayed %s", st)
 	}
-	if rm, _ := s.AuthRemovalGet(ctx, "acme", "stale"); rm.Reason != store.RemovalReasonOperator {
-		t.Fatalf("the stale row changed owner: %+v", rm)
+	rm, _ = s.AuthRemovalGet(ctx, "acme", "stale")
+	if rm.Reason != store.RemovalReasonSCIM || rm.Gate != "okta" || !rm.DisabledAt.Equal(now) ||
+		!rm.UnbindDueAt.Equal(fresh.UnbindDueAt) || !rm.EraseDueAt.IsZero() || !rm.UnboundAt.IsZero() {
+		t.Fatalf("the stale row was not replaced by a fresh one: %+v", rm)
+	}
+	due, err := s.AuthRemovalDue(ctx, now.Add(time.Minute), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range due {
+		if d.Subject == "stale" {
+			t.Fatalf("the sweeper would act on the stale deadlines: %+v", d)
+		}
+	}
+	// The ceiling holds on the stale path too, counted before any write.
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "stale2", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	stale.Subject = "stale2"
+	if ok, err := s.AuthRemovalStart(ctx, stale); !ok || err != nil {
+		t.Fatalf("seed: %v %v", ok, err)
+	}
+	if _, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "stale2", "okta", now), since, 1); !errors.Is(err, store.ErrSCIMRemovalCeiling) {
+		t.Fatalf("a stale-row removal over the ceiling: %v", err)
+	}
+	if st := userStatus(t, s, "acme", "stale2"); st != "active" {
+		t.Fatalf("a refused removal changed the user to %s", st)
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "stale2"); rm.Reason != store.RemovalReasonOperator {
+		t.Fatalf("a refused removal changed the row: %+v", rm)
 	}
 	// A SCIM removal never takes an operator's over.
 	if ok, _ := s.AuthRemovalStart(ctx, scimRemovalRow("acme", "act", "okta", now)); ok {

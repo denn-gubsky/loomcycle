@@ -36,8 +36,8 @@ func (s *Store) immediateTx(ctx context.Context, fn func(conn *sql.Conn) error) 
 // errNoChange ends an immediateTx with nothing written.
 var errNoChange = errors.New("no change")
 
-// SCIMRemoveUser implements store.SCIMStore: the count, the disable and the
-// insert in one IMMEDIATE transaction.
+// SCIMRemoveUser implements store.SCIMStore (the state machine is on the
+// interface): the count and the writes in one IMMEDIATE transaction.
 func (s *Store) SCIMRemoveUser(ctx context.Context, row store.AuthRemovalRow, since time.Time, ceiling int) (bool, error) {
 	if row.Subject == "" || row.Gate == "" || row.DisabledAt.IsZero() || row.UnbindDueAt.IsZero() {
 		return false, fmt.Errorf("scim removal: subject, gate, disabled_at and unbind_due_at are required")
@@ -57,38 +57,24 @@ func (s *Store) SCIMRemoveUser(ctx context.Context, row store.AuthRemovalRow, si
 		if status == "disabled" {
 			return errNoChange
 		}
-		reason := store.RemovalReasonSCIM
-		if status == store.UserStatusPending {
-			reason = store.RemovalReasonSCIMPending
-		}
-		var existingGate, existingReason string
-		err = conn.QueryRowContext(ctx, `SELECT gate, reason FROM auth_removals WHERE tenant_id = ? AND subject = ?`,
-			row.TenantID, row.Subject).Scan(&existingGate, &existingReason)
-		switch {
-		case err == nil:
-			// A removal row behind a user who is not disabled: fail closed —
-			// disable the user under the row. Another owner's row stays
-			// theirs; this gate's SCIM row records the status the user had.
-			if _, err := conn.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = ? AND subject = ?`, row.TenantID, row.Subject); err != nil {
-				return fmt.Errorf("scim removal: disable: %w", err)
-			}
-			if existingGate == row.Gate && store.SCIMRemovalReason(existingReason) {
-				if _, err := conn.ExecContext(ctx, `UPDATE auth_removals SET reason = ? WHERE tenant_id = ? AND subject = ?`,
-					reason, row.TenantID, row.Subject); err != nil {
-					return fmt.Errorf("scim removal: refresh: %w", err)
-				}
-			}
-			return nil
-		case !errors.Is(err, sql.ErrNoRows):
-			return fmt.Errorf("scim removal: read removal: %w", err)
-		}
+		// The ceiling before any write. A stale row of this subject is not
+		// counted: it is replaced below, not added to.
 		var n int
-		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_removals WHERE gate = ? AND tenant_id = ? AND disabled_at >= ?`,
-			row.Gate, row.TenantID, since.UnixNano()).Scan(&n); err != nil {
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM auth_removals WHERE gate = ? AND tenant_id = ? AND disabled_at >= ? AND subject <> ?`,
+			row.Gate, row.TenantID, since.UnixNano(), row.Subject).Scan(&n); err != nil {
 			return fmt.Errorf("scim removal: count: %w", err)
 		}
 		if n >= ceiling {
 			return store.ErrSCIMRemovalCeiling
+		}
+		// A removal row behind a user who is not disabled is no longer in
+		// force: it goes, with its deadlines, and a fresh one replaces it.
+		if _, err := conn.ExecContext(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ?`, row.TenantID, row.Subject); err != nil {
+			return fmt.Errorf("scim removal: drop a stale removal: %w", err)
+		}
+		reason := store.RemovalReasonSCIM
+		if status == store.UserStatusPending {
+			reason = store.RemovalReasonSCIMPending
 		}
 		if _, err := conn.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = ? AND subject = ?`, row.TenantID, row.Subject); err != nil {
 			return fmt.Errorf("scim removal: disable: %w", err)

@@ -118,18 +118,30 @@ type SCIMStore interface {
 	SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject string) ([]SCIMGroupRow, error)
 
 	// SCIMRemoveUser is a SCIM gate's removal of one user, all or nothing in
-	// one transaction under a per-(gate, tenant) lock (so concurrent
-	// removals on any replica cannot pass the ceiling together): it counts
-	// the gate's removals in the tenant since `since`, refuses at ceiling
-	// (ErrSCIMRemovalCeiling), else disables the user and writes row with
-	// the reason recording the status it had (RemovalReasonSCIM for active,
-	// RemovalReasonSCIMPending for pending; row.Reason is ignored). It
-	// changes nothing and answers false when the user is disabled already
-	// (a disable SCIM did not do stays someone else's). A user that has a
-	// removal row but is not disabled is disabled under that row (fail
-	// closed; another owner's row stays theirs, this gate's SCIM row is
-	// refreshed) and answers true. *ErrNotFound{Kind:"user"} for an unknown
-	// user.
+	// one transaction under a per-(gate, tenant) lock, so concurrent removals
+	// on any replica cannot pass the ceiling together.
+	//
+	// The SCIM removal state machine (a user's status, and its removal row):
+	//
+	//   - disabled (any row or none) --remove--> unchanged, false: a disable
+	//     SCIM did not do stays its owner's; nothing is counted.
+	//   - active|pending, any row or none --remove-->
+	//       at the ceiling (the gate's removals in the tenant since `since`,
+	//       this subject's own row not counted): unchanged,
+	//       ErrSCIMRemovalCeiling;
+	//       else: a stale row (one behind a user who is not disabled, so no
+	//       longer in force) is deleted with its deadlines; the user becomes
+	//       disabled under a FRESH row = row's gate, timings and created_by,
+	//       reason RemovalReasonSCIM (was active) or RemovalReasonSCIMPending
+	//       (was pending; row.Reason is ignored); true.
+	//   - disabled + this gate's SCIM row --SCIMReactivate--> the recorded
+	//     status (active, or pending: SCIM never approves), row deleted.
+	//   - disabled + any other row, or none --SCIMReactivate--> unchanged.
+	//   - an operator's or another gate's AuthRemovalStart over a SCIM row
+	//     takes it over (gate, reason, created_by), so SCIM can no longer
+	//     re-enable that user.
+	//
+	// *ErrNotFound{Kind:"user"} for an unknown user.
 	SCIMRemoveUser(ctx context.Context, row AuthRemovalRow, since time.Time, ceiling int) (bool, error)
 	// SCIMReactivate ends a removal the gate's SCIM made, in one
 	// transaction: when the subject's CURRENT removal is the gate's with a
