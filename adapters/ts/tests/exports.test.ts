@@ -24,7 +24,7 @@ const SRC = resolve(__dirname, "..", "src");
 
 /** Modules whose every top-level export is public surface. client.ts is
  *  covered by its single class; fetch-helpers.ts and stream.ts are internal. */
-const PUBLIC_MODULES = ["types", "errors", "client-tools", "interactive", "signature"];
+const PUBLIC_MODULES = ["types", "errors", "client-tools", "interactive", "signature", "oauth"];
 
 function read(file: string): string {
   return readFileSync(resolve(SRC, file), "utf8");

@@ -1595,6 +1595,12 @@ export interface ClientOptions {
    *  every request. */
   authToken?: string;
 
+  /** A source of short-lived bearers, instead of `authToken` (pass one or
+   *  the other): every request asks it for the token, and a 401 is retried
+   *  once with the token it hands back. An app signed in through loomcycle
+   *  passes an `OAuthTokenProvider`, which refreshes before expiry. */
+  tokenProvider?: TokenProvider;
+
   /** Custom fetch implementation; defaults to global `fetch`.
    *  Useful for testing (vi.fn()) or for runtimes that ship their
    *  own fetch (e.g. node-fetch on older Node). */
@@ -7864,6 +7870,246 @@ export interface AuthzSimulateResponse {
   results: AuthzSimulateResult[];
   /** Lists the draft's bindings name that no layer has. */
   missing_acls: string[] | null;
+}
+
+// ---- App sign-in (RFC FL) ----
+//
+// loomcycle runs a small OAuth 2.0 authorization server for its own apps: an
+// app sends the person to loomcycle's login page, they sign in through
+// whatever gates the operator configured, and the app gets a short-lived
+// access token for that same user plus a rotating refresh token. See
+// LoomcycleOAuth (oauth.ts) for the flow and OAuthTokenProvider for a client
+// that refreshes on its own.
+
+/** The authorization server's metadata (RFC 8414), from
+ *  `GET /.well-known/oauth-authorization-server`. Published only when the
+ *  server knows its public address (`LOOMCYCLE_PUBLIC_URL`). */
+export interface OAuthServerMetadata {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  revocation_endpoint: string;
+  response_types_supported: string[];
+  grant_types_supported: string[];
+  code_challenge_methods_supported: string[];
+  token_endpoint_auth_methods_supported: string[];
+  revocation_endpoint_auth_methods_supported: string[];
+  /** The server adds `iss` to every authorization response (RFC 9207). */
+  authorization_response_iss_parameter_supported: boolean;
+}
+
+/** The token endpoint's answer (RFC 6749 §5.1). */
+export interface OAuthTokenResponse {
+  access_token: string;
+  /** Always `Bearer`. */
+  token_type: string;
+  /** Seconds the access token lives. */
+  expires_in: number;
+  /** Single use: each refresh returns a new one and spends the old one.
+   *  Presenting a spent one ends the whole sign-in. */
+  refresh_token: string;
+}
+
+/** A token answer with the moment the access token expires — what a caller
+ *  persists. */
+export interface OAuthTokenSet extends OAuthTokenResponse {
+  /** When the access token expires, in milliseconds since the epoch
+   *  (`Date.now()` at receipt plus `expires_in`). */
+  expires_at: number;
+}
+
+/** Input to `LoomcycleOAuth.beginAuthorize`. */
+export interface BeginAuthorizeOptions {
+  /** The app's registered client id. */
+  clientId: string;
+  /** One of the app's registered redirect URIs, exactly (a loopback one may
+   *  carry any port). */
+  redirectUri: string;
+  /** An opaque value to round-trip; a random one is generated when omitted.
+   *  1 to 1024 characters. */
+  state?: string;
+}
+
+/** What `LoomcycleOAuth.beginAuthorize` returns. Persist `verifier` and
+ *  `state` (session storage, never a URL) until the redirect comes back, then
+ *  send the person to `url`. */
+export interface AuthorizeRequest {
+  url: string;
+  /** The PKCE code verifier. A secret until the exchange: keep it out of
+   *  URLs and logs. */
+  verifier: string;
+  state: string;
+}
+
+/** The parameters the server puts on the redirect back to the app: `code`
+ *  on success, `error` (+ `error_description`) otherwise, `state` as sent,
+ *  and `iss` when the server knows its issuer (RFC 9207). */
+export interface AuthorizeResponseParams {
+  code?: string;
+  state?: string;
+  iss?: string;
+  error?: string;
+  error_description?: string;
+}
+
+/** Input to `LoomcycleOAuth.completeAuthorize`: the redirect's parameters
+ *  plus what `beginAuthorize` returned. */
+export interface CompleteAuthorizeOptions extends AuthorizeResponseParams {
+  /** The `state` beginAuthorize returned; a redirect carrying any other is
+   *  refused before the code is used. */
+  expectedState: string;
+  verifier: string;
+  clientId: string;
+  /** The same redirect URI the authorization request named. */
+  redirectUri: string;
+  signal?: AbortSignal;
+}
+
+/** Input to `LoomcycleOAuth.refresh`. */
+export interface RefreshTokenOptions {
+  refreshToken: string;
+  clientId: string;
+  signal?: AbortSignal;
+}
+
+/** Input to `LoomcycleOAuth.revoke`. */
+export interface RevokeTokenOptions {
+  /** A refresh token (ends the whole sign-in) or an access token (ends that
+   *  token only). */
+  token: string;
+  clientId: string;
+  signal?: AbortSignal;
+}
+
+/** Supplies the bearer for every request of a `LoomcycleClient` built with
+ *  `tokenProvider` instead of `authToken`. `OAuthTokenProvider` implements it
+ *  for an app sign-in; any other source of short-lived tokens can too. */
+export interface TokenProvider {
+  /** The token for the next request, refreshed ahead of expiry; undefined
+   *  sends none. A throw fails the request with that error. */
+  getToken(): Promise<string | undefined>;
+  /** Called at most once per request, after the server answered 401 to
+   *  `rejected`: a different token to retry with once, or undefined to let
+   *  the 401 stand. */
+  onUnauthorized?(rejected: string | undefined): Promise<string | undefined>;
+}
+
+/** A client's refresh-token lifetimes: Go durations or whole days (`"7d"`). */
+export interface AppClientRefresh {
+  idle?: string;
+  absolute?: string;
+}
+
+/** An app client's definition: an entry of the config's `auth.clients`, and
+ *  the body of a ClientDef. */
+export interface AppClientConfig {
+  /** `public`, the only kind: the app holds no secret and PKCE binds a code
+   *  to it. */
+  kind: string;
+  /** The name the login page shows. */
+  label?: string;
+  /** Exact https URIs, loopback URIs (any port, exact path) and private-use
+   *  scheme URIs (`myapp://callback`). */
+  redirect_uris: string[];
+  /** Origins allowed to call the token and revoke endpoints from a browser:
+   *  https, loopback, `chrome-extension://`, `moz-extension://`, `tauri://`. */
+  allowed_origins?: string[];
+  /** Go duration, 1m to 24h; default 1h. */
+  access_token_ttl?: string;
+  refresh?: AppClientRefresh;
+  /** Narrows every token the client's sign-ins mint, as a token's
+   *  restrictions record does. */
+  restrictions?: Record<string, unknown>;
+}
+
+/** The body of `POST /v1/_clientdef`. */
+export interface ClientDefInput {
+  op: "create" | "update" | "get" | "list" | "retire" | "verify";
+  /** The client id. Unique across the deployment, retired names included. */
+  name?: string;
+  def_id?: string;
+  client?: AppClientConfig;
+  description?: string;
+  /** Admin only. On create: the tenant whose people the client signs in, ""
+   *  (the default) for every tenant. On list: focus one tenant. A tenant
+   *  operator's clients are always its own tenant's. */
+  tenant?: string;
+  /** verify: the content hash to compare with the deployed one. */
+  content_sha256?: string;
+}
+
+/** A runtime-registered client (a ClientDef version). */
+export interface ClientDefRecord {
+  name: string;
+  source: "def";
+  def_id: string;
+  version: number;
+  /** The tenant whose people it signs in; "" for every tenant. */
+  tenant_id: string;
+  all_tenants: boolean;
+  label: string;
+  redirect_uris: string[];
+  /** The definition as stored. */
+  client: AppClientConfig;
+  description: string;
+  content_sha256: string;
+  created_at: string;
+  created_by: string;
+  created_by_tenant: string;
+  read_only: false;
+}
+
+/** A client declared in the server's config: read only through the API. */
+export interface ConfigAppClient {
+  name: string;
+  source: "config";
+  label: string;
+  all_tenants: true;
+  tenant_id: string;
+  redirect_uris: string[];
+  allowed_origins: string[];
+  access_token_ttl: string;
+  refresh_idle: string;
+  refresh_absolute: string;
+  read_only: true;
+}
+
+/** A client as `get` and `list` report it. */
+export type AppClientEntry = ClientDefRecord | ConfigAppClient;
+
+/** `op: "list"`: the clients the caller may see, config ones included. */
+export interface ClientDefListResponse {
+  clients: AppClientEntry[];
+}
+
+/** `op: "verify"`: whether a client is deployed and matches a hash. An absent
+ *  client (or one the caller may not see) answers `deployed: false`. */
+export interface ClientDefVerifyResult {
+  name: string;
+  deployed: boolean;
+  current_def_id?: string;
+  current_sha256?: string;
+  version?: number;
+  matches: boolean;
+}
+
+/** `op: "retire"`. */
+export interface ClientDefRetireResult {
+  name: string;
+  retired: boolean;
+}
+
+/** One row of `GET /v1/_clientdef/names`. */
+export interface ClientDefNameSummary {
+  name: string;
+  source: "def" | "config";
+  tenant_id: string;
+  label: string;
+  read_only: boolean;
+}
+
+export interface ClientDefNamesResponse {
+  names: ClientDefNameSummary[];
 }
 
 // ---- Device login (RFC 8628, a `kind: device` sign-in gate) ----
