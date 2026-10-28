@@ -240,3 +240,15 @@ func TestUsage_RunsRecordTheirAgentsTierAndPurpose(t *testing.T) {
 		}
 	}
 }
+
+// TestUsage_ObservedCallIsRecordedAfterItsCallerHasGone — a summary that
+// finished was spent; a cancelled request ctx must not drop its row.
+func TestUsage_ObservedCallIsRecordedAfterItsCallerHasGone(t *testing.T) {
+	srv, st := newUsageTestServer(t)
+	ctx, cancel := context.WithCancel(tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "t1", UserID: "u1"}))
+	cancel()
+	srv.callObserver("run-gone")(providers.WithCallPurpose(ctx, store.UsagePurposeCompaction), &providers.Usage{InputTokens: 10, Provider: "p", Model: "m"})
+	if rows, err := st.TokenUsageForRun(context.Background(), "run-gone"); err != nil || len(rows) != 1 {
+		t.Errorf("rows = %+v, %v; want the summary's row", rows, err)
+	}
+}

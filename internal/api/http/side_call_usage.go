@@ -91,5 +91,8 @@ func (s *Server) chargeObservedCall(ctx context.Context, runID string, u *provid
 		return
 	}
 	rid := tools.RunIdentity(ctx)
-	_ = s.recordCallUsage(ctx, runID, rid, rid.SessionID, loop.IterationOf(ctx), u, purpose)
+	// On a ctx that outlives the caller: a summary or a Document job that
+	// finished is spent even if its caller has gone, and a cancelled insert
+	// would drop a row the budget had already counted.
+	_ = s.recordCallUsage(context.WithoutCancel(ctx), runID, rid, rid.SessionID, loop.IterationOf(ctx), u, purpose)
 }
