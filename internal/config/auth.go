@@ -58,13 +58,6 @@ const (
 // tokenGateLabel is the token gate's label when none is configured.
 const tokenGateLabel = "Access token"
 
-// laterGateKinds are the gate kinds the RFC defines for later phases. They are
-// refused with a message that says so, rather than as unknown, so an operator
-// who copied an example learns why it does not load yet.
-var laterGateKinds = map[string]bool{
-	"device": true,
-}
-
 var authGateNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
 var authHeaderNameRE = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
@@ -86,6 +79,9 @@ type AuthConfig struct {
 	// in (Cloudflare: CF-Connecting-IP). Empty: the right-most
 	// X-Forwarded-For entry that is not a trusted proxy.
 	ClientIPHeader string `yaml:"client_ip_header,omitempty"`
+	// TenantPolicies: tenant → the gates its people must come through
+	// (auth_tenant_policy.go).
+	TenantPolicies map[string]AuthTenantPolicyConfig `yaml:"tenant_policies,omitempty"`
 }
 
 // AuthSessionConfig holds Go durations ("8h", "15m").
@@ -145,6 +141,8 @@ type AuthGateConfig struct {
 	// External holds the kind: external keys (auth_external.go).
 	External AuthExternalGateConfig `yaml:",inline"`
 
+	// The device gate's keys (kind: device, auth_device.go).
+	AuthGateDeviceConfig `yaml:",inline"`
 	// The edge gates' own keys (kind: header and kind: awsiam, auth_edge.go).
 	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs,omitempty"`
 	TeamDomain        string   `yaml:"team_domain,omitempty"`
@@ -200,6 +198,8 @@ type AuthGate struct {
 	OAuth *AuthOAuthGate
 	// External is set for kind: external.
 	External *AuthExternalGate
+	// Device is set for kind: device.
+	Device *AuthDeviceGate
 	// Header is set for kind: header, AWSIAM for kind: awsiam.
 	Header *AuthHeaderGate
 	AWSIAM *AuthAWSIAMGate
@@ -243,6 +243,9 @@ type AuthPolicy struct {
 	// Removal is the validated removal policy (read it through
 	// RemovalPolicy).
 	Removal AuthRemovalPolicy
+	// TenantPolicies is the validated auth.tenant_policies: tenant → sorted
+	// gate names. The admin-managed rows can only narrow it.
+	TenantPolicies map[string][]string
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -282,6 +285,10 @@ func (p AuthPolicy) LoginGates() []AuthGate {
 		// An external gate with no callback_url only asserts for non-browser
 		// clients (a bridge): there is nothing to offer a person.
 		if g.External != nil && !g.External.Interactive() {
+			continue
+		}
+		// A device gate is approved through a login gate, never one itself.
+		if g.Kind == AuthGateKindDevice {
 			continue
 		}
 		out = append(out, g)
@@ -426,15 +433,14 @@ func resolveAuth(c *Config) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	tokenGates, interactive := 0, 0
+	tokenGates, interactive, deviceGates := 0, 0, 0
 	for _, name := range names {
 		g := c.Auth.Gates[name]
 		if !authGateNameRE.MatchString(name) {
 			return fmt.Errorf("auth.gates: invalid gate name %q (lowercase letters, digits, - and _, at most 32)", name)
 		}
 		kind := strings.ToLower(strings.TrimSpace(g.Kind))
-		// The one place a gate kind is accepted: a kind that becomes available
-		// is a case here (and leaves laterGateKinds).
+		// The one place a gate kind is accepted.
 		switch {
 		case kind == AuthGateKindToken:
 			tokenGates++
@@ -447,18 +453,18 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindExternal:
 			// Interactive only with a callback_url; counted below.
+		case kind == AuthGateKindDevice:
+			deviceGates++
 		case kind == AuthGateKindHeader:
 			// A person signs in to the Web UI through it (the proxy's
 			// assertion on the login request).
 			interactive++
 		case kind == AuthGateKindAWSIAM:
 			// Machines only: it issues API tokens, never a session.
-		case laterGateKinds[kind]:
-			return fmt.Errorf("auth.gates.%s: kind %q is not supported in this release yet; only kinds token, password, oidc, oauth, external, header and awsiam are", name, kind)
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header or awsiam)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam or device)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header or awsiam)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam or device)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
@@ -548,6 +554,14 @@ func resolveAuth(c *Config) error {
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
 		}
+		var dev *AuthDeviceGate
+		if kind == AuthGateKindDevice {
+			if dev, err = resolveDeviceGate(c, name, g); err != nil {
+				return err
+			}
+		} else if hasDeviceKeys(g) {
+			return fmt.Errorf("auth.gates.%s: token_ttl and rate apply only to kind: device", name)
+		}
 		label := strings.TrimSpace(g.Label)
 		if label == "" {
 			label = name
@@ -559,15 +573,21 @@ func resolveAuth(c *Config) error {
 			}
 		}
 		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth,
-			Identity: idm, External: ext, Header: hdr, AWSIAM: aws})
+			Identity: idm, External: ext, Header: hdr, AWSIAM: aws, Device: dev})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
+	}
+	if deviceGates > 1 {
+		return fmt.Errorf("auth.gates: at most one gate may be kind: device, got %d", deviceGates)
 	}
 	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
 		return err
 	}
 	if err := checkHeaderGatesShareProxies(p.Gates); err != nil {
+		return err
+	}
+	if p.TenantPolicies, err = resolveTenantPolicies(c, p.Gates); err != nil {
 		return err
 	}
 	// Strict mode with no gate a person can sign in through would lock

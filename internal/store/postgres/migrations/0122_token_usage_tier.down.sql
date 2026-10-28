@@ -1,4 +1,4 @@
--- 0118_token_usage_tier.down.sql — drop tier and user_tier.
+-- 0122_token_usage_tier.down.sql — drop tier and user_tier.
 --
 -- The archive's old key has neither, so rows of one day that differ only by
 -- tier are folded back into one first (the same sums the rollup takes; the

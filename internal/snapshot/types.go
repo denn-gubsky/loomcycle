@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -490,6 +491,14 @@ type TeamDefActiveEntry struct {
 type TeamDefPromoterEntry struct {
 	OperatorKeyRestricted bool `json:"operator_key_restricted"`
 	Isolated              bool `json:"isolated"`
+	// ACLOwner is whose access-control set binds the subscription's walks
+	// (store.TeamDefPromoter.ACLOwner); ids only.
+	ACLOwner *authz.SubjectRef `json:"acl_owner,omitempty"`
+	// ACLOwnerRecorded says ACLOwner was recorded — so a nil one means
+	// "nobody's set", not "unknown". Positive on purpose: a snapshot from
+	// before the owner was recorded has neither field and restores a pointer
+	// whose owner is unknown, as the store reads one promoted before 0121.
+	ACLOwnerRecorded bool `json:"acl_owner_recorded,omitempty"`
 }
 
 // HookDefsSection mirrors TeamDefsSection. Additive: an older snapshot has no

@@ -122,6 +122,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		OperatorAuthored: def.OperatorAuthored,
 		ACL:              acl,
 		ACLRemovedTools:  src.ACLRemovedTools,
+		LiveACL:          s.liveACLFor(acl),
 		FanoutCap:        max(src.FanoutCap, 0),
 		Overrides:        overridesOffer(src.Overrides),
 		// A setting with no field set is no setting: nil, as the per-value
@@ -130,6 +131,18 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		Compaction: nilIfZeroCompaction(src.Compaction),
 		Context:    nilIfZeroContext(src.Context),
 	}, live
+}
+
+// liveACLFor is a run's live view of its caller's set acl (RFC EY §3.7,
+// Q-B): built only under LOOMCYCLE_ACL_LIVE=1, for a run that has a set and
+// a resolver to read it again from. Every run gets its own — a child's from
+// the set its parent held when it was spawned — so a narrowing is reported
+// on the transcript of each run it reaches.
+func (s *Server) liveACLFor(acl *authz.Effective) *tools.LiveACL {
+	if acl == nil || s.aclResolver == nil || !s.cfg().Env.ACLLive {
+		return nil
+	}
+	return tools.NewLiveACL(acl, s.aclResolver.ResolveSubject)
 }
 
 // overridesOffer is an offer with no record as no offer at all.

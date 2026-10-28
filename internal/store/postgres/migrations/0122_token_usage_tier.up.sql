@@ -1,4 +1,4 @@
--- 0118_token_usage_tier.up.sql — the model tier and the user tier a usage row
+-- 0122_token_usage_tier.up.sql — the model tier and the user tier a usage row
 -- was spent under.
 --
 -- A usage report by tier needs both on the row: tier is the model tier the
@@ -12,9 +12,9 @@
 -- did in 0113. Every existing archive row holds '' in both, so the wider key
 -- admits them all.
 --
--- 0118, not 0117: 0117 is taken by the token-authority migration on its own
--- branch, and golang-migrate keeps one version pointer, so that one must reach
--- main first or it would be skipped on a database already past it.
+-- 0122: 0117, 0118 and 0121 are on main, and 0119 and 0120 are held by open
+-- pull requests. golang-migrate keeps one version pointer, so a number below
+-- one already applied would be skipped on a database past it.
 --
 -- Non-secret: two labels from operator configuration.
 --
