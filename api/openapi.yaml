@@ -47,6 +47,8 @@ tags:
     description: Decision models — typed questions about supplied state, answered with probabilities.
   - name: crypto
     description: Encrypt, decrypt, sign, verify, MAC and one-time codes with keys the runtime holds.
+  - name: oauth
+    description: Sign-in for loomcycle's own apps — loomcycle as an OAuth 2.0 authorization server (authorization code + PKCE), and the apps registered with it.
   - name: authgate
     description: Password gate management — invitations, reset links, logins. Never a password.
   - name: auth
@@ -1066,6 +1068,163 @@ paths:
         "403":
           description: "`not_revocable`: not a delegated user token."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+  /v1/_oauth/authorize:
+    get:
+      tags: [oauth]
+      summary: Start or continue an app sign-in (authorization code with PKCE).
+      description: |
+        For a registered app (`auth.clients` or a ClientDef). An unknown
+        `client_id` or a `redirect_uri` the client did not register ends on
+        loomcycle's own error page — never a redirect. Every other error goes
+        back to the app's `redirect_uri` with `error` (and `state`). With no
+        session in the browser, redirects to `/ui/login?oauth=<this query>`;
+        with one, redirects to `redirect_uri?code=…&state=…&iss=…`. The code
+        is single-use, lives 60 s and is bound to the client, the exact
+        redirect_uri, the PKCE challenge, the user and the session. A pending
+        user gets `error=access_denied&error_description=pending`; a user of
+        another tenant than a tenant client's is stopped on loomcycle's page.
+        Unframeable (`frame-ancestors 'none'`); throttled per client and
+        source.
+      operationId: oauthAuthorize
+      security: []
+      parameters:
+        - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
+        - { name: client_id, in: query, required: true, schema: { type: string } }
+        - { name: redirect_uri, in: query, required: true, schema: { type: string } }
+        - { name: code_challenge, in: query, required: true, description: "base64url SHA-256 of the verifier (43 characters).", schema: { type: string } }
+        - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
+        - { name: state, in: query, required: false, schema: { type: string, maxLength: 1024 } }
+      responses:
+        "303": { description: "To the app's redirect_uri (code or error), or to the login page." }
+        "400": { description: "loomcycle's error page: unknown client, unregistered redirect_uri, a parameter sent twice." }
+        "403": { description: "loomcycle's error page: the app signs in only its own tenant's people." }
+        "429": { description: "loomcycle's error page: too many sign-in attempts." }
+  /v1/_oauth/token:
+    post:
+      tags: [oauth]
+      summary: Exchange a code, or rotate a refresh token.
+      description: |
+        Form-encoded; nothing in the URL. `grant_type=authorization_code`
+        (`code`, `redirect_uri`, `client_id`, `code_verifier`) or
+        `grant_type=refresh_token` (`refresh_token`, `client_id`). A code is
+        consumed on its first presentation; a second one revokes the sign-in
+        it produced. A used refresh token presented again revokes the whole
+        sign-in. Refused for a revoked or expired sign-in, a user no longer
+        active, a removed or retired client. CORS only for the client's
+        `allowed_origins` (another origin is refused before anything is
+        consumed). Always `Cache-Control: no-store`.
+      operationId: oauthToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type: { type: string, enum: [authorization_code, refresh_token] }
+                client_id: { type: string }
+                code: { type: string }
+                redirect_uri: { type: string }
+                code_verifier: { type: string, minLength: 43, maxLength: 128 }
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: The tokens (RFC 6749 §5.1).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer }
+                  refresh_token: { type: string }
+        "400": { description: "`invalid_request`, `invalid_grant`, `unsupported_grant_type` (RFC 6749 §5.2)." }
+        "401": { description: "`invalid_client`: unknown client_id." }
+        "403": { description: "`invalid_client`: this origin may not call the endpoint for this client." }
+        "429": { description: "`temporarily_unavailable`: throttled; Retry-After." }
+  /v1/_oauth/revoke:
+    post:
+      tags: [oauth]
+      summary: Revoke an app's refresh or access token (RFC 7009).
+      description: |
+        Form-encoded `token` and `client_id`. A refresh token ends its whole
+        sign-in; an access token is retired. A token of another client, or
+        one loomcycle does not know, gets the same 200.
+      operationId: oauthRevoke
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token, client_id]
+              properties:
+                token: { type: string }
+                token_type_hint: { type: string }
+                client_id: { type: string }
+      responses:
+        "200": { description: Revoked (or nothing to revoke). }
+        "401": { description: "`invalid_client`." }
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [oauth]
+      summary: Authorization server metadata (RFC 8414).
+      description: |
+        `issuer` is `LOOMCYCLE_PUBLIC_URL`; 404 `oauth_issuer_unset` until it
+        is set. Lists the three endpoints, S256 as the only PKCE method and
+        `none` as the only client authentication.
+      operationId: oauthMetadata
+      security: []
+      responses:
+        "200": { description: The metadata document. }
+        "404": { description: "`oauth_issuer_unset`." }
+  /v1/_clientdef:
+    post:
+      tags: [oauth]
+      summary: Register the apps that sign people in (ClientDef).
+      description: |
+        Op-dispatched: `create`, `update`, `get`, `list`, `retire`,
+        `verify`. `client` is an `auth.clients` entry (kind, label,
+        redirect_uris, allowed_origins, access_token_ttl, refresh,
+        restrictions). An admin registers for any tenant (`tenant`) or for
+        every tenant (no `tenant`); a tenant operator for its own tenant
+        only. Config clients are listed read-only and never changed. `update`
+        voids the client's unused codes; `retire` also revokes every sign-in
+        made through it. Every write is audited with its author.
+      operationId: clientDef
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [op]
+              properties:
+                op: { type: string, enum: [create, update, get, list, retire, verify] }
+                name: { type: string }
+                def_id: { type: string }
+                client: { type: object }
+                description: { type: string }
+                tenant: { type: string }
+                content_sha256: { type: string }
+      responses:
+        "200": { description: "The client (or `{clients}` for list)." }
+        "403": { description: "Needs substrate:tenant; `acl_denied`." }
+        "422": { description: "`tool_refused`: a refused op (invalid client, taken name, not found, a config client)." }
+  /v1/_clientdef/names:
+    get:
+      tags: [oauth]
+      summary: The registered apps' names the caller may see.
+      operationId: clientDefNames
+      parameters:
+        - { name: tenant, in: query, required: false, description: Admin only — one tenant's clients., schema: { type: string } }
+      responses:
+        "200": { description: "`{names: [{name, source, tenant_id, label, read_only}]}`." }
   /v1/_auth/assert:
     post:
       tags: [auth]

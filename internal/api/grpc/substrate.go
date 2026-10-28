@@ -312,6 +312,13 @@ func (s *Server) DocumentSourceDef(ctx context.Context, req *loomcyclepb.Substra
 	})
 }
 
+// ClientDef serves the RFC FL ClientDef RPC — the apps that sign people in
+// through this server's gates. The implementation takes the caller's
+// authority from the principal on ctx alone, so nothing is stamped.
+func (s *Server) ClientDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPCCtx(ctx, "ClientDef", req, func(ctx context.Context) context.Context { return ctx }, s.connector.ClientDef)
+}
+
 // OperatorTokenDef serves the RFC L OperatorTokenDef gRPC RPC — auth
 // token minting/rotation/retirement. Same shape as the other substrate
 // RPCs; operator-admin-only.

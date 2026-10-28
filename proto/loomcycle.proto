@@ -475,6 +475,13 @@ service Loomcycle {
   // response. Consumed by the Document tool's set_remote/sync.
   rpc DocumentSourceDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // ClientDef registers the apps that sign people in through this server's
+  // gates (OAuth clients). Mirrors POST /v1/_clientdef: op-discriminated
+  // input_json (create / update / get / list / retire / verify). An admin
+  // registers for any tenant (or every tenant); a tenant operator for its
+  // own. Config-declared clients are listed read-only and never changed.
+  rpc ClientDef(SubstrateRequest) returns (SubstrateResponse);
+
   // OperatorTokenDef dispatches to the RFC L OSS multi-tenant
   // authorization substrate (auth-token minting/rotation/retirement).
   // Mirrors POST /v1/_operatortokendef. Operator-admin-only. Same

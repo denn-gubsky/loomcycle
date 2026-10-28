@@ -59,7 +59,7 @@ var (
 	// defFamilies are the definition families a rule may name under `def:`.
 	// `acl` and `group` are the RFC EY families themselves, so authoring an
 	// ACL is an ACL decision like any other.
-	defFamilies = []string{"agent", "skill", "team", "mcpserver", "schedule", "webhook", "volume", "a2a", "a2aserver", "hook", "credential", "memorybackend", "documentsource", "acl", "group"}
+	defFamilies = []string{"agent", "skill", "team", "mcpserver", "schedule", "webhook", "volume", "a2a", "a2aserver", "hook", "credential", "memorybackend", "documentsource", "acl", "group", "client"}
 )
 
 // catalog is the closed set (RFC EY §3.3, owner decision D8: every primitive

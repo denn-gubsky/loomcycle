@@ -21,7 +21,7 @@ import (
 
 const operatorTokenDefSelect = `SELECT def_id, name, tenant_id, subject, token_hash,
 	allowed_scopes, created_at, created_by_agent_id, created_by_run_id,
-	rotated_from, retired_at, expires_at, restrictions, issued_by_gate, authority FROM operator_token_defs`
+	rotated_from, retired_at, expires_at, restrictions, issued_by_gate, authority, oauth_client, oauth_family FROM operator_token_defs`
 
 func scanOperatorTokenDef(sc interface{ Scan(...any) error }) (store.OperatorTokenDefRow, error) {
 	var (
@@ -36,7 +36,8 @@ func scanOperatorTokenDef(sc interface{ Scan(...any) error }) (store.OperatorTok
 		restrict   sql.NullString
 	)
 	if err := sc.Scan(&row.DefID, &row.Name, &row.TenantID, &row.Subject, &row.TokenHash,
-		&scopesJSON, &createdNs, &agent, &runID, &rotated, &retiredNs, &expiresNs, &restrict, &row.IssuedByGate, &row.Authority); err != nil {
+		&scopesJSON, &createdNs, &agent, &runID, &rotated, &retiredNs, &expiresNs, &restrict, &row.IssuedByGate,
+		&row.Authority, &row.OAuthClient, &row.OAuthFamily); err != nil {
 		return store.OperatorTokenDefRow{}, err
 	}
 	if err := json.Unmarshal([]byte(scopesJSON), &row.AllowedScopes); err != nil {
@@ -91,12 +92,12 @@ func (s *Store) OperatorTokenDefCreate(ctx context.Context, row store.OperatorTo
 		`INSERT INTO operator_token_defs (
 			def_id, name, tenant_id, subject, token_hash, allowed_scopes,
 			created_at, created_by_agent_id, created_by_run_id, rotated_from, retired_at, expires_at, restrictions,
-			issued_by_gate, authority
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			issued_by_gate, authority, oauth_client, oauth_family
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.DefID, row.Name, row.TenantID, row.Subject, row.TokenHash, string(scopesJSON),
 		row.CreatedAt.UnixNano(), nilIfEmpty(row.CreatedByAgentID), nilIfEmpty(row.CreatedByRunID),
 		nilIfEmpty(row.RotatedFrom), retired, expires, nilIfEmpty(row.RestrictionsJSON), row.IssuedByGate,
-		row.Authority,
+		row.Authority, row.OAuthClient, row.OAuthFamily,
 	); err != nil {
 		return store.OperatorTokenDefRow{}, fmt.Errorf("operator_token_def insert: %w", err)
 	}

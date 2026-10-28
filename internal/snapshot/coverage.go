@@ -198,6 +198,21 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "bearer-authentication material; restoring one would make a source bearer valid on the target"},
 	"ui_sessions": {Kind: coverNever, Backends: onBoth,
 		Reason: "browser login sessions bound to one browser on THIS deployment; restoring one would let a source cookie authenticate on the target"},
+	// RFC FL app sign-ins: hashes of authorization codes and refresh
+	// tokens, and the families that bind them. Authentication material like
+	// ui_sessions: a restored family would let a source app's refresh token
+	// mint access tokens on the target.
+	"oauth_codes": {Kind: coverNever, Backends: onBoth,
+		Reason: "60-second single-use authorization codes issued on THIS deployment"},
+	"oauth_refresh_families": {Kind: coverNever, Backends: onBoth,
+		Reason: "app sign-ins on THIS deployment; restoring one would let a source refresh token mint access tokens on the target"},
+	// RFC FL P0b: a runtime app client names where people's sign-in codes
+	// go. Its redirect URIs and origins are THIS deployment's apps, and its
+	// sign-ins (above) never travel; a target registers its own clients.
+	"client_defs": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "runtime app clients registered on THIS deployment; a restored one would send this deployment's sign-in codes to the source's apps"},
+	"oauth_refresh_tokens": {Kind: coverNever, Backends: onBoth,
+		Reason: "hashes of app refresh tokens; carried, one would authenticate a source app on the target"},
 	"token_usage": {Kind: coverNever, Backends: onBoth,
 		Reason: "the per-call billing ledger; only a month-to-date aggregate may travel, with token_limits"},
 	"usage_archive": {Kind: coverNever, Backends: onBoth,
