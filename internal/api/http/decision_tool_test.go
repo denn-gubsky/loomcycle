@@ -155,7 +155,7 @@ func newDecisionRunEnv(t *testing.T, configured bool, agents map[string]config.A
 	}}
 	srv := New(cfg, &stubResolver{p: prov}, all, concurrency.New(4, 4, 2*time.Second), st)
 	if svc != nil {
-		svc.SetOnUsage(srv.RecordRunSideCallUsage) // as main wires it
+		svc.SetOnUsage(srv.SideCallUsage(store.UsagePurposeDecision)) // as main wires it
 	}
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)

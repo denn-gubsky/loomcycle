@@ -112,7 +112,7 @@ func TestCallTimer_LeavesAFailedOrUnfinishedCallUnstamped(t *testing.T) {
 
 func TestObserveCall_ReachesTheObserverOnTheContext(t *testing.T) {
 	var seen *Usage
-	ctx := WithCallObserver(context.Background(), func(u *Usage) { seen = u })
+	ctx := WithCallObserver(context.Background(), func(_ context.Context, u *Usage) { seen = u })
 	u := &Usage{Model: "m"}
 	ObserveCall(ctx, u)
 	if seen != u {

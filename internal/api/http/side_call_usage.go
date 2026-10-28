@@ -3,13 +3,16 @@ package http
 import (
 	"context"
 
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// RecordRunSideCallUsage charges a model call made OUTSIDE the loop — the
-// search rerank a Memory tool call runs, a Decision tool call — to whoever it
-// was made for: one token_usage row, counted against the token budget like any
-// other call.
+// SideCallUsage returns the recorder for model calls made OUTSIDE the loop for
+// purpose — the search rerank a Memory tool call runs, a Decision tool call —
+// which charges each to whoever it was made for: one token_usage row under that
+// purpose, counted against the token budget like any other call.
 //
 // Without it the rerank would be free in every report and invisible to the
 // budgets, while costing about 6,000 prompt tokens per search.
@@ -19,8 +22,8 @@ import (
 //   - A call the server admitted with no run behind it
 //     (tools.WithMeteredOffRunCall, set only by Server.Decision): the caller it
 //     names, on a row with no run, session or agent. The marker is read first
-//     and is the ONLY thing that bills a call with no run. "No run id" is not
-//     the test: that also describes an operator route dispatching a tool
+//     and is the ONLY thing that bills a side call with no run. "No run id" is
+//     not the test: that also describes an operator route dispatching a tool
 //     directly, which has always been unbilled.
 //   - Otherwise, a call inside a run: that run, by the run identity on ctx.
 //   - Neither: nothing is recorded; there is nobody to charge.
@@ -28,14 +31,68 @@ import (
 // The budget counters are incremented, but a tier this call newly crosses is
 // not announced here — there is no event stream at a tool call's depth — and
 // the next loop call that crosses reports it.
-func (s *Server) RecordRunSideCallUsage(ctx context.Context, u *providers.Usage) {
+func (s *Server) SideCallUsage(purpose string) func(ctx context.Context, u *providers.Usage) {
+	return func(ctx context.Context, u *providers.Usage) {
+		if u == nil {
+			return
+		}
+		runID, rid, sessionID, iteration, ok := sideCallCharge(ctx)
+		if !ok {
+			s.observeCall("", u) // nothing to charge, but the call still measured the model
+			return
+		}
+		_ = s.recordCallUsage(ctx, runID, rid, sessionID, iteration, u, purpose)
+	}
+}
+
+// runCallPurpose is the purpose a run's own model calls are charged under:
+// consolidation for a run of an `internal:` agent, chat for every other.
+func runCallPurpose(rid tools.RunIdentityValue) string {
+	if rid.InternalAgent {
+		return store.UsagePurposeConsolidation
+	}
+	return store.UsagePurposeChat
+}
+
+// callObserver is the RunOptions / ctx observer for the calls a run makes that
+// emit no usage event — its compaction and recap summaries. Each is charged to
+// runID under the purpose on its ctx and fed to the throughput estimate.
+// runID "" is a summary made for a chat with no run (a History recap, a
+// replay's compaction): charged to the identity on ctx with no run.
+func (s *Server) callObserver(runID string) providers.CallObserver {
+	return func(ctx context.Context, u *providers.Usage) { s.chargeObservedCall(ctx, runID, u) }
+}
+
+// BackgroundCallObserver is the observer for a model call the runtime makes
+// for purpose outside any loop — Document unit generation, an image
+// description — charged to the run on ctx if there is one, else to the tenant
+// and user whose data the call worked on (the identity the operator route put
+// on ctx), and fed to the throughput estimate.
+//
+// Unlike a side call, a call with no run is billed: it is real spend on that
+// tenant's behalf, and an operator route is the only way these calls are made.
+func (s *Server) BackgroundCallObserver(purpose string) providers.CallObserver {
+	return func(ctx context.Context, u *providers.Usage) {
+		s.chargeObservedCall(providers.WithCallPurpose(ctx, purpose), tools.RunID(ctx), u)
+	}
+}
+
+// chargeObservedCall writes one observed call's usage row: to runID when set,
+// under the purpose on ctx, with the run identity on ctx. A call whose ctx
+// names no purpose is measured and not charged, since its row could not say
+// what it was for.
+func (s *Server) chargeObservedCall(ctx context.Context, runID string, u *providers.Usage) {
 	if u == nil {
 		return
 	}
-	runID, rid, sessionID, iteration, ok := sideCallCharge(ctx)
-	if !ok {
-		s.observeCall("", u) // nothing to charge, but the call still measured the model
+	purpose := providers.CallPurpose(ctx)
+	if purpose == "" {
+		s.observeCall(runID, u)
 		return
 	}
-	_ = s.recordCallUsage(ctx, runID, rid, sessionID, iteration, u)
+	rid := tools.RunIdentity(ctx)
+	// On a ctx that outlives the caller: a summary or a Document job that
+	// finished is spent even if its caller has gone, and a cancelled insert
+	// would drop a row the budget had already counted.
+	_ = s.recordCallUsage(context.WithoutCancel(ctx), runID, rid, rid.SessionID, loop.IterationOf(ctx), u, purpose)
 }

@@ -358,8 +358,8 @@ type Server struct {
 	limits *limits.Tracker
 
 	// throughput is the RFC DT per-(provider, model) speed estimate, fed from
-	// every timed call recordCallUsage sees (plus the summarizer / unit-generator
-	// / describe calls that record no usage). nil when timeout_scaling.mode is
+	// every timed call recordCallUsage sees (the summaries and Document jobs
+	// included, through the call observers). nil when timeout_scaling.mode is
 	// off; its methods are nil-safe. Seeded from the ledger at boot via
 	// SeedThroughput (main.go). Reported only — no timeout reads it.
 	throughput *throughput.Estimator
@@ -1980,6 +1980,19 @@ func (s *Server) resolveAgentDef(ctx context.Context, def config.AgentDef, tenan
 // tiered?" uses this, so none of them disagrees with where the run went.
 func routesByTier(def config.AgentDef) bool {
 	return def.Tier != "" && def.Provider == "" && def.Model == ""
+}
+
+// usageModelTier is the model tier a run of def is recorded under on the usage
+// ledger: the tier it routes by, pinned when it names its provider or model
+// (a pin wins over a tier, as in resolveAgentDef), "" when it does neither.
+func usageModelTier(def config.AgentDef) string {
+	switch {
+	case routesByTier(def):
+		return def.Tier
+	case def.Provider != "" || def.Model != "":
+		return store.UsageTierPinned
+	}
+	return ""
 }
 
 // imageInputKey marks the ctx of a run-start resolution whose run carries an
@@ -3763,6 +3776,8 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 		RootRunID:             runID,     // RFC AH Phase 2b: top-level run roots its own spawn tree
 		SessionID:             sessionID, // the chat a run-time write records itself against
 		UserTier:              in.UserTier,
+		ModelTier:             usageModelTier(agentDef),
+		InternalAgent:         agentDef.Internal,
 		UserBearer:            in.UserBearer,      // v0.8.x: per-run MCP bearer
 		UserCredentials:       in.UserCredentials, // v1.x RFC F: per-tool named credentials
 		ParentContext:         in.ParentContext,   // v0.12.x: opaque tracking lineage, inherited by sub-agents
@@ -6470,7 +6485,7 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// usage event itself is persisted+forwarded, below.
 		var crossings []providers.LimitInfo
 		if ev.Type == providers.EventUsage && ev.Usage != nil {
-			crossings = s.recordCallUsage(ctx, runID, rid, sessionID, usageCallIdx, ev.Usage)
+			crossings = s.recordCallUsage(ctx, runID, rid, sessionID, usageCallIdx, ev.Usage, runCallPurpose(rid))
 			usageCallIdx++
 		}
 		// F32: redact secrets out of the PERSISTED copy only — the tool_call
@@ -6569,7 +6584,13 @@ func redactJSONMap(r *redact.Redactor, m map[string]any) map[string]any {
 // (tenant, user) by this call's total tokens and RETURNS the tiers this call
 // newly crossed, so makeRecordingEmit can emit a `limit` event. Nil tracker /
 // zero tokens → nil.
-func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, iteration int, u *providers.Usage) []providers.LimitInfo {
+//
+// purpose is what the call was for (a store.UsagePurpose* value). The row
+// carries the run's user tier whatever the purpose, and its model tier only
+// for the calls that resolve through the agent's routing — the run's own
+// turns and gateway calls; a rerank or a summary is served by a model the
+// tier did not choose.
+func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.RunIdentityValue, sessionID string, iteration int, u *providers.Usage, purpose string) []providers.LimitInfo {
 	if u == nil {
 		return nil
 	}
@@ -6608,6 +6629,12 @@ func (s *Server) recordCallUsage(ctx context.Context, runID string, rid tools.Ru
 		Cost:                cost,
 		CostCurrency:        currency,
 		TS:                  time.Now(),
+		Purpose:             purpose,
+		UserTier:            rid.UserTier,
+	}
+	switch purpose {
+	case store.UsagePurposeChat, store.UsagePurposeConsolidation, store.UsagePurposeGateway:
+		row.Tier = rid.ModelTier
 	}
 	if tm := u.Timing; tm != nil {
 		row.DurationMs, row.TTFTMs, row.LoadMs = tm.DurationMs, tm.TTFTMs, tm.LoadMs
@@ -7905,9 +7932,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		UserID:          parentIdentity.UserID,
 		TenantID:        parentIdentity.TenantID, // RFC L: sub-agents inherit the parent's authoritative tenant (same isolation boundary)
 		AgentID:         subAgentID,
-		RootRunID:       parentIdentity.RootRunID,             // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
-		SessionID:       subSessionID,                         // its OWN chat, not the parent's — a sub-agent gets a session of its own
-		UserTier:        parentIdentity.UserTier,              // v0.8.2: sub-agents inherit parent's user_tier
+		RootRunID:       parentIdentity.RootRunID, // RFC AH Phase 2b: INHERIT the tree's root id (do NOT overwrite)
+		SessionID:       subSessionID,             // its OWN chat, not the parent's — a sub-agent gets a session of its own
+		UserTier:        parentIdentity.UserTier,  // v0.8.2: sub-agents inherit parent's user_tier
+		ModelTier:       usageModelTier(def),      // its own agent's tier, not the parent's
+		InternalAgent:   def.Internal,
 		AgentDefID:      defID,                                // v0.8.7: surface pinned def_id via Context.self
 		UserBearer:      parentIdentity.UserBearer,            // v0.8.x: bearer inherited identically (same end-user)
 		UserCredentials: parentIdentity.UserCredentials,       // v1.x RFC F: credentials map inherited identically

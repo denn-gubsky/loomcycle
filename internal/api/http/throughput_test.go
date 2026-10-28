@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -39,7 +40,7 @@ func TestRecordCallUsage_PersistsTheTimingAndASeedRestoresTheEstimate(t *testing
 	ctx := context.Background()
 	for i := 0; i < 6; i++ {
 		run := "run-" + string(rune('a'+i))
-		srv.recordCallUsage(ctx, run, tools.RunIdentityValue{TenantID: "t"}, "s", 0, slowUsage("ollama-local", "qwen3.6", 250))
+		srv.recordCallUsage(ctx, run, tools.RunIdentityValue{TenantID: "t"}, "s", 0, slowUsage("ollama-local", "qwen3.6", 250), store.UsagePurposeChat)
 	}
 
 	rows, err := st.TokenUsageForRun(ctx, "run-a")
@@ -71,10 +72,12 @@ func TestRecordCallUsage_PersistsTheTimingAndASeedRestoresTheEstimate(t *testing
 func TestObserveCallTiming_OffModeMeasuresNothing(t *testing.T) {
 	cfg := &config.Config{TimeoutScaling: config.TimeoutScaling{Mode: "off"}}
 	srv := New(cfg, &stubResolver{}, []tools.Tool{}, concurrency.New(1, 1, time.Second), nil)
-	if srv.Throughput() != nil || srv.callObserver("r") != nil {
+	if srv.Throughput() != nil {
 		t.Fatal("mode off built an estimate")
 	}
-	srv.ObserveCallTiming(slowUsage("p", "m", 0)) // must not panic
+	// The observers still exist (they charge the calls) and must not panic.
+	srv.BackgroundCallObserver(store.UsagePurposeUnitGeneration)(context.Background(), slowUsage("p", "m", 0))
+	srv.callObserver("r")(context.Background(), slowUsage("p", "m", 0))
 	if srv.candidateThroughput("p", "m", true) != nil {
 		t.Error("mode off still reports a throughput block")
 	}

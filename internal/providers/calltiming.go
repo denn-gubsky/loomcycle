@@ -126,8 +126,10 @@ func (t *CallTimer) Stamp(u *Usage) {
 }
 
 // CallObserver receives the usage of a model call that has no usage event of
-// its own to ride — a summary, for instance — so its timing is still measured.
-type CallObserver func(u *Usage)
+// its own to ride — a summary, for instance — so its timing is still measured
+// and its cost still charged. ctx is the call's own: it carries who the call
+// was made for and, through WithCallPurpose, what it was for.
+type CallObserver func(ctx context.Context, u *Usage)
 
 type callObserverKey struct{}
 
@@ -145,6 +147,22 @@ func ObserveCall(ctx context.Context, u *Usage) {
 		return
 	}
 	if obs, ok := ctx.Value(callObserverKey{}).(CallObserver); ok {
-		obs(u)
+		obs(ctx, u)
 	}
+}
+
+type callPurposeKey struct{}
+
+// WithCallPurpose returns ctx naming what the model calls made under it are
+// for ("compaction", "recap", …), so whoever records their usage can tell them
+// apart from an agent's own turns. The values are the usage ledger's purposes;
+// this package only carries them.
+func WithCallPurpose(ctx context.Context, purpose string) context.Context {
+	return context.WithValue(ctx, callPurposeKey{}, purpose)
+}
+
+// CallPurpose returns the purpose WithCallPurpose put on ctx, "" when none.
+func CallPurpose(ctx context.Context) string {
+	p, _ := ctx.Value(callPurposeKey{}).(string)
+	return p
 }

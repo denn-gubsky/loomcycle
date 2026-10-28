@@ -125,7 +125,7 @@ func TestGenerate_ReportsEachCallsTimingToTheObserver(t *testing.T) {
 	p := &withUsage{scripted{replies: []string{"States the carry-over limit."}}}
 	g := New(p, config.UnitGeneratorConfig{Model: "m"})
 	var seen []*providers.Usage
-	g.ObserveCall = func(u *providers.Usage) { seen = append(seen, u) }
+	g.ObserveCall = func(_ context.Context, u *providers.Usage) { seen = append(seen, u) }
 	if _, err := g.Generate(context.Background(), req("description")); err != nil {
 		t.Fatal(err)
 	}

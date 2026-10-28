@@ -9,15 +9,16 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	storesqlite "github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// TestRecordRunSideCallUsage_ChargesTheRunOnTheContext — a model call a tool makes
+// TestSideCallUsage_ChargesTheRunOnTheContext — a model call a tool makes
 // on a run's behalf (the search rerank) lands in that run's token_usage ledger,
 // attributed to its tenant, user and session; with no run on the context there is
 // nothing to charge and nothing is written.
-func TestRecordRunSideCallUsage_ChargesTheRunOnTheContext(t *testing.T) {
+func TestSideCallUsage_ChargesTheRunOnTheContext(t *testing.T) {
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "usage.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -27,8 +28,8 @@ func TestRecordRunSideCallUsage_ChargesTheRunOnTheContext(t *testing.T) {
 
 	ctx := tools.WithRunID(context.Background(), "run-1")
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: "t1", UserID: "u1", AgentID: "reader", SessionID: "s1"})
-	srv.RecordRunSideCallUsage(ctx, &providers.Usage{InputTokens: 6000, OutputTokens: 12, Provider: "ollama-local", Model: "qwen3.6:latest"})
-	srv.RecordRunSideCallUsage(context.Background(), &providers.Usage{InputTokens: 1})
+	srv.SideCallUsage(store.UsagePurposeRerank)(ctx, &providers.Usage{InputTokens: 6000, OutputTokens: 12, Provider: "ollama-local", Model: "qwen3.6:latest"})
+	srv.SideCallUsage(store.UsagePurposeRerank)(context.Background(), &providers.Usage{InputTokens: 1})
 
 	rows, err := st.TokenUsageForRun(context.Background(), "run-1")
 	if err != nil {

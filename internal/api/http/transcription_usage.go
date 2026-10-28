@@ -95,7 +95,7 @@ func (u TranscriptionUsage) validate() error {
 }
 
 // RecordTranscriptionUsage writes one OCR, STT or TTS engine call to the usage
-// ledger, charged the way RecordRunSideCallUsage charges a tool's model call:
+// ledger, charged the way SideCallUsage charges a tool's model call:
 // to the run on ctx, or to the caller of an admitted off-run call; with
 // neither, nothing is recorded and nil is returned. Its tokens count against
 // the token budgets like any call; an STT or TTS unit's seconds and
@@ -137,6 +137,7 @@ func (s *Server) RecordTranscriptionUsage(ctx context.Context, u TranscriptionUs
 		CredentialScopeID: u.CredentialScopeID,
 		InputTokens:       u.InputTokens,
 		OutputTokens:      u.OutputTokens,
+		UserTier:          rid.UserTier,
 		Purpose:           u.Purpose,
 		AudioSeconds:      u.AudioSeconds,
 		InputChars:        u.InputChars,
@@ -150,7 +151,7 @@ func (s *Server) RecordTranscriptionUsage(ctx context.Context, u TranscriptionUs
 }
 
 // sideCallCharge is who a call made outside the loop is charged to, by the
-// rules RecordRunSideCallUsage documents: an admitted off-run call's caller,
+// rules SideCallUsage documents: an admitted off-run call's caller,
 // else the run on ctx. ok is false when there is nobody to charge.
 func sideCallCharge(ctx context.Context) (runID string, rid tools.RunIdentityValue, sessionID string, iteration int, ok bool) {
 	if call, metered := tools.MeteredOffRunCall(ctx); metered {

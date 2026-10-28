@@ -68,6 +68,16 @@ type Identity struct {
 	// Empty when the operator has no user_tiers block or the caller
 	// didn't pass user_tier.
 	UserTier string
+	// ModelTier is the model tier this run's agent routes by ("low",
+	// "middle", "high", …), or "pinned" for an agent that names its provider
+	// and model. The usage ledger records it on the run's own model calls so
+	// spend can be reported per tier. Each run sets its own: a sub-agent's
+	// comes from its agent, not its parent's.
+	ModelTier string
+	// InternalAgent marks a run of an agent declared `internal:` — the
+	// runtime's own maintenance (memory consolidation). Its model calls are
+	// charged as consolidation, not as conversation.
+	InternalAgent bool
 	// AgentDefID is the v0.8.5 substrate def_id pinned to THIS run
 	// (when set via the Agent tool's def_id parameter or when the
 	// resolver picked a non-static active def at run start). Empty

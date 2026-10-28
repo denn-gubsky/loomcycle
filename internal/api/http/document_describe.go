@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/resolve"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -372,7 +373,8 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 			}
 		}
 	}
-	// The vision model's speed, for the throughput estimate (not billed: unchanged).
+	// Charged to the tenant and user whose document it is, and the vision
+	// model's speed fed to the throughput estimate.
 	if usage != nil {
 		u := *usage
 		if u.Provider == "" {
@@ -382,7 +384,7 @@ func (s *Server) describeOneImage(ctx context.Context, providerID string, prov p
 			u.Model = model
 		}
 		timer.Stamp(&u)
-		s.ObserveCallTiming(&u)
+		s.BackgroundCallObserver(store.UsagePurposeImageDescription)(ctx, &u)
 	}
 	if callErr != nil {
 		return "", callErr

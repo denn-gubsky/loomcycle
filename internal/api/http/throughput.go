@@ -29,21 +29,6 @@ func (s *Server) SeedThroughput(ctx context.Context) error {
 	return nil
 }
 
-// ObserveCallTiming feeds one call made outside any run to the estimate —
-// a Document unit-generator or image-describe call. It records nothing in the
-// ledger: those calls are not billed, and that is unchanged.
-func (s *Server) ObserveCallTiming(u *providers.Usage) { s.observeCall("", u) }
-
-// callObserver is the RunOptions / ctx observer for a run's calls that emit no
-// usage event (its summaries), attributed to runID for the per-run sample cap.
-// nil when the estimate is off, so the loop skips the work entirely.
-func (s *Server) callObserver(runID string) providers.CallObserver {
-	if s.throughput == nil {
-		return nil
-	}
-	return func(u *providers.Usage) { s.observeCall(runID, u) }
-}
-
 func (s *Server) observeCall(runID string, u *providers.Usage) {
 	if s.throughput == nil {
 		return

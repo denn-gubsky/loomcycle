@@ -287,7 +287,7 @@ func (s *Server) serveLLMChatJSON(
 	}
 	meter := newGatewayMeter(provReq)
 	// Deferred: however this function leaves, the call is settled.
-	defer s.settleGatewayCall(r.Context(), req.UserID, providerID, modelID, meter)
+	defer s.settleGatewayCall(r.Context(), req, providerID, modelID, meter)
 	id := newLLMID()
 	resp, err := collectProviderEventsIntoResponse(meter.tap(ch), id, requestID, providerID, modelID)
 	if err != nil {
@@ -336,7 +336,7 @@ func (s *Server) serveLLMChatStream(
 		return
 	}
 	meter := newGatewayMeter(provReq)
-	defer s.settleGatewayCall(r.Context(), req.UserID, providerID, modelID, meter)
+	defer s.settleGatewayCall(r.Context(), req, providerID, modelID, meter)
 	ch = meter.tap(ch)
 
 	// Block-index lifecycle: the gateway owns the index exclusively

@@ -646,8 +646,8 @@ type RunOptions struct {
 
 	// ObserveCall receives the usage, timing included, of the model calls this
 	// run makes that emit no usage event — the summaries behind compaction and
-	// recap. It feeds the throughput estimate only; nothing is billed. nil = not
-	// observed.
+	// recap, each with its purpose on the ctx it is handed. The server charges
+	// them to the run and feeds the throughput estimate. nil = not observed.
 	ObserveCall providers.CallObserver
 }
 
@@ -1934,14 +1934,25 @@ func recapPrompt() string {
 // Shared by the loop (auto + self-compact) and the server (manual + terminal
 // compaction). model may be a cheaper same-provider model.
 func Summarize(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message, targetPct int) (string, error) {
+	ctx = providers.WithCallPurpose(ctx, PurposeCompaction)
 	return summarizeWith(ctx, provider, model, msgs, compactionPrompt(targetPct), "Conversation to compact:", 0)
 }
+
+// The purposes a summary call is charged under on the usage ledger: a
+// compaction summary, and a recap (a chat's short summary or a run's
+// reasoning recap). They are the ledger's own values; this package does not
+// import the store, so a server test holds them to its list.
+const (
+	PurposeCompaction = "compaction"
+	PurposeRecap      = "recap"
+)
 
 // Recap makes ONE provider call to produce the SHORT chat summary behind History
 // op=recap, which the server persists to sessions.summary for the chat list.
 // Same mechanics as Summarize, different prompt and a token cap — see
 // recapPrompt for why a recap can't just reuse the compaction summary.
 func Recap(ctx context.Context, provider providers.Provider, model string, msgs []providers.Message) (string, error) {
+	ctx = providers.WithCallPurpose(ctx, PurposeRecap)
 	return summarizeWith(ctx, provider, model, msgs, recapPrompt(), "Conversation to summarize:", recapMaxTokens)
 }
 
@@ -2670,6 +2681,7 @@ func RecapReasoning(ctx context.Context, provider providers.Provider, model stri
 	if maxChars > 0 {
 		maxTok = maxChars/4 + 64 // chars→tokens, generous so a compliant model finishes its sentence
 	}
+	ctx = providers.WithCallPurpose(ctx, PurposeRecap)
 	return summarizeWith(ctx, provider, model, evicted, recapReasoningPrompt(maxChars), "Progress to recap:", maxTok)
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/runstate"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
@@ -130,7 +131,7 @@ func (b *boot) buildServer() {
 	// run's ledger and budget. Set here because srv exists only now; no run can
 	// have started yet.
 	if rerankModel != nil {
-		rerankModel.SetOnUsage(srv.RecordRunSideCallUsage)
+		rerankModel.SetOnUsage(srv.SideCallUsage(store.UsagePurposeRerank))
 	}
 	// The Document derived-unit writer (memory.unit_generator): a declared one that
 	// cannot be built fails boot, as the embedder and the reranker do.
@@ -140,14 +141,15 @@ func (b *boot) buildServer() {
 	}
 	if unitGenerator != nil {
 		slog.Info("unit generator: enabled", "model", unitGenerator.ModelID())
-		// RFC DT: its calls are the throughput samples of its model (not billed).
-		unitGenerator.ObserveCall = srv.ObserveCallTiming
+		// Its calls are charged to the tenant and user whose document they
+		// derive units for, and are the throughput samples of its model.
+		unitGenerator.ObserveCall = srv.BackgroundCallObserver(store.UsagePurposeUnitGeneration)
 		srv.SetUnitGenerator(unitGenerator)
 	}
 	// A decision is asked on a run's behalf, so its tokens go to that run's
 	// ledger and budget. Set here because srv exists only now.
 	if decisionService != nil {
-		decisionService.SetOnUsage(srv.RecordRunSideCallUsage)
+		decisionService.SetOnUsage(srv.SideCallUsage(store.UsagePurposeDecision))
 	}
 	// RFC FG: the File tool's OCR, on this server's model resolution and usage
 	// ledger. A configured engine that cannot be built fails boot.
