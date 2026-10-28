@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
@@ -34,7 +35,12 @@ type mockConnector struct {
 	retentionRes connector.RetentionOverrideResult
 	retentionErr error
 
-	dirTenant      atomic.Value
+	dirTenant atomic.Value
+	// identityTool, when set, answers Identity calls as the server would
+	// (the builtin, on the ctx the handler stamped); identityTenant records
+	// the run tenant that ctx carried.
+	identityTool   tools.Tool
+	identityTenant atomic.Value
 	erasureTenant  atomic.Value
 	erasureSubject atomic.Value
 	erasureDryRun  atomic.Value
@@ -318,6 +324,10 @@ func (m *mockConnector) WebhookDef(context.Context, json.RawMessage) (connector.
 func (m *mockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) ClientDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 func (m *mockConnector) DocumentSourceDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -505,7 +515,7 @@ func TestServer_ToolsList_ReturnsFullCatalogue(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(result.Tools) != 65 {
-		t.Errorf("got %d tools, want 65 (+file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the directory/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
+		t.Errorf("got %d tools, want 65 (+file; +groupdef, +acldef, +aclbinding, +authz; +crypto, +retention_override, +delete_run_tree, +list_team_channels, +peek_team_channel, +release_team_channel; register_hook, list_hooks and delete_hook removed; +hookdef, +review_run, +configured_run, +decision on top of retune_run and the identity (was directory)/erasure/history/teamdef/credentialdef/path/document/volumedef/documentsourcedef list)", len(result.Tools))
 	}
 	names := map[string]bool{}
 	for _, td := range result.Tools {
@@ -627,6 +637,11 @@ func TestBuiltinWrapperSchemas_CoverAllWrappers(t *testing.T) {
 			// Derived from the builtin's schema minus the poll-mode surface
 			// this transport cannot serve (teamdef_surface.go).
 			want = teamDefMCPSchema()
+		}
+		if name == "identity" {
+			// The builtin's schema plus the admin's op=tenants
+			// (identity_surface.go).
+			want = identityMCPSchema()
 		}
 		if !bytes.Equal(schema, want) {
 			t.Errorf("wrapper %q: descriptor schema not sourced from builtin (bare fallback?)", name)
@@ -1766,6 +1781,15 @@ func (m *mockConnector) DirectoryInspect(_ context.Context, tenant, _ string) (d
 
 func (m *mockConnector) DirectoryTenants(context.Context) ([]directory.TenantRow, error) {
 	return nil, nil
+}
+
+func (m *mockConnector) Identity(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.identityTenant.Store(tools.RunIdentity(ctx).TenantID)
+	if m.identityTool == nil {
+		return connector.ToolResult{Text: "{}"}, nil
+	}
+	res, err := m.identityTool.Execute(ctx, in)
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, err
 }
 
 // Configured-run operations (RFC DI D5) — not exercised by this fake.

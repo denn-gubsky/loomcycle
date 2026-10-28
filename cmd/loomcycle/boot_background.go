@@ -520,6 +520,18 @@ func (b *boot) startStoreSweepers() {
 				if m > 0 {
 					slog.Info("ui-session sweep: deleted finished login states", "rows", m)
 				}
+				// App sign-ins (RFC FL): expired codes and ended refresh
+				// families. An hour's margin keeps a tombstone (a family
+				// revoked before its exchange created it) past any exchange
+				// still running.
+				o, err := storeIface.OAuthDeleteExpired(ctx, time.Now().Add(-time.Hour))
+				if err != nil {
+					slog.Error("ui-session sweep: deleting ended app sign-ins failed", "err", err)
+					return
+				}
+				if o > 0 {
+					slog.Info("ui-session sweep: deleted ended app sign-ins", "rows", o)
+				}
 			})
 	}
 

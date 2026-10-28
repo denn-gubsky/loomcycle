@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { type LoginConfig, type LoginGate, parseLoginConfig } from "../lib/uiSession";
 import { refusalText as passwordRefusalText, signInWithPassword } from "../lib/passwordGate";
 import { REDIRECT_GATE_KINDS, redirectLoginError, redirectLoginHref } from "../lib/oidcGate";
+import { afterSignInHref, appReturnTo, appSignInRequest, mayAutoContinue } from "../lib/appSignIn";
 import { signedInDestination } from "../lib/returnPath";
 import { proxyRefusalText, signInThroughProxy } from "../lib/headerGate";
 
@@ -20,6 +21,12 @@ import { proxyRefusalText, signInThroughProxy } from "../lib/headerGate";
 // session cookie and never keeps the token. The token travels once, in an
 // Authorization header to POST /ui/session — never in a URL, history, Referer
 // or an access log.
+//
+// App sign-in: an app (loomboard) that sends a person to the server's
+// authorize step arrives here as ?oauth=<request> when the browser has no
+// session. The page names the app, and once the person is signed in — or at
+// once, when the browser already is — it goes back to the authorize step,
+// which hands the app its code (lib/appSignIn.ts).
 //
 // The postMessage handoff: a configured first-party origin
 // (LOOMCYCLE_UI_LOGIN_ORIGINS — e.g. the loomcycle.cloud landing that mints
@@ -56,7 +63,7 @@ function refusalMessage(code: string): string {
   return refusalText[code] ?? "Sign-in failed — try again.";
 }
 
-function TokenGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean }) {
+function TokenGateForm({ gate, disabled, next }: { gate: LoginGate; disabled: boolean; next: string }) {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const submit = async (e: React.FormEvent) => {
@@ -66,7 +73,7 @@ function TokenGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean 
     setError("");
     const refused = await signInWithToken(t);
     if (refused === "") {
-      window.location.href = signedInDestination(window.location.search);
+      window.location.href = next;
     } else {
       setError(refusalMessage(refused));
     }
@@ -108,7 +115,7 @@ function TokenGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean 
 // person (Cloudflare Access, an AWS ALB, a forward-auth proxy): the button's
 // request carries the proxy's signed assertion. It never signs in on its own
 // when the page opens.
-function HeaderGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean }) {
+function HeaderGateForm({ gate, disabled, next }: { gate: LoginGate; disabled: boolean; next: string }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async (e: React.FormEvent) => {
@@ -118,7 +125,7 @@ function HeaderGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean
     const refused = await signInThroughProxy(gate.name);
     setBusy(false);
     if (refused === "") {
-      window.location.href = signedInDestination(window.location.search);
+      window.location.href = next;
     } else {
       setError(proxyRefusalText(refused, gate.label));
     }
@@ -142,7 +149,7 @@ function HeaderGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean
 // account on its own (it is unique per gate), so no tenant is asked. When the
 // account has an authenticator the server asks for its code after the
 // password is accepted, and the form shows that field.
-function PasswordGateForm({ gate, disabled }: { gate: LoginGate; disabled: boolean }) {
+function PasswordGateForm({ gate, disabled, next }: { gate: LoginGate; disabled: boolean; next: string }) {
   const [login, setLogin] = useState("");
   const [pw, setPw] = useState("");
   const [otp, setOtp] = useState("");
@@ -157,7 +164,7 @@ function PasswordGateForm({ gate, disabled }: { gate: LoginGate; disabled: boole
     const r = await signInWithPassword(gate.name, login, pw, otp);
     setBusy(false);
     if (r.ok) {
-      window.location.href = signedInDestination(window.location.search);
+      window.location.href = next;
       return;
     }
     if (r.refusal.code === "otp_required") {
@@ -215,10 +222,15 @@ function PasswordGateForm({ gate, disabled }: { gate: LoginGate; disabled: boole
 
 export default function LoginView() {
   const [config, setConfig] = useState<LoginConfig | null>(null);
+  const oauth = appSignInRequest(window.location.search);
+  // An app sign-in continues to its authorize step; otherwise a safe ?next=
+  // path on this UI (the device-approval page), else /ui.
+  const next = oauth ? afterSignInHref(oauth) : signedInDestination(window.location.search);
 
   useEffect(() => {
     let live = true;
-    fetch("/ui/login-config.json", { credentials: "same-origin" })
+    const q = oauth ? "?" + new URLSearchParams({ oauth }).toString() : "";
+    fetch("/ui/login-config.json" + q, { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
       .then((raw) => {
         if (live) setConfig(parseLoginConfig(raw));
@@ -229,7 +241,25 @@ export default function LoginView() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [oauth]);
+
+  // A browser already signed in goes straight back to the authorize step: the
+  // cookie did not travel on the app's cross-site navigation here
+  // (SameSite=Strict), but it does on this same-site one.
+  useEffect(() => {
+    if (!oauth) return;
+    let storage: Storage | null = null;
+    try {
+      storage = window.sessionStorage;
+    } catch {
+      storage = null;
+    }
+    fetch("/v1/_me", { credentials: "same-origin" })
+      .then((r) => {
+        if (r.ok && mayAutoContinue(oauth, storage)) window.location.href = next;
+      })
+      .catch(() => {});
+  }, [oauth, next]);
 
   // postMessage login handoff: accept a bearer from an ALLOWED first-party
   // origin and exchange it for a session. The origin pin is the login-CSRF
@@ -249,12 +279,12 @@ export default function LoginView() {
         } catch {
           /* opener gone — harmless */
         }
-        window.location.href = signedInDestination(window.location.search);
+        window.location.href = next;
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [config]);
+  }, [config, next]);
 
   const tokenGate = config?.gates.find((g) => g.kind === "token");
   const passwordGates = config?.gates.filter((g) => g.kind === "password") ?? [];
@@ -268,6 +298,12 @@ export default function LoginView() {
       <div className="login-card">
         <div className="login-brand">loomcycle</div>
         <h1 className="login-title">Sign in</h1>
+        {config?.app && (
+          <p className="login-sub">
+            to <strong>{config.app.label}</strong>
+            {config.app.destination && <> at {config.app.destination}</>}
+          </p>
+        )}
         {blocked && (
           <p className="login-error" role="alert">
             {refusalMessage(blocked)}
@@ -285,18 +321,18 @@ export default function LoginView() {
               {g.label}
             </button>
           ) : (
-            <a key={g.name} className="login-btn" href={redirectLoginHref(g.name)}>
+            <a key={g.name} className="login-btn" href={redirectLoginHref(g.name, appReturnTo(oauth))}>
               {g.label}
             </a>
           ),
         )}
         {headerGates.map((g) => (
-          <HeaderGateForm key={g.name} gate={g} disabled={blocked !== ""} />
+          <HeaderGateForm key={g.name} gate={g} disabled={blocked !== ""} next={next} />
         ))}
         {passwordGates.map((g) => (
-          <PasswordGateForm key={g.name} gate={g} disabled={blocked !== ""} />
+          <PasswordGateForm key={g.name} gate={g} disabled={blocked !== ""} next={next} />
         ))}
-        {tokenGate && <TokenGateForm gate={tokenGate} disabled={blocked !== ""} />}
+        {tokenGate && <TokenGateForm gate={tokenGate} disabled={blocked !== ""} next={next} />}
         {config !== null &&
           !tokenGate &&
           passwordGates.length === 0 &&

@@ -74,13 +74,32 @@ func gateTokenName(gate string) string {
 // caller's own principal, when the context carries one, bounds them further.
 // The plaintext is returned once and never logged.
 func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate string, ttl time.Duration, restrictions auth.Restrictions) (string, store.OperatorTokenDefRow, error) {
+	return s.issueGateTokenFor(ctx, gateTokenSpec{tenant: tenant, subject: subject, gate: gate, ttl: ttl, restrictions: restrictions})
+}
+
+// gateTokenSpec is what a gate-issued token is minted for. scopeCap and the
+// oauth fields are an app sign-in's (RFC FL): the token never holds a scope
+// the signing-in session did not (scopeCap nil = no cap), and it is tagged
+// with the client and the refresh-token family it came from.
+type gateTokenSpec struct {
+	tenant, subject, gate string
+	ttl                   time.Duration
+	restrictions          auth.Restrictions
+	scopeCap              []string
+	oauthClient           string
+	oauthFamily           string
+}
+
+// issueGateTokenFor is issueGateToken with an app sign-in's cap and tags.
+func (s *Server) issueGateTokenFor(ctx context.Context, spec gateTokenSpec) (string, store.OperatorTokenDefRow, error) {
+	tenant, subject, gate, ttl, restrictions := spec.tenant, spec.subject, spec.gate, spec.ttl, spec.restrictions
 	if s.store == nil {
 		return "", store.OperatorTokenDefRow{}, errSessionsUnavailable
 	}
 	if tenant == "" || subject == "" {
 		return "", store.OperatorTokenDefRow{}, errGateTokenUser
 	}
-	g, ok := s.configuredGate(gate)
+	g, ok := s.issuingGate(gate)
 	if !ok {
 		return "", store.OperatorTokenDefRow{}, errGateTokenGate
 	}
@@ -129,6 +148,27 @@ func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate strin
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
 	}
+	if spec.scopeCap != nil {
+		// HasScope, not string equality: a session that holds substrate:admin
+		// holds every member scope too.
+		kept := scopes[:0:0]
+		for _, sc := range scopes {
+			if auth.HasScope(spec.scopeCap, sc) {
+				kept = append(kept, sc)
+			}
+		}
+		if len(kept) == 0 {
+			return "", store.OperatorTokenDefRow{}, errGateTokenUser
+		}
+		// A session narrower than its user (one opened with a pasted narrow
+		// token) caps the app token; an inherit token would re-derive its
+		// scopes from the user's access_mode on every request and lose that
+		// cap, so a capped token is always frozen.
+		if len(kept) < len(scopes) {
+			authority = ""
+		}
+		scopes = kept
+	}
 	hasher, err := s.hasher()
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
@@ -137,11 +177,16 @@ func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate strin
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
 	}
+	name := gateTokenName(gate)
+	if spec.oauthClient != "" {
+		name = appTokenName(spec.oauthClient)
+	}
 	now := time.Now().UTC()
 	row, err := s.store.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
-		DefID: newTokenDefID(), Name: gateTokenName(gate), TenantID: tenant, Subject: subject,
+		DefID: newTokenDefID(), Name: name, TenantID: tenant, Subject: subject,
 		TokenHash: hasher.Hash(plaintext), AllowedScopes: scopes, CreatedAt: now, ExpiresAt: now.Add(ttl),
 		RestrictionsJSON: rj, IssuedByGate: gate, Authority: authority,
+		OAuthClient: spec.oauthClient, OAuthFamily: spec.oauthFamily,
 	})
 	if err != nil {
 		return "", store.OperatorTokenDefRow{}, err
@@ -149,8 +194,29 @@ func (s *Server) issueGateToken(ctx context.Context, tenant, subject, gate strin
 	s.invalidateTokenCache(ctx)
 	s.recordTokenAudit(ctx, "create", row)
 	s.recordAuthEvent(audit.Event{Action: "auth_token_issued", AuthGate: gate, TargetTenant: tenant, TargetSubject: subject,
-		TargetDefID: row.DefID, ScopesAfter: scopes})
+		TargetDefID: row.DefID, ScopesAfter: scopes, AuthClient: spec.oauthClient})
 	slog.Info("auth gate: issued a user token", "gate", gate, "tenant", tenant, "subject", subject,
-		"def_id", row.DefID, "suffix", suffix, "expires", row.ExpiresAt)
+		"def_id", row.DefID, "suffix", suffix, "expires", row.ExpiresAt, "app", spec.oauthClient)
 	return plaintext, row, nil
+}
+
+// issuingGate is the gate a token was issued through: a configured gate, or
+// the token gate a token-mode login page offers without one being listed (an
+// app sign-in through a pasted token, RFC FL). A token issued through the
+// implicit token gate stands while the deployment still offers it, as one
+// through a configured gate stands while that gate is configured.
+func (s *Server) issuingGate(name string) (config.AuthGate, bool) {
+	if g, ok := s.configuredGate(name); ok {
+		return g, true
+	}
+	if g, ok := s.cfg().ResolvedAuth.TokenGate(); ok && g.Name == name {
+		return g, true
+	}
+	return config.AuthGate{}, false
+}
+
+// appTokenName is an app access token's label: "u-app-<client>" (a client id
+// is at most 48 characters, so it fits the 64 a name allows).
+func appTokenName(client string) string {
+	return userTokenNamePrefix + "app-" + client
 }

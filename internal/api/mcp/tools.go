@@ -106,7 +106,7 @@ func filterProps(fragment string, keep []string) string {
 // builtin wrappers (memory, channel, agentdef, skilldef, evaluation, context)
 // whose inner `op` field already discriminates the operation.
 func toolDescriptors() []loommcp.ToolDescriptor {
-	return append(baseToolDescriptors(), aclToolDescriptors()...)
+	return append(append(baseToolDescriptors(), aclToolDescriptors()...), clientDefToolDescriptor())
 }
 
 func baseToolDescriptors() []loommcp.ToolDescriptor {
@@ -273,25 +273,9 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 			}`),
 		},
 		{
-			Name: "directory",
-			Description: "Who is in this deployment, and what is held for them. READ-ONLY. op=users (default) lists the subjects with activity in your tenant; op=inspect with a subject aggregates that one subject's activity, chats, memory rows, documents, token budget and usage in a single call. op=tenants enumerates tenants with counts and requires an operator-admin token. There is no create/update/delete: a user is DERIVED from run activity, not a stored record, so there is nothing to write \u2014 to remove a subject's footprint use the `erasure` tool, which is the only thing that does it across every plane. Tenant listings are derived from runs, so a tenant with no runs does not appear (an empty list means no ACTIVITY, not no tenants). The tenant is taken from your credentials and cannot be passed. Do NOT use it to change anything \u2014 there is no create, update or delete, because a subject is DERIVED from activity rather than stored. Do NOT use it to remove what it reports: erasure deletes a subject's data; this only shows you what exists." +
-				"op=users (default) lists the subjects with activity in your tenant; " +
-				"op=inspect with a subject aggregates that one subject's activity, chats, memory rows, " +
-				"documents, token budget and usage in a single call. " +
-				"op=tenants enumerates tenants with counts and requires an operator-admin token. " +
-				"There is no create/update/delete: a user is DERIVED from run activity, not a stored " +
-				"record, so there is nothing to write — to remove a subject's footprint use the " +
-				"`erasure` tool, which is the only thing that does it across every plane. " +
-				"Tenant listings are derived from runs, so a tenant with no runs does not appear " +
-				"(an empty list means no ACTIVITY, not no tenants). " +
-				"The tenant is taken from your credentials and cannot be passed.",
-			InputSchema: rawJSON(`{
-				"type": "object",
-				"properties": {
-					"op":      {"type": "string", "enum": ["users", "inspect", "tenants"], "description": "users (default) | inspect | tenants (admin only)."},
-					"subject": {"type": "string", "description": "inspect only: the user id to aggregate."}
-				}
-			}`),
+			Name:        "identity",
+			Description: identityDescription(),
+			InputSchema: identityMCPSchema(),
 		},
 		{
 			Name: "erasure",

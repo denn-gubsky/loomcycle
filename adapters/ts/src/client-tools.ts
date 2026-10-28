@@ -11,6 +11,8 @@
 // rides the `Sec-WebSocket-Protocol` subprotocol (browsers can't set an
 // Authorization header on a WebSocket).
 
+import { OAuthError } from "./errors.js";
+
 /** The app-level subprotocol the server negotiates for /v1/client-tools. */
 export const CLIENT_TOOL_SUBPROTOCOL = "loomcycle.client-tools.v1";
 
@@ -74,9 +76,12 @@ export class ClientToolHost {
   private ws?: WebSocketLike;
   private closed = false;
 
+  /** `auth` is the bearer, or a function that supplies one on each
+   *  (re)connect — a client built with a token provider passes one, so a
+   *  reconnect after the access token expired carries the refreshed one. */
   constructor(
     private readonly url: string,
-    private readonly authToken: string | undefined,
+    private readonly auth: string | undefined | (() => Promise<string | undefined>),
     private readonly opts: ConnectClientToolsOptions,
   ) {}
 
@@ -100,8 +105,30 @@ export class ClientToolHost {
         "connectClientTools: no WebSocket implementation available — pass WebSocketImpl (e.g. the `ws` package) on Node < 22",
       );
     }
+    if (typeof this.auth === "function") {
+      this.auth().then(
+        (token) => this.open(WS, token),
+        (err) => {
+          this.opts.onError?.(err);
+          // A sign-in that ended does not come back by retrying: stop
+          // rather than ask again every few seconds.
+          if (err instanceof OAuthError && !err.retryable) {
+            this.closed = true;
+            this.opts.onStatus?.("closed");
+            return;
+          }
+          this.scheduleReconnect();
+        },
+      );
+      return;
+    }
+    this.open(WS, this.auth);
+  }
+
+  private open(WS: WebSocketCtor, token: string | undefined): void {
+    if (this.closed) return;
     const protocols = [CLIENT_TOOL_SUBPROTOCOL];
-    if (this.authToken) protocols.push("bearer." + this.authToken);
+    if (token) protocols.push("bearer." + token);
 
     this.opts.onStatus?.("connecting");
     const ws = new WS(this.url, protocols);

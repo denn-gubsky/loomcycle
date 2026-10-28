@@ -285,6 +285,13 @@ type Connector interface {
 	// through this single Connector method.
 	History(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// Identity — the read-only directory of the caller's tenant, the in-run
+	// Identity tool's ops (profile / user / users / group / groups / can /
+	// explain / held / whoami) for the principal on ctx. The tenant and the
+	// grants come from the principal, never the input. What the LoomCycle MCP
+	// meta-tool `identity` calls.
+	Identity(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// Decision — ask one of the operator's decision models typed questions
 	// (choice / noul / score) about a piece of state, from OUTSIDE a run. One
 	// operation, no op field; input and output are the in-run `Decision`
@@ -364,6 +371,13 @@ type Connector interface {
 	// through this single Connector method. Consumed by the Document tool's
 	// set_remote/sync (runtime-authored peer document sources).
 	DocumentSourceDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
+	// ClientDef — RFC FL P0b runtime app clients: the OAuth clients that sign
+	// people in through this server's gates. One implementation behind POST
+	// /v1/_clientdef, the MCP `clientdef` tool and the gRPC ClientDef RPC; it
+	// reads the caller's principal from ctx (admin: any tenant; a tenant
+	// operator: its own) and nothing else.
+	ClientDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
 	// OperatorTokenDef — RFC L OSS multi-tenant authorization. Mints,
 	// rotates, retires, and inspects the bearer tokens that replace the

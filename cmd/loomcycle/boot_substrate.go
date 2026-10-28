@@ -192,6 +192,8 @@ func (b *boot) wireAuth() {
 		// is the record then.
 		agentDefTool.Audit = tokenAudit
 		hookDefTool.Audit = tokenAudit
+		// A run's or an MCP session's lookup of another person or a group.
+		b.identityTool.Audit = tokenAudit
 	}
 	graceSecs := 0
 	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
@@ -256,7 +258,11 @@ func (b *boot) wireAuth() {
 	if err != nil {
 		fatal("authz: invalid access control mode", "err", err)
 	}
-	srv.SetACLResolver(aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second))
+	aclResolver := aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second)
+	srv.SetACLResolver(aclResolver)
+	// The Identity tool compiles another person's set (can, explain) and
+	// reads the config-declared groups through the same resolver.
+	b.identityTool.ACL = aclResolver
 	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds, "live", cfg.Env.ACLLive)
 	// Delegated user-token mints and revocations are recorded to the same
 	// sink as operator-token mutations. Not wired when there is no file: the

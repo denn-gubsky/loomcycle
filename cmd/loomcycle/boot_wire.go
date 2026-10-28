@@ -296,6 +296,7 @@ func (b *boot) bindStoreToTools() {
 	skillTool.Store = storeIface
 	evaluationTool.Store = storeIface
 	contextTool.Store = storeIface
+	b.identityTool.Store = storeIface
 	// RFC BL P1: the SAME embedder the Memory tool uses powers the help op's
 	// `query` search mode; nil (no embedder configured) makes query degrade to
 	// a substring scan over the in-memory help set.

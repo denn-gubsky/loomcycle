@@ -1050,6 +1050,11 @@ func (s *Store) AuthSubjectDelete(ctx context.Context, tenantID, subject string)
 		`DELETE FROM auth_invites WHERE tenant_id = ?1 AND (subject = ?2 OR redeemed_subject = ?2)`,
 		`DELETE FROM auth_resets WHERE tenant_id = ?1 AND subject = ?2`,
 		`DELETE FROM auth_removals WHERE tenant_id = ?1 AND subject = ?2`,
+		// RFC FL app sign-ins: the refresh tokens before their families.
+		`DELETE FROM oauth_refresh_tokens WHERE family_id IN (
+			SELECT family_id FROM oauth_refresh_families WHERE tenant_id = ?1 AND subject = ?2)`,
+		`DELETE FROM oauth_refresh_families WHERE tenant_id = ?1 AND subject = ?2`,
+		`DELETE FROM oauth_codes WHERE tenant_id = ?1 AND subject = ?2`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, tenantID, subject); err != nil {
 			return fmt.Errorf("auth subject delete: %w", err)

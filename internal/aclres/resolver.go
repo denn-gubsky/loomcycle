@@ -113,6 +113,25 @@ func Class(p auth.Principal) string {
 	return "member"
 }
 
+// IsOperatorClass reports whether a class key (authz.Subject.Class, as
+// ClassKey writes it) is a tenant operator's or an admin's. A token RFC EF
+// confines to the run plane is not, whatever its scopes.
+func IsOperatorClass(classKey string) bool {
+	return classKey == "admin" || classKey == "tenant"
+}
+
+// RowPrincipal is the principal a subject is evaluated as when it is named
+// rather than present: the class its user row gives it (an isolated user, or
+// a member), never the class of whoever asked. accessMode is the row's
+// access_mode ("" when it has no row).
+func RowPrincipal(tenant, subject, accessMode string) auth.Principal {
+	scopes := []string{auth.ScopeRunsCreate, auth.ScopeRunsRead, auth.ScopeChannelPublish, auth.ScopeChannelRead}
+	if accessMode == "isolated" {
+		scopes = []string{auth.ScopeUser}
+	}
+	return auth.Principal{TenantID: tenant, Subject: subject, Scopes: scopes}
+}
+
 // runPlaneSuffix marks a class key whose token RFC EF confines to the run
 // plane: the run-plane deny list is bound on top of the class baseline.
 const runPlaneSuffix = "+runplane"

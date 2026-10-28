@@ -32,13 +32,15 @@ const mcpErrForbidden = -32001
 // authz that keeps it confined: a tenant session lists + may call only these
 // tools; the admin-only ones are filtered out + 403'd by principalMayCallTool.
 var tenantConfinableTools = map[string]bool{
-	// directory: a read-only derived view of who is in the caller's OWN tenant.
-	// Tenant-confinable because the handler takes the tenant from the PRINCIPAL and
-	// offers no wire field, so a tenant session cannot inspect another tenant's
-	// subject. Its op=tenants sub-op is separately refused for a non-admin inside
-	// the handler — that one op IS cross-tenant, and the tool is listed here rather
-	// than in adminOnlyTools so the useful ops stay reachable.
-	"directory": true,
+	// identity: the read-only directory of the caller's OWN tenant (the
+	// Identity tool). Tenant-confinable because the tenant comes from the
+	// PRINCIPAL and there is no wire field for it, so a session cannot look up
+	// another tenant's subject; what it may see inside the tenant is the
+	// tool's own locks (read / manage principal). Its op=tenants sub-op is
+	// separately refused for a non-admin inside the handler — that one op IS
+	// cross-tenant, and the tool is listed here rather than in adminOnlyTools
+	// so the useful ops stay reachable.
+	"identity": true,
 	// erasure: a data-subject report/erasure confined to the caller's own tenant.
 	// Tenant-confinable rather than admin-only because the handler takes the
 	// tenant from the PRINCIPAL and offers no wire field for it, so a tenant
@@ -123,6 +125,11 @@ var tenantConfinableTools = map[string]bool{
 	// authz: the questions a principal asks about itself; naming another
 	// subject needs a tenant operator, which the implementation checks.
 	"authz": true,
+	// clientdef: the implementation stamps the tenant from the principal (an
+	// admin alone names another) and opaque-404s another tenant's client. It
+	// also needs substrate:tenant by name (toolRequiredScope), as its HTTP
+	// route keeps members out.
+	"clientdef": true,
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -257,6 +264,9 @@ var toolRequiredScope = map[string]string{
 	"groupdef":   auth.ScopeTenant,
 	"acldef":     auth.ScopeTenant,
 	"aclbinding": auth.ScopeTenant,
+	// An app client decides where people's sign-in codes go: the operator's
+	// to register, as POST /v1/_clientdef requires.
+	"clientdef": auth.ScopeTenant,
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke

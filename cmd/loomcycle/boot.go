@@ -82,6 +82,7 @@ type boot struct {
 	evaluationTool    *builtin.Evaluation
 	interruptionTool  *builtin.Interruption
 	contextTool       *builtin.Context
+	identityTool      *builtin.Identity
 
 	// buildMCP
 	dynamicMCPRegistry *mcp.DynamicRegistry

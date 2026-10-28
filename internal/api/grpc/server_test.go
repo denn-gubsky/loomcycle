@@ -952,6 +952,10 @@ func (m *mockConnector) WebhookDef(context.Context, json.RawMessage) (connector.
 func (m *mockConnector) MemoryBackendDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) ClientDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 func (m *mockConnector) DocumentSourceDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -989,6 +993,9 @@ func (m *mockConnector) Document(context.Context, json.RawMessage) (connector.To
 	return connector.ToolResult{}, nil
 }
 func (m *mockConnector) History(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) Identity(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
 func (m *mockConnector) Decision(context.Context, json.RawMessage) (connector.ToolResult, error) {

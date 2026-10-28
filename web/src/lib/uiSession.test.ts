@@ -83,11 +83,20 @@ describe("parseLoginConfig", () => {
       gates: [{ name: "paste", kind: "token", label: "Access token" }],
       origins: ["https://loomcycle.cloud"],
       sessionRefused: "insecure_transport",
+      app: null,
     });
   });
 
+  it("reads the app an app sign-in is for", () => {
+    expect(parseLoginConfig({ app: { label: "loomboard", destination: "board.example.com" } }).app).toEqual({
+      label: "loomboard",
+      destination: "board.example.com",
+    });
+    expect(parseLoginConfig({ app: { label: 3 } }).app).toBeNull();
+  });
+
   it("treats a missing or malformed document as empty", () => {
-    expect(parseLoginConfig(null)).toEqual({ mode: "", gates: [], origins: [], sessionRefused: "" });
+    expect(parseLoginConfig(null)).toEqual({ mode: "", gates: [], origins: [], sessionRefused: "", app: null });
     expect(parseLoginConfig({ gates: "x", login_origins: {} }).gates).toEqual([]);
   });
 });

@@ -48,6 +48,8 @@ _CASES = [
     ("memory_backend_def", "MemoryBackendDef"),
     ("document_source_def", "DocumentSourceDef"),
     ("operator_token_def", "OperatorTokenDef"),
+    # RFC FL — the apps that sign people in through this server's gates.
+    ("client_def", "ClientDef"),
     ("volume_def", "VolumeDef"),
     ("team_def", "TeamDef"),
     ("hook_def", "HookDef"),
@@ -55,6 +57,16 @@ _CASES = [
     # SubstrateRequest→SubstrateResponse dispatch shape exactly.
     ("history", "History"),
 ]
+
+
+@pytest.mark.parametrize("method,rpc", _CASES)
+@pytest.mark.asyncio
+async def test_substrate_def_rpc_is_on_the_generated_stub(method: str, rpc: str):
+    # The other tests replace the stub attribute, so they would pass for an
+    # RPC the generated stub does not have; the dispatch looks it up by name.
+    # Async only because an aio channel needs a running event loop.
+    client = _make_client()
+    assert callable(getattr(client._stub, rpc, None)), f"stub lacks {rpc}"
 
 
 @pytest.mark.parametrize("method,rpc", _CASES)

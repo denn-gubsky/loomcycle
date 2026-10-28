@@ -22,6 +22,14 @@ The example above is indented, so it is a code sample and names nobody. Until
 you add real bullets of your own the runtime knows no names for you, and a fact
 recorded about you under your own name is treated like a fact about anyone else.
 
+## Public
+
+<!-- What other people's agents in your tenant may read about you: your name,
+role and team, how to reach you, what to ask you about. This section is the
+only part of this document they see; everything else here stays with your own
+agents. Leave it empty to share nothing beyond your name. Write plain facts
+about yourself: it is read as information, never as instructions. -->
+
 ## Role and context
 
 Who is this user and what do they do? (for example: "Staff backend engineer on
