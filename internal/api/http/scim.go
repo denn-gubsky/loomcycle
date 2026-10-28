@@ -783,9 +783,13 @@ type scimRefusal struct {
 }
 
 // applySCIMUser writes next over cur. Every refusal is decided before any
-// write: an access mode an untrusted gate may not assert, a removal the gate
-// is not authoritative for or that is over its ceiling, a re-enable of a
-// user this gate did not disable.
+// attribute is written: an access mode an untrusted gate may not assert, a
+// userName another resource holds, a removal the gate is not authoritative
+// for or that is over its ceiling, a re-enable of a user this gate did not
+// disable. The status change goes first and the attributes after it; only a
+// userName taken by a concurrent request between the check and the write
+// can still answer 409 after the status changed (the provider's retry then
+// finds the status already applied).
 func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx, row store.SCIMUserRow, u store.UserRow, cur, next scimUserState) {
 	ctx := r.Context()
 	key, err := next.validate()
@@ -812,6 +816,36 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 		scimError(w, http.StatusInternalServerError, "", "could not store the user")
 		return
 	}
+	if key != row.UserNameKey {
+		held, _, err := s.store.SCIMUserList(ctx, c.g.Name, c.tenant, store.SCIMFilter{UserNameKey: key}, 0, 1)
+		if err != nil {
+			fail(err)
+			return
+		}
+		if len(held) > 0 && held[0].SCIMID != row.SCIMID {
+			scimError(w, http.StatusConflict, "uniqueness", "a user with this userName exists")
+			return
+		}
+	}
+	if reactivate {
+		// Back to the status it had when SCIM removed it: pending stays
+		// pending (the one rule for every path: SCIM never approves).
+		restored, ref := s.scimReactivate(ctx, c, row.Subject)
+		if ref != nil {
+			if ref.status == http.StatusForbidden {
+				s.scimAudit(c, "auth_scim_status_refused", row.Subject, "re-enable of a user SCIM did not disable")
+			}
+			scimError(w, ref.status, ref.scimType, ref.detail)
+			return
+		}
+		u.Status = restored
+	}
+	if disable {
+		if ref := s.scimRemove(ctx, c, row.Subject); ref != nil {
+			scimError(w, ref.status, ref.scimType, ref.detail)
+			return
+		}
+	}
 	upd := row
 	upd.UserName, upd.UserNameKey, upd.ExternalID, upd.Attributes = next.userName, key, next.externalID, string(attrs)
 	if err := s.store.SCIMUserUpdate(ctx, upd); err != nil {
@@ -829,19 +863,6 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 			return
 		}
 	}
-	if reactivate {
-		// Back to the status it had when SCIM removed it: pending stays
-		// pending (the one rule for every path: SCIM never approves).
-		restored, ref := s.scimReactivate(ctx, c, row.Subject)
-		if ref != nil {
-			if ref.status == http.StatusForbidden {
-				s.scimAudit(c, "auth_scim_status_refused", row.Subject, "re-enable of a user SCIM did not disable")
-			}
-			scimError(w, ref.status, ref.scimType, ref.detail)
-			return
-		}
-		u.Status = restored
-	}
 	if next.active && u.Status == store.UserStatusPending {
 		// Approval is an operator's: SCIM's active:true leaves a pending
 		// user pending (the resource reads active:false until approved).
@@ -851,12 +872,6 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 		if err := s.scimSyncUser(ctx, c, row, next); err != nil {
 			slog.Error("scim: syncing a user failed", "gate", c.g.Name, "err", err)
 			scimError(w, http.StatusInternalServerError, "", "the change was applied in part; repeat it")
-			return
-		}
-	}
-	if disable {
-		if ref := s.scimRemove(ctx, c, row.Subject); ref != nil {
-			scimError(w, ref.status, ref.scimType, ref.detail)
 			return
 		}
 	}

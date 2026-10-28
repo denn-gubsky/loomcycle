@@ -140,6 +140,39 @@ func TestSCIM_CreatesAreHeldToTheCeiling(t *testing.T) {
 	f.scimUser(t, bSCIMOther, "c@other.test")
 }
 
+// A refused status change writes none of the request's attributes.
+func TestSCIM_ARefusedStatusChangeWritesNoAttribute(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true, maxRemovals: 1})
+	ctx := context.Background()
+	// A re-enable of a user an operator disabled.
+	id, sub := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+	disabled := "disabled"
+	if err := f.st.UserUpdate(ctx, "acme", sub, store.UserPatch{Status: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.call(t, bSCIMAcme, "PUT", "/scim/v2/Users/"+id, `{"userName":"renamed@acme.test","displayName":"Renamed","active":true}`); code != http.StatusForbidden {
+		t.Fatalf("re-enable of an operator's disable = %d, want 403", code)
+	}
+	if row, _ := f.st.SCIMUserGet(ctx, "okta", "acme", id); row.UserName != "alice@acme.test" {
+		t.Fatalf("a refused re-enable renamed the resource to %q", row.UserName)
+	}
+	if u, _ := f.st.UserGet(ctx, "acme", sub); u.DisplayName == "Renamed" {
+		t.Fatal("a refused re-enable changed the display name")
+	}
+	// A removal over the ceiling.
+	first, _ := f.scimUser(t, bSCIMAcme, "bob@acme.test")
+	if code, _ := f.call(t, bSCIMAcme, "DELETE", "/scim/v2/Users/"+first, ""); code != http.StatusNoContent {
+		t.Fatalf("first removal = %d", code)
+	}
+	id2, _ := f.scimUser(t, bSCIMAcme, "carol@acme.test")
+	if code, _ := f.call(t, bSCIMAcme, "PUT", "/scim/v2/Users/"+id2, `{"userName":"carol2@acme.test","active":false}`); code != http.StatusTooManyRequests {
+		t.Fatalf("a removal over the ceiling = %d, want 429", code)
+	}
+	if row, _ := f.st.SCIMUserGet(ctx, "okta", "acme", id2); row.UserName != "carol@acme.test" {
+		t.Fatalf("a refused removal renamed the resource to %q", row.UserName)
+	}
+}
+
 // A SCIM re-enable gives the user nothing before it owns the re-enable: an
 // operator who takes the removal over while the user is being reset keeps a
 // disabled user that has joined no floor group.
