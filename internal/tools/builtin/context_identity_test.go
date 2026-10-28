@@ -159,14 +159,14 @@ func TestContextSelf_IdentityReportsTheRunsUserGroupsAndAppliedLists(t *testing.
 		t.Errorf("op=self carries another tenant's directory data: %s", res.Text)
 	}
 	// The flat principal block keeps exactly the keys its existing readers
-	// know.
+	// know, plus the additive `authority` (frozen | inherit) a token reports.
 	principal, _ := out["principal"].(map[string]any)
 	keys := make([]string, 0, len(principal))
 	for k := range principal {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if want := []string{"is_admin", "legacy", "scopes", "subject", "tenant_id", "token_def_id", "token_suffix"}; !reflect.DeepEqual(keys, want) {
+	if want := []string{"authority", "is_admin", "legacy", "scopes", "subject", "tenant_id", "token_def_id", "token_suffix"}; !reflect.DeepEqual(keys, want) {
 		t.Errorf("principal keys = %v, want %v", keys, want)
 	}
 }

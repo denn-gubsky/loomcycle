@@ -507,6 +507,31 @@ func TestOperatorTokenDef_RotateKeepsTheExpiry(t *testing.T) {
 	}
 }
 
+// RFC EY §8: a rotation replaces the secret, not the authority mode — an
+// inherit token rotated by def_id stays inherit, so it does not freeze the
+// scopes its user held at mint.
+func TestOperatorTokenDef_RotateKeepsTheAuthorityMode(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	if _, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{
+		DefID: "def_inh", Name: "u-alice", TenantID: "acme", Subject: "alice", TokenHash: "h-inh",
+		AllowedScopes: []string{"substrate:user"}, Authority: auth.AuthorityInherit,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","def_id":"def_inh"}`)
+	if rotated["authority"] != auth.AuthorityInherit {
+		t.Errorf("rotate response authority = %v, want inherit", rotated["authority"])
+	}
+	next, err := st.OperatorTokenDefGet(ctx, rotated["def_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Authority != auth.AuthorityInherit {
+		t.Errorf("rotated token authority = %q, want inherit", next.Authority)
+	}
+}
+
 // Rotating a token that has already run out would mint one dead on arrival.
 func TestOperatorTokenDef_RotateOfAnExpiredTokenIsRefused(t *testing.T) {
 	tool, ctx, st, cleanup := operatorTokenDefFixture(t)

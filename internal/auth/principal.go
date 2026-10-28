@@ -56,6 +56,20 @@ type Principal struct {
 	// revoke holds at once on every replica, whatever the sweeper did. The
 	// tenant's gate policy (RFC FA P5) is checked against it the same way.
 	IssuedByGate string
+	// InheritsAuthority is set for a token minted with authority "inherit"
+	// (RFC EY §8): Scopes is then not the token's stored set but the implied
+	// set of its user's current access_mode, re-derived on every request it
+	// authenticates. Restrictions still narrow it.
+	InheritsAuthority bool
+}
+
+// AuthorityMode names how the principal's scopes were decided, for reporting
+// (/v1/_me, Context op=self): AuthorityInherit or AuthorityFrozen. Not secret.
+func (p Principal) AuthorityMode() string {
+	if p.InheritsAuthority {
+		return AuthorityInherit
+	}
+	return AuthorityFrozen
 }
 
 type ctxKeyPrincipal struct{}

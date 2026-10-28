@@ -36,7 +36,10 @@ type stubConfig struct {
 	loginable      int
 	embedder       *DoctorEmbedder
 	embedderErr    error
+	edgeProbes     []DoctorEdgeProbe
 }
+
+func (s *stubConfig) EdgeGateProbes() []DoctorEdgeProbe { return s.edgeProbes }
 
 func (s *stubConfig) Embedder() (*DoctorEmbedder, error) { return s.embedder, s.embedderErr }
 

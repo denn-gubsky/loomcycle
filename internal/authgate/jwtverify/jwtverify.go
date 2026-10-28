@@ -50,6 +50,12 @@ var ErrInvalid = errors.New("jwt: invalid token")
 // ErrUnknownKey: no key of the issuer's set matches the token's kid.
 var ErrUnknownKey = errors.New("jwt: no key for the token's key id")
 
+// ErrKeySetUnavailable: the key set could not be fetched, so the token was
+// not judged at all. It is not wrapped in ErrInvalid: a caller that ends a
+// session on an invalid token must not end it because the issuer's key
+// endpoint is down.
+var ErrKeySetUnavailable = errors.New("jwt: key set unavailable")
+
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, args...)...)
 }
@@ -116,6 +122,9 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Claims, error) {
 	}
 	alg := jose.SignatureAlgorithm(h.Algorithm)
 	key, err := v.Keys.Key(ctx, h.KeyID, alg)
+	if errors.Is(err, ErrKeySetUnavailable) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}

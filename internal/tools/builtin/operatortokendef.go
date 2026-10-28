@@ -724,6 +724,11 @@ func operatorTokenRowResponse(row store.OperatorTokenDefRow) map[string]any {
 		// operator can see why the token is refused at login.
 		m["restrictions"] = json.RawMessage(row.RestrictionsJSON)
 	}
+	if row.Authority != "" {
+		// RFC EY §8: allowed_scopes is then what the user held at mint, not
+		// the token's ceiling.
+		m["authority"] = row.Authority
+	}
 	return m
 }
 
