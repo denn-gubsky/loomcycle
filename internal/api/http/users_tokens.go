@@ -17,7 +17,8 @@ package http
 //  2. The granted scopes are DERIVED from the target user's access_mode
 //     (auth.GrantableUserScopes) — never free-form from the request. A tenant
 //     operator cannot mint a token more powerful than the member's dial, and
-//     cannot mint an operator/admin scope at all.
+//     cannot mint an operator/admin scope at all. An "inherit" token (RFC EY
+//     §8) re-derives them the same way on every request instead of once.
 //  3. The route is substrate:tenant (the /v1/_users/ prefix gate in
 //     requiredScopeFor), so a substrate:user member is auto-denied minting.
 //  4. list / revoke operate ONLY on member tokens — a row that belongs to this
@@ -77,6 +78,31 @@ type mintUserTokenRequest struct {
 	Rate *auth.RateLimit `json:"rate,omitempty"`
 	// Retention: "none" makes every run the token starts a no-trace run.
 	Retention string `json:"retention,omitempty"`
+	// Authority is how the token's scopes are decided (RFC EY §8): "inherit"
+	// (its user's CURRENT access_mode, re-read on every request) or "frozen"
+	// (the grant of the access_mode at mint). Absent = the deployment's
+	// default (LOOMCYCLE_TOKEN_AUTHORITY_INHERIT). Either way the ceiling is
+	// the user's own access_mode grant — it names no scope.
+	Authority string `json:"authority,omitempty"`
+}
+
+// storedAuthority is the authority column value a mint writes: "" for frozen
+// (what every token minted before the mode existed holds) or
+// auth.AuthorityInherit. requested is what the caller asked for ("" = the
+// default); an unknown value is an error.
+func (s *Server) storedAuthority(requested string) (string, error) {
+	switch requested {
+	case "":
+		if c := s.cfg(); c != nil && c.Env.TokenAuthorityInherit {
+			return auth.AuthorityInherit, nil
+		}
+		return "", nil
+	case auth.AuthorityInherit:
+		return auth.AuthorityInherit, nil
+	case auth.AuthorityFrozen:
+		return "", nil
+	}
+	return "", fmt.Errorf("authority must be %q or %q", auth.AuthorityInherit, auth.AuthorityFrozen)
 }
 
 // restrictions builds the token's restrictions record from the request.
@@ -247,7 +273,11 @@ type mintUserTokenResponse struct {
 	// Restrictions is what narrows the token below its scopes, when anything
 	// does.
 	Restrictions *auth.Restrictions `json:"restrictions,omitempty"`
-	Warning      string             `json:"warning"`
+	// Authority is "inherit" when the token takes its user's current
+	// access_mode on each request (Scopes is then the grant at mint);
+	// absent for a frozen token.
+	Authority string `json:"authority,omitempty"`
+	Warning   string `json:"warning"`
 }
 
 // userTokenMeta is one token row in the list response — METADATA ONLY. It never
@@ -265,6 +295,10 @@ type userTokenMeta struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// Restrictions is the token's restrictions record, when it has one.
 	Restrictions *auth.Restrictions `json:"restrictions,omitempty"`
+	// Authority is "inherit" for a token whose scopes follow its user's
+	// current access_mode (Scopes is then the grant at mint); absent for a
+	// frozen token.
+	Authority string `json:"authority,omitempty"`
 	// Active applies the SAME validity rule as the auth hot path (a row
 	// authenticates iff it is not retired, or still inside its grace window,
 	// and not expired) so the UI can gray out a dead token honestly.
@@ -472,6 +506,11 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_max_active", "max_active must be at least 1")
 		return
 	}
+	authority, err := s.storedAuthority(req.Authority)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid_authority", err.Error())
+		return
+	}
 	restrictions, err := req.restrictions()
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_restrictions", err.Error())
@@ -560,6 +599,7 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	}
 	row.ExpiresAt = expiresAt
 	row.RestrictionsJSON = restrictionsJSON
+	row.Authority = authority
 	created, err := s.store.OperatorTokenDefCreate(r.Context(), row)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "token_create_failed", err.Error())
@@ -593,7 +633,8 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 	// Non-secret correlation only — NEVER the plaintext. The suffix + def_id are
 	// safe to log; the minting operator is attributed via principalSubject.
 	slog.Info("users: minted token", "tenant", tenant, "subject", subject, "def_id", created.DefID, "suffix", suffix,
-		"scopes", scopes, "expires", !created.ExpiresAt.IsZero(), "restrictions", restrictions.Describe(),
+		"scopes", scopes, "inherit", created.Authority == auth.AuthorityInherit,
+		"expires", !created.ExpiresAt.IsZero(), "restrictions", restrictions.Describe(),
 		"retired", len(retired), "by", principalSubject(r.Context()))
 
 	resp := mintUserTokenResponse{
@@ -604,6 +645,7 @@ func (s *Server) handleMintUserToken(w http.ResponseWriter, r *http.Request) {
 		Scopes:      scopes,
 		CreatedAt:   created.CreatedAt,
 		Retired:     retired,
+		Authority:   created.Authority,
 		Warning:     "store this token now — it is shown once and cannot be retrieved later",
 	}
 	if !created.ExpiresAt.IsZero() {
@@ -648,6 +690,7 @@ func (s *Server) handleListUserTokens(w http.ResponseWriter, r *http.Request) {
 			Name:      row.Name,
 			Scopes:    row.AllowedScopes,
 			CreatedAt: row.CreatedAt.UTC(),
+			Authority: row.Authority,
 			Active:    tokenActive(row),
 		}
 		if !row.RetiredAt.IsZero() {

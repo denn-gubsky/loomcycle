@@ -84,6 +84,10 @@ func (r *realConfig) Embedder() (*DoctorEmbedder, error) {
 	return out, nil
 }
 
+func (r *realConfig) EdgeGateProbes() []DoctorEdgeProbe {
+	return edgeGateProbes(r.cfg.ResolvedAuth.Gates)
+}
+
 func (r *realConfig) TokenHasher() (auth.TokenHasher, error) { return r.cfg.Env.TokenHasher() }
 
 func (r *realConfig) HostShellEnabled() bool {

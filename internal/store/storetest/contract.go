@@ -530,6 +530,7 @@ func Run(t *testing.T, factory Factory) {
 		{"GroupCreateNeverOverwrites", testGroupCreateNeverOverwrites},
 		{"UISessionAuthTimeRoundTrips", testUISessionAuthTimeRoundTrips},
 		{"OperatorTokenIssuedByGateRoundTrips", testOperatorTokenIssuedByGateRoundTrips},
+		{"OperatorTokenAuthorityRoundTripsAndDefaultsFrozen", testOperatorTokenAuthorityRoundTripsAndDefaultsFrozen},
 		// RFC FL app sign-ins (oauth.go).
 		{"OAuthCodeConsumesOnceAndKeepsTheFirstFamily", testOAuthCodeConsumesOnceAndKeepsTheFirstFamily},
 		{"OAuthCodeConcurrentConsumeHasOneWinner", testOAuthCodeConcurrentConsumeHasOneWinner},
