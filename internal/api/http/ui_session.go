@@ -621,8 +621,9 @@ func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, ro
 			return auth.Principal{}, false, true
 		}
 		// A gate-issued token pasted into the UI holds only while its user
-		// is active, as on the API (gateTokenUserActive).
-		if !s.gateTokenUserActive(ctx, p) {
+		// is active, and an inherit token takes its user's current scopes,
+		// as on the API (liveTokenPrincipal).
+		if p, ok = s.liveTokenPrincipal(ctx, p); !ok {
 			return auth.Principal{}, false, false
 		}
 		return s.enrichPrincipal(ctx, p), true, true

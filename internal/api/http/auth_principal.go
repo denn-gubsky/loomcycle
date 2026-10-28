@@ -499,13 +499,13 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	}
 	hash := h.Hash(bearer)
 	if p, found, ok := s.tokenCache.get(hash); ok {
-		if found && !s.gateTokenUserActive(ctx, p) {
+		if !found {
+			return p, false
+		}
+		if p, ok = s.liveTokenPrincipal(ctx, p); !ok {
 			return auth.Principal{}, false
 		}
-		if found {
-			p = s.enrichPrincipal(ctx, p)
-		}
-		return p, found
+		return s.enrichPrincipal(ctx, p), true
 	}
 	p, found, cacheable, validUntil := s.resolvePrincipalUncached(ctx, h, bearer, hash)
 	// Only memoise DEFINITIVE outcomes (token hit, legacy fallback, genuine
@@ -516,48 +516,70 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if cacheable {
 		s.tokenCache.put(hash, p, found, validUntil)
 	}
-	if found && !s.gateTokenUserActive(ctx, p) {
+	if !found {
+		return p, false
+	}
+	if p, found = s.liveTokenPrincipal(ctx, p); !found {
 		return auth.Principal{}, false
 	}
-	if found {
-		// The RFC EY set is resolved OUTSIDE the token cache: it has its own
-		// cache keyed on the tenant's acl_version, so a binding change reaches
-		// the next request without a token-cache flush.
-		p = s.enrichPrincipal(ctx, p)
-	}
-	return p, found
+	// The RFC EY set is resolved OUTSIDE the token cache: it has its own
+	// cache keyed on the tenant's acl_version, so a binding change reaches
+	// the next request without a token-cache flush.
+	return s.enrichPrincipal(ctx, p), true
 }
 
-// gateTokenUserActive is the on-use half of the removal policy (RFC FA
-// §3.7c): a token a gate issued authenticates only while its user is active,
-// read from the store on every request — after the token cache, so neither a
-// cached resolution nor a removal whose token retire failed part-way can
-// carry a disabled (or revoked, or pending) user past it, on any replica.
-// Fails closed: a status that cannot be read refuses the request. Other
-// credentials are not affected.
+// liveTokenPrincipal applies, after the token cache, what a token row cannot
+// fix at mint because it depends on the user as the user is NOW. It reads
+// the user row on every request it has work for, so neither a cached
+// resolution nor a removal whose token retire failed part-way can carry a
+// stale user past it, on any replica:
 //
-// The token also stands only while the gate that issued it is configured: an
-// operator who takes a gate out of the config withdraws its trust, and what it
-// vouched for must not outlive that until its TTL (a gate's browser sessions
-// follow the same rule in identitySessionPrincipal).
-func (s *Server) gateTokenUserActive(ctx context.Context, p auth.Principal) bool {
-	if p.IssuedByGate == "" {
-		return true
+//   - a gate-issued token (the on-use half of the RFC FA §3.7c removal
+//     policy) stands only while its user is active and the gate that issued
+//     it is configured: an operator who takes a gate out of the config
+//     withdraws its trust, and what it vouched for must not outlive that
+//     until its TTL (a gate's browser sessions follow the same rule in
+//     identitySessionPrincipal);
+//   - an inherit token (RFC EY §8) stands only while its user exists and is
+//     active, and its scopes BECOME the implied set of the user's current
+//     access_mode, so a promotion widens it and a demotion narrows it on the
+//     next request with no re-mint. Its restrictions are untouched, so they
+//     still only narrow.
+//
+// A frozen token from neither path is returned as it is, with no read. Fails
+// closed: a user that cannot be read, or an access_mode that grants nothing,
+// refuses the request.
+func (s *Server) liveTokenPrincipal(ctx context.Context, p auth.Principal) (auth.Principal, bool) {
+	if p.IssuedByGate == "" && !p.InheritsAuthority {
+		return p, true
 	}
-	if _, ok := s.configuredGate(p.IssuedByGate); !ok {
-		return false
+	if p.IssuedByGate != "" {
+		if _, ok := s.configuredGate(p.IssuedByGate); !ok {
+			return auth.Principal{}, false
+		}
 	}
 	if s.store == nil {
-		return false
+		return auth.Principal{}, false
 	}
 	u, err := s.store.UserGet(ctx, p.TenantID, p.Subject)
 	if err != nil {
 		if !isNotFound(err) && ctx.Err() == nil {
-			slog.Error("auth: reading a gate token's user failed (refusing)", "err", err)
+			slog.Error("auth: reading a token's user failed (refusing)", "token_def", p.TokenDefID, "err", err)
 		}
-		return false
+		return auth.Principal{}, false
 	}
-	return u.Status == "active"
+	if u.Status != "active" {
+		return auth.Principal{}, false
+	}
+	if p.InheritsAuthority {
+		scopes, err := auth.GrantableUserScopes(u.AccessMode)
+		if err != nil {
+			slog.Error("auth: an inherit token's user grants no scopes (refusing)", "token_def", p.TokenDefID, "err", err)
+			return auth.Principal{}, false
+		}
+		p.Scopes = scopes
+	}
+	return p, true
 }
 
 // resolvePrincipalUncached is the resolution itself: token substrate
@@ -649,6 +671,13 @@ func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Princ
 		slog.Warn("auth: token refused", "token_def", row.DefID, "err", err)
 		return auth.Principal{}, false, never
 	}
+	// Likewise an authority mode this build does not know: reading it as
+	// frozen would hand the token its stored scopes, as inherit its user's.
+	inherit, err := auth.TokenInheritsAuthority(row.Authority)
+	if err != nil {
+		slog.Warn("auth: token refused", "token_def", row.DefID, "err", err)
+		return auth.Principal{}, false, never
+	}
 	validUntil := never
 	if !row.RetiredAt.IsZero() || !row.ExpiresAt.IsZero() {
 		validUntil = row.ValidUntil()
@@ -660,6 +689,9 @@ func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Princ
 		TokenDefID:   row.DefID,
 		Restrictions: restrictions,
 		IssuedByGate: row.IssuedByGate,
+		// Scopes above are the set the user held at mint; liveTokenPrincipal
+		// replaces them with the current one on every request.
+		InheritsAuthority: inherit,
 	}, true, validUntil
 }
 
@@ -968,6 +1000,10 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	if !p.Restrictions.IsZero() {
 		out["restrictions"] = p.Restrictions
 	}
+	// RFC EY §8: whether scopes above are the token's own (frozen) or its
+	// user's current access_mode (inherit), so a UI can say a promotion
+	// needs no new token.
+	out["authority"] = p.AuthorityMode()
 	// RFC EY: the principal's groups and the rollout mode, so a UI can show
 	// why a surface is missing; the compiled set itself is not serialised.
 	out["acl_mode"] = string(s.aclMode())
