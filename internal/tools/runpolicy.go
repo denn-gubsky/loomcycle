@@ -98,6 +98,10 @@ type RunPolicy struct {
 	// ACLRemovedTools names the tools this run's definition granted and its
 	// ACL removed, for Context op=self; each hop's own.
 	ACLRemovedTools []string
+	// LiveACL, set only under LOOMCYCLE_ACL_LIVE=1, re-reads the caller's
+	// set during the run and holds the policy PolicyOf returns to the current
+	// rules within ACL (see aclive.go). nil: the set is frozen at the start.
+	LiveACL *LiveACL
 
 	// FanoutCap is the run's own parallel_spawn width; 0 lets the calling
 	// agent's definition decide, by name, at spawn time.
@@ -133,8 +137,13 @@ func WithRunPolicy(ctx context.Context, p RunPolicy) context.Context {
 
 // PolicyOf returns the run's policy, or the zero RunPolicy when ctx carries
 // none — which grants nothing (see the field docs for what zero means each).
+// A run with a live view of its caller's set (LiveACL) gets the policy
+// narrowed by the latest reading of that set.
 func PolicyOf(ctx context.Context) RunPolicy {
 	p, _ := ctx.Value(ctxKeyRunPolicy{}).(RunPolicy)
+	if p.LiveACL != nil {
+		return applyLive(ctx, p)
+	}
 	return p
 }
 
@@ -225,6 +234,7 @@ var inheritRules = map[string]inheritRule{
 	"OperatorAuthored":   ruleOwn,     //
 	"ACL":                ruleInherit, // the originating principal's set binds the whole tree (RFC EY)
 	"ACLRemovedTools":    ruleOwn,     // what this hop's definition lost to the ACL
+	"LiveACL":            ruleOwn,     // each run's own view, built from the set it was spawned with
 	"FanoutCap":          ruleNarrow,  // min(parent, child) when both are set, else the one set
 	"Overrides":          ruleInherit, // only a child of the same definition takes them
 	"Compaction":         ruleMerge,   // parent wins per field, then this spawn's override
@@ -280,6 +290,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		OperatorAuthored:  own.OperatorAuthored,
 		ACL:               p.ACL,
 		ACLRemovedTools:   own.ACLRemovedTools,
+		LiveACL:           own.LiveACL,
 		FanoutCap:         NarrowFanoutCap(p.FanoutCap, own.FanoutCap),
 		Overrides:         p.Overrides,
 		// A child's own settings fill what its parent left unset; a per-spawn
