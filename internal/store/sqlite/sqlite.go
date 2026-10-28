@@ -38,6 +38,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
 )
 
 // Store is the SQLite implementation of store.Store.
@@ -713,8 +714,38 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY (tenant_id, subject)
 		)`,
 		`CREATE INDEX IF NOT EXISTS auth_removals_by_unbind_due ON auth_removals(unbind_due_at) WHERE unbound_at IS NULL`,
-		// RFC FL P0 app sign-in. Mirrors postgres migration 0119 (see
-		// 0119_oauth_app_sign_in.up.sql): authorization codes, refresh-token
+		// RFC FA P5 device login and per-tenant gate policy. Mirrors
+		// postgres migration 0118 (see 0118_device_gate.up.sql for the
+		// design); times are unix nanos, interval_ms milliseconds.
+		`CREATE TABLE IF NOT EXISTS device_authorizations (
+			device_code_hash TEXT    PRIMARY KEY,
+			user_code_hash   TEXT    NOT NULL UNIQUE,
+			client_id        TEXT    NOT NULL,
+			source_addr      TEXT    NOT NULL DEFAULT '',
+			created_at       INTEGER NOT NULL,
+			expires_at       INTEGER NOT NULL,
+			interval_ms      INTEGER NOT NULL,
+			last_polled_at   INTEGER,
+			last_poll_early  INTEGER NOT NULL DEFAULT 0,
+			status           TEXT    NOT NULL DEFAULT 'pending',
+			decided_tenant   TEXT    NOT NULL DEFAULT '',
+			decided_subject  TEXT    NOT NULL DEFAULT '',
+			decided_gate     TEXT    NOT NULL DEFAULT '',
+			decided_at       INTEGER,
+			decided_session  TEXT    NOT NULL DEFAULT '',
+			decided_cred_mac TEXT    NOT NULL DEFAULT '',
+			decided_not_after INTEGER,
+			redeemed_at      INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS device_authorizations_by_expiry ON device_authorizations(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS tenant_auth_policies (
+			tenant_id  TEXT    PRIMARY KEY,
+			gates      TEXT    NOT NULL,
+			updated_at INTEGER NOT NULL,
+			updated_by TEXT    NOT NULL DEFAULT ''
+		)`,
+		// RFC FL P0 app sign-in. Mirrors postgres migration 0123 (see
+		// 0123_oauth_app_sign_in.up.sql): authorization codes, refresh-token
 		// families and their refresh tokens — hashes only.
 		`CREATE TABLE IF NOT EXISTS oauth_codes (
 			code_hash      TEXT    PRIMARY KEY,
@@ -761,8 +792,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			used_at    INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS oauth_refresh_tokens_by_family ON oauth_refresh_tokens(family_id)`,
-		// RFC FL P0b runtime app clients. Mirrors postgres migration 0120
-		// (see 0120_client_defs.up.sql).
+		// RFC FL P0b runtime app clients. Mirrors postgres migration 0124
+		// (see 0124_client_defs.up.sql).
 		`CREATE TABLE IF NOT EXISTS client_defs (
 			def_id            TEXT    PRIMARY KEY,
 			name              TEXT    NOT NULL,
@@ -897,6 +928,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			tenant_id             TEXT    NOT NULL DEFAULT '',
 			promoter_operator_key_restricted INTEGER,
 			promoter_isolated                INTEGER,
+			promoter_acl_owner               TEXT,
 			PRIMARY KEY(tenant_id, name)
 		)`,
 		// A team's own webhooks, armed by running walks: one lease per
@@ -1740,9 +1772,14 @@ func (s *Store) migrate(ctx context.Context) error {
 		// its user's current access_mode). Every existing row reads back
 		// frozen. Mirrors postgres 0117.
 		`ALTER TABLE operator_token_defs ADD COLUMN authority TEXT NOT NULL DEFAULT ''`,
+		// Whose access-control set binds a team subscription's walks (the
+		// promoter). NULLABLE, no DEFAULT: a pointer promoted before it reads
+		// as "owner unknown", never as "recorded, nobody". Mirrors postgres
+		// 0121; see sqlshared/teamdef_promoter.go for the three states.
+		`ALTER TABLE teamdef_active ADD COLUMN promoter_acl_owner TEXT`,
 		// The app sign-in an access token came from (RFC FL): its client and
 		// refresh-token family, '' for every other token. Mirrors postgres
-		// 0119; the indexes are in addIndexes.
+		// 0123; the indexes are in addIndexes.
 		`ALTER TABLE operator_token_defs ADD COLUMN oauth_client TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE operator_token_defs ADD COLUMN oauth_family TEXT NOT NULL DEFAULT ''`,
 	}
@@ -4771,7 +4808,7 @@ func (s *Store) SnapshotReadTeamDefs(ctx context.Context) ([]store.TeamDefRow, e
 func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefActiveEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT name, def_id, promoted_at, promoted_by_agent_id, tenant_id,
-		        promoter_operator_key_restricted, promoter_isolated
+		        promoter_operator_key_restricted, promoter_isolated, promoter_acl_owner
 		 FROM teamdef_active
 		 ORDER BY tenant_id ASC, name ASC`)
 	if err != nil {
@@ -4785,15 +4822,18 @@ func (s *Store) SnapshotReadTeamDefActive(ctx context.Context) ([]store.TeamDefA
 			promotedNs     int64
 			promoter       sql.NullString
 			opKey, isolate sql.NullBool
+			aclOwner       sql.NullString
 		)
-		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID, &opKey, &isolate); err != nil {
+		if err := rows.Scan(&e.Name, &e.DefID, &promotedNs, &promoter, &e.TenantID, &opKey, &isolate, &aclOwner); err != nil {
 			return nil, fmt.Errorf("scan teamdef_active: %w", err)
 		}
 		e.PromotedAt = time.Unix(0, promotedNs)
 		if promoter.Valid {
 			e.PromotedByAgentID = promoter.String
 		}
-		e.Promoter = teamDefPromoterFromColumns(opKey, isolate)
+		if e.Promoter, err = teamDefPromoterFromColumns(opKey, isolate, aclOwner); err != nil {
+			return nil, fmt.Errorf("team %q: %w", e.Name, err)
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -5455,10 +5495,15 @@ func (s *Store) SnapshotRestoreTeamDefActive(ctx context.Context, e store.TeamDe
 		promotedNs = time.Now().UnixNano()
 	}
 	opKey, isolate := teamDefPromoterColumns(e.Promoter)
+	aclOwner, err := sqlshared.TeamDefPromoterACLOwnerRestoreArg(e.Promoter)
+	if err != nil {
+		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
+	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO teamdef_active(tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
-		                                      promoter_operator_key_restricted, promoter_isolated) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID), opKey, isolate,
+		                                      promoter_operator_key_restricted, promoter_isolated, promoter_acl_owner)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.TenantID, e.Name, e.DefID, promotedNs, nilIfEmpty(e.PromotedByAgentID), opKey, isolate, aclOwner,
 	)
 	if err != nil {
 		return false, fmt.Errorf("snapshot restore teamdef_active: %w", err)
@@ -8622,11 +8667,12 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 			COALESCE(a.def_id, '')                AS active_def_id,
 			COALESCE(ad.retired, 0)               AS active_retired,
 			a.promoter_operator_key_restricted,
-			a.promoter_isolated
+			a.promoter_isolated,
+			a.promoter_acl_owner
 		FROM teamdefs d
 		LEFT JOIN teamdef_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
 		LEFT JOIN teamdefs ad      ON ad.def_id = a.def_id
-		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated, a.promoter_acl_owner
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, err
@@ -8639,12 +8685,16 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 		var updatedAt int64
 		var activeRetired int
 		var opKey, isolate sql.NullBool
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID, &activeRetired, &opKey, &isolate); err != nil {
+		var aclOwner sql.NullString
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &updatedAt, &ns.ActiveDefID, &activeRetired, &opKey, &isolate, &aclOwner); err != nil {
 			return nil, err
 		}
 		ns.LastUpdated = time.Unix(0, updatedAt)
 		ns.ActiveRetired = activeRetired != 0
-		ns.ActivePromoter = teamDefPromoterFromColumns(opKey, isolate)
+		var err error
+		if ns.ActivePromoter, err = teamDefPromoterFromColumns(opKey, isolate, aclOwner); err != nil {
+			return nil, fmt.Errorf("team %q: %w", ns.Name, err)
+		}
 		out = append(out, ns)
 	}
 	return out, rows.Err()
@@ -8672,18 +8722,23 @@ func (s *Store) TeamDefSetActive(ctx context.Context, tenantID, name, defID, pro
 	if rowTenant != tenantID {
 		return fmt.Errorf("teamdef_active: def_id %q belongs to tenant %q, refusing to promote under tenant %q", defID, rowTenant, tenantID)
 	}
+	aclOwner, err := sqlshared.TeamDefPromoterACLOwnerArg(promoter.ACLOwner)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO teamdef_active (tenant_id, name, def_id, promoted_at, promoted_by_agent_id,
-		                            promoter_operator_key_restricted, promoter_isolated)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		                            promoter_operator_key_restricted, promoter_isolated, promoter_acl_owner)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(tenant_id, name) DO UPDATE SET
 		    def_id                           = excluded.def_id,
 		    promoted_at                      = excluded.promoted_at,
 		    promoted_by_agent_id             = excluded.promoted_by_agent_id,
 		    promoter_operator_key_restricted = excluded.promoter_operator_key_restricted,
-		    promoter_isolated                = excluded.promoter_isolated`,
+		    promoter_isolated                = excluded.promoter_isolated,
+		    promoter_acl_owner               = excluded.promoter_acl_owner`,
 		tenantID, name, defID, time.Now().UnixNano(), nilIfEmpty(promotedByAgentID),
-		promoter.OperatorKeyRestricted, promoter.Isolated,
+		promoter.OperatorKeyRestricted, promoter.Isolated, aclOwner,
 	)
 	return err
 }
@@ -8697,14 +8752,19 @@ func teamDefPromoterColumns(p *store.TeamDefPromoter) (opKey, isolated any) {
 	return p.OperatorKeyRestricted, p.Isolated
 }
 
-// teamDefPromoterFromColumns reads the pair back. Either column NULL means
+// teamDefPromoterFromColumns reads the capture back. Either bit NULL means
 // not captured — never "unrestricted": the two are written together, so a
-// half-written pair is not a state a promote produces.
-func teamDefPromoterFromColumns(opKey, isolated sql.NullBool) *store.TeamDefPromoter {
+// half-written pair is not a state a promote produces. The owner column is
+// read only for a captured promoter (sqlshared.SetTeamDefPromoterACLOwner).
+func teamDefPromoterFromColumns(opKey, isolated sql.NullBool, aclOwner sql.NullString) (*store.TeamDefPromoter, error) {
 	if !opKey.Valid || !isolated.Valid {
-		return nil
+		return nil, nil
 	}
-	return &store.TeamDefPromoter{OperatorKeyRestricted: opKey.Bool, Isolated: isolated.Bool}
+	p := &store.TeamDefPromoter{OperatorKeyRestricted: opKey.Bool, Isolated: isolated.Bool}
+	if err := sqlshared.SetTeamDefPromoterACLOwner(p, aclOwner.Valid, aclOwner.String); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func (s *Store) TeamDefGetActive(ctx context.Context, tenantID, name string) (store.TeamDefRow, error) {

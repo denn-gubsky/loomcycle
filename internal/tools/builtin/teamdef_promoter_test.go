@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -73,8 +75,18 @@ func TestTeamDef_EveryPromoteCapturesThePromotersConfinement(t *testing.T) {
 				promote(t, tool, c.apply(context.Background()), "armed")
 				got := activePromoter(t, tool.Store, "acme", "armed")
 				want := store.TeamDefPromoter{OperatorKeyRestricted: c.wantRestricted, Isolated: c.wantIsolated}
-				if got == nil || *got != want {
+				if got == nil || bitsOf(*got) != want {
 					t.Errorf("captured %+v, want %+v", got, want)
+				}
+				// The promoter is also whose access-control set binds the
+				// walks: the live principal off-run; nobody in open mode or a
+				// run with no set on its policy.
+				wantOwner := ""
+				if c.principal != nil {
+					wantOwner = c.principal.Subject
+				}
+				if got != nil && (ownerSubject(got) != wantOwner || got.ACLOwnerUnrecorded) {
+					t.Errorf("recorded acl owner %+v (unrecorded %v), want subject %q", got.ACLOwner, got.ACLOwnerUnrecorded, wantOwner)
 				}
 			})
 		}
@@ -92,7 +104,7 @@ func TestTeamDef_PromoteCaptureFollowsTheOperatorKeyGate(t *testing.T) {
 		createTeam(t, tool, restricted.apply(context.Background()), "armed", validTeamGraph)
 		got := activePromoter(t, tool.Store, "acme", "armed")
 		want := store.TeamDefPromoter{OperatorKeyRestricted: gateOn, Isolated: true}
-		if got == nil || *got != want {
+		if got == nil || bitsOf(*got) != want {
 			t.Errorf("gate on=%v: captured %+v, want %+v", gateOn, got, want)
 		}
 		cleanup()
@@ -128,5 +140,37 @@ func TestTeamDef_PromoteLeavesTheContentHashUnchanged(t *testing.T) {
 	}
 	if got := activePromoter(t, tool.Store, "acme", "hashed"); got == nil || !got.OperatorKeyRestricted || !got.Isolated {
 		t.Errorf("the promotes did not capture a confined promoter: %+v", got)
+	}
+}
+
+// bitsOf is the promoter's two confinement bits alone, comparable with ==.
+func bitsOf(p store.TeamDefPromoter) store.TeamDefPromoter {
+	return store.TeamDefPromoter{OperatorKeyRestricted: p.OperatorKeyRestricted, Isolated: p.Isolated}
+}
+
+func ownerSubject(p *store.TeamDefPromoter) string {
+	if p.ACLOwner == nil {
+		return ""
+	}
+	return p.ACLOwner.Subject
+}
+
+// Inside a run, the owner a promote records is the run's ORIGINATING caller —
+// the set on its policy, which a resumed run carries with no principal —
+// exactly as a schedule a run authors records it, never the principal of
+// whatever token the tool call arrived under.
+func TestTeamDef_PromoteInARunRecordsTheRunsCallerAsACLOwner(t *testing.T) {
+	tool, _, cleanup := teamDefFixture(t)
+	defer cleanup()
+	loose := auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeTenant}}
+	caller := &authz.Effective{Subject: authz.Subject{TenantID: "acme", ID: "carol", TokenDefID: "def_carol", Class: "member"}}
+	ctx := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_run", TenantID: "acme"})
+	ctx = auth.WithPrincipal(ctx, loose)
+	ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ACL = caller })
+	createTeam(t, tool, ctx, "armed", validTeamGraph)
+	got := activePromoter(t, tool.Store, "acme", "armed")
+	want := authz.SubjectRef{TenantID: "acme", Subject: "carol", TokenDefID: "def_carol", Class: "member"}
+	if got == nil || got.ACLOwner == nil || *got.ACLOwner != want || got.ACLOwnerUnrecorded {
+		t.Errorf("recorded promoter %+v, want acl owner %+v", got, want)
 	}
 }

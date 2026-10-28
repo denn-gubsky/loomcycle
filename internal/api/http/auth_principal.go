@@ -253,6 +253,10 @@ func runPlaneRoute(method, path string) bool {
 	// agent allowlist first, so the token learns nothing about other agents.
 	case isAgentOverridablePath(path):
 		return method == http.MethodGet
+	// A token retiring itself (`loomcycle logout`) is never an escalation, and
+	// a token limited to some agents must still be able to sign out.
+	case path == "/v1/_auth/token/revoke":
+		return method == http.MethodPost
 	case path == "/v1/_mcp":
 		// The MCP transport itself; the per-tool gate inside it applies the
 		// same rule to each tool (the MCP package's runPlaneTools).
@@ -292,6 +296,7 @@ func (s *Server) EnableTokenCache(ttl time.Duration) {
 // replica would not otherwise see its own invalidation.
 func (s *Server) invalidateTokenCache(ctx context.Context) {
 	s.tokenCache.flush()
+	s.tenantPolicyCache.flush()
 	if s.backplane != nil {
 		// Payload is a sentinel — subscribers flush their whole cache
 		// (a mutation can change any resolution, incl. the legacy gate).
@@ -314,6 +319,7 @@ func (s *Server) SubscribeTokenInvalidations(ctx context.Context, bp coord.Backp
 	go func() {
 		for range ch {
 			s.tokenCache.flush()
+			s.tenantPolicyCache.flush()
 		}
 	}()
 	return nil
@@ -502,7 +508,7 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 		if !found {
 			return p, false
 		}
-		if p, ok = s.liveTokenPrincipal(ctx, p); !ok {
+		if p, ok = s.liveTokenPrincipal(ctx, p); !ok || !s.issuedTokenAllowed(ctx, p) {
 			return auth.Principal{}, false
 		}
 		return s.enrichPrincipal(ctx, p), true
@@ -519,7 +525,10 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 	if !found {
 		return p, false
 	}
-	if p, found = s.liveTokenPrincipal(ctx, p); !found {
+	// RFC FA P5: the tenant gate policy is checked outside the token cache,
+	// like the user's status and the ACL set, so a policy that arrives without
+	// a token change (config, a failed sweep) still holds.
+	if p, found = s.liveTokenPrincipal(ctx, p); !found || !s.issuedTokenAllowed(ctx, p) {
 		return auth.Principal{}, false
 	}
 	// The RFC EY set is resolved OUTSIDE the token cache: it has its own
@@ -1360,6 +1369,10 @@ func requiredScopeFor(method, path string) string {
 		return auth.ScopeTenant
 	case strings.HasPrefix(path, "/v1/_authz/"):
 		return ""
+	// RFC FA P5: which gates a tenant's people must use is the deployment
+	// admin's decision, not the tenant's own.
+	case path == "/v1/_auth/tenant-policies", strings.HasPrefix(path, "/v1/_auth/tenant-policies/"):
+		return auth.ScopeAdmin
 	// RFC FA P2: a signed-in person's own account (password, authenticator).
 	// Any principal reaches the handler, which serves only a password-gate
 	// Web UI session and re-authenticates every change.

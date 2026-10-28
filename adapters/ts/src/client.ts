@@ -39,6 +39,7 @@ import {
 import { parseSSE } from "./stream.js";
 import { InteractiveSession } from "./interactive.js";
 import { LoomcycleOAuth } from "./oauth.js";
+import { deviceLogin } from "./device-login.js";
 import {
   ClientToolHost,
   clientToolsURL,
@@ -286,6 +287,8 @@ import type {
   ClientDefRetireResult,
   ClientDefVerifyResult,
   TokenProvider,
+  DeviceLoginOptions,
+  DeviceLoginResult,
 } from "./types.js";
 
 /** samplingToWire maps the camelCase SamplingOptions to the snake_case wire
@@ -1541,6 +1544,19 @@ export class LoomcycleClient {
       ),
       { signal: opts?.signal },
     );
+  }
+
+  /** Sign in through the server's device gate (RFC 8628): shows the person a
+   *  code through `onPrompt`, polls until they approve it in a signed-in Web
+   *  UI session (`/ui/device`), and returns the token issued to them. The
+   *  token is the approver's own member token, at most the device gate's
+   *  `token_ttl` and never past the approving session or the credential it
+   *  was made from. Sends no bearer: a client constructed without one can
+   *  call it. Throws {@link DeviceLoginError} when the login is denied,
+   *  expires, or the server refuses it; 404 `device_login_disabled` when no
+   *  device gate is configured. */
+  async deviceLogin(opts: DeviceLoginOptions): Promise<DeviceLoginResult> {
+    return deviceLogin(this.ctx, opts);
   }
 
   // ---- RFC FA: sign-in gates + the password gate's management API ----

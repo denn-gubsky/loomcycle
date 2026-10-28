@@ -3,6 +3,7 @@ import { type LoginConfig, type LoginGate, parseLoginConfig } from "../lib/uiSes
 import { refusalText as passwordRefusalText, signInWithPassword } from "../lib/passwordGate";
 import { REDIRECT_GATE_KINDS, redirectLoginError, redirectLoginHref } from "../lib/oidcGate";
 import { afterSignInHref, appReturnTo, appSignInRequest, mayAutoContinue } from "../lib/appSignIn";
+import { signedInDestination } from "../lib/returnPath";
 import { proxyRefusalText, signInThroughProxy } from "../lib/headerGate";
 
 // LoginView is the sign-in page. It renders from /ui/login-config.json: the
@@ -222,7 +223,9 @@ function PasswordGateForm({ gate, disabled, next }: { gate: LoginGate; disabled:
 export default function LoginView() {
   const [config, setConfig] = useState<LoginConfig | null>(null);
   const oauth = appSignInRequest(window.location.search);
-  const next = afterSignInHref(oauth);
+  // An app sign-in continues to its authorize step; otherwise a safe ?next=
+  // path on this UI (the device-approval page), else /ui.
+  const next = oauth ? afterSignInHref(oauth) : signedInDestination(window.location.search);
 
   useEffect(() => {
     let live = true;

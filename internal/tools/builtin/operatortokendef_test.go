@@ -811,3 +811,25 @@ func TestOperatorTokenDef_MintsUnderTheDerivedPepper(t *testing.T) {
 		t.Errorf("rotate: stored hash is not the derived-pepper hash")
 	}
 }
+
+// A rotation derives the new row from the old one by copy: every field the
+// rotation does not change is carried, so a field added to the row later is
+// carried too instead of silently dropped.
+func TestOperatorTokenDef_RotateCarriesEveryUnchangedField(t *testing.T) {
+	tool, ctx, st, cleanup := operatorTokenDefFixture(t)
+	defer cleanup()
+	created := mustOp(t, tool, ctx, `{"op":"create","name":"ci","tenant_id":"acme","scopes":["runs:create"],"ttl_seconds":600}`)
+	orig, _ := st.OperatorTokenDefGet(ctx, created["def_id"].(string))
+	rotated := mustOp(t, tool, ctx, `{"op":"rotate","name":"ci"}`)
+	next, err := st.OperatorTokenDefGet(ctx, rotated["def_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Name != orig.Name || next.TenantID != orig.TenantID || next.Subject != orig.Subject ||
+		strings.Join(next.AllowedScopes, ",") != strings.Join(orig.AllowedScopes, ",") ||
+		next.RestrictionsJSON != orig.RestrictionsJSON || !next.ExpiresAt.Equal(orig.ExpiresAt) ||
+		next.IssuedByGate != orig.IssuedByGate || next.RotatedFrom != orig.DefID || next.TokenHash == orig.TokenHash ||
+		next.DefID == orig.DefID || !next.RetiredAt.IsZero() {
+		t.Fatalf("rotated row %+v does not carry %+v", next, orig)
+	}
+}

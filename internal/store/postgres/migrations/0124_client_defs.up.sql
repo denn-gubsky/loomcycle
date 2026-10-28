@@ -1,4 +1,4 @@
--- 0120_client_defs.up.sql — RFC FL P0b: runtime-registered app clients
+-- 0124_client_defs.up.sql — RFC FL P0b: runtime-registered app clients
 -- (ClientDef), beside the config-declared auth.clients.
 --
 -- A client's name is its OAuth client_id, which travels alone in every

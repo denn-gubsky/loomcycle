@@ -178,6 +178,58 @@ type Effective struct {
 	// baseline and via are copied from the Input; see there.
 	baseline string
 	via      map[string]string
+	// ceiling, when set, is a set every answer is also held to (Within): a
+	// run that re-reads its caller's rules mid-run is never allowed more than
+	// it started with.
+	ceiling *Effective
+}
+
+// Within returns e held to ceiling: the same subject, version, bindings and
+// rules as e, but every answer is the meet of e's and ceiling's — denied
+// when either denies, allowed only when both allow, no match otherwise (so
+// enforce refuses it and compat falls back to the legacy answer, exactly as
+// it would for either set alone). It is how a live run (LOOMCYCLE_ACL_LIVE)
+// takes its caller's CURRENT rules without regaining anything the set it
+// started with withheld. A nil ceiling, or e itself, returns e.
+func (e *Effective) Within(ceiling *Effective) *Effective {
+	if ceiling == nil || ceiling == e || e == nil {
+		return e
+	}
+	out := *e
+	out.ceiling = ceiling
+	if e.ceiling != nil {
+		// e is already held to a ceiling: keep it, under the new one too.
+		out.ceiling = e.ceiling.Within(ceiling)
+	}
+	return &out
+}
+
+// meet is the answer of two sets asked the same question: a deny from either
+// decides (with every deny named), an allow needs both.
+func meet(a, b Decision) Decision {
+	switch {
+	case a.Outcome == Denied || b.Outcome == Denied:
+		var reasons []Reason
+		for _, r := range append(append([]Reason(nil), a.Reasons...), b.Reasons...) {
+			if r.Effect == Deny {
+				reasons = append(reasons, r)
+			}
+		}
+		return Decision{Outcome: Denied, Reasons: reasons, TenantFloor: a.TenantFloor || b.TenantFloor}
+	case a.Outcome == Allowed && b.Outcome == Allowed:
+		return Decision{Outcome: Allowed, Reasons: append(append([]Reason(nil), a.Reasons...), b.Reasons...)}
+	}
+	return Decision{Outcome: NoMatch}
+}
+
+func meetOutcome(a, b Outcome) Outcome {
+	switch {
+	case a == Denied || b == Denied:
+		return Denied
+	case a == Allowed && b == Allowed:
+		return Allowed
+	}
+	return NoMatch
 }
 
 // Compile builds a principal's Effective set from its bindings and the ACLs
@@ -298,6 +350,13 @@ func (e *Effective) GroupVia() map[string]string {
 // was compiled for one subject and the caller must not reuse it for another
 // (Effective.Subject says whose it is).
 func (e *Effective) Decide(req Request) Decision {
+	if e.ceiling != nil {
+		return meet(e.decideOwn(req), e.ceiling.Decide(req))
+	}
+	return e.decideOwn(req)
+}
+
+func (e *Effective) decideOwn(req Request) Decision {
 	if req.Resource.TenantID != "" && req.Resource.TenantID != e.Subject.TenantID {
 		return Decision{Outcome: Denied, TenantFloor: true}
 	}
@@ -341,12 +400,19 @@ func (e *Effective) Decide(req Request) Decision {
 // scope (some of what the operation reaches is refused), an ALLOW only when it
 // covers the whole scope. A type with no scopes is answered by Decide.
 func (e *Effective) DecideScope(req Request) Decision {
+	if e.ceiling != nil {
+		return meet(e.decideScopeOwn(req), e.ceiling.DecideScope(req))
+	}
+	return e.decideScopeOwn(req)
+}
+
+func (e *Effective) decideScopeOwn(req Request) Decision {
 	if req.Resource.TenantID != "" && req.Resource.TenantID != e.Subject.TenantID {
 		return Decision{Outcome: Denied, TenantFloor: true}
 	}
 	spec, ok := catalogByName[req.Resource.Type]
 	if !ok || !spec.isScoped() {
-		return e.Decide(req)
+		return e.decideOwn(req)
 	}
 	tr := e.byType[req.Resource.Type]
 	if tr == nil {
@@ -385,6 +451,9 @@ func (e *Effective) DecideScope(req Request) Decision {
 // "scope-decidable" fields in step with the condition set is a drift waiting
 // to happen for a saving only on sets that carry conditions.
 func (e *Effective) HasInstanceRules(typ, scope string) bool {
+	if e.ceiling != nil && e.ceiling.HasInstanceRules(typ, scope) {
+		return true
+	}
 	tr := e.byType[typ]
 	if tr == nil {
 		return false
@@ -427,11 +496,14 @@ func coversScope(s selector) bool {
 // entries in the same `/`-segmented syntax. A conditional deny cannot be
 // expressed as a pattern and is left to the per-call check.
 func (e *Effective) DenyPatterns(typ, action string) []string {
+	var out []string
+	if e.ceiling != nil {
+		out = e.ceiling.DenyPatterns(typ, action)
+	}
 	tr := e.byType[typ]
 	if tr == nil {
-		return nil
+		return out
 	}
-	var out []string
 	for _, r := range tr.deny {
 		if r.when != nil || !r.actions[action] {
 			continue
@@ -486,6 +558,13 @@ func (e *Effective) HasConditionalRules(typ, action string) bool {
 // that could match is a literal, else a full Decide. It returns the same
 // outcome Decide would.
 func (e *Effective) Quick(typ, action, name string) Outcome {
+	if e.ceiling != nil {
+		return meetOutcome(e.quickOwn(typ, action, name), e.ceiling.Quick(typ, action, name))
+	}
+	return e.quickOwn(typ, action, name)
+}
+
+func (e *Effective) quickOwn(typ, action, name string) Outcome {
 	tr := e.byType[typ]
 	if tr == nil {
 		return NoMatch
@@ -494,12 +573,12 @@ func (e *Effective) Quick(typ, action, name string) Outcome {
 	// authoritative; fall back.
 	for _, r := range tr.deny {
 		if r.when != nil || len(r.sels) != 1 || r.sels[0].literal == "" {
-			return e.Decide(Request{Subject: e.Subject, Action: action, Resource: Resource{Type: typ, Name: name}}).Outcome
+			return e.decideOwn(Request{Subject: e.Subject, Action: action, Resource: Resource{Type: typ, Name: name}}).Outcome
 		}
 	}
 	for _, r := range tr.allow {
 		if r.when != nil || len(r.sels) != 1 || r.sels[0].literal == "" {
-			return e.Decide(Request{Subject: e.Subject, Action: action, Resource: Resource{Type: typ, Name: name}}).Outcome
+			return e.decideOwn(Request{Subject: e.Subject, Action: action, Resource: Resource{Type: typ, Name: name}}).Outcome
 		}
 	}
 	if len(tr.literalDeny[action][name]) > 0 {
@@ -617,6 +696,10 @@ func (e *Effective) Explain(req Request) Explanation {
 	ex := Explanation{Decision: e.Decide(req), Missing: e.Missing(), Applied: e.Applied()}
 	if ex.Decision.TenantFloor {
 		return ex
+	}
+	if e.ceiling != nil {
+		// The ceiling's rules decide too; trace them first, then e's own.
+		ex.Traces = e.ceiling.Explain(req).Traces
 	}
 	tr := e.byType[req.Resource.Type]
 	spec := catalogByName[req.Resource.Type]

@@ -257,7 +257,7 @@ func (b *boot) wireAuth() {
 		fatal("authz: invalid access control mode", "err", err)
 	}
 	srv.SetACLResolver(aclres.New(storeIface, aclMode, time.Duration(cfg.Env.ACLCacheTTLSeconds)*time.Second))
-	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds)
+	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds, "live", cfg.Env.ACLLive)
 	// Delegated user-token mints and revocations are recorded to the same
 	// sink as operator-token mutations. Not wired when there is no file: the
 	// handler treats a nil sink as "not recorded".

@@ -1884,6 +1884,14 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 		d.noteResult(name, input, r)
 		return r, nil
 	}
+	// LOOMCYCLE_ACL_LIVE: a tool the caller's rules withdrew during the run
+	// is refused here, before it runs, as the model may still name it from
+	// an earlier turn. Counted like any failure, so a run that keeps calling
+	// it is stopped by the repeat guard.
+	if r, refused := liveToolRefusal(ctx, name); refused {
+		d.noteResult(name, input, r)
+		return r, nil
+	}
 	if t, ok := d.tools[name]; ok {
 		if r, refused := d.refuseUnknownFields(t, input); refused {
 			res = r

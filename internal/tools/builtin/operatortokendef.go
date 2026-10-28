@@ -494,23 +494,19 @@ func (s *OperatorTokenDef) execRotate(ctx context.Context, in operatorTokenDefIn
 		return errResult(fmt.Sprintf("rotate: %s", mErr)), nil
 	}
 	ident := tools.RunIdentity(ctx)
-	row := store.OperatorTokenDefRow{
-		DefID:            mintDefID(),
-		Name:             prior.Name,
-		TenantID:         prior.TenantID,
-		Subject:          prior.Subject,
-		TokenHash:        s.Hasher.Hash(plaintext),
-		AllowedScopes:    prior.AllowedScopes,
-		CreatedByAgentID: ident.AgentID,
-		RotatedFrom:      prior.DefID,
-		// Copied, never recomputed: a rotation replaces the secret, it does
-		// not grant the token more time — or more reach.
-		ExpiresAt:        prior.ExpiresAt,
-		RestrictionsJSON: prior.RestrictionsJSON,
-		// An inherit token rotated into a frozen one would keep the scopes
-		// its user held at mint, past a demotion since.
-		Authority: prior.Authority,
-	}
+	// The new row is the old one with only what a rotation changes: a new
+	// id and secret, who rotated it, the link back, a live state. Copying
+	// rather than listing fields means everything else — the expiry and the
+	// restrictions (a rotation never grants more time or reach), and any
+	// field the row gains later — is carried, not silently dropped.
+	row := prior
+	row.DefID = mintDefID()
+	row.TokenHash = s.Hasher.Hash(plaintext)
+	row.CreatedAt = time.Time{}
+	row.CreatedByAgentID = ident.AgentID
+	row.CreatedByRunID = ""
+	row.RotatedFrom = prior.DefID
+	row.RetiredAt = time.Time{}
 	created, err := s.Store.OperatorTokenDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("rotate: %s", err)), nil
