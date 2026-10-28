@@ -332,16 +332,24 @@ class LoomcycleClient:
         from_time: str = "",
         to_time: str = "",
         tenant: str = "",
+        bucket: str = "",
+        top: int = 0,
+        top_by: str = "",
+        filters: Mapping[str, Sequence[str]] | None = None,
     ) -> Mapping[str, Any]:
         """Aggregated token-usage + cost report (RFC AV). Group by any of
-        ``tenant``/``user``/``provider``/``model``/``source``/``purpose`` over an
-        optional RFC3339 window (``from_time``/``to_time``); group by ``source``
-        for the operator-vs-tenant split, by ``purpose`` to see what OCR and
-        speech cost (``chat``/``ocr``/``stt``/``tts``). Each row's
-        ``audio_seconds`` is the audio its speech calls transcribed or produced.
+        ``tenant``/``user``/``provider``/``model``/``source``/``purpose``/
+        ``tier``/``user_tier``/``agent``/``class`` over an optional RFC3339
+        window (``from_time``/``to_time``); group by ``source`` for the
+        operator-vs-tenant split, by ``purpose`` or ``class`` to see what the
+        background calls cost. ``bucket`` (``hour``/``day``/``week``/``month``,
+        UTC) splits the window and gives each row a ``period``; ``top`` keeps
+        the largest values of the first dimension (by ``top_by``: ``cost``,
+        ``tokens`` or ``calls``) and folds the rest into rows with ``other``;
+        ``filters`` maps a dimension (any but ``tenant``) to the values to keep.
         Tenant-scoped server-side (a tenant principal sees only its own tenant;
         ``tenant`` is an admin-only focus). Returns
-        ``{"group_by": [...], "rows": [{...}, ...]}``."""
+        ``{"group_by": [...], "bucket": ..., "detail_since": ..., "rows": [{...}, ...]}``."""
         try:
             resp = await self._stub.UsageReport(
                 pb.UsageReportRequest(
@@ -349,6 +357,14 @@ class LoomcycleClient:
                     from_time=from_time,
                     to_time=to_time,
                     tenant=tenant,
+                    bucket=bucket,
+                    top=top,
+                    top_by=top_by,
+                    filters=[
+                        pb.UsageFilter(dimension=dim, values=list(values))
+                        for dim, values in (filters or {}).items()
+                        if values
+                    ],
                 ),
                 metadata=self._auth_metadata(),
             )
@@ -356,6 +372,8 @@ class LoomcycleClient:
             _raise_from_grpc(e)
         return {
             "group_by": list(resp.group_by),
+            "bucket": resp.bucket,
+            "detail_since": resp.detail_since,
             "rows": [
                 {
                     "tenant_id": r.tenant_id,
@@ -373,6 +391,14 @@ class LoomcycleClient:
                     "unpriced_calls": r.unpriced_calls,
                     "purpose": r.purpose,
                     "audio_seconds": r.audio_seconds,
+                    "tier": r.tier,
+                    "user_tier": r.user_tier,
+                    "agent": r.agent,
+                    # `class` is a Python keyword, so the field is read by name.
+                    "class": getattr(r, "class"),
+                    "period": r.period,
+                    "other": r.other,
+                    "input_chars": r.input_chars,
                 }
                 for r in resp.rows
             ],
