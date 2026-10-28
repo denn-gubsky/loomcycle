@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
@@ -61,6 +62,10 @@ type Principal struct {
 	// set of its user's current access_mode, re-derived on every request it
 	// authenticates. Restrictions still narrow it.
 	InheritsAuthority bool
+	// Login is how the person signed in, for a principal a Web UI session
+	// authenticated (RFC FA §5); nil for a bearer. It is provenance for the
+	// person's own agents to report, never consulted by a gate.
+	Login *Login
 }
 
 // AuthorityMode names how the principal's scopes were decided, for reporting
@@ -70,6 +75,16 @@ func (p Principal) AuthorityMode() string {
 		return AuthorityInherit
 	}
 	return AuthorityFrozen
+}
+
+// Login is the sign-in provenance of a Web UI session: the configured gate
+// the person came through, the authentication methods that gate reported
+// (RFC 8176 style) and when they last authenticated. It carries no session
+// id, hash or credential reference.
+type Login struct {
+	Gate     string
+	AMR      []string
+	AuthTime time.Time
 }
 
 type ctxKeyPrincipal struct{}

@@ -151,7 +151,7 @@ var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
 // after the ref and the argument form requires a second colon — but the
 // ordering means a later widening of either charset degrades into a longer
 // match rather than a truncated one.
-var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern)
+var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + identityPlaceholderPattern)
 
 // combinedWithVarsRe is combinedPlaceholderRe plus the ${var.*} family. It is a
 // SEPARATE regex, used only when the caller supplies Values, so a prompt with no
@@ -163,7 +163,7 @@ var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `
 // variable cannot become a placeholder and a placeholder body cannot become a
 // variable. Ordering stops existing, and with it the injection path that
 // ordering created.
-var combinedWithVarsRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + varPlaceholderPattern)
+var combinedWithVarsRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + identityPlaceholderPattern + `|` + varPlaceholderPattern)
 
 // References reports whether s contains any {{memory:...}} placeholder
 // (escaped or not). A cheap gate so the caller can skip the whole injection
@@ -269,6 +269,12 @@ type ExpandInput struct {
 	// one line in a prompt would change what the agent remembers. They are
 	// independent kinds of content and get independent ceilings.
 	ToolMaxTokens int
+	// Identity is the person the run acts for, rendered at {{identity}}. nil
+	// renders nothing: the run acts for nobody, or access control is off.
+	// Exempt from both budgets — the block is bounded by construction (see
+	// identityinject.go), and a large memory section placed above it must
+	// not be able to crowd out what the run knows about its own user.
+	Identity *IdentityFacts
 }
 
 // Expand substitutes each UNESCAPED placeholder in prompt with the framed body
@@ -341,6 +347,11 @@ func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
 		// tool inventory.
 		if toolArgFormRe.MatchString(match) {
 			return expandToolArgForm(match, in.ToolCalls, &remaining, in.OperatorAuthored, in.Values, in.HostAllowed, &refused)
+		}
+		// {{identity}} is disjoint from every other family and draws on
+		// neither budget (see ExpandInput.Identity).
+		if identityPlaceholderRe.MatchString(match) {
+			return expandIdentityPlaceholder(match, in.Identity)
 		}
 		sub := placeholderRe.FindStringSubmatch(match)
 		if sub == nil {

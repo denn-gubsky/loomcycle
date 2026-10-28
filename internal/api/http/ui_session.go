@@ -613,7 +613,20 @@ func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, u
 			row.LastSeenAt, row.IdleExpiresAt = now, idle
 		}
 	}
+	p.Login = sessionLogin(row)
 	return p, uiAuth{session: &row, pending: pending}, true
+}
+
+// sessionLogin is the sign-in provenance a session's principal carries into
+// the runs it starts (Context op=self reports it): the gate, its methods and
+// when the person authenticated — the creation time when the gate could not
+// say, as /v1/_me reports it. Nothing of the session's own identity.
+func sessionLogin(row store.UISessionRow) *auth.Login {
+	authTime := row.AuthTime
+	if authTime.IsZero() {
+		authTime = row.CreatedAt
+	}
+	return &auth.Login{Gate: row.Gate, AMR: append([]string(nil), row.AMR...), AuthTime: authTime}
 }
 
 // sessionExpiresAt is when the session stops authenticating: its own idle and
@@ -809,11 +822,7 @@ func (s *Server) whoamiAuth(ctx context.Context, open bool) map[string]any {
 	if a, ok := uiAuthFrom(ctx); ok && a.session != nil {
 		out["gate"] = a.session.Gate
 		out["amr"] = a.session.AMR
-		authTime := a.session.AuthTime
-		if authTime.IsZero() {
-			authTime = a.session.CreatedAt
-		}
-		out["auth_time"] = authTime.UTC()
+		out["auth_time"] = sessionLogin(*a.session).AuthTime.UTC()
 		if a.pending {
 			// RFC FA §3.7a: the UI shows "awaiting approval" and nothing else.
 			out["status"] = store.UserStatusPending

@@ -3550,6 +3550,7 @@ func (s *Server) RunOnce(ctx context.Context, in runner.RunInput, cb runner.RunC
 	agentDef, coreBlocks := s.applyMemoryInjection(ctx, agentDef, memInject{
 		Tenant: effectiveTenantID, UserID: effectiveUserID, AgentName: effectiveAgentName,
 		InitialInput: firstUserText(in.Segments), Tools: allowedTools,
+		ACL: callerACL, ACLRemovedTools: aclRemovedTools,
 	})
 	if agentDef.SystemPrompt != "" {
 		segments = append([]loop.PromptSegment{{
@@ -7823,6 +7824,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	def, coreBlocks := s.applyMemoryInjection(ctx, def, memInject{
 		Tenant: parentIdentity.TenantID, UserID: parentIdentity.UserID, AgentName: name,
 		InitialInput: prompt, Tools: subTools,
+		ACL: parentPolicy.ACL, ACLRemovedTools: subACLRemoved,
 	})
 	// The CALLER's segments are expanded too, with the same families and the
 	// same single pass. Until this, a {{document:...}} in a team node's prompt

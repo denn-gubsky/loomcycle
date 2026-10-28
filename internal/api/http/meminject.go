@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -61,6 +62,12 @@ type memInject struct {
 	// assembly, so this reuses that result rather than re-deriving it. Empty →
 	// the placeholder renders to nothing.
 	Tools []tools.Tool
+	// ACL is the run's compiled access-control set — the originating
+	// caller's, inherited down the tree — and ACLRemovedTools the tools this
+	// hop's definition lost to it. {{identity}} renders the person the set
+	// names; nil renders nothing (open mode, a trigger with no owner).
+	ACL             *authz.Effective
+	ACLRemovedTools []string
 }
 
 // applyMemoryInjection expands the agent's system prompt with its core memory
@@ -114,9 +121,10 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// those are authorship-gated, so a non-operator def whose only placeholder
 	// is a widened one would take the fast path and leave the placeholder in the
 	// prompt as literal text. Refused and removed is the intended outcome.
+	wantIdentity := promptinject.ReferencesIdentity(promptSrc)
 	if len(blocks) == 0 && !promptinject.References(promptSrc) && len(toolRefs) == 0 &&
 		len(docRefs) == 0 && !promptinject.ReferencesWidened(promptSrc) &&
-		!agentDef.MemoryProtocol && !forceRoots {
+		!wantIdentity && !agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
 
@@ -184,8 +192,15 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	}
 	sections[promptinject.VariantConsolidationBands] = promptinject.ConsolidationBands(mergeBand, relatedBand)
 
+	// identity: gated on an actual reference — it costs a user-row read.
+	var identity *promptinject.IdentityFacts
+	if wantIdentity {
+		identity = s.renderIdentity(ctx, mi)
+	}
+
 	out := agentDef
 	expanded, refused := promptinject.ExpandWithRefusals(promptSrc, promptinject.ExpandInput{
+		Identity:      identity,
 		Sections:      sections,
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		Documents:     s.renderDocuments(ctx, mi, docRefs),
@@ -219,6 +234,41 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 		}
 	}
 	return out, blocks
+}
+
+// renderIdentity gathers what {{identity}} renders: the person the run's
+// compiled set names, their user row in the run's own tenant, their groups,
+// and the tools this hop's definition lost to the set. nil — render nothing —
+// when the run carries no set.
+//
+// Keyed by the SET's subject, never mi.UserID: the set is the authenticated
+// originating principal's, carried down the tree and recompiled on a resume,
+// while the user id can be a wire value in some entry paths. The row is read
+// only when that subject belongs to the run's tenant: a credential of another
+// tenant running here has no row in it, and a row under the same subject id
+// would be somebody else's (as Context op=self reads it). A missing row
+// leaves name and status out; a store fault is logged and does the same — a
+// run must not fail on prompt assembly.
+func (s *Server) renderIdentity(ctx context.Context, mi memInject) *promptinject.IdentityFacts {
+	eff := mi.ACL
+	if eff == nil || eff.Subject.ID == "" {
+		return nil
+	}
+	facts := &promptinject.IdentityFacts{
+		Groups:      append([]string(nil), eff.Subject.Groups...),
+		DeniedTools: append([]string(nil), mi.ACLRemovedTools...),
+	}
+	if s.store == nil || eff.Subject.TenantID != mi.Tenant {
+		return facts
+	}
+	row, err := s.store.UserGet(ctx, mi.Tenant, eff.Subject.ID)
+	switch {
+	case err == nil:
+		facts.DisplayName, facts.Status = row.DisplayName, row.Status
+	case !isNotFound(err):
+		slog.WarnContext(ctx, "prompt assembly: reading the run's user row for {{identity}} failed", "tenant", mi.Tenant, "subject", eff.Subject.ID, "err", err)
+	}
+	return facts
 }
 
 // effectiveCoreBlocks computes the core-block set that applies to a run: the
@@ -913,8 +963,12 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	// prompt as literal text. Refused and removed is the intended outcome — and
 	// on this path EVERY widened reference is refused (see OperatorAuthored
 	// below), so this is the only thing that makes the refusal visible at all.
+	// ReferencesIdentity for the same reason: {{identity}} is the agent's
+	// own-prompt family (no Identity below), and a caller segment naming it
+	// gets it removed, not left as literal text.
 	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 &&
-		!promptinject.References(combined) && !promptinject.ReferencesWidened(combined) {
+		!promptinject.References(combined) && !promptinject.ReferencesWidened(combined) &&
+		!promptinject.ReferencesIdentity(combined) {
 		return system, user
 	}
 
@@ -931,7 +985,8 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	// Deliberately NO Sections: the {{memory:...}} variants render an agent's
 	// own accumulated memory, which belongs to the AgentDef's prompt. A caller
 	// segment naming one renders nothing rather than injecting a different
-	// agent's material into a prompt the agent did not author.
+	// agent's material into a prompt the agent did not author. NO Identity
+	// either, for the same reason: the agent's own prompt places it.
 	// Each segment is expanded under ITS OWN authorship. The system segment is
 	// always the team's `system_prompt`; the user segment is the node's
 	// `input_template` when it declares one and the previous state's THREADED

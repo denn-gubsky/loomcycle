@@ -1059,6 +1059,7 @@ A `system_prompt` may contain placeholders the server expands at run start, befo
 | `{{memory:user_info}}` | the operator-authored user-root document + the learned `human` block |
 | `{{memory:search_request}}` | an LLM-free retrieval against the run's initial user input |
 | `{{memory:consolidation_bands}}` | the deployment's duplicate-detection similarity bands |
+| `{{identity}}` | the person the run acts for, from its access-control set: display name and status (from their user record in the run's tenant), group names, and the tools their access rules withheld — a snapshot at run start, framed as data, with a runtime line after it when the account is `pending`. Renders nothing when the run acts for nobody (open mode, a trigger with no owner) and in a team node's templates. Values are folded onto one line and bounded (16 groups / 16 tools, then a count), and the block is exempt from `memory_inject_max_tokens` |
 | `{{tool:WebFetch:<url>}}` | the framed body of that page, fetched once at run start — **operator-written definitions only**, host must be on `http_host_allowlist` |
 | `{{tool:WebSearch:<query>}}` | the framed results of that search — **operator-written definitions only** |
 | `{{memory:key:<key>}}` | one stored memory entry, under the run's own scope — **operator-written definitions only** |
