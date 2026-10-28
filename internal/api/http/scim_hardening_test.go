@@ -267,3 +267,65 @@ func TestUsers_ADisableRetiresTokensEvenWhenSCIMDisownFails(t *testing.T) {
 		t.Fatal("the disabled user's token stayed live after the disown failed")
 	}
 }
+
+// A group delete needs group sync like every other group write.
+func TestSCIM_AGroupDeleteNeedsGroupSync(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{})
+	ctx := context.Background()
+	if err := f.st.SCIMGroupCreate(ctx, store.SCIMGroupRow{Gate: "okta", TenantID: "acme", SCIMID: "g1", DisplayName: "Admins", DisplayKey: "admins"}); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.call(t, bSCIMAcme, "DELETE", "/scim/v2/Groups/g1", ""); code != http.StatusForbidden {
+		t.Fatalf("group delete on a gate without group sync = %d, want 403", code)
+	}
+	if _, err := f.st.SCIMGroupGet(ctx, "okta", "acme", "g1"); err != nil {
+		t.Fatalf("the group went: %v", err)
+	}
+}
+
+// One request resolves at most scimMaxGroupMembers member references,
+// across all of its operations.
+func TestSCIM_APatchIsHeldToOneMemberBudget(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{trusted: true, groups: true})
+	aliceID, _ := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+	code, body := f.call(t, bSCIMAcme, "POST", "/scim/v2/Groups", `{"displayName":"Sales"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create group: %d %v", code, body)
+	}
+	half := make([]map[string]string, scimMaxGroupMembers/2+1)
+	for i := range half {
+		half[i] = map[string]string{"value": aliceID}
+	}
+	op := map[string]any{"op": "add", "path": "members", "value": half}
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Groups/"+body["id"].(string), scimPatchBody(t, op, op)); code != http.StatusBadRequest {
+		t.Fatalf("a PATCH over the member budget = %d, want 400", code)
+	}
+}
+
+// A group write resolves its members in one read and lists the tenant's
+// groups once for the whole re-sync, not once per member.
+func TestSCIM_AGroupWriteReadsMembersAndGroupsOnce(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{trusted: true, groups: true})
+	var members []map[string]string
+	for i := 0; i < 5; i++ {
+		id, _ := f.scimUser(t, bSCIMAcme, fmt.Sprintf("u%d@acme.test", i))
+		members = append(members, map[string]string{"value": id})
+	}
+	code, body := f.call(t, bSCIMAcme, "POST", "/scim/v2/Groups", `{"displayName":"Sales"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("create group: %d %v", code, body)
+	}
+	h := hook(f)
+	if code, out := f.call(t, bSCIMAcme, "PUT", "/scim/v2/Groups/"+body["id"].(string), jsonBody(t, map[string]any{
+		"displayName": "Sales", "members": members})); code != http.StatusOK {
+		t.Fatalf("replace group: %d %v", code, out)
+	}
+	if n := h.scimUserGets.Load(); n != 0 {
+		t.Fatalf("the members were read one by one: %d reads", n)
+	}
+	// The first member's sync creates the group: one listing before it, one
+	// after, then none.
+	if n := h.groupLists.Load(); n > 2 {
+		t.Fatalf("the tenant's groups were listed %d times for 5 members", n)
+	}
+}

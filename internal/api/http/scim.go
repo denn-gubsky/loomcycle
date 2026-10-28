@@ -1151,31 +1151,62 @@ func (s *Server) writeSCIMGroup(w http.ResponseWriter, r *http.Request, c scimCt
 	scimJSON(w, status, out)
 }
 
-// scimMemberSubjects resolves member values (SCIM user ids) to subjects. An
-// unknown id — another tenant's, another gate's, a deleted one — is an
-// error, never a member.
-func (s *Server) scimMemberSubjects(ctx context.Context, c scimCtx, members []scimMember) ([]string, error) {
-	if len(members) > scimMaxGroupMembers {
-		return nil, fmt.Errorf("at most %d members", scimMaxGroupMembers)
+// scimMemberSubjects resolves member values (SCIM user ids) to subjects, in
+// one batched read. An unknown id — another tenant's, another gate's, a
+// deleted one — is an error, never a member. budget is what is left of the
+// request's member references (scimMaxGroupMembers across all of its
+// operations); it is charged here, before any read.
+func (s *Server) scimMemberSubjects(ctx context.Context, c scimCtx, members []scimMember, budget *int) ([]string, error) {
+	if len(members) > *budget {
+		return nil, fmt.Errorf("at most %d member references per request: %w", scimMaxGroupMembers, errSCIMMemberBudget)
+	}
+	*budget -= len(members)
+	ids := make([]string, len(members))
+	for i, m := range members {
+		ids[i] = m.Value
+	}
+	rows, err := s.store.SCIMUsersGetMany(ctx, c.g.Name, c.tenant, ids)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]string, 0, len(members))
-	for _, m := range members {
-		row, err := s.store.SCIMUserGet(ctx, c.g.Name, c.tenant, m.Value)
-		if err != nil {
-			if isNotFound(err) {
-				return nil, fmt.Errorf("member %q is not a user of this service", m.Value)
-			}
-			return nil, err
+	for _, id := range ids {
+		row, ok := rows[id]
+		if !ok {
+			return nil, fmt.Errorf("member %q is not a user of this service: %w", id, errSCIMUnknownMember)
 		}
 		out = append(out, row.Subject)
 	}
 	return out, nil
 }
 
+// errSCIMUnknownMember: a member value that is not a live user resource of
+// the gate in the tenant.
+var errSCIMUnknownMember = errors.New("unknown member")
+
+// errSCIMMemberBudget: a request that names more members than one request
+// may resolve.
+var errSCIMMemberBudget = errors.New("too many members")
+
+// scimMemberError writes a member resolution failure: the caller's mistake
+// is a 400, a store failure a 500.
+func scimMemberError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errSCIMUnknownMember) || errors.Is(err, errSCIMMemberBudget) {
+		scimError(w, http.StatusBadRequest, "invalidValue", err.Error())
+		return
+	}
+	slog.Error("scim: resolving group members failed", "err", err)
+	scimError(w, http.StatusInternalServerError, "", "could not read the members")
+}
+
 // scimResync re-runs the gate's group sync for subjects whose SCIM
 // memberships changed. A disabled user is skipped: its removal policy owns
-// its memberships (the unbind stage), and a sync must not undo it.
+// its memberships (the unbind stage), and a sync must not undo it. The
+// tenant's group list is read once for all of them (again only after a sync
+// created a group), not once per member.
 func (s *Server) scimResync(ctx context.Context, c scimCtx, subjects []string) error {
+	var all []store.GroupRow
+	stale := true
 	for _, sub := range subjects {
 		u, err := s.store.UserGet(ctx, c.tenant, sub)
 		if err != nil {
@@ -1192,9 +1223,16 @@ func (s *Server) scimResync(ctx context.Context, c scimCtx, subjects []string) e
 			return err
 		}
 		asserted := identity.AssertedGroups(c.g.Identity, authgate.Assertion{Groups: groups})
-		if _, _, err := s.syncGroups(ctx, c.g, c.tenant, sub, asserted); err != nil {
+		if stale {
+			if all, err = s.store.GroupList(ctx, c.tenant); err != nil {
+				return err
+			}
+		}
+		_, _, created, err := s.syncGroupsWith(ctx, c.g, c.tenant, sub, asserted, all)
+		if err != nil {
 			return err
 		}
+		stale = created
 	}
 	return nil
 }
@@ -1237,9 +1275,10 @@ func (s *Server) handleSCIMCreateGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	subs, err := s.scimMemberSubjects(ctx, c, in.Members)
+	budget := scimMaxGroupMembers
+	subs, err := s.scimMemberSubjects(ctx, c, in.Members, &budget)
 	if err != nil {
-		scimError(w, http.StatusBadRequest, "invalidValue", err.Error())
+		scimMemberError(w, err)
 		return
 	}
 	id, err := newSCIMID()
@@ -1402,9 +1441,10 @@ func (s *Server) handleSCIMReplaceGroup(w http.ResponseWriter, r *http.Request) 
 		s.scimNotFoundOr500(w, err, "Group")
 		return
 	}
-	want, err := s.scimMemberSubjects(ctx, c, in.Members)
+	budget := scimMaxGroupMembers
+	want, err := s.scimMemberSubjects(ctx, c, in.Members, &budget)
 	if err != nil {
-		scimError(w, http.StatusBadRequest, "invalidValue", err.Error())
+		scimMemberError(w, err)
 		return
 	}
 	s.applySCIMGroup(w, r, c, g, in, want)
@@ -1443,6 +1483,7 @@ func (s *Server) handleSCIMPatchGroup(w http.ResponseWriter, r *http.Request) {
 		s.scimNotFoundOr500(w, err, "Group")
 		return
 	}
+	budget := scimMaxGroupMembers
 	next := scimGroupIn{DisplayName: g.DisplayName, ExternalID: g.ExternalID}
 	for _, op := range p.Operations {
 		o, path := strings.ToLower(op.Op), strings.TrimSpace(op.Path)
@@ -1464,9 +1505,9 @@ func (s *Server) handleSCIMPatchGroup(w http.ResponseWriter, r *http.Request) {
 				next.ExternalID = in.ExternalID
 			}
 			if in.Members != nil {
-				subs, err := s.scimMemberSubjects(ctx, c, in.Members)
+				subs, err := s.scimMemberSubjects(ctx, c, in.Members, &budget)
 				if err != nil {
-					scimError(w, http.StatusBadRequest, "invalidValue", err.Error())
+					scimMemberError(w, err)
 					return
 				}
 				members = mergeMembers(members, subs, o == "replace")
@@ -1494,9 +1535,9 @@ func (s *Server) handleSCIMPatchGroup(w http.ResponseWriter, r *http.Request) {
 				members = nil // remove every member
 				continue
 			}
-			subs, err := s.scimMemberSubjects(ctx, c, ms)
+			subs, err := s.scimMemberSubjects(ctx, c, ms, &budget)
 			if err != nil {
-				scimError(w, http.StatusBadRequest, "invalidValue", err.Error())
+				scimMemberError(w, err)
 				return
 			}
 			if o == "remove" {
@@ -1539,6 +1580,10 @@ func mergeMembers(cur, subs []string, replace bool) []string {
 func (s *Server) handleSCIMDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	c, ok := s.scimCaller(w, r)
 	if !ok {
+		return
+	}
+	if !c.scimGroupsEnabled() {
+		refuseSCIMGroups(w)
 		return
 	}
 	ctx := r.Context()

@@ -300,9 +300,22 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 	if err != nil {
 		return nil, nil, err
 	}
+	added, removed, _, err = s.syncGroupsWith(ctx, g, tenant, subject, asserted, all)
+	return added, removed, err
+}
+
+// syncGroupsWith is syncGroups over a group listing the caller read (one
+// listing for many subjects); created reports that it made a group, so the
+// caller's listing is stale.
+func (s *Server) syncGroupsWith(ctx context.Context, g config.AuthGate, tenant, subject string, asserted []string,
+	all []store.GroupRow) (added, removed []string, created bool, err error) {
+	m := g.Identity
+	if m == nil || !m.SyncGroups || !m.Trusted {
+		return nil, nil, false, nil
+	}
 	current, err := s.store.GroupsOfSubject(ctx, tenant, subject)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	groups := make([]identity.Group, len(all))
 	for i, r := range all {
@@ -317,16 +330,16 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 				TargetSubject: subject, AuthGroupsAdded: added, AuthGroupsRemoved: removed})
 		}
 	}()
-	created := map[string]bool{}
+	made := map[string]bool{}
 	for _, c := range plan.Create {
 		row := store.GroupRow{TenantID: c.TenantID, Name: c.Name, ExternalID: c.ExternalID, Description: c.Description, CreatedBy: c.CreatedBy}
 		ok, err := s.store.GroupCreate(ctx, row)
 		if err != nil {
-			return added, removed, err
+			return added, removed, len(made) > 0, err
 		}
 		if ok {
 			changed = true
-			created[row.Name] = true
+			made[row.Name] = true
 		}
 	}
 	// Removals first: a failure part-way leaves the user with less than the
@@ -334,7 +347,7 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 	for _, name := range plan.Remove {
 		ok, err := s.store.GroupMemberRemove(ctx, tenant, name, store.GroupMemberUser, subject)
 		if err != nil {
-			return added, removed, err
+			return added, removed, len(made) > 0, err
 		}
 		if ok {
 			changed = true
@@ -342,7 +355,7 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 		}
 	}
 	for _, name := range plan.Add {
-		if !created[name] && !s.groupStillGates(ctx, g.Name, tenant, name) {
+		if !made[name] && !s.groupStillGates(ctx, g.Name, tenant, name) {
 			continue
 		}
 		err := s.store.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: tenant, GroupName: name,
@@ -354,10 +367,10 @@ func (s *Server) syncGroups(ctx context.Context, g config.AuthGate, tenant, subj
 			added = append(added, name)
 		case errors.As(err, &conflict):
 		default:
-			return added, removed, err
+			return added, removed, len(made) > 0, err
 		}
 	}
-	return added, removed, nil
+	return added, removed, len(made) > 0, nil
 }
 
 // groupStillGates re-reads a group the plan adds to: the plan was made from a
