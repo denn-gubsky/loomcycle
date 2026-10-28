@@ -38,6 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -552,6 +553,14 @@ func secondFactorBinding(gate string) string { return "second_factor:" + gate }
 // answer verified. User verification is preferred, not required: the
 // password is the first factor, the passkey proves possession.
 func (s *Server) passkeySecondFactor(ctx context.Context, gate, tenant, subject string, keys []store.UserPasskeyRow, answer *passkeyAnswer) (*passkeyOffer, bool, error) {
+	return s.passkeyAssertion(ctx, ceremonySecondFactor, gate, tenant, subject, secondFactorBinding(gate),
+		protocol.VerificationPreferred, keys, answer)
+}
+
+// passkeyAssertion begins (answer nil) or checks an assertion of one of the
+// subject's passkeys, in a ceremony of kind bound to binding.
+func (s *Server) passkeyAssertion(ctx context.Context, kind, gate, tenant, subject, binding string,
+	uv protocol.UserVerificationRequirement, keys []store.UserPasskeyRow, answer *passkeyAnswer) (*passkeyOffer, bool, error) {
 	wa, ok := s.relyingParty()
 	if !ok || len(keys) == 0 {
 		return nil, false, errPasskeysUnavailable
@@ -563,17 +572,17 @@ func (s *Server) passkeySecondFactor(ctx context.Context, gate, tenant, subject 
 		}
 	}
 	if answer == nil {
-		opts, sd, err := wa.BeginLogin(user, webauthn.WithUserVerification(protocol.VerificationPreferred))
+		opts, sd, err := wa.BeginLogin(user, webauthn.WithUserVerification(uv))
 		if err != nil {
 			return nil, false, err
 		}
-		offer, err := s.beginCeremony(ctx, ceremonySecondFactor, gate, tenant, subject, secondFactorBinding(gate), opts.Response, sd)
+		offer, err := s.beginCeremony(ctx, kind, gate, tenant, subject, binding, opts.Response, sd)
 		if err != nil {
 			return nil, false, err
 		}
 		return &offer, false, nil
 	}
-	sd, err := s.takeCeremony(ctx, *answer, ceremonySecondFactor, gate, tenant, subject, secondFactorBinding(gate))
+	sd, err := s.takeCeremony(ctx, *answer, kind, gate, tenant, subject, binding)
 	if err != nil {
 		if errors.Is(err, errPasskeyRefused) {
 			return nil, false, nil
@@ -694,6 +703,104 @@ func (s *Server) handleListPasskeys(w http.ResponseWriter, r *http.Request) {
 
 func registerBinding(sessionHash string) string { return "register:" + sessionHash }
 
+// ceremonyStepUp: a passkey re-confirming its person before a passkey change.
+const ceremonyStepUp = "step_up"
+
+func stepUpBinding(sessionHash string) string { return "step_up:" + sessionHash }
+
+// passkeyStepUp is the re-authentication a passkey change carries in its own
+// request, as the password and TOTP changes do.
+type passkeyStepUp struct {
+	CurrentPassword string         `json:"current_password,omitempty"`
+	OTP             string         `json:"otp,omitempty"`
+	WebAuthn        *passkeyAnswer `json:"webauthn,omitempty"`
+}
+
+// passwordLoginOf is the subject's login at a configured password gate where
+// it has a password, if any.
+func (s *Server) passwordLoginOf(ctx context.Context, tenant, subject string) (*passwordGate, string, bool, error) {
+	if _, err := s.store.UserCredentialGet(ctx, tenant, subject, store.CredentialKindPassword); err != nil {
+		if isNotFound(err) {
+			return nil, "", false, nil
+		}
+		return nil, "", false, err
+	}
+	ids, err := s.store.UserIdentityListSubject(ctx, tenant, subject)
+	if err != nil {
+		return nil, "", false, err
+	}
+	for _, id := range ids {
+		if pw, ok := s.passwordGateNamed(id.Gate); ok {
+			return pw, id.ExternalSubject, true, nil
+		}
+	}
+	return nil, "", false, nil
+}
+
+// passkeyStepUpOK re-authenticates the person within this request before a
+// passkey is added or removed, so a borrowed session alone cannot change how
+// the account signs in: an account with a password gives it and its second
+// factor (the TOTP or passkey a login would ask for); an account without one
+// confirms with one of its passkeys (user-verifying); an account with
+// neither — an identity provider's — must have signed in at the provider
+// within the re-authentication window. Writes the refusal (a 401
+// second_factor_required carries the passkey offer to answer).
+func (s *Server) passkeyStepUpOK(w http.ResponseWriter, r *http.Request, sess *store.UISessionRow, req passkeyStepUp) bool {
+	ctx := r.Context()
+	pw, login, hasPassword, err := s.passwordLoginOf(ctx, sess.TenantID, sess.Subject)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+		return false
+	}
+	if hasPassword {
+		if req.CurrentPassword == "" {
+			writeJSONError(w, http.StatusUnauthorized, "password_required", "confirm with your current password")
+			return false
+		}
+		return s.reauthenticate(w, r, pw, *sess, login, req.CurrentPassword, secondFactor{otp: req.OTP, webauthn: req.WebAuthn})
+	}
+	keys, err := s.livePasskeys(ctx, sess.TenantID, sess.Subject)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read passkeys")
+		return false
+	}
+	if len(keys) > 0 {
+		offer, ok, err := s.passkeyAssertion(ctx, ceremonyStepUp, "", sess.TenantID, sess.Subject, stepUpBinding(sess.SessionHash),
+			protocol.VerificationRequired, keys, req.WebAuthn)
+		switch {
+		case err != nil:
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not confirm the passkey")
+			return false
+		case offer != nil:
+			writeSecondFactorRequired(w, &secondFactorChallenge{offer: offer})
+			return false
+		case !ok:
+			writeJSONError(w, http.StatusUnauthorized, "reauth_failed", "the passkey was not accepted")
+			return false
+		}
+		return true
+	}
+	if !s.recentSignIn(sess) {
+		writeReauthRequired(w)
+		return false
+	}
+	return true
+}
+
+// decodeStepUp reads a passkey change's optional step-up body (an empty body
+// is no step-up).
+func decodeStepUp(w http.ResponseWriter, r *http.Request) (passkeyStepUp, bool) {
+	var req passkeyStepUp
+	r.Body = http.MaxBytesReader(w, r.Body, maxWebAuthnBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSONError(w, http.StatusBadRequest, "invalid_body", "invalid request body")
+		return passkeyStepUp{}, false
+	}
+	return req, true
+}
+
 // cleanPasskeyName bounds a label: printable, trimmed, at most 64 bytes.
 func cleanPasskeyName(v string) string {
 	var b strings.Builder
@@ -713,16 +820,16 @@ func cleanPasskeyName(v string) string {
 }
 
 // handlePasskeyRegisterBegin serves POST /v1/_auth/passkeys/register/begin:
-// a creation challenge for the signed-in person, after a recent sign-in,
-// bound to this session. The passkey must be discoverable and verify its
+// a creation challenge for the signed-in person, after a step-up in this
+// request (passkeyStepUpOK), bound to this session. The passkey must be discoverable and verify its
 // user, so it can sign in without a password.
 func (s *Server) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	sess, u, ok := s.passkeySelf(w, r)
 	if !ok {
 		return
 	}
-	if !s.recentSignIn(sess) {
-		writeReauthRequired(w)
+	req, ok := decodeStepUp(w, r)
+	if !ok || !s.passkeyStepUpOK(w, r, sess, req) {
 		return
 	}
 	wa, ok := s.relyingParty()
@@ -890,8 +997,8 @@ func (s *Server) handleRenamePasskey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRemovePasskey serves DELETE /v1/_auth/passkeys/{id}, after a recent
-// sign-in. It refuses to remove the account's last way in, and the last
+// handleRemovePasskey serves DELETE /v1/_auth/passkeys/{id}, after a step-up
+// in this request (passkeyStepUpOK). It refuses to remove the account's last way in, and the last
 // second factor of a password a gate requires one for. Sessions made with
 // the passkey end on their next request (their binding is its key).
 func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
@@ -899,13 +1006,13 @@ func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.recentSignIn(sess) {
-		writeReauthRequired(w)
-		return
-	}
 	id, err := base64.RawURLEncoding.DecodeString(r.PathValue("id"))
 	if err != nil || len(id) == 0 {
 		writeJSONError(w, http.StatusNotFound, "passkey_not_found", "no such passkey")
+		return
+	}
+	req, ok := decodeStepUp(w, r)
+	if !ok || !s.passkeyStepUpOK(w, r, sess, req) {
 		return
 	}
 	ctx := r.Context()

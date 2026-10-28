@@ -46,11 +46,15 @@ const (
 const credKindPassword = "password"
 
 var (
-	errOTPRequired      = errors.New("authgate: a second factor is required")
-	errOTPInvalid       = errors.New("authgate: invalid second factor")
-	errMFAEnrolment     = errors.New("authgate: this gate requires a second factor and the account has none")
-	errTooManyAttempts  = errors.New("authgate: too many attempts")
-	errEnrolmentInvalid = errors.New("authgate: invalid or expired TOTP enrolment")
+	errOTPRequired  = errors.New("authgate: a second factor is required")
+	errOTPInvalid   = errors.New("authgate: invalid second factor")
+	errMFAEnrolment = errors.New("authgate: this gate requires a second factor and the account has none")
+	// errSecondFactorUnavailable: the account has a passkey, which cannot be
+	// used now, and no authenticator app — it never signs in on its
+	// password alone (RFC FA P6).
+	errSecondFactorUnavailable = errors.New("authgate: the account's second factor cannot be used on this server now")
+	errTooManyAttempts         = errors.New("authgate: too many attempts")
+	errEnrolmentInvalid        = errors.New("authgate: invalid or expired TOTP enrolment")
 )
 
 // passwordGate implements authgate.Gate for a kind: password gate.
@@ -225,12 +229,21 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		return store.UserIdentityRow{}, nil, terr
 	}
 	hasTOTP := terr == nil && !totp.ConfirmedAt.IsZero()
-	// RFC FA P6: a passkey is a second factor too, when the deployment is a
-	// relying party.
+	// RFC FA P6: a passkey is a second factor too. Whether the account HAS
+	// one is read from the stored rows, flagged ones included, whatever the
+	// deployment's relying party is now: an account that enrolled a passkey
+	// never signs in on its password alone (a config change, or a flagged
+	// key, must not downgrade it). keys are the ones usable now.
+	all, err := s.store.UserPasskeyList(ctx, id.TenantID, id.Subject)
+	if err != nil {
+		return store.UserIdentityRow{}, nil, err
+	}
 	var keys []store.UserPasskeyRow
 	if s.cfg().ResolvedAuth.Passkeys != nil {
-		if keys, err = s.livePasskeys(ctx, id.TenantID, id.Subject); err != nil {
-			return store.UserIdentityRow{}, nil, err
+		for _, k := range all {
+			if k.FlaggedAt.IsZero() {
+				keys = append(keys, k)
+			}
 		}
 	}
 	secondFailed := func() (store.UserIdentityRow, []string, error) {
@@ -266,6 +279,11 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		return store.UserIdentityRow{}, nil, &secondFactorChallenge{offer: offer, otp: hasTOTP}
 	case hasTOTP:
 		return store.UserIdentityRow{}, nil, errOTPRequired
+	case len(all) > 0:
+		// A passkey account whose passkeys cannot be used now (no relying
+		// party, or every key flagged) and that has no authenticator app:
+		// fail closed rather than fall back to the password alone.
+		return store.UserIdentityRow{}, nil, errSecondFactorUnavailable
 	case pw.g.RequireMFA:
 		return store.UserIdentityRow{}, nil, errMFAEnrolment
 	}
@@ -380,6 +398,11 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errMFAEnrolment):
 		writeJSONError(w, http.StatusForbidden, "mfa_enrolment_required",
 			"this sign-in requires an authenticator app and your account has none; ask an operator for a reset link")
+		return
+	case errors.Is(err, errSecondFactorUnavailable):
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "second_factor_unavailable", SourceAddr: s.clientSource(r)})
+		writeJSONError(w, http.StatusForbidden, "second_factor_unavailable",
+			"your account signs in with a passkey, which this server cannot use right now, and has no authenticator app; ask an operator for help")
 		return
 	default:
 		slog.Error("auth: password login failed", "gate", name, "err", err)
@@ -1162,7 +1185,8 @@ func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, pw *pass
 		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
 	case errors.Is(err, errTooManyAttempts):
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts; wait and try again")
-	case err == nil, errors.Is(err, authgate.ErrInvalidCredential), errors.Is(err, errOTPInvalid), errors.Is(err, errMFAEnrolment):
+	case err == nil, errors.Is(err, authgate.ErrInvalidCredential), errors.Is(err, errOTPInvalid), errors.Is(err, errMFAEnrolment),
+		errors.Is(err, errSecondFactorUnavailable):
 		writeJSONError(w, http.StatusUnauthorized, "reauth_failed", "the current password or code was not accepted")
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
