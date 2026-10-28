@@ -503,9 +503,15 @@ func (s *Server) provisionUserRootDoc(ctx context.Context, mi memInject) {
 		return
 	}
 
+	// The Public section starts with the display name the user row already
+	// shows to the tenant, and nothing else; the person adds the rest.
+	displayName := ""
+	if row, err := s.store.UserGet(ctx, mi.Tenant, mi.UserID); err == nil {
+		displayName = row.DisplayName
+	}
 	create, _ := json.Marshal(map[string]any{
 		"op": "import_md", "scope": "user", "path": meminject.UserRootPath,
-		"markdown": meminject.UserRootTemplate(),
+		"markdown": meminject.UserRootTemplateFor(displayName),
 	})
 	_, _ = doc.Execute(dctx, create) // best-effort; a failure retries next reference
 }

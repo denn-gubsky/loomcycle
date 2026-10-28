@@ -9,6 +9,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
@@ -300,6 +301,22 @@ func TestUserRoot_LazyProvisionOnFirstReference(t *testing.T) {
 	}
 	if !strings.Contains(got.SystemPrompt, `<memory source="user_info">`) {
 		t.Errorf("user_info must be framed as reference DATA:\n%s", got.SystemPrompt)
+	}
+}
+
+// A new profile's Public section starts with the user row's display name and
+// nothing else.
+func TestUserRoot_ProvisionSeedsThePublicSectionWithTheDisplayName(t *testing.T) {
+	st, mgr := memStoreFixture(t)
+	if err := st.UserCreate(context.Background(), store.UserRow{TenantID: "t1", Subject: "alice", DisplayName: "Alice Doe", AccessMode: "tenant", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	s.SetSqlMem(mgr)
+	mi := memInject{Tenant: "t1", UserID: "alice", AgentName: "helper"}
+	s.ensureUserRootDoc(context.Background(), mi)
+	if got, _ := meminject.PublicSection(s.readUserRootMarkdown(context.Background(), mi)); got != "Name: Alice Doe" {
+		t.Errorf("seeded Public section = %q", got)
 	}
 }
 

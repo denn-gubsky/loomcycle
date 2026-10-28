@@ -43,6 +43,7 @@ var mcpWrapperSchemas = map[string]string{
 	"path":              pathInputSchema,
 	"document":          documentInputSchema,
 	"history":           historyInputSchema,
+	"identity":          identityInputSchema,
 	"decision":          decisionInputSchema,
 }
 

@@ -247,6 +247,9 @@ func (m *httpMockConnector) Document(context.Context, json.RawMessage) (connecto
 func (m *httpMockConnector) History(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) Identity(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) Decision(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }

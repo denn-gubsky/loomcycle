@@ -1081,6 +1081,14 @@ func (s *Server) History(ctx context.Context, input json.RawMessage) (connector.
 	return s.dispatchBuiltin(ctx, "History", input)
 }
 
+// Identity dispatches to the Identity tool, the read-only tenant directory.
+// What the MCP meta-tool `identity` calls, on the ctx mcpPrincipalCtx stamps:
+// the tenant from the principal, and the principal's compiled set as the
+// grants the tool's locks ask.
+func (s *Server) Identity(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	return s.dispatchBuiltin(ctx, "Identity", input)
+}
+
 // MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
 // substrate tool. The tool is NOT in the per-agent dispatcher (operator-
 // admin-only) — dispatchBuiltinDirect looks it up via the dedicated
