@@ -62,6 +62,9 @@ const (
 	credKindPasskey = "passkey"
 	// ceremonySecondFactor: a passkey confirming a verified password.
 	ceremonySecondFactor = "second_factor"
+	// ceremonyLinkFactor: a passkey confirming a reset or attach-invite
+	// link, bound to the link's code.
+	ceremonyLinkFactor = "link_factor"
 
 	passkeyCeremonyTTL = 5 * time.Minute
 	maxPasskeysPerUser = 10

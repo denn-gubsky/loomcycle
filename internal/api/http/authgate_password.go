@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
+
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
@@ -717,6 +719,10 @@ type redeemInviteRequest struct {
 	Password      string `json:"password"`
 	TOTPEnrolment string `json:"totp_enrolment"`
 	TOTPCode      string `json:"totp_code"`
+	// OTP and WebAuthn confirm the existing second factor of the account an
+	// attach invite names (linkSecondFactor).
+	OTP      string         `json:"otp,omitempty"`
+	WebAuthn *passkeyAnswer `json:"webauthn,omitempty"`
 }
 
 // liveInvite resolves an invite code to a live invite on a configured gate.
@@ -753,6 +759,19 @@ func (s *Server) handleInviteInfo(w http.ResponseWriter, r *http.Request) {
 	account := inv.Login
 	if account == "" {
 		account = inv.Email
+	}
+	if inv.Subject != "" {
+		_, hasTOTP, hasPasskey, err := s.accountSecondFactors(r.Context(), inv.TenantID, inv.Subject)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+			return
+		}
+		if hasTOTP || hasPasskey {
+			// The account confirms the factor it has; it is offered no new one.
+			out["has_totp"], out["has_passkey"] = hasTOTP, hasPasskey
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
 	}
 	enrol, err := newEnrolment(pg, g.Name, inv.TenantID, "invite:"+inv.CodeHash, account)
 	if err != nil {
@@ -805,7 +824,19 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	withMFA := g.RequireMFA || req.TOTPEnrolment != ""
+	// An invite that attaches a password to an existing account with a
+	// second factor (a passkey account) must confirm that factor: the link
+	// alone must not add a password and a TOTP of the holder's choosing.
+	existingFactor, existingRequired := "", false
+	if inv.Subject != "" {
+		var ok bool
+		existingFactor, existingRequired, ok = s.linkSecondFactor(w, ctx, pg, g, inv.TenantID, inv.Subject, "invite:"+inv.CodeHash,
+			req.OTP, req.WebAuthn, req.TOTPEnrolment)
+		if !ok {
+			return
+		}
+	}
+	withMFA := g.RequireMFA || req.TOTPEnrolment != "" || existingRequired
 	pass, err := password.Normalize(req.Password)
 	if err == nil {
 		err = pg.policy.Check(pass, withMFA, login, inv.Email)
@@ -825,7 +856,9 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	var factor *store.AuthSecondFactor
 	var recovery []string
 	amr := []string{amrPassword}
-	if req.TOTPEnrolment != "" {
+	if existingRequired {
+		amr = append(amr, existingFactor)
+	} else if req.TOTPEnrolment != "" {
 		secret, step, err := openEnrolment(pg, inv.TenantID, "invite:"+inv.CodeHash, req.TOTPEnrolment, req.TOTPCode)
 		if err != nil {
 			s.codeFailure(ctx, g, inv.CodeHash)
@@ -953,11 +986,99 @@ func (s *Server) managerLinkStillAllowed(ctx context.Context, g *PasswordGateSet
 // --- resets ---
 
 type completeResetRequest struct {
-	Code          string `json:"code"`
-	Password      string `json:"password"`
-	OTP           string `json:"otp"`
-	TOTPEnrolment string `json:"totp_enrolment"`
-	TOTPCode      string `json:"totp_code"`
+	Code          string         `json:"code"`
+	Password      string         `json:"password"`
+	OTP           string         `json:"otp"`
+	WebAuthn      *passkeyAnswer `json:"webauthn,omitempty"`
+	TOTPEnrolment string         `json:"totp_enrolment"`
+	TOTPCode      string         `json:"totp_code"`
+}
+
+// accountSecondFactors reports what second factor an account already has: a
+// confirmed TOTP, and any passkey at all (a flagged one included — the
+// account chose a passkey, so a link must not replace it with a factor of
+// the link holder's choosing).
+func (s *Server) accountSecondFactors(ctx context.Context, tenant, subject string) (totp store.UserTOTPRow, hasTOTP, hasPasskey bool, err error) {
+	if totp, hasTOTP, err = s.confirmedTOTP(ctx, tenant, subject); err != nil {
+		return
+	}
+	keys, err := s.store.UserPasskeyList(ctx, tenant, subject)
+	return totp, hasTOTP, len(keys) > 0, err
+}
+
+// linkSecondFactor is what a reset link (or an invite that attaches a
+// password to an existing user) must present when the account already has a
+// second factor: a code from its TOTP, or an answer from one of its
+// passkeys, in a ceremony bound to the link's code. The link alone never
+// passes it, and a new TOTP enrolment is refused for such an account (a link
+// holder must not install a factor of their own). required is false when
+// the account has none, and the caller applies its enrolment rules; ok is
+// false when the refusal was written.
+func (s *Server) linkSecondFactor(w http.ResponseWriter, ctx context.Context, pg *PasswordGates, g PasswordGateSettings,
+	tenant, subject, binding, otp string, wa *passkeyAnswer, enrolment string) (method string, required, ok bool) {
+	totp, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, tenant, subject)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+		return "", true, false
+	}
+	if !hasTOTP && !hasPasskey {
+		return "", false, true
+	}
+	if enrolment != "" {
+		writeJSONError(w, http.StatusBadRequest, "second_factor_exists",
+			"this account already has a second factor; confirm with it instead of adding a new one")
+		return "", true, false
+	}
+	var keys []store.UserPasskeyRow
+	if hasPasskey && s.cfg().ResolvedAuth.Passkeys != nil {
+		if keys, err = s.livePasskeys(ctx, tenant, subject); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+			return "", true, false
+		}
+	}
+	failed := func() (string, bool, bool) {
+		s.codeFailure(ctx, g, strings.TrimPrefix(strings.TrimPrefix(binding, "reset:"), "invite:"))
+		writeJSONError(w, http.StatusUnauthorized, "invalid_otp", "that code was not accepted")
+		return "", true, false
+	}
+	switch {
+	case wa != nil && len(keys) > 0:
+		_, verified, err := s.passkeyAssertion(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
+			protocol.VerificationPreferred, keys, wa)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not check the passkey")
+			return "", true, false
+		}
+		if !verified {
+			return failed()
+		}
+		return amrWebAuthn, true, true
+	case hasTOTP && strings.TrimSpace(otp) != "":
+		m, verified, err := s.checkSecondFactor(ctx, pg, tenant, subject, totp, otp)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not check the code")
+			return "", true, false
+		}
+		if !verified {
+			return failed()
+		}
+		return m, true, true
+	case len(keys) > 0:
+		offer, _, err := s.passkeyAssertion(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
+			protocol.VerificationPreferred, keys, nil)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not begin the passkey check")
+			return "", true, false
+		}
+		writeSecondFactorRequired(w, &secondFactorChallenge{offer: offer, otp: hasTOTP})
+		return "", true, false
+	case hasTOTP:
+		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
+		return "", true, false
+	}
+	writeJSONError(w, http.StatusForbidden, "second_factor_unavailable",
+		"this account's passkey cannot be used on this server right now; ask an operator to remove its credentials, then use a new link")
+	return "", true, false
 }
 
 func (s *Server) liveReset(ctx context.Context, pg *PasswordGates, code string) (store.AuthResetRow, PasswordGateSettings, bool) {
@@ -1006,14 +1127,16 @@ func (s *Server) handleResetInfo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	_, hasTOTP, err := s.confirmedTOTP(ctx, rs.TenantID, rs.Subject)
+	_, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, rs.TenantID, rs.Subject)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	out := map[string]any{"gate": g.Name, "login": login, "has_totp": hasTOTP, "require_mfa": g.RequireMFA,
+	out := map[string]any{"gate": g.Name, "login": login, "has_totp": hasTOTP, "has_passkey": hasPasskey, "require_mfa": g.RequireMFA,
 		"min_length": password.MinLengthSoleFactor, "min_length_with_mfa": password.MinLengthWithMFA, "expires_at": rs.ExpiresAt}
-	if !hasTOTP {
+	// An account with a second factor confirms it; it is never offered a new
+	// one through the link.
+	if !hasTOTP && !hasPasskey {
 		enrol, err := newEnrolment(pg, g.Name, rs.TenantID, "reset:"+rs.CodeHash, login)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", "could not prepare the authenticator enrolment")
@@ -1050,31 +1173,16 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 	if s.codeBlocked(w, ctx, rs.CodeHash) {
 		return
 	}
-	totp, hasTOTP, err := s.confirmedTOTP(ctx, rs.TenantID, rs.Subject)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
 	now := time.Now().UTC()
 	amr := []string{amrPassword}
 	var factor *store.AuthSecondFactor
 	var recovery []string
+	method, required, ok := s.linkSecondFactor(w, ctx, pg, g, rs.TenantID, rs.Subject, "reset:"+rs.CodeHash, req.OTP, req.WebAuthn, req.TOTPEnrolment)
+	if !ok {
+		return
+	}
 	switch {
-	case hasTOTP:
-		if strings.TrimSpace(req.OTP) == "" {
-			writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
-			return
-		}
-		method, ok, err := s.checkSecondFactor(ctx, pg, rs.TenantID, rs.Subject, totp, req.OTP)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-			return
-		}
-		if !ok {
-			s.codeFailure(ctx, g, rs.CodeHash)
-			writeJSONError(w, http.StatusUnauthorized, "invalid_otp", "that code was not accepted")
-			return
-		}
+	case required:
 		amr = append(amr, method)
 	case req.TOTPEnrolment != "":
 		secret, step, err := openEnrolment(pg, rs.TenantID, "reset:"+rs.CodeHash, req.TOTPEnrolment, req.TOTPCode)

@@ -10,6 +10,7 @@ import {
   redeemInvite,
   refusalText,
 } from "../lib/passwordGate";
+import { withPasskeyStepUp } from "../lib/passkeys";
 
 // InviteView is loomcycle's own page for an invitation link
 // (https://<server>/ui/invite#lci_…): the person chooses a login (or takes the
@@ -25,6 +26,7 @@ export default function InviteView() {
   const [pw2, setPw2] = useState("");
   const [addTotp, setAddTotp] = useState(false);
   const [totpCode, setTotpCode] = useState("");
+  const [otp, setOtp] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ redirect: string; codes: string[] } | null>(null);
 
@@ -73,13 +75,18 @@ export default function InviteView() {
     if (!info || !ready) return;
     setBusy(true);
     setRefusal(null);
-    const r = await redeemInvite({
-      code,
-      login,
-      password: pw,
-      totp_enrolment: withMFA ? info.totp?.enrolment : undefined,
-      totp_code: withMFA ? totpCode : undefined,
-    });
+    // An invite to an existing passkey account confirms that passkey.
+    const r = await withPasskeyStepUp((webauthn) =>
+      redeemInvite({
+        code,
+        login,
+        password: pw,
+        webauthn,
+        otp: info.has_totp && !webauthn ? otp : undefined,
+        totp_enrolment: withMFA ? info.totp?.enrolment : undefined,
+        totp_code: withMFA ? totpCode : undefined,
+      }),
+    );
     setBusy(false);
     if (r.ok) setDone({ redirect: r.data.redirect || "/ui/", codes: r.data.recovery_codes ?? [] });
     else setRefusal(r.refusal);
@@ -109,6 +116,18 @@ export default function InviteView() {
               disabled={busy}
             />
             <NewPasswordFields value={pw} confirm={pw2} onValue={setPw} onConfirm={setPw2} min={min} disabled={busy} />
+            {info.has_passkey && <p className="login-sub">You will confirm with your passkey.</p>}
+            {info.has_totp && (
+              <input
+                className="login-input"
+                autoComplete="one-time-code"
+                aria-label="Authenticator or recovery code"
+                placeholder="Code from your authenticator app, or a recovery code"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value)}
+                disabled={busy}
+              />
+            )}
             {!info.require_mfa && info.totp && (
               <label className="login-check">
                 <input type="checkbox" checked={addTotp} onChange={(e) => setAddTotp(e.target.checked)} /> Also add an

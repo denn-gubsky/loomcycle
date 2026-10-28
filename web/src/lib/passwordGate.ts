@@ -80,6 +80,10 @@ export interface InviteInfo {
   gate: string;
   login: string;
   email: string;
+  /** For an invite to an existing account that already has a second factor:
+   *  which, to confirm (no new authenticator is offered then). */
+  has_totp?: boolean;
+  has_passkey?: boolean;
   require_mfa: boolean;
   min_length: number;
   min_length_with_mfa: number;
@@ -91,6 +95,8 @@ export interface ResetInfo {
   gate: string;
   login: string;
   has_totp: boolean;
+  /** The account has a passkey: the reset is confirmed with it. */
+  has_passkey?: boolean;
   require_mfa: boolean;
   min_length: number;
   min_length_with_mfa: number;
@@ -124,14 +130,22 @@ export const signInWithPassword = (
 export const inviteInfo = (code: string, f: typeof fetch = fetch) => call<InviteInfo>(f, "POST", "/v1/_auth/invite/info", { code });
 
 export const redeemInvite = (
-  req: { code: string; login: string; password: string; totp_enrolment?: string; totp_code?: string },
+  req: {
+    code: string;
+    login: string;
+    password: string;
+    totp_enrolment?: string;
+    totp_code?: string;
+    otp?: string;
+    webauthn?: PasskeyAnswerJSON;
+  },
   f: typeof fetch = fetch,
 ) => call<Redeemed>(f, "POST", "/v1/_auth/invite", req);
 
 export const resetInfo = (code: string, f: typeof fetch = fetch) => call<ResetInfo>(f, "POST", "/v1/_auth/reset/info", { code });
 
 export const completeReset = (
-  req: { code: string; password: string; otp?: string; totp_enrolment?: string; totp_code?: string },
+  req: { code: string; password: string; otp?: string; webauthn?: PasskeyAnswerJSON; totp_enrolment?: string; totp_code?: string },
   f: typeof fetch = fetch,
 ) => call<Redeemed>(f, "POST", "/v1/_auth/reset", req);
 
@@ -177,6 +191,7 @@ const messages: Record<string, string> = {
   mfa_required: "This sign-in requires an authenticator app; it cannot be removed.",
   network: "The server could not be reached.",
   second_factor_required: "Confirm with your passkey.",
+  second_factor_exists: "This account already has a second factor. Confirm with it instead.",
   second_factor_unavailable:
     "Your account signs in with a passkey, which this server cannot use right now, and has no authenticator app. Ask your administrator.",
   passkey_cancelled: "The passkey was not used. Try again.",

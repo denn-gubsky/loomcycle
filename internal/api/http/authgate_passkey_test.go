@@ -496,3 +496,78 @@ func TestPasskey_AnotherUsersPasskeyIsOutOfReach(t *testing.T) {
 		t.Fatalf("bob removed alice's passkey: %d", code)
 	}
 }
+
+// A reset link never bypasses a passkey: the holder is offered no new
+// authenticator, a TOTP of their own is refused, and the reset completes only
+// with the account's passkey.
+func TestPasskey_AResetLinkNeedsTheAccountsPasskey(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "alice@example.com")
+	a := registerPasskey(t, b)
+	code := f.resetCode(t, bAcmeOp, "local", jsonBody(t, map[string]string{"subject": sub}))
+	holder := f.browser(t)
+	c, info := holder.do("POST", "/v1/_auth/reset/info", jsonBody(t, map[string]string{"code": code}))
+	if c != http.StatusOK || info["has_passkey"] != true || info["totp"] != nil {
+		t.Fatalf("reset info for a passkey account: %d %v (want has_passkey and no enrolment)", c, info)
+	}
+	newPass := "a different long passphrase for alice"
+	// A TOTP of the holder's own is refused outright.
+	c, out := holder.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": code, "password": newPass,
+		"totp_enrolment": "anything", "totp_code": "123456"}))
+	if c != http.StatusBadRequest || out["code"] != "second_factor_exists" {
+		t.Fatalf("a reset with the holder's own TOTP: %d %v", c, out)
+	}
+	// The link alone asks for the passkey.
+	c, out = holder.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": code, "password": newPass}))
+	if c != http.StatusUnauthorized || out["code"] != "second_factor_required" || out["webauthn"] == nil {
+		t.Fatalf("a reset on the link alone: %d %v", c, out)
+	}
+	// A passkey that is not the account's is refused.
+	stranger := newSoftAuthenticator(t, testRPID, testOrigin)
+	stranger.credID = a.credID
+	if c, out := holder.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": code, "password": newPass,
+		"webauthn": stranger.get(out["webauthn"].(map[string]any))})); c != http.StatusUnauthorized {
+		t.Fatalf("a reset with a forged passkey answer: %d %v", c, out)
+	}
+	_, out = holder.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": code, "password": newPass}))
+	if c, out := holder.do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": code, "password": newPass,
+		"webauthn": a.get(out["webauthn"].(map[string]any))})); c != http.StatusOK {
+		t.Fatalf("a reset with the account's passkey: %d %v", c, out)
+	}
+}
+
+// A passkey account whose passkeys cannot be used now has no way through a
+// reset link: an operator removes its credentials first.
+func TestPasskey_AResetLinkFailsClosedWhenThePasskeyCannotBeUsed(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "alice@example.com")
+	registerPasskey(t, b)
+	code := f.resetCode(t, bAcmeOp, "local", jsonBody(t, map[string]string{"subject": sub}))
+	f.srv.cfg().ResolvedAuth.Passkeys = nil
+	c, out := f.browser(t).do("POST", "/v1/_auth/reset", jsonBody(t, map[string]any{"code": code, "password": "a different long passphrase for alice"}))
+	if c != http.StatusForbidden || out["code"] != "second_factor_unavailable" {
+		t.Fatalf("a reset of a passkey account without a relying party: %d %v", c, out)
+	}
+}
+
+// An invite that attaches a password to an existing passkey account must
+// confirm that passkey: the link alone adds no password and no TOTP.
+func TestPasskey_AnAttachInviteNeedsTheAccountsPasskey(t *testing.T) {
+	f := newPasskeyFixture(t)
+	b, sub := f.passwordUser(t, "alice@example.com")
+	a := registerPasskey(t, b)
+	passkeyOnlyUser(t, f, sub, a)
+	inv := f.inviteCode(t, bAcmeOp, "local", jsonBody(t, map[string]string{"subject": sub, "login": "alice2@example.com"}))
+	holder := f.browser(t)
+	if c, info := holder.do("POST", "/v1/_auth/invite/info", jsonBody(t, map[string]string{"code": inv})); c != http.StatusOK || info["has_passkey"] != true || info["totp"] != nil {
+		t.Fatalf("invite info for a passkey account: %d %v", c, info)
+	}
+	c, out := holder.do("POST", "/v1/_auth/invite", jsonBody(t, map[string]any{"code": inv, "password": goodPassword}))
+	if c != http.StatusUnauthorized || out["code"] != "second_factor_required" {
+		t.Fatalf("an attach invite on the link alone: %d %v", c, out)
+	}
+	if c, out := holder.do("POST", "/v1/_auth/invite", jsonBody(t, map[string]any{"code": inv, "password": goodPassword,
+		"webauthn": a.get(out["webauthn"].(map[string]any))})); c != http.StatusCreated {
+		t.Fatalf("an attach invite with the passkey: %d %v", c, out)
+	}
+}
