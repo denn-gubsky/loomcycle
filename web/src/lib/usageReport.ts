@@ -394,11 +394,16 @@ export function inCurrency(rows: UsageAggregate[], currency: string): UsageAggre
 
 // --- CSV ------------------------------------------------------------------
 
+// A text cell a spreadsheet would read as a formula: one starting — after any
+// whitespace — with = + - @, a tab or a carriage return, or the full-width
+// forms of the first four, which some spreadsheets fold to ASCII. Names here
+// (users, agents, models) come from callers, so a cell is never trusted.
+const FORMULA_START = /^[\s]*[=+\-@\t\r\uFF1D\uFF0B\uFF0D\uFF20]/;
+
 function csvCell(v: string | number): string {
-  const s = String(v);
-  // A leading =,+,-,@ would be read as a formula by a spreadsheet.
-  const safe = /^[=+\-@]/.test(s) ? "'" + s : s;
-  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  // Numbers are written as numbers: a negative one is a value, not a formula.
+  const s = typeof v === "number" ? String(v) : FORMULA_START.test(v) ? "'" + v : v;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
 export function toCSV(header: string[], rows: Array<Array<string | number>>): string {

@@ -165,6 +165,15 @@ describe("csv", () => {
   it("quotes what needs quoting and defuses formulas", () => {
     expect(toCSV(["a", "b"], [["x,y", '=SUM(A1)'], ["say \"hi\"", 3]])).toBe('a,b\n"x,y",\'=SUM(A1)\n"say ""hi""",3\n');
   });
+
+  it("defuses every formula start a spreadsheet honours, and leaves numbers alone", () => {
+    const cells = ["  =1+1", "\t=1", "\r=1", "＝1+1", "＋1", "－1", "＠SUM(A1)", "+1", "-1", "@x"];
+    for (const c of cells) {
+      expect(toCSV(["a"], [[c]]).split("\n")[1]?.replace(/^"/, "").startsWith("'")).toBe(true);
+    }
+    expect(toCSV(["n"], [[-5]])).toBe("n\n-5\n");
+    expect(toCSV(["a"], [["claude-haiku-5-5"]])).toBe("a\nclaude-haiku-5-5\n");
+  });
 });
 
 describe("filters", () => {
