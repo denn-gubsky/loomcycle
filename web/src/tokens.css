@@ -91,6 +91,18 @@
   /* Charts (consumed by inline SVG via var()) */
   --lc-chart-grid: #2a2e3a;
   --lc-chart-axis: #9aa0ad;
+  /* Categorical series, in this order: the order is what keeps adjacent
+   * series apart for colour-blind readers (checked with the dataviz palette
+   * validator against --lc-surface, both themes). A value keeps its slot;
+   * "other" is the neutral. Never extend past seven — fold into "other". */
+  --lc-series-1: #3987e5;
+  --lc-series-2: #d95926;
+  --lc-series-3: #199e70;
+  --lc-series-4: #c98500;
+  --lc-series-5: #d55181;
+  --lc-series-6: #008300;
+  --lc-series-7: #9085e9;
+  --lc-series-other: #5c6272;
 
   color-scheme: dark;
 
@@ -157,6 +169,16 @@
 
   --lc-chart-grid: #d7dbe2;
   --lc-chart-axis: #5a6270;
+  /* Light steps of the same seven hues. Slots 3–5 sit under 3:1 on white,
+   * which is why every chart has a legend with values and a table. */
+  --lc-series-1: #2a78d6;
+  --lc-series-2: #eb6834;
+  --lc-series-3: #1baf7a;
+  --lc-series-4: #eda100;
+  --lc-series-5: #e87ba4;
+  --lc-series-6: #008300;
+  --lc-series-7: #6250d6;
+  --lc-series-other: #a3a9b5;
 
   --lc-shadow-sm: 0 1px 2px rgba(26, 29, 36, 0.05);
   --lc-shadow: 0 2px 10px rgba(26, 29, 36, 0.08);

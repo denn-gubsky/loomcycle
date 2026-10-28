@@ -3806,7 +3806,17 @@ export interface UsageAggregate {
   provider?: string;
   model?: string;
   credential_source?: string; // operator | tenant | user
-  purpose?: string; // chat | ocr | stt | tts
+  purpose?: string; // chat | gateway | consolidation | rerank | … | ocr | stt | tts
+  tier?: string;
+  user_tier?: string;
+  agent?: string;
+  class?: string; // foreground | background
+  // Start of the UTC period the row sums, when the request asked for a bucket.
+  period?: string;
+  // The row folds every value of the first dimension outside the request's top.
+  other?: boolean;
+  // Characters text-to-speech and embedding calls sent.
+  input_chars?: number;
   input_tokens: number;
   output_tokens: number;
   cache_creation_tokens: number;
@@ -3824,14 +3834,23 @@ export interface UsageReportResponse {
   group_by: string[];
   from?: string;
   to?: string;
+  bucket?: string;
   rows: UsageAggregate[];
+  // The oldest instant the per-call ledger holds; hour buckets and the agent
+  // dimension stop there. Absent when nothing is archived.
+  detail_since?: string;
 }
 
 export interface UsageReportParams {
-  group_by?: string; // comma list of tenant,user,provider,model,source,purpose
+  group_by?: string; // comma list of report dimensions
   from?: string; // RFC3339
   to?: string; // RFC3339
   tenant?: string; // admin-only focus; ignored for a tenant operator
+  bucket?: "hour" | "day" | "week" | "month";
+  top?: number;
+  top_by?: "cost" | "tokens" | "calls";
+  // Filters by dimension name (any but tenant), values OR'd.
+  filters?: Record<string, string[] | undefined>;
 }
 
 export function getUsage(
@@ -3842,6 +3861,12 @@ export function getUsage(
   if (params.from) q.set("from", params.from);
   if (params.to) q.set("to", params.to);
   if (params.tenant) q.set("tenant", params.tenant);
+  if (params.bucket) q.set("bucket", params.bucket);
+  if (params.top) q.set("top", String(params.top));
+  if (params.top_by) q.set("top_by", params.top_by);
+  for (const [dim, vals] of Object.entries(params.filters ?? {})) {
+    if (vals && vals.length > 0) q.set(dim, vals.join(","));
+  }
   const qs = q.toString();
   return jsonFetch<UsageReportResponse>(`/v1/_usage${qs ? "?" + qs : ""}`);
 }

@@ -7188,6 +7188,340 @@ a.login-btn {
   font-size: 11px;
 }
 
+/* --- RFC FM: the Usage dashboard ------------------------------------------
+   Tabs, one filter bar, figures, a donut + over-time chart per tab, the table.
+   Chart colours are --lc-series-* (tokens.css); text never wears them. */
+.usage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-tab {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--fg-soft);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.usage-tab:hover {
+  color: var(--fg);
+}
+.usage-tab.is-active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.usage-filterbar {
+  align-items: flex-end;
+}
+.usage-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.usage-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-soft);
+}
+.usage-filterbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.usage-chips {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-family: var(--mono);
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-soft-2);
+}
+.usage-chip button,
+.usage-chip-clear {
+  border: 0;
+  background: transparent;
+  color: var(--fg-soft);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+}
+.usage-chip-clear {
+  font-size: 12px;
+  text-decoration: underline;
+}
+.usage-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: opacity 0.15s;
+}
+.usage-body.is-loading {
+  opacity: 0.5;
+}
+.usage-stat-delta {
+  font-size: 11px;
+  color: var(--fg-soft);
+}
+.usage-charts {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.usage-donut-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.usage-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--lc-radius-sm);
+  padding: 12px 14px;
+  min-width: 0;
+}
+.usage-card-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+.usage-card-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+.usage-empty-chart {
+  padding: 32px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.usage-donut-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.usage-donut-chart {
+  position: relative;
+  flex: none;
+}
+.usage-donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.usage-donut-total {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  text-align: center;
+  max-width: 60%;
+}
+.usage-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 160px;
+}
+.usage-legend-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+}
+.usage-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.usage-legend-row .usage-legend-item {
+  width: auto;
+}
+.usage-legend-item:hover:not(:disabled) {
+  background: var(--bg-soft-2);
+}
+.usage-legend-item.is-hidden {
+  opacity: 0.4;
+}
+.usage-legend-static {
+  cursor: default;
+  color: var(--fg-soft);
+}
+.usage-legend-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-legend-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.usage-legend-share {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-soft);
+  min-width: 3ch;
+  text-align: right;
+}
+.usage-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+.usage-legend-item .usage-swatch {
+  margin-right: 0;
+}
+.usage-line-key {
+  display: inline-block;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+}
+.usage-line-key-dashed {
+  background: repeating-linear-gradient(90deg, var(--lc-chart-axis) 0 4px, transparent 4px 7px);
+}
+.usage-tooltip {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  box-shadow: var(--lc-shadow);
+  min-width: 160px;
+}
+.usage-tooltip-label {
+  color: var(--fg-soft);
+  margin-bottom: 4px;
+}
+.usage-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-soft);
+}
+.usage-tooltip-row strong {
+  color: var(--fg);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.usage-tooltip-prev {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.usage-ranked {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.usage-ranked button {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 2fr auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+.usage-ranked button:hover {
+  background: var(--bg-soft-2);
+}
+.usage-ranked-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-ranked-bar {
+  height: 8px;
+  background: var(--bg-soft-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.usage-ranked-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+.usage-row-pick {
+  cursor: pointer;
+}
+.usage-row-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.usage-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+@media (max-width: 860px) {
+  .usage-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .usage-filterbar-actions {
+    margin-left: 0;
+  }
+  .usage-view {
+    padding: 16px;
+  }
+}
+
 /* --- RFC AW: per-scope token budgets (LimitsView) --------------------------
    Mirrors the .usage-* console conventions (--bg-soft cards, --mono table). */
 .limits-view {
