@@ -32,7 +32,7 @@ func TestUsageCanonicalDims_EveryDimensionMapsToAColumnAndIsListed(t *testing.T)
 		t.Errorf("ungrouped = (%v, %v), want %d literal expressions and no GROUP BY", exprs, group, len(UsageCanonicalDims))
 	}
 	exprs, group = UsageGroupColumns([]UsageDimension{UsageByPurpose, UsageByTenant})
-	wantExprs := []string{"tenant_id", "''", "''", "''", "''", "purpose"}
+	wantExprs := []string{"tenant_id", "''", "''", "''", "''", "purpose", "''", "''", "''", "''"}
 	if !reflect.DeepEqual(exprs, wantExprs) || !reflect.DeepEqual(group, []string{"tenant_id", "purpose"}) {
 		t.Errorf("grouped by purpose,tenant = (%v, %v), want (%v, [tenant_id purpose]) in canonical order", exprs, group, wantExprs)
 	}

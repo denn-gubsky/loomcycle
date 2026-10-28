@@ -2789,72 +2789,14 @@ const nanosPerDay = int64(86400) * int64(1e9)
 
 // UsageReport aggregates recent per-call token_usage UNION the compact
 // usage_archive rollup (RFC AV Phase 2b), so a window that has been pruned to
-// the archive still reports. The six dimension columns are SELECTed in
-// UsageCanonicalDims order — the column when grouped, else ” — a fixed
-// 15-column shape. ts / period_start are unix-nano, so window bounds are nanos.
+// the archive still reports. The SQL is store.BuildUsageReportQuery's, shared
+// with Postgres; ts and period_start are unix nanoseconds, so times bind as
+// nanoseconds.
 func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.UsageAggregate, error) {
-	dimExprs, groupCols := store.UsageGroupColumns(q.GroupBy)
-	// Per-source WHERE (tenant + window). token_usage windows on ts (exact);
-	// usage_archive on period_start (day-truncated UTC midnight). Args are
-	// appended in placeholder order (token_usage first). floorFromDay floors the
-	// `from` bound to its UTC day for the archive branch — see below.
-	where := func(tsCol string, floorFromDay bool) (string, []any) {
-		var conds []string
-		var args []any
-		if q.TenantID != "" {
-			conds = append(conds, "tenant_id = ?")
-			args = append(args, q.TenantID)
-		}
-		if !q.From.IsZero() {
-			conds = append(conds, tsCol+" >= ?")
-			from := q.From.UnixNano()
-			if floorFromDay {
-				// The archive is day-bucketed (period_start = UTC midnight), so an
-				// intra-day `from` (e.g. 12:00) compared exactly would drop the whole
-				// from-day bucket (period_start 00:00 < 12:00). Floor `from` to its
-				// UTC day so that bucket is included. This makes the boundary day
-				// over-inclusive at day granularity — never under-inclusive.
-				from = (from / nanosPerDay) * nanosPerDay
-			}
-			args = append(args, from)
-		}
-		if !q.To.IsZero() {
-			conds = append(conds, tsCol+" <= ?")
-			args = append(args, q.To.UnixNano())
-		}
-		if len(conds) == 0 {
-			return "", nil
-		}
-		return " WHERE " + strings.Join(conds, " AND "), args
+	query, args, err := store.BuildUsageReportQuery(q, sqliteUsageDialect)
+	if err != nil {
+		return nil, err
 	}
-	tuWhere, tuArgs := where("ts", false)
-	uaWhere, uaArgs := where("period_start", true)
-
-	inner := `SELECT tenant_id, COALESCE(user_id,'') AS user_id, provider, model, credential_source, purpose,
-			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			COALESCE(cost,0) AS cost, COALESCE(cost_currency,'') AS cost_currency,
-			1 AS call_count, CASE WHEN cost IS NULL THEN 1 ELSE 0 END AS unpriced_calls, audio_seconds
-		FROM token_usage` + tuWhere + `
-		UNION ALL
-		SELECT tenant_id, user_id, provider, model, credential_source, purpose,
-			input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-			cost, cost_currency, call_count, unpriced_calls, audio_seconds
-		FROM usage_archive` + uaWhere
-
-	query := `SELECT ` + strings.Join(dimExprs, ", ") + `,
-		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-		COALESCE(SUM(cache_creation_tokens),0), COALESCE(SUM(cache_read_tokens),0),
-		COALESCE(SUM(cost),0), COALESCE(SUM(call_count),0), COALESCE(SUM(unpriced_calls),0),
-		COALESCE(SUM(audio_seconds),0), cost_currency
-		FROM (` + inner + `)`
-	// cost_currency is ALWAYS in the GROUP BY so a row never sums across currencies
-	// — each output row is single-currency (unpriced rows, currency '', group
-	// together). A single-currency deployment still yields one row per bucket.
-	groupCols = append(groupCols, "cost_currency")
-	query += " GROUP BY " + strings.Join(groupCols, ", ")
-	query += " ORDER BY COALESCE(SUM(cost),0) DESC"
-
-	args := append(append([]any{}, tuArgs...), uaArgs...)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -2863,16 +2805,48 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 	var out []store.UsageAggregate
 	for rows.Next() {
 		var a store.UsageAggregate
+		var period int64
 		if err := rows.Scan(
 			&a.TenantID, &a.UserID, &a.Provider, &a.Model, &a.CredentialSource, &a.Purpose,
+			&a.Tier, &a.UserTier, &a.AgentID, &a.Class,
 			&a.InputTokens, &a.OutputTokens, &a.CacheCreationTokens, &a.CacheReadTokens,
-			&a.Cost, &a.CallCount, &a.UnpricedCalls, &a.AudioSeconds, &a.Currency,
+			&a.Cost, &a.CallCount, &a.UnpricedCalls, &a.AudioSeconds, &a.InputChars, &a.Currency, &period,
 		); err != nil {
 			return nil, err
 		}
+		if q.Bucket != store.UsageBucketNone {
+			a.Period = time.Unix(0, period).UTC()
+		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return store.FinishUsageReport(out, q), nil
+}
+
+// sqliteUsageDialect is the sqlite half of the shared usage report SQL. Times
+// are unix nanoseconds, so a bucket start is integer arithmetic: hours and days
+// divide evenly from the epoch; weeks are offset by four days, since 1970-01-01
+// was a Thursday and an ISO week starts on Monday; months go through strftime.
+var sqliteUsageDialect = store.UsageSQLDialect{
+	Placeholder: func(int) string { return "?" },
+	TimeArg:     func(t time.Time) any { return t.UnixNano() },
+	Bucket: func(col string, b store.UsageBucket) string {
+		const hour, day = int64(time.Hour), int64(24 * time.Hour)
+		switch b {
+		case store.UsageBucketHour:
+			return fmt.Sprintf("((%s / %d) * %d)", col, hour, hour)
+		case store.UsageBucketDay:
+			return fmt.Sprintf("((%s / %d) * %d)", col, day, day)
+		case store.UsageBucketWeek:
+			week, monday := 7*day, 4*day
+			return fmt.Sprintf("(((%s - %d) / %d) * %d + %d)", col, monday, week, week, monday)
+		}
+		// month
+		return fmt.Sprintf("(CAST(strftime('%%s', strftime('%%Y-%%m-01', %s / 1000000000, 'unixepoch')) AS INTEGER) * 1000000000)", col)
+	},
+	NoPeriod: "0",
 }
 
 // RollupAndPruneUsage folds token_usage rows older than olderThan into

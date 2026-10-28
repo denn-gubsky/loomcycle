@@ -688,6 +688,10 @@ func Run(t *testing.T, factory Factory) {
 		// Tier columns and the wider purpose list.
 		{"TokenUsageTierRoundTrip", testTokenUsageTierRoundTrip},
 		{"UsageRollupAcrossTiers", testUsageRollupAcrossTiers},
+		// Report buckets, filters, the new dimensions and top-N.
+		{"UsageReportBuckets", testUsageReportBuckets},
+		{"UsageReportFiltersAndNewDims", testUsageReportFiltersAndNewDims},
+		{"UsageReportTopFoldsTheRest", testUsageReportTopFoldsTheRest},
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},

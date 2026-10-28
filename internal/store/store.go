@@ -1007,8 +1007,16 @@ const (
 	UsageByUser     UsageDimension = "user"
 	UsageByProvider UsageDimension = "provider"
 	UsageByModel    UsageDimension = "model"
-	UsageBySource   UsageDimension = "source"  // credential_source (operator|tenant|user)
-	UsageByPurpose  UsageDimension = "purpose" // chat | ocr | stt | tts (UsagePurpose*)
+	UsageBySource   UsageDimension = "source"    // credential_source (operator|tenant|user)
+	UsageByPurpose  UsageDimension = "purpose"   // what the call was for (UsagePurpose*)
+	UsageByTier     UsageDimension = "tier"      // the model tier the call was resolved through
+	UsageByUserTier UsageDimension = "user_tier" // the run's user tier
+	// UsageByAgent is the agent that made the call. The archive keeps no agent,
+	// so a report grouped or filtered by it reads the detail window only.
+	UsageByAgent UsageDimension = "agent"
+	// UsageByClass is foreground or background, derived from the purpose
+	// (UsagePurposeClass) rather than stored.
+	UsageByClass UsageDimension = "class"
 )
 
 // UsageQuery filters + groups a usage report.
@@ -1026,6 +1034,18 @@ type UsageQuery struct {
 	// GroupBy is the ordered set of dimensions to group by (validated against the
 	// UsageBy* whitelist). Empty ⇒ a single grand-total row.
 	GroupBy []UsageDimension
+	// Bucket splits the window into UTC periods ("" = one total per group);
+	// each row then carries the period's start.
+	Bucket UsageBucket
+	// Filters keeps only rows whose dimension holds one of the values (an
+	// equality filter per dimension, values OR'd, dimensions AND'd). Keys are
+	// whitelisted dimensions; values are bound parameters.
+	Filters map[UsageDimension][]string
+	// Top, when > 0, keeps the Top largest values of GroupBy[0] over the whole
+	// window, ranked by TopBy (cost | tokens | calls; "" = cost), and folds the
+	// rest into rows marked Other.
+	Top   int
+	TopBy string
 }
 
 // UsageAggregate is one grouped row of a usage report. Only the dimensions named
@@ -1037,6 +1057,20 @@ type UsageAggregate struct {
 	Model            string `json:"model,omitempty"`
 	CredentialSource string `json:"credential_source,omitempty"`
 	Purpose          string `json:"purpose,omitempty"`
+	Tier             string `json:"tier,omitempty"`
+	UserTier         string `json:"user_tier,omitempty"`
+	AgentID          string `json:"agent,omitempty"`
+	Class            string `json:"class,omitempty"`
+
+	// Period is the start of the UTC bucket the row sums, when the query asked
+	// for buckets; zero (and absent from JSON) otherwise.
+	Period time.Time `json:"period,omitzero"`
+	// Other marks a row that folds every value of the first dimension outside
+	// the query's Top; that dimension is empty on it.
+	Other bool `json:"other,omitempty"`
+	// InputChars is the summed characters text-to-speech and embedding calls
+	// sent, the unit those calls are priced by when no token count exists.
+	InputChars int64 `json:"input_chars,omitempty"`
 
 	InputTokens         int64 `json:"input_tokens"`
 	OutputTokens        int64 `json:"output_tokens"`
@@ -1062,71 +1096,6 @@ type UsageAggregate struct {
 	// speech call sends no key, so a report over chat-only usage is
 	// byte-identical to one from before transcription.
 	AudioSeconds float64 `json:"audio_seconds,omitempty"`
-}
-
-// UsageCanonicalDims is the fixed order the report's 6 dimension columns are
-// SELECTed + scanned in, shared by both backends so the scan target order can't
-// drift from the query. A grouped dimension SELECTs its column; an ungrouped one
-// SELECTs ” — keeping the result a fixed 15-column shape regardless of group_by.
-var UsageCanonicalDims = []UsageDimension{UsageByTenant, UsageByUser, UsageByProvider, UsageByModel, UsageBySource, UsageByPurpose}
-
-// UsageDimNames is the comma-joined list of the whitelisted dimensions, in
-// canonical order — what a refusal of an unknown group_by tells the caller is
-// allowed, derived here so the transports cannot list a stale set.
-func UsageDimNames() string {
-	names := make([]string, len(UsageCanonicalDims))
-	for i, d := range UsageCanonicalDims {
-		names[i] = string(d)
-	}
-	return strings.Join(names, ",")
-}
-
-// UsageDimColumn maps a whitelisted dimension to its column name, the same in
-// token_usage and usage_archive. The whitelist IS the SQL-injection guard — only
-// these six map to a column, so a caller-supplied group_by can never inject
-// arbitrary SQL. ok=false rejects an unknown dimension.
-func UsageDimColumn(d UsageDimension) (col string, ok bool) {
-	switch d {
-	case UsageByTenant:
-		return "tenant_id", true
-	case UsageByUser:
-		return "user_id", true
-	case UsageByProvider:
-		return "provider", true
-	case UsageByModel:
-		return "model", true
-	case UsageBySource:
-		return "credential_source", true
-	case UsageByPurpose:
-		return "purpose", true
-	}
-	return "", false
-}
-
-// UsageGroupColumns builds a usage report's per-dimension SELECT expressions and
-// GROUP BY column list, in UsageCanonicalDims order: a grouped dimension emits its
-// column into BOTH lists; an ungrouped one emits the literal ” into dimExprs only,
-// keeping the SELECT a fixed 6-dimension shape regardless of group_by. Shared by
-// both backends so the scan-target order can't drift from the query — and it's
-// dialect-independent (no ?/$N placeholders, no day-floor math, which genuinely
-// differ between backends and are NOT shared).
-func UsageGroupColumns(groupBy []UsageDimension) (dimExprs, groupCols []string) {
-	grouped := map[UsageDimension]bool{}
-	for _, d := range groupBy {
-		if _, ok := UsageDimColumn(d); ok {
-			grouped[d] = true
-		}
-	}
-	for _, d := range UsageCanonicalDims {
-		col, _ := UsageDimColumn(d)
-		if grouped[d] {
-			dimExprs = append(dimExprs, col)
-			groupCols = append(groupCols, col)
-		} else {
-			dimExprs = append(dimExprs, "''")
-		}
-	}
-	return dimExprs, groupCols
 }
 
 // RunIdentity carries the v0.4 tracking fields a CreateRun caller can
