@@ -819,6 +819,79 @@ func (s *Store) migrate(ctx context.Context) error {
 			UNIQUE (name, version)
 		)`,
 		`CREATE INDEX IF NOT EXISTS client_defs_by_tenant ON client_defs(tenant_id)`,
+		// RFC FA P6 passkeys, WebAuthn ceremonies and SCIM resources.
+		// Mirrors postgres migration 0126 (see 0126_passkeys_scim.up.sql
+		// for the design).
+		`CREATE TABLE IF NOT EXISTS user_passkeys (
+			credential_id      TEXT    PRIMARY KEY,
+			tenant_id          TEXT    NOT NULL DEFAULT '',
+			subject            TEXT    NOT NULL,
+			user_handle        TEXT    NOT NULL,
+			public_key         TEXT    NOT NULL,
+			attestation_type   TEXT    NOT NULL DEFAULT '',
+			attestation_format TEXT    NOT NULL DEFAULT '',
+			transports         TEXT    NOT NULL DEFAULT '[]',
+			flags              INTEGER NOT NULL DEFAULT 0,
+			aaguid             TEXT    NOT NULL DEFAULT '',
+			sign_count         INTEGER NOT NULL DEFAULT 0,
+			attachment         TEXT    NOT NULL DEFAULT '',
+			discoverable       INTEGER NOT NULL DEFAULT 0,
+			name               TEXT    NOT NULL DEFAULT '',
+			created_at         INTEGER NOT NULL,
+			last_used_at       INTEGER,
+			flagged_at         INTEGER,
+			flag_reason        TEXT    NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS user_passkeys_by_subject ON user_passkeys(tenant_id, subject)`,
+		`CREATE TABLE IF NOT EXISTS webauthn_ceremonies (
+			ceremony_hash TEXT    PRIMARY KEY,
+			kind          TEXT    NOT NULL,
+			gate          TEXT    NOT NULL DEFAULT '',
+			tenant_id     TEXT    NOT NULL DEFAULT '',
+			subject       TEXT    NOT NULL DEFAULT '',
+			binding       TEXT    NOT NULL DEFAULT '',
+			session_data  TEXT    NOT NULL,
+			created_at    INTEGER NOT NULL,
+			expires_at    INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS scim_users (
+			gate          TEXT    NOT NULL,
+			tenant_id     TEXT    NOT NULL,
+			scim_id       TEXT    NOT NULL,
+			subject       TEXT    NOT NULL,
+			user_name     TEXT    NOT NULL,
+			user_name_key TEXT    NOT NULL,
+			external_id   TEXT    NOT NULL DEFAULT '',
+			attributes    TEXT    NOT NULL DEFAULT '{}',
+			version       INTEGER NOT NULL DEFAULT 1,
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL,
+			deleted_at    INTEGER,
+			PRIMARY KEY (gate, tenant_id, scim_id)
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS scim_users_live_name ON scim_users(gate, tenant_id, user_name_key) WHERE deleted_at IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS scim_users_live_subject ON scim_users(gate, tenant_id, subject) WHERE deleted_at IS NULL`,
+		`CREATE TABLE IF NOT EXISTS scim_groups (
+			gate         TEXT    NOT NULL,
+			tenant_id    TEXT    NOT NULL,
+			scim_id      TEXT    NOT NULL,
+			display_name TEXT    NOT NULL,
+			display_key  TEXT    NOT NULL,
+			external_id  TEXT    NOT NULL DEFAULT '',
+			version      INTEGER NOT NULL DEFAULT 1,
+			created_at   INTEGER NOT NULL,
+			updated_at   INTEGER NOT NULL,
+			PRIMARY KEY (gate, tenant_id, scim_id),
+			UNIQUE (gate, tenant_id, display_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS scim_group_members (
+			gate      TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			group_id  TEXT NOT NULL,
+			subject   TEXT NOT NULL,
+			PRIMARY KEY (gate, tenant_id, group_id, subject)
+		)`,
+		`CREATE INDEX IF NOT EXISTS scim_group_members_by_subject ON scim_group_members(gate, tenant_id, subject)`,
 		// v0.8.5 Self-Evolution Substrate — see
 		// internal/store/postgres/migrations/0006_agent_defs.up.sql for
 		// the full design rationale. SQLite mirrors the shape; INTEGER

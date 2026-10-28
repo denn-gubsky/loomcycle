@@ -1055,6 +1055,10 @@ func (s *Store) AuthSubjectDelete(ctx context.Context, tenantID, subject string)
 			SELECT family_id FROM oauth_refresh_families WHERE tenant_id = ?1 AND subject = ?2)`,
 		`DELETE FROM oauth_refresh_families WHERE tenant_id = ?1 AND subject = ?2`,
 		`DELETE FROM oauth_codes WHERE tenant_id = ?1 AND subject = ?2`,
+		// RFC FA P6: passkeys and SCIM resources.
+		`DELETE FROM user_passkeys WHERE tenant_id = ?1 AND subject = ?2`,
+		`DELETE FROM scim_group_members WHERE tenant_id = ?1 AND subject = ?2`,
+		`DELETE FROM scim_users WHERE tenant_id = ?1 AND subject = ?2`,
 	} {
 		if _, err := tx.ExecContext(ctx, q, tenantID, subject); err != nil {
 			return fmt.Errorf("auth subject delete: %w", err)

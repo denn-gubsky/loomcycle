@@ -583,6 +583,15 @@ func Run(t *testing.T, factory Factory) {
 		{"AuthInviteAndResetRoundTripIssuedByManager", testAuthInviteAndResetRoundTripIssuedByManager},
 		{"AuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks", testAuthRevokeManagerIssuedClosesOnlyThatSubjectsManagerLinks},
 		{"AuthorityRaisingWritesRevokeManagerIssuedLinks", testAuthorityRaisingWritesRevokeManagerIssuedLinks},
+		// RFC FA P6: passkeys, WebAuthn ceremonies, SCIM resources.
+		{"UserPasskeyRoundTripAndConflict", testUserPasskeyRoundTripAndConflict},
+		{"UserPasskeyRecordUseOnlyMovesForward", testUserPasskeyRecordUseOnlyMovesForward},
+		{"UserPasskeyDeleteIsConfinedToItsSubject", testUserPasskeyDeleteIsConfinedToItsSubject},
+		{"WebAuthnCeremonyIsTakenOnce", testWebAuthnCeremonyIsTakenOnce},
+		{"SCIMUserLifecycleIsTenantConfined", testSCIMUserLifecycleIsTenantConfined},
+		{"SCIMGroupLifecycle", testSCIMGroupLifecycle},
+		{"SCIMRemovalsSinceCountsTheGatesRemovals", testSCIMRemovalsSinceCountsTheGatesRemovals},
+		{"AuthSubjectDeleteRemovesPasskeysAndSCIMRows", testAuthSubjectDeleteRemovesPasskeysAndSCIMRows},
 		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},
 		{"TenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant", testTenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant},
 		// RFC FA P4 external gates and the removal policy.
