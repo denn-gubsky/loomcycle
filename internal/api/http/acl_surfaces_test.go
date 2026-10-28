@@ -39,6 +39,9 @@ var aclUngovernedRoutes = map[string]bool{
 	// the gate's signature under its pinned key authenticates them, and what
 	// they do is held to the gate's identity_map.
 	"POST /v1/_auth/assert": true, "POST /v1/_auth/revoke": true, "POST /v1/_auth/sync": true,
+	// RFC FA P5 device login: the CLI's start and poll precede any principal
+	// (the poll authenticates by its device code; the approval is governed).
+	"POST /v1/_auth/device": true, "POST /v1/_auth/device/token": true,
 	"GET /.well-known/agent-card.json/extended": true,
 	// RFC FL: the app sign-in routes. authorize runs on the person's own
 	// session; token and revoke are authenticated by the code (with its PKCE

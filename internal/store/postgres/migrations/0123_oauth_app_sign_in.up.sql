@@ -1,4 +1,4 @@
--- 0119_oauth_app_sign_in.up.sql — RFC FL P0: loomcycle as an OAuth 2.0
+-- 0123_oauth_app_sign_in.up.sql — RFC FL P0: loomcycle as an OAuth 2.0
 -- authorization server for its own apps.
 --
 -- oauth_codes: an authorization code is single-use and lives 60 s. The row

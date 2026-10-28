@@ -98,6 +98,14 @@ func (c *Context) identityReport(ctx context.Context) map[string]any {
 			slog.WarnContext(ctx, "context: reading the run's user row failed", "tenant", tenant, "subject", subject, "err", err)
 		}
 	}
+	if a := identityAuth(ctx, subject, subjectTenant); a != nil {
+		out["auth"] = a
+	}
+	if readRows {
+		if ids := c.identityIdentities(ctx, tenant, subject); len(ids) > 0 {
+			out["identities"] = ids
+		}
+	}
 	if eff == nil {
 		// No compiled set: access control is off for this run, so there are
 		// no groups or lists to report.
@@ -105,6 +113,64 @@ func (c *Context) identityReport(ctx context.Context) map[string]any {
 	}
 	out["groups"] = c.identityGroups(ctx, tenant, eff, readRows)
 	out["acl"] = identityACL(ctx, eff)
+	return out
+}
+
+// maxIdentityIdentities bounds the linked sign-in identities op=self lists.
+// A person links one per gate, and a deployment configures a handful of
+// gates; the bound only keeps a pathological row set from growing the answer.
+const maxIdentityIdentities = 16
+
+// identityAuth is the identity block's `auth`: how the principal the run
+// acts for signed in. A Web UI session carries its gate, methods and
+// authentication time; a token a gate issued names that gate alone. nil for
+// any other credential — an operator token went through no gate — and when
+// the principal on ctx is not the subject reported, so one person's sign-in
+// is never reported as another's.
+func identityAuth(ctx context.Context, subject, subjectTenant string) map[string]any {
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok || p.Subject != subject || p.TenantID != subjectTenant {
+		return nil
+	}
+	switch {
+	case p.Login != nil && p.Login.Gate != "":
+		out := map[string]any{"gate": p.Login.Gate, "amr": nonNilStrings(p.Login.AMR)}
+		if !p.Login.AuthTime.IsZero() {
+			out["auth_time"] = p.Login.AuthTime.UTC().Format(time.RFC3339)
+		}
+		return out
+	case p.IssuedByGate != "":
+		return map[string]any{"gate": p.IssuedByGate}
+	}
+	return nil
+}
+
+// identityIdentities lists the sign-in identities linked to the run's own
+// subject: the gate each is at, whether its e-mail is verified, and the last
+// login through it. The e-mail itself only when the gate verified it — this
+// is the person's own agent, and an address nobody verified is a claim, not
+// a contact. The external subject and issuer are left out: provenance the
+// agent cannot act on. A store fault is logged and leaves the list out.
+func (c *Context) identityIdentities(ctx context.Context, tenant, subject string) []map[string]any {
+	rows, err := c.Store.UserIdentityListSubject(ctx, tenant, subject)
+	if err != nil {
+		slog.WarnContext(ctx, "context: reading the run's linked identities failed", "tenant", tenant, "subject", subject, "err", err)
+		return nil
+	}
+	if len(rows) > maxIdentityIdentities {
+		rows = rows[:maxIdentityIdentities]
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		id := map[string]any{"gate": r.Gate, "email_verified": r.EmailVerified}
+		if r.EmailVerified && r.Email != "" {
+			id["email"] = r.Email
+		}
+		if !r.LastLoginAt.IsZero() {
+			id["last_login_at"] = r.LastLoginAt.UTC().Format(time.RFC3339)
+		}
+		out = append(out, id)
+	}
 	return out
 }
 

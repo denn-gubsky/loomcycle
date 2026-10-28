@@ -598,6 +598,35 @@ func TestUISession_WebSocketUpgradeFromForeignOriginRefused(t *testing.T) {
 	}
 }
 
+// The principal a session authenticated carries how the person signed in,
+// so the runs it starts can report it; a bearer's principal carries none.
+func TestUISession_PrincipalCarriesTheSignIn(t *testing.T) {
+	s, _, _ := sessionTestServer(t, "legacy-secret")
+	c := mustSession(t, s, "legacy-secret")
+	principalOf := func(r *http.Request) auth.Principal {
+		t.Helper()
+		var p auth.Principal
+		var ok bool
+		rec := httptest.NewRecorder()
+		s.authMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			p, ok = auth.PrincipalFromContext(r.Context())
+		})).ServeHTTP(rec, r)
+		if !ok {
+			t.Fatalf("no principal reached the handler (%d %s)", rec.Code, rec.Body.String())
+		}
+		return p
+	}
+	p := principalOf(sessionReq(http.MethodGet, "/v1/_me", c))
+	if p.Login == nil || p.Login.Gate != "token" || len(p.Login.AMR) != 1 || p.Login.AMR[0] != "bearer" || p.Login.AuthTime.IsZero() {
+		t.Errorf("session principal login = %+v", p.Login)
+	}
+	bearer := httptest.NewRequest(http.MethodGet, "/v1/_me", nil)
+	bearer.Header.Set("Authorization", "Bearer legacy-secret")
+	if p := principalOf(bearer); p.Login != nil {
+		t.Errorf("bearer principal carries a sign-in: %+v", p.Login)
+	}
+}
+
 // /v1/_me's auth block: the mode always; the gate, methods and session times
 // when a session authenticated the request; open in open mode.
 func TestWhoami_ReportsHowTheCallerSignedIn(t *testing.T) {

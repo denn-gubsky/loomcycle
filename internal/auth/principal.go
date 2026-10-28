@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
@@ -53,7 +54,8 @@ type Principal struct {
 	// came from (RFC FA §7); "" for every other credential. Such a token
 	// stands only while its user is active: the server re-reads the user's
 	// status on every request it authenticates, so a disable or a gate's
-	// revoke holds at once on every replica, whatever the sweeper did.
+	// revoke holds at once on every replica, whatever the sweeper did. The
+	// tenant's gate policy (RFC FA P5) is checked against it the same way.
 	IssuedByGate string
 	// OAuthClient and OAuthFamily name the app sign-in (RFC FL) the token
 	// came from: the OAuth client and the refresh-token family. "" for every
@@ -65,6 +67,10 @@ type Principal struct {
 	// set of its user's current access_mode, re-derived on every request it
 	// authenticates. Restrictions still narrow it.
 	InheritsAuthority bool
+	// Login is how the person signed in, for a principal a Web UI session
+	// authenticated (RFC FA §5); nil for a bearer. It is provenance for the
+	// person's own agents to report, never consulted by a gate.
+	Login *Login
 }
 
 // AuthorityMode names how the principal's scopes were decided, for reporting
@@ -74,6 +80,16 @@ func (p Principal) AuthorityMode() string {
 		return AuthorityInherit
 	}
 	return AuthorityFrozen
+}
+
+// Login is the sign-in provenance of a Web UI session: the configured gate
+// the person came through, the authentication methods that gate reported
+// (RFC 8176 style) and when they last authenticated. It carries no session
+// id, hash or credential reference.
+type Login struct {
+	Gate     string
+	AMR      []string
+	AuthTime time.Time
 }
 
 type ctxKeyPrincipal struct{}

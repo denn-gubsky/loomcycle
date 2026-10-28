@@ -71,6 +71,13 @@ var memberMCPTools = []string{
 // admin's.
 var tenantMCPTools = append([]string{"retention_override", "crypto", "groupdef", "acldef", "aclbinding", "clientdef"}, memberMCPTools...)
 
+// selfTokenRule is every user's say over its own credentials (RFC FA P5):
+// approving a device login, which mints a token for the approver themselves
+// (`mint principal:token:self`), and a bearer retiring itself (`manage
+// principal:token:self`). Never another principal's: the handlers act only
+// on the caller's own session and the presented bearer.
+var selfTokenRule = Rule{Effect: Allow, Actions: []string{"mint", "manage"}, Resources: []string{"principal:token:self"}}
+
 // Baselines returns the built-in lists by name. Each validates against the
 // catalog (TestBaselines_Validate), so a catalog change that drops a verb a
 // baseline names fails the build.
@@ -91,6 +98,7 @@ func Baselines() map[string]ACL {
 				Rule{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"def:schedule/*"}},
 				Rule{Effect: Allow, Actions: []string{"read", "manage", "mint"}, Resources: []string{"principal:user:*", "principal:group:*"}},
 				Rule{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:token:*"}},
+				selfTokenRule,
 				Rule{Effect: Allow, Actions: []string{"read", "manage"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:erasure", "runtime:usage", "runtime:routing", "runtime:events"}},
 			)},
 		BaselineMember: {Name: BaselineMember, Description: "a non-isolated member — the collaboration plane, not the operator controls",
@@ -123,6 +131,7 @@ func Baselines() map[string]ACL {
 				// the scope stays the ceiling for one that was not.
 				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own", "run:tenant"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"principal:user:*"}},
+				selfTokenRule,
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:limits", "runtime:retention", "runtime:usage", "runtime:routing", "runtime:events"}},
 				{Effect: Allow, Actions: []string{"fetch", "push"}, Resources: []string{"git:*"}},
 			}},
@@ -164,6 +173,7 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"manage"}, Resources: []string{"credential:user:*"}, When: &Condition{OwnerIsSelf: &self}},
 				{Effect: Allow, Actions: []string{"submit", "read"}, Resources: []string{"evaluation:self"}},
 				{Effect: Allow, Actions: []string{"read", "steer", "cancel", "compact", "retune", "review", "delete"}, Resources: []string{"run:own"}},
+				selfTokenRule,
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},
 				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse"}, Resources: []string{"document:tenant"}},
