@@ -211,18 +211,14 @@ function EmbedderCard({ e }: { e: RoutingEmbedder }) {
     <div className="routing-tier-card">
       <div className="routing-tier-title">embedder</div>
       <ol className="routing-cascade">
-        <li className={`routing-cand ${e.state === "failing" ? "unavail" : ""}`}>
-          <span className="routing-rank">memory</span>
-          <span
-            className={`routing-dot ${dot}`}
-            title={embedderStatusText(e)}
-            aria-hidden="true"
-          />
-          <span className="routing-provider">{e.provider}</span>
-          <span className="routing-model" title={e.model}>
-            {e.model}
-          </span>
-        </li>
+        <RouteRow
+          unavail={e.state === "failing"}
+          dot={dot}
+          dotTitle={embedderStatusText(e)}
+          main={e.model ?? e.alias ?? "(no model)"}
+          rank="memory"
+          detail={e.provider}
+        />
       </ol>
       <div className="routing-service-note">
         {e.alias && (
@@ -272,20 +268,14 @@ function DecisionRow({ m }: { m: RoutingDecisionModel }) {
   const hasState = m.reachable !== undefined;
   const dot = m.available ? "up" : m.reachable && m.listed === false ? "warn" : "down";
   return (
-    <li className={`routing-cand ${hasState && !m.available ? "unavail" : ""}`}>
-      <span className="routing-rank">{m.default ? "default" : "allowed"}</span>
-      {hasState && (
-        <span
-          className={`routing-dot ${dot}`}
-          title={decisionStatusText(m)}
-          aria-hidden="true"
-        />
-      )}
-      <span className="routing-provider">{m.name}</span>
-      <span className="routing-model" title={`${m.provider}/${m.model}`}>
-        {m.provider}/{m.model}
-      </span>
-    </li>
+    <RouteRow
+      unavail={hasState && !m.available}
+      dot={hasState ? dot : undefined}
+      dotTitle={decisionStatusText(m)}
+      main={m.name}
+      rank={m.default ? "default" : "allowed"}
+      detail={`${m.provider}/${m.model}`}
+    />
   );
 }
 
@@ -298,32 +288,16 @@ function decisionStatusText(m: RoutingDecisionModel): string {
 
 function SearchRow({ sp }: { sp: SearchRoutingProvider }) {
   const hasAvail = sp.available !== undefined;
-  const selected = sp.selected === true;
-  const rowClass = [
-    "routing-cand",
-    selected ? "selected" : "",
-    hasAvail && !sp.available ? "unavail" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
   return (
-    <li className={rowClass}>
-      <span className="routing-rank">{sp.primary ? "top" : "fallback"}</span>
-      {hasAvail && (
-        <span
-          className={`routing-dot ${sp.available ? "up" : "down"}`}
-          title={searchStatusText(sp)}
-          aria-hidden="true"
-        />
-      )}
-      <span className="routing-provider">{sp.provider}</span>
-      {sp.keyable === false && (
-        <span className="routing-model" title="no usable key for your scope">
-          no key
-        </span>
-      )}
-      {selected && <span className="routing-selected-badge">selected</span>}
-    </li>
+    <RouteRow
+      selected={sp.selected === true}
+      unavail={hasAvail && !sp.available}
+      dot={hasAvail ? (sp.available ? "up" : "down") : undefined}
+      dotTitle={searchStatusText(sp)}
+      main={sp.provider}
+      rank={sp.primary ? "top" : "fallback"}
+      detail={sp.keyable === false ? "no key for your scope" : undefined}
+    />
   );
 }
 
@@ -360,30 +334,16 @@ function CandidateRow({ c }: { c: RoutingCandidate }) {
   // Availability dots render purely by field presence — the backend populates
   // these for a tenant too now (admin only differs by seeing last_error).
   const hasAvail = c.available !== undefined;
-  const selected = c.selected === true;
-  const rowClass = [
-    "routing-cand",
-    selected ? "selected" : "",
-    hasAvail && !c.available ? "unavail" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
   return (
-    <li className={rowClass}>
-      <span className="routing-rank">{c.primary ? "top" : "fallback"}</span>
-      {hasAvail && (
-        <span
-          className={`routing-dot ${c.available ? "up" : "down"}`}
-          title={candidateStatusText(c)}
-          aria-hidden="true"
-        />
-      )}
-      <span className="routing-provider">{c.provider}</span>
-      <span className="routing-model" title={c.model}>
-        {c.model}
-      </span>
-      {selected && <span className="routing-selected-badge">selected</span>}
-    </li>
+    <RouteRow
+      selected={c.selected === true}
+      unavail={hasAvail && !c.available}
+      dot={hasAvail ? (c.available ? "up" : "down") : undefined}
+      dotTitle={candidateStatusText(c)}
+      main={c.model}
+      rank={c.primary ? "top" : "fallback"}
+      detail={c.provider}
+    />
   );
 }
 
@@ -394,4 +354,39 @@ function candidateStatusText(c: RoutingCandidate): string {
   if (c.stalled) return "model stalled";
   if (c.rate_limited) return "rate-limited";
   return "unavailable";
+}
+
+// RouteRow is one entry of a cascade. The model is what an operator reads the
+// page for, so it takes the first line whole and wraps rather than being cut
+// off; where it sits in the cascade and which provider serves it go on a
+// smaller line beneath, with the "selected" badge.
+function RouteRow(props: {
+  main: string;
+  rank: string;
+  detail?: string;
+  dot?: "up" | "down" | "warn";
+  dotTitle?: string;
+  selected?: boolean;
+  unavail?: boolean;
+}) {
+  const rowClass = ["routing-cand", props.selected ? "selected" : "", props.unavail ? "unavail" : ""]
+    .filter(Boolean)
+    .join(" ");
+  return (
+    <li className={rowClass}>
+      {props.dot ? (
+        <span className={`routing-dot ${props.dot}`} title={props.dotTitle} aria-hidden="true" />
+      ) : (
+        <span className="routing-dot-space" aria-hidden="true" />
+      )}
+      <div className="routing-cand-body">
+        <span className="routing-model">{props.main}</span>
+        <span className="routing-cand-meta">
+          <span className="routing-rank">{props.rank}</span>
+          {props.detail && <span className="routing-provider">{props.detail}</span>}
+          {props.selected && <span className="routing-selected-badge">selected</span>}
+        </span>
+      </div>
+    </li>
+  );
 }
