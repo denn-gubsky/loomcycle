@@ -442,14 +442,22 @@ func promoterEntry(p *store.TeamDefPromoter) *TeamDefPromoterEntry {
 	if p == nil {
 		return nil
 	}
-	return &TeamDefPromoterEntry{OperatorKeyRestricted: p.OperatorKeyRestricted, Isolated: p.Isolated}
+	return &TeamDefPromoterEntry{
+		OperatorKeyRestricted: p.OperatorKeyRestricted, Isolated: p.Isolated,
+		ACLOwner: p.ACLOwner, ACLOwnerRecorded: !p.ACLOwnerUnrecorded,
+	}
 }
 
 func promoterRow(e *TeamDefPromoterEntry) *store.TeamDefPromoter {
 	if e == nil {
 		return nil
 	}
-	return &store.TeamDefPromoter{OperatorKeyRestricted: e.OperatorKeyRestricted, Isolated: e.Isolated}
+	return &store.TeamDefPromoter{
+		OperatorKeyRestricted: e.OperatorKeyRestricted, Isolated: e.Isolated,
+		// An owner present is recorded whatever the flag says: dropping it
+		// would run the walks unnarrowed.
+		ACLOwner: e.ACLOwner, ACLOwnerUnrecorded: !e.ACLOwnerRecorded && e.ACLOwner == nil,
+	}
 }
 
 // captureHookDefs mirrors captureTeamDefs against hook_defs.
