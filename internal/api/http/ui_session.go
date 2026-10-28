@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
+	"github.com/denn-gubsky/loomcycle/internal/authgate/awsiam"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
@@ -255,6 +256,9 @@ func (s *Server) loginConfig(r *http.Request) webui.LoginConfig {
 		return lc
 	}
 	for _, g := range policy.LoginGates() {
+		if g.Kind == config.AuthGateKindAWSIAM {
+			continue // a machine gate: no browser signs in through it
+		}
 		lc.Gates = append(lc.Gates, webui.LoginGate{Name: g.Name, Kind: g.Kind, Label: g.Label})
 	}
 	// The postMessage handoff gives a bearer to the paste-box path; strict
@@ -303,6 +307,16 @@ func (s *Server) gateFor(g config.AuthGate) (authgate.Gate, error) {
 			return og, nil
 		}
 		return nil, fmt.Errorf("auth gate %q: the OAuth gate is misconfigured", g.Name)
+	case config.AuthGateKindHeader:
+		if hg, ok := s.headerGateNamed(g.Name); ok {
+			return hg, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the header gate is not running (see the boot log)", g.Name)
+	case config.AuthGateKindAWSIAM:
+		if ag, ok := s.awsiamGateNamed(g.Name); ok {
+			return awsiam.AuthGate{G: ag}, nil
+		}
+		return nil, fmt.Errorf("auth gate %q: the AWS IAM gate is not running (see the boot log)", g.Name)
 	}
 	return nil, fmt.Errorf("auth gate %q: kind %q has no implementation", g.Name, g.Kind)
 }
@@ -558,6 +572,14 @@ func (s *Server) sessionPrincipal(r *http.Request, id []byte) (auth.Principal, u
 		}
 		return auth.Principal{}, uiAuth{}, false
 	}
+	// A header-gate session lasts only while its proxy still vouches for the
+	// same person on each request (authgate_edge.go).
+	if holds, definitive := s.edgeSessionHolds(r, row); !holds {
+		if definitive {
+			s.endSession(ctx, r, row, "auth_session_revoked", "proxy_assertion_lost")
+		}
+		return auth.Principal{}, uiAuth{}, false
+	}
 	if now.Sub(row.LastSeenAt) >= sessionTouchEvery {
 		idle := now.Add(policy.SessionIdle())
 		if idle.After(row.AbsoluteExpiresAt) {
@@ -621,8 +643,9 @@ func (s *Server) sessionCredentialPrincipalOf(ctx context.Context, id []byte, ro
 			return auth.Principal{}, false, true
 		}
 		// A gate-issued token pasted into the UI holds only while its user
-		// is active, as on the API (gateTokenUserActive).
-		if !s.gateTokenUserActive(ctx, p) {
+		// is active, and an inherit token takes its user's current scopes,
+		// as on the API (liveTokenPrincipal).
+		if p, ok = s.liveTokenPrincipal(ctx, p); !ok {
 			return auth.Principal{}, false, false
 		}
 		return s.enrichPrincipal(ctx, p), true, true

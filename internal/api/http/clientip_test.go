@@ -1,6 +1,7 @@
 package http
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"net/netip"
 	"testing"
@@ -57,5 +58,33 @@ func TestSourceIP_TrustsOnlyAConfiguredProxysWord(t *testing.T) {
 		if got := sourceIP(c.policy, r); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// The proxy warning is for every gate that throttles sign-in by client
+// address (password, awsiam, external), and only when one is configured.
+func TestProxyThrottleWarning_NamesEverySourceThrottledGateAndOnlyThose(t *testing.T) {
+	withGates := func(kinds ...string) *config.Config {
+		c := &config.Config{}
+		c.Env.PublicURL = "https://lc.example"
+		for i, k := range kinds {
+			c.ResolvedAuth.Gates = append(c.ResolvedAuth.Gates, config.AuthGate{Name: fmt.Sprintf("g%d", i), Kind: k})
+		}
+		return c
+	}
+	for _, k := range []string{config.AuthGateKindPassword, config.AuthGateKindAWSIAM, config.AuthGateKindExternal} {
+		if ProxyThrottleWarning(withGates(k)) == "" {
+			t.Errorf("kind %s behind an https proxy with no trusted_proxies: no warning", k)
+		}
+	}
+	for _, kinds := range [][]string{nil, {config.AuthGateKindToken}, {config.AuthGateKindOIDC, config.AuthGateKindHeader}} {
+		if w := ProxyThrottleWarning(withGates(kinds...)); w != "" {
+			t.Errorf("kinds %v throttle nothing by source, yet: %s", kinds, w)
+		}
+	}
+	c := withGates(config.AuthGateKindAWSIAM)
+	c.ResolvedAuth.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	if w := ProxyThrottleWarning(c); w != "" {
+		t.Errorf("trusted_proxies set, yet: %s", w)
 	}
 }

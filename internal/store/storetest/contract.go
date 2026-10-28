@@ -530,6 +530,7 @@ func Run(t *testing.T, factory Factory) {
 		{"GroupCreateNeverOverwrites", testGroupCreateNeverOverwrites},
 		{"UISessionAuthTimeRoundTrips", testUISessionAuthTimeRoundTrips},
 		{"OperatorTokenIssuedByGateRoundTrips", testOperatorTokenIssuedByGateRoundTrips},
+		{"OperatorTokenAuthorityRoundTripsAndDefaultsFrozen", testOperatorTokenAuthorityRoundTripsAndDefaultsFrozen},
 		{"UserStatusPendingIsStored", testUserStatusPendingIsStored},
 		{"UserIdentityTakenLoginAndSecondIdentityAtGateConflict", testUserIdentityTakenLoginAndSecondIdentityAtGateConflict},
 		{"UserIdentityRenameToTakenNameConflictsAndKeepsOldName", testUserIdentityRenameToTakenNameConflictsAndKeepsOldName},
