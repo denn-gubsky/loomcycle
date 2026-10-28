@@ -363,8 +363,7 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "passkey_failed", "sign-in failed")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: s.webauthnCookieName(r), Value: secret, Path: "/", HttpOnly: true,
-		Secure: s.requestSecure(r), SameSite: http.SameSiteStrictMode, MaxAge: int(passkeyCeremonyTTL / time.Second)})
+	http.SetCookie(w, s.transportCookie(r, s.webauthnCookieName(r), secret, int(passkeyCeremonyTTL/time.Second)))
 	writeJSON(w, http.StatusOK, offer)
 }
 
@@ -397,7 +396,7 @@ func (s *Server) handlePasskeyLogin(w http.ResponseWriter, r *http.Request, g co
 	}
 	// The ceremony's browser binding is single-use too.
 	cookie, cerr := r.Cookie(s.webauthnCookieName(r))
-	http.SetCookie(w, expiredCookie(s.webauthnCookieName(r), s.requestSecure(r)))
+	http.SetCookie(w, s.transportCookie(r, s.webauthnCookieName(r), "", -1))
 	var a passkeyAnswer
 	r.Body = http.MaxBytesReader(w, r.Body, maxWebAuthnBody)
 	dec := json.NewDecoder(r.Body)
