@@ -139,5 +139,8 @@ func (s *Server) RecordEmbedCall(ctx context.Context, c providers.EmbedCall) {
 			row.Cost, row.CostCurrency = cost, currency
 		}
 	}
-	_, _ = s.appendUsageRow(ctx, row)
+	// On a ctx that outlives the caller: the tokens were spent whether or not
+	// the gateway client or the run is still there to hear the answer, and a
+	// cancelled insert would drop a row the budget had already counted.
+	_, _ = s.appendUsageRow(context.WithoutCancel(ctx), row)
 }

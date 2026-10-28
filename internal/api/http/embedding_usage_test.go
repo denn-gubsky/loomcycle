@@ -98,3 +98,15 @@ func TestEmbeddings_GatewayCallIsAnEmbeddingRowOfTheCaller(t *testing.T) {
 		t.Errorf("tenant month-to-date = %d, want 10 (no estimate on top of a reported count)", used)
 	}
 }
+
+// TestRecordEmbedCall_IsRecordedAfterItsCallerHasGone — a gateway client that
+// hangs up after the provider answered still spent the tokens.
+func TestRecordEmbedCall_IsRecordedAfterItsCallerHasGone(t *testing.T) {
+	srv, st := newUsageTestServer(t)
+	ctx, cancel := context.WithCancel(tools.WithRunID(context.Background(), "run-emb-gone"))
+	cancel()
+	srv.RecordEmbedCall(ctx, providers.EmbedCall{Provider: "p", Model: "m", Texts: 1, Chars: 3, InputTokens: 2, TokensReported: true})
+	if rows, err := st.TokenUsageForRun(context.Background(), "run-emb-gone"); err != nil || len(rows) != 1 {
+		t.Errorf("rows = %+v, %v; want the call's row", rows, err)
+	}
+}
