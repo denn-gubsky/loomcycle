@@ -394,8 +394,14 @@ func TestSCIM_ReEnablesOnlyAUserItDisabled(t *testing.T) {
 	if err := f.srv.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: time.Hour}, "acme", s5, "", store.RemovalReasonOperator, "op"); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.st.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "local-ops", MemberKind: store.GroupMemberUser, MemberID: s5}); err != nil {
+		t.Fatal(err)
+	}
 	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id5, on); code != http.StatusForbidden || f.status(t, "acme", s5) != "disabled" {
 		t.Fatalf("re-enable after an operator's removal = %d, status %s", code, f.status(t, "acme", s5))
+	}
+	if groups, _ := f.st.GroupsOfSubject(ctx, "acme", s5); !slices.Contains(groups, "local-ops") {
+		t.Fatalf("a refused re-enable reset the user's groups: %v", groups)
 	}
 	// Another gate's removal stands.
 	id3, s3 := f.scimUser(t, bSCIMAcme, "carol@acme.test")
