@@ -76,10 +76,6 @@ CREATE TABLE IF NOT EXISTS scim_users (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at    TIMESTAMPTZ,
-    -- When the gate last claimed a re-enable of this user: re-enables are
-    -- counted per window, and a re-enabled user does not raise the
-    -- removal ceiling's base.
-    reactivated_at TIMESTAMPTZ,
     PRIMARY KEY (gate, tenant_id, scim_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS scim_users_live_name ON scim_users (gate, tenant_id, user_name_key) WHERE deleted_at IS NULL;
@@ -107,12 +103,3 @@ CREATE TABLE IF NOT EXISTS scim_group_members (
     PRIMARY KEY (gate, tenant_id, group_id, subject)
 );
 CREATE INDEX IF NOT EXISTS scim_group_members_by_subject ON scim_group_members (gate, tenant_id, subject);
-
--- The removal stage machine (0115) gains two columns. stage is the stage
--- the sweeper has claimed and is running ('unbinding' | 'erasing'), '' in
--- between: while it is set nobody re-enables the user, so a re-enable can
--- never race an unbind or an erasure. prior_status is the user's status
--- when the removal disabled it ('pending' carries an approval still owed
--- through a re-enable), '' when unknown.
-ALTER TABLE auth_removals ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT '';
-ALTER TABLE auth_removals ADD COLUMN IF NOT EXISTS prior_status TEXT NOT NULL DEFAULT '';
