@@ -1139,6 +1139,7 @@ paths:
         "201": { description: The User resource. }
         "403": { description: "`accessMode` on an untrusted gate, or the identity map refused the user." }
         "409": { description: "uniqueness: the userName is taken." }
+        "429": { description: "The gate created `max_sync_creates` users in this tenant in the last 24 hours." }
   "/scim/v2/Users/{id}":
     parameters:
       - { name: id, in: path, required: true, schema: { type: string } }
@@ -1981,9 +1982,13 @@ paths:
                 password: { type: string, format: password }
                 totp_enrolment: { type: string }
                 totp_code: { type: string }
+                otp: { type: string, description: "An invite that attaches a password to an existing user with an authenticator: a code from it." }
+                webauthn: { type: object, description: "An invite to an existing user with a passkey: the answer to the `second_factor_required` offer." }
       responses:
         "201": { description: "Signed in: `redirect`, `login`, and `recovery_codes` (shown once) when an authenticator was enrolled." }
-        "400": { description: "A policy refusal (`password_too_short`, `password_breached`, `password_is_login`), `invalid_login`, `totp_required` or `invalid_totp`." }
+        "400": { description: "A policy refusal (`password_too_short`, `password_breached`, `password_is_login`), `invalid_login`, `totp_required`, `invalid_totp`, or `second_factor_exists` (the existing user already has a second factor; no new one is enrolled)." }
+        "401": { description: "`second_factor_required` (with a `webauthn` offer), `otp_required` or `invalid_otp`: the existing user's second factor." }
+        "403": { description: "`second_factor_unavailable`: the user's passkey cannot be used on this server; an operator removes its credentials." }
         "404": { description: "`link_invalid`." }
         "409": { description: "`login_taken`." }
   /v1/_auth/reset/info:
@@ -1996,7 +2001,7 @@ paths:
         required: true
         content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string } } } } }
       responses:
-        "200": { description: "The gate, the login, whether the account has an authenticator, the length minimums and, without one, a TOTP enrolment." }
+        "200": { description: "The gate, the login, whether the account has an authenticator (`has_totp`) or a passkey (`has_passkey`), the length minimums and, with neither, a TOTP enrolment." }
         "404": { description: "`link_invalid`." }
   /v1/_auth/reset:
     post:
@@ -2017,11 +2022,14 @@ paths:
                 code: { type: string }
                 password: { type: string, format: password }
                 otp: { type: string }
+                webauthn: { type: object, description: "A passkey account: the answer to the `second_factor_required` offer." }
                 totp_enrolment: { type: string }
                 totp_code: { type: string }
       responses:
         "200": { description: Signed in. }
-        "401": { description: "`otp_required` or `invalid_otp`." }
+        "400": { description: "`second_factor_exists`: the account has a second factor; a TOTP enrolment is refused." }
+        "401": { description: "`second_factor_required` (with a `webauthn` offer), `otp_required` or `invalid_otp`." }
+        "403": { description: "`second_factor_unavailable`: the account's passkey cannot be used on this server." }
         "404": { description: "`link_invalid`." }
   /v1/_auth/account:
     get:
