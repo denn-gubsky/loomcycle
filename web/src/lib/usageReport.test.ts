@@ -16,6 +16,10 @@ import {
   slices,
   alignPrevious,
   bucketIndex,
+  budgetFor,
+  formatMs,
+  monthFraction,
+  speedByModel,
   toCSV,
 } from "./usageReport";
 
@@ -184,5 +188,44 @@ describe("filters", () => {
 
   it("adds to a dimension without duplicates and skips empty values", () => {
     expect(addFilter({ model: ["a"] }, { model: ["a", "b"], tier: [""] })).toEqual({ model: ["a", "b"] });
+  });
+});
+
+describe("budgets", () => {
+  const limits = [
+    { tenant_id: "acme", scope: "tenant", scope_id: "acme", soft_limit: 800, hard_limit: 1000, used: 300 },
+    { tenant_id: "acme", scope: "user", scope_id: "ann", soft_limit: null, hard_limit: 100, used: 40 },
+    { tenant_id: "globex", scope: "user", scope_id: "ann", soft_limit: null, hard_limit: 5, used: 5 },
+  ];
+  const mid = new Date("2026-10-16T12:00:00Z"); // half of October
+
+  it("finds a tenant's and a user's budget, the user within its tenant", () => {
+    expect(budgetFor(limits, "tenant", "acme", "", mid)?.hard).toBe(1000);
+    expect(budgetFor(limits, "user", "acme", "ann", mid)?.hard).toBe(100);
+    expect(budgetFor(limits, "user", "globex", "ann", mid)?.used).toBe(5);
+    expect(budgetFor(limits, "user", "acme", "bob", mid)).toBeUndefined();
+  });
+
+  it("projects at this month's rate, but not from its first hours", () => {
+    expect(monthFraction(mid)).toBeCloseTo(0.5, 2);
+    expect(budgetFor(limits, "tenant", "acme", "", mid)?.projected).toBeCloseTo(600, 0);
+    expect(budgetFor(limits, "tenant", "acme", "", new Date("2026-10-01T03:00:00Z"))?.projected).toBe(300);
+  });
+});
+
+describe("speed", () => {
+  it("keeps the provider that answered more of a model's calls", () => {
+    const m = speedByModel([
+      { provider: "a", model: "x", calls: 3, duration_p50_ms: 1, duration_p95_ms: 2 },
+      { provider: "b", model: "x", calls: 9, duration_p50_ms: 5, duration_p95_ms: 6 },
+    ]);
+    expect(m.get("x")?.provider).toBe("b");
+  });
+
+  it("writes durations to scale", () => {
+    expect(formatMs(0)).toBe("—");
+    expect(formatMs(340)).toBe("340 ms");
+    expect(formatMs(2500)).toBe("2.5 s");
+    expect(formatMs(42000)).toBe("42 s");
   });
 });

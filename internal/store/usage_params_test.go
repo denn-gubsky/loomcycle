@@ -90,3 +90,23 @@ func TestFinishUsageReport_FoldsByTopByAcrossPeriods(t *testing.T) {
 		t.Errorf("top 3 of 3 values changed the rows: %+v", got)
 	}
 }
+
+func TestSummarizeCallTimings_PercentilesPerModel(t *testing.T) {
+	var rows []TokenUsageRow
+	for i := 1; i <= 20; i++ {
+		rows = append(rows, TokenUsageRow{Provider: "p", Model: "a", DurationMs: int64(i * 100), TTFTMs: int64(i * 10),
+			OutputTokens: 100, DecodeMs: 1000})
+	}
+	rows = append(rows, TokenUsageRow{Provider: "p", Model: "b", DurationMs: 50})
+	got := SummarizeCallTimings(rows)
+	if len(got) != 2 || got[0].Model != "a" || got[0].Calls != 20 {
+		t.Fatalf("summary = %+v, want a (20 calls) first", got)
+	}
+	a := got[0]
+	if a.DurationP50Ms != 1000 || a.DurationP95Ms != 1900 || a.TTFTP50Ms != 100 || a.OutputTokensPS != 100 {
+		t.Errorf("a = %+v, want p50 1000, p95 1900, ttft 100, 100 tok/s", a)
+	}
+	if b := got[1]; b.DurationP50Ms != 50 || b.TTFTP50Ms != 0 || b.OutputTokensPS != 0 {
+		t.Errorf("b = %+v, want only a duration", b)
+	}
+}

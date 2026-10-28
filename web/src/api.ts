@@ -3871,6 +3871,40 @@ export function getUsage(
   return jsonFetch<UsageReportResponse>(`/v1/_usage${qs ? "?" + qs : ""}`);
 }
 
+// UsageSpeed is how fast one model answered in a window (RFC FM D6): over its
+// latest timed calls, the median and 95th-percentile duration, the median time
+// to the first token and the median output tokens per second.
+export interface UsageSpeed {
+  provider: string;
+  model: string;
+  calls: number;
+  duration_p50_ms: number;
+  duration_p95_ms: number;
+  ttft_p50_ms?: number;
+  output_tokens_per_s?: number;
+}
+
+export interface UsageSpeedResponse {
+  from?: string;
+  to?: string;
+  detail_since?: string;
+  models: UsageSpeed[];
+}
+
+// getUsageSpeed reads GET /v1/_usage/speed with the report's window, tenant
+// focus and filters.
+export function getUsageSpeed(params: Omit<UsageReportParams, "group_by" | "bucket" | "top" | "top_by"> = {}): Promise<UsageSpeedResponse> {
+  const q = new URLSearchParams();
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.tenant) q.set("tenant", params.tenant);
+  for (const [dim, vals] of Object.entries(params.filters ?? {})) {
+    if (vals && vals.length > 0) q.set(dim, vals.join(","));
+  }
+  const qs = q.toString();
+  return jsonFetch<UsageSpeedResponse>(`/v1/_usage/speed${qs ? "?" + qs : ""}`);
+}
+
 // --- RFC AW: per-scope token budgets (GET/PUT/DELETE /v1/_limits) ---
 
 // TokenLimit is one token_limits row plus its live month-to-date usage

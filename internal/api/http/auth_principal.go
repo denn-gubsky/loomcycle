@@ -1327,8 +1327,9 @@ func requiredScopeFor(method, path string) string {
 	// RFC AV: the usage/cost report. token_usage rows carry tenant_id, so
 	// handleUsageReport tenant-scopes the aggregation (a tenant operator sees
 	// only its own tenant's spend; admin sees all + the ?tenant= focus).
-	// ScopeAdmin also satisfies. Read-only GET.
-	case path == "/v1/_usage":
+	// ScopeAdmin also satisfies. Read-only GET. /v1/_usage/speed is its
+	// per-model timing summary, scoped the same way (RFC FM D6).
+	case path == "/v1/_usage", path == "/v1/_usage/speed":
 		return auth.ScopeTenant
 	// The per-subject erasure report (GET). Tenant-readable, and deliberately so:
 	// answering "what do you hold about this person" is the tenant OPERATOR's job

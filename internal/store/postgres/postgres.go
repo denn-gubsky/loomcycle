@@ -1015,6 +1015,29 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 	return store.FinishUsageReport(out, q), nil
 }
 
+// UsageCallTimings reads the latest timed calls per model for a speed summary;
+// the SQL is store.BuildUsageTimingsQuery's, shared with sqlite.
+func (s *Store) UsageCallTimings(ctx context.Context, q store.UsageQuery, perModel int) ([]store.TokenUsageRow, error) {
+	query, args, err := store.BuildUsageTimingsQuery(q, pgUsageDialect, perModel)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage call timings: %w", err)
+	}
+	defer rows.Close()
+	var out []store.TokenUsageRow
+	for rows.Next() {
+		var r store.TokenUsageRow
+		if err := rows.Scan(&r.Provider, &r.Model, &r.OutputTokens, &r.DurationMs, &r.TTFTMs, &r.DecodeMs); err != nil {
+			return nil, fmt.Errorf("scan call timing: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // pgUsageDialect is the Postgres half of the shared usage report SQL: bucket
 // starts are date_trunc over the UTC wall clock, re-stamped as timestamptz
 // (date_trunc's week is ISO, Monday-first). The bucket name is one of the

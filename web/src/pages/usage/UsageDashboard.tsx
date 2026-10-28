@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { getUsage, listUsers, type UsageAggregate, type UsageReportParams } from "../../api";
+import {
+  getUsage,
+  getUsageSpeed,
+  listLimits,
+  listUsers,
+  type TokenLimit,
+  type UsageAggregate,
+  type UsageReportParams,
+  type UsageSpeed,
+} from "../../api";
 import { useFocusTenant, usePrincipal } from "../../components/Layout";
 import {
   DIMS,
@@ -11,6 +20,10 @@ import {
   TABS,
   addFilter,
   assignSlots,
+  budgetFor,
+  compact,
+  formatMs,
+  speedByModel,
   currencies,
   effectiveStep,
   filtersFromSearch,
@@ -31,6 +44,7 @@ import {
   type Measure,
   type PeriodPreset,
   type Range,
+  type Budget,
   type Slice,
   type Step,
   type UsageTab,
@@ -54,6 +68,8 @@ interface Loaded {
   sources: Rows; // operator- vs tenant-paid
   prev?: Rows; // the previous window, bucketed — compare
   overview?: { model: Rows; provider: Rows; tier: Rows; class: Rows; top: Rows };
+  limits?: TokenLimit[]; // users and tenants: the month's budgets
+  speed?: UsageSpeed[]; // models: how fast each answered (D6)
 }
 
 // The dimension a tab reports on, and any filter it always applies.
@@ -171,6 +187,14 @@ export default function UsageDashboard() {
         sources: sourceRes.rows ?? [],
         prev: prevRes?.rows ?? undefined,
       };
+      // Budgets and speed are extras: a viewer who may not read them still
+      // gets the report.
+      if (tab === "users" || tab === "tenants") {
+        out.limits = (await listLimits(tenant || undefined).catch(() => ({ limits: [] }))).limits ?? [];
+      }
+      if (tab === "models") {
+        out.speed = (await getUsageSpeed(main).catch(() => ({ models: [] }))).models ?? [];
+      }
       if (tab === "overview") {
         const [m, p, t, c, top] = await Promise.all([
           g({ ...main, group_by: "model" }),
@@ -281,6 +305,15 @@ export default function UsageDashboard() {
   const tableTotal = tableRows.reduce((s, r) => s + measureOf(r, measure), 0);
   const hasAudio = tableRows.some((r) => (r.audio_seconds ?? 0) > 0);
   const hasChars = tableRows.some((r) => (r.input_chars ?? 0) > 0);
+  const speed = tab === "models" && data?.speed?.length ? speedByModel(data.speed) : undefined;
+  const now = new Date();
+  const budgetOf = (r: UsageAggregate): Budget | undefined => {
+    if (!data?.limits?.length) return undefined;
+    if (tab === "tenants") return budgetFor(data.limits, "tenant", r.tenant_id ?? "", "", now);
+    if (tab === "users") return budgetFor(data.limits, "user", r.tenant_id ?? "", r.user_id ?? "", now);
+    return undefined;
+  };
+  const hasBudgets = tableRows.some((r) => budgetOf(r) !== undefined);
 
   const exportCSV = () => {
     const header = [noun, "input", "output", "cache", ...(hasAudio ? ["audio_minutes"] : []), ...(hasChars ? ["characters"] : []), "calls", "unpriced_calls", "cost", "currency"];
@@ -530,6 +563,15 @@ export default function UsageDashboard() {
                   <th className="num">calls</th>
                   <th className="num">cost</th>
                   <th className="num">share</th>
+                  {speed && (
+                    <>
+                      <th className="num" title="median call duration, latest calls in the window">typical</th>
+                      <th className="num" title="95th-percentile call duration">slow</th>
+                      <th className="num" title="median time to the first token">first token</th>
+                      <th className="num" title="median output tokens per second of decode">tokens/s</th>
+                    </>
+                  )}
+                  {hasBudgets && <th title="month-to-date tokens against the token budget (UTC month)">budget this month</th>}
                 </tr>
               </thead>
               <tbody>
@@ -553,6 +595,12 @@ export default function UsageDashboard() {
                     </td>
                     <td className="num">{formatMeasure(r.cost, "cost", measure === "cost" ? currency : r.currency)}</td>
                     <td className="num">{tableTotal > 0 ? `${((measureOf(r, measure) / tableTotal) * 100).toFixed(1)}%` : "—"}</td>
+                    {speed && <SpeedCells s={speed.get(r.model ?? "")} />}
+                    {hasBudgets && (
+                      <td>
+                        <BudgetMeter b={budgetOf(r)} />
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -567,6 +615,62 @@ export default function UsageDashboard() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function SpeedCells({ s }: { s?: UsageSpeed }) {
+  if (!s) {
+    return (
+      <>
+        <td className="num">—</td>
+        <td className="num">—</td>
+        <td className="num">—</td>
+        <td className="num">—</td>
+      </>
+    );
+  }
+  return (
+    <>
+      <td className="num" title={`${s.calls} timed calls`}>
+        {formatMs(s.duration_p50_ms)}
+      </td>
+      <td className="num">{formatMs(s.duration_p95_ms)}</td>
+      <td className="num">{formatMs(s.ttft_p50_ms ?? 0)}</td>
+      <td className="num">{s.output_tokens_per_s ? Math.round(s.output_tokens_per_s).toLocaleString() : "—"}</td>
+    </>
+  );
+}
+
+// BudgetMeter draws month-to-date use against the hard limit (or the soft one
+// when only that is set), the soft limit as a tick, and the month-end
+// projection. Its state is written out, never carried by colour alone.
+function BudgetMeter({ b }: { b?: Budget }) {
+  if (!b) return <span className="usage-budget-none">no budget</span>;
+  const cap = b.hard ?? b.soft ?? 0;
+  const pct = cap > 0 ? Math.min(100, (b.used / cap) * 100) : 0;
+  const state =
+    b.hard != null && b.used >= b.hard
+      ? "at the hard limit"
+      : b.soft != null && b.used >= b.soft
+        ? "over the soft limit"
+        : b.hard != null && b.projected >= b.hard
+          ? "on course for the hard limit"
+          : "";
+  const level = b.hard != null && b.used >= b.hard ? "critical" : state ? "warning" : "ok";
+  return (
+    <div className={`usage-budget usage-budget-${level}`}>
+      <div className="usage-budget-track" aria-hidden>
+        <span className="usage-budget-fill" style={{ width: `${pct}%` }} />
+        {b.soft != null && b.hard != null && b.hard > 0 && (
+          <span className="usage-budget-soft" style={{ left: `${Math.min(100, (b.soft / b.hard) * 100)}%` }} />
+        )}
+      </div>
+      <span className="usage-budget-text">
+        {compact(b.used)} / {compact(cap)}
+        {b.projected > b.used && <> · ~{compact(b.projected)} by month end</>}
+        {state && <strong> · {state}</strong>}
+      </span>
     </div>
   );
 }

@@ -143,3 +143,67 @@ func (s *Server) handleUsageReport(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// usageSpeedResponse is the wire shape of GET /v1/_usage/speed.
+type usageSpeedResponse struct {
+	From        string             `json:"from,omitempty"`
+	To          string             `json:"to,omitempty"`
+	DetailSince string             `json:"detail_since,omitempty"`
+	Models      []store.UsageSpeed `json:"models"`
+}
+
+// handleUsageSpeed serves GET /v1/_usage/speed — how fast each model answered
+// in a window (RFC FM D6): over the latest store.UsageTimingsPerModel timed
+// calls per model, the median and 95th-percentile call duration, the median
+// time to the first token and the median output tokens per second.
+//
+// It takes the report's from, to, tenant and dimension filters, and is scoped
+// like it: a tenant operator's figures come from its own tenant's calls only.
+// Timings live in the per-call ledger alone, so the window stops at
+// detail_since however far back from reaches.
+func (s *Server) handleUsageSpeed(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
+			"store not configured; usage reporting requires a persistent store")
+		return
+	}
+	q := r.URL.Query()
+	params := store.UsageParams{From: q.Get("from"), To: q.Get("to")}
+	for _, d := range store.UsageCanonicalDims {
+		if d == store.UsageByTenant {
+			continue
+		}
+		if v := q.Get(string(d)); v != "" {
+			if params.Filters == nil {
+				params.Filters = map[string][]string{}
+			}
+			params.Filters[string(d)] = strings.Split(v, ",")
+		}
+	}
+	query, err := store.ParseUsageQuery(params, time.Time{})
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if tenantID, all := s.principalTenantScope(r.Context(), q.Get("tenant")); !all {
+		query.TenantID = tenantID
+	}
+	rows, err := s.store.UsageCallTimings(r.Context(), query, store.UsageTimingsPerModel)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
+		return
+	}
+	resp := usageSpeedResponse{Models: store.SummarizeCallTimings(rows)}
+	if !query.From.IsZero() {
+		resp.From = query.From.Format(time.RFC3339)
+	}
+	if !query.To.IsZero() {
+		resp.To = query.To.Format(time.RFC3339)
+	}
+	if ds := s.UsageDetailSince(); !ds.IsZero() {
+		resp.DetailSince = ds.Format(time.RFC3339)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}

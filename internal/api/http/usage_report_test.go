@@ -289,3 +289,42 @@ func TestUsageReport_TenantOperatorCannotFilterIntoOtherTenant(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageSpeed_PerModelAndConfinedToTheTenant — GET /v1/_usage/speed sums a
+// model's timed calls into its percentiles; a tenant operator's figures come
+// from its own tenant's calls only, whatever tenant it names.
+func TestUsageSpeed_PerModelAndConfinedToTheTenant(t *testing.T) {
+	now := time.Now().UTC()
+	var rows []store.TokenUsageRow
+	for i := 1; i <= 10; i++ {
+		rows = append(rows, store.TokenUsageRow{RunID: "r", TenantID: "acme", Provider: "p", Model: "m", CredentialSource: "operator",
+			OutputTokens: 200, DurationMs: int64(i * 100), TTFTMs: 50, DecodeMs: 1000, TS: now.Add(-time.Duration(i) * time.Minute)})
+	}
+	rows = append(rows, store.TokenUsageRow{RunID: "r", TenantID: "globex", Provider: "p", Model: "m", CredentialSource: "operator",
+		OutputTokens: 1, DurationMs: 999999, DecodeMs: 999999, TS: now.Add(-time.Minute)})
+	ts, _ := usageReportServer(t, rows)
+
+	decode := func(bearer, path string) (int, usageSpeedResponse) {
+		code, body := bearerCall(t, ts, bearer, "GET", path, "")
+		var out usageSpeedResponse
+		if code == http.StatusOK {
+			if err := json.Unmarshal([]byte(body), &out); err != nil {
+				t.Fatalf("decode %s: %v", body, err)
+			}
+		}
+		return code, out
+	}
+	code, rep := decode("tok-acme-op", "/v1/_usage/speed?tenant=globex")
+	if code != http.StatusOK || len(rep.Models) != 1 {
+		t.Fatalf("status %d, models %+v", code, rep.Models)
+	}
+	if m := rep.Models[0]; m.Calls != 10 || m.DurationP50Ms != 500 || m.DurationP95Ms != 1000 || m.TTFTP50Ms != 50 || m.OutputTokensPS != 200 {
+		t.Errorf("acme's speed = %+v, want 10 calls, p50 500, p95 1000, ttft 50, 200 tok/s (no globex call)", m)
+	}
+	if _, all := decode("legacy-admin", "/v1/_usage/speed"); len(all.Models) != 1 || all.Models[0].Calls != 11 {
+		t.Errorf("admin's speed = %+v, want both tenants' 11 calls", all.Models)
+	}
+	if code, _ := decode("legacy-admin", "/v1/_usage/speed?class=sideways"); code != http.StatusBadRequest {
+		t.Errorf("bad filter: status %d, want 400", code)
+	}
+}
