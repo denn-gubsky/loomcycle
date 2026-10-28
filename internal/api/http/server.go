@@ -4454,6 +4454,7 @@ func (s *Server) routes() *http.ServeMux {
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
 	mux.Handle("GET /v1/_usage", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageReport))))
+	mux.Handle("GET /v1/_usage/speed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageSpeed))))
 	// RFC BM — the data-retention view. Tenant-readable config; the cross-tenant
 	// purgeable counts + export dir are admin-only (stripped in the handler).
 	// Scope-gated to substrate:tenant in requiredScopeFor.

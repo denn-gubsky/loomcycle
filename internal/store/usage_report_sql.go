@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -221,36 +222,9 @@ func BuildUsageReportQuery(q UsageQuery, d UsageSQLDialect) (string, []any, erro
 		FROM usage_archive` + where("period_start", from)
 	}
 
-	for dim := range q.Filters {
-		if _, ok := UsageDimColumn(dim); !ok {
-			return "", nil, fmt.Errorf("unknown filter dimension %q (allowed: %s)", dim, UsageDimNames())
-		}
-	}
-
-	var filters []string
-	for _, dim := range UsageCanonicalDims {
-		vals := q.Filters[dim]
-		if len(vals) == 0 {
-			continue
-		}
-		col, _ := UsageDimColumn(dim)
-		if dim == UsageByClass {
-			// Filter on the stored purpose: the class is derived from it.
-			col = "purpose"
-			var ps []string
-			for _, c := range vals {
-				if c != UsageClassForeground && c != UsageClassBackground {
-					return "", nil, fmt.Errorf("unknown class %q (allowed: %s, %s)", c, UsageClassForeground, UsageClassBackground)
-				}
-				ps = append(ps, purposesOfClass(c)...)
-			}
-			vals = ps
-		}
-		phs := make([]string, len(vals))
-		for i, v := range vals {
-			phs[i] = ph(v)
-		}
-		filters = append(filters, col+" IN ("+strings.Join(phs, ", ")+")")
+	filters, err := usageFilterSQL(q, ph)
+	if err != nil {
+		return "", nil, err
 	}
 
 	dimExprs, groupCols := UsageGroupColumns(q.GroupBy)
@@ -277,6 +251,44 @@ func BuildUsageReportQuery(q UsageQuery, d UsageSQLDialect) (string, []any, erro
 	}
 	query += " GROUP BY " + strings.Join(groupCols, ", ") + " ORDER BY " + order
 	return query, args, nil
+}
+
+// usageFilterSQL renders the query's dimension filters as SQL conditions over
+// the columns UsageDimColumn names, binding every value through ph. A class
+// filter becomes a purpose filter, since the class is derived from it.
+func usageFilterSQL(q UsageQuery, ph func(v any) string) ([]string, error) {
+	for dim := range q.Filters {
+		if _, ok := UsageDimColumn(dim); !ok {
+			return nil, fmt.Errorf("unknown filter dimension %q (allowed: %s)", dim, UsageDimNames())
+		}
+	}
+
+	var filters []string
+	for _, dim := range UsageCanonicalDims {
+		vals := q.Filters[dim]
+		if len(vals) == 0 {
+			continue
+		}
+		col, _ := UsageDimColumn(dim)
+		if dim == UsageByClass {
+			// Filter on the stored purpose: the class is derived from it.
+			col = "purpose"
+			var ps []string
+			for _, c := range vals {
+				if c != UsageClassForeground && c != UsageClassBackground {
+					return nil, fmt.Errorf("unknown class %q (allowed: %s, %s)", c, UsageClassForeground, UsageClassBackground)
+				}
+				ps = append(ps, purposesOfClass(c)...)
+			}
+			vals = ps
+		}
+		phs := make([]string, len(vals))
+		for i, v := range vals {
+			phs[i] = ph(v)
+		}
+		filters = append(filters, col+" IN ("+strings.Join(phs, ", ")+")")
+	}
+	return filters, nil
 }
 
 // usageDimField returns the field of a holding dimension d.
@@ -508,4 +520,108 @@ func UsageDetailSince(now time.Time, retention time.Duration, sweeperEnabled boo
 		retention = 30 * 24 * time.Hour
 	}
 	return now.Add(-retention).UTC()
+}
+
+// UsageTimingsPerModel caps how many of a model's latest timed calls a speed
+// summary reads: enough for a stable median and 95th percentile, bounded
+// whatever the window holds.
+const UsageTimingsPerModel = 500
+
+// BuildUsageTimingsQuery returns the SQL for the latest timed calls of each
+// (provider, model) in the query's tenant, window and filters — the per-call
+// detail only, since the archive keeps no timings. Columns: provider, model,
+// output tokens, duration, time to first token, decode time.
+func BuildUsageTimingsQuery(q UsageQuery, d UsageSQLDialect, perModel int) (string, []any, error) {
+	var args []any
+	ph := func(v any) string { args = append(args, v); return d.Placeholder(len(args)) }
+	conds := []string{"duration_ms IS NOT NULL"}
+	if q.TenantID != "" {
+		conds = append(conds, "tenant_id = "+ph(q.TenantID))
+	}
+	if !q.From.IsZero() {
+		conds = append(conds, "ts >= "+ph(d.TimeArg(q.From)))
+	}
+	if !q.To.IsZero() {
+		conds = append(conds, "ts <= "+ph(d.TimeArg(q.To)))
+	}
+	// The filters name the union's columns; here they are token_usage's own,
+	// with user_id and agent_id nullable — an IN never matches a NULL, which is
+	// what a filter on them means.
+	filters, err := usageFilterSQL(q, ph)
+	if err != nil {
+		return "", nil, err
+	}
+	conds = append(conds, filters...)
+	query := `SELECT provider, model, output_tokens, duration_ms, COALESCE(ttft_ms, 0), COALESCE(decode_ms, 0)
+		FROM (
+			SELECT provider, model, output_tokens, duration_ms, ttft_ms, decode_ms,
+				ROW_NUMBER() OVER (PARTITION BY provider, model ORDER BY ts DESC, id DESC) AS rn
+			FROM token_usage WHERE ` + strings.Join(conds, " AND ") + `
+		) t WHERE rn <= ` + ph(perModel)
+	return query, args, nil
+}
+
+// UsageSpeed is how fast one model answered: over its latest timed calls in a
+// report's window, the median and 95th-percentile call duration, the median
+// time to the first token and the median output tokens per second of decode.
+// A figure no call measured is 0.
+type UsageSpeed struct {
+	Provider       string  `json:"provider"`
+	Model          string  `json:"model"`
+	Calls          int     `json:"calls"`
+	DurationP50Ms  float64 `json:"duration_p50_ms"`
+	DurationP95Ms  float64 `json:"duration_p95_ms"`
+	TTFTP50Ms      float64 `json:"ttft_p50_ms,omitempty"`
+	OutputTokensPS float64 `json:"output_tokens_per_s,omitempty"`
+}
+
+// SummarizeCallTimings folds timed rows into one UsageSpeed per (provider,
+// model), the most-called first.
+func SummarizeCallTimings(rows []TokenUsageRow) []UsageSpeed {
+	type acc struct {
+		dur, ttft, tps []float64
+	}
+	by := map[[2]string]*acc{}
+	var order [][2]string
+	for _, r := range rows {
+		k := [2]string{r.Provider, r.Model}
+		a := by[k]
+		if a == nil {
+			a = &acc{}
+			by[k] = a
+			order = append(order, k)
+		}
+		a.dur = append(a.dur, float64(r.DurationMs))
+		if r.TTFTMs > 0 {
+			a.ttft = append(a.ttft, float64(r.TTFTMs))
+		}
+		if r.DecodeMs > 0 && r.OutputTokens > 0 {
+			a.tps = append(a.tps, float64(r.OutputTokens)*1000/float64(r.DecodeMs))
+		}
+	}
+	out := make([]UsageSpeed, 0, len(order))
+	for _, k := range order {
+		a := by[k]
+		out = append(out, UsageSpeed{
+			Provider: k[0], Model: k[1], Calls: len(a.dur),
+			DurationP50Ms: percentile(a.dur, 0.5), DurationP95Ms: percentile(a.dur, 0.95),
+			TTFTP50Ms: percentile(a.ttft, 0.5), OutputTokensPS: percentile(a.tps, 0.5),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Calls > out[j].Calls })
+	return out
+}
+
+// percentile is the nearest-rank percentile of xs (0 for none); xs is sorted
+// in place.
+func percentile(xs []float64, p float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	sort.Float64s(xs)
+	i := int(math.Ceil(p*float64(len(xs)))) - 1
+	if i < 0 {
+		i = 0
+	}
+	return xs[i]
 }

@@ -705,6 +705,7 @@ func Run(t *testing.T, factory Factory) {
 		{"UsageReportBuckets", testUsageReportBuckets},
 		{"UsageReportFiltersAndNewDims", testUsageReportFiltersAndNewDims},
 		{"UsageReportTopFoldsTheRest", testUsageReportTopFoldsTheRest},
+		{"UsageCallTimings", testUsageCallTimings},
 		// RFC AW — per-scope token budgets: upsert / get-all / delete round-trip
 		// incl. nullable tiers.
 		{"TokenLimits", testTokenLimits},

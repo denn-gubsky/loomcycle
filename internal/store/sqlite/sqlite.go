@@ -2898,6 +2898,29 @@ func (s *Store) UsageReport(ctx context.Context, q store.UsageQuery) ([]store.Us
 	return store.FinishUsageReport(out, q), nil
 }
 
+// UsageCallTimings reads the latest timed calls per model for a speed summary;
+// the SQL is store.BuildUsageTimingsQuery's, shared with Postgres.
+func (s *Store) UsageCallTimings(ctx context.Context, q store.UsageQuery, perModel int) ([]store.TokenUsageRow, error) {
+	query, args, err := store.BuildUsageTimingsQuery(q, sqliteUsageDialect, perModel)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.TokenUsageRow
+	for rows.Next() {
+		var r store.TokenUsageRow
+		if err := rows.Scan(&r.Provider, &r.Model, &r.OutputTokens, &r.DurationMs, &r.TTFTMs, &r.DecodeMs); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // sqliteUsageDialect is the sqlite half of the shared usage report SQL. Times
 // are unix nanoseconds, so a bucket start is integer arithmetic: hours and days
 // divide evenly from the epoch; weeks are offset by four days, since 1970-01-01

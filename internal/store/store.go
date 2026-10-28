@@ -2353,6 +2353,12 @@ type UsageStore interface {
 	// token buckets, the timing and ts.
 	RecentCallTimings(ctx context.Context, since time.Time, perModel int) ([]TokenUsageRow, error)
 
+	// UsageCallTimings returns the latest timed calls (at most perModel per
+	// provider and model) in q's tenant, window and filters, from the
+	// per-call ledger — what a usage speed summary reads (RFC FM D6). Only
+	// Provider, Model, OutputTokens, DurationMs, TTFTMs and DecodeMs are set.
+	UsageCallTimings(ctx context.Context, q UsageQuery, perModel int) ([]TokenUsageRow, error)
+
 	// RunCostSummary sums a run's per-call token_usage ledger into its authoritative
 	// per-run cost (RFC AV): cost = SUM(token_usage.cost), currency = MAX(cost_currency)
 	// among priced rows, priced = at least one non-NULL cost row. FinishRun uses this

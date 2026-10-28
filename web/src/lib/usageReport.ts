@@ -1,4 +1,4 @@
-import type { UsageAggregate } from "../api";
+import type { TokenLimit, UsageAggregate, UsageSpeed } from "../api";
 
 // The Usage dashboard's logic, kept free of React and of the chart library so
 // it is tested on its own: periods, steps, measures, the per-tab dimension, the
@@ -433,4 +433,60 @@ export function addFilter(f: Filters, add: Filters): Filters {
     out[d] = [...new Set([...(out[d] ?? []), ...vals])];
   }
   return out;
+}
+
+// --- budgets (RFC AW) and speed (D6) ----------------------------------------
+
+export interface Budget {
+  used: number; // month-to-date tokens, as the budget counts them
+  soft: number | null;
+  hard: number | null;
+  projected: number; // used, extended at this month's rate to its end
+}
+
+// monthFraction is how much of the current UTC month has passed — budgets run
+// by calendar month in UTC.
+export function monthFraction(now: Date): number {
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  const end = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+  return Math.min(1, Math.max(0, (now.getTime() - start) / (end - start)));
+}
+
+// budgetFor finds the budget of a tenant (scope "tenant") or of a user in a
+// tenant (scope "user"), with a straight-line projection to the month's end.
+// undefined when no budget is set: that scope is unlimited.
+export function budgetFor(
+  limits: TokenLimit[],
+  scope: "tenant" | "user",
+  tenant: string,
+  user: string,
+  now: Date,
+): Budget | undefined {
+  const l = limits.find((x) =>
+    scope === "tenant"
+      ? x.scope === "tenant" && (x.scope_id || x.tenant_id || "") === tenant
+      : x.scope === "user" && (x.scope_id ?? "") === user && (x.tenant_id ?? "") === tenant,
+  );
+  if (!l || (l.soft_limit == null && l.hard_limit == null)) return undefined;
+  const f = monthFraction(now);
+  // A projection from the first hours of a month is noise; below a day's
+  // worth it is the usage itself.
+  const projected = f > 1 / 31 ? l.used / f : l.used;
+  return { used: l.used, soft: l.soft_limit, hard: l.hard_limit, projected };
+}
+
+// speedByModel indexes speed rows by model; a model served by two providers
+// shows the one that answered more calls.
+export function speedByModel(models: UsageSpeed[]): Map<string, UsageSpeed> {
+  const out = new Map<string, UsageSpeed>();
+  for (const m of models) {
+    const cur = out.get(m.model);
+    if (!cur || m.calls > cur.calls) out.set(m.model, m);
+  }
+  return out;
+}
+
+export function formatMs(ms: number): string {
+  if (!ms) return "—";
+  return ms >= 10000 ? `${(ms / 1000).toFixed(0)} s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
 }
