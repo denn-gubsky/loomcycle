@@ -51,6 +51,10 @@ tags:
     description: Sign-in for loomcycle's own apps — loomcycle as an OAuth 2.0 authorization server (authorization code + PKCE), and the apps registered with it.
   - name: authgate
     description: Password gate management — invitations, reset links, logins. Never a password.
+  - name: scim
+    description: |
+      Inbound SCIM 2.0 through the deployment's `kind: scim` gate. Only a token
+      holding `scim:provision` alone reaches it, acting in its own tenant.
   - name: auth
     description: |
       Web UI sign-in and sign-out (server-side sessions). A request a session
@@ -971,6 +975,260 @@ paths:
         "403": { description: "`session_required`, `device_not_allowed`, or the CSRF refusal." }
         "404": { description: "`code_invalid`." }
         "429": { description: "`too_many_attempts`." }
+  "/v1/_auth/passkey/{gate}/begin":
+    post:
+      tags: [auth]
+      summary: "Begin a password-less passkey sign-in (a `kind: passkey` gate)."
+      description: |
+        Unauthenticated; same-origin with `X-Loomcycle-UI: 1`; counted against
+        the client address's login starts. Answers a discoverable,
+        user-verifying WebAuthn challenge and sets a short cookie that binds
+        it to this browser. The challenge is single-use and lives five
+        minutes; the browser answers it with
+        `POST /v1/_auth/complete/{gate}` `{ceremony, credential}`.
+      operationId: beginPasskeySignIn
+      security: []
+      parameters:
+        - { name: gate, in: path, required: true, schema: { type: string } }
+        - { name: X-Loomcycle-UI, in: header, required: true, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200":
+          description: "`{ceremony, publicKey}` — the options for `navigator.credentials.get`, binary fields base64url."
+        "403": { description: "`cross_site_login_refused` or `insecure_transport`." }
+        "404": { description: "`gate_not_found`: no passkey gate of that name." }
+        "429": { description: "`too_many_attempts`." }
+        "503": { description: "`passkeys_unavailable`: no relying party (LOOMCYCLE_PUBLIC_URL)." }
+  /v1/_auth/passkeys:
+    get:
+      tags: [auth]
+      summary: The signed-in person's passkeys (Web UI session only).
+      description: |
+        Never a key: the id (base64url credential id), label, times, whether
+        it is discoverable, and whether it was refused for good (`flagged`,
+        a signature counter that went backwards). `available` is false when
+        the server is no relying party; `passwordless` says whether a passkey
+        gate is configured.
+      operationId: listPasskeys
+      responses:
+        "200": { description: "`{available, passwordless, passkeys: [{id, name, created_at, last_used_at?, discoverable, attachment?, flagged, flag_reason?}]}`." }
+        "403": { description: "`session_required` or `passkey_needs_user_session` (a pasted token's session cannot manage passkeys)." }
+  /v1/_auth/passkeys/register/begin:
+    post:
+      tags: [auth]
+      summary: Begin registering a passkey (Web UI session only, with a step-up).
+      description: |
+        The person's own session from a password, identity or passkey
+        sign-in. The request re-authenticates: a password account sends
+        `current_password` (and `otp`, or the `webauthn` answer to the passkey
+        offer a `401 second_factor_required` carries); a passkey-only account
+        answers the offer of a `401 second_factor_required`; an identity-gate
+        account must have signed in within the re-authentication window.
+        Answers a creation challenge bound to this session (discoverable,
+        user verification required, existing passkeys excluded).
+      operationId: beginPasskeyRegistration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                current_password: { type: string }
+                otp: { type: string }
+                webauthn: { type: object, description: "`{ceremony, credential}`" }
+      responses:
+        "200": { description: "`{ceremony, publicKey}` — the options for `navigator.credentials.create`." }
+        "401": { description: "`password_required`, `second_factor_required` (with `webauthn` and `otp`), `otp_required` or `reauth_failed`." }
+        "403": { description: "`session_required`, `passkey_needs_user_session` or `reauth_required`." }
+        "409": { description: "`too_many_passkeys` (ten per account)." }
+  /v1/_auth/passkeys/register/finish:
+    post:
+      tags: [auth]
+      summary: Finish registering a passkey.
+      description: |
+        The authenticator's attestation for the ceremony this session began.
+        Only the credential id, its public key and its metadata are stored.
+      operationId: finishPasskeyRegistration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ceremony, credential]
+              properties:
+                ceremony: { type: string }
+                credential: { type: object }
+                name: { type: string, description: "A label, at most 64 bytes." }
+      responses:
+        "201": { description: "`{id, name}`." }
+        "400": { description: "`passkey_not_accepted`: an unknown, used or foreign ceremony, or an attestation that does not verify." }
+        "409": { description: "`passkey_exists`." }
+  "/v1/_auth/passkeys/{id}":
+    patch:
+      tags: [auth]
+      summary: Rename one of the signed-in person's passkeys.
+      operationId: renamePasskey
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, properties: { name: { type: string } } } } }
+      responses:
+        "204": { description: Renamed. }
+        "404": { description: "`passkey_not_found` (another person's id included)." }
+    delete:
+      tags: [auth]
+      summary: Remove one of the signed-in person's passkeys (with a step-up).
+      description: |
+        The same step-up as registering. Sessions made with the passkey end on
+        their next request. Refused when the passkey is the account's last
+        way in, or the last second factor of a password a gate requires one
+        for.
+      operationId: removePasskey
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+        "401": { description: "As for registering." }
+        "404": { description: "`passkey_not_found`." }
+        "409": { description: "`last_sign_in_method` or `last_second_factor`." }
+  /scim/v2/ServiceProviderConfig:
+    get:
+      tags: [scim]
+      summary: SCIM 2.0 service provider configuration.
+      operationId: scimServiceProviderConfig
+      responses:
+        "200": { description: "PATCH and filters supported (`eq` on userName, displayName, externalId; at most 100 results a page); bulk, sort, ETags and password change not." }
+  /scim/v2/ResourceTypes:
+    get:
+      tags: [scim]
+      summary: SCIM resource types (User with the loomcycle extension, Group).
+      operationId: scimResourceTypes
+      responses:
+        "200": { description: A ListResponse. }
+  /scim/v2/Schemas:
+    get:
+      tags: [scim]
+      summary: SCIM schemas (User, Group, the loomcycle User extension).
+      operationId: scimSchemas
+      responses:
+        "200": { description: A ListResponse. }
+  /scim/v2/Users:
+    get:
+      tags: [scim]
+      summary: List SCIM users of the token's tenant.
+      operationId: scimListUsers
+      parameters:
+        - { name: filter, in: query, schema: { type: string }, description: "`userName eq \"x\"` or `externalId eq \"x\"`; anything else is 400 invalidFilter." }
+        - { name: startIndex, in: query, schema: { type: integer } }
+        - { name: count, in: query, schema: { type: integer, maximum: 100 } }
+      responses:
+        "200": { description: A ListResponse. }
+    post:
+      tags: [scim]
+      summary: Provision a user.
+      description: |
+        The user is made by the SCIM gate's identity map: subject
+        `<gate>:<SCIM id>`, the new-user floor, status per
+        `auth.lifecycle.new_user` (a pending user reads `active: false`
+        until an operator approves it). The loomcycle extension's
+        `accessMode` needs a trusted gate. userName is unique per tenant,
+        compared case-insensitively.
+      operationId: scimCreateUser
+      responses:
+        "201": { description: The User resource. }
+        "403": { description: "`accessMode` on an untrusted gate, or the identity map refused the user." }
+        "409": { description: "uniqueness: the userName is taken." }
+  "/scim/v2/Users/{id}":
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [scim]
+      summary: Read a user.
+      operationId: scimGetUser
+      responses:
+        "200": { description: The User resource. }
+        "404": { description: Unknown here (another tenant's included). }
+    put:
+      tags: [scim]
+      summary: "Replace a user (an omitted `active` keeps the status)."
+      operationId: scimReplaceUser
+      responses:
+        "200": { description: The User resource. }
+        "403": { description: "Not authoritative for users, `accessMode` on an untrusted gate, or a re-enable of a user SCIM did not disable." }
+        "429": { description: "The gate's removals are over max_sync_removals for 24 h." }
+    patch:
+      tags: [scim]
+      summary: Patch a user (RFC 7644 §3.5.2).
+      description: |
+        `active: false` is the removal policy: the user is disabled (sessions
+        end, delegated tokens retire), kept, and unbound later — only on a gate
+        with `identity_map.authoritative_for_users`, and within
+        `max_sync_removals` per rolling 24 h. `active: true` re-enables only a
+        user SCIM itself disabled, to the status it had (pending stays
+        pending); an operator's or another gate's disable stands (403).
+      operationId: scimPatchUser
+      responses:
+        "200": { description: The User resource. }
+        "403": { description: "As for PUT." }
+        "429": { description: "As for PUT." }
+    delete:
+      tags: [scim]
+      summary: Deprovision a user — disabled and kept, never hard-deleted.
+      operationId: scimDeleteUser
+      responses:
+        "204": { description: The resource is gone; the user is disabled. }
+        "403": { description: Not authoritative for users. }
+        "429": { description: Over max_sync_removals. }
+  /scim/v2/Groups:
+    get:
+      tags: [scim]
+      summary: "List SCIM groups (`displayName eq` or `externalId eq`)."
+      operationId: scimListGroups
+      responses:
+        "200": { description: "A ListResponse; `excludedAttributes=members` leaves members out." }
+    post:
+      tags: [scim]
+      summary: Create a group with members.
+      description: |
+        Needs `identity_map.groups` on a trusted SCIM gate. A group's members
+        are the gate's assertion for each member: they are synced into the
+        loomcycle group whose external id is `<gate>:<displayName as a slug>`
+        (provisioned when `groups.provision`), added and removed; local
+        groups and other gates' groups are never touched.
+      operationId: scimCreateGroup
+      responses:
+        "201": { description: The Group resource. }
+        "400": { description: "invalidValue: a member that is not a user of this service." }
+        "403": { description: Group provisioning is off. }
+        "409": { description: "uniqueness: the displayName is taken." }
+  "/scim/v2/Groups/{id}":
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [scim]
+      summary: Read a group.
+      operationId: scimGetGroup
+      responses:
+        "200": { description: The Group resource. }
+    put:
+      tags: [scim]
+      summary: Replace a group's name and members.
+      operationId: scimReplaceGroup
+      responses:
+        "200": { description: The Group resource. }
+    patch:
+      tags: [scim]
+      summary: "Patch a group: displayName, externalId, members (add / replace / remove, or `members[value eq \"<id>\"]`)."
+      operationId: scimPatchGroup
+      responses:
+        "200": { description: The Group resource. }
+    delete:
+      tags: [scim]
+      summary: Delete a group; its former members are re-synced (the loomcycle group stays).
+      operationId: scimDeleteGroup
+      responses:
+        "204": { description: Deleted. }
   /v1/_auth/tenant-policies:
     get:
       tags: [auth]
@@ -1644,8 +1902,17 @@ paths:
         **Password gate:** the JSON body below. An unknown login, a wrong
         password, a locked account and a disabled user all answer
         `401 invalid_credentials`; an account with an authenticator answers
-        `401 otp_required` once the password was right. `429
-        too_many_attempts` when the client is throttled.
+        `401 otp_required` once the password was right, and an account with a
+        passkey `401 second_factor_required` with a `webauthn` offer (and
+        `otp: true` when a code would do too) — send the body again with the
+        `webauthn` answer `{ceremony, credential}`. An account with a passkey
+        it cannot use now and no authenticator answers
+        `403 second_factor_unavailable`. `429 too_many_attempts` when the
+        client is throttled.
+
+        **Passkey gate** (`kind: passkey`): `{ceremony, credential}` answering
+        `POST /v1/_auth/passkey/{gate}/begin`, from the same browser. Every
+        refusal is `401 invalid_credentials`.
 
         **Header gate** (`kind: header`): no body. The request must arrive
         from the gate's `trusted_proxy_cidrs` carrying the proxy's signed

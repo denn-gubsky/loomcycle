@@ -44,7 +44,10 @@ endpoints; tenant-implied, and needed by name only on an isolated user's
 token), `auth:manage` (a website's user-management credential: the password
 gate's invite / reset / login management and the user create, list, update
 and delete, across tenants, and nothing else — no runs, no data, no token
-minting; it must be a token's only scope). Every catalog scope is enforced by at least one route —
+minting; it must be a token's only scope), `scim:provision` (an identity
+provider's SCIM 2.0 credential: the `/scim/v2` service of the deployment's
+`kind: scim` gate, in the token's own tenant only, and nothing else; it must
+be a token's only scope). Every catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first
