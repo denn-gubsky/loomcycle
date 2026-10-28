@@ -399,3 +399,113 @@ func usageFoldKey(a UsageAggregate) string {
 	b.WriteString(a.Period.UTC().Format(time.RFC3339Nano))
 	return b.String()
 }
+
+// UsageMaxTop bounds UsageQuery.Top: a chart shows a handful of series, and a
+// larger fold is a table the caller can get by leaving Top unset.
+const UsageMaxTop = 50
+
+// UsageParams is a usage report request as a transport receives it, before
+// validation: the HTTP query string and the gRPC request both map onto it, so
+// the two refuse the same inputs with the same words.
+type UsageParams struct {
+	GroupBy  []string
+	From, To string // RFC 3339; "" = unbounded
+	Bucket   string
+	Top      int
+	TopBy    string
+	Filters  map[string][]string
+}
+
+// ParseUsageQuery validates p into a UsageQuery. detailSince is the oldest
+// instant the per-call ledger still holds (zero when nothing has been folded
+// into the archive): hour buckets are refused for a window reaching before
+// it, since the archive holds whole days.
+func ParseUsageQuery(p UsageParams, detailSince time.Time) (UsageQuery, error) {
+	var q UsageQuery
+	for _, g := range p.GroupBy {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		if _, ok := UsageDimColumn(UsageDimension(g)); !ok {
+			return q, fmt.Errorf("unknown group_by dimension: %s (allowed: %s)", g, UsageDimNames())
+		}
+		q.GroupBy = append(q.GroupBy, UsageDimension(g))
+	}
+	for name, v := range map[string]string{"from": p.From, "to": p.To} {
+		if v == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return q, fmt.Errorf("%s must be RFC3339: %v", name, err)
+		}
+		if name == "from" {
+			q.From = t
+		} else {
+			q.To = t
+		}
+	}
+	b, err := ParseUsageBucket(p.Bucket)
+	if err != nil {
+		return q, err
+	}
+	q.Bucket = b
+	if b == UsageBucketHour && !detailSince.IsZero() && (q.From.IsZero() || q.From.Before(detailSince)) {
+		return q, fmt.Errorf("hour buckets reach only the per-call detail, which starts at %s; set from on or after it, or use day buckets",
+			detailSince.UTC().Format(time.RFC3339))
+	}
+	if p.Top < 0 || p.Top > UsageMaxTop {
+		return q, fmt.Errorf("top must be between 0 and %d", UsageMaxTop)
+	}
+	if p.Top > 0 && len(q.GroupBy) == 0 {
+		return q, fmt.Errorf("top needs a group_by: it keeps the largest values of the first dimension")
+	}
+	q.Top = p.Top
+	switch p.TopBy {
+	case "", UsageTopByCost, UsageTopByTokens, UsageTopByCalls:
+		q.TopBy = p.TopBy
+	default:
+		return q, fmt.Errorf("unknown top_by %q (allowed: %s, %s, %s)", p.TopBy, UsageTopByCost, UsageTopByTokens, UsageTopByCalls)
+	}
+	for k, vals := range p.Filters {
+		d := UsageDimension(k)
+		if _, ok := UsageDimColumn(d); !ok {
+			return q, fmt.Errorf("unknown filter dimension: %s (allowed: %s)", k, UsageDimNames())
+		}
+		var clean []string
+		for _, v := range vals {
+			if v = strings.TrimSpace(v); v != "" {
+				clean = append(clean, v)
+			}
+		}
+		if len(clean) == 0 {
+			continue
+		}
+		if q.Filters == nil {
+			q.Filters = map[UsageDimension][]string{}
+		}
+		q.Filters[d] = append(q.Filters[d], clean...)
+	}
+	if cs := q.Filters[UsageByClass]; len(cs) > 0 {
+		for _, c := range cs {
+			if c != UsageClassForeground && c != UsageClassBackground {
+				return q, fmt.Errorf("unknown class %q (allowed: %s, %s)", c, UsageClassForeground, UsageClassBackground)
+			}
+		}
+	}
+	return q, nil
+}
+
+// UsageDetailSince is the oldest instant the per-call ledger still holds when
+// the sweeper folds rows older than retention into the archive (0 = its 30-day
+// default); zero when the sweeper is off, since nothing is then folded.
+func UsageDetailSince(now time.Time, retention time.Duration, sweeperEnabled bool) time.Time {
+	if !sweeperEnabled {
+		return time.Time{}
+	}
+	if retention <= 0 {
+		retention = 30 * 24 * time.Hour
+	}
+	return now.Add(-retention).UTC()
+}

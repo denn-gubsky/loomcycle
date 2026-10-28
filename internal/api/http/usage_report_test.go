@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -189,5 +190,102 @@ func TestUsageReport_GroupByPurposeSplitsChatOCRAndSTT(t *testing.T) {
 	}
 	if g := byPurpose["stt"]; g.in != 0 || g.calls != 1 || g.cost != 0.5 || g.seconds != 90.0 {
 		t.Errorf("stt = %+v, want 0 tokens over 1 call, cost 0.5, audio_seconds 90", g)
+	}
+}
+
+// usageReportServer serves /v1/_usage over a seeded ledger, with an admin
+// bearer and a tenant operator of acme.
+func usageReportServer(t *testing.T, rows []store.TokenUsageRow) (*httptest.Server, *Server) {
+	t.Helper()
+	cfg := makeBaseConfig()
+	cfg.Env.AuthToken = "legacy-admin"
+	cfg.Env.OperatorTokenPepper = testTokenPepper
+	cfg.Env.UsageSweeperEnabled = true // older rows are archived, so detail_since is set
+	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
+	seedToken(t, srv.store, "tok-acme-op", "acme", "ops", []string{auth.ScopeTenant}, time.Time{})
+	for _, r := range rows {
+		if err := srv.store.RecordCallUsage(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+	return ts, srv
+}
+
+func decodeUsage(t *testing.T, ts *httptest.Server, bearer, path string) (int, usageReportResponse) {
+	t.Helper()
+	code, body := bearerCall(t, ts, bearer, "GET", path, "")
+	var out usageReportResponse
+	if code == http.StatusOK {
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+	}
+	return code, out
+}
+
+// TestUsageReport_BucketsFiltersAndTopOverHTTP — the chart parameters reach
+// the store: day buckets carry their period, a filter narrows, top folds the
+// rest into "other", and a bad value is a 400.
+func TestUsageReport_BucketsFiltersAndTopOverHTTP(t *testing.T) {
+	now := time.Now().UTC()
+	day := func(n int) time.Time {
+		return now.Truncate(24 * time.Hour).Add(-time.Duration(n)*24*time.Hour + time.Hour)
+	}
+	ts, _ := usageReportServer(t, []store.TokenUsageRow{
+		{RunID: "r1", TenantID: "acme", Provider: "p", Model: "big", CredentialSource: "operator", InputTokens: 100, Cost: 9, CostCurrency: "USD", TS: day(2), Tier: "high"},
+		{RunID: "r2", TenantID: "acme", Provider: "p", Model: "mid", CredentialSource: "operator", InputTokens: 10, Cost: 3, CostCurrency: "USD", TS: day(1), Tier: "middle"},
+		{RunID: "r3", TenantID: "acme", Provider: "p", Model: "small", CredentialSource: "operator", InputTokens: 1, Cost: 1, CostCurrency: "USD", TS: day(1), Purpose: store.UsagePurposeRerank},
+	})
+
+	code, rep := decodeUsage(t, ts, "legacy-admin", "/v1/_usage?group_by=model&bucket=day&top=1")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if rep.Bucket != "day" || len(rep.Rows) != 2 || rep.Rows[0].Model != "big" || rep.Rows[0].Period.IsZero() ||
+		!rep.Rows[1].Other || rep.Rows[1].Cost != 4 {
+		t.Errorf("day buckets, top 1 = %+v, want big on its day, then the other two folded into one day", rep)
+	}
+	if rep.DetailSince == "" {
+		t.Error("detail_since missing with the sweeper on")
+	}
+
+	if _, rep = decodeUsage(t, ts, "legacy-admin", "/v1/_usage?group_by=tier&class=foreground"); len(rep.Rows) != 2 {
+		t.Errorf("foreground by tier = %+v, want high and middle only", rep.Rows)
+	}
+
+	for _, bad := range []string{"bucket=fortnight", "top=nope", "top=99", "group_by=model&top_by=vibes", "class=sideways", "bucket=hour"} {
+		if code, _ := decodeUsage(t, ts, "legacy-admin", "/v1/_usage?"+bad); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", bad, code)
+		}
+	}
+}
+
+// TestUsageReport_TenantOperatorCannotFilterIntoOtherTenant — a tenant
+// operator's report is confined to its own tenant whatever it filters on or
+// names as tenant: a filter only narrows within acme.
+func TestUsageReport_TenantOperatorCannotFilterIntoOtherTenant(t *testing.T) {
+	ts, _ := usageReportServer(t, []store.TokenUsageRow{
+		{RunID: "r1", TenantID: "acme", UserID: "ann", Provider: "p", Model: "shared", CredentialSource: "operator", InputTokens: 1, Tier: "middle"},
+		{RunID: "r2", TenantID: "globex", UserID: "gus", Provider: "p", Model: "shared", CredentialSource: "operator", InputTokens: 100, Tier: "middle"},
+		{RunID: "r3", TenantID: "globex", UserID: "gus", Provider: "p", Model: "secret", CredentialSource: "operator", InputTokens: 1000, Tier: "high"},
+	})
+	for _, path := range []string{
+		"/v1/_usage?group_by=tenant,model&model=shared",
+		"/v1/_usage?group_by=tenant,model&tenant=globex",
+		"/v1/_usage?group_by=tenant,user&user=gus",
+		"/v1/_usage?group_by=tenant,tier&tier=high",
+		"/v1/_usage?group_by=model&model=secret&tenant=globex",
+	} {
+		code, rep := decodeUsage(t, ts, "tok-acme-op", path)
+		if code != http.StatusOK {
+			t.Fatalf("%s: status %d", path, code)
+		}
+		for _, r := range rep.Rows {
+			if r.InputTokens > 1 || (r.TenantID != "" && r.TenantID != "acme") {
+				t.Errorf("%s: row %+v reaches beyond acme", path, r)
+			}
+		}
 	}
 }
