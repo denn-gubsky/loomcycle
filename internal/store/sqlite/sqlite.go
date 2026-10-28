@@ -1671,6 +1671,10 @@ func (s *Store) migrate(ctx context.Context) error {
 		// reads back 0. Mirrors postgres 0116; no key changes.
 		`ALTER TABLE token_usage ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE usage_archive ADD COLUMN input_chars INTEGER NOT NULL DEFAULT 0`,
+		// RFC EY §8: a token's authority mode ('' = frozen scopes, 'inherit' =
+		// its user's current access_mode). Every existing row reads back
+		// frozen. Mirrors postgres 0117.
+		`ALTER TABLE operator_token_defs ADD COLUMN authority TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range addColumns {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {

@@ -229,10 +229,7 @@ func TestWhoamiEffective_OpenModeReachesEverything(t *testing.T) {
 // distinct page id.
 func TestNavSurfaces_EveryEntryRouteIsRegistered(t *testing.T) {
 	srv, _, _, _ := navFixture(t, authz.ModeCompat)
-	mux, ok := srv.Mux().(*http.ServeMux)
-	if !ok {
-		t.Fatal("Mux() is no longer a *http.ServeMux")
-	}
+	mux := srv.routes()
 	seen := map[string]bool{}
 	for _, ns := range navSurfaces {
 		if seen[ns.ID] {

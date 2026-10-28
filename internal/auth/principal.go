@@ -56,10 +56,24 @@ type Principal struct {
 	// status on every request it authenticates, so a disable or a gate's
 	// revoke holds at once on every replica, whatever the sweeper did.
 	IssuedByGate string
+	// InheritsAuthority is set for a token minted with authority "inherit"
+	// (RFC EY §8): Scopes is then not the token's stored set but the implied
+	// set of its user's current access_mode, re-derived on every request it
+	// authenticates. Restrictions still narrow it.
+	InheritsAuthority bool
 	// Login is how the person signed in, for a principal a Web UI session
 	// authenticated (RFC FA §5); nil for a bearer. It is provenance for the
 	// person's own agents to report, never consulted by a gate.
 	Login *Login
+}
+
+// AuthorityMode names how the principal's scopes were decided, for reporting
+// (/v1/_me, Context op=self): AuthorityInherit or AuthorityFrozen. Not secret.
+func (p Principal) AuthorityMode() string {
+	if p.InheritsAuthority {
+		return AuthorityInherit
+	}
+	return AuthorityFrozen
 }
 
 // Login is the sign-in provenance of a Web UI session: the configured gate

@@ -96,7 +96,7 @@ func (r *RemoteJWKS) Key(ctx context.Context, kid string, alg jose.SignatureAlgo
 		if found {
 			return k, nil
 		}
-		return jose.JSONWebKey{}, fmt.Errorf("jwks: %w", err)
+		return jose.JSONWebKey{}, fmt.Errorf("%w: %w", ErrKeySetUnavailable, err)
 	}
 	r.keys, r.fetchedAt = keys, now
 	if k, ok := pickKey(r.keys, kid, alg); ok {

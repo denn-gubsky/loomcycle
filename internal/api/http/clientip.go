@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authgate"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
@@ -18,23 +19,15 @@ import (
 // trusted proxy. Any other peer is the client, whatever headers it sends: a
 // header from an untrusted peer is the client's own word about itself.
 func sourceIP(policy config.AuthPolicy, r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer, err := netip.ParseAddr(host)
-	if err != nil {
+	peer, ok := authgate.PeerAddr(r)
+	if !ok {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
 		return host
 	}
-	peer = peer.Unmap()
-	trusted := func(a netip.Addr) bool {
-		for _, p := range policy.TrustedProxies {
-			if p.Contains(a) {
-				return true
-			}
-		}
-		return false
-	}
+	trusted := func(a netip.Addr) bool { return authgate.InPrefixes(a, policy.TrustedProxies) }
 	if !trusted(peer) {
 		return peer.String()
 	}
@@ -81,16 +74,27 @@ func throttleSourceKey(ip string) string {
 	return a.String()
 }
 
-// ProxyThrottleWarning is the boot warning for a password gate that is
-// evidently behind a TLS-terminating proxy (an https LOOMCYCLE_PUBLIC_URL,
-// which the server itself does not serve) with no auth.trusted_proxies: every
-// request then comes from the proxy's address, so one client's failed logins
-// slow every client's. "" when there is nothing to say.
+// ProxyThrottleWarning is the boot warning for a gate that throttles sign-in
+// by client address (password, awsiam, external) evidently behind a
+// TLS-terminating proxy (an https LOOMCYCLE_PUBLIC_URL, which the server
+// itself does not serve) with no auth.trusted_proxies: every request then
+// comes from the proxy's address, so one client's failed logins slow every
+// client's. "" when there is nothing to say.
 func ProxyThrottleWarning(cfg *config.Config) string {
 	if len(cfg.ResolvedAuth.TrustedProxies) > 0 || !strings.HasPrefix(strings.ToLower(cfg.Env.PublicURL), "https://") {
 		return ""
 	}
-	return "auth: a password gate is configured and LOOMCYCLE_PUBLIC_URL is https, so the server is probably " +
+	throttled := ""
+	for _, g := range cfg.ResolvedAuth.Gates {
+		switch g.Kind {
+		case config.AuthGateKindPassword, config.AuthGateKindAWSIAM, config.AuthGateKindExternal:
+			throttled = g.Kind
+		}
+	}
+	if throttled == "" {
+		return ""
+	}
+	return "auth: a " + throttled + " gate is configured and LOOMCYCLE_PUBLIC_URL is https, so the server is probably " +
 		"behind a TLS-terminating proxy, but auth.trusted_proxies is not set: sign-in throttling then sees every " +
 		"client as the proxy's address. Set auth.trusted_proxies (and auth.client_ip_header, e.g. CF-Connecting-IP " +
 		"behind a Cloudflare tunnel)"
