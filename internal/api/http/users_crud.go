@@ -322,8 +322,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// leave existing tokens working. (Re-enabling does not re-issue tokens; the
 	// operator re-mints.)
 	if req.Status != nil && *req.Status == "disabled" {
-		if _, err := s.retireDelegatedUserTokens(r.Context(), tenant, subject); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", err.Error())
+		ctx := r.Context()
+		// Revocation runs first and always: whatever fails after it, a
+		// disabled user's delegated tokens and sessions are over.
+		_, retireErr := s.retireDelegatedUserTokens(ctx, tenant, subject)
+		_, sessionErr := s.store.UISessionRevokeSubject(ctx, tenant, subject, time.Now().UTC())
+		// The operator's disable owns the user from now on: a SCIM removal
+		// (or a SCIM re-enable in progress) loses its row, so the identity
+		// provider can no longer re-enable it. After the status write, so a
+		// SCIM removal racing it either wrote its row first (taken here) or
+		// found the user disabled already (and wrote none).
+		_, disownErr := s.store.SCIMRemovalDisown(ctx, tenant, subject)
+		switch {
+		case retireErr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "token_retire_failed", retireErr.Error())
+			return
+		case sessionErr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "session_revoke_failed", sessionErr.Error())
+			return
+		case disownErr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "user_update_failed",
+				"the user is disabled, but its identity provider may still re-enable it; repeat the request")
 			return
 		}
 	}

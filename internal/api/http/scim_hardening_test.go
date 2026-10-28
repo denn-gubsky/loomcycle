@@ -203,3 +203,67 @@ func TestSCIM_AReEnableGivesNothingBeforeItOwnsTheUser(t *testing.T) {
 		t.Fatalf("a re-enable SCIM did not own joined the floor groups: %v", groups)
 	}
 }
+
+// An operator's plain disable takes the user from SCIM: a SCIM removal row
+// behind it goes, so the identity provider cannot re-enable the user.
+func TestSCIM_AnOperatorsDisableTakesTheUserFromSCIM(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true})
+	id, sub := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+	off := scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": false})
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, off); code != http.StatusOK {
+		t.Fatalf("remove = %d", code)
+	}
+	if code, out := f.call(t, bAcmeOp, "PATCH", "/v1/_users/"+sub, `{"status":"disabled"}`); code != http.StatusOK {
+		t.Fatalf("operator disable = %d %v", code, out)
+	}
+	on := scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": true})
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, on); code != http.StatusForbidden {
+		t.Fatalf("SCIM re-enable after an operator's disable = %d, want 403", code)
+	}
+	if st := f.status(t, "acme", sub); st != "disabled" {
+		t.Fatalf("status = %s", st)
+	}
+}
+
+// An operator's re-enable that cannot end the removal leaves the user
+// disabled: an active user behind a SCIM removal row is one the provider
+// could later re-enable over an operator's next disable.
+func TestUsers_AReactivationThatCannotEndTheRemovalLeavesTheUserDisabled(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true})
+	id, sub := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+	if code, _ := f.call(t, bSCIMAcme, "DELETE", "/scim/v2/Users/"+id, ""); code != http.StatusNoContent {
+		t.Fatalf("remove = %d", code)
+	}
+	h := hook(f)
+	h.failRemovalDelete = true
+	if code, _ := f.call(t, bAcmeOp, "PATCH", "/v1/_users/"+sub, `{"status":"active"}`); code != http.StatusInternalServerError {
+		t.Fatalf("a re-enable whose removal row stays = %d, want 500", code)
+	}
+	if st := f.status(t, "acme", sub); st != "disabled" {
+		t.Fatalf("status = %s, want disabled", st)
+	}
+}
+
+// An operator's disable retires the user's delegated tokens even when what
+// follows it (taking the user from SCIM) fails: the revocation never waits
+// on it.
+func TestUsers_ADisableRetiresTokensEvenWhenSCIMDisownFails(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{})
+	ctx := context.Background()
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "bob", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	seedToken(t, f.st, "bob-bearer", "acme", "bob", []string{"runs:create"}, time.Time{})
+	h := hook(f)
+	h.failDisown = true
+	if code, _ := f.call(t, bAcmeOp, "PATCH", "/v1/_users/bob", `{"status":"disabled"}`); code != http.StatusInternalServerError {
+		t.Fatalf("a disable whose disown failed = %d, want 500", code)
+	}
+	row, err := f.st.OperatorTokenDefGet(ctx, "def_bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.RetiredAt.IsZero() {
+		t.Fatal("the disabled user's token stayed live after the disown failed")
+	}
+}

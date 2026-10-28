@@ -281,8 +281,11 @@ var errNoRemoval = errors.New("the user is not being removed")
 
 // reactivateRemoved re-enables a removed user at the §3.7a defaults: every
 // group membership and every binding of its own goes, the access mode drops
-// to the floor, the floor groups that exist in the tenant are joined, and only
-// then is the user active again. A failure part-way leaves the user disabled.
+// to the floor, the floor groups that exist in the tenant are joined, the
+// removal row goes, and only then is the user active again. A failure
+// part-way leaves the user disabled: a removal row left behind an active
+// user would be one a SCIM gate could later claim as its own and re-enable
+// over an operator's next plain disable.
 func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by string) error {
 	r, err := s.store.AuthRemovalGet(ctx, tenant, subject)
 	if err != nil {
@@ -294,13 +297,12 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
 		return err
 	}
+	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
+		return fmt.Errorf("end the removal: %w", err)
+	}
 	active := "active"
 	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
 		return err
-	}
-	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
-		// The sweeper ends a removal whose user is active; log, don't fail.
-		slog.Warn("auth: reactivated user's removal row not deleted", "tenant", tenant, "subject", subject, "err", err)
 	}
 	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
 	return nil
