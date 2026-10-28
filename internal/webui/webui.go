@@ -39,6 +39,15 @@ type LoginConfig struct {
 	// SessionRefused names why this request cannot start a session (e.g.
 	// "insecure_transport"); empty when it can.
 	SessionRefused string
+	// App is the app an OAuth sign-in (?oauth=) is for, so the page can say
+	// "Sign in to <app> at <destination>"; nil for a plain sign-in.
+	App *LoginApp
+}
+
+// LoginApp names the app a sign-in will hand the person to.
+type LoginApp struct {
+	Label       string `json:"label"`
+	Destination string `json:"destination"`
 }
 
 // LoginGate is one sign-in option on the login page.
@@ -138,6 +147,9 @@ func Handler(prefix string, login func(*http.Request) LoginConfig, opts ...Optio
 		}
 		if lc.SessionRefused != "" {
 			body["session_refused"] = lc.SessionRefused
+		}
+		if lc.App != nil {
+			body["app"] = lc.App
 		}
 		_ = json.NewEncoder(w).Encode(body)
 	})

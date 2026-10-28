@@ -125,6 +125,11 @@ var tenantConfinableTools = map[string]bool{
 	// authz: the questions a principal asks about itself; naming another
 	// subject needs a tenant operator, which the implementation checks.
 	"authz": true,
+	// clientdef: the implementation stamps the tenant from the principal (an
+	// admin alone names another) and opaque-404s another tenant's client. It
+	// also needs substrate:tenant by name (toolRequiredScope), as its HTTP
+	// route keeps members out.
+	"clientdef": true,
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -259,6 +264,9 @@ var toolRequiredScope = map[string]string{
 	"groupdef":   auth.ScopeTenant,
 	"acldef":     auth.ScopeTenant,
 	"aclbinding": auth.ScopeTenant,
+	// An app client decides where people's sign-in codes go: the operator's
+	// to register, as POST /v1/_clientdef requires.
+	"clientdef": auth.ScopeTenant,
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke

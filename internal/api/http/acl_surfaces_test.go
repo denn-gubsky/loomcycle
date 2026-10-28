@@ -43,6 +43,11 @@ var aclUngovernedRoutes = map[string]bool{
 	// (the poll authenticates by its device code; the approval is governed).
 	"POST /v1/_auth/device": true, "POST /v1/_auth/device/token": true,
 	"GET /.well-known/agent-card.json/extended": true,
+	// RFC FL: the app sign-in routes. authorize runs on the person's own
+	// session; token and revoke are authenticated by the code (with its PKCE
+	// verifier) or the refresh token; the metadata is public.
+	"GET /v1/_oauth/authorize": true, "POST /v1/_oauth/token": true, "OPTIONS /v1/_oauth/token": true,
+	"POST /v1/_oauth/revoke": true, "OPTIONS /v1/_oauth/revoke": true, "GET /.well-known/oauth-authorization-server": true,
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.
 	"POST /v1/_authz/evaluation": true, "POST /v1/_authz/evaluations": true, "POST /v1/_authz/explain": true, "POST /v1/_authz/simulate": true,

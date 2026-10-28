@@ -89,6 +89,7 @@ var twins = map[string][]Twin{
 	"WebhookDef":        {{Method: http.MethodPost, Path: "/v1/_webhookdef"}},
 	"MemoryBackendDef":  {{Method: http.MethodPost, Path: "/v1/_memorybackenddef"}},
 	"DocumentSourceDef": {{Method: http.MethodPost, Path: "/v1/_documentsourcedef"}},
+	"ClientDef":         {{Method: http.MethodPost, Path: "/v1/_clientdef"}},
 	"OperatorTokenDef":  {{Method: http.MethodPost, Path: "/v1/_operatortokendef"}},
 	"VolumeDef":         {{Method: http.MethodPost, Path: "/v1/_volumedef"}},
 	"TeamDef":           {{Method: http.MethodPost, Path: "/v1/_teamdef"}},

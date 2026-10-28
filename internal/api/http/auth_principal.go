@@ -563,7 +563,13 @@ func (s *Server) liveTokenPrincipal(ctx context.Context, p auth.Principal) (auth
 		return p, true
 	}
 	if p.IssuedByGate != "" {
-		if _, ok := s.configuredGate(p.IssuedByGate); !ok {
+		// issuingGate, not configuredGate: a token-mode deployment's implicit
+		// token gate issues app tokens too (RFC FL), and stands while offered.
+		if _, ok := s.issuingGate(p.IssuedByGate); !ok {
+			return auth.Principal{}, false
+		}
+		// An app's token (RFC FL) also stands only while its client does.
+		if !s.appTokenStands(ctx, p) {
 			return auth.Principal{}, false
 		}
 	}
@@ -698,6 +704,8 @@ func tokenRowPrincipal(row store.OperatorTokenDefRow, now time.Time) (auth.Princ
 		TokenDefID:   row.DefID,
 		Restrictions: restrictions,
 		IssuedByGate: row.IssuedByGate,
+		OAuthClient:  row.OAuthClient,
+		OAuthFamily:  row.OAuthFamily,
 		// Scopes above are the set the user held at mint; liveTokenPrincipal
 		// replaces them with the current one on every request.
 		InheritsAuthority: inherit,
@@ -1761,6 +1769,10 @@ func isTenantConfinedDefPath(path string) bool {
 		// the gRPC/MCP ones (both grant ScopeTenant) and leaving the
 		// tenant-scoping in handleListDocumentSourceDefNames dead for tenant tokens.
 		"/v1/_documentsourcedef",
+		// RFC FL P0b — app clients: a tenant operator registers its own
+		// tenant's, an admin any tenant's (the implementation confines the
+		// tenant and opaque-404s another's). Carved out of member access.
+		"/v1/_clientdef",
 		// RFC AH Phase 2a — the dynamic-volume substrate is tenant-confined
 		// (write-stamps the caller's tenant + opaque-404s cross-tenant), so
 		// it joins the ScopeTenant set. No /names sub-path: the list op

@@ -57,6 +57,11 @@ type Principal struct {
 	// revoke holds at once on every replica, whatever the sweeper did. The
 	// tenant's gate policy (RFC FA P5) is checked against it the same way.
 	IssuedByGate string
+	// OAuthClient and OAuthFamily name the app sign-in (RFC FL) the token
+	// came from: the OAuth client and the refresh-token family. "" for every
+	// other credential. Such a token stands only while the client does.
+	OAuthClient string
+	OAuthFamily string
 	// InheritsAuthority is set for a token minted with authority "inherit"
 	// (RFC EY §8): Scopes is then not the token's stored set but the implied
 	// set of its user's current access_mode, re-derived on every request it

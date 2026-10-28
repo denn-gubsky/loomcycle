@@ -134,6 +134,10 @@ type Event struct {
 	AuthGate   string   `json:"auth_gate,omitempty"`
 	AuthAMR    []string `json:"auth_amr,omitempty"`
 	AuthReason string   `json:"auth_reason,omitempty"`
+	// AuthClient is the app (RFC FL OAuth client) a sign-in, token or
+	// ClientDef change is about; AuthRedirectURIs a ClientDef's redirect URIs.
+	AuthClient       string   `json:"auth_client,omitempty"`
+	AuthRedirectURIs []string `json:"auth_redirect_uris,omitempty"`
 
 	// --- Password gate management (Action = "auth_invite_created" |
 	// "auth_invite_revoked" | "auth_invite_redeemed" | "auth_reset_issued" |

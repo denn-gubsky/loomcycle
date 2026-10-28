@@ -372,6 +372,13 @@ type Connector interface {
 	// set_remote/sync (runtime-authored peer document sources).
 	DocumentSourceDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// ClientDef — RFC FL P0b runtime app clients: the OAuth clients that sign
+	// people in through this server's gates. One implementation behind POST
+	// /v1/_clientdef, the MCP `clientdef` tool and the gRPC ClientDef RPC; it
+	// reads the caller's principal from ctx (admin: any tenant; a tenant
+	// operator: its own) and nothing else.
+	ClientDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// OperatorTokenDef — RFC L OSS multi-tenant authorization. Mints,
 	// rotates, retires, and inspects the bearer tokens that replace the
 	// single LOOMCYCLE_AUTH_TOKEN shared secret, each bound to an
