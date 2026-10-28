@@ -921,6 +921,15 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 		slog.Error("scim: removing a user failed", "gate", c.g.Name, "err", err)
 		return internal
 	}
+	// Fail closed: whatever the store answered, the user must be disabled
+	// now, or the provider is not told it was deprovisioned.
+	if u, err := s.store.UserGet(ctx, c.tenant, subject); err != nil || u.Status != "disabled" {
+		if err == nil || !isNotFound(err) {
+			slog.Error("scim: a removed user is not disabled", "gate", c.g.Name, "err", err)
+			return internal
+		}
+		return nil
+	}
 	rm, err := s.store.AuthRemovalGet(ctx, c.tenant, subject)
 	if err != nil && !isNotFound(err) {
 		return internal

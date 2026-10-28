@@ -125,8 +125,11 @@ type SCIMStore interface {
 	// the reason recording the status it had (RemovalReasonSCIM for active,
 	// RemovalReasonSCIMPending for pending; row.Reason is ignored). It
 	// changes nothing and answers false when the user is disabled already
-	// (a disable SCIM did not do stays someone else's) or has a removal.
-	// *ErrNotFound{Kind:"user"} for an unknown user.
+	// (a disable SCIM did not do stays someone else's). A user that has a
+	// removal row but is not disabled is disabled under that row (fail
+	// closed; another owner's row stays theirs, this gate's SCIM row is
+	// refreshed) and answers true. *ErrNotFound{Kind:"user"} for an unknown
+	// user.
 	SCIMRemoveUser(ctx context.Context, row AuthRemovalRow, since time.Time, ceiling int) (bool, error)
 	// SCIMReactivate ends a removal the gate's SCIM made, in one
 	// transaction: when the subject's CURRENT removal is the gate's with a

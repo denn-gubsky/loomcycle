@@ -510,6 +510,25 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	if _, ok, _ := s.SCIMReactivate(ctx, "okta", "acme", "act"); ok {
 		t.Fatal("SCIM re-enabled a user an operator's removal took over")
 	}
+	// A removal row behind a user who is still active: SCIM fails closed —
+	// the user is disabled under the row, which stays its owner's.
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "stale", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	stale := op
+	stale.Subject = "stale"
+	if ok, err := s.AuthRemovalStart(ctx, stale); !ok || err != nil {
+		t.Fatalf("seed a stale row: %v %v", ok, err)
+	}
+	if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "stale", "okta", now), since, 10); !got || err != nil {
+		t.Fatalf("remove under a stale row: %v %v", got, err)
+	}
+	if st := userStatus(t, s, "acme", "stale"); st != "disabled" {
+		t.Fatalf("under a stale row the user stayed %s", st)
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "stale"); rm.Reason != store.RemovalReasonOperator {
+		t.Fatalf("the stale row changed owner: %+v", rm)
+	}
 	// A SCIM removal never takes an operator's over.
 	if ok, _ := s.AuthRemovalStart(ctx, scimRemovalRow("acme", "act", "okta", now)); ok {
 		t.Fatal("a SCIM row replaced an operator's")

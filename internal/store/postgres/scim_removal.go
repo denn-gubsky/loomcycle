@@ -42,13 +42,33 @@ func (s *Store) SCIMRemoveUser(ctx context.Context, row store.AuthRemovalRow, si
 	if status == "disabled" {
 		return false, nil
 	}
-	var existing int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM auth_removals WHERE tenant_id = $1 AND subject = $2`,
-		row.TenantID, row.Subject).Scan(&existing); err != nil {
-		return false, fmt.Errorf("scim removal: read removal: %w", err)
+	reason := store.RemovalReasonSCIM
+	if status == store.UserStatusPending {
+		reason = store.RemovalReasonSCIMPending
 	}
-	if existing > 0 {
-		return false, nil
+	var existingGate, existingReason string
+	err = tx.QueryRow(ctx, `SELECT gate, reason FROM auth_removals WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`,
+		row.TenantID, row.Subject).Scan(&existingGate, &existingReason)
+	switch {
+	case err == nil:
+		// A removal row behind a user who is not disabled: fail closed —
+		// disable the user under the row. Another owner's row stays theirs;
+		// this gate's SCIM row records the status the user had now.
+		if _, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = $1 AND subject = $2`, row.TenantID, row.Subject); err != nil {
+			return false, fmt.Errorf("scim removal: disable: %w", err)
+		}
+		if existingGate == row.Gate && store.SCIMRemovalReason(existingReason) {
+			if _, err := tx.Exec(ctx, `UPDATE auth_removals SET reason = $3 WHERE tenant_id = $1 AND subject = $2`,
+				row.TenantID, row.Subject, reason); err != nil {
+				return false, fmt.Errorf("scim removal: refresh: %w", err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, err
+		}
+		return true, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return false, fmt.Errorf("scim removal: read removal: %w", err)
 	}
 	var n int
 	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM auth_removals WHERE gate = $1 AND tenant_id = $2 AND disabled_at >= $3`,
@@ -57,10 +77,6 @@ func (s *Store) SCIMRemoveUser(ctx context.Context, row store.AuthRemovalRow, si
 	}
 	if n >= ceiling {
 		return false, store.ErrSCIMRemovalCeiling
-	}
-	reason := store.RemovalReasonSCIM
-	if status == store.UserStatusPending {
-		reason = store.RemovalReasonSCIMPending
 	}
 	if _, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = $1 AND subject = $2`, row.TenantID, row.Subject); err != nil {
 		return false, fmt.Errorf("scim removal: disable: %w", err)

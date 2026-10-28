@@ -354,12 +354,22 @@ func TestSCIM_ReEnablesOnlyAUserItDisabled(t *testing.T) {
 	}
 	// An operator's disable (no removal) stands.
 	id2, s2 := f.scimUser(t, bSCIMAcme, "bob@acme.test")
+	if _, err := f.st.GroupCreate(ctx, store.GroupRow{TenantID: "acme", Name: "local-ops"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.GroupMemberAdd(ctx, store.GroupMemberRow{TenantID: "acme", GroupName: "local-ops", MemberKind: store.GroupMemberUser, MemberID: s2}); err != nil {
+		t.Fatal(err)
+	}
 	disabled := "disabled"
 	if err := f.st.UserUpdate(ctx, "acme", s2, store.UserPatch{Status: &disabled}); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id2, on); code != http.StatusForbidden || f.status(t, "acme", s2) != "disabled" {
 		t.Fatalf("re-enable of an operator's disable = %d, status %s", code, f.status(t, "acme", s2))
+	}
+	// A refused re-enable touches nothing: the user keeps its groups.
+	if groups, _ := f.st.GroupsOfSubject(ctx, "acme", s2); !slices.Contains(groups, "local-ops") {
+		t.Fatalf("a refused re-enable reset the user's groups: %v", groups)
 	}
 	// An operator's disable that lands before SCIM's deactivation: SCIM's
 	// changes nothing and owns nothing, so it cannot re-enable later.
@@ -471,5 +481,29 @@ func TestSCIM_ASCIMTokenIsNeverTheUserOnTheIdentityRoutes(t *testing.T) {
 	r = r.WithContext(auth.WithPrincipal(r.Context(), p))
 	if _, _, self, ok := f.srv.identitiesTarget(rec, r); ok && self {
 		t.Fatal("identitiesTarget took a SCIM token for the user itself")
+	}
+}
+
+// A removal row behind a user who is still active never lets SCIM answer
+// success with the person active: the user ends disabled, or the answer is
+// an error.
+func TestSCIM_AStaleRemovalRowNeverLeavesTheUserActive(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true})
+	ctx := context.Background()
+	for _, how := range []string{"DELETE", "PATCH"} {
+		id, subject := f.scimUser(t, bSCIMAcme, how+"@acme.test")
+		now := time.Now().UTC()
+		if ok, err := f.st.AuthRemovalStart(ctx, store.AuthRemovalRow{TenantID: "acme", Subject: subject, Gate: "other",
+			Reason: store.RemovalReasonRevoked, DisabledAt: now, UnbindDueAt: now.Add(time.Hour)}); !ok || err != nil {
+			t.Fatalf("seed: %v %v", ok, err)
+		}
+		body := ""
+		if how == "PATCH" {
+			body = scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": false})
+		}
+		code, _ := f.call(t, bSCIMAcme, how, "/scim/v2/Users/"+id, body)
+		if st := f.status(t, "acme", subject); code < 300 && st != "disabled" {
+			t.Fatalf("%s answered %d with the user %s", how, code, st)
+		}
 	}
 }
