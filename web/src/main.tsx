@@ -1,4 +1,4 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 // Self-hosted brand fonts (bundled into dist by Vite — no CDN, works offline).
@@ -9,13 +9,14 @@ import "@fontsource-variable/jetbrains-mono";
 // aliases resolve to the themed --lc-* tokens.
 import "./tokens.css";
 import "./styles.css";
+// The Usage pages carry the chart library; loaded only when one opens.
+const UsageDashboard = lazy(() => import("./pages/usage/UsageDashboard"));
 import AgentsView from "./pages/AgentsView";
 import RunView from "./pages/RunView";
 import MemoryView from "./pages/MemoryView";
 import InterruptInbox from "./pages/InterruptInbox";
 import SnapshotsView from "./pages/SnapshotsView";
 import AuditView from "./pages/AuditView";
-import UsageView from "./pages/UsageView";
 import AccessView from "./pages/AccessView";
 import ActivityMonitor from "./pages/ActivityMonitor";
 import LibraryView from "./pages/LibraryView";
@@ -114,7 +115,14 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="interrupts" element={<InterruptInbox />} />
           <Route path="snapshots" element={<SnapshotsView />} />
           <Route path="audit" element={<AuditView />} />
-          <Route path="usage" element={<UsageView />} />
+          <Route
+            path="usage/:tab?"
+            element={
+              <Suspense fallback={<div className="usage-view">loading…</div>}>
+                <UsageDashboard />
+              </Suspense>
+            }
+          />
           {/* Users, access control and tokens are sections of /access; their
               old addresses (the settings menu's Users, Settings → Access and
               Tokens) still land on them. */}
