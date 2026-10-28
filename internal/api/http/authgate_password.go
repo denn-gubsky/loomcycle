@@ -827,6 +827,27 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	// An invite that attaches a password to an existing account with a
 	// second factor (a passkey account) must confirm that factor: the link
 	// alone must not add a password and a TOTP of the holder's choosing.
+	// The password policy is checked before the factor is: answering the
+	// factor spends it (a TOTP step, a recovery code, a passkey ceremony),
+	// and a policy refusal must leave it to answer again.
+	hasFactor := false
+	if inv.Subject != "" {
+		_, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, inv.TenantID, inv.Subject)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+			return
+		}
+		hasFactor = hasTOTP || hasPasskey
+	}
+	withMFA := g.RequireMFA || req.TOTPEnrolment != "" || hasFactor
+	pass, err := password.Normalize(req.Password)
+	if err == nil {
+		err = pg.policy.Check(pass, withMFA, login, inv.Email)
+	}
+	if err != nil {
+		writePolicyError(w, err)
+		return
+	}
 	existingFactor, existingRequired := "", false
 	if inv.Subject != "" {
 		var ok bool
@@ -835,15 +856,6 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-	}
-	withMFA := g.RequireMFA || req.TOTPEnrolment != "" || existingRequired
-	pass, err := password.Normalize(req.Password)
-	if err == nil {
-		err = pg.policy.Check(pass, withMFA, login, inv.Email)
-	}
-	if err != nil {
-		writePolicyError(w, err)
-		return
 	}
 	now := time.Now().UTC()
 	subject := inv.Subject
@@ -1174,6 +1186,30 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
+	login := ""
+	if ids, err := s.store.UserIdentityListSubject(ctx, rs.TenantID, rs.Subject); err == nil {
+		for _, id := range ids {
+			if id.Gate == g.Name {
+				login = id.ExternalSubject
+			}
+		}
+	}
+	// The password policy is checked before the factor is: answering the
+	// factor spends it (a TOTP step, a recovery code, a passkey ceremony),
+	// and a policy refusal must leave it to answer again.
+	_, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, rs.TenantID, rs.Subject)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+		return
+	}
+	pass, err := password.Normalize(req.Password)
+	if err == nil {
+		err = pg.policy.Check(pass, hasTOTP || hasPasskey || req.TOTPEnrolment != "", login)
+	}
+	if err != nil {
+		writePolicyError(w, err)
+		return
+	}
 	amr := []string{amrPassword}
 	var factor *store.AuthSecondFactor
 	var recovery []string
@@ -1198,22 +1234,6 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		amr = append(amr, amrOTP)
 	case g.RequireMFA:
 		writeJSONError(w, http.StatusBadRequest, "totp_required", "this sign-in requires an authenticator app")
-		return
-	}
-	login := ""
-	if ids, err := s.store.UserIdentityListSubject(ctx, rs.TenantID, rs.Subject); err == nil {
-		for _, id := range ids {
-			if id.Gate == g.Name {
-				login = id.ExternalSubject
-			}
-		}
-	}
-	pass, err := password.Normalize(req.Password)
-	if err == nil {
-		err = pg.policy.Check(pass, len(amr) > 1, login)
-	}
-	if err != nil {
-		writePolicyError(w, err)
 		return
 	}
 	if rs.IssuedByManager && !s.managerLinkStillAllowed(ctx, &g, rs.TenantID, rs.Subject, "complete_reset") {
