@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,29 +15,49 @@ type usageReportResponse struct {
 	GroupBy []string               `json:"group_by"`
 	From    string                 `json:"from,omitempty"`
 	To      string                 `json:"to,omitempty"`
+	Bucket  string                 `json:"bucket,omitempty"`
 	Rows    []store.UsageAggregate `json:"rows"`
+	// DetailSince is the oldest instant the per-call ledger still holds;
+	// before it only whole days survive (the archive), so hour buckets and the
+	// agent dimension stop there. Absent when nothing is archived.
+	DetailSince string `json:"detail_since,omitempty"`
+}
+
+// UsageDetailSince is the oldest instant the per-call usage ledger holds:
+// zero when the sweeper is off, since nothing is then folded into the archive.
+func (s *Server) UsageDetailSince() time.Time {
+	cfg := s.cfg()
+	if cfg == nil {
+		return time.Time{}
+	}
+	return store.UsageDetailSince(time.Now(), cfg.Env.UsageDetailRetention, cfg.Env.UsageSweeperEnabled)
 }
 
 // handleUsageReport serves GET /v1/_usage — aggregated token usage + cost from
-// the RFC AV ledger, for building spend reports.
+// the RFC AV ledger, for building spend reports and charts.
 //
 // Query params (all optional):
 //
-//	group_by=tenant,user,provider,model,source,purpose
-//	               dimensions to group by (default: tenant,source); purpose
-//	               splits chat from OCR, speech-to-text and text-to-speech
-//	               calls, and a group with speech calls carries their
-//	               audio_seconds
+//	group_by=tenant,user,provider,model,source,purpose,tier,user_tier,agent,class
+//	               dimensions to group by (default: tenant,source)
 //	from=RFC3339   ts >= from
 //	to=RFC3339     ts <= to
+//	bucket=hour|day|week|month
+//	               split the window into UTC periods; each row carries period
+//	               (hour only within detail_since)
+//	top=N          keep the N largest values of the first group_by dimension
+//	top_by=cost|tokens|calls
+//	               what "largest" means (default cost); the rest fold into
+//	               rows marked other
+//	<dimension>=a,b
+//	               keep rows whose dimension is one of the values, for any
+//	               dimension but tenant
 //	tenant=acme    admin-only focus on one tenant (a tenant operator is always
-//	               scoped to its own tenant; the param is ignored/logged)
+//	               scoped to its own tenant; the param is ignored)
 //
 // Tenant scoping (RFC AS): admin/legacy/open see all tenants (honoring ?tenant=);
-// a substrate:tenant operator sees only its own tenant. The operator bill is
-// group_by=source filtered to credential_source=operator; a tenant's consumption
-// is the rows for its tenant; its self-funded spend is source in {tenant,user}.
-// Read-only; 503 when the server has no store.
+// a substrate:tenant operator sees only its own tenant, so every filter only
+// narrows within it. Read-only; 503 when the server has no store.
 func (s *Server) handleUsageReport(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "store_unavailable",
@@ -45,44 +66,48 @@ func (s *Server) handleUsageReport(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 
-	var query store.UsageQuery
-
-	// group_by → validated dimensions (default tenant,source: the operator-vs-
-	// tenant view). An unknown dimension is a 400, not silently dropped.
+	// group_by defaults to tenant,source: the operator-vs-tenant view.
 	groupRaw := q.Get("group_by")
 	if strings.TrimSpace(groupRaw) == "" {
 		groupRaw = "tenant,source"
 	}
-	var groupNames []string
-	for _, part := range strings.Split(groupRaw, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
+	params := store.UsageParams{
+		GroupBy: strings.Split(groupRaw, ","),
+		From:    q.Get("from"),
+		To:      q.Get("to"),
+		Bucket:  q.Get("bucket"),
+		TopBy:   q.Get("top_by"),
+	}
+	if v := q.Get("top"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad_request", "top must be a number")
+			return
+		}
+		params.Top = n
+	}
+	// Every dimension but tenant is a filter by its own name; tenant keeps its
+	// meaning as the admin's focus, with its authority check below.
+	for _, d := range store.UsageCanonicalDims {
+		if d == store.UsageByTenant {
 			continue
 		}
-		if _, ok := store.UsageDimColumn(store.UsageDimension(part)); !ok {
-			writeJSONError(w, http.StatusBadRequest, "bad_request",
-				"unknown group_by dimension: "+part+" (allowed: "+store.UsageDimNames()+")")
-			return
+		if v := q.Get(string(d)); v != "" {
+			if params.Filters == nil {
+				params.Filters = map[string][]string{}
+			}
+			params.Filters[string(d)] = strings.Split(v, ",")
 		}
-		query.GroupBy = append(query.GroupBy, store.UsageDimension(part))
-		groupNames = append(groupNames, part)
 	}
-
-	if v := q.Get("from"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "bad_request", "from must be RFC3339: "+err.Error())
-			return
-		}
-		query.From = t
+	detailSince := s.UsageDetailSince()
+	query, err := store.ParseUsageQuery(params, detailSince)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
 	}
-	if v := q.Get("to"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "bad_request", "to must be RFC3339: "+err.Error())
-			return
-		}
-		query.To = t
+	groupNames := make([]string, len(query.GroupBy))
+	for i, g := range query.GroupBy {
+		groupNames[i] = string(g)
 	}
 
 	// Tenant-scope the report (RFC AS): a tenant operator is confined to its own
@@ -104,12 +129,15 @@ func (s *Server) handleUsageReport(w http.ResponseWriter, r *http.Request) {
 	if rows == nil {
 		rows = []store.UsageAggregate{}
 	}
-	resp := usageReportResponse{GroupBy: groupNames, Rows: rows}
+	resp := usageReportResponse{GroupBy: groupNames, Bucket: string(query.Bucket), Rows: rows}
 	if !query.From.IsZero() {
 		resp.From = query.From.Format(time.RFC3339)
 	}
 	if !query.To.IsZero() {
 		resp.To = query.To.Format(time.RFC3339)
+	}
+	if !detailSince.IsZero() {
+		resp.DetailSince = detailSince.Format(time.RFC3339)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

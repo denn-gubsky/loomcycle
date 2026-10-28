@@ -599,6 +599,7 @@ export type {
   LLMEmbeddingsUsage,
   // RFC AV usage/cost report
   UsageDimension,
+  UsageBucket,
   UsageAggregate,
   UsageReportResponse,
   // RFC AW per-scope token budgets

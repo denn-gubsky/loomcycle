@@ -2084,7 +2084,8 @@ message ListChildRunsResponse {
 }
 
 // UsageReportRequest mirrors GET /v1/_usage query params. group_by is a subset
-// of {tenant,user,provider,model,source,purpose}; an unknown dimension is rejected. from
+// of {tenant,user,provider,model,source,purpose,tier,user_tier,agent,class}; an
+// unknown dimension is rejected. from
 // / to are RFC3339 (empty = unbounded). tenant is an admin-only focus (ignored
 // for a scoped principal, which is confined to its own tenant).
 message UsageReportRequest {
@@ -2094,6 +2095,24 @@ message UsageReportRequest {
   string from_time = 2;
   string to_time = 3;
   string tenant = 4;
+  // Split the window into UTC periods: "" (one total per group) | hour | day |
+  // week (ISO, Monday-first) | month. hour reaches only detail_since onward.
+  string bucket = 5;
+  // Keep the top N values of the first group_by dimension (0 = all, at most
+  // 50) by top_by (cost | tokens | calls, default cost); the rest fold into
+  // rows marked other.
+  int32 top = 6;
+  string top_by = 7;
+  // Equality filters: a row is kept when, for every filter, its dimension
+  // holds one of the values. Any group_by dimension but tenant (tenant stays
+  // the focus above, with its authority check).
+  repeated UsageFilter filters = 8;
+}
+
+// UsageFilter keeps report rows whose dimension is one of values.
+message UsageFilter {
+  string dimension = 1;
+  repeated string values = 2;
 }
 
 // UsageAggregate is one grouped row; only the grouped dimensions are populated.
@@ -2111,16 +2130,37 @@ message UsageAggregate {
   string currency = 11;
   int64 call_count = 12;
   int64 unpriced_calls = 13;
-  // What the calls were for: chat | ocr | stt | tts. Set only when grouped by purpose.
+  // What the calls were for (chat, gateway, consolidation, rerank, decision,
+  // compaction, recap, unit_generation, image_description, embedding, ocr,
+  // stt, tts). Set only when grouped by purpose.
   string purpose = 14;
   // Summed seconds of audio the group's speech calls transcribed (stt) or
   // produced (tts), the unit a per-minute price is computed from; 0 when it has none.
   double audio_seconds = 15;
+  // The model tier the calls were resolved through ("pinned" for a named
+  // model), the run's user tier, the agent, and foreground | background.
+  // Each set only when grouped by it.
+  string tier = 16;
+  string user_tier = 17;
+  string agent = 18;
+  string class = 19;
+  // RFC 3339 start of the UTC period the row sums, when the request asked for
+  // a bucket; empty otherwise.
+  string period = 20;
+  // The row folds every value of the first dimension outside the request's top.
+  bool other = 21;
+  // Summed characters text-to-speech and embedding calls sent.
+  int64 input_chars = 22;
 }
 
 message UsageReportResponse {
   repeated string group_by = 1;
   repeated UsageAggregate rows = 2;
+  // The oldest instant the per-call ledger holds (RFC 3339); before it only
+  // whole days survive, so hour buckets and the agent dimension stop there.
+  // Empty when nothing is archived.
+  string detail_since = 3;
+  string bucket = 4;
 }
 
 // TokenLimitRequest is the op-based token-budget management RPC (RFC AW),

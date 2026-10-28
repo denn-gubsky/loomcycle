@@ -53,8 +53,10 @@ func (b *boot) startListeners() {
 			// RFC AW: share the HTTP server's token-budget tracker so the gRPC
 			// TokenLimit RPC reads the identical live counters + reloads the same
 			// cache the /v1/_limits handler uses.
-			Limits:    srv.LimitsTracker(),
-			AuthToken: cfg.Env.AuthToken,
+			Limits: srv.LimitsTracker(),
+			// The usage report's hour buckets stop where the archive starts.
+			UsageDetailSince: srv.UsageDetailSince,
+			AuthToken:        cfg.Env.AuthToken,
 			// RFC EY: the gRPC gate evaluates under the same mode as HTTP.
 			ACLMode: srv.ACLResolver().Mode(),
 			// RFC L: reuse the HTTP server's token resolution so gRPC

@@ -249,6 +249,7 @@ import type {
   TranscriptResponse,
   WhoamiResponse,
   UsageDimension,
+  UsageBucket,
   UsageReportResponse,
   TokenLimit,
   TokenLimitsResponse,
@@ -1237,7 +1238,8 @@ export class LoomcycleClient {
   }
 
   /** Aggregated token-usage + cost report (RFC AV). Group by any of
-   *  tenant/user/provider/model/source/purpose over an optional time window;
+   *  tenant/user/provider/model/source/purpose/tier/user_tier/agent/class over
+   *  an optional time window, split into periods with `bucket`;
    *  group by `source` for the operator-vs-tenant split, by `purpose` to see
    *  what OCR and speech-to-text cost (a row's `audio_seconds` is the audio its
    *  speech-to-text calls transcribed). Tenant-scoped server-side: a
@@ -1251,6 +1253,16 @@ export class LoomcycleClient {
     to?: string;
     /** Super-admin tenant focus (?tenant=); ignored for a tenant principal. */
     tenant?: string;
+    /** Split the window into UTC periods; each row then carries `period`.
+     *  `hour` reaches only `detail_since` onward. */
+    bucket?: UsageBucket;
+    /** Keep the `top` largest values of the first `groupBy` dimension (by
+     *  `topBy`, default cost); the rest fold into rows marked `other`. */
+    top?: number;
+    topBy?: "cost" | "tokens" | "calls";
+    /** Keep rows whose dimension is one of the values. `tenant` is not a
+     *  filter: it is the `tenant` focus above. */
+    filters?: Partial<Record<Exclude<UsageDimension, "tenant">, string[]>>;
     signal?: AbortSignal;
   }): Promise<UsageReportResponse> {
     const params = new URLSearchParams();
@@ -1259,6 +1271,12 @@ export class LoomcycleClient {
     if (opts?.from) params.set("from", opts.from);
     if (opts?.to) params.set("to", opts.to);
     if (opts?.tenant) params.set("tenant", opts.tenant);
+    if (opts?.bucket) params.set("bucket", opts.bucket);
+    if (opts?.top) params.set("top", String(opts.top));
+    if (opts?.topBy) params.set("top_by", opts.topBy);
+    for (const [dim, values] of Object.entries(opts?.filters ?? {})) {
+      if (values && values.length > 0) params.set(dim, values.join(","));
+    }
     const q = params.toString() ? `?${params.toString()}` : "";
     return jsonFetch<UsageReportResponse>(this.ctx, `/v1/_usage${q}`, opts);
   }

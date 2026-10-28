@@ -6342,8 +6342,18 @@ export type UsageDimension =
   | "provider"
   | "model"
   | "source"
-  /** What the calls were for: chat | ocr | stt | tts. */
-  | "purpose";
+  /** What the calls were for (see `UsageAggregate.purpose`). */
+  | "purpose"
+  /** The model tier the calls were resolved through; "pinned" for a named model. */
+  | "tier"
+  | "user_tier"
+  /** The agent that made the calls — the per-call detail window only. */
+  | "agent"
+  /** foreground | background, derived from the purpose. */
+  | "class";
+
+/** The period a usage report splits its window into (UTC; weeks start Monday). */
+export type UsageBucket = "hour" | "day" | "week" | "month";
 
 /** One grouped row of a usage report; only the grouped dimensions are set. */
 export interface UsageAggregate {
@@ -6353,8 +6363,21 @@ export interface UsageAggregate {
   model?: string;
   /** operator | tenant | user */
   credential_source?: string;
-  /** chat | ocr | stt | tts — set when grouped by `purpose`. */
+  /** chat | gateway | consolidation | rerank | decision | compaction | recap |
+   *  unit_generation | image_description | embedding | ocr | stt | tts — set
+   *  when grouped by `purpose`. */
   purpose?: string;
+  tier?: string;
+  user_tier?: string;
+  agent?: string;
+  /** foreground | background — set when grouped by `class`. */
+  class?: string;
+  /** RFC 3339 start of the UTC period the row sums, when a bucket was asked for. */
+  period?: string;
+  /** The row folds every value of the first dimension outside `top`. */
+  other?: boolean;
+  /** Characters text-to-speech and embedding calls sent; absent when none. */
+  input_chars?: number;
   input_tokens: number;
   output_tokens: number;
   cache_creation_tokens: number;
@@ -6372,7 +6395,12 @@ export interface UsageReportResponse {
   group_by: string[];
   from?: string;
   to?: string;
+  bucket?: UsageBucket;
   rows: UsageAggregate[];
+  /** The oldest instant the per-call ledger holds; before it only whole days
+   *  survive, so hour buckets and the agent dimension stop there. Absent when
+   *  nothing is archived. */
+  detail_since?: string;
 }
 
 /** A per-scope token budget (RFC AW) plus its live month-to-date usage.
