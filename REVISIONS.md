@@ -8,6 +8,164 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.126.0
+
+*Sign-in for programs, apps and terminals; the Identity tool; live access control; and usage by purpose and tier. **Bridges and other programs sign in as external gates** instead of holding a tenant operator token: they sign who is talking with their own key, and loomcycle provisions the user and issues the token. The Telegram, Slack, Discord and Teams bridges can switch over and keep their existing users. **loomcycle is an OAuth 2.0 server for its own apps**, so an app signs a person in on loomcycle's login page through the configured gates; apps are registered in config or as `ClientDef`, and the TS client runs the PKCE flow. **`loomcycle login` signs a terminal in** by device code into the OS keychain, which the MCP thin client then uses. Trusted-proxy header gates (Cloudflare Access, AWS ALB, forward-auth) and an AWS IAM gate sign people in without a second login. **Agents can see who they work for:** `Context op=self` gains an identity block, `op=can` and `op=reach` answer "may I?" before trying, a read-only `Identity` tool looks up people and groups, and `{{identity}}` puts the user in the system prompt; the MCP `directory` tool is replaced by `identity`. **Access control can follow rule changes during a run** (`LOOMCYCLE_ACL_LIVE`), a write deny on a memory scope makes it read-only, snapshots carry the access-control rows, and team subscriptions run under their promoter's rules. **Every model and embedder call records what it was for and its tiers**, background calls are now billed, and usage reports gain time buckets, top-N and filters. Also: the text-to-speech substrate (nothing speaks yet), `File op=import` headings, and one Web UI menu. **Read the upgrade notes: nine migrations, the MCP `directory` tool removed, and background spend that now counts against token budgets.***
+
+Since v1.125.0: #2179 to #2216.
+- sign-in gates (RFC FA): external gates (#2179), trusted-proxy header and AWS IAM gates (#2198), device login, `loomcycle login` and per-tenant gate policy (#2205), inherit tokens (#2197), and the TS client's user and gate management (#2193);
+- bridges as gates: bridge-core (#2185), Telegram (#2183, #2184), Slack (#2187), Discord (#2188), Teams (#2189), and the lockfiles (#2190);
+- app sign-in (RFC FL): the OAuth 2.0 server and `ClientDef` (#2204), and the SDKs (#2207);
+- the identity surface (RFC FC): `Context` identity, `can` and `reach` (#2196), the `Identity` tool (#2202), sign-in provenance and `{{identity}}` (#2203);
+- access control: snapshots (#2199), write denies on memory (#2200), `LOOMCYCLE_ACL_LIVE` (#2201), team subscriptions (#2209);
+- usage (RFC FM): purposes and tiers (#2206), embedder rows (#2214), report buckets, top-N and filters (#2215), and the Web UI Usage pages (#2216);
+- text-to-speech substrate (RFC FK P1, #2195); `File op=import` headings (#2211);
+- Web UI: the menu hierarchy (#2191, #2194) and the document viewer (#2186);
+- fixes: document rename (#2181), speech-to-text error classes (#2192), `golang.org/x/net` (#2208), the cluster compose's Postgres (#2180, #2182);
+- migration numbering on main before the release (#2210, #2212; #2213 merged the same SQLite fix as #2212 and changed nothing).
+- `@loomcycle/client` and the Python adapter move to 1.126.0.
+  - **TS** gains `approveUser`, `listUserIdentities`, `unlinkUserIdentity`, `opts.tenant` on `createUser` / `updateUser` / `deleteUser`, `listAuthGates`, `createInvite`, `listInvites`, `revokeInvite`, `createPasswordReset`, `removeGateCredentials`, `renameGateLogin`, `listGateIdentities`, `getGateTenantStatus`, and `UserStatus` with `pending` (#2193); `deviceLogin` (#2205); `LoomcycleOAuth` (also `client.oauth`), `OAuthTokenProvider`, the `tokenProvider` client option, `parseAuthorizeResponse`, `pkceChallenge`, `OAuthError`, `clientDef`, `createClientDef`, `updateClientDef`, `getClientDef`, `listClientDefs`, `retireClientDef`, `verifyClientDef` and `listClientDefNames` (#2207); `bucket`, `top`, `topBy` and `filters` on `usageReport` with `UsageBucket` (#2215); `headings` and `source` on `RunFileInput` (#2211); `AgentSpeech` on `AgentDefOverlay` and the `tts` purpose (#2195).
+  - **Python** gains `client_def` (#2207) and `bucket`, `top`, `top_by` and `filters` on `usage_report`, whose rows gain `tier`, `user_tier`, `agent`, `class`, `period`, `other` and `input_chars` (#2215).
+
+### External gates: programs sign in through loomcycle (#2179, #2198, #2205)
+
+A bridge held a `substrate:tenant` operator token, created each chat user itself and minted their tokens, so a stolen bridge or its env file was a tenant operator.
+
+- **`kind: external`** (RFC FA P4, #2179). The gate holds a signing key, pinned in config: `public_key` (an Ed25519 or P-256 JWK) or `hmac_secret_env` (an HS256 secret in a `LOOMCYCLE_*` variable). It says who is talking in an assertion that lives at most 5 minutes, addressed to `LOOMCYCLE_PUBLIC_URL`, used once across replicas. loomcycle provisions the user by the gate's `identity_map` and issues the token, held to the gate's `issued_token` ceiling (`ttl` up to 30 days, `agents`, `overrides`, `rate`, `max_active`). A stolen gate key can speak only for that gate's people, at that ceiling.
+  - Routes: `POST /v1/_auth/assert` (a token for one person), `POST /v1/_auth/revoke` (the person is gone), `POST /v1/_auth/sync` (bulk provisioning and group sync), `GET|POST /v1/_auth/complete/{gate}` (a browser login through a gate with a `callback_url`), and `GET /v1/_authgate` (the admin's gate list with key fingerprints and an optional probe).
+  - A gate's reported sign-in method is not taken (`amr` is always `[ext]`), only a `trusted` gate may assert an `access_mode` or its own `<gate>:` groups, two gates may not share a key, and a `complete` sync may remove at most `max_sync_removals` users (default 10%, never fewer than 5) or is refused whole.
+  - **Removal** (`auth.lifecycle.on_removed`, or a gate's own `on_removed`): a revoke, an authoritative sync, or `dormant_after` with no sign-in starts three stages that never skip: disable at once (sessions end, issued tokens retire), unbind after `unbind_after` (default 7 days: gate-managed groups and the user's own ACL bindings go), and erase after `erase_after` (default never, at least 24h). Re-enabling a user returns them to the new-user defaults.
+- **Header gates and the AWS IAM gate** (RFC FA P3, #2198), for deployments that already authenticate people at the edge.
+  - `kind: header` with presets `cloudflare-access`, `aws-alb` and `forward-auth-hmac` (its secret only from `secret_env`, each nonce used once). A gate's header is stripped from every request unless it comes from the configured proxy, and the Web UI shows one sign-in button. A session follows the person the proxy names and ends when the header names another person or none.
+  - `kind: awsiam`: a workload posts a signed `sts:GetCallerIdentity` request to `POST /v1/_auth/assert`. loomcycle sends it only to STS, in an allowed region, and requires the host and server-id headers to be signed. Issued tokens last at most 1 hour.
+  - A verifier that cannot check (a key set unreachable) answers 503 and keeps existing sessions, instead of ending them as invalid. `loomcycle doctor` probes the Cloudflare, ALB and STS endpoints.
+- **Device login and `loomcycle login`** (RFC FA P5, #2205).
+  - `kind: device` (needs `LOOMCYCLE_PUBLIC_URL`) adds `POST /v1/_auth/device`, `/device/token`, `/device/info` and `/device/approve` and a `/ui/device` page. Only a Web UI session can approve a code, never a bearer. The token lives no longer than the approving session.
+  - `loomcycle login`, `loomcycle logout` and `loomcycle auth status` keep the token in the OS keychain (macOS `security`, Linux `secret-tool`); it is never printed, written to a file or taken from the command line. Windows is refused with a pointer to `LOOMCYCLE_MCP_UPSTREAM_TOKEN`. `loomcycle mcp --upstream` uses the keychain token when `LOOMCYCLE_MCP_UPSTREAM_TOKEN` is not set.
+  - `POST /v1/_auth/token/revoke` lets a delegated user token retire itself.
+  - **Per-tenant gate policy** (`auth.tenant_policies`, and `GET`, `PUT` and `DELETE /v1/_auth/tenant-policies`) limits a tenant's people to named gates, checked on every token use, at session creation, token issue and device approval.
+- Every gate-issued token now stops when its gate is taken out of the config, on every replica (#2179).
+- **TS client** (#2193): user approval, linked identities, the gate list and the password gate's management API (invites, resets, credential removal, login rename, identities, tenant status), and the `pending` user status. Sign-in and sign-out routes stay browser-only.
+
+### Bridges sign in as gates (#2183 to #2190)
+
+Each bridge can now run as an external gate and keep its existing users.
+
+- **Opt-in** with `BRIDGE_GATE`, `BRIDGE_GATE_AUDIENCE`, and `BRIDGE_GATE_KEY` or `BRIDGE_GATE_SECRET`; `LOOMCYCLE_TOKEN` is refused in that mode. Without `BRIDGE_GATE` a bridge runs with its token exactly as before.
+- **Existing users are kept.** A token-mode bridge made `telegram-42` (a group `telegram-conv-<hash>`), and a gate makes `telegram:42`. With `identity_map.legacy_subject_prefix: telegram-` on the gate, a person's first login links the old user, audited `auth_identity_linked` with reason `legacy subject`. Only a user with no password and no gate identity is linked, so a person's own account is never taken (#2183).
+- **Stored conversations carry over**: bridge-core 0.3.1 moves a conversation kept in `BRIDGE_STORE=file:…` to the gate's subjects as its people write again (#2185).
+- **Leaving the platform revokes the person** before the platform is answered, and a failed revoke answers 5xx so the platform redelivers: a Telegram block (#2183, #2184), a deactivated Slack account (#2187), a Discord deauthorisation on the new `POST /discord/events` route (#2188), a Teams uninstall from a personal chat (#2189).
+- **Groups**: Telegram trusted chats; Slack team, channel, admin and guest groups; Discord guild and role groups (looked up with the bot token); the Teams tenant group. A failed lookup asserts nothing, so no group is removed on a guess.
+- Versions: `@loomcycle/bridge-core` 0.3.1, `bridge-telegram` 0.3.1, `bridge-slack`, `bridge-discord` and `bridge-teams` 0.3.0, each with a container image built on its own tag (#2190). Each README has an "As a loomcycle gate" section with the switch-over steps.
+
+### Apps sign in through loomcycle: OAuth 2.0 and `ClientDef` (#2204, #2207)
+
+loomboard and loomcycle's other apps made people paste a bearer token. loomcycle now runs a small OAuth 2.0 authorization server (RFC FL), so a person signs in on loomcycle's own login page through whatever gates are configured, and the app gets a short-lived token for that same user.
+
+- `GET /v1/_oauth/authorize`, `POST /v1/_oauth/token` (authorization code with PKCE S256 only), `POST /v1/_oauth/revoke` and `GET /.well-known/oauth-authorization-server` (issuer `LOOMCYCLE_PUBLIC_URL`; 404 until it is set).
+- Codes are single-use and live 60 s. A replayed code or a reused refresh token ends the whole sign-in. CORS is open only to a client's `allowed_origins`.
+- The access token is a user token tagged with the app; its scopes are capped by the session's, and its tenant always comes from the session. `/v1/_me` reports the app, gate and `amr`. Signing out of the Web UI does not end app sign-ins.
+- Apps are registered in `auth.clients:` or at runtime as a **`ClientDef`** (`POST /v1/_clientdef`, `GET /v1/_clientdef/names`, MCP `clientdef`, gRPC `ClientDef`; ACL family `def:client`). A tenant operator registers its own tenant's apps, an admin any tenant's. Redirect URIs are https, loopback or a private-use scheme; `confidential` clients are refused for now. Retiring a client ends its sign-ins and retires their tokens on every replica.
+- **SDKs** (#2207): the TS `LoomcycleOAuth` runs the flow (`beginAuthorize`, `completeAuthorize`, `refresh`, `revoke`, `discover`), and `OAuthTokenProvider` refreshes before expiry and retries a 401 once. Python gets `client_def`; the flow itself is the TS adapter's.
+
+### Agents see who they work for: `Context` identity and the `Identity` tool (#2196, #2202, #2203)
+
+An agent could not see who it worked for, or ask whether an action would be allowed before trying, so it planned work the gates then refused (RFC FC).
+
+- **`Context op=self`** gains an `identity` block (#2196): the user's display name, `access_mode`, `status` (a `pending` account carries a note: do no work), groups with how the user is in each, and the access-control lists that apply. The `principal` and `acl` blocks are unchanged. #2203 adds `auth` (the sign-in gate, method and time) and `identities` (linked sign-ins, `email` only when verified), and #2197 adds `authority`.
+- **`Context op=can`** (one question or up to 32) answers with the same evaluation the gates use, and agrees with `POST /v1/_authz/evaluation`. **`op=reach`** lists the allow and deny patterns for a type and the tools removed by access rules.
+- **The `Identity` tool** (#2202), read-only and granted by name in an agent's `tools:`: `profile`, `user`, `users`, `group`, `groups`, `can`, `explain`, `held` and `whoami`. The tool grant opens public data (display name and the profile's new `## Public` section); `read principal:user|group` opens status, groups, members and questions about another person; `manage principal:user` opens `held`. Without written rules (compat, shadow) an operator or admin reads anyone and a member reads only itself and its own groups. An isolated user sees only itself. `can` about another person evaluates that person's own rules and refuses a question the caller could not answer for itself. The tenant always comes from the run.
+- **`{{identity}}`** in a system prompt (#2203) renders the user's name, status, groups and withheld tools as a bounded data block, at run start, sub-agent spawn and resume.
+- **MCP: `identity` replaces `directory`**, with no alias (#2202). See the upgrade notes.
+
+### Access control (#2197, #2199, #2200, #2201, #2209)
+
+- **`LOOMCYCLE_ACL_LIVE=1`** (default off) makes a run follow its caller's rules as they change (#2201). Before each model call and each tool call the run reads the rules again (a cached lookup while `acl_version` has not moved); what they no longer allow is taken away for the rest of the run: tools, volumes, memory and history scopes, skills, and the per-call Document, Path, credential, definition and `spawn agent:` checks. It only narrows: a binding added mid-run grants nothing the run did not start with. Each change is a `capability_inert` event with gate `acl`. If the rules cannot be read, `compat` and `shadow` keep the last reading and `enforce` refuses tool calls with `acl_unavailable` until a read succeeds.
+- **A write deny on a memory scope makes it read-only** in a run (#2200). `deny write memory:<scope>` or `sqlmem:<scope>` used to leave every write open. Now `set`, `delete`, `merge`, `add`, `supersede`, `pending_ack`, the cursor ops, `sql_exec` and `sql_begin` are refused there, reads still work, and `Context op=permissions` lists `read_only_scopes` and `sql_read_only_scopes`.
+- **Snapshots carry the access-control rows** (#2199): lists, groups, members and bindings, restored before any paused run resumes. On a key the target already holds, the target's row wins. Each replica drops its cached sets after a restore.
+- **A team subscription's walk is bound by its promoter's rules** (#2209). A walk a subscription started ran with no rules, so anyone who could subscribe a team could reach what its members could. Every promote now records the promoter, and the walk asks `run team:` for that person and narrows its members by that person's current rules.
+- **Inherit tokens** (#2197). A per-user or gate-issued token kept the scopes it was minted with, so a promotion or demotion reached it only at the next token. A token with authority `inherit` takes its scopes from the user's current `access_mode` on every request. `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT=1` makes `inherit` the default for `POST /v1/_users/{subject}/tokens` and every gate-issued token; a mint may also ask for `"authority": "inherit"` or `"frozen"`. Operator tokens and config `principals:` stay frozen.
+
+### Usage: what every call was for, and report charts (#2206, #2214, #2215, #2216)
+
+The Usage page could not answer what the background costs or what each tier costs: some background calls were labelled `chat`, some were not billed at all, and no tier was recorded (RFC FM).
+
+- **Purposes** (#2206): `chat`, `ocr`, `stt` and `tts`, plus `gateway`, `consolidation`, `rerank`, `decision`, `compaction`, `recap`, `unit_generation`, `image_description` and `embedding`, each foreground or background. Rerank and decision rows carry their own purpose; a run of an `internal:` agent is `consolidation`.
+- **Newly billed**: compaction and recap summaries, Document unit generation and image description (#2206), and **every embedder call** (#2214): memory and document writes, search queries, re-embeds and `/v1/embeddings`. They count against token budgets like any other call; an embedder call whose provider reported no token count counts nothing there.
+  - Embedding rows carry `input_chars` and the tokens the provider reported (OpenAI, Voyage, Ollama and Bedrock report them; Gemini's batch endpoint does not). They are priced by tokens, else by `per_million_chars`, else recorded unpriced, never as free. The `/v1/embeddings` gateway now charges the reported tokens instead of its estimate.
+- **Tiers on each row**: `tier` (the model tier, or `pinned`) and `user_tier` (#2206).
+- **Reports for charts** (#2215): `GET /v1/_usage` takes `bucket` (`hour`, `day`, `week`, `month`, UTC), `top` and `top_by` (`cost`, `tokens`, `calls`; the rest folds into rows marked `other`) and a filter per dimension by its own name. New dimensions `tier`, `user_tier`, `class` (foreground or background) and `agent` (per-call detail only). Rows gain `period`, `other` and `input_chars`; the answer carries `bucket` and `detail_since`. On gRPC, TS and Python.
+- **The Usage pages** (#2216): tabs at `/usage/<tab>` for overview, models, providers, tiers, users, tenants (admin) and background. Each shows figures, a donut of the five largest shares plus "other", use over time per hour, day, week or month (with an optional previous-period line) and a ranked table with CSV export. One filter bar sets the period, step, measure (cost, tokens, calls, audio minutes, characters) and comparison; everything lives in the URL, and clicking a slice, legend entry or row narrows every tab. The charts (Recharts) load only with these pages.
+
+### Text-to-speech substrate (#2195)
+
+The configuration and plumbing for text-to-speech, the reverse of speech-to-text (RFC FK P1). Nothing speaks yet: `File op=speak` and the gateway routes come later.
+
+- A top-level `speech:` block: `engine` (`openai-speech` or `off`), `default_language`, `voices` (language → `{model, voice, alternates}`, the list a model may pick from), `format` (`ogg`, `mp3` or `wav`; `ogg` needs the `encode` helper), and caps (4000 characters per call, 100,000 per run, 3600 s per run, `timeout_s` 600). Validation is strict.
+- A model kind `synthesizer`; `license: commercial | noncommercial` on a `models:` alias (a noncommercial voice adds a load warning); `per_million_chars` pricing; a per-agent `speech: {enabled, max_chars_per_run}` that can only lower the operator's caps.
+- The `openai` driver speaks `POST {base_url}/audio/speech` (Ollama, speaches, Kokoro-FastAPI, Phonon's server, OpenAI), with tenant keys and the operator-key gate.
+- The ledger gains the purpose `tts` and `input_chars`.
+
+### `File op=import` adds headings by line (#2211)
+
+A regulation exported from PDF has hard-wrapped lines and structure shown only by numbering, so `File op=import` made one chunk of a 232K-character document. Restructuring the file first lost its capture record and its provenance.
+
+- `headings: [{line, level, as}]` applies structure to the text as it is read, never to the file, so the bytes still match their capture record and the document keeps its provenance. `as: heading` makes a line a heading of `level` 2–6 (`lines` joins a wrapped title of up to 10 lines); `as: marker` inserts a one-line `title` before the line, which stays body text.
+- A bad entry (out of range, out of order, level 1, a blank heading line, a long or multi-line title, more than 10,000 entries) refuses the whole import before anything is written.
+- The root gains a server-written `structured: {headings, by}`.
+- An inbox file with no capture record (changed since capture) gets a `provenance_note` and no `source/…` tag; a given `source` link is still kept.
+- On MCP `file`, `POST /v1/runs/{run_id}/file` and the TS `RunFileInput` (which also gains `source`, missing since v1.125.0).
+
+### Web UI: one menu (#2191, #2194, #2186)
+
+- **The left menu has two zones of collapsible groups** (#2191, #2194): Workspace (runs; agents; knowledge: documents, memory, volumes, ontology; connections: integrations, channels, tenant credentials) and Administration (access: users, groups, policies, bindings, simulator, tokens; cost and models: usage, limits, routing; compliance: audit, retention, erasure; system: activity, snapshots, runtime, lanes, presets, maintenance, health). Each Settings section is now a page at `/<section>`. Access administration that was in four places is at `/access/<section>`, and an operator whose rules deny policies still manages users.
+- **The gear and the Settings hub are gone.** A new account menu holds Your account, My credentials and Log out. Old addresses redirect: `/users`, `/settings/access`, `/settings/tokens`, `/settings/<section>`, and `/paths`, now **documents** at `/documents`. A link to a page the viewer may not open says so.
+- **The document viewer** (#2186): an **↰ Up** button and a breadcrumb from a chunk to the root, a movable tree splitter whose width is remembered and clamped to the pane, a light orange edit button (`@loomcycle/explorer` 0.10.0, built into the Web UI from source).
+- New pages for device approval (`/ui/device`) and app sign-in on the login page (#2204, #2205).
+
+### Fixes
+
+- **Renaming a document's root chunk renames the document** (#2181). `update_chunk` on the root's `title` succeeded, but `get_document`, the listings, `export_md` and the Library kept the old name, and title links still found it. The root's title now updates the document, through `update_chunk`, `upsert_chunk`, `remember` and `sync`; a blank title keeps the old name. Documents renamed before this are repaired when their scope is next opened. The Path-tree name does not move.
+- **Speech-to-text errors are classified by status** (#2192): a 400 is permanent, a 5xx retryable and a refused operator key recognised. Every transcription error used to classify as unknown.
+- **`golang.org/x/net` v0.62.0** fixes GO-2026-6860, in the root module and the two nested modules (#2208).
+- **The cluster compose stays on Postgres 16** (#2182). A dependency bot moved it to 18 again (#2180); the bot now skips Postgres majors.
+
+### Upgrade notes
+
+- **Nine migrations** (Postgres; sqlite creates or alters at open). All add tables or columns; none deletes data on the way up.
+  - **0115** external gates: single-use assertion ids and the removal stages (`auth_assertion_jtis`, `auth_removals`).
+  - **0116** `input_chars` on `token_usage` and `usage_archive`.
+  - **0117** `authority` on `operator_token_defs` (existing tokens read as frozen).
+  - **0118** device login and per-tenant gate policy (`device_authorizations`, `tenant_auth_policies`).
+  - **0121** `promoter_acl_owner` on `teamdef_active`.
+  - **0122** a repair: it repeats 0118 with `IF NOT EXISTS`, for a database a build from `main` took to 0121 before 0118 existed (#2210). On a database upgraded from v1.125.0 it changes nothing, and its down step is a no-op.
+  - **0123** app sign-in: authorization codes, refresh families and tokens, and `oauth_client` / `oauth_family` on `operator_token_defs`.
+  - **0124** `client_defs`.
+  - **0125** `tier` and `user_tier` on `token_usage` and `usage_archive`, with the archive's primary key widened to include them. Rebuilding that key reads the whole archive, so it takes time in proportion to its size. Old rows read `''` (unknown). Sqlite rebuilds the archive table onto the new key at open. Stepping 0125 down folds rows that differ only by tier back together.
+  - **Numbering:** versions 0119 and 0120 are unused (the app sign-in tables were renumbered to 0123 and 0124 before merging), and the tier migration, merged as a second 0122, was renamed 0125 before the release (#2212). No released database holds either number, so there is nothing to do.
+- **Document titles** of documents renamed through their root chunk before this release are repaired the first time each scope is opened after the upgrade, one lookup per document (#2181).
+- **MCP `directory` is removed; use `identity`** (#2202). `directory op=users` is `identity op=users` (`active_only: true` for the old activity listing), `op=inspect` is `op=held` and now needs `manage principal:user` (without written rules, an operator or admin token), and `op=tenants` stays admin-only. The gRPC `DirectoryUsers`, `DirectoryInspect` and `DirectoryTenants` RPCs and the Python `directory_*` methods are unchanged. A client that called `directory`, such as the Claude Code plugin's tool map, must move to `identity`.
+- **Background spend now counts against token budgets:** compaction and recap summaries, Document unit generation, image description and every embedder call are billed (#2206, #2214), so the same work fills a budget faster, and an ungrouped usage report's totals rise. Rerank and decision rows move from `chat` to their own purposes, and `internal:` agent runs to `consolidation`. Rows written before the upgrade keep their purpose and have no tier.
+- **Behaviour changes:**
+  - **A `deny write` on `memory:<scope>` or `sqlmem:<scope>` now makes that scope read-only in a run** (#2200); before, writes went through. Under `shadow` it is reported, not applied.
+  - **Team subscriptions** started after a promote on this release run under the promoter's rules. A team promoted before the upgrade walks as before, with a warning, until it is promoted again (#2209). Re-promote subscribed teams to bind them.
+  - **Taking a gate out of the config** now ends every token it issued at once, on every replica (#2179); retiring an app client ends its sign-ins (#2204).
+  - **Snapshots now carry the access-control rows** and restore them; on a conflict the target's row is kept with a warning (#2199).
+  - **`/v1/_me` `effective.surfaces`** replaces the page id `access` with `groups`, `policies` and `bindings` (#2191); `paths` keeps its id.
+  - **Web UI addresses** moved under the new menu; the old ones redirect (#2191, #2194).
+- **New environment variables:** `LOOMCYCLE_ACL_LIVE` and `LOOMCYCLE_TOKEN_AUTHORITY_INHERIT`, both default off (the TrueNAS install questions list both). An external gate's `hmac_secret_env` and a forward-auth gate's `secret_env` name `LOOMCYCLE_*` variables. External and device gates need `LOOMCYCLE_PUBLIC_URL`, and the OAuth metadata answers 404 without it.
+- **New config:** gate kinds `external`, `header`, `awsiam` and `device`; `auth.lifecycle.on_removed` and `dormant_after` (default never, so nothing is removed unless a gate revokes or syncs); `auth.tenant_policies`; `auth.clients`; `identity_map.legacy_subject_prefix` (external gates only); the `speech:` block, the model kind `synthesizer`, `license` on model aliases, `per_million_chars` pricing and the agent field `speech`. Nothing changes until you set them.
+- **New wire surface, all additive:**
+  - HTTP: `/v1/_auth/assert`, `/revoke`, `/sync`, `/device`, `/device/token`, `/device/info`, `/device/approve`, `/token/revoke` and `/tenant-policies`; `GET /v1/_authgate`; `/v1/_oauth/authorize`, `/token` and `/revoke`; `/.well-known/oauth-authorization-server`; `POST /v1/_clientdef` and `GET /v1/_clientdef/names`; the `bucket`, `top`, `top_by` and filter parameters on `/v1/_usage`; `headings` on `POST /v1/runs/{run_id}/file`.
+  - gRPC: the `ClientDef` RPC; `bucket`, `top`, `top_by` and `UsageFilter` on `UsageReportRequest`; `tier`, `user_tier`, `agent`, `class`, `period`, `other` and `input_chars` on `UsageAggregate`; `detail_since` and `bucket` on the response.
+  - MCP: `identity` (replacing `directory`) and `clientdef`.
+  - Tools: the `Identity` tool; `Context op=can` and `op=reach`, and `identity` in `op=self`; `headings` on `File op=import`; the `{{identity}}` placeholder.
+  - CLI: `loomcycle login`, `logout` and `auth status`.
+- **Bridges:** nothing changes until you opt in. To switch a bridge to a gate, add a `kind: external` gate with its public key and `identity_map.legacy_subject_prefix: <platform>-`, set `BRIDGE_GATE*` on the bridge, remove its `LOOMCYCLE_TOKEN`, and retire its operator token. A bridge that keeps conversations in `BRIDGE_STORE=file:…` needs bridge-core 0.3.1, which the `bridge-telegram` 0.3.1 and `bridge-slack`, `bridge-discord` and `bridge-teams` 0.3.0 images carry. Discord needs its Events Webhook URL set to the bridge's `/discord/events`.
+- **Rolling upgrades:** an older replica has none of the new gates or routes, reads no token's `authority` (an inherit token keeps its minted scopes there), and keeps a removed gate's tokens until they expire. Upgrade all replicas together.
+- **Dependencies:** `golang.org/x/net` v0.62.0 (GO-2026-6860, #2208); no new Go modules. `docker-compose.cluster.yaml` stays on `postgres:16`; any Postgres ≥ 14 works (#2182).
+- **Images:** a minor tag rebuilds every image, all at 1.126.0 for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser`, the sandbox images and `loomcycle-media`. The bridge images are built on their own tags and are already published.
+
 ## What's in v1.125.0
 
 *Speech-to-text and the files line's follow-ups. **`File op=transcribe` turns recordings into timed transcripts** through a whisper server (self-hosted speaches or whisper.cpp, or OpenAI), and Teams VTT/SRT captions are read with no engine at all. **Imported documents say where they came from:** their text is stamped origin `import` (document text, never a fact) and the root keeps a server-written `provenance` with the captured file and a link back to the SharePoint item, email or URL. **The `File` tool has an HTTP route and a captured file can be downloaded** over HTTP and from the Web UI, safely typed so nothing captured renders on loomcycle's origin. **Usage reports split by purpose** (chat, OCR, speech-to-text) with audio seconds. And the Memory key routes now apply the Memory tool's write rules, closing several ways to write document rows and server-only keys from outside a run.*
