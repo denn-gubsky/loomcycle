@@ -140,3 +140,23 @@ func (s *Store) SCIMGroupMembersRemove(ctx context.Context, gate, tenantID, grou
 func (s *Store) SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject string) ([]store.SCIMGroupRow, error) {
 	return sqlshared.SCIMGroupsOfSubject(ctx, s.shared(), gate, tenantID, subject)
 }
+
+// SCIMRemovalDisown implements store.SCIMStore.
+func (s *Store) SCIMRemovalDisown(ctx context.Context, tenantID, subject string) (bool, error) {
+	return sqlshared.SCIMRemovalDisown(ctx, s.shared(), tenantID, subject)
+}
+
+// SCIMRemovalBase implements store.SCIMStore.
+func (s *Store) SCIMRemovalBase(ctx context.Context, gate, tenantID string, before time.Time) (int, error) {
+	return sqlshared.SCIMRemovalBase(ctx, s.shared(), gate, tenantID, before)
+}
+
+// SCIMUsersCreatedSince implements store.SCIMStore.
+func (s *Store) SCIMUsersCreatedSince(ctx context.Context, gate, tenantID string, since time.Time) (int, error) {
+	return sqlshared.SCIMUsersCreatedSince(ctx, s.shared(), gate, tenantID, since)
+}
+
+// SCIMUsersGetMany implements store.SCIMStore.
+func (s *Store) SCIMUsersGetMany(ctx context.Context, gate, tenantID string, ids []string) (map[string]store.SCIMUserRow, error) {
+	return sqlshared.SCIMUsersGetMany(ctx, s.shared(), gate, tenantID, ids)
+}

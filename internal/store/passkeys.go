@@ -108,6 +108,12 @@ type PasskeyStore interface {
 	// UserPasskeyDelete removes one of the subject's passkeys and reports
 	// whether one went. Another subject's credential id removes nothing.
 	UserPasskeyDelete(ctx context.Context, tenantID, subject string, credentialID []byte) (bool, error)
+	// UserPasskeyDeleteKeeping removes one of the subject's passkeys unless
+	// it is the subject's last usable (unflagged) one, in one transaction, so
+	// two concurrent removals can never take the last usable passkey between
+	// them. deleted is false when the subject has no such passkey; refused is
+	// true when it was the last usable one and stays.
+	UserPasskeyDeleteKeeping(ctx context.Context, tenantID, subject string, credentialID []byte) (deleted, refused bool, err error)
 	// UserPasskeyDeleteSubject removes every passkey of the subject and
 	// returns how many went.
 	UserPasskeyDeleteSubject(ctx context.Context, tenantID, subject string) (int, error)

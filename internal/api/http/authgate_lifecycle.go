@@ -310,16 +310,36 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 // memberships and bindings go, its access mode drops to the floor, and it
 // joins the floor groups that exist. Its status is the caller's to set.
 func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by string) error {
+	if err := s.stripRemovedUser(ctx, tenant, subject); err != nil {
+		return err
+	}
+	return s.rejoinFloorGroups(ctx, tenant, subject, by)
+}
+
+// stripRemovedUser is the part of the reset that only takes away: every
+// group membership and binding of the user's own goes and its access mode
+// drops to the floor's (the deployment floor is always isolated, the
+// lowest). It may run before the caller owns the re-enable for good.
+func (s *Server) stripRemovedUser(ctx context.Context, tenant, subject string) error {
 	changed, err := s.unbindSubject(ctx, tenant, subject, true)
 	if err != nil {
 		return err
 	}
-	floor := s.cfg().ResolvedAuth.NewUserFloor()
-	mode := floor.AccessMode
+	mode := s.cfg().ResolvedAuth.NewUserFloor().AccessMode
 	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{AccessMode: &mode}); err != nil {
 		return err
 	}
-	for _, g := range floor.Groups {
+	if changed {
+		s.aclChanged(ctx, tenant, "removal_reactivated", subject)
+	}
+	return nil
+}
+
+// rejoinFloorGroups is the part of the reset that gives: the user joins the
+// floor groups that exist. It runs only once the re-enable is the caller's.
+func (s *Server) rejoinFloorGroups(ctx context.Context, tenant, subject, by string) error {
+	changed := false
+	for _, g := range s.cfg().ResolvedAuth.NewUserFloor().Groups {
 		if _, err := s.store.GroupGet(ctx, tenant, g); err != nil {
 			if isNotFound(err) {
 				continue

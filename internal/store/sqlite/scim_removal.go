@@ -94,9 +94,16 @@ func (s *Store) SCIMRemoveUser(ctx context.Context, row store.AuthRemovalRow, si
 	return err == nil, err
 }
 
-// SCIMReactivate implements store.SCIMStore.
-func (s *Store) SCIMReactivate(ctx context.Context, gate, tenantID, subject string) (string, bool, error) {
-	restored := ""
+// claimedReason is the reactivating reason a SCIM reason claims to.
+func claimedReason(reason string) string {
+	if reason == store.RemovalReasonSCIMPending || reason == store.RemovalReasonSCIMReactivatingPending {
+		return store.RemovalReasonSCIMReactivatingPending
+	}
+	return store.RemovalReasonSCIMReactivating
+}
+
+// SCIMReactivateClaim implements store.SCIMStore.
+func (s *Store) SCIMReactivateClaim(ctx context.Context, gate, tenantID, subject string) (bool, error) {
 	err := s.immediateTx(ctx, func(conn *sql.Conn) error {
 		var rowGate, reason string
 		err := conn.QueryRowContext(ctx, `SELECT gate, reason FROM auth_removals WHERE tenant_id = ? AND subject = ?`,
@@ -110,9 +117,40 @@ func (s *Store) SCIMReactivate(ctx context.Context, gate, tenantID, subject stri
 		if rowGate != gate || !store.SCIMRemovalReason(reason) {
 			return errNoChange
 		}
-		restored = "active"
-		if reason == store.RemovalReasonSCIMPending {
+		if _, err := conn.ExecContext(ctx, `UPDATE auth_removals SET reason = ? WHERE tenant_id = ? AND subject = ?`,
+			claimedReason(reason), tenantID, subject); err != nil {
+			return fmt.Errorf("scim reactivate: claim: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, errNoChange) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// SCIMReactivate implements store.SCIMStore.
+func (s *Store) SCIMReactivate(ctx context.Context, gate, tenantID, subject string) (string, bool, error) {
+	restored := ""
+	err := s.immediateTx(ctx, func(conn *sql.Conn) error {
+		var rowGate, reason string
+		err := conn.QueryRowContext(ctx, `SELECT gate, reason FROM auth_removals WHERE tenant_id = ? AND subject = ?`,
+			tenantID, subject).Scan(&rowGate, &reason)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errNoChange
+		}
+		if err != nil {
+			return fmt.Errorf("scim reactivate: read removal: %w", err)
+		}
+		switch {
+		case rowGate != gate:
+			return errNoChange
+		case reason == store.RemovalReasonSCIMReactivating:
+			restored = "active"
+		case reason == store.RemovalReasonSCIMReactivatingPending:
 			restored = store.UserStatusPending
+		default:
+			return errNoChange
 		}
 		res, err := conn.ExecContext(ctx, `UPDATE users SET status = ? WHERE tenant_id = ? AND subject = ? AND status = 'disabled'`,
 			restored, tenantID, subject)

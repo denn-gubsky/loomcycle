@@ -957,22 +957,27 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 // scimReactivate re-enables a user whose CURRENT removal this gate's SCIM
 // made, back to the status it had then (pending stays pending), at the
 // §3.7a floor. An operator's or another gate's removal, or a disable with no
-// removal, stands: 403. The final step is one store transaction that
-// re-checks the removal is still SCIM's.
+// removal, stands: 403. Nothing that gives access happens before the
+// re-enable is SCIM's for good: the removal is CLAIMED in one store
+// transaction (only a removal of this gate's SCIM claims); the user, still
+// disabled, is stripped (memberships, bindings, access mode down to the
+// floor's) — which only ever takes away; a second transaction re-enables
+// only while the claim stands; and only then does the user join the floor
+// groups. An operator who takes the removal over in between keeps a
+// disabled user with less than it had, never more. A failure part-way
+// leaves the claim, and the provider's retry continues it.
 func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) (string, *scimRefusal) {
 	refused := &scimRefusal{http.StatusForbidden, "", "this user was disabled outside SCIM; an operator re-enables it"}
 	internal := &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
-	rm, err := s.store.AuthRemovalGet(ctx, c.tenant, subject)
-	if err != nil {
-		if isNotFound(err) {
-			return "", refused
-		}
+	claimed, err := s.store.SCIMReactivateClaim(ctx, c.g.Name, c.tenant, subject)
+	switch {
+	case err != nil:
+		slog.Error("scim: claiming a removal failed", "gate", c.g.Name, "err", err)
 		return "", internal
-	}
-	if rm.Gate != c.g.Name || !store.SCIMRemovalReason(rm.Reason) {
+	case !claimed:
 		return "", refused
 	}
-	if err := s.resetRemovedToFloor(ctx, c.tenant, subject, "gate:"+c.g.Name); err != nil {
+	if err := s.stripRemovedUser(ctx, c.tenant, subject); err != nil {
 		slog.Error("scim: resetting a user to the floor failed", "gate", c.g.Name, "err", err)
 		return "", internal
 	}
@@ -983,7 +988,13 @@ func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) 
 	case !ok:
 		return "", refused
 	}
-	s.recordLifecycleEvent("auth_user_reactivated", c.tenant, subject, c.g.Name, rm.Reason, "gate:"+c.g.Name)
+	if err := s.rejoinFloorGroups(ctx, c.tenant, subject, "gate:"+c.g.Name); err != nil {
+		// The user is back with fewer groups than the floor: less, never
+		// more. An operator adds them.
+		slog.Error("scim: a re-enabled user did not join the floor groups", "gate", c.g.Name, "err", err)
+		return "", internal
+	}
+	s.recordLifecycleEvent("auth_user_reactivated", c.tenant, subject, c.g.Name, store.RemovalReasonSCIM, "gate:"+c.g.Name)
 	return restored, nil
 }
 

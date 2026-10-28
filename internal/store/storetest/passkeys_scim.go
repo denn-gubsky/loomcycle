@@ -482,8 +482,24 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	if rm, _ := s.AuthRemovalGet(ctx, "acme", "pend"); rm.Reason != store.RemovalReasonSCIMPending || userStatus(t, s, "acme", "pend") != "disabled" {
 		t.Fatalf("pending removal: %+v, status %s", rm, userStatus(t, s, "acme", "pend"))
 	}
+	if ok, _ := s.SCIMReactivateClaim(ctx, "other-gate", "acme", "pend"); ok {
+		t.Fatal("another gate claimed the SCIM gate's removal")
+	}
+	// A re-enable is a claim, then a finish: an unclaimed removal does not
+	// finish, and the user stays disabled while it is claimed.
+	if _, ok, _ := s.SCIMReactivate(ctx, "okta", "acme", "pend"); ok {
+		t.Fatal("a re-enable finished without a claim")
+	}
+	for i := 0; i < 2; i++ { // a retried claim continues
+		if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "pend"); !ok || err != nil {
+			t.Fatalf("claim %d: %v %v", i, ok, err)
+		}
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "pend"); rm.Reason != store.RemovalReasonSCIMReactivatingPending || userStatus(t, s, "acme", "pend") != "disabled" {
+		t.Fatalf("claimed: %+v, status %s", rm, userStatus(t, s, "acme", "pend"))
+	}
 	if _, ok, _ := s.SCIMReactivate(ctx, "other-gate", "acme", "pend"); ok {
-		t.Fatal("another gate re-enabled the SCIM gate's removal")
+		t.Fatal("another gate finished the SCIM gate's claim")
 	}
 	if st, ok, err := s.SCIMReactivate(ctx, "okta", "acme", "pend"); !ok || err != nil || st != store.UserStatusPending {
 		t.Fatalf("re-enable pending: %q %v %v", st, ok, err)
@@ -500,6 +516,10 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	}
 	op := store.AuthRemovalRow{TenantID: "acme", Subject: "act", Reason: store.RemovalReasonOperator, DisabledAt: now.Add(time.Minute),
 		UnbindDueAt: now.Add(2 * time.Hour), CreatedBy: "op"}
+	// Even mid re-enable: the claim does not hold an operator off.
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "act"); !ok || err != nil {
+		t.Fatalf("claim act: %v %v", ok, err)
+	}
 	if ok, err := s.AuthRemovalStart(ctx, op); !ok || err != nil {
 		t.Fatalf("an operator's removal over SCIM's: %v %v", ok, err)
 	}
@@ -563,6 +583,164 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	// A SCIM removal never takes an operator's over.
 	if ok, _ := s.AuthRemovalStart(ctx, scimRemovalRow("acme", "act", "okta", now)); ok {
 		t.Fatal("a SCIM row replaced an operator's")
+	}
+}
+
+// An operator's disable disowns a SCIM removal (any SCIM reason, a claim
+// included) and leaves every other removal alone.
+func testSCIMRemovalDisownTakesOnlySCIMRows(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	since := now.Add(-24 * time.Hour)
+	for _, sub := range []string{"s1", "s2"} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", sub, "okta", now), since, 10); !got || err != nil {
+			t.Fatalf("remove %s: %v %v", sub, got, err)
+		}
+	}
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "s2"); !ok || err != nil {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	op := store.AuthRemovalRow{TenantID: "acme", Subject: "op", Reason: store.RemovalReasonOperator, DisabledAt: now,
+		UnbindDueAt: now.Add(time.Hour), CreatedBy: "op"}
+	if ok, err := s.AuthRemovalStart(ctx, op); !ok || err != nil {
+		t.Fatalf("seed: %v %v", ok, err)
+	}
+	for _, sub := range []string{"s1", "s2"} {
+		if ok, err := s.SCIMRemovalDisown(ctx, "acme", sub); !ok || err != nil {
+			t.Fatalf("disown %s: %v %v", sub, ok, err)
+		}
+		if _, err := s.AuthRemovalGet(ctx, "acme", sub); !pwgNotFound(err) {
+			t.Fatalf("%s: the SCIM row outlived the disown: %v", sub, err)
+		}
+		if _, ok, _ := s.SCIMReactivate(ctx, "okta", "acme", sub); ok {
+			t.Fatalf("%s: SCIM re-enabled a disowned user", sub)
+		}
+	}
+	if ok, err := s.SCIMRemovalDisown(ctx, "acme", "op"); ok || err != nil {
+		t.Fatalf("disowned an operator's removal: %v %v", ok, err)
+	}
+	if _, err := s.AuthRemovalGet(ctx, "acme", "op"); err != nil {
+		t.Fatalf("the operator's removal went: %v", err)
+	}
+}
+
+// The base of a percentage ceiling is the gate's linked users in the tenant
+// who are not disabled and existed before the window; the creates in it are
+// counted per gate and tenant, deleted ones too.
+func testSCIMRemovalBaseAndCreatesCountTheWindow(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	before := now.Add(-24 * time.Hour)
+	old := now.Add(-48 * time.Hour)
+	for _, u := range []struct {
+		tenant, sub, gate, status string
+		at                        time.Time
+	}{
+		{"acme", "old-active", "okta", "active", old},
+		{"acme", "old-pending", "okta", store.UserStatusPending, old},
+		{"acme", "old-disabled", "okta", "disabled", old},
+		{"acme", "old-removed-now", "okta", "disabled", old},
+		{"acme", "old-removed-before", "okta", "disabled", old},
+		{"acme", "new-active", "okta", "active", now},
+		{"acme", "other-gate", "azure", "active", old},
+		{"beta", "other-tenant", "okta", "active", old},
+	} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: u.tenant, Subject: u.sub, AccessMode: "isolated", Status: u.status, CreatedAt: u.at}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UserIdentityCreate(ctx, store.UserIdentityRow{TenantID: u.tenant, Subject: u.sub, Gate: u.gate,
+			ExternalSubject: "ext-" + u.sub, CreatedAt: u.at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Removed inside the window: still part of the base. Removed before it:
+	// not.
+	for _, r := range []store.AuthRemovalRow{scimRemovalRow("acme", "old-removed-now", "okta", now),
+		scimRemovalRow("acme", "old-removed-before", "okta", old)} {
+		if ok, err := s.AuthRemovalStart(ctx, r); !ok || err != nil {
+			t.Fatalf("seed: %v %v", ok, err)
+		}
+	}
+	if n, err := s.SCIMRemovalBase(ctx, "okta", "acme", before); n != 3 || err != nil {
+		t.Fatalf("base = %d %v, want 3 (old-active, old-pending, old-removed-now)", n, err)
+	}
+	for i, at := range []time.Time{old, now, now, now} {
+		r := scimUser("acme", fmt.Sprintf("c%d", i), fmt.Sprintf("c%d@acme.test", i))
+		r.CreatedAt = at
+		if err := s.SCIMUserCreate(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SCIMUserCreate(ctx, scimUser("beta", "c9", "c9@beta.test")); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SCIMUserMarkDeleted(ctx, "okta", "acme", "c2", now); !ok || err != nil {
+		t.Fatalf("mark deleted: %v %v", ok, err)
+	}
+	// A discarded create (its user was refused) made no user: not counted.
+	if err := s.SCIMUserDiscard(ctx, "okta", "acme", "c3"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SCIMUsersCreatedSince(ctx, "okta", "acme", before); n != 2 || err != nil {
+		t.Fatalf("created since = %d %v, want 2 (c1, and the deleted c2)", n, err)
+	}
+	got, err := s.SCIMUsersGetMany(ctx, "okta", "acme", []string{"c0", "c1", "c1", "c9", "nope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["c0"].Subject != "okta:c0" || got["c1"].Subject != "okta:c1" {
+		t.Fatalf("get many = %+v, want c0 and c1 only", got)
+	}
+}
+
+// Two concurrent removals of a subject's two usable passkeys never take
+// both, and a flagged passkey never stands in for a usable one.
+func testUserPasskeyDeleteKeepingNeverTakesTheLastUsable(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a, b, c := pkRow("acme", "erin", 7), pkRow("acme", "erin", 8), pkRow("acme", "erin", 9)
+	for _, r := range []store.UserPasskeyRow{a, b, c} {
+		if err := s.UserPasskeyCreate(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.UserPasskeyFlag(ctx, c.CredentialID, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	deleted, refused := 0, 0
+	for _, id := range [][]byte{a.CredentialID, b.CredentialID} {
+		wg.Add(1)
+		go func(id []byte) {
+			defer wg.Done()
+			d, r, err := s.UserPasskeyDeleteKeeping(ctx, "acme", "erin", id)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err != nil:
+				t.Errorf("delete: %v", err)
+			case d:
+				deleted++
+			case r:
+				refused++
+			}
+		}(id)
+	}
+	wg.Wait()
+	if deleted != 1 || refused != 1 {
+		t.Fatalf("deleted %d, refused %d of two usable passkeys removed together", deleted, refused)
+	}
+	if d, r, err := s.UserPasskeyDeleteKeeping(ctx, "acme", "erin", c.CredentialID); !d || r || err != nil {
+		t.Fatalf("the flagged passkey: %v %v %v", d, r, err)
+	}
+	if d, r, err := s.UserPasskeyDeleteKeeping(ctx, "acme", "erin", []byte("nope")); d || r || err != nil {
+		t.Fatalf("an unknown passkey: %v %v %v", d, r, err)
+	}
+	if d, r, _ := s.UserPasskeyDeleteKeeping(ctx, "acme", "frank", a.CredentialID); d || r {
+		t.Fatal("another subject's call reached erin's passkey")
 	}
 }
 

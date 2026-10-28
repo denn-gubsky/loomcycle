@@ -163,6 +163,69 @@ func SCIMUserDiscard(ctx context.Context, q Querier, gate, tenantID, scimID stri
 	return err
 }
 
+func SCIMRemovalDisown(ctx context.Context, q Querier, tenantID, subject string) (bool, error) {
+	n, err := q.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = ? AND subject = ? AND reason IN (`+store.SCIMRemovalReasons+`)`,
+		tenantID, subject)
+	return n > 0, err
+}
+
+func SCIMRemovalBase(ctx context.Context, q Querier, gate, tenantID string, before time.Time) (int, error) {
+	var n int
+	// Not disabled now, or disabled by a removal inside the window: the
+	// users the gate had when the window began, so the removals the window
+	// already made do not shrink its own ceiling either.
+	d := q.Dialect()
+	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM user_identities i JOIN users u ON u.tenant_id = i.tenant_id AND u.subject = i.subject
+		WHERE i.gate = ? AND i.tenant_id = ? AND u.created_at < ?
+		AND (u.status <> 'disabled' OR EXISTS (SELECT 1 FROM auth_removals r
+			WHERE r.tenant_id = u.tenant_id AND r.subject = u.subject AND r.disabled_at >= ?))`,
+		gate, tenantID, d.TimeArg(before), d.TimeArg(before)).Scan(&n)
+	return n, err
+}
+
+func SCIMUsersCreatedSince(ctx context.Context, q Querier, gate, tenantID string, since time.Time) (int, error) {
+	var n int
+	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM scim_users WHERE gate = ? AND tenant_id = ? AND created_at >= ?`,
+		gate, tenantID, q.Dialect().TimeArg(since)).Scan(&n)
+	return n, err
+}
+
+// scimManyChunk bounds one IN list.
+const scimManyChunk = 500
+
+func SCIMUsersGetMany(ctx context.Context, q Querier, gate, tenantID string, ids []string) (map[string]store.SCIMUserRow, error) {
+	out := map[string]store.SCIMUserRow{}
+	ids = dedupSorted(ids)
+	for start := 0; start < len(ids); start += scimManyChunk {
+		chunk := ids[start:min(start+scimManyChunk, len(ids))]
+		args := []any{gate, tenantID}
+		marks := make([]string, len(chunk))
+		for i, id := range chunk {
+			marks[i] = "?"
+			args = append(args, id)
+		}
+		rows, err := q.Query(ctx, `SELECT `+scimUserCols+` FROM scim_users WHERE gate = ? AND tenant_id = ? AND deleted_at IS NULL
+			AND scim_id IN (`+strings.Join(marks, ", ")+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			r, err := scanSCIMUser(q.Dialect(), rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[r.SCIMID] = r
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // ---- groups ----
 
 const scimGroupCols = `gate, tenant_id, scim_id, display_name, display_key, external_id, version, created_at, updated_at`

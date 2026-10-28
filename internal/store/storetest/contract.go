@@ -593,6 +593,9 @@ func Run(t *testing.T, factory Factory) {
 		{"SCIMRemoveUserHoldsTheCeilingUnderConcurrency", testSCIMRemoveUserHoldsTheCeilingUnderConcurrency},
 		{"SCIMRemoveAndReactivateKeepOwnership", testSCIMRemoveAndReactivateKeepOwnership},
 		{"AuthSubjectDeleteRemovesPasskeysAndSCIMRows", testAuthSubjectDeleteRemovesPasskeysAndSCIMRows},
+		{"SCIMRemovalDisownTakesOnlySCIMRows", testSCIMRemovalDisownTakesOnlySCIMRows},
+		{"SCIMRemovalBaseAndCreatesCountTheWindow", testSCIMRemovalBaseAndCreatesCountTheWindow},
+		{"UserPasskeyDeleteKeepingNeverTakesTheLastUsable", testUserPasskeyDeleteKeepingNeverTakesTheLastUsable},
 		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},
 		{"TenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant", testTenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant},
 		// RFC FA P4 external gates and the removal policy.

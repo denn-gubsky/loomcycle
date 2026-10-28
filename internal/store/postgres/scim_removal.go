@@ -78,6 +78,43 @@ func (s *Store) SCIMRemoveUser(ctx context.Context, row store.AuthRemovalRow, si
 	return true, nil
 }
 
+// claimedReason is the reactivating reason a SCIM reason claims to.
+func claimedReason(reason string) string {
+	if reason == store.RemovalReasonSCIMPending || reason == store.RemovalReasonSCIMReactivatingPending {
+		return store.RemovalReasonSCIMReactivatingPending
+	}
+	return store.RemovalReasonSCIMReactivating
+}
+
+// SCIMReactivateClaim implements store.SCIMStore.
+func (s *Store) SCIMReactivateClaim(ctx context.Context, gate, tenantID, subject string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var rowGate, reason string
+	err = tx.QueryRow(ctx, `SELECT gate, reason FROM auth_removals WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`,
+		tenantID, subject).Scan(&rowGate, &reason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("scim reactivate: read removal: %w", err)
+	}
+	if rowGate != gate || !store.SCIMRemovalReason(reason) {
+		return false, nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE auth_removals SET reason = $3 WHERE tenant_id = $1 AND subject = $2`,
+		tenantID, subject, claimedReason(reason)); err != nil {
+		return false, fmt.Errorf("scim reactivate: claim: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SCIMReactivate implements store.SCIMStore.
 func (s *Store) SCIMReactivate(ctx context.Context, gate, tenantID, subject string) (string, bool, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -94,12 +131,16 @@ func (s *Store) SCIMReactivate(ctx context.Context, gate, tenantID, subject stri
 	if err != nil {
 		return "", false, fmt.Errorf("scim reactivate: read removal: %w", err)
 	}
-	if rowGate != gate || !store.SCIMRemovalReason(reason) {
+	restored := ""
+	switch {
+	case rowGate != gate:
 		return "", false, nil
-	}
-	restored := "active"
-	if reason == store.RemovalReasonSCIMPending {
+	case reason == store.RemovalReasonSCIMReactivating:
+		restored = "active"
+	case reason == store.RemovalReasonSCIMReactivatingPending:
 		restored = store.UserStatusPending
+	default:
+		return "", false, nil
 	}
 	tag, err := tx.Exec(ctx, `UPDATE users SET status = $3 WHERE tenant_id = $1 AND subject = $2 AND status = 'disabled'`,
 		tenantID, subject, restored)
