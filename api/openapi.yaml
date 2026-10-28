@@ -1091,7 +1091,7 @@ paths:
         "204": { description: Removed. }
         "401": { description: "As for registering." }
         "404": { description: "`passkey_not_found`." }
-        "409": { description: "`last_sign_in_method` or `last_second_factor`." }
+        "409": { description: "`last_sign_in_method`, `last_second_factor`, or `flagged_passkeys_remain` (the account's other passkeys are flagged and it has no authenticator app)." }
   /scim/v2/ServiceProviderConfig:
     get:
       tags: [scim]
@@ -1157,7 +1157,8 @@ paths:
       responses:
         "200": { description: The User resource. }
         "403": { description: "Not authoritative for users, `accessMode` on an untrusted gate, or a re-enable of a user SCIM did not disable." }
-        "429": { description: "The gate's removals are over max_sync_removals for 24 h." }
+        "409": { description: "uniqueness (the userName is taken), or a re-enable while the user's removal runs a stage (or of an erased user)." }
+        "429": { description: "The gate's removals, or its re-enables, are over max_sync_removals for 24 h." }
     patch:
       tags: [scim]
       summary: Patch a user (RFC 7644 §3.5.2).
@@ -1172,6 +1173,7 @@ paths:
       responses:
         "200": { description: The User resource. }
         "403": { description: "As for PUT." }
+        "409": { description: "As for PUT." }
         "429": { description: "As for PUT." }
     delete:
       tags: [scim]
