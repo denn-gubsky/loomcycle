@@ -175,7 +175,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			input_chars           INTEGER NOT NULL DEFAULT 0,
 			-- The model tier the call was resolved through ('pinned' for an
 			-- agent that names its model) and the run's user tier; '' when
-			-- unknown. Mirrors postgres 0122.
+			-- unknown. Mirrors postgres 0125.
 			tier                  TEXT NOT NULL DEFAULT '',
 			user_tier             TEXT NOT NULL DEFAULT ''
 		)`,
@@ -213,7 +213,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			input_chars           INTEGER NOT NULL DEFAULT 0,
 			-- Tier and user tier join the key, so an archived day keeps
 			-- them apart; rebuildWidenedKeys swaps an older key for this
-			-- one. Mirrors postgres 0122.
+			-- one. Mirrors postgres 0125.
 			tier                  TEXT NOT NULL DEFAULT '',
 			user_tier             TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (period_start, tenant_id, user_id, provider, model, credential_source, purpose, tier, user_tier)
@@ -1788,7 +1788,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		// 0121; see sqlshared/teamdef_promoter.go for the three states.
 		`ALTER TABLE teamdef_active ADD COLUMN promoter_acl_owner TEXT`,
 		// The model tier and user tier a row was spent under. A row from
-		// before reads back ''. Mirrors postgres 0122; the archive's key
+		// before reads back ''. Mirrors postgres 0125; the archive's key
 		// gains both in rebuildWidenedKeys.
 		`ALTER TABLE token_usage ADD COLUMN tier TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE token_usage ADD COLUMN user_tier TEXT NOT NULL DEFAULT ''`,
