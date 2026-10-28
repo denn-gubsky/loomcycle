@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.125.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.126.0.</em>
 </p>
 
 <p align="center">
@@ -201,12 +201,23 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.125.0) adds speech-to-text: `File op=transcribe` turns
+The most recent line (v1.126.0) adds sign-in for programs, apps and terminals:
+bridges sign in as external gates with their own key instead of holding an
+operator token, and keep their existing users; loomcycle is an OAuth 2.0 server
+for its own apps, which register in config or as a `ClientDef`; `loomcycle
+login` signs a terminal in by device code; and Cloudflare Access, AWS ALB,
+forward-auth and AWS IAM identities can sign in directly. Agents can see who
+they work for (`Context` identity, `can` and `reach`, a read-only `Identity`
+tool that replaces the MCP `directory` tool), access rules can follow changes
+during a run, and every model and embedder call records its purpose and tiers,
+with background calls now billed. See [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions
-are read with no engine. Imported documents now record where they came from
-(the captured file and a link to the SharePoint item, email or URL) and are
-never treated as facts, a captured file can be downloaded over HTTP and from
-the Web UI, usage reports split by purpose, and the Memory key routes apply
+were read with no engine. Imported documents recorded where they came from
+(the captured file and a link to the SharePoint item, email or URL) and were
+never treated as facts, a captured file could be downloaded over HTTP and from
+the Web UI, usage reports split by purpose, and the Memory key routes applied
 the Memory tool's write rules. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.124.0 was fixes and one Memory feature: the Library
