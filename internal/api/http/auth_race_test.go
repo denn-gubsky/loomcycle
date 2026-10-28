@@ -114,12 +114,22 @@ func TestUsers_APendingUserNeverBecomesActiveWithoutApproval(t *testing.T) {
 	if st := f.status(t, "acme", "bob"); st != store.UserStatusPending {
 		t.Fatalf("a revoked pending user came back %s", st)
 	}
-	// A plain disable of a pending user is refused.
-	if code, out := f.call(t, bAcmeOp, "PATCH", "/v1/_users/bob", `{"status":"disabled"}`); code != http.StatusConflict || out["code"] != "user_pending" {
-		t.Fatalf("a plain disable of a pending user = %d %v", code, out)
+	// Disabling a pending user (a rejection) keeps the approval it owes: a
+	// re-enable brings it back pending.
+	if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "carol", AccessMode: "isolated", Status: store.UserStatusPending}); err != nil {
+		t.Fatal(err)
 	}
-	if st := f.status(t, "acme", "bob"); st != store.UserStatusPending {
-		t.Fatalf("status = %s", st)
+	if code, out := f.call(t, bAcmeOp, "PATCH", "/v1/_users/carol", `{"status":"disabled"}`); code != http.StatusOK {
+		t.Fatalf("disabling a pending user = %d %v", code, out)
+	}
+	if st := f.status(t, "acme", "carol"); st != "disabled" {
+		t.Fatalf("status = %s after the disable", st)
+	}
+	if code, out := f.call(t, bAcmeOp, "PATCH", "/v1/_users/carol", `{"status":"active"}`); code != http.StatusOK {
+		t.Fatalf("re-enable = %d %v", code, out)
+	}
+	if st := f.status(t, "acme", "carol"); st != store.UserStatusPending {
+		t.Fatalf("a rejected pending user came back %s", st)
 	}
 }
 

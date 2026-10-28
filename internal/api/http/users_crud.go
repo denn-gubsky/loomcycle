@@ -322,12 +322,16 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(disableErr, store.ErrUserPending) {
-			// A pending user has no access to take away, and a plain
-			// disable would drop the approval it owes: a later re-enable
-			// would make it active unapproved.
-			writeJSONError(w, http.StatusConflict, "user_pending",
-				"this user is awaiting approval and has no access; approve it, or delete it")
-			return
+			// Disabling a pending user is its rejection. A plain disable
+			// would drop the approval it owes (a later re-enable would make
+			// it active unapproved), so it runs as a removal, which records
+			// the pending status and takes over a pending SCIM removal: a
+			// re-enable brings the user back pending.
+			by := ""
+			if p, ok := auth.PrincipalFromContext(ctx); ok {
+				by = p.Subject
+			}
+			disableErr = s.startRemoval(ctx, tenant, subject, "", store.RemovalReasonOperator, by)
 		}
 		// Revocation always runs, the disable's failure included: the
 		// operator asked for the user's access to end, and an error is
