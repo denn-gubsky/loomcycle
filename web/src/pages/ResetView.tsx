@@ -10,11 +10,13 @@ import {
   refusalText,
   resetInfo,
 } from "../lib/passwordGate";
+import { withPasskeyStepUp } from "../lib/passkeys";
 
 // ResetView is loomcycle's page for a password reset link
 // (https://<server>/ui/reset#lcr_…). An account with an authenticator also
-// gives a code from it (or a recovery code): the link alone does not pass the
-// second factor. Completing it signs this browser in and every other session
+// gives a code from it (or a recovery code), and an account with a passkey
+// confirms with the passkey: the link alone does not pass the second factor,
+// and such an account is offered no new authenticator. Completing it signs this browser in and every other session
 // of the account out.
 export default function ResetView() {
   const [code] = useState(() => codeFromHash(window.location.hash));
@@ -55,12 +57,12 @@ export default function ResetView() {
   }
 
   const enrolling = addTotp && !!info?.totp;
-  const withMFA = !!info?.has_totp || enrolling;
+  const withMFA = !!info?.has_totp || !!info?.has_passkey || enrolling;
   const min = info ? minLength(info, withMFA) : 15;
   const ready =
     !!info &&
     passwordReady(pw, pw2, min) &&
-    (!info.has_totp || otp.trim() !== "") &&
+    (!info.has_totp || !!info.has_passkey || otp.trim() !== "") &&
     (!enrolling || totpCode.length === 6);
 
   const submit = async (e: React.FormEvent) => {
@@ -68,13 +70,16 @@ export default function ResetView() {
     if (!info || !ready) return;
     setBusy(true);
     setRefusal(null);
-    const r = await completeReset({
-      code,
-      password: pw,
-      otp: info.has_totp ? otp : undefined,
-      totp_enrolment: enrolling ? info.totp?.enrolment : undefined,
-      totp_code: enrolling ? totpCode : undefined,
-    });
+    const r = await withPasskeyStepUp((webauthn) =>
+      completeReset({
+        code,
+        password: pw,
+        otp: info.has_totp && !webauthn ? otp : undefined,
+        webauthn,
+        totp_enrolment: enrolling ? info.totp?.enrolment : undefined,
+        totp_code: enrolling ? totpCode : undefined,
+      }),
+    );
     setBusy(false);
     if (!r.ok) {
       setRefusal(r.refusal);
@@ -104,6 +109,7 @@ export default function ResetView() {
               </p>
             )}
             <NewPasswordFields value={pw} confirm={pw2} onValue={setPw} onConfirm={setPw2} min={min} disabled={busy} />
+            {info.has_passkey && <p className="login-sub">You will confirm with your passkey.</p>}
             {info.has_totp && (
               <input
                 className="login-input"

@@ -52,25 +52,25 @@ var ownIdentityPatterns = map[string]bool{
 // and its {subject} value — never by re-reading the decoded path, where an
 // encoded '/' in a segment can make "<self>/identities" out of a request the
 // mux routes elsewhere. Only a user principal (not the legacy secret, not
-// auth:manage) qualifies. It is the only self-service admission of these
+// auth:manage, not a scim:provision credential) qualifies. It is the only self-service admission of these
 // routes, at the scope gate and past the route's ACL question; the handlers
 // then require, for a link or an unlink, the person's own Web UI session
 // after a recent sign-in.
 func ownIdentityRequest(p auth.Principal, r *http.Request) bool {
-	if p.Subject == "" || p.Legacy || auth.IsAuthManager(p) || !ownIdentityPatterns[r.Pattern] {
+	if p.Subject == "" || p.Legacy || auth.IsAuthManager(p) || auth.IsSCIMProvisioner(p) || !ownIdentityPatterns[r.Pattern] {
 		return false
 	}
 	return r.PathValue("subject") == p.Subject
 }
 
 // userCredentialSession reports whether a session's credential IS its user:
-// a password-gate or identity-gate session, whose principal is the user's
-// own reach. A token-gate session stands for a pasted bearer, which may be
+// a password-gate, identity-gate or passkey-gate session, whose principal is
+// the user's own reach. A token-gate session stands for a pasted bearer, which may be
 // narrower than its user (restricted, fewer scopes); linking from it would
 // hand the user's full reach to every later sign-in through the linked
 // identity — a restricted credential widening itself.
 func userCredentialSession(row *store.UISessionRow) bool {
-	return row != nil && (row.CredKind == credKindPassword || row.CredKind == credKindIdentity)
+	return row != nil && (row.CredKind == credKindPassword || row.CredKind == credKindIdentity || row.CredKind == credKindPasskey)
 }
 
 // principalIsTheUser is the belt to userCredentialSession's braces: the
@@ -102,7 +102,7 @@ func (s *Server) identitiesTarget(w http.ResponseWriter, r *http.Request) (tenan
 		return "", "", false, false
 	}
 	p, has := auth.PrincipalFromContext(r.Context())
-	if has && !p.Legacy && p.Subject == subject && !auth.IsAuthManager(p) {
+	if has && !p.Legacy && p.Subject == subject && !auth.IsAuthManager(p) && !auth.IsSCIMProvisioner(p) {
 		return p.TenantID, subject, true, true
 	}
 	switch callerOf(r.Context()) {

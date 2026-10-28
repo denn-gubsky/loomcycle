@@ -85,6 +85,9 @@ type AuthConfig struct {
 	// TenantPolicies: tenant → the gates its people must come through
 	// (auth_tenant_policy.go).
 	TenantPolicies map[string]AuthTenantPolicyConfig `yaml:"tenant_policies,omitempty"`
+	// Strict holds what strict mode refuses beyond its defaults
+	// (auth_strict.go).
+	Strict AuthStrictConfig `yaml:"strict,omitempty"`
 }
 
 // AuthSessionConfig holds Go durations ("8h", "15m").
@@ -206,6 +209,8 @@ type AuthGate struct {
 	// Header is set for kind: header, AWSIAM for kind: awsiam.
 	Header *AuthHeaderGate
 	AWSIAM *AuthAWSIAMGate
+	// SCIM is set for kind: scim.
+	SCIM *AuthSCIMGate
 }
 
 // AuthPasswordGate is a validated password gate.
@@ -252,6 +257,12 @@ type AuthPolicy struct {
 	// Clients are the validated auth.clients, sorted by id (read one through
 	// Client).
 	Clients []AppClient
+	// Passkeys is the WebAuthn relying party, set when a password or passkey
+	// gate is configured and LOOMCYCLE_PUBLIC_URL can be one (auth_passkey.go).
+	Passkeys *AuthPasskeyRP
+	// UserTokensGateOnly is auth.strict.user_tokens: gate_only — in strict
+	// mode, a per-user token no gate issued is refused on the API too.
+	UserTokensGateOnly bool
 }
 
 // Strict reports whether the deployment is in strict mode.
@@ -293,8 +304,9 @@ func (p AuthPolicy) LoginGates() []AuthGate {
 		if g.External != nil && !g.External.Interactive() {
 			continue
 		}
-		// A device gate is approved through a login gate, never one itself.
-		if g.Kind == AuthGateKindDevice {
+		// A device gate is approved through a login gate, never one itself;
+		// a SCIM gate provisions, it signs nobody in.
+		if g.Kind == AuthGateKindDevice || g.Kind == AuthGateKindSCIM {
 			continue
 		}
 		out = append(out, g)
@@ -439,7 +451,7 @@ func resolveAuth(c *Config) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	tokenGates, interactive, deviceGates := 0, 0, 0
+	tokenGates, interactive, deviceGates, scimGates := 0, 0, 0, 0
 	for _, name := range names {
 		g := c.Auth.Gates[name]
 		if !authGateNameRE.MatchString(name) {
@@ -467,10 +479,19 @@ func resolveAuth(c *Config) error {
 			interactive++
 		case kind == AuthGateKindAWSIAM:
 			// Machines only: it issues API tokens, never a session.
+		case kind == AuthGateKindSCIM:
+			// An identity provider's provisioning service, never a sign-in.
+			scimGates++
+		case kind == AuthGateKindPasskey:
+			// Not counted as interactive: a passkey is registered from a
+			// session of another sign-in gate, so it cannot be the only way in.
+			if hasPasskeyGateKeys(g) {
+				return fmt.Errorf("auth.gates.%s: a passkey gate takes only a label", name)
+			}
 		case kind == "":
-			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam or device)", name)
+			return fmt.Errorf("auth.gates.%s: kind is required (token, password, oidc, oauth, external, header, awsiam, device, passkey or scim)", name)
 		default:
-			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam or device)", name, g.Kind)
+			return fmt.Errorf("auth.gates.%s: unknown kind %q (want token, password, oidc, oauth, external, header, awsiam, device, passkey or scim)", name, g.Kind)
 		}
 		if g.IdentityMap != nil && (kind == AuthGateKindToken || kind == AuthGateKindPassword) {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
@@ -521,7 +542,10 @@ func resolveAuth(c *Config) error {
 			// It links a bridge's pre-gate users; a sign-in provider has none.
 			return fmt.Errorf("auth.gates.%s.identity_map.legacy_subject_prefix applies only to kind: external", name)
 		}
-		if kind != AuthGateKindExternal && hasExternalKeys(g) {
+		if kind != AuthGateKindSCIM && g.External.MaxSyncCreates != 0 {
+			return fmt.Errorf("auth.gates.%s.max_sync_creates applies only to kind: scim", name)
+		}
+		if kind != AuthGateKindExternal && kind != AuthGateKindSCIM && hasExternalKeys(g) {
 			return fmt.Errorf("auth.gates.%s: public_key, hmac_secret_env, callback_url, probe_url, issued_token "+
 				"and on_removed apply only to kind: external", name)
 		}
@@ -556,9 +580,18 @@ func resolveAuth(c *Config) error {
 			if pw, err = resolvePasswordGate(c, name, g, p.Strict()); err != nil {
 				return err
 			}
-		case kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && hasPasswordKeys(g):
+		case kind != AuthGateKindOIDC && kind != AuthGateKindOAuth && kind != AuthGateKindExternal && kind != AuthGateKindSCIM && hasPasswordKeys(g):
 			return fmt.Errorf("auth.gates.%s: the password gate's keys (trusted, require_mfa, invites, resets, "+
 				"allowed_return_to, password, new_user, manager_may_recover_owners) apply only to kind: password", name)
+		}
+		var scim *AuthSCIMGate
+		if kind == AuthGateKindSCIM {
+			if hasPasswordOnlyKeys(g) || len(g.AllowedReturnTo) > 0 {
+				return fmt.Errorf("auth.gates.%s: the password gate's keys do not apply to kind: scim; use identity_map.new_user", name)
+			}
+			if scim, idm, err = resolveSCIMGate(c, name, g, p.NewUserFloor(), p.RemovalPolicy()); err != nil {
+				return err
+			}
 		}
 		var dev *AuthDeviceGate
 		if kind == AuthGateKindDevice {
@@ -579,10 +612,13 @@ func resolveAuth(c *Config) error {
 			}
 		}
 		p.Gates = append(p.Gates, AuthGate{Name: name, Kind: kind, Label: label, Password: pw, OIDC: oidc, OAuth: oauth,
-			Identity: idm, External: ext, Header: hdr, AWSIAM: aws, Device: dev})
+			Identity: idm, External: ext, Header: hdr, AWSIAM: aws, Device: dev, SCIM: scim})
 	}
 	if tokenGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: token, got %d", tokenGates)
+	}
+	if scimGates > 1 {
+		return fmt.Errorf("auth.gates: at most one gate may be kind: scim, got %d", scimGates)
 	}
 	if deviceGates > 1 {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: device, got %d", deviceGates)
@@ -604,6 +640,12 @@ func resolveAuth(c *Config) error {
 	if p.Strict() && interactive == 0 {
 		return fmt.Errorf("auth.mode: strict needs at least one interactive gate in auth.gates " +
 			"(e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI")
+	}
+	if err := resolvePasskeys(c, &p); err != nil {
+		return err
+	}
+	if err := resolveStrict(c, &p); err != nil {
+		return err
 	}
 	c.ResolvedAuth = p
 	return nil

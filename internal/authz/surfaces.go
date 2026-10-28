@@ -53,6 +53,9 @@ func HTTPSurface(method, path string) (Surface, bool) {
 	if path == "/metrics" {
 		return instance("read", "runtime", "metrics"), true
 	}
+	if s, ok := scimSurface(method, path); ok {
+		return s, true
+	}
 	seg := strings.Split(strings.Trim(path, "/"), "/")
 	// seg[0] is "v1" for every other governed route.
 	if len(seg) < 2 || seg[0] != "v1" {
@@ -302,7 +305,8 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		// gate's login return, assert, revoke and sync are authenticated by
 		// the gate's own signature under its pinned key and held to its
 		// identity_map; logout ends the caller's own session; the account
-		// routes act on the caller's own credentials. No ACL question fits.
+		// routes (password, TOTP, passkeys) act on the caller's own
+		// credentials. No ACL question fits.
 		return Surface{}, false
 	case name == "oauth":
 		// RFC FL: the app sign-in routes run before any principal exists.
@@ -349,6 +353,29 @@ func HTTPSurface(method, path string) (Surface, bool) {
 		// exists before it to ask an ACL question of, and the token it
 		// issues carries only the user's own reach, which the ACLs govern.
 		return Surface{}, false
+	}
+	return Surface{}, false
+}
+
+// scimSurface maps the SCIM 2.0 service (RFC FA P6) to questions of its own,
+// `principal:scim:users` and `principal:scim:groups`, read or managed (the
+// discovery documents read users): the service provisions through an
+// identity gate, a different reach from the operator's /v1/_users and
+// /v1/_groups, so it asks a different question. The scope gate reserves the
+// service to a scim:provision credential, whose baseline allows exactly
+// these, in its own tenant.
+func scimSurface(method, path string) (Surface, bool) {
+	rest, ok := strings.CutPrefix(path, "/scim/v2/")
+	if !ok {
+		return Surface{}, false
+	}
+	switch strings.SplitN(rest, "/", 2)[0] {
+	case "Users":
+		return instance(readOrManage(method), "principal", "scim:users"), true
+	case "Groups":
+		return instance(readOrManage(method), "principal", "scim:groups"), true
+	case "ServiceProviderConfig", "ResourceTypes", "Schemas":
+		return instance("read", "principal", "scim:users"), true
 	}
 	return Surface{}, false
 }

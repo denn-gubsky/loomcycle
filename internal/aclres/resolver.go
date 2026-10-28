@@ -103,6 +103,8 @@ func Class(p auth.Principal) string {
 	// if a scope set slipped past ValidateScopeSet.
 	case auth.IsAuthManager(p):
 		return "authmanager"
+	case auth.IsSCIMProvisioner(p):
+		return "scimprovisioner"
 	case p.Legacy || auth.HasScope(p.Scopes, auth.ScopeAdmin):
 		return "admin"
 	case auth.HasScope(p.Scopes, auth.ScopeTenant):
@@ -153,7 +155,7 @@ func ClassKey(p auth.Principal) string {
 func splitClassKey(key string) (class string, runPlane, ok bool) {
 	class, runPlane = strings.CutSuffix(key, runPlaneSuffix)
 	switch class {
-	case "admin", "tenant", "isolated", "member", "authmanager":
+	case "admin", "tenant", "isolated", "member", "authmanager", "scimprovisioner":
 		return class, runPlane, true
 	}
 	return "", false, false
@@ -169,6 +171,8 @@ func baselineName(class string) string {
 		return authz.BaselineIsolated
 	case "authmanager":
 		return authz.BaselineAuthManager
+	case "scimprovisioner":
+		return authz.BaselineSCIMProvisioner
 	}
 	return authz.BaselineMember
 }

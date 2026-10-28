@@ -80,6 +80,7 @@ func eqClasses() []eqClass {
 		{name: "isolated", scopes: []string{auth.ScopeUser}},
 		{name: "isolated+runplane", scopes: append([]string{auth.ScopeUser}, eqMemberScopes...), agents: []string{"chat"}},
 		{name: "auth-manager", scopes: []string{auth.ScopeAuthManage}, maximal: true},
+		{name: "scim-provisioner", scopes: []string{auth.ScopeSCIMProvision}, maximal: true},
 	}
 }
 
@@ -114,7 +115,21 @@ var baselineWiderThanGateHTTP = map[string]string{
 	// GET /v1/_users/{subject} (the per-subject view aggregates usage and
 	// memory), and authManageRoute holds that at the scope gate.
 	"auth-manager|read principal:user:x": "the roster question cannot be granted without each user's; authManageRoute holds the per-subject view at the scope gate",
+	// RFC FA P6: the admin baseline allows every question, the SCIM
+	// service's included, but the scope gate reserves /scim/v2 to a
+	// scim:provision credential: the service provisions into that
+	// credential's own tenant, and no other principal is meant to.
+	"admin|read principal:scim:users":     scimReserved,
+	"admin|manage principal:scim:users":   scimReserved,
+	"admin|read principal:scim:groups":    scimReserved,
+	"admin|manage principal:scim:groups":  scimReserved,
+	"legacy|read principal:scim:users":    scimReserved,
+	"legacy|manage principal:scim:users":  scimReserved,
+	"legacy|read principal:scim:groups":   scimReserved,
+	"legacy|manage principal:scim:groups": scimReserved,
 }
+
+const scimReserved = "the scope gate reserves /scim/v2 to a scim:provision credential, whatever the ACL baseline allows"
 
 const inRunReach = "the class's in-run reach asks the same question as an off-run operator route the scope gate refuses it"
 

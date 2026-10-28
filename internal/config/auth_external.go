@@ -52,9 +52,12 @@ type AuthExternalGateConfig struct {
 	// MaxSyncRemovals caps the users one complete sync may remove: a count
 	// ("25") or a share of the gate's linked users ("20%"). Default: 10%,
 	// never fewer than five.
-	MaxSyncRemovals string                 `yaml:"max_sync_removals,omitempty"`
-	IssuedToken     *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
-	OnRemoved       *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
+	MaxSyncRemovals string `yaml:"max_sync_removals,omitempty"`
+	// MaxSyncCreates (kind: scim only) caps the users the SCIM gate may
+	// create in a tenant per rolling 24 h. Default: 1000.
+	MaxSyncCreates int                    `yaml:"max_sync_creates,omitempty"`
+	IssuedToken    *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
+	OnRemoved      *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
 }
 
 // AuthIssuedTokenConfig is the ceiling of the tokens a gate gets issued.
@@ -108,13 +111,7 @@ const (
 // that is compromised, or whose platform API returned only a first page,
 // must not disable everyone in one request.
 func (g *AuthExternalGate) SyncRemovalCeiling(linked int) int {
-	switch {
-	case g.MaxSyncRemovals > 0:
-		return g.MaxSyncRemovals
-	case g.MaxSyncRemovalsPercent > 0:
-		return linked * g.MaxSyncRemovalsPercent / 100
-	}
-	return max(minSyncRemovalCeiling, linked*defaultSyncRemovalPercent/100)
+	return syncRemovalCeiling(g.MaxSyncRemovals, g.MaxSyncRemovalsPercent, linked)
 }
 
 // Interactive reports whether a browser can sign in through the gate.
@@ -186,21 +183,10 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 	default:
 		return nil, fmt.Errorf("%s: public_key (an Ed25519 or P-256 public JWK) or hmac_secret_env is required", where)
 	}
-	if v := strings.TrimSpace(e.MaxSyncRemovals); v != "" {
-		n, pct := strings.CutSuffix(v, "%")
-		k, err := strconv.Atoi(strings.TrimSpace(n))
-		switch {
-		case err != nil || k < 1:
-			return nil, fmt.Errorf("%s.max_sync_removals: %q must be a positive count (25) or percentage (20%%)", where, v)
-		case pct && k > 100:
-			return nil, fmt.Errorf("%s.max_sync_removals: %q is over 100%%", where, v)
-		case pct:
-			out.MaxSyncRemovalsPercent = k
-		default:
-			out.MaxSyncRemovals = k
-		}
-	}
 	var err error
+	if out.MaxSyncRemovals, out.MaxSyncRemovalsPercent, err = parseMaxSyncRemovals(where, e.MaxSyncRemovals); err != nil {
+		return nil, err
+	}
 	if e.CallbackURL != "" {
 		if out.CallbackURL, err = gateURL(where+".callback_url", e.CallbackURL); err != nil {
 			return nil, err
@@ -251,17 +237,58 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 		}
 		out.MaxActive = t.MaxActive
 	}
-	if o := e.OnRemoved; o != nil {
-		sub := *c
-		sub.Auth.Lifecycle.OnRemoved = mergeOnRemoved(c.Auth.Lifecycle.OnRemoved, *o)
-		r, err := resolveRemoval(&sub)
-		if err != nil {
-			return nil, fmt.Errorf("%s.on_removed: %w", where, err)
-		}
-		r.DormantAfter = deployment.DormantAfter
-		out.Removal = r
+	if out.Removal, err = gateRemovalPolicy(c, where, e.OnRemoved, deployment); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// parseMaxSyncRemovals reads a removal ceiling: a count ("25") or a share of
+// the gate's linked users ("20%"); "" is neither (the default).
+func parseMaxSyncRemovals(where, v string) (count, percent int, err error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, 0, nil
+	}
+	n, pct := strings.CutSuffix(v, "%")
+	k, err := strconv.Atoi(strings.TrimSpace(n))
+	switch {
+	case err != nil || k < 1:
+		return 0, 0, fmt.Errorf("%s.max_sync_removals: %q must be a positive count (25) or percentage (20%%)", where, v)
+	case pct && k > 100:
+		return 0, 0, fmt.Errorf("%s.max_sync_removals: %q is over 100%%", where, v)
+	case pct:
+		return 0, k, nil
+	}
+	return k, 0, nil
+}
+
+// syncRemovalCeiling is the removal ceiling of count or percent (one set, or
+// neither for the default) over linked users.
+func syncRemovalCeiling(count, percent, linked int) int {
+	switch {
+	case count > 0:
+		return count
+	case percent > 0:
+		return linked * percent / 100
+	}
+	return max(minSyncRemovalCeiling, linked*defaultSyncRemovalPercent/100)
+}
+
+// gateRemovalPolicy is a gate's removal policy: the deployment's, with the
+// gate's on_removed laid over it key by key.
+func gateRemovalPolicy(c *Config, where string, o *AuthOnRemovedConfig, deployment AuthRemovalPolicy) (AuthRemovalPolicy, error) {
+	if o == nil {
+		return deployment, nil
+	}
+	sub := *c
+	sub.Auth.Lifecycle.OnRemoved = mergeOnRemoved(c.Auth.Lifecycle.OnRemoved, *o)
+	r, err := resolveRemoval(&sub)
+	if err != nil {
+		return AuthRemovalPolicy{}, fmt.Errorf("%s.on_removed: %w", where, err)
+	}
+	r.DormantAfter = deployment.DormantAfter
+	return r, nil
 }
 
 // mergeOnRemoved lays a gate's on_removed over the deployment's, key by key.

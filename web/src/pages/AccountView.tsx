@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { NewPasswordFields, RecoveryCodes, TotpEnrolBlock, passwordReady } from "../components/PasswordGateParts";
 import LinkedSignIns from "../components/LinkedSignIns";
+import PasskeySection from "../components/PasskeySection";
+import { type PasskeyAnswer, withPasskeyStepUp } from "../lib/passkeys";
 import {
   type AccountInfo,
   type Refusal,
@@ -14,10 +16,12 @@ import {
 } from "../lib/passwordGate";
 
 // AccountView is a password-gate user's own account: change the password,
-// add or replace the authenticator app, remove it where the sign-in allows.
-// Every change asks for the current password again (and a code when an
-// authenticator is set up). Changing the password signs out every other
-// browser of the account.
+// add or replace the authenticator app, remove it where the sign-in allows,
+// and add or remove passkeys. Every change asks for the current password
+// again (and the second factor a sign-in would ask for: a code, or the
+// passkey the browser is prompted for). Changing the password signs out
+// every other browser of the account. A session from an identity provider or
+// a passkey has no password: it manages its passkeys and linked sign-ins.
 export default function AccountView() {
   const [info, setInfo] = useState<AccountInfo | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
@@ -60,17 +64,18 @@ export default function AccountView() {
       <div className="page">
         <h1>Your account</h1>
         <LinkedSignIns />
+        {refusal && <PasskeySection stepUp={() => ({})} />}
         {refusal ? null : <p>Loading…</p>}
       </div>
     );
   }
 
   const min = info.has_totp ? 8 : 15;
-  const run = async (f: () => Promise<{ ok: boolean; refusal?: Refusal }>, ok: string) => {
+  const run = async (f: (webauthn?: PasskeyAnswer) => Promise<{ ok: boolean; refusal?: Refusal }>, ok: string) => {
     setBusy(true);
     setRefusal(null);
     setNotice("");
-    const r = (await f()) as { ok: true } | { ok: false; refusal: Refusal };
+    const r = (await withPasskeyStepUp(f as never)) as { ok: true } | { ok: false; refusal: Refusal };
     setBusy(false);
     if (r.ok) {
       setNotice(ok);
@@ -127,7 +132,9 @@ export default function AccountView() {
           className="login-btn"
           type="button"
           disabled={busy || current === "" || !passwordReady(pw, pw2, min)}
-          onClick={() => run(() => changePassword(current, pw, otp), "Password changed. Your other browsers are signed out.")}
+          onClick={() =>
+            run((webauthn) => changePassword(current, pw, otp, fetch, webauthn), "Password changed. Your other browsers are signed out.")
+          }
         >
           Change password
         </button>
@@ -164,7 +171,9 @@ export default function AccountView() {
               onClick={async () => {
                 setBusy(true);
                 setRefusal(null);
-                const r = await totpConfirm({ current_password: current, otp, enrolment: enrol.enrolment, code: enrolCode });
+                const r = await withPasskeyStepUp((webauthn) =>
+                  totpConfirm({ current_password: current, otp, enrolment: enrol.enrolment, code: enrolCode, webauthn }),
+                );
                 setBusy(false);
                 if (r.ok) {
                   setEnrol(null);
@@ -186,12 +195,14 @@ export default function AccountView() {
             className="login-btn"
             type="button"
             disabled={busy || current === ""}
-            onClick={() => run(() => totpRemove(current, otp), "Authenticator removed.")}
+            onClick={() => run((webauthn) => totpRemove(current, otp, fetch, webauthn), "Authenticator removed.")}
           >
             Remove authenticator
           </button>
         )}
       </section>
+
+      <PasskeySection stepUp={() => ({ current_password: current, otp })} onChanged={load} />
     </div>
   );
 }

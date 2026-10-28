@@ -252,6 +252,20 @@ var tableCoverageMap = map[string]tableCoverage{
 	// approved row redeems into a bearer for whoever holds the device code.
 	"device_authorizations": {Kind: coverNever, Backends: onBoth,
 		Reason: "not carried: in-flight device logins (hashed codes, at most ten minutes old); a restored approved row would mint a token on the target for a device code issued by the source"},
+	// RFC FA P6, on the same footing: a passkey is a login credential (its
+	// public key lets the authenticator sign in), and a SCIM resource is a
+	// provider-to-user binding like an identity. The users section carries
+	// the users; the target's provider re-provisions the bindings.
+	"user_passkeys": {Kind: coverNever, Backends: onBoth,
+		Reason: "not carried: WebAuthn credentials (public keys and counters); restoring one would let the source's authenticator sign in on the target"},
+	"webauthn_ceremonies": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "not carried: begun WebAuthn challenges of the source, minutes long, consumed once"},
+	"scim_users": {Kind: coverNever, Backends: onBoth,
+		Reason: "not carried: provider-to-user bindings, like user_identities; the target's provider re-provisions them"},
+	"scim_groups": {Kind: coverNever, Backends: onBoth,
+		Reason: "not carried: provider-to-group bindings; the target's provider re-provisions them"},
+	"scim_group_members": {Kind: coverNever, Backends: onBoth,
+		Reason: "not carried: the provider's group memberships; the target's provider re-provisions them"},
 	"retention_overrides": {Kind: coverNever, Backends: onBoth,
 		Reason: "a timed decision (24 hours at most) to store one agent's runs on THIS deployment; carrying it would switch storage on somewhere nobody asked for it"},
 

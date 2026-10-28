@@ -10,11 +10,18 @@ export interface Refusal {
   code: string;
   error?: string;
   min_length?: number;
+  /** For "second_factor_required" (RFC FA P6): the passkey offer to answer,
+   *  and whether an authenticator code would do instead. */
+  webauthn?: { ceremony: string; publicKey: Record<string, unknown> };
+  otp?: boolean;
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; refusal: Refusal };
 
-async function call<T>(fetchImpl: typeof fetch, method: string, path: string, body?: unknown): Promise<Result<T>> {
+/** A passkey's answer to an offer, as a request carries it (passkeys.ts). */
+export type PasskeyAnswerJSON = { ceremony: string; credential: unknown };
+
+export async function call<T>(fetchImpl: typeof fetch, method: string, path: string, body?: unknown): Promise<Result<T>> {
   let r: Response;
   try {
     r = await fetchImpl(path, {
@@ -35,7 +42,16 @@ async function call<T>(fetchImpl: typeof fetch, method: string, path: string, bo
   }
   if (r.ok) return { ok: true, data: (parsed ?? {}) as T };
   const p = (parsed ?? {}) as Partial<Refusal>;
-  return { ok: false, refusal: { code: typeof p.code === "string" ? p.code : "refused", error: p.error, min_length: p.min_length } };
+  return {
+    ok: false,
+    refusal: {
+      code: typeof p.code === "string" ? p.code : "refused",
+      error: p.error,
+      min_length: p.min_length,
+      webauthn: p.webauthn,
+      otp: p.otp,
+    },
+  };
 }
 
 /** The code a link carries in its fragment ("#lci_…"). The fragment never
@@ -64,6 +80,10 @@ export interface InviteInfo {
   gate: string;
   login: string;
   email: string;
+  /** For an invite to an existing account that already has a second factor:
+   *  which, to confirm (no new authenticator is offered then). */
+  has_totp?: boolean;
+  has_passkey?: boolean;
   require_mfa: boolean;
   min_length: number;
   min_length_with_mfa: number;
@@ -75,6 +95,8 @@ export interface ResetInfo {
   gate: string;
   login: string;
   has_totp: boolean;
+  /** The account has a passkey: the reset is confirmed with it. */
+  has_passkey?: boolean;
   require_mfa: boolean;
   min_length: number;
   min_length_with_mfa: number;
@@ -96,35 +118,56 @@ export interface AccountInfo {
   require_mfa: boolean;
 }
 
-export const signInWithPassword = (gate: string, login: string, password: string, otp: string, f: typeof fetch = fetch) =>
-  call<object>(f, "POST", "/v1/_auth/complete/" + encodeURIComponent(gate), { login, password, otp });
+export const signInWithPassword = (
+  gate: string,
+  login: string,
+  password: string,
+  otp: string,
+  f: typeof fetch = fetch,
+  webauthn?: PasskeyAnswerJSON,
+) => call<object>(f, "POST", "/v1/_auth/complete/" + encodeURIComponent(gate), { login, password, otp, webauthn });
 
 export const inviteInfo = (code: string, f: typeof fetch = fetch) => call<InviteInfo>(f, "POST", "/v1/_auth/invite/info", { code });
 
 export const redeemInvite = (
-  req: { code: string; login: string; password: string; totp_enrolment?: string; totp_code?: string },
+  req: {
+    code: string;
+    login: string;
+    password: string;
+    totp_enrolment?: string;
+    totp_code?: string;
+    otp?: string;
+    webauthn?: PasskeyAnswerJSON;
+  },
   f: typeof fetch = fetch,
 ) => call<Redeemed>(f, "POST", "/v1/_auth/invite", req);
 
 export const resetInfo = (code: string, f: typeof fetch = fetch) => call<ResetInfo>(f, "POST", "/v1/_auth/reset/info", { code });
 
 export const completeReset = (
-  req: { code: string; password: string; otp?: string; totp_enrolment?: string; totp_code?: string },
+  req: { code: string; password: string; otp?: string; webauthn?: PasskeyAnswerJSON; totp_enrolment?: string; totp_code?: string },
   f: typeof fetch = fetch,
 ) => call<Redeemed>(f, "POST", "/v1/_auth/reset", req);
 
 export const accountInfo = (f: typeof fetch = fetch) => call<AccountInfo>(f, "GET", "/v1/_auth/account");
 
-export const changePassword = (current_password: string, new_password: string, otp: string, f: typeof fetch = fetch) =>
-  call<object>(f, "POST", "/v1/_auth/password", { current_password, new_password, otp });
+export const changePassword = (
+  current_password: string,
+  new_password: string,
+  otp: string,
+  f: typeof fetch = fetch,
+  webauthn?: PasskeyAnswerJSON,
+) => call<object>(f, "POST", "/v1/_auth/password", { current_password, new_password, otp, webauthn });
 
 export const totpBegin = (f: typeof fetch = fetch) => call<TotpEnrolment>(f, "POST", "/v1/_auth/totp/begin", {});
 
-export const totpConfirm = (req: { current_password: string; otp: string; enrolment: string; code: string }, f: typeof fetch = fetch) =>
-  call<{ recovery_codes: string[] }>(f, "POST", "/v1/_auth/totp/confirm", req);
+export const totpConfirm = (
+  req: { current_password: string; otp: string; enrolment: string; code: string; webauthn?: PasskeyAnswerJSON },
+  f: typeof fetch = fetch,
+) => call<{ recovery_codes: string[] }>(f, "POST", "/v1/_auth/totp/confirm", req);
 
-export const totpRemove = (current_password: string, otp: string, f: typeof fetch = fetch) =>
-  call<object>(f, "DELETE", "/v1/_auth/totp", { current_password, otp });
+export const totpRemove = (current_password: string, otp: string, f: typeof fetch = fetch, webauthn?: PasskeyAnswerJSON) =>
+  call<object>(f, "DELETE", "/v1/_auth/totp", { current_password, otp, webauthn });
 
 const messages: Record<string, string> = {
   invalid_credentials: "That login and password were not accepted.",
@@ -147,6 +190,21 @@ const messages: Record<string, string> = {
   session_required: "Sign in with your login and password to manage this account.",
   mfa_required: "This sign-in requires an authenticator app; it cannot be removed.",
   network: "The server could not be reached.",
+  second_factor_required: "Confirm with your passkey.",
+  second_factor_exists: "This account already has a second factor. Confirm with it instead.",
+  second_factor_unavailable:
+    "Your account signs in with a passkey, which this server cannot use right now, and has no authenticator app. Ask your administrator.",
+  passkey_cancelled: "The passkey was not used. Try again.",
+  passkey_not_accepted: "The passkey was not accepted. Try again.",
+  passkey_exists: "That passkey is already registered.",
+  passkeys_unavailable: "Passkeys are not available on this server.",
+  passkey_needs_user_session: "Sign in with your password, a passkey or your identity provider to manage passkeys.",
+  password_required: "Enter your current password above to confirm it is you.",
+  too_many_passkeys: "This account has as many passkeys as it can keep. Remove one first.",
+  last_sign_in_method: "This passkey is the only way to sign in to this account. Add another first.",
+  last_second_factor: "This sign-in needs a second factor. Add an authenticator app or another passkey first.",
+  reauth_required: "Sign in again to make this change.",
+  password_too_weak_alone: "Without a second factor your password must stand alone: set a longer one.",
 };
 
 /** The text a refusal shows the person. */

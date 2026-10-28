@@ -21,6 +21,11 @@ const (
 	RemovalReasonSync     = "sync"     // an authoritative gate's sync no longer lists the user
 	RemovalReasonDormant  = "dormant"  // no login through any gate for dormant_after
 	RemovalReasonOperator = "operator" // an operator started it
+	RemovalReasonSCIM     = "scim"     // a SCIM gate's DELETE or active:false (RFC FA P6)
+	// RemovalReasonSCIMPending is RemovalReasonSCIM for a user that was
+	// pending when removed: a SCIM re-enable brings it back pending, never
+	// active (approval stays an operator's).
+	RemovalReasonSCIMPending = "scim_pending"
 )
 
 // AuthRemovalRow is one user's removal (RFC FA §3.7c). Stages never skip:
@@ -58,7 +63,10 @@ type AuthLifecycleStore interface {
 
 	// AuthRemovalStart inserts a removal unless the subject already has one,
 	// and reports whether it did. An existing removal is never restarted,
-	// so a repeated revoke or sync cannot postpone its stages.
+	// so a repeated revoke or sync cannot postpone its stages. One exception:
+	// a removal of any other reason takes over a SCIM gate's (its gate,
+	// reason and created_by; the timings stay), so an operator's or another
+	// gate's removal is never left behind a row SCIM could re-enable.
 	AuthRemovalStart(ctx context.Context, row AuthRemovalRow) (bool, error)
 	// AuthRemovalGet returns the subject's removal.
 	// *ErrNotFound{Kind:"auth_removal"} when there is none.

@@ -115,6 +115,13 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	if auth.IsAuthManager(p) {
 		return auth.ScopeAuthManage, authManageRoute(method, path)
 	}
+	// RFC FA P6: a SCIM credential reaches /scim/v2 and nothing else, and
+	// /scim/v2 is reserved to it — an admin or tenant token is refused
+	// there too: the SCIM tenant is the credential's own, and no other
+	// principal is meant to provision through it.
+	if auth.IsSCIMProvisioner(p) || scimRoute(path) {
+		return auth.ScopeSCIMProvision, auth.IsSCIMProvisioner(p) && scimRoute(path)
+	}
 	required = requiredScopeFor(method, path)
 	if required == "" || auth.HasScope(p.Scopes, required) {
 		return required, true
@@ -553,13 +560,19 @@ func (s *Server) resolvePrincipal(ctx context.Context, bearer string) (auth.Prin
 //     active, and its scopes BECOME the implied set of the user's current
 //     access_mode, so a promotion widens it and a demotion narrows it on the
 //     next request with no re-mint. Its restrictions are untouched, so they
-//     still only narrow.
+//     still only narrow;
+//   - under auth.strict.user_tokens: gate_only (RFC FA §4), a token no gate
+//     issued is refused when its subject is a registered user: it is a
+//     hand-minted per-user token. Decided here, per request and after the
+//     token cache, so a user created after the token was minted, or a policy
+//     switched on by a restart, holds at once on every transport.
 //
-// A frozen token from neither path is returned as it is, with no read. Fails
-// closed: a user that cannot be read, or an access_mode that grants nothing,
-// refuses the request.
+// A frozen token from none of these paths is returned as it is, with no read.
+// Fails closed: a user that cannot be read, or an access_mode that grants
+// nothing, refuses the request.
 func (s *Server) liveTokenPrincipal(ctx context.Context, p auth.Principal) (auth.Principal, bool) {
-	if p.IssuedByGate == "" && !p.InheritsAuthority {
+	gateOnly := s.gateOnlyApplies(p)
+	if p.IssuedByGate == "" && !p.InheritsAuthority && !gateOnly {
 		return p, true
 	}
 	if p.IssuedByGate != "" {
@@ -578,8 +591,19 @@ func (s *Server) liveTokenPrincipal(ctx context.Context, p auth.Principal) (auth
 	}
 	u, err := s.store.UserGet(ctx, p.TenantID, p.Subject)
 	if err != nil {
+		// Under gate_only a frozen token whose subject is no user is a
+		// service token, and stands.
+		if isNotFound(err) && gateOnly && !p.InheritsAuthority {
+			return p, true
+		}
 		if !isNotFound(err) && ctx.Err() == nil {
 			slog.Error("auth: reading a token's user failed (refusing)", "token_def", p.TokenDefID, "err", err)
+		}
+		return auth.Principal{}, false
+	}
+	if gateOnly {
+		if s.authVerbose() {
+			slog.Info("auth: refused a per-user token no gate issued (auth.strict.user_tokens: gate_only)", "token_def", p.TokenDefID)
 		}
 		return auth.Principal{}, false
 	}
@@ -1194,6 +1218,10 @@ func requiredScopeFor(method, path string) string {
 	// without the scope (gatewayMemberOK).
 	case isGatewayRoute(path):
 		return auth.ScopeLLMGateway
+	// RFC FA P6: the SCIM service. scopeGate reserves it to a scim:provision
+	// credential before this switch; this is the scope its refusal names.
+	case scimRoute(path):
+		return auth.ScopeSCIMProvision
 	// Whoami — any authenticated principal must be able to learn its own
 	// identity (the Web UI's role source); a tenant token needs it too.
 	case path == "/v1/_me":
@@ -1674,6 +1702,12 @@ func authManageRoute(method, path string) bool {
 
 // authGateRoutePrefix is the password gate's management API.
 const authGateRoutePrefix = "/v1/_authgate/"
+
+// scimRoutePrefix is the SCIM 2.0 service (RFC FA P6), the whole reach of a
+// scim:provision credential.
+const scimRoutePrefix = "/scim/v2/"
+
+func scimRoute(path string) bool { return strings.HasPrefix(path, scimRoutePrefix) }
 
 // isTenantConfinedDefPath matches the substrate def-authoring families that
 // RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined

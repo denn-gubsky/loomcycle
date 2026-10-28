@@ -59,8 +59,11 @@ func resolveTenantPolicies(c *Config, gates []AuthGate) (map[string][]string, er
 
 // TenantPolicyGateKind reports whether a tenant policy may name a gate of this
 // kind ("" = no such gate). Not a device gate: a device login is approved
-// through another gate, and that gate is what the policy judges.
-func TenantPolicyGateKind(kind string) bool { return kind != "" && kind != AuthGateKindDevice }
+// through another gate, and that gate is what the policy judges. Not a SCIM
+// gate either: it provisions, it signs nobody in.
+func TenantPolicyGateKind(kind string) bool {
+	return kind != "" && kind != AuthGateKindDevice && kind != AuthGateKindSCIM
+}
 
 // TenantGates is the config's gate policy for tenant: the gates its people
 // must come through, and whether the config sets one.

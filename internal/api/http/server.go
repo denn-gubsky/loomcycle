@@ -4365,6 +4365,26 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("PATCH /v1/_authgate/{gate}/logins/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRenameLogin))))
 	mux.Handle("GET /v1/_authgate/{gate}/identities", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListIdentities))))
 	mux.Handle("GET /v1/_authgate/{gate}/tenant-status", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateTenantStatus))))
+	// RFC FA P6: inbound SCIM 2.0 (scim.go) through the kind: scim gate.
+	// Reserved to a scim:provision token (scopeGate), which acts in its own
+	// token's tenant only.
+	mux.Handle("GET /scim/v2/ServiceProviderConfig", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMServiceProviderConfig))))
+	mux.Handle("GET /scim/v2/ResourceTypes", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMResourceTypes))))
+	mux.Handle("GET /scim/v2/ResourceTypes/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMResourceTypes))))
+	mux.Handle("GET /scim/v2/Schemas", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMSchemas))))
+	mux.Handle("GET /scim/v2/Schemas/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMSchemas))))
+	mux.Handle("GET /scim/v2/Users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMListUsers))))
+	mux.Handle("POST /scim/v2/Users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMCreateUser))))
+	mux.Handle("GET /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMGetUser))))
+	mux.Handle("PUT /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMReplaceUser))))
+	mux.Handle("PATCH /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMPatchUser))))
+	mux.Handle("DELETE /scim/v2/Users/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMDeleteUser))))
+	mux.Handle("GET /scim/v2/Groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMListGroups))))
+	mux.Handle("POST /scim/v2/Groups", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMCreateGroup))))
+	mux.Handle("GET /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMGetGroup))))
+	mux.Handle("PUT /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMReplaceGroup))))
+	mux.Handle("PATCH /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMPatchGroup))))
+	mux.Handle("DELETE /scim/v2/Groups/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSCIMDeleteGroup))))
 	// v0.8.6 system channels admin endpoint. Bearer-authed publish to
 	// _system/* channels. Used by external monitoring (push alerts in
 	// via webhook), ops dashboards (operator-issued alarms), and
@@ -4814,6 +4834,15 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /v1/_auth/totp/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPBegin))))
 	mux.Handle("POST /v1/_auth/totp/confirm", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPConfirm))))
 	mux.Handle("DELETE /v1/_auth/totp", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleTOTPRemove))))
+	// RFC FA P6 passkeys (authgate_passkey.go). The sign-in start runs before
+	// any principal exists (same-origin, throttled); the rest serve only the
+	// person's own Web UI session.
+	mux.Handle("POST /v1/_auth/passkey/{gate}/begin", recoveryMiddleware(http.HandlerFunc(s.handlePasskeyLoginBegin)))
+	mux.Handle("GET /v1/_auth/passkeys", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListPasskeys))))
+	mux.Handle("POST /v1/_auth/passkeys/register/begin", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePasskeyRegisterBegin))))
+	mux.Handle("POST /v1/_auth/passkeys/register/finish", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handlePasskeyRegisterFinish))))
+	mux.Handle("PATCH /v1/_auth/passkeys/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRenamePasskey))))
+	mux.Handle("DELETE /v1/_auth/passkeys/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRemovePasskey))))
 	// RFC FL — loomcycle as an OAuth 2.0 authorization server for its own apps.
 	// No bearer on any of them: authorize signs the person in through the
 	// login page and the session cookie; token and revoke are authenticated by

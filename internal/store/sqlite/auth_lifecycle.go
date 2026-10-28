@@ -73,7 +73,9 @@ func (s *Store) AuthRemovalStart(ctx context.Context, row store.AuthRemovalRow) 
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_removals (`+removalCols+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
-		ON CONFLICT (tenant_id, subject) DO NOTHING`,
+		ON CONFLICT (tenant_id, subject) DO UPDATE SET gate = excluded.gate, reason = excluded.reason,
+			created_by = excluded.created_by
+		WHERE auth_removals.reason IN (`+store.SCIMRemovalReasons+`) AND excluded.reason NOT IN (`+store.SCIMRemovalReasons+`)`,
 		row.TenantID, row.Subject, row.Gate, row.Reason, row.DisabledAt.UnixNano(), row.UnbindDueAt.UnixNano(),
 		gateNanos(row.EraseDueAt), row.CreatedBy)
 	if err != nil {

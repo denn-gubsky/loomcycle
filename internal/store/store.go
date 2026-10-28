@@ -1758,6 +1758,8 @@ type Store interface {
 	PasswordGateStore
 	AuthLoginStateStore
 	AuthLifecycleStore
+	PasskeyStore
+	SCIMStore
 	SnapshotStore
 	SnapshotReadStore
 	SnapshotRestoreStore

@@ -281,8 +281,11 @@ var errNoRemoval = errors.New("the user is not being removed")
 
 // reactivateRemoved re-enables a removed user at the §3.7a defaults: every
 // group membership and every binding of its own goes, the access mode drops
-// to the floor, the floor groups that exist in the tenant are joined, and only
-// then is the user active again. A failure part-way leaves the user disabled.
+// to the floor, the floor groups that exist in the tenant are joined, the
+// removal row goes, and only then is the user active again. A failure
+// part-way leaves the user disabled: a removal row left behind an active
+// user would be one a SCIM gate could later claim as its own and re-enable
+// over an operator's next plain disable.
 func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by string) error {
 	r, err := s.store.AuthRemovalGet(ctx, tenant, subject)
 	if err != nil {
@@ -291,16 +294,54 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 		}
 		return err
 	}
+	if err := s.resetRemovedToFloor(ctx, tenant, subject, by); err != nil {
+		return err
+	}
+	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
+		return fmt.Errorf("end the removal: %w", err)
+	}
+	active := "active"
+	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
+		return err
+	}
+	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
+	return nil
+}
+
+// resetRemovedToFloor is the §3.7a part of a re-enable: the user's own group
+// memberships and bindings go, its access mode drops to the floor, and it
+// joins the floor groups that exist. Its status is the caller's to set.
+func (s *Server) resetRemovedToFloor(ctx context.Context, tenant, subject, by string) error {
+	if err := s.stripRemovedUser(ctx, tenant, subject); err != nil {
+		return err
+	}
+	return s.rejoinFloorGroups(ctx, tenant, subject, by)
+}
+
+// stripRemovedUser is the part of the reset that only takes away: every
+// group membership and binding of the user's own goes and its access mode
+// drops to the floor's (the deployment floor is always isolated, the
+// lowest). It may run before the caller owns the re-enable for good.
+func (s *Server) stripRemovedUser(ctx context.Context, tenant, subject string) error {
 	changed, err := s.unbindSubject(ctx, tenant, subject, true)
 	if err != nil {
 		return err
 	}
-	floor := s.cfg().ResolvedAuth.NewUserFloor()
-	mode := floor.AccessMode
+	mode := s.cfg().ResolvedAuth.NewUserFloor().AccessMode
 	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{AccessMode: &mode}); err != nil {
 		return err
 	}
-	for _, g := range floor.Groups {
+	if changed {
+		s.aclChanged(ctx, tenant, "removal_reactivated", subject)
+	}
+	return nil
+}
+
+// rejoinFloorGroups is the part of the reset that gives: the user joins the
+// floor groups that exist. It runs only once the re-enable is the caller's.
+func (s *Server) rejoinFloorGroups(ctx context.Context, tenant, subject, by string) error {
+	changed := false
+	for _, g := range s.cfg().ResolvedAuth.NewUserFloor().Groups {
 		if _, err := s.store.GroupGet(ctx, tenant, g); err != nil {
 			if isNotFound(err) {
 				continue
@@ -318,15 +359,6 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	if changed {
 		s.aclChanged(ctx, tenant, "removal_reactivated", subject)
 	}
-	active := "active"
-	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
-		return err
-	}
-	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
-		// The sweeper ends a removal whose user is active; log, don't fail.
-		slog.Warn("auth: reactivated user's removal row not deleted", "tenant", tenant, "subject", subject, "err", err)
-	}
-	s.recordLifecycleEvent("auth_user_reactivated", tenant, subject, r.Gate, r.Reason, by)
 	return nil
 }
 

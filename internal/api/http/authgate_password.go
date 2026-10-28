@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
+
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authgate"
@@ -46,11 +48,15 @@ const (
 const credKindPassword = "password"
 
 var (
-	errOTPRequired      = errors.New("authgate: a second factor is required")
-	errOTPInvalid       = errors.New("authgate: invalid second factor")
-	errMFAEnrolment     = errors.New("authgate: this gate requires a second factor and the account has none")
-	errTooManyAttempts  = errors.New("authgate: too many attempts")
-	errEnrolmentInvalid = errors.New("authgate: invalid or expired TOTP enrolment")
+	errOTPRequired  = errors.New("authgate: a second factor is required")
+	errOTPInvalid   = errors.New("authgate: invalid second factor")
+	errMFAEnrolment = errors.New("authgate: this gate requires a second factor and the account has none")
+	// errSecondFactorUnavailable: the account has a passkey, which cannot be
+	// used now, and no authenticator app — it never signs in on its
+	// password alone (RFC FA P6).
+	errSecondFactorUnavailable = errors.New("authgate: the account's second factor cannot be used on this server now")
+	errTooManyAttempts         = errors.New("authgate: too many attempts")
+	errEnrolmentInvalid        = errors.New("authgate: invalid or expired TOTP enrolment")
 )
 
 // passwordGate implements authgate.Gate for a kind: password gate.
@@ -90,19 +96,22 @@ type passwordLoginRequest struct {
 	Password string `json:"password"`
 	// OTP is a TOTP code or a recovery code.
 	OTP string `json:"otp"`
+	// WebAuthn answers the passkey offer a second_factor_required refusal
+	// carried (RFC FA P6).
+	WebAuthn *passkeyAnswer `json:"webauthn,omitempty"`
 }
 
 // Complete is the login form's post. The identity is authoritative: the login
 // maps to exactly one (tenant, subject) through user_identities.
 func (pw *passwordGate) Complete(ctx context.Context, r *http.Request, _ authgate.LoginState) (authgate.Assertion, error) {
 	var req passwordLoginRequest
-	r.Body = http.MaxBytesReader(nil, r.Body, 16<<10)
+	r.Body = http.MaxBytesReader(nil, r.Body, maxWebAuthnBody)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil || req.Login == "" || req.Password == "" {
 		return authgate.Assertion{}, authgate.ErrNoCredential
 	}
-	id, amr, err := pw.s.verifyPassword(ctx, pw, req.Login, req.Password, req.OTP, pw.s.clientSource(r))
+	id, amr, err := pw.s.verifyPassword(ctx, pw, req.Login, req.Password, secondFactor{otp: req.OTP, webauthn: req.WebAuthn}, pw.s.clientSource(r))
 	if err != nil {
 		return authgate.Assertion{}, err
 	}
@@ -145,12 +154,19 @@ func (s *Server) recordSourceFailure(ctx context.Context, key string, block func
 	}
 }
 
+// secondFactor is what a login or a step-up sent beside the password: a TOTP
+// or recovery code, or the answer to a passkey offer.
+type secondFactor struct {
+	otp      string
+	webauthn *passkeyAnswer
+}
+
 // verifyPassword checks a login. An unknown login, a wrong password, a
 // locked account and a disabled user all answer ErrInvalidCredential after
 // one Argon2id verify's worth of work, so neither the answer nor its time says
 // which. Only once the password is right does it say a second factor is
-// needed or wrong.
-func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pass, otp, ip string) (store.UserIdentityRow, []string, error) {
+// needed (a *secondFactorChallenge when the account has a passkey) or wrong.
+func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pass string, f secondFactor, ip string) (store.UserIdentityRow, []string, error) {
 	now := time.Now()
 	loginN, lerr := password.NormalizeLogin(login)
 	loginKey := loginN
@@ -214,22 +230,63 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 	if terr != nil && !isNotFound(terr) {
 		return store.UserIdentityRow{}, nil, terr
 	}
-	if terr == nil && !totp.ConfirmedAt.IsZero() {
-		if strings.TrimSpace(otp) == "" {
-			return store.UserIdentityRow{}, nil, errOTPRequired
+	hasTOTP := terr == nil && !totp.ConfirmedAt.IsZero()
+	// RFC FA P6: a passkey is a second factor too. Whether the account HAS
+	// one is read from the stored rows, flagged ones included, whatever the
+	// deployment's relying party is now: an account that enrolled a passkey
+	// never signs in on its password alone (a config change, or a flagged
+	// key, must not downgrade it). keys are the ones usable now.
+	all, err := s.store.UserPasskeyList(ctx, id.TenantID, id.Subject)
+	if err != nil {
+		return store.UserIdentityRow{}, nil, err
+	}
+	var keys []store.UserPasskeyRow
+	if s.cfg().ResolvedAuth.Passkeys != nil {
+		for _, k := range all {
+			if k.FlaggedAt.IsZero() {
+				keys = append(keys, k)
+			}
 		}
-		method, ok, err := s.checkSecondFactor(ctx, pw.pg, id.TenantID, id.Subject, totp, otp)
+	}
+	secondFailed := func() (store.UserIdentityRow, []string, error) {
+		s.recordAccountFailure(ctx, pw, id)
+		s.recordSourceFailure(ctx, src, th.SourceBlockFor)
+		s.recordSourceFailure(ctx, srcLogin, th.SourceLoginBlockFor)
+		return store.UserIdentityRow{}, nil, errOTPInvalid
+	}
+	switch {
+	case f.webauthn != nil && len(keys) > 0:
+		_, ok, err := s.passkeySecondFactor(ctx, pw.g.Name, id.TenantID, id.Subject, keys, f.webauthn)
 		if err != nil {
 			return store.UserIdentityRow{}, nil, err
 		}
 		if !ok {
-			s.recordAccountFailure(ctx, pw, id)
-			s.recordSourceFailure(ctx, src, th.SourceBlockFor)
-			s.recordSourceFailure(ctx, srcLogin, th.SourceLoginBlockFor)
-			return store.UserIdentityRow{}, nil, errOTPInvalid
+			return secondFailed()
+		}
+		amr = append(amr, amrWebAuthn)
+	case hasTOTP && strings.TrimSpace(f.otp) != "":
+		method, ok, err := s.checkSecondFactor(ctx, pw.pg, id.TenantID, id.Subject, totp, f.otp)
+		if err != nil {
+			return store.UserIdentityRow{}, nil, err
+		}
+		if !ok {
+			return secondFailed()
 		}
 		amr = append(amr, method)
-	} else if pw.g.RequireMFA {
+	case len(keys) > 0:
+		offer, _, err := s.passkeySecondFactor(ctx, pw.g.Name, id.TenantID, id.Subject, keys, nil)
+		if err != nil {
+			return store.UserIdentityRow{}, nil, err
+		}
+		return store.UserIdentityRow{}, nil, &secondFactorChallenge{offer: offer, otp: hasTOTP}
+	case hasTOTP:
+		return store.UserIdentityRow{}, nil, errOTPRequired
+	case len(all) > 0:
+		// A passkey account whose passkeys cannot be used now (no relying
+		// party, or every key flagged) and that has no authenticator app:
+		// fail closed rather than fall back to the password alone.
+		return store.UserIdentityRow{}, nil, errSecondFactorUnavailable
+	case pw.g.RequireMFA:
 		return store.UserIdentityRow{}, nil, errMFAEnrolment
 	}
 	if err := s.store.UserCredentialRecordSuccess(ctx, id.TenantID, id.Subject, store.CredentialKindPassword); err != nil {
@@ -316,6 +373,7 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := gate.Complete(r.Context(), r, authgate.LoginState{})
+	var challenge *secondFactorChallenge
 	switch {
 	case err == nil:
 	case errors.Is(err, authgate.ErrNoCredential):
@@ -329,6 +387,9 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "throttled", SourceAddr: s.clientSource(r)})
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts; wait and try again")
 		return
+	case errors.As(err, &challenge):
+		writeSecondFactorRequired(w, challenge)
+		return
 	case errors.Is(err, errOTPRequired):
 		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
 		return
@@ -339,6 +400,11 @@ func (s *Server) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, errMFAEnrolment):
 		writeJSONError(w, http.StatusForbidden, "mfa_enrolment_required",
 			"this sign-in requires an authenticator app and your account has none; ask an operator for a reset link")
+		return
+	case errors.Is(err, errSecondFactorUnavailable):
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: name, AuthReason: "second_factor_unavailable", SourceAddr: s.clientSource(r)})
+		writeJSONError(w, http.StatusForbidden, "second_factor_unavailable",
+			"your account signs in with a passkey, which this server cannot use right now, and has no authenticator app; ask an operator for help")
 		return
 	default:
 		slog.Error("auth: password login failed", "gate", name, "err", err)
@@ -408,7 +474,15 @@ func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessi
 	if !bound(cred.PHC) {
 		return auth.Principal{}, false, true
 	}
-	u, err := s.store.UserGet(ctx, row.TenantID, row.Subject)
+	return s.activeUserSessionPrincipal(ctx, row.TenantID, row.Subject)
+}
+
+// activeUserSessionPrincipal is the principal of a session a person gate made
+// for the user (tenant, subject): the user must exist and be active. ok is
+// false when the session no longer authenticates; definitive is false when
+// that could not be decided (a store error), so the session is kept.
+func (s *Server) activeUserSessionPrincipal(ctx context.Context, tenant, subject string) (auth.Principal, bool, bool) {
+	u, err := s.store.UserGet(ctx, tenant, subject)
 	if err != nil {
 		return auth.Principal{}, false, isNotFound(err)
 	}
@@ -419,7 +493,8 @@ func (s *Server) passwordSessionPrincipal(ctx context.Context, row store.UISessi
 }
 
 // userSessionPrincipal is an active user's session principal, for every gate
-// whose session stands for the user itself (password, identity gates): the
+// whose session stands for the user itself (password, identity and passkey
+// gates): the
 // scopes its access_mode grants a delegated token, plus the tenant-operator
 // scope an owner binding gives an access_mode tenant user — never more.
 func (s *Server) userSessionPrincipal(ctx context.Context, u store.UserRow) (auth.Principal, bool, bool) {
@@ -644,6 +719,10 @@ type redeemInviteRequest struct {
 	Password      string `json:"password"`
 	TOTPEnrolment string `json:"totp_enrolment"`
 	TOTPCode      string `json:"totp_code"`
+	// OTP and WebAuthn confirm the existing second factor of the account an
+	// attach invite names (linkSecondFactor).
+	OTP      string         `json:"otp,omitempty"`
+	WebAuthn *passkeyAnswer `json:"webauthn,omitempty"`
 }
 
 // liveInvite resolves an invite code to a live invite on a configured gate.
@@ -680,6 +759,19 @@ func (s *Server) handleInviteInfo(w http.ResponseWriter, r *http.Request) {
 	account := inv.Login
 	if account == "" {
 		account = inv.Email
+	}
+	if inv.Subject != "" {
+		_, hasTOTP, hasPasskey, err := s.accountSecondFactors(r.Context(), inv.TenantID, inv.Subject)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+			return
+		}
+		if hasTOTP || hasPasskey {
+			// The account confirms the factor it has; it is offered no new one.
+			out["has_totp"], out["has_passkey"] = hasTOTP, hasPasskey
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
 	}
 	enrol, err := newEnrolment(pg, g.Name, inv.TenantID, "invite:"+inv.CodeHash, account)
 	if err != nil {
@@ -732,7 +824,19 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	withMFA := g.RequireMFA || req.TOTPEnrolment != ""
+	// An invite that attaches a password to an existing account with a
+	// second factor (a passkey account) must confirm that factor: the link
+	// alone must not add a password and a TOTP of the holder's choosing.
+	existingFactor, existingRequired := "", false
+	if inv.Subject != "" {
+		var ok bool
+		existingFactor, existingRequired, ok = s.linkSecondFactor(w, ctx, pg, g, inv.TenantID, inv.Subject, "invite:"+inv.CodeHash,
+			req.OTP, req.WebAuthn, req.TOTPEnrolment)
+		if !ok {
+			return
+		}
+	}
+	withMFA := g.RequireMFA || req.TOTPEnrolment != "" || existingRequired
 	pass, err := password.Normalize(req.Password)
 	if err == nil {
 		err = pg.policy.Check(pass, withMFA, login, inv.Email)
@@ -752,7 +856,9 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 	var factor *store.AuthSecondFactor
 	var recovery []string
 	amr := []string{amrPassword}
-	if req.TOTPEnrolment != "" {
+	if existingRequired {
+		amr = append(amr, existingFactor)
+	} else if req.TOTPEnrolment != "" {
 		secret, step, err := openEnrolment(pg, inv.TenantID, "invite:"+inv.CodeHash, req.TOTPEnrolment, req.TOTPCode)
 		if err != nil {
 			s.codeFailure(ctx, g, inv.CodeHash)
@@ -880,11 +986,99 @@ func (s *Server) managerLinkStillAllowed(ctx context.Context, g *PasswordGateSet
 // --- resets ---
 
 type completeResetRequest struct {
-	Code          string `json:"code"`
-	Password      string `json:"password"`
-	OTP           string `json:"otp"`
-	TOTPEnrolment string `json:"totp_enrolment"`
-	TOTPCode      string `json:"totp_code"`
+	Code          string         `json:"code"`
+	Password      string         `json:"password"`
+	OTP           string         `json:"otp"`
+	WebAuthn      *passkeyAnswer `json:"webauthn,omitempty"`
+	TOTPEnrolment string         `json:"totp_enrolment"`
+	TOTPCode      string         `json:"totp_code"`
+}
+
+// accountSecondFactors reports what second factor an account already has: a
+// confirmed TOTP, and any passkey at all (a flagged one included — the
+// account chose a passkey, so a link must not replace it with a factor of
+// the link holder's choosing).
+func (s *Server) accountSecondFactors(ctx context.Context, tenant, subject string) (totp store.UserTOTPRow, hasTOTP, hasPasskey bool, err error) {
+	if totp, hasTOTP, err = s.confirmedTOTP(ctx, tenant, subject); err != nil {
+		return
+	}
+	keys, err := s.store.UserPasskeyList(ctx, tenant, subject)
+	return totp, hasTOTP, len(keys) > 0, err
+}
+
+// linkSecondFactor is what a reset link (or an invite that attaches a
+// password to an existing user) must present when the account already has a
+// second factor: a code from its TOTP, or an answer from one of its
+// passkeys, in a ceremony bound to the link's code. The link alone never
+// passes it, and a new TOTP enrolment is refused for such an account (a link
+// holder must not install a factor of their own). required is false when
+// the account has none, and the caller applies its enrolment rules; ok is
+// false when the refusal was written.
+func (s *Server) linkSecondFactor(w http.ResponseWriter, ctx context.Context, pg *PasswordGates, g PasswordGateSettings,
+	tenant, subject, binding, otp string, wa *passkeyAnswer, enrolment string) (method string, required, ok bool) {
+	totp, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, tenant, subject)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+		return "", true, false
+	}
+	if !hasTOTP && !hasPasskey {
+		return "", false, true
+	}
+	if enrolment != "" {
+		writeJSONError(w, http.StatusBadRequest, "second_factor_exists",
+			"this account already has a second factor; confirm with it instead of adding a new one")
+		return "", true, false
+	}
+	var keys []store.UserPasskeyRow
+	if hasPasskey && s.cfg().ResolvedAuth.Passkeys != nil {
+		if keys, err = s.livePasskeys(ctx, tenant, subject); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
+			return "", true, false
+		}
+	}
+	failed := func() (string, bool, bool) {
+		s.codeFailure(ctx, g, strings.TrimPrefix(strings.TrimPrefix(binding, "reset:"), "invite:"))
+		writeJSONError(w, http.StatusUnauthorized, "invalid_otp", "that code was not accepted")
+		return "", true, false
+	}
+	switch {
+	case wa != nil && len(keys) > 0:
+		_, verified, err := s.passkeyAssertion(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
+			protocol.VerificationPreferred, keys, wa)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not check the passkey")
+			return "", true, false
+		}
+		if !verified {
+			return failed()
+		}
+		return amrWebAuthn, true, true
+	case hasTOTP && strings.TrimSpace(otp) != "":
+		m, verified, err := s.checkSecondFactor(ctx, pg, tenant, subject, totp, otp)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not check the code")
+			return "", true, false
+		}
+		if !verified {
+			return failed()
+		}
+		return m, true, true
+	case len(keys) > 0:
+		offer, _, err := s.passkeyAssertion(ctx, ceremonyLinkFactor, g.Name, tenant, subject, binding,
+			protocol.VerificationPreferred, keys, nil)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "internal", "could not begin the passkey check")
+			return "", true, false
+		}
+		writeSecondFactorRequired(w, &secondFactorChallenge{offer: offer, otp: hasTOTP})
+		return "", true, false
+	case hasTOTP:
+		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
+		return "", true, false
+	}
+	writeJSONError(w, http.StatusForbidden, "second_factor_unavailable",
+		"this account's passkey cannot be used on this server right now; ask an operator to remove its credentials, then use a new link")
+	return "", true, false
 }
 
 func (s *Server) liveReset(ctx context.Context, pg *PasswordGates, code string) (store.AuthResetRow, PasswordGateSettings, bool) {
@@ -933,14 +1127,16 @@ func (s *Server) handleResetInfo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	_, hasTOTP, err := s.confirmedTOTP(ctx, rs.TenantID, rs.Subject)
+	_, hasTOTP, hasPasskey, err := s.accountSecondFactors(ctx, rs.TenantID, rs.Subject)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	out := map[string]any{"gate": g.Name, "login": login, "has_totp": hasTOTP, "require_mfa": g.RequireMFA,
+	out := map[string]any{"gate": g.Name, "login": login, "has_totp": hasTOTP, "has_passkey": hasPasskey, "require_mfa": g.RequireMFA,
 		"min_length": password.MinLengthSoleFactor, "min_length_with_mfa": password.MinLengthWithMFA, "expires_at": rs.ExpiresAt}
-	if !hasTOTP {
+	// An account with a second factor confirms it; it is never offered a new
+	// one through the link.
+	if !hasTOTP && !hasPasskey {
 		enrol, err := newEnrolment(pg, g.Name, rs.TenantID, "reset:"+rs.CodeHash, login)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "internal", "could not prepare the authenticator enrolment")
@@ -977,31 +1173,16 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 	if s.codeBlocked(w, ctx, rs.CodeHash) {
 		return
 	}
-	totp, hasTOTP, err := s.confirmedTOTP(ctx, rs.TenantID, rs.Subject)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
-	}
 	now := time.Now().UTC()
 	amr := []string{amrPassword}
 	var factor *store.AuthSecondFactor
 	var recovery []string
+	method, required, ok := s.linkSecondFactor(w, ctx, pg, g, rs.TenantID, rs.Subject, "reset:"+rs.CodeHash, req.OTP, req.WebAuthn, req.TOTPEnrolment)
+	if !ok {
+		return
+	}
 	switch {
-	case hasTOTP:
-		if strings.TrimSpace(req.OTP) == "" {
-			writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
-			return
-		}
-		method, ok, err := s.checkSecondFactor(ctx, pg, rs.TenantID, rs.Subject, totp, req.OTP)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
-			return
-		}
-		if !ok {
-			s.codeFailure(ctx, g, rs.CodeHash)
-			writeJSONError(w, http.StatusUnauthorized, "invalid_otp", "that code was not accepted")
-			return
-		}
+	case required:
 		amr = append(amr, method)
 	case req.TOTPEnrolment != "":
 		secret, step, err := openEnrolment(pg, rs.TenantID, "reset:"+rs.CodeHash, req.TOTPEnrolment, req.TOTPCode)
@@ -1100,16 +1281,20 @@ func (s *Server) selfService(w http.ResponseWriter, r *http.Request) (*passwordG
 // reauthenticate is the step-up a sensitive self-service action takes: the
 // current password (and the second factor, when the account has one), through
 // the same throttled check as a login.
-func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, pw *passwordGate, sess store.UISessionRow, login, current, otp string) bool {
-	id, _, err := s.verifyPassword(r.Context(), pw, login, current, otp, s.clientSource(r))
+func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, pw *passwordGate, sess store.UISessionRow, login, current string, f secondFactor) bool {
+	id, _, err := s.verifyPassword(r.Context(), pw, login, current, f, s.clientSource(r))
+	var challenge *secondFactorChallenge
 	switch {
 	case err == nil && id.TenantID == sess.TenantID && id.Subject == sess.Subject:
 		return true
+	case errors.As(err, &challenge):
+		writeSecondFactorRequired(w, challenge)
 	case errors.Is(err, errOTPRequired):
 		writeJSONError(w, http.StatusUnauthorized, "otp_required", "enter the code from your authenticator app or a recovery code")
 	case errors.Is(err, errTooManyAttempts):
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts; wait and try again")
-	case err == nil, errors.Is(err, authgate.ErrInvalidCredential), errors.Is(err, errOTPInvalid), errors.Is(err, errMFAEnrolment):
+	case err == nil, errors.Is(err, authgate.ErrInvalidCredential), errors.Is(err, errOTPInvalid), errors.Is(err, errMFAEnrolment),
+		errors.Is(err, errSecondFactorUnavailable):
 		writeJSONError(w, http.StatusUnauthorized, "reauth_failed", "the current password or code was not accepted")
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "internal", err.Error())
@@ -1118,9 +1303,10 @@ func (s *Server) reauthenticate(w http.ResponseWriter, r *http.Request, pw *pass
 }
 
 type changePasswordRequest struct {
-	CurrentPassword string `json:"current_password"`
-	NewPassword     string `json:"new_password"`
-	OTP             string `json:"otp"`
+	CurrentPassword string         `json:"current_password"`
+	NewPassword     string         `json:"new_password"`
+	OTP             string         `json:"otp"`
+	WebAuthn        *passkeyAnswer `json:"webauthn,omitempty"`
 }
 
 // handleChangePassword serves POST /v1/_auth/password. The new password ends
@@ -1135,7 +1321,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, req.OTP) {
+	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, secondFactor{otp: req.OTP, webauthn: req.WebAuthn}) {
 		return
 	}
 	ctx := r.Context()
@@ -1184,10 +1370,11 @@ func (s *Server) handleTOTPBegin(w http.ResponseWriter, r *http.Request) {
 }
 
 type confirmTOTPRequest struct {
-	CurrentPassword string `json:"current_password"`
-	OTP             string `json:"otp"`
-	Enrolment       string `json:"enrolment"`
-	Code            string `json:"code"`
+	CurrentPassword string         `json:"current_password"`
+	OTP             string         `json:"otp"`
+	WebAuthn        *passkeyAnswer `json:"webauthn,omitempty"`
+	Enrolment       string         `json:"enrolment"`
+	Code            string         `json:"code"`
 }
 
 // handleTOTPConfirm serves POST /v1/_auth/totp/confirm: after re-entering the
@@ -1203,7 +1390,7 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, req.OTP) {
+	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, secondFactor{otp: req.OTP, webauthn: req.WebAuthn}) {
 		return
 	}
 	ctx := r.Context()
@@ -1229,8 +1416,9 @@ func (s *Server) handleTOTPConfirm(w http.ResponseWriter, r *http.Request) {
 }
 
 type removeTOTPRequest struct {
-	CurrentPassword string `json:"current_password"`
-	OTP             string `json:"otp"`
+	CurrentPassword string         `json:"current_password"`
+	OTP             string         `json:"otp"`
+	WebAuthn        *passkeyAnswer `json:"webauthn,omitempty"`
 	// NewPassword replaces a password that was long enough only beside the
 	// authenticator (8 characters) with one that stands alone (15).
 	NewPassword string `json:"new_password"`
@@ -1255,7 +1443,7 @@ func (s *Server) handleTOTPRemove(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
-	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, req.OTP) {
+	if !s.reauthenticate(w, r, pw, sess, login, req.CurrentPassword, secondFactor{otp: req.OTP, webauthn: req.WebAuthn}) {
 		return
 	}
 	ctx := r.Context()

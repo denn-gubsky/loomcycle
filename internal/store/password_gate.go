@@ -397,9 +397,10 @@ type PasswordGateStore interface {
 	TenantBootstrapMark(ctx context.Context, row TenantBootstrapRow) error
 
 	// AuthSubjectDelete removes every gate row of a subject: identities,
-	// credentials, TOTP, recovery codes, its invites and resets, and its
-	// removal (auth_removals), and its app sign-ins (oauth codes, refresh
-	// families and their refresh tokens). Called
+	// credentials, TOTP, recovery codes, passkeys, its SCIM resources and
+	// memberships, its invites and resets, and its removal (auth_removals),
+	// and its app sign-ins (oauth codes, refresh families and their refresh
+	// tokens). Called
 	// when the user is deleted, so a login never outlives its user.
 	AuthSubjectDelete(ctx context.Context, tenantID, subject string) error
 }
