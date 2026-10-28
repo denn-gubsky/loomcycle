@@ -1019,22 +1019,24 @@ func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	keys, err := s.livePasskeys(ctx, sess.TenantID, sess.Subject)
+	// Whether the account may lose its last usable passkey is decided first;
+	// when it may not, the removal is one store transaction that keeps the
+	// last usable passkey, so two removals at once cannot take both.
+	code, msg, err := s.lastPasskeyRefusal(ctx, sess.TenantID, sess.Subject)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read passkeys")
+		writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
 		return
 	}
-	last := len(keys) == 1 && bytes.Equal(keys[0].CredentialID, id)
-	if last {
-		if code, msg, err := s.lastPasskeyRefusal(ctx, sess.TenantID, sess.Subject); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "internal", "could not read the account")
-			return
-		} else if code != "" {
+	if code == "" {
+		ok, err = s.store.UserPasskeyDelete(ctx, sess.TenantID, sess.Subject, id)
+	} else {
+		var refused bool
+		ok, refused, err = s.store.UserPasskeyDeleteKeeping(ctx, sess.TenantID, sess.Subject, id)
+		if err == nil && refused {
 			writeJSONError(w, http.StatusConflict, code, msg)
 			return
 		}
 	}
-	ok, err = s.store.UserPasskeyDelete(ctx, sess.TenantID, sess.Subject, id)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "internal", "could not remove the passkey")
 		return
@@ -1048,7 +1050,8 @@ func (s *Server) handleRemovePasskey(w http.ResponseWriter, r *http.Request) {
 }
 
 // lastPasskeyRefusal says why the account's last usable passkey may not go:
-// without it the account has no password and no linked identity (no way in),
+// without it the account has no password and no identity at a sign-in gate
+// (no way in),
 // or it has a password at a gate that requires a second factor and no
 // authenticator app (its password alone would no longer sign in).
 func (s *Server) lastPasskeyRefusal(ctx context.Context, tenant, subject string) (code, msg string, err error) {
@@ -1061,7 +1064,20 @@ func (s *Server) lastPasskeyRefusal(ctx context.Context, tenant, subject string)
 		return "", "", perr
 	}
 	hasPassword := perr == nil
-	if !hasPassword && len(ids) == 0 {
+	// Only an identity at a gate a person signs in through is a way in: a
+	// SCIM or device gate's identity, a non-interactive external gate's, or
+	// one of a gate no longer configured, signs nobody in.
+	login := map[string]bool{}
+	for _, g := range s.cfg().ResolvedAuth.LoginGates() {
+		login[g.Name] = true
+	}
+	signIns := 0
+	for _, id := range ids {
+		if login[id.Gate] {
+			signIns++
+		}
+	}
+	if !hasPassword && signIns == 0 {
 		return "last_sign_in_method", "this passkey is the only way to sign in to this account; add another first", nil
 	}
 	if !hasPassword {
