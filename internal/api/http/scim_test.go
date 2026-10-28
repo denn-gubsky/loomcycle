@@ -2,9 +2,11 @@ package http
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -127,6 +129,14 @@ func TestSCIM_IsConfinedToItsTokensTenant(t *testing.T) {
 	}
 	if f.status(t, "acme", subject) != "active" {
 		t.Fatal("another tenant's token changed the user")
+	}
+	// What a token provisions lands in its own tenant.
+	_, otherSub := f.scimUser(t, bSCIMOther, "bob@other.test")
+	if f.status(t, "other", otherSub) != "active" {
+		t.Fatal("the other tenant's user is not in the other tenant")
+	}
+	if _, err := f.st.UserGet(context.Background(), "acme", otherSub); !isNotFound(err) {
+		t.Fatalf("the other token's user landed in acme: %v", err)
 	}
 	// A credential of the shared tenant (a declared principal can name none)
 	// is refused.
@@ -355,5 +365,82 @@ func TestSCIM_ReEnablesOnlyAUserItDisabled(t *testing.T) {
 	}
 	if code, _ := f.call(t, bSCIMAcme, "PUT", "/scim/v2/Users/"+id3, `{"userName":"carol@acme.test","active":true}`); code != http.StatusForbidden || f.status(t, "acme", s3) != "disabled" {
 		t.Fatalf("re-enable of another gate's removal = %d, status %s", code, f.status(t, "acme", s3))
+	}
+}
+
+// A user SCIM removed while pending comes back pending: SCIM never approves,
+// through a re-enable either.
+func TestSCIM_APendingUserRemovedAndReEnabledStaysPending(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{newUserStatus: store.UserStatusPending, authoritative: true})
+	id, subject := f.scimUser(t, bSCIMAcme, "alice@acme.test")
+	off := scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": false})
+	on := scimPatchBody(t, map[string]any{"op": "replace", "path": "active", "value": true})
+	if code, _ := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, off); code != http.StatusOK || f.status(t, "acme", subject) != "disabled" {
+		t.Fatalf("active:false = %d, status %s", code, f.status(t, "acme", subject))
+	}
+	if code, out := f.call(t, bSCIMAcme, "PATCH", "/scim/v2/Users/"+id, on); code != http.StatusOK || out["active"] != false {
+		t.Fatalf("active:true = %d %v", code, out)
+	}
+	if st := f.status(t, "acme", subject); st != store.UserStatusPending {
+		t.Fatalf("pending -> false -> true left the user %s, want pending", st)
+	}
+}
+
+// Concurrent removals never pass max_sync_removals together.
+func TestSCIM_ConcurrentRemovalsAreHeldToTheCeiling(t *testing.T) {
+	f := newSCIMFixture(t, scimOpts{authoritative: true, maxRemovals: 2})
+	var ids []string
+	for i := 0; i < 6; i++ {
+		id, _ := f.scimUser(t, bSCIMAcme, fmt.Sprintf("u%d@acme.test", i))
+		ids = append(ids, id)
+	}
+	var wg sync.WaitGroup
+	codes := make([]int, len(ids))
+	for i, id := range ids {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			codes[i], _ = f.call(t, bSCIMAcme, "DELETE", "/scim/v2/Users/"+id, "")
+		}(i, id)
+	}
+	wg.Wait()
+	removed, refused := 0, 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusNoContent:
+			removed++
+		case http.StatusTooManyRequests:
+			refused++
+		}
+	}
+	if removed != 2 || refused != 4 {
+		t.Fatalf("codes %v: %d removed, %d refused; want 2 and 4", codes, removed, refused)
+	}
+	disabled := 0
+	for _, id := range ids {
+		if f.status(t, "acme", "okta:"+id) == "disabled" {
+			disabled++
+		}
+	}
+	if disabled != 2 {
+		t.Fatalf("%d users disabled, want 2", disabled)
+	}
+}
+
+// A scim:provision credential is never "the person themselves" on the
+// identity routes, even for a subject equal to its own.
+func TestSCIM_ASCIMTokenIsNeverTheUserOnTheIdentityRoutes(t *testing.T) {
+	p := auth.Principal{TenantID: "acme", Subject: "idp-acme", Scopes: []string{auth.ScopeSCIMProvision}}
+	r := httptest.NewRequest("GET", "/v1/_users/idp-acme/identities", nil)
+	r.Pattern = "GET /v1/_users/{subject}/identities"
+	r.SetPathValue("subject", "idp-acme")
+	if ownIdentityRequest(p, r) {
+		t.Fatal("a SCIM token counts as the user on its own identity routes")
+	}
+	f := newSCIMFixture(t, scimOpts{})
+	rec := httptest.NewRecorder()
+	r = r.WithContext(auth.WithPrincipal(r.Context(), p))
+	if _, _, self, ok := f.srv.identitiesTarget(rec, r); ok && self {
+		t.Fatal("identitiesTarget took a SCIM token for the user itself")
 	}
 }

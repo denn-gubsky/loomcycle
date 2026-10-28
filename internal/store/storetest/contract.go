@@ -590,7 +590,7 @@ func Run(t *testing.T, factory Factory) {
 		{"WebAuthnCeremonyIsTakenOnce", testWebAuthnCeremonyIsTakenOnce},
 		{"SCIMUserLifecycleIsTenantConfined", testSCIMUserLifecycleIsTenantConfined},
 		{"SCIMGroupLifecycle", testSCIMGroupLifecycle},
-		{"SCIMRemovalsSinceCountsTheGatesRemovals", testSCIMRemovalsSinceCountsTheGatesRemovals},
+		{"SCIMRemovalReserveHoldsTheCeilingUnderConcurrency", testSCIMRemovalReserveHoldsTheCeilingUnderConcurrency},
 		{"AuthSubjectDeleteRemovesPasskeysAndSCIMRows", testAuthSubjectDeleteRemovesPasskeysAndSCIMRows},
 		{"NonRaisingWritesKeepManagerIssuedLinks", testNonRaisingWritesKeepManagerIssuedLinks},
 		{"TenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant", testTenantBootstrapMarkIsInsertOrIgnoreAndListsByTenant},

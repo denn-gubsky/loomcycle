@@ -355,10 +355,3 @@ func SCIMGroupsOfSubject(ctx context.Context, q Querier, gate, tenantID, subject
 	}
 	return out, rows.Err()
 }
-
-func SCIMRemovalsSince(ctx context.Context, q Querier, gate, tenantID string, since time.Time) (int, error) {
-	var n int
-	err := q.QueryRow(ctx, `SELECT COUNT(*) FROM auth_removals WHERE gate = ? AND tenant_id = ? AND disabled_at >= ?`,
-		gate, tenantID, q.Dialect().TimeArg(since)).Scan(&n)
-	return n, err
-}

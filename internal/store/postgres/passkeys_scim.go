@@ -140,8 +140,3 @@ func (s *Store) SCIMGroupMembersRemove(ctx context.Context, gate, tenantID, grou
 func (s *Store) SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject string) ([]store.SCIMGroupRow, error) {
 	return sqlshared.SCIMGroupsOfSubject(ctx, s.shared(), gate, tenantID, subject)
 }
-
-// SCIMRemovalsSince implements store.SCIMStore.
-func (s *Store) SCIMRemovalsSince(ctx context.Context, gate, tenantID string, since time.Time) (int, error) {
-	return sqlshared.SCIMRemovalsSince(ctx, s.shared(), gate, tenantID, since)
-}

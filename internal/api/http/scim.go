@@ -784,18 +784,31 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 	}
 	disable := !next.active && u.Status != "disabled"
 	reactivate := next.active && u.Status == "disabled"
-	if disable {
-		if ref := s.scimRemovalAllowed(ctx, c); ref != nil {
-			scimError(w, ref.status, ref.scimType, ref.detail)
-			return
-		}
-	}
+	restore := ""
 	if reactivate {
-		if ref := s.scimReactivationAllowed(ctx, c, row.Subject); ref != nil {
+		var ref *scimRefusal
+		if restore, ref = s.scimReactivationAllowed(ctx, c, row.Subject); ref != nil {
 			s.scimAudit(c, "auth_scim_status_refused", row.Subject, "re-enable of a user SCIM did not disable")
 			scimError(w, ref.status, ref.scimType, ref.detail)
 			return
 		}
+	}
+	// A removal is reserved before anything is written, under the gate's
+	// ceiling, atomically: a refused one changes nothing.
+	var removal *scimRemoval
+	if disable {
+		var ref *scimRefusal
+		if removal, ref = s.scimReserveRemoval(ctx, c, row.Subject, u.Status); ref != nil {
+			scimError(w, ref.status, ref.scimType, ref.detail)
+			return
+		}
+	}
+	fail := func(err error, code int, detail string) {
+		removal.release(ctx, s)
+		if err != nil {
+			slog.Error("scim: updating a user failed", "gate", c.g.Name, "err", err)
+		}
+		scimError(w, code, "", detail)
 	}
 	attrs, err := json.Marshal(next.attrs)
 	if err != nil {
@@ -807,24 +820,27 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 	if err := s.store.SCIMUserUpdate(ctx, upd); err != nil {
 		var conflict *store.ErrConflict
 		if errors.As(err, &conflict) {
+			removal.release(ctx, s)
 			scimError(w, http.StatusConflict, "uniqueness", "a user with this userName exists")
 			return
 		}
-		s.scimNotFoundOr500(w, err, "User")
+		fail(err, http.StatusInternalServerError, "the request could not be completed")
 		return
 	}
 	if dn := next.displayName(); dn != u.DisplayName {
 		if err := s.store.UserUpdate(ctx, c.tenant, row.Subject, store.UserPatch{DisplayName: &dn}); err != nil {
-			s.scimNotFoundOr500(w, err, "User")
+			fail(err, http.StatusInternalServerError, "the request could not be completed")
 			return
 		}
 	}
 	if reactivate {
-		if err := s.reactivateRemoved(ctx, c.tenant, row.Subject, "gate:"+c.g.Name); err != nil {
+		// Back to the status it had when SCIM removed it: pending stays
+		// pending (the one rule for both paths: SCIM never approves).
+		if err := s.reactivateRemovedAs(ctx, c.tenant, row.Subject, "gate:"+c.g.Name, restore); err != nil {
 			s.scimNotFoundOr500(w, err, "User")
 			return
 		}
-		u.Status = "active"
+		u.Status = restore
 	}
 	if next.active && u.Status == store.UserStatusPending {
 		// Approval is an operator's: SCIM's active:true leaves a pending
@@ -839,9 +855,8 @@ func (s *Server) applySCIMUser(w http.ResponseWriter, r *http.Request, c scimCtx
 		}
 	}
 	if disable {
-		if err := s.scimRemove(ctx, c, row.Subject); err != nil {
-			slog.Error("scim: removing a user failed", "gate", c.g.Name, "err", err)
-			scimError(w, http.StatusInternalServerError, "", "the user could not be deactivated; repeat it")
+		if err := s.scimRemove(ctx, c, removal); err != nil {
+			fail(err, http.StatusInternalServerError, "the user could not be deactivated; repeat it")
 			return
 		}
 	}
@@ -881,15 +896,39 @@ func (s *Server) scimAssertedGroups(ctx context.Context, c scimCtx, subject stri
 	return out, nil
 }
 
-// scimRemovalAllowed is the gate's say over removing a user: it must be
-// authoritative for its users, and under its ceiling for the window.
-func (s *Server) scimRemovalAllowed(ctx context.Context, c scimCtx) *scimRefusal {
+// scimRemoval is a removal the gate reserved (its auth_removals row is
+// written) and has yet to carry out.
+type scimRemoval struct {
+	tenant  string
+	subject string
+	// reserved: this request wrote the row (false when the subject was
+	// already being removed), so a failure before the disable releases it.
+	reserved bool
+}
+
+// release deletes a reserved row whose disable never happened, so a failed
+// request leaves no removal behind an active user. A nil removal is a no-op.
+func (rm *scimRemoval) release(ctx context.Context, s *Server) {
+	if rm == nil || !rm.reserved {
+		return
+	}
+	if _, err := s.store.AuthRemovalDelete(ctx, rm.tenant, rm.subject); err != nil {
+		slog.Error("scim: releasing a reserved removal failed", "err", err)
+	}
+}
+
+// scimReserveRemoval is the gate's say over removing a user, and its
+// reservation: the gate must be authoritative for its users, and the removal
+// is recorded only under its ceiling for the window, the count and the
+// insert atomic in the store (one lock per gate and tenant, every replica).
+// A pending user's removal says so, so a re-enable brings it back pending.
+func (s *Server) scimReserveRemoval(ctx context.Context, c scimCtx, subject, status string) (*scimRemoval, *scimRefusal) {
 	if !c.g.Identity.AuthoritativeForUsers {
-		return &scimRefusal{http.StatusForbidden, "", "this SCIM gate is not authoritative for users (identity_map.authoritative_for_users)"}
+		return nil, &scimRefusal{http.StatusForbidden, "", "this SCIM gate is not authoritative for users (identity_map.authoritative_for_users)"}
 	}
 	ids, err := s.store.UserIdentityListGate(ctx, c.g.Name)
 	if err != nil {
-		return &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
+		return nil, &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
 	}
 	linked := 0
 	for _, id := range ids {
@@ -897,40 +936,58 @@ func (s *Server) scimRemovalAllowed(ctx context.Context, c scimCtx) *scimRefusal
 			linked++
 		}
 	}
-	n, err := s.store.SCIMRemovalsSince(ctx, c.g.Name, c.tenant, time.Now().Add(-config.SCIMRemovalWindow))
-	if err != nil {
-		return &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
+	reason := store.RemovalReasonSCIM
+	if status == store.UserStatusPending {
+		reason = store.RemovalReasonSCIMPending
 	}
-	if ceiling := c.g.SCIM.RemovalCeiling(linked); n >= ceiling {
-		s.scimAudit(c, "auth_gate_sync_refused", "", fmt.Sprintf("removal %d in 24h is over the ceiling of %d", n+1, ceiling))
-		return &scimRefusal{http.StatusTooManyRequests, "", fmt.Sprintf(
-			"this SCIM gate has removed %d users in the last 24 hours, its ceiling (max_sync_removals); try again later", n)}
+	rp := c.g.SCIM.Removal
+	now := time.Now().UTC()
+	row := removalRow(lifecycle.Policy{UnbindAfter: rp.UnbindAfter, EraseAfter: rp.EraseAfter}.Start(now),
+		c.tenant, subject, c.g.Name, reason, "gate:"+c.g.Name)
+	ceiling := c.g.SCIM.RemovalCeiling(linked)
+	reserved, err := s.store.SCIMRemovalReserve(ctx, row, now.Add(-config.SCIMRemovalWindow), ceiling)
+	switch {
+	case errors.Is(err, store.ErrSCIMRemovalCeiling):
+		s.scimAudit(c, "auth_gate_sync_refused", subject, fmt.Sprintf("removal over the ceiling of %d in 24h", ceiling))
+		return nil, &scimRefusal{http.StatusTooManyRequests, "", fmt.Sprintf(
+			"this SCIM gate has removed %d users in the last 24 hours, its ceiling (max_sync_removals); try again later", ceiling)}
+	case err != nil:
+		slog.Error("scim: reserving a removal failed", "gate", c.g.Name, "err", err)
+		return nil, &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
 	}
-	return nil
+	return &scimRemoval{tenant: c.tenant, subject: subject, reserved: reserved}, nil
 }
 
 // scimReactivationAllowed: SCIM re-enables only a user whose disable this
-// gate's SCIM caused (its removal row). An operator's disable, another
-// gate's removal, or a disable with no removal stands.
-func (s *Server) scimReactivationAllowed(ctx context.Context, c scimCtx, subject string) *scimRefusal {
+// gate's SCIM caused (its removal row), and only to the status it had then
+// (restore). An operator's disable, another gate's removal, or a disable
+// with no removal stands.
+func (s *Server) scimReactivationAllowed(ctx context.Context, c scimCtx, subject string) (restore string, ref *scimRefusal) {
 	rm, err := s.store.AuthRemovalGet(ctx, c.tenant, subject)
 	if err != nil && !isNotFound(err) {
-		return &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
+		return "", &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
 	}
-	if err == nil && rm.Gate == c.g.Name && rm.Reason == store.RemovalReasonSCIM {
-		return nil
+	if err == nil && rm.Gate == c.g.Name {
+		switch rm.Reason {
+		case store.RemovalReasonSCIM:
+			return "active", nil
+		case store.RemovalReasonSCIMPending:
+			return store.UserStatusPending, nil
+		}
 	}
-	return &scimRefusal{http.StatusForbidden, "", "this user was disabled outside SCIM; an operator re-enables it"}
+	return "", &scimRefusal{http.StatusForbidden, "", "this user was disabled outside SCIM; an operator re-enables it"}
 }
 
-// scimRemove starts the gate's removal policy for a user: disabled now (its
-// sessions end, its tokens retire), unbound and maybe erased later.
-func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) error {
-	rp := c.g.SCIM.Removal
-	err := s.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: rp.UnbindAfter, EraseAfter: rp.EraseAfter},
-		c.tenant, subject, c.g.Name, store.RemovalReasonSCIM, "gate:"+c.g.Name)
+// scimRemove carries out a reserved removal: the gate's removal policy's
+// first stage — disabled now (its sessions end, its tokens retire), unbound
+// and maybe erased later. The reserved row makes startRemovalWith's own
+// insert a no-op.
+func (s *Server) scimRemove(ctx context.Context, c scimCtx, rm *scimRemoval) error {
+	p := c.g.SCIM.Removal
+	err := s.startRemovalWith(ctx, lifecycle.Policy{UnbindAfter: p.UnbindAfter, EraseAfter: p.EraseAfter},
+		c.tenant, rm.subject, c.g.Name, store.RemovalReasonSCIM, "gate:"+c.g.Name)
 	if err == nil {
-		s.scimAudit(c, "auth_scim_user_deactivated", subject, "")
+		s.scimAudit(c, "auth_scim_user_deactivated", rm.subject, "")
 	}
 	return err
 }
@@ -957,11 +1014,18 @@ func (s *Server) handleSCIMDeleteUser(w http.ResponseWriter, r *http.Request) {
 		s.scimNotFoundOr500(w, rerr, "User")
 		return
 	default:
-		if ref := s.scimRemovalAllowed(ctx, c); ref != nil {
+		u, err := s.store.UserGet(ctx, c.tenant, row.Subject)
+		if err != nil {
+			s.scimNotFoundOr500(w, err, "User")
+			return
+		}
+		removal, ref := s.scimReserveRemoval(ctx, c, row.Subject, u.Status)
+		if ref != nil {
 			scimError(w, ref.status, ref.scimType, ref.detail)
 			return
 		}
-		if err := s.scimRemove(ctx, c, row.Subject); err != nil && !isNotFound(err) {
+		if err := s.scimRemove(ctx, c, removal); err != nil {
+			removal.release(ctx, s)
 			slog.Error("scim: removing a user failed", "gate", c.g.Name, "err", err)
 			scimError(w, http.StatusInternalServerError, "", "the user could not be removed; repeat it")
 			return

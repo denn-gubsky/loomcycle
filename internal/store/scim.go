@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -116,8 +117,14 @@ type SCIMStore interface {
 	// of, ordered by display key.
 	SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject string) ([]SCIMGroupRow, error)
 
-	// SCIMRemovalsSince counts the removals (auth_removals) the gate started
-	// in the tenant at or after since: the window a SCIM gate's removal
-	// ceiling is held to.
-	SCIMRemovalsSince(ctx context.Context, gate, tenantID string, since time.Time) (int, error)
+	// SCIMRemovalReserve records row (a removal the gate starts) only while
+	// the gate has started fewer than ceiling removals in row's tenant since
+	// `since` — the count and the insert under one per-(gate, tenant) lock,
+	// so concurrent removals on any replica cannot pass the ceiling
+	// together. False when the subject already has a removal (nothing
+	// recorded); ErrSCIMRemovalCeiling when the ceiling is reached.
+	SCIMRemovalReserve(ctx context.Context, row AuthRemovalRow, since time.Time, ceiling int) (bool, error)
 }
+
+// ErrSCIMRemovalCeiling: a SCIM gate reached its removal ceiling.
+var ErrSCIMRemovalCeiling = errors.New("store: the SCIM gate's removal ceiling is reached")

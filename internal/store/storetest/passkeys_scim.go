@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -369,24 +370,51 @@ func testSCIMGroupLifecycle(t *testing.T, s store.Store) {
 	}
 }
 
-// The removal window counts only the gate's removals in the tenant.
-func testSCIMRemovalsSinceCountsTheGatesRemovals(t *testing.T, s store.Store) {
+// A SCIM removal is reserved under the gate's ceiling, the count and the
+// insert atomic: concurrent reservations never pass it together, and only
+// the gate's own removals in the tenant count.
+func testSCIMRemovalReserveHoldsTheCeilingUnderConcurrency(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	for i, r := range []store.AuthRemovalRow{
-		{TenantID: "acme", Subject: "a1", Gate: "okta", Reason: store.RemovalReasonRevoked, DisabledAt: pwgT0, UnbindDueAt: pwgT0.Add(time.Hour)},
-		{TenantID: "acme", Subject: "a2", Gate: "okta", Reason: store.RemovalReasonRevoked, DisabledAt: pwgT0.Add(2 * time.Hour), UnbindDueAt: pwgT0.Add(3 * time.Hour)},
-		{TenantID: "acme", Subject: "a3", Gate: "other", Reason: store.RemovalReasonRevoked, DisabledAt: pwgT0.Add(2 * time.Hour), UnbindDueAt: pwgT0.Add(3 * time.Hour)},
-		{TenantID: "beta", Subject: "a4", Gate: "okta", Reason: store.RemovalReasonRevoked, DisabledAt: pwgT0.Add(2 * time.Hour), UnbindDueAt: pwgT0.Add(3 * time.Hour)},
-	} {
+	row := func(tenant, subject, gate string, at time.Time) store.AuthRemovalRow {
+		return store.AuthRemovalRow{TenantID: tenant, Subject: subject, Gate: gate, Reason: store.RemovalReasonSCIM,
+			DisabledAt: at, UnbindDueAt: at.Add(time.Hour), CreatedBy: "gate:" + gate}
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	// Outside the window, another gate's and another tenant's do not count.
+	for _, r := range []store.AuthRemovalRow{row("acme", "old", "okta", now.Add(-48*time.Hour)),
+		row("acme", "x1", "other", now), row("beta", "x2", "okta", now)} {
 		if ok, err := s.AuthRemovalStart(ctx, r); !ok || err != nil {
-			t.Fatalf("removal %d: %v %v", i, ok, err)
+			t.Fatalf("seed: %v %v", ok, err)
 		}
 	}
-	if n, err := s.SCIMRemovalsSince(ctx, "okta", "acme", pwgT0.Add(time.Hour)); n != 1 || err != nil {
-		t.Fatalf("since +1h = %d, %v; want 1", n, err)
+	since := now.Add(-24 * time.Hour)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	ok, refused := 0, 0
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got, err := s.SCIMRemovalReserve(ctx, row("acme", fmt.Sprintf("u%d", i), "okta", now), since, 3)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil && got:
+				ok++
+			case errors.Is(err, store.ErrSCIMRemovalCeiling):
+				refused++
+			default:
+				t.Errorf("reserve %d: %v %v", i, got, err)
+			}
+		}(i)
 	}
-	if n, _ := s.SCIMRemovalsSince(ctx, "okta", "acme", pwgT0); n != 2 {
-		t.Fatalf("since t0 = %d; want 2", n)
+	wg.Wait()
+	if ok != 3 || refused != 9 {
+		t.Fatalf("reserved %d and refused %d of 12 under a ceiling of 3", ok, refused)
+	}
+	// A subject already being removed records nothing, and is not refused.
+	if got, err := s.SCIMRemovalReserve(ctx, row("beta", "x2", "okta", now), since, 5); got || err != nil {
+		t.Fatalf("an existing removal: %v %v", got, err)
 	}
 }
 

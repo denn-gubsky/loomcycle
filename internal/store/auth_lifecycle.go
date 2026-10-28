@@ -22,6 +22,10 @@ const (
 	RemovalReasonDormant  = "dormant"  // no login through any gate for dormant_after
 	RemovalReasonOperator = "operator" // an operator started it
 	RemovalReasonSCIM     = "scim"     // a SCIM gate's DELETE or active:false (RFC FA P6)
+	// RemovalReasonSCIMPending is RemovalReasonSCIM for a user that was
+	// pending when removed: a SCIM re-enable brings it back pending, never
+	// active (approval stays an operator's).
+	RemovalReasonSCIMPending = "scim_pending"
 )
 
 // AuthRemovalRow is one user's removal (RFC FA §3.7c). Stages never skip:

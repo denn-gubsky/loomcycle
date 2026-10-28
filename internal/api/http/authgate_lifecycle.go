@@ -284,6 +284,12 @@ var errNoRemoval = errors.New("the user is not being removed")
 // to the floor, the floor groups that exist in the tenant are joined, and only
 // then is the user active again. A failure part-way leaves the user disabled.
 func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by string) error {
+	return s.reactivateRemovedAs(ctx, tenant, subject, by, "active")
+}
+
+// reactivateRemovedAs is reactivateRemoved ending at status (active, or
+// pending for a user removed while it awaited approval).
+func (s *Server) reactivateRemovedAs(ctx context.Context, tenant, subject, by, status string) error {
 	r, err := s.store.AuthRemovalGet(ctx, tenant, subject)
 	if err != nil {
 		if isNotFound(err) {
@@ -318,8 +324,7 @@ func (s *Server) reactivateRemoved(ctx context.Context, tenant, subject, by stri
 	if changed {
 		s.aclChanged(ctx, tenant, "removal_reactivated", subject)
 	}
-	active := "active"
-	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &active}); err != nil {
+	if err := s.store.UserUpdate(ctx, tenant, subject, store.UserPatch{Status: &status}); err != nil {
 		return err
 	}
 	if _, err := s.store.AuthRemovalDelete(ctx, tenant, subject); err != nil {
