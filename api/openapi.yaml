@@ -2401,6 +2401,11 @@ components:
             - link_chunks
             - unlink_chunks
             - get_edges
+            - get_edge
+            - propose_statement
+            - accept_statement
+            - reject_statement
+            - list_statements
             - query_chunks
             - add_tags
             - remove_tags
