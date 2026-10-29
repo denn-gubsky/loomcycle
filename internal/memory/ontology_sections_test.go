@@ -326,3 +326,27 @@ func TestIsReservedStructuralType(t *testing.T) {
 		t.Error("a class is not a structural type")
 	}
 }
+
+// TestOntologyTemplate_SectionExampleDeclaresNothing.
+//
+// The template teaches sections with a fenced example. Anything in it that read as a
+// heading or a directive would configure the very document it documents — a class
+// named after the example, or a @section on the root.
+func TestOntologyTemplate_SectionExampleDeclaresNothing(t *testing.T) {
+	tpl := OntologyTemplate()
+	if !strings.Contains(tpl, "@section classes") {
+		t.Fatal("the template no longer teaches sections")
+	}
+	if strings.Contains(tpl, "\n### Sections") {
+		t.Error("the section explainer is a heading, so it would be imported as a class")
+	}
+	if ds := ParseDirectives(tpl); len(ds) != 0 {
+		// The bullet-form @memory_scope example is indented, and bullets are read
+		// wherever they are — so only a bare-line leak is a regression here.
+		for _, d := range ds {
+			if d.Name != "memory_scope" {
+				t.Errorf("the template body declares @%s %s", d.Name, d.Value)
+			}
+		}
+	}
+}

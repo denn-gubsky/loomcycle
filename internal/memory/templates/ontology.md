@@ -27,6 +27,44 @@ top-level. You may nest your types *under* them, but nesting them under one of
 yours is ignored. Names work best lowercase, as `a-z0-9-_` — a name with spaces
 still works, it just reads as prose inside a prompt.
 
+**Sections, typed fields and document classes.**
+
+Everything above still works as written. When you want more than a flat list of
+entity types, give a top-level heading a `@section` line as its first directive.
+Nesting under it then means what that section says:
+
+- **classes** — the types you have been writing, with nesting as subclassing.
+- **relations**, **schemes** and **instances** — relation kinds, topic and file-plan
+  schemes, and your organisation's real units. Reserved for upcoming versions;
+  declaring them now is harmless.
+
+Inside a classes section, a field can say what it holds, and a class under
+`Document` describes a kind of *document* rather than a kind of thing memory records:
+
+```markdown
+## Classes
+@section classes
+
+### Document
+- `title` text @required
+
+#### Policy
+@identity
+- `owner` text @required — who maintains it
+- `issued` date
+- `state` enum(draft, in_force, retired)
+
+### Provision
+- `anchor` anchor @identity — its article or clause number
+```
+
+Field types are `text`, `number`, `date`, `enum(…)`, `concept(scheme)`,
+`ref(Class)` and `anchor`; a field with no type is text. `@required` and a value of
+the wrong type produce warnings on the write, never a refusal. `@identity` makes the
+field part of the thing's identity, and a bare `@identity` line means "its title
+is its identity" — two chunks with the same identity are refused. Document classes
+describe documents; they are never listed to the agents as entity types.
+
 ### Where a type's facts are stored
 
 A type may declare which memory scope facts about that kind of thing belong in:
