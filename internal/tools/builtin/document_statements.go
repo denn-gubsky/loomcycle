@@ -1082,13 +1082,23 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		if base == nil {
 			return errNotFound("propose_statement: no such statement: "+in.ID, "Omit id to propose a new statement."), nil
 		}
+		if base.Status == edgeStatusRejected {
+			return errBusiness("propose_statement: statement_rejected: that relation was rejected by an operator ("+base.JudgeReason+"), so it is not revised",
+				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
+		}
 		w.from, w.to, w.kind, w.revisionOf = base.FromID, base.ToID, base.Kind, base.ID
 		if in.Kind != "" {
 			w.kind = in.Kind
 		}
 	}
-	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
-		return errValidation("propose_statement: confidence must be between 0 and 1", ""), nil
+	// A rejection is a tombstone for the relation, not for one valid_at of it: a
+	// proposal that differs only in its date (or rides in as a revision) would
+	// otherwise re-file what an operator already refused, as often as asked.
+	if reason, rejected, err := d.rejectedRelation(ctx, key, w.from, w.to, w.kind, d.discriminatorFor(ctx, w.kind, w.attributes)); err != nil {
+		return errFrom("propose_statement: "+err.Error(), err), nil
+	} else if rejected {
+		return errBusiness("propose_statement: statement_rejected: this relation was rejected by an operator ("+reason+")",
+			"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 	}
 	if len(w.evidence) > 0 && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
@@ -1114,6 +1124,18 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	d.publishEdgeChange(ctx, key, mscope, "propose_statement", res.ID, w.from, w.to, w.kind, res.Status)
 	return jsonResult(res)
+}
+
+// rejectedRelation reports a rejected statement of (from, to, kind,
+// discriminator) at any valid_at, with its reason.
+func (d *Document) rejectedRelation(ctx context.Context, key sqlmem.ScopeKey, from, to, kind, disc string) (string, bool, error) {
+	res, err := d.query(ctx, key, `SELECT COALESCE(judge_reason, '') FROM chunk_edges
+		WHERE from_id = ? AND to_id = ? AND kind = ? AND discriminator = ? AND status = ? LIMIT 1`,
+		from, to, kind, disc, edgeStatusRejected)
+	if err != nil || len(res.Rows) == 0 {
+		return "", false, err
+	}
+	return asStr(res.Rows[0][0]), true, nil
 }
 
 // reviewStatement is accept_statement / reject_statement: the operator's ruling on
