@@ -110,7 +110,11 @@ var docACLOps = map[string]docACLRule{
 	// resolve_anchor names its document by work key, which only the op can
 	// resolve: it asks read on the document it finds (and write on the path of a
 	// placeholder it files) itself.
-	"resolve_anchor":    {verb: "read", target: docACLListing},
+	"resolve_anchor": {verb: "read", target: docACLListing},
+	// A lease guards a pass over the whole scope and changes no content: it asks
+	// propose, the verb a statement-maintaining driver already needs there.
+	"lease":             {verb: "propose", target: docACLScope},
+	"release":           {verb: "propose", target: docACLScope},
 	"query_chunks":      {verb: "read", target: docACLScope},
 	"add_tags":          {verb: "write", target: docACLChunkOrDocument},
 	"remove_tags":       {verb: "write", target: docACLChunkOrDocument},
