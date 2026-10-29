@@ -3990,13 +3990,14 @@ export type DocumentToolInput = {
    *  and the verbatim quote, which the server checks against that source. */
   evidence?: DocumentEdgeEvidence[];
   /** get_edges (default true) / backlinks (default false): include relations
-   *  proposed for review. */
+   *  proposed for review. graph_recall (default false): also follow them. */
   include_proposed?: boolean;
   /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
   after?: string;
   /** graph_recall: declared (the tenant's walk kinds) or all relations. */
   walk?: "declared" | "all";
-  /** graph_recall with budget_chars: each hop spends at most decay^hop of it. */
+  /** graph_recall with budget_chars: each hop spends at most decay^hop of it.
+   *  Refused without budget_chars. */
   decay?: number;
   /** graph_recall: also step to the parent (up) / children (down). */
   include_hierarchy?: "up" | "down" | "both" | "none";
@@ -4102,7 +4103,8 @@ export type DocumentToolInput = {
   reason?: string;
   /** list_facts / graph_recall: also return facts a judge marked unsupported.
    *  They are withheld by default and never deleted, so this is how to read what
-   *  was refused, and why. */
+   *  was refused, and why. graph_recall also follows relations a judge marked
+   *  unsupported, never one an operator rejected. */
   include_refuted?: boolean;
   /** list_facts: return only CLAIMS, dropping the entity identity nodes (the subject
    *  a fact is about — "Ollama", "the user"). A claim carries a sentence and can carry

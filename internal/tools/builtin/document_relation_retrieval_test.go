@@ -413,3 +413,65 @@ func TestRelated_IDAndRelatedToWithoutEmbedderKeepsLinked(t *testing.T) {
 		t.Errorf("note = %v", out["note"])
 	}
 }
+
+// A rejected statement is an operator's ruling, not a verdict on a fact:
+// include_refuted brings back refuted facts and relations, never a rejected one.
+func TestGraphRecall_IncludeRefutedNeverWalksARejectedStatement(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		ids := walkDoc(t, d, ctx)
+		o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"related"}`, ids["clause"], ids["note"]))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		sid, _ := o["id"].(string)
+		if _, r := docExec(t, d, operatorCtx(ctx), fmt.Sprintf(`{"op":"reject_statement","scope":"user","id":%q,"reason":"wrong"}`, sid)); r.IsError {
+			t.Fatalf("reject_statement: %s", r.Text)
+		}
+		for _, extra := range []string{`,"include_refuted":true`, `,"include_refuted":true,"include_proposed":true`} {
+			rows, _ := recallRows(t, d, ctx, fmt.Sprintf(`{"op":"graph_recall","scope":"user","seed_ids":[%q]%s}`, ids["clause"], extra))
+			if n, ok := rows[ids["note"]]; ok {
+				t.Errorf("%s: the rejected statement was walked: %v", extra, n)
+			}
+			if _, ok := rows[ids["article"]]; !ok {
+				t.Errorf("%s: control: the asserted relation was not walked", extra)
+			}
+		}
+	})
+}
+
+// decay shares out budget_chars, so it is refused without one, and reported only
+// when a budget made it apply.
+func TestGraphRecall_DecayAppliesOnlyWithABudget(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	ids := walkDoc(t, d, ctx)
+	_, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"graph_recall","scope":"user","seed_ids":[%q],"decay":0.5}`, ids["clause"]))
+	if !r.IsError || !strings.Contains(r.Text, "budget_chars") {
+		t.Errorf("decay without budget_chars: want a refusal naming budget_chars, got %s", r.Text)
+	}
+	// A declared walk defaults decay to 0.7; with no budget there is nothing to decay.
+	f := newRelFixture(t, relationsOntologyMD)
+	if _, failed, msg := f.link(t, "supervises", f.provA, f.provB, ""); failed {
+		t.Fatalf("link: %s", msg)
+	}
+	_, out := recallRows(t, f.d, f.ctx, fmt.Sprintf(`{"op":"graph_recall","scope":"user","seed_ids":[%q]}`, f.provA))
+	if out["walk"] != "declared" {
+		t.Fatalf("staging: walk = %v, want declared", out["walk"])
+	}
+	if _, ok := out["decay"]; ok {
+		t.Errorf("decay reported with no budget: %v", out["decay"])
+	}
+	_, out = recallRows(t, f.d, f.ctx, fmt.Sprintf(`{"op":"graph_recall","scope":"user","seed_ids":[%q],"budget_chars":500}`, f.provA))
+	if out["decay"] != 0.7 {
+		t.Errorf("declared walk with a budget: decay = %v, want 0.7", out["decay"])
+	}
+}
+
+// walk is checked whether or not kinds are named: a typo is refused, not ignored.
+func TestGraphRecall_InvalidWalkIsRefusedWithKinds(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	ids := walkDoc(t, d, ctx)
+	_, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"graph_recall","scope":"user","seed_ids":[%q],"kinds":["cites"],"walk":"everything"}`, ids["clause"]))
+	if !r.IsError || !strings.Contains(r.Text, "walk must be") {
+		t.Errorf("walk=everything with kinds: want a refusal, got %s", r.Text)
+	}
+}
