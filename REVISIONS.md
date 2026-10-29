@@ -12,12 +12,13 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 *Passkeys, SCIM provisioning and gate-only user tokens; a `loomboard` preset for app sign-in; and model speed and budgets on the Usage pages. **Passkeys** are a phishing-resistant second factor at a password gate and, as `kind: passkey`, a password-less sign-in. **A `kind: scim` gate takes SCIM 2.0** at `/scim/v2`, so an identity provider creates, deactivates and groups users the way an external gate's sync does. **`auth.strict.user_tokens: gate_only`** refuses hand-minted per-user tokens, so a person's API token comes only from a gate. **The opt-in `loomboard` preset** registers loomboard's desktop app for "Sign in with loomcycle". **The Usage pages** show each model's speed and each user's and tenant's spend against its token budget. **Read the upgrade notes: two migrations, a new Go dependency, and strict mode now refusing a hand-minted user token as a Web UI sign-in.***
 
-Since v1.126.0: #2218 to #2223.
+Since v1.126.0: #2218 to #2225.
 - sign-in gates (RFC FA P6): passkeys, SCIM 2.0 and `gate_only` (#2221), and the removal races and passkey edge cases its last review found (#2222);
 - app sign-in (RFC FL P2): the `loomboard` preset (#2223);
 - usage (RFC FM P5): model speed and budgets (#2218);
 - fixes: the MCP tool-count test and guide (#2219), model names on the routing page (#2220).
-- `@loomcycle/client` and the Python adapter are unchanged and stay at 1.126.0; this release adds no adapter methods.
+- the TS adapter's `AuthGateKind` names the `passkey` and `scim` gates (#2225).
+- `@loomcycle/client` moves to 1.127.0 for that type; it adds no methods. The Python adapter is unchanged and stays at 1.126.0.
 
 ### Passkeys, SCIM and gate-only user tokens (#2221, #2222)
 
@@ -67,7 +68,7 @@ The last phase of usage reports (RFC FM P5).
 - **Behaviour change: in `auth.mode: strict`, a hand-minted per-user token is no longer a Web UI sign-in**, with or without `gate_only` (RFC FA §4). The person signs in through a gate; the token still works as an API bearer unless `gate_only` is set.
 - **Behaviour change: an operator's disable now ends the user's Web UI sessions** as well as retiring its tokens.
 - **New config:** gate kinds `passkey` and `scim`; `auth.strict.user_tokens`; `max_sync_creates`; the `loomboard` preset. Nothing changes until you set them. Passkeys need `LOOMCYCLE_PUBLIC_URL` (https, or http on localhost). No new environment variables.
-- **New wire surface, all additive:** HTTP `/v1/_auth/passkeys` (list, `register/begin`, `register/finish`, rename, remove), `/v1/_auth/passkey/{gate}/begin`, `/scim/v2/*`, `GET /v1/_usage/speed`; the 403 `user_tokens_gate_only`, `second_factor_unavailable` and 409 `flagged_passkeys_remain`, `removal_in_progress` answers. No gRPC, MCP or adapter change.
+- **New wire surface, all additive:** HTTP `/v1/_auth/passkeys` (list, `register/begin`, `register/finish`, rename, remove), `/v1/_auth/passkey/{gate}/begin`, `/scim/v2/*`, `GET /v1/_usage/speed`; the 403 `user_tokens_gate_only`, `second_factor_unavailable` and 409 `flagged_passkeys_remain`, `removal_in_progress` answers. No gRPC or MCP change; `AuthGateKind` in `@loomcycle/client` gains `passkey` and `scim`.
 - **Rolling upgrades:** an older replica has no passkey, SCIM or `gate_only` handling. Upgrade all replicas together before configuring them.
 - **Dependencies:** new `github.com/go-webauthn/webauthn` v0.18.2 (BSD-3-Clause), with `go-webauthn/x`, `fxamacker/cbor`, `golang-jwt/jwt/v5`, `google/go-tpm` and their dependencies (BSD, MIT, Apache-2.0).
 - **Images:** a minor tag rebuilds every image, all at 1.127.0 for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser`, the sandbox images and `loomcycle-media`.
