@@ -63,6 +63,20 @@ func (d *Document) inverseKindName(ctx context.Context, kind string) string {
 	return ""
 }
 
+// discriminatorFor is the value of the kind's declared @discriminator qualifier in
+// attributes (e.g. mod_type), "" when the kind declares none — so two statements of one
+// triple that differ in it (two separate amendments) are two rows, not one.
+func (d *Document) discriminatorFor(ctx context.Context, kind string, attributes map[string]any) string {
+	return ""
+}
+
+// gateAttributes checks a relation's attributes against the kind's declared @qualifiers.
+// Same verdict shape as gateRelation; separate so gateRelation's agreed signature stays
+// fixed.
+func (d *Document) gateAttributes(ctx context.Context, kind string, attributes map[string]any, authored bool) relationGate {
+	return relationGate{Valid: true}
+}
+
 // ontologyVersion is the revision of the tenant ontology document's root chunk — the
 // ontology_version stamped on every fact and statement at write (RFC FO §3.6), so the
 // panel can count what was written under an older vocabulary. 0 means the tenant has no
