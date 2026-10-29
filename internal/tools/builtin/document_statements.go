@@ -49,6 +49,10 @@ const chunkEdgesColumns = `
 		judged_at BIGINT, judge_reason TEXT, judged_by TEXT,
 		PRIMARY KEY (id)`
 
+// preStatementEdgeColumns is the whole chunk_edges of a scope created before
+// statements. A table holding any other column is not that table.
+var preStatementEdgeColumns = map[string]bool{"from_id": true, "to_id": true, "kind": true, "created_at": true, "auto": true}
+
 // chunkEdgeEvidenceColumns: exactly one of the three source forms is set — a chunk
 // of this scope, a chat turn (session_id + event_seq), or another scope by
 // natural key (resolved by a tolerant reader, never enumerated).
@@ -130,8 +134,21 @@ func edgeEvidenceMax() int {
 // otherwise — which is byte-identical for every reader that ignores the new fields.
 //
 // One transaction, so a crash leaves either the old table or the new one.
+//
+// The rebuild drops every statement column, so it runs only on a POSITIVE reading
+// of the table's columns: a probe that failed (a lock, a dropped connection) is an
+// error here, never "the column is missing" — which is how a transient fault would
+// otherwise rewrite every statement as a fresh, evidence-less assertion.
 func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKey) error {
-	if !d.tableHasColumn(ctx, key, "chunk_edges", "discriminator") {
+	cols, err := d.tableColumns(ctx, key, "chunk_edges")
+	if err != nil {
+		return fmt.Errorf("probe chunk_edges: %w", err)
+	}
+	rebuild, err := edgeTableNeedsRebuild(cols)
+	if err != nil {
+		return err
+	}
+	if rebuild {
 		idExpr := `lower(hex(randomblob(16)))`
 		if d.SqlMem.Tier() == "postgres" {
 			idExpr = `md5(random()::text || clock_timestamp()::text || from_id || to_id || kind)`
@@ -167,6 +184,52 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 		}
 	}
 	return nil
+}
+
+// tableColumns lists a table's columns from the catalog, so a success is a
+// complete answer and a failure is only a failure. Not `SELECT * … WHERE 1=0`:
+// postgres caches that statement's plan, and once the rebuild changes the table
+// the cached plan's result type no longer matches — the probe itself would fail.
+// Aggregated into one row, so the operator's row cap cannot clip the listing.
+func (d *Document) tableColumns(ctx context.Context, key sqlmem.ScopeKey, table string) (map[string]bool, error) {
+	stmt := `SELECT group_concat(name, ',') FROM pragma_table_info(?)`
+	if d.SqlMem.Tier() == "postgres" {
+		stmt = `SELECT string_agg(column_name, ',') FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?`
+	}
+	res, err := d.query(ctx, key, stmt, table)
+	if err != nil {
+		return nil, err
+	}
+	if len(res.Rows) != 1 || res.Truncated {
+		return nil, fmt.Errorf("column listing of %s came back as %d rows", table, len(res.Rows))
+	}
+	cols := map[string]bool{}
+	for _, c := range strings.Split(asStr(res.Rows[0][0]), ",") {
+		if c = strings.ToLower(strings.TrimSpace(c)); c != "" {
+			cols[c] = true
+		}
+	}
+	return cols, nil
+}
+
+// edgeTableNeedsRebuild reads a chunk_edges column listing: true for the
+// pre-statement table, false for one already in the statement shape, and an error
+// for anything between — a listing it cannot place is not a table to rebuild.
+func edgeTableNeedsRebuild(cols map[string]bool) (bool, error) {
+	if cols["discriminator"] {
+		return false, nil
+	}
+	for c := range preStatementEdgeColumns {
+		if !cols[c] {
+			return false, fmt.Errorf("chunk_edges has no %s column; refusing to rebuild a table this build does not recognise", c)
+		}
+	}
+	for c := range cols {
+		if !preStatementEdgeColumns[c] {
+			return false, fmt.Errorf("chunk_edges has statement column %s but no discriminator; refusing to rebuild over a partly migrated table", c)
+		}
+	}
+	return true, nil
 }
 
 // deleteEdgesWhere removes the edges matching cond and their evidence. Every path
