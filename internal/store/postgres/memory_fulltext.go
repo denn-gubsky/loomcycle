@@ -67,11 +67,6 @@ func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) err
 	if err := s.pool.QueryRow(ctx, `SELECT $1::regconfig::text`, name).Scan(&resolved); err != nil {
 		return fmt.Errorf("memory.fulltext.config %q: Postgres has no such text search configuration (list them with \\dF in psql; a language Postgres does not ship needs a dictionary installed first): %w", name, err)
 	}
-	if cfg.Unaccent {
-		if err := s.ensureUnaccentFunc(ctx); err != nil {
-			return err
-		}
-	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -80,6 +75,15 @@ func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) err
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(ftsLockKey)); err != nil {
 		return fmt.Errorf("fulltext: lock: %w", err)
+	}
+	// The extension and the wrapper are catalog rows every replica would
+	// write: created outside the lock, two booting together collide on them
+	// ("tuple concurrently updated", a duplicate pg_extension row) and one of
+	// the boots fails. DDL is transactional, so they commit with the rebuild.
+	if cfg.Unaccent {
+		if err := ensureUnaccentFunc(ctx, tx); err != nil {
+			return err
+		}
 	}
 	// Read under the lock: a replica that won the race has already rebuilt.
 	var comment *string
@@ -131,19 +135,31 @@ func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) err
 // Postgres 13, so the database owner may) and the IMMUTABLE wrapper over it.
 // The wrapper names the extension's schema explicitly: unqualified, it would
 // resolve through the caller's search_path, which a generated column must not
-// depend on.
-func (s *Store) ensureUnaccentFunc(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS unaccent`); err != nil {
+// depend on. It runs in the caller's locked transaction.
+func ensureUnaccentFunc(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS unaccent`); err != nil {
 		return fmt.Errorf("memory.fulltext.unaccent needs the Postgres `unaccent` extension (part of contrib), and this role could not create it: %w", err)
 	}
 	var ns string
-	if err := s.pool.QueryRow(ctx, `SELECT quote_ident(n.nspname) FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent'`).Scan(&ns); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT quote_ident(n.nspname) FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'unaccent'`).Scan(&ns); err != nil {
 		return fmt.Errorf("fulltext: locate unaccent: %w", err)
+	}
+	body := ` SELECT ` + ns + `.unaccent('` + ns + `.unaccent'::regdictionary, $1) `
+	// Replacing an identical function still rewrites its pg_proc row, and needs
+	// the role to own it; every boot after the first would do both for nothing.
+	var same bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_proc
+		WHERE oid = to_regprocedure(quote_ident(current_schema()) || '.`+ftsUnaccentFunc+`(text)')
+		  AND prosrc = $1 AND provolatile = 'i')`, body).Scan(&same); err != nil {
+		return fmt.Errorf("fulltext: read %s: %w", ftsUnaccentFunc, err)
+	}
+	if same {
+		return nil
 	}
 	ddl := `CREATE OR REPLACE FUNCTION ` + ftsUnaccentFunc + `(text) RETURNS text
 		LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
-		AS $fn$ SELECT ` + ns + `.unaccent('` + ns + `.unaccent'::regdictionary, $1) $fn$`
-	if _, err := s.pool.Exec(ctx, ddl); err != nil {
+		AS $fn$` + body + `$fn$`
+	if _, err := tx.Exec(ctx, ddl); err != nil {
 		return fmt.Errorf("fulltext: create %s: %w", ftsUnaccentFunc, err)
 	}
 	return nil

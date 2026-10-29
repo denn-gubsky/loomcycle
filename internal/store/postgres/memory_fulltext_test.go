@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,5 +177,85 @@ func TestFullText_UnknownConfigurationFailsTheBoot(t *testing.T) {
 	_, err = ftsReopen(t, fix, FullTextConfig{Config: "english'); DROP TABLE memory; --"})
 	if err == nil || !strings.Contains(err.Error(), "not a text search configuration name") {
 		t.Fatalf("want the name refused, got %v", err)
+	}
+}
+
+// ftsConcurrentRounds × ftsConcurrentOpens replicas boot together on a fresh
+// schema each round. The race this guards was rare (about one boot in sixty),
+// so a single round would pass on broken code most of the time.
+const (
+	ftsConcurrentRounds = 10
+	ftsConcurrentOpens  = 6
+)
+
+// Replicas booting at once with unaccent on must all come up: the extension and
+// its wrapper are DDL on shared catalog rows, and two sessions creating them
+// together fail one of the boots ("tuple concurrently updated").
+func TestFullText_ConcurrentUnaccentBootsAllSucceed(t *testing.T) {
+	dsn := pgDSNFromEnv(t)
+	if !pgvectorInstallable(t, dsn) {
+		t.Skip("test Postgres cannot install pgvector; there is no word leg without memory_embeddings")
+	}
+	cfg := FullTextConfig{Config: "simple", Unaccent: true}
+	failed := 0
+	for round := 0; round < ftsConcurrentRounds; round++ {
+		fix := freshSchemaWithVectors(t, dsn, true)
+		// Drop the extension a previous round (or test) installed, so every
+		// round races on creating it as well as the wrapper.
+		pool := rawPool(t, dsn)
+		if _, err := pool.Exec(context.Background(), `DROP EXTENSION IF EXISTS unaccent CASCADE`); err != nil {
+			t.Fatalf("drop unaccent: %v", err)
+		}
+		pool.Close()
+
+		var wg sync.WaitGroup
+		errs := make([]error, ftsConcurrentOpens)
+		stores := make([]*Store, ftsConcurrentOpens)
+		for i := range ftsConcurrentOpens {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				stores[i], errs[i] = Open(context.Background(), Config{DSN: fix.storeDSN, MaxOpenConns: 2, PgvectorEnabled: true, FullText: cfg})
+			}()
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				failed++
+				t.Errorf("round %d boot %d: %v", round, i, err)
+				continue
+			}
+			_ = stores[i].Close()
+		}
+		fix.cleanup()
+	}
+	t.Logf("%d of %d concurrent boots failed", failed, ftsConcurrentRounds*ftsConcurrentOpens)
+}
+
+// A reboot with unaccent on must leave the wrapper's catalog row alone:
+// rewriting it needs the role to own the function and is one more write two
+// booting replicas can collide on.
+func TestFullText_UnaccentRebootKeepsTheWrapperRow(t *testing.T) {
+	fix := ftsFixture(t)
+	cfg := FullTextConfig{Config: "simple", Unaccent: true}
+	if _, err := ftsReopen(t, fix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	xmin := func() string {
+		pool := rawPool(t, fix.storeDSN)
+		defer pool.Close()
+		var x string
+		if err := pool.QueryRow(context.Background(),
+			`SELECT xmin::text FROM pg_proc WHERE oid = to_regprocedure('`+ftsUnaccentFunc+`(text)')`).Scan(&x); err != nil {
+			t.Fatalf("read wrapper row: %v", err)
+		}
+		return x
+	}
+	before := xmin()
+	if _, err := ftsReopen(t, fix, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if after := xmin(); after != before {
+		t.Fatalf("wrapper rewritten on an unchanged reboot: xmin %s → %s", before, after)
 	}
 }
