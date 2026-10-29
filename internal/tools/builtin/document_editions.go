@@ -225,6 +225,9 @@ func (d *Document) claimWorkKey(ctx context.Context, key sqlmem.ScopeKey, rootID
 		}
 		return nil
 	}
+	if r := workKeyClaimAllowed(ctx, d.newDocACL(ctx, key)); r != nil {
+		return r
+	}
 	if err := d.exec(ctx, key, `UPDATE chunks SET identity_key = ? WHERE id = ?`, wk, rootID); err != nil {
 		r := errBusiness("identity_collision: the work key "+wk+" was claimed concurrently", "Retry the call; it will find the document that holds the key.")
 		return &r
@@ -250,6 +253,9 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 		if !in.CreatePlaceholder {
 			return jsonResult(map[string]any{"work_key": wk, "found": false})
 		}
+		if r := workKeyClaimAllowed(ctx, acl); r != nil {
+			return *r, nil
+		}
 		path := "/documents/unresolved/" + placeholderSlug(wk)
 		if acl != nil {
 			if r := acl.path(ctx, "resolve_anchor", "write", path); r != nil {
@@ -262,11 +268,17 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 		}
 		docID, rootID = resultField(cd, "document_id"), resultField(cd, "root_chunk_id")
 		if r := d.claimWorkKey(ctx, key, rootID, wk); r != nil {
-			// A concurrent resolver filed it first: answer with theirs.
-			_ = d.exec(ctx, key, `DELETE FROM chunks WHERE id = ?`, rootID)
-			_ = d.exec(ctx, key, `DELETE FROM documents WHERE id = ?`, docID)
+			// A concurrent resolver filed it first: drop ours through the normal
+			// delete (it has a Path name and a body) and answer with theirs — under
+			// the same read rule as any other holder.
+			_, _ = d.deleteDocument(ctx, key, mscope, docInput{ID: docID})
 			if docID, rootID, status, err = d.documentByWorkKey(ctx, key, wk); err != nil || docID == "" {
 				return *r, nil
+			}
+			if acl != nil {
+				if rr, err := acl.document(ctx, "resolve_anchor", "read", docID); err != nil || rr != nil {
+					return workKeyUnreadable("resolve_anchor", wk), nil
+				}
 			}
 		} else {
 			if err := d.exec(ctx, key, `UPDATE documents SET status = ? WHERE id = ?`, placeholderStatus, docID); err != nil {
@@ -305,6 +317,18 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 		}
 	}
 	return jsonResult(out)
+}
+
+// workKeyClaimAllowed refuses a caller who may not write the whole scope a work
+// key, the rule RFC FO applies to every identity key: a key is a claim on the
+// scope's namespace, and a writer confined to part of it must not squat one.
+func workKeyClaimAllowed(ctx context.Context, acl *docACL) *tools.Result {
+	if acl == nil || acl.scopeWritableQuietly(ctx) {
+		return nil
+	}
+	r := errPermission("a work key is claimed for the whole scope, and the caller's access-control rules do not let it write the whole scope",
+		"Import without work_key, or ask an operator to file the work.")
+	return &r
 }
 
 // workKeyUnreadable refuses a call whose work key is held by a document the
@@ -390,6 +414,11 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	}
 	acl := d.newDocACL(ctx, key)
 	if docID == "" {
+		// Asked before anything is written: a refusal after the import would leave
+		// a keyless copy behind.
+		if r := workKeyClaimAllowed(ctx, acl); r != nil {
+			return *r, nil
+		}
 		// The first edition of a work: an ordinary import, then the work key.
 		res, err := d.importMD(ctx, key, mscope, docInput{Markdown: in.Markdown, Path: in.Path, Title: in.Title,
 			SourceURL: in.SourceURL, SourceKind: in.SourceKind, SourceTitle: in.SourceTitle})
@@ -606,7 +635,7 @@ func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscop
 			return "", nil, err
 		}
 	}
-	copied, proposed, err := d.moveStatements(ctx, key, old.id, newID, p.c.body)
+	copied, proposed, err := d.moveStatements(ctx, key, d.newDocACL(ctx, key), old.id, newID, p.c.body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -624,7 +653,11 @@ func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscop
 // stays on the old part, where it still holds for the old part's interval: its
 // evidence on the old part is marked stale and its status drops to proposed, so
 // it is re-verified rather than silently carried or silently lost.
-func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, oldID, newID, newBody string) (copied, proposed int, err error) {
+//
+// A statement whose other end is in a document the caller may not link is left
+// exactly as it is: re-checking or copying it is a change to that document's
+// relations, which the reimport's write on this document does not authorize.
+func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, oldID, newID, newBody string) (copied, proposed int, err error) {
 	res, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e
 		WHERE (e.from_id = ? OR e.to_id = ?) AND e.kind NOT IN ('supersedes', 'about')
 		  AND e.status <> ? AND e.expired_at IS NULL`, oldID, oldID, edgeStatusRejected)
@@ -644,6 +677,17 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, oldI
 	}
 	now := time.Now().UnixNano()
 	for _, s := range stmts {
+		if acl != nil {
+			other := s.ToID
+			if other == oldID {
+				other = s.FromID
+			}
+			if r, err := acl.chunk(ctx, "import_md", "link", other); err != nil {
+				return copied, proposed, err
+			} else if r != nil {
+				continue
+			}
+		}
 		holds := true
 		for _, e := range ev[s.ID] {
 			if e.ChunkID == oldID && !strings.Contains(newBody, e.Quote) {

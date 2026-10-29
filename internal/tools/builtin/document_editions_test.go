@@ -303,3 +303,82 @@ func TestResolveAnchor_UnreadableWorkDoesNotNameItsDocument(t *testing.T) {
 		t.Errorf("reimport over an unreadable work: %s", r.Text)
 	}
 }
+
+// A work key is a claim on the whole scope's namespace: a writer confined to part
+// of the scope may not make one, by reimport or by placeholder.
+func TestReimport_ConfinedWriterCannotClaimAWorkKey(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	confined := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition1, "reimport": true,
+		"work_key": "law:ua/10", "path": "/kb/public/act"})
+	if _, r := docExec(t, d, confined, string(b)); !r.IsError {
+		t.Errorf("a confined writer claimed a work key by reimport")
+	}
+	if _, r := docExec(t, d, confined, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/11","create_placeholder":true}`); !r.IsError {
+		t.Errorf("a confined writer claimed a work key by placeholder")
+	}
+	res, _ := docExec(t, d, tenantDocCtx(base, nil), `{"op":"query_documents","scope":"tenant"}`)
+	if docs, _ := res["documents"].([]any); len(docs) != 0 {
+		t.Errorf("a refused claim left documents behind: %v", docs)
+	}
+}
+
+// A reimport carries a superseded part's statements only where the caller may
+// link both ends: a statement from a document it may not link stays as it was.
+func TestReimport_LeavesStatementsItMayNotLinkAlone(t *testing.T) {
+	run := func(t *testing.T, deny bool) (copied bool, status any) {
+		d, base, _ := documentFixture(t)
+		open := tenantDocCtx(base, nil)
+		s := seedACLDocs(t, d, open)
+		b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition1, "reimport": true,
+			"work_key": "law:ua/12", "path": "/kb/public/act"})
+		out, r := docExec(t, d, open, string(b))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		docID := out["document_id"].(string)
+		art2 := resolvePartScope(t, d, open, "tenant", "law:ua/12", "article-2")
+		stmt, r := docExec(t, d, open, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"implements"}`, s.secretChunk, art2))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		ctx := open
+		if deny {
+			ctx = tenantDocCtx(base, aclSet(t,
+				authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+				authz.Rule{Effect: authz.Deny, Actions: []string{"link"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+		}
+		b, _ = json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition2, "reimport": true, "document_id": docID})
+		if _, r := docExec(t, d, ctx, string(b)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		for _, e := range edgesOf(t, d, open, fmt.Sprintf(`{"op":"get_edges","scope":"tenant","document_id":%q,"include_refuted":true}`, s.secretDoc)) {
+			attrs, _ := e["attributes"].(map[string]any)
+			if attrs["revision_of"] == stmt["id"] {
+				copied = true
+			}
+			if e["id"] == stmt["id"] {
+				status = e["status"]
+			}
+		}
+		return copied, status
+	}
+	if copied, _ := run(t, false); !copied {
+		t.Fatalf("control: the statement did not follow the new part")
+	}
+	if copied, status := run(t, true); copied || status != "asserted" {
+		t.Errorf("a statement the caller may not link was changed: copied=%v status=%v", copied, status)
+	}
+}
+
+func resolvePartScope(t *testing.T, d *Document, ctx context.Context, scope, wk, anchor string) string {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"op": "resolve_anchor", "scope": scope, "work_key": wk, "anchor": anchor})
+	out, r := docExec(t, d, ctx, string(b))
+	if r.IsError {
+		t.Fatalf("resolve_anchor: %s", r.Text)
+	}
+	return out["chunk_id"].(string)
+}
