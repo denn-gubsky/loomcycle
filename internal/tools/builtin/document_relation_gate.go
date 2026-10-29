@@ -54,3 +54,15 @@ func (d *Document) walkKinds(ctx context.Context) []string { return nil }
 
 // inverseKindName is kind's declared inverse, "" when undeclared.
 func (d *Document) inverseKindName(ctx context.Context, kind string) string { return "" }
+
+// discriminatorFor is the value of kind's declared discriminating qualifier
+// (e.g. mod_type), "" when none is declared: statements that differ in it coexist.
+func (d *Document) discriminatorFor(ctx context.Context, kind string, attributes map[string]any) string {
+	return ""
+}
+
+// gateAttributes checks a statement's attributes against kind's declared
+// qualifiers, with gateRelation's verdict shape.
+func (d *Document) gateAttributes(ctx context.Context, kind string, attributes map[string]any, authored bool) relationGate {
+	return relationGate{Valid: true}
+}

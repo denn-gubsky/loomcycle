@@ -273,6 +273,12 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	if w.authored && gate.Refuse != nil {
 		return out, gate.Refuse, nil
 	}
+	agate := d.gateAttributes(ctx, w.kind, w.attributes, w.authored)
+	if w.authored && agate.Refuse != nil {
+		return out, agate.Refuse, nil
+	}
+	gate.Valid = gate.Valid && agate.Valid
+	gate.Warnings = append(gate.Warnings, agate.Warnings...)
 	out.OntologyValid, out.Warnings = gate.Valid, gate.Warnings
 	confidence := w.confidence
 	if !gate.Valid {
@@ -293,10 +299,9 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		return out, refuse, err
 	}
 
-	// discriminator: the value of the kind's declared discriminating qualifier. No
-	// vocabulary declares one yet, so every statement has the empty discriminator
-	// and one assertion per (triple, valid_at).
-	const discriminator = ""
+	// discriminator: the value of the kind's declared discriminating qualifier, ""
+	// when none is declared — then one assertion per (triple, valid_at).
+	discriminator := d.discriminatorFor(ctx, w.kind, w.attributes)
 	existing, err := d.statementByKey(ctx, key, w.from, w.to, w.kind, w.validAt, discriminator)
 	if err != nil {
 		return out, nil, err
@@ -423,9 +428,14 @@ func (d *Document) checkEvidence(ctx context.Context, key sqlmem.ScopeKey, mscop
 		c := checkedEvidence{edgeEvidenceIn: ev}
 		switch {
 		case ev.ChunkID != "":
-			if _, ok, err := d.getChunkRow(ctx, key, ev.ChunkID); err != nil {
+			// A chunk the caller may not read answers exactly like a missing one:
+			// verifying a quote against it would otherwise tell the caller whether
+			// that text is in a document it cannot open.
+			readable, err := d.chunkReadable(ctx, key, ev.ChunkID)
+			if err != nil {
 				return nil, nil, err
-			} else if !ok {
+			}
+			if !readable {
 				r := errNotFound(where+": no such chunk: "+ev.ChunkID, "Evidence must cite a chunk of this scope; cite another scope by scope + natural_key.")
 				return nil, &r, nil
 			}
@@ -501,11 +511,12 @@ func quoteSpan(text, quote string, wantStart, wantEnd *int) (int, int, bool) {
 	return s, s + len(q), true
 }
 
-// sessionTurnText returns one turn's text from a chat the caller may cite into
-// this scope: the same tenant, and for a user scope the same user — the
-// visibility History applies, so a citation cannot reach a chat its writer could
-// not read. ok=false covers both "no such turn" and "not yours" (one answer, so a
-// citation cannot probe for another user's chats).
+// sessionTurnText returns one turn's text from a chat the caller may cite: one of
+// the caller's own chats (same tenant, same user), and for a user scope the
+// scope's own user. Verifying a quote against a turn answers "does this text
+// occur there", so a wider rule would be an oracle over other people's chats.
+// ok=false covers both "no such turn" and "not yours" — one answer, so a citation
+// cannot probe for another user's chats.
 func (d *Document) sessionTurnText(ctx context.Context, key sqlmem.ScopeKey, sessionID string, seq int64) (string, bool, error) {
 	if d.Store == nil {
 		return "", false, nil
@@ -519,7 +530,7 @@ func (d *Document) sessionTurnText(ctx context.Context, key sqlmem.ScopeKey, ses
 		return "", false, err
 	}
 	ident := tools.RunIdentity(ctx)
-	if sess.TenantID != ident.TenantID {
+	if sess.TenantID != ident.TenantID || sess.UserID != ident.UserID {
 		return "", false, nil
 	}
 	if key.Scope == "user" && sess.UserID != key.ScopeID {
@@ -1014,6 +1025,9 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	r := res.Rows[0]
 	s := scanStatement(r)
 	ev, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 0)
+	if err == nil {
+		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
+	}
 	if err != nil {
 		return errFrom("get_edge: "+err.Error(), err), nil
 	}
@@ -1037,8 +1051,8 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 		status = edgeStatusProposed
 	}
 	limit := edgeGetEdgesDefault
-	if in.Limit > 0 && in.Limit < edgeGetEdgesMax {
-		limit = in.Limit
+	if in.Limit > 0 {
+		limit = min(in.Limit, edgeGetEdgesMax)
 	}
 	where := []string{"e.status = ?"}
 	args := []any{status}
@@ -1083,6 +1097,9 @@ func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey,
 		ids[i] = stmts[i].ID
 	}
 	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
+	if err == nil {
+		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
+	}
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}
@@ -1188,6 +1205,9 @@ func (d *Document) exportEdgeLines(ctx context.Context, key sqlmem.ScopeKey, doc
 		ids[i] = asStr(r[0])
 	}
 	ev, _, err := d.evidenceFor(ctx, key, ids, 0)
+	if err == nil {
+		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1196,6 +1216,13 @@ func (d *Document) exportEdgeLines(ctx context.Context, key sqlmem.ScopeKey, doc
 		s := scanStatement(r)
 		from := s.FromID
 		if nk := asStr(r[statementColCount]); nk != "" {
+			// An inbound source in a document the caller may not read is left out:
+			// its natural key and kind would describe that document.
+			if ok, err := d.chunkReadable(ctx, key, s.FromID); err != nil {
+				return nil, err
+			} else if !ok {
+				continue
+			}
 			from = "@" + nk
 		}
 		line := from + " -> " + s.ToID + " [" + s.Kind + "]"
@@ -1231,7 +1258,15 @@ func (d *Document) importEdges(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		var nf string
 		okFrom := false
 		if strings.HasPrefix(e.from, "@") {
+			// The source is an existing chunk the trailer names by key: linking from
+			// it needs the caller's `link` on its document, as link_chunks would ask.
 			if id, err := d.chunkIDByNaturalKey(ctx, key, strings.TrimPrefix(e.from, "@")); err == nil && id != "" {
+				if acl := d.newDocACL(ctx, key); acl != nil {
+					if r, err := acl.chunk(ctx, "import_md", "link", id); err != nil || r != nil {
+						skipped++
+						continue
+					}
+				}
 				nf, okFrom = id, true
 			}
 		} else {
@@ -1267,4 +1302,18 @@ func (d *Document) importEdges(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 	}
 	return skipped
+}
+
+// chunkReadable reports whether the caller's access-control set lets it read the
+// document holding chunkID. A missing chunk is not readable.
+func (d *Document) chunkReadable(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (bool, error) {
+	row, ok, err := d.getChunkRow(ctx, key, chunkID)
+	if err != nil || !ok {
+		return false, err
+	}
+	acl := d.newDocACL(ctx, key)
+	if acl == nil {
+		return true, nil
+	}
+	return acl.readable(ctx, row.DocumentID)
 }
