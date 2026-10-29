@@ -673,6 +673,7 @@ agents:
           relations: 0,             // typed relations recorded between a fact's subjects
           relations_proposed: 0,    // ... recorded for review (a kind the tenant has not declared)
           relations_skipped: 0,     // ... not recorded (no second subject, or a reserved kind)
+          relations_dropped: 0,     // ... named by the extractor in a form no kind can take, dropped here
           relation_conflicts: 0,    // live relations of the same kind to a DIFFERENT subject — reported, never retired
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
@@ -1449,9 +1450,19 @@ agents:
           // rule and carried separately, so a dropped interval never takes it with it.
           var oa = tsOrEmpty(f.observed_at);
           // THE RELATION the fact states between its subjects, when the tenant lists
-          // relation kinds and the extractor named one. Kept only as a bare kind name:
-          // anything else is model text and is not a kind.
-          var rel = (typeof f.relation === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(f.relation)) ? f.relation : "";
+          // relation kinds and the extractor named one. Kept only in a form a kind
+          // can take — one token, no quotes or brackets, at most 64 characters —
+          // and anything else is model text and is not a kind. NOT lower_snake_case
+          // only: a tenant names its kinds as it likes (the runtime only advises
+          // lower_snake_case), and a check narrower than the runtime's would drop
+          // every relation of a tenant that wrote `worksAt` or `works-at`. A kind
+          // the tenant has not declared is the runtime's call, which records it
+          // for review. A drop is counted, so a narrowing that bites shows.
+          var rel = "";
+          if (typeof f.relation === "string" && f.relation.trim()) {
+            rel = f.relation.trim();
+            if (!/^[^\s"'`<>()\[\]{}\\,;\u0000-\u001f\u007f]{1,64}$/.test(rel)) { rel = ""; st.relations_dropped++; }
+          }
           out.push({ text: text, cls: cls, type: typ, subject: subj, subjects: subjects,
                      quote: "", observed_at: oa, valid_at: va, invalid_at: iva, relation: rel });
         }
@@ -3608,9 +3619,10 @@ agents:
           if (st.subject_refs) {
             ent += ", " + st.subject_refs + " reference(s) to a second subject a fact is also about";
           }
-          if (st.relations || st.relations_proposed || st.relations_skipped) {
+          if (st.relations || st.relations_proposed || st.relations_skipped || st.relations_dropped) {
             ent += ", relations " + st.relations + " recorded, " + st.relations_proposed + " for review" +
-              (st.relations_skipped ? ", " + st.relations_skipped + " skipped" : "");
+              (st.relations_skipped ? ", " + st.relations_skipped + " skipped" : "") +
+              (st.relations_dropped ? ", " + st.relations_dropped + " dropped (not a kind name)" : "");
           }
           if (st.relation_conflicts) {
             ent += ", " + st.relation_conflicts + " possible contradiction(s) between relations (reported, nothing retired)";
