@@ -16,15 +16,24 @@ document, use `get_edges`.
 ## Arguments
 
 - `id` (required) — the chunk being linked to.
-- `limit` — at most this many, default 50, capped at 200.
+- `kind` / `kinds` — only these relation kinds.
+- `as_of` — only relations that held at this moment (unix nanoseconds).
+- `include_proposed` — also list relations proposed for review (default false).
+- `include_refuted` / `include_retired` — also list rejected or refuted / retired
+  relations, which are withheld by default.
+- `limit` — at most this many, default 50, capped at 200. `after` — the
+  `next_cursor` of the previous page.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 
 ## Returns
 
-`{backlinks: [{from_id, kind, auto, from_title, from_type, from_status,
-from_document_id}]}`, ordered by kind, then age. `auto: true` marks a
-`[[name]]` link. Empty endpoint fields are omitted.
+`{backlinks: [{id, from_id, to_id, kind, auto, status, method, created_at,
+from_title, from_type, from_status, from_document_id, ...}]}`, ordered by kind,
+then age. Each row is a relation with the same envelope `get_edges` returns
+(evidence preview, verdict, validity when present), plus `inverse_kind` when the
+tenant's vocabulary names the relation as seen from this end. `auto: true`
+marks a `[[name]]` link. Empty endpoint fields are omitted.
 
 ## Errors
 

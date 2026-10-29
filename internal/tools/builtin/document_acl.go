@@ -48,6 +48,7 @@ const (
 	docACLScope                        // every document of the scope
 	docACLTenantScope                  // every document of the TENANT scope (ontology proposals file there)
 	docACLListing                      // no single target; the answer is filtered
+	docACLStatement                    // id is a statement: both endpoint documents
 )
 
 // docACLFilter names where a listing's answer carries document ids.
@@ -66,9 +67,10 @@ type docACLRule struct {
 }
 
 var (
-	docListDocuments = &docACLFilter{key: "documents", fields: []string{"document_id"}}
-	docListChunks    = &docACLFilter{key: "chunks", fields: []string{"document_id"}, required: true}
-	docListEdges     = &docACLFilter{key: "edges", fields: []string{"from_document_id", "to_document_id"}}
+	docListDocuments  = &docACLFilter{key: "documents", fields: []string{"document_id"}}
+	docListChunks     = &docACLFilter{key: "chunks", fields: []string{"document_id"}, required: true}
+	docListEdges      = &docACLFilter{key: "edges", fields: []string{"from_document_id", "to_document_id"}}
+	docListStatements = &docACLFilter{key: "statements", fields: []string{"from_document_id", "to_document_id"}}
 )
 
 // docACLOps is every op's question. TestDocumentACL_EveryOpIsMapped holds it
@@ -100,6 +102,11 @@ var docACLOps = map[string]docACLRule{
 	"link_chunks":        {verb: "link", target: docACLLink},
 	"unlink_chunks":      {verb: "link", target: docACLLink},
 	"get_edges":          {verb: "read", target: docACLDocumentField, filter: docListEdges},
+	"get_edge":           {verb: "read", target: docACLStatement},
+	"propose_statement":  {verb: "propose", target: docACLStatement},
+	"accept_statement":   {verb: "link", target: docACLStatement},
+	"reject_statement":   {verb: "link", target: docACLStatement},
+	"list_statements":    {verb: "read", target: docACLListing, filter: docListStatements},
 	"query_chunks":       {verb: "read", target: docACLScope},
 	"add_tags":           {verb: "write", target: docACLChunkOrDocument},
 	"remove_tags":        {verb: "write", target: docACLChunkOrDocument},
@@ -324,6 +331,23 @@ func (d *Document) guardDocumentACL(ctx context.Context, key sqlmem.ScopeKey, in
 		return func() (*tools.Result, error) { return a.chunk(ctx, op, verb, id) }
 	}
 	wholeScope := func() (*tools.Result, error) { return a.scope(ctx, op, verb, ""), nil }
+	// statementEnds asks about both endpoint documents of a statement (RFC FN). An
+	// id that is not a statement asks nothing, like a missing chunk.
+	statementEnds := func(id string) func() (*tools.Result, error) {
+		return func() (*tools.Result, error) {
+			if id == "" {
+				return nil, nil
+			}
+			s, err := d.statementByID(ctx, key, id)
+			if err != nil || s == nil {
+				return nil, err
+			}
+			if r, err := a.chunk(ctx, op, verb, s.FromID); r != nil || err != nil {
+				return r, err
+			}
+			return a.chunk(ctx, op, verb, s.ToID)
+		}
+	}
 
 	switch rule.target {
 	case docACLNew, docACLListing:
@@ -365,6 +389,14 @@ func (d *Document) guardDocumentACL(ctx context.Context, key sqlmem.ScopeKey, in
 	case docACLLink:
 		check(chunk(in.FromID))
 		check(chunk(in.ToID))
+		// unlink_chunks by statement id names no endpoint itself.
+		if in.ID != "" {
+			check(statementEnds(in.ID))
+		}
+	case docACLStatement:
+		check(statementEnds(in.ID))
+		check(chunk(in.FromID))
+		check(chunk(in.ToID))
 	case docACLSetPath:
 		check(doc(in.ID))
 		check(doc(in.DocumentID))
@@ -379,6 +411,7 @@ func (d *Document) guardDocumentACL(ctx context.Context, key sqlmem.ScopeKey, in
 	case docACLJudge:
 		if in.ID != "" {
 			check(chunk(in.ID))
+			check(statementEnds(in.ID))
 		} else if in.NaturalKey != "" {
 			check(func() (*tools.Result, error) {
 				id, kerr := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey)

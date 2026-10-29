@@ -435,6 +435,7 @@ export type {
   PathToolInput,
   PathToolResponse,
   DocumentToolInput,
+  DocumentEdgeEvidence,
   DocumentToolResponse,
   DocumentSearchFilter,
   DocumentSearchHit,

@@ -304,7 +304,9 @@ export function dataLayerFromClient(
         .document(
           // get_edges is DOCUMENT-scoped: it reads `document_id`, not a chunk
           // `id`. The FactViewer sources this from the fact chunk's document_id.
-          toDocInput({ op: "get_edges", scope, document_id: documentId }),
+          // include_proposed:false: a relation awaiting review is not a link the
+          // fact view should draw.
+          toDocInput({ op: "get_edges", scope, document_id: documentId, include_proposed: false }),
           docOpts(opts?.scopeId),
         )
         .then((r) => r as DocEdgesResponse),

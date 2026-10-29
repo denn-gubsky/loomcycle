@@ -162,9 +162,10 @@ func assertNameLinkCore(t *testing.T, d *Document, ctx context.Context) {
 	}
 	cManual := out["id"].(string)
 	cManualRev := int(out["revision"].(float64))
-	if _, r := docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+cManual+`","to_id":"`+tgtRoot+`","kind":"references"}`); r.IsError {
-		t.Fatalf("link_chunks: %s", r.Text)
-	}
+	// A manual `references` edge can no longer be made (the kind is the parser's,
+	// RFC FN), but a store written before that still holds them: stage one the way
+	// such a store has it.
+	insertLegacyEdge(t, d, ctx, cManual, tgtRoot, "references")
 	if got := edgesFrom(t, d, ctx, cManual); len(got) != 1 || got[0].auto {
 		t.Fatalf("manual edge = %+v, want one auto=0 references edge", got)
 	}
@@ -399,5 +400,19 @@ func TestDocumentNameLinks_BodylessUpdateLeavesEdges(t *testing.T) {
 	}
 	if got := edgesFrom(t, d, ctx, c); len(got) != 1 || got[0].to != tgtRoot {
 		t.Errorf("fields-only update disturbed name-link edges: %+v", got)
+	}
+}
+
+// insertLegacyEdge writes a manual edge the way a store written before reserved
+// kinds holds it, bypassing link_chunks.
+func insertLegacyEdge(t *testing.T, d *Document, ctx context.Context, from, to, kind string) {
+	t.Helper()
+	key, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatalf("resolveScope: %v", err)
+	}
+	if err := d.exec(ctx, key, `INSERT INTO chunk_edges (id, from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
+		newDocID(), from, to, kind, time.Now().UnixNano()); err != nil {
+		t.Fatalf("insert legacy edge: %v", err)
 	}
 }

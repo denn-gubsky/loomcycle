@@ -10,6 +10,7 @@ import type {
   DocEdge,
   DocScope,
   PathEntry,
+  StatementStatus,
   PathScope,
   RelatedChunk,
   UnlinkedMention,
@@ -177,6 +178,41 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<{ edges: DocEdge[] }>;
+  // RFC FN statement ops. Optional, like pathIsStored, so a custom data layer
+  // written before them still satisfies the interface: without get_edge the
+  // viewer only shows the evidence preview the listing carries, and without both
+  // rulings it shows a proposal's status but no Accept / Reject.
+  //
+  // documentGetEdge returns one statement with ALL its evidence rows.
+  documentGetEdge?(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ statement: DocEdge }>;
+  // documentAcceptStatement / documentRejectStatement are the operator's ruling on
+  // a proposed statement. The runtime accepts them only from the off-run operator
+  // plane (this console), never from an agent inside a run; a refusal rejects the
+  // promise with the runtime's error text. A rejection needs a reason.
+  documentAcceptStatement?(
+    id: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+    reason?: string,
+  ): Promise<{ id: string; status: StatementStatus }>;
+  documentRejectStatement?(
+    id: string,
+    reason: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<{ id: string; status: StatementStatus }>;
+  // documentListStatements is the review queue: statements in a status
+  // (the runtime defaults to "proposed"), paged by `after` = a previous page's
+  // next_cursor.
+  documentListStatements?(
+    scope: DocScope,
+    browse?: BrowseScope,
+    opts?: { status?: StatementStatus; kind?: string; limit?: number; after?: string },
+  ): Promise<{ statements: DocEdge[]; truncated?: boolean; next_cursor?: string }>;
   // documentAssetObjectUrl fetches an image chunk's bytes (RFC BO) WITH auth and
   // returns a blob object-URL for an <img src> — a bare <img src=/v1/...> can't
   // carry a bearer header. The CALLER must URL.revokeObjectURL when done. Absent
@@ -421,6 +457,40 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         { op: "get_edges", document_id: documentId, scope } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{ edges: DocEdge[] }>,
+    // RFC FN statement ops — the same passthrough cast: new wire ops the pinned
+    // SDK type doesn't enumerate.
+    documentGetEdge: (id, scope, browse) =>
+      client.document(
+        { op: "get_edge", id, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ statement: DocEdge }>,
+    documentAcceptStatement: (id, scope, browse, reason) =>
+      client.document(
+        {
+          op: "accept_statement",
+          id,
+          scope,
+          ...(reason ? { reason } : {}),
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ id: string; status: StatementStatus }>,
+    documentRejectStatement: (id, reason, scope, browse) =>
+      client.document(
+        { op: "reject_statement", id, reason, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ id: string; status: StatementStatus }>,
+    documentListStatements: (scope, browse, opts) =>
+      client.document(
+        {
+          op: "list_statements",
+          scope,
+          ...(opts?.status ? { status: opts.status } : {}),
+          ...(opts?.kind ? { kind: opts.kind } : {}),
+          ...(opts?.limit ? { limit: opts.limit } : {}),
+          ...(opts?.after ? { after: opts.after } : {}),
+        } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<{ statements: DocEdge[]; truncated?: boolean; next_cursor?: string }>,
     documentUpdateChunk: (id, revision, patch, scope, browse) =>
       client.document(
         // `patch.fields` is unknown but DocumentToolInput.fields is a typed

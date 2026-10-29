@@ -65,13 +65,65 @@ export interface ChunkDetail extends ChunkRow {
   asset?: { media_type: string; size: number };
 }
 
+// StatementStatus is where a relation stands (RFC FN): an asserted one holds, a
+// proposed one waits for an operator's ruling, a rejected one was ruled out.
+export type StatementStatus = "asserted" | "proposed" | "rejected";
+
+// EdgeEvidence is one piece of support for a statement (RFC FN): a verbatim
+// `quote`, and where it came from — a chunk (with an optional character span), a
+// run event (session_id + event_seq), or a memory row (scope + natural_key).
+// `stale` marks a quote whose source has since changed. created_at is Unix ns.
+export interface EdgeEvidence {
+  id: string;
+  chunk_id?: string;
+  session_id?: string;
+  event_seq?: number;
+  scope?: string;
+  natural_key?: string;
+  quote: string;
+  char_start?: number;
+  char_end?: number;
+  stale?: boolean;
+  created_at: number;
+}
+
+// StatementFields is the RFC FN statement envelope every edge listing carries
+// (get_edges, backlinks, get_edge, list_statements). Every field is optional so
+// the shapes still describe an older server's plain edges. Timestamps are Unix
+// nanoseconds. A listing carries at most three `evidence` rows; evidence_count is
+// the total, so a reader knows how many more get_edge would return.
+export interface StatementFields {
+  id?: string;
+  status?: StatementStatus;
+  method?: string; // manual | wikilink | import | sync | canvas | runtime | …
+  auto?: boolean;
+  created_at?: number;
+  confidence?: number;
+  valid_at?: number;
+  invalid_at?: number;
+  expired_at?: number;
+  verified_at?: number;
+  actor?: string;
+  run_id?: string;
+  discriminator?: string;
+  ontology_version?: number;
+  inverse_kind?: string;
+  attributes?: Record<string, unknown>;
+  judged_at?: number;
+  judge_reason?: string;
+  judged_by?: string;
+  evidence?: EdgeEvidence[];
+  evidence_count?: number;
+}
+
 // DocEdge is one cross-reference edge from get_edges (RFC BN P4): a typed link
 // between two chunks (possibly in different documents), enriched with each
 // endpoint's title/type/status/document_id so the viewer can render a References
 // list + a relationship graph without a per-endpoint get_chunk. The endpoint
 // fields are omitted when empty (a dangling endpoint, or a chunk with no
-// type/status).
-export interface DocEdge {
+// type/status). Since RFC FN an edge is a statement: it also carries the
+// StatementFields envelope (get_edge / list_statements return the same shape).
+export interface DocEdge extends StatementFields {
   from_id: string;
   to_id: string;
   kind: string;
@@ -90,8 +142,9 @@ export interface DocEdge {
 // edge `kind`, and `auto` — true when the link came from a `[[name]]` wikilink in
 // the source body (vs a manually-authored edge). from_document_id ≠ the current
 // document marks a cross-document backlink (labeled, not navigable in this
-// single-document viewer). Endpoint fields are omitted when empty.
-export interface Backlink {
+// single-document viewer). Endpoint fields are omitted when empty. Since RFC FN
+// it carries the statement envelope too (backlinks omits proposals by default).
+export interface Backlink extends StatementFields {
   from_id: string;
   kind: string;
   auto: boolean;

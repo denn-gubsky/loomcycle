@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi } from "vitest";
 import type { DocEdge } from "../types";
 import ChunkTarget, { type ChunkTargetProps } from "./ChunkTarget";
-import { RefRow, graphEndpoint, nodeId } from "./CrossReferences";
+import { RefRow, buildGraph, graphEndpoint, nodeId } from "./CrossReferences";
 import type { Trail } from "../lib/docTrail";
 import DocTrail from "./DocTrail";
 import DocUnavailable from "./DocUnavailable";
@@ -107,6 +107,69 @@ describe("RefRow", () => {
   });
 });
 
+describe("RefRow — the statement envelope (RFC FN)", () => {
+  const proposed: DocEdge = {
+    id: "e-7",
+    from_id: "here",
+    to_id: "there",
+    kind: "cites",
+    to_title: "Source",
+    status: "proposed",
+    method: "runtime",
+    judged_at: Date.parse("2026-10-29T00:00:00Z") * 1e6,
+    judged_by: "judge",
+    judge_reason: "quote does not say so",
+    valid_at: Date.parse("2026-01-02T00:00:00Z") * 1e6,
+    evidence: [
+      { id: "ev1", quote: "<b>bold</b> **claim**", created_at: 0 },
+      { id: "ev2", quote: "second", stale: true, created_at: 0 },
+    ],
+    evidence_count: 5,
+  };
+  const render = (edge: DocEdge, onRuleStatement?: () => Promise<void>) =>
+    renderToStaticMarkup(
+      createElement(RefRow, {
+        edge,
+        selectedId: "here",
+        documentId: "doc-a",
+        onSelectChunk: () => {},
+        onRuleStatement,
+      }),
+    );
+
+  it("shows status, method, verdict, validity and evidence for a proposal", () => {
+    const html = render(proposed);
+    expect(html).toContain('class="doc-stmt-status proposed">proposed<');
+    expect(html).toContain('class="doc-stmt-method"');
+    expect(html).toContain(">runtime<");
+    expect(html).toContain('title="judged by judge on 2026-10-29: quote does not say so"');
+    expect(html).toContain("valid from 2026-01-02");
+    expect(html).toContain("(source changed)");
+    expect(html).toContain("+3 more");
+  });
+
+  it("renders a quote as text, never as HTML or Markdown", () => {
+    const html = render(proposed);
+    expect(html).not.toContain("<b>bold</b>");
+    expect(html).toContain("&lt;b&gt;bold&lt;/b&gt; **claim**");
+  });
+
+  it("offers Accept / Reject on a proposal only when the host can rule", () => {
+    expect(render(proposed)).not.toContain("Accept");
+    const html = render(proposed, async () => {});
+    expect(html).toContain(">Accept<");
+    expect(html).toContain(">Reject…<");
+  });
+
+  it("a plain asserted manual edge shows no statement chrome", () => {
+    const html = render(
+      { id: "e-1", from_id: "here", to_id: "there", kind: "related", status: "asserted", method: "manual" },
+      async () => {},
+    );
+    expect(html).not.toContain("doc-stmt");
+  });
+});
+
 describe("relationship graph nodes", () => {
   const edges: DocEdge[] = [
     { from_id: "c-1", to_id: "c-2", kind: "related", from_document_id: "doc-a", to_document_id: "doc-b", to_title: "RFC CV" },
@@ -116,6 +179,15 @@ describe("relationship graph nodes", () => {
     expect(graphEndpoint(edges, nodeId("c-2"))).toEqual({ id: "c-2", documentId: "doc-b", title: "RFC CV" });
     expect(graphEndpoint(edges, nodeId("c-1"))).toMatchObject({ id: "c-1", documentId: "doc-a" });
     expect(graphEndpoint(edges, "nunknown")).toBeUndefined();
+  });
+
+  it("draws a proposed statement dotted and an asserted one solid", () => {
+    const g = buildGraph([
+      { from_id: "a", to_id: "b", kind: "cites", status: "proposed" },
+      { from_id: "a", to_id: "c", kind: "cites", status: "asserted" },
+    ]);
+    expect(g).toContain('na["a"] -.->|cites| nb["b"]');
+    expect(g).toContain('na["a"] -->|cites| nc["c"]');
   });
 
   it("reads the declared node id out of the id mermaid gives the drawn node", () => {

@@ -276,14 +276,15 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 			validAtKnown: true, invalidAtKnown: true,
 		}
 	}
-	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto FROM chunk_edges
-		WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID, docID)
+	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto FROM chunk_edges e
+		WHERE (from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?))
+		  AND e.status = '`+edgeStatusAsserted+`' AND `+edgeLiveClause, docID, docID)
 	if err != nil {
 		return nil, err
 	}
 	for _, r := range rows.Rows {
-		if asInt(r[3]) == 1 {
-			continue // auto [[name]] edge — regenerated from bodies, not synced
+		if asInt(r[3]) == 1 || isReservedEdgeKind(asStr(r[2])) {
+			continue // auto [[name]] edge or a runtime kind — re-derived, not synced
 		}
 		fromNK, ok1 := idToNK[asStr(r[0])]
 		toNK, ok2 := idToNK[asStr(r[1])]
@@ -354,21 +355,33 @@ func (d *Document) loadRemoteSnapshot(ctx context.Context, client *docremote.Cli
 			validAtKnown: validAtKnown, invalidAtKnown: invalidAtKnown,
 		}
 	}
-	rawEdges, err := client.Do(ctx, map[string]any{"op": "get_edges", "document_id": docID, "scope": scope})
-	if err != nil {
-		return nil, fmt.Errorf("list remote edges: %w", err)
+	// Paged (get_edges returns at most a page since statements), and asserted
+	// statements only: a proposal is one store's review state, not a link.
+	// Reserved kinds are the runtime's own and are re-derived on each side.
+	var remoteEdges []remoteEdge
+	for after := ""; ; {
+		req := map[string]any{"op": "get_edges", "document_id": docID, "scope": scope,
+			"include_proposed": false, "limit": edgeGetEdgesMax}
+		if after != "" {
+			req["after"] = after
+		}
+		rawEdges, err := client.Do(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("list remote edges: %w", err)
+		}
+		var ge struct {
+			Edges      []remoteEdge `json:"edges"`
+			NextCursor string       `json:"next_cursor"`
+		}
+		_ = json.Unmarshal(rawEdges, &ge)
+		remoteEdges = append(remoteEdges, ge.Edges...)
+		if ge.NextCursor == "" || ge.NextCursor == after {
+			break
+		}
+		after = ge.NextCursor
 	}
-	var ge struct {
-		Edges []struct {
-			FromID string `json:"from_id"`
-			ToID   string `json:"to_id"`
-			Kind   string `json:"kind"`
-			Auto   bool   `json:"auto"`
-		} `json:"edges"`
-	}
-	_ = json.Unmarshal(rawEdges, &ge)
-	for _, e := range ge.Edges {
-		if e.Auto {
+	for _, e := range remoteEdges {
+		if e.Auto || isReservedEdgeKind(e.Kind) || (e.Status != "" && e.Status != edgeStatusAsserted) {
 			continue
 		}
 		fromNK, ok1 := idToNK[e.FromID]
@@ -492,8 +505,17 @@ func (w localWriter) move(ctx context.Context, id, parentID string, position int
 	return nil
 }
 
+// remoteEdge is one statement of a peer's get_edges page, as sync reads it.
+type remoteEdge struct {
+	FromID string `json:"from_id"`
+	ToID   string `json:"to_id"`
+	Kind   string `json:"kind"`
+	Auto   bool   `json:"auto"`
+	Status string `json:"status"`
+}
+
 func (w localWriter) ensureEdge(ctx context.Context, fromID, toID, kind string) error {
-	res, err := w.d.linkChunks(ctx, w.key, docInput{FromID: fromID, ToID: toID, Kind: kind})
+	res, err := w.d.linkChunks(ctx, w.key, w.mscope, docInput{FromID: fromID, ToID: toID, Kind: kind, edgeMethod: edgeMethodSync})
 	if err != nil {
 		return err
 	}

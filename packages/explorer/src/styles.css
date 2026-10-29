@@ -1106,8 +1106,9 @@
 }
 .loomcycle-explorer .doc-ref {
   display: flex;
+  flex-wrap: wrap; /* the evidence quotes + a reject reason wrap onto their own line */
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   font-size: var(--lc-text-sm);
 }
 .loomcycle-explorer .doc-ref-kind {
@@ -1149,6 +1150,88 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
+}
+/* RFC FN — a link is a statement: its status, how it was made, a ruling, when it
+   holds, and the quotes that support it. Shared by References and Backlinks. */
+.loomcycle-explorer .doc-stmt-status,
+.loomcycle-explorer .doc-stmt-method,
+.loomcycle-explorer .doc-stmt-verdict,
+.loomcycle-explorer .doc-stmt-valid {
+  font-size: var(--lc-text-xs);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.loomcycle-explorer .doc-stmt-status.proposed {
+  color: var(--running);
+  border-color: var(--running);
+}
+.loomcycle-explorer .doc-stmt-status.rejected {
+  color: var(--failed);
+  border-color: var(--failed);
+  text-decoration: line-through;
+}
+.loomcycle-explorer .doc-stmt-verdict {
+  cursor: help;
+  border-style: dashed;
+}
+.loomcycle-explorer .doc-stmt-valid {
+  border: none;
+  padding: 0;
+  color: var(--fg-muted);
+}
+.loomcycle-explorer .doc-stmt-evidence {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 0 0 2px 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--border);
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-stmt-evidence li {
+  overflow-wrap: anywhere;
+}
+.loomcycle-explorer .doc-stmt-stale,
+.loomcycle-explorer .doc-stmt-more {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.loomcycle-explorer .doc-stmt-review {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.loomcycle-explorer .doc-stmt-review button {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-stmt-review button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-stmt-review button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.loomcycle-explorer .doc-stmt-review button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.loomcycle-explorer .doc-stmt-review input {
+  padding: 1px 6px;
+  font-size: var(--lc-text-xs);
+  min-width: 16ch;
+}
+.loomcycle-explorer .doc-stmt-err {
+  color: var(--failed);
+  font-size: var(--lc-text-xs);
 }
 /* The relationship graph's nodes follow the same links as the list. */
 .loomcycle-explorer .md-mermaid-nav g.node {
@@ -1331,8 +1414,9 @@
 }
 .loomcycle-explorer .doc-conn-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   font-size: var(--lc-text-sm);
 }
 .loomcycle-explorer .doc-conn-score {

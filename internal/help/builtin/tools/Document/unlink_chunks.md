@@ -1,10 +1,11 @@
 ---
 name: Document/unlink_chunks
-description: "Document op=unlink_chunks — remove one edge, named by its from_id, to_id and kind."
+description: "Document op=unlink_chunks — remove a relation and its evidence, by its id or by from_id, to_id and kind."
 ---
-`unlink_chunks` deletes the edge from `from_id` to `to_id` of the given
-`kind`. The chunks themselves are untouched. You need all three values exactly
-as the edge was created; read them from `get_edges` or `backlinks` first.
+`unlink_chunks` deletes a relation and its evidence: the one with `id`, or
+every relation from `from_id` to `to_id` of the given `kind`. The chunks
+themselves are untouched. Read the id or the three values from `get_edges` or
+`backlinks` first.
 
 An edge that came from a `[[name]]` link in a chunk body (`auto: true` in
 `get_edges`) is re-created the next time that body is written. To remove it for
@@ -12,9 +13,10 @@ good, edit the `[[...]]` out of the body with `update_chunk`.
 
 ## Arguments
 
-- `from_id` (required) — the edge's source chunk.
-- `to_id` (required) — the edge's target chunk.
-- `kind` (required) — the edge kind, e.g. `blocks`.
+- `id` — the statement id. Pass this, or all three of the following.
+- `from_id` — the edge's source chunk.
+- `to_id` — the edge's target chunk.
+- `kind` — the edge kind, e.g. `blocks`.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 
@@ -25,7 +27,7 @@ whether anything was deleted; check `get_edges` if that matters.
 
 ## Errors
 
-- `unlink_chunks: from_id, to_id, and kind are required` — supply all three.
+- `unlink_chunks: pass id, or from_id, to_id and kind` — supply one or the other.
   An edge with a different `kind` is a different edge.
 
 ## Examples

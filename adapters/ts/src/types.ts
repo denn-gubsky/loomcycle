@@ -3866,6 +3866,18 @@ export type PathToolInput = {
  *  the Path tree and then opened with no chunks. A tenant document additionally
  *  requires the operator to grant BOTH `memory_scopes` and `sql_scopes` with
  *  `tenant`, since a document spans both planes. */
+/** One evidence row of a Document relation (a statement). */
+export type DocumentEdgeEvidence = {
+  chunk_id?: string;
+  session_id?: string;
+  event_seq?: number;
+  scope?: "agent" | "user" | "tenant";
+  natural_key?: string;
+  quote: string;
+  char_start?: number;
+  char_end?: number;
+};
+
 export type DocumentToolInput = {
   // Op order mirrors the backend enum (internal/tools/builtin/document.go)
   // exactly so a reader can line the two up 1:1. set_path attaches/re-homes a
@@ -3890,6 +3902,11 @@ export type DocumentToolInput = {
     | "link_chunks"
     | "unlink_chunks"
     | "get_edges"
+    | "get_edge"
+    | "propose_statement"
+    | "accept_statement"
+    | "reject_statement"
+    | "list_statements"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"
@@ -3963,6 +3980,19 @@ export type DocumentToolInput = {
   from_id?: string;
   to_id?: string;
   kind?: string;
+  /** get_edges / backlinks / list_statements: only these relation kinds. */
+  kinds?: string[];
+  /** link_chunks / propose_statement: the relation's qualifiers. */
+  attributes?: Record<string, unknown>;
+  /** link_chunks / propose_statement: the text the relation rests on. Each row
+   *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
+   *  and the verbatim quote, which the server checks against that source. */
+  evidence?: DocumentEdgeEvidence[];
+  /** get_edges (default true) / backlinks (default false): include relations
+   *  proposed for review. */
+  include_proposed?: boolean;
+  /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
+  after?: string;
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before

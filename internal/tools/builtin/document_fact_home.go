@@ -534,6 +534,7 @@ func (d *Document) moveSubtreeDocument(ctx context.Context, txnID, chunkID, docI
 // reachable only through the chunk that is going is an orphan nothing can see.
 func (d *Document) deletePlaceholderRoot(ctx context.Context, txnID, chunkID string) error {
 	for _, stmt := range []string{
+		`DELETE FROM chunk_edge_evidence WHERE edge_id IN (SELECT id FROM chunk_edges WHERE from_id = ? OR to_id = ?)`,
 		`DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`,
 		`DELETE FROM chunk_assets WHERE chunk_id = ?`,
 		`DELETE FROM chunk_tags WHERE chunk_id = ?`,
