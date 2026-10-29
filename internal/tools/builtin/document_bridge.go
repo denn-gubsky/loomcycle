@@ -17,7 +17,9 @@ package builtin
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -81,6 +83,13 @@ func (d *Document) checkFactSource(ctx context.Context, key sqlmem.ScopeKey, msc
 		}
 		quote = string(runes[s:e])
 	}
+	// Checked here rather than left to the evidence write, which would refuse it
+	// after the fact was stored and leave the fact without its derived_from.
+	if utf8.RuneCountInString(quote) > edgeEvidenceQuoteMax {
+		r := errValidation(fmt.Sprintf("upsert_chunk: source_quote is longer than %d characters", edgeEvidenceQuoteMax),
+			"Quote the sentence the fact was taken from, not the whole passage.")
+		return nil, &r, nil
+	}
 	s, e, found := quoteSpan(cb.Body, quote, in.CharStart, in.CharEnd)
 	if !found {
 		r := errValidation("upsert_chunk: evidence_quote_not_found — source_quote does not occur in source_chunk_id"+
@@ -105,14 +114,7 @@ func ifThen(c bool, a, b string) string {
 // from one subject, never the fact.
 func (d *Document) afterFactUpsert(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, factID string, in docInput, src *factSource, out map[string]any) {
 	if src != nil {
-		s, e := src.start, src.end
-		res, refuse, err := d.writeStatement(ctx, key, mscope, edgeWrite{
-			from: factID, to: src.chunkID, kind: "derived_from", method: edgeMethodRuntime, status: edgeStatusAsserted,
-			evidence: []edgeEvidenceIn{{ChunkID: src.chunkID, Quote: src.quote, CharStart: &s, CharEnd: &e}},
-		})
-		if err == nil && refuse == nil {
-			out["derived_from"] = map[string]any{"statement_id": res.ID, "chunk_id": src.chunkID, "char_start": s, "char_end": e}
-		}
+		d.writeDerivedFrom(ctx, key, mscope, factID, src, out)
 	}
 	if len(in.AboutIDs) == 0 {
 		return
@@ -142,6 +144,28 @@ func (d *Document) afterFactUpsert(ctx context.Context, key sqlmem.ScopeKey, msc
 	if strings.TrimSpace(in.Relation) != "" {
 		d.factRelation(ctx, key, mscope, factID, in, linked, out)
 	}
+}
+
+// writeDerivedFrom links a fact to the passage it was taken from. A fact has ONE
+// live source: re-derived from another passage, the edge to the old one goes, and
+// re-derived from the same passage, so does the evidence for a quote it no longer
+// rests on — otherwise the judge, the deletion snapshot and recall would each read
+// whichever source happened to be oldest.
+func (d *Document) writeDerivedFrom(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, factID string, src *factSource, out map[string]any) {
+	s, e := src.start, src.end
+	res, refuse, err := d.writeStatement(ctx, key, mscope, edgeWrite{
+		from: factID, to: src.chunkID, kind: "derived_from", method: edgeMethodRuntime, status: edgeStatusAsserted,
+		evidence: []edgeEvidenceIn{{ChunkID: src.chunkID, Quote: src.quote, CharStart: &s, CharEnd: &e}},
+	})
+	if err != nil || refuse != nil {
+		return
+	}
+	// Removed only once the new edge is written, so a failed write keeps the old source.
+	if d.deleteEdgesWhere(ctx, key, "", `from_id = ? AND kind = 'derived_from' AND id <> ?`, factID, res.ID) != nil ||
+		d.exec(ctx, key, `DELETE FROM chunk_edge_evidence WHERE edge_id = ? AND quote <> ?`, res.ID, src.quote) != nil {
+		return
+	}
+	out["derived_from"] = map[string]any{"statement_id": res.ID, "chunk_id": src.chunkID, "char_start": s, "char_end": e}
 }
 
 // factRelation records the relation a fact states between its first two subjects
@@ -231,9 +255,11 @@ func (d *Document) snapshotDerivedQuotes(ctx context.Context, txnID, inSet strin
 // A source the CALLER may not read is not checked either: refusing would tell
 // them whether text they cannot see still occurs in a document they cannot open.
 func (d *Document) sourceStillHolds(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, factID string) (ok, checked bool, err error) {
+	// The newest edge and its newest quote: a fact written before facts kept a
+	// single source may still carry an older one.
 	res, err := d.query(ctx, key, `SELECT e.id, e.to_id, ev.quote FROM chunk_edges e
 		JOIN chunk_edge_evidence ev ON ev.edge_id = e.id
-		WHERE e.from_id = ? AND e.kind = 'derived_from' ORDER BY ev.created_at LIMIT 1`, factID)
+		WHERE e.from_id = ? AND e.kind = 'derived_from' ORDER BY e.created_at DESC, ev.created_at DESC LIMIT 1`, factID)
 	if err != nil || len(res.Rows) == 0 {
 		return true, false, err
 	}
