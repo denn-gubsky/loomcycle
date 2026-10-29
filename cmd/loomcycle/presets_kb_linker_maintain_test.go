@@ -259,6 +259,18 @@ func TestKBLinker_RuntimeWrittenStatementIsNeverTouched(t *testing.T) {
 	if n := layerCount(t, rep, "L6", "skipped_reserved_kind"); n != 1 {
 		t.Errorf("skipped_reserved_kind = %v, want 1", n)
 	}
+
+	// Without a usable ontology nothing says supersedes is reserved: the method
+	// alone must keep the edge out of the validity check that would expire it.
+	g := maintainFixture()
+	g.ontology = nil
+	g.chunks = f.chunks
+	g.statements = []*kbStatement{{ID: "st-edge", From: "c-a2", To: "c-a1", Kind: "supersedes", Status: "asserted",
+		Method: "runtime", CreatedAt: 1}}
+	runLinker(t, g, maintainInput)
+	if n := len(g.callsOf("Document", "maintain_statement")); n != 0 {
+		t.Errorf("without an ontology, maintain_statement called %d times on the runtime's own edge", n)
+	}
 }
 
 // TestKBLinker_DuplicatesUnderARemovedDiscriminatorMerge: once a kind declares
