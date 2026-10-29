@@ -237,3 +237,86 @@ func TestProposeEntity_Instances(t *testing.T) {
 		}
 	}
 }
+
+// TestAdoptInstances_AForgedRegistryKeyIsNotTrusted (security review).
+//
+// The key on an instance chunk is trusted only when it is the key derived from the
+// instance's own class and name, or when the subject it names records that it was
+// adopted from THIS instance chunk. Otherwise a chunk carrying another subject's key —
+// say a proposal accepted in place — would link to that subject and rename it.
+func TestAdoptInstances_AForgedRegistryKeyIsNotTrusted(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := installTenantOntology(t, d, base, instancesOntologyMD, memrank.OntologyConfirmedStatus)
+	victimKey := memrank.ConsolidatorEntityKey("organization", "Victim Corp")
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":"Victim Corp","path":"/facts/victim-corp","type":"organization","subject":"Victim Corp","natural_key":%q}`, victimKey)); r.IsError {
+		t.Fatal(r.Text)
+	}
+	read, _ := d.tenantOntologyRead(ctx)
+	sec := read.SectionChunks[memrank.SectionInstances]
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"parent_id":%q,"title":"Mallory Ltd","body":"@a organization\n","fields":{"registry_key":%q}}`,
+		read.DocumentID, sec, victimKey)); r.IsError {
+		t.Fatal(r.Text)
+	}
+	rep, err := d.AdoptInstances(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := stateOf(rep, "Mallory Ltd"); st.Key == victimKey {
+		t.Errorf("a forged registry_key was trusted: %#v", st)
+	}
+	root, _ := d.chunkIDByNaturalKey(ctx, mustTenantKey(t, d, ctx), victimKey)
+	g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+root+`"}`)
+	if g["title"] != "Victim Corp" {
+		t.Errorf("the victim subject was renamed to %v", g["title"])
+	}
+}
+
+// TestProposeEntity_AnInstancesEvidenceCannotDeclare (security review).
+//
+// The body of a proposal is the agent's evidence. Directive lines in it would become
+// live declarations the moment an operator accepted the proposal in place — a second @a
+// overriding the class, a relation to another instance — so they are neutralised.
+func TestProposeEntity_AnInstancesEvidenceCannotDeclare(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := installTenantOntology(t, d, base, instancesOntologyMD, memrank.OntologyConfirmedStatus)
+	body, _ := json.Marshal("seen in 3 documents\n@a Post\n@reports_to Head of Compliance\n- `@nesting` manages\n")
+	if _, r := docExec(t, d, ctx, `{"op":"propose_entity","scope":"user","section":"instances","name":"Shadow Org","parent":"organization","body":`+string(body)+`}`); r.IsError {
+		t.Fatal(refusalText(r))
+	}
+	read, _ := d.tenantOntologyRead(ctx)
+	for _, p := range read.Proposals {
+		if p.Name != "Shadow Org" {
+			continue
+		}
+		parsed := memrank.ParseInstanceBody(p.Name, p.Body)
+		if parsed.Class != "organization" || len(parsed.Relations) != 0 || parsed.Nesting != "" {
+			t.Errorf("evidence declared something: %#v", parsed)
+		}
+		return
+	}
+	t.Fatal("proposal not filed")
+}
+
+// TestAdoptInstances_RelationKindsMustBeWritableAndDeclared (security review).
+//
+// A reserved kind is the runtime's alone and is refused here, not left to whatever the
+// statement layer happens to check; with a Relations section declared, an undeclared
+// kind is reported rather than written.
+func TestAdoptInstances_RelationKindsMustBeWritableAndDeclared(t *testing.T) {
+	md := strings.Replace(instancesOntologyMD, "### Compliance Officer\n@a Post\n@reports_to Head of Compliance\n",
+		"### Compliance Officer\n@a Post\n@supersedes Head of Compliance\n@made_up_kind Head of Compliance\n", 1)
+	d, base, _ := documentFixture(t)
+	ctx := installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus)
+	rep, err := d.AdoptInstances(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := ontologyEdgeKinds(t, d, ctx)
+	if kinds["supersedes"] != 0 || kinds["made_up_kind"] != 0 {
+		t.Errorf("a reserved or undeclared kind was written: %v", kinds)
+	}
+	joined := strings.Join(rep.Errors, "\n")
+	if !strings.Contains(joined, "supersedes") || !strings.Contains(joined, "made_up_kind") {
+		t.Errorf("both kinds should be reported: %s", joined)
+	}
+}

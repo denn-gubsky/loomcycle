@@ -262,7 +262,37 @@ func (d *Document) proposeRelation(ctx context.Context, key sqlmem.ScopeKey, msc
 				"Pass one of the listed kinds as parent, or omit parent."), nil
 		}
 	}
-	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, in.Body)
+	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, neutraliseDirectives(in.Body))
+}
+
+// neutraliseDirectives quotes every line of an agent's evidence that the ontology reader
+// would parse as a directive — a bare `@name value` line or a `- `@name“ bullet — so it
+// stays evidence. A relation, concept or instance proposal is ACCEPTED IN PLACE: without
+// this, an `@auto_assert` or a second `@a` in the evidence would become a live
+// declaration the moment an operator accepted the name it was filed under.
+func neutraliseDirectives(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		bullet := strings.HasPrefix(t, "- ") && strings.HasPrefix(firstBacktickedToken(t), "@")
+		if strings.HasPrefix(t, "@") || bullet {
+			lines[i] = "> " + t
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// firstBacktickedToken returns the first `backticked` token of a line, or "".
+func firstBacktickedToken(s string) string {
+	i := strings.Index(s, "`")
+	if i < 0 {
+		return ""
+	}
+	j := strings.Index(s[i+1:], "`")
+	if j < 0 {
+		return ""
+	}
+	return strings.TrimSpace(s[i+1 : i+1+j])
 }
 
 // chunkIDForEntity finds the chunk backing an in-force entity by name.

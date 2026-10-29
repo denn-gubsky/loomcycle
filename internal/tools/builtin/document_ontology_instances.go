@@ -103,9 +103,10 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 			continue
 		}
 		st.Class = class.Name
-		st.Key = inst.RegistryKey
-		if st.Key == "" {
-			st.Key = memrank.ConsolidatorEntityKey(class.Name, inst.Name)
+		var trusted bool
+		st.Key, trusted = d.instanceKey(ctx, key, mscope, inst, class.Name)
+		if inst.RegistryKey != "" && !trusted {
+			st.Note = "its recorded key was not written by adoption and is ignored"
 		}
 		keys[st.Key] = true
 		existing, err := d.chunkIDByNaturalKey(ctx, key, st.Key)
@@ -115,7 +116,7 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 		switch {
 		case existing != "":
 			roots[strings.ToLower(inst.Name)] = existing
-			st.State = d.reconcileExistingSubject(ctx, key, mscope, inst, existing, st.Key, dryRun, &rep)
+			st.State = d.reconcileExistingSubject(ctx, key, mscope, inst, existing, trusted, dryRun, &rep)
 		case dryRun:
 			st.State = "pending"
 		default:
@@ -131,7 +132,7 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 			rep.Adopted++
 			d.publishSubjectEvent(ctx, key, mscope, "adopted", st.Key, "")
 		}
-		if !dryRun && inst.RegistryKey == "" {
+		if !dryRun && !trusted {
 			if err := d.setInstanceRegistryKey(ctx, key, mscope, inst.ChunkID, st.Key); err != nil {
 				rep.Errors = append(rep.Errors, inst.Name+": recording its key: "+err.Error())
 			}
@@ -151,14 +152,14 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 // the subject takes the new title, keeps the old one as an alias, keeps its key), or
 // nothing to do.
 func (d *Document) reconcileExistingSubject(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope,
-	inst memrank.OntologyInstance, root, subjectKey string, dryRun bool, rep *InstanceReport) string {
+	inst memrank.OntologyInstance, root string, trusted, dryRun bool, rep *InstanceReport) string {
 	row, ok, err := d.getChunkRow(ctx, key, root)
 	if err != nil || !ok {
 		rep.Errors = append(rep.Errors, inst.Name+": cannot read its subject")
 		return "error"
 	}
 	state := "unchanged"
-	if inst.RegistryKey == "" {
+	if !trusted {
 		state = "linked"
 		rep.Linked++
 	}
@@ -171,12 +172,85 @@ func (d *Document) reconcileExistingSubject(ctx context.Context, key sqlmem.Scop
 		return state
 	}
 	_ = d.tagDocument(ctx, key, row.DocumentID, instanceSubjectTag)
+	if !trusted {
+		// Record WHICH instance this subject now stands for — the provenance that lets a
+		// later rename of the instance keep this key (see instanceKey).
+		if err := d.mergeSubjectFields(ctx, key, mscope, root, map[string]any{"instance_chunk": inst.ChunkID}); err != nil {
+			rep.Errors = append(rep.Errors, inst.Name+": recording its instance: "+err.Error())
+		}
+	}
 	if renamed {
 		if err := d.renameInstanceSubject(ctx, key, mscope, root, row.Title, inst.Name); err != nil {
 			rep.Errors = append(rep.Errors, inst.Name+": renaming its subject: "+err.Error())
 		}
 	}
 	return state
+}
+
+// instanceKey is the registry key an instance is adopted under, and whether it came
+// from a trusted record.
+//
+// The key recorded on an instance chunk is TRUSTED only when it is the key derived from
+// the instance's own class and name, or when the subject it names records that it was
+// adopted from THIS instance chunk (createInstanceSubject and a link write that). Any
+// other recorded key is ignored: an ontology chunk's fields can be written by whoever can
+// write the chunk — a proposal accepted in place, say — and a key naming another subject
+// would link this instance to it and rename it. Ignoring it falls back to the derived
+// key, which is what a fresh adoption would use anyway.
+func (d *Document) instanceKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, inst memrank.OntologyInstance, class string) (string, bool) {
+	derived := memrank.ConsolidatorEntityKey(class, inst.Name)
+	if inst.RegistryKey == "" {
+		return derived, false
+	}
+	if inst.RegistryKey == derived {
+		return derived, true
+	}
+	root, err := d.chunkIDByNaturalKey(ctx, key, inst.RegistryKey)
+	if err != nil || root == "" {
+		return derived, false
+	}
+	cb, err := d.readBody(ctx, mscope, key, root)
+	if err != nil || len(cb.Fields) == 0 {
+		return derived, false
+	}
+	var f struct {
+		InstanceChunk string `json:"instance_chunk"`
+	}
+	if json.Unmarshal(cb.Fields, &f) != nil || f.InstanceChunk == "" || f.InstanceChunk != inst.ChunkID {
+		return derived, false
+	}
+	return inst.RegistryKey, true
+}
+
+// mergeSubjectFields merges keys into a subject root's fields, keeping the rest. Through
+// update_chunk, like every other change to a stored chunk.
+func (d *Document) mergeSubjectFields(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, root string, add map[string]any) error {
+	row, ok, err := d.getChunkRow(ctx, key, root)
+	if err != nil || !ok {
+		return fmt.Errorf("cannot read the subject")
+	}
+	cb, err := d.readBody(ctx, mscope, key, root)
+	if err != nil {
+		return err
+	}
+	fields := map[string]any{}
+	if len(cb.Fields) > 0 {
+		_ = json.Unmarshal(cb.Fields, &fields)
+	}
+	for k, v := range add {
+		fields[k] = v
+	}
+	fb, _ := json.Marshal(fields)
+	rev := row.Revision
+	raw, _ := json.Marshal(map[string]any{"fields": json.RawMessage(fb), "revision": rev})
+	res, err := d.updateChunk(ctx, key, mscope, docInput{Scope: "tenant", ID: root, Fields: fb, Revision: &rev}, raw)
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return fmt.Errorf("%s", res.Text)
+	}
+	return nil
 }
 
 // createInstanceSubject writes the subject node exactly as subject adoption does: a
@@ -284,7 +358,21 @@ func (d *Document) setInstanceRegistryKey(ctx context.Context, key sqlmem.ScopeK
 // kind), so re-confirming re-asserts rather than duplicates.
 func (d *Document) writeInstanceStatements(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope,
 	read OntologyRead, roots map[string]string, rep *InstanceReport) {
+	view := d.relationView(ctx)
 	link := func(from, to, kind, who string) {
+		// Checked HERE rather than left to the statement layer: a reserved kind is the
+		// runtime's alone, and with a Relations section an instance may only use kinds in
+		// force — the method is not manual, so the gate would otherwise only annotate.
+		if memrank.IsReservedRelation(kind) {
+			rep.Errors = append(rep.Errors, who+": "+kind+" is written only by the runtime; not written")
+			return
+		}
+		if view.active {
+			if _, declared := view.byName[kind]; !declared {
+				rep.Errors = append(rep.Errors, who+": "+kind+" is not a relation kind this tenant declares; not written")
+				return
+			}
+		}
 		res, err := d.linkChunks(ctx, key, mscope, docInput{Scope: "tenant", FromID: from, ToID: to, Kind: kind, edgeMethod: edgeMethodOntology})
 		switch {
 		case err != nil:
@@ -395,5 +483,5 @@ func (d *Document) proposeInstance(ctx context.Context, key sqlmem.ScopeKey, msc
 				"Do not propose it again; an operator decides."), nil
 		}
 	}
-	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, section, name, "@a "+declared+"\n\n"+in.Body)
+	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, section, name, "@a "+declared+"\n\n"+neutraliseDirectives(in.Body))
 }
