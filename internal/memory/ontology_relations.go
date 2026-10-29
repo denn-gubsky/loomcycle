@@ -63,6 +63,9 @@ type OntologyRelation struct {
 	Source      string   `json:"source"`
 	Issues      []string `json:"issues,omitempty"`
 	NameIssue   string   `json:"name_issue,omitempty"`
+	// ChunkID is the entry's chunk in the ontology document; "" for a seed or reserved
+	// kind, which has none. Lets a proposal hang under a declared kind by name.
+	ChunkID string `json:"chunk_id,omitempty"`
 }
 
 // relationDirectives are the directives a relation entry may carry. A class directive in

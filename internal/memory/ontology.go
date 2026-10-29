@@ -720,6 +720,9 @@ type OntologyProposal struct {
 	// Body is the proposal's own text, which for a curator's proposal is its evidence.
 	// Surfaced so the operator judges a case rather than a bare suggestion.
 	Body string `json:"body,omitempty"`
+	// Section is the section the proposal sits in when it is not a class (RFC FO P1b:
+	// "relations"); "" for a class, as every proposal was before sections.
+	Section string `json:"section,omitempty"`
 }
 
 // TrimOntologyName normalises a heading line or a chunk title into an entity name.
