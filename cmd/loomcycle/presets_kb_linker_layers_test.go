@@ -166,8 +166,17 @@ func TestKBLinker_UnheldWorkGetsAPlaceholderTarget(t *testing.T) {
 			"resolved": map[string]any{"document_id": "doc-of-law:held", "exact": false, "placeholder": false}}),
 	}
 
-	rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"]}`)
+	rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"],"as_of":1735689600000000000}`)
 
+	// The input's date reaches both reads that resolve as of a moment: a first
+	// edition's parts carry no date of their own.
+	for _, op := range []string{"extract_citations", "resolve_anchor"} {
+		for _, c := range f.callsOf("Document", op) {
+			if c.Input["as_of"] != float64(1735689600000000000) {
+				t.Errorf("%s carried as_of=%v, want the input's 1735689600000000000", op, c.Input["as_of"])
+			}
+		}
+	}
 	got := proposals(f)
 	if len(got) != 2 || got[0]["to_id"] != "ph-root-law:new" || got[1]["to_id"] != "held-root" {
 		t.Fatalf("proposals = %v, want c1 → the placeholder root, then c1 → the held work's root", got)

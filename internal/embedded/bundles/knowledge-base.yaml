@@ -981,7 +981,7 @@ agents:
       function citationHits(st, L, doc, changed) {
         var ids;
         if (changed === null) {
-          var r = call(st, citationArgs({ document_id: doc.id }));
+          var r = call(st, citationArgs(st, { document_id: doc.id }));
           if (!grammarDeclared(L, r)) { return null; }
           if (r.truncated !== true) { return isArray(r.hits) ? r.hits : []; }
           L.counts.read_by_part++;
@@ -995,7 +995,7 @@ agents:
         }
         var out = [];
         for (var j = 0; j < ids.length; j++) {
-          var p = call(st, citationArgs({ id: ids[j] }));
+          var p = call(st, citationArgs(st, { id: ids[j] }));
           if (!grammarDeclared(L, p)) { return null; }
           if (p.truncated === true) { L.counts.parts_truncated++; }
           var hs = isArray(p.hits) ? p.hits : [];
@@ -1004,9 +1004,12 @@ agents:
         return out;
       }
 
-      function citationArgs(target) {
+      // citationArgs passes the input's as_of on: a first edition's parts carry no
+      // date of their own, so without it their citations resolve as of now.
+      function citationArgs(st, target) {
         var a = { op: "extract_citations", limit: CONFIG.citations_limit };
         if (target.document_id) { a.document_id = target.document_id; } else { a.id = target.id; }
+        if (typeof st.opts.as_of === "number") { a.as_of = st.opts.as_of; }
         return a;
       }
 
