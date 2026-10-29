@@ -347,6 +347,7 @@ agents:
           document_id: "",
           chunks_truncated: false,
           budget_stopped: false,
+          related_ok: false,
           bodies: {},     // chunk id -> {ok, body, type, document_id}
           docTypes: {},   // document id -> {ok, type}
           counts: {
@@ -499,9 +500,15 @@ agents:
             under_paths: st.opts.corpus_paths, exclude_document_ids: [docID]
           }));
         } catch (e) {
+          // The FIRST related call failing is configuration (no embedder, no vector
+          // tier, a scope the agent may not read), and it would fail for every
+          // chunk: stop and say why instead of reporting a clean pass of errors.
+          // After one success a failure is per-chunk, counted, and the pass goes on.
+          if (!st.related_ok) { throw new Error("related failed: " + clip(errText(e), 200)); }
           st.counts.related_errors++;
           return [];
         }
+        st.related_ok = true;
         // A server that does not know the corpus filters ignores them and answers
         // from the whole scope. Judging that would measure the wrong corpus, so the
         // pass stops instead of producing a plausible report about it.

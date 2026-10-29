@@ -47,6 +47,9 @@ type kbFixture struct {
 	// omitFilterEcho stands in for a runtime whose related does not know the
 	// corpus filters: it ignores them and echoes no `filter` block.
 	omitFilterEcho bool
+	// relatedFails names chunks whose related call errors, the way a server with
+	// no embedder or vector tier answers.
+	relatedFails map[string]bool
 
 	// verdictByNeedle routes the verdict reply on a substring of the spawn
 	// prompt; first match wins, defaultVerdict otherwise.
@@ -143,6 +146,9 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		}
 		return okResult(map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title, "body": c.Body})
 	case "related":
+		if f.relatedFails[id] {
+			return tools.Result{IsError: true, Text: "related: requires a configured embedder / vector memory"}, nil
+		}
 		out := map[string]any{"related": f.related[id]}
 		if f.related[id] == nil {
 			out["related"] = []any{}
@@ -675,4 +681,41 @@ func TestKBLinker_SkipsRootShortAndBelowFloor(t *testing.T) {
 		t.Errorf("a below-floor candidate reached the verdict; prompts=%q", prompts)
 	}
 	checkBuckets(t, rep)
+}
+
+// TestKBLinker_RelatedFailingFromTheStartStopsThePass: a first related call that
+// fails is configuration — no embedder, no vector tier — and would fail for every
+// chunk. The pass stops and names it rather than reporting a "complete" pass made
+// of errors. After one success, a failure is one chunk's, counted, and the pass
+// goes on.
+func TestKBLinker_RelatedFailingFromTheStartStopsThePass(t *testing.T) {
+	f := kbBaseFixture()
+	f.relatedFails = map[string]bool{"c1": true}
+
+	rep, text := runLinker(t, f, kbInput)
+
+	if rep["status"] != "failed" {
+		t.Errorf("status = %v, want failed; report %s", rep["status"], text)
+	}
+	if failure, _ := rep["failure"].(string); !strings.Contains(failure, "embedder") {
+		t.Errorf("failure = %q, want the server's reason", failure)
+	}
+	if n := len(f.callsOf("Agent", "")); n != 0 {
+		t.Errorf("verdict calls = %d, want 0", n)
+	}
+
+	// A later chunk failing is counted, not fatal.
+	g := kbBaseFixture()
+	g.chunks = append(g.chunks, kbChunk{ID: "c2", DocumentID: "doc-target", Type: "section", Body: kbBodyClaim + " c2"})
+	g.relatedFails = map[string]bool{"c2": true}
+	rep, text = runLinker(t, g, kbInput)
+	if rep["status"] != "complete" {
+		t.Errorf("status = %v, want complete when only a later chunk fails; report %s", rep["status"], text)
+	}
+	if got := reportCount(t, rep, "related_errors"); got != 1 {
+		t.Errorf("related_errors = %v, want 1", got)
+	}
+	if n := len(g.callsOf("Agent", "")); n != 1 {
+		t.Errorf("verdict calls = %d, want 1 (the chunk whose related answered)", n)
+	}
 }
