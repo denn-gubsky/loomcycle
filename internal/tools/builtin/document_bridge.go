@@ -161,7 +161,16 @@ func (d *Document) snapshotDerivedQuotes(ctx context.Context, txnID, inSet strin
 
 // sourceStillHolds reports whether a fact's derived_from quote still occurs in its
 // source chunk. ok=false with checked=true means the source changed under the
-// fact (or is gone); checked=false means the fact has no document source.
+// fact (an empty or unreadable body counts as changed); checked=false means there
+// is nothing to check it against.
+//
+// A DELETED source is not a changed one. Its quote was snapshotted onto the fact
+// (source_gone) before the passage left — retention's rule for an archived chat —
+// so a judge still has the span the claim rests on; what this guards against is a
+// passage that now says something else.
+//
+// A source the CALLER may not read is not checked either: refusing would tell
+// them whether text they cannot see still occurs in a document they cannot open.
 func (d *Document) sourceStillHolds(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, factID string) (ok, checked bool, err error) {
 	res, err := d.query(ctx, key, `SELECT e.id, e.to_id, ev.quote FROM chunk_edges e
 		JOIN chunk_edge_evidence ev ON ev.edge_id = e.id
@@ -170,6 +179,9 @@ func (d *Document) sourceStillHolds(ctx context.Context, key sqlmem.ScopeKey, ms
 		return true, false, err
 	}
 	edgeID, chunkID, quote := asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2])
+	if readable, rerr := d.chunkReadable(ctx, key, chunkID); rerr != nil || !readable {
+		return true, false, rerr
+	}
 	cb, err := d.readBody(ctx, mscope, key, chunkID)
 	if err != nil {
 		return true, false, err

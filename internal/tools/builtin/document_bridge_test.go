@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
@@ -182,4 +183,33 @@ func TestUpsertChunk_NoSourceIsUnchanged(t *testing.T) {
 		}
 	}
 	_ = store.MemoryScopeUser
+}
+
+// A judge who may not read the passage a fact came from gets no answer about it:
+// refusing `supported` would reveal whether the passage still says the quote.
+func TestJudgeFact_UnreadableSourceIsNotAnOracle(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	out, r := docExec(t, d, open, fmt.Sprintf(`{"op":"upsert_chunk","scope":"tenant","document_id":%q,"natural_key":"memory/plan","title":"plan","body":"the plan nests savepoints",
+		"source_chunk_id":%q,"source_quote":"savepoint nesting secret"}`, s.publicDoc, s.secretChunk))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	fact := out["id"].(string)
+	if _, r := docExec(t, d, open, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":1,"body":"rewritten"}`, s.secretChunk)); r.IsError {
+		t.Fatal(r.Text)
+	}
+	denied := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	_, r = docExec(t, d, denied, fmt.Sprintf(`{"op":"judge_fact","scope":"tenant","id":%q,"verdict":"supported","reason":"x"}`, fact))
+	if r.IsError && strings.Contains(r.Text, "no longer occurs") {
+		t.Errorf("the refusal revealed that an unreadable passage changed: %s", r.Text)
+	}
+	// The reader who may see the passage is still held to it.
+	_, r = docExec(t, d, open, fmt.Sprintf(`{"op":"judge_fact","scope":"tenant","id":%q,"verdict":"supported","reason":"x"}`, fact))
+	if !r.IsError || !strings.Contains(r.Text, "no longer occurs") {
+		t.Errorf("control: a reader of the passage was not held to it: %s", r.Text)
+	}
 }
