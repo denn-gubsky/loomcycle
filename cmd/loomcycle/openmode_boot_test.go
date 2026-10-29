@@ -236,10 +236,11 @@ type bootResult struct {
 func (b *openModeBoot) boot(t *testing.T, host string, extra map[string]string) bootResult {
 	t.Helper()
 	port := freePort(t)
+	listenAddr := net.JoinHostPort(host, fmt.Sprint(port))
 	env := map[string]string{
 		"HOME":                   filepath.Join(b.dir, "home"),
 		"LOOMCYCLE_DATA_DIR":     b.dataDir,
-		"LOOMCYCLE_LISTEN_ADDR":  net.JoinHostPort(host, fmt.Sprint(port)),
+		"LOOMCYCLE_LISTEN_ADDR":  listenAddr,
 		"LOOMCYCLE_MOCK_ENABLED": "1",
 	}
 	for k, v := range extra {
@@ -274,6 +275,15 @@ func (b *openModeBoot) boot(t *testing.T, host string, extra map[string]string) 
 			<-exited
 			t.Fatalf("binary neither served /healthz nor exited within 90s\n%s", out.String())
 		case <-time.After(200 * time.Millisecond):
+		}
+		// OUR binary must be the one answering. freePort releases the port before
+		// the binary binds it, so on a busy runner another test's server can take
+		// it in between and answer /healthz first — the test then interrupted this
+		// binary mid-boot, before it had logged the warning it checks for. The
+		// listen line is logged after every boot warning, so waiting for it also
+		// means the log is complete.
+		if !strings.Contains(out.String(), "loomcycle listening on "+listenAddr) {
+			continue
 		}
 		resp, err := client.Get(base + "/healthz")
 		if err != nil {

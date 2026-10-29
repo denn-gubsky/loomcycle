@@ -1,0 +1,131 @@
+package builtin
+
+// document_mentions.go — `mentions`: prose that names a subject (RFC FN P3b §6.1).
+//
+// A fact is ABOUT its subject (`about`); a passage that names the subject in a
+// [[link]] MENTIONS it. Keeping the two apart is what lets a subject's dossier say
+// "these are the facts about Ada" and, separately, "Ada is mentioned in these
+// passages" — and lets a walk skip mentions by default, since a name in passing is
+// not a relation worth following.
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+)
+
+// subjectNodesWhere selects the chunk ids that are subject (entity) nodes: a chunk
+// carrying a subject whose natural key is an entity key (`<type>:<slug>`), not a
+// fact key (`s|p|o`).
+const subjectNodesWhere = `SELECT chunk_id FROM chunk_memory_meta
+	WHERE subject IS NOT NULL AND subject <> '' AND natural_key IS NOT NULL AND natural_key NOT LIKE '%|%'`
+
+// subjectNodes reports which of ids are subject nodes. A fault answers "none", so
+// the link keeps today's kind.
+func (d *Document) subjectNodes(ctx context.Context, key sqlmem.ScopeKey, ids []string) map[string]bool {
+	out := map[string]bool{}
+	if len(ids) == 0 {
+		return out
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	res, err := d.query(ctx, key, subjectNodesWhere+` AND chunk_id IN (`+placeholders(len(ids))+`)`, args...)
+	if err != nil {
+		return out
+	}
+	for _, r := range res.Rows {
+		out[asStr(r[0])] = true
+	}
+	return out
+}
+
+// mentionEvidence records where in the body the subject is named: the first
+// [[…]] that resolves to it, with its character span. Best-effort, like the link.
+func (d *Document) mentionEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID, fromChunkID, body, to string) {
+	for _, name := range parseNameLinks(body) {
+		if id, ok := d.resolveLinkTarget(ctx, key, name); !ok || id != to {
+			continue
+		}
+		i := strings.Index(body, "[["+name)
+		if i < 0 {
+			return
+		}
+		j := strings.Index(body[i:], "]]")
+		if j < 0 {
+			return
+		}
+		quote := body[i : i+j+2]
+		start := utf8.RuneCountInString(body[:i])
+		end := start + utf8.RuneCountInString(quote)
+		_ = d.exec(ctx, key, `INSERT INTO chunk_edge_evidence (id, edge_id, chunk_id, quote, char_start, char_end, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, newDocID(), edgeID, fromChunkID, quote, start, end, time.Now().UnixNano())
+		return
+	}
+}
+
+// migrateMentionKinds re-kinds [[name]] links that were written as `references`
+// to a subject node before mentions existed. Idempotent: a link that already has
+// a `mentions` twin is dropped rather than re-kinded, so the unique key holds.
+func (d *Document) migrateMentionKinds(ctx context.Context, key sqlmem.ScopeKey) error {
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET kind = 'mentions'
+		WHERE kind = 'references' AND auto = 1 AND to_id IN (`+subjectNodesWhere+`)
+		  AND NOT EXISTS (SELECT 1 FROM chunk_edges m
+		                   WHERE m.from_id = chunk_edges.from_id AND m.to_id = chunk_edges.to_id AND m.kind = 'mentions')`); err != nil {
+		return err
+	}
+	return d.deleteEdgesWhere(ctx, key, "", `kind = 'references' AND auto = 1 AND to_id IN (`+subjectNodesWhere+`)`)
+}
+
+// mentionedIn lists the chunks that mention a subject node (newest first,
+// bounded), for a dossier read.
+func (d *Document) mentionedIn(ctx context.Context, key sqlmem.ScopeKey, subjectID string, limit int) ([]map[string]any, error) {
+	res, err := d.query(ctx, key, `SELECT c.id, c.title, c.document_id FROM chunk_edges e JOIN chunks c ON c.id = e.from_id
+		WHERE e.to_id = ? AND e.kind = 'mentions' AND `+edgeLiveClause+`
+		ORDER BY e.created_at DESC LIMIT ?`, subjectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		out = append(out, map[string]any{"chunk_id": asStr(r[0]), "title": asStr(r[1]), "document_id": asStr(r[2])})
+	}
+	return out, nil
+}
+
+// publishSubjectEvent tells the scope's `memory/subjects` channel that a subject
+// changed identity — adopted into the registry today; merged, re-typed or erased
+// once those operations exist — so whatever indexes relations by subject (a links
+// agent) can re-point or expire them rather than poll for it. surviving is the key
+// a merged subject now lives under ("" otherwise).
+func (d *Document) publishSubjectEvent(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, naturalKey, surviving string) {
+	if d.Bus == nil || naturalKey == "" {
+		return
+	}
+	ev := map[string]any{"op": op, "subject_natural_key": naturalKey, "timestamp": time.Now().UnixNano()}
+	if surviving != "" {
+		ev["surviving_key"] = surviving
+	}
+	payload, _ := json.Marshal(ev)
+	w := d.Writer
+	if w == nil {
+		w = &channels.StorePublisher{Store: d.Store, Bus: d.Bus}
+	}
+	_, _ = w.Write(ctx, channels.WriteRequest{
+		Channel:     "memory/subjects",
+		TenantID:    tools.RunIdentity(ctx).TenantID,
+		Scope:       mscope,
+		ScopeID:     docMemScopeID(mscope, key),
+		Payload:     payload,
+		PublishedBy: tools.RunIdentity(ctx).UserID,
+		MaxMessages: 256,
+	})
+}

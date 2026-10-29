@@ -42,6 +42,10 @@ lists the types searched when `type` pulled in subtypes. With `across_scopes`,
 truncated?}]` holds what the other scopes know. `truncated: true` means more
 facts matched than `limit`.
 
+With `about`, the response also carries `mentioned_in` when passages name the
+subject in a `[[link]]`: `[{chunk_id, title, document_id}]`, newest first. Facts
+are ABOUT a subject; these passages only mention it.
+
 ## Errors
 
 - `list_facts: class must be one of: derived, evidential`.

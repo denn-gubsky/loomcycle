@@ -152,6 +152,7 @@ const documentInputSchema = `{
 		"char_start":  {"type": "integer", "description": "upsert_chunk with source_chunk_id: where the quote starts in the source chunk's text (characters)."},
 		"char_end":    {"type": "integer", "description": "upsert_chunk with source_chunk_id: where the quote ends (exclusive)."},
 		"about_ids":   {"type": "array", "items": {"type": "string"}, "description": "upsert_chunk: the subject nodes (entity chunks) this fact is about; the runtime writes the fact's about edges to them. A subject that is not a chunk of this scope is skipped and counted (about_skipped)."},
+		"relation":    {"type": "string", "description": "upsert_chunk with two or more about_ids: the kind of relation the fact states between its first two subjects (e.g. works_at). The runtime records it as a relation whose evidence is the fact; a kind the tenant has not declared is recorded for review."},
 		"across_scopes": {"type": "boolean", "description": "get_document / list_facts about: also look for this SUBJECT in the other scopes you can read (agent, user, tenant), matching on its natural_key. A subject exists once per scope, so its facts can be split across them — this is how \"what do we know about X\" stops depending on which scope you happened to read. Off by default: it costs up to three queries, and it never reaches another USER's scope."},
 		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope. May be omitted when the chunk's type is a class whose identity fields are declared in the tenant ontology: the key is then built from those fields."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
@@ -252,6 +253,10 @@ type docInput struct {
 	CharStart     *int     `json:"char_start,omitempty"`
 	CharEnd       *int     `json:"char_end,omitempty"`
 	AboutIDs      []string `json:"about_ids,omitempty"`
+	// Relation (upsert_chunk): the kind of relation the fact states between its
+	// first two about_ids subjects; the runtime records it as a statement whose
+	// evidence is the fact itself (RFC FN P3b).
+	Relation string `json:"relation,omitempty"`
 	// Subject is WHAT an entity assertion is about, travelling with Type as a pair.
 	// First-class rather than encoded in the natural key, so it can be read, queried and
 	// checked — and so the tool can tell an entity assertion from a document write.
@@ -1001,6 +1006,9 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 		return err
 	}
 	if err := d.migrateSourceGone(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateMentionKinds(ctx, key); err != nil {
 		return err
 	}
 	return d.migrateOntologyVersion(ctx, key)
@@ -4325,14 +4333,26 @@ func (d *Document) reconcileNameLinks(ctx context.Context, key sqlmem.ScopeKey, 
 		return err
 	}
 	now := time.Now().UnixNano()
+	// A link to a SUBJECT (an entity node) is a mention of it, not a citation of a
+	// passage (RFC FN P3b): it is what "where is this subject mentioned" reads, and
+	// it is never walked by default. It carries the bracketed text and its span.
+	subjects := d.subjectNodes(ctx, key, targets)
 	for _, to := range targets {
-		// Guarded so a pre-existing MANUAL references edge (auto=0) is neither
+		kind := "references"
+		if subjects[to] {
+			kind = "mentions"
+		}
+		// Guarded so a pre-existing MANUAL edge of the kind (auto=0) is neither
 		// duplicated nor overwritten (the portable existence-check from addTagRows).
+		edgeID := newDocID()
 		stmt := `INSERT INTO chunk_edges (id, from_id, to_id, kind, created_at, auto, method)
-			SELECT ?, ?, ?, 'references', ?, 1, '` + edgeMethodWikilink + `'
-			WHERE NOT EXISTS (SELECT 1 FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = 'references')`
-		if err := d.exec(ctx, key, stmt, newDocID(), fromChunkID, to, now, fromChunkID, to); err != nil {
+			SELECT ?, ?, ?, ?, ?, 1, '` + edgeMethodWikilink + `'
+			WHERE NOT EXISTS (SELECT 1 FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = ?)`
+		if err := d.exec(ctx, key, stmt, edgeID, fromChunkID, to, kind, now, fromChunkID, to, kind); err != nil {
 			return err
+		}
+		if kind == "mentions" {
+			d.mentionEvidence(ctx, key, edgeID, fromChunkID, body, to)
 		}
 	}
 	return nil

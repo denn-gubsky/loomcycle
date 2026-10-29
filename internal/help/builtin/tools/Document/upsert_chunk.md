@@ -50,6 +50,11 @@ while keeping the old version, write the correction under a NEW key and then
 - `about_ids` — the subject nodes (entity chunks) the fact is about. The fact
   is linked to each (`about`); one that is not a chunk of this scope is skipped
   and counted in `about_skipped`.
+- `relation` — with two or more `about_ids`: the kind of relation the fact
+  states between its first two subjects (e.g. `works_at`). It is recorded as a
+  relation whose evidence is the fact; a kind the tenant has not declared is
+  recorded for review. Another live relation of the same kind from the same
+  subject to a different one is reported as `relation_conflicts`, never removed.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Every time field you omit keeps its stored value. The server sets the fact's
@@ -59,7 +64,9 @@ first-seen time itself and records who wrote it; you cannot set either.
 
 `{id, natural_key, created}` — `created: true` for a new chunk, `false` for an
 update. With `source_chunk_id`, also `derived_from: {statement_id, chunk_id,
-char_start, char_end}`; with `about_ids`, `about_written` and `about_skipped`. Call `get_chunk` for the full chunk and its `entity` block.
+char_start, char_end}`; with `about_ids`, `about_written` and `about_skipped`;
+with `relation`, `relation: {statement_id, kind, status}` or `relation_skipped`,
+and `relation_conflicts`. Call `get_chunk` for the full chunk and its `entity` block.
 
 ## Errors
 
