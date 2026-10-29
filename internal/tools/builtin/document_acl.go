@@ -110,7 +110,10 @@ var docACLOps = map[string]docACLRule{
 	// resolve_anchor names its document by work key, which only the op can
 	// resolve: it asks read on the document it finds (and write on the path of a
 	// placeholder it files) itself.
-	"resolve_anchor":    {verb: "read", target: docACLListing},
+	"resolve_anchor": {verb: "read", target: docACLListing},
+	// extract_citations reads the document or chunk it names; resolving a citation
+	// asks read on the cited work through resolve_anchor.
+	"extract_citations": {verb: "read", target: docACLChunkOrDocument},
 	"query_chunks":      {verb: "read", target: docACLScope},
 	"add_tags":          {verb: "write", target: docACLChunkOrDocument},
 	"remove_tags":       {verb: "write", target: docACLChunkOrDocument},
