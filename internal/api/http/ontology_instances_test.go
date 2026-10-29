@@ -56,3 +56,22 @@ func TestOntologyAPI_ConfirmAdoptsInstancesAndOnlyConfirm(t *testing.T) {
 		t.Errorf("after confirm the read should show the instance adopted (unchanged), got %q", st)
 	}
 }
+
+// TestOntologyAPI_ReconfirmingDoesNotAgeTheVocabulary.
+//
+// Confirming an already-confirmed ontology is how an operator re-applies its tags and
+// instances. It must not bump the ontology version — the root's revision — or every
+// re-apply would mark every fact as written under an older vocabulary.
+func TestOntologyAPI_ReconfirmingDoesNotAgeTheVocabulary(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	replaceOntologyWithSections(t, s, mi, instancesLayout())
+	first := s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+	again := s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+	if again.OntologyVersion != first.OntologyVersion {
+		t.Errorf("re-confirming bumped the ontology version %d → %d", first.OntologyVersion, again.OntologyVersion)
+	}
+	draft := s.setOntologyStatus(t, mi.Tenant, meminject.OntologyDraftStatus, http.StatusOK)
+	if draft.OntologyVersion == first.OntologyVersion {
+		t.Error("a real status change should still bump the version")
+	}
+}

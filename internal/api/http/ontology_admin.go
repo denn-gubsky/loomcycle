@@ -218,32 +218,39 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 	// caller is toggling one bit and should not have to know the document's
 	// internal shape, and a revision that came from the client could be stale in a
 	// way that silently targeted the wrong chunk.
-	rootID, _, _, err := s.ontologyRoot(dctx, doc)
-	if err != nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
-		return
-	}
-	rev, err := s.ontologyChunkRevision(dctx, doc, rootID)
+	rootID, _, current, err := s.ontologyRoot(dctx, doc)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
 		return
 	}
 
-	// Status ONLY. update_chunk is presence-based, so omitting body/fields leaves
-	// the operator's Markdown untouched — sending them would risk blanking the
-	// document to flip a flag.
-	patch, _ := json.Marshal(map[string]any{
-		"op": "update_chunk", "scope": "tenant", "id": rootID,
-		"status": status, "revision": rev,
-	})
-	res, err := doc.Execute(dctx, patch)
-	if err != nil || res.IsError {
-		msg := res.Text
+	// NO WRITE WHEN NOTHING CHANGES. Confirming an already-confirmed ontology is how an
+	// operator re-applies its concept tags and instances; rewriting the same status would
+	// bump the root's revision — the ontology_version every fact and statement is
+	// stamped with — and each re-apply would mark everything as written under an older
+	// vocabulary that never changed.
+	if !strings.EqualFold(strings.TrimSpace(current), status) {
+		rev, err := s.ontologyChunkRevision(dctx, doc, rootID)
 		if err != nil {
-			msg = err.Error()
+			writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
+			return
 		}
-		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", msg)
-		return
+		// Status ONLY. update_chunk is presence-based, so omitting body/fields leaves
+		// the operator's Markdown untouched — sending them would risk blanking the
+		// document to flip a flag.
+		patch, _ := json.Marshal(map[string]any{
+			"op": "update_chunk", "scope": "tenant", "id": rootID,
+			"status": status, "revision": rev,
+		})
+		res, err := doc.Execute(dctx, patch)
+		if err != nil || res.IsError {
+			msg := res.Text
+			if err != nil {
+				msg = err.Error()
+			}
+			writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", msg)
+			return
+		}
 	}
 
 	// Confirming applies the Schemes section: every concept chunk gets its mirror tag
