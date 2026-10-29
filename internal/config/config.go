@@ -619,6 +619,10 @@ type MemoryConfig struct {
 	// the Path subtrees marked for them (see UnitGeneratorConfig). Unset, no units
 	// are ever generated.
 	UnitGenerator UnitGeneratorConfig `yaml:"unit_generator"`
+
+	// FullText sets the language of the Postgres word leg of a search (see
+	// FullTextConfig).
+	FullText FullTextConfig `yaml:"fulltext"`
 }
 
 // RerankerConfig is the memory.reranker block. The rerank is one model call over
@@ -9658,6 +9662,9 @@ func validate(c *Config) error {
 		}
 	}
 	if err := c.Memory.UnitGenerator.validate(c); err != nil {
+		return err
+	}
+	if err := c.Memory.FullText.validate(); err != nil {
 		return err
 	}
 	if err := c.Decision.validate(c); err != nil {

@@ -335,6 +335,34 @@ Kinds combine with AND, values within a list with OR; a singular and its plural 
 - `documents_scope` equal to `scope` with the same subject is the sugar above. With a different `documents_scope_id` it is refused (`400 invalid_documents_scope`), because hits name their scope, not their subject.
 - Other refusals: `400 invalid_documents_scope` (unknown value, or combined with `[traces]`), `400 missing_documents_scope_id`, `400 filter_unavailable` (no documents on this server), and `403 permission_denied` from the Document gate.
 
+#### The word leg's language — `memory.fulltext`
+
+The full-text leg matches words through a Postgres *text search configuration*. A configuration decides how a word is reduced before it is compared: `english` turns "contracts" and "contract" into the same lexeme, `simple` only lowercases. Until this block, the leg always used `english`. On a corpus in another language an inflected term therefore never matched its other forms, and the vector leg carried the search alone.
+
+```yaml
+memory:
+  fulltext:
+    config: english   # any configuration Postgres knows; default english
+    unaccent: false   # strip diacritics on both sides (the `unaccent` extension)
+```
+
+- **Server-wide.** The words live in one generated column on `memory_embeddings`, shared by every tenant and scope, so there is one setting per server.
+- **A change rebuilds the column at the next boot.** Startup compares the setting with the one recorded on the column. When they differ it drops the column and its GIN index, re-adds them under the new configuration and records the new setting, all in one transaction. The table is locked while this runs, for a time proportional to its rows; startup logs the old setting, the new one and the row count first. A restart with the same setting does nothing. An unset block never touches the column the migrations built. Replicas booting together serialise on an advisory lock, so only the first rebuilds. A rebuild needs a restart; a config reload does not apply it.
+- **The query side follows the column.** The search reads its query text with the same configuration and the same unaccent pass the column was built with. An accented query and an unaccented row (or the reverse) both match.
+- **A configuration Postgres does not know fails the boot**, naming it. A search that silently stayed English is the defect this setting fixes. The value must be a name (`letters, digits, _`, optionally `schema.name`) because it is written into DDL.
+- **Languages Postgres does not ship.** Postgres ships Snowball stemmers for about thirty languages (`\dF` in psql lists them), but not for Ukrainian. For Ukrainian, install a hunspell dictionary on the database server and create a configuration from it:
+
+  ```sql
+  -- files uk_ua.affix / uk_ua.dict / uk_ua.stop in $SHAREDIR/tsearch_data
+  CREATE TEXT SEARCH DICTIONARY ukrainian_hunspell (TEMPLATE = ispell, DictFile = uk_ua, AffFile = uk_ua, StopWords = uk_ua);
+  CREATE TEXT SEARCH CONFIGURATION ukrainian (COPY = simple);
+  ALTER TEXT SEARCH CONFIGURATION ukrainian ALTER MAPPING FOR word, hword, hword_part WITH ukrainian_hunspell, simple;
+  ```
+
+  Then set `config: ukrainian`. Without a dictionary, `simple` plus `unaccent: true` matches exact word forms only.
+- **`unaccent`** creates the extension if it is missing (trusted since Postgres 13, so the database owner may) and an `IMMUTABLE` wrapper, `loomcycle_fts_unaccent`, that the generated column can use.
+- **Tiers.** Postgres with pgvector only, the one tier with a word leg. sqlite ignores the block.
+
 ### The opt-in rerank — memory.reranker + memory_rerank
 
 One model call per search reorders the first N candidates. The model reads the question plus each candidate's **index text** (so every candidate arrives labelled with its document and section), each truncated to a character budget.
