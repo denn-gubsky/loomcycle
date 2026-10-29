@@ -39,6 +39,12 @@ import (
 //
 // confidence is DOUBLE PRECISION for the reason chunk_memory_meta's is: postgres
 // REAL is float4 and would read 0.9 back as 0.8999999761581421.
+//
+// Two confidences, because they are two claims: `confidence` is what the writer
+// said of its own relation, `verdict_confidence` what a judge (or an operator)
+// found when checking it. Only the verdict withholds — a writer unsure of a link
+// is not a refutation of it — and an operator's accept can clear a refuting
+// verdict without erasing what the writer said.
 const chunkEdgesColumns = `
 		id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL,
 		created_at BIGINT NOT NULL, auto INTEGER NOT NULL DEFAULT 0,
@@ -46,7 +52,7 @@ const chunkEdgesColumns = `
 		confidence DOUBLE PRECISION, valid_at BIGINT, invalid_at BIGINT,
 		expired_at BIGINT, verified_at BIGINT, actor TEXT, run_id TEXT,
 		ontology_version INTEGER, discriminator TEXT NOT NULL DEFAULT '', attributes TEXT,
-		judged_at BIGINT, judge_reason TEXT, judged_by TEXT,
+		judged_at BIGINT, judge_reason TEXT, judged_by TEXT, verdict_confidence DOUBLE PRECISION,
 		PRIMARY KEY (id)`
 
 // preStatementEdgeColumns is the whole chunk_edges of a scope created before
@@ -171,6 +177,23 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 			for _, s := range stmts {
 				if err := d.execTxn(ctx, txnID, s); err != nil {
 					return fmt.Errorf("migrate chunk_edges to statements: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	} else if !cols["verdict_confidence"] {
+		// A scope already in the statement shape from before the two confidences
+		// were split. A verdict was the last writer of `confidence` exactly when
+		// verified_at is set (only judge_fact stamps it), so that is the value moved.
+		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			for _, s := range []string{
+				`ALTER TABLE chunk_edges ADD COLUMN verdict_confidence DOUBLE PRECISION`,
+				`UPDATE chunk_edges SET verdict_confidence = confidence WHERE verified_at IS NOT NULL`,
+			} {
+				if err := d.execTxn(ctx, txnID, s); err != nil {
+					return fmt.Errorf("add chunk_edges.verdict_confidence: %w", err)
 				}
 			}
 			return nil
@@ -343,6 +366,10 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	if w.validAt != nil && w.invalidAt != nil && *w.invalidAt <= *w.validAt {
 		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
+		return out, &r, nil
+	}
+	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
+		r := errValidation("confidence must be between 0 and 1", "Leave confidence unset when you have no estimate.")
 		return out, &r, nil
 	}
 	var attrs []byte
@@ -731,15 +758,19 @@ type statementRow struct {
 	JudgedAt        *int64         `json:"judged_at,omitempty"`
 	JudgeReason     string         `json:"judge_reason,omitempty"`
 	JudgedBy        string         `json:"judged_by,omitempty"`
-	CreatedAt       int64          `json:"created_at"`
+	// VerdictConfidence is the judge's (or operator's) finding; Confidence the
+	// writer's own. Only the verdict withholds.
+	VerdictConfidence *float64 `json:"verdict_confidence,omitempty"`
+	CreatedAt         int64    `json:"created_at"`
 }
 
 // statementCols is the SELECT list scanStatement reads, aliased on `e`.
 const statementCols = `e.id, e.from_id, e.to_id, e.kind, e.auto, e.status, e.method, e.confidence,
 	e.valid_at, e.invalid_at, e.expired_at, e.verified_at, e.actor, e.run_id, e.ontology_version,
-	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at`
+	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at,
+	e.verdict_confidence`
 
-const statementColCount = 21
+const statementColCount = 22
 
 func scanStatement(r []any) statementRow {
 	s := statementRow{
@@ -754,6 +785,7 @@ func scanStatement(r []any) statementRow {
 		_ = json.Unmarshal([]byte(a), &s.Attributes)
 	}
 	s.CreatedAt, _ = asInt64(r[20])
+	s.VerdictConfidence = asFloat64Ptr(r[21])
 	if s.Status == "" {
 		s.Status = edgeStatusAsserted
 	}
@@ -857,7 +889,7 @@ func (v statementVisibility) clause() (string, []any) {
 	}
 	if !v.includeRefuted {
 		parts = append(parts, "e.status <> '"+edgeStatusRejected+"'")
-		parts = append(parts, withholdClause("e.confidence", false))
+		parts = append(parts, withholdClause("e.verdict_confidence", false))
 	}
 	if !v.includeRetired {
 		parts = append(parts, "e.expired_at IS NULL")
@@ -928,6 +960,9 @@ func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[s
 	}
 	if s.Confidence != nil {
 		e["confidence"] = *s.Confidence
+	}
+	if s.VerdictConfidence != nil {
+		e["verdict_confidence"] = *s.VerdictConfidence
 	}
 	for k, v := range map[string]*int64{"valid_at": s.ValidAt, "invalid_at": s.InvalidAt, "expired_at": s.ExpiredAt, "verified_at": s.VerifiedAt, "judged_at": s.JudgedAt, "ontology_version": s.OntologyVersion} {
 		if v != nil {
@@ -1247,7 +1282,7 @@ func (d *Document) judgeEdge(ctx context.Context, key sqlmem.ScopeKey, s *statem
 		}
 	}
 	now := time.Now().UnixNano()
-	if err := d.exec(ctx, key, `UPDATE chunk_edges SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verified_at = ? WHERE id = ?`,
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET verdict_confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verified_at = ? WHERE id = ?`,
 		confidence, now, reason, judgedBy, now, s.ID); err != nil {
 		return errFrom("judge_fact: "+err.Error(), err), nil
 	}
