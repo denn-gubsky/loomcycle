@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -34,7 +36,105 @@ func (f FullTextConfig) effectiveConfig() string {
 // against that normal form would make every Postgres release a chance to
 // rebuild a large table for nothing.
 func (f FullTextConfig) marker() string {
-	return "loomcycle-fulltext v1 config=" + f.effectiveConfig() + " unaccent=" + strconv.FormatBool(f.Unaccent)
+	return ftsMarkerPrefix + f.effectiveConfig() + ftsMarkerUnaccent + strconv.FormatBool(f.Unaccent)
+}
+
+const (
+	ftsMarkerPrefix   = "loomcycle-fulltext v1 config="
+	ftsMarkerUnaccent = " unaccent="
+)
+
+// parseFullTextMarker reads a marker back into the setting it records. ok is
+// false for anything marker() would not have written — a hand-edited comment,
+// or one from a later format.
+func parseFullTextMarker(m string) (FullTextConfig, bool) {
+	rest, ok := strings.CutPrefix(m, ftsMarkerPrefix)
+	if !ok {
+		return FullTextConfig{}, false
+	}
+	name, flag, ok := strings.Cut(rest, ftsMarkerUnaccent)
+	if !ok || !ftsConfigIdent.MatchString(name) {
+		return FullTextConfig{}, false
+	}
+	unaccent, err := strconv.ParseBool(flag)
+	if err != nil {
+		return FullTextConfig{}, false
+	}
+	return FullTextConfig{Config: name, Unaccent: unaccent}, true
+}
+
+// readFullTextMarker returns the marker the column carries; a column without a
+// comment is the english one the migrations built. found is false when the
+// column itself is missing.
+func readFullTextMarker(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) (marker string, found bool, err error) {
+	var comment *string
+	err = q.QueryRow(ctx, `SELECT col_description(a.attrelid, a.attnum)
+		FROM pg_attribute a
+		WHERE a.attrelid = 'memory_embeddings'::regclass AND a.attname = 'embed_text_tsv' AND NOT a.attisdropped`).Scan(&comment)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("fulltext: read column: %w", err)
+	}
+	if comment == nil || *comment == "" {
+		return FullTextConfig{}.marker(), true, nil
+	}
+	return *comment, true, nil
+}
+
+// ftsRefreshInterval is how long a store trusts the setting it last read off
+// the column. The setting belongs to the column, not to this process: a replica
+// booted with a different one rebuilds it under the running ones (the last
+// writer wins), and a store still querying the old way finds almost nothing.
+const ftsRefreshInterval = 30 * time.Second
+
+// ftsSnapshot is the column's setting as this store last read it.
+type ftsSnapshot struct {
+	cfg    FullTextConfig
+	readAt time.Time
+}
+
+// ftsSetting is the setting the column is built with, as of at most one
+// refresh interval ago. One caller re-reads a stale setting; the others keep
+// using the last one rather than queue behind it.
+func (s *Store) ftsSetting(ctx context.Context) FullTextConfig {
+	snap := s.fts.Load()
+	ttl := s.ftsTTL
+	if ttl <= 0 {
+		ttl = ftsRefreshInterval
+	}
+	var last FullTextConfig
+	if snap != nil {
+		last = snap.cfg
+		if time.Since(snap.readAt) < ttl {
+			return last
+		}
+	}
+	if !s.ftsRefreshing.CompareAndSwap(false, true) {
+		return last
+	}
+	defer s.ftsRefreshing.Store(false)
+	next := last
+	marker, found, err := readFullTextMarker(ctx, s.pool)
+	switch {
+	case err != nil:
+		slog.WarnContext(ctx, "postgres: could not re-read the full-text column's setting; searching with the last one", "setting", last.marker(), "err", err)
+	case !found:
+		slog.WarnContext(ctx, "postgres: memory_embeddings has no full-text column; searching with the last setting", "setting", last.marker())
+	default:
+		if got, ok := parseFullTextMarker(marker); ok {
+			next = got
+		} else {
+			slog.WarnContext(ctx, "postgres: the full-text column carries a setting this build does not recognise; searching with the last one until a boot rebuilds it", "column", marker, "setting", last.marker())
+		}
+	}
+	// Stamped on failure too, so a failing read costs one query (and one log
+	// line) per interval, not one per search.
+	s.fts.Store(&ftsSnapshot{cfg: next, readAt: time.Now()})
+	return next
 }
 
 // ftsConfigIdent mirrors config's check. It is repeated here because the name is
@@ -54,27 +154,28 @@ const ftsUnaccentFunc = "loomcycle_fts_unaccent"
 const ftsLockKey = 0x6c6f6f6d_66747331 // "loomfts1"
 
 // applyFullTextConfig makes memory_embeddings.embed_text_tsv match cfg,
-// rebuilding the column when it was built differently. Called from Open only
-// when the table exists. It fails the boot on a configuration Postgres does not
-// know: the operator named one, and a search that silently stayed English would
-// be the defect this block exists to fix.
-func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) error {
+// rebuilding the column when it was built differently, and returns the marker
+// the column carries when the lock is released. Called from Open only when the
+// table exists and the caller is the server boot. It fails the boot on a
+// configuration Postgres does not know: the operator named one, and a search
+// that silently stayed English would be the defect this block exists to fix.
+func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) (string, error) {
 	name := cfg.effectiveConfig()
 	if !ftsConfigIdent.MatchString(name) {
-		return fmt.Errorf("memory.fulltext.config %q is not a text search configuration name", name)
+		return "", fmt.Errorf("memory.fulltext.config %q is not a text search configuration name", name)
 	}
 	var resolved string
 	if err := s.pool.QueryRow(ctx, `SELECT $1::regconfig::text`, name).Scan(&resolved); err != nil {
-		return fmt.Errorf("memory.fulltext.config %q: Postgres has no such text search configuration (list them with \\dF in psql; a language Postgres does not ship needs a dictionary installed first): %w", name, err)
+		return "", fmt.Errorf("memory.fulltext.config %q: Postgres has no such text search configuration (list them with \\dF in psql; a language Postgres does not ship needs a dictionary installed first): %w", name, err)
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("fulltext: begin: %w", err)
+		return "", fmt.Errorf("fulltext: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(ftsLockKey)); err != nil {
-		return fmt.Errorf("fulltext: lock: %w", err)
+		return "", fmt.Errorf("fulltext: lock: %w", err)
 	}
 	// The extension and the wrapper are catalog rows every replica would
 	// write: created outside the lock, two booting together collide on them
@@ -82,32 +183,28 @@ func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) err
 	// the boots fails. DDL is transactional, so they commit with the rebuild.
 	if cfg.Unaccent {
 		if err := ensureUnaccentFunc(ctx, tx); err != nil {
-			return err
+			return "", err
 		}
 	}
 	// Read under the lock: a replica that won the race has already rebuilt.
-	var comment *string
-	err = tx.QueryRow(ctx, `SELECT col_description(a.attrelid, a.attnum)
-		FROM pg_attribute a
-		WHERE a.attrelid = 'memory_embeddings'::regclass AND a.attname = 'embed_text_tsv' AND NOT a.attisdropped`).Scan(&comment)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("fulltext: read column: %w", err)
-	}
-	current := FullTextConfig{}.marker() // no comment = the migrations' english column
-	if comment != nil && *comment != "" {
-		current = *comment
+	current, found, err := readFullTextMarker(ctx, tx)
+	if err != nil {
+		return "", err
 	}
 	want := cfg.marker()
-	if current == want && !errors.Is(err, pgx.ErrNoRows) {
-		return nil
+	if found && current == want {
+		return current, nil
 	}
 
 	var rows int64
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM memory_embeddings`).Scan(&rows); err != nil {
-		return fmt.Errorf("fulltext: count rows: %w", err)
+		return "", fmt.Errorf("fulltext: count rows: %w", err)
 	}
-	slog.Warn("postgres: rebuilding the full-text index of memory_embeddings for a changed memory.fulltext setting; the table is locked until it finishes",
-		"from", current, "to", want, "rows", rows)
+	// The column may have been built by another replica still running with its
+	// own setting. This boot wins; that replica's searches follow the column
+	// once they re-read it, and its next boot rebuilds it back.
+	slog.Warn("postgres: memory.fulltext differs from the setting the full-text column of memory_embeddings was built with; rebuilding it to this process's setting (the last process to boot wins). The table is locked until it finishes",
+		"column", current, "process", want, "rows", rows)
 
 	src := "embed_text"
 	if cfg.Unaccent {
@@ -121,14 +218,14 @@ func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) err
 		`COMMENT ON COLUMN memory_embeddings.embed_text_tsv IS '` + want + `'`,
 	} {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("fulltext: rebuild (%s): %w", stmt, err)
+			return "", fmt.Errorf("fulltext: rebuild (%s): %w", stmt, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("fulltext: commit: %w", err)
+		return "", fmt.Errorf("fulltext: commit: %w", err)
 	}
 	slog.Info("postgres: full-text index rebuilt", "config", name, "unaccent", cfg.Unaccent, "rows", rows)
-	return nil
+	return want, nil
 }
 
 // ensureUnaccentFunc installs the unaccent extension (a trusted extension since
@@ -172,10 +269,11 @@ func ensureUnaccentFunc(ctx context.Context, tx pgx.Tx) error {
 
 // ftsQuery is the tsquery side of the match, built to read the query text the
 // way the column read the stored text. Both the configuration and the unaccent
-// pass have to agree with the column, or the leg silently stops matching.
-func (s *Store) ftsQuery(textParam, configParam string) string {
+// pass have to agree with the column, or the leg silently stops matching, so
+// cfg is the column's setting (ftsSetting), never this process's config.
+func ftsQuery(cfg FullTextConfig, textParam, configParam string) string {
 	src := textParam
-	if s.fts.Unaccent {
+	if cfg.Unaccent {
 		src = ftsUnaccentFunc + "(" + textParam + ")"
 	}
 	return "plainto_tsquery(" + configParam + "::regconfig, " + src + ")"
