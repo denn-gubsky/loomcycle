@@ -406,13 +406,15 @@ func TestEffectiveOntology_PinnedRootIsEnforcedBeforeInheritance(t *testing.T) {
 // exist under the old spelling splits the type in half — the cost of a bad name is
 // friction in a prompt, not corruption.
 func TestOntologyNameIssue_WarnsWithoutRewriting(t *testing.T) {
-	fine := []string{"event", "security-incident", "work_item", "p", "x9"}
+	// PascalCase is fine (RFC FO decision 10b.4): class names like NormativeAct are the
+	// convention of the standards the sectioned ontology borrows from.
+	fine := []string{"event", "security-incident", "work_item", "p", "x9", "Event", "NormativeAct"}
 	for _, n := range fine {
 		if got := OntologyNameIssue(n); got != "" {
 			t.Errorf("%q should be accepted quietly, got %q", n, got)
 		}
 	}
-	awkward := []string{"Notes on naming", "Event", "type:thing", "trailing-"}
+	awkward := []string{"Notes on naming", "type:thing", "trailing-"}
 	for _, n := range awkward {
 		if OntologyNameIssue(n) == "" {
 			t.Errorf("%q should have produced an advisory", n)

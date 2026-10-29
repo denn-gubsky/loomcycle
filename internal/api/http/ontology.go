@@ -92,7 +92,10 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	// It also ends a silent data loss: the markdown parser matched only "## ", so
 	// every nested type an operator wrote was dropped without a word.
 	tree, terr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath)
-	if terr == nil && len(tree.Terms) > 0 {
+	// A SECTIONED document that declares no classes is still a tree read, not a reason
+	// for the flat fallback: that parser knows nothing of sections and would turn
+	// "## Relations" into an entity type (RFC FO §3.1).
+	if terr == nil && (len(tree.Terms) > 0 || len(tree.Sections) > 0) {
 		if tree.DepthCapped {
 			notes = append(notes, "This document nests deeper than "+
 				strconv.Itoa(meminject.OntologyMaxDepth)+" levels. The types below that "+

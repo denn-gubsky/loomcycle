@@ -82,6 +82,28 @@ type ontologyResponse struct {
 	// from two lists and get subtly wrong (a tenant term that overrides a standard name
 	// is NOT adoptable).
 	Adoptable []string `json:"adoptable,omitempty"`
+
+	// --- RFC FO P1a. All omitempty, and the class/usage reports are filled only for a
+	// SECTIONED document, so a section-less ontology's response is unchanged.
+
+	// Sections lists the section kinds the document declares, in document order.
+	Sections []string `json:"sections,omitempty"`
+	// DocumentClasses is the effective document-class tree (the seed Document unless
+	// the tenant overrides it). Kept apart from Effective, which is the entity ontology a
+	// run's prompt is built from — document classes never reach the prompt.
+	DocumentClasses []meminject.OntologyTerm `json:"document_classes,omitempty"`
+	// Grammars are the anchor/citation grammars the classes section declares; one with
+	// an issue is disabled.
+	Grammars []meminject.OntologyGrammar `json:"grammars,omitempty"`
+	// OntologyVersion is the root chunk's revision — what facts written now are stamped
+	// with. FactVersions counts the tenant scope's facts by the version they carry.
+	OntologyVersion int                    `json:"ontology_version,omitempty"`
+	FactVersions    []builtin.VersionCount `json:"fact_versions,omitempty"`
+	// UndeclaredTypes are chunks.type values in use in the TENANT scope that no class
+	// declares (structural types excluded), with counts — what an operator would declare
+	// or map with @renamed_from. Tenant scope only: user scopes are per person and are
+	// not swept from a settings page.
+	UndeclaredTypes []builtin.TypeCount `json:"undeclared_types,omitempty"`
 }
 
 // handleOntology serves GET /v1/_ontology — the tenant ontology's state.
@@ -200,8 +222,14 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.ontologyDocCtx(ctx, mi)
+	sectioned := false
 	if read, rerr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath); rerr == nil {
 		resp.Proposals = read.Proposals
+		resp.Sections, resp.Grammars, resp.OntologyVersion = read.Sections, read.Grammars, read.RootRevision
+		sectioned = len(read.Sections) > 0
+		// Document-level advisories (a duplicate or unknown section) join the reader
+		// notes the panel already renders.
+		notes = append(notes, read.Issues...)
 	}
 	rootID, docID, status, err := s.ontologyRoot(dctx, doc)
 	if err == nil {
@@ -246,7 +274,27 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 			resp.Adoptable = append(resp.Adoptable, t.Name)
 		}
 	}
-	resp.Effective = meminject.EffectiveOntology(terms, confirmed)
+	// Effective is what an agent is told about, so document classes — which never
+	// reach a prompt — are reported in DocumentClasses instead.
+	resp.Effective = meminject.EntityTermsOnly(meminject.EffectiveOntology(terms, confirmed))
+	if sectioned {
+		classes := meminject.EffectiveClasses(terms, confirmed)
+		declaredClass := make(map[string]bool, len(classes))
+		for _, c := range classes {
+			declaredClass[strings.ToLower(c.Name)] = true
+			if c.IsDocumentClass {
+				resp.DocumentClasses = append(resp.DocumentClasses, c)
+			}
+		}
+		if usage, uerr := doc.OntologyUsageIn(dctx, "tenant"); uerr == nil {
+			resp.FactVersions = usage.Versions
+			for _, tc := range usage.Types {
+				if !declaredClass[strings.ToLower(tc.Type)] && !meminject.IsReservedStructuralType(tc.Type) {
+					resp.UndeclaredTypes = append(resp.UndeclaredTypes, tc)
+				}
+			}
+		}
+	}
 	return resp, nil
 }
 

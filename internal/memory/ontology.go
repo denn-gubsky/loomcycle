@@ -116,6 +116,75 @@ type OntologyTerm struct {
 	// parser: an ontology that dropped a type over a typo'd directive would be worse
 	// than one that ignores the directive and says so.
 	MemoryScopeIssue string `json:"memory_scope_issue,omitempty"`
+
+	// --- RFC FO P1a: typed classes. Every field below is omitempty. FieldSpecs is filled
+	// for any class with fields (an untyped field is `text`), and the directives in
+	// either spelling are honoured in any document; IsDocumentClass needs a classes
+	// section. None of it reaches the extraction prompt except through the unchanged
+	// Fields/Inherited.
+
+	// FieldSpecs is Fields with types and flags (ParseOntologyFieldSpecs). Fields stays
+	// the name list the prompt renders from; the two are parsed from the same bullets.
+	FieldSpecs []FieldSpec `json:"field_specs,omitempty"`
+	// InheritedSpecs mirrors Inherited for typed fields, and is separate from FieldSpecs
+	// for the same reason: the panel shows what a subclass declared.
+	InheritedSpecs []FieldSpec `json:"inherited_specs,omitempty"`
+	// TitleIdentity is the bare @identity directive on a class: its title is its
+	// identity (sugar for `title text @identity`). InheritedTitleIdentity is the same,
+	// resolved from an ancestor.
+	TitleIdentity          bool `json:"title_identity,omitempty"`
+	InheritedTitleIdentity bool `json:"inherited_title_identity,omitempty"`
+	// IsDocumentClass marks `Document` and its descendants: they govern documents.type
+	// and are never rendered into the extraction prompt. Set only for terms read from a
+	// `@section classes` section (and the seed), so a flat ontology's entity type that
+	// happens to be called "document" keeps behaving as the entity type it always was.
+	IsDocumentClass bool `json:"document_class,omitempty"`
+	// Class directives, as declared on THIS class. Inheritance of the same is resolved
+	// into InheritedDirectives; consumers read EffectiveDirective.
+	IdentifierPattern string   `json:"identifier_pattern,omitempty"`
+	TitlePattern      string   `json:"title_pattern,omitempty"`
+	AnchorGrammar     string   `json:"anchor_grammar,omitempty"`
+	CitationGrammar   string   `json:"citation_grammar,omitempty"`
+	Exclude           []string `json:"exclude,omitempty"`
+	RenamedFrom       string   `json:"renamed_from,omitempty"`
+	// InheritedDirectives holds the class directives this class gets from its nearest
+	// declaring ancestor, keyed by directive name (Exclude joined with ", ").
+	InheritedDirectives map[string]string `json:"inherited_directives,omitempty"`
+	// Issues are operator-facing advisories about this class's declarations — an
+	// unknown directive, a pattern that does not compile. Advisory only: the class is in
+	// force.
+	Issues []string `json:"issues,omitempty"`
+}
+
+// inheritableDirectives are the class directives a subclass takes from its ancestors
+// when it declares none of its own (nearest ancestor wins, as for memory_scope).
+var inheritableDirectives = []string{"identifier_pattern", "title_pattern", "anchor_grammar", "citation_grammar", "exclude"}
+
+// declaredDirective returns the value a class declares itself for an inheritable
+// directive, or "".
+func declaredDirective(t OntologyTerm, name string) string {
+	switch name {
+	case "identifier_pattern":
+		return t.IdentifierPattern
+	case "title_pattern":
+		return t.TitlePattern
+	case "anchor_grammar":
+		return t.AnchorGrammar
+	case "citation_grammar":
+		return t.CitationGrammar
+	case "exclude":
+		return strings.Join(t.Exclude, ", ")
+	}
+	return ""
+}
+
+// EffectiveDirective is a class directive as a consumer should see it: declared, else
+// inherited, else "".
+func EffectiveDirective(t OntologyTerm, name string) string {
+	if v := declaredDirective(t, name); v != "" {
+		return v
+	}
+	return t.InheritedDirectives[name]
 }
 
 // BaseSeedOntology is the ontology every tenant starts with: POLE+O — person,
@@ -208,6 +277,10 @@ func (t OntologyTerm) FieldsJSON() string {
 //
 // HOUSE RULE: model-visible text — no internal RFC citations.
 func RenderOntology(terms []OntologyTerm, tenantConfirmed bool) string {
+	// Document classes govern documents.type; they are not things memory records facts
+	// about, and keeping them out is what keeps the seed-only and flat renders
+	// byte-identical now that a `Document` seed exists (RFC FO decision 10b.2).
+	terms = entityTermsOnly(terms)
 	if len(terms) == 0 {
 		return ""
 	}
@@ -243,6 +316,31 @@ func RenderOntology(terms []OntologyTerm, tenantConfirmed bool) string {
 			"additions of its own, so use these as they are.\n"
 	}
 	return b
+}
+
+// EntityTermsOnly is the entity half of a class list — what an agent is told about —
+// with document classes dropped.
+func EntityTermsOnly(terms []OntologyTerm) []OntologyTerm { return entityTermsOnly(terms) }
+
+// entityTermsOnly drops document classes, returning the input slice untouched when
+// there are none (the common case allocates nothing).
+func entityTermsOnly(terms []OntologyTerm) []OntologyTerm {
+	n := 0
+	for _, t := range terms {
+		if t.IsDocumentClass {
+			n++
+		}
+	}
+	if n == 0 {
+		return terms
+	}
+	out := make([]OntologyTerm, 0, len(terms)-n)
+	for _, t := range terms {
+		if !t.IsDocumentClass {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func joinComma(ss []string) string {
@@ -290,7 +388,11 @@ func EnforcePinnedRoots(terms []OntologyTerm) ([]OntologyTerm, []string) {
 }
 
 // ontologyNameRe is the identifier shape an entity name should take.
-var ontologyNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$`)
+//
+// Capitals are allowed (RFC FO decision 10b.4): class names like NormativeAct are the
+// convention the RFC's own examples and the standards it borrows from use, and names
+// are matched case-insensitively, so a capital costs nothing a lowercase name would not.
+var ontologyNameRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?$`)
 
 // OntologyNameIssue returns an operator-facing warning when a name is awkward as a type,
 // or "" when it is fine (RFC BZ §10.2).
@@ -314,9 +416,6 @@ func OntologyNameIssue(name string) string {
 		return "contains spaces — a type name is used inside a prompt and as part of a " +
 			"fact's key, where a phrase reads as prose rather than as a type. Prefer " +
 			"lowercase words joined by - or _."
-	case n != strings.ToLower(n):
-		return "has capitals — type names are matched case-insensitively, so two spellings " +
-			"of the same type are easy to create by accident. Prefer lowercase."
 	default:
 		return "has characters outside a-z, 0-9, - and _, which are awkward in a prompt " +
 			"and in a fact's key."
@@ -412,9 +511,79 @@ func ResolveInheritance(terms []OntologyTerm) []OntologyTerm {
 	for _, t := range terms {
 		t.Inherited = resolve(t.Name, map[string]bool{})
 		t.MemoryScopeInherited = resolveScope(t.Name, map[string]bool{})
+		t.InheritedSpecs, t.InheritedTitleIdentity, t.InheritedDirectives = resolveClassInheritance(t, byName)
 		res = append(res, t)
 	}
 	return res
+}
+
+// resolveClassInheritance resolves the typed-class half of inheritance (RFC FO): the
+// ancestors' field specs (most specific wins, ancestor-first, as for field names), the
+// bare @identity directive, and the inheritable class directives (nearest declaring
+// ancestor wins). Bounded by the depth cap and a visited set — it runs on every render.
+func resolveClassInheritance(t OntologyTerm, byName map[string]OntologyTerm) ([]FieldSpec, bool, map[string]string) {
+	var chain []OntologyTerm // nearest ancestor first
+	seen := map[string]bool{t.Name: true}
+	cur := t
+	for i := 0; i < OntologyMaxDepth*2 && cur.Parent != ""; i++ {
+		p, ok := byName[cur.Parent]
+		if !ok || seen[p.Name] {
+			break
+		}
+		seen[p.Name] = true
+		chain = append(chain, p)
+		cur = p
+	}
+	if len(chain) == 0 {
+		return nil, false, nil
+	}
+	declared := make(map[string]bool, len(t.FieldSpecs))
+	for _, fs := range t.FieldSpecs {
+		declared[fs.Name] = true
+	}
+	var specs []FieldSpec
+	emitted := map[string]bool{}
+	for i := len(chain) - 1; i >= 0; i-- { // ancestor-first
+		for _, fs := range chain[i].FieldSpecs {
+			if declared[fs.Name] {
+				continue
+			}
+			if emitted[fs.Name] {
+				// A nearer ancestor redeclared it: the nearer declaration wins.
+				for k := range specs {
+					if specs[k].Name == fs.Name {
+						specs[k] = fs
+					}
+				}
+				continue
+			}
+			emitted[fs.Name] = true
+			specs = append(specs, fs)
+		}
+	}
+	titleID := false
+	for _, a := range chain {
+		if a.TitleIdentity {
+			titleID = true
+			break
+		}
+	}
+	var dirs map[string]string
+	for _, name := range inheritableDirectives {
+		if declaredDirective(t, name) != "" {
+			continue
+		}
+		for _, a := range chain {
+			if v := declaredDirective(a, name); v != "" {
+				if dirs == nil {
+					dirs = map[string]string{}
+				}
+				dirs[name] = v
+				break
+			}
+		}
+	}
+	return specs, titleID, dirs
 }
 
 // AllFields is a term's complete field set as a consumer should see it: inherited
@@ -640,16 +809,32 @@ func OntologyScopeValues() []string { return []string{"user", "tenant"} }
 // Returns the declared scope and an advisory. They are mutually exclusive: a value this
 // cannot route to yields ("", advisory), never a guess. The LAST directive wins, matching
 // how a repeated field would behave, and a body with no directive yields ("", "").
+//
+// Both spellings are read (RFC FO decision 10b.1): the bullet above and the bare line
+// `@memory_scope tenant`. One reader for both, so a class cannot declare a scope in a
+// spelling the router does not see.
 func ParseOntologyScope(body string) (scope, issue string) {
+	inFence := false
 	for _, line := range strings.Split(body, "\n") {
 		t := strings.TrimSpace(line)
-		if !strings.HasPrefix(t, "- ") {
+		if strings.HasPrefix(t, "```") {
+			inFence = !inFence
 			continue
 		}
-		if firstBackticked(t) != OntologyScopeDirective {
+		var raw string
+		switch {
+		case strings.HasPrefix(t, "- "):
+			if firstBackticked(t) != OntologyScopeDirective {
+				continue
+			}
+			raw = directiveValue(t)
+		case !inFence && !strings.HasPrefix(line, "    ") && !strings.HasPrefix(line, "\t") &&
+			strings.HasPrefix(t, OntologyScopeDirective) &&
+			(len(t) == len(OntologyScopeDirective) || t[len(OntologyScopeDirective)] == ' ' || t[len(OntologyScopeDirective)] == '\t'):
+			raw = bareScopeValue(strings.TrimSpace(t[len(OntologyScopeDirective):]))
+		default:
 			continue
 		}
-		raw := directiveValue(t)
 		if raw == "" {
 			scope, issue = "", OntologyScopeDirective+" names no scope — give it one of: "+
 				joinComma(OntologyScopeValues())
@@ -671,6 +856,16 @@ func ParseOntologyScope(body string) (scope, issue string) {
 		scope, issue = raw, ""
 	}
 	return scope, issue
+}
+
+// bareScopeValue normalises the value of a bare `@memory_scope tenant — note` line the
+// way directiveValue normalises the bullet form: first word, lowercased, separators off.
+func bareScopeValue(tail string) string {
+	tail = strings.TrimLeft(tail, ":=—- \t")
+	if k := strings.IndexAny(tail, " \t—"); k > 0 {
+		tail = tail[:k]
+	}
+	return strings.ToLower(strings.Trim(tail, "`.,;:—- \t"))
 }
 
 // directiveValue returns the first word after a directive's closing backtick.

@@ -148,7 +148,7 @@ const documentInputSchema = `{
 		"subject":      {"type": "string", "description": "upsert_chunk: the thing this entity assertion is ABOUT, paired with type — emit both or neither. type says what kind of thing it is, subject names it. A plain document chunk has no subject; passing the pair is what marks a write as an entity the ontology governs."},
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
 		"across_scopes": {"type": "boolean", "description": "get_document / list_facts about: also look for this SUBJECT in the other scopes you can read (agent, user, tenant), matching on its natural_key. A subject exists once per scope, so its facts can be split across them — this is how \"what do we know about X\" stops depending on which scope you happened to read. Off by default: it costs up to three queries, and it never reaches another USER's scope."},
-		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope."},
+		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope. May be omitted when the chunk's type is a class whose identity fields are declared in the tenant ontology: the key is then built from those fields."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
 		"valid_at":   {"type": "integer", "description": "When the content became true IN THE WORLD (unix nanos). upsert_chunk: the fact's start. create_chunk / update_chunk: the chunk's own start, e.g. when an edition or clause came into force — it does not make the chunk a fact; update_chunk with null clears it. Omit when unknown — an undated chunk is honest and still matches an as_of question; a guessed instant is not. Distinct from when it was recorded. link_chunks / propose_statement: when the relation began to hold."},
 		"from_pending": {"type": "string", "description": "upsert_chunk: the id of a pending item you drained, so this fact records what produced it. The server fills in the origin and the source ids from that row — you cannot set those yourself. Unknown or unowned ids are ignored and the write still succeeds."},
@@ -572,10 +572,17 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if refused != nil {
 		return *refused, nil
 	}
+	// RFC FO P1a: typed classes — field warnings and identity keys for the four write
+	// ops; see document_ontology_fields.go. Pre-write so a collision leaves nothing behind.
+	classRules, refused := d.applyClassRules(ctx, key, mscope, acl, &in, raw)
+	if refused != nil {
+		return *refused, nil
+	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
 	if err != nil {
 		return res, err
 	}
+	res = d.finishClassRules(ctx, key, in, classRules, res)
 	return acl.filterListing(ctx, in.Op, res), nil
 }
 
@@ -938,7 +945,13 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateVerdict(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateJudgedBy(ctx, key)
+	if err := d.migrateJudgedBy(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateIdentityKey(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateOntologyVersion(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -5374,7 +5387,10 @@ func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		_ = json.Unmarshal([]byte(asStr(m["fields"])), &fields)
 		types = append(types, map[string]any{"name": asStr(m["name"]), "document_id": asStr(m["document_id"]), "fields": fields})
 	}
-	return jsonResult(map[string]any{"types": types})
+	// The structural vocabulary the primitive itself writes into chunks.type, listed
+	// apart from the document's own types (RFC FO §3.2) so a `section` chunk is not
+	// mistaken for an undeclared class.
+	return jsonResult(map[string]any{"types": types, "reserved": memrank.ReservedStructuralTypes()})
 }
 
 // --- ops: tags + document facets (RFC BS Phase 1) ---

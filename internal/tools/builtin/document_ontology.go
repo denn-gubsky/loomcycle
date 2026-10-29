@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -80,6 +81,19 @@ type OntologyRead struct {
 	// proposal, adopt a type as a new root) without resolving the path again.
 	DocumentID  string
 	RootChunkID string
+	// Sections lists the section kinds the document declares, in document order (RFC FO).
+	// Empty for a section-less document, which reads exactly as it did before sections.
+	Sections []string
+	// Grammars are the `grammar:<name>` chunks of the classes section — data the anchor
+	// resolver and the linking agent read. Only recognised in a sectioned document, so a
+	// flat document's chunk titled like one keeps its old reading as a class.
+	Grammars []memrank.OntologyGrammar
+	// Issues are document-level advisories: a duplicate section, an unknown section kind.
+	// Per-class advisories live on each term's Issues.
+	Issues []string
+	// RootRevision is the ontology root chunk's revision — the ontology_version stamped
+	// on facts and statements written under this vocabulary (RFC FO §3.6).
+	RootRevision int
 	// DepthCapped is true when the document nests deeper than OntologyMaxDepth, so
 	// some types were flattened onto the cap rather than kept at their written depth.
 	//
@@ -123,19 +137,23 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	confirmed := strings.EqualFold(strings.TrimSpace(status), memrank.OntologyConfirmedStatus)
 
 	res, err := d.query(ctx, key,
-		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position, coalesce(status, '')
+		`SELECT id, coalesce(parent_id, ''), coalesce(title, ''), position, coalesce(status, ''), revision
 		   FROM chunks WHERE document_id = ? ORDER BY position`, docID)
 	if err != nil {
 		return OntologyRead{Confirmed: confirmed}, err
 	}
 	kids := map[string][]ontologyChunk{}
+	rootRevision := 0
 	for _, row := range res.Rows {
-		if len(row) < 5 {
+		if len(row) < 6 {
 			continue
 		}
 		c := ontologyChunk{
 			id: asStr(row[0]), parentID: asStr(row[1]),
 			title: asStr(row[2]), position: asInt(row[3]), status: asStr(row[4]),
+		}
+		if c.id == rootID {
+			rootRevision = asInt(row[5])
 		}
 		kids[c.parentID] = append(kids[c.parentID], c)
 	}
@@ -145,55 +163,117 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		})
 	}
 
+	// Bodies are read once and shared: the section pre-pass and the class walk both need
+	// a root child's body, and each read is a Memory round-trip.
+	bodies := map[string]string{}
+	bodyOf := func(id string) string {
+		if b, ok := bodies[id]; ok {
+			return b
+		}
+		got, _ := d.readBody(ctx, mscope, key, id)
+		bodies[id] = got.Body
+		return got.Body
+	}
+
+	// SECTION PRE-PASS (RFC FO §3.1). A root child whose first directive is
+	// `@section <kind>` is a section; anything else is a class, as before sections
+	// existed. At most one section of each kind: a second is reported and read the way
+	// it read before sections — as a class — so declaring sections can never take out of
+	// force a type that was in force.
+	sectionOf := map[string]string{} // chunk id → kind, for the sections that count
+	var sections, issues []string
+	seenKind := map[string]bool{}
+	for _, c := range kids[rootID] {
+		body := bodyOf(c.id)
+		if iss := memrank.SectionIssue(body); iss != "" {
+			issues = append(issues, strconv.Quote(memrank.TrimOntologyName(c.title))+": "+iss)
+		}
+		kind := memrank.SectionKind(body)
+		if kind == "" {
+			continue
+		}
+		if seenKind[kind] {
+			issues = append(issues, "a second @section "+kind+" ("+strconv.Quote(memrank.TrimOntologyName(c.title))+
+				") is ignored — the first one wins — and read as a class")
+			continue
+		}
+		seenKind[kind] = true
+		sectionOf[c.id] = kind
+		sections = append(sections, kind)
+	}
+	sectioned := len(sections) > 0
+
 	var out []memrank.OntologyTerm
 	var proposals []memrank.OntologyProposal
+	var grammars []memrank.OntologyGrammar
 	depthCapped := false
 	// The walk starts at the ROOT CHUNK'S CHILDREN: the root is the document's title
 	// ("Tenant Ontology"), not an entity. Including it would invent a type nobody
 	// declared and make every real entity its subclass.
-	var walk func(parentChunkID, parentName string, depth int)
-	walk = func(parentChunkID, parentName string, depth int) {
-		for _, c := range kids[parentChunkID] {
+	//
+	// docClass is true inside the classes section beneath a class named Document: those
+	// are document classes, which govern documents.type and never reach the prompt.
+	var walk func(chunks []ontologyChunk, parentChunkID, parentName string, depth int, docClass bool)
+	walk = func(chunks []ontologyChunk, parentChunkID, parentName string, depth int, docClass bool) {
+		for _, c := range chunks {
+			// A grammar is data under a class, not a subclass of it.
+			if sectioned {
+				if gname := memrank.GrammarName(c.title); gname != "" {
+					grammars = append(grammars, memrank.ParseGrammarBody(gname, parentName, bodyOf(c.id)))
+					continue
+				}
+			}
 			name := d.ontologyEntityName(ctx, mscope, key, c)
 			// INERT: a proposal (or a rejected one) is in the document and not in force.
 			// Recorded so the operator can act on it, then skipped.
 			if memrank.IsInertEntityStatus(c.status) {
 				if name != "" {
-					body, _ := d.readBody(ctx, mscope, key, c.id)
+					body := bodyOf(c.id)
 					proposals = append(proposals, memrank.OntologyProposal{
 						ChunkID: c.id, Name: name, Parent: parentName,
-						Fields: memrank.ParseOntologyFields(body.Body),
+						Fields: memrank.ParseOntologyFields(body),
 						Status: strings.ToLower(strings.TrimSpace(c.status)),
-						Body:   body.Body,
+						Body:   body,
 					})
 				}
 				// Its children keep walking against the nearest IN-FORCE ancestor, so
 				// rejecting a parent never silently switches off a live type beneath it.
 				// Turning types off is what this reader exists to prevent.
-				walk(c.id, parentName, depth)
+				walk(kids[c.id], c.id, parentName, depth, docClass)
 				continue
 			}
 			if name == "" {
 				// No title and no leading heading: nothing names this entity. Its
 				// children are still walked, attached to the nearest NAMED ancestor, so
 				// an unnamed organisational chunk does not orphan a real subclass.
-				walk(c.id, parentName, depth)
+				walk(kids[c.id], c.id, parentName, depth, docClass)
 				continue
 			}
-			body, _ := d.readBody(ctx, mscope, key, c.id)
 			// The scope directive is read on THIS path too, not only from the
 			// whole-document Markdown. This is the reader the live ontology actually
 			// goes through — one chunk per type — so a declaration parsed in only one
 			// of the two places would work in the template and do nothing in
 			// production.
-			mscopeDecl, mscopeIssue := memrank.ParseOntologyScope(body.Body)
+			decl := memrank.ParseClassBody(bodyOf(c.id))
+			isDoc := docClass || (parentName == "" && sectionOf[parentChunkID] == memrank.SectionClasses &&
+				strings.EqualFold(name, memrank.DocumentClassRoot))
 			out = append(out, memrank.OntologyTerm{
-				Name:             name,
-				Fields:           memrank.ParseOntologyFields(body.Body),
-				Source:           "tenant",
-				Parent:           parentName,
-				MemoryScope:      mscopeDecl,
-				MemoryScopeIssue: mscopeIssue,
+				Name:              name,
+				Fields:            decl.Fields,
+				Source:            "tenant",
+				Parent:            parentName,
+				MemoryScope:       decl.MemoryScope,
+				MemoryScopeIssue:  decl.MemoryScopeIssue,
+				FieldSpecs:        decl.FieldSpecs,
+				TitleIdentity:     decl.TitleIdentity,
+				IsDocumentClass:   isDoc,
+				IdentifierPattern: decl.IdentifierPattern,
+				TitlePattern:      decl.TitlePattern,
+				AnchorGrammar:     decl.AnchorGrammar,
+				CitationGrammar:   decl.CitationGrammar,
+				Exclude:           decl.Exclude,
+				RenamedFrom:       decl.RenamedFrom,
+				Issues:            decl.Issues,
 			})
 			// AT the cap, this node's children are reported with this node's OWN
 			// parent — so a would-be level-5 type lands at level 4 as a sibling, and
@@ -206,13 +286,26 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 					depthCapped = true
 				}
 			}
-			walk(c.id, childParent, depth+1)
+			walk(kids[c.id], c.id, childParent, depth+1, isDoc)
 		}
 	}
-	walk(rootID, "", 1)
+	for _, c := range kids[rootID] {
+		switch sectionOf[c.id] {
+		case memrank.SectionClasses:
+			// Depth counts from the SECTION (RFC FO §3.1): its children are root classes.
+			walk(kids[c.id], c.id, "", 1, false)
+		case memrank.SectionRelations, memrank.SectionSchemes, memrank.SectionInstances:
+			// Recognised and kept out of the class list; their entries are read by the
+			// phases that give them meaning.
+		default:
+			// No directive: a class, exactly as before sections existed.
+			walk([]ontologyChunk{c}, rootID, "", 1, false)
+		}
+	}
 	return OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
+		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 	}, nil
 }
 
@@ -324,6 +417,20 @@ func (d *Document) tenantOntologyForRun(ctx context.Context) ([]memrank.Ontology
 // would enforce a vocabulary nobody chose to curate, changing behaviour for every
 // deployment that has not opted in.
 func (d *Document) tenantOntologyState(ctx context.Context) (terms []memrank.OntologyTerm, confirmed, exists bool) {
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok {
+		// Best-effort, exactly as the prompt-side render is: a store fault must not
+		// turn a retrieval into an error. The unexpanded filter still answers the
+		// question that was asked, just narrowly.
+		return nil, false, false
+	}
+	return memrank.ResolveInheritance(read.Terms), read.Confirmed, read.DocumentID != ""
+}
+
+// tenantOntologyRead is the whole read of the run's tenant ontology — terms plus the
+// section-level results (grammars, root revision) the class-aware write paths need.
+// ok is false on a store fault; an absent document is ok with an empty read.
+func (d *Document) tenantOntologyRead(ctx context.Context) (OntologyRead, bool) {
 	key := sqlmem.ScopeKey{
 		Tenant:  sqlScopeTenant(ctx),
 		Scope:   "tenant",
@@ -331,12 +438,9 @@ func (d *Document) tenantOntologyState(ctx context.Context) (terms []memrank.Ont
 	}
 	read, err := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
 	if err != nil {
-		// Best-effort, exactly as the prompt-side render is: a store fault must not
-		// turn a retrieval into an error. The unexpanded filter still answers the
-		// question that was asked, just narrowly.
-		return nil, false, false
+		return OntologyRead{}, false
 	}
-	return memrank.ResolveInheritance(read.Terms), read.Confirmed, read.DocumentID != ""
+	return read, true
 }
 
 // typeFilterSQL renders an expanded type filter as a WHERE fragment plus its args.
