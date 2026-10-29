@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -94,6 +95,7 @@ func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey,
 			// prune removed the chunk and kept the words it existed to reap, in a table
 			// no read path consults and no sweeper walks.
 			for _, stmt := range []string{
+				`DELETE FROM chunk_edge_evidence WHERE edge_id IN (SELECT id FROM chunk_edges WHERE from_id = ? OR to_id = ?)`,
 				`DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?`,
 				`DELETE FROM chunk_assets WHERE chunk_id = ?`,
 				`DELETE FROM chunk_tags WHERE chunk_id = ?`,
@@ -103,7 +105,7 @@ func (d *Document) cascadeDeleteChunks(ctx context.Context, key sqlmem.ScopeKey,
 				`DELETE FROM chunks WHERE id = ?`,
 			} {
 				args := []any{id}
-				if stmt == `DELETE FROM chunk_edges WHERE from_id = ? OR to_id = ?` {
+				if strings.Contains(stmt, "from_id = ? OR to_id = ?") {
 					args = []any{id, id}
 				}
 				if err := d.execTxn(ctx, txnID, stmt, args...); err != nil {

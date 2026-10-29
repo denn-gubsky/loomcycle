@@ -189,7 +189,7 @@ func assertUnlinkedMentions(t *testing.T, d *Document, ctx context.Context) {
 
 	// Manual link LinkedManual → target.
 	if _, rr := docExec(t, d, ctx, fmt.Sprintf(
-		`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"references"}`, linkedManual, target)); rr.IsError {
+		`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, linkedManual, target)); rr.IsError {
 		t.Fatalf("link_chunks: %s", rr.Text)
 	}
 

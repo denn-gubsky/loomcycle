@@ -532,7 +532,7 @@ func TestDocument_ExportMD(t *testing.T) {
 	intro := out["id"].(string)
 	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+intro+`","title":"Detail","body":"deep"}`)
 	detail := out["id"].(string)
-	docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+intro+`","to_id":"`+detail+`","kind":"references"}`)
+	docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+intro+`","to_id":"`+detail+`","kind":"cites"}`)
 
 	// Default export: metadata-rich, round-trippable.
 	out, res := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`"}`)
@@ -554,7 +554,7 @@ func TestDocument_ExportMD(t *testing.T) {
 		t.Errorf("export_md missing metadata comment:\n%s", md)
 	}
 	// Edges trailer present (the graph edge, not the parent-child hierarchy).
-	if !strings.Contains(md, "<!-- loom-edges:") || !strings.Contains(md, intro+" -> "+detail+" [references]") {
+	if !strings.Contains(md, "<!-- loom-edges:") || !strings.Contains(md, intro+" -> "+detail+" [cites]") {
 		t.Errorf("export_md missing edges block:\n%s", md)
 	}
 
@@ -623,7 +623,7 @@ func TestDocument_ImportMD_RoundTrip(t *testing.T) {
 	out, _ = docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+a+`","title":"A1","body":"nested"}`)
 	a1 := out["id"].(string)
 	docExec(t, d, ctx, `{"op":"create_chunk","scope":"user","document_id":"`+docID+`","parent_id":"`+root+`","title":"B","body":""}`)
-	docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+a+`","to_id":"`+a1+`","kind":"references"}`)
+	docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+a+`","to_id":"`+a1+`","kind":"cites"}`)
 
 	// Metadata-rich export → import into a NEW document.
 	out, res := docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+docID+`"}`)
@@ -656,7 +656,7 @@ func TestDocument_ImportMD_RoundTrip(t *testing.T) {
 	}
 	// The graph edge was recreated (remapped) — the metadata-rich re-export has it.
 	out, _ = docExec(t, d, ctx, `{"op":"export_md","scope":"user","document_id":"`+newDoc+`"}`)
-	if !strings.Contains(out["markdown"].(string), "[references]") {
+	if !strings.Contains(out["markdown"].(string), "[cites]") {
 		t.Errorf("edge not recreated on import:\n%s", out["markdown"])
 	}
 }

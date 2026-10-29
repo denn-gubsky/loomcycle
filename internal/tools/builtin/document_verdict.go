@@ -113,6 +113,17 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if err != nil {
 		return errFrom("judge_fact: "+err.Error(), err), nil
 	}
+	if !found && strings.TrimSpace(in.ID) != "" {
+		// A statement id (RFC FN D3): the same verdict vocabulary, the same
+		// withholding rule, checked against the statement's evidence.
+		s, serr := d.statementByID(ctx, key, chunkID)
+		if serr != nil {
+			return errFrom("judge_fact: "+serr.Error(), serr), nil
+		}
+		if s != nil {
+			return d.judgeEdge(ctx, key, s, verdict, confidence, in.Reason)
+		}
+	}
 	if !found {
 		// Only a fact can be judged. A plain chunk has no claim to check and no span to
 		// check it against.

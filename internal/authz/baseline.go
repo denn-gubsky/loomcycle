@@ -117,7 +117,7 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"read", "write", "recall"}, Resources: []string{"memory:user", "memory:agent", "memory:tenant"}},
 				{Effect: Allow, Actions: []string{"browse"}, Resources: []string{"memory:user", "memory:agent"}, When: &Condition{OwnerIsSelf: &self}},
 				{Effect: Allow, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:user", "sqlmem:agent", "sqlmem:tenant"}},
-				{Effect: Allow, Actions: []string{"read", "write", "delete", "link"}, Resources: []string{"document:user", "document:agent", "document:tenant"}},
+				{Effect: Allow, Actions: []string{"read", "write", "delete", "link", "propose"}, Resources: []string{"document:user", "document:agent", "document:tenant"}},
 				{Effect: Allow, Actions: []string{"browse"}, Resources: []string{"document:user", "document:agent"}, When: &Condition{OwnerIsSelf: &self}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"history:self", "history:user"}},
 				// manage: the member path admits the /v1/_channels writes
@@ -164,7 +164,7 @@ func Baselines() map[string]ACL {
 				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"mcp-tool:credentialdef", "mcp-tool:evaluation", "mcp-tool:authz"}},
 				{Effect: Allow, Actions: []string{"read", "write", "recall"}, Resources: []string{"memory:user", "memory:agent"}},
 				{Effect: Allow, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:user", "sqlmem:agent"}},
-				{Effect: Allow, Actions: []string{"read", "write", "delete", "link"}, Resources: []string{"document:user", "document:agent"}},
+				{Effect: Allow, Actions: []string{"read", "write", "delete", "link", "propose"}, Resources: []string{"document:user", "document:agent"}},
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"history:self", "history:user"}},
 				// The per-user channel surface (its own subject only) and the
 				// channel RPCs, which the channel scopes admit an isolated
@@ -181,7 +181,7 @@ func Baselines() map[string]ACL {
 				selfTokenRule,
 				{Effect: Deny, Actions: []string{"read", "write", "recall", "browse"}, Resources: []string{"memory:tenant", "memory:global"}},
 				{Effect: Deny, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:tenant"}},
-				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse"}, Resources: []string{"document:tenant"}},
+				{Effect: Deny, Actions: []string{"read", "write", "delete", "link", "browse", "propose"}, Resources: []string{"document:tenant"}},
 				{Effect: Deny, Actions: []string{"read"}, Resources: []string{"history:tenant", "history:global"}},
 			}},
 		// RFC FA D16: a website's user-management credential. The roster and

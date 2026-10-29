@@ -706,17 +706,23 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 	// One statement per hop, both directions unioned. `via` carries the edge kind
 	// and the neighbour it was reached from, so the caller can see the shape of the
 	// association rather than just its endpoint.
+	//
+	// A statement a reader would not be shown is not walked either (RFC FN): a
+	// proposal awaiting review, a rejected or refuted one, a retired one. Every
+	// statement written before statements existed is asserted and unjudged, so
+	// this changes nothing for them.
+	edgeLive := ` AND ` + edgeLiveClause
 	stmt := `SELECT ` + graphChunkCols + `, e.kind, e.from_id
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.to_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
-	          WHERE e.from_id IN (` + marks + `)` + extra + `
+	          WHERE e.from_id IN (` + marks + `)` + edgeLive + extra + `
 	         UNION
 	         SELECT ` + graphChunkCols + `, e.kind, e.to_id
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.from_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
-	          WHERE e.to_id IN (` + marks + `)` + extra + `
+	          WHERE e.to_id IN (` + marks + `)` + edgeLive + extra + `
 	         LIMIT ?`
 	// One over the cap, so the caller can tell "exactly full" from "there was more"
 	// without a second query. Trimmed back to the cap below.

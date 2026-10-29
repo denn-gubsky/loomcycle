@@ -217,7 +217,7 @@ func assertBacklinks(t *testing.T, d *Document, ctx context.Context) {
 	manual := histCreateChunk(t, d, ctx, docID, "", "Manual Source", "plain body\n")
 
 	// A manual edge manual → target (auto=0).
-	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"references"}`, manual, target)); r.IsError {
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, manual, target)); r.IsError {
 		t.Fatalf("link_chunks: %s", r.Text)
 	}
 	// A parser edge auto → target from the inline [[Target]] name-link (auto=1).
@@ -247,8 +247,8 @@ func assertBacklinks(t *testing.T, d *Document, ctx context.Context) {
 	if ft, _ := m["from_title"].(string); ft != "Manual Source" {
 		t.Errorf("manual from_title = %q, want Manual Source", ft)
 	}
-	if k, _ := m["kind"].(string); k != "references" {
-		t.Errorf("manual kind = %q, want references", k)
+	if k, _ := m["kind"].(string); k != "cites" {
+		t.Errorf("manual kind = %q, want cites", k)
 	}
 
 	a := byFrom[auto]

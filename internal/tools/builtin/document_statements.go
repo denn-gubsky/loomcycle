@@ -1,0 +1,1270 @@
+package builtin
+
+// document_statements.go — a relation is a STATEMENT (RFC FN P0).
+//
+// An edge used to be (from_id, to_id, kind, created_at, auto): it could not say why
+// it existed, who made it, from what text, since when, or whether anyone checked
+// it, so every consumer that needed those answers kept a ledger beside the store
+// and materialised edges from it — one fact in two places, nothing keeping them in
+// step. Here the edge carries them itself: its own id, a status (asserted |
+// proposed | rejected), the method that made it, world-time validity, the actor
+// and run, a verdict, declared attributes, and evidence rows — verbatim quotes
+// from a chunk of this scope, a chat turn, or another scope by natural key. Every
+// reader the runtime owns (get_edges, backlinks, graph_recall, export, judge_fact)
+// sees them without a second table to keep in agreement.
+//
+// No foreign key, like the rest of this schema: deleteEdgesWhere removes an edge's
+// evidence with it, and the dead-link sweep collects any evidence row an older
+// path left behind.
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+)
+
+// chunkEdgesColumns is the statement table's shape. One definition, so a scope
+// created fresh and a scope rebuilt by migrateEdgeStatements end in the same table.
+//
+// confidence is DOUBLE PRECISION for the reason chunk_memory_meta's is: postgres
+// REAL is float4 and would read 0.9 back as 0.8999999761581421.
+const chunkEdgesColumns = `
+		id TEXT NOT NULL, from_id TEXT NOT NULL, to_id TEXT NOT NULL, kind TEXT NOT NULL,
+		created_at BIGINT NOT NULL, auto INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'asserted', method TEXT NOT NULL DEFAULT 'manual',
+		confidence DOUBLE PRECISION, valid_at BIGINT, invalid_at BIGINT,
+		expired_at BIGINT, verified_at BIGINT, actor TEXT, run_id TEXT,
+		ontology_version INTEGER, discriminator TEXT NOT NULL DEFAULT '', attributes TEXT,
+		judged_at BIGINT, judge_reason TEXT, judged_by TEXT,
+		PRIMARY KEY (id)`
+
+// chunkEdgeEvidenceColumns: exactly one of the three source forms is set — a chunk
+// of this scope, a chat turn (session_id + event_seq), or another scope by
+// natural key (resolved by a tolerant reader, never enumerated).
+const chunkEdgeEvidenceColumns = `
+		id TEXT PRIMARY KEY, edge_id TEXT NOT NULL,
+		chunk_id TEXT, session_id TEXT, event_seq BIGINT,
+		ref_scope TEXT, ref_natural_key TEXT,
+		quote TEXT NOT NULL, char_start INTEGER, char_end INTEGER,
+		stale INTEGER NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, run_id TEXT`
+
+// chunkEdgeIndexes name columns a pre-statement chunk_edges does not have, so they
+// cannot sit in docSchemaDDL (which runs before the rebuild — the #1106 ordering
+// lesson). The unique index is what keeps one assertion per undated, unqualified
+// triple: a second link of the same triple adds evidence instead of a second edge,
+// while a statement that differs in valid_at or in its discriminating qualifier
+// coexists (one edge per modification).
+var chunkEdgeIndexes = []string{
+	`CREATE UNIQUE INDEX IF NOT EXISTS chunk_edges_statement ON chunk_edges(from_id, to_id, kind, COALESCE(valid_at, 0), discriminator)`,
+	`CREATE INDEX IF NOT EXISTS chunk_edges_to_kind ON chunk_edges(to_id, kind)`,
+	`CREATE INDEX IF NOT EXISTS chunk_edges_from_kind ON chunk_edges(from_id, kind)`,
+	`CREATE INDEX IF NOT EXISTS chunk_edges_status ON chunk_edges(status) WHERE status <> 'asserted'`,
+	`CREATE INDEX IF NOT EXISTS chunk_edge_evidence_edge ON chunk_edge_evidence(edge_id)`,
+	`CREATE INDEX IF NOT EXISTS chunk_edge_evidence_chunk ON chunk_edge_evidence(chunk_id)`,
+}
+
+// Statement statuses. Unknown values read as live (fail open): a status this
+// build does not know was written by a newer one, and hiding it would lose data.
+const (
+	edgeStatusAsserted = "asserted"
+	edgeStatusProposed = "proposed"
+	edgeStatusRejected = "rejected"
+)
+
+// Server-stamped methods. None is accepted from the wire.
+const (
+	edgeMethodManual   = "manual"
+	edgeMethodWikilink = "wikilink"
+	edgeMethodImport   = "import"
+	edgeMethodSync     = "sync"
+	edgeMethodCanvas   = "canvas"
+	edgeMethodRuntime  = "runtime"
+)
+
+// Bounds on what a caller may attach to one statement.
+const (
+	edgeEvidenceDefaultMax = 32
+	edgeEvidenceQuoteMax   = 4000
+	edgeAttributesMaxBytes = 4096
+	edgeGetEdgesDefault    = 500
+	edgeGetEdgesMax        = 5000
+	edgeEvidencePreview    = 3
+	// edgeProposalConfidenceCap is where an annotated (ontology-invalid) proposal's
+	// confidence is lowered to — below a clean proposal, above the withholding floor,
+	// so it sorts last in review without disappearing.
+	edgeProposalConfidenceCap = 0.3
+)
+
+// edgeEvidenceMax is LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE. An edge with many
+// supporting quotes is evidence the relation is real; past a few dozen it is a
+// table growing without telling a reader anything new.
+func edgeEvidenceMax() int {
+	if v, err := strconv.Atoi(os.Getenv("LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE")); err == nil && v > 0 {
+		return v
+	}
+	return edgeEvidenceDefaultMax
+}
+
+// migrateEdgeStatements rebuilds a chunk_edges created before statements into the
+// statement shape, then ensures the indexes.
+//
+// A rebuild rather than ALTERs: the primary key moves from the triple to `id`,
+// which sqlite cannot ALTER at all and which postgres could, but two code paths
+// for one shape is how the tiers drift. Every existing edge keeps its endpoints,
+// kind, created_at and auto flag, gains a fresh id, and reads back as an asserted
+// statement with no evidence — `wikilink` for an inline [[name]] edge, `manual`
+// otherwise — which is byte-identical for every reader that ignores the new fields.
+//
+// One transaction, so a crash leaves either the old table or the new one.
+func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKey) error {
+	if !d.tableHasColumn(ctx, key, "chunk_edges", "discriminator") {
+		idExpr := `lower(hex(randomblob(16)))`
+		if d.SqlMem.Tier() == "postgres" {
+			idExpr = `md5(random()::text || clock_timestamp()::text || from_id || to_id || kind)`
+		}
+		stmts := []string{
+			`CREATE TABLE chunk_edges_statements (` + chunkEdgesColumns + `)`,
+			`INSERT INTO chunk_edges_statements (id, from_id, to_id, kind, created_at, auto, method)
+			 SELECT ` + idExpr + `, from_id, to_id, kind, created_at, auto,
+			        CASE WHEN auto = 1 THEN '` + edgeMethodWikilink + `' ELSE '` + edgeMethodManual + `' END
+			   FROM chunk_edges`,
+			`DROP TABLE chunk_edges`,
+			`ALTER TABLE chunk_edges_statements RENAME TO chunk_edges`,
+		}
+		if d.SqlMem.Tier() == "postgres" {
+			// The renamed table keeps its constraint's old name; a fresh scope's is
+			// chunk_edges_pkey. Same name in both, so a dump of one restores as the other.
+			stmts = append(stmts, `ALTER TABLE chunk_edges RENAME CONSTRAINT chunk_edges_statements_pkey TO chunk_edges_pkey`)
+		}
+		if err := d.withSqlTxn(ctx, key, func(txnID string) error {
+			for _, s := range stmts {
+				if err := d.execTxn(ctx, txnID, s); err != nil {
+					return fmt.Errorf("migrate chunk_edges to statements: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	for _, s := range chunkEdgeIndexes {
+		if _, err := d.SqlMem.Exec(ctx, key, s, nil, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteEdgesWhere removes the edges matching cond and their evidence. Every path
+// that deletes edges goes through here so no evidence row outlives its edge.
+// txnID "" runs outside a transaction.
+func (d *Document) deleteEdgesWhere(ctx context.Context, key sqlmem.ScopeKey, txnID, cond string, args ...any) error {
+	stmts := []struct {
+		sql  string
+		args []any
+	}{
+		{`DELETE FROM chunk_edge_evidence WHERE edge_id IN (SELECT id FROM chunk_edges WHERE ` + cond + `)`, args},
+		{`DELETE FROM chunk_edges WHERE ` + cond, args},
+	}
+	for _, s := range stmts {
+		var err error
+		if txnID != "" {
+			err = d.execTxn(ctx, txnID, s.sql, s.args...)
+		} else {
+			err = d.exec(ctx, key, s.sql, s.args...)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// edgeEvidenceIn is one evidence row as a caller supplies it.
+type edgeEvidenceIn struct {
+	ChunkID    string `json:"chunk_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	EventSeq   *int64 `json:"event_seq,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	NaturalKey string `json:"natural_key,omitempty"`
+	Quote      string `json:"quote"`
+	CharStart  *int   `json:"char_start,omitempty"`
+	CharEnd    *int   `json:"char_end,omitempty"`
+}
+
+// edgeWrite is one statement write, from any path.
+type edgeWrite struct {
+	from, to, kind string
+	method         string
+	status         string // asserted | proposed
+	authored       bool   // a principal's own link: refused on a vocabulary violation
+	confidence     *float64
+	validAt        *int64
+	invalidAt      *int64
+	attributes     map[string]any
+	evidence       []edgeEvidenceIn
+	// overrideRejected: an operator may re-assert what was rejected; nobody else.
+	overrideRejected bool
+	// revisionOf attaches a competing proposal to an existing statement.
+	revisionOf string
+}
+
+// edgeWriteResult is what a write reports.
+type edgeWriteResult struct {
+	ID              string   `json:"id"`
+	Status          string   `json:"status"`
+	Created         bool     `json:"created"`
+	EvidenceWritten int      `json:"evidence_written"`
+	EvidenceCapped  bool     `json:"evidence_capped,omitempty"`
+	OntologyValid   bool     `json:"ontology_valid"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
+// writeStatement is the one write path for a statement: link_chunks,
+// propose_statement, import, canvas and sync all end here. A refusal comes back as
+// *tools.Result; err is a store fault.
+func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, w edgeWrite) (edgeWriteResult, *tools.Result, error) {
+	var out edgeWriteResult
+	if w.from == "" || w.to == "" || strings.TrimSpace(w.kind) == "" {
+		r := errValidation("from_id, to_id and kind are required", "Pass all three: from_id and to_id (chunk ids) and a kind label.")
+		return out, &r, nil
+	}
+	if w.method != edgeMethodRuntime {
+		if writer, reserved := reservedEdgeKinds[w.kind]; reserved && !(w.kind == aboutEdgeKind && w.authored && (w.method == edgeMethodManual || w.method == edgeMethodImport)) {
+			r := errValidation(fmt.Sprintf("kind_reserved: %q edges are written only by %s", w.kind, writer),
+				"Use a kind of your own (cites, based_on, defines, implements, related, …).")
+			return out, &r, nil
+		}
+	}
+	for _, id := range []struct{ name, id string }{{"from_id", w.from}, {"to_id", w.to}} {
+		if _, ok, err := d.getChunkRow(ctx, key, id.id); err != nil {
+			return out, nil, err
+		} else if !ok {
+			r := errNotFound(id.name+": no such chunk: "+id.id, "Pass a chunk id from this scope (find one with op=query_chunks or op=search).")
+			return out, &r, nil
+		}
+	}
+	if w.validAt != nil && w.invalidAt != nil && *w.invalidAt <= *w.validAt {
+		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
+		return out, &r, nil
+	}
+	var attrs []byte
+	if len(w.attributes) > 0 {
+		b, err := json.Marshal(w.attributes)
+		if err != nil || len(b) > edgeAttributesMaxBytes {
+			r := errValidation(fmt.Sprintf("attributes must be a JSON object of at most %d bytes", edgeAttributesMaxBytes), "Keep attributes to the relation's qualifiers.")
+			return out, &r, nil
+		}
+		attrs = b
+	}
+
+	gate := d.gateRelation(ctx, w.kind, w.from, w.to, w.authored)
+	if w.authored && gate.Refuse != nil {
+		return out, gate.Refuse, nil
+	}
+	out.OntologyValid, out.Warnings = gate.Valid, gate.Warnings
+	confidence := w.confidence
+	if !gate.Valid {
+		// annotate mode (D8): kept, marked, and sorted behind a clean proposal.
+		if attrs == nil {
+			w.attributes = map[string]any{}
+		}
+		w.attributes["ontology_valid"] = false
+		attrs, _ = json.Marshal(w.attributes)
+		capped := edgeProposalConfidenceCap
+		if confidence == nil || *confidence > capped {
+			confidence = &capped
+		}
+	}
+
+	evidence, refuse, err := d.checkEvidence(ctx, key, mscope, w.evidence)
+	if err != nil || refuse != nil {
+		return out, refuse, err
+	}
+
+	// discriminator: the value of the kind's declared discriminating qualifier. No
+	// vocabulary declares one yet, so every statement has the empty discriminator
+	// and one assertion per (triple, valid_at).
+	const discriminator = ""
+	existing, err := d.statementByKey(ctx, key, w.from, w.to, w.kind, w.validAt, discriminator)
+	if err != nil {
+		return out, nil, err
+	}
+	now := time.Now().UnixNano()
+	ident := tools.RunIdentity(ctx)
+	actor := ident.UserID
+	if name := tools.AgentName(ctx); name != "" && tools.RunID(ctx) != "" {
+		actor = name
+	}
+	status := w.status
+	if status == "" {
+		status = edgeStatusAsserted
+	}
+
+	if existing != nil && w.revisionOf == "" {
+		if existing.Status == edgeStatusRejected && !w.overrideRejected {
+			r := errBusiness("statement_rejected: this relation was rejected by an operator ("+existing.JudgeReason+")",
+				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error.")
+			return out, &r, nil
+		}
+		out.ID, out.Status = existing.ID, existing.Status
+		// An authored link of a proposed (or rejected, by an operator) statement asserts it.
+		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted {
+			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ? WHERE id = ?`, edgeStatusAsserted, nullIfEmpty(actor), existing.ID); err != nil {
+				return out, nil, err
+			}
+			out.Status = edgeStatusAsserted
+		}
+	} else {
+		id := newDocID()
+		var attrsArg any
+		if attrs != nil {
+			attrsArg = string(attrs)
+		}
+		if w.revisionOf != "" {
+			// A competing proposal sits beside the statement it revises; the
+			// discriminator keeps it off that statement's unique key.
+			if w.attributes == nil {
+				w.attributes = map[string]any{}
+			}
+			w.attributes["revision_of"] = w.revisionOf
+			b, _ := json.Marshal(w.attributes)
+			attrsArg = string(b)
+		}
+		disc := discriminator
+		if w.revisionOf != "" {
+			disc = "revision:" + id
+		}
+		var ov any
+		if v := d.ontologyVersion(ctx); v > 0 {
+			ov = v
+		}
+		auto := 0
+		if w.method == edgeMethodWikilink {
+			auto = 1
+		}
+		err := d.exec(ctx, key, `INSERT INTO chunk_edges
+			(id, from_id, to_id, kind, created_at, auto, status, method, confidence, valid_at, invalid_at,
+			 actor, run_id, ontology_version, discriminator, attributes)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, w.from, w.to, w.kind, now, auto, status, w.method, confidence, w.validAt, w.invalidAt,
+			nullIfEmpty(actor), nullIfEmpty(tools.RunID(ctx)), ov, disc, attrsArg)
+		if err != nil {
+			// A concurrent writer may have made the same statement; its row is ours.
+			again, gerr := d.statementByKey(ctx, key, w.from, w.to, w.kind, w.validAt, discriminator)
+			if gerr != nil || again == nil || w.revisionOf != "" {
+				return out, nil, err
+			}
+			id = again.ID
+			status = again.Status
+		} else {
+			out.Created = true
+		}
+		out.ID, out.Status = id, status
+	}
+
+	written, capped, err := d.addEvidence(ctx, key, out.ID, evidence)
+	if err != nil {
+		return out, nil, err
+	}
+	out.EvidenceWritten, out.EvidenceCapped = written, capped
+	return out, nil, nil
+}
+
+// checkedEvidence is an evidence row that passed checkEvidence, with its span
+// resolved.
+type checkedEvidence struct {
+	edgeEvidenceIn
+	start, end *int
+}
+
+// checkEvidence verifies each row before anything is written. A quote that does
+// not occur in its source is refused, never stored: a statement's evidence is what
+// a judge checks it against and what an operator reads to trust it, so an
+// unverified quote would be a forged citation.
+func (d *Document) checkEvidence(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in []edgeEvidenceIn) ([]checkedEvidence, *tools.Result, error) {
+	out := make([]checkedEvidence, 0, len(in))
+	for i, ev := range in {
+		where := fmt.Sprintf("evidence[%d]", i)
+		quote := ev.Quote
+		if strings.TrimSpace(quote) == "" {
+			r := errValidation(where+": quote is required — the verbatim text that supports the relation", "Copy the supporting sentence exactly as it appears in the source.")
+			return nil, &r, nil
+		}
+		if utf8.RuneCountInString(quote) > edgeEvidenceQuoteMax {
+			r := errValidation(fmt.Sprintf("%s: quote is longer than %d characters", where, edgeEvidenceQuoteMax), "Quote the sentence that carries the relation, not the whole passage.")
+			return nil, &r, nil
+		}
+		forms := 0
+		if ev.ChunkID != "" {
+			forms++
+		}
+		if ev.SessionID != "" || ev.EventSeq != nil {
+			forms++
+		}
+		if ev.Scope != "" || ev.NaturalKey != "" {
+			forms++
+		}
+		if forms != 1 {
+			r := errValidation(where+": name exactly one source — chunk_id, session_id + event_seq, or scope + natural_key", "")
+			return nil, &r, nil
+		}
+		c := checkedEvidence{edgeEvidenceIn: ev}
+		switch {
+		case ev.ChunkID != "":
+			if _, ok, err := d.getChunkRow(ctx, key, ev.ChunkID); err != nil {
+				return nil, nil, err
+			} else if !ok {
+				r := errNotFound(where+": no such chunk: "+ev.ChunkID, "Evidence must cite a chunk of this scope; cite another scope by scope + natural_key.")
+				return nil, &r, nil
+			}
+			cb, err := d.readBody(ctx, mscope, key, ev.ChunkID)
+			if err != nil {
+				return nil, nil, err
+			}
+			start, end, found := quoteSpan(cb.Body, quote, ev.CharStart, ev.CharEnd)
+			if !found {
+				r := errValidation(where+": evidence_quote_not_found — the quote does not occur in chunk "+ev.ChunkID,
+					"Copy the text exactly from the chunk body (op=get_chunk); a paraphrase is not evidence.")
+				return nil, &r, nil
+			}
+			c.start, c.end = &start, &end
+		case ev.SessionID != "":
+			if ev.EventSeq == nil {
+				r := errValidation(where+": a chat-turn citation needs both session_id and event_seq", "")
+				return nil, &r, nil
+			}
+			text, ok, err := d.sessionTurnText(ctx, key, ev.SessionID, *ev.EventSeq)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !ok {
+				r := errNotFound(where+": no such chat turn in a chat this scope may cite", "Cite a turn of a chat the caller can read, by its session_id and event_seq.")
+				return nil, &r, nil
+			}
+			start, end, found := quoteSpan(text, quote, ev.CharStart, ev.CharEnd)
+			if !found {
+				r := errValidation(where+": evidence_quote_not_found — the quote does not occur in that turn", "Copy the text exactly from the turn.")
+				return nil, &r, nil
+			}
+			c.start, c.end = &start, &end
+		default:
+			if ev.Scope == "" || ev.NaturalKey == "" {
+				r := errValidation(where+": a cross-scope citation needs both scope and natural_key", "")
+				return nil, &r, nil
+			}
+			if ev.Scope != "agent" && ev.Scope != "user" && ev.Scope != "tenant" {
+				r := errValidation(where+": scope must be agent, user or tenant", "")
+				return nil, &r, nil
+			}
+			// A reference by name into a scope this one cannot enumerate: kept as
+			// written, resolved later by a tolerant reader (RFC CV decision 11).
+			c.CharStart, c.CharEnd = nil, nil
+		}
+		out = append(out, c)
+	}
+	return out, nil, nil
+}
+
+// quoteSpan locates quote in text, in characters. A caller-given span must be
+// exactly where the quote is; without one, the first occurrence is used.
+func quoteSpan(text, quote string, wantStart, wantEnd *int) (int, int, bool) {
+	runes := []rune(text)
+	q := []rune(quote)
+	if wantStart != nil {
+		s := *wantStart
+		e := s + len(q)
+		if wantEnd != nil && *wantEnd != e {
+			return 0, 0, false
+		}
+		if s < 0 || e > len(runes) || string(runes[s:e]) != quote {
+			return 0, 0, false
+		}
+		return s, e, true
+	}
+	i := strings.Index(text, quote)
+	if i < 0 {
+		return 0, 0, false
+	}
+	s := utf8.RuneCountInString(text[:i])
+	return s, s + len(q), true
+}
+
+// sessionTurnText returns one turn's text from a chat the caller may cite into
+// this scope: the same tenant, and for a user scope the same user — the
+// visibility History applies, so a citation cannot reach a chat its writer could
+// not read. ok=false covers both "no such turn" and "not yours" (one answer, so a
+// citation cannot probe for another user's chats).
+func (d *Document) sessionTurnText(ctx context.Context, key sqlmem.ScopeKey, sessionID string, seq int64) (string, bool, error) {
+	if d.Store == nil {
+		return "", false, nil
+	}
+	sess, err := d.Store.GetSession(ctx, sessionID)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if asNotFound(err, &nf) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	ident := tools.RunIdentity(ctx)
+	if sess.TenantID != ident.TenantID {
+		return "", false, nil
+	}
+	if key.Scope == "user" && sess.UserID != key.ScopeID {
+		return "", false, nil
+	}
+	events, err := d.Store.GetTranscript(ctx, sess.ID)
+	if err != nil {
+		return "", false, err
+	}
+	for _, ev := range events {
+		if ev.Seq == seq {
+			return eventText(ev.Payload), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// addEvidence appends rows to an edge, skipping one already recorded (same source,
+// same quote) and stopping at the cap. Oldest rows are kept: the first support is
+// as good as the hundredth, and a cap that rotated would rewrite history.
+func (d *Document) addEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID string, rows []checkedEvidence) (int, bool, error) {
+	if len(rows) == 0 {
+		return 0, false, nil
+	}
+	res, err := d.query(ctx, key, `SELECT COALESCE(chunk_id, ''), COALESCE(session_id, ''), COALESCE(event_seq, -1),
+		COALESCE(ref_scope, ''), COALESCE(ref_natural_key, ''), quote FROM chunk_edge_evidence WHERE edge_id = ?`, edgeID)
+	if err != nil {
+		return 0, false, err
+	}
+	have := map[string]bool{}
+	for _, r := range res.Rows {
+		have[strings.Join([]string{asStr(r[0]), asStr(r[1]), strconv.Itoa(asInt(r[2])), asStr(r[3]), asStr(r[4]), asStr(r[5])}, "\x00")] = true
+	}
+	n, max := len(res.Rows), edgeEvidenceMax()
+	written, capped := 0, false
+	now := time.Now().UnixNano()
+	for _, ev := range rows {
+		seq := -1
+		if ev.EventSeq != nil {
+			seq = int(*ev.EventSeq)
+		}
+		k := strings.Join([]string{ev.ChunkID, ev.SessionID, strconv.Itoa(seq), ev.Scope, ev.NaturalKey, ev.Quote}, "\x00")
+		if have[k] {
+			continue
+		}
+		if n >= max {
+			capped = true
+			break
+		}
+		var eventSeq any
+		if ev.EventSeq != nil {
+			eventSeq = *ev.EventSeq
+		}
+		var start, end any
+		if ev.start != nil {
+			start, end = *ev.start, *ev.end
+		}
+		if err := d.exec(ctx, key, `INSERT INTO chunk_edge_evidence
+			(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, created_at, run_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			newDocID(), edgeID, nullIfEmpty(ev.ChunkID), nullIfEmpty(ev.SessionID), eventSeq,
+			nullIfEmpty(ev.Scope), nullIfEmpty(ev.NaturalKey), ev.Quote, start, end, now, nullIfEmpty(tools.RunID(ctx))); err != nil {
+			return written, capped, err
+		}
+		have[k] = true
+		n++
+		written++
+	}
+	return written, capped, nil
+}
+
+// statementRow is a stored statement.
+type statementRow struct {
+	ID              string         `json:"id"`
+	FromID          string         `json:"from_id"`
+	ToID            string         `json:"to_id"`
+	Kind            string         `json:"kind"`
+	Auto            bool           `json:"auto"`
+	Status          string         `json:"status"`
+	Method          string         `json:"method"`
+	Confidence      *float64       `json:"confidence,omitempty"`
+	ValidAt         *int64         `json:"valid_at,omitempty"`
+	InvalidAt       *int64         `json:"invalid_at,omitempty"`
+	ExpiredAt       *int64         `json:"expired_at,omitempty"`
+	VerifiedAt      *int64         `json:"verified_at,omitempty"`
+	Actor           string         `json:"actor,omitempty"`
+	RunID           string         `json:"run_id,omitempty"`
+	OntologyVersion *int64         `json:"ontology_version,omitempty"`
+	Discriminator   string         `json:"discriminator,omitempty"`
+	Attributes      map[string]any `json:"attributes,omitempty"`
+	JudgedAt        *int64         `json:"judged_at,omitempty"`
+	JudgeReason     string         `json:"judge_reason,omitempty"`
+	JudgedBy        string         `json:"judged_by,omitempty"`
+	CreatedAt       int64          `json:"created_at"`
+}
+
+// statementCols is the SELECT list scanStatement reads, aliased on `e`.
+const statementCols = `e.id, e.from_id, e.to_id, e.kind, e.auto, e.status, e.method, e.confidence,
+	e.valid_at, e.invalid_at, e.expired_at, e.verified_at, e.actor, e.run_id, e.ontology_version,
+	e.discriminator, e.attributes, e.judged_at, e.judge_reason, e.judged_by, e.created_at`
+
+const statementColCount = 21
+
+func scanStatement(r []any) statementRow {
+	s := statementRow{
+		ID: asStr(r[0]), FromID: asStr(r[1]), ToID: asStr(r[2]), Kind: asStr(r[3]),
+		Auto: asInt(r[4]) == 1, Status: asStr(r[5]), Method: asStr(r[6]),
+		Confidence: asFloat64Ptr(r[7]), ValidAt: asInt64Ptr(r[8]), InvalidAt: asInt64Ptr(r[9]),
+		ExpiredAt: asInt64Ptr(r[10]), VerifiedAt: asInt64Ptr(r[11]), Actor: asStr(r[12]), RunID: asStr(r[13]),
+		OntologyVersion: asInt64Ptr(r[14]), Discriminator: asStr(r[15]),
+		JudgedAt: asInt64Ptr(r[17]), JudgeReason: asStr(r[18]), JudgedBy: asStr(r[19]),
+	}
+	if a := asStr(r[16]); a != "" {
+		_ = json.Unmarshal([]byte(a), &s.Attributes)
+	}
+	s.CreatedAt, _ = asInt64(r[20])
+	if s.Status == "" {
+		s.Status = edgeStatusAsserted
+	}
+	return s
+}
+
+// statementByKey finds the statement on the unique key, or nil.
+func (d *Document) statementByKey(ctx context.Context, key sqlmem.ScopeKey, from, to, kind string, validAt *int64, disc string) (*statementRow, error) {
+	var va int64
+	if validAt != nil {
+		va = *validAt
+	}
+	res, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e
+		WHERE e.from_id = ? AND e.to_id = ? AND e.kind = ? AND COALESCE(e.valid_at, 0) = ? AND e.discriminator = ?`,
+		from, to, kind, va, disc)
+	if err != nil || len(res.Rows) == 0 {
+		return nil, err
+	}
+	s := scanStatement(res.Rows[0])
+	return &s, nil
+}
+
+// statementByID finds one statement, or nil.
+func (d *Document) statementByID(ctx context.Context, key sqlmem.ScopeKey, id string) (*statementRow, error) {
+	res, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e WHERE e.id = ?`, id)
+	if err != nil || len(res.Rows) == 0 {
+		return nil, err
+	}
+	s := scanStatement(res.Rows[0])
+	return &s, nil
+}
+
+// edgeEvidenceRow is a stored evidence row.
+type edgeEvidenceRow struct {
+	ID         string `json:"id"`
+	ChunkID    string `json:"chunk_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	EventSeq   *int64 `json:"event_seq,omitempty"`
+	Scope      string `json:"scope,omitempty"`
+	NaturalKey string `json:"natural_key,omitempty"`
+	Quote      string `json:"quote"`
+	CharStart  *int64 `json:"char_start,omitempty"`
+	CharEnd    *int64 `json:"char_end,omitempty"`
+	Stale      bool   `json:"stale,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+// evidenceFor returns up to limit evidence rows per edge (0 = all), oldest first,
+// plus each edge's total.
+func (d *Document) evidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs []string, limit int) (map[string][]edgeEvidenceRow, map[string]int, error) {
+	rows := map[string][]edgeEvidenceRow{}
+	counts := map[string]int{}
+	if len(edgeIDs) == 0 {
+		return rows, counts, nil
+	}
+	args := make([]any, len(edgeIDs))
+	for i, id := range edgeIDs {
+		args[i] = id
+	}
+	res, err := d.query(ctx, key, `SELECT edge_id, id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key,
+		quote, char_start, char_end, stale, created_at
+		FROM chunk_edge_evidence WHERE edge_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")+`)
+		ORDER BY edge_id, created_at, id`, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, r := range res.Rows {
+		eid := asStr(r[0])
+		counts[eid]++
+		if limit > 0 && len(rows[eid]) >= limit {
+			continue
+		}
+		ev := edgeEvidenceRow{
+			ID: asStr(r[1]), ChunkID: asStr(r[2]), SessionID: asStr(r[3]), EventSeq: asInt64Ptr(r[4]),
+			Scope: asStr(r[5]), NaturalKey: asStr(r[6]), Quote: asStr(r[7]),
+			CharStart: asInt64Ptr(r[8]), CharEnd: asInt64Ptr(r[9]), Stale: asInt(r[10]) == 1,
+		}
+		ev.CreatedAt, _ = asInt64(r[11])
+		rows[eid] = append(rows[eid], ev)
+	}
+	return rows, counts, nil
+}
+
+// statementVisibility is the withholding a reader applies to statements, the edge
+// analogue of the fact surfaces' rule: a rejected statement, an unsupported
+// verdict (confidence below the floor) and a retired one are withheld unless asked
+// for — never deleted. NULL confidence (never judged) stays visible.
+type statementVisibility struct {
+	includeProposed bool
+	includeRefuted  bool
+	includeRetired  bool
+	asOf            *int64
+}
+
+// clause renders the visibility as SQL on alias e, with its args.
+func (v statementVisibility) clause() (string, []any) {
+	var parts []string
+	var args []any
+	if !v.includeProposed {
+		parts = append(parts, "e.status <> '"+edgeStatusProposed+"'")
+	}
+	if !v.includeRefuted {
+		parts = append(parts, "e.status <> '"+edgeStatusRejected+"'")
+		parts = append(parts, withholdClause("e.confidence", false))
+	}
+	if !v.includeRetired {
+		parts = append(parts, "e.expired_at IS NULL")
+	}
+	if v.asOf != nil {
+		parts = append(parts, "(e.valid_at IS NULL OR e.valid_at <= ?) AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
+		args = append(args, *v.asOf, *v.asOf)
+	}
+	if len(parts) == 0 {
+		return "1=1", nil
+	}
+	return strings.Join(parts, " AND "), args
+}
+
+// edgeLiveClause is the walk's visibility: asserted (or a status this build does
+// not know, which reads as live), not rejected, not refuted, not retired.
+var edgeLiveClause = func() string {
+	c, _ := statementVisibility{}.clause()
+	return c
+}()
+
+// edgeCursor is get_edges' paging position: the last row's (kind, created_at, id).
+type edgeCursor struct {
+	Kind      string `json:"k"`
+	CreatedAt int64  `json:"c"`
+	ID        string `json:"i"`
+}
+
+func encodeEdgeCursor(c edgeCursor) string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeEdgeCursor(s string) (edgeCursor, bool) {
+	var c edgeCursor
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || json.Unmarshal(b, &c) != nil {
+		return c, false
+	}
+	return c, true
+}
+
+// kindFilter widens kinds through the vocabulary and renders the IN clause.
+func (d *Document) kindFilter(ctx context.Context, in docInput) (string, []any, []string) {
+	kinds := append([]string{}, in.Kinds...)
+	if in.Kind != "" {
+		kinds = append(kinds, in.Kind)
+	}
+	if len(kinds) == 0 {
+		return "", nil, nil
+	}
+	expanded, expandedTo := d.expandKindFilter(ctx, kinds)
+	sort.Strings(expanded)
+	args := make([]any, len(expanded))
+	for i, k := range expanded {
+		args[i] = k
+	}
+	return "e.kind IN (" + strings.TrimSuffix(strings.Repeat("?,", len(expanded)), ",") + ")", args, expandedTo
+}
+
+// statementJSON renders one statement for a listing: the envelope, the endpoint
+// display fields the listing joined in, the inverse name as seen from the queried
+// end, and an evidence preview.
+func (d *Document) statementJSON(ctx context.Context, s statementRow, ends map[string]string, evidence []edgeEvidenceRow, evidenceCount int, inverseFrom bool) map[string]any {
+	e := map[string]any{
+		"id": s.ID, "from_id": s.FromID, "to_id": s.ToID, "kind": s.Kind, "auto": s.Auto,
+		"status": s.Status, "method": s.Method, "created_at": s.CreatedAt,
+	}
+	if s.Confidence != nil {
+		e["confidence"] = *s.Confidence
+	}
+	for k, v := range map[string]*int64{"valid_at": s.ValidAt, "invalid_at": s.InvalidAt, "expired_at": s.ExpiredAt, "verified_at": s.VerifiedAt, "judged_at": s.JudgedAt, "ontology_version": s.OntologyVersion} {
+		if v != nil {
+			e[k] = *v
+		}
+	}
+	for k, v := range map[string]string{"actor": s.Actor, "run_id": s.RunID, "discriminator": s.Discriminator, "judge_reason": s.JudgeReason, "judged_by": s.JudgedBy} {
+		if v != "" {
+			e[k] = v
+		}
+	}
+	if len(s.Attributes) > 0 {
+		e["attributes"] = s.Attributes
+	}
+	for k, v := range ends {
+		if v != "" {
+			e[k] = v
+		}
+	}
+	if inverseFrom {
+		if inv := d.inverseKindName(ctx, s.Kind); inv != "" {
+			e["inverse_kind"] = inv
+		}
+	}
+	if evidenceCount > 0 {
+		e["evidence"] = evidence
+		e["evidence_count"] = evidenceCount
+	}
+	return e
+}
+
+// --- ops ---
+
+// linkChunks asserts a relation: a statement with status asserted, method manual
+// (or the internal path's own), and any evidence the caller supplies.
+func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	method := in.edgeMethod
+	if method == "" {
+		method = edgeMethodManual
+	}
+	res, refuse, err := d.writeStatement(ctx, key, mscope, edgeWrite{
+		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: edgeStatusAsserted,
+		authored: true, confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
+		attributes: in.Attributes, evidence: in.Evidence,
+		overrideRejected: authorIsOperatorPlane(ctx),
+	})
+	if err != nil {
+		return errFrom("link_chunks: "+err.Error(), err), nil
+	}
+	if refuse != nil {
+		refuse.Text = "link_chunks: " + refuse.Text
+		return *refuse, nil
+	}
+	d.publishEdgeChange(ctx, key, mscope, "link_chunks", res.ID, in.FromID, in.ToID, in.Kind, res.Status)
+	out := map[string]any{"ok": true, "from_id": in.FromID, "to_id": in.ToID, "kind": in.Kind,
+		"id": res.ID, "status": res.Status, "evidence_written": res.EvidenceWritten}
+	if res.EvidenceCapped {
+		out["evidence_capped"] = true
+	}
+	return jsonResult(out)
+}
+
+// unlinkChunks deletes a statement and its evidence, by id or by the exact
+// triple (every statement of that triple). A hard delete stays available to a
+// principal holding `link`: an operator must be able to remove a wrong link
+// outright.
+func (d *Document) unlinkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	var cond string
+	var args []any
+	var from, to, kind string
+	switch {
+	case in.ID != "":
+		s, err := d.statementByID(ctx, key, in.ID)
+		if err != nil {
+			return errFrom("unlink_chunks: "+err.Error(), err), nil
+		}
+		if s == nil {
+			return errNotFound("unlink_chunks: no such statement: "+in.ID, "List statements with op=get_edges."), nil
+		}
+		cond, args = "id = ?", []any{in.ID}
+		from, to, kind = s.FromID, s.ToID, s.Kind
+	case in.FromID != "" && in.ToID != "" && in.Kind != "":
+		cond, args = "from_id = ? AND to_id = ? AND kind = ?", []any{in.FromID, in.ToID, in.Kind}
+		from, to, kind = in.FromID, in.ToID, in.Kind
+	default:
+		return errValidation("unlink_chunks: pass id, or from_id, to_id and kind", "Pass the statement's id from op=get_edges, or the exact triple the link was made with."), nil
+	}
+	if err := d.deleteEdgesWhere(ctx, key, "", cond, args...); err != nil {
+		return errFrom("unlink_chunks: "+err.Error(), err), nil
+	}
+	d.publishEdgeChange(ctx, key, mscope, "unlink_chunks", in.ID, from, to, kind, "")
+	return jsonResult(map[string]any{"removed": true})
+}
+
+// proposeStatement files a statement for review: status proposed, its evidence,
+// and nothing live changes. It cannot clear a status, edit or delete. Re-proposing
+// an existing statement adds evidence to it; with id it files a competing proposal
+// beside that statement (attributes.revision_of), so a re-verification never
+// writes a duplicate.
+//
+// Auto-assertion is the server's decision, never the caller's: a kind the
+// vocabulary marks @auto_assert, made by a rule, with every quote resolved to an
+// existing chunk, is written asserted.
+func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	w := edgeWrite{
+		from: in.FromID, to: in.ToID, kind: in.Kind, method: edgeMethodManual, status: edgeStatusProposed,
+		confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
+		attributes: in.Attributes, evidence: in.Evidence,
+	}
+	if in.ID != "" {
+		base, err := d.statementByID(ctx, key, in.ID)
+		if err != nil {
+			return errFrom("propose_statement: "+err.Error(), err), nil
+		}
+		if base == nil {
+			return errNotFound("propose_statement: no such statement: "+in.ID, "Omit id to propose a new statement."), nil
+		}
+		w.from, w.to, w.kind, w.revisionOf = base.FromID, base.ToID, base.Kind, base.ID
+		if in.Kind != "" {
+			w.kind = in.Kind
+		}
+	}
+	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
+		return errValidation("propose_statement: confidence must be between 0 and 1", ""), nil
+	}
+	if len(w.evidence) > 0 && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
+		allChunks := true
+		for _, ev := range w.evidence {
+			if ev.ChunkID == "" {
+				allChunks = false
+			}
+		}
+		if allChunks {
+			w.status = edgeStatusAsserted
+		}
+	}
+	if in.edgeMethod != "" {
+		w.method = in.edgeMethod
+	}
+	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
+	if err != nil {
+		return errFrom("propose_statement: "+err.Error(), err), nil
+	}
+	if refuse != nil {
+		refuse.Text = "propose_statement: " + refuse.Text
+		return *refuse, nil
+	}
+	d.publishEdgeChange(ctx, key, mscope, "propose_statement", res.ID, w.from, w.to, w.kind, res.Status)
+	return jsonResult(res)
+}
+
+// reviewStatement is accept_statement / reject_statement: the operator's ruling on
+// a proposal. Not reachable from inside a run — an agent's Document grant must not
+// let a model accept its own proposals (the RFC CA posture for ontology proposals).
+func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, accept bool) (tools.Result, error) {
+	op := "reject_statement"
+	status := edgeStatusRejected
+	if accept {
+		op, status = "accept_statement", edgeStatusAsserted
+	}
+	if !authorIsOperatorPlane(ctx) {
+		return errPermission(op+": only an operator rules on a proposed statement, from the review queue — not an agent inside a run",
+			"Leave it proposed; an operator reviews it in the console."), nil
+	}
+	if in.ID == "" {
+		return errValidation(op+": missing required field: id", "Pass the statement id from op=list_statements."), nil
+	}
+	if !accept && strings.TrimSpace(in.Reason) == "" {
+		return errValidation(op+": reason is required", "Say why, so the proposer never re-proposes it and a later reader knows."), nil
+	}
+	s, err := d.statementByID(ctx, key, in.ID)
+	if err != nil {
+		return errFrom(op+": "+err.Error(), err), nil
+	}
+	if s == nil {
+		return errNotFound(op+": no such statement: "+in.ID, "List proposals with op=list_statements."), nil
+	}
+	now := time.Now().UnixNano()
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE id = ?`,
+		status, now, nullIfEmpty(strings.TrimSpace(in.Reason)), "operator", in.ID); err != nil {
+		return errFrom(op+": "+err.Error(), err), nil
+	}
+	d.publishEdgeChange(ctx, key, mscope, op, in.ID, s.FromID, s.ToID, s.Kind, status)
+	return jsonResult(map[string]any{"id": in.ID, "status": status})
+}
+
+// getEdge returns one statement with all its evidence.
+func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.ID == "" {
+		return errValidation("get_edge: missing required field: id", "Pass a statement id from op=get_edges or op=backlinks."), nil
+	}
+	res, err := d.query(ctx, key, `SELECT `+statementCols+`,
+		cf.title, cf.document_id, ct.title, ct.document_id
+		FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id LEFT JOIN chunks ct ON ct.id = e.to_id
+		WHERE e.id = ?`, in.ID)
+	if err != nil {
+		return errFrom("get_edge: "+err.Error(), err), nil
+	}
+	if len(res.Rows) == 0 {
+		return errNotFound("get_edge: no such statement: "+in.ID, "List statements with op=get_edges."), nil
+	}
+	r := res.Rows[0]
+	s := scanStatement(r)
+	ev, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 0)
+	if err != nil {
+		return errFrom("get_edge: "+err.Error(), err), nil
+	}
+	ends := map[string]string{
+		"from_title": asStr(r[statementColCount]), "from_document_id": asStr(r[statementColCount+1]),
+		"to_title": asStr(r[statementColCount+2]), "to_document_id": asStr(r[statementColCount+3]),
+	}
+	out := d.statementJSON(ctx, s, ends, ev[s.ID], counts[s.ID], false)
+	if _, ok := out["evidence"]; !ok {
+		out["evidence"] = []edgeEvidenceRow{}
+		out["evidence_count"] = 0
+	}
+	return jsonResult(map[string]any{"statement": out})
+}
+
+// listStatements is the review queue: statements of a status (default proposed)
+// across the scope, newest first, paged.
+func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	status := in.Status
+	if status == "" {
+		status = edgeStatusProposed
+	}
+	limit := edgeGetEdgesDefault
+	if in.Limit > 0 && in.Limit < edgeGetEdgesMax {
+		limit = in.Limit
+	}
+	where := []string{"e.status = ?"}
+	args := []any{status}
+	if kc, ka, _ := d.kindFilter(ctx, in); kc != "" {
+		where = append(where, kc)
+		args = append(args, ka...)
+	}
+	if in.After != "" {
+		c, ok := decodeEdgeCursor(in.After)
+		if !ok {
+			return errValidation("list_statements: after is not a cursor this op returned", "Pass next_cursor from the previous page."), nil
+		}
+		where = append(where, "(e.created_at < ? OR (e.created_at = ? AND e.id < ?))")
+		args = append(args, c.CreatedAt, c.CreatedAt, c.ID)
+	}
+	args = append(args, limit+1)
+	res, err := d.query(ctx, key, `SELECT `+statementCols+`,
+		cf.title, cf.document_id, ct.title, ct.document_id
+		FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id LEFT JOIN chunks ct ON ct.id = e.to_id
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY e.created_at DESC, e.id DESC LIMIT ?`, args...)
+	if err != nil {
+		return errFrom("list_statements: "+err.Error(), err), nil
+	}
+	return d.renderStatementPage(ctx, key, res, limit, "statements", func(s statementRow) edgeCursor {
+		return edgeCursor{CreatedAt: s.CreatedAt, ID: s.ID}
+	})
+}
+
+// renderStatementPage turns a statement query (statementCols + the four endpoint
+// display columns, fetched limit+1) into a page with an evidence preview.
+func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey, res *sqlmem.QueryResult, limit int, field string, cursorOf func(statementRow) edgeCursor) (tools.Result, error) {
+	rows := res.Rows
+	truncated := len(rows) > limit
+	if truncated {
+		rows = rows[:limit]
+	}
+	stmts := make([]statementRow, len(rows))
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		stmts[i] = scanStatement(r)
+		ids[i] = stmts[i].ID
+	}
+	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
+	if err != nil {
+		return errFrom(err.Error(), err), nil
+	}
+	list := make([]map[string]any, 0, len(rows))
+	for i, r := range rows {
+		ends := map[string]string{
+			"from_title": asStr(r[statementColCount]), "from_document_id": asStr(r[statementColCount+1]),
+			"to_title": asStr(r[statementColCount+2]), "to_document_id": asStr(r[statementColCount+3]),
+		}
+		list = append(list, d.statementJSON(ctx, stmts[i], ends, ev[stmts[i].ID], counts[stmts[i].ID], false))
+	}
+	out := map[string]any{field: list}
+	if truncated && len(stmts) > 0 {
+		out["truncated"] = true
+		out["next_cursor"] = encodeEdgeCursor(cursorOf(stmts[len(stmts)-1]))
+	}
+	return jsonResult(out)
+}
+
+// judgeEdge is judge_fact on a statement (D3): the fact tier's verdict vocabulary
+// and withholding rule. The evidence is what the judge checks; a statement with
+// none can be vouched for by an operator, never by a run — the fact tier's rule.
+func (d *Document) judgeEdge(ctx context.Context, key sqlmem.ScopeKey, s *statementRow, verdict string, confidence float64, reason string) (tools.Result, error) {
+	judgedBy := judgedByForVerdict(ctx)
+	if verdict != "unclear" && !(judgedBy == "operator" && verdict != "mistyped") {
+		_, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 1)
+		if err != nil {
+			return errFrom("judge_fact: "+err.Error(), err), nil
+		}
+		if counts[s.ID] == 0 {
+			return errBusiness("judge_fact: that statement records no evidence, so there is nothing to check it against. "+
+				"An operator may still vouch for it from the console — a run may not", ""), nil
+		}
+	}
+	now := time.Now().UnixNano()
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ?, verified_at = ? WHERE id = ?`,
+		confidence, now, reason, judgedBy, now, s.ID); err != nil {
+		return errFrom("judge_fact: "+err.Error(), err), nil
+	}
+	return jsonResult(map[string]any{
+		"edge_id": s.ID, "verdict": verdict, "confidence": confidence,
+		"judged_at": now, "withheld": confidence < withholdBelowConfidence,
+	})
+}
+
+// publishEdgeChange tells both endpoint documents' change channels.
+func (d *Document) publishEdgeChange(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, edgeID, from, to, kind, status string) {
+	if d.Bus == nil {
+		return
+	}
+	docs := map[string]bool{}
+	for _, id := range []string{from, to} {
+		if row, ok, err := d.getChunkRow(ctx, key, id); err == nil && ok {
+			docs[row.DocumentID] = true
+		}
+	}
+	scopeID := docMemScopeID(mscope, key)
+	for docID := range docs {
+		d.publishEdgeEvent(ctx, mscope, scopeID, docID, map[string]any{
+			"op": op, "edge_id": edgeID, "kind": kind, "status": status, "actor": tools.RunIdentity(ctx).UserID,
+		})
+	}
+}
+
+// --- export / import carry ---
+
+// mdEdgeEnvelope is a statement's envelope in the export_md trailer. Present only
+// when it carries something beyond a plain asserted link, so a document whose
+// edges have none exports byte-identically to before statements existed.
+type mdEdgeEnvelope struct {
+	Status     string           `json:"status,omitempty"`
+	Confidence *float64         `json:"confidence,omitempty"`
+	ValidAt    *int64           `json:"valid_at,omitempty"`
+	InvalidAt  *int64           `json:"invalid_at,omitempty"`
+	Attributes map[string]any   `json:"attributes,omitempty"`
+	Evidence   []edgeEvidenceIn `json:"evidence,omitempty"`
+}
+
+// exportEdgeLines renders the trailer: the statements leaving this document's
+// chunks, then the ones arriving from outside it whose source carries a natural
+// key — written as `@<natural_key>` so an import can reconnect them, which is what
+// keeps an inbound citation through an export round trip. Rejected statements are
+// a tombstone for this scope and are not carried.
+func (d *Document) exportEdgeLines(ctx context.Context, key sqlmem.ScopeKey, docID string) ([]string, error) {
+	res, err := d.query(ctx, key, `SELECT `+statementCols+`, '' AS nk FROM chunk_edges e
+		WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND e.status <> ?
+		ORDER BY e.from_id, e.to_id, e.kind, e.id`, docID, edgeStatusRejected)
+	if err != nil {
+		return nil, err
+	}
+	inb, err := d.query(ctx, key, `SELECT `+statementCols+`, m.natural_key FROM chunk_edges e
+		JOIN chunk_memory_meta m ON m.chunk_id = e.from_id
+		WHERE e.to_id IN (SELECT id FROM chunks WHERE document_id = ?)
+		  AND e.from_id NOT IN (SELECT id FROM chunks WHERE document_id = ?)
+		  AND m.natural_key IS NOT NULL AND m.natural_key <> '' AND e.status <> ?
+		ORDER BY m.natural_key, e.to_id, e.kind, e.id`, docID, docID, edgeStatusRejected)
+	if err != nil {
+		return nil, err
+	}
+	rows := append(append([][]any{}, res.Rows...), inb.Rows...)
+	ids := make([]string, len(rows))
+	for i, r := range rows {
+		ids[i] = asStr(r[0])
+	}
+	ev, _, err := d.evidenceFor(ctx, key, ids, 0)
+	if err != nil {
+		return nil, err
+	}
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		s := scanStatement(r)
+		from := s.FromID
+		if nk := asStr(r[statementColCount]); nk != "" {
+			from = "@" + nk
+		}
+		line := from + " -> " + s.ToID + " [" + s.Kind + "]"
+		env := mdEdgeEnvelope{Confidence: s.Confidence, ValidAt: s.ValidAt, InvalidAt: s.InvalidAt, Attributes: s.Attributes}
+		if s.Status != edgeStatusAsserted {
+			env.Status = s.Status
+		}
+		for _, e := range ev[s.ID] {
+			env.Evidence = append(env.Evidence, edgeEvidenceIn{
+				ChunkID: e.ChunkID, SessionID: e.SessionID, EventSeq: e.EventSeq,
+				Scope: e.Scope, NaturalKey: e.NaturalKey, Quote: e.Quote,
+			})
+		}
+		if env.Status != "" || env.Confidence != nil || env.ValidAt != nil || env.InvalidAt != nil || len(env.Attributes) > 0 || len(env.Evidence) > 0 {
+			b, _ := json.Marshal(env)
+			line += " " + string(b)
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
+// importEdges writes the trailer's statements into the imported document and
+// returns how many it could not place. Endpoints are remapped from the exported
+// ids; an evidence row is kept only when its quote still verifies (its chunk
+// remapped too, when it was part of the document). A statement keeps `proposed`
+// when it was exported proposed and is otherwise asserted: an import is made with
+// the importer's own link authority, and can lower a status but never raise one.
+func (d *Document) importEdges(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, edges []mdEdge, oldToNew map[string]string) int {
+	skipped := 0
+	for _, e := range edges {
+		nt, okTo := oldToNew[e.to]
+		var nf string
+		okFrom := false
+		if strings.HasPrefix(e.from, "@") {
+			if id, err := d.chunkIDByNaturalKey(ctx, key, strings.TrimPrefix(e.from, "@")); err == nil && id != "" {
+				nf, okFrom = id, true
+			}
+		} else {
+			nf, okFrom = oldToNew[e.from]
+		}
+		if !okFrom || !okTo || (isReservedEdgeKind(e.kind) && e.kind != aboutEdgeKind) {
+			skipped++
+			continue
+		}
+		w := edgeWrite{from: nf, to: nt, kind: e.kind, method: edgeMethodImport, status: edgeStatusAsserted, authored: true}
+		if e.env != nil {
+			if e.env.Status == edgeStatusRejected {
+				skipped++
+				continue
+			}
+			if e.env.Status == edgeStatusProposed {
+				w.status, w.authored = edgeStatusProposed, false
+			}
+			w.confidence, w.validAt, w.invalidAt, w.attributes = e.env.Confidence, e.env.ValidAt, e.env.InvalidAt, e.env.Attributes
+			for _, ev := range e.env.Evidence {
+				if ev.ChunkID != "" {
+					if mapped, ok := oldToNew[ev.ChunkID]; ok {
+						ev.ChunkID = mapped
+					}
+				}
+				if _, refuse, err := d.checkEvidence(ctx, key, mscope, []edgeEvidenceIn{ev}); err == nil && refuse == nil {
+					w.evidence = append(w.evidence, ev)
+				}
+			}
+		}
+		if _, refuse, err := d.writeStatement(ctx, key, mscope, w); err != nil || refuse != nil {
+			skipped++
+		}
+	}
+	return skipped
+}

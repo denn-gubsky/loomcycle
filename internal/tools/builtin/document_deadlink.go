@@ -50,6 +50,7 @@ type DeadLinkReport struct {
 	Units    int // doc.unit:<id>:… derived search units whose chunk is gone
 	Sidecars int // chunk_memory_meta rows with no chunks row
 	Edges    int // chunk_edges with a missing endpoint
+	Evidence int // chunk_edge_evidence rows whose statement is gone
 	Assets   int // chunk_assets rows with no chunks row
 
 	// Reported only, never deleted.
@@ -61,7 +62,9 @@ type DeadLinkReport struct {
 }
 
 // Total is the reaped count across every class.
-func (r DeadLinkReport) Total() int { return r.Bodies + r.Units + r.Sidecars + r.Edges + r.Assets }
+func (r DeadLinkReport) Total() int {
+	return r.Bodies + r.Units + r.Sidecars + r.Edges + r.Evidence + r.Assets
+}
 
 // Empty reports whether there is nothing worth logging.
 func (r DeadLinkReport) Empty() bool {
@@ -72,8 +75,8 @@ func (r DeadLinkReport) String() string {
 	if r.Skipped != "" {
 		return fmt.Sprintf("%s/%s/%s: skipped (%s)", r.Scope.Tenant, r.Scope.Scope, r.Scope.ScopeID, r.Skipped)
 	}
-	s := fmt.Sprintf("%s/%s/%s: %d body, %d unit, %d sidecar, %d edge, %d asset",
-		r.Scope.Tenant, r.Scope.Scope, r.Scope.ScopeID, r.Bodies, r.Units, r.Sidecars, r.Edges, r.Assets)
+	s := fmt.Sprintf("%s/%s/%s: %d body, %d unit, %d sidecar, %d edge, %d evidence, %d asset",
+		r.Scope.Tenant, r.Scope.Scope, r.Scope.ScopeID, r.Bodies, r.Units, r.Sidecars, r.Edges, r.Evidence, r.Assets)
 	if r.OrphanChunks > 0 {
 		s += fmt.Sprintf(" (+%d chunk(s) whose document is gone — reported, not deleted)", r.OrphanChunks)
 	}
@@ -138,6 +141,8 @@ func (d *Document) ReconcileDeadLinks(ctx context.Context, key sqlmem.ScopeKey, 
 		{&rep.Sidecars, "chunk_memory_meta", "chunk_id NOT IN (SELECT id FROM chunks)"},
 		{&rep.Assets, "chunk_assets", "chunk_id NOT IN (SELECT id FROM chunks)"},
 		{&rep.Edges, "chunk_edges", "from_id NOT IN (SELECT id FROM chunks) OR to_id NOT IN (SELECT id FROM chunks)"},
+		// After the edges, so the evidence of an edge reaped just above goes with it.
+		{&rep.Evidence, "chunk_edge_evidence", "edge_id NOT IN (SELECT id FROM chunk_edges)"},
 	} {
 		n, err := d.countWhere(ctx, key, c.table, c.where)
 		if err != nil {

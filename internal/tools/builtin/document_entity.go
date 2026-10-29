@@ -966,8 +966,8 @@ func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retired
 			return nil
 		}
 		return d.execTxn(ctx, txnID,
-			`INSERT INTO chunk_edges (from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?)`,
-			replacementID, retiredID, "supersedes", now)
+			`INSERT INTO chunk_edges (id, from_id, to_id, kind, created_at, method) VALUES (?, ?, ?, ?, ?, ?)`,
+			newDocID(), replacementID, retiredID, "supersedes", now, edgeMethodRuntime)
 	})
 	if err != nil {
 		return 0, "", err
