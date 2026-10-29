@@ -164,12 +164,14 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	case "", memrank.SectionClasses:
 	case memrank.SectionRelations:
 		return d.proposeRelation(ctx, key, mscope, read, name, in)
-	case memrank.SectionSchemes, memrank.SectionInstances:
+	case memrank.SectionSchemes:
+		return d.proposeConcept(ctx, key, mscope, read, name, in)
+	case memrank.SectionInstances:
 		return errBusiness("propose_entity: proposing into the "+in.Section+" section is not available yet",
-			"Propose an entity type (section omitted) or a relation kind (section=relations)."), nil
+			"Propose an entity type (section omitted), a relation kind (section=relations) or a concept (section=schemes)."), nil
 	default:
-		return errValidation("propose_entity: section must be classes or relations, not "+strconv.Quote(in.Section),
-			"Omit section for an entity type, or pass section=relations for a relation kind."), nil
+		return errValidation("propose_entity: section must be classes, relations or schemes, not "+strconv.Quote(in.Section),
+			"Omit section for an entity type, or pass section=relations for a relation kind or section=schemes for a concept."), nil
 	}
 	for _, t := range read.Terms {
 		if strings.EqualFold(t.Name, name) {

@@ -47,6 +47,9 @@ type relationView struct {
 	parentOf map[string]string
 	// classParent maps a lowercase class name to its lowercase parent ("" for a root).
 	classParent map[string]string
+	// conceptChunks holds the chunk ids of the tenant ontology's scheme concepts — what a
+	// `concept` domain or range accepts (RFC FO P1c).
+	conceptChunks map[string]bool
 }
 
 // relationView reads the tenant's relation vocabulary. Inactive — every hook a no-op —
@@ -69,6 +72,12 @@ func (d *Document) relationView(ctx context.Context) relationView {
 	}
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		v.classParent[strings.ToLower(c.Name)] = strings.ToLower(c.Parent)
+	}
+	v.conceptChunks = map[string]bool{}
+	for _, s := range read.Schemes {
+		for _, c := range s.Concepts {
+			v.conceptChunks[c.ChunkID] = true
+		}
 	}
 	return v
 }
@@ -161,9 +170,10 @@ func sortedRelations(v relationView) []memrank.OntologyRelation {
 
 // checkRelationEnds checks @domain and @range closed-world under the subclass closure:
 // the chunk's type must be one of the listed classes or a subclass of one. `entity`
-// accepts any chunk carrying entity metadata (a subject); `concept` is accepted
-// unchecked until scheme concepts exist as chunks. An untyped chunk, or one whose type
-// is not a declared class, does not satisfy a constraint.
+// accepts any chunk carrying entity metadata (a subject); `concept` accepts a concept
+// chunk of the tenant ontology's Schemes section — which exists only in the tenant
+// scope, so elsewhere a document is classified by its concept's tag instead. An untyped
+// chunk, or one whose type is not a declared class, does not satisfy a constraint.
 func (d *Document) checkRelationEnds(ctx context.Context, key sqlmem.ScopeKey, v relationView, rel memrank.OntologyRelation, from, to string) []relationProblem {
 	var out []relationProblem
 	for _, end := range []struct {
@@ -177,7 +187,7 @@ func (d *Document) checkRelationEnds(ctx context.Context, key sqlmem.ScopeKey, v
 		if !ok {
 			continue // the caller has already refused a missing chunk
 		}
-		if classAllowed(v, typ, isEntity, end.allowed) {
+		if classAllowed(v, end.chunkID, typ, isEntity, end.allowed) {
 			continue
 		}
 		got := "untyped"
@@ -188,10 +198,22 @@ func (d *Document) checkRelationEnds(ctx context.Context, key sqlmem.ScopeKey, v
 			code: "domain_range_violation",
 			msg: fmt.Sprintf("%s needs its %s to be %s, but chunk %s is %s",
 				rel.Name, end.label, strings.Join(end.allowed, " or "), end.chunkID, got),
-			hint: "Link chunks of the declared classes, or type the chunk with one of them first.",
+			hint: relationEndHint(end.allowed),
 		})
 	}
 	return out
+}
+
+// relationEndHint says how to satisfy an end constraint. A `concept` end cannot be met
+// outside the tenant scope, where concepts live, so it points at the tag instead.
+func relationEndHint(allowed []string) string {
+	for _, a := range allowed {
+		if strings.EqualFold(a, "concept") {
+			return "Link to a concept of the ontology's Schemes section (tenant scope only); to classify a " +
+				"document in another scope, tag it with the concept's tag (<scheme>/<path>) instead."
+		}
+	}
+	return "Link chunks of the declared classes, or type the chunk with one of them first."
 }
 
 func (d *Document) relationEndType(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (typ string, isEntity, ok bool) {
@@ -206,12 +228,14 @@ func (d *Document) relationEndType(ctx context.Context, key sqlmem.ScopeKey, chu
 
 // classAllowed reports whether a chunk type sits under one of the allowed classes.
 // Bounded walk up the class tree: the tree cannot cycle, but this runs on a write path.
-func classAllowed(v relationView, typ string, isEntity bool, allowed []string) bool {
+func classAllowed(v relationView, chunkID, typ string, isEntity bool, allowed []string) bool {
 	want := map[string]bool{}
 	for _, a := range allowed {
 		switch strings.ToLower(a) {
 		case "concept":
-			return true // scheme concepts are not chunks yet; nothing to check
+			if v.conceptChunks[chunkID] {
+				return true
+			}
 		case "entity":
 			if isEntity {
 				return true

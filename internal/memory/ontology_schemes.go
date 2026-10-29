@@ -124,17 +124,17 @@ func directiveIssue(name, what string) string {
 // and the tag a document is classified with can never differ.
 func MirrorTag(scheme string, path []string) string {
 	segs := make([]string, 0, len(path)+1)
-	segs = append(segs, mirrorSegment(scheme))
+	segs = append(segs, MirrorSegment(scheme))
 	for _, p := range path {
-		segs = append(segs, mirrorSegment(p))
+		segs = append(segs, MirrorSegment(p))
 	}
 	return strings.Join(segs, "/")
 }
 
-// mirrorSegment lowercases a title and joins its words with '-'. A '/' inside a title
+// MirrorSegment lowercases a title and joins its words with '-'. A '/' inside a title
 // becomes '-' too: it is the tag hierarchy separator, and a title containing one would
 // otherwise fabricate a level of nesting nobody declared.
-func mirrorSegment(s string) string {
+func MirrorSegment(s string) string {
 	s = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "/", " ")
 	return strings.Join(strings.Fields(s), "-")
 }
