@@ -123,6 +123,7 @@ const documentInputSchema = `{
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here. search / related: return only chunks of these documents."},
 		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
 		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
+		"section":     {"type": "string", "enum": ["classes","relations"], "description": "propose_entity: what is being proposed — classes (default) for an entity type, relations for a relation kind (a name for how two things are related, e.g. supervises). parent then names an in-force kind of the same section."},
 		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
@@ -232,6 +233,9 @@ type docInput struct {
 	// Parent names an entity by NAME (propose_entity). Distinct from ParentID, which
 	// addresses a chunk: a curator knows the type it read in its prompt, not a uuid.
 	Parent string `json:"parent"`
+	// Section is which part of the ontology a proposal belongs to (propose_entity):
+	// "" or "classes" for an entity type, "relations" for a relation kind.
+	Section string `json:"section"`
 	// SourceQuote is the span a fact was derived from (upsert_chunk). Persisted on the
 	// entity row so a later pass can check the claim against it, and so an operator
 	// asking "why do you believe this" has an answer.

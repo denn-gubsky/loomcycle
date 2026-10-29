@@ -14,7 +14,9 @@ while keeping the old version, write the correction under a NEW key and then
 
 - `natural_key` (required) — the stable identity, unique in the scope. Use a
   derived form: `person:ada-lovelace` for a subject,
-  `subject|predicate|object` for a fact.
+  `subject|predicate|object` for a fact. It may be omitted when `type` names a
+  class whose identity fields the tenant ontology declares: the key is then
+  built from those fields.
 - `document_id`, `title` — required when the key is new (the chunk is created
   like `create_chunk`); ignored for placement on an update.
 - `parent_id`, `after_id`, `position` — placement, on create only.
