@@ -67,9 +67,9 @@ type docACLRule struct {
 }
 
 var (
-	docListDocuments = &docACLFilter{key: "documents", fields: []string{"document_id"}}
-	docListChunks    = &docACLFilter{key: "chunks", fields: []string{"document_id"}, required: true}
-	docListEdges     = &docACLFilter{key: "edges", fields: []string{"from_document_id", "to_document_id"}}
+	docListDocuments  = &docACLFilter{key: "documents", fields: []string{"document_id"}}
+	docListChunks     = &docACLFilter{key: "chunks", fields: []string{"document_id"}, required: true}
+	docListEdges      = &docACLFilter{key: "edges", fields: []string{"from_document_id", "to_document_id"}}
 	docListStatements = &docACLFilter{key: "statements", fields: []string{"from_document_id", "to_document_id"}}
 )
 

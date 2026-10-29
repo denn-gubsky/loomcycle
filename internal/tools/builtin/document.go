@@ -272,8 +272,8 @@ type docInput struct {
 	// canvas) writes it. UNEXPORTED: a caller must not name how its own link was
 	// made.
 	edgeMethod string
-	Position    *int   `json:"position"`
-	Revision    *int   `json:"revision"`
+	Position   *int `json:"position"`
+	Revision   *int `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
