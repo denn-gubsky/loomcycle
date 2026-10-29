@@ -284,17 +284,18 @@ func decodeFields(raw json.RawMessage) map[string]any {
 // either way), but which chunk holds it, in a document the caller cannot see, can be.
 func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, in *docInput, idKey, selfID string) *tools.Result {
 	res, err := d.query(ctx, key,
-		`SELECT c.id, coalesce(m.natural_key, ''), c.document_id FROM chunks c
+		`SELECT c.id, coalesce(m.natural_key, ''), c.document_id, coalesce(doc.status, '') FROM chunks c
 		   LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+		   LEFT JOIN documents doc ON doc.id = c.document_id
 		  WHERE c.identity_key = ? LIMIT 2`, idKey)
 	if err != nil {
 		return nil // fail open; the unique index is the backstop
 	}
 	for _, row := range res.Rows {
-		if len(row) < 3 {
+		if len(row) < 4 {
 			continue
 		}
-		holder, holderKey, holderDoc := asStr(row[0]), asStr(row[1]), asStr(row[2])
+		holder, holderKey, holderDoc, holderStatus := asStr(row[0]), asStr(row[1]), asStr(row[2]), asStr(row[3])
 		if holder == selfID {
 			continue
 		}
@@ -309,6 +310,17 @@ func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, a
 				return &r
 			}
 		}
+		if strings.EqualFold(holderStatus, placeholderDocumentStatus) {
+			// A placeholder for a cited work that has not been imported yet. Creating the
+			// work beside it would leave every citation pointing at the placeholder, so
+			// the answer is to fill it, never to make a second document.
+			r := errBusiness("identity_collision: the work "+idKey+" is held by an unresolved placeholder (document "+
+				holderDoc+"), filed because something cites it.",
+				"Fill the placeholder instead of creating a second document: import the work with op=import_md "+
+					"reimport:true work_key:\""+idKey+"\" (that keeps every citation of it), or delete the placeholder "+
+					"first with op=delete_document id:"+holderDoc+".")
+			return &r
+		}
 		r := errBusiness("identity_collision: chunk "+holder+" already holds the identity "+idKey+
 			" — two chunks cannot be the same thing. Nothing was written.",
 			"Update chunk "+holder+" instead, or change the identity fields if this is a different thing.")
@@ -316,6 +328,10 @@ func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, a
 	}
 	return nil
 }
+
+// placeholderDocumentStatus marks a document filed for a cited work that has not been
+// imported yet (RFC FN P2); its root carries the work key as its identity.
+const placeholderDocumentStatus = "unresolved"
 
 // finishClassRules is the post-write half: it records the identity key on the chunk
 // the op wrote and attaches the warnings to its response. A successful response only;
