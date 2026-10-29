@@ -858,6 +858,14 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 			return errFrom("import_md: "+err.Error(), err), nil
 		}
 	}
+	// The root: its title and preamble follow the edition. Updated in place, not
+	// superseded — the root IS the document (its id, its Path name, its work key) —
+	// and an earlier preamble stays readable in the root's history.
+	if changed, r := d.reconcileRoot(ctx, key, mscope, rootID, chunks[0]); r != nil {
+		return *r, nil
+	} else if changed {
+		rep.changed = append(rep.changed, rootID)
+	}
 	// Sibling order follows the edition.
 	for _, kids := range order {
 		for i, id := range kids {
@@ -879,6 +887,47 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		out["changed_chunk_ids"] = rep.changed
 	}
 	return jsonResult(out)
+}
+
+// reconcileRoot brings the root's title and body to the edition's, through
+// update_chunk, so the body's revision log, embedding and [[name]] links follow as
+// for any edit. Reports whether anything changed.
+func (d *Document) reconcileRoot(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rootID string, c mdChunk) (bool, *tools.Result) {
+	fail := func(err error) (bool, *tools.Result) {
+		r := errFrom("import_md: root: "+err.Error(), err)
+		return false, &r
+	}
+	row, ok, err := d.getChunkRow(ctx, key, rootID)
+	if err != nil {
+		return fail(err)
+	}
+	if !ok {
+		return fail(fmt.Errorf("no such chunk %s", rootID))
+	}
+	cb, err := d.readBody(ctx, mscope, key, rootID)
+	if err != nil {
+		return fail(err)
+	}
+	upd := map[string]any{"id": rootID, "revision": row.Revision}
+	in := docInput{ID: rootID, Revision: &row.Revision}
+	if t := titleOrUntitled(c.title); t != row.Title {
+		upd["title"], in.Title = t, t
+	}
+	if strings.TrimSpace(c.body) != strings.TrimSpace(cb.Body) {
+		upd["body"], in.Body = c.body, c.body
+	}
+	if len(upd) == 2 {
+		return false, nil
+	}
+	raw, _ := json.Marshal(upd)
+	res, err := d.updateChunk(ctx, key, mscope, in, raw)
+	if err != nil {
+		return fail(err)
+	}
+	if res.IsError {
+		return false, &res
+	}
+	return true, nil
 }
 
 // supersedePart writes a changed part's new version: it opens at the edition date

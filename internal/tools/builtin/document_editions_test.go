@@ -684,3 +684,47 @@ func TestReimport_ConcurrentReimportsOfOneWorkSerialise(t *testing.T) {
 		}
 	})
 }
+
+// The root is part of the edition too: its title and its preamble (the text under
+// the '# ' heading) follow the edition, and filling a placeholder gives it the
+// work's real title.
+func TestReimport_EditionRootIsReconciled(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/36"
+		ph, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/36","create_placeholder":true}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		docID, root := ph["document_id"].(string), ph["root_chunk_id"].(string)
+		reimport(t, d, ctx, "# The Act on Things\n\nPreamble one.\n\n## Article 1\n\nOne.\n", wk, 1_000_000)
+		meta, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_document","scope":"user","id":%q}`, docID))
+		if meta["title"] != "The Act on Things" {
+			t.Errorf("the filled placeholder is titled %v", meta["title"])
+		}
+		if got := partBody(t, d, ctx, root); got != "Preamble one." {
+			t.Errorf("the first edition's preamble = %q", got)
+		}
+		rep := reimport(t, d, ctx, "# The Act on Things, amended\n\nPreamble TWO.\n\n## Article 1\n\nOne.\n", wk, 2_000_000)
+		if got := partBody(t, d, ctx, root); got != "Preamble TWO." {
+			t.Errorf("the edition's preamble was dropped: %q", got)
+		}
+		meta, _ = docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_document","scope":"user","id":%q}`, docID))
+		if meta["title"] != "The Act on Things, amended" {
+			t.Errorf("the edition's title was dropped: %v", meta["title"])
+		}
+		if ids, _ := rep["changed_chunk_ids"].([]any); len(ids) != 1 || ids[0] != root {
+			t.Errorf("changed_chunk_ids = %v, want the root", rep["changed_chunk_ids"])
+		}
+		hist, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"history","scope":"user","id":%q}`, root))
+		revs, _ := hist["revisions"].([]any)
+		found := false
+		for _, rv := range revs {
+			n := rv.(map[string]any)["revision"]
+			v, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_version","scope":"user","id":%q,"revision":%v}`, root, n))
+			found = found || v["body"] == "Preamble one."
+		}
+		if r.IsError || !found {
+			t.Errorf("the old preamble is not in the root's history: %s", r.Text)
+		}
+	})
+}
