@@ -35,9 +35,11 @@ unsupported are not copied.
 ## Returns
 
 `{direction, source, remote_ref, remote_document_id, local_document_id,
-created, updated, unchanged, reparented, edges_added, excluded_unkeyed,
-excluded_withheld}` — counts of keyed chunks. `excluded_unkeyed` counts the
-sending side's chunks that could not be carried.
+created, updated, unchanged, reparented, edges_added, edges_skipped_rejected,
+excluded_unkeyed, excluded_withheld}` — counts of keyed chunks. `excluded_unkeyed`
+counts the sending side's chunks that could not be carried.
+`edges_skipped_rejected` counts the peer's links a pull left out because an
+operator rejected that relation here; a sync never undoes a rejection.
 
 ## Errors
 
@@ -76,7 +78,7 @@ Pull the peer's latest keyed chunks into the local runbook:
 ```json result
 {"direction": "pull", "source": "hq-docs", "remote_ref": "/docs/runbook",
  "remote_document_id": "0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4", "local_document_id": "b4407b522dc11495d3de371311db17f0",
- "created": 2, "updated": 1, "unchanged": 14, "reparented": 2, "edges_added": 1, "excluded_unkeyed": 3, "excluded_withheld": 0}
+ "created": 2, "updated": 1, "unchanged": 14, "reparented": 2, "edges_added": 1, "edges_skipped_rejected": 0, "excluded_unkeyed": 3, "excluded_withheld": 0}
 ```
 
 Push local edits up to the peer:

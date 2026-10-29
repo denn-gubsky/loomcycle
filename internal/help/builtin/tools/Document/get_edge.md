@@ -20,7 +20,9 @@ from_title, from_document_id, to_title, to_document_id, evidence: [...],
 evidence_count, ...}}`. Each evidence row has its `quote` and its source —
 `chunk_id`, `session_id` + `event_seq`, or `scope` + `natural_key` — and
 `char_start` / `char_end` where the quote sits. `stale: true` marks a quote
-that no longer occurs in its source.
+that no longer occurs in its source. Evidence citing a document you may not
+read is left out, and `evidence_count` counts only what is shown. `confidence`
+is the writer's own; a judge's finding is `verdict_confidence`.
 
 ## Errors
 

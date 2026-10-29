@@ -22,13 +22,15 @@ good, edit the `[[...]]` out of the body with `update_chunk`.
 
 ## Returns
 
-`{removed: true}` — also when no such edge existed. It does not tell you
-whether anything was deleted; check `get_edges` if that matters.
+`{removed: true}`. Removing by `from_id`, `to_id` and `kind` answers the same
+when no such edge existed; check `get_edges` if that matters. Removing by `id`
+reports an unknown id as an error.
 
 ## Errors
 
 - `unlink_chunks: pass id, or from_id, to_id and kind` — supply one or the other.
   An edge with a different `kind` is a different edge.
+- `no such statement` — no statement has that `id` in this scope.
 
 ## Examples
 

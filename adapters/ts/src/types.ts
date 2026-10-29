@@ -3992,6 +3992,15 @@ export type DocumentToolInput = {
   /** get_edges (default true) / backlinks (default false): include relations
    *  proposed for review. */
   include_proposed?: boolean;
+  /** get_edges / backlinks / graph_recall / list_facts: also return what has been
+   *  retired (superseded relations and facts). */
+  include_retired?: boolean;
+  /** upsert_chunk / link_chunks / propose_statement: 0..1, how sure the writer is.
+   *  Recorded, never used to hide anything; only a judge_fact verdict withholds. */
+  confidence?: number;
+  /** get_edges: out | in | both (default both). reorder_chunk: up | down. sync /
+   *  diff_remote: pull (default) | push. */
+  direction?: "out" | "in" | "both" | "up" | "down" | "pull" | "push";
   /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
   after?: string;
   /** graph_recall: declared (the tenant's walk kinds) or all relations. */
