@@ -2,14 +2,19 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 const instancesOntologyMD = "# Tenant Ontology\n\n" +
@@ -318,5 +323,51 @@ func TestAdoptInstances_RelationKindsMustBeWritableAndDeclared(t *testing.T) {
 	joined := strings.Join(rep.Errors, "\n")
 	if !strings.Contains(joined, "supersedes") || !strings.Contains(joined, "made_up_kind") {
 		t.Errorf("both kinds should be reported: %s", joined)
+	}
+}
+
+// TestOntologyInstances_AdoptionOnPostgres runs adoption on the postgres tier: subject
+// creation under the consolidator's key, the recorded key, the statements, and a second
+// confirm that changes nothing.
+func TestOntologyInstances_AdoptionOnPostgres(t *testing.T) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the postgres tier")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	dropAllSqlmemScopes(t, raw)
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Close()
+		dropAllSqlmemScopes(t, raw)
+		_ = raw.Close()
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	d := &Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
+	base := tools.WithAgentName(context.Background(), "pg-instances")
+	base = tools.WithRunIdentity(base, tools.RunIdentityValue{UserID: "u1", TenantID: "tnt"})
+	ctx := installTenantOntology(t, d, base, instancesOntologyMD, memrank.OntologyConfirmedStatus)
+
+	rep, err := d.AdoptInstances(ctx, false)
+	if err != nil || rep.Adopted != 4 {
+		t.Fatalf("adopt on postgres = %#v, %v", rep, err)
+	}
+	kinds := ontologyEdgeKinds(t, d, ctx)
+	if kinds["sub_organization_of"] != 1 || kinds["instance_of"] != 3 {
+		t.Errorf("statements on postgres = %v", kinds)
+	}
+	again, _ := d.AdoptInstances(ctx, false)
+	if again.Adopted != 0 || stateOf(again, "Acme Bank").State != "unchanged" {
+		t.Errorf("second adopt on postgres = %#v", again)
 	}
 }
