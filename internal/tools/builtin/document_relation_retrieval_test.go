@@ -359,6 +359,10 @@ func TestSearch_ExpandObeysTheSearchFilter(t *testing.T) {
 	if _, r := docExec(t, d, open, fmt.Sprintf(base, "")); r.IsError || !strings.Contains(r.Text, s.secretChunk) {
 		t.Fatalf("control: an unfiltered expansion did not reach the secret chunk: %s", r.Text)
 	}
+	// A filter that keeps both ends still expands: the filter narrows, it does not blank.
+	if _, r := docExec(t, d, open, fmt.Sprintf(base, `,"under_path":"/kb"`)); r.IsError || !strings.Contains(r.Text, s.secretChunk) {
+		t.Fatalf("control: a filter covering both ends dropped the expansion: %s", r.Text)
+	}
 	for _, f := range []string{`,"exclude_under_path":"/kb/secret"`, `,"under_path":"/kb/public"`} {
 		out, r := docExec(t, d, open, fmt.Sprintf(base, f))
 		if r.IsError {
@@ -382,6 +386,9 @@ func TestRelated_RelatedToObeysTheFilter(t *testing.T) {
 	base := `{"op":"related","scope":"tenant","related_to":"` + s.publicChunk + `"%s}`
 	if _, r := docExec(t, d, open, fmt.Sprintf(base, "")); r.IsError || !strings.Contains(r.Text, s.secretChunk) {
 		t.Fatalf("control: related_to did not reach the secret chunk: %s", r.Text)
+	}
+	if _, r := docExec(t, d, open, fmt.Sprintf(base, `,"under_path":"/kb"`)); r.IsError || !strings.Contains(r.Text, s.secretChunk) {
+		t.Fatalf("control: a filter covering both ends dropped the linked chunk: %s", r.Text)
 	}
 	for _, f := range []string{`,"under_path":"/kb/public"`, `,"exclude_under_path":"/kb/secret"`} {
 		out, r := docExec(t, d, open, fmt.Sprintf(base, f))
