@@ -269,12 +269,18 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		attrs = b
 	}
 
-	gate := d.gateRelation(ctx, w.kind, w.from, w.to, w.authored)
-	if w.authored && gate.Refuse != nil {
+	// Only a principal's own link_chunks is refused on a vocabulary violation. A
+	// bulk path — import_md, import_canvas, sync — carries relations someone else
+	// wrote, and refusing one would drop it from an otherwise faithful copy; it is
+	// kept, annotated ontology_valid=false (RFC FO decision, 2026-10-29). w.authored
+	// still means "the caller's own authority" for the reserved-kind rule.
+	gateAuthored := w.authored && w.method == edgeMethodManual
+	gate := d.gateRelation(ctx, w.kind, w.from, w.to, gateAuthored)
+	if gateAuthored && gate.Refuse != nil {
 		return out, gate.Refuse, nil
 	}
-	agate := d.gateAttributes(ctx, w.kind, w.attributes, w.authored)
-	if w.authored && agate.Refuse != nil {
+	agate := d.gateAttributes(ctx, w.kind, w.attributes, gateAuthored)
+	if gateAuthored && agate.Refuse != nil {
 		return out, agate.Refuse, nil
 	}
 	gate.Valid = gate.Valid && agate.Valid
