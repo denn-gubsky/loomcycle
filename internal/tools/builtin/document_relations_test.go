@@ -2,11 +2,13 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -398,4 +400,63 @@ func chunkIDByTitle(t *testing.T, f relFixture, title string) string {
 		t.Fatalf("chunk %q: %v", title, err)
 	}
 	return asStr(res.Rows[0][0])
+}
+
+// failingBodyStore fails chunk-body reads while fail is set — a Memory fault, or a read
+// cut short by a cancelled request, in the middle of the ontology walk.
+type failingBodyStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failingBodyStore) MemoryGet(ctx context.Context, tenant string, scope store.MemoryScope, scopeID, key string) (store.MemoryEntry, error) {
+	if s.fail && strings.HasPrefix(key, "doc.chunk:") {
+		return store.MemoryEntry{}, errors.New("transient memory fault")
+	}
+	return s.Store.MemoryGet(ctx, tenant, scope, scopeID, key)
+}
+
+// TestOntologyCache_APartialReadIsNeverCached.
+//
+// The walk reads every chunk body and treats a failed read as an empty body — before the
+// cache that was a one-request blip. Cached, it would strip every class of its fields and
+// every relation of its constraints until someone happened to edit the ontology: the
+// gate weakened by a transient fault. A read with any failed sub-read is returned to its
+// caller but never stored.
+func TestOntologyCache_APartialReadIsNeverCached(t *testing.T) {
+	f := newRelFixture(t, relationsOntologyMD)
+	fs := &failingBodyStore{Store: f.d.Store}
+	d2 := &Document{Store: fs, SqlMem: f.d.SqlMem, Bus: f.d.Bus}
+	// Change the ontology so the next read is a fresh build, not the fixture's cached one.
+	read, _ := d2.tenantOntologyRead(f.ctx)
+	sec := read.SectionChunks[memrank.SectionRelations]
+	if _, r := docExec(t, f.d, f.ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"parent_id":%q,"title":"mentors","body":"x"}`, read.DocumentID, sec)); r.IsError {
+		t.Fatal(r.Text)
+	}
+
+	fs.fail = true
+	partial, ok := d2.tenantOntologyRead(f.ctx)
+	if !ok {
+		t.Fatal("a partial read should still be returned")
+	}
+	if hasConstrainedStricter(partial) {
+		t.Fatal("the fault did not reach the walk; the test proves nothing")
+	}
+
+	fs.fail = false
+	healed, _ := d2.tenantOntologyRead(f.ctx)
+	if !hasConstrainedStricter(healed) {
+		t.Error("a read cut short by a fault was cached: stricter_than (with its domain) is missing until the next edit")
+	}
+}
+
+// hasConstrainedStricter reports whether a read carries stricter_than WITH its domain —
+// present and complete, not merely absent-and-therefore-unchecked.
+func hasConstrainedStricter(r OntologyRead) bool {
+	for _, rel := range r.Relations {
+		if rel.Name == "stricter_than" && len(rel.Domain) > 0 {
+			return true
+		}
+	}
+	return false
 }
