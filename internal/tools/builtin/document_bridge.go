@@ -253,18 +253,16 @@ func (d *Document) sourceStillHolds(ctx context.Context, key sqlmem.ScopeKey, ms
 }
 
 // rememberAboutTarget finds the entity node a remembered fact's subject names,
-// when the scope already has one: a chunk carrying that subject whose natural key
-// is an entity key (`<type>:<slug>`, no `|`), of the remembered type when one was
-// given. remember never mints a subject — that is the curator's call — so with no
-// node there is no edge, as before.
+// when the scope already has one: a subject node (subjectNodesWhere — the same
+// test a [[link]] uses to call itself a mention) carrying that subject, of the
+// remembered type when one was given. remember never mints a subject — that is
+// the curator's call — so with no node there is no edge, as before.
 func (d *Document) rememberAboutTarget(ctx context.Context, key sqlmem.ScopeKey, subject, typ string) string {
 	if strings.TrimSpace(subject) == "" {
 		return ""
 	}
-	q := `SELECT chunk_id FROM chunk_memory_meta
-		WHERE lower(subject) = lower(?) AND natural_key IS NOT NULL AND natural_key NOT LIKE '%|%'
-		  AND natural_key NOT LIKE ?`
-	args := []any{strings.TrimSpace(subject), rememberedKeyPrefix + "%"}
+	q := subjectNodesWhere + ` AND lower(subject) = lower(?)`
+	args := []any{strings.TrimSpace(subject)}
 	if t := strings.TrimSpace(typ); t != "" {
 		q += ` AND natural_key LIKE ?`
 		args = append(args, t+":%")

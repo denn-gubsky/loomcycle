@@ -135,3 +135,61 @@ func TestUpsertChunk_RelationBecomesAStatement(t *testing.T) {
 		}
 	})
 }
+
+// A remembered fact carries a subject and a key with no `|`, but it is a fact, not
+// a subject node: a [[link]] to it is a reference, not a mention.
+func TestSubjectNodes_ARememberedFactIsNotASubject(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, r := docExec(t, d, ctx, `{"op":"remember","scope":"user","text":"Ada prefers tea.","subject":"Ada","type":"person"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	key, _, _ := d.resolveScope(ctx, "user")
+	if got := d.subjectNodes(ctx, key, []string{out["id"].(string)}); got[out["id"].(string)] {
+		t.Errorf("a remembered fact is classified as a subject node")
+	}
+}
+
+// Mention evidence quotes the link that names the subject — not a longer link that
+// starts with the same name — and is written only for an edge that exists.
+func TestNameLinks_MentionEvidenceQuotesTheExactLink(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		ada := subjectNode(t, d, ctx, "Ada")
+		notes, _ := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Notes"}`)
+		mk := func(body string) string {
+			p, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"M","body":%q}`, notes["document_id"], body))
+			if r.IsError {
+				t.Fatal(r.Text)
+			}
+			return p["id"].(string)
+		}
+		key, _, _ := d.resolveScope(ctx, "user")
+		for body, want := range map[string]string{
+			"See [[Ada Lovelace notes]] and [[Ada]].":       "[[Ada]]",
+			"See [[Ada Lovelace notes]] and [[Ada|her]].":   "[[Ada|her]]",
+			"See [[Adam]], then [[Ada]] and [[Ada]] again.": "[[Ada]]",
+		} {
+			p := mk(body)
+			res, err := d.query(ctx, key, `SELECT ev.quote, ev.char_start FROM chunk_edges e JOIN chunk_edge_evidence ev ON ev.edge_id = e.id
+				WHERE e.from_id = ? AND e.to_id = ? AND e.kind = 'mentions'`, p, ada)
+			if err != nil || len(res.Rows) != 1 || asStr(res.Rows[0][0]) != want ||
+				asInt(res.Rows[0][1]) != len([]rune(body[:strings.Index(body, want)])) {
+				t.Errorf("%q: evidence = %v %v, want %q", body, res, err, want)
+			}
+		}
+		// A manual mention already there: the guarded insert writes no edge, so no
+		// evidence row may be written for one.
+		p := mk("plain")
+		if err := d.exec(ctx, key, `INSERT INTO chunk_edges (id, from_id, to_id, kind, created_at, auto, method) VALUES (?, ?, ?, 'mentions', ?, 0, 'manual')`,
+			newDocID(), p, ada, time.Now().UnixNano()); err != nil {
+			t.Fatal(err)
+		}
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"revision":1,"body":"Met [[Ada]]."}`, p)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edge_evidence ev WHERE NOT EXISTS (SELECT 1 FROM chunk_edges e WHERE e.id = ev.edge_id)`)
+		if err != nil || asInt(res.Rows[0][0]) != 0 {
+			t.Errorf("orphan evidence rows: %v %v", res, err)
+		}
+	})
+}
