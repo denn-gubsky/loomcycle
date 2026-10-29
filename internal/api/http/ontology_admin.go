@@ -104,6 +104,23 @@ type ontologyResponse struct {
 	// or map with @renamed_from. Tenant scope only: user scopes are per person and are
 	// not swept from a settings page.
 	UndeclaredTypes []builtin.TypeCount `json:"undeclared_types,omitempty"`
+
+	// --- RFC FO P1b. Filled only when the document declares a Relations section.
+
+	// Relations is the tenant's own relation kinds as written, each with its issues
+	// (an entry named after a reserved kind is marked: its directives do nothing).
+	Relations []meminject.OntologyRelation `json:"relations,omitempty"`
+	// EffectiveRelations is the vocabulary in force — reserved ⊕ seed ⊕ tenant — and
+	// empty while the document is draft, which is the gate made visible.
+	EffectiveRelations []meminject.OntologyRelation `json:"effective_relations,omitempty"`
+	// AdoptableRelations names the seed kinds the document does not declare — what the
+	// adopt action can copy in, and so list to agents.
+	AdoptableRelations []string `json:"adoptable_relations,omitempty"`
+	// StatementVersions counts the tenant scope's relation statements by the ontology
+	// version they were written under; UndatedStatements counts live statements of a
+	// @dated kind that carry no valid_at.
+	StatementVersions []builtin.VersionCount `json:"statement_versions,omitempty"`
+	UndatedStatements int                    `json:"undated_statements,omitempty"`
 }
 
 // ontologyTenant is the tenant every ontology route reads and writes: an admin's
@@ -239,10 +256,14 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.ontologyDocCtx(ctx, mi)
 	sectioned := false
+	var relRead builtin.OntologyRead
+	hasRelations := false
 	if read, rerr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath); rerr == nil {
 		resp.Proposals = read.Proposals
 		resp.Sections, resp.Grammars, resp.OntologyVersion = read.Sections, read.Grammars, read.RootRevision
 		sectioned = len(read.Sections) > 0
+		relRead = read
+		_, hasRelations = read.SectionChunks[meminject.SectionRelations]
 		// Document-level advisories (a duplicate or unknown section) join the reader
 		// notes the panel already renders.
 		notes = append(notes, read.Issues...)
@@ -304,11 +325,36 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		}
 		if usage, uerr := doc.OntologyUsageIn(dctx, "tenant"); uerr == nil {
 			resp.FactVersions = usage.Versions
+			if hasRelations {
+				resp.StatementVersions = usage.StatementVersions
+			}
 			for _, tc := range usage.Types {
 				if !declaredClass[strings.ToLower(tc.Type)] && !meminject.IsReservedStructuralType(tc.Type) {
 					resp.UndeclaredTypes = append(resp.UndeclaredTypes, tc)
 				}
 			}
+		}
+	}
+	if hasRelations {
+		resp.Relations = meminject.MarkReservedEntries(relRead.Relations)
+		resp.EffectiveRelations = meminject.EffectiveRelations(relRead.Relations, true, confirmed)
+		declaredRel := map[string]bool{}
+		for _, r := range relRead.Relations {
+			declaredRel[r.Name] = true
+		}
+		for _, r := range meminject.SeedRelations() {
+			if !declaredRel[r.Name] {
+				resp.AdoptableRelations = append(resp.AdoptableRelations, r.Name)
+			}
+		}
+		var dated []string
+		for _, r := range resp.EffectiveRelations {
+			if r.Dated {
+				dated = append(dated, r.Name)
+			}
+		}
+		if n, uerr := doc.UndatedStatementsIn(dctx, "tenant", dated); uerr == nil {
+			resp.UndatedStatements = n
 		}
 	}
 	return resp, nil
