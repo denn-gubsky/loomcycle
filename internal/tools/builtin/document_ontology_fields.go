@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -121,6 +122,18 @@ func (d *Document) tenantOntologyConfirmed(ctx context.Context) bool {
 	return strings.EqualFold(strings.TrimSpace(asStr(res.Rows[0][0])), memrank.OntologyConfirmedStatus)
 }
 
+// scopeWritableQuietly asks the same question as scope(…, "write", "") — may the caller
+// write every document of this scope? — without the acl_denied log line. Here a "no" is
+// not a refusal (the write proceeds, unkeyed), so logging it as a denial on every typed
+// write by a confined writer would fill the log with refusals that never happened.
+func (a *docACL) scopeWritableQuietly(ctx context.Context) bool {
+	if a.eff == nil {
+		return true
+	}
+	r := authz.EvaluateScope(ctx, a.eff, "write", a.resource(""), true)
+	return r.Allowed && !r.Unavailable
+}
+
 // classRuleResult is what the pre-write pass decided.
 type classRuleResult struct {
 	warnings    []string
@@ -139,7 +152,14 @@ var classRulesOps = map[string]bool{
 // applyClassRules is the pre-write half: it computes warnings and the identity key, and
 // refuses an identity collision BEFORE anything is written. It may fill in.NaturalKey
 // for upsert_chunk when the caller passed none and the class can derive one.
-func (d *Document) applyClassRules(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in *docInput, raw json.RawMessage) (classRuleResult, *tools.Result) {
+//
+// acl is the caller's access-control set (nil when none is configured). An identity is
+// SCOPE-WIDE — one key per scope, whatever document holds it — so claiming one needs
+// write access to the whole scope, the same question upsert_chunk (which keys
+// scope-wide too) is asked. A writer confined to some documents still writes; its chunk
+// just carries no identity, so it cannot squat a key and block a document it may not
+// touch.
+func (d *Document) applyClassRules(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, acl *docACL, in *docInput, raw json.RawMessage) (classRuleResult, *tools.Result) {
 	if !classRulesOps[in.Op] {
 		return classRuleResult{}, nil
 	}
@@ -185,12 +205,17 @@ func (d *Document) applyClassRules(ctx context.Context, key sqlmem.ScopeKey, msc
 	if !hasKey {
 		return res, nil
 	}
+	if acl != nil && !acl.scopeWritableQuietly(ctx) {
+		res.warnings = append(res.warnings, "identity "+idKey+" was not recorded: an identity is unique across the "+
+			"whole scope, so claiming one needs write access to every document in it")
+		return res, nil
+	}
 	if in.Op == "upsert_chunk" && strings.TrimSpace(in.NaturalKey) == "" {
 		// The class derives the natural key, so upsert's idempotency handle is the
 		// thing's identity rather than a caller-invented string (RFC FO §3.2).
 		in.NaturalKey = idKey
 	}
-	if refused := d.identityCollision(ctx, key, in, idKey, selfID); refused != nil {
+	if refused := d.identityCollision(ctx, key, acl, in, idKey, selfID); refused != nil {
 		return classRuleResult{}, refused
 	}
 	res.identityKey, res.clearIdentity = idKey, false
@@ -249,24 +274,36 @@ func decodeFields(raw json.RawMessage) map[string]any {
 // identityCollision refuses a write that would give a second chunk an identity another
 // chunk already holds. selfID is the chunk being updated; an upsert is not colliding
 // with the chunk it is about to update (the holder's natural key is the upsert's own).
-func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, in *docInput, idKey, selfID string) *tools.Result {
+//
+// The holder is NAMED only when the caller may read its document. Otherwise the refusal
+// is generic: that the identity is taken cannot be hidden (the unique index refuses it
+// either way), but which chunk holds it, in a document the caller cannot see, can be.
+func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, in *docInput, idKey, selfID string) *tools.Result {
 	res, err := d.query(ctx, key,
-		`SELECT c.id, coalesce(m.natural_key, '') FROM chunks c
+		`SELECT c.id, coalesce(m.natural_key, ''), c.document_id FROM chunks c
 		   LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
 		  WHERE c.identity_key = ? LIMIT 2`, idKey)
 	if err != nil {
 		return nil // fail open; the unique index is the backstop
 	}
 	for _, row := range res.Rows {
-		if len(row) < 2 {
+		if len(row) < 3 {
 			continue
 		}
-		holder, holderKey := asStr(row[0]), asStr(row[1])
+		holder, holderKey, holderDoc := asStr(row[0]), asStr(row[1]), asStr(row[2])
 		if holder == selfID {
 			continue
 		}
 		if in.Op == "upsert_chunk" && holderKey != "" && holderKey == strings.TrimSpace(in.NaturalKey) {
 			continue
+		}
+		if acl != nil {
+			if ok, rerr := acl.readable(ctx, holderDoc); rerr != nil || !ok {
+				r := errBusiness("identity_collision: another chunk in this scope already holds the identity "+idKey+
+					" — two chunks cannot be the same thing. Nothing was written.",
+					"Change the identity fields if this is a different thing.")
+				return &r
+			}
 		}
 		r := errBusiness("identity_collision: chunk "+holder+" already holds the identity "+idKey+
 			" — two chunks cannot be the same thing. Nothing was written.",

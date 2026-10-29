@@ -574,7 +574,7 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	}
 	// RFC FO P1a: typed classes — field warnings and identity keys for the four write
 	// ops; see document_ontology_fields.go. Pre-write so a collision leaves nothing behind.
-	classRules, refused := d.applyClassRules(ctx, key, mscope, &in, raw)
+	classRules, refused := d.applyClassRules(ctx, key, mscope, acl, &in, raw)
 	if refused != nil {
 		return *refused, nil
 	}

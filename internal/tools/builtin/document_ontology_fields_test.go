@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -376,5 +377,58 @@ func TestOntologyIdentity_CollisionRefusedOnPostgres(t *testing.T) {
 	key := sidecarScope(t, d, ctx)
 	if _, err := d.query(ctx, key, `SELECT ontology_version FROM chunk_memory_meta WHERE 1=0`); err != nil {
 		t.Errorf("ontology_version column missing on postgres: %v", err)
+	}
+}
+
+// TestClassRules_ConfinedWriterCannotClaimAScopeWideIdentity.
+//
+// An identity is unique across the scope, so a writer allowed only part of it must not
+// be able to claim one: it could block a document it may not write. Its write lands,
+// unkeyed, with a warning — and an unrestricted writer can still claim the identity.
+func TestClassRules_ConfinedWriterCannotClaimAScopeWideIdentity(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	installTenantOntology(t, d, base, typedOntologyMD, memrank.OntologyConfirmedStatus)
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	confined := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+
+	mk := func(ctx context.Context, docID string) (map[string]any, tools.Result) {
+		return docExec(t, d, ctx, `{"op":"create_chunk","scope":"tenant","document_id":"`+docID+
+			`","title":"p","type":"Provision","body":"x","fields":{"anchor":"art-1"}}`)
+	}
+	out, res := mk(confined, s.publicDoc)
+	if res.IsError {
+		t.Fatalf("the confined writer's write must land: %s", res.Text)
+	}
+	if _, has := out["identity_key"]; has || !strings.Contains(warningsOf(out), "was not recorded") {
+		t.Errorf("a confined writer claimed an identity: %v", out)
+	}
+	if out, res = mk(open, s.secretDoc); res.IsError || out["identity_key"] != "provision:art-1" {
+		t.Errorf("the unrestricted writer could not claim the identity: %v %s", out, res.Text)
+	}
+}
+
+// TestClassRules_CollisionDoesNotNameAHolderTheCallerCannotRead.
+//
+// That an identity is taken cannot be hidden — the unique index refuses it either way —
+// but which chunk holds it, in a document the caller may not read, must not leak.
+func TestClassRules_CollisionDoesNotNameAHolderTheCallerCannotRead(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	installTenantOntology(t, d, base, typedOntologyMD, memrank.OntologyConfirmedStatus)
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	held, res := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+s.secretDoc+
+		`","title":"p","type":"Provision","body":"x","fields":{"anchor":"art-1"}}`)
+	if res.IsError {
+		t.Fatalf("seed: %s", res.Text)
+	}
+	blind := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	_, res = docExec(t, d, blind, `{"op":"create_chunk","scope":"tenant","document_id":"`+s.publicDoc+
+		`","title":"p","type":"Provision","body":"x","fields":{"anchor":"art-1"}}`)
+	if !res.IsError || !strings.Contains(res.Text, "identity_collision") {
+		t.Fatalf("the collision was not refused: %s", res.Text)
+	}
+	if strings.Contains(res.Text, held["id"].(string)) {
+		t.Errorf("the refusal named a chunk the caller cannot read: %s", res.Text)
 	}
 }
