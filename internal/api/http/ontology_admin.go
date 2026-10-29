@@ -106,6 +106,22 @@ type ontologyResponse struct {
 	UndeclaredTypes []builtin.TypeCount `json:"undeclared_types,omitempty"`
 }
 
+// ontologyTenant is the tenant every ontology route reads and writes: an admin's
+// explicit `?tenant=` focus, else the CALLER'S OWN tenant — the one its runs are stamped
+// with and its off-run Document writes go to. A tenant operator is pinned to its own.
+//
+// It is NOT principalTenantScope, which resolves an unfocused admin to "" because it
+// serves listings, where "" means "every tenant". The ontology is one tenant's
+// document, and "" is a concrete tenant there. For a LOOMCYCLE_AUTH_TOKEN caller —
+// principal tenant "default" — that made the page provision and read the ontology under
+// "" while runs and the Web UI document browser used "default". SQL Memory maps both to
+// the same database, so the page showed the classes' titles, but chunk bodies and Path
+// names are keyed by the raw tenant: it read every class with no fields, runs read a
+// second document, and an operator's edits and confirm never reached a run.
+func (s *Server) ontologyTenant(r *http.Request) string {
+	return s.adminFocusedTenant(r.Context(), r.URL.Query().Get("tenant"))
+}
+
 // handleOntology serves GET /v1/_ontology — the tenant ontology's state.
 //
 // Reading PROVISIONS the document on first reference, which is a real behaviour
@@ -115,8 +131,8 @@ type ontologyResponse struct {
 func (s *Server) handleOntology(w http.ResponseWriter, r *http.Request) {
 	// Admin may focus a tenant via ?tenant= (the UI's tenant switcher); a tenant
 	// operator is pinned to its own and the wire value is ignored. An admin with no
-	// focus operates on the default tenant — the same one its own runs use.
-	tenant, _ := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	// focus operates on its own tenant — the same one its own runs use.
+	tenant := s.ontologyTenant(r)
 
 	resp, err := s.ontologyState(r.Context(), tenant)
 	if err != nil {
@@ -146,7 +162,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tenant, _ := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	tenant := s.ontologyTenant(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable",
 			"the ontology needs SQL Memory; none is configured")

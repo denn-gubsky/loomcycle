@@ -57,7 +57,7 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tenant, _ := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	tenant := s.ontologyTenant(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable",
 			"the ontology needs SQL Memory; none is configured")
@@ -149,7 +149,7 @@ func (s *Server) handleOntologyAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenant, _ := s.principalTenantScope(r.Context(), r.URL.Query().Get("tenant"))
+	tenant := s.ontologyTenant(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable",
 			"the ontology needs SQL Memory; none is configured")
