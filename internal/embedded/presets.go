@@ -14,7 +14,8 @@ import (
 // checkout. They are selected by name (LOOMCYCLE_PRESETS / --preset) and layered
 // as the base of the RFC AN config stack, under the operator's thin overlay.
 //
-// A preset is pure provider/tier/model config (no agents, no secrets). A bundle
+// A preset is config with no agents and no secrets: provider/tier/model routing,
+// or an app sign-in client (`loomboard` declares auth.clients). A bundle
 // additionally carries an agent def + its skills INLINE (the top-level `skills:`
 // map, loomcycle PR #559) — a bundle is "a preset that also defines skills."
 // Neither carries secrets: only `token_env` names (RFC AO).

@@ -1,0 +1,44 @@
+# RFC AQ embedded preset: loomboard
+#
+# Registers the loomboard desktop app as an app sign-in client (auth.clients).
+# Select it with LOOMCYCLE_PRESETS=…,loomboard so the desktop app's "Sign in
+# with loomcycle" works without hand-written yaml. It adds no provider, tier,
+# agent or secret.
+#
+# WHAT IT COVERS AND WHAT IT DOES NOT. Only the addresses that are the same on
+# every install ship here: the desktop app's loopback callback (any port; the
+# app listens where the OS lets it) and its private-use scheme, plus the
+# origins a Tauri webview sends. The web app's address and the Chrome
+# extension's (https://<extension-id>.chromiumapp.org/, which depends on how the
+# extension was installed) are the operator's, so add them in your own config
+# with `!append` — a plain list in a later layer would REPLACE these:
+#
+#   auth:
+#     clients:
+#       loomboard:
+#         redirect_uris: !append
+#           - https://board.example.com/auth/callback
+#           - https://<extension-id>.chromiumapp.org/
+#         allowed_origins: !append
+#           - https://board.example.com
+#           - chrome-extension://<extension-id>
+#
+# Sign-in also needs LOOMCYCLE_PUBLIC_URL (the issuer the app checks) and an
+# interactive gate in auth.gates. docs/CONFIGURATION.md "App sign-in".
+
+auth:
+  clients:
+    loomboard:
+      kind: public
+      label: loomboard
+      redirect_uris:
+        # Desktop (Tauri): a loopback listener on a random port (RFC 8252 §7.3).
+        - http://127.0.0.1/auth/callback
+        # Desktop (Tauri): the app identifier as a private-use scheme (RFC 8252 §7.1).
+        - com.loomboard.app:/auth/callback
+      # The desktop app calls the token endpoint through Tauri's HTTP plugin,
+      # which stamps the webview's origin: tauri://localhost on macOS and
+      # Linux, http://tauri.localhost on Windows.
+      allowed_origins:
+        - tauri://localhost
+        - http://tauri.localhost
