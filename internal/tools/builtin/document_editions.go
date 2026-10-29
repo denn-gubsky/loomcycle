@@ -13,8 +13,8 @@ package builtin
 // That needs each part to be recognisable across editions, which is what an
 // ANCHOR is: a key derived from where the part sits (its heading path, or a
 // class-declared grammar such as AKN eIds), stored on the chunk. The WORK is
-// recognised by its key too — the root chunk's identity_key, which a document
-// class's @identity fields produce (RFC FO). A keyed reimport matches the
+// recognised by its key too — the root chunk's work_key, or the class identity a
+// document class's @identity fields produce (RFC FO). A keyed reimport matches the
 // incoming edition to the held one part by part on those keys.
 //
 // WHY COLUMNS AND NOT natural_key. The RFC proposed storing `work#anchor` as the
@@ -46,8 +46,14 @@ import (
 // yet (a citation's target). Its backlinks are the import worklist.
 const placeholderStatus = "unresolved"
 
-// migrateAnchors adds chunks.anchor and chunks.stable_id. Probe-then-ALTER, like
-// every column migration here: ensureSchema runs on every op.
+// migrateAnchors adds chunks.anchor, chunks.stable_id and chunks.work_key.
+// Probe-then-ALTER, like every column migration here: ensureSchema runs on every
+// op.
+//
+// WORK KEY IN ITS OWN COLUMN. It was first kept in identity_key, but that column
+// is the ontology's: every write re-derives it from the chunk's class, so an
+// ordinary edit of a typed (or untyped) root cleared or overwrote the claim and
+// the next edition landed in a new document. Unique per scope, like identity_key.
 func (d *Document) migrateAnchors(ctx context.Context, key sqlmem.ScopeKey) error {
 	for _, col := range []string{"anchor", "stable_id"} {
 		if !d.tableHasColumn(ctx, key, "chunks", col) {
@@ -55,6 +61,24 @@ func (d *Document) migrateAnchors(ctx context.Context, key sqlmem.ScopeKey) erro
 				return err
 			}
 		}
+	}
+	if !d.tableHasColumn(ctx, key, "chunks", "work_key") {
+		if err := d.exec(ctx, key, `ALTER TABLE chunks ADD COLUMN work_key TEXT`); err != nil {
+			return err
+		}
+		// Carry the keys claimed before the column existed. Only where the claim is
+		// recognisable: a placeholder root, or an untyped root — the ontology derives
+		// an identity only from a class, so an untyped root's key was a work key.
+		// A typed root's key may be its class identity; it stays where it is and
+		// documentByWorkKey still finds it there.
+		if err := d.exec(ctx, key, `UPDATE chunks SET work_key = identity_key
+			WHERE identity_key IS NOT NULL AND id IN (SELECT root_chunk_id FROM documents)
+			  AND (COALESCE(type, '') = '' OR status = ?)`, placeholderStatus); err != nil {
+			return err
+		}
+	}
+	if err := d.exec(ctx, key, `CREATE UNIQUE INDEX IF NOT EXISTS chunks_work_key ON chunks(work_key)`); err != nil {
+		return err
 	}
 	if err := d.exec(ctx, key, `CREATE INDEX IF NOT EXISTS chunks_doc_anchor ON chunks(document_id, anchor)`); err != nil {
 		return err
@@ -205,32 +229,60 @@ func (d *Document) assignAnchors(ctx context.Context, key sqlmem.ScopeKey, mscop
 	return nil
 }
 
-// documentByWorkKey finds the document whose root holds work key wk.
+// documentByWorkKey finds the document whose root holds work key wk: claimed as
+// one (work_key), else a root whose class identity is that key (identity_key) —
+// a typed work the ontology already names.
 func (d *Document) documentByWorkKey(ctx context.Context, key sqlmem.ScopeKey, wk string) (docID, rootID, status string, err error) {
-	res, err := d.query(ctx, key, `SELECT d.id, d.root_chunk_id, COALESCE(d.status, '') FROM documents d
-		JOIN chunks c ON c.id = d.root_chunk_id WHERE c.identity_key = ? LIMIT 1`, wk)
-	if err != nil || len(res.Rows) == 0 {
-		return "", "", "", err
+	for _, col := range []string{"work_key", "identity_key"} {
+		res, err := d.query(ctx, key, `SELECT d.id, d.root_chunk_id, COALESCE(d.status, '') FROM documents d
+			JOIN chunks c ON c.id = d.root_chunk_id WHERE c.`+col+` = ? LIMIT 1`, wk)
+		if err != nil {
+			return "", "", "", err
+		}
+		if len(res.Rows) > 0 {
+			return asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2]), nil
+		}
 	}
-	return asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2]), nil
+	return "", "", "", nil
 }
 
-// claimWorkKey sets a root's identity_key. A key another chunk holds is the
-// ontology's identity_collision: refused, never overwritten.
+// claimWorkKey sets a root's work_key. A key another document's root holds, in
+// either column, is the ontology's identity_collision: refused, never overwritten.
 func (d *Document) claimWorkKey(ctx context.Context, key sqlmem.ScopeKey, rootID, wk string) *tools.Result {
-	if holder, _, _, err := d.documentByWorkKey(ctx, key, wk); err == nil && holder != "" {
-		if row, ok, _ := d.getChunkRow(ctx, key, rootID); !ok || row.DocumentID != holder {
-			r := errBusiness("identity_collision: another document in this scope already holds the work key "+wk, "Reimport onto that document (work_key or its document_id) instead.")
-			return &r
-		}
-		return nil
-	}
-	if r := workKeyClaimAllowed(ctx, d.newDocACL(ctx, key)); r != nil {
-		return r
-	}
-	if err := d.exec(ctx, key, `UPDATE chunks SET identity_key = ? WHERE id = ?`, wk, rootID); err != nil {
-		r := errBusiness("identity_collision: the work key "+wk+" was claimed concurrently", "Retry the call; it will find the document that holds the key.")
+	collision := func() *tools.Result {
+		r := errBusiness("identity_collision: another document in this scope already holds the work key "+wk, "Reimport onto that document (work_key or its document_id) instead.")
 		return &r
+	}
+	fault := func(err error) *tools.Result {
+		r := errFrom("work key "+wk+": "+err.Error(), err)
+		return &r
+	}
+	holder, _, _, err := d.documentByWorkKey(ctx, key, wk)
+	if err != nil {
+		return fault(err)
+	}
+	row, ok, err := d.getChunkRow(ctx, key, rootID)
+	if err != nil {
+		return fault(err)
+	}
+	if !ok {
+		return fault(fmt.Errorf("no such root chunk %s", rootID))
+	}
+	if holder != "" && holder != row.DocumentID {
+		return collision()
+	}
+	if holder == "" {
+		if r := workKeyClaimAllowed(ctx, d.newDocACL(ctx, key)); r != nil {
+			return r
+		}
+	}
+	if err := d.exec(ctx, key, `UPDATE chunks SET work_key = ? WHERE id = ?`, wk, rootID); err != nil {
+		// The unique index refuses the key only when a concurrent claim won it; any
+		// other failure is a fault, and is reported as one.
+		if h, _, _, herr := d.documentByWorkKey(ctx, key, wk); herr == nil && h != "" && h != row.DocumentID {
+			return collision()
+		}
+		return fault(err)
 	}
 	return nil
 }

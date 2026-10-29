@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 )
 
 // RFC FN P2 — a new edition of a work reconciles onto the held one part by part.
@@ -381,4 +382,74 @@ func resolvePartScope(t *testing.T, d *Document, ctx context.Context, scope, wk,
 		t.Fatalf("resolve_anchor: %s", r.Text)
 	}
 	return out["chunk_id"].(string)
+}
+
+// A work key lives in its own column: an ordinary edit of the root, which under a
+// confirmed ontology re-derives the root's class identity, must not drop it — or
+// the next edition lands in a new document.
+func TestReimport_RootEditUnderAnOntologyKeepsTheWorkKey(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	ctx = installTenantOntology(t, d, ctx, typedOntologyMD, memrank.OntologyConfirmedStatus)
+	const wk = "law:ua/20"
+	first := reimport(t, d, ctx, edition1, wk, 1_000_000)
+	root := first["root_chunk_id"].(string)
+	g, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, root))
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"body":"A preamble.","revision":%d}`,
+		root, int(g["revision"].(float64)))); r.IsError {
+		t.Fatal(r.Text)
+	}
+	out, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/20"}`)
+	if r.IsError || out["found"] != true || out["document_id"] != first["document_id"] {
+		t.Errorf("a root edit dropped the work key: %v %s", out, r.Text)
+	}
+	if again := reimport(t, d, ctx, edition2, wk, 2_000_000); again["document_id"] != first["document_id"] {
+		t.Errorf("the next edition landed in a new document %v (was %v)", again["document_id"], first["document_id"])
+	}
+}
+
+// A scope whose work keys were claimed into identity_key, before work_key existed,
+// migrates them where the claim is recognisable — a placeholder or untyped root —
+// and leaves a typed root's identity alone.
+func TestMigrateAnchors_CarriesClaimedWorkKeysIntoTheirColumn(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		work := reimport(t, d, ctx, edition1, "law:ua/21", 1)
+		ph, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/22","create_placeholder":true}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		typed, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Typed"}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		key, _, _ := d.resolveScope(ctx, "user")
+		for _, q := range []string{
+			`UPDATE chunks SET identity_key = work_key`,
+			`UPDATE chunks SET identity_key = 'Policy:typed', type = 'Policy' WHERE id = '` + typed["root_chunk_id"].(string) + `'`,
+			`DROP INDEX chunks_work_key`,
+			`ALTER TABLE chunks DROP COLUMN work_key`,
+		} {
+			if err := d.exec(ctx, key, q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		d.SqlMem.ForgetEnsured(key)
+		if err := d.ensureSchema(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		res, err := d.query(ctx, key, `SELECT id, COALESCE(work_key, '') FROM chunks WHERE id IN (?, ?, ?)`,
+			work["root_chunk_id"], ph["root_chunk_id"], typed["root_chunk_id"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, row := range res.Rows {
+			got[asStr(row[0])] = asStr(row[1])
+		}
+		if got[work["root_chunk_id"].(string)] != "law:ua/21" || got[ph["root_chunk_id"].(string)] != "law:ua/22" {
+			t.Errorf("claimed keys were not carried: %v", got)
+		}
+		if got[typed["root_chunk_id"].(string)] != "" {
+			t.Errorf("a typed root's class identity was taken for a work key: %v", got)
+		}
+	})
 }
