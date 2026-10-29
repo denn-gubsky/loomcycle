@@ -153,7 +153,10 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		}
 		return okResult(out)
 	}
-	return tools.Result{IsError: true, Text: "Document: op not supported by this double: " + firstString(in["op"])}, nil
+	// Any other op ANSWERS rather than errors: a write that "succeeded" is the case
+	// the op-allowlist assertion has to catch, and an erroring double would let a
+	// body that swallows the error slip past it.
+	return okResult(map[string]any{"ok": true})
 }
 
 type kbFakeAgent struct{ f *kbFixture }
