@@ -65,6 +65,36 @@ field part of the thing's identity, and a bare `@identity` line means "its title
 is its identity" — two chunks with the same identity are refused. Document classes
 describe documents; they are never listed to the agents as entity types.
 
+**Relation kinds.** A `@section relations` heading names the kinds of link agents
+may record between two things. Declaring one — even an empty one — switches on the
+standard kinds (`cites`, `based_on`, `amends`, `implements`, `related`, …) for every
+link, and makes a link of an undeclared kind an error when written by hand. Nesting
+makes a narrower kind, so a search for `changes` also finds `amends`:
+
+```markdown
+## Relations
+@section relations
+
+### references
+#### cross_refers
+A reference from one rule to another in the same rulebook.
+
+### stricter_than
+Sets a stricter version of the same requirement.
+@domain Provision
+@range Provision
+@inverse looser_than
+@asymmetric
+@qualifiers aspect(security|privacy|operational)
+@discriminator aspect
+```
+
+`@domain` and `@range` name the classes at either end; `@inverse` is how the
+link reads from the other end; `@qualifiers` lists what a link may record about
+itself, and `@discriminator` the one that makes two links between the same pair
+distinct. Only the kinds you declare (or adopt from the standard set on the
+Ontology page) are listed to the agents.
+
 **Where a type's facts are stored.**
 
 A type may declare which memory scope facts about that kind of thing belong in:
