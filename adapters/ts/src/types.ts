@@ -2467,7 +2467,7 @@ export interface UserIdentitiesResponse {
 
 /** A sign-in gate's kind. Fields typed with it still accept a kind a newer
  *  server adds. */
-export type AuthGateKind = "token" | "password" | "oidc" | "oauth" | "external" | "device" | (string & {});
+export type AuthGateKind = "token" | "password" | "oidc" | "oauth" | "external" | "device" | "passkey" | "scim" | (string & {});
 
 /** One configured sign-in gate, from GET /v1/_authgate. Never key material. */
 export interface AuthGate {
