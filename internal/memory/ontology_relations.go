@@ -497,7 +497,8 @@ func RenderRelations(effective []OntologyRelation) string {
 	var b strings.Builder
 	b.WriteString("\n# Relation kinds\n\n" +
 		"When you record how two things are related, name the relation with one of these kinds. " +
-		"If none of them fits, describe the relation in the sentence instead of inventing a kind.\n\n")
+		"If none of them fits, describe the relation in the sentence instead of inventing a kind. " +
+		"Give the kind as the fact's `relation`, with the other thing in `also_about`.\n\n")
 	for _, r := range tenant {
 		b.WriteString("- **" + r.Name + "**")
 		if r.Symmetric {

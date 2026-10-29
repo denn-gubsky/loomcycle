@@ -556,6 +556,15 @@ func (d *Document) listFacts(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			out["across_scopes"] = elsewhere
 		}
 	}
+	// WHERE THE SUBJECT IS MENTIONED. Facts are ABOUT it; passages that name it in
+	// a [[link]] MENTION it, and a dossier that listed only the facts would hide
+	// where else the subject comes up. Present only when there are any, so a scope
+	// without mentions answers exactly as before.
+	if in.About != "" {
+		if mentions, merr := d.mentionedIn(ctx, key, in.About, limit); merr == nil && len(mentions) > 0 {
+			out["mentioned_in"] = mentions
+		}
+	}
 	return okJSONCount(out, len(facts))
 }
 

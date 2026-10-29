@@ -670,6 +670,10 @@ agents:
           entity_nodes: 0,          // distinct subjects given an entity chunk
           subject_doc_unavailable: 0, // subjects filed in the shared document instead of their own
           subject_refs: 0,          // extra subjects a fact REFERENCES beyond the one it is homed under
+          relations: 0,             // typed relations recorded between a fact's subjects
+          relations_proposed: 0,    // ... recorded for review (a kind the tenant has not declared)
+          relations_skipped: 0,     // ... not recorded (no second subject, or a reserved kind)
+          relation_conflicts: 0,    // live relations of the same kind to a DIFFERENT subject — reported, never retired
           entity_facts: 0,          // facts mirrored into the graph
           // The judge's candidates, in WRITE ORDER. An array rather than a map
           // because this body re-executes from the top on every turn and must be a
@@ -1444,8 +1448,12 @@ agents:
           // what `Memory when=` narrows on. Validated by the same RFC3339-or-nothing
           // rule and carried separately, so a dropped interval never takes it with it.
           var oa = tsOrEmpty(f.observed_at);
+          // THE RELATION the fact states between its subjects, when the tenant lists
+          // relation kinds and the extractor named one. Kept only as a bare kind name:
+          // anything else is model text and is not a kind.
+          var rel = (typeof f.relation === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(f.relation)) ? f.relation : "";
           out.push({ text: text, cls: cls, type: typ, subject: subj, subjects: subjects,
-                     quote: "", observed_at: oa, valid_at: va, invalid_at: iva });
+                     quote: "", observed_at: oa, valid_at: va, invalid_at: iva, relation: rel });
         }
         return out;
       }
@@ -2618,6 +2626,11 @@ agents:
             st.entity_failed += res.about_skipped;
             if (!st.entity_error) { st.entity_error = "about edges skipped: " + res.about_skipped; }
           }
+          if (res && res.relation) {
+            if (res.relation.status === "proposed") { st.relations_proposed++; } else { st.relations++; }
+          }
+          if (res && res.relation_skipped) { st.relations_skipped++; }
+          if (res && res.relation_conflicts) { st.relation_conflicts += res.relation_conflicts; }
           if (res && res.id) { st.entity_ids[memo] = res.id; return res.id; }
           // Parsed but no id: a refusal that did not throw. It used to return "" silently
           // and increment NOTHING, so a pass could lose every entity write and report a
@@ -2963,6 +2976,9 @@ agents:
           }
         }
         if (aboutIDs.length > 0) { factArgs.about_ids = aboutIDs; }
+        // The relation runs from the home subject to the first other one; the
+        // runtime records it with the fact as its evidence.
+        if (fact.relation && aboutIDs.length > 1) { factArgs.relation = fact.relation; }
 
         // FILED UNDER ITS SUBJECT. No parent_id: create_chunk makes a chunk with
         // none a child of the document's root, which IS the entity — so the fact
@@ -3591,6 +3607,13 @@ agents:
           }
           if (st.subject_refs) {
             ent += ", " + st.subject_refs + " reference(s) to a second subject a fact is also about";
+          }
+          if (st.relations || st.relations_proposed || st.relations_skipped) {
+            ent += ", relations " + st.relations + " recorded, " + st.relations_proposed + " for review" +
+              (st.relations_skipped ? ", " + st.relations_skipped + " skipped" : "");
+          }
+          if (st.relation_conflicts) {
+            ent += ", " + st.relation_conflicts + " possible contradiction(s) between relations (reported, nothing retired)";
           }
           if (st.subject_doc_unavailable) {
             ent += ", " + st.subject_doc_unavailable + " subject(s) still filed in the shared " +

@@ -173,7 +173,9 @@ func TestRenderRelations_ListsOnlyTheTenantsOwnKinds(t *testing.T) {
 		ParseRelationBody("stricter_than", "Sets a stricter version of the same requirement.\n@domain Provision\n@range Provision\n@inverse looser_than\n@qualifiers aspect\n"),
 	}, true, true))
 	for _, want := range []string{"# Relation kinds", "**stricter_than** (seen from the other end: looser_than)",
-		"Provision → Provision", "record aspect", "describe the relation in the sentence"} {
+		"Provision → Provision", "record aspect", "describe the relation in the sentence",
+		// The field the extractor fills, said only where there are kinds to fill it with.
+		"Give the kind as the fact's `relation`, with the other thing in `also_about`."} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}

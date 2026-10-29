@@ -119,6 +119,7 @@ func (d *Document) afterFactUpsert(ctx context.Context, key sqlmem.ScopeKey, msc
 	}
 	written, skipped := 0, 0
 	seen := map[string]bool{}
+	var linked []string
 	for _, id := range in.AboutIDs {
 		id = strings.TrimSpace(id)
 		if id == "" || id == factID || seen[id] {
@@ -132,11 +133,69 @@ func (d *Document) afterFactUpsert(ctx context.Context, key sqlmem.ScopeKey, msc
 			continue
 		}
 		written++
+		linked = append(linked, id)
 	}
 	out["about_written"] = written
 	if skipped > 0 {
 		out["about_skipped"] = skipped
 	}
+	if strings.TrimSpace(in.Relation) != "" {
+		d.factRelation(ctx, key, mscope, factID, in, linked, out)
+	}
+}
+
+// factRelation records the relation a fact states between its first two subjects
+// as a statement (RFC FN P3b §6.3): subject —kind→ other subject, method
+// consolidator, the fact chunk as evidence (its claim the quote), the fact's own
+// confidence and validity. The fact stays a node; the statement is its index.
+//
+// A kind the vocabulary does not accept is still written, PROPOSED and marked
+// ontology_valid=false (annotate mode); a reserved kind is skipped. A second live
+// statement of the same kind from the same subject to a DIFFERENT one is counted
+// as a possible contradiction and reported — nothing is retired, because
+// automatic retirement has no measured false-retirement rate yet.
+func (d *Document) factRelation(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, factID string, in docInput, linked []string, out map[string]any) {
+	kind := strings.TrimSpace(in.Relation)
+	if len(linked) < 2 {
+		out["relation_skipped"] = "a relation needs two subjects the fact is about"
+		return
+	}
+	claim := strings.TrimSpace(in.Body)
+	w := edgeWrite{
+		from: linked[0], to: linked[1], kind: kind, method: edgeMethodConsolidator, status: edgeStatusAsserted,
+		confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt, proposeIfInvalid: true,
+	}
+	if claim != "" {
+		w.evidence = []edgeEvidenceIn{{ChunkID: factID, Quote: claim}}
+	}
+	res, refuse, err := d.writeStatement(ctx, key, mscope, w)
+	if err != nil {
+		out["relation_skipped"] = "the relation could not be written"
+		return
+	}
+	if refuse != nil {
+		out["relation_skipped"] = refuse.Text
+		return
+	}
+	rel := map[string]any{"statement_id": res.ID, "kind": kind, "status": res.Status}
+	if !res.OntologyValid {
+		rel["ontology_valid"] = false
+	}
+	out["relation"] = rel
+	if n := d.relationConflicts(ctx, key, linked[0], kind, linked[1]); n > 0 {
+		out["relation_conflicts"] = n
+	}
+}
+
+// relationConflicts counts the live statements of kind from `from` to a subject
+// other than `to`. Report-only.
+func (d *Document) relationConflicts(ctx context.Context, key sqlmem.ScopeKey, from, kind, to string) int {
+	res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edges e
+		WHERE e.from_id = ? AND e.kind = ? AND e.to_id <> ? AND e.status = '`+edgeStatusAsserted+`' AND `+edgeLiveClause, from, kind, to)
+	if err != nil || len(res.Rows) == 0 {
+		return 0
+	}
+	return asInt(res.Rows[0][0])
 }
 
 // snapshotDerivedQuotes runs before chunks are deleted: every fact OUTSIDE the

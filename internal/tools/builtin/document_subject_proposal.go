@@ -190,6 +190,7 @@ func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey
 	if out.RootChunkID != "" {
 		_ = d.writeBody(ctx, mscope, key, out.RootChunkID, f.EntityType, body, nil)
 	}
+	d.publishSubjectEvent(ctx, key, mscope, "adopted", f.NaturalKey, "")
 	return out.DocumentID, nil
 }
 

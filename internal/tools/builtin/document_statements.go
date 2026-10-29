@@ -90,6 +90,9 @@ const (
 	edgeMethodSync     = "sync"
 	edgeMethodCanvas   = "canvas"
 	edgeMethodRuntime  = "runtime"
+	// edgeMethodConsolidator: a typed relation the memory pass extracted from a
+	// fact (upsert_chunk relation). Never accepted from the wire.
+	edgeMethodConsolidator = "consolidator"
 )
 
 // Bounds on what a caller may attach to one statement.
@@ -218,6 +221,9 @@ type edgeWrite struct {
 	overrideRejected bool
 	// revisionOf attaches a competing proposal to an existing statement.
 	revisionOf string
+	// proposeIfInvalid writes the statement proposed rather than asserted when the
+	// vocabulary does not accept it (annotate mode for an extracted relation).
+	proposeIfInvalid bool
 }
 
 // edgeWriteResult is what a write reports.
@@ -338,6 +344,9 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	status := w.status
 	if status == "" {
 		status = edgeStatusAsserted
+	}
+	if w.proposeIfInvalid && !gate.Valid {
+		status = edgeStatusProposed
 	}
 
 	if existing != nil && w.revisionOf == "" {

@@ -4021,6 +4021,8 @@ export type DocumentToolInput = {
   char_end?: number;
   /** upsert_chunk: the subject nodes the fact is about (runtime-written `about`). */
   about_ids?: string[];
+  /** upsert_chunk with two or more about_ids: the relation kind between the first two. */
+  relation?: string;
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before
