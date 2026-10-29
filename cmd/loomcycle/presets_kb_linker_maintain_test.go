@@ -345,3 +345,27 @@ func TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages(t *testing.T) {
 		t.Errorf("verified %d, want 207 — each statement exactly once", verified)
 	}
 }
+
+// TestKBLinker_AutoLinkWhoseTextIsGoneIsCountedNotTouched: an auto statement — a
+// [[name]] link the runtime keeps — whose source no longer contains its text is
+// the one case a later version may delete by rule. This version counts it and
+// touches nothing; one whose text is still there is not counted.
+func TestKBLinker_AutoLinkWhoseTextIsGoneIsCountedNotTouched(t *testing.T) {
+	f := maintainFixture()
+	gone := &kbStatement{ID: "st-auto-gone", From: "c1", To: "x1", Kind: "references", Status: "asserted",
+		Method: "wikilink", Auto: true, CreatedAt: 1,
+		Evidence: []*kbEvidence{{ID: "ev-a", ChunkID: "c1", Quote: "[[a link removed from the text]]"}}}
+	kept := &kbStatement{ID: "st-auto-kept", From: "c1", To: "x2", Kind: "mentions", Status: "asserted",
+		Method: "runtime", Auto: true, CreatedAt: 2,
+		Evidence: []*kbEvidence{{ID: "ev-b", ChunkID: "c1", Quote: "the regulator"}}}
+	f.statements = []*kbStatement{gone, kept}
+
+	rep, _ := runLinker(t, f, maintainInput)
+
+	if n := layerCount(t, rep, "L6", "auto_rule_a_candidates"); n != 1 {
+		t.Errorf("auto_rule_a_candidates = %v, want 1 (the link whose text is gone)", n)
+	}
+	if n := len(f.callsOf("Document", "maintain_statement")); n != 0 {
+		t.Errorf("maintain_statement called %d times on auto statements", n)
+	}
+}
