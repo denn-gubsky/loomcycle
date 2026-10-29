@@ -117,9 +117,11 @@ type OntologyTerm struct {
 	// than one that ignores the directive and says so.
 	MemoryScopeIssue string `json:"memory_scope_issue,omitempty"`
 
-	// --- RFC FO P1a: typed classes. Every field below is omitempty and stays zero for a
-	// document with no @section directive, so the JSON a section-less ontology produces
-	// is unchanged.
+	// --- RFC FO P1a: typed classes. Every field below is omitempty. FieldSpecs is filled
+	// for any class with fields (an untyped field is `text`), and the directives in
+	// either spelling are honoured in any document; IsDocumentClass needs a classes
+	// section. None of it reaches the extraction prompt except through the unchanged
+	// Fields/Inherited.
 
 	// FieldSpecs is Fields with types and flags (ParseOntologyFieldSpecs). Fields stays
 	// the name list the prompt renders from; the two are parsed from the same bullets.
@@ -315,6 +317,10 @@ func RenderOntology(terms []OntologyTerm, tenantConfirmed bool) string {
 	}
 	return b
 }
+
+// EntityTermsOnly is the entity half of a class list — what an agent is told about —
+// with document classes dropped.
+func EntityTermsOnly(terms []OntologyTerm) []OntologyTerm { return entityTermsOnly(terms) }
 
 // entityTermsOnly drops document classes, returning the input slice untouched when
 // there are none (the common case allocates nothing).

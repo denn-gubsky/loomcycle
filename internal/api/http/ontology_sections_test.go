@@ -171,3 +171,23 @@ func TestOntologyTemplate_ProvisionsOnlyItsWorkedExamplesAsClasses(t *testing.T)
 		t.Errorf("the provisioned template's classes = %v, want exactly project, incident, constraint", got)
 	}
 }
+
+// TestOntologyAPI_EffectiveExcludesDocumentClasses: `effective` is what an agent is told
+// about, so a tenant's document classes are reported apart and never listed there.
+func TestOntologyAPI_EffectiveExcludesDocumentClasses(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	replaceOntologyWithSections(t, s, mi, []ontologyTestChunk{
+		{title: "Classes", body: "@section classes\n", kids: []ontologyTestChunk{
+			{title: "Document", body: "- `title` text\n", kids: []ontologyTestChunk{{title: "Policy"}}},
+			{title: "incident"},
+		}},
+	})
+	s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+	got := s.getOntology(t, mi.Tenant)
+	if hasTerm(got.Effective, "Document") || hasTerm(got.Effective, "Policy") {
+		t.Errorf("effective lists document classes: %v", termNames(got.Effective))
+	}
+	if !hasTerm(got.Effective, "incident") || !hasTerm(got.DocumentClasses, "Policy") {
+		t.Errorf("effective %v / document_classes %v", termNames(got.Effective), termNames(got.DocumentClasses))
+	}
+}

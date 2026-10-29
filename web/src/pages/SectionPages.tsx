@@ -280,16 +280,19 @@ function OntologyFieldSummary({ term, isLeaf }: { term: OntologyNode; isLeaf: bo
     ? term.inherited_specs.map(typedFieldLabel)
     : inherited;
   const directives = classDirectiveNotes(term);
+  // Typed labels carry commas of their own ("enum(a, b)", "required, identity"), so
+  // they are separated by semicolons; plain names keep the comma they always had.
+  const sep = [...declaredLabels, ...inheritedLabels].some((l) => l.includes(":")) ? "; " : ", ";
   return (
     <span className="settings-muted">
       {" "}
       {term.document_class && <span className="settings-flash">document class · </span>}
       {total === 0 ? "no fields" : `${total} field${total === 1 ? "" : "s"}`}
-      {declaredLabels.length > 0 && <> — {declaredLabels.join("; ")}</>}
+      {declaredLabels.length > 0 && <> — {declaredLabels.join(sep)}</>}
       {inheritedLabels.length > 0 && (
         <span className="ontology-inherited">
           {" "}
-          · inherited: {inheritedLabels.join("; ")}
+          · inherited: {inheritedLabels.join(sep)}
         </span>
       )}
       {directives.length > 0 && <> · {directives.join(" · ")}</>}

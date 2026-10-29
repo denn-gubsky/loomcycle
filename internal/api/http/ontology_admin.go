@@ -274,7 +274,9 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 			resp.Adoptable = append(resp.Adoptable, t.Name)
 		}
 	}
-	resp.Effective = meminject.EffectiveOntology(terms, confirmed)
+	// Effective is what an agent is told about, so document classes — which never
+	// reach a prompt — are reported in DocumentClasses instead.
+	resp.Effective = meminject.EntityTermsOnly(meminject.EffectiveOntology(terms, confirmed))
 	if sectioned {
 		classes := meminject.EffectiveClasses(terms, confirmed)
 		declaredClass := make(map[string]bool, len(classes))
