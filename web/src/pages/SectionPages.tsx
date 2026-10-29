@@ -3,6 +3,7 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { canSee, grantOf, hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { NAV_ITEMS } from "../components/navItems";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
+import { classDirectiveNotes, factsUnderOlderVocabulary, typedFieldLabel } from "../lib/ontologySections";
 import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
@@ -272,17 +273,32 @@ function OntologyFieldSummary({ term, isLeaf }: { term: OntologyNode; isLeaf: bo
   // A node with CHILDREN that declares nothing is different and fine: that is a
   // deliberate abstract grouping type (`work item` over `project` and `task`).
   const phantom = declared.length === 0 && isLeaf;
+  // Typed classes (RFC FO) show each field's type and flags; an untyped field reads
+  // as its bare name, so a section-less ontology looks exactly as it did.
+  const declaredLabels = term.field_specs?.length ? term.field_specs.map(typedFieldLabel) : declared;
+  const inheritedLabels = term.inherited_specs?.length
+    ? term.inherited_specs.map(typedFieldLabel)
+    : inherited;
+  const directives = classDirectiveNotes(term);
   return (
     <span className="settings-muted">
       {" "}
+      {term.document_class && <span className="settings-flash">document class · </span>}
       {total === 0 ? "no fields" : `${total} field${total === 1 ? "" : "s"}`}
-      {declared.length > 0 && <> — {declared.join(", ")}</>}
-      {inherited.length > 0 && (
+      {declaredLabels.length > 0 && <> — {declaredLabels.join("; ")}</>}
+      {inheritedLabels.length > 0 && (
         <span className="ontology-inherited">
           {" "}
-          · inherited: {inherited.join(", ")}
+          · inherited: {inheritedLabels.join("; ")}
         </span>
       )}
+      {directives.length > 0 && <> · {directives.join(" · ")}</>}
+      {(term.issues ?? []).map((iss) => (
+        <span className="ontology-warn" key={iss}>
+          {" "}
+          · {iss}
+        </span>
+      ))}
       {phantom && (
         <span className="ontology-warn">
           {" "}
@@ -326,6 +342,83 @@ function OntologyTermTree({
         </li>
       ))}
     </ul>
+  );
+}
+
+// OntologySectionsDetail is the part of the panel a SECTIONED ontology adds (RFC FO):
+// the document classes — kept out of the table above because they never reach an
+// agent's prompt — the grammars, the types in use that nothing declares, and how many
+// facts were written under an older vocabulary. Relations, schemes and instances get
+// their own trees in later versions; until then their sections are only listed.
+function OntologySectionsDetail({ state }: { state: OntologyResponse }) {
+  const versions = factsUnderOlderVocabulary(state);
+  const later = (state.sections ?? []).filter((k) => k !== "classes");
+  return (
+    <>
+      <p className="settings-help">
+        Sections: {(state.sections ?? []).map((k) => <code key={k}>{k} </code>)}
+        {later.length > 0 && (
+          <span className="settings-muted">
+            {" "}
+            — {later.join(", ")} {later.length === 1 ? "is" : "are"} recognised but not yet
+            applied by this version.
+          </span>
+        )}
+      </p>
+      {(state.document_classes ?? []).length > 0 && (
+        <div className="settings-row">
+          <div>
+            <strong>Document classes</strong>
+            <span className="settings-muted">
+              {" "}
+              — govern a document's type; never listed to agents as entity types.
+            </span>
+            <OntologyTermTree nodes={buildOntologyTree(state.document_classes ?? [])} markSource />
+          </div>
+        </div>
+      )}
+      {(state.grammars ?? []).length > 0 && (
+        <div className="settings-row">
+          <div>
+            <strong>Grammars</strong>
+            <ul className="ontology-tree">
+              {(state.grammars ?? []).map((g) => (
+                <li key={g.name}>
+                  <code>{g.name}</code>
+                  {g.class && <span className="settings-muted"> under {g.class}</span>}
+                  {g.issue ? (
+                    <span className="ontology-warn"> · disabled: {g.issue}</span>
+                  ) : (
+                    <span className="settings-muted">
+                      {" "}
+                      · {g.patterns?.length ?? 0} pattern(s) → {g.resolve}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      {(state.undeclared_types ?? []).length > 0 && (
+        <p className="settings-help">
+          <strong>Types in use that no class declares</strong> (tenant scope):{" "}
+          {(state.undeclared_types ?? []).map((t) => (
+            <span key={t.type}>
+              <code>{t.type}</code> <span className="settings-muted">×{t.count}</span>{" "}
+            </span>
+          ))}
+          — declare them as classes, or map an old name with <code>@renamed_from</code>.
+        </p>
+      )}
+      {(versions.older > 0 || versions.unknown > 0) && (
+        <p className="settings-help">
+          Facts in the tenant scope: {versions.older} written under an older vocabulary
+          than the current one (version {state.ontology_version}), {versions.unknown} with no
+          recorded version.
+        </p>
+      )}
+    </>
   );
 }
 
@@ -702,6 +795,8 @@ function OntologySection() {
               </tbody>
             </table>
           </div>
+
+          {(state.sections ?? []).length > 0 && <OntologySectionsDetail state={state} />}
         </>
       )}
     </div>

@@ -3558,6 +3558,48 @@ export interface OntologyTerm {
    * stored fact's key and normalising one would split the type in half.
    */
   name_issue?: string;
+  // RFC FO — typed classes. Absent for a section-less document.
+  /** The declared fields with their types and flags (same names as `fields`). */
+  field_specs?: OntologyFieldSpec[];
+  /** Typed fields inherited from ancestors (mirrors `inherited`). */
+  inherited_specs?: OntologyFieldSpec[];
+  /** Governs documents.type; never reaches an agent's prompt. */
+  document_class?: boolean;
+  /** Bare `@identity`: the title is the identity (declared / inherited). */
+  title_identity?: boolean;
+  inherited_title_identity?: boolean;
+  identifier_pattern?: string;
+  title_pattern?: string;
+  anchor_grammar?: string;
+  citation_grammar?: string;
+  exclude?: string[];
+  renamed_from?: string;
+  /** Class directives taken from the nearest declaring ancestor. */
+  inherited_directives?: Record<string, string>;
+  /** Advisories about this class's declarations; the class stays in force. */
+  issues?: string[];
+}
+
+/** One typed field of a class (RFC FO). */
+export interface OntologyFieldSpec {
+  name: string;
+  type: "text" | "number" | "date" | "enum" | "concept" | "ref" | "anchor";
+  enum?: string[];
+  /** The scheme a concept field draws from, or the class a ref points at. */
+  range?: string;
+  required?: boolean;
+  unique?: boolean;
+  identity?: boolean;
+  issue?: string;
+}
+
+/** A named anchor/citation grammar; one with an `issue` is disabled. */
+export interface OntologyGrammar {
+  name: string;
+  class?: string;
+  patterns?: string[];
+  resolve?: string;
+  issue?: string;
 }
 
 /** An entity present in the ontology document but NOT in force (RFC CA). */
@@ -3597,6 +3639,18 @@ export interface OntologyResponse {
   proposals?: OntologyProposal[];
   /** Standard type names this document does not declare — what `adopt` can copy in. */
   adoptable?: string[];
+  // RFC FO — filled only for a SECTIONED document.
+  /** Section kinds the document declares, in document order. */
+  sections?: string[];
+  /** The effective document-class tree (kept apart from `effective`). */
+  document_classes?: OntologyTerm[];
+  grammars?: OntologyGrammar[];
+  /** The ontology root's revision — what facts written now are stamped with. */
+  ontology_version?: number;
+  /** Tenant-scope facts by the ontology version they were written under (0 = unknown). */
+  fact_versions?: { version: number; count: number }[];
+  /** chunks.type values in use in the tenant scope that no class declares. */
+  undeclared_types?: { type: string; count: number }[];
 }
 
 /** Accept (put in force, in place) or reject (keep as a tombstone) a proposal. */
