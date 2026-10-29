@@ -990,6 +990,10 @@ func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retired
 			now, now, retiredID); err != nil {
 			return err
 		}
+		// A relation recorded from the fact ends with it, unless another fact states it.
+		if err := d.expireUnsupportedRelations(ctx, key, txnID, "", `{col} = ?`, retiredID); err != nil {
+			return err
+		}
 		if replacementID == "" {
 			return nil
 		}

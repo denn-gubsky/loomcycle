@@ -216,6 +216,17 @@ func TestJudgeFact_UnreadableSourceIsNotAnOracle(t *testing.T) {
 	}
 }
 
+// tenantSubjectAt files a subject node in the TENANT scope at path.
+func tenantSubjectAt(t *testing.T, d *Document, ctx context.Context, name, path string) string {
+	t.Helper()
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":%q,"path":%q,
+		"type":"person","subject":%q,"natural_key":"person:%s"}`, name, path, name, strings.ToLower(name)))
+	if r.IsError {
+		t.Fatalf("subject %s: %s", name, r.Text)
+	}
+	return out["root_chunk_id"].(string)
+}
+
 // liveEdgeTargets lists the live edges of kind from `from`.
 func liveEdgeTargets(t *testing.T, d *Document, ctx context.Context, scope, from, kind string) map[string]bool {
 	t.Helper()
@@ -229,6 +240,105 @@ func liveEdgeTargets(t *testing.T, d *Document, ctx context.Context, scope, from
 		out[asStr(r[0])] = true
 	}
 	return out
+}
+
+// A fact's about_ids, the two subjects of its relation and its source chunk are
+// each an endpoint of an edge the fact writes, so each is held to what link_chunks
+// asks: read and link on its document. One the caller may not link is skipped as
+// if it did not exist, and nothing the fact reports describes a statement the
+// caller could not have read.
+func TestUpsertChunk_AFactLinksOnlyEndpointsTheCallerMayLink(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		open := tenantDocCtx(base, nil)
+		dave := tenantSubjectAt(t, d, open, "Dave", "/facts/dave")
+		eve := tenantSubjectAt(t, d, open, "Eve", "/kb/secret/eve")
+		cafe := tenantSubjectAt(t, d, open, "Cafe", "/facts/cafe")
+		facts, r := docExec(t, d, open, `{"op":"create_document","scope":"tenant","title":"Facts","path":"/facts/all"}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		mkPassage := func(path, body string) string {
+			doc, r := docExec(t, d, open, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":"P","path":%q}`, path))
+			if r.IsError {
+				t.Fatal(r.Text)
+			}
+			c, r := docExec(t, d, open, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":"p","body":%q}`, doc["document_id"], body))
+			if r.IsError {
+				t.Fatal(r.Text)
+			}
+			return c["id"].(string)
+		}
+		secretPassage := mkPassage("/kb/secret/memo", "Eve leads the audit.")
+		linklessPassage := mkPassage("/kb/linkless/memo", "Eve leads the audit.")
+		// Someone who may read it asserts Dave works_at Eve; another statement was
+		// rejected by an operator with a reason the caller has no business seeing.
+		if _, r := docExec(t, d, open, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"works_at"}`, dave, eve)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		rej, r := docExec(t, d, open, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"knows"}`, dave, cafe))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		key, _, _ := d.resolveScope(open, "tenant")
+		if err := d.exec(open, key, `UPDATE chunk_edges SET status = 'rejected', judge_reason = 'SECRET-REASON' WHERE id = ?`, rej["id"]); err != nil {
+			t.Fatal(err)
+		}
+		denied := tenantDocCtx(base, aclSet(t,
+			authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+			authz.Rule{Effect: authz.Deny, Actions: []string{"read", "link"}, Resources: []string{"document:tenant:/kb/secret/**"}},
+			authz.Rule{Effect: authz.Deny, Actions: []string{"link"}, Resources: []string{"document:tenant:/kb/linkless/**"}}))
+		upsert := func(nk, body, extra string) (map[string]any, tools.Result) {
+			return docExec(t, d, denied, fmt.Sprintf(`{"op":"upsert_chunk","scope":"tenant","document_id":%q,"natural_key":%q,"title":%q,"body":%q%s}`,
+				facts["document_id"], nk, body, body, extra))
+		}
+
+		out, r := upsert("m/f1", "Dave knows Eve.", fmt.Sprintf(`,"about_ids":[%q,%q],"relation":"knows"`, dave, eve))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if out["about_written"] != float64(1) || out["about_skipped"] != float64(1) || out["relation"] != nil || out["relation_skipped"] == nil {
+			t.Errorf("an unlinkable subject was linked: %v", out)
+		}
+		if s, _ := out["relation_skipped"].(string); strings.Contains(s, eve) {
+			t.Errorf("the skip names the hidden subject: %q", s)
+		}
+		if got := liveEdgeTargets(t, d, open, "tenant", out["id"].(string), "about"); got[eve] {
+			t.Errorf("an about edge reached a chunk the caller may not link: %v", got)
+		}
+		// The control: the same caller's link_chunks to it is refused.
+		if _, r := docExec(t, d, denied, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"knows"}`, dave, eve)); !r.IsError {
+			t.Errorf("control: link_chunks to the hidden subject was allowed")
+		}
+
+		// The hidden works_at to Eve is not counted against a works_at to the cafe.
+		out, r = upsert("m/f2", "Dave works at the cafe.", fmt.Sprintf(`,"about_ids":[%q,%q],"relation":"works_at"`, dave, cafe))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if out["relation"] == nil || out["relation_conflicts"] != nil {
+			t.Errorf("relation_conflicts counted a statement whose target the caller cannot read: %v", out)
+		}
+
+		// A relation an operator rejected is skipped without its reason.
+		out, r = upsert("m/f3", "Dave knows the cafe.", fmt.Sprintf(`,"about_ids":[%q,%q],"relation":"knows"`, dave, cafe))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if s, _ := out["relation_skipped"].(string); s == "" || strings.Contains(s, "SECRET-REASON") {
+			t.Errorf("relation_skipped = %q, want a reason that does not echo the rejection", s)
+		}
+
+		// A source the caller may not read, or may read but not link, is refused
+		// exactly as a chunk that does not exist.
+		_, missing := upsert("m/f4", "Eve leads.", `,"source_chunk_id":"no-such-chunk","source_quote":"Eve leads"`)
+		for name, src := range map[string]string{"unreadable": secretPassage, "unlinkable": linklessPassage} {
+			_, r := upsert("m/f4", "Eve leads.", fmt.Sprintf(`,"source_chunk_id":%q,"source_quote":"Eve leads"`, src))
+			if !r.IsError || r.Error == nil || missing.Error == nil || r.Error.Category != missing.Error.Category ||
+				strings.ReplaceAll(r.Text, src, "X") != strings.ReplaceAll(missing.Text, "no-such-chunk", "X") {
+				t.Errorf("%s source: %v %s, want the refusal for a missing chunk (%s)", name, r.IsError, r.Text, missing.Text)
+			}
+		}
+	})
 }
 
 // A fact taken again from another passage keeps ONE source, the current one: the
