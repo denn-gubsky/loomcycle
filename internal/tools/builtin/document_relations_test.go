@@ -2,13 +2,18 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -459,4 +464,86 @@ func hasConstrainedStricter(r OntologyRead) bool {
 		}
 	}
 	return false
+}
+
+// TestOntologyRelations_GateAndCacheOnPostgres runs the relation gate and the ontology
+// cache on the postgres tier: the edge queries (asymmetric / functional through the
+// reader's visibility rule) and the fingerprint's aggregates are where the two SQL tiers
+// could disagree.
+func TestOntologyRelations_GateAndCacheOnPostgres(t *testing.T) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the postgres tier")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	dropAllSqlmemScopes(t, raw)
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Close()
+		dropAllSqlmemScopes(t, raw)
+		_ = raw.Close()
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	d := &Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
+	base := tools.WithAgentName(context.Background(), "pg-relations")
+	base = tools.WithRunIdentity(base, tools.RunIdentityValue{UserID: "u1", TenantID: "tnt"})
+	ctx := installTenantOntology(t, d, base, relationsOntologyMD, memrank.OntologyConfirmedStatus)
+	docID, _ := newUserDoc(t, d, ctx)
+	mk := func(title, typ string) string {
+		out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":%q,"type":%q,"body":"x"}`, docID, title, typ))
+		if r.IsError {
+			t.Fatalf("create %s: %s", title, r.Text)
+		}
+		return out["id"].(string)
+	}
+	a, b, c := mk("Article 1", "Provision"), mk("Article 2", "Provision"), mk("note", "")
+	link := func(kind, from, to string) tools.Result {
+		_, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":%q}`, from, to, kind))
+		return r
+	}
+	if r := link("blocks", a, b); !r.IsError || !strings.Contains(r.Text, "kind_not_declared") {
+		t.Errorf("undeclared kind on postgres: %s", r.Text)
+	}
+	if r := link("stricter_than", a, c); !r.IsError || !strings.Contains(r.Text, "domain_range_violation") {
+		t.Errorf("domain/range on postgres: %s", r.Text)
+	}
+	if r := link("supervises", a, b); r.IsError {
+		t.Fatalf("functional first link on postgres: %s", r.Text)
+	}
+	if r := link("supervises", a, c); !r.IsError || !strings.Contains(r.Text, "characteristic_violation") {
+		t.Errorf("functional second target on postgres: %s", r.Text)
+	}
+	if r := link("stricter_than", a, b); r.IsError {
+		t.Fatalf("stricter_than on postgres: %s", r.Text)
+	}
+	if r := link("stricter_than", b, a); !r.IsError {
+		t.Error("asymmetric reverse accepted on postgres")
+	}
+	r1, _ := d.tenantOntologyRead(ctx)
+	r2, _ := d.tenantOntologyRead(ctx)
+	if len(r1.Terms) == 0 || &r1.Terms[0] != &r2.Terms[0] {
+		t.Error("the cache did not hold an unchanged ontology on postgres")
+	}
+	sec := r2.SectionChunks[memrank.SectionRelations]
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"parent_id":%q,"title":"mentors","body":"x"}`, r2.DocumentID, sec)); r.IsError {
+		t.Fatal(r.Text)
+	}
+	r3, _ := d.tenantOntologyRead(ctx)
+	found := false
+	for _, rel := range r3.Relations {
+		found = found || rel.Name == "mentors"
+	}
+	if !found {
+		t.Error("a new kind was served from a stale cache on postgres")
+	}
 }
