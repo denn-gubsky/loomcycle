@@ -136,8 +136,13 @@ func (s *Store) applyFullTextConfig(ctx context.Context, cfg FullTextConfig) err
 // The wrapper names the extension's schema explicitly: unqualified, it would
 // resolve through the caller's search_path, which a generated column must not
 // depend on. It runs in the caller's locked transaction.
+//
+// A new extension goes into public, not the first schema of this instance's
+// search_path: it is one per database, and in a per-instance schema it would
+// be dropped with that schema, breaking every other instance's wrapper. One
+// that already exists, wherever it is, is used as is.
 func ensureUnaccentFunc(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS unaccent`); err != nil {
+	if _, err := tx.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public`); err != nil {
 		return fmt.Errorf("memory.fulltext.unaccent needs the Postgres `unaccent` extension (part of contrib), and this role could not create it: %w", err)
 	}
 	var ns string

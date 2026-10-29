@@ -259,3 +259,38 @@ func TestFullText_UnaccentRebootKeepsTheWrapperRow(t *testing.T) {
 		t.Fatalf("wrapper rewritten on an unchanged reboot: xmin %s → %s", before, after)
 	}
 }
+
+// The unaccent extension is database-wide but sits in one schema. Installed in
+// the first schema of the installing instance's search_path, it went down with
+// that schema and took every other instance's word leg with it.
+func TestFullText_UnaccentSurvivesAnotherInstancesSchemaDrop(t *testing.T) {
+	dsn := pgDSNFromEnv(t)
+	if !pgvectorInstallable(t, dsn) {
+		t.Skip("test Postgres cannot install pgvector; there is no word leg without memory_embeddings")
+	}
+	pool := rawPool(t, dsn)
+	if _, err := pool.Exec(context.Background(), `DROP EXTENSION IF EXISTS unaccent CASCADE`); err != nil {
+		t.Fatalf("drop unaccent: %v", err)
+	}
+	pool.Close()
+	cfg := FullTextConfig{Config: "simple", Unaccent: true}
+
+	other := freshSchemaWithVectors(t, dsn, true)
+	if s, err := Open(context.Background(), Config{DSN: other.storeDSN, MaxOpenConns: 2, PgvectorEnabled: true, FullText: cfg}); err != nil {
+		other.cleanup()
+		t.Fatal(err)
+	} else {
+		_ = s.Close()
+	}
+	fix := ftsFixture(t)
+	if _, err := ftsReopen(t, fix, cfg); err != nil {
+		other.cleanup()
+		t.Fatal(err)
+	}
+	other.cleanup()
+
+	ftsSeed(t, fix.store, "k", "café")
+	if got := ftsFind(t, fix.store, "cafe"); !sameKeys(got, "k") {
+		t.Fatalf("unaccent after another instance's schema was dropped: got %v", got)
+	}
+}
