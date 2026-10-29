@@ -2029,7 +2029,7 @@ auth:
         - chrome-extension://<extension-id>
 ```
 
-Sign-in also needs `LOOMCYCLE_PUBLIC_URL` (the issuer; metadata is a 404 without it, and loomboard then offers only the pasted-token path) and an interactive gate in `auth.gates`. loomboard signs in only when the issuer is on the origin of the Base URL the person entered (a guard against a server naming another server's sign-in); when the public address legitimately differs — the Base URL is a LAN address or a proxy — the person enters the public address under Advanced → **Sign-in server address**.
+Sign-in also needs `LOOMCYCLE_PUBLIC_URL` (the issuer; metadata is a 404 without it, and loomboard then offers only the pasted-token path) and an interactive gate in `auth.gates`. loomboard signs in only when the issuer is on the origin of the Base URL the person entered, with no override: it sends the code exchange to the Base URL, so a server naming another server's issuer would receive that server's code. People enter `LOOMCYCLE_PUBLIC_URL` itself as the Base URL. The desktop app also opens only an `https` issuer, or `http` to the same machine.
 
 **Redirect URIs** are `https` with a host; `http` only to the loopback literals `127.0.0.1` or `[::1]` (any port at sign-in, path exact — a desktop app listens where the OS lets it); or a private-use scheme that names the app (`loomboard://…`, `com.example.app:/…`). Never `http` to another host, a fragment, a wildcard, userinfo, or a browser scheme (`javascript:`, `data:`, …). They are matched **exactly**. A redirect URI decides where a person's sign-in code goes: list only addresses the app really owns.
 
