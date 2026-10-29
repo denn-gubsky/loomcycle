@@ -736,3 +736,88 @@ func TestEmbedded_BedrockPresetEmbedderExampleLoads(t *testing.T) {
 		t.Errorf("dimensions = %d, want the example's 1024", cfg.Memory.Embedder.Dimensions)
 	}
 }
+
+// TestEmbedded_LoomboardPresetRegistersTheDesktopClient: on the full default
+// stack, the loomboard preset declares a validated public client whose
+// loopback redirect accepts the random port a desktop listener gets; and the
+// operator overlay its header comment documents (the web and extension
+// addresses, with !append) loads and keeps the desktop addresses — a plain
+// list in that layer would replace them.
+func TestEmbedded_LoomboardPresetRegistersTheDesktopClient(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	stack := layersFor(t, "base", "document-agent", "chat", "agent-teams", "team-examples", "loomboard")
+	cfg, err := config.LoadLayers(stack...)
+	if err != nil {
+		t.Fatalf("the default stack with loomboard must load + validate: %v", err)
+	}
+	cl, ok := cfg.ResolvedAuth.Client("loomboard")
+	if !ok {
+		t.Fatalf("no loomboard client; clients = %+v", cfg.ResolvedAuth.Clients)
+	}
+	if !cl.FromConfig() || !cl.ServesTenant("acme") {
+		t.Errorf("loomboard should be a config client serving every tenant: %+v", cl)
+	}
+	for _, uri := range []string{"http://127.0.0.1:53817/auth/callback", "com.loomboard.app:/auth/callback"} {
+		if !cl.MatchRedirectURI(uri) {
+			t.Errorf("redirect %q should match the preset's client", uri)
+		}
+	}
+	for _, uri := range []string{"http://127.0.0.1:53817/other", "http://localhost:53817/auth/callback", "https://board.example.com/auth/callback"} {
+		if cl.MatchRedirectURI(uri) {
+			t.Errorf("redirect %q must not match the preset's client", uri)
+		}
+	}
+	for _, o := range []string{"tauri://localhost", "http://tauri.localhost"} {
+		if !cl.OriginAllowed(o) {
+			t.Errorf("origin %q should be allowed", o)
+		}
+	}
+
+	// The overlay is the commented block in the preset's header, from its
+	// "#   auth:" line to the next bare "#".
+	var preset []byte
+	for _, u := range embedded.Units() {
+		if u.Name == "loomboard" {
+			preset = u.Data
+		}
+	}
+	var example []string
+	in := false
+	for _, line := range strings.Split(string(preset), "\n") {
+		if strings.HasPrefix(line, "#   auth:") {
+			in = true
+		}
+		if !in {
+			continue
+		}
+		if strings.TrimSpace(line) == "#" {
+			break
+		}
+		example = append(example, strings.TrimPrefix(line, "#   "))
+	}
+	const extID = "abcdefghijklmnopabcdefghijklmnop"
+	body := strings.ReplaceAll(strings.Join(example, "\n"), "<extension-id>", extID)
+	if !strings.Contains(body, "!append") || !strings.Contains(body, "chromiumapp.org") {
+		t.Fatalf("did not find the operator overlay in the preset; got:\n%s", body)
+	}
+	cfg, err = config.LoadLayers(append(stack, config.Layer{Name: "operator", Data: []byte(body)})...)
+	if err != nil {
+		t.Fatalf("the documented operator overlay must load: %v\n%s", err, body)
+	}
+	cl, _ = cfg.ResolvedAuth.Client("loomboard")
+	for _, uri := range []string{
+		"http://127.0.0.1:4000/auth/callback",
+		"com.loomboard.app:/auth/callback",
+		"https://board.example.com/auth/callback",
+		"https://" + extID + ".chromiumapp.org/",
+	} {
+		if !cl.MatchRedirectURI(uri) {
+			t.Errorf("after the overlay, redirect %q should match; have %v", uri, cl.RedirectURIs)
+		}
+	}
+	for _, o := range []string{"tauri://localhost", "https://board.example.com", "chrome-extension://" + extID} {
+		if !cl.OriginAllowed(o) {
+			t.Errorf("after the overlay, origin %q should be allowed; have %v", o, cl.AllowedOrigins)
+		}
+	}
+}

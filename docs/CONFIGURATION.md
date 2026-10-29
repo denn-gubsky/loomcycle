@@ -2010,6 +2010,27 @@ auth:
       restrictions: {}                  # narrows every token of this client (agents, overrides, rate, retention)
 ```
 
+**The `loomboard` preset.** `LOOMCYCLE_PRESETS=…,loomboard` declares the `loomboard` client with the addresses that are the same on every install: the desktop app's loopback callback `http://127.0.0.1/auth/callback` (any port) and its private-use scheme `com.loomboard.app:/auth/callback`, plus the origins a Tauri webview stamps on its token calls (`tauri://localhost` on macOS/Linux, `http://tauri.localhost` on Windows). The two addresses that differ per install are yours to add:
+
+- **the web app** — the exact callback of the origin you serve it from (`https://board.example.com/auth/callback`; the host must answer that path with the app's `index.html`), and that origin in `allowed_origins`. A dev server or the standalone `loomboard` CLI on `127.0.0.1` needs no redirect entry — the preset's loopback callback matches any port — only its origin, e.g. `http://127.0.0.1:5173` (Vite) or `http://127.0.0.1:4173` (CLI), in `allowed_origins`: the proxy forwards the page's `Origin` to the token endpoint. Open it at `127.0.0.1`, not `localhost`: plain `http` redirects are accepted only to a loopback IP literal;
+- **the Chrome extension** — `https://<extension-id>.chromiumapp.org/` (what `chrome.identity.getRedirectURL()` returns; the extension shows it on its sign-in screen) and `chrome-extension://<extension-id>` in `allowed_origins`. The ID depends on how the extension was installed (a store install and an unpacked one differ), which is why the preset cannot ship it.
+
+Add them in your own config with `!append` — a plain list in a later layer **replaces** the preset's:
+
+```yaml
+auth:
+  clients:
+    loomboard:
+      redirect_uris: !append
+        - https://board.example.com/auth/callback
+        - https://<extension-id>.chromiumapp.org/
+      allowed_origins: !append
+        - https://board.example.com
+        - chrome-extension://<extension-id>
+```
+
+Sign-in also needs `LOOMCYCLE_PUBLIC_URL` (the issuer; metadata is a 404 without it, and loomboard then offers only the pasted-token path) and an interactive gate in `auth.gates`. loomboard signs in only when the issuer is on the origin of the Base URL the person entered, with no override: it sends the code exchange to the Base URL, so a server naming another server's issuer would receive that server's code. People enter `LOOMCYCLE_PUBLIC_URL` itself as the Base URL. The desktop app also opens only an `https` issuer, or `http` to the same machine.
+
 **Redirect URIs** are `https` with a host; `http` only to the loopback literals `127.0.0.1` or `[::1]` (any port at sign-in, path exact — a desktop app listens where the OS lets it); or a private-use scheme that names the app (`loomboard://…`, `com.example.app:/…`). Never `http` to another host, a fragment, a wildcard, userinfo, or a browser scheme (`javascript:`, `data:`, …). They are matched **exactly**. A redirect URI decides where a person's sign-in code goes: list only addresses the app really owns.
 
 **The flow** (authorization code with PKCE; RFC 6749, 7636, 8252, 9700):
