@@ -93,6 +93,9 @@ type OntologyRead struct {
 	// its parent kind resolved (RFC FO P1b). Empty without such a section. The section
 	// being present at all is recorded in Sections.
 	Relations []memrank.OntologyRelation
+	// Schemes are the Schemes section's concept schemes (RFC FO P1c), each with its
+	// concepts in document order.
+	Schemes []memrank.OntologyScheme
 	// SectionChunks maps each declared section kind to its chunk, so a proposal can be
 	// filed into the right section.
 	SectionChunks map[string]string
@@ -324,6 +327,74 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// child chunk a sub-kind. The same fail-open rules as classes — an inert entry is a
 	// proposal and its children attach to the nearest in-force kind, an unnamed chunk
 	// is skipped with its children kept, and the depth cap flattens rather than drops.
+	// walkSchemes reads the Schemes section: each entry is a concept scheme, its
+	// children concepts, a child narrower than its parent. The same fail-open rules as
+	// the other sections; a concept's depth counts from its scheme.
+	var schemes []memrank.OntologyScheme
+	var walkConcepts func(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int)
+	walkConcepts = func(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int) {
+		for _, c := range chunks {
+			name := entityName(c)
+			parent := s.Name
+			if len(path) > 0 {
+				parent = path[len(path)-1]
+			}
+			if memrank.IsInertEntityStatus(c.status) {
+				if name != "" {
+					proposals = append(proposals, memrank.OntologyProposal{
+						ChunkID: c.id, Name: name, Parent: parent,
+						Status: strings.ToLower(strings.TrimSpace(c.status)),
+						Body:   bodyOf(c.id), Section: memrank.SectionSchemes,
+					})
+				}
+				walkConcepts(kids[c.id], s, path, depth)
+				continue
+			}
+			if name == "" {
+				walkConcepts(kids[c.id], s, path, depth)
+				continue
+			}
+			full := append(append([]string{}, path...), name)
+			concept := memrank.ParseConceptBody(s.Name, name, full, bodyOf(c.id))
+			concept.ChunkID = c.id
+			s.Concepts = append(s.Concepts, concept)
+			childPath := full
+			if depth >= memrank.OntologyMaxDepth {
+				childPath = path
+				if len(kids[c.id]) > 0 {
+					depthCapped = true
+				}
+			}
+			walkConcepts(kids[c.id], s, childPath, depth+1)
+		}
+	}
+	walkSchemes := func(chunks []ontologyChunk) {
+		for _, c := range chunks {
+			name := entityName(c)
+			if memrank.IsInertEntityStatus(c.status) {
+				if name != "" {
+					proposals = append(proposals, memrank.OntologyProposal{
+						ChunkID: c.id, Name: name, Status: strings.ToLower(strings.TrimSpace(c.status)),
+						Body: bodyOf(c.id), Section: memrank.SectionSchemes,
+					})
+				}
+				continue
+			}
+			if name == "" {
+				continue // concepts need a named scheme to belong to
+			}
+			s := memrank.ParseSchemeBody(name, bodyOf(c.id))
+			s.ChunkID = c.id
+			walkConcepts(kids[c.id], &s, nil, 1)
+			if s.Ordered {
+				for i := range s.Concepts {
+					s.Concepts[i].Rank = i + 1
+				}
+			}
+			schemes = append(schemes, s)
+		}
+	}
+
 	var relations []memrank.OntologyRelation
 	var walkRelations func(chunks []ontologyChunk, parentName string, depth int)
 	walkRelations = func(chunks []ontologyChunk, parentName string, depth int) {
@@ -366,8 +437,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		case memrank.SectionRelations:
 			// Depth counts from the section, as for classes; a child entry is a sub-kind.
 			walkRelations(kids[c.id], "", 1)
-		case memrank.SectionSchemes, memrank.SectionInstances:
-			// Recognised and kept out of the class list; their entries are read by the
+		case memrank.SectionSchemes:
+			walkSchemes(kids[c.id])
+		case memrank.SectionInstances:
+			// Recognised and kept out of the class list; its entries are read by the
 			// phase that gives them meaning.
 		default:
 			// No directive: a class, exactly as before sections existed.
@@ -379,6 +452,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
+		Schemes: schemes,
 	}, nil
 }
 

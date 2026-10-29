@@ -95,6 +95,34 @@ itself, and `@discriminator` the one that makes two links between the same pair
 distinct. Only the kinds you declare (or adopt from the standard set on the
 Ontology page) are listed to the agents.
 
+**Concept schemes.** A `@section schemes` heading holds the vocabularies documents
+are classified by — topics, a ranking, a file plan. Each heading under it is a
+scheme, and each heading under a scheme is a concept; a nested concept is narrower
+than the one above it, and inherits nothing:
+
+```markdown
+## Schemes
+@section schemes
+
+### topics
+@render
+#### risk-management
+@notation RM
+##### outsourcing
+@alt vendor management
+
+### file-plan
+#### compliance
+@retention 10y
+@acl compliance
+```
+
+Confirming gives every concept a tag such as `topics/risk-management/outsourcing`;
+a document anywhere is classified under a concept by carrying its tag, and a
+search for `topics/risk-management` also finds everything narrower. `@render`
+lists a scheme to the agents. A file plan's `@retention` and `@acl` are recorded
+and shown on the Ontology page but not enforced yet.
+
 **Where a type's facts are stored.**
 
 A type may declare which memory scope facts about that kind of thing belong in:

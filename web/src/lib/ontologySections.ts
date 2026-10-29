@@ -1,7 +1,13 @@
 // ontologySections — formatting for the sectioned ontology (RFC FO) in the
 // Settings → Ontology panel. Pure so it is tested without rendering.
 
-import type { OntologyFieldSpec, OntologyRelation, OntologyResponse, OntologyTerm } from "../api";
+import type {
+  OntologyConcept,
+  OntologyFieldSpec,
+  OntologyRelation,
+  OntologyResponse,
+  OntologyTerm,
+} from "../api";
 
 // typedFieldLabel renders one typed field the way an operator wrote it:
 // `rank: concept(normative-rank), required`. A plain text field with no flags
@@ -116,4 +122,19 @@ export function buildRelationTree(relations: OntologyRelation[]): RelationNode[]
   };
   sort(roots);
   return roots;
+}
+
+// conceptSummary is the one-line description of a concept in the panel: its tag (its
+// identity across scopes), notation, rank, aliases, and — on a file plan — the policy it
+// carries, labelled as not yet enforced so no operator relies on it.
+export function conceptSummary(c: OntologyConcept): string {
+  const parts: string[] = [c.tag];
+  if (c.notation) parts.push(c.notation);
+  if (c.rank) parts.push(`rank ${c.rank}`);
+  if ((c.alt ?? []).length) parts.push(`also ${(c.alt ?? []).join(", ")}`);
+  const policy = [c.retention && `retention ${c.retention}`, c.acl && `access ${c.acl}`].filter(
+    Boolean,
+  ) as string[];
+  if (policy.length) parts.push(`${policy.join(", ")} (not enforced yet)`);
+  return parts.join(" · ");
 }

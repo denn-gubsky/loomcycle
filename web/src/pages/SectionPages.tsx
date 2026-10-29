@@ -6,6 +6,7 @@ import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
 import {
   buildRelationTree,
   classDirectiveNotes,
+  conceptSummary,
   factsUnderOlderVocabulary,
   relationSummary,
   typedFieldLabel,
@@ -432,6 +433,7 @@ function OntologySectionsDetail({
       {state.relations !== undefined && (
         <OntologyRelationsDetail state={state} busy={busy} onAdopt={onAdoptRelation} />
       )}
+      {state.schemes !== undefined && <OntologySchemesDetail state={state} />}
       {(versions.older > 0 || versions.unknown > 0) && (
         <p className="settings-help">
           Facts in the tenant scope: {versions.older} written under an older vocabulary
@@ -553,6 +555,58 @@ function OntologyRelationsDetail({
         </p>
       )}
     </>
+  );
+}
+
+// OntologySchemesDetail is the Schemes section's half of the panel (RFC FO P1c): each
+// scheme's concepts as a tree — a concept's tag is its identity in every scope, which is
+// how a document is classified under it — and, when a concept chunk lacks its tag, the
+// note that confirming again applies it.
+function OntologySchemesDetail({ state }: { state: OntologyResponse }) {
+  const stale = state.scheme_mirror_stale ?? [];
+  return (
+    <div className="settings-row">
+      <div>
+        <strong>Concept schemes</strong>
+        <span className="settings-muted">
+          {" "}
+          — a document is classified under a concept by carrying its tag.
+        </span>
+        {(state.schemes ?? []).map((sc) => (
+          <div key={sc.name}>
+            <code>{sc.name}</code>
+            {sc.ordered && <span className="settings-muted"> ordered</span>}
+            {sc.render && <span className="settings-flash"> listed to agents</span>}
+            {(sc.issues ?? []).map((iss) => (
+              <span className="ontology-warn" key={iss}>
+                {" "}
+                · {iss}
+              </span>
+            ))}
+            <ul className="ontology-tree">
+              {(sc.concepts ?? []).map((c) => (
+                <li key={c.tag} style={{ marginLeft: `${(c.path.length - 1) * 1.2}em` }}>
+                  <code>{c.name}</code>
+                  <span className="settings-muted"> {conceptSummary(c)}</span>
+                  {(c.issues ?? []).map((iss) => (
+                    <span className="ontology-warn" key={iss}>
+                      {" "}
+                      · {iss}
+                    </span>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        {stale.length > 0 && (
+          <p className="settings-help">
+            {stale.length} concept(s) do not carry their tag yet — confirm the ontology again to
+            apply them.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -801,6 +855,7 @@ function OntologySection() {
                       {p.section === "relations" && (
                         <span className="settings-muted"> relation kind</span>
                       )}
+                      {p.section === "schemes" && <span className="settings-muted"> concept</span>}
                       {p.parent && (
                         <span className="settings-muted">
                           {" "}

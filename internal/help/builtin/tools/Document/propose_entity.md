@@ -1,10 +1,11 @@
 ---
 name: Document/propose_entity
-description: "Document op=propose_entity — suggest a new entity type, or a relation kind, for the tenant ontology; it stays inert until an operator accepts it."
+description: "Document op=propose_entity — suggest a new entity type, relation kind or concept for the tenant ontology; it stays inert until an operator accepts it."
 ---
 `propose_entity` files a suggestion that the tenant ontology gain a new entity
 type (or a subtype of an existing one) — or, with `section: relations`, a new
-relation kind: a name for how two things are related. The proposal is **inert**: no run sees
+relation kind: a name for how two things are related — or, with
+`section: schemes`, a new concept in a topic or classification scheme. The proposal is **inert**: no run sees
 it and nothing changes until an operator accepts it in the console. It needs no
 tenant grant and always goes to your own tenant's ontology, whatever `scope`
 you pass — but **`scope` is still checked first**, so it must be a scope your
@@ -18,8 +19,10 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
   a kind of. Omit for a new top-level type. With `section: relations`, a
   relation kind the tenant declares, that this one is a narrower kind of.
 - `section` — `classes` (the default) for an entity type, `relations` for a
-  relation kind. A relation kind can only be proposed where the tenant's
-  ontology declares relation kinds at all.
+  relation kind, `schemes` for a concept. A relation kind or concept can only be
+  proposed where the tenant's ontology declares that section at all. A concept
+  needs `parent`: the scheme, or the broader concept, it belongs under — by name
+  or by its tag (`topics/risk-management`).
 - `body` — your evidence: counts and a few example facts, at most 4000 bytes.
 - `scope` — see above.
 
@@ -62,6 +65,12 @@ A relation kind, narrower than one the tenant already declares:
 
 ```json
 {"op": "propose_entity", "section": "relations", "name": "supervises", "parent": "manages", "body": "6 facts say one person supervises another's thesis."}
+```
+
+A concept, narrower than one a topic scheme already has:
+
+```json
+{"op": "propose_entity", "section": "schemes", "name": "cloud outsourcing", "parent": "topics/risk-management/outsourcing", "body": "11 documents discuss cloud providers under outsourcing."}
 ```
 
 A top-level type from an agent with no user on its run:

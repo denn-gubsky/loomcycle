@@ -48,7 +48,10 @@ func (s *Server) renderOntology(ctx context.Context, mi memInject) string {
 	out := meminject.RenderOntology(meminject.EffectiveOntology(terms, confirmed), confirmed)
 	if s.store != nil && s.sqlMem != nil {
 		doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
-		out += meminject.RenderRelations(doc.EffectiveRelationsFor(withTenantDocGrants(s.docToolCtx(ctx, mi))))
+		dctx := withTenantDocGrants(s.docToolCtx(ctx, mi))
+		out += meminject.RenderRelations(doc.EffectiveRelationsFor(dctx))
+		// Concept schemes marked @render (RFC FO P1c); "" for none, so unchanged.
+		out += meminject.RenderSchemes(doc.EffectiveSchemesFor(dctx))
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildRelationTree,
+  conceptSummary,
   classDirectiveNotes,
   factsUnderOlderVocabulary,
   relationSummary,
@@ -82,5 +83,23 @@ describe("buildRelationTree", () => {
     ]);
     expect(tree.map((n) => n.name)).toEqual(["amends", "references"]);
     expect(tree[1].children.map((n) => n.name)).toEqual(["cites"]);
+  });
+});
+
+describe("conceptSummary", () => {
+  it("leads with the tag and marks file-plan policy as not enforced", () => {
+    expect(
+      conceptSummary({
+        scheme: "file-plan",
+        name: "compliance",
+        path: ["compliance"],
+        tag: "file-plan/compliance",
+        retention: "10y",
+        acl: "compliance",
+      }),
+    ).toBe("file-plan/compliance · retention 10y, access compliance (not enforced yet)");
+    expect(
+      conceptSummary({ scheme: "rank", name: "Law", path: ["Law"], tag: "rank/law", rank: 1, notation: "L" }),
+    ).toBe("rank/law · L · rank 1");
   });
 });
