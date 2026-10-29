@@ -40,6 +40,11 @@ as the user store, search both, in two calls.
 - `tag` — only chunks carrying exactly this tag.
 - `tag_prefix` — only chunks whose tag is this one or nested under it
   (`prefix/…`).
+- `expand` — `{kinds?, budget_chars?}`: after ranking, add the chunks the top
+  five hits are related to (one hop), e.g. the article a clause cites or the
+  term it is defined by. Without `kinds` it follows the tenant's declared walk
+  kinds, or every relation except `about` and `mentions`. Budget default 2000
+  characters (titles and quotes).
 - `as_of` — only chunks whose stated validity contains this moment (unix
   nanoseconds); a chunk with no stated validity always matches.
 
@@ -90,6 +95,12 @@ model, so compare within one result rather than to a fixed number. When the
 response says `reranked: true`, the order is the reranker's and `rank_score` no
 longer describes it.
 Bodies are not included: read a hit with `{"op":"get_chunk","id":<chunk_id>}`.
+
+With `expand`, the chunks it added follow the ranked hits in the same list,
+without scores, each with `expanded_via: {kind, from_chunk_id, quote?}` — the
+relation, the hit it came from, and that relation's evidence. The response
+then also carries `expanded` (how many) and `expand_truncated` when the budget
+cut some.
 
 The order is the same as `Memory op=search` over the same scope with prefix
 `doc.chunk:` on the server's own memory — the two run one search. (An agent
