@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.126.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.127.0.</em>
 </p>
 
 <p align="center">
@@ -201,7 +201,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.126.0) adds sign-in for programs, apps and terminals:
+The most recent line (v1.127.0) finishes the sign-in gates: passkeys as a
+second factor and as a password-less gate, SCIM 2.0 provisioning from an
+identity provider, and a strict-mode switch that accepts a person's API token
+only from a gate. An opt-in `loomboard` preset registers loomboard's desktop app
+for "Sign in with loomcycle", and the Usage pages show each model's speed and
+each user's and tenant's spend against its token budget. See
+[`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.126.0 added sign-in for programs, apps and terminals:
 bridges sign in as external gates with their own key instead of holding an
 operator token, and keep their existing users; loomcycle is an OAuth 2.0 server
 for its own apps, which register in config or as a `ClientDef`; `loomcycle
