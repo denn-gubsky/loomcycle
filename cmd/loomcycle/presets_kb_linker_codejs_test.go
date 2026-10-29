@@ -1302,6 +1302,7 @@ func TestKBLinker_BadInputIsRefusedBeforeAnyCall(t *testing.T) {
 		"L4 without corpus":   {`{"document_id":"doc-target","layers":["L4"]}`, "corpus_paths"},
 		"corpus without L4":   {`{"document_id":"doc-target","layers":["L2"],"corpus_paths":["/laws"]}`, "only by the L4 layer"},
 		"unknown layer":       {`{"document_id":"doc-target","layers":["L5"]}`, "layers[0]"},
+		"propose, bad layer":  {`{"document_id":"doc-target","write":"propose","layers":["L0"]}`, "layers[0]"},
 		"layer twice":         {`{"document_id":"doc-target","layers":["L2","L2"]}`, "named twice"},
 		"maintain plus L2":    {`{"mode":"maintain","document_id":"doc-target","layers":["L2","L6"]}`, "L6 layer only"},
 		"drain with document": {`{"mode":"drain","document_id":"doc-target"}`, "neither document_id nor path"},
