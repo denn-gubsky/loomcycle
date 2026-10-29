@@ -9,6 +9,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 )
 
 // RFC FN P2 — a new edition of a work reconciles onto the held one part by part.
@@ -450,6 +451,161 @@ func TestMigrateAnchors_CarriesClaimedWorkKeysIntoTheirColumn(t *testing.T) {
 		}
 		if got[typed["root_chunk_id"].(string)] != "" {
 			t.Errorf("a typed root's class identity was taken for a work key: %v", got)
+		}
+	})
+}
+
+const insertEd1 = "# Act\n\n## Article 1\n\nOne.\n\n## Article 2\n\nTwo.\n\n## Article 3\n\nThree.\n"
+
+// Article 2 inserted, the rest renumbered.
+const insertEd2 = "# Act\n\n## Article 1\n\nOne.\n\n## Article 2\n\nInserted.\n\n## Article 3\n\nTwo.\n\n## Article 4\n\nThree.\n"
+
+func partBody(t *testing.T, d *Document, ctx context.Context, id string) string {
+	t.Helper()
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, id))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	b, _ := out["body"].(string)
+	return b
+}
+
+func userKey(t *testing.T, d *Document, ctx context.Context) sqlmem.ScopeKey {
+	t.Helper()
+	k, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// Inserting an article renumbers the ones after it: the text keeps its part (and
+// everything linked to it), and only the inserted article is new.
+func TestReimport_InsertedPartRenumbersTheRestAsMoves(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/30"
+		docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		_, citing, _, _ := stmtDoc(t, d, ctx, "Other")
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, citing, v1["article-2"].id)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		rep := reimport(t, d, ctx, insertEd2, wk, 2_000_000)["reimport"].(map[string]any)
+		for k, v := range map[string]float64{"unchanged": 1, "moved": 2, "created": 1, "superseded": 0, "closed": 0} {
+			if rep[k] != v {
+				t.Errorf("%s = %v, want %v (report %v)", k, rep[k], v, rep)
+			}
+		}
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		if v2["article-3"].id != v1["article-2"].id || v2["article-4"].id != v1["article-3"].id {
+			t.Errorf("renumbering was not a move: v1=%+v v2=%+v", v1, v2)
+		}
+		if got := partBody(t, d, ctx, v2["article-2"].id); got != "Inserted." {
+			t.Errorf("article-2 now = %q", got)
+		}
+		// stable ids follow the text: the inserted article does not take the stable id
+		// "Two." has carried since the first edition.
+		if v2["article-3"].stable != v1["article-2"].stable || v2["article-2"].stable == v1["article-2"].stable {
+			t.Errorf("stable ids did not follow the text: v1=%+v v2=%+v", v1, v2)
+		}
+		res, err := d.query(ctx, userKey(t, d, ctx), `SELECT to_id FROM chunk_edges WHERE from_id = ? AND kind = 'cites'`, citing)
+		if err != nil || len(res.Rows) != 1 || asStr(res.Rows[0][0]) != v1["article-2"].id {
+			t.Errorf("the citation of \"Two.\" moved: %v %v", res, err)
+		}
+	})
+}
+
+// A statement between two parts that both change is copied once, onto the two new
+// versions — not once per end.
+func TestReimport_StatementBetweenTwoChangedPartsIsCopiedOnce(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/31"
+		docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, v1["article-1"].id, v1["article-2"].id)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		ed := "# Act\n\n## Article 1\n\nOne changed.\n\n## Article 2\n\nTwo changed.\n\n## Article 3\n\nThree.\n"
+		rep := reimport(t, d, ctx, ed, wk, 2_000_000)["reimport"].(map[string]any)
+		if rep["statements_copied"] != float64(1) {
+			t.Errorf("statements_copied = %v, want 1 (%v)", rep["statements_copied"], rep)
+		}
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		res, err := d.query(ctx, userKey(t, d, ctx), `SELECT from_id, to_id FROM chunk_edges WHERE kind = 'cites'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[[2]string]bool{}
+		for _, row := range res.Rows {
+			got[[2]string{asStr(row[0]), asStr(row[1])}] = true
+		}
+		want := map[[2]string]bool{{v1["article-1"].id, v1["article-2"].id}: true, {v2["article-1"].id, v2["article-2"].id}: true}
+		if len(got) != len(res.Rows) || len(got) != 2 || !got[[2]string{v2["article-1"].id, v2["article-2"].id}] {
+			t.Errorf("cites statements = %v, want %v", got, want)
+		}
+	})
+}
+
+// A [[link]] belongs to the text that makes it: an edition that drops it must not
+// carry it to the new version.
+func TestReimport_WikilinkTheEditionDroppedDoesNotSurvive(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		tgt, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Target","path":"/t/target"}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		target := tgt["root_chunk_id"].(string)
+		const wk = "law:ua/32"
+		docID := reimport(t, d, ctx, "# Act\n\n## Article 1\n\nSee [[/t/target]] here.\n", wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		key := userKey(t, d, ctx)
+		if res, err := d.query(ctx, key, `SELECT 1 FROM chunk_edges WHERE from_id = ? AND to_id = ?`, v1["article-1"].id, target); err != nil || len(res.Rows) != 1 {
+			t.Fatalf("control: edition 1 does not link the target: %v %v", res, err)
+		}
+		reimport(t, d, ctx, "# Act\n\n## Article 1\n\nNo link any more.\n", wk, 2_000_000)
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		res, err := d.query(ctx, key, `SELECT auto, method FROM chunk_edges WHERE from_id = ? AND to_id = ?`, v2["article-1"].id, target)
+		if err != nil || len(res.Rows) != 0 {
+			t.Errorf("the new edition no longer links the target, yet carries %v (%v)", res.Rows, err)
+		}
+	})
+}
+
+// A reimport interrupted after a part's new version was written, but before its
+// statements were carried and the old version closed, is completed by running it
+// again.
+func TestReimport_RerunCompletesAnInterruptedSupersession(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/33"
+		docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		_, citing, _, _ := stmtDoc(t, d, ctx, "Other")
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, citing, v1["article-2"].id)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		ed := "# Act\n\n## Article 1\n\nOne.\n\n## Article 2\n\nTwo changed.\n\n## Article 3\n\nThree.\n"
+		reimport(t, d, ctx, ed, wk, 2_000_000)
+		key := userKey(t, d, ctx)
+		// Undo the tail of the run: the copied statement, and the old version's close.
+		for _, q := range []string{
+			`DELETE FROM chunk_edges WHERE kind = 'cites' AND to_id <> '` + v1["article-2"].id + `'`,
+			`UPDATE chunks SET invalid_at = NULL WHERE id = '` + v1["article-2"].id + `'`,
+		} {
+			if err := d.exec(ctx, key, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reimport(t, d, ctx, ed, wk, 2_000_000)
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		if _, still := v2["article-2"]; !still || v2["article-2"].id == v1["article-2"].id {
+			t.Fatalf("article-2 in force = %+v", v2["article-2"])
+		}
+		res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = 'cites'`, citing, v2["article-2"].id)
+		if err != nil || asInt(res.Rows[0][0]) != 1 {
+			t.Errorf("the rerun did not carry the citation: %v %v", res, err)
+		}
+		if res, err = d.query(ctx, key, `SELECT COUNT(*) FROM chunks WHERE document_id = ?`, docID); err != nil || asInt(res.Rows[0][0]) != 5 {
+			t.Errorf("the rerun made extra parts: %v %v", res, err)
 		}
 	})
 }

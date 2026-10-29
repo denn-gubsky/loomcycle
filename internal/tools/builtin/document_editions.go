@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -427,13 +428,15 @@ type reimportReport struct {
 // of, part by part, keyed by anchor:
 //
 //  1. same anchor, same body: untouched — ids, statements, evidence, tags survive;
-//  2. same body under a new anchor (renumbered or moved): the part keeps its id
-//     and stable_id and takes the new anchor;
-//  3. same anchor, new body: superseded — the old part closes at edition_date and a
-//     new one opens there, inheriting stable_id and tags, joined by `supersedes`;
-//     its statements follow it where their evidence still holds (below);
-//  4. an anchor the edition no longer has: the part closes, never deleted;
-//  5. a new anchor: a new part, valid from edition_date.
+//  2. a held part's body under another anchor (renumbered or moved): the part keeps
+//     its id and stable_id and takes the new anchor — tried before 3, so the text
+//     keeps its part when an inserted part shifts the anchors after it;
+//  3. same anchor, new body, among what is left: superseded — the old part closes
+//     at edition_date and a new one opens there, inheriting stable_id and tags,
+//     joined by `supersedes`; its statements follow it where their evidence still
+//     holds (moveStatements);
+//  4. a held part nothing matched: it closes, never deleted;
+//  5. an incoming part nothing matched: a new part, valid from edition_date.
 func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, chunks []mdChunk, edges []mdEdge) (tools.Result, error) {
 	edition := time.Now().UnixNano()
 	if in.EditionDate != nil {
@@ -532,10 +535,61 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		stack = append(stack, frame{level: c.level, title: c.title, anchor: p.anchor})
 	}
 
-	byAnchor := map[string]*editionPart{}
+	// A part whose new version an earlier, interrupted run of this edition already
+	// wrote (joined by `supersedes`) is finished here, not matched again: its
+	// statements are carried and it closes below, like any superseded part.
+	remap := map[string]string{} // superseded part → its new version
+	newBody := map[string]string{}
+	var toClose []string
+	pend, err := d.query(ctx, key, `SELECT e.from_id, e.to_id FROM chunk_edges e
+		JOIN chunks n ON n.id = e.from_id JOIN chunks o ON o.id = e.to_id
+		WHERE e.kind = 'supersedes' AND n.document_id = ? AND o.document_id = ?
+		  AND (n.invalid_at IS NULL OR n.invalid_at > ?) AND (o.invalid_at IS NULL OR o.invalid_at > ?)`,
+		docID, docID, edition, edition)
+	if err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
+	for _, r := range pend.Rows {
+		remap[asStr(r[1])] = asStr(r[0])
+	}
+	bodyOf := map[string]string{}
+	for _, h := range held {
+		bodyOf[h.id] = h.body
+	}
+	live := held[:0:0]
+	for _, h := range held {
+		if nv, ok := remap[h.id]; ok {
+			newBody[nv] = bodyOf[nv]
+			toClose = append(toClose, h.id)
+			continue
+		}
+		live = append(live, h)
+	}
+	held = live
+
+	// Match the edition to the held parts, in passes, before anything is written:
+	//
+	//  1. same anchor, same body: unchanged;
+	//  2. a held part's body under another anchor: a move — the text keeps its part,
+	//     so inserting an article and renumbering the rest is a run of moves, never a
+	//     chain of supersessions that would hand one article's links to the next;
+	//  3. same anchor, new body, among what is left: superseded;
+	//  4. anything else: new.
+	const (
+		actCreate = iota
+		actUnchanged
+		actMove
+		actSupersede
+	)
+	type step struct {
+		act  int
+		held *editionPart
+	}
+	steps := make([]step, len(parts))
+	byAnchor := map[string][]*editionPart{}
 	byBody := map[string][]*editionPart{}
 	for i := range held {
-		byAnchor[held[i].anchor] = &held[i]
+		byAnchor[held[i].anchor] = append(byAnchor[held[i].anchor], &held[i])
 		b := strings.TrimSpace(held[i].body)
 		byBody[b] = append(byBody[b], &held[i])
 	}
@@ -543,35 +597,108 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	for _, p := range parts {
 		incomingAnchors[p.anchor] = true
 	}
+	matched := map[string]bool{}
+	take := func(i, act int, h *editionPart) {
+		matched[h.id] = true
+		steps[i] = step{act: act, held: h}
+	}
+	for i, p := range parts {
+		for _, h := range byAnchor[p.anchor] {
+			if !matched[h.id] && strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body) {
+				take(i, actUnchanged, h)
+				break
+			}
+		}
+	}
+	for i, p := range parts {
+		body := strings.TrimSpace(p.c.body)
+		if steps[i].held != nil || body == "" {
+			continue
+		}
+		// Prefer a part whose anchor the edition no longer uses: of two copies of the
+		// same text, the one that lost its place is the one that moved.
+		var mv *editionPart
+		for _, cand := range byBody[body] {
+			if matched[cand.id] {
+				continue
+			}
+			if !incomingAnchors[cand.anchor] {
+				mv = cand
+				break
+			}
+			if mv == nil {
+				mv = cand
+			}
+		}
+		if mv != nil {
+			take(i, actMove, mv)
+		}
+	}
+	for i, p := range parts {
+		if steps[i].held != nil {
+			continue
+		}
+		for _, h := range byAnchor[p.anchor] {
+			if !matched[h.id] {
+				take(i, actSupersede, h)
+				break
+			}
+		}
+	}
+
+	// stable ids already given out in this document: a new part does not take one
+	// that names another part's text.
+	stables := map[string]bool{}
+	sres, err := d.query(ctx, key, `SELECT DISTINCT stable_id FROM chunks WHERE document_id = ? AND stable_id IS NOT NULL`, docID)
+	if err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
+	for _, r := range sres.Rows {
+		stables[asStr(r[0])] = true
+	}
+	freshStable := func(anchor string) string {
+		s := anchor
+		if stables[s] {
+			s = fmt.Sprintf("%s@%d", anchor, edition)
+			for n := 2; stables[s]; n++ {
+				s = fmt.Sprintf("%s@%d~%d", anchor, edition, n)
+			}
+		}
+		stables[s] = true
+		return s
+	}
 
 	rep := reimportReport{}
-	matched := map[string]bool{}
 	current := map[string]string{"": rootID} // anchor -> the chunk in force for it now
 	order := map[string][]string{}           // parent chunk -> children in edition order
 	bodyOrigin := ""
-	if prov, imported := importProvenanceFrom(ctx); imported {
-		_ = prov
+	if _, imported := importProvenanceFrom(ctx); imported {
 		bodyOrigin = store.OriginImport
 	}
 
-	for _, p := range parts {
+	for i, p := range parts {
 		parent := current[p.parentAn]
 		if parent == "" {
 			parent = rootID
 		}
-		body := strings.TrimSpace(p.c.body)
 		var id string
-		switch ex := byAnchor[p.anchor]; {
-		case ex != nil && !matched[ex.id] && strings.TrimSpace(ex.body) == body:
-			matched[ex.id] = true
-			id = ex.id
+		switch st := steps[i]; st.act {
+		case actUnchanged:
+			id = st.held.id
 			if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, title = ? WHERE id = ?`, parent, titleOrUntitled(p.c.title), id); err != nil {
 				return errFrom("import_md: "+err.Error(), err), nil
 			}
 			rep.Unchanged++
-		case ex != nil && !matched[ex.id]:
-			matched[ex.id] = true
-			newID, r, err := d.supersedePart(ctx, key, mscope, docID, ex, p, parent, edition, bodyOrigin, &rep)
+		case actMove:
+			id = st.held.id
+			if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, title = ?, anchor = ? WHERE id = ?`,
+				parent, titleOrUntitled(p.c.title), p.anchor, id); err != nil {
+				return errFrom("import_md: "+err.Error(), err), nil
+			}
+			rep.Moved++
+			rep.changed = append(rep.changed, id)
+		case actSupersede:
+			newID, r, err := d.supersedePart(ctx, key, mscope, docID, st.held, p, parent, edition, bodyOrigin)
 			if err != nil {
 				return errFrom("import_md: "+err.Error(), err), nil
 			}
@@ -579,29 +706,11 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 				return *r, nil
 			}
 			id = newID
+			remap[st.held.id], newBody[id] = id, p.c.body
+			toClose = append(toClose, st.held.id)
 			rep.Superseded++
 			rep.changed = append(rep.changed, id)
 		default:
-			// Moved or renumbered: the same text under an anchor the held edition did
-			// not use for it, and whose old anchor the new edition no longer has.
-			var mv *editionPart
-			for _, cand := range byBody[body] {
-				if !matched[cand.id] && !incomingAnchors[cand.anchor] && body != "" {
-					mv = cand
-					break
-				}
-			}
-			if mv != nil {
-				matched[mv.id] = true
-				id = mv.id
-				if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, title = ?, anchor = ? WHERE id = ?`,
-					parent, titleOrUntitled(p.c.title), p.anchor, id); err != nil {
-					return errFrom("import_md: "+err.Error(), err), nil
-				}
-				rep.Moved++
-				rep.changed = append(rep.changed, id)
-				break
-			}
 			cc, _ := d.createChunk(ctx, key, mscope, docInput{
 				DocumentID: docID, ParentID: parent, Title: titleOrUntitled(p.c.title),
 				Type: p.c.typ, Status: p.c.status, Body: p.c.body, Fields: p.c.fields,
@@ -611,7 +720,7 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 				return cc, nil
 			}
 			id = resultField(cc, "id")
-			if err := d.exec(ctx, key, `UPDATE chunks SET anchor = ?, stable_id = ? WHERE id = ?`, p.anchor, p.anchor, id); err != nil {
+			if err := d.exec(ctx, key, `UPDATE chunks SET anchor = ?, stable_id = ? WHERE id = ?`, p.anchor, freshStable(p.anchor), id); err != nil {
 				return errFrom("import_md: "+err.Error(), err), nil
 			}
 			rep.Created++
@@ -621,19 +730,29 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		order[parent] = append(order[parent], id)
 	}
 
-	// Parts the edition no longer has close at its date; nothing is deleted.
+	// Statements follow the superseded parts BEFORE those close, so a run cut short
+	// here leaves them open and paired, and running it again finishes the carry.
+	copied, proposed, err := d.moveStatements(ctx, key, acl, remap, newBody)
+	if err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
+	rep.StatementsCopied, rep.StatementsProposed = copied, proposed
+
+	// Superseded parts, and parts the edition no longer has, close at its date;
+	// nothing is deleted.
 	for i := range held {
-		if matched[held[i].id] {
-			continue
+		if !matched[held[i].id] {
+			toClose = append(toClose, held[i].id)
+			rep.Closed++
 		}
-		if err := d.exec(ctx, key, `UPDATE chunks SET invalid_at = ? WHERE id = ?`, edition, held[i].id); err != nil {
+	}
+	for _, id := range toClose {
+		if err := d.exec(ctx, key, `UPDATE chunks SET invalid_at = ? WHERE id = ?`, edition, id); err != nil {
 			return errFrom("import_md: "+err.Error(), err), nil
 		}
-		rep.Closed++
 	}
 	// Sibling order follows the edition.
-	for parent, kids := range order {
-		_ = parent
+	for _, kids := range order {
 		for i, id := range kids {
 			if err := d.exec(ctx, key, `UPDATE chunks SET position = ? WHERE id = ?`, i, id); err != nil {
 				return errFrom("import_md: "+err.Error(), err), nil
@@ -655,10 +774,15 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	return jsonResult(out)
 }
 
-// supersedePart replaces a changed part: the held version closes at the edition
-// date, the new one opens there with its stable_id and tags, and `supersedes`
-// joins them. Statements follow the part where they still hold (moveStatements).
-func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string, old *editionPart, p incomingPart, parent string, edition int64, bodyOrigin string, rep *reimportReport) (string, *tools.Result, error) {
+// supersedePart writes a changed part's new version: it opens at the edition date
+// with the held version's stable_id and tags, joined to it by `supersedes`. The
+// held version closes, and its statements follow, once every part is reconciled
+// (reimportMD).
+//
+// The anchor, the tags and the `supersedes` edge are one transaction: the edge is
+// how a rerun recognises a new version an interrupted run already wrote, so it must
+// not exist without the rest.
+func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string, old *editionPart, p incomingPart, parent string, edition int64, bodyOrigin string) (string, *tools.Result, error) {
 	cc, _ := d.createChunk(ctx, key, mscope, docInput{
 		DocumentID: docID, ParentID: parent, Title: titleOrUntitled(p.c.title),
 		Type: firstNonEmpty(p.c.typ, old.typ), Status: firstNonEmpty(p.c.status, old.status),
@@ -673,82 +797,127 @@ func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscop
 		stable = old.anchor
 	}
 	now := time.Now().UnixNano()
-	for _, s := range []struct {
-		sql  string
-		args []any
-	}{
-		{`UPDATE chunks SET anchor = ?, stable_id = ? WHERE id = ?`, []any{p.anchor, stable, newID}},
-		{`UPDATE chunks SET invalid_at = ? WHERE id = ?`, []any{edition, old.id}},
-		{`INSERT INTO chunk_tags (chunk_id, tag) SELECT ?, tag FROM chunk_tags WHERE chunk_id = ?`, []any{newID, old.id}},
-		{`INSERT INTO chunk_edges (id, from_id, to_id, kind, created_at, method, valid_at) VALUES (?, ?, ?, 'supersedes', ?, ?, ?)`,
-			[]any{newDocID(), newID, old.id, now, edgeMethodRuntime, edition}},
-	} {
-		if err := d.exec(ctx, key, s.sql, s.args...); err != nil {
-			return "", nil, err
+	err := d.withSqlTxn(ctx, key, func(txn string) error {
+		for _, s := range []struct {
+			sql  string
+			args []any
+		}{
+			{`UPDATE chunks SET anchor = ?, stable_id = ? WHERE id = ?`, []any{p.anchor, stable, newID}},
+			{`INSERT INTO chunk_tags (chunk_id, tag) SELECT ?, tag FROM chunk_tags WHERE chunk_id = ?`, []any{newID, old.id}},
+			{`INSERT INTO chunk_edges (id, from_id, to_id, kind, created_at, method, valid_at) VALUES (?, ?, ?, 'supersedes', ?, ?, ?)`,
+				[]any{newDocID(), newID, old.id, now, edgeMethodRuntime, edition}},
+		} {
+			if err := d.execTxn(ctx, txn, s.sql, s.args...); err != nil {
+				return err
+			}
 		}
-	}
-	copied, proposed, err := d.moveStatements(ctx, key, d.newDocACL(ctx, key), old.id, newID, p.c.body)
+		return nil
+	})
 	if err != nil {
 		return "", nil, err
 	}
-	rep.StatementsCopied += copied
-	rep.StatementsProposed += proposed
 	return newID, nil, nil
 }
 
-// moveStatements carries a superseded part's statements to its new version.
+// moveStatements carries the superseded parts' statements to their new versions.
+// remap names each superseded part's new version, newBody its text.
 //
-// A statement whose evidence quoting the old part still occurs in the new text is
-// COPIED to the new part (attributes.revision_of naming the original); so is a
-// statement with no evidence on the old part, and a manual one, unconditionally —
-// a person's link is not something a text change can disprove. Anything else
-// stays on the old part, where it still holds for the old part's interval: its
-// evidence on the old part is marked stale and its status drops to proposed, so
-// it is re-verified rather than silently carried or silently lost.
+// Each statement is visited ONCE, with both ends remapped: one between two parts
+// that both changed is copied once, onto the two new versions.
+//
+// A statement whose evidence quoting a superseded part still occurs in that part's
+// new text is COPIED (attributes.revision_of naming the original); so is a
+// statement with no evidence there, and a manual one, unconditionally — a person's
+// link is not something a text change can disprove. Anything else stays on the
+// old part, where it still holds for the old part's interval: its evidence there is
+// marked stale and its status drops to proposed, so it is re-verified rather than
+// silently carried or silently lost.
+//
+// An inline [[name]] link (auto) is never copied: it belongs to the text that
+// makes it, and the new version's own [[name]] links were derived from its body
+// when it was written. A copy would outlive an edition that dropped the link.
 //
 // A statement whose other end is in a document the caller may not link is left
 // exactly as it is: re-checking or copying it is a change to that document's
 // relations, which the reimport's write on this document does not authorize.
-func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, oldID, newID, newBody string) (copied, proposed int, err error) {
-	res, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e
-		WHERE (e.from_id = ? OR e.to_id = ?) AND e.kind NOT IN ('supersedes', 'about')
-		  AND e.status <> ? AND e.expired_at IS NULL`, oldID, oldID, edgeStatusRejected)
-	if err != nil {
-		return 0, 0, err
+//
+// Rerunnable: a copy already present (an earlier, interrupted run) is left alone,
+// and each copy is written with its evidence in one transaction, so a present
+// copy is a complete one.
+func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, remap, newBody map[string]string) (copied, proposed int, err error) {
+	olds := make([]string, 0, len(remap))
+	for old := range remap {
+		olds = append(olds, old)
 	}
-	stmts := make([]statementRow, 0, len(res.Rows))
-	ids := make([]string, 0, len(res.Rows))
-	for _, r := range res.Rows {
-		s := scanStatement(r)
-		stmts = append(stmts, s)
-		ids = append(ids, s.ID)
+	sort.Strings(olds)
+	seen := map[string]bool{}
+	var stmts []statementRow
+	var ids []string
+	for _, old := range olds {
+		res, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e
+			WHERE (e.from_id = ? OR e.to_id = ?) AND e.kind NOT IN ('supersedes', 'about')
+			  AND e.status <> ? AND e.expired_at IS NULL`, old, old, edgeStatusRejected)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, r := range res.Rows {
+			s := scanStatement(r)
+			if seen[s.ID] || s.Auto {
+				continue
+			}
+			seen[s.ID] = true
+			stmts = append(stmts, s)
+			ids = append(ids, s.ID)
+		}
 	}
 	ev, _, err := d.evidenceFor(ctx, key, ids, 0)
 	if err != nil {
 		return 0, 0, err
 	}
+	mapped := func(id string) string {
+		if nid, ok := remap[id]; ok {
+			return nid
+		}
+		return id
+	}
 	now := time.Now().UnixNano()
 	for _, s := range stmts {
 		if acl != nil {
-			other := s.ToID
-			if other == oldID {
-				other = s.FromID
+			var ends []string
+			for _, end := range []string{s.FromID, s.ToID} {
+				if _, ours := remap[end]; !ours {
+					ends = append(ends, end)
+				}
 			}
-			if r, err := acl.chunk(ctx, "import_md", "link", other); err != nil {
-				return copied, proposed, err
-			} else if r != nil {
+			if len(ends) == 0 {
+				ends = []string{s.FromID} // both ends in this document: one verdict
+			}
+			denied := false
+			for _, end := range ends {
+				r, err := acl.chunk(ctx, "import_md", "link", end)
+				if err != nil {
+					return copied, proposed, err
+				}
+				denied = denied || r != nil
+			}
+			if denied {
 				continue
 			}
 		}
 		holds := true
 		for _, e := range ev[s.ID] {
-			if e.ChunkID == oldID && !strings.Contains(newBody, e.Quote) {
+			if nid, ok := remap[e.ChunkID]; ok && !strings.Contains(newBody[nid], e.Quote) {
 				holds = false
 			}
 		}
 		if !holds && s.Method != edgeMethodManual {
-			if err := d.exec(ctx, key, `UPDATE chunk_edge_evidence SET stale = 1 WHERE edge_id = ? AND chunk_id = ?`, s.ID, oldID); err != nil {
-				return copied, proposed, err
+			for _, end := range []string{s.FromID, s.ToID} {
+				if _, ours := remap[end]; !ours {
+					continue
+				}
+				if err := d.exec(ctx, key, `UPDATE chunk_edge_evidence SET stale = 1 WHERE edge_id = ? AND chunk_id = ?`, s.ID, end); err != nil {
+					return copied, proposed, err
+				}
 			}
 			if s.Status == edgeStatusAsserted {
 				if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ? WHERE id = ?`, edgeStatusProposed, s.ID); err != nil {
@@ -758,12 +927,11 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 			proposed++
 			continue
 		}
-		from, to := s.FromID, s.ToID
-		if from == oldID {
-			from = newID
-		}
-		if to == oldID {
-			to = newID
+		from, to := mapped(s.FromID), mapped(s.ToID)
+		if have, err := d.statementByKey(ctx, key, from, to, s.Kind, s.ValidAt, s.Discriminator); err != nil {
+			return copied, proposed, err
+		} else if have != nil {
+			continue
 		}
 		attrs := map[string]any{}
 		for k, v := range s.Attributes {
@@ -771,37 +939,45 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 		}
 		attrs["revision_of"] = s.ID
 		ab, _ := json.Marshal(attrs)
-		copyID := newDocID()
-		if err := d.exec(ctx, key, `INSERT INTO chunk_edges
-			(id, from_id, to_id, kind, created_at, auto, status, method, confidence, valid_at, invalid_at,
-			 actor, run_id, ontology_version, discriminator, attributes)
-			VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			copyID, from, to, s.Kind, now, s.Status, s.Method, s.Confidence, s.ValidAt, s.InvalidAt,
-			nullIfEmpty(s.Actor), nullIfEmpty(s.RunID), s.OntologyVersion, s.Discriminator, string(ab)); err != nil {
-			// The new part already carries this statement (an earlier, interrupted
-			// run of the same reimport): nothing to copy.
-			continue
+		auto := 0
+		if s.Auto {
+			auto = 1
 		}
-		for _, e := range ev[s.ID] {
-			chunkID, stale := e.ChunkID, 0
-			var start, end any
-			if e.CharStart != nil {
-				start, end = *e.CharStart, *e.CharEnd
+		copyID := newDocID()
+		err := d.withSqlTxn(ctx, key, func(txn string) error {
+			if err := d.execTxn(ctx, txn, `INSERT INTO chunk_edges
+				(id, from_id, to_id, kind, created_at, auto, status, method, confidence, valid_at, invalid_at,
+				 actor, run_id, ontology_version, discriminator, attributes)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				copyID, from, to, s.Kind, now, auto, s.Status, s.Method, s.Confidence, s.ValidAt, s.InvalidAt,
+				nullIfEmpty(s.Actor), nullIfEmpty(s.RunID), s.OntologyVersion, s.Discriminator, string(ab)); err != nil {
+				return err
 			}
-			if chunkID == oldID {
-				if st, en, ok := quoteSpan(newBody, e.Quote, nil, nil); ok {
-					chunkID, start, end = newID, st, en
-				} else {
-					stale = 1 // a manual statement copied though its quote is gone
+			for _, e := range ev[s.ID] {
+				chunkID, stale := e.ChunkID, 0
+				var start, end any
+				if e.CharStart != nil {
+					start, end = *e.CharStart, *e.CharEnd
+				}
+				if nid, ok := remap[chunkID]; ok {
+					if st, en, ok := quoteSpan(newBody[nid], e.Quote, nil, nil); ok {
+						chunkID, start, end = nid, st, en
+					} else {
+						stale = 1 // a manual statement copied though its quote is gone
+					}
+				}
+				if err := d.execTxn(ctx, txn, `INSERT INTO chunk_edge_evidence
+					(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, stale, created_at, run_id)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					newDocID(), copyID, nullIfEmpty(chunkID), nullIfEmpty(e.SessionID), e.EventSeq,
+					nullIfEmpty(e.Scope), nullIfEmpty(e.NaturalKey), e.Quote, start, end, stale, now, nullIfEmpty(tools.RunID(ctx))); err != nil {
+					return err
 				}
 			}
-			if err := d.exec(ctx, key, `INSERT INTO chunk_edge_evidence
-				(id, edge_id, chunk_id, session_id, event_seq, ref_scope, ref_natural_key, quote, char_start, char_end, stale, created_at, run_id)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				newDocID(), copyID, nullIfEmpty(chunkID), nullIfEmpty(e.SessionID), e.EventSeq,
-				nullIfEmpty(e.Scope), nullIfEmpty(e.NaturalKey), e.Quote, start, end, stale, now, nullIfEmpty(tools.RunID(ctx))); err != nil {
-				return copied, proposed, err
-			}
+			return nil
+		})
+		if err != nil {
+			return copied, proposed, err
 		}
 		copied++
 	}
