@@ -119,12 +119,18 @@ func documentLeaseInput(op string, ctx context.Context, in docInput) (string, *t
 // cannot both win; the INSERT before it only makes sure the row exists (its
 // failure under a concurrent insert of the same name is expected and ignored —
 // the UPDATE decides).
+//
+// A lease expiring further out than maxDocumentLeaseTTL from now was not written
+// by this op — the scope's SQL database is also reachable through Memory sql_exec
+// by an agent holding sql_scopes — so it counts as expired: no row can hold a
+// pass off a scope for longer than the cap.
 func (d *Document) acquireDocumentLease(ctx context.Context, key sqlmem.ScopeKey, name, owner string, now time.Time, ttl time.Duration) (documentLeaseResult, error) {
 	exp := now.Add(ttl).UnixNano()
 	insErr := d.exec(ctx, key, `INSERT INTO document_leases (name, owner, expires_at)
 		SELECT ?, '', 0 WHERE NOT EXISTS (SELECT 1 FROM document_leases WHERE name = ?)`, name, name)
 	n, err := d.execCount(ctx, key, `UPDATE document_leases SET owner = ?, expires_at = ?
-		WHERE name = ? AND (expires_at <= ? OR owner = ?)`, owner, exp, name, now.UnixNano(), owner)
+		WHERE name = ? AND (expires_at <= ? OR expires_at > ? OR owner = ?)`,
+		owner, exp, name, now.UnixNano(), now.Add(maxDocumentLeaseTTL).UnixNano(), owner)
 	if err != nil {
 		if insErr != nil {
 			return documentLeaseResult{}, insErr

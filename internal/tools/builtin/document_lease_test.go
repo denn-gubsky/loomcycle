@@ -55,6 +55,34 @@ func TestDocumentLease_ExpiredLeaseIsTakenOver(t *testing.T) {
 	})
 }
 
+// The scope's SQL database is also reachable through Memory sql_exec, so a lease
+// row can be forged with an expiry far past the cap. Such a row must not hold a
+// pass off the scope: anything expiring beyond now+max counts as expired.
+func TestDocumentLease_ForgedFarFutureExpiryIsTakenOver(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		key, _, _ := d.resolveScope(ctx, "user")
+		if err := d.ensureSchema(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Unix(1_000, 0)
+		if err := d.exec(ctx, key, `INSERT INTO document_leases (name, owner, expires_at) VALUES (?, ?, ?)`,
+			"linker", "squatter", now.Add(365*24*time.Hour).UnixNano()); err != nil {
+			t.Fatal(err)
+		}
+		r, err := d.acquireDocumentLease(ctx, key, "linker", "run-a", now, time.Minute)
+		if err != nil || !r.Acquired {
+			t.Fatalf("acquire over a forged year-long lease = %+v, %v; want acquired", r, err)
+		}
+		// A lease written by the op, at the cap, still holds.
+		if r, _ := d.acquireDocumentLease(ctx, key, "other", "run-a", now, maxDocumentLeaseTTL); !r.Acquired {
+			t.Fatal("setup: acquire other")
+		}
+		if r, _ := d.acquireDocumentLease(ctx, key, "other", "run-b", now, time.Minute); r.Acquired {
+			t.Fatal("a lease at exactly the cap was treated as forged")
+		}
+	})
+}
+
 func TestDocumentLease_OnlyTheHolderReleasesIt(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		key, _, _ := d.resolveScope(ctx, "user")
