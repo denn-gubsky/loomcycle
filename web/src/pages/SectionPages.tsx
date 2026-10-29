@@ -360,8 +360,8 @@ function OntologyTermTree({
 // OntologySectionsDetail is the part of the panel a SECTIONED ontology adds (RFC FO):
 // the document classes — kept out of the table above because they never reach an
 // agent's prompt — the grammars, the types in use that nothing declares, and how many
-// facts were written under an older vocabulary. Relations, schemes and instances get
-// their own trees in later versions; until then their sections are only listed.
+// facts were written under an older vocabulary. Relations, schemes and instances each
+// have their own block below.
 function OntologySectionsDetail({
   state,
   busy,
@@ -372,18 +372,10 @@ function OntologySectionsDetail({
   onAdoptRelation: (name: string) => void;
 }) {
   const versions = factsUnderOlderVocabulary(state);
-  const later = (state.sections ?? []).filter((k) => k !== "classes");
   return (
     <>
       <p className="settings-help">
         Sections: {(state.sections ?? []).map((k) => <code key={k}>{k} </code>)}
-        {later.length > 0 && (
-          <span className="settings-muted">
-            {" "}
-            — {later.join(", ")} {later.length === 1 ? "is" : "are"} recognised but not yet
-            applied by this version.
-          </span>
-        )}
       </p>
       {(state.document_classes ?? []).length > 0 && (
         <div className="settings-row">
@@ -585,7 +577,7 @@ function OntologyInstancesDetail({ state }: { state: OntologyResponse }) {
           {(rep?.instances ?? []).map((i) => (
             <li key={i.name}>
               <code>{i.name}</code>
-              {i.class && <span className="settings-muted"> a {i.class}</span>}
+              {i.class && <span className="settings-muted"> · instance of {i.class}</span>}
               <span className={i.state === "error" ? "ontology-warn" : "settings-muted"}>
                 {" "}
                 · {instanceStateLabel(i)}
