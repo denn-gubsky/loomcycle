@@ -234,11 +234,13 @@ type syncChunk struct {
 type edgeKey struct{ fromNK, toNK, kind string }
 
 // sideSnapshot is one document's keyed chunks + manual edges + a count of the
-// unkeyed (non-root) chunks that cannot be reconciled.
+// unkeyed (non-root) chunks that cannot be reconciled. rejected (local side only)
+// holds the relations an operator rejected here: a pull never re-creates one.
 type sideSnapshot struct {
-	chunks  map[string]syncChunk
-	edges   map[edgeKey]bool
-	unkeyed int
+	chunks   map[string]syncChunk
+	edges    map[edgeKey]bool
+	rejected map[edgeKey]bool
+	unkeyed  int
 }
 
 // loadLocalSnapshot reads the local document's keyed structure.
@@ -251,7 +253,7 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 	for _, kc := range keyed {
 		idToNK[kc.ID] = kc.NaturalKey
 	}
-	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(keyed)), edges: map[edgeKey]bool{}}
+	snap := &sideSnapshot{chunks: make(map[string]syncChunk, len(keyed)), edges: map[edgeKey]bool{}, rejected: map[edgeKey]bool{}}
 	for _, kc := range keyed {
 		row, ok, rerr := d.getChunkRow(ctx, key, kc.ID)
 		if rerr != nil {
@@ -276,9 +278,11 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 			validAtKnown: true, invalidAtKnown: true,
 		}
 	}
-	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto FROM chunk_edges e
+	// Live statements are what this side carries; rejected ones (at any valid_at)
+	// are read too, as the relations a pull must not bring back.
+	rows, err := d.query(ctx, key, `SELECT from_id, to_id, kind, auto, CASE WHEN e.status = '`+edgeStatusRejected+`' THEN 1 ELSE 0 END FROM chunk_edges e
 		WHERE (from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?))
-		  AND e.status = '`+edgeStatusAsserted+`' AND `+edgeLiveClause, docID, docID)
+		  AND (e.status = '`+edgeStatusRejected+`' OR (e.status = '`+edgeStatusAsserted+`' AND `+edgeLiveClause+`))`, docID, docID)
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +292,14 @@ func (d *Document) loadLocalSnapshot(ctx context.Context, key sqlmem.ScopeKey, m
 		}
 		fromNK, ok1 := idToNK[asStr(r[0])]
 		toNK, ok2 := idToNK[asStr(r[1])]
-		if ok1 && ok2 {
-			snap.edges[edgeKey{fromNK: fromNK, toNK: toNK, kind: asStr(r[2])}] = true
+		if !ok1 || !ok2 {
+			continue
+		}
+		ek := edgeKey{fromNK: fromNK, toNK: toNK, kind: asStr(r[2])}
+		if asInt(r[4]) == 1 {
+			snap.rejected[ek] = true
+		} else {
+			snap.edges[ek] = true
 		}
 	}
 	total, err := d.documentChunkCount(ctx, key, docID)
@@ -591,6 +601,9 @@ func (w remoteWriter) ensureEdge(ctx context.Context, fromID, toID, kind string)
 
 type reconcileCounts struct {
 	created, updated, unchanged, reparented, edgesAdded, excludedWithheld int
+	// edgesSkippedRejected: source relations the writer's side rejected — left
+	// rejected, never re-linked (a pull must not undo an operator's ruling).
+	edgesSkippedRejected int
 }
 
 // applyReconcile reconciles `source` INTO the writer's side, using `target` as
@@ -676,6 +689,10 @@ func applyReconcile(ctx context.Context, w sideWriter, source, target *sideSnaps
 		if target.edges[ek] {
 			continue
 		}
+		if target.rejected[ek] {
+			c.edgesSkippedRejected++
+			continue
+		}
 		fromID, ok1 := idByNK[ek.fromNK]
 		toID, ok2 := idByNK[ek.toNK]
 		if !ok1 || !ok2 {
@@ -730,18 +747,19 @@ func (d *Document) syncPush(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 // local's for push).
 func reconcileReport(direction string, b *remoteBinding, excludedUnkeyed int, c reconcileCounts) map[string]any {
 	return map[string]any{
-		"direction":          direction,
-		"source":             b.source,
-		"remote_ref":         b.ref,
-		"remote_document_id": b.remoteDocID,
-		"local_document_id":  b.localDocID,
-		"created":            c.created,
-		"updated":            c.updated,
-		"unchanged":          c.unchanged,
-		"reparented":         c.reparented,
-		"edges_added":        c.edgesAdded,
-		"excluded_unkeyed":   excludedUnkeyed,
-		"excluded_withheld":  c.excludedWithheld,
+		"direction":              direction,
+		"source":                 b.source,
+		"remote_ref":             b.ref,
+		"remote_document_id":     b.remoteDocID,
+		"local_document_id":      b.localDocID,
+		"created":                c.created,
+		"updated":                c.updated,
+		"unchanged":              c.unchanged,
+		"reparented":             c.reparented,
+		"edges_added":            c.edgesAdded,
+		"edges_skipped_rejected": c.edgesSkippedRejected,
+		"excluded_unkeyed":       excludedUnkeyed,
+		"excluded_withheld":      c.excludedWithheld,
 	}
 }
 
@@ -864,7 +882,7 @@ func (d *Document) diffRemote(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 	}
 	for ek := range remote.edges {
-		if !local.edges[ek] {
+		if !local.edges[ek] && !local.rejected[ek] {
 			edgesOnlyRemote++
 		}
 	}
