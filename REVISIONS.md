@@ -8,6 +8,70 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.127.0
+
+*Passkeys, SCIM provisioning and gate-only user tokens; a `loomboard` preset for app sign-in; and model speed and budgets on the Usage pages. **Passkeys** are a phishing-resistant second factor at a password gate and, as `kind: passkey`, a password-less sign-in. **A `kind: scim` gate takes SCIM 2.0** at `/scim/v2`, so an identity provider creates, deactivates and groups users the way an external gate's sync does. **`auth.strict.user_tokens: gate_only`** refuses hand-minted per-user tokens, so a person's API token comes only from a gate. **The opt-in `loomboard` preset** registers loomboard's desktop app for "Sign in with loomcycle". **The Usage pages** show each model's speed and each user's and tenant's spend against its token budget. **Read the upgrade notes: two migrations, a new Go dependency, and strict mode now refusing a hand-minted user token as a Web UI sign-in.***
+
+Since v1.126.0: #2218 to #2223.
+- sign-in gates (RFC FA P6): passkeys, SCIM 2.0 and `gate_only` (#2221), and the removal races and passkey edge cases its last review found (#2222);
+- app sign-in (RFC FL P2): the `loomboard` preset (#2223);
+- usage (RFC FM P5): model speed and budgets (#2218);
+- fixes: the MCP tool-count test and guide (#2219), model names on the routing page (#2220).
+- `@loomcycle/client` and the Python adapter are unchanged and stay at 1.126.0; this release adds no adapter methods.
+
+### Passkeys, SCIM and gate-only user tokens (#2221, #2222)
+
+The last deferred phase of the sign-in gates (RFC FA P6).
+
+- **Passkeys** (WebAuthn, through `github.com/go-webauthn/webauthn` v0.18.2).
+  - **A second factor at a password gate**: a gate that asks for a second factor offers the passkey, `require_mfa` accepts one, and password and authenticator-app step-ups accept one too.
+  - **`kind: passkey`**, a password-less gate: `/v1/_auth/passkey/{gate}/begin`, then `/v1/_auth/complete/{gate}`; the session is bound to the key.
+  - **Self-service** under `/v1/_auth/passkeys`: list, register, rename, remove. Registering or removing a key needs a step-up in the same request (password plus second factor, a passkey assertion, or a fresh sign-in at the account's identity provider), and removing the last usable way in is refused.
+  - The relying party comes from `LOOMCYCLE_PUBLIC_URL` (an https domain, or http on localhost). Challenges are single-use and live 5 minutes; registration and password-less sign-in require user verification; only the key's id and public key are stored. A sign count that does not advance flags the key, across replicas.
+  - **No downgrade**: an account with any stored passkey (a flagged one included) never signs in on its password alone, even if passkeys are later switched off (403 `second_factor_unavailable` when no second factor is usable). Reset and invite links for such an account require its passkey or its existing authenticator app. A password account with flagged keys and no authenticator app cannot remove its last usable key (409 `flagged_passkeys_remain`).
+- **SCIM 2.0**: a `kind: scim` gate (at most one) serves `/scim/v2` — `Users`, `Groups`, `PATCH`, `eq` filters, paging up to 100, and `ServiceProviderConfig`, `ResourceTypes` and `Schemas` — to a token holding `scim:provision` alone, in its own tenant. gRPC refuses that token.
+  - Users are provisioned as `<gate>:<scim id>`, never linked by `userName`; groups sync into `<gate>:<slug>` (needs a trusted gate with `identity_map.groups`); deleting a SCIM group keeps the loomcycle group. A pending user reads `active: false`.
+  - Deactivating a user runs the gate's removal policy (disable, unbind, erase), held to `max_sync_removals`. New `max_sync_creates` caps creates per tenant per 24 hours (default 1000; over it, 429). SCIM never re-enables a user an operator disabled.
+  - Every removal is one store transaction, and the removal stages are claimed, so a SCIM re-enable cannot race the sweeper into unbinding or erasing an active user; a re-enable while a stage runs, or after erase, answers 409 `removal_in_progress`. A re-enabled user returns to its recorded status (pending stays pending) (#2222).
+  - Access control: `principal:scim:users` and `principal:scim:groups`, and a `builtin:scim-provisioner` baseline.
+- **`auth.strict.user_tokens: gate_only`** refuses a hand-minted per-user token on every transport (HTTP, gRPC, A2A, MCP), and `POST /v1/_users/{subject}/tokens` answers 403 `user_tokens_gate_only`. Gate-issued tokens (device login, app sign-in, external and AWS IAM gates), operator and tenant tokens, service tokens, `auth:manage`, `scim:provision`, declared principals and `LOOMCYCLE_AUTH_TOKEN` are unaffected. `gate_only` outside strict mode fails the load.
+- **An operator's disable** now also ends the user's Web UI sessions, takes the user from SCIM, and retires its tokens; an operator re-enable that raced a new disable answers 409 instead of overwriting it (#2222).
+- Session and passkey-ceremony cookies are `Secure` (and `__Host-`) over TLS, plain only under the documented plain-HTTP exception (#2222).
+- **Web UI**: passkey sign-in, "Confirm with your passkey" at the password gate, and a passkeys section on the account page; each continues an app sign-in.
+
+### The `loomboard` preset (#2223)
+
+`LOOMCYCLE_PRESETS=…,loomboard` declares the `auth.clients.loomboard` app for loomboard's "Sign in with loomcycle" (RFC FL D2): a public client with the desktop app's loopback callback `http://127.0.0.1/auth/callback` (any port), the private-use scheme `com.loomboard.app:/auth/callback`, and the origins a Tauri webview sends (`tauri://localhost`, `http://tauri.localhost`).
+
+- The web origin and the Chrome extension's redirect differ per install, so they stay operator config: `docs/CONFIGURATION.md`'s app sign-in section has a copy-paste `!append` block (a plain list in a later layer replaces the preset's).
+- The Base URL people enter in loomboard must have the origin of `LOOMCYCLE_PUBLIC_URL`.
+
+### Model speed and budgets on the Usage pages (#2218)
+
+The last phase of usage reports (RFC FM P5).
+
+- **`GET /v1/_usage/speed`**: for each provider and model, the latest 500 timed calls in the window give `duration_p50_ms`, `duration_p95_ms`, `ttft_p50_ms` and `output_tokens_per_s`. Same scoping, `tenant` focus and filters as `/v1/_usage`; a tenant operator's figures come from its own calls only. Timings live in the per-call ledger, so the window stops at `detail_since`. HTTP only.
+- **Models tab**: typical (median), slow (p95), first token and tokens per second.
+- **Users and Tenants tabs**: month-to-date tokens against each token budget, as a meter with a tick at the soft limit and a straight-line projection to the end of the UTC month, and the state written out ("over the soft limit", "on course for the hard limit", "at the hard limit"). A viewer who cannot read budgets or speed still gets the report.
+
+### Fixes
+
+- **The MCP tools list test expects `clientdef` again** (#2219). The squash of #2202 restored an older count (65) and dropped `clientdef` from `docs/MCP_SERVER.md`; the tool was still served. The test now also asserts `clientdef` by name.
+- **The routing page shows every model name in full** (#2220): two lines per cascade entry, the name wrapping instead of being cut to `gpt…`, and cards that stack in a narrow column.
+
+### Upgrade notes
+
+- **Two migrations** (Postgres; sqlite creates or alters at open). Both only add.
+  - **0126** passkeys and SCIM: `user_passkeys`, `webauthn_ceremonies`, `scim_users`, `scim_groups`, `scim_group_members`.
+  - **0127** removal stage claims: `stage` and `prior_status` on `auth_removals`, `reactivated_at` on `scim_users`.
+- **Behaviour change: in `auth.mode: strict`, a hand-minted per-user token is no longer a Web UI sign-in**, with or without `gate_only` (RFC FA §4). The person signs in through a gate; the token still works as an API bearer unless `gate_only` is set.
+- **Behaviour change: an operator's disable now ends the user's Web UI sessions** as well as retiring its tokens.
+- **New config:** gate kinds `passkey` and `scim`; `auth.strict.user_tokens`; `max_sync_creates`; the `loomboard` preset. Nothing changes until you set them. Passkeys need `LOOMCYCLE_PUBLIC_URL` (https, or http on localhost). No new environment variables.
+- **New wire surface, all additive:** HTTP `/v1/_auth/passkeys` (list, `register/begin`, `register/finish`, rename, remove), `/v1/_auth/passkey/{gate}/begin`, `/scim/v2/*`, `GET /v1/_usage/speed`; the 403 `user_tokens_gate_only`, `second_factor_unavailable` and 409 `flagged_passkeys_remain`, `removal_in_progress` answers. No gRPC, MCP or adapter change.
+- **Rolling upgrades:** an older replica has no passkey, SCIM or `gate_only` handling. Upgrade all replicas together before configuring them.
+- **Dependencies:** new `github.com/go-webauthn/webauthn` v0.18.2 (BSD-3-Clause), with `go-webauthn/x`, `fxamacker/cbor`, `golang-jwt/jwt/v5`, `google/go-tpm` and their dependencies (BSD, MIT, Apache-2.0).
+- **Images:** a minor tag rebuilds every image, all at 1.127.0 for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser`, the sandbox images and `loomcycle-media`.
+
 ## What's in v1.126.0
 
 *Sign-in for programs, apps and terminals; the Identity tool; live access control; and usage by purpose and tier. **Bridges and other programs sign in as external gates** instead of holding a tenant operator token: they sign who is talking with their own key, and loomcycle provisions the user and issues the token. The Telegram, Slack, Discord and Teams bridges can switch over and keep their existing users. **loomcycle is an OAuth 2.0 server for its own apps**, so an app signs a person in on loomcycle's login page through the configured gates; apps are registered in config or as `ClientDef`, and the TS client runs the PKCE flow. **`loomcycle login` signs a terminal in** by device code into the OS keychain, which the MCP thin client then uses. Trusted-proxy header gates (Cloudflare Access, AWS ALB, forward-auth) and an AWS IAM gate sign people in without a second login. **Agents can see who they work for:** `Context op=self` gains an identity block, `op=can` and `op=reach` answer "may I?" before trying, a read-only `Identity` tool looks up people and groups, and `{{identity}}` puts the user in the system prompt; the MCP `directory` tool is replaced by `identity`. **Access control can follow rule changes during a run** (`LOOMCYCLE_ACL_LIVE`), a write deny on a memory scope makes it read-only, snapshots carry the access-control rows, and team subscriptions run under their promoter's rules. **Every model and embedder call records what it was for and its tiers**, background calls are now billed, and usage reports gain time buckets, top-N and filters. Also: the text-to-speech substrate (nothing speaks yet), `File op=import` headings, and one Web UI menu. **Read the upgrade notes: nine migrations, the MCP `directory` tool removed, and background spend that now counts against token budgets.***
