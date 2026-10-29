@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -630,6 +631,56 @@ func TestReimport_BackdatedEditionIsRefused(t *testing.T) {
 		// The edition in force, imported again, is still a no-op.
 		if rep := reimport(t, d, ctx, mk("V3."), wk, 3_000_000)["reimport"].(map[string]any); rep["unchanged"] != float64(1) {
 			t.Errorf("re-running the current edition: %v", rep)
+		}
+	})
+}
+
+// Reimports of one work run one at a time: two at once each read the held parts
+// before the other wrote, and left two parts in force under one anchor — or, for a
+// work's first edition, a second document with no key.
+func TestReimport_ConcurrentReimportsOfOneWorkSerialise(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const n = 4
+		run := func(md, wk string, edition int64) {
+			var wg sync.WaitGroup
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md, "reimport": true, "work_key": wk, "edition_date": edition})
+					if r, err := d.Execute(ctx, b); err != nil || r.IsError {
+						t.Errorf("concurrent reimport: %v %s", err, r.Text)
+					}
+				}()
+			}
+			wg.Wait()
+		}
+		// Provision the scope first: concurrent first calls on a fresh scope race the
+		// schema migrations, which is not what this test is about.
+		if _, r := docExec(t, d, ctx, `{"op":"query_documents","scope":"user"}`); r.IsError {
+			t.Fatal(r.Text)
+		}
+		const wk = "law:ua/35"
+		run(insertEd1, wk, 1_000_000)
+		key := userKey(t, d, ctx)
+		res, err := d.query(ctx, key, `SELECT id FROM documents`)
+		if err != nil || len(res.Rows) != 1 {
+			t.Fatalf("concurrent first editions made %d documents (%v)", len(res.Rows), err)
+		}
+		docID := asStr(res.Rows[0][0])
+		if out, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/35"}`); r.IsError || out["document_id"] != docID {
+			t.Fatalf("the document does not hold the key: %v %s", out, r.Text)
+		}
+		run("# Act\n\n## Article 1\n\nOne changed.\n\n## Article 2\n\nTwo.\n\n## Article 3\n\nThree.\n", wk, 2_000_000)
+		res, err = d.query(ctx, key, `SELECT anchor, COUNT(*) FROM chunks c JOIN documents dd ON dd.id = c.document_id
+			WHERE c.document_id = ? AND c.id <> dd.root_chunk_id AND (c.invalid_at IS NULL OR c.invalid_at > 2000001) GROUP BY anchor`, docID)
+		if err != nil || len(res.Rows) != 3 {
+			t.Fatalf("anchors in force: %v %v", res, err)
+		}
+		for _, r := range res.Rows {
+			if asInt(r[1]) != 1 {
+				t.Errorf("anchor %s has %d parts in force", asStr(r[0]), asInt(r[1]))
+			}
 		}
 	})
 }

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -296,6 +297,15 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 	if wk == "" {
 		return errValidation("resolve_anchor: missing required field: work_key", "Pass the cited work's key, e.g. law:ua/2297-vi."), nil
 	}
+	if in.CreatePlaceholder {
+		// The same lock a first-edition import takes: filing a placeholder while the
+		// work is being imported would leave the import's copy keyless.
+		unlock, err := d.editions.lock(ctx, key, "work", wk)
+		if err != nil {
+			return errFrom("resolve_anchor: "+err.Error(), err), nil
+		}
+		defer unlock()
+	}
 	acl := d.newDocACL(ctx, key)
 	docID, rootID, status, err := d.documentByWorkKey(ctx, key, wk)
 	if err != nil {
@@ -405,6 +415,50 @@ func placeholderSlug(wk string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// editionLocks serialises, within this process, the reimports of one work and the
+// placeholder filings for one work key. Another replica is not covered; there, the
+// unique work_key index refuses a second claim, and the loser removes its copy.
+type editionLocks struct {
+	mu sync.Mutex
+	m  map[string]*editionLock
+}
+
+// editionLock is a one-slot channel, so a waiter gives up when its call is
+// cancelled; n counts holders and waiters, so the entry goes when nobody needs it.
+type editionLock struct {
+	slot chan struct{}
+	n    int
+}
+
+func (l *editionLocks) lock(ctx context.Context, key sqlmem.ScopeKey, kind, name string) (func(), error) {
+	k := strings.Join([]string{key.Tenant, key.Scope, key.ScopeID, kind, name}, "\x00")
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = map[string]*editionLock{}
+	}
+	e := l.m[k]
+	if e == nil {
+		e = &editionLock{slot: make(chan struct{}, 1)}
+		l.m[k] = e
+	}
+	e.n++
+	l.mu.Unlock()
+	forget := func() {
+		l.mu.Lock()
+		if e.n--; e.n == 0 {
+			delete(l.m, k)
+		}
+		l.mu.Unlock()
+	}
+	select {
+	case e.slot <- struct{}{}:
+		return func() { <-e.slot; forget() }, nil
+	case <-ctx.Done():
+		forget()
+		return nil, ctx.Err()
+	}
+}
+
 // incomingPart is one part of the edition being imported.
 type incomingPart struct {
 	c        mdChunk
@@ -444,8 +498,37 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	}
 	wk := strings.TrimSpace(in.WorkKey)
 	docID, rootID := in.DocumentID, ""
+	var docUnlock func()
+	// One reimport of a work at a time: each reads the held parts and then writes,
+	// so two at once both saw the old part and left two in force under one anchor,
+	// and two first editions both imported a document. Held from before the work is
+	// looked up to after the last write. Work key first, then document: every path
+	// takes them in that order.
+	if wk != "" {
+		unlock, err := d.editions.lock(ctx, key, "work", wk)
+		if err != nil {
+			return errFrom("import_md: "+err.Error(), err), nil
+		}
+		defer unlock()
+	}
+	lockDoc := func(id string) (tools.Result, bool) {
+		unlock, err := d.editions.lock(ctx, key, "document", id)
+		if err != nil {
+			return errFrom("import_md: "+err.Error(), err), false
+		}
+		docUnlock = unlock
+		return tools.Result{}, true
+	}
+	defer func() {
+		if docUnlock != nil {
+			docUnlock()
+		}
+	}()
 	switch {
 	case docID != "":
+		if r, ok := lockDoc(docID); !ok {
+			return r, nil
+		}
 		res, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ?`, docID)
 		if err != nil {
 			return errFrom("import_md: "+err.Error(), err), nil
@@ -463,6 +546,11 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		var err error
 		if docID, rootID, _, err = d.documentByWorkKey(ctx, key, wk); err != nil {
 			return errFrom("import_md: "+err.Error(), err), nil
+		}
+		if docID != "" {
+			if r, ok := lockDoc(docID); !ok {
+				return r, nil
+			}
 		}
 	default:
 		return errValidation("import_md: reimport needs document_id or work_key — the document this is an edition of", ""), nil
@@ -482,6 +570,9 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 		docID, rootID = resultField(res, "document_id"), resultField(res, "root_chunk_id")
 		if r := d.claimWorkKey(ctx, key, rootID, wk); r != nil {
+			// Another process claimed the key first (the lock is per process): drop the
+			// keyless copy rather than leave it beside the work.
+			_, _ = d.deleteDocument(ctx, key, mscope, docInput{ID: docID})
 			return *r, nil
 		}
 		if err := d.assignAnchors(ctx, key, mscope, docID, rootID); err != nil {

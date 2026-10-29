@@ -94,6 +94,9 @@ type Document struct {
 	// re-indexes before it lets go (see reindexSubtree). Guarded by reindexMu.
 	reindexMu  sync.Mutex
 	reindexing map[reindexDocKey]map[string]struct{}
+
+	// editions serialises the reimports of one work (see document_editions.go).
+	editions editionLocks
 }
 
 func (d *Document) Name() string { return "Document" }
