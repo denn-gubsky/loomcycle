@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
 
 // RFC FN P4 — retrieval that follows relations by kind.
@@ -22,8 +24,8 @@ func walkDoc(t *testing.T, d *Document, ctx context.Context) map[string]string {
 	docID := out["document_id"].(string)
 	ids := map[string]string{"doc": docID, "root": out["root_chunk_id"].(string)}
 	for _, c := range []struct{ name, body string }{
-		{"clause", "The licensee shall report under Article 12 savepoint."},
-		{"article", "Article 12 requires a quarterly report nesting."},
+		{"clause", "The licensee shall report under Article 12 savepoint rules."},
+		{"article", "Article 12 requires a quarterly report nesting rules."},
 		{"term", "Licensee means the holder of a permit."},
 		{"note", "Unrelated note."},
 	} {
@@ -259,4 +261,38 @@ func TestGraphRecall_EveryBranchOnBothTiers(t *testing.T) {
 			t.Errorf("related_to: %v %s", out, r.Text)
 		}
 	})
+}
+
+// search expand starts only from hits the caller may read: an unreadable hit is
+// dropped from the answer by the listing filter, and expanding from it would put
+// its chunk id and its relations into the answer anyway.
+func TestSearch_ExpandNeverStartsFromAnUnreadableHit(t *testing.T) {
+	d, _, base := mermaidDocFixture(t, "savepoint", "nesting", "secret", "public")
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	o, r := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+s.publicDoc+`","title":"Target","body":"other words"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	target := o["id"].(string)
+	if _, r := docExec(t, d, open, `{"op":"link_chunks","scope":"tenant","from_id":"`+s.secretChunk+`","to_id":"`+target+`","kind":"cites"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	// limit 1: the secret chunk is the only ranked hit, so the target can only
+	// arrive by expansion.
+	q := `{"op":"search","scope":"tenant","query":"savepoint secret","limit":1,"expand":{"kinds":["cites"]}}`
+	_, r = docExec(t, d, open, q)
+	if r.IsError || !strings.Contains(r.Text, `"expanded_via"`) || !strings.Contains(r.Text, target) {
+		t.Fatalf("control: expansion from the secret hit did not reach the target: %s", r.Text)
+	}
+	denied := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	_, r = docExec(t, d, denied, q)
+	if r.IsError {
+		t.Fatalf("search: %s", r.Text)
+	}
+	if strings.Contains(r.Text, s.secretChunk) || strings.Contains(r.Text, `"expanded_via"`) {
+		t.Errorf("an expansion from an unreadable hit reached the answer: %s", r.Text)
+	}
 }

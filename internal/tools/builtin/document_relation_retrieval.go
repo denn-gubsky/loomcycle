@@ -66,14 +66,39 @@ func (d *Document) expandHits(ctx context.Context, key sqlmem.ScopeKey, in docIn
 	if budget == 0 {
 		budget = expandDefaultBudget
 	}
+	// The expansion starts only from hits the caller may read. The listing filter
+	// drops an unreadable hit from the answer AFTER this runs, so expanding from
+	// one would put its id (from_chunk_id) and its relations into the answer anyway.
+	acl := d.newDocACL(ctx, key)
+	limits, err := acl.limitsReading(ctx)
+	if err != nil {
+		return nil, false, err
+	}
 	seen := map[string]bool{}
 	frontier := make([]string, 0, expandFromTop)
 	for _, h := range hits {
 		id, _ := h["chunk_id"].(string)
 		seen[id] = true
-		if len(frontier) < expandFromTop && id != "" {
-			frontier = append(frontier, id)
+		if len(frontier) >= expandFromTop || id == "" {
+			continue
 		}
+		if limits {
+			docID, _ := h["document_id"].(string)
+			if docID == "" {
+				continue
+			}
+			ok, err := acl.readable(ctx, docID)
+			if err != nil {
+				return nil, false, err
+			}
+			if !ok {
+				continue
+			}
+		}
+		frontier = append(frontier, id)
+	}
+	if len(frontier) == 0 {
+		return nil, false, nil
 	}
 	walkIn := docInput{Kinds: in.Expand.Kinds, AsOf: in.AsOf, Walk: "declared"}
 	walk, err := d.graphWalkSpec(ctx, walkIn)
