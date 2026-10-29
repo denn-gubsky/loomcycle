@@ -3612,6 +3612,42 @@ export interface OntologyProposal {
   status: "proposed" | "rejected";
   /** The proposal's own text; for a curator's proposal, its evidence. */
   body?: string;
+  /** "relations" for a proposed relation kind; absent for an entity type (RFC FO). */
+  section?: string;
+}
+
+/** One qualifier a relation statement may carry; empty values = any value. */
+export interface RelationQualifier {
+  name: string;
+  values?: string[];
+}
+
+/** One relation kind (RFC FO P1b). */
+export interface OntologyRelation {
+  name: string;
+  /** The kind this one is a sub-kind of. */
+  parent?: string;
+  /** The name seen from the target end; a symmetric kind is its own. */
+  inverse?: string;
+  domain?: string[];
+  range?: string[];
+  symmetric?: boolean;
+  asymmetric?: boolean;
+  irreflexive?: boolean;
+  transitive?: boolean;
+  transitive_within?: string;
+  functional?: boolean;
+  qualifiers?: RelationQualifier[];
+  discriminator?: string;
+  dated?: boolean;
+  walk?: boolean;
+  auto_assert?: boolean;
+  meaning?: string;
+  renamed_from?: string;
+  source: "base" | "tenant" | "reserved";
+  issues?: string[];
+  name_issue?: string;
+  chunk_id?: string;
 }
 
 export interface OntologyResponse {
@@ -3651,6 +3687,16 @@ export interface OntologyResponse {
   fact_versions?: { version: number; count: number }[];
   /** chunks.type values in use in the tenant scope that no class declares. */
   undeclared_types?: { type: string; count: number }[];
+  // RFC FO P1b — filled only when the document declares a Relations section.
+  /** The tenant's own relation kinds as written. */
+  relations?: OntologyRelation[];
+  /** The vocabulary in force (reserved + standard + yours); empty while draft. */
+  effective_relations?: OntologyRelation[];
+  /** Standard kinds the document does not declare — what adopt can copy in. */
+  adoptable_relations?: string[];
+  statement_versions?: { version: number; count: number }[];
+  /** Live statements of a dated kind that carry no date. */
+  undated_statements?: number;
 }
 
 /** Accept (put in force, in place) or reject (keep as a tombstone) a proposal. */
@@ -3670,9 +3716,14 @@ export function resolveOntologyProposal(
  * Copy a standard type into the document so it can be extended or subclassed. The
  * fields come from the seed server-side; the caller sends only the name.
  */
-export function adoptOntologyType(name: string, tenant?: string): Promise<OntologyResponse> {
+export function adoptOntologyType(
+  name: string,
+  tenant?: string,
+  section?: "relations",
+): Promise<OntologyResponse> {
   const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
-  return postJSON<OntologyResponse>(`/v1/_ontology/adopt${q}`, JSON.stringify({ name }));
+  const body = section ? { name, section } : { name };
+  return postJSON<OntologyResponse>(`/v1/_ontology/adopt${q}`, JSON.stringify(body));
 }
 
 export function getOntology(tenant?: string): Promise<OntologyResponse> {

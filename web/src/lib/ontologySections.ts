@@ -1,7 +1,7 @@
 // ontologySections — formatting for the sectioned ontology (RFC FO) in the
 // Settings → Ontology panel. Pure so it is tested without rendering.
 
-import type { OntologyFieldSpec, OntologyResponse, OntologyTerm } from "../api";
+import type { OntologyFieldSpec, OntologyRelation, OntologyResponse, OntologyTerm } from "../api";
 
 // typedFieldLabel renders one typed field the way an operator wrote it:
 // `rank: concept(normative-rank), required`. A plain text field with no flags
@@ -61,4 +61,59 @@ export function factsUnderOlderVocabulary(r: OntologyResponse): { older: number;
     else if (v.version < current) older += v.count;
   }
   return { older, unknown };
+}
+
+// relationSummary is the one-line description of a relation kind under its name in the
+// panel: direction, the classes at either end, characteristics, qualifiers and flags.
+export function relationSummary(r: OntologyRelation): string {
+  const parts: string[] = [];
+  if (r.symmetric) parts.push("either direction");
+  else if (r.inverse) parts.push(`inverse ${r.inverse}`);
+  if ((r.domain ?? []).length || (r.range ?? []).length) {
+    parts.push(`${(r.domain ?? []).join("|") || "anything"} → ${(r.range ?? []).join("|") || "anything"}`);
+  }
+  const traits = [
+    r.asymmetric && "asymmetric",
+    r.irreflexive && "irreflexive",
+    r.functional && "one target per source",
+    r.transitive && "transitive",
+    r.transitive_within && `transitive within ${r.transitive_within}`,
+    r.dated && "dated",
+  ].filter(Boolean) as string[];
+  parts.push(...traits);
+  if ((r.qualifiers ?? []).length) {
+    const qs = (r.qualifiers ?? []).map((q) =>
+      q.values?.length ? `${q.name}(${q.values.join("|")})` : q.name,
+    );
+    parts.push(`qualifiers ${qs.join(", ")}`);
+  }
+  if (r.discriminator) parts.push(`distinct per ${r.discriminator}`);
+  if (r.walk) parts.push("walked");
+  if (r.auto_assert) parts.push("auto-asserted");
+  if (r.renamed_from) parts.push(`renamed from ${r.renamed_from}`);
+  return parts.join(" · ");
+}
+
+// buildRelationTree nests relation kinds under their parent kind. A kind whose parent is
+// not in the list (a standard kind's parent shown elsewhere, say) is a root rather than
+// dropped — a kind missing from the panel is one the operator cannot see is in force.
+export interface RelationNode extends OntologyRelation {
+  children: RelationNode[];
+}
+
+export function buildRelationTree(relations: OntologyRelation[]): RelationNode[] {
+  const byName = new Map<string, RelationNode>();
+  relations.forEach((r) => byName.set(r.name, { ...r, children: [] }));
+  const roots: RelationNode[] = [];
+  byName.forEach((n) => {
+    const parent = n.parent ? byName.get(n.parent) : undefined;
+    if (parent && parent !== n) parent.children.push(n);
+    else roots.push(n);
+  });
+  const sort = (ns: RelationNode[]) => {
+    ns.sort((a, b) => a.name.localeCompare(b.name));
+    ns.forEach((n) => sort(n.children));
+  };
+  sort(roots);
+  return roots;
 }

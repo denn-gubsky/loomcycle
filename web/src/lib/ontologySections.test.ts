@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { classDirectiveNotes, factsUnderOlderVocabulary, typedFieldLabel } from "./ontologySections";
+import {
+  buildRelationTree,
+  classDirectiveNotes,
+  factsUnderOlderVocabulary,
+  relationSummary,
+  typedFieldLabel,
+} from "./ontologySections";
 import type { OntologyResponse } from "../api";
 
 describe("typedFieldLabel", () => {
@@ -44,5 +50,37 @@ describe("factsUnderOlderVocabulary", () => {
       ],
     } as OntologyResponse;
     expect(factsUnderOlderVocabulary(r)).toEqual({ older: 2, unknown: 7 });
+  });
+});
+
+describe("relationSummary", () => {
+  it("describes direction, ends, traits and qualifiers", () => {
+    expect(
+      relationSummary({
+        name: "stricter_than",
+        source: "tenant",
+        inverse: "looser_than",
+        domain: ["Provision"],
+        range: ["Provision"],
+        asymmetric: true,
+        qualifiers: [{ name: "aspect", values: ["security", "privacy"] }],
+        discriminator: "aspect",
+      }),
+    ).toBe(
+      "inverse looser_than · Provision → Provision · asymmetric · qualifiers aspect(security|privacy) · distinct per aspect",
+    );
+    expect(relationSummary({ name: "related", source: "base", symmetric: true })).toBe("either direction");
+  });
+});
+
+describe("buildRelationTree", () => {
+  it("nests sub-kinds and keeps orphans as roots", () => {
+    const tree = buildRelationTree([
+      { name: "cites", parent: "references", source: "base" },
+      { name: "references", source: "reserved" },
+      { name: "amends", parent: "changes", source: "tenant" },
+    ]);
+    expect(tree.map((n) => n.name)).toEqual(["amends", "references"]);
+    expect(tree[1].children.map((n) => n.name)).toEqual(["cites"]);
   });
 });
