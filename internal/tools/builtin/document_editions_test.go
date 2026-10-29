@@ -284,9 +284,11 @@ func TestHeadingSegment_DropsLetterlessSegments(t *testing.T) {
 	}
 }
 
-// A work held by a document the caller may not read: the refusal says the key is
-// taken (unavoidable) but not where.
-func TestResolveAnchor_UnreadableWorkDoesNotNameItsDocument(t *testing.T) {
+// A work held by a document the caller may not read is not found: a resolve is a
+// read, and an unreadable holder is answered exactly as no holder. Filing a
+// placeholder, or a reimport, would claim the key, so those say it is taken
+// (unavoidable — the unique key refuses a second holder) but not where.
+func TestResolveAnchor_UnreadableWorkIsNotFound(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	open := tenantDocCtx(base, nil)
 	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition1, "reimport": true,
@@ -297,9 +299,14 @@ func TestResolveAnchor_UnreadableWorkDoesNotNameItsDocument(t *testing.T) {
 	denied := tenantDocCtx(base, aclSet(t,
 		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
 		authz.Rule{Effect: authz.Deny, Actions: []string{"read", "write"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
-	_, r := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/9","anchor":"article-1"}`)
-	if !r.IsError || strings.Contains(r.Text, "/kb/secret") || strings.Contains(r.Text, "chunk_id") {
-		t.Errorf("resolve_anchor over an unreadable work: %s", r.Text)
+	out, r := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/9","anchor":"article-1"}`)
+	unheld, _ := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/none","anchor":"article-1"}`)
+	if r.IsError || out["found"] != false || len(out) != len(unheld) {
+		t.Errorf("resolve_anchor over an unreadable work = %s, an unheld one = %v", r.Text, unheld)
+	}
+	_, r = docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/9","create_placeholder":true}`)
+	if !r.IsError || strings.Contains(r.Text, "/kb/secret") {
+		t.Errorf("a placeholder over an unreadable work: %s", r.Text)
 	}
 	b, _ = json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition2, "reimport": true, "work_key": "law:ua/9"})
 	_, r = docExec(t, d, denied, string(b))

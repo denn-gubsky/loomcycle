@@ -356,6 +356,12 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 		if r, err := acl.document(ctx, "resolve_anchor", "read", docID); err != nil {
 			return errFrom("resolve_anchor: "+err.Error(), err), nil
 		} else if r != nil {
+			// A lookup is a read: an unreadable holder answers as no holder, so the
+			// op is not an oracle for which works the scope holds. Filing a
+			// placeholder would claim the key, which the unique key refuses either way.
+			if !in.CreatePlaceholder {
+				return jsonResult(map[string]any{"work_key": wk, "found": false})
+			}
 			return workKeyUnreadable("resolve_anchor", wk), nil
 		}
 	}
