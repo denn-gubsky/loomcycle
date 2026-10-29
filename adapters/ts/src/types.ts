@@ -3908,6 +3908,7 @@ export type DocumentToolInput = {
     | "reject_statement"
     | "list_statements"
     | "resolve_anchor"
+    | "describe_ontology"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"
