@@ -147,6 +147,10 @@ const documentInputSchema = `{
 		"reason":       {"type": "string", "description": "judge_fact: one sentence on WHY, quoted back to the operator. A verdict nobody can act on is a verdict nobody trusts. reject_statement: why the relation is wrong (required)."},
 		"subject":      {"type": "string", "description": "upsert_chunk: the thing this entity assertion is ABOUT, paired with type — emit both or neither. type says what kind of thing it is, subject names it. A plain document chunk has no subject; passing the pair is what marks a write as an entity the ontology governs."},
 		"source_quote": {"type": "string", "description": "upsert_chunk: the EXACT text this fact was derived from, copied verbatim from the source you read — not a paraphrase. It is what a later pass checks the claim against, and what an operator sees when they ask why the store believes this. Omit only when there is no source text (material you are recording as evidence in its own right)."},
+		"source_chunk_id": {"type": "string", "description": "upsert_chunk: the chunk of this scope the fact was taken from. The runtime links the fact to it (derived_from) with source_quote as evidence, so the fact can be checked against the passage and recall can point back to it. source_quote must occur in that chunk; char_start/char_end say where (or, with no source_quote, select it)."},
+		"char_start":  {"type": "integer", "description": "upsert_chunk with source_chunk_id: where the quote starts in the source chunk's text (characters)."},
+		"char_end":    {"type": "integer", "description": "upsert_chunk with source_chunk_id: where the quote ends (exclusive)."},
+		"about_ids":   {"type": "array", "items": {"type": "string"}, "description": "upsert_chunk: the subject nodes (entity chunks) this fact is about; the runtime writes the fact's about edges to them. A subject that is not a chunk of this scope is skipped and counted (about_skipped)."},
 		"across_scopes": {"type": "boolean", "description": "get_document / list_facts about: also look for this SUBJECT in the other scopes you can read (agent, user, tenant), matching on its natural_key. A subject exists once per scope, so its facts can be split across them — this is how \"what do we know about X\" stops depending on which scope you happened to read. Off by default: it costs up to three queries, and it never reaches another USER's scope."},
 		"natural_key": {"type": "string", "description": "create_document: pair it with type+subject to make the new document's ROOT the entity node itself, so /facts/<subject> IS the subject and its facts are its children. upsert_chunk: the stable identity of this entity or fact. Upserting twice with the same key updates ONE chunk instead of adding a second — use a derived form such as person:ada-lovelace, or subject|predicate|object for a fact. Unique within the scope. May be omitted when the chunk's type is a class whose identity fields are declared in the tenant ontology: the key is then built from those fields."},
 		"supersedes_id": {"type": "string", "description": "supersede_chunk: the id of the chunk being RETIRED by this one. The retired chunk is not deleted — it stays queryable so that questions about an earlier point in time still have an answer."},
@@ -236,6 +240,14 @@ type docInput struct {
 	// entity row so a later pass can check the claim against it, and so an operator
 	// asking "why do you believe this" has an answer.
 	SourceQuote string `json:"source_quote"`
+	// SourceChunkID / CharStart / CharEnd (upsert_chunk): the chunk of this scope a
+	// fact was taken from and where in it; the runtime records a derived_from
+	// statement with the quote and span as evidence. AboutIDs: the subject nodes
+	// the fact is about — the runtime writes the `about` edges (RFC FN P3a).
+	SourceChunkID string   `json:"source_chunk_id,omitempty"`
+	CharStart     *int     `json:"char_start,omitempty"`
+	CharEnd       *int     `json:"char_end,omitempty"`
+	AboutIDs      []string `json:"about_ids,omitempty"`
 	// Subject is WHAT an entity assertion is about, travelling with Type as a pair.
 	// First-class rather than encoded in the natural key, so it can be read, queried and
 	// checked — and so the tool can tell an entity assertion from a document write.
@@ -630,7 +642,7 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	case "set_path":
 		return d.setPath(ctx, key, in)
 	case "judge_fact":
-		return d.judgeFact(ctx, key, in)
+		return d.judgeFact(ctx, key, mscope, in)
 	case "propose_entity":
 		// RFC CA: files an INERT ontology proposal. Resolves its own tenant scope, so it
 		// is deliberately not routed through the caller's `scope` argument.
@@ -982,6 +994,9 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 		return err
 	}
 	if err := d.migrateAnchors(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateSourceGone(ctx, key); err != nil {
 		return err
 	}
 	return d.migrateOntologyVersion(ctx, key)
@@ -2449,6 +2464,10 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		for _, r := range res.Rows {
 			ids = append(ids, asStr(r[0]))
 		}
+		// Facts derived from this document's text keep their quotes (RFC FN P3a).
+		if err := d.snapshotDerivedQuotes(ctx, txnID, `{col} IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
+			return err
+		}
 		if err := d.deleteEdgesWhere(ctx, key, txnID, `from_id IN (SELECT id FROM chunks WHERE document_id = ?) OR to_id IN (SELECT id FROM chunks WHERE document_id = ?)`, docID, docID); err != nil {
 			return err
 		}
@@ -3202,6 +3221,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			// chunk_edges is the one that matches on EITHER endpoint, so it takes the
 			// id list twice.
 			edgeArgs := append(append([]any(nil), args...), args...)
+			if err := d.snapshotDerivedQuotes(ctx, txnID, `{col} IN (`+marks+`)`, args...); err != nil {
+				return err
+			}
 			if err := d.deleteEdgesWhere(ctx, key, txnID,
 				`from_id IN (`+marks+`) OR to_id IN (`+marks+`)`,
 				edgeArgs...); err != nil {

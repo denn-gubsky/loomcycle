@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -73,7 +74,7 @@ const (
 // when the judgement happened, and does nothing else. A judge cannot edit the claim, move
 // it, retire it, or invent a timestamp — so "the judge got it wrong" is always recoverable
 // by re-judging, and never by restoring content it overwrote.
-func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
 	verdict := strings.ToLower(strings.TrimSpace(in.Verdict))
 	var confidence float64
 	switch verdict {
@@ -158,6 +159,19 @@ func (d *Document) judgeFact(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			"to prevent. Leave it unjudged, which reads as unverified", ""), nil
 	}
 
+	// A fact taken from a document is checked against the document as it is NOW: a
+	// span that no longer occurs in its source chunk cannot support the claim,
+	// however well it once did (RFC FN P3a).
+	if verdict == "supported" {
+		holds, checked, serr := d.sourceStillHolds(ctx, key, mscope, chunkID)
+		if serr != nil {
+			return errFrom("judge_fact: "+serr.Error(), serr), nil
+		}
+		if checked && !holds {
+			return errBusiness("judge_fact: the fact's quote no longer occurs in the chunk it was taken from — the source changed (or is gone), so it cannot support the fact as written",
+				"Judge it unclear or unsupported, or re-derive the fact from the current text."), nil
+		}
+	}
 	now := time.Now().UnixNano()
 	if err := d.exec(ctx, key,
 		`UPDATE chunk_memory_meta SET confidence = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE chunk_id = ?`,

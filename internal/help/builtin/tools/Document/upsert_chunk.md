@@ -39,6 +39,15 @@ while keeping the old version, write the correction under a NEW key and then
 - `source_session_id` — rarely used: the id of the chat session the fact was
   distilled from, when it did not come off a pending item (`from_pending`
   supplies this itself and wins). Kept when a later upsert omits it.
+- `source_chunk_id` — the chunk of this scope (a passage of a document) the
+  fact was taken from. The fact is linked to it (`derived_from`) with your
+  `source_quote` as evidence, so it can be checked against the passage and
+  recall can point back to it. The quote must occur in that chunk.
+- `char_start` / `char_end` — where the quote sits in the source chunk's text
+  (characters). With no `source_quote`, they select it.
+- `about_ids` — the subject nodes (entity chunks) the fact is about. The fact
+  is linked to each (`about`); one that is not a chunk of this scope is skipped
+  and counted in `about_skipped`.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Every time field you omit keeps its stored value. The server sets the fact's
@@ -47,7 +56,8 @@ first-seen time itself and records who wrote it; you cannot set either.
 ## Returns
 
 `{id, natural_key, created}` — `created: true` for a new chunk, `false` for an
-update. Call `get_chunk` for the full chunk and its `entity` block.
+update. With `source_chunk_id`, also `derived_from: {statement_id, chunk_id,
+char_start, char_end}`; with `about_ids`, `about_written` and `about_skipped`. Call `get_chunk` for the full chunk and its `entity` block.
 
 ## Errors
 

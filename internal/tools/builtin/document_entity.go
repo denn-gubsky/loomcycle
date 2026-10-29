@@ -63,6 +63,19 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		return *refused, nil
 	}
 
+	// Checked before anything is written: a source that does not hold refuses the
+	// whole fact rather than leaving it without the link it was meant to carry.
+	src, refused, err := d.checkFactSource(ctx, key, mscope, in)
+	if err != nil {
+		return errFrom("upsert_chunk: source: "+err.Error(), err), nil
+	}
+	if refused != nil {
+		return *refused, nil
+	}
+	if src != nil && in.SourceQuote == "" {
+		in.SourceQuote = src.quote
+	}
+
 	existing, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey)
 	if err != nil {
 		return errFrom("upsert_chunk: lookup: "+err.Error(), err), nil
@@ -110,9 +123,9 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		if werr := d.writeChunkMeta(ctx, key, created.ID, in); werr != nil {
 			return errFrom("upsert_chunk: chunk created but its metadata write failed: "+werr.Error(), werr), nil
 		}
-		return okJSON(map[string]any{
-			"id": created.ID, "natural_key": in.NaturalKey, "created": true,
-		})
+		out := map[string]any{"id": created.ID, "natural_key": in.NaturalKey, "created": true}
+		d.afterFactUpsert(ctx, key, mscope, created.ID, in, src, out)
+		return okJSON(out)
 	}
 
 	// Update in place. Only the fields the caller actually supplied move, so an
@@ -134,9 +147,9 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if werr := d.writeChunkMeta(ctx, key, existing, in); werr != nil {
 		return errFrom("upsert_chunk: metadata write failed: "+werr.Error(), werr), nil
 	}
-	return okJSON(map[string]any{
-		"id": existing, "natural_key": in.NaturalKey, "created": false,
-	})
+	out := map[string]any{"id": existing, "natural_key": in.NaturalKey, "created": false}
+	d.afterFactUpsert(ctx, key, mscope, existing, in, src, out)
+	return okJSON(out)
 }
 
 // chunkIDByNaturalKey resolves the scope's chunk for a natural key, or "" when

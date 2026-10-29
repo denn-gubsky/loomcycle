@@ -2105,6 +2105,14 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 			if sp.SessionID != "" {
 				mem["source_session_id"] = sp.SessionID
 			}
+			// The DOCUMENT twin: a fact taken from a passage names it, so the
+			// passage the span sits in is one get_chunk away.
+			if sp.SourceChunkID != "" {
+				mem["source_chunk_id"] = sp.SourceChunkID
+				if sp.SourceDocumentID != "" {
+					mem["source_document_id"] = sp.SourceDocumentID
+				}
+			}
 			// WHEN THE FACT WAS OBSERVED, which recall did not return at all.
 			//
 			// The distilled sentence is tenseless ("Caroline went to a support group")

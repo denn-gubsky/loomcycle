@@ -4014,6 +4014,13 @@ export type DocumentToolInput = {
   anchor?: string;
   /** resolve_anchor: file a placeholder for a work not held yet. */
   create_placeholder?: boolean;
+  /** upsert_chunk: the chunk the fact was taken from (a derived_from link). */
+  source_chunk_id?: string;
+  /** upsert_chunk with source_chunk_id: where the quote sits (characters). */
+  char_start?: number;
+  char_end?: number;
+  /** upsert_chunk: the subject nodes the fact is about (runtime-written `about`). */
+  about_ids?: string[];
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before

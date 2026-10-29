@@ -120,10 +120,15 @@ func TestLinkChunks_RefusesARuntimeKind(t *testing.T) {
 				t.Errorf("propose %s: want kind_reserved, got %s", kind, r.Text)
 			}
 		}
-		// about stays writable through link_chunks: the consolidator files every
-		// fact's about edge that way. Proposing one is refused.
-		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"about"}`, a, b)); r.IsError {
-			t.Errorf("link about: %s", r.Text)
+		// about through link_chunks only from a fact (a consolidator still on the old
+		// path); from ordinary prose it is refused. Proposing one is refused.
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"about"}`, a, b)); !r.IsError || !strings.Contains(r.Text, "not a fact") {
+			t.Errorf("link about from prose: want a refusal, got %s", r.Text)
+		}
+		docID := firstDocOf(t, d, ctx, a)
+		fact := upsertIn(t, d, ctx, docID, "f|about|x", "a fact")
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"about"}`, fact, b)); r.IsError {
+			t.Errorf("link about from a fact: %s", r.Text)
 		}
 		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"about"}`, a, b)); !r.IsError {
 			t.Errorf("propose about was accepted")
@@ -520,4 +525,23 @@ func TestMigrateEdgeStatements_PreExistingEdgesReadIdentically(t *testing.T) {
 			t.Errorf("a duplicate undated statement was accepted on the rebuilt table")
 		}
 	})
+}
+
+func firstDocOf(t *testing.T, d *Document, ctx context.Context, chunkID string) string {
+	t.Helper()
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, chunkID))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	return out["document_id"].(string)
+}
+
+// upsertIn writes a fact into a document of the default user scope (any tier).
+func upsertIn(t *testing.T, d *Document, ctx context.Context, docID, key, body string) string {
+	t.Helper()
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":%q,"title":%q,"body":%q}`, docID, key, body, body))
+	if r.IsError {
+		t.Fatalf("upsert %s: %s", key, r.Text)
+	}
+	return out["id"].(string)
 }

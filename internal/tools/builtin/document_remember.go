@@ -90,6 +90,13 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 		Type:    strings.TrimSpace(in.Type),
 		Subject: strings.TrimSpace(in.Subject),
 	}
+	// THE EDGE A DISTILLED FACT GETS. A remembered fact named its subject and was
+	// still unreachable from it: the consolidator writes `about` to the subject's
+	// node, remember did not. Linked when the scope has a node for the subject;
+	// remember does not mint one.
+	if target := d.rememberAboutTarget(ctx, key, next.Subject, next.Type); target != "" {
+		next.AboutIDs = []string{target}
+	}
 	return d.upsertChunk(ctx, key, mscope, next)
 }
 

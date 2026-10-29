@@ -2612,6 +2612,12 @@ agents:
           args.document_id = docID;
           args.natural_key = naturalKey;
           var res = JSON.parse(Document(args));
+          // A subject the runtime could not link (not a chunk of this scope) costs
+          // reachability from it, never the fact: counted, as the old edge write was.
+          if (res && res.about_skipped) {
+            st.entity_failed += res.about_skipped;
+            if (!st.entity_error) { st.entity_error = "about edges skipped: " + res.about_skipped; }
+          }
           if (res && res.id) { st.entity_ids[memo] = res.id; return res.id; }
           // Parsed but no id: a refusal that did not throw. It used to return "" silently
           // and increment NOTHING, so a pass could lose every entity write and report a
@@ -2926,6 +2932,38 @@ agents:
         // erasure report keys on it — without it a placed fact cannot be surfaced as
         // residue for the subject who produced it.
         if (sourceID) { factArgs.source_session_id = sourceID; }
+        // EVERY THING THE FACT IS ABOUT, linked by the runtime as it writes the fact
+        // (upsert_chunk about_ids) — `about` is the runtime's own edge kind, so a
+        // manual one from ordinary prose can be refused. The fact is HOMED under the
+        // first subject — the tree needs exactly one parent — and REFERENCES the rest,
+        // which is the whole difference between containment and reference: read the
+        // shop and the fact filed under Dave is still reachable, through an edge
+        // rather than through the tree.
+        //
+        // No subject node means there is nothing to point an edge at: the fact is
+        // still stored, just not reachable by traversal. A subject the runtime cannot
+        // link is skipped and counted (about_skipped), never the fact — an
+        // unreachable fact is a retrieval gap, a missing fact is data loss.
+        var aboutIDs = [];
+        if (subjID) { aboutIDs.push(subjID); }
+        if (subjID && fact.subjects && fact.subjects.length > 1) {
+          for (var si = 1; si < fact.subjects.length; si++) {
+            var alsoName = fact.subjects[si];
+            if (!nonEmpty(alsoName)) { continue; }
+            // The SAME type arbitration as the home subject: canonicalType keeps one
+            // subject on one node however many kinds the extractor spells it, and the
+            // fallback covers a kind the tenant does not declare. Without this a
+            // referenced subject would be minted under whatever the fact's own type
+            // happened to be, which is the fact's kind and not the subject's.
+            var alsoType = canonicalType(st, scope, ENTITY_FALLBACK_TYPE, alsoName);
+            var alsoHome = homeFor(st, scope, docID, alsoType, alsoName);
+            if (!alsoHome || !alsoHome.root) { continue; }
+            aboutIDs.push(alsoHome.root);
+            st.subject_refs++;
+          }
+        }
+        if (aboutIDs.length > 0) { factArgs.about_ids = aboutIDs; }
+
         // FILED UNDER ITS SUBJECT. No parent_id: create_chunk makes a chunk with
         // none a child of the document's root, which IS the entity — so the fact
         // becomes a child of the thing it is about, and the dossier is one read.
@@ -2954,56 +2992,6 @@ agents:
           }
         }
 
-        // No subject node means there is nothing to point an edge at. The fact is
-        // already stored; it is simply not reachable by traversal.
-        if (subjID) {
-          try {
-            // `scope`, NOT CONFIG.scope. Every other write in this function already
-            // threads the placed scope; this one did not, so a fact the ontology sent
-            // to the tenant plane got its subject node and its fact node there and
-            // then tried to join them in the caller's scope, where neither exists.
-            // The two nodes were stored and the edge silently was not — leaving a
-            // placed fact unreachable from the person it is about, which is the whole
-            // reason the entity tier exists. Measured live: 3 facts placed, 3 edges
-            // lost, 0 inbound edges on the subject.
-            Document({ op: "link_chunks", scope: scope,
-                       from_id: factID, to_id: subjID, kind: "about" });
-          } catch (e) {
-            st.entity_failed++; // the nodes exist; only the edge is missing
-            if (!st.entity_error) { st.entity_error = errText(e); }
-          }
-        }
-
-        // EVERY OTHER THING THE FACT IS ABOUT. It is HOMED under the first subject —
-        // the tree needs exactly one parent — and REFERENCES the rest, which is the
-        // whole difference between containment and reference: read the shop and the
-        // fact filed under Dave is still reachable, through an edge rather than
-        // through the tree.
-        //
-        // Same best-effort posture as the home edge: a reference that fails to write
-        // costs reachability from that one subject and never the fact.
-        if (subjID && fact.subjects && fact.subjects.length > 1) {
-          for (var si = 1; si < fact.subjects.length; si++) {
-            var alsoName = fact.subjects[si];
-            if (!nonEmpty(alsoName)) { continue; }
-            // The SAME type arbitration as the home subject: canonicalType keeps one
-            // subject on one node however many kinds the extractor spells it, and the
-            // fallback covers a kind the tenant does not declare. Without this a
-            // referenced subject would be minted under whatever the fact's own type
-            // happened to be, which is the fact's kind and not the subject's.
-            var alsoType = canonicalType(st, scope, ENTITY_FALLBACK_TYPE, alsoName);
-            var alsoHome = homeFor(st, scope, docID, alsoType, alsoName);
-            if (!alsoHome || !alsoHome.root) { continue; }
-            try {
-              Document({ op: "link_chunks", scope: scope,
-                         from_id: factID, to_id: alsoHome.root, kind: "about" });
-              st.subject_refs++;
-            } catch (e2) {
-              st.entity_failed++;
-              if (!st.entity_error) { st.entity_error = errText(e2); }
-            }
-          }
-        }
         // The FACT CHUNK landed. The edge may not have, and that stays best-effort:
         // an unreachable fact is a retrieval gap, a missing fact is data loss, and
         // only the second may fail a write.
