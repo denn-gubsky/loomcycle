@@ -1,12 +1,19 @@
 package builtin
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 const schemesOntologyMD = "# Tenant Ontology\n\n" +
@@ -190,5 +197,54 @@ func TestProposeEntity_Concepts(t *testing.T) {
 	ctx2 := installTenantOntology(t, d2, base2, "# Tenant Ontology\n\n## Classes\n@section classes\n\n### Provision\n", memrank.OntologyConfirmedStatus)
 	if _, r := docExec(t, d2, ctx2, `{"op":"propose_entity","scope":"user","section":"schemes","name":"x","parent":"topics"}`); !r.IsError || !strings.Contains(r.Text, "no Schemes section") {
 		t.Errorf("a concept proposal without a Schemes section: %s", r.Text)
+	}
+}
+
+// TestOntologySchemes_MirrorAndConceptRangeOnPostgres runs the tag mirror and the
+// concept range check on the postgres tier.
+func TestOntologySchemes_MirrorAndConceptRangeOnPostgres(t *testing.T) {
+	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+	if dsn == "" {
+		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the postgres tier")
+	}
+	raw, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	dropAllSqlmemScopes(t, raw)
+	mgr, err := sqlmem.NewPostgres(context.Background(), sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000})
+	if err != nil {
+		t.Fatalf("NewPostgres: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = mgr.Close()
+		dropAllSqlmemScopes(t, raw)
+		_ = raw.Close()
+	})
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	d := &Document{Store: st, SqlMem: mgr, Bus: channels.NewBus()}
+	base := tools.WithAgentName(context.Background(), "pg-schemes")
+	base = tools.WithRunIdentity(base, tools.RunIdentityValue{UserID: "u1", TenantID: "tnt"})
+	ctx := installTenantOntology(t, d, base, schemesOntologyMD, memrank.OntologyConfirmedStatus)
+
+	if rep, err := d.MirrorSchemeTags(ctx, false); err != nil || rep.Added != 6 {
+		t.Fatalf("mirror on postgres = %#v, %v", rep, err)
+	}
+	if rep, _ := d.MirrorSchemeTags(ctx, true); len(rep.Stale) != 0 {
+		t.Errorf("mirror not idempotent on postgres: %#v", rep)
+	}
+	read, _ := d.tenantOntologyRead(ctx)
+	concept := schemeConcepts(read)["file-plan/compliance"].ChunkID
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Returns","type":"Provision"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"filed_under"}`,
+		out["root_chunk_id"], concept)); r.IsError {
+		t.Errorf("concept link on postgres: %s", refusalText(r))
 	}
 }
