@@ -280,6 +280,7 @@ func (d *Document) PruneEmptyDossiers(ctx context.Context, key sqlmem.ScopeKey, 
 		  FROM documents d
 		  JOIN chunk_memory_meta m ON m.chunk_id = d.root_chunk_id
 		 WHERE d.updated_at < ?
+		   AND COALESCE(d.status, '') <> 'unresolved'
 		   AND (SELECT COUNT(*) FROM chunks c
 		         WHERE c.document_id = d.id AND c.id <> d.root_chunk_id) = 0
 		   AND (SELECT COUNT(*) FROM chunk_edges e WHERE e.to_id = d.root_chunk_id) = 0`,
