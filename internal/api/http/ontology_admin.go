@@ -133,6 +133,15 @@ type ontologyResponse struct {
 	SchemeMirrorStale []string `json:"scheme_mirror_stale,omitempty"`
 	// SchemeMirror reports what the mirror changed, on the confirm that ran it.
 	SchemeMirror *builtin.SchemeMirrorReport `json:"scheme_mirror,omitempty"`
+
+	// --- RFC FO P1c-2. Filled only when the document declares an Instances section.
+
+	// Instances is each instance's adoption state as a confirm would leave it (a dry
+	// run): pending, unchanged, linked, renamed or error — with the registry key — and
+	// the subjects adopted from instances no longer declared (kept, never erased).
+	Instances *builtin.InstanceReport `json:"instances,omitempty"`
+	// InstanceAdoption reports what adoption did, on the confirm that ran it.
+	InstanceAdoption *builtin.InstanceReport `json:"instance_adoption,omitempty"`
 }
 
 // ontologyTenant is the tenant every ontology route reads and writes: an admin's
@@ -243,12 +252,21 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 	// flip is what the operator asked for — and is reported as a note.
 	var mirror *builtin.SchemeMirrorReport
 	var mirrorNote string
+	var adoption *builtin.InstanceReport
 	if status == meminject.OntologyConfirmedStatus {
 		if rep, merr := doc.MirrorSchemeTags(dctx, false); merr != nil {
 			slog.Warn("ontology: scheme tag mirror failed", "tenant", tenant, "err", merr)
 			mirrorNote = "The concept tags could not be applied this time; confirm again to retry."
 		} else if rep.Concepts > 0 {
 			mirror = &rep
+		}
+		// Instances become real here and only here (RFC FO §6): an explicit confirm, never
+		// boot or an edit. Same failure posture as the mirror.
+		if rep, aerr := doc.AdoptInstances(dctx, false); aerr != nil {
+			slog.Warn("ontology: instance adoption failed", "tenant", tenant, "err", aerr)
+			mirrorNote = strings.TrimSpace(mirrorNote + " The instances could not be adopted this time; confirm again to retry.")
+		} else if len(rep.Instances) > 0 || len(rep.Orphaned) > 0 {
+			adoption = &rep
 		}
 	}
 
@@ -260,6 +278,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	resp.SchemeMirror = mirror
+	resp.InstanceAdoption = adoption
 	if mirrorNote != "" {
 		resp.Notes = append(resp.Notes, mirrorNote)
 	}
@@ -295,6 +314,11 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		sectioned = len(read.Sections) > 0
 		relRead = read
 		_, hasRelations = read.SectionChunks[meminject.SectionRelations]
+		if _, hasInstances := read.SectionChunks[meminject.SectionInstances]; hasInstances {
+			if dry, derr := doc.AdoptInstances(dctx, true); derr == nil {
+				resp.Instances = &dry
+			}
+		}
 		if _, hasSchemes := read.SectionChunks[meminject.SectionSchemes]; hasSchemes {
 			resp.Schemes = read.Schemes
 			if dry, derr := doc.MirrorSchemeTags(dctx, true); derr == nil {
