@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -47,7 +48,34 @@ type AuthRemovalRow struct {
 	UnboundAt  time.Time
 	ErasedAt   time.Time
 	CreatedBy  string
+	// Stage is the stage the sweeper has claimed and is running
+	// (RemovalStageUnbinding, RemovalStageErasing), "" between stages.
+	// While it is set the removal is not re-enabled by anyone.
+	Stage string
+	// PriorStatus is the user's status when the removal disabled it
+	// (UserStatusPending carries an approval still owed); "" when the user
+	// was disabled already or the row predates it.
+	PriorStatus string
 }
+
+// RestoredStatus is the status a re-enable from removal r gives back: pending
+// when the user owed an approval, else active.
+func RestoredStatus(r AuthRemovalRow) string {
+	if r.PriorStatus == UserStatusPending || r.Reason == RemovalReasonSCIMPending || r.Reason == RemovalReasonSCIMReactivatingPending {
+		return UserStatusPending
+	}
+	return "active"
+}
+
+// The stages the sweeper claims (AuthRemovalClaimStage).
+const (
+	RemovalStageUnbinding = "unbinding"
+	RemovalStageErasing   = "erasing"
+)
+
+// ErrRemovalBusy: the removal's stage is running (or the user was erased),
+// so it cannot be re-enabled now.
+var ErrRemovalBusy = errors.New("store: the removal is running a stage")
 
 // AuthLifecycleStore persists the external gates' replay cache and the
 // removal stage machine.
@@ -61,13 +89,34 @@ type AuthLifecycleStore interface {
 	// AuthAssertionDeleteExpired removes rows that expired before `before`.
 	AuthAssertionDeleteExpired(ctx context.Context, before time.Time) (int, error)
 
-	// AuthRemovalStart inserts a removal unless the subject already has one,
-	// and reports whether it did. An existing removal is never restarted,
-	// so a repeated revoke or sync cannot postpone its stages. One exception:
-	// a removal of any other reason takes over a SCIM gate's (its gate,
-	// reason and created_by; the timings stay), so an operator's or another
-	// gate's removal is never left behind a row SCIM could re-enable.
+	// AuthRemovalStart disables the user and records its removal, in ONE
+	// transaction (the user row locked first), and reports whether a row
+	// was written. The row's PriorStatus is the user's status before (""
+	// when it was disabled already). An existing removal of a user who is
+	// disabled is never restarted, so a repeated revoke or sync cannot
+	// postpone its stages; a row behind a user who is NOT disabled is stale
+	// and is replaced by a fresh one. One exception: a removal of any other
+	// reason takes over a SCIM gate's (its gate, reason and created_by; the
+	// timings stay; a pending SCIM reason carries into PriorStatus), so an
+	// operator's or another gate's removal is never left behind a row SCIM
+	// could re-enable. *ErrNotFound{Kind:"user"} for an unknown user.
 	AuthRemovalStart(ctx context.Context, row AuthRemovalRow) (bool, error)
+	// AuthRemovalClaimStage claims a due stage for the sweeper, in one
+	// transaction (the user row locked first): only while the user is
+	// still disabled, the removal exists, is not a SCIM re-enable in
+	// progress, and runs no other stage, does Stage become `stage` (a
+	// retry of the same stage claims again). false otherwise. Marking the
+	// stage done clears it.
+	AuthRemovalClaimStage(ctx context.Context, tenantID, subject, stage string) (bool, error)
+	// AuthRemovalReactivate ends a removal and re-enables the user, in ONE
+	// transaction (the user row locked first): only while the user is still
+	// disabled and its removal is still `seen` (same reason and disabled_at),
+	// idle (no stage claimed) and not erased, is the row deleted and the user
+	// set to the status it had — pending when it owed an approval
+	// (PriorStatus pending, or a pending SCIM reason), else active. Anything
+	// changed since `seen` was read answers false and changes nothing, so a
+	// disable or a stage that landed meanwhile is never overwritten.
+	AuthRemovalReactivate(ctx context.Context, seen AuthRemovalRow) (restored string, ok bool, err error)
 	// AuthRemovalGet returns the subject's removal.
 	// *ErrNotFound{Kind:"auth_removal"} when there is none.
 	AuthRemovalGet(ctx context.Context, tenantID, subject string) (AuthRemovalRow, error)
@@ -81,8 +130,8 @@ type AuthLifecycleStore interface {
 	// not yet unbound and UnbindDueAt <= now, or unbound, not erased, with a
 	// non-zero EraseDueAt <= now. Oldest first.
 	AuthRemovalDue(ctx context.Context, now time.Time, limit int) ([]AuthRemovalRow, error)
-	// AuthRemovalMarkUnbound sets unbound_at if it is unset; false when it
-	// was already set or there is no row.
+	// AuthRemovalMarkUnbound sets unbound_at if it is unset (and clears the
+	// claimed stage); false when it was already set or there is no row.
 	AuthRemovalMarkUnbound(ctx context.Context, tenantID, subject string, at time.Time) (bool, error)
 	// AuthRemovalMarkErased sets erased_at if unbound_at is set and
 	// erased_at is not; false otherwise (an erase never skips the unbind).

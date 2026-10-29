@@ -354,29 +354,23 @@ func (s *Server) handleSCIMCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	// The create ceiling bounds how many users one provider adds per window.
-	// It is read before the insert, so concurrent creates may pass it by the
-	// requests in flight; the removal ceiling does not depend on it (its
-	// base excludes the window's creates).
-	created, err := s.store.SCIMUsersCreatedSince(ctx, c.g.Name, c.tenant, time.Now().UTC().Add(-config.SCIMRemovalWindow))
-	if err != nil {
-		scimError(w, http.StatusInternalServerError, "", "could not create the user")
-		return
-	}
-	if limit := c.g.SCIM.CreateCeiling(); created >= limit {
-		s.scimAudit(c, "auth_gate_sync_refused", "", fmt.Sprintf("create over the ceiling of %d in 24h", limit))
-		scimError(w, http.StatusTooManyRequests, "", fmt.Sprintf(
-			"this SCIM gate has created %d users in the last 24 hours, its ceiling (max_sync_creates); try again later", limit))
-		return
-	}
 	// The resource is reserved first: its unique userName decides a race
-	// between two creates before any user is made.
+	// between two creates before any user is made, and the create ceiling
+	// (max_sync_creates) is counted in the same locked store transaction, so
+	// concurrent creates cannot pass it together.
 	row := store.SCIMUserRow{Gate: c.g.Name, TenantID: c.tenant, SCIMID: id, Subject: scimSubject(c, id), UserName: st.userName,
 		UserNameKey: key, ExternalID: st.externalID, Attributes: string(attrs)}
-	if err := s.store.SCIMUserCreate(ctx, row); err != nil {
+	limit := c.g.SCIM.CreateCeiling()
+	if err := s.store.SCIMUserCreate(ctx, row, time.Now().UTC().Add(-config.SCIMRemovalWindow), limit); err != nil {
 		var conflict *store.ErrConflict
 		if errors.As(err, &conflict) {
 			scimError(w, http.StatusConflict, "uniqueness", "a user with this userName exists")
+			return
+		}
+		if errors.Is(err, store.ErrSCIMCreateCeiling) {
+			s.scimAudit(c, "auth_gate_sync_refused", "", fmt.Sprintf("create over the ceiling of %d in 24h", limit))
+			scimError(w, http.StatusTooManyRequests, "", fmt.Sprintf(
+				"this SCIM gate has created %d users in the last 24 hours, its ceiling (max_sync_creates); try again later", limit))
 			return
 		}
 		scimError(w, http.StatusInternalServerError, "", "could not create the user")
@@ -996,8 +990,24 @@ func (s *Server) scimRemove(ctx context.Context, c scimCtx, subject string) *sci
 func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) (string, *scimRefusal) {
 	refused := &scimRefusal{http.StatusForbidden, "", "this user was disabled outside SCIM; an operator re-enables it"}
 	internal := &scimRefusal{http.StatusInternalServerError, "", "the request could not be completed"}
-	claimed, err := s.store.SCIMReactivateClaim(ctx, c.g.Name, c.tenant, subject)
+	now := time.Now().UTC()
+	since := now.Add(-config.SCIMRemovalWindow)
+	// Re-enables are held to the removal ceiling too: a provider that
+	// re-enables users it removed long ago would otherwise grow the base
+	// its percentage ceiling is taken of (the base also leaves them out).
+	base, err := s.store.SCIMRemovalBase(ctx, c.g.Name, c.tenant, since)
+	if err != nil {
+		return "", internal
+	}
+	ceiling := c.g.SCIM.RemovalCeiling(base)
+	claimed, err := s.store.SCIMReactivateClaim(ctx, c.g.Name, c.tenant, subject, now, since, ceiling)
 	switch {
+	case errors.Is(err, store.ErrSCIMReactivationCeiling):
+		s.scimAudit(c, "auth_gate_sync_refused", subject, fmt.Sprintf("re-enable over the ceiling of %d in 24h", ceiling))
+		return "", &scimRefusal{http.StatusTooManyRequests, "", fmt.Sprintf(
+			"this SCIM gate has re-enabled %d users in the last 24 hours, its ceiling (max_sync_removals); try again later", ceiling)}
+	case errors.Is(err, store.ErrRemovalBusy):
+		return "", &scimRefusal{http.StatusConflict, "", "this user's removal is running a stage (or the user was erased); try again later"}
 	case err != nil:
 		slog.Error("scim: claiming a removal failed", "gate", c.g.Name, "err", err)
 		return "", internal
@@ -1015,13 +1025,14 @@ func (s *Server) scimReactivate(ctx context.Context, c scimCtx, subject string) 
 	case !ok:
 		return "", refused
 	}
+	// The re-enable is committed: it is recorded whatever follows.
+	s.recordLifecycleEvent("auth_user_reactivated", c.tenant, subject, c.g.Name, store.RemovalReasonSCIM, "gate:"+c.g.Name)
 	if err := s.rejoinFloorGroups(ctx, c.tenant, subject, "gate:"+c.g.Name); err != nil {
 		// The user is back with fewer groups than the floor: less, never
 		// more. An operator adds them.
 		slog.Error("scim: a re-enabled user did not join the floor groups", "gate", c.g.Name, "err", err)
 		return "", internal
 	}
-	s.recordLifecycleEvent("auth_user_reactivated", c.tenant, subject, c.g.Name, store.RemovalReasonSCIM, "gate:"+c.g.Name)
 	return restored, nil
 }
 

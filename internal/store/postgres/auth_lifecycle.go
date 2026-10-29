@@ -49,11 +49,15 @@ func (s *Store) AuthAssertionDeleteExpired(ctx context.Context, before time.Time
 
 const removalCols = `tenant_id, subject, gate, reason, disabled_at, unbind_due_at, erase_due_at, unbound_at, erased_at, created_by`
 
+// removalReadCols is what a read returns: removalCols, then the claimed
+// stage and the prior status (written by their own statements).
+const removalReadCols = removalCols + `, stage, prior_status`
+
 func scanRemoval(row pgx.Row) (store.AuthRemovalRow, error) {
 	var r store.AuthRemovalRow
 	var eraseDue, unbound, erased *time.Time
 	if err := row.Scan(&r.TenantID, &r.Subject, &r.Gate, &r.Reason, &r.DisabledAt, &r.UnbindDueAt,
-		&eraseDue, &unbound, &erased, &r.CreatedBy); err != nil {
+		&eraseDue, &unbound, &erased, &r.CreatedBy, &r.Stage, &r.PriorStatus); err != nil {
 		return store.AuthRemovalRow{}, err
 	}
 	r.DisabledAt, r.UnbindDueAt = r.DisabledAt.UTC(), r.UnbindDueAt.UTC()
@@ -83,24 +87,128 @@ func (s *Store) AuthRemovalStart(ctx context.Context, row store.AuthRemovalRow) 
 	if row.UnbindDueAt.Before(row.DisabledAt) || (!row.EraseDueAt.IsZero() && row.EraseDueAt.Before(row.UnbindDueAt)) {
 		return false, fmt.Errorf("auth removal: stages must be due in order (disable <= unbind <= erase)")
 	}
-	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO auth_removals (`+removalCols+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, NULL, $8)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The user row first: every removal write locks it before the removal,
+	// so none of them can deadlock another.
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, row.TenantID, row.Subject).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, &store.ErrNotFound{Kind: "user", ID: row.Subject}
+	}
+	if err != nil {
+		return false, fmt.Errorf("auth removal start: read user: %w", err)
+	}
+	prior := ""
+	if status != "disabled" {
+		prior = status
+		// A row behind a user who is not disabled is no longer in force.
+		if _, err := tx.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = $1 AND subject = $2`, row.TenantID, row.Subject); err != nil {
+			return false, fmt.Errorf("auth removal start: drop a stale removal: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE tenant_id = $1 AND subject = $2`, row.TenantID, row.Subject); err != nil {
+			return false, fmt.Errorf("auth removal start: disable: %w", err)
+		}
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO auth_removals (`+removalCols+`, prior_status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, NULL, $8, $9)
 		ON CONFLICT (tenant_id, subject) DO UPDATE SET gate = excluded.gate, reason = excluded.reason,
-			created_by = excluded.created_by
+			created_by = excluded.created_by,
+			prior_status = CASE WHEN auth_removals.reason IN ('`+store.RemovalReasonSCIMPending+`', '`+store.RemovalReasonSCIMReactivatingPending+`')
+				THEN '`+store.UserStatusPending+`' ELSE auth_removals.prior_status END
 		WHERE auth_removals.reason IN (`+store.SCIMRemovalReasons+`) AND excluded.reason NOT IN (`+store.SCIMRemovalReasons+`)`,
 		row.TenantID, row.Subject, row.Gate, row.Reason, row.DisabledAt.UTC(), row.UnbindDueAt.UTC(),
-		pgNullTime(row.EraseDueAt), row.CreatedBy)
+		pgNullTime(row.EraseDueAt), row.CreatedBy, prior)
 	if err != nil {
 		return false, fmt.Errorf("auth removal start: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// AuthRemovalClaimStage implements store.AuthLifecycleStore.
+func (s *Store) AuthRemovalClaimStage(ctx context.Context, tenantID, subject, stage string) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, tenantID, subject).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("auth removal claim: read user: %w", err)
+	}
+	if status != "disabled" {
+		return false, nil
+	}
+	tag, err := tx.Exec(ctx, `UPDATE auth_removals SET stage = $3
+		WHERE tenant_id = $1 AND subject = $2 AND (stage = '' OR stage = $3)
+		  AND reason NOT IN ('`+store.RemovalReasonSCIMReactivating+`', '`+store.RemovalReasonSCIMReactivatingPending+`')`,
+		tenantID, subject, stage)
+	if err != nil {
+		return false, fmt.Errorf("auth removal claim: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// AuthRemovalReactivate implements store.AuthLifecycleStore.
+func (s *Store) AuthRemovalReactivate(ctx context.Context, seen store.AuthRemovalRow) (string, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM users WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`, seen.TenantID, seen.Subject).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: read user: %w", err)
+	}
+	if status != "disabled" {
+		return "", false, nil
+	}
+	cur, err := scanRemoval(tx.QueryRow(ctx, `SELECT `+removalReadCols+` FROM auth_removals WHERE tenant_id = $1 AND subject = $2 FOR UPDATE`,
+		seen.TenantID, seen.Subject))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: read removal: %w", err)
+	}
+	if cur.Reason != seen.Reason || !cur.DisabledAt.Equal(seen.DisabledAt) || cur.Stage != "" || !cur.ErasedAt.IsZero() {
+		return "", false, nil
+	}
+	restored := store.RestoredStatus(cur)
+	if _, err := tx.Exec(ctx, `DELETE FROM auth_removals WHERE tenant_id = $1 AND subject = $2`, seen.TenantID, seen.Subject); err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE users SET status = $3 WHERE tenant_id = $1 AND subject = $2`, seen.TenantID, seen.Subject, restored); err != nil {
+		return "", false, fmt.Errorf("auth removal reactivate: user: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, err
+	}
+	return restored, true, nil
 }
 
 // AuthRemovalGet implements store.AuthLifecycleStore.
 func (s *Store) AuthRemovalGet(ctx context.Context, tenantID, subject string) (store.AuthRemovalRow, error) {
 	r, err := scanRemoval(s.pool.QueryRow(ctx,
-		`SELECT `+removalCols+` FROM auth_removals WHERE tenant_id = $1 AND subject = $2`, tenantID, subject))
+		`SELECT `+removalReadCols+` FROM auth_removals WHERE tenant_id = $1 AND subject = $2`, tenantID, subject))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.AuthRemovalRow{}, &store.ErrNotFound{Kind: "auth_removal", ID: subject}
 	}
@@ -129,13 +237,13 @@ func (s *Store) listRemovals(ctx context.Context, q string, args ...any) ([]stor
 
 // AuthRemovalList implements store.AuthLifecycleStore.
 func (s *Store) AuthRemovalList(ctx context.Context, tenantID string) ([]store.AuthRemovalRow, error) {
-	return s.listRemovals(ctx, `SELECT `+removalCols+` FROM auth_removals WHERE tenant_id = $1
+	return s.listRemovals(ctx, `SELECT `+removalReadCols+` FROM auth_removals WHERE tenant_id = $1
 		ORDER BY disabled_at, subject`, tenantID)
 }
 
 // AuthRemovalListAllTenants implements store.AuthLifecycleStore.
 func (s *Store) AuthRemovalListAllTenants(ctx context.Context) ([]store.AuthRemovalRow, error) {
-	return s.listRemovals(ctx, `SELECT `+removalCols+` FROM auth_removals ORDER BY disabled_at, tenant_id, subject`)
+	return s.listRemovals(ctx, `SELECT `+removalReadCols+` FROM auth_removals ORDER BY disabled_at, tenant_id, subject`)
 }
 
 // AuthRemovalDue implements store.AuthLifecycleStore.
@@ -143,7 +251,7 @@ func (s *Store) AuthRemovalDue(ctx context.Context, now time.Time, limit int) ([
 	if limit <= 0 {
 		limit = 100
 	}
-	return s.listRemovals(ctx, `SELECT `+removalCols+` FROM auth_removals
+	return s.listRemovals(ctx, `SELECT `+removalReadCols+` FROM auth_removals
 		WHERE (unbound_at IS NULL AND unbind_due_at <= $1)
 		   OR (unbound_at IS NOT NULL AND erased_at IS NULL AND erase_due_at IS NOT NULL AND erase_due_at <= $1)
 		ORDER BY disabled_at, tenant_id, subject LIMIT $2`, now.UTC(), limit)
@@ -151,7 +259,7 @@ func (s *Store) AuthRemovalDue(ctx context.Context, now time.Time, limit int) ([
 
 // AuthRemovalMarkUnbound implements store.AuthLifecycleStore.
 func (s *Store) AuthRemovalMarkUnbound(ctx context.Context, tenantID, subject string, at time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE auth_removals SET unbound_at = $1
+	tag, err := s.pool.Exec(ctx, `UPDATE auth_removals SET unbound_at = $1, stage = ''
 		WHERE tenant_id = $2 AND subject = $3 AND unbound_at IS NULL`, at.UTC(), tenantID, subject)
 	if err != nil {
 		return false, fmt.Errorf("auth removal unbound: %w", err)
@@ -161,7 +269,7 @@ func (s *Store) AuthRemovalMarkUnbound(ctx context.Context, tenantID, subject st
 
 // AuthRemovalMarkErased implements store.AuthLifecycleStore.
 func (s *Store) AuthRemovalMarkErased(ctx context.Context, tenantID, subject string, at time.Time) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE auth_removals SET erased_at = $1
+	tag, err := s.pool.Exec(ctx, `UPDATE auth_removals SET erased_at = $1, stage = ''
 		WHERE tenant_id = $2 AND subject = $3 AND unbound_at IS NOT NULL AND erased_at IS NULL`, at.UTC(), tenantID, subject)
 	if err != nil {
 		return false, fmt.Errorf("auth removal erased: %w", err)

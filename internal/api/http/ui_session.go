@@ -133,6 +133,22 @@ func (s *Server) requestSecure(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// transportCookie is a Web UI cookie under the session cookie's transport
+// rule, the one rule every sign-in cookie follows (the session's, the
+// passkey ceremony's): over TLS (requestSecure) it is Secure, and its name
+// is the caller's __Host- one, which a browser accepts only on a Secure
+// cookie. A plain cookie is written only to a plain-HTTP request, which
+// sessionRefusal admits only outside strict mode or with
+// LOOMCYCLE_UI_INSECURE_COOKIES (the documented plain-HTTP exception).
+// maxAge 0 is a browser-session cookie, negative deletes it.
+func (s *Server) transportCookie(r *http.Request, name, value string, maxAge int) *http.Cookie {
+	c := &http.Cookie{Name: name, Value: value, Path: "/", MaxAge: maxAge, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode}
+	if !s.requestSecure(r) {
+		c.Secure = false
+	}
+	return c
+}
+
 // sessionCookieName is the cookie a request of this transport uses. Each
 // transport reads only its own name: over HTTPS a plain lc_session cookie, which
 // a network attacker can plant from an http:// page, is never read.
@@ -502,14 +518,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, ident 
 	}
 	// No Max-Age: the cookie lives as long as the browser session, and the
 	// server enforces the idle and absolute timeouts on the row.
-	http.SetCookie(w, &http.Cookie{
-		Name:     s.sessionCookieName(r),
-		Value:    base64.RawURLEncoding.EncodeToString(id),
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
-	})
+	http.SetCookie(w, s.transportCookie(r, s.sessionCookieName(r), base64.RawURLEncoding.EncodeToString(id), 0))
 	// The bearer cookie of earlier releases goes the first time the browser
 	// signs in again.
 	http.SetCookie(w, expiredCookie(webui.LegacyBearerCookie, secure))

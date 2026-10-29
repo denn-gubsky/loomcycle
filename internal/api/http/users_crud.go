@@ -294,6 +294,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		switch err := s.reactivateRemoved(r.Context(), tenant, subject, by); {
 		case err == nil:
 			req.Status = nil
+		case errors.Is(err, errRemovalBusy):
+			writeJSONError(w, http.StatusConflict, "removal_in_progress", err.Error())
+			return
 		case errors.Is(err, errNoRemoval):
 		case isNotFound(err):
 			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
@@ -317,6 +320,18 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if isNotFound(disableErr) {
 			writeJSONError(w, http.StatusNotFound, "user_not_found", "no such user in this tenant")
 			return
+		}
+		if errors.Is(disableErr, store.ErrUserPending) {
+			// Disabling a pending user is its rejection. A plain disable
+			// would drop the approval it owes (a later re-enable would make
+			// it active unapproved), so it runs as a removal, which records
+			// the pending status and takes over a pending SCIM removal: a
+			// re-enable brings the user back pending.
+			by := ""
+			if p, ok := auth.PrincipalFromContext(ctx); ok {
+				by = p.Subject
+			}
+			disableErr = s.startRemoval(ctx, tenant, subject, "", store.RemovalReasonOperator, by)
 		}
 		// Revocation always runs, the disable's failure included: the
 		// operator asked for the user's access to end, and an error is

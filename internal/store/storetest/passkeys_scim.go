@@ -18,6 +18,9 @@ import (
 // that stick), single-use WebAuthn ceremonies, and SCIM resources confined to
 // their gate and tenant.
 
+// noCeiling is a ceiling no contract test reaches.
+const noCeiling = 1 << 30
+
 func pkRow(tenant, subject string, id byte) store.UserPasskeyRow {
 	return store.UserPasskeyRow{
 		CredentialID: []byte{0xc0, id, 0x01, 0xff}, TenantID: tenant, Subject: subject,
@@ -216,7 +219,7 @@ func scimUser(tenant, id, name string) store.SCIMUserRow {
 func testSCIMUserLifecycleIsTenantConfined(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	u := scimUser("acme", "u1", "Alice@Acme.example")
-	if err := s.SCIMUserCreate(ctx, u); err != nil {
+	if err := s.SCIMUserCreate(ctx, u, time.Time{}, noCeiling); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.SCIMUserGet(ctx, "okta", "acme", "u1")
@@ -229,14 +232,14 @@ func testSCIMUserLifecycleIsTenantConfined(t *testing.T, s store.Store) {
 		}
 	}
 	// The same name in another tenant is fine; in this one it is a conflict.
-	if err := s.SCIMUserCreate(ctx, scimUser("beta", "u1", "alice@acme.example")); err != nil {
+	if err := s.SCIMUserCreate(ctx, scimUser("beta", "u1", "alice@acme.example"), time.Time{}, noCeiling); err != nil {
 		t.Fatal(err)
 	}
 	var conflict *store.ErrConflict
-	if err := s.SCIMUserCreate(ctx, scimUser("acme", "u2", "ALICE@acme.example")); !errors.As(err, &conflict) || conflict.Kind != "scim_user_name" {
+	if err := s.SCIMUserCreate(ctx, scimUser("acme", "u2", "ALICE@acme.example"), time.Time{}, noCeiling); !errors.As(err, &conflict) || conflict.Kind != "scim_user_name" {
 		t.Fatalf("duplicate name: %v", err)
 	}
-	if err := s.SCIMUserCreate(ctx, scimUser("acme", "u3", "carol")); err != nil {
+	if err := s.SCIMUserCreate(ctx, scimUser("acme", "u3", "carol"), time.Time{}, noCeiling); err != nil {
 		t.Fatal(err)
 	}
 	rows, total, err := s.SCIMUserList(ctx, "okta", "acme", store.SCIMFilter{}, 0, 10)
@@ -284,7 +287,7 @@ func testSCIMUserLifecycleIsTenantConfined(t *testing.T, s store.Store) {
 		t.Fatalf("a deleted resource still reads: %v", err)
 	}
 	// Its name is free again.
-	if err := s.SCIMUserCreate(ctx, scimUser("acme", "u4", "alice2")); err != nil {
+	if err := s.SCIMUserCreate(ctx, scimUser("acme", "u4", "alice2"), time.Time{}, noCeiling); err != nil {
 		t.Fatalf("reuse a deleted name: %v", err)
 	}
 	if err := s.SCIMUserDiscard(ctx, "okta", "acme", "u4"); err != nil {
@@ -319,7 +322,7 @@ func testSCIMGroupLifecycle(t *testing.T, s store.Store) {
 		t.Fatalf("unknown: %v", err)
 	}
 	for _, u := range []store.SCIMUserRow{scimUser("acme", "m1", "m1"), scimUser("acme", "m2", "m2")} {
-		if err := s.SCIMUserCreate(ctx, u); err != nil {
+		if err := s.SCIMUserCreate(ctx, u, time.Time{}, noCeiling); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -397,6 +400,12 @@ func testSCIMRemoveUserHoldsTheCeilingUnderConcurrency(t *testing.T, s store.Sto
 		}
 	}
 	// Outside the window, another gate's and another tenant's do not count.
+	for _, u := range []store.UserRow{{TenantID: "acme", Subject: "old"}, {TenantID: "acme", Subject: "x1"}, {TenantID: "beta", Subject: "x2"}} {
+		u.AccessMode, u.Status = "isolated", "active"
+		if err := s.UserCreate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, r := range []store.AuthRemovalRow{scimRemovalRow("acme", "old", "okta", now.Add(-48*time.Hour)),
 		scimRemovalRow("acme", "x1", "other", now), scimRemovalRow("beta", "x2", "okta", now)} {
 		if ok, err := s.AuthRemovalStart(ctx, r); !ok || err != nil {
@@ -482,7 +491,7 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	if rm, _ := s.AuthRemovalGet(ctx, "acme", "pend"); rm.Reason != store.RemovalReasonSCIMPending || userStatus(t, s, "acme", "pend") != "disabled" {
 		t.Fatalf("pending removal: %+v, status %s", rm, userStatus(t, s, "acme", "pend"))
 	}
-	if ok, _ := s.SCIMReactivateClaim(ctx, "other-gate", "acme", "pend"); ok {
+	if ok, _ := s.SCIMReactivateClaim(ctx, "other-gate", "acme", "pend", time.Now(), time.Time{}, noCeiling); ok {
 		t.Fatal("another gate claimed the SCIM gate's removal")
 	}
 	// A re-enable is a claim, then a finish: an unclaimed removal does not
@@ -491,7 +500,7 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 		t.Fatal("a re-enable finished without a claim")
 	}
 	for i := 0; i < 2; i++ { // a retried claim continues
-		if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "pend"); !ok || err != nil {
+		if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "pend", time.Now(), time.Time{}, noCeiling); !ok || err != nil {
 			t.Fatalf("claim %d: %v %v", i, ok, err)
 		}
 	}
@@ -517,7 +526,7 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	op := store.AuthRemovalRow{TenantID: "acme", Subject: "act", Reason: store.RemovalReasonOperator, DisabledAt: now.Add(time.Minute),
 		UnbindDueAt: now.Add(2 * time.Hour), CreatedBy: "op"}
 	// Even mid re-enable: the claim does not hold an operator off.
-	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "act"); !ok || err != nil {
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "act", time.Now(), time.Time{}, noCeiling); !ok || err != nil {
 		t.Fatalf("claim act: %v %v", ok, err)
 	}
 	if ok, err := s.AuthRemovalStart(ctx, op); !ok || err != nil {
@@ -539,9 +548,19 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 	old := now.Add(-10 * 24 * time.Hour)
 	stale := store.AuthRemovalRow{TenantID: "acme", Subject: "stale", Reason: store.RemovalReasonOperator, DisabledAt: old,
 		UnbindDueAt: old.Add(24 * time.Hour), EraseDueAt: old.Add(48 * time.Hour), CreatedBy: "op"}
-	if ok, err := s.AuthRemovalStart(ctx, stale); !ok || err != nil {
-		t.Fatalf("seed a stale row: %v %v", ok, err)
+	seedStale := func(r store.AuthRemovalRow) {
+		t.Helper()
+		if ok, err := s.AuthRemovalStart(ctx, r); !ok || err != nil {
+			t.Fatalf("seed a stale row: %v %v", ok, err)
+		}
+		// A row left behind a user who is active again (an older release's
+		// re-enable, or a failure part-way).
+		active := "active"
+		if err := s.UserUpdate(ctx, "acme", r.Subject, store.UserPatch{Status: &active}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	seedStale(stale)
 	fresh := scimRemovalRow("acme", "stale", "okta", now)
 	if got, err := s.SCIMRemoveUser(ctx, fresh, since, 10); !got || err != nil {
 		t.Fatalf("remove under a stale row: %v %v", got, err)
@@ -568,9 +587,7 @@ func testSCIMRemoveAndReactivateKeepOwnership(t *testing.T, s store.Store) {
 		t.Fatal(err)
 	}
 	stale.Subject = "stale2"
-	if ok, err := s.AuthRemovalStart(ctx, stale); !ok || err != nil {
-		t.Fatalf("seed: %v %v", ok, err)
-	}
+	seedStale(stale)
 	if _, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "stale2", "okta", now), since, 1); !errors.Is(err, store.ErrSCIMRemovalCeiling) {
 		t.Fatalf("a stale-row removal over the ceiling: %v", err)
 	}
@@ -601,7 +618,7 @@ func testOperatorDisableTakesOnlySCIMRows(t *testing.T, s store.Store) {
 			t.Fatalf("remove %s: %v %v", sub, got, err)
 		}
 	}
-	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "s2"); !ok || err != nil {
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "s2", time.Now(), time.Time{}, noCeiling); !ok || err != nil {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
 	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "op", AccessMode: "isolated", Status: "disabled"}); err != nil {
@@ -625,6 +642,20 @@ func testOperatorDisableTakesOnlySCIMRows(t *testing.T, s store.Store) {
 		if _, ok, _ := s.SCIMReactivate(ctx, "okta", "acme", sub); ok {
 			t.Fatalf("%s: SCIM re-enabled a disowned user", sub)
 		}
+	}
+	// A pending user, or one under a pending SCIM removal, keeps its owed
+	// approval: a plain disable is refused.
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "waiting", AccessMode: "isolated", Status: store.UserStatusPending}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.OperatorDisableUser(ctx, "acme", "waiting"); !errors.Is(err, store.ErrUserPending) {
+		t.Fatalf("a plain disable of a pending user: %v", err)
+	}
+	if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "waiting", "okta", now), since, 10); !got || err != nil {
+		t.Fatalf("scim remove pending: %v %v", got, err)
+	}
+	if _, err := s.OperatorDisableUser(ctx, "acme", "waiting"); !errors.Is(err, store.ErrUserPending) {
+		t.Fatalf("a plain disable over a pending SCIM removal: %v", err)
 	}
 	if ok, err := s.OperatorDisableUser(ctx, "acme", "op"); ok || err != nil {
 		t.Fatalf("disowned an operator's removal: %v %v", ok, err)
@@ -687,11 +718,11 @@ func testSCIMRemovalBaseAndCreatesCountTheWindow(t *testing.T, s store.Store) {
 	for i, at := range []time.Time{old, now, now, now} {
 		r := scimUser("acme", fmt.Sprintf("c%d", i), fmt.Sprintf("c%d@acme.test", i))
 		r.CreatedAt = at
-		if err := s.SCIMUserCreate(ctx, r); err != nil {
+		if err := s.SCIMUserCreate(ctx, r, time.Time{}, noCeiling); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SCIMUserCreate(ctx, scimUser("beta", "c9", "c9@beta.test")); err != nil {
+	if err := s.SCIMUserCreate(ctx, scimUser("beta", "c9", "c9@beta.test"), time.Time{}, noCeiling); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := s.SCIMUserMarkDeleted(ctx, "okta", "acme", "c2", now); !ok || err != nil {
@@ -701,8 +732,41 @@ func testSCIMRemovalBaseAndCreatesCountTheWindow(t *testing.T, s store.Store) {
 	if err := s.SCIMUserDiscard(ctx, "okta", "acme", "c3"); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.SCIMUsersCreatedSince(ctx, "okta", "acme", before); n != 2 || err != nil {
-		t.Fatalf("created since = %d %v, want 2 (c1, and the deleted c2)", n, err)
+	// The window holds c1 and the deleted c2 (not c0, before it; not the
+	// discarded c3; not beta's c9): a ceiling of 2 is reached, 3 is not.
+	if err := s.SCIMUserCreate(ctx, scimUser("acme", "x1", "x1@acme.test"), before, 2); !errors.Is(err, store.ErrSCIMCreateCeiling) {
+		t.Fatalf("a create at the ceiling: %v", err)
+	}
+	if _, err := s.SCIMUserGet(ctx, "okta", "acme", "x1"); !pwgNotFound(err) {
+		t.Fatalf("a refused create left a resource: %v", err)
+	}
+	if err := s.SCIMUserCreate(ctx, scimUser("acme", "x1", "x1@acme.test"), before, 3); err != nil {
+		t.Fatalf("a create under the ceiling: %v", err)
+	}
+	// Concurrent creates never pass the ceiling together.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	made, refused := 0, 0
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			err := s.SCIMUserCreate(ctx, scimUser("gamma", fmt.Sprintf("g%d", i), fmt.Sprintf("g%d@gamma.test", i)), before, 3)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				made++
+			case errors.Is(err, store.ErrSCIMCreateCeiling):
+				refused++
+			default:
+				t.Errorf("create %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if made != 3 || refused != 5 {
+		t.Fatalf("made %d, refused %d of 8 concurrent creates under a ceiling of 3", made, refused)
 	}
 	got, err := s.SCIMUsersGetMany(ctx, "okta", "acme", []string{"c0", "c1", "c1", "c9", "nope"})
 	if err != nil {
@@ -761,6 +825,260 @@ func testUserPasskeyDeleteKeepingNeverTakesTheLastUsable(t *testing.T, s store.S
 	}
 }
 
+// A removal start disables the user in the same write, remembers a pending
+// user's owed approval (also through a takeover of a pending SCIM row), and
+// replaces a stale row behind a user who is not disabled.
+func testAuthRemovalStartDisablesAndRemembersPending(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, u := range []store.UserRow{{Subject: "act", Status: "active"}, {Subject: "pend", Status: store.UserStatusPending},
+		{Subject: "spend", Status: store.UserStatusPending}} {
+		u.TenantID, u.AccessMode = "acme", "isolated"
+		if err := s.UserCreate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	op := func(sub string) store.AuthRemovalRow {
+		return store.AuthRemovalRow{TenantID: "acme", Subject: sub, Reason: store.RemovalReasonOperator, DisabledAt: now,
+			UnbindDueAt: now.Add(time.Hour), CreatedBy: "op"}
+	}
+	for sub, prior := range map[string]string{"act": "active", "pend": store.UserStatusPending} {
+		if ok, err := s.AuthRemovalStart(ctx, op(sub)); !ok || err != nil {
+			t.Fatalf("start %s: %v %v", sub, ok, err)
+		}
+		if st := userStatus(t, s, "acme", sub); st != "disabled" {
+			t.Fatalf("%s: status %s after a start", sub, st)
+		}
+		if rm, _ := s.AuthRemovalGet(ctx, "acme", sub); rm.PriorStatus != prior {
+			t.Fatalf("%s: prior status %q, want %q", sub, rm.PriorStatus, prior)
+		}
+	}
+	// A takeover of a pending SCIM row carries the owed approval.
+	if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", "spend", "okta", now), now.Add(-time.Hour), 10); !got || err != nil {
+		t.Fatalf("scim remove: %v %v", got, err)
+	}
+	if ok, err := s.AuthRemovalStart(ctx, op("spend")); !ok || err != nil {
+		t.Fatalf("takeover: %v %v", ok, err)
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "spend"); rm.Reason != store.RemovalReasonOperator || rm.PriorStatus != store.UserStatusPending {
+		t.Fatalf("after the takeover: %+v", rm)
+	}
+	if _, err := s.AuthRemovalStart(ctx, op("ghost")); !pwgNotFound(err) {
+		t.Fatalf("an unknown user: %v", err)
+	}
+}
+
+// The sweeper claims a stage only of a disabled user's removal that is not a
+// SCIM re-enable in progress; while a stage runs (or after an erasure)
+// nobody re-enables the user; marking the stage done releases it.
+func testAuthRemovalStageClaimExcludesReEnables(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	since := now.Add(-time.Hour)
+	for _, sub := range []string{"a", "b", "c"} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SCIMUserCreate(ctx, store.SCIMUserRow{Gate: "okta", TenantID: "acme", SCIMID: sub, Subject: sub,
+			UserName: sub, UserNameKey: sub, Attributes: `{}`}, time.Time{}, noCeiling); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", sub, "okta", now), since, 10); !got || err != nil {
+			t.Fatalf("remove %s: %v %v", sub, got, err)
+		}
+	}
+	// a: the sweeper claims the unbind; SCIM cannot claim, nobody deletes.
+	if ok, err := s.AuthRemovalClaimStage(ctx, "acme", "a", store.RemovalStageUnbinding); !ok || err != nil {
+		t.Fatalf("claim unbind: %v %v", ok, err)
+	}
+	if ok, err := s.AuthRemovalClaimStage(ctx, "acme", "a", store.RemovalStageUnbinding); !ok || err != nil {
+		t.Fatalf("a retried claim: %v %v", ok, err)
+	}
+	if ok, _ := s.AuthRemovalClaimStage(ctx, "acme", "a", store.RemovalStageErasing); ok {
+		t.Fatal("a second stage claimed while one runs")
+	}
+	if _, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "a", now, since, noCeiling); !errors.Is(err, store.ErrRemovalBusy) {
+		t.Fatalf("a re-enable mid-stage: %v", err)
+	}
+	if seen, _ := s.AuthRemovalGet(ctx, "acme", "a"); true {
+		if _, ok, _ := s.AuthRemovalReactivate(ctx, seen); ok {
+			t.Fatal("a removal mid-stage was re-enabled")
+		}
+	}
+	if ok, err := s.AuthRemovalMarkUnbound(ctx, "acme", "a", now); !ok || err != nil {
+		t.Fatalf("mark unbound: %v %v", ok, err)
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "a"); rm.Stage != "" {
+		t.Fatalf("the stage outlived its mark: %+v", rm)
+	}
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "a", now, since, noCeiling); !ok || err != nil {
+		t.Fatalf("a re-enable between stages: %v %v", ok, err)
+	}
+	// b: a SCIM re-enable in progress holds the sweeper off.
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "b", now, since, noCeiling); !ok || err != nil {
+		t.Fatalf("claim b: %v %v", ok, err)
+	}
+	if ok, _ := s.AuthRemovalClaimStage(ctx, "acme", "b", store.RemovalStageUnbinding); ok {
+		t.Fatal("the sweeper claimed a stage of a re-enable in progress")
+	}
+	// c: erased — never re-enabled; an active user's removal is never claimed.
+	if ok, _ := s.AuthRemovalClaimStage(ctx, "acme", "c", store.RemovalStageUnbinding); !ok {
+		t.Fatal("claim c")
+	}
+	if _, err := s.AuthRemovalMarkUnbound(ctx, "acme", "c", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AuthRemovalMarkErased(ctx, "acme", "c", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "c", now, since, noCeiling); !errors.Is(err, store.ErrRemovalBusy) {
+		t.Fatalf("a re-enable of an erased user: %v", err)
+	}
+	if seen, _ := s.AuthRemovalGet(ctx, "acme", "c"); true {
+		if _, ok, _ := s.AuthRemovalReactivate(ctx, seen); ok {
+			t.Fatal("an erased user was re-enabled")
+		}
+	}
+	if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: "on", AccessMode: "isolated", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.AuthRemovalClaimStage(ctx, "acme", "on", store.RemovalStageUnbinding); ok {
+		t.Fatal("a stage claimed for a user with no removal")
+	}
+}
+
+// New SCIM re-enables are held to a ceiling per window; a retried claim is
+// not counted again.
+func testSCIMReactivateClaimIsHeldToTheCeiling(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	since := now.Add(-time.Hour)
+	for _, sub := range []string{"a", "b", "c"} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SCIMUserCreate(ctx, store.SCIMUserRow{Gate: "okta", TenantID: "acme", SCIMID: sub, Subject: sub,
+			UserName: sub, UserNameKey: sub, Attributes: `{}`}, time.Time{}, noCeiling); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", sub, "okta", now), since, 10); !got || err != nil {
+			t.Fatalf("remove %s: %v %v", sub, got, err)
+		}
+	}
+	for _, sub := range []string{"a", "b"} {
+		if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", sub, now, since, 2); !ok || err != nil {
+			t.Fatalf("claim %s: %v %v", sub, ok, err)
+		}
+	}
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "a", now, since, 2); !ok || err != nil {
+		t.Fatalf("a retried claim at the ceiling: %v %v", ok, err)
+	}
+	if _, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "c", now, since, 2); !errors.Is(err, store.ErrSCIMReactivationCeiling) {
+		t.Fatalf("a third re-enable under a ceiling of 2: %v", err)
+	}
+	if rm, _ := s.AuthRemovalGet(ctx, "acme", "c"); rm.Reason != store.RemovalReasonSCIM {
+		t.Fatalf("a refused claim changed the row: %+v", rm)
+	}
+	// Re-enables before the window do not count.
+	if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", "c", now, now.Add(time.Minute), 1); !ok || err != nil {
+		t.Fatalf("a claim in a fresh window: %v %v", ok, err)
+	}
+}
+
+// The removal writes that race on one user — a SCIM re-enable's finish, an
+// operator's disable, a removal start, the sweeper's stage claim — all lock
+// the user row before the removal row, so none of them deadlocks another
+// (Postgres would abort one with 40P01 otherwise).
+func testSCIMRemovalWritesNeverDeadlock(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	since := now.Add(-time.Hour)
+	for i := 0; i < 40; i++ {
+		sub := fmt.Sprintf("d%d", i)
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := s.SCIMRemoveUser(ctx, scimRemovalRow("acme", sub, "okta", now), since, noCeiling); !got || err != nil {
+			t.Fatalf("remove %s: %v %v", sub, got, err)
+		}
+		if ok, err := s.SCIMReactivateClaim(ctx, "okta", "acme", sub, now, since, noCeiling); !ok || err != nil {
+			t.Fatalf("claim %s: %v %v", sub, ok, err)
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 4)
+		run := func(k int, fn func() error) {
+			wg.Add(1)
+			go func() { defer wg.Done(); errs[k] = fn() }()
+		}
+		run(0, func() error { _, _, err := s.SCIMReactivate(ctx, "okta", "acme", sub); return err })
+		run(1, func() error { _, err := s.OperatorDisableUser(ctx, "acme", sub); return err })
+		run(2, func() error {
+			_, err := s.AuthRemovalStart(ctx, store.AuthRemovalRow{TenantID: "acme", Subject: sub, Reason: store.RemovalReasonOperator,
+				DisabledAt: now, UnbindDueAt: now.Add(time.Hour), CreatedBy: "op"})
+			return err
+		})
+		run(3, func() error {
+			_, err := s.AuthRemovalClaimStage(ctx, "acme", sub, store.RemovalStageUnbinding)
+			return err
+		})
+		wg.Wait()
+		for k, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d, writer %d: %v", i, k, err)
+			}
+		}
+	}
+}
+
+// An operator's re-enable is one write over the removal it read: it gives
+// back the status the user had (pending stays pending), and anything that
+// changed since — a takeover, a stage, a re-enable — makes it a no-op.
+func testAuthRemovalReactivateOnlyOverTheRowItRead(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, u := range []store.UserRow{{Subject: "act", Status: "active"}, {Subject: "pend", Status: store.UserStatusPending},
+		{Subject: "moved", Status: "active"}} {
+		u.TenantID, u.AccessMode = "acme", "isolated"
+		if err := s.UserCreate(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.AuthRemovalStart(ctx, store.AuthRemovalRow{TenantID: "acme", Subject: u.Subject, Reason: store.RemovalReasonDormant,
+			DisabledAt: now, UnbindDueAt: now.Add(time.Hour)}); !ok || err != nil {
+			t.Fatalf("start %s: %v %v", u.Subject, ok, err)
+		}
+	}
+	for sub, want := range map[string]string{"act": "active", "pend": store.UserStatusPending} {
+		seen, _ := s.AuthRemovalGet(ctx, "acme", sub)
+		if st, ok, err := s.AuthRemovalReactivate(ctx, seen); !ok || err != nil || st != want {
+			t.Fatalf("%s: %q %v %v, want %q", sub, st, ok, err, want)
+		}
+		if got := userStatus(t, s, "acme", sub); got != want {
+			t.Fatalf("%s: status %s", sub, got)
+		}
+		if _, err := s.AuthRemovalGet(ctx, "acme", sub); !pwgNotFound(err) {
+			t.Fatalf("%s: the removal outlived the re-enable: %v", sub, err)
+		}
+		if _, ok, _ := s.AuthRemovalReactivate(ctx, seen); ok {
+			t.Fatalf("%s: re-enabled twice", sub)
+		}
+	}
+	// Another removal took the row over after it was read: no re-enable.
+	seen, _ := s.AuthRemovalGet(ctx, "acme", "moved")
+	if _, err := s.AuthRemovalDelete(ctx, "acme", "moved"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.AuthRemovalStart(ctx, store.AuthRemovalRow{TenantID: "acme", Subject: "moved", Reason: store.RemovalReasonRevoked,
+		DisabledAt: now.Add(time.Minute), UnbindDueAt: now.Add(time.Hour)}); !ok || err != nil {
+		t.Fatalf("restart: %v %v", ok, err)
+	}
+	if _, ok, err := s.AuthRemovalReactivate(ctx, seen); ok || err != nil {
+		t.Fatalf("a re-enable over a removal that changed: %v %v", ok, err)
+	}
+	if got := userStatus(t, s, "acme", "moved"); got != "disabled" {
+		t.Fatalf("status %s after a refused re-enable", got)
+	}
+}
+
 // Deleting a user removes its passkeys and SCIM rows, and only its own.
 func testAuthSubjectDeleteRemovesPasskeysAndSCIMRows(t *testing.T, s store.Store) {
 	ctx := context.Background()
@@ -770,7 +1088,7 @@ func testAuthSubjectDeleteRemovesPasskeysAndSCIMRows(t *testing.T, s store.Store
 		}
 	}
 	for _, u := range []store.SCIMUserRow{scimUser("acme", "z1", "z1"), scimUser("acme", "z2", "z2")} {
-		if err := s.SCIMUserCreate(ctx, u); err != nil {
+		if err := s.SCIMUserCreate(ctx, u, time.Time{}, noCeiling); err != nil {
 			t.Fatal(err)
 		}
 	}

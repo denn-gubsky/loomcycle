@@ -363,8 +363,7 @@ func (s *Server) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusInternalServerError, "passkey_failed", "sign-in failed")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: s.webauthnCookieName(r), Value: secret, Path: "/", HttpOnly: true,
-		Secure: s.requestSecure(r), SameSite: http.SameSiteStrictMode, MaxAge: int(passkeyCeremonyTTL / time.Second)})
+	http.SetCookie(w, s.transportCookie(r, s.webauthnCookieName(r), secret, int(passkeyCeremonyTTL/time.Second)))
 	writeJSON(w, http.StatusOK, offer)
 }
 
@@ -397,7 +396,7 @@ func (s *Server) handlePasskeyLogin(w http.ResponseWriter, r *http.Request, g co
 	}
 	// The ceremony's browser binding is single-use too.
 	cookie, cerr := r.Cookie(s.webauthnCookieName(r))
-	http.SetCookie(w, expiredCookie(s.webauthnCookieName(r), s.requestSecure(r)))
+	http.SetCookie(w, s.transportCookie(r, s.webauthnCookieName(r), "", -1))
 	var a passkeyAnswer
 	r.Body = http.MaxBytesReader(w, r.Body, maxWebAuthnBody)
 	dec := json.NewDecoder(r.Body)
@@ -1090,6 +1089,22 @@ func (s *Server) lastPasskeyRefusal(ctx context.Context, tenant, subject string)
 	for _, id := range ids {
 		if pw, ok := s.passwordGateNamed(id.Gate); ok && pw.g.RequireMFA {
 			return "last_second_factor", "this sign-in requires a second factor; add an authenticator app or another passkey first", nil
+		}
+	}
+	// A password account with a stored passkey never signs in on its
+	// password alone, flagged passkeys included (no MFA downgrade). Its last
+	// usable passkey going while flagged ones stay would leave a second
+	// factor nobody can answer: refused, rather than letting the flagged
+	// keys stop counting (which would turn a cloning signal into a
+	// password-only account).
+	keys, err := s.store.UserPasskeyList(ctx, tenant, subject)
+	if err != nil {
+		return "", "", err
+	}
+	for _, k := range keys {
+		if !k.FlaggedAt.IsZero() {
+			return "flagged_passkeys_remain", "this account's other passkeys were blocked; remove them, or add an authenticator app, " +
+				"before removing its last usable passkey", nil
 		}
 	}
 	return "", "", nil

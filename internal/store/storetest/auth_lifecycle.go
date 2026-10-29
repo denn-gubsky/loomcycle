@@ -72,6 +72,11 @@ func mkRemoval(subject string, at time.Time) store.AuthRemovalRow {
 // order, and the erase can never be marked before the unbind.
 func testAuthRemovalStagesNeverSkip(t *testing.T, s store.Store) {
 	ctx := context.Background()
+	for _, sub := range []string{"alice", "bob", "carol"} {
+		if err := s.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: sub, AccessMode: "isolated", Status: "active"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t0 := time.Now().Add(-30 * 24 * time.Hour)
 	r := mkRemoval("alice", t0)
 	r.EraseDueAt = t0.Add(30 * 24 * time.Hour)

@@ -66,11 +66,6 @@ func (s *Store) WebAuthnCeremonyDeleteExpired(ctx context.Context, before time.T
 	return sqlshared.WebAuthnCeremonyDeleteExpired(ctx, s.shared(), before)
 }
 
-// SCIMUserCreate implements store.SCIMStore.
-func (s *Store) SCIMUserCreate(ctx context.Context, row store.SCIMUserRow) error {
-	return sqlshared.SCIMUserCreate(ctx, s.shared(), row)
-}
-
 // SCIMUserGet implements store.SCIMStore.
 func (s *Store) SCIMUserGet(ctx context.Context, gate, tenantID, scimID string) (store.SCIMUserRow, error) {
 	return sqlshared.SCIMUserGet(ctx, s.shared(), gate, tenantID, scimID)
@@ -144,11 +139,6 @@ func (s *Store) SCIMGroupsOfSubject(ctx context.Context, gate, tenantID, subject
 // SCIMRemovalBase implements store.SCIMStore.
 func (s *Store) SCIMRemovalBase(ctx context.Context, gate, tenantID string, before time.Time) (int, error) {
 	return sqlshared.SCIMRemovalBase(ctx, s.shared(), gate, tenantID, before)
-}
-
-// SCIMUsersCreatedSince implements store.SCIMStore.
-func (s *Store) SCIMUsersCreatedSince(ctx context.Context, gate, tenantID string, since time.Time) (int, error) {
-	return sqlshared.SCIMUsersCreatedSince(ctx, s.shared(), gate, tenantID, since)
 }
 
 // SCIMUsersGetMany implements store.SCIMStore.
