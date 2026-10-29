@@ -372,3 +372,44 @@ func TestSearch_ExpandObeysTheSearchFilter(t *testing.T) {
 		}
 	}
 }
+
+// related_to obeys the same structural filter as the semantic neighbours.
+func TestRelated_RelatedToObeysTheFilter(t *testing.T) {
+	d, open, _, s := expandACLFixture(t)
+	if _, r := docExec(t, d, open, `{"op":"link_chunks","scope":"tenant","from_id":"`+s.publicChunk+`","to_id":"`+s.secretChunk+`","kind":"cites"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	base := `{"op":"related","scope":"tenant","related_to":"` + s.publicChunk + `"%s}`
+	if _, r := docExec(t, d, open, fmt.Sprintf(base, "")); r.IsError || !strings.Contains(r.Text, s.secretChunk) {
+		t.Fatalf("control: related_to did not reach the secret chunk: %s", r.Text)
+	}
+	for _, f := range []string{`,"under_path":"/kb/public"`, `,"exclude_under_path":"/kb/secret"`} {
+		out, r := docExec(t, d, open, fmt.Sprintf(base, f))
+		if r.IsError {
+			t.Fatalf("%s: %s", f, r.Text)
+		}
+		if strings.Contains(r.Text, s.secretChunk) {
+			t.Errorf("%s: related_to returned a chunk outside the filter: %s", f, r.Text)
+		}
+		if _, ok := out["filter"]; !ok {
+			t.Errorf("%s: no filter echo: %s", f, r.Text)
+		}
+	}
+}
+
+// related with both id and related_to on a server with no embedder still answers
+// by relation, and says why the semantic half is missing.
+func TestRelated_IDAndRelatedToWithoutEmbedderKeepsLinked(t *testing.T) {
+	d, ctx, _ := documentFixture(t) // no embedder
+	ids := walkDoc(t, d, ctx)
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"related","scope":"user","id":%q,"related_to":%q}`, ids["clause"], ids["clause"]))
+	if r.IsError {
+		t.Fatalf("related id+related_to: %s", r.Text)
+	}
+	if l, _ := out["linked"].([]any); len(l) != 2 {
+		t.Errorf("linked = %v", out["linked"])
+	}
+	if n, _ := out["note"].(string); !strings.Contains(n, "embedder") {
+		t.Errorf("note = %v", out["note"])
+	}
+}

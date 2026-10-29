@@ -176,18 +176,24 @@ func (d *Document) expandHits(ctx context.Context, key sqlmem.ScopeKey, in docIn
 
 // relatedByRelation is related's `related_to`: the chunks a chunk is related to by
 // relations (statements), one hop, both directions — the graph's answer beside the
-// embedding's.
-func (d *Document) relatedByRelation(ctx context.Context, key sqlmem.ScopeKey, in docInput, limit int) ([]map[string]any, error) {
+// embedding's. filter is the call's resolved structural filter (nil when none was
+// named), applied as it is to the semantic neighbours.
+func (d *Document) relatedByRelation(ctx context.Context, key sqlmem.ScopeKey, in docInput, limit int, filter *searchFilterSet) ([]map[string]any, error) {
 	walkIn := docInput{Kinds: in.Kinds, Kind: in.Kind, AsOf: in.AsOf, Walk: "declared"}
 	walk, err := d.graphWalkSpec(ctx, walkIn)
 	if err != nil {
 		return nil, err
 	}
-	rows, _, err := d.walkNeighbours(ctx, key, []string{in.RelatedTo}, 1, walkIn, walk, limit)
+	// A filtered walk reads up to the hop cap and cuts to limit after filtering: a
+	// LIMIT taken before the filter fills with the rows it then drops.
+	rowCap := limit
+	if filter != nil {
+		rowCap = graphHopRowCap
+	}
+	rows, _, err := d.walkNeighbours(ctx, key, []string{in.RelatedTo}, 1, walkIn, walk, rowCap)
 	if err != nil {
 		return nil, err
 	}
-	d.attachViaQuotes(ctx, key, rows)
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, r.ID)
@@ -196,9 +202,18 @@ func (d *Document) relatedByRelation(ctx context.Context, key sqlmem.ScopeKey, i
 	if err != nil {
 		return nil, err
 	}
-	out := make([]map[string]any, 0, len(rows))
+	// related reads the whole scope (its access-control question is the scope's),
+	// so only the structural filter narrows the rows here.
+	if rows, err = visibleRelationRows(ctx, rows, meta, filter, nil, false); err != nil {
+		return nil, err
+	}
+	d.attachViaQuotes(ctx, key, rows)
+	out := make([]map[string]any, 0, min(len(rows), limit))
 	seen := map[string]bool{in.RelatedTo: true}
 	for _, r := range rows {
+		if len(out) >= limit {
+			break
+		}
 		if seen[r.ID] {
 			continue
 		}

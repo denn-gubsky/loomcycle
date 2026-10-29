@@ -183,7 +183,7 @@ const documentInputSchema = `{
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay)."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
 		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
-		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder."},
+		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder. The filter arguments (under_path, type, …) narrow it too."},
 		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their heading path: unchanged parts keep their ids and links, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
 		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now)."},
 		"work_key":    {"type": "string", "description": "import_md with reimport / resolve_anchor: the work's key, e.g. law:ua/2297-vi — the document holding it, or (import) the one the first edition creates."},
@@ -3953,43 +3953,17 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	if in.ID == "" && in.RelatedTo == "" {
 		return errValidation("related: missing required field: id", "Pass `id`, the chunk to find neighbours of (by meaning), or `related_to` (by relation)."), nil
 	}
-	// related_to: the neighbours by relation, beside (or instead of) the ones by
-	// meaning. Needs no embedder.
-	var linked []map[string]any
-	if in.RelatedTo != "" {
-		limit := 10
-		if in.Limit > 0 {
-			limit = min(in.Limit, 50)
-		}
-		var err error
-		if linked, err = d.relatedByRelation(ctx, key, in, limit); err != nil {
-			return errFrom("related: related_to: "+err.Error(), err), nil
-		}
-		if in.ID == "" {
-			return jsonResult(map[string]any{"linked": linked})
-		}
-	}
 	// Semantic neighbours need both a vector index and something to turn the query
-	// body into a vector. No embedder → there is no vector plane to search.
-	if d.Embedder == nil {
-		return errBusiness("related: requires a configured embedder / vector memory", "Semantic neighbours are not available on this server; use op=backlinks or op=query_chunks instead."), nil
+	// body into a vector. No embedder → there is no vector plane to search, and
+	// without related_to nothing else to answer with.
+	const noEmbedderHint = "Semantic neighbours are not available on this server; use op=backlinks or op=query_chunks instead."
+	if d.Embedder == nil && in.RelatedTo == "" {
+		return errBusiness("related: requires a configured embedder / vector memory", noEmbedderHint), nil
 	}
-	topK := 10
-	if in.Limit > 0 {
-		topK = in.Limit
-	}
-	if topK > 50 {
-		topK = 50
-	}
-	// The same structural filter as search, applied to the one vector leg related
-	// runs. withFilter adds the echo to every answer once a filter was named.
-	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
-	withFilter := func(m map[string]any) map[string]any {
-		if linked != nil {
-			m["linked"] = linked
-		}
-		return m
-	}
+	// The same structural filter as search, resolved once and applied to both
+	// halves: the vector leg and the neighbours by relation. withFilter adds the
+	// echo, and the relation half, to every answer.
+	var filter *searchFilterSet
 	if hasSearchFilter(in) {
 		set, refusal, err := d.resolveSearchFilter(ctx, key, "related", in)
 		if err != nil {
@@ -3998,17 +3972,51 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		if refusal != nil {
 			return *refusal, nil
 		}
-		withFilter = func(m map[string]any) map[string]any {
-			m["filter"] = set.echo
-			if linked != nil {
-				m["linked"] = linked
-			}
-			return m
+		filter = set
+	}
+	var linked []map[string]any
+	withFilter := func(m map[string]any) map[string]any {
+		if filter != nil {
+			m["filter"] = filter.echo
 		}
-		if set.echo.MatchedChunks == 0 {
+		if linked != nil {
+			m["linked"] = linked
+		}
+		return m
+	}
+	// related_to: the neighbours by relation, beside (or instead of) the ones by
+	// meaning. Needs no embedder.
+	if in.RelatedTo != "" {
+		limit := 10
+		if in.Limit > 0 {
+			limit = min(in.Limit, 50)
+		}
+		var err error
+		if linked, err = d.relatedByRelation(ctx, key, in, limit, filter); err != nil {
+			return errFrom("related: related_to: "+err.Error(), err), nil
+		}
+		if in.ID == "" {
+			return jsonResult(withFilter(map[string]any{}))
+		}
+		// Both were asked for and only the relation half can be answered: give it,
+		// and say why the other is missing, rather than throw it away.
+		if d.Embedder == nil {
+			return jsonResult(withFilter(map[string]any{"note": "related: no embedder is configured, so only the neighbours by relation (linked) are returned. " + noEmbedderHint}))
+		}
+	}
+	topK := 10
+	if in.Limit > 0 {
+		topK = in.Limit
+	}
+	if topK > 50 {
+		topK = 50
+	}
+	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
+	if filter != nil {
+		if filter.echo.MatchedChunks == 0 {
 			return jsonResult(withFilter(map[string]any{"related": []map[string]any{}}))
 		}
-		sf.IDs, sf.ExcludeIDs = set.ids, set.excludeIDs
+		sf.IDs, sf.ExcludeIDs = filter.ids, filter.excludeIDs
 	}
 	// The query text is the chunk's own body. An empty or media body has nothing
 	// to embed — the same predicate embedBody skips on write — so it has no
