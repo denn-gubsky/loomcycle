@@ -1589,12 +1589,16 @@ agents:
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
           C.statements++;
-          if (RUNTIME_METHODS[row.method] === true) { C.skipped_runtime++; continue; }
+          // Auto statements ([[name]] links, mentions) are only counted for the rule
+          // a later version may delete them by. They are checked first: they are
+          // also runtime-written or of a reserved kind, and would otherwise never be.
+          var isAuto = row.auto === true;
+          if (!isAuto && RUNTIME_METHODS[row.method] === true) { C.skipped_runtime++; continue; }
           var k = st.onto && hasOwn(st.onto.kinds, row.kind) ? st.onto.kinds[row.kind] : null;
-          if (k !== null && k.source === "reserved") { C.skipped_reserved_kind++; continue; }
+          if (!isAuto && k !== null && k.source === "reserved") { C.skipped_reserved_kind++; continue; }
           var s = edgeOf(st, row.id);
           if (s === null) { C.unreadable++; continue; }
-          if (s.auto === true) { autos.push(s); } else { todo.push(s); }
+          if (isAuto || s.auto === true) { autos.push(s); } else { todo.push(s); }
         }
         loadMeta(st, statementChunkIDs(todo.concat(autos)));
         for (var a = 0; a < autos.length; a++) { countRuleA(st, C, autos[a]); }
