@@ -502,6 +502,22 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 	}
 
+	// Editions are applied in date order. One older than a part in force would be
+	// reconciled against the newer text and replace it: currentParts reads what is
+	// in force at the edition date, and the newer edition's parts are not yet.
+	// Filling in an older edition behind a newer one (splitting the intervals) is
+	// not supported, so it is refused rather than half done.
+	fl, err := d.query(ctx, key, `SELECT MAX(valid_at) FROM chunks
+		WHERE document_id = ? AND id <> ? AND (invalid_at IS NULL OR invalid_at > ?)`, docID, rootID, time.Now().UnixNano())
+	if err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
+	if len(fl.Rows) > 0 {
+		if latest, ok := asInt64(fl.Rows[0][0]); ok && edition < latest {
+			return errBusiness(fmt.Sprintf("import_md: edition_date %d is earlier than the edition already in force (its parts are valid from %d). Nothing was imported.", edition, latest),
+				"Import editions in date order: pass an edition_date at or after the one in force. An older edition cannot be inserted behind a newer one."), nil
+		}
+	}
 	if err := d.assignAnchors(ctx, key, mscope, docID, rootID); err != nil {
 		return errFrom("import_md: "+err.Error(), err), nil
 	}

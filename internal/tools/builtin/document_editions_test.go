@@ -10,6 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RFC FN P2 — a new edition of a work reconciles onto the held one part by part.
@@ -606,6 +607,29 @@ func TestReimport_RerunCompletesAnInterruptedSupersession(t *testing.T) {
 		}
 		if res, err = d.query(ctx, key, `SELECT COUNT(*) FROM chunks WHERE document_id = ?`, docID); err != nil || asInt(res.Rows[0][0]) != 5 {
 			t.Errorf("the rerun made extra parts: %v %v", res, err)
+		}
+	})
+}
+
+// An edition older than the one in force is refused: reconciling it would replace
+// the current text with the older one.
+func TestReimport_BackdatedEditionIsRefused(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/34"
+		mk := func(b string) string { return "# Act\n\n## Article 1\n\n" + b + "\n" }
+		reimport(t, d, ctx, mk("V1."), wk, 1_000_000)
+		reimport(t, d, ctx, mk("V3."), wk, 3_000_000)
+		b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": mk("V2."), "reimport": true, "work_key": wk, "edition_date": 2_000_000})
+		_, r := docExec(t, d, ctx, string(b))
+		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryBusiness || !strings.Contains(r.Text, "edition_date") {
+			t.Errorf("a back-dated edition was not refused: %s", r.Text)
+		}
+		if id := resolvePart(t, d, ctx, wk, "article-1", 0); id == "" || partBody(t, d, ctx, id) != "V3." {
+			t.Errorf("the newest edition is no longer in force")
+		}
+		// The edition in force, imported again, is still a no-op.
+		if rep := reimport(t, d, ctx, mk("V3."), wk, 3_000_000)["reimport"].(map[string]any); rep["unchanged"] != float64(1) {
+			t.Errorf("re-running the current edition: %v", rep)
 		}
 	})
 }
