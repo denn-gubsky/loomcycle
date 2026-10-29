@@ -585,8 +585,9 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 		docID, rootID = resultField(res, "document_id"), resultField(res, "root_chunk_id")
 		if r := d.claimWorkKey(ctx, key, rootID, wk); r != nil {
-			// Another process claimed the key first (the lock is per process): drop the
-			// keyless copy rather than leave it beside the work.
+			// The key could not be claimed — another process won it (the lock is per
+			// process), or a fault: drop the keyless copy rather than leave it beside
+			// the work.
 			_, _ = d.deleteDocument(ctx, key, mscope, docInput{ID: docID})
 			return *r, nil
 		}
@@ -614,7 +615,8 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 
 	// Editions are applied in date order. One older than a part in force would be
 	// reconciled against the newer text and replace it: currentParts reads what is
-	// in force at the edition date, and the newer edition's parts are not yet.
+	// in force at the edition date, which the newer edition's text is too (it does
+	// not look at valid_at).
 	// Filling in an older edition behind a newer one (splitting the intervals) is
 	// not supported, so it is refused rather than half done.
 	fl, err := d.query(ctx, key, `SELECT MAX(valid_at) FROM chunks
