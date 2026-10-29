@@ -432,3 +432,29 @@ func TestClassRules_CollisionDoesNotNameAHolderTheCallerCannotRead(t *testing.T)
 		t.Errorf("the refusal named a chunk the caller cannot read: %s", res.Text)
 	}
 }
+
+// TestClassRules_ConfinedWriterEditDoesNotDropAnExistingIdentity.
+//
+// A confined writer may not CLAIM an identity, but editing a chunk that already holds
+// one must not silently strip it either — that would free a key the confined writer had
+// no authority over.
+func TestClassRules_ConfinedWriterEditDoesNotDropAnExistingIdentity(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	installTenantOntology(t, d, base, typedOntologyMD, memrank.OntologyConfirmedStatus)
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	held, res := docExec(t, d, open, `{"op":"create_chunk","scope":"tenant","document_id":"`+s.publicDoc+
+		`","title":"p","type":"Provision","body":"x","fields":{"anchor":"art-1"}}`)
+	if res.IsError {
+		t.Fatalf("seed: %s", res.Text)
+	}
+	confined := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"write"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	if _, res = docExec(t, d, confined, `{"op":"update_chunk","scope":"tenant","id":"`+held["id"].(string)+`","body":"edited","revision":1}`); res.IsError {
+		t.Fatalf("confined edit: %s", res.Text)
+	}
+	key, _, _ := d.resolveScope(open, "tenant")
+	got, err := d.query(open, key, `SELECT coalesce(identity_key, '') FROM chunks WHERE id = ?`, held["id"])
+	if err != nil || len(got.Rows) == 0 || asStr(got.Rows[0][0]) != "provision:art-1" {
+		t.Errorf("a confined writer's body edit dropped the identity: %v %v", got, err)
+	}
+}

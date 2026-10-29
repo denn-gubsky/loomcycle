@@ -206,6 +206,10 @@ func (d *Document) applyClassRules(ctx context.Context, key sqlmem.ScopeKey, msc
 		return res, nil
 	}
 	if acl != nil && !acl.scopeWritableQuietly(ctx) {
+		// Neither claim nor release: a key this chunk already holds stays as it is. A
+		// confined writer has no authority over a scope-wide key in either direction,
+		// and a stale key only over-refuses — it never lets a duplicate in.
+		res.clearIdentity = false
 		res.warnings = append(res.warnings, "identity "+idKey+" was not recorded: an identity is unique across the "+
 			"whole scope, so claiming one needs write access to every document in it")
 		return res, nil
