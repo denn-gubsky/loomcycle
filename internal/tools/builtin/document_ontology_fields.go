@@ -310,7 +310,7 @@ func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, a
 				return &r
 			}
 		}
-		if strings.EqualFold(holderStatus, placeholderDocumentStatus) {
+		if strings.EqualFold(holderStatus, placeholderStatus) {
 			// A placeholder for a cited work that has not been imported yet. Creating the
 			// work beside it would leave every citation pointing at the placeholder, so
 			// the answer is to fill it, never to make a second document.
@@ -328,10 +328,6 @@ func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, a
 	}
 	return nil
 }
-
-// placeholderDocumentStatus marks a document filed for a cited work that has not been
-// imported yet (RFC FN P2); its root carries the work key as its identity.
-const placeholderDocumentStatus = "unresolved"
 
 // finishClassRules is the post-write half: it records the identity key on the chunk
 // the op wrote and attaches the warnings to its response. A successful response only;
