@@ -65,7 +65,7 @@ field part of the thing's identity, and a bare `@identity` line means "its title
 is its identity" — two chunks with the same identity are refused. Document classes
 describe documents; they are never listed to the agents as entity types.
 
-### Where a type's facts are stored
+**Where a type's facts are stored.**
 
 A type may declare which memory scope facts about that kind of thing belong in:
 

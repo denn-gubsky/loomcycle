@@ -157,3 +157,17 @@ func getOntologyRaw(t *testing.T, s *Server, tenant string) map[string]any {
 	}
 	return out
 }
+
+// TestOntologyTemplate_ProvisionsOnlyItsWorkedExamplesAsClasses.
+//
+// import_md turns every heading into a chunk and a chunk under the root is a class, so a
+// prose sub-heading in the template's introduction became a class named after the
+// sentence — and, once an operator confirmed the template, an entity type in every
+// extraction prompt. The template's classes are exactly its three worked examples.
+func TestOntologyTemplate_ProvisionsOnlyItsWorkedExamplesAsClasses(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	got := termNames(s.getOntology(t, mi.Tenant).Terms)
+	if strings.Join(got, ",") != "project,incident,constraint" {
+		t.Errorf("the provisioned template's classes = %v, want exactly project, incident, constraint", got)
+	}
+}
