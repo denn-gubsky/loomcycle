@@ -91,6 +91,11 @@ type FactSource struct {
 	// same instant twice. That is why this is a read fix and not a coverage
 	// campaign; see RFC DF P3.
 	ValidAt int64
+	// SourceChunkID / SourceDocumentID are the document passage a fact was taken
+	// from (its derived_from statement, RFC FN P3a), the document twin of
+	// SessionID: Document op=get_chunk reads the passage the span sits in.
+	SourceChunkID    string
+	SourceDocumentID string
 }
 
 func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
@@ -123,9 +128,11 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	// followable even when the span was never derived, which is the common shape
 	// before a verification pass runs. The old query required a non-empty span
 	// and so hid those rows entirely.
-	stmt := `SELECT natural_key, coalesce(source_quote, ''), coalesce(run_id, ''), coalesce(session_id, ''), ` +
-		`coalesce(observed_at, 0), coalesce(valid_at, 0) FROM chunk_memory_meta ` +
-		`WHERE natural_key IN (` +
+	stmt := `SELECT m.natural_key, coalesce(m.source_quote, ''), coalesce(m.run_id, ''), coalesce(m.session_id, ''), ` +
+		`coalesce(m.observed_at, 0), coalesce(m.valid_at, 0), ` +
+		`coalesce((SELECT e.to_id FROM chunk_edges e WHERE e.from_id = m.chunk_id AND e.kind = 'derived_from' LIMIT 1), ''), ` +
+		`coalesce((SELECT c.document_id FROM chunk_edges e JOIN chunks c ON c.id = e.to_id WHERE e.from_id = m.chunk_id AND e.kind = 'derived_from' LIMIT 1), '') ` +
+		`FROM chunk_memory_meta m WHERE m.natural_key IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
 	res, err := sm.Query(ctx, key, sm.Rebind(stmt), keys)
 	if err != nil || res == nil {
@@ -133,7 +140,7 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	}
 	out := make(map[string]FactSource, len(res.Rows))
 	for _, row := range res.Rows {
-		if len(row) < 6 {
+		if len(row) < 8 {
 			continue
 		}
 		nk, span, runID, sessionID := asStr(row[0]), asStr(row[1]), asStr(row[2]), asStr(row[3])
@@ -144,11 +151,12 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 		// this test rather than being folded into the old one: a fact whose span was
 		// never derived but whose observation time WAS recorded is exactly the row
 		// this change exists to stop discarding.
-		if nk == "" || (span == "" && runID == "" && sessionID == "" && observedAt == 0 && validAt == 0) {
+		srcChunk, srcDoc := asStr(row[6]), asStr(row[7])
+		if nk == "" || (span == "" && runID == "" && sessionID == "" && observedAt == 0 && validAt == 0 && srcChunk == "") {
 			continue
 		}
 		out[nk] = FactSource{Span: span, RunID: runID, SessionID: sessionID,
-			ObservedAt: observedAt, ValidAt: validAt}
+			ObservedAt: observedAt, ValidAt: validAt, SourceChunkID: srcChunk, SourceDocumentID: srcDoc}
 	}
 	return out
 }

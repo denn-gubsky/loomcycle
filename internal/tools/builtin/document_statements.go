@@ -247,6 +247,23 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 			return out, &r, nil
 		}
 	}
+	// A caller-made `about` must run from a FACT (a chunk with entity metadata):
+	// an `about` edge is what makes its target an identity node, so one from
+	// ordinary prose would make a passage look like an entity. The runtime's own
+	// path (upsert_chunk about_ids) writes it with method runtime; this keeps a
+	// consolidator that still calls link_chunks working. An import is exempt: it
+	// copies a document's own graph, whose fact metadata import_md does not carry.
+	if w.kind == aboutEdgeKind && w.method != edgeMethodRuntime && w.method != edgeMethodImport {
+		res, err := d.query(ctx, key, `SELECT 1 FROM chunk_memory_meta WHERE chunk_id = ? LIMIT 1`, w.from)
+		if err != nil {
+			return out, nil, err
+		}
+		if len(res.Rows) == 0 {
+			r := errValidation("kind_reserved: an `about` edge joins a fact to the subject it is about, and from_id is not a fact",
+				"Use a kind of your own (cites, related, …); a fact gets its `about` edges from upsert_chunk about_ids.")
+			return out, &r, nil
+		}
+	}
 	for _, id := range []struct{ name, id string }{{"from_id", w.from}, {"to_id", w.to}} {
 		if _, ok, err := d.getChunkRow(ctx, key, id.id); err != nil {
 			return out, nil, err

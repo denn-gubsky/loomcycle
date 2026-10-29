@@ -98,8 +98,10 @@ type fakeToolset struct {
 	preexistingFacts []map[string]any
 	// failListFacts makes the backfill's scan refuse, which must read as a scan
 	// failure and not as a broken judge.
-	failListFacts    bool
-	edges            []string // "from-kind->to"
+	failListFacts bool
+	edges         []string // "from-kind->to"
+	aboutScopes   []string // the scope of each fact upsert that wrote about edges
+
 	supersededChunks []string // "old by new"
 	failEntityKeys   map[string]bool
 	// failSubjectDocs models the ONE state a pre-subject-homing store is in: the
@@ -444,7 +446,29 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 				row[field] = v
 			}
 		}
-		return okResult(map[string]any{"id": id, "natural_key": key, "created": !existed})
+		// The runtime writes a fact's `about` edges from about_ids, under the same
+		// scope rule as link_chunks: a subject node in another scope cannot be
+		// linked, and is skipped and counted rather than failing the fact.
+		res := map[string]any{"id": id, "natural_key": key, "created": !existed}
+		if ids, ok := in["about_ids"].([]any); ok {
+			uscope, _ := in["scope"].(string)
+			written, skipped := 0, 0
+			for _, raw := range ids {
+				to, _ := raw.(string)
+				if got, ok := d.f.chunkScopes[to]; ok && got != uscope {
+					skipped++
+					continue
+				}
+				d.f.edges = append(d.f.edges, id+"-about->"+to)
+				d.f.aboutScopes = append(d.f.aboutScopes, uscope)
+				written++
+			}
+			res["about_written"] = written
+			if skipped > 0 {
+				res["about_skipped"] = skipped
+			}
+		}
+		return okResult(res)
 	case "judge_fact":
 		id, _ := in["id"].(string)
 		verdict, _ := in["verdict"].(string)
@@ -3532,7 +3556,7 @@ func TestConsolidator_AFactWithNoSubjectStillGetsItsChunk(t *testing.T) {
 	if n := len(f.chunks); n != 2 {
 		t.Errorf("wrote %d chunks, want exactly 2 (one per fact, no subject node); keys=%v", n, f.chunks)
 	}
-	if n := len(callsWithOp(f, "Document.link_chunks")); n != 0 {
+	if n := aboutEdgeCount(f); n != 0 {
 		t.Errorf("drew %d edge(s) for facts naming no subject, want 0 — there is nothing to point at", n)
 	}
 	// The gap has to be visible: silent, it reads as a graph that covers the corpus.
@@ -3563,7 +3587,7 @@ func TestConsolidator_ASubjectWithNoTypeIsFiledUnderTheFallbackType(t *testing.T
 			t.Errorf("subject %q got no node; keys=%v", key, f.chunks)
 		}
 	}
-	if n := len(callsWithOp(f, "Document.link_chunks")); n != 2 {
+	if n := aboutEdgeCount(f); n != 2 {
 		t.Errorf("edges = %d, want 2 — a named subject is reachable even with no type given", n)
 	}
 }
@@ -3591,14 +3615,13 @@ func TestConsolidator_ARelationFactReferencesEverySubjectItNames(t *testing.T) {
 		t.Fatalf("fact writes = %d, want 1 — a fact about two things is still ONE fact", n)
 	}
 	// An `about` edge to EACH subject: one home, one reference.
-	links := callsWithOp(f, "Document.link_chunks")
-	if len(links) != 2 {
+	targets := aboutEdgeTargets(f)
+	if len(targets) != 2 {
 		t.Fatalf("about edges = %d, want 2 (Dave and the shop) — a relation fact is "+
-			"unreachable from the subject it is not filed under without the second", len(links))
+			"unreachable from the subject it is not filed under without the second", len(targets))
 	}
 	to := map[string]bool{}
-	for _, c := range links {
-		id, _ := c.Input["to_id"].(string)
+	for _, id := range targets {
 		to[id] = true
 	}
 	if len(to) != 2 {
@@ -3631,7 +3654,7 @@ func TestConsolidator_TheSameSubjectNamedTwiceIsOneReference(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	if n := len(callsWithOp(f, "Document.link_chunks")); n != 1 {
+	if n := aboutEdgeCount(f); n != 1 {
 		t.Errorf("about edges = %d, want 1 — one subject spelled three ways is one node", n)
 	}
 }
@@ -3647,7 +3670,7 @@ func TestConsolidator_ALegacySingleSubjectStillLands(t *testing.T) {
 
 	runConsolidator(t, f)
 
-	if n := len(callsWithOp(f, "Document.link_chunks")); n != 1 {
+	if n := aboutEdgeCount(f); n != 1 {
 		t.Fatalf("about edges = %d, want 1 — the older schema still names a subject", n)
 	}
 	found := false
@@ -3694,12 +3717,12 @@ func TestConsolidator_AnUnmigratedSubjectStillGetsItsEdge(t *testing.T) {
 	if n := factWriteCount(f); n != 1 {
 		t.Fatalf("the fact must still be stored; fact writes=%d", n)
 	}
-	links := callsWithOp(f, "Document.link_chunks")
-	if len(links) != 1 {
+	targets := aboutEdgeTargets(f)
+	if len(targets) != 1 {
 		t.Fatalf("about edges = %d, want 1 — a subject whose own document cannot be created "+
-			"must still be reachable from its facts", len(links))
+			"must still be reachable from its facts", len(targets))
 	}
-	if to, _ := links[0].Input["to_id"].(string); to != "chunk-existing" {
+	if to := targets[0]; to != "chunk-existing" {
 		t.Errorf("edge points at %q, want the existing subject node chunk-existing", to)
 	}
 	// And the fact is filed beside it, in the shared document — the old shape,
@@ -5228,18 +5251,16 @@ func TestConsolidator_APlacedFactIsLinkedToItsSubjectInThePlacedScope(t *testing
 
 	rep := runConsolidator(t, f)
 
-	links := callsWithOp(f, "Document.link_chunks")
-	if len(links) == 0 {
-		t.Fatal("a typed, placed fact must be joined to its subject — no link_chunks call")
+	// The `about` edge is written by the runtime from the fact upsert's about_ids,
+	// so it lands in the scope the fact was written into.
+	if len(f.edges) == 0 {
+		t.Fatal("a typed, placed fact must be joined to its subject — no about edge")
 	}
-	for _, c := range links {
-		if got, _ := c.Input["scope"].(string); got != "tenant" {
+	for _, sc := range f.aboutScopes {
+		if sc != "tenant" {
 			t.Errorf("the about-edge was written in %q while both endpoints are in tenant — "+
-				"the edge cannot resolve either node and the fact is orphaned: %v", got, c.Input)
+				"the edge cannot resolve either node and the fact is orphaned", sc)
 		}
-	}
-	if len(f.edges) != len(links) {
-		t.Errorf("%d link_chunks calls but %d edges recorded — a link was refused", len(links), len(f.edges))
 	}
 	// And the pass must not be reporting a silent failure.
 	if strings.Contains(rep.FinalText, "graph write(s) failed") {
@@ -6246,7 +6267,31 @@ func TestConsolidator_ASubjectsListIsStillReadFromAnOverriddenPrompt(t *testing.
 
 	runConsolidator(t, f)
 
-	if n := len(callsWithOp(f, "Document.link_chunks")); n != 2 {
+	if n := aboutEdgeCount(f); n != 2 {
 		t.Errorf("about edges = %d, want 2 — the older list schema still names both ends", n)
 	}
+}
+
+// aboutEdgeCount is how many `about` edges the pass wrote. The runtime writes them
+// from a fact upsert's about_ids now, not from a link_chunks call, so counting
+// calls would count nothing.
+func aboutEdgeCount(f *fakeToolset) int {
+	n := 0
+	for _, e := range f.edges {
+		if strings.Contains(e, "-about->") {
+			n++
+		}
+	}
+	return n
+}
+
+// aboutEdgeTargets lists where the pass's `about` edges point, in write order.
+func aboutEdgeTargets(f *fakeToolset) []string {
+	var out []string
+	for _, e := range f.edges {
+		if i := strings.Index(e, "-about->"); i >= 0 {
+			out = append(out, e[i+len("-about->"):])
+		}
+	}
+	return out
 }

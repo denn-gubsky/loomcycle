@@ -47,7 +47,9 @@ holds as much evidence as it keeps.
 - `from_id: no such chunk` / `to_id: no such chunk` — that chunk is not in this
   scope. Chunk ids are not document ids: take them from `get_document`,
   `search` or `query_chunks`.
-- `kind_reserved` — the kind is one the runtime writes; choose your own.
+- `kind_reserved` — the kind is one the runtime writes; choose your own. An
+  `about` link is accepted only from a fact; a fact gets its `about` links from
+  `upsert_chunk` `about_ids`.
 - `evidence_quote_not_found` — the quote is not in the cited chunk or turn;
   copy it exactly (`get_chunk` shows the body).
 - `statement_rejected` — an operator rejected this relation; do not re-link it.
