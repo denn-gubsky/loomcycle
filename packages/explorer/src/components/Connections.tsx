@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { useExplorerData } from "../lib/dataLayer";
 import ChunkTarget from "./ChunkTarget";
+import { StatementMeta } from "./Statement";
 
 // Connections is the RFC BS per-chunk connection surface, a collapsible companion
 // to CrossReferences. It shows three lists for the SELECTED chunk, each fetched
@@ -27,6 +28,9 @@ export interface ConnectionsProps {
   browse?: BrowseScope;
   onSelectChunk: (id: string) => void;
   onOpenDocument?: (documentId: string, chunkId: string, title?: string) => void;
+  // Bumped by the host when the document's edges changed (an operator ruled on a
+  // proposal) so an open panel refetches its backlinks.
+  refreshKey?: number;
 }
 
 const RELATED_LIMIT = 8;
@@ -46,6 +50,7 @@ export default function Connections({
   browse,
   onSelectChunk,
   onOpenDocument,
+  refreshKey,
 }: ConnectionsProps) {
   const data = useExplorerData();
   const [open, setOpen] = useState(false);
@@ -94,7 +99,7 @@ export default function Connections({
     return () => {
       cancelled = true;
     };
-  }, [data, open, selectedId, scope, browse]);
+  }, [data, open, selectedId, scope, browse, refreshKey]);
 
   // The three lists differ only in which fields name the far chunk.
   const target = (id: string, title?: string, targetDocumentId?: string) => (
@@ -144,6 +149,7 @@ export default function Connections({
                             auto
                           </span>
                         )}
+                        <StatementMeta statement={e} />
                       </li>
                     ))}
                   </ul>

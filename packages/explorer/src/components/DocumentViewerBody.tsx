@@ -133,6 +133,9 @@ export default function DocumentViewerBody({
   const [meta, setMeta] = useState<DocumentMeta | null>(null);
   const [colorsOpen, setColorsOpen] = useState(false);
   const [edges, setEdges] = useState<DocEdge[]>([]);
+  // Bumped after an operator rules on a proposed statement: refetches the edges
+  // (and an open Connections panel) without reloading the whole document.
+  const [edgesReload, setEdgesReload] = useState(0);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
@@ -259,7 +262,20 @@ export default function DocumentViewerBody({
     return () => {
       cancelled = true;
     };
-  }, [data, documentId, scope, reload, browse]);
+  }, [data, documentId, scope, reload, browse, edgesReload]);
+
+  // RFC FN — the operator's ruling on a proposed statement. Offered only when the
+  // data layer implements both rulings (they are optional on a custom one). A
+  // refusal propagates to the row, which shows it inline.
+  // Called through `data` (not detached) so a class-based data layer keeps `this`.
+  const ruleStatement = useMemo(() => {
+    if (!data.documentAcceptStatement || !data.documentRejectStatement) return undefined;
+    return async (id: string, ok: boolean, reason?: string) => {
+      if (ok) await data.documentAcceptStatement!(id, scope, browse, reason);
+      else await data.documentRejectStatement!(id, reason ?? "", scope, browse);
+      setEdgesReload((n) => n + 1);
+    };
+  }, [data, scope, browse]);
 
   // Reset selection + view when the document changes.
   useEffect(() => {
@@ -876,6 +892,7 @@ export default function DocumentViewerBody({
                   selectedId={selectedId}
                   onSelectChunk={setSelectedId}
                   onOpenDocument={onOpenDocument ? openDocument : undefined}
+                  onRuleStatement={ruleStatement}
                 />
                 {/* RFC BS — backlinks / related / unlinked mentions for the selected
                     chunk, lazily fetched when its section is expanded. */}
@@ -886,6 +903,7 @@ export default function DocumentViewerBody({
                   browse={browse}
                   onSelectChunk={setSelectedId}
                   onOpenDocument={onOpenDocument ? openDocument : undefined}
+                  refreshKey={edgesReload}
                 />
               </>
             ) : (

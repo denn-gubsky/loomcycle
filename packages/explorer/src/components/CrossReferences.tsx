@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { DocEdge } from "../types";
+import { isProposed } from "../lib/statement";
 import ChunkTarget from "./ChunkTarget";
 import MermaidDiagram from "./Mermaid";
+import { StatementMeta, StatementReview, type StatementRuling } from "./Statement";
 
 // CrossReferences renders the RFC BN P4 cross-reference surface for a document:
 //   - a References list for the SELECTED chunk (its outgoing + incoming edges),
@@ -12,7 +14,9 @@ import MermaidDiagram from "./Mermaid";
 //     heavily cross-linked document doesn't render an unreadable diagram. Its
 //     nodes follow the same rule as the list.
 // Fed by one get_edges call (all edges touching the document); renders nothing
-// when the document has no edges.
+// when the document has no edges. Since RFC FN each edge is a statement: a row
+// also shows its status / method / verdict / validity / evidence, and a proposed
+// one gets Accept / Reject when the host passes onRuleStatement.
 export interface CrossReferencesProps {
   edges: DocEdge[];
   documentId: string;
@@ -21,6 +25,9 @@ export interface CrossReferencesProps {
   // Opens ANOTHER document at a chunk. Omitted → cross-document targets are
   // labels only.
   onOpenDocument?: (documentId: string, chunkId: string, title?: string) => void;
+  // Rules on a proposed statement, then refetches the edges. Omitted → proposals
+  // are shown but not reviewable here.
+  onRuleStatement?: StatementRuling;
 }
 
 // GRAPH_CAP is the default number of edges the relationship graph draws before
@@ -33,6 +40,7 @@ export default function CrossReferences({
   selectedId,
   onSelectChunk,
   onOpenDocument,
+  onRuleStatement,
 }: CrossReferencesProps) {
   const [showGraph, setShowGraph] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -68,6 +76,7 @@ export default function CrossReferences({
                   documentId={documentId}
                   onSelectChunk={onSelectChunk}
                   onOpenDocument={onOpenDocument}
+                  onRuleStatement={onRuleStatement}
                 />
               ))}
             </ul>
@@ -100,12 +109,14 @@ export function RefRow({
   documentId,
   onSelectChunk,
   onOpenDocument,
+  onRuleStatement,
 }: {
   edge: DocEdge;
   selectedId: string;
   documentId: string;
   onSelectChunk: (id: string) => void;
   onOpenDocument?: (documentId: string, chunkId: string, title?: string) => void;
+  onRuleStatement?: StatementRuling;
 }) {
   const outgoing = edge.from_id === selectedId;
   const otherId = outgoing ? edge.to_id : edge.from_id;
@@ -125,6 +136,10 @@ export function RefRow({
         onSelectChunk={onSelectChunk}
         onOpenDocument={onOpenDocument}
       />
+      <StatementMeta statement={edge} />
+      {onRuleStatement && isProposed(edge) && (
+        <StatementReview id={edge.id!} onRule={onRuleStatement} />
+      )}
     </li>
   );
 }
@@ -133,13 +148,15 @@ export function RefRow({
 // Node ids are the chunk ids (prefixed + stripped to mermaid-safe chars); labels
 // are the endpoint titles, sanitized of mermaid metacharacters and truncated.
 // Mermaid dedups nodes by id, so re-declaring a node's label across edges is fine.
-function buildGraph(edges: DocEdge[]): string {
+// A statement that does not hold yet (proposed) is drawn dotted.
+export function buildGraph(edges: DocEdge[]): string {
   const lines = ["graph LR"];
   for (const e of edges) {
     const from = `${nodeId(e.from_id)}["${label(e.from_title, e.from_id)}"]`;
     const to = `${nodeId(e.to_id)}["${label(e.to_title, e.to_id)}"]`;
     const kind = (e.kind || "link").replace(/[|"]/g, " ");
-    lines.push(`  ${from} -->|${kind}| ${to}`);
+    const arrow = e.status === "proposed" ? "-.->" : "-->";
+    lines.push(`  ${from} ${arrow}|${kind}| ${to}`);
   }
   return lines.join("\n");
 }

@@ -303,3 +303,64 @@ describe("RFC BS connections / history / canvas ops → wire mapping", () => {
     expect(endless.path).toHaveBeenCalledTimes(4);
   });
 });
+
+// RFC FN statement ops: get_edges keeps its single call (the runtime's default
+// page), and the review ops ride the same /v1/_document passthrough.
+describe("RFC FN statement ops → wire mapping", () => {
+  it("documentGetEdges stays one unpaged call", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentGetEdges("doc1", "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith({ op: "get_edges", document_id: "doc1", scope: "user" }, BROWSE);
+  });
+
+  it("documentGetEdge sends the statement id", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentGetEdge!("e1", "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith({ op: "get_edge", id: "e1", scope: "user" }, BROWSE);
+  });
+
+  it("documentAcceptStatement carries a reason only when given", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentAcceptStatement!("e1", "tenant", BROWSE);
+    await dl.documentAcceptStatement!("e2", "user", undefined, "checked the source");
+    expect(s.document).toHaveBeenNthCalledWith(1, { op: "accept_statement", id: "e1", scope: "tenant" }, BROWSE);
+    expect(s.document).toHaveBeenNthCalledWith(
+      2,
+      { op: "accept_statement", id: "e2", scope: "user", reason: "checked the source" },
+      undefined,
+    );
+  });
+
+  it("documentRejectStatement always sends its reason", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).documentRejectStatement!("e1", "wrong target", "user", BROWSE);
+    expect(s.document).toHaveBeenCalledWith(
+      { op: "reject_statement", id: "e1", reason: "wrong target", scope: "user" },
+      BROWSE,
+    );
+  });
+
+  it("a refused ruling rejects with the runtime's error", async () => {
+    const s = stubClient();
+    s.document.mockRejectedValueOnce(
+      Object.assign(new Error("reject_statement: reason is required"), { name: "SubstrateToolRefusedError" }),
+    );
+    await expect(
+      dataLayerFromClient(s.client).documentRejectStatement!("e1", "", "user"),
+    ).rejects.toThrow("reason is required");
+  });
+
+  it("documentListStatements passes only the filters that are set", async () => {
+    const s = stubClient();
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentListStatements!("user", BROWSE);
+    await dl.documentListStatements!("user", BROWSE, { status: "rejected", kind: "cites", limit: 50, after: "cur" });
+    expect(s.document).toHaveBeenNthCalledWith(1, { op: "list_statements", scope: "user" }, BROWSE);
+    expect(s.document).toHaveBeenNthCalledWith(
+      2,
+      { op: "list_statements", scope: "user", status: "rejected", kind: "cites", limit: 50, after: "cur" },
+      BROWSE,
+    );
+  });
+});

@@ -352,7 +352,7 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     const s = stubClient();
     await dataLayerFromClient(s.client).getEdges("user", "doc-1", { scopeId: "bob" });
     expect(s.document).toHaveBeenCalledWith(
-      { op: "get_edges", scope: "user", document_id: "doc-1" },
+      { op: "get_edges", scope: "user", document_id: "doc-1", include_proposed: false },
       { scopeId: "bob" },
     );
   });
