@@ -869,10 +869,40 @@ func (d *Document) evidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs
 	return rows, counts, nil
 }
 
+// readableEvidenceFor is evidenceFor as the caller may read it: rows citing a
+// document its access-control set cannot read are withheld, and each count is of
+// the rows left — a count that included them would tell the caller a source it
+// cannot see exists. Without a reading limit it is evidenceFor unchanged.
+func (d *Document) readableEvidenceFor(ctx context.Context, key sqlmem.ScopeKey, edgeIDs []string, limit int) (map[string][]edgeEvidenceRow, map[string]int, error) {
+	limits, err := d.newDocACL(ctx, key).limitsReading(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !limits {
+		return d.evidenceFor(ctx, key, edgeIDs, limit)
+	}
+	ev, _, err := d.evidenceFor(ctx, key, edgeIDs, 0)
+	if err == nil {
+		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	counts := make(map[string]int, len(ev))
+	for id, rows := range ev {
+		counts[id] = len(rows)
+		if limit > 0 && len(rows) > limit {
+			ev[id] = rows[:limit]
+		}
+	}
+	return ev, counts, nil
+}
+
 // statementVisibility is the withholding a reader applies to statements, the edge
 // analogue of the fact surfaces' rule: a rejected statement, an unsupported
-// verdict (confidence below the floor) and a retired one are withheld unless asked
-// for — never deleted. NULL confidence (never judged) stays visible.
+// verdict (verdict_confidence below the floor) and a retired one are withheld
+// unless asked for — never deleted. NULL (never judged) stays visible, and the
+// writer's own confidence never withholds.
 type statementVisibility struct {
 	includeProposed bool
 	includeRefuted  bool
@@ -1226,10 +1256,7 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	}
 	r := res.Rows[0]
 	s := scanStatement(r)
-	ev, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 0)
-	if err == nil {
-		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
-	}
+	ev, counts, err := d.readableEvidenceFor(ctx, key, []string{s.ID}, 0)
 	if err != nil {
 		return errFrom("get_edge: "+err.Error(), err), nil
 	}
@@ -1298,10 +1325,7 @@ func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey,
 		stmts[i] = scanStatement(r)
 		ids[i] = stmts[i].ID
 	}
-	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
-	if err == nil {
-		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
-	}
+	ev, counts, err := d.readableEvidenceFor(ctx, key, ids, edgeEvidencePreview)
 	if err != nil {
 		return errFrom(err.Error(), err), nil
 	}

@@ -3537,11 +3537,8 @@ LIMIT ?`, args...)
 		stmts[i] = scanStatement(r)
 		ids[i] = stmts[i].ID
 	}
-	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
+	ev, counts, err := d.readableEvidenceFor(ctx, key, ids, edgeEvidencePreview)
 	if err != nil {
-		return errFrom(op+": "+err.Error(), err), nil
-	}
-	if ev, err = d.withholdUnreadableEvidence(ctx, key, ev); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	edges := make([]map[string]any, 0, len(rows))
