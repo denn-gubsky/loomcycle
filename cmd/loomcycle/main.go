@@ -580,6 +580,10 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 			AutoMigrate:     cfg.Storage.PgAutoMigrate,
 			PgvectorEnabled: cfg.Env.PgvectorEnabled,
 			ChannelDebug:    channelDebugEnabled(),
+			FullText: storepostgres.FullTextConfig{
+				Config:   cfg.Memory.FullText.Config,
+				Unaccent: cfg.Memory.FullText.Unaccent,
+			},
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("postgres open: %w", err)

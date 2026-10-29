@@ -88,6 +88,11 @@ type Config struct {
 	// Store struct so the hot path is a single bool load. Defaults
 	// to off so noise stays out of production logs.
 	ChannelDebug bool
+
+	// FullText is how the word leg of a memory search reads text
+	// (memory.fulltext). Applied at Open when memory_embeddings exists; a
+	// change rebuilds the indexed column once.
+	FullText FullTextConfig
 }
 
 // Store is the Postgres implementation of store.Store.
@@ -103,6 +108,10 @@ type Store struct {
 	// 0062). SupportsVectors()/SupportsFullText() return this, and every
 	// MemoryEmbed* op refuses with store.ErrVectorUnsupported when false.
 	pgvectorEnabled bool
+
+	// fts is the full-text setting the indexed column was built with, so
+	// the query side reads text the same way (see ftsQuery).
+	fts FullTextConfig
 
 	// channelDebug is captured from Config.ChannelDebug at Open()
 	// time. See ChannelPublish for what the debug log contains.
@@ -252,6 +261,11 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 		if tableExists {
 			s.pgvectorEnabled = true
+			if err := s.applyFullTextConfig(ctx, cfg.FullText); err != nil {
+				pool.Close()
+				return nil, fmt.Errorf("postgres: %w", err)
+			}
+			s.fts = cfg.FullText
 		} else {
 			// The one state that would otherwise be silent-but-degraded, so
 			// say it loudly and actionably exactly once, at boot.
