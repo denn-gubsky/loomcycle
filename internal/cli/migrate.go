@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -84,6 +85,24 @@ func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 	if err := storepostgres.MigrateUp(resolvedDSN); err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: migrate up: %v\n", err)
 		return 1
+	}
+	// memory.fulltext rebuilds a column the migrations own, so it may need the
+	// same role. Only with --config: --dsn alone carries no setting, and
+	// applying the default would undo the server's.
+	if *cfgPath != "" {
+		cfg, err := config.Load(*cfgPath)
+		if err != nil {
+			return fail(stderr, "config: %v", err)
+		}
+		ft := storepostgres.FullTextConfig{Config: cfg.Memory.FullText.Config, Unaccent: cfg.Memory.FullText.Unaccent}
+		applied, err := storepostgres.ApplyFullTextConfig(context.Background(), resolvedDSN, ft)
+		if err != nil {
+			fmt.Fprintf(stderr, "loomcycle: error: migrate up: memory.fulltext: %v\n", err)
+			return 1
+		}
+		if applied {
+			fmt.Fprintf(stdout, "memory.fulltext: config=%s unaccent=%v\n", cfg.Memory.FullText.EffectiveConfig(), ft.Unaccent)
+		}
 	}
 	v, dirty, err := storepostgres.MigrateStatus(resolvedDSN)
 	if err != nil {

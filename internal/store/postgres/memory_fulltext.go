@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // FullTextConfig is how the word leg of a memory search reads text: the text
@@ -135,6 +136,29 @@ func (s *Store) ftsSetting(ctx context.Context) FullTextConfig {
 	// line) per interval, not one per search.
 	s.fts.Store(&ftsSnapshot{cfg: next, readAt: time.Now()})
 	return next
+}
+
+// ApplyFullTextConfig makes the full-text column of the database at dsn match
+// cfg, as the server boot does. It is for `loomcycle migrate up`, which runs as
+// the role that owns the schema. applied is false when there is no
+// memory_embeddings table (no pgvector), so no word leg to set.
+func ApplyFullTextConfig(ctx context.Context, dsn string, cfg FullTextConfig) (applied bool, err error) {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return false, fmt.Errorf("dial postgres: %w", err)
+	}
+	defer pool.Close()
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('memory_embeddings') IS NOT NULL`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("probe memory_embeddings table: %w", err)
+	}
+	if !exists {
+		return false, nil
+	}
+	if _, err := (&Store{pool: pool}).applyFullTextConfig(ctx, cfg); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ftsConfigIdent mirrors config's check. It is repeated here because the name is
