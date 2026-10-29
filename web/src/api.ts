@@ -3653,6 +3653,28 @@ export interface OntologyScheme {
   issues?: string[];
 }
 
+/** One instance's adoption state (RFC FO P1c-2). */
+export interface OntologyInstanceState {
+  name: string;
+  class?: string;
+  /** The registry key — the same key the memory tier files facts about it under. */
+  key?: string;
+  state: "pending" | "adopted" | "linked" | "renamed" | "unchanged" | "error";
+  note?: string;
+}
+
+/** What instance adoption did, or (dry run) would do. */
+export interface OntologyInstanceReport {
+  instances?: OntologyInstanceState[];
+  adopted: number;
+  linked: number;
+  renamed: number;
+  statements: number;
+  /** Subjects adopted from instances no longer declared — kept, never erased. */
+  orphaned?: string[];
+  errors?: string[];
+}
+
 /** One relation kind (RFC FO P1b). */
 export interface OntologyRelation {
   name: string;
@@ -3734,6 +3756,11 @@ export interface OntologyResponse {
   scheme_mirror_stale?: string[];
   /** What the mirror changed, on the confirm that ran it. */
   scheme_mirror?: { concepts: number; stale?: string[]; added: number; removed: number };
+  // RFC FO P1c-2 — filled only when the document declares an Instances section.
+  /** Each instance's state as a confirm would leave it. */
+  instances?: OntologyInstanceReport;
+  /** What adoption did, on the confirm that ran it. */
+  instance_adoption?: OntologyInstanceReport;
 }
 
 /** Accept (put in force, in place) or reject (keep as a tombstone) a proposal. */

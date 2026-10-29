@@ -7,6 +7,7 @@ import {
   buildRelationTree,
   classDirectiveNotes,
   conceptSummary,
+  instanceStateLabel,
   factsUnderOlderVocabulary,
   relationSummary,
   typedFieldLabel,
@@ -434,6 +435,7 @@ function OntologySectionsDetail({
         <OntologyRelationsDetail state={state} busy={busy} onAdopt={onAdoptRelation} />
       )}
       {state.schemes !== undefined && <OntologySchemesDetail state={state} />}
+      {state.instances !== undefined && <OntologyInstancesDetail state={state} />}
       {(versions.older > 0 || versions.unknown > 0) && (
         <p className="settings-help">
           Facts in the tenant scope: {versions.older} written under an older vocabulary
@@ -555,6 +557,51 @@ function OntologyRelationsDetail({
         </p>
       )}
     </>
+  );
+}
+
+// OntologyInstancesDetail is the Instances section's half of the panel (RFC FO P1c-2):
+// each instance with its class, what a confirm does (or did) for it, and its registry key
+// — the key the memory tier files facts about it under. Subjects whose instance was
+// removed are listed as kept, because removal never erases.
+function OntologyInstancesDetail({ state }: { state: OntologyResponse }) {
+  const rep = state.instances;
+  const did = state.instance_adoption;
+  return (
+    <div className="settings-row">
+      <div>
+        <strong>Instances</strong>
+        <span className="settings-muted">
+          {" "}
+          — real organisations, units and posts; a confirm adopts them into memory.
+        </span>
+        {did && (
+          <p className="settings-flash">
+            This confirm adopted {did.adopted}, matched {did.linked} to existing subjects, renamed{" "}
+            {did.renamed}, and wrote {did.statements} statement(s).
+          </p>
+        )}
+        <ul className="ontology-tree">
+          {(rep?.instances ?? []).map((i) => (
+            <li key={i.name}>
+              <code>{i.name}</code>
+              {i.class && <span className="settings-muted"> a {i.class}</span>}
+              <span className={i.state === "error" ? "ontology-warn" : "settings-muted"}>
+                {" "}
+                · {instanceStateLabel(i)}
+              </span>
+              {i.key && <span className="settings-muted"> · {i.key}</span>}
+            </li>
+          ))}
+        </ul>
+        {(rep?.orphaned ?? []).length > 0 && (
+          <p className="settings-help">
+            No longer declared, kept in memory (delete a subject through erasure, not here):{" "}
+            {(rep?.orphaned ?? []).join(", ")}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -856,6 +903,7 @@ function OntologySection() {
                         <span className="settings-muted"> relation kind</span>
                       )}
                       {p.section === "schemes" && <span className="settings-muted"> concept</span>}
+                      {p.section === "instances" && <span className="settings-muted"> instance</span>}
                       {p.parent && (
                         <span className="settings-muted">
                           {" "}
