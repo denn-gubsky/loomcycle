@@ -25,6 +25,11 @@ existing one.** A new document always gets a Path-tree name.
   Default: `/documents/<first heading, slugified>`. That default is shared by
   any other document with the same title in this scope — the name then points
   at the newest one — so pass `path` when the title is not unique.
+- `reimport` — the Markdown is a new edition of the document named by
+  `document_id` or `work_key`; see "A new edition" below.
+- `work_key` — with `reimport`: the work's key, e.g. `law:ua/2297-vi`.
+- `edition_date` — with `reimport`: when the edition came into force (unix
+  nanoseconds; default now).
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 - `source_url`, `source_kind`, `source_title` — new document only: where the
@@ -62,6 +67,31 @@ reads at most 64 such pictures and 64 MiB of them; a picture that cannot be
 read, is not a PNG, JPEG, GIF or WebP, or is over the size limit stays a
 plain link. Tags are not read from Markdown; add them afterwards with
 `add_tags`.
+
+## A new edition: `reimport`
+
+When the Markdown is a new edition of a document you already hold — an amended
+law, a revised standard — pass `reimport: true` with the document's
+`document_id` or its `work_key`. Each part is recognised by its anchor (its
+heading path, e.g. `article-2/paragraph-1`) and reconciled instead of recreated:
+
+- a part with the same text is left untouched — its id, links, evidence and
+  tags stay;
+- a part with the same heading and new text is **superseded**: the old version
+  closes at `edition_date` (it is still what the work said before) and a new one
+  opens there, joined by `supersedes`. Links follow it where their evidence still
+  holds; the others stay on the old version, marked `proposed` for re-checking;
+- a part with the same text under a new heading (renumbered or moved) keeps its
+  id and is still found by its old anchor;
+- a part the edition no longer has closes; nothing is deleted;
+- a new part opens at `edition_date`.
+
+`edition_date` is when the edition came into force (unix nanoseconds; default
+now). With `work_key` and no document holding it yet, the first edition is
+imported as a new document carrying that key — or onto the placeholder
+`resolve_anchor` filed for it. Running the same reimport twice changes nothing.
+The response adds `reimport: {unchanged, superseded, moved, closed, created,
+statements_copied, statements_proposed}` and `changed_chunk_ids`.
 
 ## Returns
 

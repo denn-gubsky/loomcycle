@@ -3907,6 +3907,7 @@ export type DocumentToolInput = {
     | "accept_statement"
     | "reject_statement"
     | "list_statements"
+    | "resolve_anchor"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"
@@ -4003,6 +4004,16 @@ export type DocumentToolInput = {
   expand?: { kinds?: string[]; hops?: 1; budget_chars?: number };
   /** related: a chunk whose neighbours BY RELATION to return as `linked`. */
   related_to?: string;
+  /** import_md: the markdown is a new edition of document_id / work_key. */
+  reimport?: boolean;
+  /** import_md with reimport: when the edition came into force (unix nanos). */
+  edition_date?: number;
+  /** import_md with reimport / resolve_anchor: the work's key. */
+  work_key?: string;
+  /** resolve_anchor: a part of the work, by anchor or first anchor. */
+  anchor?: string;
+  /** resolve_anchor: file a placeholder for a work not held yet. */
+  create_placeholder?: boolean;
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before
