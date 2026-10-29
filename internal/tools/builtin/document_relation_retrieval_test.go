@@ -296,3 +296,79 @@ func TestSearch_ExpandNeverStartsFromAnUnreadableHit(t *testing.T) {
 		t.Errorf("an expansion from an unreadable hit reached the answer: %s", r.Text)
 	}
 }
+
+// expandACLFixture links the readable public chunk to the secret one, so a search
+// that ranks the public chunk can only reach the secret chunk by expansion.
+func expandACLFixture(t *testing.T) (*Document, context.Context, context.Context, aclDocs) {
+	t.Helper()
+	d, _, base := mermaidDocFixture(t, "savepoint", "nesting", "secret", "public")
+	open := tenantDocCtx(base, nil)
+	s := seedACLDocs(t, d, open)
+	denied := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	return d, open, denied, s
+}
+
+// expanded and expand_truncated describe only the rows the caller is shown: an
+// unreadable neighbour neither counts nor spends the budget, so neither moves when
+// a readable hit gains a relation to something the caller cannot read.
+func TestSearch_ExpandCountsOnlyReadableRows(t *testing.T) {
+	d, open, denied, s := expandACLFixture(t)
+	// The default budget, and budget_chars 1, where any row that reaches the budget
+	// truncates the expansion.
+	qs := []string{
+		`{"op":"search","scope":"tenant","query":"savepoint public","limit":1,"expand":{"kinds":["cites"]}}`,
+		`{"op":"search","scope":"tenant","query":"savepoint public","limit":1,"expand":{"kinds":["cites"],"budget_chars":1}}`,
+	}
+	before := make([]map[string]any, len(qs))
+	for i, q := range qs {
+		out, r := docExec(t, d, denied, q)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		before[i] = out
+	}
+	if _, r := docExec(t, d, open, `{"op":"link_chunks","scope":"tenant","from_id":"`+s.publicChunk+`","to_id":"`+s.secretChunk+`","kind":"cites"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	for i, q := range qs {
+		after, r := docExec(t, d, denied, q)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if strings.Contains(r.Text, s.secretChunk) {
+			t.Errorf("%s: the unreadable chunk reached the answer: %s", q, r.Text)
+		}
+		for _, k := range []string{"expanded", "expand_truncated"} {
+			if fmt.Sprint(before[i][k]) != fmt.Sprint(after[k]) {
+				t.Errorf("%s: %s moved %v -> %v while the visible rows did not", q, k, before[i][k], after[k])
+			}
+		}
+	}
+}
+
+// An expanded row obeys the search's own filter: exclude_under_path and
+// under_path keep out a neighbour the ranked hits could never have been.
+func TestSearch_ExpandObeysTheSearchFilter(t *testing.T) {
+	d, open, _, s := expandACLFixture(t)
+	if _, r := docExec(t, d, open, `{"op":"link_chunks","scope":"tenant","from_id":"`+s.publicChunk+`","to_id":"`+s.secretChunk+`","kind":"cites"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	base := `{"op":"search","scope":"tenant","query":"savepoint public","expand":{"kinds":["cites"]}%s}`
+	if _, r := docExec(t, d, open, fmt.Sprintf(base, "")); r.IsError || !strings.Contains(r.Text, s.secretChunk) {
+		t.Fatalf("control: an unfiltered expansion did not reach the secret chunk: %s", r.Text)
+	}
+	for _, f := range []string{`,"exclude_under_path":"/kb/secret"`, `,"under_path":"/kb/public"`} {
+		out, r := docExec(t, d, open, fmt.Sprintf(base, f))
+		if r.IsError {
+			t.Fatalf("%s: %s", f, r.Text)
+		}
+		if strings.Contains(r.Text, s.secretChunk) {
+			t.Errorf("%s: a filtered-out chunk came back by expansion: %s", f, r.Text)
+		}
+		if out["expanded"] != float64(0) {
+			t.Errorf("%s: expanded = %v, want 0", f, out["expanded"])
+		}
+	}
+}

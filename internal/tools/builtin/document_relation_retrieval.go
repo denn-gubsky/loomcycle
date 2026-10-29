@@ -57,8 +57,9 @@ func validateExpand(e *searchExpand) error {
 
 // expandHits adds the relation neighbours of the top hits to a search answer.
 // hits are the ranked rows (each with chunk_id); the returned rows carry
-// chunk_id / title / type / document_id like a hit, plus expanded_via.
-func (d *Document) expandHits(ctx context.Context, key sqlmem.ScopeKey, in docInput, hits []map[string]any) ([]map[string]any, bool, error) {
+// chunk_id / title / type / document_id like a hit, plus expanded_via. filter is
+// the search's resolved structural filter (nil when none was named).
+func (d *Document) expandHits(ctx context.Context, key sqlmem.ScopeKey, in docInput, hits []map[string]any, filter *searchFilterSet) ([]map[string]any, bool, error) {
 	if in.Expand == nil || len(hits) == 0 {
 		return nil, false, nil
 	}
@@ -118,7 +119,6 @@ func (d *Document) expandHits(ctx context.Context, key sqlmem.ScopeKey, in docIn
 		}
 		rows = kept
 	}
-	d.attachViaQuotes(ctx, key, rows)
 	ids := make([]string, 0, len(rows))
 	for _, r := range rows {
 		ids = append(ids, r.ID)
@@ -127,6 +127,18 @@ func (d *Document) expandHits(ctx context.Context, key sqlmem.ScopeKey, in docIn
 	if err != nil {
 		return nil, false, err
 	}
+	// ⚠️ DROP WHAT THE CALLER IS NOT SHOWN BEFORE THE BUDGET. The listing filter
+	// removes an unreadable row from the answer afterwards, but by then it has been
+	// counted in `expanded`, may have set `expand_truncated`, and has spent budget a
+	// visible row could have used — so either count moving would say a readable hit
+	// is related to something the caller cannot read. The search's own filter is
+	// applied here for the same reason: a ranked hit could never have come from an
+	// excluded path, and neither may a row added beside it.
+	rows, err = visibleRelationRows(ctx, rows, meta, filter, acl, limits)
+	if err != nil {
+		return nil, false, err
+	}
+	d.attachViaQuotes(ctx, key, rows)
 	out := []map[string]any{}
 	used, truncated := 0, false
 	for _, r := range rows {
@@ -209,4 +221,67 @@ func (d *Document) relatedByRelation(ctx context.Context, key sqlmem.ScopeKey, i
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// visibleRelationRows keeps the rows a relation-following answer may show: inside
+// the structural filter (when one was named) and, when the caller's reading is
+// limited, in a document it may read. A row whose document is unknown is dropped
+// under a limit — there is nothing to ask the access-control set about.
+func visibleRelationRows(ctx context.Context, rows []graphChunk, meta map[string]chunkMeta, filter *searchFilterSet, acl *docACL, limits bool) ([]graphChunk, error) {
+	if filter == nil && !limits {
+		return rows, nil
+	}
+	inFilter := searchFilterMembership(filter)
+	readable := map[string]bool{}
+	kept := rows[:0]
+	for _, r := range rows {
+		if !inFilter(r.ID) {
+			continue
+		}
+		if limits {
+			docID := meta[r.ID].documentID
+			if docID == "" {
+				continue
+			}
+			ok, seen := readable[docID]
+			if !seen {
+				var err error
+				if ok, err = acl.readable(ctx, docID); err != nil {
+					return nil, err
+				}
+				readable[docID] = ok
+			}
+			if !ok {
+				continue
+			}
+		}
+		kept = append(kept, r)
+	}
+	return kept, nil
+}
+
+// searchFilterMembership reports whether a chunk is inside a resolved filter: in
+// its allowlist when it sends one, and never in its denylist. A filter that
+// matched nothing sends neither list, so it is checked by its count.
+func searchFilterMembership(f *searchFilterSet) func(string) bool {
+	if f == nil {
+		return func(string) bool { return true }
+	}
+	if f.echo.MatchedChunks == 0 {
+		return func(string) bool { return false }
+	}
+	var allow map[string]bool
+	if f.ids != nil {
+		allow = make(map[string]bool, len(f.ids))
+		for _, id := range f.ids {
+			allow[id] = true
+		}
+	}
+	deny := make(map[string]bool, len(f.excludeIDs))
+	for _, id := range f.excludeIDs {
+		deny[id] = true
+	}
+	return func(id string) bool {
+		return (allow == nil || allow[id]) && !deny[id]
+	}
 }

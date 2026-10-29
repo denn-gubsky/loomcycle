@@ -182,7 +182,7 @@ const documentInputSchema = `{
 		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it."},
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay)."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
-		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
+		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
 		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder."},
 		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their heading path: unchanged parts keep their ids and links, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
 		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now)."},
@@ -3915,7 +3915,7 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// reading the first element must get the best match, not whatever order the
 	// metadata query returned. Expanded rows follow the ranked ones, unranked and
 	// marked, in the same list so the access-control filter reads them too.
-	expanded, expandTruncated, err := d.expandHits(ctx, key, in, out)
+	expanded, expandTruncated, err := d.expandHits(ctx, key, in, out, filter)
 	if err != nil {
 		return errFrom("search: expand: "+err.Error(), err), nil
 	}
