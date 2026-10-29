@@ -572,10 +572,17 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if refused != nil {
 		return *refused, nil
 	}
+	// RFC FO P1a: typed classes — field warnings and identity keys for the four write
+	// ops; see document_ontology_fields.go. Pre-write so a collision leaves nothing behind.
+	classRules, refused := d.applyClassRules(ctx, key, mscope, &in, raw)
+	if refused != nil {
+		return *refused, nil
+	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
 	if err != nil {
 		return res, err
 	}
+	res = d.finishClassRules(ctx, key, in, classRules, res)
 	return acl.filterListing(ctx, in.Op, res), nil
 }
 
@@ -938,7 +945,13 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.migrateVerdict(ctx, key); err != nil {
 		return err
 	}
-	return d.migrateJudgedBy(ctx, key)
+	if err := d.migrateJudgedBy(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateIdentityKey(ctx, key); err != nil {
+		return err
+	}
+	return d.migrateOntologyVersion(ctx, key)
 }
 
 // migrateConfidencePrecision widens chunk_memory_meta.confidence from postgres
@@ -5374,7 +5387,10 @@ func (d *Document) listTypes(ctx context.Context, key sqlmem.ScopeKey, in docInp
 		_ = json.Unmarshal([]byte(asStr(m["fields"])), &fields)
 		types = append(types, map[string]any{"name": asStr(m["name"]), "document_id": asStr(m["document_id"]), "fields": fields})
 	}
-	return jsonResult(map[string]any{"types": types})
+	// The structural vocabulary the primitive itself writes into chunks.type, listed
+	// apart from the document's own types (RFC FO §3.2) so a `section` chunk is not
+	// mistaken for an undeclared class.
+	return jsonResult(map[string]any{"types": types, "reserved": memrank.ReservedStructuralTypes()})
 }
 
 // --- ops: tags + document facets (RFC BS Phase 1) ---
