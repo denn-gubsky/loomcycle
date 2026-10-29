@@ -105,6 +105,11 @@ func TestOntologyAdopt_ARelationKindIsCopiedWithItsDirectives(t *testing.T) {
 		len(amends.Qualifiers) != len(want.Qualifiers) || len(amends.Qualifiers[0].Values) != len(want.Qualifiers[0].Values) {
 		t.Errorf("adopted copy does not parse back to the seed kind:\n got %#v\nwant %#v", *amends, want)
 	}
+	for _, r := range got.EffectiveRelations {
+		if r.Name == "amends" && r.Parent != "changes" {
+			t.Errorf("the adopted copy left its parent: amends under %q, want changes", r.Parent)
+		}
+	}
 	if !strings.Contains(s.renderOntology(context.Background(), mi), "**amends**") {
 		t.Error("an adopted kind should reach the prompt")
 	}

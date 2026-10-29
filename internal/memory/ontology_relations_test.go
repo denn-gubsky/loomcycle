@@ -191,3 +191,26 @@ func TestReservedRelationNames_Sorted(t *testing.T) {
 		t.Errorf("reserved names = %v", got)
 	}
 }
+
+// TestEffectiveRelations_ARootOverrideKeepsTheSeedParent.
+//
+// Adopting a standard kind files it at the root of the Relations section when the tenant
+// has no copy of its parent. Taken wholesale, that override would drop the parent and
+// make `changes` stop expanding to `amends`. A root entry keeps the seed kind's parent;
+// nesting it under another kind is how a tenant sets a different one.
+func TestEffectiveRelations_ARootOverrideKeepsTheSeedParent(t *testing.T) {
+	by := map[string]OntologyRelation{}
+	for _, r := range EffectiveRelations([]OntologyRelation{
+		{Name: "amends", Source: RelationSourceTenant},                        // adopted at the section root
+		{Name: "repeals", Parent: "terminates", Source: RelationSourceTenant}, // deliberately re-parented
+		{Name: "terminates", Source: RelationSourceTenant},
+	}, true, true) {
+		by[r.Name] = r
+	}
+	if by["amends"].Parent != "changes" {
+		t.Errorf("a root override lost the seed parent: %q", by["amends"].Parent)
+	}
+	if by["repeals"].Parent != "terminates" {
+		t.Errorf("an explicit nesting must win over the seed parent: %q", by["repeals"].Parent)
+	}
+}

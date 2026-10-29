@@ -385,7 +385,8 @@ func SeedRelations() []OntologyRelation {
 // EffectiveRelations is the relation vocabulary in force: nil unless the tenant's
 // CONFIRMED ontology declares a Relations section, otherwise reserved ⊕ seed ⊕ tenant.
 //
-// A tenant kind replaces a same-named seed kind wholesale (as classes do). A tenant
+// A tenant kind replaces a same-named seed kind wholesale (as classes do), except that a
+// root entry keeps the seed kind's parent (see below). A tenant
 // entry with a RESERVED name keeps the reserved definition — the runtime writes those
 // edges and its meaning is fixed — and only anchors the sub-kinds nested beneath it.
 // Sorted by name so rendering and expansion are stable.
@@ -404,6 +405,14 @@ func EffectiveRelations(tenant []OntologyRelation, sectionDeclared, confirmed bo
 	for _, r := range tenant {
 		if r.Name == "" || IsReservedRelation(r.Name) {
 			continue
+		}
+		// A ROOT entry that overrides a seed kind keeps the seed kind's parent. Adopting
+		// files a copy at the section root when the tenant has no copy of its parent, and
+		// a wholesale override would drop the parent with it — `changes` would stop
+		// expanding to `amends`. Nesting the entry under another kind still sets a
+		// different parent; the position is the operator's, the default is the seed's.
+		if seed, ok := byName[r.Name]; ok && r.Parent == "" && seed.Source == RelationSourceBase {
+			r.Parent = seed.Parent
 		}
 		r.Source = RelationSourceTenant
 		byName[r.Name] = r
