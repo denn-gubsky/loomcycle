@@ -355,9 +355,21 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 				"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error.")
 			return out, &r, nil
 		}
+		// A proposal is filed for review; it may not add to a relation that already
+		// holds. Evidence on an asserted statement is live data, and the propose verb
+		// is narrower than link (a principal holding only read + propose).
+		if status == edgeStatusProposed && existing.Status == edgeStatusAsserted {
+			r := errBusiness("statement_asserted: this relation is already asserted (id "+existing.ID+"), so a proposal cannot add to it",
+				"Leave it, or propose a correction beside it by passing id.")
+			return out, &r, nil
+		}
 		out.ID, out.Status = existing.ID, existing.Status
-		// An authored link of a proposed (or rejected, by an operator) statement asserts it.
-		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted {
+		// Only an authored link_chunks asserts a statement that awaits review (or, by
+		// an operator, one rejected). A machine write — a fact's relation, sync,
+		// import, canvas — carries someone else's judgement and adds its evidence to
+		// the proposal; clearing the review queue is not something holding write
+		// should be able to do.
+		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && gateAuthored {
 			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ? WHERE id = ?`, edgeStatusAsserted, nullIfEmpty(actor), existing.ID); err != nil {
 				return out, nil, err
 			}
@@ -897,7 +909,9 @@ func (d *Document) linkChunks(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		from: in.FromID, to: in.ToID, kind: in.Kind, method: method, status: edgeStatusAsserted,
 		authored: true, confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt,
 		attributes: in.Attributes, evidence: in.Evidence,
-		overrideRejected: authorIsOperatorPlane(ctx),
+		// An operator's own link may re-assert a rejection; sync and canvas carry
+		// another document's relations and never override one, whoever runs them.
+		overrideRejected: method == edgeMethodManual && authorIsOperatorPlane(ctx),
 	})
 	if err != nil {
 		return errFrom("link_chunks: "+err.Error(), err), nil
