@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -121,6 +122,17 @@ type ontologyResponse struct {
 	// @dated kind that carry no valid_at.
 	StatementVersions []builtin.VersionCount `json:"statement_versions,omitempty"`
 	UndatedStatements int                    `json:"undated_statements,omitempty"`
+
+	// --- RFC FO P1c. Filled only when the document declares a Schemes section.
+
+	// Schemes are the concept schemes as written, each concept with its mirror tag and,
+	// on a file plan, its retention and ACL (shown, not enforced yet).
+	Schemes []meminject.OntologyScheme `json:"schemes,omitempty"`
+	// SchemeMirrorStale lists the concepts whose chunk does not carry its mirror tag
+	// (or still carries an old one) — what confirming again would fix.
+	SchemeMirrorStale []string `json:"scheme_mirror_stale,omitempty"`
+	// SchemeMirror reports what the mirror changed, on the confirm that ran it.
+	SchemeMirror *builtin.SchemeMirrorReport `json:"scheme_mirror,omitempty"`
 }
 
 // ontologyTenant is the tenant every ontology route reads and writes: an admin's
@@ -225,12 +237,31 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Confirming applies the Schemes section: every concept chunk gets its mirror tag
+	// (RFC FO P1c). Confirming an already-confirmed ontology is how an operator
+	// re-applies after editing a scheme. A mirror fault does not undo the confirm — the
+	// flip is what the operator asked for — and is reported as a note.
+	var mirror *builtin.SchemeMirrorReport
+	var mirrorNote string
+	if status == meminject.OntologyConfirmedStatus {
+		if rep, merr := doc.MirrorSchemeTags(dctx, false); merr != nil {
+			slog.Warn("ontology: scheme tag mirror failed", "tenant", tenant, "err", merr)
+			mirrorNote = "The concept tags could not be applied this time; confirm again to retry."
+		} else if rep.Concepts > 0 {
+			mirror = &rep
+		}
+	}
+
 	// Re-read rather than synthesizing the new state: the response then shows the
 	// EFFECTIVE ontology after the flip, which is what the operator wanted to know.
 	resp, err := s.ontologyState(r.Context(), tenant)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
 		return
+	}
+	resp.SchemeMirror = mirror
+	if mirrorNote != "" {
+		resp.Notes = append(resp.Notes, mirrorNote)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -264,6 +295,12 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		sectioned = len(read.Sections) > 0
 		relRead = read
 		_, hasRelations = read.SectionChunks[meminject.SectionRelations]
+		if _, hasSchemes := read.SectionChunks[meminject.SectionSchemes]; hasSchemes {
+			resp.Schemes = read.Schemes
+			if dry, derr := doc.MirrorSchemeTags(dctx, true); derr == nil {
+				resp.SchemeMirrorStale = dry.Stale
+			}
+		}
 		// Document-level advisories (a duplicate or unknown section) join the reader
 		// notes the panel already renders.
 		notes = append(notes, read.Issues...)

@@ -145,3 +145,16 @@ func (d *Document) proposeConcept(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, in.Body)
 }
+
+// EffectiveSchemesFor is the run's tenant's concept schemes in force: those of a
+// CONFIRMED ontology, through the same cached read the gates use; nil otherwise.
+func (d *Document) EffectiveSchemesFor(ctx context.Context) []memrank.OntologyScheme {
+	if d.Store == nil || d.SqlMem == nil {
+		return nil
+	}
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || !read.Confirmed {
+		return nil
+	}
+	return read.Schemes
+}
