@@ -1234,12 +1234,15 @@ func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey,
 func (d *Document) judgeEdge(ctx context.Context, key sqlmem.ScopeKey, s *statementRow, verdict string, confidence float64, reason string) (tools.Result, error) {
 	judgedBy := judgedByForVerdict(ctx)
 	if verdict != "unclear" && !(judgedBy == "operator" && verdict != "mistyped") {
-		_, counts, err := d.evidenceFor(ctx, key, []string{s.ID}, 1)
+		// Only evidence this scope verified counts: a reference into another scope
+		// is kept as written, never checked, so it is no ground for a verdict.
+		res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edge_evidence
+			WHERE edge_id = ? AND (chunk_id IS NOT NULL OR session_id IS NOT NULL)`, s.ID)
 		if err != nil {
 			return errFrom("judge_fact: "+err.Error(), err), nil
 		}
-		if counts[s.ID] == 0 {
-			return errBusiness("judge_fact: that statement records no evidence, so there is nothing to check it against. "+
+		if len(res.Rows) == 0 || asInt(res.Rows[0][0]) == 0 {
+			return errBusiness("judge_fact: that statement records no evidence verified in this scope, so there is nothing to check it against. "+
 				"An operator may still vouch for it from the console — a run may not", ""), nil
 		}
 	}
