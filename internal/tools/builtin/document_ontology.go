@@ -25,6 +25,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -88,6 +89,18 @@ type OntologyRead struct {
 	// resolver and the linking agent read. Only recognised in a sectioned document, so a
 	// flat document's chunk titled like one keeps its old reading as a class.
 	Grammars []memrank.OntologyGrammar
+	// Relations are the entries of the Relations section, in document order, each with
+	// its parent kind resolved (RFC FO P1b). Empty without such a section. The section
+	// being present at all is recorded in Sections.
+	Relations []memrank.OntologyRelation
+	// SectionChunks maps each declared section kind to its chunk, so a proposal can be
+	// filed into the right section.
+	SectionChunks map[string]string
+	// partial is set when any chunk body could not be read during the walk. Such a read
+	// is still usable — it is what the walk always returned on a fault — but it must
+	// never be CACHED, or one transient fault would strip classes and relations of their
+	// declarations until the next edit.
+	partial bool
 	// Issues are document-level advisories: a duplicate section, an unknown section kind.
 	// Per-class advisories live on each term's Issues.
 	Issues []string
@@ -166,13 +179,29 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Bodies are read once and shared: the section pre-pass and the class walk both need
 	// a root child's body, and each read is a Memory round-trip.
 	bodies := map[string]string{}
+	partial := false
 	bodyOf := func(id string) string {
 		if b, ok := bodies[id]; ok {
 			return b
 		}
-		got, _ := d.readBody(ctx, mscope, key, id)
+		got, err := d.readBody(ctx, mscope, key, id)
+		if err != nil {
+			partial = true
+		}
 		bodies[id] = got.Body
 		return got.Body
+	}
+	// entityName resolves an entry's name: the chunk's title, or — when the title is
+	// empty — the first heading in its body. The title is authoritative because import_md
+	// lifts a heading into it; the body fallback covers a chunk written through
+	// update_chunk with a heading and no title, which would otherwise be nameless and
+	// dropped. Read through bodyOf, so an untitled chunk's failed read marks the read
+	// partial too.
+	entityName := func(c ontologyChunk) string {
+		if n := memrank.TrimOntologyName(c.title); n != "" {
+			return n
+		}
+		return memrank.FirstHeadingName(bodyOf(c.id))
 	}
 
 	// SECTION PRE-PASS (RFC FO §3.1). A root child whose first directive is
@@ -180,7 +209,8 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// existed. At most one section of each kind: a second is reported and read the way
 	// it read before sections — as a class — so declaring sections can never take out of
 	// force a type that was in force.
-	sectionOf := map[string]string{} // chunk id → kind, for the sections that count
+	sectionOf := map[string]string{}     // chunk id → kind, for the sections that count
+	sectionChunks := map[string]string{} // kind → chunk id
 	var sections, issues []string
 	seenKind := map[string]bool{}
 	for _, c := range kids[rootID] {
@@ -199,6 +229,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		seenKind[kind] = true
 		sectionOf[c.id] = kind
+		sectionChunks[kind] = c.id
 		sections = append(sections, kind)
 	}
 	sectioned := len(sections) > 0
@@ -223,7 +254,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 					continue
 				}
 			}
-			name := d.ontologyEntityName(ctx, mscope, key, c)
+			name := entityName(c)
 			// INERT: a proposal (or a rejected one) is in the document and not in force.
 			// Recorded so the operator can act on it, then skipped.
 			if memrank.IsInertEntityStatus(c.status) {
@@ -289,14 +320,55 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			walk(kids[c.id], c.id, childParent, depth+1, isDoc)
 		}
 	}
+	// walkRelations reads the Relations section: one chunk is one relation kind, a
+	// child chunk a sub-kind. The same fail-open rules as classes — an inert entry is a
+	// proposal and its children attach to the nearest in-force kind, an unnamed chunk
+	// is skipped with its children kept, and the depth cap flattens rather than drops.
+	var relations []memrank.OntologyRelation
+	var walkRelations func(chunks []ontologyChunk, parentName string, depth int)
+	walkRelations = func(chunks []ontologyChunk, parentName string, depth int) {
+		for _, c := range chunks {
+			name := entityName(c)
+			if memrank.IsInertEntityStatus(c.status) {
+				if name != "" {
+					body := bodyOf(c.id)
+					proposals = append(proposals, memrank.OntologyProposal{
+						ChunkID: c.id, Name: name, Parent: parentName,
+						Status: strings.ToLower(strings.TrimSpace(c.status)),
+						Body:   body, Section: memrank.SectionRelations,
+					})
+				}
+				walkRelations(kids[c.id], parentName, depth)
+				continue
+			}
+			if name == "" {
+				walkRelations(kids[c.id], parentName, depth)
+				continue
+			}
+			rel := memrank.ParseRelationBody(name, bodyOf(c.id))
+			rel.Parent, rel.ChunkID = parentName, c.id
+			relations = append(relations, rel)
+			childParent := name
+			if depth >= memrank.OntologyMaxDepth {
+				childParent = parentName
+				if len(kids[c.id]) > 0 {
+					depthCapped = true
+				}
+			}
+			walkRelations(kids[c.id], childParent, depth+1)
+		}
+	}
 	for _, c := range kids[rootID] {
 		switch sectionOf[c.id] {
 		case memrank.SectionClasses:
 			// Depth counts from the SECTION (RFC FO §3.1): its children are root classes.
 			walk(kids[c.id], c.id, "", 1, false)
-		case memrank.SectionRelations, memrank.SectionSchemes, memrank.SectionInstances:
+		case memrank.SectionRelations:
+			// Depth counts from the section, as for classes; a child entry is a sub-kind.
+			walkRelations(kids[c.id], "", 1)
+		case memrank.SectionSchemes, memrank.SectionInstances:
 			// Recognised and kept out of the class list; their entries are read by the
-			// phases that give them meaning.
+			// phase that gives them meaning.
 		default:
 			// No directive: a class, exactly as before sections existed.
 			walk([]ontologyChunk{c}, rootID, "", 1, false)
@@ -306,26 +378,8 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
+		Relations: relations, SectionChunks: sectionChunks, partial: partial,
 	}, nil
-}
-
-// ontologyEntityName resolves an entity's name: the chunk's title, or — when the title
-// is empty — the first `## ` heading in its body.
-//
-// The title is authoritative because import_md already lifts a heading into it, so a
-// document authored the normal way has the name exactly there. The body fallback covers
-// a chunk written directly through update_chunk, where the operator typed a heading and
-// no title was ever set; without it their entity would be nameless and dropped, which
-// is the failure mode this whole change exists to remove.
-func (d *Document) ontologyEntityName(ctx context.Context, mscope store.MemoryScope, key sqlmem.ScopeKey, c ontologyChunk) string {
-	if n := memrank.TrimOntologyName(c.title); n != "" {
-		return n
-	}
-	body, err := d.readBody(ctx, mscope, key, c.id)
-	if err != nil {
-		return ""
-	}
-	return memrank.FirstHeadingName(body.Body)
 }
 
 // expandTypeFilter turns a type filter into the type plus every type that is a
@@ -430,17 +484,78 @@ func (d *Document) tenantOntologyState(ctx context.Context) (terms []memrank.Ont
 // tenantOntologyRead is the whole read of the run's tenant ontology — terms plus the
 // section-level results (grammars, root revision) the class-aware write paths need.
 // ok is false on a store fault; an absent document is ok with an empty read.
+//
+// CACHED, and never stale (RFC FO decision 10d.4). The read walks every chunk of the
+// ontology and reads each body, and since P1b it runs on every edge write through the
+// relation gate — an import of a thousand edges would otherwise re-read the ontology a
+// thousand times. The parse is kept on the shared sqlmem.Manager and reused only while
+// ontologyFingerprint, one query on every call, is unchanged: any edit to any ontology
+// chunk, on any replica, changes it. The returned read is shared — callers must not
+// mutate its slices.
 func (d *Document) tenantOntologyRead(ctx context.Context) (OntologyRead, bool) {
 	key := sqlmem.ScopeKey{
 		Tenant:  sqlScopeTenant(ctx),
 		Scope:   "tenant",
 		ScopeID: sqlScopeTenant(ctx),
 	}
-	read, err := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
+	docID, err := d.docIDFromInput(ctx, key, docInput{Path: memrank.OntologyPath})
+	if err != nil {
+		return OntologyRead{}, true // no such document — no tenant layer, as ontologyForKey reports it
+	}
+	fp, err := d.ontologyFingerprint(ctx, key, docID)
 	if err != nil {
 		return OntologyRead{}, false
 	}
+	var uncached OntologyRead
+	v, err := d.SqlMem.Memo(key, "ontology", fp, func() (any, error) {
+		read, rerr := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
+		if rerr != nil {
+			return nil, rerr
+		}
+		if read.partial {
+			// Hand it to this caller, store nothing: Memo does not keep a failed build.
+			uncached = read
+			return nil, errPartialOntologyRead
+		}
+		return read, nil
+	})
+	if errors.Is(err, errPartialOntologyRead) {
+		return uncached, true
+	}
+	if err != nil {
+		return OntologyRead{}, false
+	}
+	read, _ := v.(OntologyRead)
 	return read, true
+}
+
+// errPartialOntologyRead marks a build that must not be cached (a chunk body could not
+// be read).
+var errPartialOntologyRead = errors.New("ontology read incomplete")
+
+// ontologyFingerprint changes whenever anything the ontology read depends on changes:
+// which document is named /memory/ontology, its status (the confirm gate), and its
+// chunks — a count catches an add or delete, max(updated_at) a move, and sum(revision)
+// every body, title, type or status edit, since update_chunk bumps the revision on each.
+func (d *Document) ontologyFingerprint(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {
+	res, err := d.query(ctx, key,
+		`SELECT coalesce(doc.status, ''), count(c.id), coalesce(max(c.updated_at), 0), coalesce(sum(c.revision), 0)
+		   FROM documents doc LEFT JOIN chunks c ON c.document_id = doc.id
+		  WHERE doc.id = ? GROUP BY doc.status`, docID)
+	if err != nil {
+		return "", err
+	}
+	if len(res.Rows) == 0 || len(res.Rows[0]) < 4 {
+		return docID + "|absent", nil
+	}
+	r := res.Rows[0]
+	return fmt.Sprintf("%s|%s|%d|%d|%d", docID, asStr(r[0]), asInt(r[1]), asInt64Val(r[2]), asInt64Val(r[3])), nil
+}
+
+// asInt64Val reads a numeric cell as int64 (0 for NULL or non-numeric).
+func asInt64Val(v any) int64 {
+	n, _ := asInt64(v)
+	return n
 }
 
 // typeFilterSQL renders an expanded type filter as a WHERE fragment plus its args.

@@ -97,10 +97,16 @@ func TestOntologyAPI_ReportsSectionsAndKeepsDocumentClassesOutOfThePrompt(t *tes
 	if !strings.Contains(prompt, "**incident**") {
 		t.Errorf("the chunk class is missing from the prompt:\n%s", prompt)
 	}
-	for _, bad := range []string{"Document", "Policy", "Relations", "cites"} {
+	for _, bad := range []string{"Document", "Policy", "Relations"} {
 		if strings.Contains(prompt, bad) {
 			t.Errorf("%q reached the prompt:\n%s", bad, prompt)
 		}
+	}
+	// A relation kind the tenant declares is listed — in the relation block, never as an
+	// entity type (RFC FO P1b, decision 10d.2).
+	entityBlock, relationBlock, _ := strings.Cut(prompt, "# Relation kinds")
+	if strings.Contains(entityBlock, "cites") || !strings.Contains(relationBlock, "**cites**") {
+		t.Errorf("cites should appear only in the relation block:\n%s", prompt)
 	}
 }
 
@@ -136,7 +142,8 @@ func TestOntology_SectionsOnlyDocumentDoesNotFallBackToFlatParsing(t *testing.T)
 func TestOntologyAPI_FlatDocumentResponseHasNoSectionFields(t *testing.T) {
 	s, mi := ontologyFixture(t)
 	req := getOntologyRaw(t, s, mi.Tenant)
-	for _, key := range []string{"sections", "document_classes", "grammars", "undeclared_types", "fact_versions"} {
+	for _, key := range []string{"sections", "document_classes", "grammars", "undeclared_types", "fact_versions",
+		"relations", "effective_relations", "adoptable_relations", "statement_versions", "undated_statements"} {
 		if _, has := req[key]; has {
 			t.Errorf("a flat ontology's response grew %q", key)
 		}

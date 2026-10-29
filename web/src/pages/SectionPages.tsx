@@ -3,7 +3,14 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { canSee, grantOf, hasTenantScope as principalHasTenantScope, surfacesOf } from "../lib/visibility";
 import { NAV_ITEMS } from "../components/navItems";
 import { ontologistRunHref, ontologyEditHref } from "../lib/ontologyEditHref";
-import { classDirectiveNotes, factsUnderOlderVocabulary, typedFieldLabel } from "../lib/ontologySections";
+import {
+  buildRelationTree,
+  classDirectiveNotes,
+  factsUnderOlderVocabulary,
+  relationSummary,
+  typedFieldLabel,
+  type RelationNode,
+} from "../lib/ontologySections";
 import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
@@ -353,7 +360,15 @@ function OntologyTermTree({
 // agent's prompt — the grammars, the types in use that nothing declares, and how many
 // facts were written under an older vocabulary. Relations, schemes and instances get
 // their own trees in later versions; until then their sections are only listed.
-function OntologySectionsDetail({ state }: { state: OntologyResponse }) {
+function OntologySectionsDetail({
+  state,
+  busy,
+  onAdoptRelation,
+}: {
+  state: OntologyResponse;
+  busy: boolean;
+  onAdoptRelation: (name: string) => void;
+}) {
   const versions = factsUnderOlderVocabulary(state);
   const later = (state.sections ?? []).filter((k) => k !== "classes");
   return (
@@ -414,11 +429,127 @@ function OntologySectionsDetail({ state }: { state: OntologyResponse }) {
           — declare them as classes, or map an old name with <code>@renamed_from</code>.
         </p>
       )}
+      {state.relations !== undefined && (
+        <OntologyRelationsDetail state={state} busy={busy} onAdopt={onAdoptRelation} />
+      )}
       {(versions.older > 0 || versions.unknown > 0) && (
         <p className="settings-help">
           Facts in the tenant scope: {versions.older} written under an older vocabulary
           than the current one (version {state.ontology_version}), {versions.unknown} with no
           recorded version.
+        </p>
+      )}
+    </>
+  );
+}
+
+// OntologyRelationTree renders relation kinds, recursing into sub-kinds. Depth-bounded
+// like the class tree, for the same reason.
+function OntologyRelationTree({
+  nodes,
+  depth = 0,
+  markSource = false,
+}: {
+  nodes: RelationNode[];
+  depth?: number;
+  markSource?: boolean;
+}) {
+  if (nodes.length === 0 || depth > 8) return null;
+  return (
+    <ul className="ontology-tree">
+      {nodes.map((n) => {
+        const summary = relationSummary(n);
+        return (
+          <li key={n.name}>
+            <code>{n.name}</code>
+            {markSource && n.source === "tenant" && <span className="settings-flash"> yours</span>}
+            {markSource && n.source === "reserved" && (
+              <span className="settings-muted"> reserved</span>
+            )}
+            {summary && <span className="settings-muted"> {summary}</span>}
+            {[...(n.issues ?? []), ...(n.name_issue ? [n.name_issue] : [])].map((iss) => (
+              <span className="ontology-warn" key={iss}>
+                {" "}
+                · {iss}
+              </span>
+            ))}
+            <OntologyRelationTree nodes={n.children} depth={depth + 1} markSource={markSource} />
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// OntologyRelationsDetail is the Relations section's half of the panel (RFC FO P1b): what
+// this deployment declares beside what is in force — the standard kinds come into force
+// with the section, but only the deployment's own (declared or adopted) are listed to
+// agents, which is why adopting is offered here.
+function OntologyRelationsDetail({
+  state,
+  busy,
+  onAdopt,
+}: {
+  state: OntologyResponse;
+  busy: boolean;
+  onAdopt: (name: string) => void;
+}) {
+  const mine = state.relations ?? [];
+  const inForce = state.effective_relations ?? [];
+  return (
+    <>
+      <div className="settings-row">
+        <table className="settings-table ontology-compare">
+          <thead>
+            <tr>
+              <th>relation kinds this deployment defines</th>
+              <th>relation kinds in force now</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                {mine.length === 0 ? (
+                  <span className="settings-muted">none yet — the standard kinds still apply</span>
+                ) : (
+                  <OntologyRelationTree nodes={buildRelationTree(mine)} />
+                )}
+              </td>
+              <td>
+                {inForce.length === 0 ? (
+                  <span className="settings-muted">none — confirm the ontology to apply them</span>
+                ) : (
+                  <OntologyRelationTree nodes={buildRelationTree(inForce)} markSource />
+                )}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      {(state.adoptable_relations ?? []).length > 0 && (
+        <p className="settings-help">
+          <strong>List a standard kind to agents:</strong> standard kinds are valid without
+          this, but agents are only told about the kinds your document declares. Adopting
+          copies one in, frozen — edit it freely afterwards.
+          <span className="ontology-adopt-row">
+            {(state.adoptable_relations ?? []).map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="ghost-btn"
+                disabled={busy}
+                onClick={() => onAdopt(name)}
+                title={`Copy the standard relation kind "${name}" into your Relations section`}
+              >
+                adopt <code>{name}</code>
+              </button>
+            ))}
+          </span>
+        </p>
+      )}
+      {(state.undated_statements ?? 0) > 0 && (
+        <p className="settings-help">
+          {state.undated_statements} statement(s) of a dated relation kind carry no date.
         </p>
       )}
     </>
@@ -474,11 +605,11 @@ function OntologySection() {
     }
   };
 
-  const adopt = async (name: string) => {
+  const adopt = async (name: string, section?: "relations") => {
     if (busy) return;
     setBusy(true);
     try {
-      setState(await adoptOntologyType(name));
+      setState(await adoptOntologyType(name, undefined, section));
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -667,6 +798,9 @@ function OntologySection() {
                   <div className="ontology-proposal" key={p.chunk_id}>
                     <div>
                       <code>{p.name}</code>
+                      {p.section === "relations" && (
+                        <span className="settings-muted"> relation kind</span>
+                      )}
                       {p.parent && (
                         <span className="settings-muted">
                           {" "}
@@ -799,7 +933,13 @@ function OntologySection() {
             </table>
           </div>
 
-          {(state.sections ?? []).length > 0 && <OntologySectionsDetail state={state} />}
+          {(state.sections ?? []).length > 0 && (
+            <OntologySectionsDetail
+              state={state}
+              busy={busy}
+              onAdoptRelation={(name) => void adopt(name, "relations")}
+            />
+          )}
         </>
       )}
     </div>

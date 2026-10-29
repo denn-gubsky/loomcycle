@@ -153,6 +153,10 @@ type Manager struct {
 	ensuredMu sync.Mutex
 	ensured   map[string]struct{}
 
+	// Derived-value memo — see Memo. Same reason to live here as the schema memo.
+	memoMu sync.Mutex
+	memo   map[string]memoEntry
+
 	// Durable-scope GC (Phase 3d). touch debounce + the sweeper goroutine.
 	touchMu   sync.Mutex
 	lastTouch map[string]time.Time
@@ -331,6 +335,55 @@ func (m *Manager) EnsureOnce(key ScopeKey, fn func() error) error {
 	m.ensured[id] = struct{}{}
 	m.ensuredMu.Unlock()
 	return nil
+}
+
+// memoEntry is one Memo value and the fingerprint it was built at.
+type memoEntry struct {
+	fingerprint string
+	value       any
+}
+
+// maxMemoEntries bounds the derived-value memo. Entries are one per (scope, name), so
+// the bound is only reached by a deployment with that many tenants; past it the memo
+// starts over rather than growing, which costs a rebuild, never a wrong answer.
+const maxMemoEntries = 4096
+
+// Memo returns a value derived from a scope's data, rebuilding it only when the
+// caller's fingerprint of that data has changed.
+//
+// WHY A FINGERPRINT AND NOT A TTL. The caller computes the fingerprint with one cheap
+// query on every call (a count, a max timestamp), so a stale value is never served: any
+// write that changes the data changes the fingerprint, on this replica or another. What
+// the memo saves is the expensive part — reading and parsing everything the value is
+// derived from — not the check. A TTL would save the check too and serve stale data for
+// its duration, which for config that gates writes is the wrong trade.
+//
+// build runs OUTSIDE the lock, like EnsureOnce's fn; two callers racing on a cold entry
+// both build, and the later store wins with an equally valid value. A build error is
+// returned and nothing is stored. Callers must treat the returned value as read-only:
+// it is shared by every caller with the same fingerprint.
+func (m *Manager) Memo(key ScopeKey, name, fingerprint string, build func() (any, error)) (any, error) {
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
+	id := key.memoID() + string(scopeKeySep) + name
+	m.memoMu.Lock()
+	if e, ok := m.memo[id]; ok && e.fingerprint == fingerprint {
+		m.memoMu.Unlock()
+		return e.value, nil
+	}
+	m.memoMu.Unlock()
+	v, err := build()
+	if err != nil {
+		return nil, err
+	}
+	m.memoMu.Lock()
+	if m.memo == nil || len(m.memo) >= maxMemoEntries {
+		m.memo = make(map[string]memoEntry)
+	}
+	m.memo[id] = memoEntry{fingerprint: fingerprint, value: v}
+	m.memoMu.Unlock()
+	return v, nil
 }
 
 // ForgetEnsured drops a scope's memo so the next EnsureOnce provisions again.

@@ -138,6 +138,9 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleOntologyAdopt(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
+		// Section selects what is adopted: "" or "classes" for a standard entity type,
+		// "relations" for a standard relation kind (RFC FO P1b).
+		Section string `json:"section"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body", "expected {\"name\": \"event\"}")
@@ -159,6 +162,16 @@ func (s *Server) handleOntologyAdopt(w http.ResponseWriter, r *http.Request) {
 	s.ensureOntologyDoc(r.Context(), mi)
 	doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
 	dctx := s.ontologyDocCtx(r.Context(), mi)
+
+	switch strings.ToLower(strings.TrimSpace(body.Section)) {
+	case "", meminject.SectionClasses:
+	case meminject.SectionRelations:
+		s.adoptRelation(w, r, doc, dctx, tenant, name)
+		return
+	default:
+		writeJSONError(w, http.StatusBadRequest, "invalid_section", "section must be classes or relations")
+		return
+	}
 
 	// The FIELDS come from the base seed, resolved here rather than sent by the caller.
 	// A client-supplied field list could disagree with the type it claims to be a copy
@@ -227,6 +240,116 @@ func (s *Server) handleOntologyAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeOntologyState(w, r.Context(), tenant)
+}
+
+// adoptRelation copies a standard relation kind into the Relations section. Adopting is
+// how a seed kind reaches the extraction prompt (RFC FO decision 10d.2): seed kinds are
+// valid without it, but only the tenant's own kinds are listed to agents. The copy is a
+// tenant kind and overrides the seed one wholesale, so it is frozen like an adopted type,
+// with the same provenance in its fields.
+func (s *Server) adoptRelation(w http.ResponseWriter, r *http.Request, doc *builtin.Document, dctx context.Context, tenant, name string) {
+	var source *meminject.OntologyRelation
+	for _, rel := range meminject.SeedRelations() {
+		if rel.Name == name {
+			kind := rel
+			source = &kind
+			break
+		}
+	}
+	if source == nil {
+		writeJSONError(w, http.StatusBadRequest, "not_a_standard_kind",
+			"only a standard relation kind can be adopted — this one is not in the standard set")
+		return
+	}
+	read, err := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
+		return
+	}
+	section := read.SectionChunks[meminject.SectionRelations]
+	if section == "" {
+		writeJSONError(w, http.StatusConflict, "no_relations_section",
+			"the document declares no Relations section — add a top-level heading whose first line is @section relations")
+		return
+	}
+	for _, rel := range read.Relations {
+		if rel.Name == source.Name {
+			writeJSONError(w, http.StatusConflict, "already_declared",
+				"your document already declares that kind — edit it in the document instead")
+			return
+		}
+	}
+	// Nested under the tenant's copy of its parent when there is one, so the sub-kind
+	// tree the operator sees is the one that expands; under the section otherwise (the
+	// seed parent still applies through the layering).
+	parent := section
+	for _, rel := range read.Relations {
+		if rel.Name == source.Parent && rel.ChunkID != "" {
+			parent = rel.ChunkID
+		}
+	}
+	prov, _ := json.Marshal(map[string]any{
+		"adopted_from":        source.Name,
+		"adopted_from_source": "base",
+		"adopted_at_version":  s.buildVersion,
+	})
+	req, _ := json.Marshal(map[string]any{
+		"op": "create_chunk", "scope": "tenant",
+		"document_id": read.DocumentID, "parent_id": parent,
+		"title": source.Name, "body": adoptedRelationBody(*source), "fields": json.RawMessage(prov),
+	})
+	if res, aerr := doc.Execute(dctx, req); aerr != nil || res.IsError {
+		msg := "adopt failed"
+		if aerr != nil {
+			msg = aerr.Error()
+		} else if res.Text != "" {
+			msg = res.Text
+		}
+		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", msg)
+		return
+	}
+	s.writeOntologyState(w, r.Context(), tenant)
+}
+
+// adoptedRelationBody writes a seed kind out as directives, so the adopted entry is an
+// ordinary editable chunk that parses back to the same kind.
+func adoptedRelationBody(rel meminject.OntologyRelation) string {
+	var b strings.Builder
+	if rel.Meaning != "" {
+		b.WriteString(strings.ToUpper(rel.Meaning[:1]) + rel.Meaning[1:] + ".\n\n")
+	}
+	line := func(s string) { b.WriteString(s + "\n") }
+	if rel.Inverse != "" {
+		line("@inverse " + rel.Inverse)
+	}
+	for _, flag := range []struct {
+		on   bool
+		name string
+	}{{rel.Symmetric, "symmetric"}, {rel.Asymmetric, "asymmetric"}, {rel.Irreflexive, "irreflexive"},
+		{rel.Transitive, "transitive"}, {rel.Functional, "functional"}, {rel.Dated, "dated"},
+		{rel.Walk, "walk"}, {rel.AutoAssert, "auto_assert"}} {
+		if flag.on {
+			line("@" + flag.name)
+		}
+	}
+	if len(rel.Qualifiers) > 0 {
+		var qs []string
+		for _, q := range rel.Qualifiers {
+			if len(q.Values) > 0 {
+				qs = append(qs, q.Name+"("+strings.Join(q.Values, "|")+")")
+			} else {
+				qs = append(qs, q.Name)
+			}
+		}
+		line("@qualifiers " + strings.Join(qs, ", "))
+	}
+	if rel.Discriminator != "" {
+		line("@discriminator " + rel.Discriminator)
+	}
+	if rel.TransitiveWithin != "" {
+		line("@transitive_within " + rel.TransitiveWithin)
+	}
+	return b.String()
 }
 
 // adoptedBody renders a standard type's fields the way an operator would have typed

@@ -160,6 +160,17 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 		return errBusiness("propose_entity: this tenant has no ontology document yet — an "+
 			"operator opens the Ontology page once to create it", ""), nil
 	}
+	switch strings.ToLower(strings.TrimSpace(in.Section)) {
+	case "", memrank.SectionClasses:
+	case memrank.SectionRelations:
+		return d.proposeRelation(ctx, key, mscope, read, name, in)
+	case memrank.SectionSchemes, memrank.SectionInstances:
+		return errBusiness("propose_entity: proposing into the "+in.Section+" section is not available yet",
+			"Propose an entity type (section omitted) or a relation kind (section=relations)."), nil
+	default:
+		return errValidation("propose_entity: section must be classes or relations, not "+strconv.Quote(in.Section),
+			"Omit section for an entity type, or pass section=relations for a relation kind."), nil
+	}
 	for _, t := range read.Terms {
 		if strings.EqualFold(t.Name, name) {
 			return errBusiness("propose_entity: "+name+" is already in force — propose a "+
@@ -179,6 +190,12 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	// proposal would be a suggestion contingent on another suggestion, which the
 	// operator cannot evaluate on its own.
 	parentChunk := read.RootChunkID
+	// A sectioned document files a new top-level class inside its classes section, where
+	// the operator reads classes; a root child outside it would still be a class, but in
+	// the wrong place to review.
+	if sec := read.SectionChunks[memrank.SectionClasses]; sec != "" {
+		parentChunk = sec
+	}
 	if want := memrank.TrimOntologyName(in.Parent); want != "" {
 		id := d.chunkIDForEntity(ctx, key, read.DocumentID, want)
 		if id == "" {
@@ -191,6 +208,58 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 				"hang off a type the operator has already accepted", "Pass one of the listed types as parent, or omit parent."), nil
 		}
 		parentChunk = id
+	}
+	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, in.Body)
+}
+
+// proposeRelation files an inert relation kind into the Relations section.
+//
+// The section must exist: the relation vocabulary is inert until an operator declares
+// one, and a proposal cannot be the thing that switches it on. A kind already in force —
+// the tenant's own, a seed kind or a reserved one — is refused with what to do instead:
+// a seed kind is ADOPTED by an operator, never re-proposed.
+func (d *Document) proposeRelation(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, read OntologyRead, name string, in docInput) (tools.Result, error) {
+	section := read.SectionChunks[memrank.SectionRelations]
+	if section == "" {
+		return errBusiness("propose_entity: this tenant's ontology declares no Relations section, so relation "+
+			"kinds are not in use here", "Describe the relation in prose instead; an operator decides whether to declare relation kinds."), nil
+	}
+	if memrank.IsReservedRelation(name) {
+		return errBusiness("propose_entity: "+name+" is written only by the runtime", "Propose a different name."), nil
+	}
+	for _, r := range read.Relations {
+		if r.Name == name {
+			return errBusiness("propose_entity: relation kind "+name+" is already in force — propose a "+
+				"sub-kind of it (parent=\""+name+"\") or use it as it is", ""), nil
+		}
+	}
+	for _, r := range memrank.SeedRelations() {
+		if r.Name == name {
+			return errBusiness("propose_entity: "+name+" is a standard relation kind and already valid",
+				"Use it as it is; an operator can adopt it to list it to agents."), nil
+		}
+	}
+	for _, p := range read.Proposals {
+		if p.Name == name && p.Section == memrank.SectionRelations {
+			return errBusiness("propose_entity: relation kind "+name+" is already "+p.Status+
+				" — an operator has seen it", "Do not propose it again; an operator decides."), nil
+		}
+	}
+	parentChunk := section
+	if want := strings.TrimSpace(in.Parent); want != "" {
+		parentChunk = ""
+		var have []string
+		for _, r := range read.Relations {
+			have = append(have, r.Name)
+			if r.Name == want {
+				parentChunk = r.ChunkID
+			}
+		}
+		if parentChunk == "" {
+			return errValidation("propose_entity: no relation kind named "+want+" is declared in this tenant's "+
+				"Relations section (have: "+strings.Join(have, ", ")+")",
+				"Pass one of the listed kinds as parent, or omit parent."), nil
+		}
 	}
 	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, in.Body)
 }

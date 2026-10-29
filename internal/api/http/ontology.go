@@ -39,9 +39,18 @@ import (
 // run continues on the base seed rather than failing, because an ontology is
 // guidance and a run that dies for want of it is worse than a run using the
 // standard types.
+//
+// The relation block (RFC FO P1b) is appended only when the confirmed ontology declares
+// relation kinds of its own; RenderRelations is "" otherwise, so the prompt of a tenant
+// without them is byte-identical.
 func (s *Server) renderOntology(ctx context.Context, mi memInject) string {
 	terms, confirmed, _ := s.tenantOntologyTerms(ctx, mi)
-	return meminject.RenderOntology(meminject.EffectiveOntology(terms, confirmed), confirmed)
+	out := meminject.RenderOntology(meminject.EffectiveOntology(terms, confirmed), confirmed)
+	if s.store != nil && s.sqlMem != nil {
+		doc := &builtin.Document{Store: s.store, SqlMem: s.sqlMem}
+		out += meminject.RenderRelations(doc.EffectiveRelationsFor(withTenantDocGrants(s.docToolCtx(ctx, mi))))
+	}
+	return out
 }
 
 // tenantOntologyTerms reads the tenant's ontology document, provisioning it on

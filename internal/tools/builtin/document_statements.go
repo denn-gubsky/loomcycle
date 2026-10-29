@@ -275,7 +275,7 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	// kept, annotated ontology_valid=false (RFC FO decision, 2026-10-29). w.authored
 	// still means "the caller's own authority" for the reserved-kind rule.
 	gateAuthored := w.authored && w.method == edgeMethodManual
-	gate := d.gateRelation(ctx, w.kind, w.from, w.to, gateAuthored)
+	gate := d.gateRelation(ctx, key, w.kind, w.from, w.to, gateAuthored)
 	if gateAuthored && gate.Refuse != nil {
 		return out, gate.Refuse, nil
 	}
