@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -734,4 +735,58 @@ func TestReimport_EditionRootIsReconciled(t *testing.T) {
 			t.Errorf("the old preamble is not in the root's history: %s", r.Text)
 		}
 	})
+}
+
+type recordingWriter struct {
+	mu   sync.Mutex
+	docs []string
+}
+
+func (w *recordingWriter) Write(_ context.Context, req channels.WriteRequest) (channels.WriteResult, error) {
+	var ev struct {
+		DocumentID string `json:"document_id"`
+	}
+	_ = json.Unmarshal(req.Payload, &ev)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if req.Channel == "documents/ingested" {
+		w.docs = append(w.docs, ev.DocumentID)
+	}
+	return channels.WriteResult{}, nil
+}
+
+// documents/ingested is read by everyone on the scope's channel, so a document is
+// announced only when nothing in the caller's rules hides part of the scope from
+// reading — otherwise the event would name it to subscribers who may not read it.
+// The response says why it was not announced.
+func TestPublishIngested_OnlyWhenReadingIsNotPartitioned(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	w := &recordingWriter{}
+	d.Writer = w
+	confined := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	for _, call := range []string{
+		`{"op":"create_document","scope":"tenant","title":"Notes","path":"/kb/public/notes"}`,
+		`{"op":"import_md","scope":"tenant","path":"/kb/public/act","markdown":"# Act\n\nText."}`,
+		`{"op":"import_md","scope":"tenant","path":"/kb/public/act2","markdown":"# Act two\n\nText.","reimport":true,"work_key":"law:ua/37"}`,
+	} {
+		out, r := docExec(t, d, confined, call)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if why, _ := out["not_announced"].(string); why == "" {
+			t.Errorf("%s: no reason given for not announcing: %s", call, r.Text)
+		}
+	}
+	if len(w.docs) != 0 {
+		t.Errorf("announced under a partitioned scope: %v", w.docs)
+	}
+	out, r := docExec(t, d, tenantDocCtx(base, nil), `{"op":"create_document","scope":"tenant","title":"Open","path":"/kb/open"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	if _, has := out["not_announced"]; has || len(w.docs) != 1 || w.docs[0] != out["document_id"] {
+		t.Errorf("control: an unrestricted create was not announced: %v %v", w.docs, out)
+	}
 }

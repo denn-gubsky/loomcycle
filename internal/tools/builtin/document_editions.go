@@ -584,9 +584,13 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		if err := d.assignAnchors(ctx, key, mscope, docID, rootID); err != nil {
 			return errFrom("import_md: "+err.Error(), err), nil
 		}
-		// importMD announced it already.
-		return jsonResult(map[string]any{"document_id": docID, "root_chunk_id": rootID, "work_key": wk,
-			"reimport": reimportReport{Created: len(chunks) - 1}})
+		// importMD announced it already (or said why not).
+		out := map[string]any{"document_id": docID, "root_chunk_id": rootID, "work_key": wk,
+			"reimport": reimportReport{Created: len(chunks) - 1}}
+		if why := resultField(res, "not_announced"); why != "" {
+			out["not_announced"] = why
+		}
+		return jsonResult(out)
 	}
 	if acl != nil {
 		if r, err := acl.document(ctx, "import_md", "write", docID); err != nil {
@@ -884,8 +888,11 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	_ = d.exec(ctx, key, `UPDATE documents SET status = NULL WHERE id = ? AND status = ?`, docID, placeholderStatus)
 	_ = d.exec(ctx, key, `UPDATE chunks SET status = NULL WHERE id = ? AND status = ?`, rootID, placeholderStatus)
 
-	d.publishIngested(ctx, key, mscope, docID, "reimported", rep.changed)
+	why := d.publishIngested(ctx, key, mscope, docID, "reimported", rep.changed)
 	out := map[string]any{"document_id": docID, "root_chunk_id": rootID, "edition_date": edition, "reimport": rep}
+	if why != "" {
+		out["not_announced"] = why
+	}
 	if wk != "" {
 		out["work_key"] = wk
 	}
@@ -1156,9 +1163,19 @@ func firstNonEmpty(a, b string) string {
 // publishIngested tells the scope's `documents/ingested` channel that a document
 // arrived or changed by import — what makes "on import" an event a links agent
 // can subscribe to, rather than a poll.
-func (d *Document) publishIngested(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, reason string, changed []string) {
+//
+// Everyone on the scope's channel reads the event, and it names the document. So
+// it is published only when the caller's access-control rules hide no part of the
+// scope from reading; otherwise it would name the document to subscribers who may
+// not read it. The caller's rules are the only ones known here, so this is the
+// best available proxy for "readable scope-wide". Returns why nothing was
+// published, or "".
+func (d *Document) publishIngested(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, reason string, changed []string) string {
 	if d.Bus == nil {
-		return
+		return ""
+	}
+	if limited, err := d.newDocACL(ctx, key).limitsReading(ctx); err != nil || limited {
+		return "documents/ingested was not published: the caller's access-control rules hide part of this scope from reading, so the event could name this document to subscribers who may not read it"
 	}
 	ev := map[string]any{"document_id": docID, "reason": reason, "timestamp": time.Now().UnixNano()}
 	if len(changed) > 0 {
@@ -1178,4 +1195,5 @@ func (d *Document) publishIngested(ctx context.Context, key sqlmem.ScopeKey, msc
 		PublishedBy: tools.RunIdentity(ctx).UserID,
 		MaxMessages: 256,
 	})
+	return ""
 }

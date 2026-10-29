@@ -2003,7 +2003,9 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Announced only for a document a caller created directly: import_md and the
 	// placeholder path create through here too, and announce their own.
 	if in.Op == "create_document" {
-		d.publishIngested(ctx, key, mscope, docID, "created", nil)
+		if why := d.publishIngested(ctx, key, mscope, docID, "created", nil); why != "" {
+			resp["not_announced"] = why
+		}
 	}
 	return jsonResult(resp)
 }
@@ -5197,7 +5199,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if len(skippedWhy) > 0 {
 		out["skipped_images"] = skippedWhy
 	}
-	d.publishIngested(ctx, key, mscope, docID, "imported", nil)
+	if why := d.publishIngested(ctx, key, mscope, docID, "imported", nil); why != "" {
+		out["not_announced"] = why
+	}
 	return jsonResult(out)
 }
 
