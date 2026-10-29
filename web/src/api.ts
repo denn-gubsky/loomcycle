@@ -3622,6 +3622,37 @@ export interface RelationQualifier {
   values?: string[];
 }
 
+/** One concept of a scheme (RFC FO P1c). */
+export interface OntologyConcept {
+  scheme: string;
+  name: string;
+  path: string[];
+  parent?: string;
+  rank?: number;
+  notation?: string;
+  alt?: string[];
+  exact_match?: string;
+  /** A file-plan concept's policy — shown, not enforced yet. */
+  retention?: string;
+  acl?: string;
+  /** The concept's identity across scopes: `<scheme>/<path>`. */
+  tag: string;
+  meaning?: string;
+  chunk_id?: string;
+  issues?: string[];
+}
+
+/** One concept scheme (RFC FO P1c). */
+export interface OntologyScheme {
+  name: string;
+  ordered?: boolean;
+  render?: boolean;
+  meaning?: string;
+  concepts?: OntologyConcept[];
+  chunk_id?: string;
+  issues?: string[];
+}
+
 /** One relation kind (RFC FO P1b). */
 export interface OntologyRelation {
   name: string;
@@ -3697,6 +3728,12 @@ export interface OntologyResponse {
   statement_versions?: { version: number; count: number }[];
   /** Live statements of a dated kind that carry no date. */
   undated_statements?: number;
+  // RFC FO P1c — filled only when the document declares a Schemes section.
+  schemes?: OntologyScheme[];
+  /** Concepts whose chunk lacks its mirror tag — confirming again fixes them. */
+  scheme_mirror_stale?: string[];
+  /** What the mirror changed, on the confirm that ran it. */
+  scheme_mirror?: { concepts: number; stale?: string[]; added: number; removed: number };
 }
 
 /** Accept (put in force, in place) or reject (keep as a tombstone) a proposal. */
