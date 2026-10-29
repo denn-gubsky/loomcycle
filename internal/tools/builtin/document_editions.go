@@ -155,8 +155,9 @@ type editionPart struct {
 }
 
 // currentParts returns the document's parts in force at `at` (the root excluded),
-// in tree order, with their bodies.
-func (d *Document) currentParts(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, rootID string, at int64) ([]editionPart, error) {
+// in tree order — with their bodies when withBodies. A body that cannot be read is
+// an error: read as empty, every part would look changed and be superseded.
+func (d *Document) currentParts(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, rootID string, at int64, withBodies bool) ([]editionPart, error) {
 	res, err := d.query(ctx, key, `SELECT id, COALESCE(parent_id, ''), title, COALESCE(anchor, ''), COALESCE(stable_id, ''),
 		COALESCE(type, ''), COALESCE(status, ''), position
 		FROM chunks WHERE document_id = ? AND id <> ? AND (invalid_at IS NULL OR invalid_at > ?)
@@ -171,18 +172,26 @@ func (d *Document) currentParts(ctx context.Context, key sqlmem.ScopeKey, mscope
 		byParent[p.parentID] = append(byParent[p.parentID], p)
 	}
 	var out []editionPart
-	var walk func(parent string)
-	walk = func(parent string) {
+	var walk func(parent string) error
+	walk = func(parent string) error {
 		for _, p := range byParent[parent] {
-			cb, err := d.readBody(ctx, mscope, key, p.id)
-			if err == nil {
+			if withBodies {
+				cb, err := d.readBody(ctx, mscope, key, p.id)
+				if err != nil {
+					return err
+				}
 				p.body = cb.Body
 			}
 			out = append(out, p)
-			walk(p.id)
+			if err := walk(p.id); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	walk(rootID)
+	if err := walk(rootID); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -190,7 +199,7 @@ func (d *Document) currentParts(ctx context.Context, key sqlmem.ScopeKey, mscope
 // one, and a stable_id where it has none. A part keeps an anchor once it has one,
 // so renaming a heading later does not silently re-key what was linked to it.
 func (d *Document) assignAnchors(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID, rootID string) error {
-	parts, err := d.currentParts(ctx, key, mscope, docID, rootID, time.Now().UnixNano())
+	parts, err := d.currentParts(ctx, key, mscope, docID, rootID, time.Now().UnixNano(), false)
 	if err != nil {
 		return err
 	}
@@ -622,7 +631,7 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	if err := d.assignAnchors(ctx, key, mscope, docID, rootID); err != nil {
 		return errFrom("import_md: "+err.Error(), err), nil
 	}
-	held, err := d.currentParts(ctx, key, mscope, docID, rootID, edition)
+	held, err := d.currentParts(ctx, key, mscope, docID, rootID, edition, true)
 	if err != nil {
 		return errFrom("import_md: "+err.Error(), err), nil
 	}
@@ -885,8 +894,12 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		}
 	}
 	// A placeholder filed for this work is now held.
-	_ = d.exec(ctx, key, `UPDATE documents SET status = NULL WHERE id = ? AND status = ?`, docID, placeholderStatus)
-	_ = d.exec(ctx, key, `UPDATE chunks SET status = NULL WHERE id = ? AND status = ?`, rootID, placeholderStatus)
+	if err := d.exec(ctx, key, `UPDATE documents SET status = NULL WHERE id = ? AND status = ?`, docID, placeholderStatus); err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
+	if err := d.exec(ctx, key, `UPDATE chunks SET status = NULL WHERE id = ? AND status = ?`, rootID, placeholderStatus); err != nil {
+		return errFrom("import_md: "+err.Error(), err), nil
+	}
 
 	why := d.publishIngested(ctx, key, mscope, docID, "reimported", rep.changed)
 	out := map[string]any{"document_id": docID, "root_chunk_id": rootID, "edition_date": edition, "reimport": rep}

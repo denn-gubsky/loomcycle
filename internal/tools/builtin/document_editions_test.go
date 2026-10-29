@@ -790,3 +790,30 @@ func TestPublishIngested_OnlyWhenReadingIsNotPartitioned(t *testing.T) {
 		t.Errorf("control: an unrestricted create was not announced: %v %v", w.docs, out)
 	}
 }
+
+// A body that cannot be read is a fault, not an empty part: read as "", every held
+// part looked changed and the whole document was superseded.
+func TestReimport_BodyReadFaultChangesNothing(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	const wk = "law:ua/38"
+	docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+	before := currentPartsOf(t, d, ctx, docID, 2_000_001)
+	fs := &failingBodyStore{Store: d.Store, fail: true}
+	d.Store = fs
+	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": insertEd1, "reimport": true, "work_key": wk, "edition_date": 2_000_000})
+	_, r := docExec(t, d, ctx, string(b))
+	fs.fail = false
+	if !r.IsError {
+		t.Errorf("a reimport over unreadable bodies succeeded: %s", r.Text)
+	}
+	after := currentPartsOf(t, d, ctx, docID, 2_000_001)
+	for a, p := range before {
+		if after[a].id != p.id {
+			t.Errorf("%s was replaced (%s → %s) on a read fault", a, p.id, after[a].id)
+		}
+	}
+	res, err := d.query(ctx, userKey(t, d, ctx), `SELECT COUNT(*) FROM chunks WHERE document_id = ?`, docID)
+	if err != nil || asInt(res.Rows[0][0]) != len(before)+1 {
+		t.Errorf("a read fault wrote parts: %v %v", res, err)
+	}
+}
