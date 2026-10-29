@@ -1,85 +1,109 @@
 # Embedded bundle: knowledge-base
 #
-# Report-only relation finder: one document's passages against a corpus, writes nothing.
+# The links agent: builds and maintains the relations between a document's
+# passages and the rest of the store, from rules the tenant's ontology declares.
+# Selected via `LOOMCYCLE_PRESETS=…,knowledge-base`.
 #
-# For each claim-bearing passage of ONE document, proposes which declared
-# relation (if any) it has to passages elsewhere in a corpus, with two quotes
-# checked by code, and returns a pass report. Selected via
-# `LOOMCYCLE_PRESETS=…,knowledge-base`.
-#
-#   kb/linker   — a DETERMINISTIC code-js agent. It owns the pass: resolve the
-#                 document → enumerate its claim-bearing chunks → find candidates
-#                 with `Document op=related` (aimed at the corpus) → one verdict
-#                 call per chunk → parse strictly → check every quote by code →
-#                 return a pass report.
+#   kb/linker   — a DETERMINISTIC code-js agent. It owns the pass and every
+#                 write. Per document, in order:
+#                   L1 anchors  — reports parts without an anchor, duplicate
+#                                 anchors and parts without a stable id;
+#                   L2 cite     — the citations the document class's grammar
+#                                 finds, proposed from the citing passage to the
+#                                 cited part (or a placeholder for a work not
+#                                 held yet);
+#                   L3 terms    — a concept scheme's terms found in the text,
+#                                 proposed as uses_term (tenant scope only);
+#                   L4 relate   — semantic relations judged by kb/verdict,
+#                                 report only, and only when asked for;
+#                   L6 maintain — re-checks the live statements touching the
+#                                 document: verify, expire, demote, merge,
+#                                 re-point or flag. Never deletes.
 #   kb/verdict  — a tool-less LLM agent. Its entire job is "given one passage and
 #                 a few candidates, say which declared relation holds, with two
-#                 quotes, or none".
+#                 quotes, or none". Used by L4 only.
 #
-# STATUS: RFC FP PHASE A — THE REPORT-ONLY PROTOTYPE. One layer (L4, relate),
-# one document per run, `write: report` only. It exists to MEASURE the false-link
-# rate and the per-document cost on a real corpus before anything is allowed to
-# write a relation. What it does NOT do yet, and why:
+# MODES. `document` (one document, the default), `maintain` (L6 only, over one
+# document's statements), `drain` (the documents the `documents/ingested`
+# queue names, one message at a time, each acked only after its pass). WRITE
+# MODES: `report` (the default — reads only, counts what it would write, acks
+# nothing) and `propose` (writes statements through propose_statement and
+# maintains them through maintain_statement). Run `report` first, always.
 #
-#   * It writes nothing — no statement, no evidence, no lease. The runtime ops a
-#     writing linker needs (an agent-stampable method, statement maintenance, a
-#     named document lease) are the RFC FP §13 amendment's R1–R7, not yet built.
-#     A run that asks for any other mode is refused, and says so.
-#   * The relation vocabulary is the five built-in L4 kinds (elaborates,
-#     implements, stricter_than, conflicts_with, alternate_of) or the caller's
-#     own list in the run input. The tenant's ontology is not read: the op that
-#     returns the parsed Relations section (`Document op=describe_ontology`,
-#     R4) does not exist yet. Vocabulary loading is ONE function in the body,
-#     so the swap is local.
-#   * Domain/range are rendered for the model but not enforced: nothing here
-#     can classify a document yet.
-#   * The citation, anchor and mention layers (L1–L3), check-against (L5) and
-#     maintenance (L6) are later phases.
+# STATUS: RFC FP PHASE B, CODED AGAINST RUNTIME OPS NOT YET ON MAIN. The writing
+# path needs, from the RFC FP §13 amendment: R1 (the `statement_methods` grant
+# and the `method` field), R2 (`maintain_statement`), R3 (the `list_statements`
+# filters), R4 (`describe_ontology`), R5 (`extract_citations`) and R6 (the
+# named document lease). Until they ship, a `report` run of the anchor and relate
+# layers works on today's runtime, and every other layer reports why it skipped
+# or fails on the op it needs. Not built here: classification (L0),
+# check-against (L5), the semantic layer's writes (L4 stays report-only), L6's
+# re-judging and its subject and sweep modes, hard deletion of any kind.
 #
 # WHY THE ORCHESTRATION IS CODE. Every invariant this pass keeps — a kind from the
-# declared list or nothing, a quote that occurs verbatim or the verdict is
-# dropped, the document never its own candidate, a hard cap on model calls, no
-# write op anywhere — is a line of code, not a sentence in a prompt. A prompt can
-# only ask for an invariant; the memory bundle's history is that a prompt-driven
-# pass dropped them one by one. The model answers one bounded question per call
-# and its reply is DATA the driver validates.
+# declared list or nothing, a quote that occurs or no write, a person's link only
+# verified or flagged, the lease released on every path, a queue message acked
+# only after its pass — is a line of code, not a sentence in a prompt. A prompt
+# can only ask for an invariant; the memory bundle's history is that a
+# prompt-driven pass dropped them one by one. The one model call (L4) answers one
+# bounded question and its reply is DATA the driver validates.
 #
 # ⚠️ REQUIREMENTS — this bundle FAILS BOOT if the first one is missing:
 #   - LOOMCYCLE_CODE_AGENTS_ENABLED=1. A `provider: code-js` agent selected
 #     without the flag is a fatal boot error by design.
 #   - SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents live there.
-#   - An embedder and the Postgres vector tier: `Document op=related` is a
-#     vector search, and sqlite has no vector leg for it.
-#   - A runtime whose `related` applies the corpus filters (`under_paths`,
-#     `exclude_document_ids`). The pass checks the server echoed the filter and
-#     REFUSES to judge an unfiltered neighbourhood rather than silently
-#     comparing against the whole scope.
+#   - A confirmed tenant ontology with a Relations section, for L2, L3 and the
+#     kind check of L6. Without one those layers skip and say why.
+#   - For L4 only: an embedder and the Postgres vector tier (`related` is a
+#     vector search), and a runtime whose `related` applies the corpus filters.
+#     The pass checks the server echoed the filter and REFUSES to judge an
+#     unfiltered neighbourhood.
 #
-# ⚠️ IT SPENDS TOKENS: one `kb/verdict` call per claim-bearing chunk that has
-# candidates, capped by `max_verdict_calls` (default 100) in the run input. The
-# linker itself is zero-token. Nothing here is scheduled — it runs only when
-# someone spawns it.
+# ⚠️ L4 SPENDS TOKENS: one `kb/verdict` call per claim-bearing chunk that has
+# candidates, capped by `max_verdict_calls`. Every other layer is zero-token.
+# Nothing here is scheduled: an operator adds a ScheduleDef that fires kb/linker
+# with {"mode":"drain","write":"propose"} to link on import (see README).
 #
 # SCOPE. `scope: user` (the default) works with these grants. `scope: tenant`
 # needs `memory_scopes: [tenant]` AND `sql_scopes: [tenant]` on kb/linker; they
-# are deliberately not granted here — a tenant Document grant is also a tenant
-# WRITE grant, and this agent writes nothing. Add them in an operator overlay to
-# run against a tenant corpus.
+# are deliberately not granted here — a tenant Document grant is a tenant WRITE
+# grant. Add them in an operator overlay. Terms (L3) write only at tenant scope,
+# where concepts live; elsewhere they are counted.
 #
 # This bundle carries NO provider matrix and NO pinned model. kb/verdict declares
 # `tier: low`, so a `low` tier must come from another layer (select `base`
 # alongside it). Retune the trade-off in your tier policy — never by pinning a
 # provider or model on the agent.
 
+channels:
+  # The runtime publishes {document_id, reason, changed_chunk_ids?} here when a
+  # document is created, imported or reimported, in the document's own scope.
+  # Declared user-scoped so a user's drain reads that user's documents; kb/linker
+  # drains it at user scope only.
+  documents/ingested:
+    description: "Documents created, imported or reimported — the links agent's work queue."
+    scope: user
+    max_messages: 256
+    semantic: queue
+
 agents:
   kb/linker:
     provider: code-js
-    # The tool ceiling, and the whole of it: Document READS the store, Agent
-    # spawns the one model call. No Memory, no Path, no Bash, no network tool, no
-    # credentials. Document does carry write ops, so "writes nothing" is held by
-    # the body (it names read ops only — get_document, query_chunks, get_chunk,
-    # related) and by a test that runs the pass and records every op it issues.
-    tools: [Document, Agent]
+    # The tool ceiling, and the whole of it: Document reads and writes
+    # statements, Agent spawns the one model call (L4), Channel reads and acks
+    # the ingest queue. No Memory, no Path, no Bash, no network tool, no
+    # credentials. "Report mode writes nothing" is held by the body (every write
+    # goes through one function that report mode turns into a count) and by a
+    # test that runs the pass and records every op it issues.
+    tools: [Document, Agent, Channel]
+    # The ingest queue only, and only to read and ack it. No publish grant.
+    channels:
+      subscribe: [documents/ingested]
+    # PENDING (RFC FP §13 R1): the grant that lets this code agent stamp
+    # rule:/extractor: methods on its statements and hold the linker lease.
+    # Config load rejects the field until the runtime knows it; add it here
+    # when R1 merges:
+    #   statement_methods: [rule, extractor]
     # Deny-all skills (the runtime auto-adds Skill otherwise) and no Context (the
     # runtime auto-adds it otherwise). Neither is called.
     skills: [-*]
@@ -90,33 +114,45 @@ agents:
     # documents re-extracted as "facts the user said".
     internal: true
     # Wall clock for the WHOLE pass, spanning every verdict child: 100 calls at
-    # ~15 s on a slow local model is 25 minutes.
+    # ~15 s on a slow local model is 25 minutes. The linker lease's TTL matches.
     run_timeout_seconds: 1800
     code: |
-      // kb/linker — the relate pass, report only.
+      // kb/linker — the links pass over one document, or over the ingest queue.
       //
-      // One document in, one pass report out. For each claim-bearing chunk of the
-      // document: find candidate passages elsewhere in the corpus by meaning, ask the
-      // tool-less kb/verdict agent which declared relation (if any) holds, and keep a
-      // verdict only when its kind is declared and both of its quotes occur verbatim.
-      // Nothing is written to the store, on any path.
+      // One run is one pass: a document (mode document), the statements touching a
+      // document (mode maintain), or the documents the ingest queue names (mode drain).
+      // Each layer is one function:
+      //   L1 anchors  — reports parts without an anchor, duplicate anchors, and parts
+      //                 without a stable id. Writes nothing.
+      //   L2 cite     — the citations the document's class grammar finds, proposed as
+      //                 statements from the citing passage to the cited part.
+      //   L3 terms    — exact and normalised mentions of a concept scheme's terms,
+      //                 proposed as uses_term statements.
+      //   L4 relate   — semantic relations judged by kb/verdict. Report only, always.
+      //   L6 maintain — re-checks the live statements touching the document and
+      //                 verifies, expires, demotes, merges, re-points or flags them.
       //
       // ENFORCED STRUCTURALLY (not asked for):
-      //   * the run input is parsed strictly; an unknown field, a bad value or any
-      //     mode other than report refuses the run before a single tool call.
-      //   * only read ops are issued: get_document, query_chunks, get_chunk, related.
-      //   * the document is never its own candidate: excluded in the related call AND
-      //     dropped here when a hit still carries its id.
-      //   * the corpus filter must be echoed by the server, or the pass stops — an
-      //     unfiltered neighbourhood is the whole scope, not the corpus.
-      //   * a kind outside the vocabulary, a malformed entry, "none" and "unclear"
-      //     all land as none.
-      //   * a quote is accepted only when it occurs verbatim in the text it claims
-      //     to come from; otherwise the verdict is dropped and counted, never
-      //     repaired.
-      //   * verdict calls stop at max_verdict_calls, and the report says so.
-      //   * the default report carries ids, kinds, spans and counts, never store
-      //     text; quote text appears only when the input asks for it.
+      //   * the run input is parsed strictly; an unknown field or a bad value refuses
+      //     the run before a single tool call.
+      //   * write "report" (the default) issues read ops only, and acks nothing.
+      //   * write "propose" takes the scope's linker lease first, renews it as the
+      //     pass goes, and releases it on every exit path; a busy lease writes nothing.
+      //   * every write goes through write(): it is counted against max_writes, and
+      //     report mode turns it into a count.
+      //   * the ontology is read once per run. A draft ontology, or one with no
+      //     relation kinds, skips the citation and term layers and the kind check.
+      //   * a kind is written only when the ontology declares it and it is not one
+      //     the runtime reserves for itself; a grammar's kind outside that list is
+      //     filed as cites. Nothing similar is ever stored.
+      //   * every evidence span this body computes is in runes, through runeSpan().
+      //   * a statement written by a person (any method that is not rule: or
+      //     extractor:) is only ever verified or flagged; a statement the runtime
+      //     itself wrote is not touched at all; nothing is ever hard-deleted.
+      //   * a queue message is acked only after its pass is recorded in the report,
+      //     and a failed pass stops the drain with its message unacked.
+      //   * the report carries ids, counts and fixed reason strings, never store
+      //     text; L4 quote text appears only when the input asks for it.
       //
       // REPLAY. This body re-executes from the top on every loop turn, fast-forwarding
       // the tool results already recorded. It must be a pure function of those
@@ -134,18 +170,64 @@ agents:
         min_quote_chars: 8,
         max_relations: 32,
         max_corpus_paths: 32,
-        max_exclude_types: 64
+        max_exclude_types: 64,
+        lease_name: "linker",
+        // The whole run's wall clock (run_timeout_seconds), so a crashed pass frees
+        // the scope no later than a finished one would have.
+        lease_ttl_ms: 1800000,
+        // Renewal re-takes the lease (the holder extends its own), so a long pass
+        // never outlives it.
+        lease_renew_every: 50,
+        ingest_channel: "documents/ingested",
+        citations_limit: 1000,
+        statements_page: 200,
+        sql_batch: 100,
+        max_changed_ids: 1000,
+        // A one-letter alternative label would match inside every sentence.
+        min_term_chars: 2,
+        max_term_evidence: 3,
+        max_report_ids: 50,
+        max_successor_hops: 8
       };
 
       var DEFAULTS = {
+        mode: "document",
         scope: "user",
+        write: "report",
         candidate_floor: 0.5,
         max_candidates_per_chunk: 8,
         max_verdict_calls: 100,
         max_chars: 1500,
         min_body_chars: 80,
-        include_quotes: false
+        include_quotes: false,
+        max_writes: 500,
+        max_statements: 500,
+        max_messages: 10
       };
+
+      // The layers each mode runs when the input names none. L4 joins them when the
+      // input gives corpus_paths, which only L4 reads.
+      var MODE_LAYERS = {
+        document: ["L1", "L2", "L3", "L6"],
+        drain: ["L1", "L2", "L3", "L6"],
+        maintain: ["L6"]
+      };
+      var LAYER_ORDER = ["L1", "L2", "L3", "L4", "L6"];
+
+      var METHOD = { citation: "rule:citation", terms: "rule:terms", maintain: "rule:maintain" };
+
+      // Statements the runtime writes for itself: the edition chain, the consolidator's
+      // links, [[name]] links. Maintaining them would, for one, expire every
+      // supersedes edge for pointing at a superseded part — which is what it is for.
+      var RUNTIME_METHODS = { runtime: true, consolidator: true, wikilink: true };
+
+      // The refusal codes the runtime puts at the front of an error, counted by name.
+      // Anything else counts as "other": the report never carries error text.
+      var REFUSALS = ["kind_reserved", "kind_not_declared", "domain_range_violation",
+        "characteristic_violation", "qualifier_violation", "statement_rejected",
+        "evidence_quote_not_found", "method_not_granted", "permission"];
+
+      var INGEST_REASONS = { created: true, imported: true, reimported: true };
 
       // The five relate-layer kinds, used when the caller names none.
       var DEFAULT_RELATIONS = [
@@ -159,28 +241,64 @@ agents:
       var DIRECTIONS = { this_to_candidate: true, candidate_to_this: true };
 
       var ALLOWED_FIELDS = {
-        document_id: true, path: true, scope: true, corpus_paths: true,
-        exclude_document_types: true, candidate_floor: true,
+        mode: true, document_id: true, path: true, scope: true, layers: true, write: true,
+        terms_scheme: true, as_of: true, max_writes: true, max_statements: true, max_messages: true,
+        corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
-        min_body_chars: true, relations: true, include_quotes: true, write: true
+        min_body_chars: true, relations: true, include_quotes: true
       };
 
-      var USAGE = "Pass a JSON object: {\"document_id\" or \"path\", \"corpus_paths\": [\"/…\"], " +
-        "optional scope (user|tenant), exclude_document_types, candidate_floor, " +
+      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain (default document), " +
+        "\"document_id\" or \"path\" (not in drain), optional scope (user|agent|tenant), " +
+        "layers [\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
+        "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
+        "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
         "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
-        "relations [{name, meaning, domain?, range?}], include_quotes, write (\"report\" only)}.";
+        "relations [{name, meaning, domain?, range?}], include_quotes}.";
 
       function run(input) {
         var parsed = parseInput(input ? input.prompt : "");
         if (parsed.error) {
           return finish({ status: "refused", reason: parsed.error, usage: USAGE });
         }
-        var st = newState(parsed.value, loadVocabulary(parsed.value));
+        var st = newState(parsed.value);
+        // The lease is the FIRST call of a writing pass. A busy scope costs one call
+        // and writes nothing; a refused lease is a failed pass that wrote nothing.
+        if (st.opts.write === "propose") {
+          var got;
+          try {
+            got = takeLease(st);
+          } catch (e) {
+            st.status = "failed";
+            st.failure = "lease: " + clip(errText(e), 200);
+            return finish(report(st));
+          }
+          if (!got) {
+            st.status = "busy";
+            return finish(report(st));
+          }
+        }
         try {
-          relatePass(st);
+          if (needsOntology(st.opts)) { st.onto = loadOntology(st); }
+          if (st.opts.mode === "drain") { drainPass(st); } else { documentPass(st); }
         } catch (e) {
-          st.status = "failed";
-          st.failure = clip(errText(e), 300);
+          if (isStop(e)) {
+            if (e.stop === "budget") {
+              setStatus(st, "budget_stopped");
+            } else {
+              setStatus(st, "failed");
+              st.failure = "the linker lease was lost mid-pass; the pass stopped writing";
+            }
+          } else {
+            setStatus(st, "failed");
+            st.failure = clip(errText(e), 300);
+          }
+        } finally {
+          // The lease is held from takeLease to here, so this is the one place it is
+          // returned on every path — normal return, a refused tool, a thrown error. (A
+          // frontier suspension is not an exception: the runtime is interrupted and
+          // the turn re-runs from the top, so this runs once, on the final turn.)
+          releaseLease(st);
         }
         return finish(report(st));
       }
@@ -204,39 +322,86 @@ agents:
           return { error: "the run prompt must be a JSON object" };
         }
         for (var k in v) {
-          if (!Object.prototype.hasOwnProperty.call(v, k)) { continue; }
+          if (!hasOwn(v, k)) { continue; }
           if (ALLOWED_FIELDS[k] !== true) {
             return { error: "unknown field " + JSON.stringify(clip(k, 64)) };
           }
         }
-        if (v.write !== undefined && v.write !== "report") {
-          return { error: "write: only \"report\" is supported; this agent does not write to the store. " +
-                          "Run it with write \"report\" (or omit write) and read the report." };
-        }
         var o = {};
-        var hasID = v.document_id !== undefined, hasPath = v.path !== undefined;
-        if (hasID === hasPath) {
-          return { error: "pass exactly one of document_id or path" };
+        o.mode = DEFAULTS.mode;
+        if (v.mode !== undefined) {
+          if (typeof v.mode !== "string" || !hasOwn(MODE_LAYERS, v.mode)) {
+            return { error: "mode must be document, drain or maintain" };
+          }
+          o.mode = v.mode;
         }
-        if (hasID) {
-          if (!isID(v.document_id)) { return { error: "document_id must be a non-empty id string" }; }
-          o.document_id = v.document_id;
+        o.write = DEFAULTS.write;
+        if (v.write !== undefined) {
+          if (v.write !== "report" && v.write !== "propose") {
+            return { error: "write must be \"report\" or \"propose\"" };
+          }
+          o.write = v.write;
+        }
+        var hasID = v.document_id !== undefined, hasPath = v.path !== undefined;
+        if (o.mode === "drain") {
+          if (hasID || hasPath) {
+            return { error: "drain takes its documents from the ingest queue; pass neither document_id nor path" };
+          }
         } else {
-          if (!isPath(v.path)) { return { error: "path must be an absolute path starting with /" }; }
-          o.path = v.path;
+          if (hasID === hasPath) {
+            return { error: "pass exactly one of document_id or path" };
+          }
+          if (hasID) {
+            if (!isID(v.document_id)) { return { error: "document_id must be a non-empty id string" }; }
+            o.document_id = v.document_id;
+          } else {
+            if (!isPath(v.path)) { return { error: "path must be an absolute path starting with /" }; }
+            o.path = v.path;
+          }
         }
         o.scope = DEFAULTS.scope;
         if (v.scope !== undefined) {
-          if (v.scope !== "user" && v.scope !== "tenant") { return { error: "scope must be user or tenant" }; }
+          if (v.scope !== "user" && v.scope !== "agent" && v.scope !== "tenant") {
+            return { error: "scope must be user, agent or tenant" };
+          }
           o.scope = v.scope;
         }
-        if (!isArray(v.corpus_paths) || v.corpus_paths.length === 0 || v.corpus_paths.length > CONFIG.max_corpus_paths) {
-          return { error: "corpus_paths must be a list of 1 to " + CONFIG.max_corpus_paths + " absolute paths" };
+        // The ingest channel this bundle declares is user-scoped, so its messages
+        // name user-scope documents. Draining it at another scope would look every
+        // one of them up in the wrong store and skip it as missing.
+        if (o.mode === "drain" && o.scope !== "user") {
+          return { error: "drain reads the user-scoped ingest channel, so its scope must be user" };
         }
-        for (var i = 0; i < v.corpus_paths.length; i++) {
-          if (!isPath(v.corpus_paths[i])) { return { error: "corpus_paths[" + i + "] must be an absolute path starting with /" }; }
+        o.corpus_paths = null;
+        if (v.corpus_paths !== undefined) {
+          if (!isArray(v.corpus_paths) || v.corpus_paths.length === 0 || v.corpus_paths.length > CONFIG.max_corpus_paths) {
+            return { error: "corpus_paths must be a list of 1 to " + CONFIG.max_corpus_paths + " absolute paths" };
+          }
+          for (var i = 0; i < v.corpus_paths.length; i++) {
+            if (!isPath(v.corpus_paths[i])) { return { error: "corpus_paths[" + i + "] must be an absolute path starting with /" }; }
+          }
+          o.corpus_paths = v.corpus_paths.slice();
         }
-        o.corpus_paths = v.corpus_paths.slice();
+        var lay = parseLayers(v.layers, o);
+        if (lay.error) { return lay; }
+        o.layers = lay.value;
+        if (o.layers.L4 === true && o.corpus_paths === null) {
+          return { error: "the L4 layer needs corpus_paths: the Path-tree paths its candidates come from" };
+        }
+        if (o.layers.L4 !== true && o.corpus_paths !== null) {
+          return { error: "corpus_paths is read only by the L4 layer, which this run does not include" };
+        }
+        if (v.terms_scheme !== undefined) {
+          if (!isName(v.terms_scheme, 128)) { return { error: "terms_scheme must be a scheme name" }; }
+          o.terms_scheme = v.terms_scheme;
+        }
+        if (v.as_of !== undefined) {
+          var a = v.as_of;
+          if (typeof a !== "number" || !isFinite(a) || a <= 0 || Math.floor(a) !== a) {
+            return { error: "as_of must be a positive integer instant in unix nanoseconds" };
+          }
+          o.as_of = a;
+        }
         o.exclude_document_types = [];
         if (v.exclude_document_types !== undefined) {
           if (!isArray(v.exclude_document_types) || v.exclude_document_types.length > CONFIG.max_exclude_types) {
@@ -258,6 +423,12 @@ agents:
         o.max_chars = n.value;
         if ((n = numberField(v, "min_body_chars", DEFAULTS.min_body_chars, 0, 10000, true)).error) { return n; }
         o.min_body_chars = n.value;
+        if ((n = numberField(v, "max_writes", DEFAULTS.max_writes, 1, 5000, true)).error) { return n; }
+        o.max_writes = n.value;
+        if ((n = numberField(v, "max_statements", DEFAULTS.max_statements, 1, 5000, true)).error) { return n; }
+        o.max_statements = n.value;
+        if ((n = numberField(v, "max_messages", DEFAULTS.max_messages, 1, 100, true)).error) { return n; }
+        o.max_messages = n.value;
         o.include_quotes = DEFAULTS.include_quotes;
         if (v.include_quotes !== undefined) {
           if (typeof v.include_quotes !== "boolean") { return { error: "include_quotes must be true or false" }; }
@@ -269,6 +440,31 @@ agents:
           o.relations = rel.value;
         }
         return { value: o };
+      }
+
+      function parseLayers(list, o) {
+        var out = {};
+        if (list === undefined) {
+          var def = MODE_LAYERS[o.mode];
+          for (var i = 0; i < def.length; i++) { out[def[i]] = true; }
+          if (o.corpus_paths !== null && o.mode !== "maintain") { out.L4 = true; }
+          return { value: out };
+        }
+        if (!isArray(list) || list.length === 0 || list.length > LAYER_ORDER.length) {
+          return { error: "layers must be a non-empty list of L1, L2, L3, L4, L6" };
+        }
+        for (var j = 0; j < list.length; j++) {
+          var l = list[j];
+          if (typeof l !== "string" || LAYER_ORDER.indexOf(l) < 0) {
+            return { error: "layers[" + j + "] must be one of L1, L2, L3, L4, L6" };
+          }
+          if (out[l] === true) { return { error: "layers: " + l + " is named twice" }; }
+          out[l] = true;
+        }
+        if (o.mode === "maintain" && (list.length !== 1 || out.L6 !== true)) {
+          return { error: "maintain runs the L6 layer only" };
+        }
+        return { value: out };
       }
 
       function numberField(v, name, def, lo, hi, integer) {
@@ -289,7 +485,7 @@ agents:
           var r = list[i];
           if (!isPlainObject(r)) { return { error: "relations[" + i + "] must be an object" }; }
           for (var k in r) {
-            if (!Object.prototype.hasOwnProperty.call(r, k)) { continue; }
+            if (!hasOwn(r, k)) { continue; }
             if (k !== "name" && k !== "meaning" && k !== "domain" && k !== "range") {
               return { error: "relations[" + i + "]: unknown field " + JSON.stringify(clip(k, 64)) };
             }
@@ -317,18 +513,786 @@ agents:
         return { value: out };
       }
 
-      // loadVocabulary is the ONE place the relation vocabulary comes from. Today
-      // it is the caller's list or the five built-in kinds; when the runtime can
-      // describe the tenant's ontology, this becomes a read of its Relations
-      // section and nothing else in the pass changes.
+      function needsOntology(opts) {
+        return opts.layers.L2 === true || opts.layers.L3 === true || opts.layers.L6 === true;
+      }
+
+      // ------------------------------------------------------------------ state
+
+      function newState(opts) {
+        return {
+          opts: opts,
+          status: "complete",
+          failure: "",
+          tool_calls: 0,
+          lease: { taken: false, acquired: false, held: false, lost: false, held_by: "", renewals: 0, renewed_at: 0, released: null },
+          onto: null,
+          planned_writes: 0,
+          writes: { propose_statement: 0, maintain_statement: 0, resolve_anchor: 0 },
+          would_write: { propose_statement: 0, maintain_statement: 0, resolve_anchor: 0 },
+          refusals: {},
+          bodies: {},     // chunk id -> {ok, body, type, document_id}
+          docTypes: {},   // document id -> {ok, type}
+          chunkLists: {}, // document id -> {rows, truncated}
+          meta: {},       // chunk id -> {document_id, anchor, stable_id, invalid_at}, null when gone
+          layers: {},
+          l4: null,
+          documents: [],
+          messages: [],
+          queue: null
+        };
+      }
+
+      // Status precedence: a failure is never hidden by a later budget stop.
+      function setStatus(st, s) {
+        if (st.status === "failed" || st.status === "busy") { return; }
+        if (s === "budget_stopped" && st.status !== "complete") { return; }
+        st.status = s;
+      }
+
+      function layerRec(st, name, init) {
+        if (!st.layers[name]) { st.layers[name] = { ran: 0, skipped: 0, reason: "", counts: init() }; }
+        return st.layers[name];
+      }
+
+      function skipLayer(L, reason) {
+        L.skipped++;
+        L.reason = reason;
+      }
+
+      function bump(obj, key) { obj[key] = (obj[key] || 0) + 1; }
+
+      // ----------------------------------------------------------- tool access
+
+      // Stop ends the pass early on purpose: the write budget is spent, or the lease
+      // is no longer ours. It is never caught as an ordinary tool error.
+      function Stop(kind) { this.stop = kind; }
+      function isStop(e) { return e instanceof Stop; }
+
+      // MissingDocument is a document the queue names that the scope no longer
+      // holds. It is the one per-message failure the drain may skip past.
+      function MissingDocument() { this.missing = true; }
+
+      // call is every Document op the pass issues: the scope is the pass's, and the
+      // lease is renewed on the way.
+      function call(st, args) {
+        st.tool_calls++;
+        renewLeaseIfDue(st);
+        var a = {};
+        for (var k in args) {
+          if (hasOwn(args, k)) { a[k] = args[k]; }
+        }
+        a.scope = st.opts.scope;
+        return parseJSON(Document(a));
+      }
+
+      // write is the only path to a store write. It is counted against max_writes
+      // before it happens, and in report mode it is only counted. A refusal is
+      // counted by its code and the pass goes on: the runtime's gates decide, and a
+      // refused kind is never retried as another.
+      function write(st, op, args) {
+        if (st.planned_writes >= st.opts.max_writes) { throw new Stop("budget"); }
+        st.planned_writes++;
+        if (st.opts.write !== "propose") {
+          st.would_write[op]++;
+          return { ok: true, dry: true, result: {} };
+        }
+        var r;
+        try {
+          r = call(st, args);
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          var why = refusalReason(e);
+          if (!st.refusals[op]) { st.refusals[op] = {}; }
+          bump(st.refusals[op], why);
+          return { ok: false, reason: why };
+        }
+        st.writes[op]++;
+        return { ok: true, dry: false, result: isPlainObject(r) ? r : {} };
+      }
+
+      function refusalReason(e) {
+        var t = errText(e);
+        for (var i = 0; i < REFUSALS.length; i++) {
+          if (t.indexOf(REFUSALS[i]) >= 0) { return REFUSALS[i]; }
+        }
+        return "other";
+      }
+
+      function takeLease(st) {
+        st.lease.taken = true;
+        st.tool_calls++;
+        var r = parseJSON(Document({ op: "lease", name: CONFIG.lease_name, ttl_ms: CONFIG.lease_ttl_ms, scope: st.opts.scope }));
+        if (!isPlainObject(r) || r.acquired !== true) {
+          st.lease.held_by = (r && isID(r.held_by)) ? r.held_by : "";
+          return false;
+        }
+        st.lease.acquired = true;
+        st.lease.held = true;
+        st.lease.renewed_at = st.tool_calls;
+        return true;
+      }
+
+      // renewLeaseIfDue re-takes the lease every lease_renew_every calls. A renewal
+      // that is not granted means another pass now holds the scope: stop writing.
+      function renewLeaseIfDue(st) {
+        if (!st.lease.held || st.tool_calls - st.lease.renewed_at < CONFIG.lease_renew_every) { return; }
+        st.lease.renewed_at = st.tool_calls;
+        st.lease.renewals++;
+        st.tool_calls++;
+        var r = null;
+        try {
+          r = parseJSON(Document({ op: "lease", name: CONFIG.lease_name, ttl_ms: CONFIG.lease_ttl_ms, scope: st.opts.scope }));
+        } catch (e) {
+          r = null;
+        }
+        if (!isPlainObject(r) || r.acquired !== true) {
+          st.lease.held = false;
+          st.lease.lost = true;
+          throw new Stop("lease_lost");
+        }
+      }
+
+      // releaseLease gives back a lease this pass holds, and nothing else: a busy or
+      // lost lease is not ours to release. A failed release is reported, never thrown
+      // — it runs inside finally, where a throw would replace the pass's own outcome.
+      function releaseLease(st) {
+        if (!st.lease.held) { return; }
+        st.lease.held = false;
+        try {
+          var r = parseJSON(Document({ op: "release", name: CONFIG.lease_name, scope: st.opts.scope }));
+          st.lease.released = isPlainObject(r) && r.released === true;
+        } catch (e) {
+          st.lease.released = false;
+        }
+      }
+
+      // ------------------------------------------------------------------ modes
+
+      function documentPass(st) {
+        var ref = st.opts.document_id ? { document_id: st.opts.document_id } : { path: st.opts.path };
+        passDocument(st, ref, null);
+      }
+
+      // passDocument runs the requested layers over one document, in layer order. A
+      // reimport names the parts that changed; L2 and L3 then read only those, while
+      // L1 and L6 always look at the whole document.
+      function passDocument(st, ref, changed) {
+        var doc = resolveDocument(st, ref);
+        st.documents.push(doc.id);
+        if (changed !== null) { changed = ownParts(st, doc, changed); }
+        if (st.opts.layers.L1 === true) { layerAnchors(st, doc); }
+        if (st.opts.layers.L2 === true) { layerCite(st, doc, changed); }
+        if (st.opts.layers.L3 === true) { layerTerms(st, doc, changed); }
+        if (st.opts.layers.L4 === true) { layerRelate(st, doc); }
+        if (st.opts.layers.L6 === true) { layerMaintain(st, doc); }
+      }
+
+      // drainPass works through the ingest queue one message at a time. await reads
+      // from the committed cursor without committing, so a message is consumed only
+      // by the ack that follows its recorded pass. An ack commits everything before
+      // it, so a message whose pass failed stops the drain: acking a later one would
+      // silently consume it.
+      function drainPass(st) {
+        var Q = { channel: CONFIG.ingest_channel, read: 0, acked: 0, empty: false, max_messages: st.opts.max_messages,
+                  ack: st.opts.write === "propose" ? "after each pass" : "never in report mode" };
+        st.queue = Q;
+        var cursor = "";
+        for (var n = 0; n < st.opts.max_messages; n++) {
+          var args = { channels: [CONFIG.ingest_channel], mode: "any", max_messages: 1, wait_ms: 0 };
+          // Report mode never acks, so it walks the queue with its own cursor.
+          if (cursor !== "") { args.from_cursor = cursor; }
+          st.tool_calls++;
+          var res = Channel.await(args);
+          var slot = (isPlainObject(res) && isPlainObject(res.results)) ? res.results[CONFIG.ingest_channel] : null;
+          var msgs = (isPlainObject(slot) && isArray(slot.messages)) ? slot.messages : [];
+          if (msgs.length === 0) { Q.empty = true; return; }
+          var next = slot.next_cursor;
+          if (typeof next !== "string" || next === "" || next === cursor) {
+            throw new Error("the ingest queue answered a message without a new cursor");
+          }
+          cursor = next;
+          Q.read++;
+          var msg = msgs[0];
+          var rec = { message_id: (isPlainObject(msg) && isID(msg.id)) ? msg.id : "", document_id: "",
+                      reason: "", outcome: "", acked: false };
+          st.messages.push(rec);
+          var m = ingestMessage(isPlainObject(msg) ? msg.value : null);
+          if (m === null) {
+            rec.outcome = "malformed";
+          } else {
+            rec.document_id = m.document_id;
+            rec.reason = m.reason;
+            rec.outcome = runMessage(st, rec, m);
+          }
+          // Reached only when the pass finished or the message is one no pass can
+          // ever process; a failed or stopped pass threw past this line.
+          if (st.opts.write === "propose") {
+            st.tool_calls++;
+            Channel.ack({ channel: CONFIG.ingest_channel, cursor: cursor });
+            rec.acked = true;
+            Q.acked++;
+          }
+        }
+      }
+
+      function runMessage(st, rec, m) {
+        try {
+          passDocument(st, { document_id: m.document_id }, m.reason === "reimported" ? m.changed : null);
+        } catch (e) {
+          if (e && e.missing === true) { return "document_missing"; }
+          rec.outcome = isStop(e) ? (e.stop === "budget" ? "budget_stopped" : "lease_lost") : "failed";
+          throw e;
+        }
+        return "complete";
+      }
+
+      // ingestMessage validates one queue payload. Anything malformed is skipped
+      // rather than retried forever: no later pass could read it either.
+      function ingestMessage(v) {
+        if (typeof v === "string") { v = parseJSONOrNull(v); }
+        if (!isPlainObject(v) || !isID(v.document_id)) { return null; }
+        var reason = (typeof v.reason === "string" && INGEST_REASONS[v.reason] === true) ? v.reason : "unknown";
+        var changed = null;
+        if (isArray(v.changed_chunk_ids) && v.changed_chunk_ids.length <= CONFIG.max_changed_ids) {
+          changed = [];
+          for (var i = 0; i < v.changed_chunk_ids.length; i++) {
+            if (isID(v.changed_chunk_ids[i])) { changed.push(v.changed_chunk_ids[i]); }
+          }
+        }
+        // A reimport that names no parts is read whole.
+        if (reason === "reimported" && changed === null) { reason = "unknown"; }
+        return { document_id: v.document_id, reason: reason, changed: changed };
+      }
+
+      // ---------------------------------------------------------------- document
+
+      // resolveDocument names the document and its root. A document that cannot be
+      // read stops the pass: there is nothing to link.
+      function resolveDocument(st, ref) {
+        var args = { op: "get_document" };
+        if (ref.document_id) { args.id = ref.document_id; } else { args.path = ref.path; }
+        var d;
+        try {
+          d = call(st, args);
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          if (/no such document/.test(errText(e))) { throw new MissingDocument(); }
+          throw e;
+        }
+        if (!d || !isID(d.document_id)) {
+          throw new Error("get_document answered without a document_id");
+        }
+        return { id: d.document_id, root: isID(d.root_chunk_id) ? d.root_chunk_id : "" };
+      }
+
+      // listChunks is the document's chunk rows, read once per pass.
+      function listChunks(st, docID) {
+        if (st.chunkLists[docID]) { return st.chunkLists[docID]; }
+        var res = call(st, { op: "query_chunks", document_id: docID, limit: CONFIG.max_chunks });
+        var rows = (res && isArray(res.chunks)) ? res.chunks : [];
+        var out = { rows: [], truncated: rows.length >= CONFIG.max_chunks };
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          if (!r || !isID(r.id)) { continue; }
+          // Belt and braces: a row of another document is not this document's chunk.
+          if (typeof r.document_id === "string" && r.document_id !== docID) { continue; }
+          out.rows.push({ id: r.id, type: r.type, invalid: typeof r.invalid_at === "number" && r.invalid_at > 0 });
+        }
+        st.chunkLists[docID] = out;
+        return out;
+      }
+
+      // ownParts keeps the changed ids that are parts of this document: a queue
+      // message names the parts, but only the document's own chunk list says whose
+      // they are.
+      function ownParts(st, doc, ids) {
+        var mine = {};
+        var rows = listChunks(st, doc.id).rows;
+        for (var i = 0; i < rows.length; i++) { mine[rows[i].id] = true; }
+        var out = [];
+        for (var j = 0; j < ids.length; j++) {
+          if (mine[ids[j]] === true && ids[j] !== doc.root) { out.push(ids[j]); }
+        }
+        return out;
+      }
+
+      // claimParts is the parts whose text the term layer reads: in force, not the
+      // root, readable, and long enough to state something.
+      function claimParts(st, doc, changed) {
+        var only = null;
+        if (changed !== null) {
+          only = {};
+          for (var c = 0; c < changed.length; c++) { only[changed[c]] = true; }
+        }
+        var rows = listChunks(st, doc.id).rows;
+        var out = [];
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          if (r.id === doc.root || r.invalid) { continue; }
+          if (only !== null && only[r.id] !== true) { continue; }
+          var b = readChunk(st, r.id);
+          if (!b.ok || b.body.trim().length < st.opts.min_body_chars) { continue; }
+          out.push({ id: r.id, body: b.body });
+        }
+        return out;
+      }
+
+      // readChunk fetches a chunk once per pass. The body stays in memory for the
+      // checks and the verdict prompt; it never reaches the report.
+      function readChunk(st, id) {
+        if (st.bodies[id]) { return st.bodies[id]; }
+        var out = { ok: false, body: "", type: "", document_id: "" };
+        try {
+          var c = call(st, { op: "get_chunk", id: id });
+          if (c && typeof c.body === "string") {
+            out = { ok: true, body: c.body,
+                    type: typeof c.type === "string" ? c.type : "",
+                    document_id: typeof c.document_id === "string" ? c.document_id : "" };
+          }
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          out.ok = false;
+        }
+        st.bodies[id] = out;
+        return out;
+      }
+
+      // ---------------------------------------------------------------- ontology
+
+      // loadOntology is the ONE read of the tenant ontology per run, and the only
+      // source of relation kinds, renames, discriminators and term schemes for L2,
+      // L3 and L6. A draft ontology, or one without relation kinds, makes the
+      // citation and term layers and the kind check skip, with the reason.
+      function loadOntology(st) {
+        var o = { read: false, exists: false, confirmed: false, partial: false, version: null,
+                  usable: false, check_kind: false, reason: "", kinds: {}, writable: {}, renamed_to: {}, schemes: {} };
+        var r;
+        try {
+          r = call(st, { op: "describe_ontology" });
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          o.reason = "the ontology could not be read";
+          return o;
+        }
+        if (!isPlainObject(r)) {
+          o.reason = "the ontology could not be read";
+          return o;
+        }
+        o.read = true;
+        o.exists = r.exists === true;
+        o.confirmed = r.confirmed === true;
+        o.partial = r.partial === true;
+        if (typeof r.version === "number" && isFinite(r.version)) { o.version = r.version; }
+        var rels = isArray(r.relations) ? r.relations : [];
+        var renamedBy = {};
+        var nKinds = 0;
+        for (var i = 0; i < rels.length; i++) {
+          var rel = rels[i];
+          if (!isPlainObject(rel) || !isKindName(rel.name) || hasOwn(o.kinds, rel.name)) { continue; }
+          o.kinds[rel.name] = {
+            source: typeof rel.source === "string" ? rel.source : "",
+            discriminator: typeof rel.discriminator === "string" ? rel.discriminator : ""
+          };
+          nKinds++;
+          // A reserved kind is the runtime's own; the linker never writes one.
+          if (o.kinds[rel.name].source !== "reserved") { o.writable[rel.name] = true; }
+          if (isKindName(rel.renamed_from)) {
+            // Two kinds claiming one former name is ambiguous: neither takes it.
+            renamedBy[rel.renamed_from] = hasOwn(renamedBy, rel.renamed_from) ? "" : rel.name;
+          }
+        }
+        for (var old in renamedBy) {
+          if (hasOwn(renamedBy, old) && renamedBy[old] !== "" && !hasOwn(o.kinds, old)) { o.renamed_to[old] = renamedBy[old]; }
+        }
+        var schemes = isArray(r.schemes) ? r.schemes : [];
+        for (var s = 0; s < schemes.length; s++) {
+          var sc = schemes[s];
+          if (isPlainObject(sc) && isName(sc.name, 128) && !hasOwn(o.schemes, sc.name)) {
+            o.schemes[sc.name] = isArray(sc.concepts) ? sc.concepts : [];
+          }
+        }
+        if (!o.exists) {
+          o.reason = "the tenant has no ontology document";
+        } else if (!o.confirmed) {
+          o.reason = "the ontology is not confirmed";
+        } else if (nKinds === 0) {
+          o.reason = "the ontology declares no relation kinds";
+        } else {
+          o.usable = true;
+          // A partial read may be missing a kind that is still declared, so it
+          // cannot decide that a kind is gone.
+          o.check_kind = !o.partial;
+        }
+        return o;
+      }
+
+      // ------------------------------------------------------------- L1 anchors
+
+      // layerAnchors reports how well the document's parts are keyed. It writes
+      // nothing: anchors are assigned by the runtime at import.
+      function layerAnchors(st, doc) {
+        var L = layerRec(st, "L1", function () {
+          return { parts: 0, without_anchor: 0, duplicate_anchors: 0, without_stable_id: 0 };
+        });
+        if (!L.collisions) { L.collisions = []; L.collisions_truncated = false; L.truncated = false; }
+        L.ran++;
+        var res = call(st, { op: "query_chunks", sql: sqlLiveParts(doc.id, doc.root) });
+        if (res && res.truncated === true) { L.truncated = true; }
+        var rows = sqlRows(res);
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          if (!isArray(row) || !isID(row[0])) { continue; }
+          var anchor = typeof row[1] === "string" ? row[1] : "";
+          var sid = typeof row[2] === "string" ? row[2] : "";
+          L.counts.parts++;
+          if (anchor === "") {
+            L.counts.without_anchor++;
+          } else if (/~[0-9]+$/.test(anchor)) {
+            // The runtime suffixes a second part with the same heading path: two
+            // citations of that anchor cannot tell the parts apart.
+            L.counts.duplicate_anchors++;
+            if (L.collisions.length < CONFIG.max_report_ids) { L.collisions.push(row[0]); } else { L.collisions_truncated = true; }
+          }
+          if (sid === "") { L.counts.without_stable_id++; }
+        }
+      }
+
+      // --------------------------------------------------------------- L2 cite
+
+      // layerCite proposes one statement per citation the document's grammar finds,
+      // from the citing passage to the cited part (or the cited work's root, or a
+      // placeholder for a work the scope does not hold yet).
+      function layerCite(st, doc, changed) {
+        var L = layerRec(st, "L2", proposalCounts({
+          hits: 0, hits_malformed: 0, hits_unreadable: 0, hits_unresolved: 0, hits_no_kind: 0, hits_self: 0,
+          kind_from_grammar: 0, kind_defaulted: 0, targets_exact: 0, targets_work_root: 0, placeholders: 0,
+          parts_truncated: 0, read_by_part: 0
+        }));
+        if (!st.onto.usable) { skipLayer(L, st.onto.reason); return; }
+        var hits = citationHits(st, L, doc, changed);
+        if (hits === null) { return; }
+        L.ran++;
+        for (var i = 0; i < hits.length; i++) { citeOne(st, L, hits[i]); }
+      }
+
+      // citationHits reads the document's citations in one call. A listing cut at the
+      // limit is read again part by part, so no citation is lost to the cap.
+      function citationHits(st, L, doc, changed) {
+        var ids;
+        if (changed === null) {
+          var r = call(st, citationArgs({ document_id: doc.id }));
+          if (!grammarDeclared(L, r)) { return null; }
+          if (r.truncated !== true) { return isArray(r.hits) ? r.hits : []; }
+          L.counts.read_by_part++;
+          ids = [];
+          var rows = listChunks(st, doc.id).rows;
+          for (var i = 0; i < rows.length; i++) {
+            if (rows[i].id !== doc.root && !rows[i].invalid) { ids.push(rows[i].id); }
+          }
+        } else {
+          ids = changed;
+        }
+        var out = [];
+        for (var j = 0; j < ids.length; j++) {
+          var p = call(st, citationArgs({ id: ids[j] }));
+          if (!grammarDeclared(L, p)) { return null; }
+          if (p.truncated === true) { L.counts.parts_truncated++; }
+          var hs = isArray(p.hits) ? p.hits : [];
+          for (var k = 0; k < hs.length; k++) { out.push(hs[k]); }
+        }
+        return out;
+      }
+
+      function citationArgs(target) {
+        var a = { op: "extract_citations", limit: CONFIG.citations_limit };
+        if (target.document_id) { a.document_id = target.document_id; } else { a.id = target.id; }
+        return a;
+      }
+
+      function grammarDeclared(L, r) {
+        if (isPlainObject(r) && isPlainObject(r.grammar)) { return true; }
+        skipLayer(L, (isPlainObject(r) && r.grammar_issue) ? "the document's citation grammar cannot be used"
+                                                            : "the document's class declares no citation grammar");
+        return false;
+      }
+
+      function citeOne(st, L, h) {
+        var C = L.counts;
+        C.hits++;
+        if (!isPlainObject(h) || !isID(h.chunk_id) || typeof h.quote !== "string" || h.quote === "" ||
+            !isSpan(h.char_start, h.char_end)) {
+          C.hits_malformed++;
+          return;
+        }
+        var res = isPlainObject(h.resolved) ? h.resolved : {};
+        if (res.unreadable === true) { C.hits_unreadable++; return; }
+        // The grammar's kind is the grammar author's word; it is used only when the
+        // ontology declares it as a kind the linker may write.
+        var kind = "cites";
+        if (typeof h.kind === "string" && h.kind !== "") {
+          if (st.onto.writable[h.kind] === true) { kind = h.kind; C.kind_from_grammar++; } else { C.kind_defaulted++; }
+        }
+        if (st.onto.writable[kind] !== true) { C.hits_no_kind++; return; }
+        var target = citationTarget(st, L, h, res);
+        if (target === null) { return; }
+        if (target !== "" && target === h.chunk_id) { C.hits_self++; return; }
+        // Offsets come from the runtime in runes, the unit evidence spans use, and
+        // are passed through untouched.
+        propose(st, L, {
+          op: "propose_statement", from_id: h.chunk_id, to_id: target, kind: kind,
+          evidence: [{ chunk_id: h.chunk_id, quote: h.quote, char_start: h.char_start, char_end: h.char_end }],
+          method: METHOD.citation
+        });
+      }
+
+      // citationTarget is the chunk a citation points at: the cited part when the
+      // runtime resolved it, else the cited work's root, else a placeholder for the
+      // work. "" is a target report mode cannot name without writing; null means none.
+      function citationTarget(st, L, h, res) {
+        var C = L.counts;
+        if (isID(res.chunk_id)) { C.targets_exact++; return res.chunk_id; }
+        if (typeof h.work_key !== "string" || h.work_key === "") { C.hits_unresolved++; return null; }
+        var args = { op: "resolve_anchor", work_key: h.work_key };
+        if (typeof st.opts.as_of === "number") { args.as_of = st.opts.as_of; }
+        if (isID(res.document_id)) {
+          // The work is held but the part is not: cite the work itself.
+          C.targets_work_root++;
+          if (st.opts.write !== "propose") { return ""; }
+          var held = call(st, args);
+          return (held && isID(held.root_chunk_id)) ? held.root_chunk_id : unresolved(C);
+        }
+        if (typeof h.anchor === "string" && h.anchor !== "") { args.anchor = h.anchor; }
+        args.create_placeholder = true;
+        var w = write(st, "resolve_anchor", args);
+        if (w.dry) { C.placeholders++; return ""; }
+        if (!w.ok) { return unresolved(C); }
+        var r = w.result;
+        if (r.placeholder === true) { C.placeholders++; }
+        if (isID(r.chunk_id)) { return r.chunk_id; }
+        return isID(r.root_chunk_id) ? r.root_chunk_id : unresolved(C);
+      }
+
+      function unresolved(C) { C.hits_unresolved++; return null; }
+
+      // -------------------------------------------------------------- L3 terms
+
+      // layerTerms proposes a uses_term statement from each passage to each concept
+      // of the named scheme whose name or alternative label it contains, matched
+      // exactly or after case-folding and whitespace-collapsing, on word boundaries,
+      // the longest match winning an overlap. Concepts live in the tenant scope and
+      // a statement cannot cross scopes, so outside the tenant scope the matches are
+      // counted and nothing is written.
+      function layerTerms(st, doc, changed) {
+        var L = layerRec(st, "L3", proposalCounts({
+          parts: 0, terms: 0, terms_ambiguous: 0, matches: 0, matches_exact: 0, matches_normalised: 0,
+          overlaps_dropped: 0, terms_skipped_scope: 0, hits_self: 0
+        }));
+        L.defines = "deferred";
+        if (!st.onto.usable) { skipLayer(L, st.onto.reason); return; }
+        if (!st.opts.terms_scheme) { skipLayer(L, "no terms_scheme was given"); return; }
+        if (!hasOwn(st.onto.schemes, st.opts.terms_scheme)) { skipLayer(L, "terms_scheme is not a scheme the ontology declares"); return; }
+        if (st.onto.writable.uses_term !== true) { skipLayer(L, "uses_term is not a relation kind the ontology declares"); return; }
+        L.ran++;
+        var terms = termIndex(st.onto.schemes[st.opts.terms_scheme], L.counts);
+        var tenant = st.opts.scope === "tenant";
+        var parts = claimParts(st, doc, changed);
+        for (var i = 0; i < parts.length; i++) {
+          var p = parts[i];
+          L.counts.parts++;
+          var found = findTerms(p.body, terms, L.counts);
+          var order = [], byConcept = {};
+          for (var j = 0; j < found.length; j++) {
+            var m = found[j];
+            if (!byConcept[m.concept]) { byConcept[m.concept] = []; order.push(m.concept); }
+            if (byConcept[m.concept].length < CONFIG.max_term_evidence) { byConcept[m.concept].push(m); }
+          }
+          for (var k = 0; k < order.length; k++) {
+            var concept = order[k];
+            if (concept === p.id) { L.counts.hits_self++; continue; }
+            if (!tenant) { L.counts.terms_skipped_scope++; continue; }
+            var ev = [];
+            for (var e = 0; e < byConcept[concept].length; e++) {
+              var mm = byConcept[concept][e];
+              var span = runeSpan(p.body, mm.start, mm.end);
+              ev.push({ chunk_id: p.id, quote: p.body.slice(mm.start, mm.end), char_start: span[0], char_end: span[1] });
+            }
+            propose(st, L, { op: "propose_statement", from_id: p.id, to_id: concept, kind: "uses_term",
+                             evidence: ev, method: METHOD.terms });
+          }
+        }
+      }
+
+      // termIndex is the scheme's terms, normalised. A term two concepts share names
+      // neither: telling them apart takes judgement, which this layer does not make.
+      function termIndex(concepts, C) {
+        var byNorm = {}, order = [];
+        for (var i = 0; i < concepts.length; i++) {
+          var c = concepts[i];
+          if (!isPlainObject(c) || !isID(c.chunk_id)) { continue; }
+          var labels = [c.name];
+          if (isArray(c.alt)) { labels = labels.concat(c.alt); }
+          for (var j = 0; j < labels.length; j++) {
+            if (typeof labels[j] !== "string") { continue; }
+            var norm = normalize(labels[j]).text;
+            if (runeCount(norm) < CONFIG.min_term_chars) { continue; }
+            if (!hasOwn(byNorm, norm)) {
+              byNorm[norm] = { norm: norm, raw: labels[j], concept: c.chunk_id };
+              order.push(norm);
+            } else if (byNorm[norm].concept !== c.chunk_id && byNorm[norm].concept !== "") {
+              byNorm[norm].concept = "";
+              C.terms_ambiguous++;
+            }
+          }
+        }
+        var out = [];
+        for (var k = 0; k < order.length; k++) {
+          if (byNorm[order[k]].concept !== "") { out.push(byNorm[order[k]]); }
+        }
+        C.terms += out.length;
+        return out;
+      }
+
+      // findTerms returns the accepted matches in text order, each as a UTF-16 range
+      // of the original body, so the quote is the body's own text.
+      function findTerms(body, terms, C) {
+        var nb = normalize(body);
+        var text = nb.text;
+        var cands = [];
+        for (var i = 0; i < terms.length; i++) {
+          var t = terms[i];
+          var from = 0;
+          while (from <= text.length - t.norm.length) {
+            var at = text.indexOf(t.norm, from);
+            if (at < 0) { break; }
+            from = at + 1;
+            var last = at + t.norm.length - 1;
+            // A match must start and end on whole source characters: a lower-cased
+            // character can expand to two.
+            if (at > 0 && nb.starts[at] === nb.starts[at - 1]) { continue; }
+            if (last + 1 < text.length && nb.starts[last + 1] === nb.starts[last]) { continue; }
+            var s = nb.starts[at], e = nb.ends[last];
+            if (isWordChar(charBefore(body, s)) || isWordChar(charAt(body, e))) { continue; }
+            cands.push({ start: s, end: e, concept: t.concept, exact: body.slice(s, e) === t.raw });
+          }
+        }
+        cands.sort(function (a, b) {
+          var la = a.end - a.start, lb = b.end - b.start;
+          if (la !== lb) { return lb - la; }
+          if (a.start !== b.start) { return a.start - b.start; }
+          return a.concept < b.concept ? -1 : (a.concept > b.concept ? 1 : 0);
+        });
+        var kept = [];
+        for (var j = 0; j < cands.length; j++) {
+          var c = cands[j], clash = false;
+          for (var k = 0; k < kept.length; k++) {
+            if (c.start < kept[k].end && kept[k].start < c.end) { clash = true; break; }
+          }
+          if (clash) { C.overlaps_dropped++; continue; }
+          kept.push(c);
+          C.matches++;
+          if (c.exact) { C.matches_exact++; } else { C.matches_normalised++; }
+        }
+        kept.sort(function (a, b) { return a.start - b.start; });
+        return kept;
+      }
+
+      // normalize case-folds and collapses whitespace, and keeps, for every unit of
+      // the result, the range of the source text it came from.
+      function normalize(s) {
+        var out = "", starts = [], ends = [];
+        var i = 0, inSpace = false, spaceStart = 0, spaceEnd = 0;
+        while (i < s.length) {
+          var ch = charAt(s, i);
+          var w = ch.length;
+          if (isSpace(ch)) {
+            if (!inSpace) { inSpace = true; spaceStart = i; }
+            spaceEnd = i + w;
+            i += w;
+            continue;
+          }
+          if (inSpace) {
+            if (out.length > 0) { out += " "; starts.push(spaceStart); ends.push(spaceEnd); }
+            inSpace = false;
+          }
+          var low = ch.toLowerCase();
+          for (var k = 0; k < low.length; k++) { starts.push(i); ends.push(i + w); }
+          out += low;
+          i += w;
+        }
+        return { text: out, starts: starts, ends: ends };
+      }
+
+      // ------------------------------------------------------- writes, counted
+
+      function proposalCounts(extra) {
+        return function () {
+          var c = { would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, refused: 0 };
+          for (var k in extra) {
+            if (hasOwn(extra, k)) { c[k] = extra[k]; }
+          }
+          return c;
+        };
+      }
+
+      // propose files one statement through write(), and counts what the runtime made
+      // of it: a new proposal, an assertion (the runtime decides that, never this
+      // body), or evidence added to a statement that already existed.
+      function propose(st, L, args) {
+        var C = L.counts;
+        var w = write(st, "propose_statement", args);
+        if (w.dry) { C.would_propose++; return w; }
+        if (!w.ok) { C.refused++; return w; }
+        if (w.result.status === "asserted") { C.asserted++; } else { C.proposed++; }
+        if (w.result.created === false) { C.evidence_added++; }
+        return w;
+      }
+
+      // --------------------------------------------------------- L4 relate
+
+      // layerRelate is the relate pass: for each claim-bearing chunk, candidates from
+      // the corpus by meaning, one verdict call, a declared kind with two quotes that
+      // occur, or nothing. It never writes, whatever the run's write mode.
+      function layerRelate(st, doc) {
+        var vocab = loadVocabulary(st.opts);
+        st.l4 = newRelateState(st.opts, vocab);
+        var R = st.l4;
+        var chunks = listChunks(st, doc.id);
+        R.chunks_truncated = chunks.truncated;
+        R.counts.chunks_total = chunks.rows.length;
+        for (var i = 0; i < chunks.rows.length; i++) {
+          var c = chunks.rows[i];
+          // The budget is checked BEFORE a chunk is read, so a spent pass costs
+          // no further reads either.
+          if (R.counts.verdict_calls >= st.opts.max_verdict_calls) {
+            R.budget_stopped = true;
+            setStatus(st, "budget_stopped");
+            R.counts.chunks_unvisited = chunks.rows.length - i;
+            return;
+          }
+          R.counts.chunks_seen++;
+          if (c.id === doc.root) { skipChunk(R, "chunks_skipped_root"); continue; }
+          if (typeof c.type === "string" && R.excluded[c.type] === true) { skipChunk(R, "chunks_skipped_excluded_type"); continue; }
+          var b = readChunk(st, c.id);
+          if (!b.ok) { skipChunk(R, "chunks_skipped_unreadable"); continue; }
+          if (b.body.trim().length < st.opts.min_body_chars || b.body.trim() === "") {
+            skipChunk(R, "chunks_skipped_short");
+            continue;
+          }
+          var cands = findCandidates(st, doc.id, c.id);
+          if (cands.length === 0) { R.counts.chunks_without_candidates++; continue; }
+          judge(st, c.id, b.body, cands);
+        }
+      }
+
+      // loadVocabulary is the relate layer's vocabulary: the caller's list or the
+      // five built-in kinds.
       function loadVocabulary(opts) {
         if (opts.relations) { return { source: "input", relations: opts.relations }; }
         return { source: "default", relations: DEFAULT_RELATIONS };
       }
 
-      // ------------------------------------------------------------------ state
-
-      function newState(opts, vocab) {
+      function newRelateState(opts, vocab) {
         var kinds = {};
         var byKind = {};
         for (var i = 0; i < vocab.relations.length; i++) {
@@ -338,18 +1302,12 @@ agents:
         var excluded = {};
         for (var j = 0; j < opts.exclude_document_types.length; j++) { excluded[opts.exclude_document_types[j]] = true; }
         return {
-          opts: opts,
           vocab: vocab,
           isKind: byKind,
           excluded: excluded,
-          status: "complete",
-          failure: "",
-          document_id: "",
           chunks_truncated: false,
           budget_stopped: false,
           related_ok: false,
-          bodies: {},     // chunk id -> {ok, body, type, document_id}
-          docTypes: {},   // document id -> {ok, type}
           counts: {
             chunks_total: 0,
             chunks_seen: 0,
@@ -380,88 +1338,9 @@ agents:
         };
       }
 
-      // ------------------------------------------------------------------- pass
-
-      function relatePass(st) {
-        var doc = resolveDocument(st);
-        st.document_id = doc.id;
-        var chunks = listChunks(st, doc.id);
-        st.counts.chunks_total = chunks.length;
-        for (var i = 0; i < chunks.length; i++) {
-          var c = chunks[i];
-          // The budget is checked BEFORE a chunk is read, so a spent pass costs
-          // no further reads either.
-          if (st.counts.verdict_calls >= st.opts.max_verdict_calls) {
-            st.budget_stopped = true;
-            st.status = "budget_stopped";
-            st.counts.chunks_unvisited = chunks.length - i;
-            return;
-          }
-          st.counts.chunks_seen++;
-          if (c.id === doc.root) { skipChunk(st, "chunks_skipped_root"); continue; }
-          if (typeof c.type === "string" && st.excluded[c.type] === true) { skipChunk(st, "chunks_skipped_excluded_type"); continue; }
-          var b = readChunk(st, c.id);
-          if (!b.ok) { skipChunk(st, "chunks_skipped_unreadable"); continue; }
-          if (b.body.trim().length < st.opts.min_body_chars || b.body.trim() === "") {
-            skipChunk(st, "chunks_skipped_short");
-            continue;
-          }
-          var cands = findCandidates(st, doc.id, c.id);
-          if (cands.length === 0) { st.counts.chunks_without_candidates++; continue; }
-          judge(st, c.id, b.body, cands);
-        }
-      }
-
-      function skipChunk(st, why) {
-        st.counts.chunks_skipped++;
-        st.counts[why]++;
-      }
-
-      // resolveDocument names the document and its root. A document that cannot be
-      // read stops the pass: there is nothing to relate.
-      function resolveDocument(st) {
-        var args = { op: "get_document", scope: st.opts.scope };
-        if (st.opts.document_id) { args.id = st.opts.document_id; } else { args.path = st.opts.path; }
-        var d = parseJSON(Document(args));
-        if (!d || typeof d.document_id !== "string" || d.document_id === "") {
-          throw new Error("get_document answered without a document_id");
-        }
-        return { id: d.document_id, root: typeof d.root_chunk_id === "string" ? d.root_chunk_id : "" };
-      }
-
-      function listChunks(st, docID) {
-        var res = parseJSON(Document({ op: "query_chunks", scope: st.opts.scope, document_id: docID, limit: CONFIG.max_chunks }));
-        var rows = (res && isArray(res.chunks)) ? res.chunks : [];
-        if (rows.length >= CONFIG.max_chunks) { st.chunks_truncated = true; }
-        var out = [];
-        for (var i = 0; i < rows.length; i++) {
-          var r = rows[i];
-          if (!r || typeof r.id !== "string" || r.id === "") { continue; }
-          // Belt and braces: a row of another document is not this document's chunk.
-          if (typeof r.document_id === "string" && r.document_id !== docID) { continue; }
-          out.push({ id: r.id, type: r.type });
-        }
-        return out;
-      }
-
-      // readChunk fetches a chunk once per pass. The body stays in memory for the
-      // verdict prompt and the quote check; it never reaches the report unless the
-      // caller asked for quotes.
-      function readChunk(st, id) {
-        if (st.bodies[id]) { return st.bodies[id]; }
-        var out = { ok: false, body: "", type: "", document_id: "" };
-        try {
-          var c = parseJSON(Document({ op: "get_chunk", scope: st.opts.scope, id: id }));
-          if (c && typeof c.body === "string") {
-            out = { ok: true, body: c.body,
-                    type: typeof c.type === "string" ? c.type : "",
-                    document_id: typeof c.document_id === "string" ? c.document_id : "" };
-          }
-        } catch (e) {
-          out.ok = false;
-        }
-        st.bodies[id] = out;
-        return out;
+      function skipChunk(R, why) {
+        R.counts.chunks_skipped++;
+        R.counts[why]++;
       }
 
       // documentType is read only when the caller excluded types, and fails CLOSED:
@@ -470,20 +1349,21 @@ agents:
         if (st.docTypes[docID]) { return st.docTypes[docID]; }
         var out = { ok: false, type: "" };
         try {
-          var d = parseJSON(Document({ op: "get_document", scope: st.opts.scope, id: docID }));
+          var d = call(st, { op: "get_document", id: docID });
           if (d && typeof d.document_id === "string") {
             out = { ok: true, type: typeof d.type === "string" ? d.type : "" };
           }
         } catch (e) {
+          if (isStop(e)) { throw e; }
           out.ok = false;
         }
         st.docTypes[docID] = out;
         return out;
       }
 
-      function hasExclusions(st) {
-        for (var k in st.excluded) {
-          if (Object.prototype.hasOwnProperty.call(st.excluded, k)) { return true; }
+      function hasExclusions(R) {
+        for (var k in R.excluded) {
+          if (hasOwn(R.excluded, k)) { return true; }
         }
         return false;
       }
@@ -492,23 +1372,25 @@ agents:
       // then keeps only those the pass may judge. Similarity only nominates: a
       // candidate is a question for the verdict agent, never a relation.
       function findCandidates(st, docID, chunkID) {
+        var R = st.l4;
         var limit = Math.min(CONFIG.related_limit_max, st.opts.max_candidates_per_chunk * 2);
         var res;
         try {
-          res = parseJSON(Document({
-            op: "related", scope: st.opts.scope, id: chunkID, limit: limit,
+          res = call(st, {
+            op: "related", id: chunkID, limit: limit,
             under_paths: st.opts.corpus_paths, exclude_document_ids: [docID]
-          }));
+          });
         } catch (e) {
+          if (isStop(e)) { throw e; }
           // The FIRST related call failing is configuration (no embedder, no vector
           // tier, a scope the agent may not read), and it would fail for every
           // chunk: stop and say why instead of reporting a clean pass of errors.
           // After one success a failure is per-chunk, counted, and the pass goes on.
-          if (!st.related_ok) { throw new Error("related failed: " + clip(errText(e), 200)); }
-          st.counts.related_errors++;
+          if (!R.related_ok) { throw new Error("related failed: " + clip(errText(e), 200)); }
+          R.counts.related_errors++;
           return [];
         }
-        st.related_ok = true;
+        R.related_ok = true;
         // A server that does not know the corpus filters ignores them and answers
         // from the whole scope. Judging that would measure the wrong corpus, so the
         // pass stops instead of producing a plausible report about it.
@@ -517,55 +1399,54 @@ agents:
                           "this pass needs a runtime whose related takes under_paths and exclude_document_ids");
         }
         var hits = isArray(res.related) ? res.related : [];
-        st.counts.candidates_considered += hits.length;
+        R.counts.candidates_considered += hits.length;
         var kept = [];
-        var checkDocType = hasExclusions(st);
+        var checkDocType = hasExclusions(R);
         for (var i = 0; i < hits.length; i++) {
           var h = hits[i];
-          if (!h || typeof h.chunk_id !== "string" || h.chunk_id === "") { st.counts.candidates_unreadable++; continue; }
-          if (h.chunk_id === chunkID || h.document_id === docID) { st.counts.candidates_self++; continue; }
+          if (!h || typeof h.chunk_id !== "string" || h.chunk_id === "") { R.counts.candidates_unreadable++; continue; }
+          if (h.chunk_id === chunkID || h.document_id === docID) { R.counts.candidates_self++; continue; }
           if (typeof h.score !== "number" || !isFinite(h.score) || h.score < st.opts.candidate_floor) {
-            st.counts.candidates_below_floor++;
+            R.counts.candidates_below_floor++;
             continue;
           }
-          if (typeof h.type === "string" && st.excluded[h.type] === true) { st.counts.candidates_excluded_type++; continue; }
-          if (kept.length >= st.opts.max_candidates_per_chunk) { st.counts.candidates_over_cap++; continue; }
+          if (typeof h.type === "string" && R.excluded[h.type] === true) { R.counts.candidates_excluded_type++; continue; }
+          if (kept.length >= st.opts.max_candidates_per_chunk) { R.counts.candidates_over_cap++; continue; }
           // The chunk's own row is the authority on its document and type; the
           // related hit's copy only pre-filtered.
           var b = readChunk(st, h.chunk_id);
-          if (!b.ok || b.document_id === "" || b.body.trim() === "") { st.counts.candidates_unreadable++; continue; }
-          if (b.document_id === docID) { st.counts.candidates_self++; continue; }
-          if (st.excluded[b.type] === true) { st.counts.candidates_excluded_type++; continue; }
+          if (!b.ok || b.document_id === "" || b.body.trim() === "") { R.counts.candidates_unreadable++; continue; }
+          if (b.document_id === docID) { R.counts.candidates_self++; continue; }
+          if (R.excluded[b.type] === true) { R.counts.candidates_excluded_type++; continue; }
           if (checkDocType) {
             var dt = documentType(st, b.document_id);
-            if (!dt.ok) { st.counts.candidates_unreadable++; continue; }
-            if (st.excluded[dt.type] === true) { st.counts.candidates_excluded_type++; continue; }
+            if (!dt.ok) { R.counts.candidates_unreadable++; continue; }
+            if (R.excluded[dt.type] === true) { R.counts.candidates_excluded_type++; continue; }
           }
           kept.push({ id: h.chunk_id, document_id: b.document_id, body: b.body });
         }
         return kept;
       }
 
-      // ---------------------------------------------------------------- verdict
-
       // judge spends ONE verdict call on one chunk and its candidates. Every
       // candidate sent ends in exactly one bucket: a finding of some kind, none, or
       // a rejected quote — so the three always sum to candidates_sent.
       function judge(st, chunkID, body, cands) {
-        st.counts.verdict_calls++;
-        st.counts.candidates_sent += cands.length;
+        var R = st.l4;
+        R.counts.verdict_calls++;
+        R.counts.candidates_sent += cands.length;
         var out;
         try {
           out = Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, body, cands) });
         } catch (e) {
-          st.counts.verdict_failures++;
-          st.counts.verdicts_none += cands.length;
+          R.counts.verdict_failures++;
+          R.counts.verdicts_none += cands.length;
           return;
         }
         var arr = coerceArray(out);
         if (arr === null) {
-          st.counts.parse_errors++;
-          st.counts.verdicts_none += cands.length;
+          R.counts.parse_errors++;
+          R.counts.verdicts_none += cands.length;
           return;
         }
         var answered = {};
@@ -573,7 +1454,7 @@ agents:
           var e = arr[i];
           var idx = (e && typeof e === "object") ? Math.floor(Number(e.candidate)) : NaN;
           if (!(idx >= 1 && idx <= cands.length) || answered[idx] === true) {
-            st.counts.parse_errors++;
+            R.counts.parse_errors++;
             continue;
           }
           answered[idx] = true;
@@ -581,29 +1462,30 @@ agents:
         }
         // A candidate the reply left out is an abstention.
         for (var n = 1; n <= cands.length; n++) {
-          if (answered[n] !== true) { st.counts.verdicts_none++; }
+          if (answered[n] !== true) { R.counts.verdicts_none++; }
         }
       }
 
       function applyVerdict(st, chunkID, body, cand, e) {
+        var R = st.l4;
         var kind = (typeof e.kind === "string") ? e.kind.toLowerCase().trim() : "";
-        if (kind === "" || kind === "none" || kind === "unclear") { st.counts.verdicts_none++; return; }
-        if (!Object.prototype.hasOwnProperty.call(st.isKind, kind)) {
-          st.counts.verdicts_out_of_vocabulary++;
-          st.counts.verdicts_none++;
+        if (kind === "" || kind === "none" || kind === "unclear") { R.counts.verdicts_none++; return; }
+        if (!hasOwn(R.isKind, kind)) {
+          R.counts.verdicts_out_of_vocabulary++;
+          R.counts.verdicts_none++;
           return;
         }
         var conf = e.confidence;
         if (typeof e.direction !== "string" || DIRECTIONS[e.direction] !== true ||
             typeof conf !== "number" || !isFinite(conf) || conf < 0 || conf > 1) {
-          st.counts.parse_errors++;
-          st.counts.verdicts_none++;
+          R.counts.parse_errors++;
+          R.counts.verdicts_none++;
           return;
         }
         var from = quoteSpan(body, e.quote_from);
         var to = quoteSpan(cand.body, e.quote_to);
-        if (from === null || to === null) { st.counts.quotes_rejected++; return; }
-        st.counts.verdicts_kind[kind]++;
+        if (from === null || to === null) { R.counts.quotes_rejected++; return; }
+        R.counts.verdicts_kind[kind]++;
         var f = {
           from_chunk_id: chunkID,
           to_chunk_id: cand.id,
@@ -618,7 +1500,7 @@ agents:
           f.quote_from = e.quote_from;
           f.quote_to = e.quote_to;
         }
-        st.findings.push(f);
+        R.findings.push(f);
       }
 
       // quoteSpan is the quote check: the quote must occur VERBATIM in the full text
@@ -638,7 +1520,7 @@ agents:
       // quotes that occur.
       function verdictPrompt(st, body, cands) {
         var kinds = [];
-        var rels = st.vocab.relations;
+        var rels = st.l4.vocab.relations;
         for (var i = 0; i < rels.length; i++) {
           var r = rels[i];
           var line = "- " + r.name + ": " + r.meaning;
@@ -675,37 +1557,630 @@ agents:
         return t.replace(/---\s*(BEGIN|END)/g, "- - - $1");
       }
 
+      // ------------------------------------------------------------ L6 maintain
+
+      // layerMaintain re-checks every live statement with an end in the document or
+      // evidence citing it. Per statement the first failing check decides:
+      //   1 endpoints  — an end chunk that no longer exists: expire.
+      //   2 kind       — a renamed kind is re-proposed under its new name and the old
+      //                  statement expired; a kind no longer declared is demoted.
+      //   3 validity   — an end superseded by a newer edition: expire, and re-propose
+      //                  on the successor when every quote is still there.
+      //   4 evidence   — a quote no longer in its chunk is re-pointed to the moved
+      //                  part (same stable id) or marked stale; all stale demotes.
+      //   5 redundancy — duplicates a removed discriminator left are merged into the
+      //                  oldest.
+      //   then verify.
+      // A person's statement is only verified or flagged; a runtime-written one is
+      // not touched; nothing is deleted.
+      function layerMaintain(st, doc) {
+        var L = layerRec(st, "L6", proposalCounts({
+          statements: 0, statements_over_cap: 0, unreadable: 0, unchecked: 0,
+          skipped_runtime: 0, skipped_reserved_kind: 0, auto_rule_a_candidates: 0,
+          endpoints_cross_scope_unchecked: 0, kind_unchecked: 0, domain_range_unchecked: 0,
+          successor_missing: 0, successor_quotes_gone: 0, rename_refused: 0, all_stale_already_proposed: 0,
+          checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, passed: 0 },
+          actions: {}
+        }));
+        L.ran++;
+        var C = L.counts;
+        var rows = selectTouched(st, L, doc.id);
+        var todo = [], autos = [];
+        for (var i = 0; i < rows.length; i++) {
+          var row = rows[i];
+          C.statements++;
+          if (RUNTIME_METHODS[row.method] === true) { C.skipped_runtime++; continue; }
+          var k = st.onto && hasOwn(st.onto.kinds, row.kind) ? st.onto.kinds[row.kind] : null;
+          if (k !== null && k.source === "reserved") { C.skipped_reserved_kind++; continue; }
+          var s = edgeOf(st, row.id);
+          if (s === null) { C.unreadable++; continue; }
+          if (s.auto === true) { autos.push(s); } else { todo.push(s); }
+        }
+        loadMeta(st, statementChunkIDs(todo.concat(autos)));
+        for (var a = 0; a < autos.length; a++) { countRuleA(st, C, autos[a]); }
+        var passed = [];
+        for (var j = 0; j < todo.length; j++) {
+          if (checkStatement(st, L, todo[j]) === "pass") { passed.push(todo[j]); }
+        }
+        var survivors = redundancy(st, L, passed);
+        for (var n = 0; n < survivors.length; n++) {
+          C.checks.passed++;
+          act(st, L, survivors[n], "verify", {});
+        }
+      }
+
+      // selectTouched is the live statements with an end in the document, then those
+      // whose evidence cites it, each status listed separately, paged, de-duplicated.
+      function selectTouched(st, L, docID) {
+        var seen = {}, out = [];
+        var filters = [{ document_id: docID }, { evidence_document_id: docID }];
+        var statuses = ["asserted", "proposed"];
+        var pages = Math.ceil(st.opts.max_statements / CONFIG.statements_page) + 2;
+        for (var f = 0; f < filters.length; f++) {
+          for (var s = 0; s < statuses.length; s++) {
+            var after = "";
+            for (var p = 0; p < pages; p++) {
+              var args = { op: "list_statements", status: statuses[s], limit: CONFIG.statements_page };
+              for (var key in filters[f]) {
+                if (hasOwn(filters[f], key)) { args[key] = filters[f][key]; }
+              }
+              if (after !== "") { args.after = after; }
+              var r = call(st, args);
+              var list = (r && isArray(r.statements)) ? r.statements : [];
+              for (var i = 0; i < list.length; i++) {
+                var row = list[i];
+                if (!isPlainObject(row) || !isID(row.id) || seen[row.id] === true) { continue; }
+                if (row.expired_at !== undefined && row.expired_at !== null) { continue; }
+                seen[row.id] = true;
+                if (out.length >= st.opts.max_statements) { L.counts.statements_over_cap++; continue; }
+                out.push(row);
+              }
+              var next = r ? r.next_cursor : "";
+              if (list.length === 0 || typeof next !== "string" || next === "" || next === after) { break; }
+              after = next;
+            }
+          }
+        }
+        return out;
+      }
+
+      // edgeOf reads one statement with ALL of its evidence; a listing previews three.
+      function edgeOf(st, id) {
+        var r;
+        try {
+          r = call(st, { op: "get_edge", id: id });
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          return null;
+        }
+        var s = (r && isPlainObject(r.statement)) ? r.statement : null;
+        if (s === null || s.id !== id || typeof s.from_id !== "string" || typeof s.to_id !== "string" ||
+            typeof s.kind !== "string") {
+          return null;
+        }
+        if (!isArray(s.evidence)) { s.evidence = []; }
+        if (typeof s.method !== "string") { s.method = ""; }
+        return s;
+      }
+
+      function statementChunkIDs(list) {
+        var ids = [];
+        for (var i = 0; i < list.length; i++) {
+          ids.push(list[i].from_id, list[i].to_id);
+          var ev = list[i].evidence;
+          for (var j = 0; j < ev.length; j++) {
+            if (isPlainObject(ev[j]) && isID(ev[j].chunk_id)) { ids.push(ev[j].chunk_id); }
+          }
+        }
+        return ids;
+      }
+
+      // loadMeta reads each chunk's document, anchor, stable id and supersession, in
+      // batches. A chunk the answer leaves out does not exist — unless the answer was
+      // cut by the row cap, when it stays unknown and no check acts on it.
+      function loadMeta(st, ids) {
+        var want = [], seen = {};
+        for (var i = 0; i < ids.length; i++) {
+          var id = ids[i];
+          if (isID(id) && seen[id] !== true && st.meta[id] === undefined) { seen[id] = true; want.push(id); }
+        }
+        for (var b = 0; b < want.length; b += CONFIG.sql_batch) {
+          var batch = want.slice(b, b + CONFIG.sql_batch);
+          var res = call(st, { op: "query_chunks", sql: sqlChunkMeta(batch) });
+          var rows = sqlRows(res);
+          var got = {};
+          for (var r = 0; r < rows.length; r++) {
+            var row = rows[r];
+            if (!isArray(row) || !isID(row[0])) { continue; }
+            got[row[0]] = true;
+            st.meta[row[0]] = {
+              document_id: typeof row[1] === "string" ? row[1] : "",
+              anchor: typeof row[2] === "string" ? row[2] : "",
+              stable_id: typeof row[3] === "string" ? row[3] : "",
+              invalid_at: (typeof row[4] === "number" && row[4] > 0) ? row[4] : 0
+            };
+          }
+          if (res && res.truncated === true) { continue; }
+          for (var k = 0; k < batch.length; k++) {
+            if (got[batch[k]] !== true) { st.meta[batch[k]] = null; }
+          }
+        }
+      }
+
+      function isMachineMethod(method) { return /^(rule|extractor):/.test(method); }
+
+      function checkStatement(st, L, s) {
+        var C = L.counts;
+        var person = !isMachineMethod(s.method);
+        var ev = s.evidence;
+        for (var i = 0; i < ev.length; i++) {
+          if (isPlainObject(ev[i]) && !ev[i].chunk_id && ev[i].natural_key) { C.endpoints_cross_scope_unchecked++; break; }
+        }
+        // 1 endpoints
+        var mf = st.meta[s.from_id], mt = st.meta[s.to_id];
+        if (mf === undefined || mt === undefined) { C.unchecked++; return "unchecked"; }
+        if (mf === null || mt === null) {
+          C.checks.endpoints++;
+          settle(st, L, s, person, "expire", "endpoint no longer exists");
+          return "acted";
+        }
+        // 2 kind
+        if (st.onto && st.onto.check_kind) {
+          if (!hasOwn(st.onto.kinds, s.kind)) {
+            C.checks.kind++;
+            var renamed = hasOwn(st.onto.renamed_to, s.kind) ? st.onto.renamed_to[s.kind] : "";
+            if (renamed !== "") {
+              renameKind(st, L, s, person, renamed);
+            } else if (person || s.status !== "asserted") {
+              act(st, L, s, "flag", { reason: "kind no longer declared" });
+            } else {
+              act(st, L, s, "demote", { reason: "kind no longer declared" });
+            }
+            return "acted";
+          }
+          // Domain and range need each end's class, which this version does not read.
+          C.domain_range_unchecked++;
+        } else {
+          C.kind_unchecked++;
+        }
+        // 3 validity
+        var sup = [];
+        if (mf.invalid_at > 0) { sup.push(s.from_id); }
+        if (mt.invalid_at > 0 && s.to_id !== s.from_id) { sup.push(s.to_id); }
+        if (sup.length > 0) {
+          C.checks.validity++;
+          supersededEnd(st, L, s, person, sup);
+          return "acted";
+        }
+        // 4 evidence
+        var chk = checkEvidence(st, s);
+        if (chk.unchecked) { C.unchecked++; return "unchecked"; }
+        if (!chk.ok) {
+          C.checks.evidence++;
+          applyEvidence(st, L, s, person, chk);
+          return "acted";
+        }
+        return "pass";
+      }
+
+      // settle applies a machine outcome, or flags a person's statement instead.
+      function settle(st, L, s, person, action, reason) {
+        act(st, L, s, person ? "flag" : action, { reason: reason });
+      }
+
+      // act is the one path to maintain_statement. The guard below holds the
+      // person-authored rule even if a check above forgets it.
+      function act(st, L, s, action, extra) {
+        if (!isMachineMethod(s.method) && action !== "verify" && action !== "flag") {
+          throw new Error("refusing " + action + " on a statement a person wrote");
+        }
+        var args = { op: "maintain_statement", id: s.id, action: action, method: METHOD.maintain };
+        for (var k in extra) {
+          if (hasOwn(extra, k)) { args[k] = extra[k]; }
+        }
+        var w = write(st, "maintain_statement", args);
+        if (w.ok) { bump(L.counts.actions, action); }
+        return w;
+      }
+
+      // renameKind files the statement again under the kind's new name, with the same
+      // ends and evidence, and expires the old one only once the new one is filed.
+      function renameKind(st, L, s, person, to) {
+        if (person) {
+          act(st, L, s, "flag", { reason: "kind renamed to " + to });
+          return;
+        }
+        var w = propose(st, L, { op: "propose_statement", from_id: s.from_id, to_id: s.to_id, kind: to,
+                                 evidence: storedEvidence(s), method: METHOD.maintain });
+        if (!w.ok) { L.counts.rename_refused++; return; }
+        act(st, L, s, "expire", { reason: "renamed to " + to });
+      }
+
+      // supersededEnd closes a statement whose end a newer edition replaced, after
+      // proposing it again on the successor when every quote survived there. The
+      // proposal comes first, so a pass that stops between the two never leaves the
+      // relation only closed.
+      function supersededEnd(st, L, s, person, sup) {
+        if (person) {
+          act(st, L, s, "flag", { reason: "endpoint superseded" });
+          return;
+        }
+        var map = {};
+        for (var i = 0; i < sup.length; i++) {
+          var nx = successorOf(st, sup[i]);
+          if (nx === "") { map = null; break; }
+          map[sup[i]] = nx;
+        }
+        if (map === null) {
+          L.counts.successor_missing++;
+        } else {
+          var p = successorProposal(st, s, map);
+          if (p === null) { L.counts.successor_quotes_gone++; } else { propose(st, L, p); }
+        }
+        act(st, L, s, "expire", { reason: "endpoint superseded" });
+      }
+
+      // successorOf follows the supersedes edges (new → old) from a superseded part
+      // to the version in force, else takes the live part with the same anchor in
+      // the same document. "" when there is no single successor.
+      function successorOf(st, id) {
+        var cur = id, seen = {};
+        seen[id] = true;
+        for (var hop = 0; hop < CONFIG.max_successor_hops; hop++) {
+          var rows = sqlRows(call(st, { op: "query_chunks", sql: sqlSupersededBy(cur) }));
+          if (rows.length !== 1 || !isArray(rows[0]) || !isID(rows[0][0])) { break; }
+          var next = rows[0][0];
+          if (seen[next] === true) { return ""; }
+          seen[next] = true;
+          loadMeta(st, [next]);
+          var m = st.meta[next];
+          if (!m) { return ""; }
+          if (m.invalid_at === 0) { return next; }
+          cur = next;
+        }
+        var m0 = st.meta[id];
+        if (m0 && m0.document_id !== "" && m0.anchor !== "" && safeLiteral(m0.anchor)) {
+          var same = sqlRows(call(st, { op: "query_chunks", sql: sqlSameKey(m0.document_id, "anchor", m0.anchor, id) }));
+          if (same.length === 1 && isArray(same[0]) && isID(same[0][0])) { return same[0][0]; }
+        }
+        return "";
+      }
+
+      // successorProposal is the statement moved onto the successors, with each quote
+      // on a superseded part found again in its successor; null when any is gone.
+      function successorProposal(st, s, map) {
+        var from = hasOwn(map, s.from_id) ? map[s.from_id] : s.from_id;
+        var to = hasOwn(map, s.to_id) ? map[s.to_id] : s.to_id;
+        if (from === to) { return null; }
+        var ev = [];
+        for (var i = 0; i < s.evidence.length; i++) {
+          var row = s.evidence[i];
+          if (!isPlainObject(row) || !isID(row.chunk_id) || typeof row.quote !== "string") { continue; }
+          if (!hasOwn(map, row.chunk_id)) { ev.push(evidenceCopy(row)); continue; }
+          if (row.quote === "") { return null; }
+          var b = readChunk(st, map[row.chunk_id]);
+          if (!b.ok) { return null; }
+          var at = b.body.indexOf(row.quote);
+          if (at < 0) { return null; }
+          var span = runeSpan(b.body, at, at + row.quote.length);
+          ev.push({ chunk_id: map[row.chunk_id], quote: row.quote, char_start: span[0], char_end: span[1] });
+        }
+        return { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: ev,
+                 attributes: { revision_of: s.id }, method: METHOD.maintain };
+      }
+
+      function storedEvidence(s) {
+        var ev = [];
+        for (var i = 0; i < s.evidence.length; i++) {
+          var row = s.evidence[i];
+          if (isPlainObject(row) && isID(row.chunk_id) && typeof row.quote === "string" && row.quote !== "") {
+            ev.push(evidenceCopy(row));
+          }
+        }
+        return ev;
+      }
+
+      function evidenceCopy(row) {
+        var e = { chunk_id: row.chunk_id, quote: row.quote };
+        if (isSpan(row.char_start, row.char_end)) { e.char_start = row.char_start; e.char_end = row.char_end; }
+        return e;
+      }
+
+      // checkEvidence reads every chunk-quoting evidence row. A quote no longer in its
+      // chunk is looked for in the live part of the same document with the same
+      // stable id (the part moved), and is stale otherwise. Any row it cannot read
+      // makes the whole statement unchecked: no action on a half-read statement.
+      function checkEvidence(st, s) {
+        var out = { ok: true, unchecked: false, actions: [], all_stale: false };
+        var rows = [];
+        for (var i = 0; i < s.evidence.length; i++) {
+          if (isPlainObject(s.evidence[i]) && isID(s.evidence[i].chunk_id)) { rows.push(s.evidence[i]); }
+        }
+        if (rows.length === 0) { return out; }
+        var stale = 0;
+        for (var j = 0; j < rows.length; j++) {
+          var r = rows[j];
+          var m = st.meta[r.chunk_id];
+          if (m === undefined || !isID(r.id) || typeof r.quote !== "string" || r.quote === "") { out.unchecked = true; return out; }
+          if (m !== null) {
+            var b = readChunk(st, r.chunk_id);
+            if (!b.ok) { out.unchecked = true; return out; }
+            if (b.body.indexOf(r.quote) >= 0) { continue; }
+          }
+          var moved = m !== null ? movedPart(st, m, r.chunk_id, r.quote) : "";
+          if (moved !== "") {
+            out.actions.push({ action: "relocate_evidence", evidence_id: r.id, chunk_id: moved });
+            continue;
+          }
+          stale++;
+          if (r.stale !== true) { out.actions.push({ action: "stale_evidence", evidence_id: r.id }); }
+        }
+        out.all_stale = stale === rows.length;
+        out.ok = stale === 0 && out.actions.length === 0;
+        return out;
+      }
+
+      function movedPart(st, m, chunkID, quote) {
+        if (m.document_id === "" || m.stable_id === "" || !safeLiteral(m.stable_id)) { return ""; }
+        var rows = sqlRows(call(st, { op: "query_chunks", sql: sqlSameKey(m.document_id, "stable_id", m.stable_id, chunkID) }));
+        for (var i = 0; i < rows.length; i++) {
+          if (!isArray(rows[i]) || !isID(rows[i][0])) { continue; }
+          var b = readChunk(st, rows[i][0]);
+          if (b.ok && b.body.indexOf(quote) >= 0) { return rows[i][0]; }
+        }
+        return "";
+      }
+
+      function applyEvidence(st, L, s, person, chk) {
+        if (person) {
+          act(st, L, s, "flag", { reason: "evidence no longer found in its source" });
+          return;
+        }
+        for (var i = 0; i < chk.actions.length; i++) {
+          var a = chk.actions[i];
+          var extra = { evidence_id: a.evidence_id };
+          if (a.chunk_id) { extra.chunk_id = a.chunk_id; }
+          act(st, L, s, a.action, extra);
+        }
+        if (chk.all_stale) {
+          if (s.status === "asserted") {
+            act(st, L, s, "demote", { reason: "all evidence stale" });
+          } else {
+            L.counts.all_stale_already_proposed++;
+          }
+        }
+      }
+
+      // redundancy merges statements that collapse under the current discriminator
+      // rule — same ends, kind and validity, a kind that no longer declares a
+      // discriminator — into the oldest, and returns the statements left to verify.
+      function redundancy(st, L, list) {
+        if (!st.onto || !st.onto.check_kind) { return list; }
+        var out = [], groups = {}, order = [];
+        for (var i = 0; i < list.length; i++) {
+          var s = list[i];
+          var k = st.onto.kinds[s.kind];
+          if (!k || k.discriminator !== "") { out.push(s); continue; }
+          var key = s.from_id + "|" + s.to_id + "|" + s.kind + "|" + (typeof s.valid_at === "number" ? s.valid_at : 0);
+          if (!groups[key]) { groups[key] = []; order.push(key); }
+          groups[key].push(s);
+        }
+        for (var g = 0; g < order.length; g++) {
+          var grp = groups[order[g]];
+          grp.sort(function (a, b) {
+            var ca = typeof a.created_at === "number" ? a.created_at : 0;
+            var cb = typeof b.created_at === "number" ? b.created_at : 0;
+            if (ca !== cb) { return ca - cb; }
+            return a.id < b.id ? -1 : (a.id > b.id ? 1 : 0);
+          });
+          out.push(grp[0]);
+          for (var x = 1; x < grp.length; x++) {
+            L.counts.checks.redundancy++;
+            if (isMachineMethod(grp[x].method)) {
+              act(st, L, grp[x], "merge", { survivor_id: grp[0].id });
+            } else {
+              act(st, L, grp[x], "flag", { reason: "duplicate of an older live statement" });
+            }
+          }
+        }
+        return out;
+      }
+
+      // countRuleA counts the auto statements whose source no longer contains their
+      // text — the one kind of statement a later version may delete by rule. This
+      // version deletes nothing and does not touch them.
+      function countRuleA(st, C, s) {
+        var rows = [];
+        for (var i = 0; i < s.evidence.length; i++) {
+          if (isPlainObject(s.evidence[i]) && isID(s.evidence[i].chunk_id)) { rows.push(s.evidence[i]); }
+        }
+        if (rows.length === 0) { return; }
+        for (var j = 0; j < rows.length; j++) {
+          var m = st.meta[rows[j].chunk_id];
+          if (m === undefined || typeof rows[j].quote !== "string" || rows[j].quote === "") { return; }
+          if (m !== null) {
+            var b = readChunk(st, rows[j].chunk_id);
+            if (!b.ok || b.body.indexOf(rows[j].quote) >= 0) { return; }
+          }
+        }
+        C.auto_rule_a_candidates++;
+      }
+
+      // ------------------------------------------------------------------- sql
+
+      // The four read-only SELECTs this body sends through query_chunks. Ids are
+      // checked to be id-shaped before they get here; every other literal goes
+      // through sqlStr.
+      function sqlLiveParts(docID, rootID) {
+        return "SELECT id, COALESCE(anchor, ''), COALESCE(stable_id, '') FROM chunks WHERE document_id = " +
+               sqlStr(docID) + " AND id <> " + sqlStr(rootID) + " AND invalid_at IS NULL ORDER BY id";
+      }
+
+      function sqlChunkMeta(ids) {
+        var lits = [];
+        for (var i = 0; i < ids.length; i++) { lits.push(sqlStr(ids[i])); }
+        return "SELECT id, document_id, COALESCE(anchor, ''), COALESCE(stable_id, ''), COALESCE(invalid_at, 0) " +
+               "FROM chunks WHERE id IN (" + lits.join(", ") + ")";
+      }
+
+      function sqlSupersededBy(id) {
+        return "SELECT from_id FROM chunk_edges WHERE kind = 'supersedes' AND to_id = " + sqlStr(id) + " ORDER BY from_id";
+      }
+
+      function sqlSameKey(docID, column, value, exceptID) {
+        if (column !== "anchor" && column !== "stable_id") { throw new Error("internal: unknown key column"); }
+        return "SELECT id FROM chunks WHERE document_id = " + sqlStr(docID) + " AND " + column + " = " +
+               sqlStr(value) + " AND id <> " + sqlStr(exceptID) + " AND invalid_at IS NULL ORDER BY id";
+      }
+
+      function safeLiteral(s) { return typeof s === "string" && s.length <= 512 && !/[\u0000-\u001f]/.test(s); }
+
+      function sqlStr(s) {
+        if (!safeLiteral(s)) { throw new Error("internal: refusing an unsafe SQL literal"); }
+        return "'" + s.replace(/'/g, "''") + "'";
+      }
+
+      function sqlRows(res) { return (res && isArray(res.rows)) ? res.rows : []; }
+
       // ----------------------------------------------------------------- report
 
-      // report carries ids, kinds, spans and counts. It never carries a title, a
-      // body or a path read from the store; quote text only on request.
+      // report carries ids, counts and fixed reason strings. It never carries a
+      // title, a body or a path read from the store; L4 quote text only on request.
       function report(st) {
-        return {
+        var out = {
           status: st.status,
-          mode: "report",
-          layer: "relate",
-          writes: 0,
-          document_id: st.document_id,
+          mode: st.opts.mode,
+          write: st.opts.write,
           scope: st.opts.scope,
-          vocabulary_source: st.vocab.source,
-          vocabulary: kindNames(st),
-          counts: st.counts,
+          ontology_version: st.onto ? st.onto.version : null,
+          ontology: st.onto ? { read: st.onto.read, exists: st.onto.exists, confirmed: st.onto.confirmed,
+                                partial: st.onto.partial, usable: st.onto.usable, kind_check: st.onto.check_kind,
+                                reason: st.onto.reason } : null,
+          lease: leaseReport(st),
+          documents: st.documents,
+          layers: layersReport(st),
+          writes: st.writes,
+          would_write: st.would_write,
+          refusals: st.refusals,
           budget: {
+            max_writes: st.opts.max_writes,
+            planned_writes: st.planned_writes,
+            max_statements: st.opts.max_statements,
             max_verdict_calls: st.opts.max_verdict_calls,
-            verdict_calls: st.counts.verdict_calls,
-            stopped: st.budget_stopped
+            verdict_calls: st.l4 ? st.l4.counts.verdict_calls : 0,
+            stopped: st.status === "budget_stopped"
           },
-          chunks_truncated: st.chunks_truncated,
           failure: st.failure,
+          evidence_span_unit: "rune"
+        };
+        if (st.opts.mode !== "drain") { out.document_id = st.documents.length > 0 ? st.documents[0] : ""; }
+        if (st.queue) {
+          out.queue = st.queue;
+          out.messages = st.messages;
+        }
+        return out;
+      }
+
+      function leaseReport(st) {
+        if (!st.lease.taken) { return { name: CONFIG.lease_name, taken: false }; }
+        return { name: CONFIG.lease_name, taken: true, acquired: st.lease.acquired, held_by: st.lease.held_by,
+                 renewals: st.lease.renewals, lost: st.lease.lost, released: st.lease.released };
+      }
+
+      function layersReport(st) {
+        var out = {};
+        for (var i = 0; i < LAYER_ORDER.length; i++) {
+          var name = LAYER_ORDER[i];
+          if (st.opts.layers[name] !== true) { continue; }
+          if (name === "L4") { out.L4 = relateReport(st); continue; }
+          var L = st.layers[name];
+          if (!L) { out[name] = { status: "not_reached" }; continue; }
+          var r = { status: L.ran > 0 ? "run" : "skipped", counts: L.counts };
+          if (L.reason !== "") { r.reason = L.reason; }
+          if (name === "L1") { r.collisions = L.collisions; r.collisions_truncated = L.collisions_truncated; r.truncated = L.truncated; }
+          if (name === "L3") { r.defines = L.defines; }
+          out[name] = r;
+        }
+        return out;
+      }
+
+      function relateReport(st) {
+        var R = st.l4;
+        if (!R) { return { status: "not_reached" }; }
+        return {
+          status: "run",
+          // The relate layer is measured before it may write anything.
+          write: "report",
+          vocabulary_source: R.vocab.source,
+          vocabulary: kindNames(R),
+          counts: R.counts,
+          budget_stopped: R.budget_stopped,
+          chunks_truncated: R.chunks_truncated,
           span_unit: "utf16",
-          findings: st.findings
+          findings: R.findings
         };
       }
 
-      function kindNames(st) {
+      function kindNames(R) {
         var out = [];
-        for (var i = 0; i < st.vocab.relations.length; i++) { out.push(st.vocab.relations[i].name); }
+        for (var i = 0; i < R.vocab.relations.length; i++) { out.push(R.vocab.relations[i].name); }
         return out;
+      }
+
+      // ---------------------------------------------------------------- text
+
+      // runeSpan converts a [start, end) range of UTF-16 code units — the unit JS
+      // strings index in — to code points, the unit evidence spans are stored in.
+      // Every span this body sends is converted here and nowhere else.
+      function runeSpan(s, start, end) { return [runeIndex(s, start), runeIndex(s, end)]; }
+
+      function runeIndex(s, i) {
+        var n = 0;
+        for (var k = 0; k < i; k++) {
+          var c = s.charCodeAt(k);
+          if (c >= 0xD800 && c <= 0xDBFF && k + 1 < i) {
+            var d = s.charCodeAt(k + 1);
+            if (d >= 0xDC00 && d <= 0xDFFF) { k++; }
+          }
+          n++;
+        }
+        return n;
+      }
+
+      function runeCount(s) { return runeIndex(s, s.length); }
+
+      // charAt is the whole character at UTF-16 index i (two units for a surrogate pair).
+      function charAt(s, i) {
+        if (i >= s.length) { return ""; }
+        return String.fromCodePoint(s.codePointAt(i));
+      }
+
+      function charBefore(s, i) {
+        if (i <= 0) { return ""; }
+        var c = s.charCodeAt(i - 1);
+        if (c >= 0xDC00 && c <= 0xDFFF && i >= 2) {
+          var h = s.charCodeAt(i - 2);
+          if (h >= 0xD800 && h <= 0xDBFF) { return s.slice(i - 2, i); }
+        }
+        return s.charAt(i - 1);
+      }
+
+      // isWordChar decides a word boundary. The engine's regexes do not know Unicode
+      // letter classes, so a letter is a character with case, or one of the common
+      // scripts without case.
+      function isWordChar(ch) {
+        if (ch === "") { return false; }
+        if (/^[0-9A-Za-z_]$/.test(ch)) { return true; }
+        if (ch.toLowerCase() !== ch.toUpperCase()) { return true; }
+        var cp = ch.codePointAt(0);
+        return (cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x0590 && cp <= 0x08FF) ||
+               (cp >= 0x0900 && cp <= 0x0DFF) || (cp >= 0x0E00 && cp <= 0x0EFF) ||
+               (cp >= 0x3040 && cp <= 0x30FF) || (cp >= 0x3400 && cp <= 0x9FFF) ||
+               (cp >= 0xAC00 && cp <= 0xD7AF);
+      }
+
+      function isSpace(ch) {
+        return /^[ \t\n\r\f\v\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]$/.test(ch);
       }
 
       // ---------------------------------------------------------------- helpers
@@ -759,11 +2234,20 @@ agents:
         try { return JSON.parse(String(raw)); } catch (e) { return null; }
       }
 
+      function hasOwn(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+
       function isArray(v) { return Object.prototype.toString.call(v) === "[object Array]"; }
 
       function isPlainObject(v) { return Object.prototype.toString.call(v) === "[object Object]"; }
 
       function isID(v) { return typeof v === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(v); }
+
+      function isKindName(v) { return typeof v === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(v); }
+
+      function isSpan(a, b) {
+        return typeof a === "number" && typeof b === "number" && Math.floor(a) === a && Math.floor(b) === b &&
+               a >= 0 && b > a;
+      }
 
       function isPath(v) { return typeof v === "string" && v.length <= 1024 && v.charAt(0) === "/" && !/[\u0000-\u001f]/.test(v); }
 
@@ -777,6 +2261,7 @@ agents:
       }
 
       function errText(e) {
+        if (e && e.missing === true) { return "no such document in this scope"; }
         return (e && e.message) ? String(e.message) : String(e);
       }
 
