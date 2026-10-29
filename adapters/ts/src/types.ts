@@ -3993,6 +3993,16 @@ export type DocumentToolInput = {
   include_proposed?: boolean;
   /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
   after?: string;
+  /** graph_recall: declared (the tenant's walk kinds) or all relations. */
+  walk?: "declared" | "all";
+  /** graph_recall with budget_chars: each hop spends at most decay^hop of it. */
+  decay?: number;
+  /** graph_recall: also step to the parent (up) / children (down). */
+  include_hierarchy?: "up" | "down" | "both" | "none";
+  /** search: after ranking, add what the top hits are related to (one hop). */
+  expand?: { kinds?: string[]; hops?: 1; budget_chars?: number };
+  /** related: a chunk whose neighbours BY RELATION to return as `linked`. */
+  related_to?: string;
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before

@@ -35,6 +35,21 @@ hops: a two-step question needs `hops: 2`, a three-step one `hops: 4`.**
   after it, so facts corrected since then come back. A chunk with its own
   `valid_at`/`invalid_at` (an edition, a clause in force for a period) must
   contain the moment too; a fact with both kinds of dates needs both to.
+- `kind` / `kinds` — follow only these relation kinds, e.g.
+  `["cites", "defines", "implements"]`. The best way to keep a walk on topic.
+- `walk` — `declared` follows the relation kinds the tenant declared for
+  walking (the default where any are declared), `all` follows every relation
+  (the default otherwise). `kinds` overrides it.
+- `direction` — `out` (relations leaving a chunk), `in` (arriving) or `both`
+  (default).
+- `include_hierarchy` — also step along the document tree: `up` to a chunk's
+  parent (reported as `part_of`), `down` to its children (`has_part`), or
+  `both`. Default `none`.
+- `include_proposed` — also follow relations proposed for review and not yet
+  accepted (default false).
+- `decay` — with `budget_chars`, each hop may spend at most `decay`^hop of the
+  budget, so far hops cannot crowd out near ones. 0 < decay ≤ 1; default 0.7 for
+  a `declared` walk, else 1.
 - `include_retired` — `true` turns the time filter off entirely.
 - `include_refuted` — `true` also returns facts a judge marked `unsupported`.
 - `document_id` — only start from chunks in this document (the walk may still
@@ -56,15 +71,21 @@ For a cheap structural walk — which chunks are connected, and how — pass
 `{chunks: [...], seeds, hops, truncated, seeded_by}`. Each chunk is `{id,
 title, type?, status?, hop, via_kind?, via_id?, valid_at?, invalid_at?,
 chunk_valid_at?, chunk_invalid_at?, retired, body?, body_truncated?}`: `hop` 0
-is a starting chunk, `hop` N was reached over the edge `via_kind` from `via_id`,
-and `hop: -1` is a budget backfill reached by rank, not by an edge.
+is a starting chunk, `hop` N was reached over the relation `via_kind` from
+`via_id`, and `hop: -1` is a budget backfill reached by rank, not by an edge.
+`via_quote` is the first evidence quote of that relation when it has one — cite
+it when you use the hop — and `via_status` is `proposed` on a row reached over a
+proposal (only with `include_proposed`). A relation is followed only while its
+own dates contain the moment asked about (now, or `as_of`).
 
 `valid_at`/`invalid_at` are a fact's dates, or, on a chunk that is not a fact,
 the chunk's own dates. A fact that also has dates of its own reports those as
 `chunk_valid_at`/`chunk_invalid_at`. `body` is absent when a chunk has no text,
 its text could not be read, or `body_chars` left it out.
 
-`seeded_by` is `ids`, `semantic` or `title`. With `budget_chars` you also get
+`seeded_by` is `ids`, `semantic` or `title`. `walk` (`kinds`, `declared` or
+`all`) and `decay` are reported when the walk was narrowed, and
+`kind_expanded_to` when a kind widened to its declared sub-kinds. With `budget_chars` you also get
 `budget_chars`, `chars_used` (titles plus bodies) and `backfilled`.
 `truncated: true` means some chunks were cut by a limit.
 

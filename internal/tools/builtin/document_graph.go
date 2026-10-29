@@ -30,6 +30,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -124,6 +125,12 @@ type graphChunk struct {
 	Hop     int    `json:"hop"`
 	ViaKind string `json:"via_kind,omitempty"`
 	ViaID   string `json:"via_id,omitempty"`
+	// ViaStatus is the status of the statement the row was reached by, when it is
+	// not asserted (a proposal walked with include_proposed). ViaQuote is that
+	// statement's first evidence quote, when it has one.
+	ViaStatus string `json:"via_status,omitempty"`
+	ViaQuote  string `json:"via_quote,omitempty"`
+	viaEdge   string
 	// ValidAt/Invalid are the row's validity: a fact's sidecar interval, or an
 	// ordinary chunk's OWN interval (it has no sidecar, so the names keep one
 	// meaning). A fact that also carries an own chunk interval reports it as
@@ -183,6 +190,23 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 		return errValidation(fmt.Sprintf("graph_recall: body_chars must be 0..%d (got %d)", graphMaxBodyChars, *in.BodyChars),
 			"Omit body_chars for excerpts of non-fact chunks, pass 0 for titles only, or read a whole body with op=get_chunk."), nil
 	}
+	walk, werr := d.graphWalkSpec(ctx, in)
+	if werr != nil {
+		return errValidation("graph_recall: "+werr.Error(), ""), nil
+	}
+	// decay: each hop's share of the content budget is decay^hop of it, so a far
+	// hop cannot crowd out a near one. 1.0 (no decay) unless the walk follows the
+	// declared kinds, where the RFC's measured default is 0.7.
+	decay := 1.0
+	if walk.mode == "declared" {
+		decay = 0.7
+	}
+	if in.Decay != nil {
+		if !(*in.Decay > 0 && *in.Decay <= 1) {
+			return errValidation(fmt.Sprintf("graph_recall: decay must be in (0, 1] (got %v)", *in.Decay), ""), nil
+		}
+		decay = *in.Decay
+	}
 	bodies := newGraphBodies(d, key, in.BodyChars)
 
 	seeds, seedInfo, err := d.graphSeedIDs(ctx, key, in, limit)
@@ -215,7 +239,7 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 			frontier = frontier[:graphFrontierCap]
 			truncated = true
 		}
-		next, hopFull, nerr := d.graphNeighbours(ctx, key, frontier, hop, in, graphHopRowCap)
+		next, hopFull, nerr := d.walkNeighbours(ctx, key, frontier, hop, in, walk, graphHopRowCap)
 		if nerr != nil {
 			return errFrom("graph_recall: hop "+fmt.Sprint(hop)+": "+nerr.Error(), nerr), nil
 		}
@@ -262,6 +286,15 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 	// BFS order is preserved inside each pass, so a nearer fact still beats a
 	// further one.
 	passes := [][]string{order}
+	// hopUsed is what each hop has spent, for the decay cap: hop h may spend at
+	// most budget·decay^h. The seeds (hop 0) are uncapped.
+	hopUsed := map[int]int{}
+	hopCap := func(h int) int {
+		if decay >= 1 || h <= 0 {
+			return budget
+		}
+		return int(float64(budget) * math.Pow(decay, float64(h)))
+	}
 	if budget > 0 {
 		// WHY THE EDGE AND NOT THE CHUNK TYPE. A distilled fact's type is the
 		// constant "fact", which makes `type = 'fact'` the obvious test — but
@@ -305,11 +338,12 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 			bodies.prefetch(ctx, pass, i, limit-len(out), seen)
 			bodies.attach(&c)
 			if budget > 0 {
-				if used+c.cost() > budget {
+				if used+c.cost() > budget || hopUsed[c.Hop]+c.cost() > hopCap(c.Hop) {
 					truncated = true
 					continue
 				}
 				used += c.cost()
+				hopUsed[c.Hop] += c.cost()
 			}
 			out = append(out, c)
 		}
@@ -347,9 +381,21 @@ func (d *Document) graphRecall(ctx context.Context, key sqlmem.ScopeKey, in docI
 			backfilled++
 		}
 	}
+	d.attachViaQuotes(ctx, key, out)
 	payload := map[string]any{
 		"chunks": out, "seeds": len(seeds), "hops": hops, "truncated": truncated,
 		"seeded_by": seedInfo.How,
+	}
+	// The walk is reported when it is not the default "every relation": a caller
+	// who asked for kinds, or got the declared set, sees which it was.
+	if walk.mode != "all" || in.Walk != "" {
+		payload["walk"] = walk.mode
+		if decay < 1 {
+			payload["decay"] = decay
+		}
+	}
+	if len(walk.expandedTo) > 0 {
+		payload["kind_expanded_to"] = walk.expandedTo
 	}
 	if budget > 0 {
 		// An arm that cannot fill its budget says so, rather than leaving the
@@ -676,6 +722,91 @@ func hasWordEdges(q string) bool {
 // this test needed 2001 chunks and 2001 edges and cost 95s under -race, on a
 // package that already runs close to its CI timeout.
 func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, frontier []string, hop int, in docInput, rowCap int) ([]graphChunk, bool, error) {
+	walk, err := d.graphWalkSpec(ctx, in)
+	if err != nil {
+		return nil, false, err
+	}
+	return d.walkNeighbours(ctx, key, frontier, hop, in, walk, rowCap)
+}
+
+// graphWalk is how one hop follows relations (RFC FN P4): which kinds, which
+// direction, which statements are visible, and whether the hierarchy counts as a
+// relation. The zero value is the walk graph_recall always did: every kind, both
+// directions, no hierarchy.
+type graphWalk struct {
+	kindCond   string
+	kindArgs   []any
+	expandedTo []string
+	mode       string // "all" | "declared" | "kinds"
+	outgoing   bool
+	incoming   bool
+	up, down   bool
+	edgeCond   string
+	edgeArgs   []any
+}
+
+// graphWalkSpec reads the walk from the call. An explicit kinds list wins; else
+// walk=declared follows the vocabulary's @walk kinds, and walk=all (the default
+// when no Relations section is declared) follows every kind.
+func (d *Document) graphWalkSpec(ctx context.Context, in docInput) (graphWalk, error) {
+	w := graphWalk{mode: "all", outgoing: true, incoming: true}
+	switch in.Direction {
+	case "", "both":
+	case "out":
+		w.incoming = false
+	case "in":
+		w.outgoing = false
+	default:
+		return w, fmt.Errorf("direction must be out, in or both")
+	}
+	switch in.IncludeHierarchy {
+	case "", "none":
+	case "up":
+		w.up = true
+	case "down":
+		w.down = true
+	case "both":
+		w.up, w.down = true, true
+	default:
+		return w, fmt.Errorf("include_hierarchy must be up, down, both or none")
+	}
+	if c, a, exp := d.kindFilter(ctx, in); c != "" {
+		w.kindCond, w.kindArgs, w.expandedTo, w.mode = c, a, exp, "kinds"
+	} else {
+		switch in.Walk {
+		case "", "declared":
+			if kinds := d.walkKinds(ctx); kinds != nil {
+				c, a, exp := d.kindFilter(ctx, docInput{Kinds: kinds})
+				w.kindCond, w.kindArgs, w.expandedTo, w.mode = c, a, exp, "declared"
+			}
+		case "all":
+		default:
+			return w, fmt.Errorf("walk must be declared or all")
+		}
+	}
+	// A statement is walked only while a reader would be shown it: proposals stay
+	// out unless asked for, rejected / refuted / retired ones always do, and its
+	// own validity must contain the walk's instant (now by default), as a node's
+	// must. Undated statements — every one written before statements existed —
+	// always match.
+	vis := statementVisibility{
+		includeProposed: in.IncludeProposed != nil && *in.IncludeProposed,
+		includeRefuted:  in.IncludeRefuted,
+		includeRetired:  in.IncludeRetired,
+	}
+	if !in.IncludeRetired {
+		at := time.Now().UnixNano()
+		if in.AsOf != nil {
+			at = *in.AsOf
+		}
+		vis.asOf = &at
+	}
+	w.edgeCond, w.edgeArgs = vis.clause()
+	return w, nil
+}
+
+// walkNeighbours runs one hop of w from frontier.
+func (d *Document) walkNeighbours(ctx context.Context, key sqlmem.ScopeKey, frontier []string, hop int, in docInput, w graphWalk, rowCap int) ([]graphChunk, bool, error) {
 	marks := placeholders(len(frontier))
 	temporal, targs := graphRecallTimeClause(in)
 	extra := ""
@@ -683,47 +814,69 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 		extra = " AND " + temporal
 	}
 	// Argument-free by construction, so it can be concatenated into `extra` without
-	// touching the placeholder ordering documented below.
-	if w := graphWithholdClause(in); w != "" {
-		extra += " AND " + w
+	// touching the placeholder ordering below.
+	if wc := graphWithholdClause(in); wc != "" {
+		extra += " AND " + wc
+	}
+	edge := " AND " + w.edgeCond
+	if w.kindCond != "" {
+		edge += " AND " + w.kindCond
 	}
 
-	// Argument order must follow the statement's PLACEHOLDER order, and the
-	// temporal clause appears in BOTH union branches — so the sequence is
-	// frontier, temporal, frontier, temporal, not both frontiers followed by one
-	// temporal. Getting that wrong surfaced as "missing argument with index 5"
-	// rather than as wrong rows, which is the good failure of the two.
-	args := make([]any, 0, (len(frontier)+len(targs))*2)
-	for _, id := range frontier {
-		args = append(args, id)
-	}
-	args = append(args, targs...)
-	for _, id := range frontier {
-		args = append(args, id)
-	}
-	args = append(args, targs...)
-
-	// One statement per hop, both directions unioned. `via` carries the edge kind
-	// and the neighbour it was reached from, so the caller can see the shape of the
-	// association rather than just its endpoint.
+	// One statement per hop, the directions unioned. Argument order follows the
+	// PLACEHOLDER order branch by branch — frontier, edge, kind, temporal — so
+	// each branch appends its own copy. Getting that wrong surfaces as "missing
+	// argument with index N" rather than as wrong rows, the good failure of the two.
 	//
-	// A statement a reader would not be shown is not walked either (RFC FN): a
-	// proposal awaiting review, a rejected or refuted one, a retired one. Every
-	// statement written before statements existed is asserted and unjudged, so
-	// this changes nothing for them.
-	edgeLive := ` AND ` + edgeLiveClause
-	stmt := `SELECT ` + graphChunkCols + `, e.kind, e.from_id
+	// `via` carries the relation kind and the neighbour it was reached from, so the
+	// caller sees the shape of the association rather than just its endpoint, plus
+	// the statement's status and id (for its quote).
+	var branches []string
+	var args []any
+	branch := func(sql string, edgeArgs bool) {
+		branches = append(branches, sql)
+		for _, id := range frontier {
+			args = append(args, id)
+		}
+		if edgeArgs {
+			args = append(args, w.edgeArgs...)
+			args = append(args, w.kindArgs...)
+		}
+		args = append(args, targs...)
+	}
+	if w.outgoing {
+		branch(`SELECT `+graphChunkCols+`, e.kind, e.from_id, e.status, e.id
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.to_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
-	          WHERE e.from_id IN (` + marks + `)` + edgeLive + extra + `
-	         UNION
-	         SELECT ` + graphChunkCols + `, e.kind, e.to_id
+	          WHERE e.from_id IN (`+marks+`)`+edge+extra, true)
+	}
+	if w.incoming {
+		branch(`SELECT `+graphChunkCols+`, e.kind, e.to_id, e.status, e.id
 	           FROM chunk_edges e
 	           JOIN chunks c ON c.id = e.from_id
 	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
-	          WHERE e.to_id IN (` + marks + `)` + edgeLive + extra + `
-	         LIMIT ?`
+	          WHERE e.to_id IN (`+marks+`)`+edge+extra, true)
+	}
+	// The hierarchy as a relation: a section is part_of its parent, a parent
+	// has_part its sections. One level per hop, like any other relation.
+	if w.up {
+		branch(`SELECT `+graphChunkCols+`, 'part_of', ch.id, '', ''
+	           FROM chunks ch
+	           JOIN chunks c ON c.id = ch.parent_id
+	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+	          WHERE ch.id IN (`+marks+`)`+extra, false)
+	}
+	if w.down {
+		branch(`SELECT `+graphChunkCols+`, 'has_part', c.parent_id, '', ''
+	           FROM chunks c
+	           LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+	          WHERE c.parent_id IN (`+marks+`)`+extra, false)
+	}
+	if len(branches) == 0 {
+		return nil, false, nil
+	}
+	stmt := strings.Join(branches, "\n\t         UNION\n\t         ") + "\n\t         LIMIT ?"
 	// One over the cap, so the caller can tell "exactly full" from "there was more"
 	// without a second query. Trimmed back to the cap below.
 	args = append(args, rowCap+1)
@@ -739,15 +892,47 @@ func (d *Document) graphNeighbours(ctx context.Context, key sqlmem.ScopeKey, fro
 	for _, r := range res.Rows {
 		c := scanGraphRow(r)
 		c.Hop = hop
-		if len(r) > graphChunkColCount {
-			c.ViaKind = asStr(r[graphChunkColCount])
+		c.ViaKind = asStr(r[graphChunkColCount])
+		c.ViaID = asStr(r[graphChunkColCount+1])
+		// Asserted is what every relation was before statements; naming it on
+		// every row would change every answer to say nothing new.
+		if st := asStr(r[graphChunkColCount+2]); st != "" && st != edgeStatusAsserted {
+			c.ViaStatus = st
 		}
-		if len(r) > graphChunkColCount+1 {
-			c.ViaID = asStr(r[graphChunkColCount+1])
-		}
+		c.viaEdge = asStr(r[graphChunkColCount+3])
 		out = append(out, c)
 	}
 	return out, over, nil
+}
+
+// graphViaQuoteChars bounds the quote a row carries for the relation it was
+// reached by: enough to attribute the hop, not a second body.
+const graphViaQuoteChars = 240
+
+// attachViaQuotes gives each row reached over a statement with evidence the first
+// quote of that evidence, so an answer can be attributed per relation.
+func (d *Document) attachViaQuotes(ctx context.Context, key sqlmem.ScopeKey, rows []graphChunk) {
+	ids := make([]string, 0, len(rows))
+	for _, c := range rows {
+		if c.viaEdge != "" {
+			ids = append(ids, c.viaEdge)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	ev, _, err := d.evidenceFor(ctx, key, ids, 1)
+	if err == nil {
+		ev, err = d.withholdUnreadableEvidence(ctx, key, ev)
+	}
+	if err != nil {
+		return // a quote is an annotation; the walk stands without it
+	}
+	for i := range rows {
+		if q := ev[rows[i].viaEdge]; len(q) > 0 {
+			rows[i].ViaQuote = truncateRunes(q[0].Quote, graphViaQuoteChars)
+		}
+	}
 }
 
 // graphRecallTimeClause is graph_recall's time filter. With as_of it is the one

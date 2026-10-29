@@ -100,7 +100,7 @@ func (d *Document) Name() string { return "Document" }
 
 // UsageHint implements tools.HintedTool — surfaced by Context op=guide.
 func (d *Document) UsageHint() string {
-	return "To reach a chunk you don't have the id for, find it first with op=search or op=query_chunks — don't invent ids. op=upsert_chunk keys on natural_key. Pass op + scope every call."
+	return "To reach a chunk you don't have the id for, find it first with op=search or op=query_chunks — don't invent ids. op=upsert_chunk keys on natural_key. Pass op + scope every call. When the answer depends on what a passage cites, defines or implements, follow the relations: op=graph_recall seed_ids=[the passage] kinds=[cites, defines, …] walks them, and op=search with expand={} adds what the top hits are related to."
 }
 
 func (d *Document) Description() string {
@@ -173,6 +173,11 @@ const documentInputSchema = `{
 		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}}, "required": ["quote"]}},
 		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false): include statements proposed for review and not yet accepted."},
 		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements: continue a truncated listing — pass the next_cursor from the previous page."},
+		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it."},
+		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay)."},
+		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
+		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
+		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder."},
 		"media_type":  {"type": "string", "description": "set_asset: the image MIME type (image/png, image/jpeg, image/gif, image/webp)."},
 		"data":        {"type": "string", "description": "set_asset: the image bytes as standard base64 (no data: prefix)."},
 		"filename":    {"type": "string", "description": "set_asset: an optional original filename (metadata only)."},
@@ -268,6 +273,15 @@ type docInput struct {
 	Kinds           []string         `json:"kinds,omitempty"`
 	After           string           `json:"after,omitempty"`
 	IncludeProposed *bool            `json:"include_proposed,omitempty"`
+	// Kind-aware retrieval (RFC FN P4). graph_recall: walk (declared | all),
+	// decay (per-hop share of the content budget), include_hierarchy (up | down |
+	// both | none). search: expand (one hop over relations from the top hits).
+	// related: related_to (neighbours by relation rather than by embedding).
+	Walk             string        `json:"walk,omitempty"`
+	Decay            *float64      `json:"decay,omitempty"`
+	IncludeHierarchy string        `json:"include_hierarchy,omitempty"`
+	Expand           *searchExpand `json:"expand,omitempty"`
+	RelatedTo        string        `json:"related_to,omitempty"`
 	// edgeMethod is the statement's method when an internal path (import, sync,
 	// canvas) writes it. UNEXPORTED: a caller must not name how its own link was
 	// made.
@@ -3719,6 +3733,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if q == "" {
 		return errValidation("search: missing required field: query (the text to match against chunk bodies)", ""), nil
 	}
+	if err := validateExpand(in.Expand); err != nil {
+		return errValidation("search: "+err.Error(), ""), nil
+	}
 	if d.Embedder == nil {
 		return errBusiness("search: requires a configured embedder / vector memory", "Semantic search is not available on this server; filter with op=query_chunks instead."), nil
 	}
@@ -3824,8 +3841,20 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	// In the backend's order, and the enrichment loop preserves it — a caller
 	// reading the first element must get the best match, not whatever order the
-	// metadata query returned.
+	// metadata query returned. Expanded rows follow the ranked ones, unranked and
+	// marked, in the same list so the access-control filter reads them too.
+	expanded, expandTruncated, err := d.expandHits(ctx, key, in, out)
+	if err != nil {
+		return errFrom("search: expand: "+err.Error(), err), nil
+	}
+	out = append(out, expanded...)
 	result := map[string]any{"chunks": out}
+	if in.Expand != nil {
+		result["expanded"] = len(expanded)
+		if expandTruncated {
+			result["expand_truncated"] = true
+		}
+	}
 	renderRerank(result, rerank, res.Rerank)
 	if filter != nil {
 		result["filter"] = filter.echo
@@ -3849,8 +3878,24 @@ func (d *Document) searchBackend() memrank.Backend {
 // direntTenant), so nothing about the write path changes. Scope-confined: the
 // vector search is bounded to the caller's own tenant/scope/scope_id.
 func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
-	if in.ID == "" {
-		return errValidation("related: missing required field: id", "Pass `id`, the chunk to find neighbours of."), nil
+	if in.ID == "" && in.RelatedTo == "" {
+		return errValidation("related: missing required field: id", "Pass `id`, the chunk to find neighbours of (by meaning), or `related_to` (by relation)."), nil
+	}
+	// related_to: the neighbours by relation, beside (or instead of) the ones by
+	// meaning. Needs no embedder.
+	var linked []map[string]any
+	if in.RelatedTo != "" {
+		limit := 10
+		if in.Limit > 0 {
+			limit = min(in.Limit, 50)
+		}
+		var err error
+		if linked, err = d.relatedByRelation(ctx, key, in, limit); err != nil {
+			return errFrom("related: related_to: "+err.Error(), err), nil
+		}
+		if in.ID == "" {
+			return jsonResult(map[string]any{"linked": linked})
+		}
 	}
 	// Semantic neighbours need both a vector index and something to turn the query
 	// body into a vector. No embedder → there is no vector plane to search.
@@ -3867,7 +3912,12 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	// The same structural filter as search, applied to the one vector leg related
 	// runs. withFilter adds the echo to every answer once a filter was named.
 	sf := store.MemorySearchFilter{KeyPrefix: chunkBodyKeyPrefix}
-	withFilter := func(m map[string]any) map[string]any { return m }
+	withFilter := func(m map[string]any) map[string]any {
+		if linked != nil {
+			m["linked"] = linked
+		}
+		return m
+	}
 	if hasSearchFilter(in) {
 		set, refusal, err := d.resolveSearchFilter(ctx, key, "related", in)
 		if err != nil {
@@ -3878,6 +3928,9 @@ func (d *Document) related(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		}
 		withFilter = func(m map[string]any) map[string]any {
 			m["filter"] = set.echo
+			if linked != nil {
+				m["linked"] = linked
+			}
 			return m
 		}
 		if set.echo.MatchedChunks == 0 {

@@ -10,7 +10,11 @@ chunk, and `backlinks` when you want the chunks that already link to it.
 
 ## Arguments
 
-- `id` (required) — the chunk to find neighbours for.
+- `id` — the chunk to find neighbours for, by meaning. Required unless
+  `related_to` is given.
+- `related_to` — a chunk whose neighbours BY RELATION (what it cites, what
+  cites it, what defines it, …) to return as `linked`. Needs no embedder; with
+  `id` too, both answers come back. `kind` / `kinds` narrow it.
 - `limit` — at most this many, default 10, capped at 50. The chunk itself is
   never included.
 - `scope` — `user` (default), `agent` or `tenant`. See
@@ -67,13 +71,15 @@ in that part of the tree is relevant. A call with no filter has no `filter` key.
 ## Returns
 
 `{related: [{chunk_id, score, title, type, document_id}]}`, closest first,
-plus `filter` when you passed one.
+plus `filter` when you passed one. With `related_to`, `linked: [{chunk_id,
+via_kind, via_quote?, title, type, document_id}]` — the relation's kind and its
+first evidence quote.
 A chunk whose body is empty — a section heading with only children — or is a
 mermaid or image form has nothing to compare, and returns `{related: []}`.
 
 ## Errors
 
-- `related: missing required field: id`.
+- `related: missing required field: id` — pass `id`, `related_to`, or both.
 - `related: requires a configured embedder / vector memory` — this server
   cannot compare meaning; retrying is pointless. Use `backlinks` or
   `unlinked_mentions` instead.
