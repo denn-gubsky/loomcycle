@@ -1,25 +1,39 @@
 ---
 name: Document/get_edges
-description: "Document op=get_edges — every edge touching a document's chunks, in or out, with both endpoints' titles, types and documents."
+description: "Document op=get_edges — the relations touching a document's chunks, in or out, with their status, provenance, evidence and both endpoints."
 ---
-`get_edges` lists every cross-reference edge that starts or ends at any chunk
-of one document, so you can see the document's whole link graph in one call.
-**It takes `document_id`, not a chunk `id`.** For the edges pointing at ONE
-chunk, use `backlinks`.
+`get_edges` lists the relations (statements) that start or end at any chunk of
+one document, so you can see the document's link graph in one call. **It takes
+`document_id`, not a chunk `id`.** For the links pointing at ONE chunk, use
+`backlinks`; for one statement with all its evidence, use `get_edge`.
 
 ## Arguments
 
 - `document_id` (required) — the document.
+- `direction` — `out` (relations leaving the document), `in` (arriving) or
+  `both` (default).
+- `kind` / `kinds` — only these relation kinds.
+- `as_of` — only relations that held at this moment (unix nanoseconds); an
+  undated relation always matches.
+- `include_proposed` — include relations proposed for review (default true).
+- `include_refuted` — also include rejected relations and ones judged
+  unsupported (withheld by default, never deleted).
+- `include_retired` — also include retired relations.
+- `limit` — page size (default 500, at most 5000). `after` — the
+  `next_cursor` of the previous page.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 
 ## Returns
 
-`{edges: [{from_id, to_id, kind, auto, from_title, from_type, from_status,
-from_document_id, to_title, to_type, to_status, to_document_id}]}`, ordered by
-kind, then age. `auto: true` marks an edge made by a `[[name]]` link in a body;
-`false` is one made with `link_chunks`. The endpoint fields appear only when
-they have a value. The list is not paged.
+`{edges: [...]}`, ordered by kind, then age. Each edge carries `id`, `from_id`,
+`to_id`, `kind`, `auto` (true = made by a `[[name]]` link in a body), `status`
+(`asserted` or `proposed`), `method` (how it was made), `created_at`, the
+endpoints' `from_title` / `from_type` / `from_status` / `from_document_id` and
+`to_…` twins, and when present `confidence`, `valid_at`, `invalid_at`,
+`attributes`, `actor`, a verdict (`judged_at`, `judge_reason`, `judged_by`),
+and up to three `evidence` rows with `evidence_count`. `truncated: true` with a
+`next_cursor` means there is another page.
 
 ## Errors
 
@@ -38,7 +52,14 @@ All links in and out of a document:
 
 ```json result
 {"edges": [
-  {"from_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "to_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "kind": "blocks", "auto": false,
+  {"id": "4b1d9c2e7a3f4e5d8c6b0a1f2e3d4c5b", "from_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "to_id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "kind": "blocks", "auto": false,
+   "status": "asserted", "method": "manual", "created_at": 1767225600000000000,
    "from_title": "Migrate the database", "from_document_id": "b4407b522dc11495d3de371311db17f0",
    "to_title": "Launch", "to_document_id": "b4407b522dc11495d3de371311db17f0"}]}
+```
+
+Only the citations leaving a document:
+
+```json
+{"op": "get_edges", "document_id": "b4407b522dc11495d3de371311db17f0", "direction": "out", "kind": "cites"}
 ```

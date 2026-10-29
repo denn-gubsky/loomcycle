@@ -104,11 +104,15 @@ skills:
       1. Resolve both endpoints first with `query_chunks` / `get_chunk` — both chunks
          must already exist (an edge to a missing chunk is refused). Cross-document
          edges are allowed as long as both chunks are in this scope.
-      2. Pick a clear `kind` verb the operator will recognize: `references`,
-         `promotes`, `targets`, `depends_on`, `supersedes`. Reuse existing kinds in
+      2. Pick a clear `kind` verb the operator will recognize: `cites`,
+         `promotes`, `targets`, `depends_on`, `implements`. Reuse existing kinds in
          the document rather than inventing near-duplicates.
-      3. Link: `Document op=link_chunks from_id=<a> to_id=<b> kind="references"`
+         Kinds the runtime writes itself (`references`, `supersedes`, `mentions`,
+         `derived_from`, `supported_by`) are refused.
+      3. Link: `Document op=link_chunks from_id=<a> to_id=<b> kind="cites"`
          (idempotent — re-linking the same triple is a no-op).
+         When the relation comes from text, pass the sentence as `evidence`:
+         `evidence=[{chunk_id: <a>, quote: "<exact words>"}]` — a reviewer reads it.
       4. Remove a stale edge with `op=unlink_chunks from_id=<a> to_id=<b> kind="…"`.
 
       ## Notes
