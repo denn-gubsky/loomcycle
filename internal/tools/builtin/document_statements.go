@@ -1119,6 +1119,11 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 // reviewStatement is accept_statement / reject_statement: the operator's ruling on
 // a proposal. Not reachable from inside a run — an agent's Document grant must not
 // let a model accept its own proposals (the RFC CA posture for ontology proposals).
+//
+// A ruling is on a proposal (accept or reject) or on a rejection (accept — it was
+// rejected in error); an asserted statement is not a ruling's to change. The
+// UPDATE is conditional on the status read, so of two operators ruling at once
+// the second is refused rather than silently replacing the first one's ruling.
 func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput, accept bool) (tools.Result, error) {
 	op := "reject_statement"
 	status := edgeStatusRejected
@@ -1142,10 +1147,41 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 	if s == nil {
 		return errNotFound(op+": no such statement: "+in.ID, "List proposals with op=list_statements."), nil
 	}
+	if s.Status != edgeStatusProposed && !(accept && s.Status == edgeStatusRejected) {
+		msg := op + ": not_a_proposal: the statement is " + s.Status + ", so there is nothing to rule on"
+		hint := "Rule on proposals from op=list_statements. To withdraw a relation that holds, judge it unsupported (judge_fact) or remove it (unlink_chunks)."
+		if s.Auto {
+			// Its body re-creates it on every write, so the body is where it goes.
+			msg += " — it comes from a [[name]] link in its source chunk's body"
+			hint = "Edit the [[name]] link out of the body (update_chunk) to remove it."
+		}
+		return errBusiness(msg, hint), nil
+	}
 	now := time.Now().UnixNano()
-	if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE id = ?`,
-		status, now, nullIfEmpty(strings.TrimSpace(in.Reason)), "operator", in.ID); err != nil {
+	reason := nullIfEmpty(strings.TrimSpace(in.Reason))
+	set, args := `status = ?, judged_at = ?, judge_reason = ?, judged_by = ?`, []any{status, now, reason, "operator"}
+	if accept {
+		refuting := s.VerdictConfidence != nil && *s.VerdictConfidence < withholdBelowConfidence
+		switch {
+		case refuting:
+			// The operator overrules the judge: an accepted statement is visible.
+			set += `, verdict_confidence = NULL`
+		case s.Status == edgeStatusRejected || s.JudgedAt == nil:
+			// The triplet held the rejection being reversed, or nothing.
+		default:
+			// A judge's standing verdict on the proposal is kept: accepting it adds
+			// nothing the verdict does not already say.
+			set, args = `status = ?`, []any{status}
+		}
+	}
+	args = append(args, in.ID, s.Status)
+	ruled, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ?`), args, 0)
+	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
+	}
+	if ruled.RowsAffected == 0 {
+		return errBusiness(op+": statement_changed: the statement was ruled on or changed while this ruling was made",
+			"Reload it (op=get_edge) and rule again if it still needs it."), nil
 	}
 	d.publishEdgeChange(ctx, key, mscope, op, in.ID, s.FromID, s.ToID, s.Kind, status)
 	return jsonResult(map[string]any{"id": in.ID, "status": status})
