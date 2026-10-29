@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ChunkDetail, DocEdge, FactEntity, MemoryScope } from "../types";
 import { useMemoryData } from "../lib/dataLayer";
+import { loadFactEdges } from "../lib/edgePages";
 import { factActions, factVerdict, vouchNotice } from "../lib/factVerdict";
 
 // ChunkDetailPanel — the fact/chunk inspector shared by the FactViewer and the
@@ -37,6 +38,8 @@ export default function ChunkDetailPanel({
   const data = useMemoryData();
   const [chunk, setChunk] = useState<ChunkDetail | null>(null);
   const [edges, setEdges] = useState<DocEdge[]>([]);
+  // The edge load stopped before the end of the document's list (its page cap).
+  const [edgesIncomplete, setEdgesIncomplete] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // A verdict needs a stated ground — the server refuses one without a reason, and it
@@ -85,11 +88,13 @@ export default function ChunkDetailPanel({
         // render filters to the edges that actually touch this chunk. A missing
         // document_id (defensive) means no chain to show, not an error.
         if (c.document_id) {
-          const e = await data.getEdges(scope, c.document_id, scopeId ? { scopeId } : undefined);
+          const e = await loadFactEdges(data, scope, c.document_id, scopeId ? { scopeId } : undefined);
           if (cancelled) return;
-          setEdges(e.edges ?? []);
+          setEdges(e.edges);
+          setEdgesIncomplete(e.incomplete);
         } else {
           setEdges([]);
+          setEdgesIncomplete(false);
         }
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
@@ -210,6 +215,12 @@ export default function ChunkDetailPanel({
         <div className="fact-chain">
           <div className="fact-chain-title">related</div>
           <EdgeList refs={related} onNavigate={onNavigate} withKind />
+        </div>
+      )}
+
+      {edgesIncomplete && (
+        <div className="meta fact-edges-incomplete">
+          This fact&apos;s document has more links than the inspector loads; some may be missing above.
         </div>
       )}
 
