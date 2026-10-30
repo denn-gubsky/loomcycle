@@ -18,7 +18,11 @@ readers see as live.
 A relation a person wrote (its `method` is `manual`) takes only `verify` and
 `flag`, from anyone, and so does one an operator ruled on (accepted it, for
 instance), from inside a run: flag it with your reason and let a person
-decide.
+decide. A relation a sync brought in (`method` `sync`) counts as a person's
+unless its `attributes.origin_method` names a method code stamps —
+`rule:<name>`, `extractor:<name>`, `import`, `canvas`, `wikilink`, `runtime`,
+`consolidator` or `ontology`. With `manual`, no origin at all, or anything
+else there, only `verify` and `flag` apply.
 
 ## Arguments
 
@@ -59,8 +63,8 @@ decide.
 
 - `permission` — the caller holds no statement methods and is not an operator.
 - `method_not_granted` — `method` is malformed or outside your grant.
-- `statement_manual` — a person wrote the relation; only `verify` and `flag`
-  apply.
+- `statement_manual` — a person wrote the relation (or a sync brought in one a
+  person wrote, or did not say who made); only `verify` and `flag` apply.
 - `statement_operator_ruled` — an operator ruled on the relation; from a run
   only `verify` and `flag` apply.
 - access control — `expire`, `demote` and `merge` need `link` on both ends'

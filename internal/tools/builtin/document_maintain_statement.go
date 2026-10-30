@@ -13,9 +13,10 @@ package builtin
 //
 // Who may call it: a code agent holding a statement_methods grant (its writes
 // carry the method it stamps), and the operator plane. A statement a person
-// wrote (method manual) takes only verify and flag from anyone, and one an
-// operator ruled on (operator_ruled_at) only verify and flag from a run: what
-// a person asserted or decided is not a pass's to undo. The ACL asks propose
+// wrote (madeByAPerson: method manual, or a synced one no machine is named as
+// making) takes only verify and flag from anyone, and one an operator ruled on
+// (operator_ruled_at) only verify and flag from a run: what a person asserted
+// or decided is not a pass's to undo. The ACL asks propose
 // for every action, and link on both ends for the actions that change what is
 // live (expire, demote, merge) — link is the verb of accepting, rejecting and
 // unlinking, which those actions undo or stand in for.
@@ -102,7 +103,7 @@ func (d *Document) applyMaintenance(ctx context.Context, key sqlmem.ScopeKey, ms
 		return errBusiness(maintainOp+": statement_rejected: an operator rejected this statement; it is a tombstone, not something to maintain", ""), nil
 	case s.ExpiredAt != nil:
 		return errBusiness(maintainOp+": statement_expired: the statement is already retired", "Leave it; it stays readable with include_retired."), nil
-	case s.Method == edgeMethodManual && !maintainActions[in.Action]:
+	case madeByAPerson(s) && !maintainActions[in.Action]:
 		return errBusiness(maintainOp+": statement_manual: a person wrote this statement, so only verify and flag apply to it",
 			"Flag it for review (action flag) and say why in reason."), nil
 	case s.OperatorRuledAt != nil && !maintainActions[in.Action] && !authorIsOperatorPlane(ctx):
