@@ -362,6 +362,16 @@ export type RunFileInput = {
    *  in its numbering imports as sections. The file is not changed, so the
    *  document keeps the record of where it came from. */
   headings?: RunFileImportHeading[];
+  /** import: the file is a new edition of the work named by `work_key`,
+   *  reconciled onto the document holding it part by part. */
+  reimport?: boolean;
+  /** import with reimport: the work's key. */
+  work_key?: string;
+  /** import with reimport: when the edition came into force (unix nanos). */
+  edition_date?: number;
+  /** import with reimport: the document that made the edition (the amending
+   *  act); each renumbered part gets an `amends` statement from it. */
+  amending_document_id?: string;
 };
 
 /** import's `source`: the item's web link (a SharePoint `webUrl`, an email's
@@ -3907,6 +3917,7 @@ export type DocumentToolInput = {
     | "accept_statement"
     | "reject_statement"
     | "list_statements"
+    | "maintain_statement"
     | "resolve_anchor"
     | "lease"
     | "release"
@@ -3971,6 +3982,14 @@ export type DocumentToolInput = {
   tag?: string;
   /** query_chunks: match this tag OR anything nested under it (prefix + '/'). */
   tag_prefix?: string;
+  /** search / related: only chunks about this concept of the tenant ontology's
+   *  concept schemes, or a narrower one — by chunk id, name or tag
+   *  (`<scheme>/<path>`). Tenant scope: by `subject` relation; user / agent
+   *  scope: by the concept's tag (see `concept_matched_by` on the echo). */
+  concept?: string;
+  /** search / related: as `concept`, for every concept whose tag is this path or
+   *  lies under it. */
+  concept_prefix?: string;
   position?: number;
   /** update_chunk: the chunk's current revision (optimistic concurrency).
    *  get_version: the historical revision to fetch. */
@@ -3989,11 +4008,29 @@ export type DocumentToolInput = {
   kinds?: string[];
   /** link_chunks / propose_statement: the relation's qualifiers. */
   attributes?: Record<string, unknown>;
-  /** propose_statement / upsert_chunk (its relation): how the statement was
-   *  made — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
+  /** propose_statement / maintain_statement / upsert_chunk (its relation): how
+   *  the statement was made (maintain_statement: the judge of what it changes) — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
    *  Only a code-js agent whose `statement_methods` lists the prefix may send
    *  it; anything else is refused with `method_not_granted`. Omitted = `manual`. */
   method?: string;
+  /** maintain_statement: verify | expire | demote | merge | stale_evidence |
+   *  relocate_evidence | flag. */
+  action?:
+    | "verify"
+    | "expire"
+    | "demote"
+    | "merge"
+    | "stale_evidence"
+    | "relocate_evidence"
+    | "flag";
+  /** maintain_statement merge: the live statement of the same from, to, kind
+   *  and status that keeps the merged statement's evidence. */
+  survivor_id?: string;
+  /** maintain_statement stale_evidence / relocate_evidence: the evidence row
+   *  (its id from get_edge). */
+  evidence_id?: string;
+  /** maintain_statement relocate_evidence: the chunk the row's quote is in now. */
+  chunk_id?: string;
   /** link_chunks / propose_statement: the text the relation rests on. Each row
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
@@ -4040,6 +4077,9 @@ export type DocumentToolInput = {
   edition_date?: number;
   /** import_md with reimport / resolve_anchor: the work's key. */
   work_key?: string;
+  /** import_md with reimport and work_key: the document that made the edition
+   *  (the amending act); each renumbered part gets an `amends` statement from it. */
+  amending_document_id?: string;
   /** resolve_anchor: a part of the work, by anchor or first anchor. */
   anchor?: string;
   /** resolve_anchor: file a placeholder for a work not held yet. */
@@ -4191,6 +4231,11 @@ export type DocumentSearchFilter = {
     statuses?: string[];
     tag?: string;
     tag_prefix?: string;
+    concept?: string;
+    concept_prefix?: string;
+    /** How a concept filter matched: by `subject` relation (tenant scope) or by
+     *  tag (user / agent scope). */
+    concept_matched_by?: "statement" | "tag";
     as_of?: number;
   };
   /** Documents with at least one matching chunk. */

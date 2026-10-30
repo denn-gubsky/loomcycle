@@ -22,8 +22,9 @@ import (
 // method. Anything else that writes one (link_chunks) is a person's act, so it
 // refuses a method rather than ignoring it.
 var statementMethodOps = map[string]bool{
-	"propose_statement": true,
-	"upsert_chunk":      true, // its relation statement; its runtime edges keep method runtime
+	"propose_statement":  true,
+	"maintain_statement": true, // the judge of what it expires, demotes or merges
+	"upsert_chunk":       true, // its relation statement; its runtime edges keep method runtime
 }
 
 // statementMethodName is the <name> of rule:<name> / extractor:<name>: short,
@@ -48,7 +49,7 @@ func stampStatementMethod(ctx context.Context, in *docInput) *tools.Result {
 		return nil
 	}
 	if !statementMethodOps[in.Op] {
-		r := errValidation(in.Op+": method is taken only by propose_statement and upsert_chunk",
+		r := errValidation(in.Op+": method is taken only by propose_statement, maintain_statement and upsert_chunk",
 			"Omit method on this op.")
 		return &r
 	}

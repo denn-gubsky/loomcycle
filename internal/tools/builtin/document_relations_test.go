@@ -186,6 +186,20 @@ func TestRelationGate_CharacteristicsHoldAndAReLinkIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRelationGate_ASyncedStatementsOriginMethodIsNotAQualifier: sync records a pulled
+// statement's original method in attributes.origin_method and push sends it through the
+// peer's link_chunks. It is the statement layer's bookkeeping; read as a qualifier, a
+// kind that declares qualifiers would refuse every pushed statement.
+func TestRelationGate_ASyncedStatementsOriginMethodIsNotAQualifier(t *testing.T) {
+	f := newRelFixture(t, relationsOntologyMD)
+	if _, refused, text := f.link(t, "stricter_than", f.provA, f.provB, `,"attributes":{"aspect":"security","origin_method":"extraction"}`); refused {
+		t.Errorf("a pushed statement carrying origin_method was refused: %s", text)
+	}
+	if g := f.d.gateAttributes(f.ctx, "stricter_than", map[string]any{"aspect": "security", "origin_method": "extraction"}, false); !g.Valid || len(g.Warnings) != 0 {
+		t.Errorf("a pulled statement carrying origin_method was annotated: valid %v, %v", g.Valid, g.Warnings)
+	}
+}
+
 // TestRelationGate_QualifiersAndTheDiscriminator.
 func TestRelationGate_QualifiersAndTheDiscriminator(t *testing.T) {
 	f := newRelFixture(t, relationsOntologyMD)

@@ -30,6 +30,9 @@ existing one.** A new document always gets a Path-tree name.
 - `work_key` — with `reimport`: the work's key, e.g. `law:ua/2297-vi`.
 - `edition_date` — with `reimport`: when the edition came into force (unix
   nanoseconds; default now).
+- `amending_document_id` — with `reimport` and `work_key`: the document of this
+  scope that made the edition, such as the amending act; see "Who made the
+  edition" below.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
 - `source_url`, `source_kind`, `source_title` — new document only: where the
@@ -114,6 +117,23 @@ The response adds `reimport: {unchanged, superseded, moved, closed, created,
 statements_copied, statements_proposed}` and `changed_chunk_ids` (the new,
 superseding and moved parts, and the root when its title or text changed).
 
+### Who made the edition: `amending_document_id`
+
+Name the document that made the edition — the amending act, held in this scope —
+and each part the edition renumbered or moved gets one `amends` statement from
+that document's root chunk, with `attributes: {mod_type: renumbering}`, method
+`import`, valid from `edition_date` when you pass one. Untouched, superseded and
+new parts get none, and running the same edition again adds none. The statement
+links the two documents, so you must be able to read and link both; a document
+you may not is refused as one that does not exist, before anything is written.
+
+Where this scope's vocabulary declares relation kinds, `amends` must be one of
+them, accepting `mod_type: renumbering`. When it does not accept the statement,
+the edition is still imported: the statement is skipped and counted by the
+refusal's code. The `reimport` result then adds `amends_written` (the
+statements written) and `amends_skipped` (`{code: count}`), each only when not
+zero.
+
 ## Returns
 
 `{document_id, root_chunk_id, chunks_created, image_chunks, skipped,
@@ -140,6 +160,9 @@ path is not in the result; use `get_document` or `Path` `ls` to see it.
 - With `reimport`: `edition_date ... is earlier than the edition already in
   force` — import editions in date order. `identity_collision` — another
   document holds the `work_key`.
+- `amending_document_id needs reimport with work_key` — it is only taken on a
+  reimport by `work_key`. `amending_document_id: no such document` — it is not
+  a document of this scope you may read and link. Nothing is written.
 - The import is not all-or-nothing. If it fails part-way, the chunks created so
   far stay; for a new document, `delete_document` it and import again.
 - In the tenant scope, the shared ontology document refuses imports from
