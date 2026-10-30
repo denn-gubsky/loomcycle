@@ -207,6 +207,84 @@ func TestParseGrammarBody_BrokenGrammarIsDisabled(t *testing.T) {
 	}
 }
 
+// nbuAnchorGrammarBody keys an NBU act's parts by the scope they sit in: the resolution
+// and its annexes are scopes, a point's heading quotes its text and ends with «…», a
+// chapter's is a short title. The last line's pattern itself contains " => ".
+const nbuAnchorGrammarBody = "scope: ^Постанова$ => resolution\n" +
+	"- scope: ^Додаток(?:\\s+(?P<n>\\d+))?(?:\\s|$) => annex-{n} | annex\n" +
+	"anchor: ^(?P<n>\\d+)\\.\\s.*…$ => point-{n}\n" +
+	"anchor: ^(?P<n>\\d+)\\.\\s => chapter-{n}\n" +
+	"anchor: ^(?P<a>x) => y => lit-{a}|lit\n"
+
+// TestParseGrammarBody_ScopeAndAnchorLinesParseIntoRules: each line keeps its pattern
+// and its alternatives in order; a pattern may itself contain " => " (the split is on
+// the last one); and a grammar that only keys anchors needs no resolve: line.
+func TestParseGrammarBody_ScopeAndAnchorLinesParseIntoRules(t *testing.T) {
+	g := ParseGrammarBody("nbu-act", "NbuResolution", nbuAnchorGrammarBody)
+	if g.Issue != "" {
+		t.Fatalf("issue = %q", g.Issue)
+	}
+	wantScopes := []GrammarRule{
+		{Pattern: `^Постанова$`, Templates: []string{"resolution"}},
+		{Pattern: `^Додаток(?:\s+(?P<n>\d+))?(?:\s|$)`, Templates: []string{"annex-{n}", "annex"}},
+	}
+	wantAnchors := []GrammarRule{
+		{Pattern: `^(?P<n>\d+)\.\s.*…$`, Templates: []string{"point-{n}"}},
+		{Pattern: `^(?P<n>\d+)\.\s`, Templates: []string{"chapter-{n}"}},
+		{Pattern: `^(?P<a>x) => y`, Templates: []string{"lit-{a}", "lit"}},
+	}
+	if !reflect.DeepEqual(g.Scopes, wantScopes) {
+		t.Errorf("scopes = %#v\nwant %#v", g.Scopes, wantScopes)
+	}
+	if !reflect.DeepEqual(g.Anchors, wantAnchors) {
+		t.Errorf("anchors = %#v\nwant %#v", g.Anchors, wantAnchors)
+	}
+	if len(g.Patterns) != 0 || g.Resolve != "" {
+		t.Errorf("an anchors-only grammar grew patterns or a resolve line: %#v", g)
+	}
+}
+
+// TestParseGrammarBody_BrokenRuleLineDisablesTheGrammar: a scope:/anchor: line that
+// cannot be used disables the whole grammar, as a broken pattern: line does — a half
+// set of scopes would key parts into the wrong scope without a word.
+func TestParseGrammarBody_BrokenRuleLineDisablesTheGrammar(t *testing.T) {
+	const okAnchor = "anchor: ^(?P<n>\\d+)\\. => point-{n}\n"
+	for name, tc := range map[string]struct{ body, issue string }{
+		"no arrow":                         {"anchor: ^(?P<n>\\d+)\\.\n", `anchor: line has no " => "`},
+		"no templates":                     {"anchor: ^(?P<n>\\d+)\\. =>\n", "anchor: line has an empty alternative"},
+		"empty alternative":                {"anchor: ^(?P<n>\\d+)\\. => point-{n} |\n", "anchor: line has an empty alternative"},
+		"empty middle alt":                 {"scope: ^Додаток => annex | | x\n" + okAnchor, "scope: line has an empty alternative"},
+		"uncaptured group":                 {"scope: ^Додаток => annex-{n}\n" + okAnchor, "scope: line names {n}, which its pattern does not capture"},
+		"bad regex":                        {"scope: ^(Додаток => annex\n" + okAnchor, "scope: pattern does not compile"},
+		"empty regex":                      {"anchor:  => point\n", "anchor: names no pattern"},
+		"too long":                         {"anchor: " + strings.Repeat("a", MaxOntologyPatternLen+1) + " => x\n", "anchor: pattern is longer than"},
+		"scopes only":                      {"scope: ^Додаток => annex\n", "declares no anchor: or pattern: line"},
+		"pattern, no resolve with anchors": {okAnchor + "pattern: (?P<n>\\d+)\n", "declares no resolve: line"},
+	} {
+		g := ParseGrammarBody("g", "", tc.body)
+		if !strings.Contains(g.Issue, tc.issue) || len(g.Patterns)+len(g.Scopes)+len(g.Anchors) != 0 {
+			t.Errorf("%s: want a disabled grammar with issue %q, got %#v", name, tc.issue, g)
+		}
+	}
+}
+
+// TestParseGrammarBody_LegacyGrammarKeepsItsParse: a grammar of pattern: and resolve:
+// lines parses exactly as before rule lines existed — no rules, and the same issue text
+// for a missing line.
+func TestParseGrammarBody_LegacyGrammarKeepsItsParse(t *testing.T) {
+	g := ParseGrammarBody("art", "Provision", "pattern: ^Article (?P<n>\\d+)\nresolve: anchor=art{n}\n")
+	want := OntologyGrammar{Name: "art", Class: "Provision", Patterns: []string{`^Article (?P<n>\d+)`}, Resolve: "anchor=art{n}"}
+	if !reflect.DeepEqual(g, want) {
+		t.Errorf("legacy grammar = %#v\nwant %#v", g, want)
+	}
+	if g := ParseGrammarBody("g", "", "resolve: work_key={n}\n"); g.Issue != "declares no pattern: line" {
+		t.Errorf("no pattern: issue = %q", g.Issue)
+	}
+	if g := ParseGrammarBody("g", "", "pattern: (?P<n>\\d+)\n"); g.Issue != "declares no resolve: line" {
+		t.Errorf("no resolve: issue = %q", g.Issue)
+	}
+}
+
 // TestRenderOntology_DocumentClassesNeverReachThePrompt (RFC FO decision 10b.2).
 //
 // The seed now carries a `Document` class. If it — or any class under it — reached the

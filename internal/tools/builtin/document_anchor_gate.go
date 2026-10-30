@@ -64,7 +64,22 @@ func (d *Document) classGrammar(ctx context.Context, key sqlmem.ScopeKey, rootID
 		}
 		return memrank.OntologyGrammar{}, term.Name, "grammar " + name + " is not declared in the ontology"
 	}
+	if directive == "citation_grammar" {
+		if issue := citationGrammarIssue(g); issue != "" {
+			return memrank.OntologyGrammar{}, term.Name, issue
+		}
+	}
 	return g, term.Name, ""
+}
+
+// citationGrammarIssue explains why a grammar that parsed cleanly still cannot cite:
+// one that only keys anchors (anchor: lines, no pattern:) has nothing to find a
+// citation with, and named as a citation grammar it would find none without a word.
+func citationGrammarIssue(g memrank.OntologyGrammar) string {
+	if len(g.Patterns) == 0 {
+		return "grammar " + g.Name + " declares no pattern: line, so it finds no citations"
+	}
+	return ""
 }
 
 // anchorFor applies a grammar to a part's heading path; "" when grammar is "" or
@@ -74,6 +89,8 @@ func (d *Document) classGrammar(ctx context.Context, key sqlmem.ScopeKey, rootID
 // before its ancestors' — and the first matching pattern wins. The anchor is the
 // grammar's `resolve:` line's `anchor=` template with each {group} filled from that
 // match; a grammar whose resolve line names no anchor yields "".
+//
+// A grammar with scope: or anchor: lines composes the anchor instead: see scopedAnchor.
 func (d *Document) anchorFor(ctx context.Context, grammar string, headingPath []string) string {
 	if grammar == "" || len(headingPath) == 0 || d.Store == nil || d.SqlMem == nil {
 		return ""
@@ -87,6 +104,9 @@ func (d *Document) anchorFor(ctx context.Context, grammar string, headingPath []
 		return ""
 	}
 	tmpl := resolveTemplate(g.Resolve, "anchor")
+	if len(g.Scopes) > 0 || len(g.Anchors) > 0 {
+		return scopedAnchor(g, tmpl, headingPath)
+	}
 	if tmpl == "" {
 		return ""
 	}
@@ -111,14 +131,94 @@ func (d *Document) anchorFor(ctx context.Context, grammar string, headingPath []
 	return ""
 }
 
-// usableGrammar finds a named grammar that parsed cleanly.
+// anchorRule is a compiled scope: or anchor: line.
+type anchorRule struct {
+	re        *regexp.Regexp
+	templates []string
+}
+
+// compileAnchorRules compiles a grammar's rule lines. Compiled here rather than kept on
+// the parsed grammar, as anchorFor does with patterns: the parse is shared through the
+// ontology cache and stays plain data. The parser has already capped each pattern.
+func compileAnchorRules(rules []memrank.GrammarRule) []anchorRule {
+	out := make([]anchorRule, 0, len(rules))
+	for _, r := range rules {
+		if re, err := regexp.Compile(r.Pattern); err == nil {
+			out = append(out, anchorRule{re: re, templates: r.Templates})
+		}
+	}
+	return out
+}
+
+// keyHeading is the segment the first rule that keys heading gives. A rule keys it when
+// its pattern matches and one of its alternatives fills — the first whose groups all
+// took part in the match; a literal always does. A rule that matches but fills none
+// does not key the heading, and the next rule is tried.
+func keyHeading(rules []anchorRule, heading string) (string, bool) {
+	for _, r := range rules {
+		m := r.re.FindStringSubmatch(heading)
+		if m == nil {
+			continue
+		}
+		for _, t := range r.templates {
+			if seg := fillTemplate(t, r.re.SubexpNames(), m); seg != "" {
+				return seg, true
+			}
+		}
+	}
+	return "", false
+}
+
+// scopedAnchor composes a part's anchor from a grammar's scope: and anchor: lines.
+//
+// A heading a scope: line keys is a SCOPE heading (an annex, the resolution around the
+// act it approves) and is never a leaf. The leaf is the deepest heading below the
+// innermost scope that an anchor: line keys — or, after the anchor: lines, a pattern:
+// line filling the resolve line's anchor= template (legacy). The anchor is every scope
+// segment, outer to inner, then the leaf: `annex-2/point-3`.
+//
+// The leaf is never sought above the innermost scope: a table inside an annex nested in
+// chapter 3 keyed as "chapter-3" would read as part of the chapter, outside its annex.
+// Without a leaf, a part that is itself a scope heading is keyed by the scopes alone
+// (`annex-2`); any other part gets "", and the caller falls back to its heading path.
+func scopedAnchor(g memrank.OntologyGrammar, tmpl string, path []string) string {
+	scopes := compileAnchorRules(g.Scopes)
+	leaves := compileAnchorRules(g.Anchors)
+	if tmpl != "" {
+		for _, p := range g.Patterns {
+			if re, err := regexp.Compile(p); err == nil {
+				leaves = append(leaves, anchorRule{re: re, templates: []string{tmpl}})
+			}
+		}
+	}
+	var segs []string
+	innermost := -1
+	for i, h := range path {
+		if seg, ok := keyHeading(scopes, h); ok {
+			segs = append(segs, seg)
+			innermost = i
+		}
+	}
+	for i := len(path) - 1; i > innermost; i-- {
+		if leaf, ok := keyHeading(leaves, path[i]); ok {
+			return strings.Join(append(segs, leaf), "/")
+		}
+	}
+	if innermost == len(path)-1 {
+		return strings.Join(segs, "/")
+	}
+	return ""
+}
+
+// usableGrammar finds a named grammar that parsed cleanly. A grammar with anchor: lines
+// and no pattern: line is usable for anchors; citation use checks citationGrammarIssue.
 func usableGrammar(grammars []memrank.OntologyGrammar, name string) (memrank.OntologyGrammar, bool) {
 	if name == "" {
 		return memrank.OntologyGrammar{}, false
 	}
 	for _, g := range grammars {
 		if g.Name == name {
-			return g, g.Issue == "" && len(g.Patterns) > 0
+			return g, g.Issue == "" && (len(g.Patterns) > 0 || len(g.Anchors) > 0)
 		}
 	}
 	return memrank.OntologyGrammar{}, false
@@ -191,6 +291,8 @@ func (d *Document) classGrammars(ctx context.Context, key sqlmem.ScopeKey, rootI
 		}
 		g, usable := usableGrammar(read.Grammars, name)
 		switch {
+		case usable && citationGrammarIssue(g) != "":
+			issues = append(issues, citationGrammarIssue(g))
 		case usable:
 			gs = append(gs, g)
 		case g.Issue != "":

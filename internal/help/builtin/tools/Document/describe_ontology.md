@@ -47,9 +47,14 @@ relations, grammars, schemes, instances, issues?}`:
   `reserved` or `tenant`), `parent`, `inverse`, `domain`, `range`, its
   characteristics, `qualifiers`, `discriminator`, `dated`, `walk`, `auto_assert`
   and `renamed_from`.
-- `grammars` — each `{name, class?, patterns, resolve, issue?, used_as?}`.
-  - A grammar with an `issue` is disabled and has no patterns.
-  - `used_as` says how classes name it: `anchor`, `citation` or both.
+- `grammars` — each `{name, class?, patterns, resolve, scopes?, anchors?, issue?,
+  used_as?}`.
+  - `scopes` and `anchors` are its `scope:` and `anchor:` lines, each
+    `{pattern, templates}` (see Grammar lines below).
+  - A grammar with an `issue` is disabled and has no patterns, scopes or anchors.
+  - `used_as` says how classes name it: `anchor`, `citation` or both. A grammar
+    with no `pattern:` line finds no citations; named as a citation grammar it is
+    reported as an issue.
 - `schemes` — each concept scheme with its concepts: `name`, `path`, `parent`,
   `tag`, `notation`, `alt`, `rank`, `exact_match`, `retention`, `acl`.
 - `instances` — each real organisation, unit or post the Instances section
@@ -64,6 +69,46 @@ relations, grammars, schemes, instances, issues?}`:
     adoption trusts, and when the caller may not read the subject (it needs the
     tenant scope and read on the subject's document). Absent does not prove the
     instance is unadopted; do not create a subject for it.
+
+## Grammar lines
+
+A grammar is a `grammar:<name>` chunk in the classes section. Its body is lines:
+
+- `pattern: <regex>` and `resolve: work_key=…, anchor=…, kind=…` — a citation
+  grammar's matches, and the templates each fills (`{group}` is a named group of
+  the pattern). As an anchor grammar, the deepest heading a pattern matches fills
+  `anchor=`.
+- `scope: <regex> => <alt> | <alt> …` — a heading it matches is a scope (the
+  resolution around an act, an annex). Its segment prefixes every part inside it.
+- `anchor: <regex> => <alt> | <alt> …` — keys a part by its own heading, or by
+  the nearest heading above it within its scope.
+
+Each alternative is a template; the first whose `{group}`s all took part in the
+match is used, and one without groups always is. The split is on the last ` => `.
+A part's anchor is its scope segments, outer to inner, then its leaf. A scope
+heading's own part is keyed by the scopes alone. A part with no leaf inside its
+innermost scope keeps its heading-path anchor. A grammar with `anchor:` lines
+needs no `resolve:` line. Patterns are RE2: `\b` is an ASCII word boundary and
+never matches after a Cyrillic letter, so end a word with `(?:\s|$)`.
+
+A resolution approving a regulation that has annexes, where every scope numbers
+its points from 1 (a point's heading quotes its text and ends with «…», a
+chapter's is a short title):
+
+```text
+##### grammar:nbu-act
+scope: ^Постанова$ => resolution
+scope: ^Додаток(?:\s+(?P<n>\d+))?(?:\s|$) => annex-{n} | annex
+anchor: ^(?P<n>\d+)\.\s.*…$ => point-{n}
+anchor: ^(?P<n>\d+)\.\s => chapter-{n}
+```
+
+keys `Постанова › 1. Затвердити Положення…` as `resolution/point-1`, its
+`Додаток до постанови` as `resolution/annex`, the regulation's chapter
+`1. Основні положення та терміни` as `chapter-1` and its point
+`1. Це Положення розроблено…` as `point-1`, `Додаток 2 до Положення` as `annex-2`
+and the point 3 inside it as `annex-2/point-3`. The regulation's own heading is no
+scope, so its parts carry no prefix.
 
 ## Errors
 
