@@ -2506,6 +2506,15 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   Document Assistant agent + its four skills — no skills directory, no
   `LOOMCYCLE_SKILLS_ROOT`. A bundle may also ship pure *declarations* rather
   than agents — `system-channels` is one.
+- **`knowledge-base`** (opt-in, a prototype) ships `kb/linker`, a `code-js`
+  pass that proposes relations between one document's passages and a corpus,
+  and the tool-less `kb/verdict` judge it calls. It is **report-only**: it
+  writes nothing to the store, refuses any other mode, and covers one layer
+  (semantic relations between passages, from five built-in kinds or the
+  caller's list; the tenant ontology is not read yet). It needs
+  `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory, an embedder on the Postgres
+  vector tier, and a `low` tier. Input, report and limits:
+  [`bundles/knowledge-base/README.md`](../bundles/knowledge-base/README.md).
 
 ### A Starter that fans out over a document
 
