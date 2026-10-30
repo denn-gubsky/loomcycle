@@ -260,6 +260,76 @@ func TestDocumentSyncPull_KeepsTheEnvelopeOfAStatementWrittenHere(t *testing.T) 
 	})
 }
 
+// A synced statement an operator ruled on here is the operator's: a later pull
+// leaves its envelope and counts it kept, while a synced statement nobody ruled
+// on still follows the peer.
+func TestDocumentSyncPull_KeepsTheEnvelopeOfAStatementAnOperatorRuledOn(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		localDoc, pd, pctx, remoteDoc := carryPair(t, d, ctx)
+		ruledPeer := richPeerStatement(t, d, ctx, pd, pctx, remoteDoc)
+		pkey, _, _ := pd.resolveScope(pctx, "user")
+		peerA, _ := pd.chunkIDByNaturalKey(pctx, pkey, "nkA")
+		peerB, _ := pd.chunkIDByNaturalKey(pctx, pkey, "nkB")
+		freePeer := linkJSON(t, pd, pctx, fmt.Sprintf(`{"op":"link_chunks","from_id":%q,"to_id":%q,"kind":"refers","confidence":0.7,"attributes":{"note":"free"}}`, peerA, peerB))
+		syncReport(t, d, ctx, localDoc, "pull")
+
+		// It arrived for review, and an operator here accepted it.
+		ruled := statementsOfKind(t, d, ctx, localDoc, "cites", 1)[0]["id"].(string)
+		scopeExec(t, d, ctx, `UPDATE chunk_edges SET status = ? WHERE id = ?`, edgeStatusProposed, ruled)
+		vExec(t, d, operatorCtx(ctx), fmt.Sprintf(`{"op":"accept_statement","id":%q}`, ruled))
+
+		scopeExec(t, pd, pctx, `UPDATE chunk_edges SET confidence = ?, invalid_at = ?, attributes = ? WHERE id = ?`, 0.3, ns2025, `{"note":"peer rewrote"}`, ruledPeer)
+		scopeExec(t, pd, pctx, `UPDATE chunk_edges SET confidence = ?, attributes = ? WHERE id = ?`, 0.4, `{"note":"peer moved"}`, freePeer)
+		rep := syncReport(t, d, ctx, localDoc, "pull")
+		if rep["edges_envelope_kept"] != float64(1) || rep["edges_updated"] != float64(1) || rep["edges_added"] != float64(0) {
+			t.Errorf("pull over a ruled and an unruled synced statement = %v, want edges_envelope_kept 1, edges_updated 1, edges_added 0", rep)
+		}
+		s := statementsOfKind(t, d, ctx, localDoc, "cites", 1)[0]
+		if s["status"] != edgeStatusAsserted || s["method"] != edgeMethodSync || s["operator_ruled_at"] == nil {
+			t.Fatalf("the accepted statement = %v, want asserted, sync, operator_ruled_at set", s)
+		}
+		attrs, _ := s["attributes"].(map[string]any)
+		if s["confidence"] != 0.8 || s["invalid_at"] != float64(ns2026) || attrs["note"] != "para 3" {
+			t.Errorf("the pull rewrote a statement an operator ruled on: %v", s)
+		}
+		f := statementsOfKind(t, d, ctx, localDoc, "refers", 1)[0]
+		fattrs, _ := f["attributes"].(map[string]any)
+		if f["confidence"] != 0.4 || fattrs["note"] != "peer moved" {
+			t.Errorf("an unruled synced statement stopped following the peer: %v", f)
+		}
+	})
+}
+
+// resyncStatement re-checks the ruling itself, so a statement an operator ruled
+// on after the pull read its snapshot is still left as ruled.
+func TestResyncStatement_LeavesAStatementAnOperatorRuledOn(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		doc := newValidityDoc(t, d, ctx, "/docs/local")
+		a := upsertKeyed(t, d, ctx, doc, "nkA", "a")
+		b := upsertKeyed(t, d, ctx, doc, "nkB", "b")
+		ruled := linkJSON(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","from_id":%q,"to_id":%q,"kind":"cites","confidence":0.8}`, a, b))
+		free := linkJSON(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","from_id":%q,"to_id":%q,"kind":"refers","confidence":0.8}`, a, b))
+		scopeExec(t, d, ctx, `UPDATE chunk_edges SET method = ? WHERE id IN (?, ?)`, edgeMethodSync, ruled, free)
+		scopeExec(t, d, ctx, `UPDATE chunk_edges SET operator_ruled_at = ? WHERE id = ?`, 1, ruled)
+
+		key, _, _ := d.resolveScope(ctx, "user")
+		lower := 0.2
+		for id, kind := range map[string]string{ruled: "cites", free: "refers"} {
+			updated, refuse, err := d.resyncStatement(ctx, key, id, edgeWrite{from: a, to: b, kind: kind, method: edgeMethodSync, confidence: &lower})
+			if err != nil || refuse != nil {
+				t.Fatalf("%s: resync: %v %v", kind, err, refuse)
+			}
+			s, _ := d.statementByID(ctx, key, id)
+			if id == ruled && (updated || *s.Confidence != 0.8) {
+				t.Errorf("resync rewrote a statement an operator ruled on: updated %v, confidence %v", updated, *s.Confidence)
+			}
+			if id == free && (!updated || *s.Confidence != lower) {
+				t.Errorf("resync left an unruled synced statement: updated %v, confidence %v", updated, *s.Confidence)
+			}
+		}
+	})
+}
+
 func TestDocumentSyncPull_StillSkipsALocallyRejectedRelation(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		localDoc, pd, pctx, remoteDoc := carryPair(t, d, ctx)

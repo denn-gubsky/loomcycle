@@ -228,6 +228,71 @@ func TestUpsertChunk_ARelationEndsWithTheLastFactThatStatesIt(t *testing.T) {
 	})
 }
 
+// A relation an operator accepted is the operator's, not the fact's: correcting,
+// superseding or deleting the last fact that states it leaves it live. The same
+// fate ends a relation nobody ruled on.
+func TestUpsertChunk_ARelationAnOperatorAcceptedOutlivesItsFacts(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		dave := subjectNode(t, d, ctx, "Dave")
+		shop := subjectNode(t, d, ctx, "Shop")
+		for i, way := range []string{"corrected", "superseded", "deleted", "document deleted"} {
+			facts, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_document","scope":"user","title":"Facts %d"}`, i))
+			if r.IsError {
+				t.Fatal(r.Text)
+			}
+			docID := facts["document_id"].(string)
+			up := func(key, body, rel string) map[string]any {
+				out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":%q,"title":%q,"body":%q,
+					"about_ids":[%q,%q],"relation":%q}`, docID, key, body, body, dave, shop, rel))
+				if r.IsError {
+					t.Fatalf("%s: upsert %s: %s", way, key, r.Text)
+				}
+				return out
+			}
+			ruledKind, freeKind := fmt.Sprintf("works_at_%d", i), fmt.Sprintf("visits_%d", i)
+			ruledKey, freeKey := fmt.Sprintf("memory/fact/ruled-%d", i), fmt.Sprintf("memory/fact/free-%d", i)
+			ruledFact := up(ruledKey, "Dave works at the shop.", ruledKind)
+			freeFact := up(freeKey, "Dave visits the shop.", freeKind)
+			stmt := ruledFact["relation"].(map[string]any)["statement_id"].(string)
+			// It was filed for review, and an operator accepted it.
+			scopeExec(t, d, ctx, `UPDATE chunk_edges SET status = ? WHERE id = ?`, edgeStatusProposed, stmt)
+			vExec(t, d, operatorCtx(ctx), fmt.Sprintf(`{"op":"accept_statement","scope":"user","id":%q}`, stmt))
+
+			switch way {
+			case "corrected":
+				up(ruledKey, "Dave left the shop.", fmt.Sprintf("left_%d", i))
+				up(freeKey, "Dave avoids the shop.", fmt.Sprintf("avoids_%d", i))
+			case "superseded":
+				for j, f := range []map[string]any{ruledFact, freeFact} {
+					c, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"memory/fact/next-%d-%d","title":"Dave moved on.","body":"Dave moved on."}`, docID, i, j))
+					if r.IsError {
+						t.Fatal(r.Text)
+					}
+					if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"supersede_chunk","scope":"user","id":%q,"supersedes_id":%q}`, c["id"], f["id"])); r.IsError {
+						t.Fatal(r.Text)
+					}
+				}
+			case "deleted":
+				for _, f := range []map[string]any{ruledFact, freeFact} {
+					if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"delete_chunk","scope":"user","id":%q}`, f["id"])); r.IsError {
+						t.Fatal(r.Text)
+					}
+				}
+			case "document deleted":
+				if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"delete_document","scope":"user","id":%q}`, docID)); r.IsError {
+					t.Fatal(r.Text)
+				}
+			}
+			if got := liveEdgeTargets(t, d, ctx, "user", dave, ruledKind); !got[shop] {
+				t.Errorf("%s: a relation an operator accepted ended with its last fact: %v", way, got)
+			}
+			if got := liveEdgeTargets(t, d, ctx, "user", dave, freeKind); got[shop] {
+				t.Errorf("%s: a relation nobody ruled on outlived its last fact: %v", way, got)
+			}
+		}
+	})
+}
+
 // The relation runs between the first two subjects the CALLER named. When one of
 // them cannot be linked, the relation is skipped rather than drawn between the
 // next two that happened to be written.

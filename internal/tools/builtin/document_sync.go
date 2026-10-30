@@ -259,6 +259,9 @@ type syncEdge struct {
 	invalidAt  *int64
 	attributes map[string]any
 	evidence   []syncEvidence
+	// ruled: an operator ruled on it on this side (operator_ruled_at). Read on
+	// the local side only; a peer's rulings are the peer's.
+	ruled bool
 }
 
 // syncEvidence is one evidence row. chunkNK is "" for a row the other side can
@@ -402,7 +405,7 @@ func (d *Document) loadLocalEdges(ctx context.Context, key sqlmem.ScopeKey, idTo
 		nkOf[id] = nk
 	}
 	for ek, st := range live {
-		e := syncEdge{id: st.ID, method: st.Method, confidence: st.Confidence, validAt: st.ValidAt, invalidAt: st.InvalidAt, attributes: st.Attributes}
+		e := syncEdge{id: st.ID, method: st.Method, ruled: st.OperatorRuledAt != nil, confidence: st.Confidence, validAt: st.ValidAt, invalidAt: st.InvalidAt, attributes: st.Attributes}
 		for _, r := range ev[st.ID] {
 			e.evidence = append(e.evidence, syncEvidence{chunkNK: nkOf[r.ChunkID], quote: r.Quote})
 		}
@@ -730,7 +733,9 @@ func (w localWriter) carryEdge(ctx context.Context, in edgeCarryIn) (edgeCarry, 
 	var out edgeCarry
 	attrs := carriedAttributes(in.src)
 	if in.have != nil {
-		if in.have.method == edgeMethodSync {
+		// A statement a pull wrote follows the peer, until an operator here rules
+		// on it: then it is the operator's, and kept like one written here.
+		if in.have.method == edgeMethodSync && !in.have.ruled {
 			updated, refuse, err := w.d.resyncStatement(ctx, w.key, in.have.id, edgeWrite{
 				from: in.fromID, to: in.toID, kind: in.kind, method: edgeMethodSync,
 				confidence: in.src.confidence, validAt: in.src.validAt, invalidAt: in.src.invalidAt, attributes: attrs,
@@ -900,7 +905,8 @@ type reconcileCounts struct {
 	edgesSkippedRejected int
 	// edgesUpdated: statements a pull wrote before whose envelope followed the
 	// peer's. edgesEnvelopeKept: statements whose envelope differs from the
-	// source's and was left — written here, or on a peer a push cannot change.
+	// source's and was left — written here, ruled on by an operator here, or on
+	// a peer a push cannot change.
 	// evidenceDropped: source evidence the writer's side could not check.
 	edgesUpdated, edgesEnvelopeKept, evidenceDropped int
 }
