@@ -138,6 +138,31 @@ func TestKBLinker_MaintainPassAgainstTheRealDocumentTool(t *testing.T) {
 	}
 }
 
+// withRealOntology writes md as the tenant's confirmed ontology and returns ctx
+// with the tenant scope granted to the run. The ontology is the operator's to
+// write, and an operator call carries no run; the linker then runs as a plain run.
+func withRealOntology(t *testing.T, d *builtin.Document, ctx context.Context, md string) context.Context {
+	t.Helper()
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}
+	})
+	op := tools.WithSubstrateOperator(context.Background())
+	op = tools.WithRunIdentity(op, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
+	op = tools.WithRunPolicy(op, tools.RunPolicy{
+		Tools:  []string{"*"},
+		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}},
+		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}},
+	})
+	mj, _ := json.Marshal(md)
+	onto := realDoc(t, d, op, `{"op":"import_md","scope":"tenant","markdown":`+string(mj)+`}`)
+	realDoc(t, d, op, fmt.Sprintf(`{"op":"set_path","scope":"tenant","id":%q,"path":"/memory/ontology"}`, onto["document_id"]))
+	root := realDoc(t, d, op, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, onto["root_chunk_id"]))
+	realDoc(t, d, op, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"status":"confirmed","revision":%v}`,
+		onto["root_chunk_id"], root["revision"]))
+	return ctx
+}
+
 // kbRealOntologyMD declares a Law class whose first article is its definitions
 // passage, a scheme of two concepts, and uses_term. defines is a seed kind;
 // uses_term is one a tenant declares.
@@ -153,25 +178,7 @@ const kbRealOntologyMD = "# Tenant Ontology\n\n" +
 // and both terms in the next article, get uses_term.
 func TestKBLinker_TermsPassAgainstTheRealDocumentTool(t *testing.T) {
 	d, ctx := realDocument(t)
-	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
-		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}}
-		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}
-	})
-	// The ontology is the operator's to write: an operator call carries no run.
-	// The linker then runs as a plain run.
-	op := tools.WithSubstrateOperator(context.Background())
-	op = tools.WithRunIdentity(op, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
-	op = tools.WithRunPolicy(op, tools.RunPolicy{
-		Tools:  []string{"*"},
-		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}},
-		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}},
-	})
-	mj, _ := json.Marshal(kbRealOntologyMD)
-	onto := realDoc(t, d, op, `{"op":"import_md","scope":"tenant","markdown":`+string(mj)+`}`)
-	realDoc(t, d, op, fmt.Sprintf(`{"op":"set_path","scope":"tenant","id":%q,"path":"/memory/ontology"}`, onto["document_id"]))
-	root := realDoc(t, d, op, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, onto["root_chunk_id"]))
-	realDoc(t, d, op, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"status":"confirmed","revision":%v}`,
-		onto["root_chunk_id"], root["revision"]))
+	ctx = withRealOntology(t, d, ctx, kbRealOntologyMD)
 
 	law := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Закон про послуги","type":"Law"}`)
 	chunk := func(title, body string) string {
@@ -213,5 +220,37 @@ func TestKBLinker_TermsPassAgainstTheRealDocumentTool(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+// kbClassifyOntologyMD: a Law is a NormativeAct whose title starts "Закон
+// України"; its number, from the identifier pattern, is its identity.
+const kbClassifyOntologyMD = "# Tenant Ontology\n\n" +
+	"## Classes\n@section classes\n\n### Document\n- `title` text\n\n" +
+	"#### NormativeAct\n@identifier_pattern (?P<number>\\d+-[IVX]+)\n- `number` text @identity\n\n" +
+	"##### Law\n@title_pattern ^Закон України\n\n" +
+	"## Relations\n@section relations\n\n### uses_term\n@inverse term_used_by\n"
+
+// TestKBLinker_ClassifyPassAgainstTheRealDocumentTool: L0 against the runtime's
+// own classify op. A document whose title matches exactly one class by rule is
+// classified, and the class is applied to it.
+func TestKBLinker_ClassifyPassAgainstTheRealDocumentTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	ctx = withRealOntology(t, d, ctx, kbClassifyOntologyMD)
+	law := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Закон України № 2297-VI про захист персональних даних"}`)
+
+	rep := runRealLinker(t, d, ctx, fmt.Sprintf(
+		`{"document_id":%q,"scope":"tenant","write":"propose","layers":["L0"]}`, law["document_id"]))
+	if refusals, _ := rep["refusals"].(map[string]any); len(refusals) != 0 {
+		t.Errorf("refusals = %v, want none", refusals)
+	}
+	L, _ := rep["layers"].(map[string]any)["L0"].(map[string]any)
+	counts, _ := L["counts"].(map[string]any)
+	if counts["classified"] != float64(1) || counts["live"] != float64(1) {
+		t.Errorf("L0 = %v, want one live classification", L)
+	}
+	got := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_document","scope":"tenant","id":%q}`, law["document_id"]))
+	if got["type"] != "Law" {
+		t.Errorf("document type = %v, want Law applied by the classify layer", got["type"])
 	}
 }
