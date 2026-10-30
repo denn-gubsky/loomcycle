@@ -430,7 +430,7 @@ func (d *Document) chunkFilterPredicate(ctx context.Context, ap searchFilterAppl
 		args = append(args, ap.TagPrefix, ap.TagPrefix+"/%")
 	}
 	for _, cs := range ap.concepts {
-		frag, cargs := d.conceptPredicate(ctx, ap.ConceptMatchedBy, cs)
+		frag, cargs := d.conceptPredicate(ctx, ap.ConceptMatchedBy, cs, ap.AsOf)
 		parts = append(parts, frag)
 		args = append(args, cargs...)
 	}
@@ -591,7 +591,12 @@ func conceptClosure(schemes []memrank.OntologyScheme, tag string) conceptSet {
 
 // conceptPredicate renders one concept filter over `chunks c`. The concept ids
 // come from the parsed ontology, never from the caller.
-func (d *Document) conceptPredicate(ctx context.Context, by string, cs conceptSet) (string, []any) {
+//
+// With as_of, a statement counts only while it is in force at that instant, as a
+// graph walk reads it: a chunk that WAS about the concept then is about it as of
+// then, and one that only became so later is not. Without as_of its dates are not
+// consulted.
+func (d *Document) conceptPredicate(ctx context.Context, by string, cs conceptSet, asOf *int64) (string, []any) {
 	if by == conceptByStatement {
 		if len(cs.ids) == 0 {
 			return "1=0", nil
@@ -599,8 +604,10 @@ func (d *Document) conceptPredicate(ctx context.Context, by string, cs conceptSe
 		kinds, _ := d.expandKindFilter(ctx, []string{"subject"})
 		kph, args := inPlaceholders(kinds)
 		iph, iargs := inPlaceholders(cs.ids)
+		live, largs := statementVisibility{asOf: asOf}.clause()
+		args = append(append(args, iargs...), largs...)
 		return "c.id IN (SELECT e.from_id FROM chunk_edges e WHERE e.kind IN (" + kph + ") AND e.to_id IN (" + iph +
-			") AND " + edgeLiveClause + ")", append(args, iargs...)
+			") AND " + live + ")", args
 	}
 	if len(cs.tags) == 0 {
 		return "1=0", nil
