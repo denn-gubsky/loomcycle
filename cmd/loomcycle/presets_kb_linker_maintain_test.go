@@ -253,7 +253,7 @@ func TestKBLinker_ImportedStatementsAreMaintainedLikeMachineOnes(t *testing.T) {
 	imp := citeStatement("st-import", "c1", "x-deleted")
 	imp.Method = "import"
 	syn := citeStatement("st-sync", "c1", "x1", "a sentence no part says", "nor this one either")
-	syn.Method = "sync"
+	syn.Method, syn.Attributes = "sync", map[string]any{"origin_method": "extractor:clauses"}
 	can := citeStatement("st-canvas", "c-a1", "x1", "keep a register of incidents")
 	can.Method, can.ValidAt = "canvas", 1704067200000000000
 	f.statements = []*kbStatement{imp, syn, can}
@@ -392,19 +392,25 @@ func TestKBLinker_DuplicateOfAnotherStatusIsFlaggedNotMerged(t *testing.T) {
 // TestKBLinker_SyncedStatementIsJudgedByTheMethodThatMadeIt: sync stamps its own
 // method on the receiving side and keeps the first one in
 // attributes.origin_method. A person's statement that arrived by sync is still a
-// person's, so it is only flagged; one a rule made is maintained as before.
+// person's, so it is only flagged, and so is one synced before origin_method
+// existed, which may be a person's; one a rule made is maintained as before.
 func TestKBLinker_SyncedStatementIsJudgedByTheMethodThatMadeIt(t *testing.T) {
 	f := maintainFixture()
 	person := citeStatement("s-person", "c1", "x-deleted")
 	person.Method, person.Attributes = "sync", map[string]any{"origin_method": "manual"}
 	rule := citeStatement("s-rule", "c1", "x-deleted")
 	rule.Method, rule.Attributes = "sync", map[string]any{"origin_method": "rule:citation"}
-	f.statements = []*kbStatement{person, rule}
+	unknown := citeStatement("s-unknown", "c1", "x-deleted")
+	unknown.Method = "sync"
+	f.statements = []*kbStatement{person, unknown, rule}
 
 	runLinker(t, f, maintainInput)
 
 	if got := actionsOf(f, "s-person"); got != "flag" {
 		t.Errorf("s-person actions = %q, want flag — a person's statement stays one after sync", got)
+	}
+	if got := actionsOf(f, "s-unknown"); got != "flag" {
+		t.Errorf("s-unknown actions = %q, want flag — with no origin_method it may be a person's", got)
 	}
 	if got := actionsOf(f, "s-rule"); got != "expire" {
 		t.Errorf("s-rule actions = %q, want expire", got)

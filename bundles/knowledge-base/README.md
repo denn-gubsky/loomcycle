@@ -71,8 +71,12 @@ If every check passes, the statement is verified.
 
 These rules always hold:
 - A statement a person wrote (`manual`, or a method the linker does not know),
-  or one an operator ruled on, is only ever **verified or flagged**. Statements written by `rule:`,
-  `extractor:`, import, sync and canvas are all maintained the same way.
+  or one an operator ruled on, is only ever **verified or flagged**. Statements
+  written by `rule:`, `extractor:`, import and canvas are all maintained the
+  same way.
+- A synced statement is judged by the method that first made it
+  (`attributes.origin_method`). One with no `origin_method`, synced before the
+  field existed, may be a person's, so it is only verified or flagged.
 - A statement the runtime wrote (the edition chain's `supersedes`, the
   consolidator's links, `[[name]]` links) and any reserved kind are **not
   touched**.
