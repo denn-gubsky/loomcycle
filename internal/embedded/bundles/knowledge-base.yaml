@@ -225,6 +225,7 @@ agents:
       // Anything else counts as "other": the report never carries error text.
       var REFUSALS = ["kind_reserved", "kind_not_declared", "domain_range_violation",
         "characteristic_violation", "qualifier_violation", "statement_rejected",
+        "statement_asserted", "not_a_proposal", "statement_changed",
         "evidence_quote_not_found", "method_not_granted", "permission"];
 
       var INGEST_REASONS = { created: true, imported: true, reimported: true };
@@ -1230,7 +1231,7 @@ agents:
 
       function proposalCounts(extra) {
         return function () {
-          var c = { would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, refused: 0 };
+          var c = { would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, already_asserted: 0, refused: 0 };
           for (var k in extra) {
             if (hasOwn(extra, k)) { c[k] = extra[k]; }
           }
@@ -1240,12 +1241,17 @@ agents:
 
       // propose files one statement through write(), and counts what the runtime made
       // of it: a new proposal, an assertion (the runtime decides that, never this
-      // body), or evidence added to a statement that already existed.
+      // body), or evidence added to a statement that already existed. A proposal over
+      // a relation that already holds is refused statement_asserted; on a re-run that
+      // is the expected answer, so it is counted apart from the refusals.
       function propose(st, L, args) {
         var C = L.counts;
         var w = write(st, "propose_statement", args);
         if (w.dry) { C.would_propose++; return w; }
-        if (!w.ok) { C.refused++; return w; }
+        if (!w.ok) {
+          if (w.reason === "statement_asserted") { C.already_asserted++; } else { C.refused++; }
+          return w;
+        }
         if (w.result.status === "asserted") { C.asserted++; } else { C.proposed++; }
         if (w.result.created === false) { C.evidence_added++; }
         return w;

@@ -60,7 +60,7 @@ var kbOpContracts = []kbOpContract{
 	{Tool: "Document", Op: "propose_statement", OnMain: true,
 		Request:  `{from_id, to_id, kind, evidence: [{chunk_id, quote, char_start?, char_end?}], attributes?, method, scope}`,
 		Response: `{id, status: proposed|asserted, created, evidence_written, ontology_valid}`,
-		Assumes:  `method (R1) is accepted as "rule:<name>"; char_start/char_end are runes; a refusal names its code (kind_reserved, kind_not_declared, statement_rejected, evidence_quote_not_found, method_not_granted, …) in the error text`},
+		Assumes:  `method (R1) is accepted as "rule:<name>"; char_start/char_end are runes; a refusal names its code (kind_reserved, kind_not_declared, statement_rejected, statement_asserted, evidence_quote_not_found, method_not_granted, …) in the error text; a proposal over an asserted triple is refused statement_asserted, over a rejected one statement_rejected (#2246)`},
 	{Tool: "Document", Op: "list_statements", OnMain: false,
 		Request:  `{document_id | evidence_document_id, status: asserted|proposed, limit, after?, scope}`,
 		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
@@ -554,8 +554,20 @@ func (f *kbFixture) answerPropose(in map[string]any) (tools.Result, error) {
 		e, _ := ev["char_end"].(float64)
 		evs = append(evs, &kbEvidence{ChunkID: cid, Quote: quote, Start: int(s), End: int(e)})
 	}
+	status := "proposed"
+	if f.autoAssert[kind] {
+		status = "asserted"
+	}
 	for _, s := range f.statements {
 		if !s.Expired && s.From == from && s.To == to && s.Kind == kind && s.Discriminator == "" {
+			// As the runtime rules it: a rejected relation is not re-filed, and a
+			// proposal may not add evidence to one that already holds.
+			if s.Status == "rejected" {
+				return kbErr("propose_statement: statement_rejected: this relation was rejected by an operator")
+			}
+			if status == "proposed" && s.Status == "asserted" {
+				return kbErr("propose_statement: statement_asserted: this relation is already asserted (id " + s.ID + ")")
+			}
 			s.Evidence = append(s.Evidence, f.numberEvidence(evs)...)
 			return okResult(map[string]any{"id": s.ID, "status": s.Status, "created": false,
 				"evidence_written": len(evs), "ontology_valid": true})
@@ -563,12 +575,9 @@ func (f *kbFixture) answerPropose(in map[string]any) (tools.Result, error) {
 	}
 	f.nextID++
 	s := &kbStatement{ID: fmt.Sprintf("st-new-%d", f.nextID), From: from, To: to, Kind: kind, Method: method,
-		Status: "proposed", CreatedAt: int64(1000 + f.nextID), Evidence: f.numberEvidence(evs)}
+		Status: status, CreatedAt: int64(1000 + f.nextID), Evidence: f.numberEvidence(evs)}
 	if attrs, ok := in["attributes"].(map[string]any); ok {
 		s.Attributes = attrs
-	}
-	if f.autoAssert[kind] {
-		s.Status = "asserted"
 	}
 	f.statements = append(f.statements, s)
 	return okResult(map[string]any{"id": s.ID, "status": s.Status, "created": true,
