@@ -345,12 +345,13 @@ func (d *Document) releaseFactRelations(ctx context.Context, key sqlmem.ScopeKey
 // set still supports: no evidence from a chunk outside it that still exists and
 // is not a retired fact, and none from a chat turn or another scope. Run when
 // facts are retired or deleted, so a relation lives exactly as long as some fact
-// still states it.
+// still states it — unless an operator ruled on it (operator_ruled_at): what an
+// operator accepted stands on that ruling, not on the facts that first stated it.
 // inSet is a SQL condition on a chunk id column written as {col}, with its args,
 // as for snapshotDerivedQuotes; txnID "" runs outside a transaction.
 func (d *Document) expireUnsupportedRelations(ctx context.Context, key sqlmem.ScopeKey, txnID, except, inSet string, args ...any) error {
 	stmt := `UPDATE chunk_edges SET expired_at = ?
-		WHERE method = '` + edgeMethodConsolidator + `' AND expired_at IS NULL AND id <> ?
+		WHERE method = '` + edgeMethodConsolidator + `' AND expired_at IS NULL AND operator_ruled_at IS NULL AND id <> ?
 		  AND id IN (SELECT ev.edge_id FROM chunk_edge_evidence ev WHERE ` + strings.ReplaceAll(inSet, "{col}", "ev.chunk_id") + `)
 		  AND NOT EXISTS (SELECT 1 FROM chunk_edge_evidence o WHERE o.edge_id = chunk_edges.id
 		        AND (o.chunk_id IS NULL OR (NOT (` + strings.ReplaceAll(inSet, "{col}", "o.chunk_id") + `)
