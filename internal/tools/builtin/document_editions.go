@@ -328,6 +328,13 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 		defer unlock()
 	}
 	acl := d.newDocACL(ctx, key)
+	// A caller that may not claim a work key is refused before the lookup, so its
+	// answer is the same whether or not the scope holds the work.
+	if in.CreatePlaceholder {
+		if r := workKeyClaimAllowed(ctx, acl); r != nil {
+			return *r, nil
+		}
+	}
 	docID, rootID, status, err := d.documentByWorkKey(ctx, key, wk)
 	if err != nil {
 		return errFrom("resolve_anchor: "+err.Error(), err), nil
@@ -336,9 +343,6 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 	if docID == "" {
 		if !in.CreatePlaceholder {
 			return jsonResult(map[string]any{"work_key": wk, "found": false})
-		}
-		if r := workKeyClaimAllowed(ctx, acl); r != nil {
-			return *r, nil
 		}
 		path := "/documents/unresolved/" + placeholderSlug(wk)
 		if acl != nil {

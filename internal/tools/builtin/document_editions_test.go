@@ -309,6 +309,11 @@ func TestResolveAnchor_UnreadableWorkIsNotFound(t *testing.T) {
 	if !r.IsError || strings.Contains(r.Text, "/kb/secret") {
 		t.Errorf("a placeholder over an unreadable work: %s", r.Text)
 	}
+	// A caller that may not claim keys gets one answer whether or not the work is held.
+	_, ru := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/none","create_placeholder":true}`)
+	if !ru.IsError || strings.ReplaceAll(r.Text, "law:ua/9", "K") != strings.ReplaceAll(ru.Text, "law:ua/none", "K") {
+		t.Errorf("a placeholder request tells a held unreadable work (%s) from an unheld one (%s)", r.Text, ru.Text)
+	}
 	b, _ = json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition2, "reimport": true, "work_key": "law:ua/9"})
 	_, r = docExec(t, d, denied, string(b))
 	if !r.IsError || strings.Contains(r.Text, "/kb/secret") {
