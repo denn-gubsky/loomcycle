@@ -77,7 +77,9 @@ How a concept matches depends on the scope, and `concept_matched_by` says
 which. In the `tenant` scope, where the concepts are, a chunk matches when it
 has a `subject` relation (or a narrower kind, such as `primary_topic`) to a
 concept of the set; a proposed, rejected, refuted or retired relation does not
-count, and a tag alone does not either (`"statement"`). In a `user` or `agent`
+count, and a tag alone does not either (`"statement"`). With `as_of`, the
+relation must also be in force at that moment: one that had ended by then, or
+had not yet begun, does not count; an undated one always does. In a `user` or `agent`
 scope a relation cannot reach a concept, so a chunk matches when it carries the
 concept's tag or a tag under it (`"tag"`). A concept the ontology does not
 declare, or one you may not read, matches nothing.

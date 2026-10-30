@@ -298,3 +298,54 @@ func assertConceptFilters(t *testing.T, d *Document, base context.Context) {
 		}
 	}
 }
+
+// TestDocumentConceptFilter_StatementValidityFollowsAsOf — with as_of, a tenant-scope
+// subject statement counts only while it is in force at that instant: one that had
+// ended by then, or had not yet begun, does not make its chunk about the concept.
+// Without as_of the statement's dates are not consulted. An undated statement always
+// counts.
+func TestDocumentConceptFilter_StatementValidityFollowsAsOf(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		assertConceptStatementValidity(t, d, ctx)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		assertConceptStatementValidity(t, d, ctx)
+	})
+}
+
+func assertConceptStatementValidity(t *testing.T, d *Document, base context.Context) {
+	f := newConceptFixture(t, d, base)
+	rm := f.concepts["topics/risk-management"]
+	kb := f.doc("tenant", "/kb/a")
+	dated := func(validAt, invalidAt int64) string {
+		id := f.chunk("tenant", kb)
+		v := map[string]any{"op": "link_chunks", "scope": "tenant", "from_id": id, "to_id": rm, "kind": "subject", "valid_at": validAt}
+		if invalidAt > 0 {
+			v["invalid_at"] = invalidAt
+		}
+		f.c.exec(v)
+		return id
+	}
+	undated := f.chunk("tenant", kb)
+	f.link("link_chunks", undated, rm, "subject")
+	ended := dated(1000, 2000)
+	future := dated(5000, 0)
+
+	for _, tc := range []struct {
+		name string
+		asOf int64
+		want []string
+	}{
+		{"inside the ended statement", 1500, []string{undated, ended}},
+		{"after one ended, before the other began", 3000, []string{undated}},
+		{"inside the later statement", 6000, []string{undated, future}},
+		{"at the end instant (exclusive)", 2000, []string{undated}},
+	} {
+		ids, text := f.search(f.reader, map[string]any{"scope": "tenant", "concept": "Risk Management", "as_of": tc.asOf})
+		assertHits(t, tc.name+": "+text, ids, tc.want...)
+	}
+	ids, text := f.search(f.reader, map[string]any{"scope": "tenant", "concept": "Risk Management"})
+	assertHits(t, "without as_of: "+text, ids, undated, ended, future)
+}
