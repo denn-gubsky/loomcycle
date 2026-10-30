@@ -1,6 +1,6 @@
 ---
 name: Document/describe_ontology
-description: "Document op=describe_ontology — the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars and concept schemes."
+description: "Document op=describe_ontology — the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes and instances."
 ---
 `describe_ontology` returns the tenant's ontology as data. It is for code that has
 to act on the ontology, and it saves that code from parsing the document itself.
@@ -9,7 +9,8 @@ arguments.
 
 It describes what is **in force**, the way the runtime applies it. A draft ontology
 governs nothing, so it describes the standard classes and nothing else, and it
-lists relation kinds only when a confirmed ontology has a Relations section.
+lists relation kinds only when a confirmed ontology has a Relations section and
+instances only when it has an Instances section.
 
 ## Arguments
 
@@ -18,7 +19,7 @@ lists relation kinds only when a confirmed ontology has a Relations section.
 ## Returns
 
 `{exists, document_id?, status, confirmed, version, sections, partial?, classes,
-relations, grammars, schemes, issues?}`:
+relations, grammars, schemes, instances, issues?}`:
 
 - `exists` — false when the tenant has no ontology document, so only the standard
   classes apply.
@@ -44,6 +45,18 @@ relations, grammars, schemes, issues?}`:
   - `used_as` says how classes name it: `anchor`, `citation` or both.
 - `schemes` — each concept scheme with its concepts: `name`, `path`, `parent`,
   `tag`, `notation`, `alt`, `rank`, `exact_match`, `retention`, `acl`.
+- `instances` — each real organisation, unit or post the Instances section
+  declares, in document order: `{name, class?, alt?, chunk_id, registry_key?,
+  subject_chunk_id?, issues?}`.
+  - `class` is the instance's `@a` class; an instance without one, or whose class
+    is not declared, carries an issue and is never adopted.
+  - `chunk_id` is the instance's chunk in the ontology document.
+  - `registry_key` and `subject_chunk_id` name the subject node the instance was
+    adopted as when the ontology was confirmed — the node to write statements at.
+    They are absent until the instance is adopted, when its recorded key is not one
+    adoption trusts, and when the caller may not read the subject (it needs the
+    tenant scope and read on the subject's document). Absent does not prove the
+    instance is unadopted; do not create a subject for it.
 
 ## Errors
 
@@ -59,5 +72,5 @@ relations, grammars, schemes, issues?}`:
 ```
 
 ```json result
-{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": []}
+{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations", "instances"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": [], "instances": [{"name": "Acme Bank", "class": "organization", "alt": ["Acme"], "chunk_id": "5c2d8e1f0a3b4c6d9e7f1a2b3c4d5e6f", "registry_key": "organization:acme-bank", "subject_chunk_id": "9a8b7c6d5e4f40312a1b0c9d8e7f6a5b"}]}
 ```
