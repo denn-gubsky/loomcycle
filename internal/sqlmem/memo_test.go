@@ -7,7 +7,7 @@ import (
 
 // TestMemo_RebuildsOnlyWhenTheFingerprintChanges.
 func TestMemo_RebuildsOnlyWhenTheFingerprintChanges(t *testing.T) {
-	m := &Manager{}
+	m := &Manager{managerCore: &managerCore{}}
 	key := ScopeKey{Tenant: "t", Scope: "tenant", ScopeID: "t"}
 	builds := 0
 	build := func() (any, error) { builds++; return builds, nil }

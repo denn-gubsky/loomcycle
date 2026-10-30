@@ -90,7 +90,8 @@ func TestScopeKey_EveryEntryPointValidates(t *testing.T) {
 	// first, so it inherits the guarantee rather than restating it — and it returns
 	// nothing, so it could not report a violation anyway.
 	scopeKeyValidationExempt := map[string]string{
-		"touch": "internal; reached only from Query/Exec/BeginTxn, which validate first",
+		"touch":   "internal; reached only from Query/Exec/BeginTxn, which validate first",
+		"onPlane": "internal; stamps the plane on a key its caller has already validated",
 	}
 
 	fset := token.NewFileSet()

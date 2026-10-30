@@ -3,6 +3,7 @@ package sqlmem
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // dump.go — RFC AA Phase 3e: logical export/import of a scope's schema + data,
@@ -86,7 +87,45 @@ func (m *Manager) ExportScope(ctx context.Context, key ScopeKey) (*ScopeDump, er
 	if err := key.validate(); err != nil {
 		return nil, err
 	}
-	return m.backend.exportScope(ctx, key)
+	dump, err := m.backend.exportScope(ctx, key.wholeScope())
+	if err != nil || m.dialect != dialectPostgres {
+		return dump, err
+	}
+	// On postgres the Document tool's tables live on their own plane. They go into
+	// the same dump, so an archive restores on a runtime of any version: restored
+	// into the agent plane, they are moved over by the Document tool's first use of
+	// the scope, exactly like a scope from before the split.
+	docKey := key
+	docKey.plane = planeDoc
+	held, err := m.backend.scopeExists(ctx, docKey)
+	if err != nil || !held {
+		return dump, err
+	}
+	doc, err := m.backend.exportScope(ctx, docKey)
+	if err != nil {
+		return nil, err
+	}
+	// The export qualifies every statement with its schema. The doc plane's DDL
+	// is replayed into the agent plane, so it names that schema instead: the two
+	// names differ only in their prefix around one 128-bit hash, so the rename
+	// cannot touch anything else.
+	agentSchema, _, err := pgScopeNames(key.wholeScope())
+	if err != nil {
+		return nil, err
+	}
+	docSchema, _, err := pgScopeNames(docKey)
+	if err != nil {
+		return nil, err
+	}
+	for _, stmts := range [][]string{doc.DDL, doc.PostDDL} {
+		for i, stmt := range stmts {
+			stmts[i] = strings.ReplaceAll(stmt, docSchema, agentSchema)
+		}
+	}
+	dump.DDL = append(dump.DDL, doc.DDL...)
+	dump.Tables = append(dump.Tables, doc.Tables...)
+	dump.PostDDL = append(dump.PostDDL, doc.PostDDL...)
+	return dump, nil
 }
 
 // RestoreScope materializes a scope from a dump: it provisions the scope (so
@@ -107,5 +146,5 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 	if key.Scope == runScope {
 		return fmt.Errorf("sqlmem: the run scope is not restorable")
 	}
-	return m.backend.restoreScope(ctx, key, dump)
+	return m.backend.restoreScope(ctx, key.wholeScope(), dump)
 }
