@@ -243,18 +243,35 @@ func (d *Document) assignAnchors(ctx context.Context, key sqlmem.ScopeKey, mscop
 // documentByWorkKey finds the document whose root holds work key wk: claimed as
 // one (work_key), else a root whose class identity is that key (identity_key) —
 // a typed work the ontology already names.
+//
+// The exact key is tried first; then, if it differs, the key as a class identity
+// is spelt (lower-cased, inner spaces collapsed). A citation quotes a law's number
+// as the text writes it ("2297-VI"), while the class rules store the identity
+// lower-cased ("law:2297-vi"): without the second try no such citation resolves.
 func (d *Document) documentByWorkKey(ctx context.Context, key sqlmem.ScopeKey, wk string) (docID, rootID, status string, err error) {
-	for _, col := range []string{"work_key", "identity_key"} {
-		res, err := d.query(ctx, key, `SELECT d.id, d.root_chunk_id, COALESCE(d.status, '') FROM documents d
-			JOIN chunks c ON c.id = d.root_chunk_id WHERE c.`+col+` = ? LIMIT 1`, wk)
-		if err != nil {
-			return "", "", "", err
-		}
-		if len(res.Rows) > 0 {
-			return asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2]), nil
+	tries := []string{wk}
+	if norm := normaliseWorkKey(wk); norm != wk {
+		tries = append(tries, norm)
+	}
+	for _, k := range tries {
+		for _, col := range []string{"work_key", "identity_key"} {
+			res, err := d.query(ctx, key, `SELECT d.id, d.root_chunk_id, COALESCE(d.status, '') FROM documents d
+				JOIN chunks c ON c.id = d.root_chunk_id WHERE c.`+col+` = ? LIMIT 1`, k)
+			if err != nil {
+				return "", "", "", err
+			}
+			if len(res.Rows) > 0 {
+				return asStr(res.Rows[0][0]), asStr(res.Rows[0][1]), asStr(res.Rows[0][2]), nil
+			}
 		}
 	}
 	return "", "", "", nil
+}
+
+// normaliseWorkKey spells a work key the way memrank.IdentityKey spells a class
+// identity: lower-cased, with runs of white space collapsed to one.
+func normaliseWorkKey(wk string) string {
+	return strings.Join(strings.Fields(strings.ToLower(wk)), " ")
 }
 
 // claimWorkKey sets a root's work_key. A key another document's root holds, in

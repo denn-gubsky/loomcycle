@@ -152,3 +152,33 @@ func TestClassifier_TheDocumentIsFencedInTheChatPrompt(t *testing.T) {
 		t.Errorf("prompt = %s", chat.prompt)
 	}
 }
+
+// TestClassifier_AConceptsOnlyRequestAsksNoClass: when the class is settled, the
+// decision model gets only the yes/no per concept, and the chat model's class, if it
+// names one anyway, is ignored — its concepts still need a quote from the document.
+func TestClassifier_AConceptsOnlyRequestAsksNoClass(t *testing.T) {
+	only := req
+	only.ConceptsOnly = true
+	dec := &stubDecision{nouls: map[string]float64{conceptQ + "0": 0.9}}
+	chat := &stubChat{}
+	v := New(dec, "nimble", 0, chat, 0.6, 0.2).Classify(context.Background(), only)
+	if v.Class != "" || len(v.Concepts) != 1 || v.Concepts[0] != "Risk Management" || chat.called != 0 {
+		t.Fatalf("decision verdict = %+v, chat called %d", v, chat.called)
+	}
+	if _, asked := dec.last.Questions[classQ]; asked || len(dec.last.Questions) != 1 {
+		t.Errorf("questions = %v", dec.last.Questions)
+	}
+
+	chat = &stubChat{reply: `{"class": "Law", "concepts": ["Risk Management"], "quote": "управління ризиками"}`}
+	v = New(nil, "", 0, chat, 0.6, 0.2).Classify(context.Background(), only)
+	if v.Class != "" || len(v.Concepts) != 1 || strings.Contains(v.Reason, "none of the classes") {
+		t.Errorf("chat verdict = %+v", v)
+	}
+	if strings.Contains(chat.prompt, "Classes:") || !strings.Contains(chat.prompt, "Risk Management") {
+		t.Errorf("the concepts-only prompt offers classes:\n%s", chat.prompt)
+	}
+	chat = &stubChat{reply: `{"concepts": ["Risk Management"], "quote": "про звільнення"}`}
+	if v = New(nil, "", 0, chat, 0.6, 0.2).Classify(context.Background(), only); len(v.Concepts) != 0 {
+		t.Errorf("concepts without evidence survived: %+v", v)
+	}
+}

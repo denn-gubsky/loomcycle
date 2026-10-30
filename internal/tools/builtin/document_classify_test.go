@@ -73,6 +73,18 @@ func (f *classifyFixture) doc(scope, title, path, typ string, parts ...[2]string
 	return docID, rootID
 }
 
+// tiedDoc makes a document whose title matches Law and whose import source title
+// matches Code: two title-level matches of unrelated classes, a real tie. (A section
+// title alone no longer ties with the title's class.)
+func (f *classifyFixture) tiedDoc(scope, number, path string) string {
+	f.t.Helper()
+	docID, root := f.doc(scope, "Закон України № "+number, path, "")
+	rev := int(f.root(scope, root)["revision"].(float64))
+	f.must(map[string]any{"op": "update_chunk", "scope": scope, "id": root, "revision": rev,
+		"fields": map[string]any{importFieldSourceTitle: "Кодекс України про працю"}})
+	return docID
+}
+
 func (f *classifyFixture) classify(ctx context.Context, scope, docID string, extra map[string]any) classifyAnswer {
 	f.t.Helper()
 	v := map[string]any{"op": "classify", "scope": scope, "document_id": docID}
@@ -192,12 +204,13 @@ func TestClassify_AHandSetTypeIsKept(t *testing.T) {
 	}
 }
 
-// TestClassify_SiblingsMatchingIsAmbiguous: two unrelated classes match, so nothing is
-// applied; both are reported. (A class inheriting a sibling's pattern does not count:
-// Law and Code each match only by the pattern they declare.)
+// TestClassify_SiblingsMatchingIsAmbiguous: two unrelated classes match at title level
+// (the title and the import's source title), so nothing is applied; both are
+// reported. (A class inheriting a sibling's pattern does not count: Law and Code each
+// match only by the pattern they declare.)
 func TestClassify_SiblingsMatchingIsAmbiguous(t *testing.T) {
 	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
-	docID, _ := f.doc("user", "Закон України № 1-I", "/kb/a", "", [2]string{"Кодекс України про працю", "текст"})
+	docID := f.tiedDoc("user", "1-I", "/kb/a")
 	a := f.classify(f.ctx, "user", docID, nil)
 	if a.Live || a.Class != "" || f.docType("user", docID) != "" {
 		t.Errorf("an ambiguous match was applied: %+v", a)
@@ -488,17 +501,21 @@ func TestClassify_TheModelIsAskedOnlyWhereTheStepsLeaveItOpen(t *testing.T) {
 	stub := &stubClassifier{verdict: memrank.ClassifyVerdict{Method: memrank.ClassifyMethodDecision, Class: "Code", Probability: 0.9}}
 	f.d.Classifier = stub
 	unique, _ := f.doc("user", "Закон України № 11-I", "/kb/u", "")
-	if a := f.classify(f.ctx, "user", unique, nil); !a.Live || modelStep(a) != nil {
-		t.Errorf("a unique rule match asked the model: %+v", a)
+	if a := f.classify(f.ctx, "user", unique, nil); !a.Live || a.Class != "Law" || (modelStep(a) != nil && modelStep(a).Chosen != "") {
+		t.Errorf("a unique rule match asked the model for a class: %+v", a)
 	}
 	handSet, _ := f.doc("user", "Розпорядження 9", "/kb/h", "Order")
-	if a := f.classify(f.ctx, "user", handSet, nil); a.Result != "kept" || modelStep(a) != nil {
-		t.Errorf("a hand-set type asked the model: %+v", a)
+	if a := f.classify(f.ctx, "user", handSet, nil); a.Result != "kept" || (modelStep(a) != nil && modelStep(a).Chosen != "") {
+		t.Errorf("a hand-set type asked the model for a class: %+v", a)
 	}
-	if len(stub.asked) != 0 {
-		t.Fatalf("asked %d times", len(stub.asked))
+	// Both were asked for their concepts only (the class is decided), never for a class.
+	for _, q := range stub.asked {
+		if !q.ConceptsOnly {
+			t.Fatalf("a decided class was asked about: %+v", q)
+		}
 	}
-	tied, _ := f.doc("user", "Закон України № 12-I", "/kb/t", "", [2]string{"Кодекс України про працю", "текст"})
+	stub.asked = nil
+	tied := f.tiedDoc("user", "12-I", "/kb/t")
 	a := f.classify(f.ctx, "user", tied, nil)
 	if len(stub.asked) != 1 || len(stub.asked[0].Classes) != 2 {
 		t.Fatalf("an ambiguous match offered %+v", stub.asked)
@@ -515,5 +532,65 @@ func TestClassify_WithoutAClassifierTheModelStepSaysSo(t *testing.T) {
 	a := f.classify(f.ctx, "user", docID, nil)
 	if step := modelStep(a); step == nil || !strings.Contains(step.Reason, "no classifier") || a.Result != "unclassified" {
 		t.Errorf("answer = %+v", a)
+	}
+}
+
+// TestResolveAnchor_AWorkKeyMatchesItsIdentityWhateverItsCase: a citation names a law as
+// the text writes it ("2297-VI"); the class rules store its identity lower-cased.
+func TestResolveAnchor_AWorkKeyMatchesItsIdentityWhateverItsCase(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	docID, _ := f.doc("tenant", "Закон України № 2297-VI", "/kb/laws/2297", "")
+	if a := f.classify(f.ctx, "tenant", docID, nil); a.WorkKey != "law:2297-vi" {
+		t.Fatalf("work key = %q", a.WorkKey)
+	}
+	out := f.must(map[string]any{"op": "resolve_anchor", "scope": "tenant", "work_key": "law:2297-VI"})
+	if out["found"] != true || out["document_id"] != docID {
+		t.Errorf("resolve_anchor law:2297-VI = %v", out)
+	}
+}
+
+// TestClassifyRules_ATitleMatchOutranksASection: a section headed by another kind's
+// name makes no tie with the title's class; with a title that says nothing, the
+// sections still speak.
+func TestClassifyRules_ATitleMatchOutranksASection(t *testing.T) {
+	terms := memrank.ResolveInheritance([]memrank.OntologyTerm{
+		{Name: "Document", IsDocumentClass: true},
+		{Name: "Regulation", Parent: "Document", IsDocumentClass: true, TitlePattern: `^Полож`},
+		{Name: "Procedure", Parent: "Document", IsDocumentClass: true, TitlePattern: `^Порядок`},
+	})
+	classes := map[string]memrank.OntologyTerm{}
+	for _, c := range terms {
+		classes[strings.ToLower(c.Name)] = c
+	}
+	got := classifyRules(classes, classifyDoc{title: "Полож_Значн_правочини", sectionTitles: []string{"Порядок погодження"}})
+	if len(got) != 1 || got[0].Class != "Regulation" {
+		t.Errorf("title and section = %#v, want only Regulation", got)
+	}
+	got = classifyRules(classes, classifyDoc{title: "B001385OM000091", sectionTitles: []string{"Порядок погодження"}})
+	if len(got) != 1 || got[0].Class != "Procedure" || got[0].From != "section" {
+		t.Errorf("section only = %#v, want Procedure from the section", got)
+	}
+}
+
+// TestClassify_AClassDecidedByRuleStillAsksForConcepts: the rules settle the class,
+// but nothing says what the document is about until the model is asked for the
+// concepts alone; they are proposals, and the class stays applied.
+func TestClassify_AClassDecidedByRuleStillAsksForConcepts(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	stub := &stubClassifier{verdict: memrank.ClassifyVerdict{Method: memrank.ClassifyMethodChat, Concepts: []string{"Risk Management"}, Quote: "ризиками"}}
+	f.d.Classifier = stub
+	docID, _ := f.doc("tenant", "Закон України № 5-I", "/kb/c/5", "", [2]string{"Стаття 1", "управління ризиками"})
+	a := f.classify(f.ctx, "tenant", docID, nil)
+	if !a.Live || a.Class != "Law" {
+		t.Fatalf("the rule's class was not applied: %+v", a)
+	}
+	if len(stub.asked) != 1 || !stub.asked[0].ConceptsOnly || len(stub.asked[0].Concepts) != 1 {
+		t.Fatalf("asked = %+v", stub.asked)
+	}
+	if len(a.Concepts) != 1 || len(a.Statements) != 1 || a.Statements[0].Status != edgeStatusProposed {
+		t.Errorf("concepts %+v, statements %+v", a.Concepts, a.Statements)
+	}
+	if step := modelStep(a); step == nil || step.Chosen != "" {
+		t.Errorf("model step = %+v", step)
 	}
 }
