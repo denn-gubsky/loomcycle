@@ -386,6 +386,29 @@ func TestClassRules_CollisionWithAPlaceholderSaysToFillIt(t *testing.T) {
 	if txt := refusalText(r); !r.IsError || !strings.Contains(txt, "unresolved placeholder") || !strings.Contains(txt, "reimport:true") {
 		t.Errorf("the refusal should say to fill the placeholder: %s", txt)
 	}
+
+	// A placeholder filed by resolve_anchor holds its key as a WORK key, not a class
+	// identity; creating the work directly must still meet it, not make a second document.
+	key, _, _ := d.resolveScope(ctx, "user")
+	res, err := d.query(ctx, key, `SELECT identity_key FROM chunks WHERE id = ?`, root)
+	if err != nil || len(res.Rows) != 1 || asStr(res.Rows[0][0]) == "" {
+		t.Fatalf("the typed root has no identity key: %v %v", res, err)
+	}
+	idKey := asStr(res.Rows[0][0])
+	if _, r = docExec(t, d, ctx, `{"op":"delete_document","scope":"user","id":"`+out["document_id"].(string)+`"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	ph, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"resolve_anchor","scope":"user","work_key":%q,"create_placeholder":true}`, idKey))
+	if r.IsError || ph["placeholder"] != true {
+		t.Fatalf("placeholder: %s", r.Text)
+	}
+	if res, err = d.query(ctx, key, `SELECT COALESCE(work_key, '') FROM chunks WHERE id = ?`, ph["root_chunk_id"]); err != nil || asStr(res.Rows[0][0]) != idKey {
+		t.Fatalf("the placeholder does not hold its key as a work key: %v %v", res, err)
+	}
+	_, r = docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"outsourcing policy","type":"Policy"}`)
+	if txt := refusalText(r); !r.IsError || !strings.Contains(txt, "unresolved placeholder") {
+		t.Errorf("creating the work beside its placeholder should be refused: %s", txt)
+	}
 }
 
 func containsStr(list []string, v string) bool {

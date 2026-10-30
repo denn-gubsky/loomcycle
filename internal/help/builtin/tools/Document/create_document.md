@@ -45,7 +45,8 @@ There is no `body`: a new root body is always empty. Write text with
 `{document_id, root_chunk_id, title, path}`. A malformed `path` fails the
 call and nothing is created. If a well-formed name could not be stored (a
 storage fault), the document still exists and you get `path_warning` instead
-of `path`; fix it with `set_path`.
+of `path`; fix it with `set_path`. `not_announced` says why the new document
+was not published to the scope's `documents/ingested` channel, when it was not.
 
 ## Errors
 

@@ -94,6 +94,9 @@ type Document struct {
 	// re-indexes before it lets go (see reindexSubtree). Guarded by reindexMu.
 	reindexMu  sync.Mutex
 	reindexing map[reindexDocKey]map[string]struct{}
+
+	// editions serialises the reimports of one work (see document_editions.go).
+	editions editionLocks
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -184,8 +187,8 @@ const documentInputSchema = `{
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
 		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
 		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder. The filter arguments (under_path, type, …) narrow it too."},
-		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their heading path: unchanged parts keep their ids and links, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
-		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now)."},
+		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their text, then their heading path: unchanged parts keep their ids and links, a part whose text moved under another heading keeps them too, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
+		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now). Not earlier than the edition in force."},
 		"work_key":    {"type": "string", "description": "import_md with reimport / resolve_anchor: the work's key, e.g. law:ua/2297-vi — the document holding it, or (import) the one the first edition creates."},
 		"anchor":      {"type": "string", "description": "resolve_anchor: a part of the work, by its anchor (its heading path, e.g. article-12/paragraph-3) or the anchor it first had."},
 		"create_placeholder": {"type": "boolean", "description": "resolve_anchor: file a placeholder document for a work this scope does not hold yet, so citations of it have a target; importing the work later fills it in."},
@@ -707,7 +710,7 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	case "list_statements":
 		return d.listStatements(ctx, key, in)
 	case "resolve_anchor":
-		return d.resolveAnchor(ctx, key, mscope, in)
+		return d.resolveAnchorOp(ctx, key, mscope, in)
 	case "lease":
 		return d.leaseOp(ctx, key, in)
 	case "release":
@@ -2014,7 +2017,9 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Announced only for a document a caller created directly: import_md and the
 	// placeholder path create through here too, and announce their own.
 	if in.Op == "create_document" {
-		d.publishIngested(ctx, key, mscope, docID, "created", nil)
+		if why := d.publishIngested(ctx, key, mscope, docID, "created", nil); why != "" {
+			resp["not_announced"] = why
+		}
 	}
 	return jsonResult(resp)
 }
@@ -5222,7 +5227,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if len(skippedWhy) > 0 {
 		out["skipped_images"] = skippedWhy
 	}
-	d.publishIngested(ctx, key, mscope, docID, "imported", nil)
+	if why := d.publishIngested(ctx, key, mscope, docID, "imported", nil); why != "" {
+		out["not_announced"] = why
+	}
 	return jsonResult(out)
 }
 

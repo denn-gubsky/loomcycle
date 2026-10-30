@@ -287,7 +287,7 @@ func (d *Document) identityCollision(ctx context.Context, key sqlmem.ScopeKey, a
 		`SELECT c.id, coalesce(m.natural_key, ''), c.document_id, coalesce(doc.status, '') FROM chunks c
 		   LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
 		   LEFT JOIN documents doc ON doc.id = c.document_id
-		  WHERE c.identity_key = ? LIMIT 2`, idKey)
+		  WHERE c.identity_key = ? OR c.work_key = ? LIMIT 2`, idKey, idKey)
 	if err != nil {
 		return nil // fail open; the unique index is the backstop
 	}

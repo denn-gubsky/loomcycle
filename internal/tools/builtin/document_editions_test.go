@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/channels"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // RFC FN P2 — a new edition of a work reconciles onto the held one part by part.
@@ -280,9 +285,11 @@ func TestHeadingSegment_DropsLetterlessSegments(t *testing.T) {
 	}
 }
 
-// A work held by a document the caller may not read: the refusal says the key is
-// taken (unavoidable) but not where.
-func TestResolveAnchor_UnreadableWorkDoesNotNameItsDocument(t *testing.T) {
+// A work held by a document the caller may not read is not found: a resolve is a
+// read, and an unreadable holder is answered exactly as no holder. Filing a
+// placeholder, or a reimport, would claim the key, so those say it is taken
+// (unavoidable — the unique key refuses a second holder) but not where.
+func TestResolveAnchor_UnreadableWorkIsNotFound(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	open := tenantDocCtx(base, nil)
 	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition1, "reimport": true,
@@ -293,9 +300,19 @@ func TestResolveAnchor_UnreadableWorkDoesNotNameItsDocument(t *testing.T) {
 	denied := tenantDocCtx(base, aclSet(t,
 		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
 		authz.Rule{Effect: authz.Deny, Actions: []string{"read", "write"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
-	_, r := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/9","anchor":"article-1"}`)
-	if !r.IsError || strings.Contains(r.Text, "/kb/secret") || strings.Contains(r.Text, "chunk_id") {
-		t.Errorf("resolve_anchor over an unreadable work: %s", r.Text)
+	out, r := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/9","anchor":"article-1"}`)
+	unheld, _ := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/none","anchor":"article-1"}`)
+	if r.IsError || out["found"] != false || len(out) != len(unheld) {
+		t.Errorf("resolve_anchor over an unreadable work = %s, an unheld one = %v", r.Text, unheld)
+	}
+	_, r = docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/9","create_placeholder":true}`)
+	if !r.IsError || strings.Contains(r.Text, "/kb/secret") {
+		t.Errorf("a placeholder over an unreadable work: %s", r.Text)
+	}
+	// A caller that may not claim keys gets one answer whether or not the work is held.
+	_, ru := docExec(t, d, denied, `{"op":"resolve_anchor","scope":"tenant","work_key":"law:ua/none","create_placeholder":true}`)
+	if !ru.IsError || strings.ReplaceAll(r.Text, "law:ua/9", "K") != strings.ReplaceAll(ru.Text, "law:ua/none", "K") {
+		t.Errorf("a placeholder request tells a held unreadable work (%s) from an unheld one (%s)", r.Text, ru.Text)
 	}
 	b, _ = json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "markdown": edition2, "reimport": true, "work_key": "law:ua/9"})
 	_, r = docExec(t, d, denied, string(b))
@@ -381,4 +398,427 @@ func resolvePartScope(t *testing.T, d *Document, ctx context.Context, scope, wk,
 		t.Fatalf("resolve_anchor: %s", r.Text)
 	}
 	return out["chunk_id"].(string)
+}
+
+// A work key lives in its own column: an ordinary edit of the root, which under a
+// confirmed ontology re-derives the root's class identity, must not drop it — or
+// the next edition lands in a new document.
+func TestReimport_RootEditUnderAnOntologyKeepsTheWorkKey(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	ctx = installTenantOntology(t, d, ctx, typedOntologyMD, memrank.OntologyConfirmedStatus)
+	const wk = "law:ua/20"
+	first := reimport(t, d, ctx, edition1, wk, 1_000_000)
+	root := first["root_chunk_id"].(string)
+	g, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, root))
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"body":"A preamble.","revision":%d}`,
+		root, int(g["revision"].(float64)))); r.IsError {
+		t.Fatal(r.Text)
+	}
+	out, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/20"}`)
+	if r.IsError || out["found"] != true || out["document_id"] != first["document_id"] {
+		t.Errorf("a root edit dropped the work key: %v %s", out, r.Text)
+	}
+	if again := reimport(t, d, ctx, edition2, wk, 2_000_000); again["document_id"] != first["document_id"] {
+		t.Errorf("the next edition landed in a new document %v (was %v)", again["document_id"], first["document_id"])
+	}
+}
+
+// A scope whose work keys were claimed into identity_key, before work_key existed,
+// migrates them where the claim is recognisable — a placeholder or untyped root —
+// and leaves a typed root's identity alone.
+func TestMigrateAnchors_CarriesClaimedWorkKeysIntoTheirColumn(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		work := reimport(t, d, ctx, edition1, "law:ua/21", 1)
+		ph, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/22","create_placeholder":true}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		typed, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Typed"}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		key, _, _ := d.resolveScope(ctx, "user")
+		for _, q := range []string{
+			`UPDATE chunks SET identity_key = work_key`,
+			`UPDATE chunks SET identity_key = 'Policy:typed', type = 'Policy' WHERE id = '` + typed["root_chunk_id"].(string) + `'`,
+			`DROP INDEX chunks_work_key`,
+			`ALTER TABLE chunks DROP COLUMN work_key`,
+		} {
+			if err := d.exec(ctx, key, q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		d.SqlMem.ForgetEnsured(key)
+		if err := d.ensureSchema(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		res, err := d.query(ctx, key, `SELECT id, COALESCE(work_key, '') FROM chunks WHERE id IN (?, ?, ?)`,
+			work["root_chunk_id"], ph["root_chunk_id"], typed["root_chunk_id"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, row := range res.Rows {
+			got[asStr(row[0])] = asStr(row[1])
+		}
+		if got[work["root_chunk_id"].(string)] != "law:ua/21" || got[ph["root_chunk_id"].(string)] != "law:ua/22" {
+			t.Errorf("claimed keys were not carried: %v", got)
+		}
+		if got[typed["root_chunk_id"].(string)] != "" {
+			t.Errorf("a typed root's class identity was taken for a work key: %v", got)
+		}
+	})
+}
+
+const insertEd1 = "# Act\n\n## Article 1\n\nOne.\n\n## Article 2\n\nTwo.\n\n## Article 3\n\nThree.\n"
+
+// Article 2 inserted, the rest renumbered.
+const insertEd2 = "# Act\n\n## Article 1\n\nOne.\n\n## Article 2\n\nInserted.\n\n## Article 3\n\nTwo.\n\n## Article 4\n\nThree.\n"
+
+func partBody(t *testing.T, d *Document, ctx context.Context, id string) string {
+	t.Helper()
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"user","id":%q}`, id))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	b, _ := out["body"].(string)
+	return b
+}
+
+func userKey(t *testing.T, d *Document, ctx context.Context) sqlmem.ScopeKey {
+	t.Helper()
+	k, _, err := d.resolveScope(ctx, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+// Inserting an article renumbers the ones after it: the text keeps its part (and
+// everything linked to it), and only the inserted article is new.
+func TestReimport_InsertedPartRenumbersTheRestAsMoves(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/30"
+		docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		_, citing, _, _ := stmtDoc(t, d, ctx, "Other")
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, citing, v1["article-2"].id)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		rep := reimport(t, d, ctx, insertEd2, wk, 2_000_000)["reimport"].(map[string]any)
+		for k, v := range map[string]float64{"unchanged": 1, "moved": 2, "created": 1, "superseded": 0, "closed": 0} {
+			if rep[k] != v {
+				t.Errorf("%s = %v, want %v (report %v)", k, rep[k], v, rep)
+			}
+		}
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		if v2["article-3"].id != v1["article-2"].id || v2["article-4"].id != v1["article-3"].id {
+			t.Errorf("renumbering was not a move: v1=%+v v2=%+v", v1, v2)
+		}
+		if got := partBody(t, d, ctx, v2["article-2"].id); got != "Inserted." {
+			t.Errorf("article-2 now = %q", got)
+		}
+		// stable ids follow the text: the inserted article does not take the stable id
+		// "Two." has carried since the first edition.
+		if v2["article-3"].stable != v1["article-2"].stable || v2["article-2"].stable == v1["article-2"].stable {
+			t.Errorf("stable ids did not follow the text: v1=%+v v2=%+v", v1, v2)
+		}
+		res, err := d.query(ctx, userKey(t, d, ctx), `SELECT to_id FROM chunk_edges WHERE from_id = ? AND kind = 'cites'`, citing)
+		if err != nil || len(res.Rows) != 1 || asStr(res.Rows[0][0]) != v1["article-2"].id {
+			t.Errorf("the citation of \"Two.\" moved: %v %v", res, err)
+		}
+	})
+}
+
+// A statement between two parts that both change is copied once, onto the two new
+// versions — not once per end.
+func TestReimport_StatementBetweenTwoChangedPartsIsCopiedOnce(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/31"
+		docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, v1["article-1"].id, v1["article-2"].id)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		ed := "# Act\n\n## Article 1\n\nOne changed.\n\n## Article 2\n\nTwo changed.\n\n## Article 3\n\nThree.\n"
+		rep := reimport(t, d, ctx, ed, wk, 2_000_000)["reimport"].(map[string]any)
+		if rep["statements_copied"] != float64(1) {
+			t.Errorf("statements_copied = %v, want 1 (%v)", rep["statements_copied"], rep)
+		}
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		res, err := d.query(ctx, userKey(t, d, ctx), `SELECT from_id, to_id FROM chunk_edges WHERE kind = 'cites'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[[2]string]bool{}
+		for _, row := range res.Rows {
+			got[[2]string{asStr(row[0]), asStr(row[1])}] = true
+		}
+		want := map[[2]string]bool{{v1["article-1"].id, v1["article-2"].id}: true, {v2["article-1"].id, v2["article-2"].id}: true}
+		if len(got) != len(res.Rows) || len(got) != 2 || !got[[2]string{v2["article-1"].id, v2["article-2"].id}] {
+			t.Errorf("cites statements = %v, want %v", got, want)
+		}
+	})
+}
+
+// A [[link]] belongs to the text that makes it: an edition that drops it must not
+// carry it to the new version.
+func TestReimport_WikilinkTheEditionDroppedDoesNotSurvive(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		tgt, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Target","path":"/t/target"}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		target := tgt["root_chunk_id"].(string)
+		const wk = "law:ua/32"
+		docID := reimport(t, d, ctx, "# Act\n\n## Article 1\n\nSee [[/t/target]] here.\n", wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		key := userKey(t, d, ctx)
+		if res, err := d.query(ctx, key, `SELECT 1 FROM chunk_edges WHERE from_id = ? AND to_id = ?`, v1["article-1"].id, target); err != nil || len(res.Rows) != 1 {
+			t.Fatalf("control: edition 1 does not link the target: %v %v", res, err)
+		}
+		reimport(t, d, ctx, "# Act\n\n## Article 1\n\nNo link any more.\n", wk, 2_000_000)
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		res, err := d.query(ctx, key, `SELECT auto, method FROM chunk_edges WHERE from_id = ? AND to_id = ?`, v2["article-1"].id, target)
+		if err != nil || len(res.Rows) != 0 {
+			t.Errorf("the new edition no longer links the target, yet carries %v (%v)", res.Rows, err)
+		}
+	})
+}
+
+// A reimport interrupted after a part's new version was written, but before its
+// statements were carried and the old version closed, is completed by running it
+// again.
+func TestReimport_RerunCompletesAnInterruptedSupersession(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/33"
+		docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+		v1 := currentPartsOf(t, d, ctx, docID, 1_000_001)
+		_, citing, _, _ := stmtDoc(t, d, ctx, "Other")
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites"}`, citing, v1["article-2"].id)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		ed := "# Act\n\n## Article 1\n\nOne.\n\n## Article 2\n\nTwo changed.\n\n## Article 3\n\nThree.\n"
+		reimport(t, d, ctx, ed, wk, 2_000_000)
+		key := userKey(t, d, ctx)
+		// Undo the tail of the run: the copied statement, and the old version's close.
+		for _, q := range []string{
+			`DELETE FROM chunk_edges WHERE kind = 'cites' AND to_id <> '` + v1["article-2"].id + `'`,
+			`UPDATE chunks SET invalid_at = NULL WHERE id = '` + v1["article-2"].id + `'`,
+		} {
+			if err := d.exec(ctx, key, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reimport(t, d, ctx, ed, wk, 2_000_000)
+		v2 := currentPartsOf(t, d, ctx, docID, 2_000_001)
+		if _, still := v2["article-2"]; !still || v2["article-2"].id == v1["article-2"].id {
+			t.Fatalf("article-2 in force = %+v", v2["article-2"])
+		}
+		res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edges WHERE from_id = ? AND to_id = ? AND kind = 'cites'`, citing, v2["article-2"].id)
+		if err != nil || asInt(res.Rows[0][0]) != 1 {
+			t.Errorf("the rerun did not carry the citation: %v %v", res, err)
+		}
+		if res, err = d.query(ctx, key, `SELECT COUNT(*) FROM chunks WHERE document_id = ?`, docID); err != nil || asInt(res.Rows[0][0]) != 5 {
+			t.Errorf("the rerun made extra parts: %v %v", res, err)
+		}
+	})
+}
+
+// An edition older than the one in force is refused: reconciling it would replace
+// the current text with the older one.
+func TestReimport_BackdatedEditionIsRefused(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/34"
+		mk := func(b string) string { return "# Act\n\n## Article 1\n\n" + b + "\n" }
+		reimport(t, d, ctx, mk("V1."), wk, 1_000_000)
+		reimport(t, d, ctx, mk("V3."), wk, 3_000_000)
+		b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": mk("V2."), "reimport": true, "work_key": wk, "edition_date": 2_000_000})
+		_, r := docExec(t, d, ctx, string(b))
+		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryBusiness || !strings.Contains(r.Text, "edition_date") {
+			t.Errorf("a back-dated edition was not refused: %s", r.Text)
+		}
+		if id := resolvePart(t, d, ctx, wk, "article-1", 0); id == "" || partBody(t, d, ctx, id) != "V3." {
+			t.Errorf("the newest edition is no longer in force")
+		}
+		// The edition in force, imported again, is still a no-op.
+		if rep := reimport(t, d, ctx, mk("V3."), wk, 3_000_000)["reimport"].(map[string]any); rep["unchanged"] != float64(1) {
+			t.Errorf("re-running the current edition: %v", rep)
+		}
+	})
+}
+
+// Reimports of one work run one at a time: two at once each read the held parts
+// before the other wrote, and left two parts in force under one anchor — or, for a
+// work's first edition, a second document with no key.
+func TestReimport_ConcurrentReimportsOfOneWorkSerialise(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const n = 4
+		run := func(md, wk string, edition int64) {
+			var wg sync.WaitGroup
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md, "reimport": true, "work_key": wk, "edition_date": edition})
+					if r, err := d.Execute(ctx, b); err != nil || r.IsError {
+						t.Errorf("concurrent reimport: %v %s", err, r.Text)
+					}
+				}()
+			}
+			wg.Wait()
+		}
+		// Provision the scope first: concurrent first calls on a fresh scope race the
+		// schema migrations, which is not what this test is about.
+		if _, r := docExec(t, d, ctx, `{"op":"query_documents","scope":"user"}`); r.IsError {
+			t.Fatal(r.Text)
+		}
+		const wk = "law:ua/35"
+		run(insertEd1, wk, 1_000_000)
+		key := userKey(t, d, ctx)
+		res, err := d.query(ctx, key, `SELECT id FROM documents`)
+		if err != nil || len(res.Rows) != 1 {
+			t.Fatalf("concurrent first editions made %d documents (%v)", len(res.Rows), err)
+		}
+		docID := asStr(res.Rows[0][0])
+		if out, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/35"}`); r.IsError || out["document_id"] != docID {
+			t.Fatalf("the document does not hold the key: %v %s", out, r.Text)
+		}
+		run("# Act\n\n## Article 1\n\nOne changed.\n\n## Article 2\n\nTwo.\n\n## Article 3\n\nThree.\n", wk, 2_000_000)
+		res, err = d.query(ctx, key, `SELECT anchor, COUNT(*) FROM chunks c JOIN documents dd ON dd.id = c.document_id
+			WHERE c.document_id = ? AND c.id <> dd.root_chunk_id AND (c.invalid_at IS NULL OR c.invalid_at > 2000001) GROUP BY anchor`, docID)
+		if err != nil || len(res.Rows) != 3 {
+			t.Fatalf("anchors in force: %v %v", res, err)
+		}
+		for _, r := range res.Rows {
+			if asInt(r[1]) != 1 {
+				t.Errorf("anchor %s has %d parts in force", asStr(r[0]), asInt(r[1]))
+			}
+		}
+	})
+}
+
+// The root is part of the edition too: its title and its preamble (the text under
+// the '# ' heading) follow the edition, and filling a placeholder gives it the
+// work's real title.
+func TestReimport_EditionRootIsReconciled(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		const wk = "law:ua/36"
+		ph, r := docExec(t, d, ctx, `{"op":"resolve_anchor","scope":"user","work_key":"law:ua/36","create_placeholder":true}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		docID, root := ph["document_id"].(string), ph["root_chunk_id"].(string)
+		reimport(t, d, ctx, "# The Act on Things\n\nPreamble one.\n\n## Article 1\n\nOne.\n", wk, 1_000_000)
+		meta, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_document","scope":"user","id":%q}`, docID))
+		if meta["title"] != "The Act on Things" {
+			t.Errorf("the filled placeholder is titled %v", meta["title"])
+		}
+		if got := partBody(t, d, ctx, root); got != "Preamble one." {
+			t.Errorf("the first edition's preamble = %q", got)
+		}
+		rep := reimport(t, d, ctx, "# The Act on Things, amended\n\nPreamble TWO.\n\n## Article 1\n\nOne.\n", wk, 2_000_000)
+		if got := partBody(t, d, ctx, root); got != "Preamble TWO." {
+			t.Errorf("the edition's preamble was dropped: %q", got)
+		}
+		meta, _ = docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_document","scope":"user","id":%q}`, docID))
+		if meta["title"] != "The Act on Things, amended" {
+			t.Errorf("the edition's title was dropped: %v", meta["title"])
+		}
+		if ids, _ := rep["changed_chunk_ids"].([]any); len(ids) != 1 || ids[0] != root {
+			t.Errorf("changed_chunk_ids = %v, want the root", rep["changed_chunk_ids"])
+		}
+		hist, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"history","scope":"user","id":%q}`, root))
+		revs, _ := hist["revisions"].([]any)
+		found := false
+		for _, rv := range revs {
+			n := rv.(map[string]any)["revision"]
+			v, _ := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_version","scope":"user","id":%q,"revision":%v}`, root, n))
+			found = found || v["body"] == "Preamble one."
+		}
+		if r.IsError || !found {
+			t.Errorf("the old preamble is not in the root's history: %s", r.Text)
+		}
+	})
+}
+
+type ingestedRecorder struct {
+	mu   sync.Mutex
+	docs []string
+}
+
+func (w *ingestedRecorder) Write(_ context.Context, req channels.WriteRequest) (channels.WriteResult, error) {
+	var ev struct {
+		DocumentID string `json:"document_id"`
+	}
+	_ = json.Unmarshal(req.Payload, &ev)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if req.Channel == "documents/ingested" {
+		w.docs = append(w.docs, ev.DocumentID)
+	}
+	return channels.WriteResult{}, nil
+}
+
+// documents/ingested is read by everyone on the scope's channel, so a document is
+// announced only when nothing in the caller's rules hides part of the scope from
+// reading — otherwise the event would name it to subscribers who may not read it.
+// The response says why it was not announced.
+func TestPublishIngested_OnlyWhenReadingIsNotPartitioned(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	w := &ingestedRecorder{}
+	d.Writer = w
+	confined := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/secret/**"}}))
+	for _, call := range []string{
+		`{"op":"create_document","scope":"tenant","title":"Notes","path":"/kb/public/notes"}`,
+		`{"op":"import_md","scope":"tenant","path":"/kb/public/act","markdown":"# Act\n\nText."}`,
+		`{"op":"import_md","scope":"tenant","path":"/kb/public/act2","markdown":"# Act two\n\nText.","reimport":true,"work_key":"law:ua/37"}`,
+	} {
+		out, r := docExec(t, d, confined, call)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if why, _ := out["not_announced"].(string); why == "" {
+			t.Errorf("%s: no reason given for not announcing: %s", call, r.Text)
+		}
+	}
+	if len(w.docs) != 0 {
+		t.Errorf("announced under a partitioned scope: %v", w.docs)
+	}
+	out, r := docExec(t, d, tenantDocCtx(base, nil), `{"op":"create_document","scope":"tenant","title":"Open","path":"/kb/open"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	if _, has := out["not_announced"]; has || len(w.docs) != 1 || w.docs[0] != out["document_id"] {
+		t.Errorf("control: an unrestricted create was not announced: %v %v", w.docs, out)
+	}
+}
+
+// A body that cannot be read is a fault, not an empty part: read as "", every held
+// part looked changed and the whole document was superseded.
+func TestReimport_BodyReadFaultChangesNothing(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	const wk = "law:ua/38"
+	docID := reimport(t, d, ctx, insertEd1, wk, 1_000_000)["document_id"].(string)
+	before := currentPartsOf(t, d, ctx, docID, 2_000_001)
+	fs := &failingBodyStore{Store: d.Store, fail: true}
+	d.Store = fs
+	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": insertEd1, "reimport": true, "work_key": wk, "edition_date": 2_000_000})
+	_, r := docExec(t, d, ctx, string(b))
+	fs.fail = false
+	if !r.IsError {
+		t.Errorf("a reimport over unreadable bodies succeeded: %s", r.Text)
+	}
+	after := currentPartsOf(t, d, ctx, docID, 2_000_001)
+	for a, p := range before {
+		if after[a].id != p.id {
+			t.Errorf("%s was replaced (%s → %s) on a read fault", a, p.id, after[a].id)
+		}
+	}
+	res, err := d.query(ctx, userKey(t, d, ctx), `SELECT COUNT(*) FROM chunks WHERE document_id = ?`, docID)
+	if err != nil || asInt(res.Rows[0][0]) != len(before)+1 {
+		t.Errorf("a read fault wrote parts: %v %v", res, err)
+	}
 }
