@@ -11,8 +11,9 @@ import (
 // against the fixture store (presets_kb_linker_codejs_test.go). Every shape the
 // fixture answers is listed in kbOpContracts.
 
-// kbOntology is a confirmed tenant ontology: two writable seed kinds, a tenant
-// kind the runtime auto-asserts, a reserved kind, and one concept scheme.
+// kbOntology is a confirmed tenant ontology: a writable seed kind, uses_term (a
+// kind the tenant declares, as L3 needs), a tenant kind the runtime
+// auto-asserts, reserved kinds, and one concept scheme.
 func kbOntology() map[string]any {
 	return map[string]any{
 		"exists": true, "status": "confirmed", "confirmed": true, "version": 7,
@@ -20,7 +21,7 @@ func kbOntology() map[string]any {
 		"classes":  []any{},
 		"relations": []any{
 			map[string]any{"name": "cites", "source": "base"},
-			map[string]any{"name": "uses_term", "source": "base"},
+			map[string]any{"name": "uses_term", "source": "tenant"},
 			map[string]any{"name": "amends", "source": "tenant", "auto_assert": true, "dated": true},
 			map[string]any{"name": "mentions", "source": "reserved"},
 			map[string]any{"name": "supersedes", "source": "reserved"},
@@ -411,10 +412,99 @@ func TestKBLinker_TermsOutsideTheTenantScopeAreCountedNotWritten(t *testing.T) {
 	if n := layerCount(t, rep, "L3", "terms_skipped_scope"); n != 0 {
 		t.Errorf("terms_skipped_scope = %v at tenant scope, want 0", n)
 	}
-	if d := layerReport(t, rep, "L3")["defines"]; d != "deferred" {
-		t.Errorf("defines = %v, want deferred", d)
-	}
 	noViolations(t, tenant)
+}
+
+// kbDefinitionsBody is a definitions passage: two defined terms, each starting a
+// line after a list marker, and two terms used mid-line.
+const kbDefinitionsBody = "BODYDEFS In this Act the following terms are used:\n" +
+	"1) incident report — a notice an operator sends to the regulator within 24 hours;\n" +
+	"а) «договір» — угода сторін, яку оператор подає разом з incident notification."
+
+// definitionsFixture has c1 as a definitions passage (or an ordinary one, with
+// definitional false) and a scheme holding a Cyrillic term too. withDefines
+// declares the defines kind.
+func definitionsFixture(definitional, withDefines bool) *kbFixture {
+	f := kbBaseFixture()
+	o := kbOntology()
+	if withDefines {
+		o["relations"] = append(o["relations"].([]any), map[string]any{"name": "defines", "source": "base"})
+	}
+	scheme := o["schemes"].([]any)[0].(map[string]any)
+	scheme["concepts"] = append(scheme["concepts"].([]any),
+		map[string]any{"name": "договір", "chunk_id": "k-contract", "tag": "topics/contract", "path": []any{"договір"}})
+	f.ontology = o
+	f.chunks[1].Body = kbDefinitionsBody
+	f.chunks[1].Definitional = definitional
+	return f
+}
+
+// TestKBLinker_DefinitionsPassageDefinesTheTermThatStartsALine: in a passage the
+// runtime marks definitional, a term that starts a line (after a list marker or an
+// opening quote) is defined there, so the statement is defines, by
+// rule:definitions, with that occurrence first in its evidence. A term used
+// mid-line stays uses_term. The same text in an ordinary passage defines nothing:
+// the runtime's mark decides, not the layout.
+func TestKBLinker_DefinitionsPassageDefinesTheTermThatStartsALine(t *testing.T) {
+	in := `{"document_id":"doc-target","write":"propose","scope":"tenant","layers":["L3"],"terms_scheme":"topics"}`
+
+	f := definitionsFixture(true, true)
+	rep, _ := runLinker(t, f, in)
+	got := map[string]map[string]any{}
+	for _, p := range proposals(f) {
+		got[p["to_id"].(string)] = p
+	}
+	if len(got) != 3 {
+		t.Fatalf("proposals = %v, want one per concept (incident report, regulator, договір)", proposals(f))
+	}
+	for _, c := range []string{"k-incident", "k-contract"} {
+		if got[c]["kind"] != "defines" || got[c]["method"] != "rule:definitions" {
+			t.Errorf("%s: proposal = %v, want defines by rule:definitions", c, got[c])
+		}
+	}
+	if got["k-regulator"]["kind"] != "uses_term" || got["k-regulator"]["method"] != "rule:terms" {
+		t.Errorf("k-regulator: proposal = %v, want uses_term by rule:terms — it is used mid-line", got["k-regulator"])
+	}
+	// k-incident's name defines it; its alternative label is only used later on.
+	ev := got["k-incident"]["evidence"].([]any)
+	if len(ev) != 2 || ev[0].(map[string]any)["quote"] != "incident report" {
+		t.Errorf("k-incident evidence = %v, want the defining occurrence first, then the use", ev)
+	}
+	if n := layerCount(t, rep, "L3", "definienda"); n != 2 {
+		t.Errorf("definienda = %v, want 2", n)
+	}
+	if n := layerCount(t, rep, "L3", "definitional_parts"); n != 1 {
+		t.Errorf("definitional_parts = %v, want 1", n)
+	}
+	noViolations(t, f)
+
+	plain := definitionsFixture(false, true)
+	runLinker(t, plain, in)
+	for _, p := range proposals(plain) {
+		if p["kind"] != "uses_term" {
+			t.Errorf("ordinary passage proposed %v, want uses_term only", p)
+		}
+	}
+}
+
+// TestKBLinker_DefinedTermWithoutADefinesKindIsUsed: when the ontology does not
+// declare defines, a term a definitions passage defines is still a term it uses,
+// and the report says how many could not be filed as defines.
+func TestKBLinker_DefinedTermWithoutADefinesKindIsUsed(t *testing.T) {
+	f := definitionsFixture(true, false)
+	rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","scope":"tenant","layers":["L3"],"terms_scheme":"topics"}`)
+	got := proposals(f)
+	if len(got) != 3 {
+		t.Fatalf("proposals = %v, want three", got)
+	}
+	for _, p := range got {
+		if p["kind"] != "uses_term" {
+			t.Errorf("proposal %v, want uses_term — defines is not declared", p)
+		}
+	}
+	if n := layerCount(t, rep, "L3", "defines_not_declared"); n != 2 {
+		t.Errorf("defines_not_declared = %v, want 2", n)
+	}
 }
 
 // TestKBLinker_EvidenceSpansAreRunesOnNonASCIIText: JS indexes strings in UTF-16

@@ -13,7 +13,9 @@
 #                                 cited part (or a placeholder for a work not
 #                                 held yet);
 #                   L3 terms    — a concept scheme's terms found in the text,
-#                                 proposed as uses_term (tenant scope only);
+#                                 proposed as uses_term, or as defines where a
+#                                 definitions passage starts a line with the
+#                                 term (tenant scope only);
 #                   L4 relate   — semantic relations judged by kb/verdict,
 #                                 report only, and only when asked for;
 #                   L6 maintain — re-checks the live statements touching the
@@ -122,7 +124,8 @@ agents:
       //   L2 cite     — the citations the document's class grammar finds, proposed as
       //                 statements from the citing passage to the cited part.
       //   L3 terms    — exact and normalised mentions of a concept scheme's terms,
-      //                 proposed as uses_term statements.
+      //                 proposed as uses_term statements, or as defines for the term a
+      //                 definitions passage defines.
       //   L4 relate   — semantic relations judged by kb/verdict. Report only, always.
       //   L6 maintain — re-checks the live statements touching the document and
       //                 verifies, expires, demotes, merges, re-points or flags them.
@@ -209,7 +212,7 @@ agents:
       };
       var LAYER_ORDER = ["L1", "L2", "L3", "L4", "L6"];
 
-      var METHOD = { citation: "rule:citation", terms: "rule:terms", maintain: "rule:maintain" };
+      var METHOD = { citation: "rule:citation", terms: "rule:terms", definitions: "rule:definitions", maintain: "rule:maintain" };
 
       // Statements the runtime writes for itself: the edition chain, the consolidator's
       // links, [[name]] links. Maintaining them would, for one, expire every
@@ -824,7 +827,8 @@ agents:
           if (!r || !isID(r.id)) { continue; }
           // Belt and braces: a row of another document is not this document's chunk.
           if (typeof r.document_id === "string" && r.document_id !== docID) { continue; }
-          out.rows.push({ id: r.id, type: r.type, invalid: typeof r.invalid_at === "number" && r.invalid_at > 0 });
+          out.rows.push({ id: r.id, type: r.type, invalid: typeof r.invalid_at === "number" && r.invalid_at > 0,
+                          definitional: r.definitional === true });
         }
         st.chunkLists[docID] = out;
         return out;
@@ -860,7 +864,7 @@ agents:
           if (only !== null && only[r.id] !== true) { continue; }
           var b = readChunk(st, r.id);
           if (!b.ok || b.body.trim().length < st.opts.min_body_chars) { continue; }
-          out.push({ id: r.id, body: b.body });
+          out.push({ id: r.id, body: b.body, definitional: r.definitional === true });
         }
         return out;
       }
@@ -1109,22 +1113,27 @@ agents:
 
       // -------------------------------------------------------------- L3 terms
 
-      // layerTerms proposes a uses_term statement from each passage to each concept
-      // of the named scheme whose name or alternative label it contains, matched
-      // exactly or after case-folding and whitespace-collapsing, on word boundaries,
-      // the longest match winning an overlap. Concepts live in the tenant scope and
-      // a statement cannot cross scopes, so outside the tenant scope the matches are
-      // counted and nothing is written.
+      // layerTerms proposes a statement from each passage to each concept of the named
+      // scheme whose name or alternative label it contains, matched exactly or after
+      // case-folding and whitespace-collapsing, on word boundaries, the longest match
+      // winning an overlap. The statement is defines when the passage is a
+      // definitions passage (the runtime marks it, from the class's @definitions) and
+      // the term starts one of its lines; otherwise it is uses_term. Concepts live in
+      // the tenant scope and a statement cannot cross scopes, so outside the tenant
+      // scope the matches are counted and nothing is written.
       function layerTerms(st, doc, changed) {
         var L = layerRec(st, "L3", proposalCounts({
           parts: 0, terms: 0, terms_ambiguous: 0, matches: 0, matches_exact: 0, matches_normalised: 0,
-          overlaps_dropped: 0, terms_skipped_scope: 0, hits_self: 0
+          overlaps_dropped: 0, terms_skipped_scope: 0, hits_self: 0,
+          definitional_parts: 0, definienda: 0, defines_not_declared: 0, hits_no_kind: 0
         }));
-        L.defines = "deferred";
         if (!st.onto.usable) { skipLayer(L, st.onto.reason); return; }
         if (!st.opts.terms_scheme) { skipLayer(L, "no terms_scheme was given"); return; }
         if (!hasOwn(st.onto.schemes, st.opts.terms_scheme)) { skipLayer(L, "terms_scheme is not a scheme the ontology declares"); return; }
-        if (st.onto.writable.uses_term !== true) { skipLayer(L, "uses_term is not a relation kind the ontology declares"); return; }
+        if (st.onto.writable.uses_term !== true && st.onto.writable.defines !== true) {
+          skipLayer(L, "neither uses_term nor defines is a relation kind the ontology declares");
+          return;
+        }
         L.ran++;
         var terms = termIndex(st.onto.schemes[st.opts.terms_scheme], L.counts);
         var tenant = st.opts.scope === "tenant";
@@ -1132,27 +1141,56 @@ agents:
         for (var i = 0; i < parts.length; i++) {
           var p = parts[i];
           L.counts.parts++;
+          if (p.definitional) { L.counts.definitional_parts++; }
           var found = findTerms(p.body, terms, L.counts);
-          var order = [], byConcept = {};
+          // A concept the passage defines is cited by its defining occurrences first:
+          // they are the evidence for defines, the rest only for using it.
+          var order = [], defining = {}, byConcept = {};
           for (var j = 0; j < found.length; j++) {
             var m = found[j];
-            if (!byConcept[m.concept]) { byConcept[m.concept] = []; order.push(m.concept); }
-            if (byConcept[m.concept].length < CONFIG.max_term_evidence) { byConcept[m.concept].push(m); }
+            if (!byConcept[m.concept]) { byConcept[m.concept] = { def: [], use: [] }; order.push(m.concept); }
+            if (p.definitional && startsALine(p.body, m.start)) {
+              byConcept[m.concept].def.push(m);
+              if (defining[m.concept] !== true) { defining[m.concept] = true; L.counts.definienda++; }
+            } else {
+              byConcept[m.concept].use.push(m);
+            }
           }
           for (var k = 0; k < order.length; k++) {
             var concept = order[k];
             if (concept === p.id) { L.counts.hits_self++; continue; }
+            var kind = "uses_term", method = METHOD.terms;
+            if (defining[concept] === true) {
+              if (st.onto.writable.defines === true) {
+                kind = "defines";
+                method = METHOD.definitions;
+              } else {
+                L.counts.defines_not_declared++;
+              }
+            }
+            if (st.onto.writable[kind] !== true) { L.counts.hits_no_kind++; continue; }
             if (!tenant) { L.counts.terms_skipped_scope++; continue; }
+            var ms = byConcept[concept].def.concat(byConcept[concept].use).slice(0, CONFIG.max_term_evidence);
             var ev = [];
-            for (var e = 0; e < byConcept[concept].length; e++) {
-              var mm = byConcept[concept][e];
+            for (var e = 0; e < ms.length; e++) {
+              var mm = ms[e];
               var span = runeSpan(p.body, mm.start, mm.end);
               ev.push({ chunk_id: p.id, quote: p.body.slice(mm.start, mm.end), char_start: span[0], char_end: span[1] });
             }
-            propose(st, L, { op: "propose_statement", from_id: p.id, to_id: concept, kind: "uses_term",
-                             evidence: ev, method: METHOD.terms });
+            propose(st, L, { op: "propose_statement", from_id: p.id, to_id: concept, kind: kind,
+                             evidence: ev, method: method });
           }
         }
+      }
+
+      // startsALine reports whether the text before at, back to the start of its
+      // line, is only what may precede a defined term: indentation, a list marker
+      // ("1)", "1.2.", "а)", a bullet) and an opening quote. "У цьому Законі
+      // договір — …" defines nothing; "1) договір — …" defines договір.
+      var DEFINIENDUM_LEAD = /^[ \t]*(?:(?:\d{1,3}(?:\.\d{1,3})*|[^\s\d.)])[.)][ \t]*|[-\u2013\u2014\u2022*\u00b7][ \t]+)?["'\u00ab\u201c\u201e]?$/;
+      function startsALine(body, at) {
+        var from = body.lastIndexOf("\n", at - 1) + 1;
+        return DEFINIENDUM_LEAD.test(body.slice(from, at));
       }
 
       // termIndex is the scheme's terms, normalised. A term two concepts share names
@@ -2160,7 +2198,6 @@ agents:
           var r = { status: L.ran > 0 ? "run" : "skipped", counts: L.counts };
           if (L.reason !== "") { r.reason = L.reason; }
           if (name === "L1") { r.collisions = L.collisions; r.collisions_truncated = L.collisions_truncated; r.truncated = L.truncated; }
-          if (name === "L3") { r.defines = L.defines; }
           out[name] = r;
         }
         return out;

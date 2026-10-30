@@ -37,13 +37,33 @@ One pass covers one document. The layers run in this order:
 |---|---|---|
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
-| **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`. Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written. `defines` is deferred |
+| **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
 | **L4 relate** | semantic neighbours from `related`, judged by `kb/verdict` | **nothing, ever.** It runs only when `corpus_paths` is given or `L4` is listed, and its findings go in the report |
 | **L6 maintain** | every live statement with an end in the document, or with evidence citing it | see below |
 
 L2 and L3 need a confirmed ontology with relation kinds. Without one they skip
 and the report says why. L1 and L4 never need it. L6 still runs, without its kind
 and redundancy checks.
+
+`defines` is a seed kind. `uses_term` is not: declare it in the ontology's
+Relations section (`### uses_term`). Until then, L3 files only `defines`, and
+counts its other matches as `hits_no_kind`.
+
+### L3: which passage defines a term
+
+A class's `@definitions` pattern marks its definitions passages: the runtime
+flags each one `definitional` when the linker reads the document's chunks. In
+such a passage, a term defines its concept when it starts the body or a line,
+after at most indentation, a list marker (`1)`, `1.2.`, `а)`, a bullet) and an
+opening quote. So in "1) договір — угода …" the passage defines договір; in "У
+цьому Законі договір …" it only uses it.
+- Each concept the passage defines gets one `defines` statement, with its
+  defining occurrences first in the evidence. The passage's other terms get
+  `uses_term`.
+- If the ontology doesn't declare `defines`, those terms get `uses_term`
+  instead, counted as `defines_not_declared`.
+- Terms are matched in the passage's body, so a term that appears only in a
+  chunk title is not seen.
 
 ### L6: maintaining what exists
 

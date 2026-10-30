@@ -59,6 +59,37 @@ func realDoc(t *testing.T, d *builtin.Document, ctx context.Context, body string
 	return out
 }
 
+// runRealLinker runs kb/linker's shipped body through the real loop and code-js
+// provider with d as its Document tool, and returns its report, which must be
+// complete.
+func runRealLinker(t *testing.T, d *builtin.Document, ctx context.Context, input string) map[string]any {
+	t.Helper()
+	f := newKBFixture()
+	agent := knowledgeBaseConfig(t).Agents["kb/linker"]
+	set := []tools.Tool{d, &kbFakeAgent{f: f}, &kbFakeChannel{f: f}}
+	res, err := loop.Run(ctx, loop.RunOptions{
+		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
+		Model:      "code-js",
+		AgentName:  "kb/linker",
+		CodeBody:   agent.Code,
+		Tools:      set,
+		Dispatcher: tools.NewDispatcher(set),
+		Segments:   []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: input}}}},
+	})
+	if err != nil {
+		t.Fatalf("loop.Run: %v", err)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal([]byte(res.FinalText), &rep); err != nil {
+		t.Fatalf("report: %v\n%s", err, res.FinalText)
+	}
+	t.Logf("report: %s", res.FinalText)
+	if rep["status"] != "complete" {
+		t.Fatalf("status = %v, failure %v\n%s", rep["status"], rep["failure"], res.FinalText)
+	}
+	return rep
+}
+
 func TestKBLinker_MaintainPassAgainstTheRealDocumentTool(t *testing.T) {
 	d, ctx := realDocument(t)
 	target := realDoc(t, d, ctx, `{"op":"create_document","scope":"user","title":"Target"}`)["document_id"].(string)
@@ -81,36 +112,13 @@ func TestKBLinker_MaintainPassAgainstTheRealDocumentTool(t *testing.T) {
 	realDoc(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"user","id":%q,"revision":%v,"body":%q}`,
 		c1, rev, "BODYALPHA Every operator shall report a material incident to the regulator without delay once it is detected."))
 
-	f := newKBFixture()
-	agent := knowledgeBaseConfig(t).Agents["kb/linker"]
-	set := []tools.Tool{d, &kbFakeAgent{f: f}, &kbFakeChannel{f: f}}
-	res, err := loop.Run(ctx, loop.RunOptions{
-		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
-		Model:      "code-js",
-		AgentName:  "kb/linker",
-		CodeBody:   agent.Code,
-		Tools:      set,
-		Dispatcher: tools.NewDispatcher(set),
-		Segments: []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text",
-			Text: fmt.Sprintf(`{"mode":"maintain","document_id":%q,"write":"propose"}`, target)}}}},
-	})
-	if err != nil {
-		t.Fatalf("loop.Run: %v", err)
-	}
-	var rep map[string]any
-	if err := json.Unmarshal([]byte(res.FinalText), &rep); err != nil {
-		t.Fatalf("report: %v\n%s", err, res.FinalText)
-	}
-	t.Logf("report: %s", res.FinalText)
-	if rep["status"] != "complete" {
-		t.Fatalf("status = %v, failure %v\n%s", rep["status"], rep["failure"], res.FinalText)
-	}
+	rep := runRealLinker(t, d, ctx, fmt.Sprintf(`{"mode":"maintain","document_id":%q,"write":"propose"}`, target))
 	lease, _ := rep["lease"].(map[string]any)
 	if lease["acquired"] != true || lease["released"] != true {
 		t.Errorf("lease = %v, want acquired and released through R6 under the R1 grant", lease)
 	}
 	if refusals, _ := rep["refusals"].(map[string]any); len(refusals) != 0 {
-		t.Errorf("refusals = %v, want none from the real ops\n%s", refusals, res.FinalText)
+		t.Errorf("refusals = %v, want none from the real ops", refusals)
 	}
 
 	edge := func(id string) map[string]any {
@@ -127,5 +135,83 @@ func TestKBLinker_MaintainPassAgainstTheRealDocumentTool(t *testing.T) {
 	}
 	if s["verified_at"] != nil {
 		t.Errorf("stale statement = %v, want it not verified", s)
+	}
+}
+
+// kbRealOntologyMD declares a Law class whose first article is its definitions
+// passage, a scheme of two concepts, and uses_term. defines is a seed kind;
+// uses_term is one a tenant declares.
+const kbRealOntologyMD = "# Tenant Ontology\n\n" +
+	"## Classes\n@section classes\n\n### Document\n\n#### Law\n@definitions (?i)^Стаття 1\\b\n\n" +
+	"## Relations\n@section relations\n\n### uses_term\n@inverse term_used_by\n\n" +
+	"## Schemes\n@section schemes\n\n### topics\n\n#### договір\n\n#### оператор\n"
+
+// TestKBLinker_TermsPassAgainstTheRealDocumentTool: the runtime decides which
+// passages are definitional from the class's @definitions, and the linker reads
+// that from its chunk listing, so this runs L3 at tenant scope against the real
+// tool. The article that defines договір gets defines; the term it only uses,
+// and both terms in the next article, get uses_term.
+func TestKBLinker_TermsPassAgainstTheRealDocumentTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}}
+	})
+	// The ontology is the operator's to write: an operator call carries no run.
+	// The linker then runs as a plain run.
+	op := tools.WithSubstrateOperator(context.Background())
+	op = tools.WithRunIdentity(op, tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
+	op = tools.WithRunPolicy(op, tools.RunPolicy{
+		Tools:  []string{"*"},
+		Memory: tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user"}},
+		SqlMem: tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user"}},
+	})
+	mj, _ := json.Marshal(kbRealOntologyMD)
+	onto := realDoc(t, d, op, `{"op":"import_md","scope":"tenant","markdown":`+string(mj)+`}`)
+	realDoc(t, d, op, fmt.Sprintf(`{"op":"set_path","scope":"tenant","id":%q,"path":"/memory/ontology"}`, onto["document_id"]))
+	root := realDoc(t, d, op, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, onto["root_chunk_id"]))
+	realDoc(t, d, op, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"status":"confirmed","revision":%v}`,
+		onto["root_chunk_id"], root["revision"]))
+
+	law := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Закон про послуги","type":"Law"}`)
+	chunk := func(title, body string) string {
+		return realDoc(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":%q,"body":%q}`,
+			law["document_id"], title, body))["id"].(string)
+	}
+	art1 := chunk("Стаття 1. Визначення термінів",
+		"У цьому Законі терміни вживаються в такому значенні:\n1) договір — угода, яку оператор укладає з клієнтом на надання послуг;")
+	art2 := chunk("Стаття 2. Сфера дії",
+		"Цей Закон регулює відносини, що виникають, коли оператор укладає договір з клієнтом на надання послуг.")
+
+	rep := runRealLinker(t, d, ctx, fmt.Sprintf(
+		`{"document_id":%q,"scope":"tenant","write":"propose","layers":["L3"],"terms_scheme":"topics"}`, law["document_id"]))
+	if refusals, _ := rep["refusals"].(map[string]any); len(refusals) != 0 {
+		t.Errorf("refusals = %v, want none", refusals)
+	}
+
+	concepts := map[string]string{}
+	for _, c := range realDoc(t, d, ctx, `{"op":"describe_ontology"}`)["schemes"].([]any)[0].(map[string]any)["concepts"].([]any) {
+		concepts[c.(map[string]any)["chunk_id"].(string)] = c.(map[string]any)["name"].(string)
+	}
+	got := map[string]string{}
+	for _, status := range []string{"proposed", "asserted"} {
+		list := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"list_statements","scope":"tenant","status":%q,"document_id":%q}`, status, law["document_id"]))
+		for _, raw := range list["statements"].([]any) {
+			s := raw.(map[string]any)
+			from := map[string]string{art1: "art1", art2: "art2"}[s["from_id"].(string)]
+			got[from+"→"+concepts[s["to_id"].(string)]] = s["kind"].(string)
+		}
+	}
+	want := map[string]string{
+		"art1→договір": "defines", "art1→оператор": "uses_term",
+		"art2→договір": "uses_term", "art2→оператор": "uses_term",
+	}
+	if len(got) != len(want) {
+		t.Errorf("statements = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q", k, got[k], v)
+		}
 	}
 }
