@@ -76,10 +76,22 @@ For each statement, the first check that fails decides the outcome:
    - A kind the ontology renamed: the statement is proposed again under the new
      name, then the old one expires.
    - A kind no longer declared: demote it to `proposed`.
-3. **Validity.** An end replaced by a newer edition: expire it. When every quote
-   the statement had on the old part is still in the new one, the statement is
-   first proposed again on the successor (`attributes.revision_of`). The new
-   proposal keeps the original's `valid_at`, but not its confidence.
+3. **Validity.** An end replaced by a newer edition: expire it, after proposing
+   it again on the successor (`attributes.revision_of`) when it still holds there.
+   The new proposal keeps the original's `valid_at`, but not its confidence.
+   - **A citation** (`rule:citation`) is re-read by the document's citation
+     grammar on the new part. It moves when a hit there still cites the same work
+     with the same kind, with that hit's quotes as its evidence: a citation that
+     lost its number form but kept its title, or whose line broke elsewhere,
+     still moves. One the new part no longer makes is not moved, even if an old
+     quote survives word for word (the new edition may name a newer act in the
+     same words), and the copy the re-import made of it is expired too. If the
+     grammar cannot be read, the rule below applies.
+   - **Any other statement** moves when every quote it had on the old part is
+     still in the new one. A quote whose words survive with different line
+     breaks or spacing counts, and the new evidence quotes the new part's own
+     text. A statement with only some of its quotes left is not moved: what is
+     left cannot vouch for what the passage now says.
 4. **Evidence.**
    - A quote no longer in its chunk but present in the live part with the same
      stable id: the evidence moves to that part.

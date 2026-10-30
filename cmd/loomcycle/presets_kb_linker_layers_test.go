@@ -638,7 +638,7 @@ func TestKBLinker_SuccessorEvidenceSpansAreRunes(t *testing.T) {
 		kbChunk{ID: "c-v2", DocumentID: "doc-target", Type: "section", Body: "🛈 Оператор 𝔞 " + quote + " щотижня.", StableID: "art-9", Anchor: "art-9"})
 	f.supersedes["c-v1"] = "c-v2"
 	f.statements = []*kbStatement{{ID: "st-v", From: "c-v1", To: "x1", Kind: "cites", Status: "asserted",
-		Method: "rule:citation", CreatedAt: 1, Evidence: []*kbEvidence{{ID: "ev-v", ChunkID: "c-v1", Quote: quote}}}}
+		Method: "extractor:clauses", CreatedAt: 1, Evidence: []*kbEvidence{{ID: "ev-v", ChunkID: "c-v1", Quote: quote}}}}
 
 	runLinker(t, f, `{"mode":"maintain","document_id":"doc-target","write":"propose"}`)
 

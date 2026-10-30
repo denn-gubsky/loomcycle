@@ -269,3 +269,95 @@ func TestKBLinker_ClassifyPassAgainstTheRealDocumentTool(t *testing.T) {
 		t.Errorf("document type = %v, want Law applied by the classify layer", got["type"])
 	}
 }
+
+// kbEditionsOntologyMD: an Order cites acts by name; each act is a document whose
+// work key the import gives it.
+const kbEditionsOntologyMD = "# Tenant Ontology\n\n" +
+	"## Classes\n@section classes\n\n### Document\n- `title` text\n\n" +
+	"#### Order\n@citation_grammar act-cite\n\n" +
+	"##### grammar:act-cite\n" +
+	"pattern: the\\s+(?P<act>[A-Z][a-z]+)\\s+Act\n" +
+	"resolve: work_key=act:{act}, kind=cites\n\n" +
+	"#### Act\n\n" +
+	"## Relations\n@section relations\n\n### cites\n"
+
+// TestKBLinker_NewEditionCitationsAgainstTheRealDocumentTool: an order's
+// citations are filed, a new edition is imported over it, and the maintain pass
+// settles them, all through the real tools. Point 1 changed but kept its
+// citation: the re-import copies the statement and the pass keeps that one
+// copy. Point 2 broke its citation over two lines: the old quote is gone, the
+// grammar still finds it, and the pass files it on the new part with the new
+// quote. Point 3 now names another act: its citation is closed and not moved.
+func TestKBLinker_NewEditionCitationsAgainstTheRealDocumentTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	ctx = withRealOntology(t, d, ctx, kbEditionsOntologyMD)
+	for _, act := range []string{"Penal", "Civil", "Fiscal"} {
+		md, _ := json.Marshal("# " + act + " Act\n\n## Article 1\n\nThe " + act + " Act applies.\n")
+		realDoc(t, d, ctx, fmt.Sprintf(`{"op":"import_md","scope":"tenant","markdown":%s,"work_key":"act:%s"}`, md, act))
+	}
+	const (
+		ed1 = "# Order 5\n\n## Point 1\n\nThis point applies the Penal Act in full.\n\n" +
+			"## Point 2\n\nThe operator follows the Civil Act and its rules.\n\n" +
+			"## Point 3\n\nDuels fall under the Fiscal Act alone.\n"
+		ed2 = "# Order 5\n\n## Point 1\n\nThis point applies the Penal Act in part.\n\n" +
+			"## Point 2\n\nThe operator follows the Civil\nAct and its rules.\n\n" +
+			"## Point 3\n\nDuels fall under the Penal Act alone.\n"
+	)
+	md1, _ := json.Marshal(ed1)
+	order := realDoc(t, d, ctx, `{"op":"import_md","scope":"tenant","markdown":`+string(md1)+`}`)
+	doc := order["document_id"].(string)
+	root := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, order["root_chunk_id"]))
+	realDoc(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"type":"Order","revision":%v}`, order["root_chunk_id"], root["revision"]))
+
+	cite := runRealLinker(t, d, ctx, fmt.Sprintf(`{"document_id":%q,"scope":"tenant","write":"propose","layers":["L2"]}`, doc))
+	if n := layerCount(t, cite, "L2", "proposed"); n != 3 {
+		t.Fatalf("first edition: proposed = %v, want 3 citations", n)
+	}
+
+	md2, _ := json.Marshal(ed2)
+	realDoc(t, d, ctx, fmt.Sprintf(`{"op":"import_md","scope":"tenant","markdown":%s,"document_id":%q,"reimport":true}`, md2, doc))
+	rep := runRealLinker(t, d, ctx, fmt.Sprintf(`{"mode":"maintain","document_id":%q,"scope":"tenant","write":"propose"}`, doc))
+	if refusals, _ := rep["refusals"].(map[string]any); len(refusals) != 0 {
+		t.Errorf("refusals = %v, want none", refusals)
+	}
+
+	// What the order cites now, read back from the store: part title → the cited
+	// work's title (its key) and the live quotes.
+	type cite1 struct{ act, quote string }
+	live := map[string]cite1{}
+	list := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"list_statements","scope":"tenant","status":"proposed","document_id":%q}`, doc))
+	for _, raw := range list["statements"].([]any) {
+		s := raw.(map[string]any)
+		if s["from_document_id"] != doc {
+			continue
+		}
+		from := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, s["from_id"]))
+		if from["invalid_at"] != nil {
+			t.Errorf("live statement %v starts at a closed part", s["id"])
+		}
+		e := realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_edge","scope":"tenant","id":%q}`, s["id"]))["statement"].(map[string]any)
+		var quotes []string
+		for _, ev := range e["evidence"].([]any) {
+			if r := ev.(map[string]any); r["stale"] != true {
+				quotes = append(quotes, r["quote"].(string))
+			}
+		}
+		key := from["title"].(string)
+		if _, dup := live[key]; dup {
+			t.Errorf("%s has two live citations", key)
+		}
+		live[key] = cite1{s["to_title"].(string), fmt.Sprint(quotes)}
+	}
+	want := map[string]cite1{
+		"Point 1": {"act:Penal", "[the Penal Act]"},
+		"Point 2": {"act:Civil", "[the Civil\nAct]"},
+	}
+	if len(live) != len(want) {
+		t.Errorf("live citations = %v, want %v", live, want)
+	}
+	for k, v := range want {
+		if live[k] != v {
+			t.Errorf("%s cites %+v, want %+v", k, live[k], v)
+		}
+	}
+}
