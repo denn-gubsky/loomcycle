@@ -39,6 +39,14 @@ export interface PathLsPage {
   cursor?: string;
 }
 
+// DocEdgesPage is one get_edges page: truncated + next_cursor are present only
+// when more edges follow.
+export interface DocEdgesPage {
+  edges: DocEdge[];
+  truncated?: boolean;
+  next_cursor?: string;
+}
+
 export interface PathLsResult {
   path: string;
   entries: PathEntry[];
@@ -171,13 +179,18 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<ChunkDetail>;
-  // documentGetEdges returns every cross-reference edge touching a document
-  // (RFC BN P4) — the References list + relationship graph source.
+  // documentGetEdges returns one page of the cross-reference edges touching a
+  // document (RFC BN P4) — the References list + relationship graph source. The
+  // runtime pages them (500 a page, ordered by kind): a clipped page reports
+  // truncated + next_cursor, and passing that back as `page.after` continues it.
+  // loadDocumentEdges follows the pages. A custom data layer that returns
+  // neither reads as complete.
   documentGetEdges(
     documentId: string,
     scope: DocScope,
     browse?: BrowseScope,
-  ): Promise<{ edges: DocEdge[] }>;
+    page?: { after?: string },
+  ): Promise<DocEdgesPage>;
   // RFC FN statement ops. Optional, like pathIsStored, so a custom data layer
   // written before them still satisfies the interface: without get_edge the
   // viewer only shows the evidence preview the listing carries, and without both
@@ -450,13 +463,18 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         } as unknown as DocumentToolInput,
         browse,
       ) as Promise<ChunkDetail>,
-    documentGetEdges: (documentId, scope, browse) =>
+    documentGetEdges: (documentId, scope, browse, page) =>
       client.document(
         // get_edges is an RFC BN P4 wire op the pinned SDK type doesn't
         // enumerate; the /v1/_document passthrough accepts it verbatim.
-        { op: "get_edges", document_id: documentId, scope } as unknown as DocumentToolInput,
+        {
+          op: "get_edges",
+          document_id: documentId,
+          scope,
+          ...(page?.after ? { after: page.after } : {}),
+        } as unknown as DocumentToolInput,
         browse,
-      ) as Promise<{ edges: DocEdge[] }>,
+      ) as Promise<DocEdgesPage>,
     // RFC FN statement ops — the same passthrough cast: new wire ops the pinned
     // SDK type doesn't enumerate.
     documentGetEdge: (id, scope, browse) =>

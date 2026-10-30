@@ -193,11 +193,18 @@ export interface MemoryDataLayer {
   // verdict — the number that says whether verification is doing anything at all.
   verificationStats(scope: MemoryScope, opts?: { scopeId?: string }): Promise<VerificationStats>;
 
-  // Every cross-reference edge with an endpoint in a DOCUMENT (get_edges is
-  // document-scoped, not chunk-scoped — the caller passes the fact's
-  // document_id, from getChunk, then filters to the edges touching the fact).
-  // Carries the supersession chain (kind:"supersedes") + any plain relations.
-  getEdges(scope: MemoryScope, documentId: string, opts?: { scopeId?: string }): Promise<DocEdgesResponse>;
+  // One page of the cross-reference edges with an endpoint in a DOCUMENT
+  // (get_edges is document-scoped, not chunk-scoped — the caller passes the
+  // fact's document_id, from getChunk, then filters to the edges touching the
+  // fact). Carries the supersession chain (kind:"supersedes") + any plain
+  // relations. `kinds` narrows to those relation kinds; `after` is a previous
+  // page's next_cursor. loadFactEdges follows the pages. A custom data layer
+  // that returns no next_cursor reads as complete.
+  getEdges(
+    scope: MemoryScope,
+    documentId: string,
+    opts?: { scopeId?: string; kinds?: string[]; after?: string },
+  ): Promise<DocEdgesResponse>;
 
   // ---- Scope-id suggestions (OPTIONAL) ---------------------------------
   // Populate the search panel's scope_id combobox. Optional so a data layer that
@@ -306,7 +313,14 @@ export function dataLayerFromClient(
           // `id`. The FactViewer sources this from the fact chunk's document_id.
           // include_proposed:false: a relation awaiting review is not a link the
           // fact view should draw.
-          toDocInput({ op: "get_edges", scope, document_id: documentId, include_proposed: false }),
+          toDocInput({
+            op: "get_edges",
+            scope,
+            document_id: documentId,
+            include_proposed: false,
+            ...(opts?.kinds?.length ? { kinds: opts.kinds } : {}),
+            ...(opts?.after ? { after: opts.after } : {}),
+          }),
           docOpts(opts?.scopeId),
         )
         .then((r) => r as DocEdgesResponse),

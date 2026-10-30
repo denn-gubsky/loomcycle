@@ -164,6 +164,8 @@ export interface ChunkDetail {
 // side) are present only when non-empty — the backend omits blanks. `auto`
 // marks a parser-generated [[name]] link vs a manual one.
 export interface DocEdge {
+  /** The statement id. Present on every edge the runtime returns. */
+  id?: string;
   from_id: string;
   to_id: string;
   kind: string;
@@ -178,11 +180,14 @@ export interface DocEdge {
   to_document_id?: string;
 }
 
-// DocEdgesResponse is the `get_edges` envelope — every edge with an endpoint in
-// the addressed DOCUMENT (both directions). The viewer filters to the edges that
-// touch the fact it is showing.
+// DocEdgesResponse is one `get_edges` page — the edges with an endpoint in the
+// addressed DOCUMENT (both directions). The runtime pages at 500, ordered by
+// kind: truncated + next_cursor mean another page follows (pass the cursor back
+// as `after`). The viewer filters to the edges that touch the fact it is showing.
 export interface DocEdgesResponse {
   edges: DocEdge[];
+  truncated?: boolean;
+  next_cursor?: string;
 }
 
 // VerificationStats is `Document op=verification_stats` — how much of a scope's fact
