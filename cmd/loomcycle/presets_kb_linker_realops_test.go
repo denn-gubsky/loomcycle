@@ -478,3 +478,40 @@ func TestKBLinker_SweepAgainstTheRealDocumentTool(t *testing.T) {
 		}
 	}
 }
+
+// TestKBLinker_FilingAgainstTheRealDocumentTool: a law is classified live and filed
+// under /by-class through the real tools. Its class home's name is already held by
+// another document (the real get_document answers it; a free name is "no such
+// path"), so the law is filed beside it with its id appended and neither loses a
+// name; the law keeps the name it was created with.
+func TestKBLinker_FilingAgainstTheRealDocumentTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	ctx = withRealOntology(t, d, ctx, kbClassifyOntologyMD)
+	decoy := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Memo","path":"/by-class/Law/2297-VI"}`)["document_id"].(string)
+	law := realDoc(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Закон України № 2297-VI","path":"/inbox/a"}`)["document_id"].(string)
+
+	rep := runRealLinker(t, d, ctx, fmt.Sprintf(`{"document_id":%q,"scope":"tenant","write":"propose","layers":["L0"],"file":{"root":"/by-class"}}`, law))
+
+	if fl, _ := layerReport(t, rep, "L0")["filing"].(map[string]any); fl["status"] != "filed" || fl["suffixed"] != true {
+		t.Errorf("filing = %v, want filed, suffixed", fl)
+	}
+	at := func(path string) string {
+		got, err := d.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"op":"get_document","scope":"tenant","path":%q}`, path)))
+		if err != nil || got.IsError {
+			return ""
+		}
+		var out map[string]any
+		_ = json.Unmarshal([]byte(got.Text), &out)
+		id, _ := out["document_id"].(string)
+		return id
+	}
+	if got := at("/by-class/Law/2297-VI-" + law[:8]); got != law {
+		t.Errorf("the law is not filed beside the held name with its id appended (got %q)", got)
+	}
+	if at("/by-class/Law/2297-VI") != decoy {
+		t.Error("filing took the name another document held")
+	}
+	if at("/inbox/a") != law {
+		t.Error("filing moved the law off the name it was created with")
+	}
+}

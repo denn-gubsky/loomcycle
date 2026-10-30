@@ -261,7 +261,7 @@ agents:
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
         min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true,
-        purge: true, purge_after_days: true
+        purge: true, purge_after_days: true, file: true
       };
 
       var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject|sweep (default document), " +
@@ -270,7 +270,7 @@ agents:
         "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
         "rejudge (L6), merged_into (subject mode: the surviving subject's document id), " +
-        "purge, purge_after_days (sweep mode; path names the subtree), " +
+        "purge, purge_after_days (sweep mode; path names the subtree), file {root} (L0), " +
         "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
         "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
         "relations [{name, meaning, domain?, range?}], include_quotes}.";
@@ -470,6 +470,16 @@ agents:
             return { error: "merged_into must be the surviving subject's document id, not the subject's own" };
           }
           o.merged_into = v.merged_into;
+        }
+        if (v.file !== undefined) {
+          if (!isPlainObject(v.file) || !isPath(v.file.root) || !/^(\/[A-Za-z0-9._-]+)+\/?$/.test(v.file.root)) {
+            return { error: "file must be {\"root\": \"/a/path\"}: the folder the class homes go under" };
+          }
+          for (var fk in v.file) {
+            if (hasOwn(v.file, fk) && fk !== "root") { return { error: "file takes root only" }; }
+          }
+          if (o.layers.L0 !== true) { return { error: "file needs the L0 layer, which decides the class" }; }
+          o.file = { root: v.file.root };
         }
         o.purge = false;
         if (v.purge !== undefined) {
@@ -867,7 +877,8 @@ agents:
         if (!d || !isID(d.document_id)) {
           throw new Error("get_document answered without a document_id");
         }
-        return { id: d.document_id, root: isID(d.root_chunk_id) ? d.root_chunk_id : "" };
+        return { id: d.document_id, root: isID(d.root_chunk_id) ? d.root_chunk_id : "",
+                 title: typeof d.title === "string" ? d.title : "" };
       }
 
       // listChunks is the document's chunk rows, read once per pass.
@@ -1062,6 +1073,53 @@ agents:
         C.issuers += isArray(r.issued_by) ? r.issued_by.length : 0;
         C.concepts += isArray(r.concepts) ? r.concepts.length : 0;
         C.warnings += isArray(r.warnings) ? r.warnings.length : 0;
+        // A class in force (or, in a report, one the op would apply) files the
+        // document — only when the run asks to.
+        var applies = r.live === true || (st.opts.write !== "propose" && r.result === "classified");
+        if (st.opts.file && applies && typeof r.class === "string" && r.class !== "") { fileDocument(st, L, doc, r.class); }
+      }
+
+      // fileDocument gives the document a name in its class's home, <root>/<Class>/<title>,
+      // through set_path. It ADDS a name: the document keeps every name it had, so an
+      // operator's own tree is never moved, and the added one can be removed with
+      // Path rm. A name another document holds is never taken (set_path would take
+      // it): the document's id is appended instead. The report says what was done
+      // and for which class, never the path, which carries the document's title.
+      function fileDocument(st, L, doc, cls) {
+        var seg = pathSegment(cls);
+        if (seg === "") { L.filing = { status: "skipped", reason: "the class name makes no path segment" }; return; }
+        var name = pathSegment(doc.title);
+        if (name === "") { name = doc.id; }
+        var path = st.opts.file.root.replace(/\/+$/, "") + "/" + seg + "/" + name;
+        var holder = documentAtPath(st, path);
+        if (holder === null) { L.filing = { status: "skipped", reason: "the class home could not be read" }; return; }
+        if (holder === doc.id) { L.filing = { status: "already_filed", class: seg }; return; }
+        if (holder !== "") { path += "-" + doc.id.slice(0, 8); }
+        var w = write(st, "set_path", { op: "set_path", id: doc.id, path: path });
+        L.filing = { status: w.dry ? "would_file" : (w.ok ? "filed" : "refused"), class: seg, suffixed: holder !== "" };
+      }
+
+      // documentAtPath is the id of the document named at path, "" when nothing holds
+      // the name, "-" when something other than a document does (a name set_path
+      // would take from it), null when the lookup failed for another reason.
+      function documentAtPath(st, path) {
+        try {
+          var d = call(st, { op: "get_document", path: path });
+          return (d && isID(d.document_id)) ? d.document_id : null;
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          var t = errText(e);
+          if (/no such path/.test(t)) { return ""; }
+          if (/is an? [a-z_]+, not a document/.test(t)) { return "-"; }
+          return null;
+        }
+      }
+
+      // pathSegment makes a Path-tree segment ([A-Za-z0-9._-]) of a name: other
+      // characters become a dash; "" when too little is left.
+      function pathSegment(s) {
+        var t = String(s || "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+        return t.length < 2 ? "" : t.slice(0, 120);
       }
 
       // ------------------------------------------------------------- L1 anchors
@@ -2800,6 +2858,7 @@ agents:
           var r = { status: L.ran > 0 ? "run" : "skipped", counts: L.counts };
           if (L.reason !== "") { r.reason = L.reason; }
           if (name === "L1") { r.collisions = L.collisions; r.collisions_truncated = L.collisions_truncated; r.truncated = L.truncated; }
+          if (name === "L0" && L.filing) { r.filing = L.filing; }
           if (name === "L6" && L.sweep) { r.sweep = L.sweep; }
           if (name === "L6" && L.purge) { r.purge = L.purge; }
           out[name] = r;

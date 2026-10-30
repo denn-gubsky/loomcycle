@@ -64,6 +64,10 @@ var kbOpContracts = []kbOpContract{
 		Request:  `{document_id | evidence_document_id | under_path, status: asserted|proposed, order?: verified, include_retired?, limit, after?, scope}`,
 		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, expired_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
 		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired, and carry expired_at (unix nanoseconds) when included; under_path matches either end's document at or under the path; order verified is least recently verified first; next_cursor is absent on the last page`},
+	{Tool: "Document", Op: "set_path",
+		Request:  `{id, path, scope}`,
+		Response: `{document_id, path}`,
+		Assumes:  `ADDS a name (the document keeps its others); a path that names another document is taken from it, so the body looks the path up with get_document first; sent only when the run passes file`},
 	{Tool: "Document", Op: "unlink_chunks",
 		Request:  `{id, scope}`,
 		Response: `{removed: true}`,
@@ -119,7 +123,7 @@ var kbReadOps = map[string]bool{
 // kbWriteOps is every Document op that changes the store or holds a scope.
 var kbWriteOps = map[string]bool{
 	"propose_statement": true, "maintain_statement": true, "lease": true, "release": true,
-	"unlink_chunks": true,
+	"unlink_chunks": true, "set_path": true,
 }
 
 type kbChunk struct {
@@ -369,12 +373,22 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 			return okResult(map[string]any{"document_id": f.docID, "root_chunk_id": f.rootID, "type": "act",
 				"title": "TITLE-OF-THE-TARGET"})
 		}
+		if id == "" && path != "" {
+			for doc, p := range f.docPaths {
+				if p == path {
+					id = doc
+				}
+			}
+		}
 		if typ, ok := f.docTypes[id]; ok {
 			out := map[string]any{"document_id": id, "type": typ, "title": "TITLE-OF-" + id}
 			if r := f.roots[id]; r != "" {
 				out["root_chunk_id"] = r
 			}
 			return okResult(out)
+		}
+		if id == "" && path != "" {
+			return kbErr("get_document: no such path: " + path)
 		}
 		return kbErr("get_document: no such document: " + id)
 	case "query_chunks":
@@ -467,6 +481,10 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		return okResult(map[string]any{"statement": f.statementJSON(s, 0)})
 	case "maintain_statement":
 		return f.answerMaintain(in)
+	case "set_path":
+		path, _ := in["path"].(string)
+		f.docPaths[id] = path
+		return okResult(map[string]any{"document_id": id, "path": path})
 	case "unlink_chunks":
 		for i, st := range f.statements {
 			if st.ID == id {

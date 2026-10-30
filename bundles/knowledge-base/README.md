@@ -36,7 +36,7 @@ One pass covers one document. The layers run in this order:
 
 | layer | reads | writes (`propose` mode) |
 |---|---|---|
-| **L0 classify** | the runtime's `classify` op on the document: the ontology's class rules (`@title_pattern`, `@identifier_pattern`), its Instances, and the neighbours' classes | in `propose` mode the op writes: exactly one class matched by its own rule is applied (type, identity fields, so the work key, and an `issued_by` an adopted instance can take); anything else is proposed for an operator, and a type set by hand is kept. `report` mode asks with `write: report`. The linker never accepts a proposal: that is an operator's act |
+| **L0 classify** | the runtime's `classify` op on the document: the ontology's class rules (`@title_pattern`, `@identifier_pattern`), its Instances, and the neighbours' classes | in `propose` mode the op writes: exactly one class matched by its own rule is applied (type, identity fields, so the work key, and an `issued_by` an adopted instance can take); anything else is proposed for an operator, and a type set by hand is kept. `report` mode asks with `write: report`. The linker never accepts a proposal: that is an operator's act. With `file: {root}` a class in force also files the document: it gets a name at `<root>/<Class>/<title>` |
 | **L1 anchors** | each live part's anchor and stable id | nothing. It reports parts without an anchor, duplicate anchors (`…~2`, by id) and parts without a stable id |
 | **L2 cite** | the citations the document class's `@citation_grammar` finds | one statement per citation, from the citing passage to the cited part, `method: rule:citation`. A citation to a held work whose part is missing points at the work's root; one to an unheld work gets a placeholder. The grammar's `kind` is used only when the ontology declares it and it is not reserved; otherwise the statement is `cites` |
 | **L3 terms** | the concepts of the scheme named by `terms_scheme`: their name and alternative labels | `uses_term` from each passage to each concept it mentions, `method: rule:terms`; or `defines`, `method: rule:definitions`, for a term a definitions passage defines (see below). Matches are exact or case-folded with whitespace collapsed, on word boundaries, and the longest match wins. **Tenant scope only**, because concepts live there; at user or agent scope the matches are counted and nothing is written |
@@ -51,6 +51,18 @@ checks.
 `defines` is a seed kind. `uses_term` is not: declare it in the ontology's
 Relations section (`### uses_term`). Until then, L3 files only `defines`, and
 counts its other matches as `hits_no_kind`.
+
+### L0: filing
+
+With `file: {"root": "/board/by-class"}`, a document whose class is in force gets
+a name in its class's home, `/board/by-class/<Class>/<title>` (the title reduced
+to letters, digits, `.`, `_` and `-`; the document id when nothing is left).
+Filing **adds** a name through `set_path`: the document keeps every name it
+had, so a folder tree you arranged is never moved, and `Path rm` takes the added
+name away. A name another document already holds is left to it: the document's
+id is appended to its own. Without `file`, nothing is filed. The report says
+which class a document was filed under (`layers.L0.filing`), never the path,
+which carries the title.
 
 ### L3: which passage defines a term
 
@@ -262,6 +274,7 @@ curl -sX POST localhost:8080/v1/runs \
 | `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
 | `merged_into` | — | subject mode: the document of the subject this one was merged into |
 | `purge` | `false` | sweep mode, with `write: propose`: delete what the purge report lists |
+| `file` | — | `{"root": "/…"}`, with L0: file a document whose class is in force under `<root>/<Class>/` |
 | `purge_after_days` | `180` | sweep mode: how long a statement stays retired before a purge may delete it (1–3650) |
 
 An unknown field or an out-of-range value refuses the run with
