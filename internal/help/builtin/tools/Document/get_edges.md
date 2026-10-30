@@ -33,7 +33,8 @@ one document, so you can see the document's link graph in one call. **It takes
 endpoints' `from_title` / `from_type` / `from_status` / `from_document_id` and
 `to_…` twins, and when present `confidence` (the writer's own), `valid_at`,
 `invalid_at`, `attributes`, `actor`, a verdict (`verdict_confidence`,
-`judged_at`, `judge_reason`, `judged_by`), and up to three `evidence` rows with
+`judged_at`, `judge_reason`, `judged_by`), `operator_ruled_at` (an operator
+accepted or rejected it), and up to three `evidence` rows with
 `evidence_count` — both counting only the evidence you may read. `truncated: true` with a
 `next_cursor` means there is another page.
 
