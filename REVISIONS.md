@@ -58,7 +58,8 @@ Exactly one class matching by rule is applied (type, identity fields, `issued_by
 RFC FP (`/loomcycle/rfcs/links-building-agent`). `LOOMCYCLE_PRESETS=base,knowledge-base` adds `kb/linker`, a code-js agent whose every invariant is code, and a tool-less `kb/verdict` model.
 
 - **Modes**: one `document`, `maintain` (upkeep of one document's statements) or `drain` (the `documents/ingested` queue). **Write modes**: `report` (default) counts what it would write; `propose` takes the scope lease and writes through `propose_statement` and `maintain_statement`.
-- **Layers**: L0 `classify`; L2 citations from the class's citation grammar; L3 `uses_term`, and `defines` from a definitions passage; L4 semantic relations, report only; L6 upkeep.
+- **Layers**: L0 `classify`; L1 anchors, report only; L2 citations from the class's citation grammar; L3 `uses_term`, and `defines` from a definitions passage; L4 semantic relations, report only; L6 upkeep.
+- **Running it**: documents in the tenant scope need a tenant overlay the bundle leaves out on purpose (a tenant Document grant is a tenant write grant): `agents: {kb/linker: {memory_scopes: [tenant], sql_scopes: [tenant]}}`. `uses_term` must be declared in the ontology's Relations section (it is not a seed kind); `defines` is a seed. The import-queue `drain` is user scope only. Run `write: report` first.
 - **Runtime it uses**, all new Document ops or fields: `statement_methods: [rule, extractor]` on a code-js agent's definition lets its runs stamp `rule:<name>` / `extractor:<name>`, and a rule may auto-assert an `@auto_assert` kind; `list_statements` filters (`document_id`, `evidence_document_id`, `method_prefix`, `under_path`, `include_retired`) and `order: verified`; `describe_ontology` (the ontology in force, instances included); `extract_citations` (a class's citation grammar applied in RE2, read-only); `lease` / `release` (a named lease on a document scope); `maintain_statement` (verify, expire, demote, merge, mark or relocate evidence, flag — never asserts or deletes; a person's statement and an operator-ruled one take only verify and flag).
 
 ### Search (#2226, #2240)
@@ -83,7 +84,10 @@ RFC FP (`/loomcycle/rfcs/links-building-agent`). `LOOMCYCLE_PRESETS=base,knowled
   - **the statements table is rebuilt once**, in one transaction: existing links read back `asserted`, method `manual` (`wikilink` for a `[[link]]`), so a reader that ignores the new fields sees no change;
   - new tables `chunk_edge_evidence` and `document_leases`, new columns for anchors, work keys, identity keys, `operator_ruled_at` and `source_gone`;
   - old `references` links to subjects are re-kinded `mentions`, once per scope.
-- **Behaviour change: Memory `sql_query` / `sql_exec` refuse the Document tool's tables** (`chunks`, `chunk_edges`, `documents`, …). An agent that read them through Memory SQL must use `Document op=query_chunks` (its `sql` escape hatch is unchanged) or the Document ops.
+- **Behaviour change: Memory `sql_query` / `sql_exec` refuse any statement that names a Document table or index** (`documents`, `chunks`, `chunk_tags`, `chunk_edges`, …) with `document_tables_reserved`.
+  - An agent that read them through Memory SQL must use `Document op=query_chunks` (its `sql` escape hatch is unchanged) or the Document ops.
+  - **An agent whose OWN tables carry one of those names is refused too**: rename its tables. On sqlite, a string literal spelled exactly like one of the names is refused as well.
+  - A scope holding a view, trigger or function that names a Document table is refused Memory SQL until that object is dropped.
 - **Behaviour change: `get_edges` pages at 500 statements** and returns `truncated` / `next_cursor`; follow the cursor.
 - **Legacy-token deployments** (`LOOMCYCLE_AUTH_TOKEN`): the Settings → Ontology page now shows the document runs have always used, which may be a draft you have not seen. An ontology confirmed on the page before this release never reached runs: confirm it again.
 - **`link_chunks` refuses an `about` from a chunk that is not a fact**; the bundled consolidator writes them through `upsert_chunk about_ids`. A customised consolidator that still calls `link_chunks` from facts keeps working.
