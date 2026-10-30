@@ -32,6 +32,12 @@ chunk, and `backlinks` when you want the chunks that already link to it.
 - `tag` — only chunks carrying exactly this tag.
 - `tag_prefix` — only chunks whose tag is this one or nested under it
   (`prefix/…`).
+- `concept` — only chunks about this concept of the tenant ontology's concept
+  schemes, or about a concept narrower than it. Name it by its chunk id, its
+  name, or its tag (`<scheme>/<path>`, e.g. `topics/risk-management`). A name
+  two concepts share is refused with their tags; pass one of those.
+- `concept_prefix` — the same, for every concept whose tag is this path or lies
+  under it, e.g. `topics` for a whole scheme.
 - `as_of` — only chunks whose stated validity contains this moment (unix
   nanoseconds); a chunk with no stated validity always matches.
 
@@ -55,7 +61,8 @@ With a filter, the response also carries `filter`, what it resolved to:
 ```text
 filter: {
   applied: {under_paths, exclude_under_paths, document_ids, exclude_document_ids,
-            types, statuses, tag, tag_prefix, as_of},   (only what you passed)
+            types, statuses, tag, tag_prefix, concept, concept_prefix,
+            concept_matched_by, as_of},   (only what you passed)
   matched_documents: 14,     documents with at least one matching chunk
   matched_chunks: 312,       chunks that could be returned
   type_expanded_to: [...],   present when a type was widened to its subtypes
@@ -65,6 +72,15 @@ filter: {
 
 When access-control rules keep you from reading part of the scope, the filter
 covers only what you may read, and so do the counts.
+
+How a concept matches depends on the scope, and `concept_matched_by` says
+which. In the `tenant` scope, where the concepts are, a chunk matches when it
+has a `subject` relation (or a narrower kind, such as `primary_topic`) to a
+concept of the set; a proposed, rejected, refuted or retired relation does not
+count, and a tag alone does not either (`"statement"`). In a `user` or `agent`
+scope a relation cannot reach a concept, so a chunk matches when it carries the
+concept's tag or a tag under it (`"tag"`). A concept the ontology does not
+declare, or one you may not read, matches nothing.
 
 `matched_chunks: 0` means the filter itself matched nothing — check the path,
 type or status — as opposed to an empty result with matches, which means nothing
@@ -88,6 +104,8 @@ mermaid or image form has nothing to compare, and returns `{related: []}`.
 - `related: body: ...` / `related: embed: ...` — a storage or embedding
   failure; a retry may work.
 - `related: filter_too_wide: ...` — as for `search`: narrow the filter.
+- `related: concept "…" names N concepts: …` and `related: concept_too_wide:
+  ...` — as for `search`.
 
 ## Examples
 
