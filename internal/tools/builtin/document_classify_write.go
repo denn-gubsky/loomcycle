@@ -259,7 +259,7 @@ func (d *Document) classifyStatement(ctx context.Context, key sqlmem.ScopeKey, m
 // the class is then proposed instead.
 func (d *Document) classifyWriteRoot(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, acl *docACL,
 	cd classifyDoc, setType string, idFields map[string]any, rec classification, out *classifyAnswer) *tools.Result {
-	fields := make(map[string]any, len(cd.fields)+len(idFields)+1)
+	fields := map[string]any{}
 	for k, v := range cd.fields {
 		fields[k] = v
 	}
