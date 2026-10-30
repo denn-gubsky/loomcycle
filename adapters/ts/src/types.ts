@@ -4005,8 +4005,8 @@ export type DocumentToolInput = {
     | "stale_evidence"
     | "relocate_evidence"
     | "flag";
-  /** maintain_statement merge: the live statement of the same from, to and
-   *  kind that keeps the merged statement's evidence. */
+  /** maintain_statement merge: the live statement of the same from, to, kind
+   *  and status that keeps the merged statement's evidence. */
   survivor_id?: string;
   /** maintain_statement stale_evidence / relocate_evidence: the evidence row
    *  (its id from get_edge). */

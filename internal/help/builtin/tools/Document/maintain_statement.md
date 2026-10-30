@@ -10,11 +10,15 @@ deletes one or an evidence row: what it retires stays readable with
 `include_retired`.
 
 Only a code agent whose definition grants statement methods
-(`statement_methods`) may call it, and an operator session. Inside a run it
-also needs the `propose` permission on the documents the relation joins.
+(`statement_methods`) may call it, and an operator session. It needs the
+`propose` permission on the documents the relation joins, and `expire`,
+`demote` and `merge` also need `link` on both of them — they change what
+readers see as live.
 
 A relation a person wrote (its `method` is `manual`) takes only `verify` and
-`flag`, from anyone: flag it with your reason and let a person decide.
+`flag`, from anyone, and so does one an operator ruled on (accepted it, for
+instance), from inside a run: flag it with your reason and let a person
+decide.
 
 ## Arguments
 
@@ -26,7 +30,7 @@ A relation a person wrote (its `method` is `manual`) takes only `verify` and
   - `demote` — an asserted relation goes back to `proposed` for review.
     `reason` is required.
   - `merge` — move its evidence onto `survivor_id`, a live statement of the
-    same `from_id`, `to_id` and `kind`, then retire it with the reason
+    same `from_id`, `to_id`, `kind` and status, then retire it with the reason
     `merged`. A row the survivor already holds (same source, quote and span)
     stays where it was.
   - `stale_evidence` — mark the evidence row `evidence_id` stale: its quote is
@@ -57,11 +61,15 @@ A relation a person wrote (its `method` is `manual`) takes only `verify` and
 - `method_not_granted` — `method` is malformed or outside your grant.
 - `statement_manual` — a person wrote the relation; only `verify` and `flag`
   apply.
+- `statement_operator_ruled` — an operator ruled on the relation; from a run
+  only `verify` and `flag` apply.
+- access control — `expire`, `demote` and `merge` need `link` on both ends'
+  documents; every action needs `propose`.
 - `statement_not_asserted` — `demote` of a relation that is not asserted.
 - `statement_expired` / `statement_rejected` — the relation is already retired,
   or an operator rejected it.
 - `survivor_mismatch` — the survivor is not another live statement of the same
-  relation.
+  relation and status.
 - `evidence_quote_not_found` — the quote does not occur in `chunk_id`.
 - `no such evidence row on that statement` — `evidence_id` belongs to another
   relation.
