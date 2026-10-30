@@ -363,7 +363,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		structured, err := applyImportHeadings(text, in.Headings)
 		if err != nil {
 			return errValidation("import: headings: "+err.Error()+". Nothing was imported.",
-				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title."), nil
+				"Give each entry a line of the file (counted from 1), in increasing order, a level from 2 to 6, and as heading or marker; a marker needs a one-line title. A drop names a line that is already a heading and takes nothing else."), nil
 		}
 		text = structured
 	}
@@ -372,7 +372,19 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, digest), "extract:")
 	prov, titleName, recorded := importFileProvenance(ctx, r, rel, digest)
 	if len(in.Headings) > 0 {
-		prov.fields[importFieldStructured] = map[string]any{"headings": len(in.Headings), "by": tools.RunID(ctx)}
+		dropped := 0
+		for _, h := range in.Headings {
+			if h.As == importHeadingAsDrop {
+				dropped++
+			}
+		}
+		structured := map[string]any{"headings": len(in.Headings) - dropped, "by": tools.RunID(ctx)}
+		// Omitted when nothing was dropped, so an import without drops
+		// records exactly what it did before drops existed.
+		if dropped > 0 {
+			structured["dropped"] = dropped
+		}
+		prov.fields[importFieldStructured] = structured
 	}
 	// An inbox file whose bytes match no record changed after it was
 	// captured: say so, and tag no source rather than source/volume/inbox,
