@@ -607,9 +607,21 @@ func (f *kbFixture) answerPropose(in map[string]any) (tools.Result, error) {
 			if status == "proposed" && s.Status == "asserted" {
 				return kbErr("propose_statement: statement_asserted: this relation is already asserted (id " + s.ID + ")")
 			}
-			s.Evidence = append(s.Evidence, f.numberEvidence(evs)...)
+			// The runtime skips a row it already holds (same chunk, same quote), so a
+			// re-run over unchanged text writes nothing.
+			var fresh []*kbEvidence
+			for _, ev := range evs {
+				held := false
+				for _, h := range s.Evidence {
+					held = held || (h.ChunkID == ev.ChunkID && h.Quote == ev.Quote)
+				}
+				if !held {
+					fresh = append(fresh, ev)
+				}
+			}
+			s.Evidence = append(s.Evidence, f.numberEvidence(fresh)...)
 			return okResult(map[string]any{"id": s.ID, "status": s.Status, "created": false,
-				"evidence_written": len(evs), "ontology_valid": true})
+				"evidence_written": len(fresh), "ontology_valid": true})
 		}
 	}
 	f.nextID++

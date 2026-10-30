@@ -1361,7 +1361,7 @@ agents:
 
       function proposalCounts(extra) {
         return function () {
-          var c = { would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, already_asserted: 0, refused: 0 };
+          var c = { would_propose: 0, proposed: 0, asserted: 0, evidence_added: 0, unchanged: 0, already_asserted: 0, refused: 0 };
           for (var k in extra) {
             if (hasOwn(extra, k)) { c[k] = extra[k]; }
           }
@@ -1371,9 +1371,10 @@ agents:
 
       // propose files one statement through write(), and counts what the runtime made
       // of it: a new proposal, an assertion (the runtime decides that, never this
-      // body), or evidence added to a statement that already existed. A proposal over
-      // a relation that already holds is refused statement_asserted; on a re-run that
-      // is the expected answer, so it is counted apart from the refusals.
+      // body), evidence added to a statement that already existed, or nothing at all
+      // (the statement and its quote were both held: the answer a re-run gets). A
+      // proposal over a relation that already holds is refused statement_asserted; on
+      // a re-run that is the expected answer, so it is counted apart from the refusals.
       function propose(st, L, args) {
         var C = L.counts;
         var w = write(st, "propose_statement", args);
@@ -1382,8 +1383,13 @@ agents:
           if (w.reason === "statement_asserted") { C.already_asserted++; } else { C.refused++; }
           return w;
         }
-        if (w.result.status === "asserted") { C.asserted++; } else { C.proposed++; }
-        if (w.result.created === false) { C.evidence_added++; }
+        if (w.result.created === true) {
+          if (w.result.status === "asserted") { C.asserted++; } else { C.proposed++; }
+        } else if (typeof w.result.evidence_written === "number" && w.result.evidence_written === 0) {
+          C.unchanged++;
+        } else {
+          C.evidence_added++;
+        }
         return w;
       }
 
