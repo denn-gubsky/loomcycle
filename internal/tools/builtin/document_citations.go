@@ -35,13 +35,15 @@ const (
 
 // citationResolution is where a citation leads. Exact is true when the citation names a
 // part and that part was found in force; otherwise it resolved to the work at most.
+//
+// A work held by a document the caller may not read resolves to nothing, exactly as a
+// work the scope does not hold: saying more would tell a confined reader the work
+// exists, which resolve_anchor refuses to tell the same caller.
 type citationResolution struct {
 	DocumentID  string `json:"document_id,omitempty"`
 	ChunkID     string `json:"chunk_id,omitempty"`
 	Exact       bool   `json:"exact"`
 	Placeholder bool   `json:"placeholder"`
-	// Unreadable: the cited work is held by a document the caller may not read.
-	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 // citationHit is one match of the grammar in one body. CharStart/CharEnd are rune
@@ -302,7 +304,7 @@ func (r *citationResolver) resolve(workKey, anchor string, passageValidAt *int64
 		if res.Error == nil || res.Error.Category != tools.CategoryPermission {
 			return citationResolution{}, errors.New("resolving a citation: " + strings.TrimSpace(res.Text))
 		}
-		v.Unreadable = true
+		// Unreadable: left unresolved (see citationResolution).
 	} else {
 		var body struct {
 			Found       bool   `json:"found"`
