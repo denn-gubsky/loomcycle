@@ -389,6 +389,28 @@ func TestKBLinker_DuplicateOfAnotherStatusIsFlaggedNotMerged(t *testing.T) {
 	noViolations(t, f)
 }
 
+// TestKBLinker_SyncedStatementIsJudgedByTheMethodThatMadeIt: sync stamps its own
+// method on the receiving side and keeps the first one in
+// attributes.origin_method. A person's statement that arrived by sync is still a
+// person's, so it is only flagged; one a rule made is maintained as before.
+func TestKBLinker_SyncedStatementIsJudgedByTheMethodThatMadeIt(t *testing.T) {
+	f := maintainFixture()
+	person := citeStatement("s-person", "c1", "x-deleted")
+	person.Method, person.Attributes = "sync", map[string]any{"origin_method": "manual"}
+	rule := citeStatement("s-rule", "c1", "x-deleted")
+	rule.Method, rule.Attributes = "sync", map[string]any{"origin_method": "rule:citation"}
+	f.statements = []*kbStatement{person, rule}
+
+	runLinker(t, f, maintainInput)
+
+	if got := actionsOf(f, "s-person"); got != "flag" {
+		t.Errorf("s-person actions = %q, want flag — a person's statement stays one after sync", got)
+	}
+	if got := actionsOf(f, "s-rule"); got != "expire" {
+		t.Errorf("s-rule actions = %q, want expire", got)
+	}
+}
+
 // TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages: the touched set is
 // every live statement with an end in the document or evidence citing it, of
 // either status, over every page, each once.

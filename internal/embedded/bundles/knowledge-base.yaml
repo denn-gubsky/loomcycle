@@ -1751,11 +1751,18 @@ agents:
       // The statements L6 may expire, demote, move and merge: rule and extractor
       // writes, and those the import, sync and canvas paths wrote. A person's own
       // (manual), one an operator ruled on, or a method this body does not know,
-      // is only verified or flagged.
+      // is only verified or flagged. Sync stamps its own method and keeps the one
+      // that made the statement in attributes.origin_method, so a person's
+      // statement that arrived by sync is judged as the person's.
       var RETIRABLE_METHODS = { "import": true, sync: true, canvas: true };
       function mayRetire(s) {
         if (typeof s.operator_ruled_at === "number" && s.operator_ruled_at > 0) { return false; }
-        return /^(rule|extractor):/.test(s.method) || RETIRABLE_METHODS[s.method] === true;
+        var m = s.method;
+        if (m === "sync" && isPlainObject(s.attributes) && typeof s.attributes.origin_method === "string" &&
+            s.attributes.origin_method !== "") {
+          m = s.attributes.origin_method;
+        }
+        return /^(rule|extractor):/.test(m) || RETIRABLE_METHODS[m] === true;
       }
 
       function checkStatement(st, L, s) {
