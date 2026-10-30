@@ -2521,10 +2521,9 @@ base — and built-in agents — **without a source checkout**. Two kinds:
 
   It runs on one document, or drains the `documents/ingested` queue. `write:
   report` (the default) only counts, while `write: propose` takes a scope
-  lease and writes. The writing path needs runtime ops still being built. It
-  needs `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and a confirmed
-  ontology; the semantic layer also needs an embedder on the Postgres vector
-  tier and a `low` tier. Input, report and limits:
+  lease and writes. It needs `LOOMCYCLE_CODE_AGENTS_ENABLED=1`, SQL Memory and
+  a confirmed ontology; the semantic layer also needs an embedder on the
+  Postgres vector tier and a `low` tier. Input, report and limits:
   [`bundles/knowledge-base/README.md`](../bundles/knowledge-base/README.md).
 
 ### A Starter that fans out over a document
