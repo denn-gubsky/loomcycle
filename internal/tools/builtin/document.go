@@ -2394,11 +2394,34 @@ func inPlaceholders(ids []string) (string, []any) {
 // N+1 of get_document per row. Unknown/out-of-scope ids are silently skipped
 // (opaque — a caller can't probe another scope's documents).
 func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	// A caller whose access-control set hides some document of the scope gets the
+	// answer it would get if those documents did not exist: one found under_path
+	// is dropped before the bound below is counted, and one it names in
+	// document_ids is skipped as an unknown id is. Dropped after the bound, they
+	// would spend it and set truncated on documents the caller cannot see.
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
+	if err != nil {
+		return errFrom("documents_summary: "+err.Error(), err), nil
+	}
 	ids := in.DocumentIDs
 	if in.UnderPath != "" {
 		under, err := d.documentsUnderPath(ctx, key, in.UnderPath)
 		if err != nil {
 			return docFail("documents_summary: ", err), nil
+		}
+		if limited {
+			kept := under[:0]
+			for _, id := range under {
+				ok, err := acl.readable(ctx, id)
+				if err != nil {
+					return errFrom("documents_summary: "+err.Error(), err), nil
+				}
+				if ok {
+					kept = append(kept, id)
+				}
+			}
+			under = kept
 		}
 		ids = append(ids, under...)
 	}
@@ -2484,6 +2507,15 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 		dm, ok := docs[id]
 		if !ok {
 			continue // no such document in this scope → skip (opaque)
+		}
+		if limited {
+			readable, err := acl.readable(ctx, id)
+			if err != nil {
+				return errFrom("documents_summary: "+err.Error(), err), nil
+			}
+			if !readable {
+				continue // as if there were no such document
+			}
 		}
 		entry := map[string]any{"document_id": id, "title": dm.title, "color_enabled": false}
 		if dm.root != "" {
@@ -5984,6 +6016,12 @@ func (d *Document) listTags(ctx context.Context, key sqlmem.ScopeKey, in docInpu
 // queryDocuments filters the documents table by type / status / tag (via
 // document_tags) / under_path (the Path tree, exactly like query_chunks), and
 // returns the matching document rows.
+//
+// A caller whose access-control set hides some document of the scope has those
+// rows withheld before the answer is cut at limit, reading on past them until it
+// holds limit readable rows or the documents run out: dropped after LIMIT they
+// would shorten the answer, telling the caller hidden documents exist. A caller
+// the set limits nothing keeps the one query.
 func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	limit := in.Limit
 	if limit <= 0 || limit > 1000 {
@@ -6015,15 +6053,65 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 		where += " AND id IN (SELECT document_id FROM document_tags WHERE tag = ?)"
 		args = append(args, in.Tag)
 	}
-	args = append(args, limit)
-	res, err := d.query(ctx, key, `SELECT id, title, type, status, root_chunk_id, created_at, updated_at FROM documents WHERE `+where+` ORDER BY title, id LIMIT ?`, args...)
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
 	if err != nil {
 		return errFrom("query_documents: "+err.Error(), err), nil
 	}
-	docs := make([]map[string]any, 0, len(res.Rows))
-	for _, r := range res.Rows {
+	const cols = `SELECT id, title, type, status, root_chunk_id, created_at, updated_at FROM documents WHERE `
+	if !limited {
+		args = append(args, limit)
+		res, err := d.query(ctx, key, cols+where+` ORDER BY title, id LIMIT ?`, args...)
+		if err != nil {
+			return errFrom("query_documents: "+err.Error(), err), nil
+		}
+		return queryDocumentsAnswer(res.Columns, res.Rows)
+	}
+	// A floor, so a small limit among many hidden documents is not a query per row.
+	batch := max(limit, 100)
+	var columns []string
+	var rows [][]any
+	var after []any // the last row scanned: its title and id
+	for len(rows) < limit {
+		w, a := where, append([]any{}, args...)
+		if after != nil {
+			w += " AND (title > ? OR (title = ? AND id > ?))"
+			a = append(a, after[1], after[1], after[0])
+		}
+		a = append(a, batch)
+		res, err := d.query(ctx, key, cols+w+` ORDER BY title, id LIMIT ?`, a...)
+		if err != nil {
+			return errFrom("query_documents: "+err.Error(), err), nil
+		}
+		columns = res.Columns
+		for _, r := range res.Rows {
+			ok, err := acl.readable(ctx, asStr(r[0]))
+			if err != nil {
+				return errFrom("query_documents: "+err.Error(), err), nil
+			}
+			if ok {
+				rows = append(rows, r)
+				if len(rows) == limit {
+					break
+				}
+			}
+		}
+		// The store's row cap can cut a batch short; only an uncut short batch
+		// is the end.
+		if len(res.Rows) == 0 || (!res.Truncated && len(res.Rows) < batch) {
+			break
+		}
+		after = res.Rows[len(res.Rows)-1]
+	}
+	return queryDocumentsAnswer(columns, rows)
+}
+
+// queryDocumentsAnswer renders query_documents' rows.
+func queryDocumentsAnswer(columns []string, rows [][]any) (tools.Result, error) {
+	docs := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
 		m := map[string]any{}
-		for i, c := range res.Columns {
+		for i, c := range columns {
 			if i < len(r) {
 				m[c] = r[i]
 			}
