@@ -997,7 +997,7 @@ agents:
       // placeholder for a work the scope does not hold yet).
       function layerCite(st, doc, changed) {
         var L = layerRec(st, "L2", proposalCounts({
-          hits: 0, hits_malformed: 0, hits_unreadable: 0, hits_unresolved: 0, hits_no_kind: 0, hits_self: 0,
+          hits: 0, hits_malformed: 0, hits_unresolved: 0, hits_no_kind: 0, hits_self: 0,
           kind_from_grammar: 0, kind_defaulted: 0, targets_exact: 0, targets_work_root: 0, placeholders: 0, placeholders_refused: 0,
           parts_truncated: 0, read_by_part: 0
         }));
@@ -1061,7 +1061,6 @@ agents:
           return;
         }
         var res = isPlainObject(h.resolved) ? h.resolved : {};
-        if (res.unreadable === true) { C.hits_unreadable++; return; }
         // The grammar's kind is the grammar author's word; it is used only when the
         // ontology declares it as a kind the linker may write.
         var kind = "cites";

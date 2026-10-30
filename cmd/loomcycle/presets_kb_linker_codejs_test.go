@@ -78,7 +78,7 @@ var kbOpContracts = []kbOpContract{
 		Assumes:  `R4: the seed source string is "base" (the agreed text said "seed"; the body treats every source but "reserved" as writable, so either works); reserved kinds are listed; renamed_from is one string`},
 	{Tool: "Document", Op: "extract_citations", OnMain: false,
 		Request:  `{document_id | id, limit, as_of?, scope}`,
-		Response: `{document_id, grammar: {name, class} | null, grammar_issue?, hits: [{chunk_id, quote, char_start, char_end, groups?, work_key?, anchor?, kind?, resolved: {document_id?, chunk_id?, exact, placeholder, unreadable?}}], truncated?}`,
+		Response: `{document_id, grammar: {name, class} | null, grammar_issue?, hits: [{chunk_id, quote, char_start, char_end, groups?, work_key?, anchor?, kind?, resolved: {document_id?, chunk_id?, exact, placeholder}}], truncated?}`,
 		Assumes:  `R5: grammar is an object or null (the agreed text said a name); no cursor, so a truncated document listing is re-read part by part with {id}; offsets are runes`},
 	{Tool: "Document", Op: "lease", OnMain: false,
 		Request:  `{name: "linker", ttl_ms, scope}`,

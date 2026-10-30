@@ -200,29 +200,35 @@ func TestKBLinker_PassWhoseEveryWriteIsRefusedFails(t *testing.T) {
 	})
 }
 
-// TestKBLinker_UnreadableCitationIsSkipped: a citation to a work held where the
-// caller may not read it is neither resolved again nor proposed. The control hit
-// proves the proposing path is live.
-func TestKBLinker_UnreadableCitationIsSkipped(t *testing.T) {
+// TestKBLinker_UnreadableCitationIsUnresolved: extract_citations answers a work
+// the caller may not read exactly as one the scope does not hold, so as not to
+// reveal that it exists. The linker therefore asks for a placeholder, a caller
+// confined to part of the scope is refused it, and the citation is unresolved
+// with nothing proposed. The control hit proves the proposing path is live.
+func TestKBLinker_UnreadableCitationIsUnresolved(t *testing.T) {
 	f := kbBaseFixture()
 	f.ontology = kbOntology()
+	f.placeholderRefusal = "resolve_anchor: a work key is claimed for the whole scope, and the caller's access-control rules do not let it write the whole scope"
 	f.citations = []map[string]any{
 		kbCiteHit("report a material incident", map[string]any{"work_key": "law:secret", "anchor": "article-3",
-			"resolved": map[string]any{"exact": false, "placeholder": false, "unreadable": true}}),
+			"resolved": map[string]any{"exact": false, "placeholder": false}}),
 		kbCiteHit("to the regulator", map[string]any{"resolved": resolvedTo("x2")}),
 	}
 
 	rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"]}`)
 
+	if rep["status"] != "complete" {
+		t.Errorf("status = %v (failure %v), want complete", rep["status"], rep["failure"])
+	}
 	got := proposals(f)
 	if len(got) != 1 || got[0]["to_id"] != "x2" {
 		t.Errorf("proposals = %v, want only the readable citation to x2", got)
 	}
-	if n := len(f.callsOf("Document", "resolve_anchor")); n != 0 {
-		t.Errorf("resolve_anchor called %d times — an unreadable work must not be looked up or filed", n)
+	if n := layerCount(t, rep, "L2", "placeholders_refused"); n != 1 {
+		t.Errorf("placeholders_refused = %v, want 1", n)
 	}
-	if n := layerCount(t, rep, "L2", "hits_unreadable"); n != 1 {
-		t.Errorf("hits_unreadable = %v, want 1", n)
+	if n := layerCount(t, rep, "L2", "hits_unresolved"); n != 1 {
+		t.Errorf("hits_unresolved = %v, want 1", n)
 	}
 }
 
