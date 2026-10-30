@@ -347,6 +347,48 @@ func TestKBLinker_DuplicatesUnderARemovedDiscriminatorMerge(t *testing.T) {
 	noViolations(t, f)
 }
 
+// TestKBLinker_OperatorAcceptedStatementIsOnlyVerifiedOrFlagged: a rule's
+// statement an operator accepted carries that operator's judgement, so like a
+// person's own it is only flagged when a check fails. Its unjudged twin is
+// expired, so the flag is that rule and not a dead check.
+func TestKBLinker_OperatorAcceptedStatementIsOnlyVerifiedOrFlagged(t *testing.T) {
+	f := maintainFixture()
+	accepted := citeStatement("st-accepted", "c1", "x-deleted")
+	accepted.JudgedBy = "operator"
+	twin := citeStatement("st-twin", "c1", "x-deleted")
+	twin.Kind = "amends"
+	f.statements = []*kbStatement{accepted, twin}
+
+	runLinker(t, f, maintainInput)
+
+	if got := actionsOf(f, "st-accepted"); got != "flag" {
+		t.Errorf("st-accepted actions = %q, want flag", got)
+	}
+	if got := actionsOf(f, "st-twin"); got != "expire" {
+		t.Errorf("st-twin actions = %q, want expire", got)
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_DuplicateOfAnotherStatusIsFlaggedNotMerged: the runtime merges
+// only into a survivor of the same status, so a proposed duplicate of an
+// asserted statement is left for review.
+func TestKBLinker_DuplicateOfAnotherStatusIsFlaggedNotMerged(t *testing.T) {
+	f := maintainFixture()
+	older := citeStatement("st-older", "c1", "x1", "report a material incident")
+	older.Discriminator, older.CreatedAt = "art-1", 10
+	newer := citeStatement("st-newer", "c1", "x1", "within 24 hours")
+	newer.Discriminator, newer.CreatedAt, newer.Status = "art-2", 20, "proposed"
+	f.statements = []*kbStatement{newer, older}
+
+	runLinker(t, f, maintainInput)
+
+	if got := actionsOf(f, "st-newer"); got != "flag" {
+		t.Errorf("st-newer actions = %q, want flag — never merged across statuses", got)
+	}
+	noViolations(t, f)
+}
+
 // TestKBLinker_SelectionCoversEndsAndEvidenceAcrossPages: the touched set is
 // every live statement with an end in the document or evidence citing it, of
 // either status, over every page, each once.

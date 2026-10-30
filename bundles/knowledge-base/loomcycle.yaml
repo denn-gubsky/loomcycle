@@ -1751,13 +1751,17 @@ agents:
 
       // The statements L6 may expire, demote, move and merge: rule and extractor
       // writes, and those the import, sync and canvas paths wrote. A person's own
-      // (manual), or a method this body does not know, is only verified or flagged.
+      // (manual), one an operator accepted, or a method this body does not know,
+      // is only verified or flagged.
       var RETIRABLE_METHODS = { "import": true, sync: true, canvas: true };
-      function mayRetire(method) { return /^(rule|extractor):/.test(method) || RETIRABLE_METHODS[method] === true; }
+      function mayRetire(s) {
+        if (s.judged_by === "operator") { return false; }
+        return /^(rule|extractor):/.test(s.method) || RETIRABLE_METHODS[s.method] === true;
+      }
 
       function checkStatement(st, L, s) {
         var C = L.counts;
-        var person = !mayRetire(s.method);
+        var person = !mayRetire(s);
         var ev = s.evidence;
         for (var i = 0; i < ev.length; i++) {
           if (isPlainObject(ev[i]) && !ev[i].chunk_id && ev[i].natural_key) { C.endpoints_cross_scope_unchecked++; break; }
@@ -1817,7 +1821,7 @@ agents:
       // act is the one path to maintain_statement. The guard below holds the
       // person-authored rule even if a check above forgets it.
       function act(st, L, s, action, extra) {
-        if (!mayRetire(s.method) && action !== "verify" && action !== "flag") {
+        if (!mayRetire(s) && action !== "verify" && action !== "flag") {
           throw new Error("refusing " + action + " on a statement a person wrote");
         }
         var args = { op: "maintain_statement", id: s.id, action: action, method: METHOD.maintain };
@@ -2027,7 +2031,8 @@ agents:
           out.push(grp[0]);
           for (var x = 1; x < grp.length; x++) {
             L.counts.checks.redundancy++;
-            if (mayRetire(grp[x].method)) {
+            // The runtime merges only into a survivor of the same status.
+            if (mayRetire(grp[x]) && grp[x].status === grp[0].status) {
               act(st, L, grp[x], "merge", { survivor_id: grp[0].id });
             } else {
               act(st, L, grp[x], "flag", { reason: "duplicate of an older live statement" });

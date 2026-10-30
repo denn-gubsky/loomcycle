@@ -27,6 +27,16 @@ Until they ship:
 The `statement_methods: [rule, extractor]` grant is a marked comment in the yaml.
 Config load rejects the field until the runtime knows it.
 
+Under `LOOMCYCLE_ACL=enforce`, the access rules of whoever starts the linker must
+allow these verbs on the documents it works on:
+- `propose`, to file statements, take the lease, and verify, flag or re-point
+  evidence;
+- `link`, on both ends' documents (and on the survivor's, for a merge), for
+  `maintain` mode to expire, demote or merge.
+
+Without `link`, those three actions are refused one by one, and the report
+counts them under `refusals`.
+
 ## Layers
 
 One pass covers one document. The layers run in this order:
@@ -62,13 +72,14 @@ For each statement, the first check that fails decides the outcome:
    - Otherwise the evidence row is marked stale.
    - When all of a statement's evidence is stale, it is demoted.
 5. **Redundancy.** Statements left identical once a kind dropped its
-   discriminator are merged into the oldest.
+   discriminator are merged into the oldest of the same status. A duplicate of
+   another status is flagged.
 
 If every check passes, the statement is verified.
 
 These rules always hold:
-- A statement a person wrote (`manual`, or a method the linker does not know) is
-  only ever **verified or flagged**. Statements written by `rule:`,
+- A statement a person wrote (`manual`, or a method the linker does not know),
+  or one an operator accepted, is only ever **verified or flagged**. Statements written by `rule:`,
   `extractor:`, import, sync and canvas are all maintained the same way.
 - A statement the runtime wrote (the edition chain's `supersedes`, the
   consolidator's links, `[[name]]` links) and any reserved kind are **not
