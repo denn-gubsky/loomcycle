@@ -8,6 +8,34 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.128.1
+
+*A first `classify` pass over 231 real regulatory documents found five defects. Law citations never resolved. A class could carry one citation grammar only. A section title tied with the title's own match. Documents classified by rule got no concepts. And the chat classifier's replies were cut off. All five are fixed. `File op=import` can now also **drop** a heading the file already has, so a PDF extract imports by its sections rather than by its pages.*
+
+A patch on the v1.128 line: #2281, #2282.
+- `@loomcycle/client` stays at 1.128.0. Its `RunFileImportHeading` type gains the `drop` variant in the next adapter release. The runtime accepts the entry from any client now. The Python adapter stays at 1.126.0.
+
+### File import can drop a heading (#2281)
+
+`File op=extract` writes a `## Page N` heading per PDF page, so an imported PDF became one section per page. A point running over a page break was split in two. `headings` could only add boundaries, and editing the file to remove them would break its capture provenance.
+
+A `headings` entry may now be `{"line": N, "as": "drop"}`. It removes a line that is already a Markdown heading, and the text either side reads on as one section. Drops combine with `heading` and `marker` entries in one call. Line numbers count over the file as it is, so one call can drop the page headings and add the real structure.
+- **Refused:** a drop on a body line, or one that sets `level`, `title` or `lines`. If any entry is refused, nothing is imported.
+- **Provenance:** the file is unchanged, so the document keeps its capture record. `structured` reads `{headings, dropped, by}`, and `dropped` is left out when 0.
+
+### Classify and citations (#2282)
+
+- **Work keys fold case.** Identity keys are held lower-cased (`law:2297-vi`), but a citation's key was looked up exactly, so «№ 2297-VI» never resolved. The lookup now falls back to the lower-cased, space-collapsed key.
+- **A class may name several citation grammars.** `@citation_grammar nbu-resolution, law-ua`: `extract_citations` applies each one and merges the hits. Where two match the same text, the earlier match wins. `grammar.name` lists the names.
+- **The title outranks a section.** A class matched by the title or the import's source title now beats one matched only by a section title. Sections count only when the titles match no class.
+- **Concepts for rule-classified documents.** When the class is settled (by rule, vote or a type set by hand) but no concepts are, the classifier model is asked about the concepts alone. That is one model call per such document, and its concepts are proposals.
+- **The chat classifier's reply budget is 1024 tokens.** It reused the reranker's 256, which cut a quoted Ukrainian passage plus concept names off mid-object, and such a reply was dropped.
+
+### Upgrade notes
+
+- **No migration and no config change.**
+- **Images:** this patch is built in full (`force_full`), so the plain `loomcycle` image is published at 1.128.1 too, not only `loomcycle-browser`.
+
 ## What's in v1.128.0
 
 *Relations become statements with evidence, the tenant ontology becomes a sectioned document that governs them, and a document can be classified and linked by rule. **A relation is a statement**: it carries its method, status, confidence, validity and verbatim evidence, waits for review when an agent proposes it, and is followed by kind in retrieval. **The ontology gains sections** — typed document classes with identity keys, relation kinds with domain and range, concept schemes, and instances adopted into the entity registry — and the gates read it. **A new edition is reconciled onto the work it amends** part by part, so statements, tags and citations follow it. **`classify`** says what a document is, by its classes' patterns, its neighbours and, where those leave it open, a classifier model. **A `knowledge-base` bundle** ships a code-js links agent that builds and maintains statements by rule. **Read the upgrade notes: Memory SQL no longer reaches the Document tool's tables (and on Postgres they move to their own schema and login role per scope), and the statements table is rebuilt in place on first use.***
