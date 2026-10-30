@@ -197,6 +197,11 @@ The run's final output is one JSON object:
   `renewals`, `lost` and `released`.
 - `layers.L1` … `layers.L6`: each layer's `status` (`run`, `skipped` with
   `reason`) and its `counts`.
+  - A layer that proposes counts each write by what the runtime made of it:
+    `proposed` or `asserted` (a new statement), `evidence_added` (a new quote on
+    a statement already held), `unchanged` (statement and quote both held), or
+    `already_asserted`. A re-run over the same text proposes nothing: its writes
+    count as `unchanged`.
   - L6 adds `checks` (which check decided) and `actions` (per action).
   - L4 keeps its findings and spans in UTF-16 units (`span_unit`).
 - `writes`, `would_write`: per op. `refusals`: per op and refusal code.

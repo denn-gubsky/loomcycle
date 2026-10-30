@@ -162,6 +162,42 @@ func TestKBLinker_ReRunOverAnAcceptedCitationIsNotARefusal(t *testing.T) {
 	noViolations(t, f)
 }
 
+// TestKBLinker_ReRunOverTheSameTextProposesNothing: the gate a second pass must
+// meet. The first pass files one statement and adds a second quote to it; the
+// second pass over the same text makes the same calls, the runtime changes
+// nothing, and the report says so: proposed and evidence_added are 0, and every
+// write counts as unchanged.
+func TestKBLinker_ReRunOverTheSameTextProposesNothing(t *testing.T) {
+	f := kbBaseFixture()
+	f.ontology = kbOntology()
+	f.citations = []map[string]any{
+		kbCiteHit("report a material incident", map[string]any{"resolved": resolvedTo("x1")}),
+		kbCiteHit("to the regulator", map[string]any{"resolved": resolvedTo("x1")}),
+	}
+	in := `{"document_id":"doc-target","write":"propose","layers":["L2"]}`
+
+	first, _ := runLinker(t, f, in)
+	for counter, want := range map[string]float64{"proposed": 1, "evidence_added": 1, "unchanged": 0} {
+		if n := layerCount(t, first, "L2", counter); n != want {
+			t.Errorf("first pass %s = %v, want %v", counter, n, want)
+		}
+	}
+
+	second, _ := runLinker(t, f, in)
+	for counter, want := range map[string]float64{"proposed": 0, "evidence_added": 0, "unchanged": 2} {
+		if n := layerCount(t, second, "L2", counter); n != want {
+			t.Errorf("second pass %s = %v, want %v", counter, n, want)
+		}
+	}
+	if second["status"] != "complete" {
+		t.Errorf("second pass status = %v, want complete", second["status"])
+	}
+	if got := len(f.statements); got != 1 || len(f.statements[0].Evidence) != 2 {
+		t.Errorf("statements = %d (evidence %d), want 1 statement with 2 quotes", got, len(f.statements[0].Evidence))
+	}
+	noViolations(t, f)
+}
+
 // TestKBLinker_PassWhoseEveryWriteIsRefusedFails: when the runtime refuses every
 // write a pass makes, that is a configuration fault (here a missing method
 // grant), and the pass fails rather than report complete. A relation that is

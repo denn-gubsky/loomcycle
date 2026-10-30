@@ -221,6 +221,21 @@ func TestKBLinker_TermsPassAgainstTheRealDocumentTool(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}
 	}
+
+	// A second pass over the same text proposes nothing: the runtime holds every
+	// statement and quote already, and the report must say unchanged rather than
+	// proposed.
+	filed := layerCount(t, rep, "L3", "proposed") + layerCount(t, rep, "L3", "evidence_added")
+	again := runRealLinker(t, d, ctx, fmt.Sprintf(
+		`{"document_id":%q,"scope":"tenant","write":"propose","layers":["L3"],"terms_scheme":"topics"}`, law["document_id"]))
+	for counter, want := range map[string]float64{"proposed": 0, "evidence_added": 0, "unchanged": filed} {
+		if n := layerCount(t, again, "L3", counter); n != want {
+			t.Errorf("second pass %s = %v, want %v", counter, n, want)
+		}
+	}
+	if filed == 0 {
+		t.Error("the first pass filed nothing, so the second pass proves nothing")
+	}
 }
 
 // kbClassifyOntologyMD: a Law is a NormativeAct whose title starts "Закон
