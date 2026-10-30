@@ -73,6 +73,12 @@ type fakeToolset struct {
 	declaredTypes map[string]bool
 	// proposedTypes records propose_entity calls: name -> true.
 	proposedTypes map[string]bool
+	// declaredRelations, when non-empty, makes upsert_chunk record a relation of a
+	// kind outside the set as PROPOSED, as the runtime's annotate mode does.
+	declaredRelations map[string]bool
+	// relationTargets is each recorded relation's object, by subject + kind, so a
+	// second object reads back as relation_conflicts like the runtime reports it.
+	relationTargets map[string]string
 
 	// The entity half, filled by fakeDocument.
 	entitiesDocID string
@@ -202,6 +208,7 @@ func newFakeToolset() *fakeToolset {
 		failSubjectDocs:   map[string]bool{},
 		unadoptedSubjects: map[string]bool{},
 		proposedTypes:     map[string]bool{},
+		relationTargets:   map[string]string{},
 		// Source of truth for this format: formatSubAgentOutput in
 		// internal/api/http/resume.go. Nothing links them — grep that name.
 		subAgentHeader: "[sub-agent agent_id=a_test000000000000]\n",
@@ -466,6 +473,31 @@ func (d *fakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 			res["about_written"] = written
 			if skipped > 0 {
 				res["about_skipped"] = skipped
+			}
+		}
+		// The relation between the first two subjects, answered in the runtime's
+		// shape: recorded (asserted, or proposed for a kind the tenant does not
+		// declare), skipped for a reserved kind or a single subject, and a second
+		// object for the same subject and kind reported as a conflict.
+		if rel, _ := in["relation"].(string); rel != "" {
+			ids, _ := in["about_ids"].([]any)
+			switch {
+			case len(ids) < 2:
+				res["relation_skipped"] = "a relation needs two subjects the fact is about"
+			case rel == "about" || rel == "supersedes" || rel == "references" || rel == "mentions" || rel == "derived_from":
+				res["relation_skipped"] = "kind_reserved: " + strconv.Quote(rel) + " edges are written only by the runtime"
+			default:
+				from, _ := ids[0].(string)
+				to, _ := ids[1].(string)
+				status := "asserted"
+				if len(d.f.declaredRelations) > 0 && !d.f.declaredRelations[rel] {
+					status = "proposed"
+				}
+				res["relation"] = map[string]any{"statement_id": "stmt-" + id, "kind": rel, "status": status}
+				if prev, ok := d.f.relationTargets[from+"\x00"+rel]; ok && prev != to {
+					res["relation_conflicts"] = 1
+				}
+				d.f.relationTargets[from+"\x00"+rel] = to
 			}
 		}
 		return okResult(res)
@@ -6326,5 +6358,51 @@ func TestConsolidator_ARelationKindTravelsWithTheFact(t *testing.T) {
 	}
 	if got["Dave knows Ada."] != nil {
 		t.Errorf("model text was passed as a relation kind: %v", got["Dave knows Ada."])
+	}
+}
+
+// The relation counters reach the pass report: a relation recorded, one recorded
+// for review (a kind the tenant does not declare), one the runtime skipped (a
+// reserved kind), a conflict, and one the pass dropped because the extractor named
+// it in a form no kind can take. A kind spelled outside lower_snake_case still
+// travels: the tenant names its kinds, and the runtime decides what it accepts.
+func TestConsolidator_RelationCountersReachThePassReport(t *testing.T) {
+	f := newFakeToolset()
+	f.declaredRelations = map[string]bool{"works_at": true, "worksAt": true}
+	f.sessions = []map[string]any{scanRow("sess-a", "2026-07-01T10:00:00Z")}
+	f.transcript = "### user\n\nDave started at the corner shop, then the cafe. He mentors Ada."
+	f.factsJSON = `[{"text":"Dave works at the corner shop.","class":"fact","type":"person",
+	                 "subject":"Dave","also_about":["the corner shop"],"relation":"works_at"},
+	                {"text":"Dave works at the cafe.","class":"fact","type":"person",
+	                 "subject":"Dave","also_about":["the cafe"],"relation":"works_at"},
+	                {"text":"Dave mentors Ada.","class":"fact","type":"person",
+	                 "subject":"Dave","also_about":["Ada"],"relation":"mentors"},
+	                {"text":"Dave replaced Bob.","class":"fact","type":"person",
+	                 "subject":"Dave","also_about":["Bob"],"relation":"supersedes"},
+	                {"text":"Dave knows Eve.","class":"fact","type":"person",
+	                 "subject":"Dave","also_about":["Eve"],"relation":"knows \"Eve\""},
+	                {"text":"Dave helps Acme.","class":"fact","type":"person",
+	                 "subject":"Dave","also_about":["Acme"],"relation":"worksAt"}]`
+
+	res := runConsolidator(t, f)
+
+	got := map[string]any{}
+	for _, c := range callsWithOp(f, "Document.upsert_chunk") {
+		if body, _ := c.Input["body"].(string); body != "" {
+			got[body] = c.Input["relation"]
+		}
+	}
+	if got["Dave helps Acme."] != "worksAt" {
+		t.Errorf("a kind outside lower_snake_case was dropped: %v", got)
+	}
+	if got["Dave knows Eve."] != nil {
+		t.Errorf("model text was passed as a relation kind: %v", got["Dave knows Eve."])
+	}
+	want := "relations 3 recorded, 1 for review, 1 skipped, 1 dropped (not a kind name)"
+	if !strings.Contains(res.FinalText, want) {
+		t.Errorf("report lacks %q:\n%s", want, res.FinalText)
+	}
+	if !strings.Contains(res.FinalText, "1 possible contradiction(s) between relations") {
+		t.Errorf("report lacks the conflict:\n%s", res.FinalText)
 	}
 }

@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { readImageAsBase64, imageFileFromPaste } from "../lib/imageUpload";
 import { useExplorerData } from "../lib/dataLayer";
+import { loadDocumentEdges } from "../lib/edgePages";
 import { landingChunk, type DocLocation } from "../lib/docTrail";
 import { chunkAncestors } from "../lib/chunkAncestry";
 import {
@@ -133,6 +134,8 @@ export default function DocumentViewerBody({
   const [meta, setMeta] = useState<DocumentMeta | null>(null);
   const [colorsOpen, setColorsOpen] = useState(false);
   const [edges, setEdges] = useState<DocEdge[]>([]);
+  // The edge load stopped before the end of the list (its page cap).
+  const [edgesIncomplete, setEdgesIncomplete] = useState(false);
   // Bumped after an operator rules on a proposed statement: refetches the edges
   // (and an open Connections panel) without reloading the whole document.
   const [edgesReload, setEdgesReload] = useState(0);
@@ -251,14 +254,22 @@ export default function DocumentViewerBody({
     };
   }, [data, documentId, scope, reload, browse]);
 
-  // Load the cross-reference edges (RFC BN P4) in one call — powers the 🔗 tile
-  // badge, the References list, and the relationship graph. Best-effort.
+  // Load the cross-reference edges (RFC BN P4), every page up to the cap —
+  // powers the 🔗 tile badge, the References list, and the relationship graph.
+  // Best-effort.
   useEffect(() => {
     let cancelled = false;
-    data
-      .documentGetEdges(documentId, scope, browse)
-      .then((r) => !cancelled && setEdges(r.edges ?? []))
-      .catch(() => !cancelled && setEdges([]));
+    loadDocumentEdges(data, documentId, scope, browse)
+      .then((r) => {
+        if (cancelled) return;
+        setEdges(r.edges);
+        setEdgesIncomplete(r.incomplete);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setEdges([]);
+        setEdgesIncomplete(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -285,6 +296,7 @@ export default function DocumentViewerBody({
     setMode("chunks");
     setMeta(null);
     setEdges([]);
+    setEdgesIncomplete(false);
   }, [documentId, scope]);
 
   // Fetch the selected chunk's body.
@@ -888,6 +900,7 @@ export default function DocumentViewerBody({
                 </div>
                 <CrossReferences
                   edges={edges}
+                  incomplete={edgesIncomplete}
                   documentId={documentId}
                   selectedId={selectedId}
                   onSelectChunk={setSelectedId}

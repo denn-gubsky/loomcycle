@@ -122,7 +122,7 @@ func runTokensRewrap(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	st, closeStore, err := openStore(cfg)
+	st, closeStore, err := openStore(cfg, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: store: %v\n", err)
 		return 1

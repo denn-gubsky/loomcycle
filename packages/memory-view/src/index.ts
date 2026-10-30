@@ -81,6 +81,7 @@ export type { Connection } from "./lib/createClient";
 // @loomcycle/client instance.
 export { dataLayerFromClient, dataLayerFromConnection } from "./lib/dataLayer";
 export type { MemoryDataLayer, FactListOptions } from "./lib/dataLayer";
+export { loadFactEdges, EDGE_PAGE_CAP } from "./lib/edgePages";
 
 // The shared data-source contract (connection | client | dataLayer), for hosts
 // typing their own wrappers.

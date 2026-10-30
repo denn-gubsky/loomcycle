@@ -13,8 +13,8 @@ import { StatementMeta, StatementReview, type StatementRuling } from "./Statemen
 //     document's edges), capped to the first N with a "show all" expand so a
 //     heavily cross-linked document doesn't render an unreadable diagram. Its
 //     nodes follow the same rule as the list.
-// Fed by one get_edges call (all edges touching the document); renders nothing
-// when the document has no edges. Since RFC FN each edge is a statement: a row
+// Fed by the paged get_edges load (all edges touching the document); renders
+// nothing when the document has no edges. Since RFC FN each edge is a statement: a row
 // also shows its status / method / verdict / validity / evidence, and a proposed
 // one gets Accept / Reject when the host passes onRuleStatement.
 export interface CrossReferencesProps {
@@ -28,6 +28,9 @@ export interface CrossReferencesProps {
   // Rules on a proposed statement, then refetches the edges. Omitted → proposals
   // are shown but not reviewable here.
   onRuleStatement?: StatementRuling;
+  // The edge list stopped before the end (the load's page cap): both the list
+  // and the graph may be missing links, so the panel says so.
+  incomplete?: boolean;
 }
 
 // GRAPH_CAP is the default number of edges the relationship graph draws before
@@ -41,6 +44,7 @@ export default function CrossReferences({
   onSelectChunk,
   onOpenDocument,
   onRuleStatement,
+  incomplete,
 }: CrossReferencesProps) {
   const [showGraph, setShowGraph] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -61,6 +65,12 @@ export default function CrossReferences({
 
   return (
     <div className="doc-refs">
+      {incomplete && (
+        <p className="doc-refs-incomplete">
+          Showing the first {edges.length} links of this document; it has more, which are not shown
+          here or in the graph.
+        </p>
+      )}
       {selectedId && (
         <div className="doc-refs-list-wrap">
           <h4>References</h4>

@@ -2069,6 +2069,7 @@ func (m *Memory) execRecall(ctx context.Context, scope store.MemoryScope, scopeI
 			}
 		}
 	}
+	withholdUnreadableSources(ctx, m.hitReader(), scope, scopeID, spans)
 	memories := make([]map[string]any, 0, len(res.Facts))
 	for _, f := range res.Facts {
 		id := f.ID

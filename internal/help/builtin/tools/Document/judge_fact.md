@@ -31,8 +31,8 @@ the default fact reads now leave it out; `include_refuted: true` shows it again.
 ## Errors
 
 - `judge_fact: the fact's quote no longer occurs in the chunk it was taken from ...`
-  — a fact taken from a document passage is checked against the passage as it
-  is now; when the passage changed, judge it `unclear` or `unsupported`, or
+  — a fact taken from a document passage is checked against the passage it
+  was last taken from, as it is now; when the passage changed, judge it `unclear` or `unsupported`, or
   re-derive the fact.
 - `judge_fact: verdict must be "supported", "unclear", "mistyped" or "unsupported" ...`
   — pass the word, never a number.
