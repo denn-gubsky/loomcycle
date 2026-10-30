@@ -312,6 +312,13 @@ type edgeWrite struct {
 	proposeIfInvalid bool
 }
 
+// gateAuthored reports a principal's own link_chunks: the one write the
+// vocabulary refuses rather than annotates, and the one that asserts a statement
+// awaiting review.
+func (w edgeWrite) gateAuthored() bool {
+	return w.authored && w.method == edgeMethodManual
+}
+
 // edgeWriteResult is what a write reports.
 type edgeWriteResult struct {
 	ID              string   `json:"id"`
@@ -364,54 +371,12 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 			return out, &r, nil
 		}
 	}
-	if w.validAt != nil && w.invalidAt != nil && *w.invalidAt <= *w.validAt {
-		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
-		return out, &r, nil
+	env, refuse := d.checkEnvelope(ctx, key, &w)
+	if refuse != nil {
+		return out, refuse, nil
 	}
-	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
-		r := errValidation("confidence must be between 0 and 1", "Leave confidence unset when you have no estimate.")
-		return out, &r, nil
-	}
-	var attrs []byte
-	if len(w.attributes) > 0 {
-		b, err := json.Marshal(w.attributes)
-		if err != nil || len(b) > edgeAttributesMaxBytes {
-			r := errValidation(fmt.Sprintf("attributes must be a JSON object of at most %d bytes", edgeAttributesMaxBytes), "Keep attributes to the relation's qualifiers.")
-			return out, &r, nil
-		}
-		attrs = b
-	}
-
-	// Only a principal's own link_chunks is refused on a vocabulary violation. A
-	// bulk path — import_md, import_canvas, sync — carries relations someone else
-	// wrote, and refusing one would drop it from an otherwise faithful copy; it is
-	// kept, annotated ontology_valid=false (RFC FO decision, 2026-10-29). w.authored
-	// still means "the caller's own authority" for the reserved-kind rule.
-	gateAuthored := w.authored && w.method == edgeMethodManual
-	gate := d.gateRelation(ctx, key, w.kind, w.from, w.to, gateAuthored)
-	if gateAuthored && gate.Refuse != nil {
-		return out, gate.Refuse, nil
-	}
-	agate := d.gateAttributes(ctx, w.kind, w.attributes, gateAuthored)
-	if gateAuthored && agate.Refuse != nil {
-		return out, agate.Refuse, nil
-	}
-	gate.Valid = gate.Valid && agate.Valid
-	gate.Warnings = append(gate.Warnings, agate.Warnings...)
+	gate, attrs, confidence := env.gate, env.attrs, env.confidence
 	out.OntologyValid, out.Warnings = gate.Valid, gate.Warnings
-	confidence := w.confidence
-	if !gate.Valid {
-		// annotate mode (D8): kept, marked, and sorted behind a clean proposal.
-		if attrs == nil {
-			w.attributes = map[string]any{}
-		}
-		w.attributes["ontology_valid"] = false
-		attrs, _ = json.Marshal(w.attributes)
-		capped := edgeProposalConfidenceCap
-		if confidence == nil || *confidence > capped {
-			confidence = &capped
-		}
-	}
 
 	evidence, refuse, err := d.checkEvidence(ctx, key, mscope, w.evidence)
 	if err != nil || refuse != nil {
@@ -459,7 +424,7 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 		// import, canvas — carries someone else's judgement and adds its evidence to
 		// the proposal; clearing the review queue is not something holding write
 		// should be able to do.
-		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && gateAuthored {
+		if status == edgeStatusAsserted && existing.Status != edgeStatusAsserted && w.gateAuthored() {
 			if err := d.exec(ctx, key, `UPDATE chunk_edges SET status = ?, actor = ? WHERE id = ?`, edgeStatusAsserted, nullIfEmpty(actor), existing.ID); err != nil {
 				return out, nil, err
 			}
@@ -519,6 +484,69 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	out.EvidenceWritten, out.EvidenceCapped = written, capped
 	return out, nil, nil
+}
+
+// edgeEnvelope is a statement's envelope as a write stores it: the attributes as
+// JSON (nil for none), the confidence after any annotation cap, and the
+// vocabulary gate's verdict.
+type edgeEnvelope struct {
+	attrs      []byte
+	confidence *float64
+	gate       relationGate
+}
+
+// checkEnvelope validates w's validity, confidence and attributes and runs the
+// vocabulary gate over the relation. A refusal comes back as *tools.Result. It
+// may add the ontology_valid annotation to w.attributes.
+func (d *Document) checkEnvelope(ctx context.Context, key sqlmem.ScopeKey, w *edgeWrite) (edgeEnvelope, *tools.Result) {
+	var env edgeEnvelope
+	if w.validAt != nil && w.invalidAt != nil && *w.invalidAt <= *w.validAt {
+		r := errValidation("invalid_at must be after valid_at", "Leave invalid_at unset for a relation that still holds.")
+		return env, &r
+	}
+	if w.confidence != nil && (*w.confidence < 0 || *w.confidence > 1) {
+		r := errValidation("confidence must be between 0 and 1", "Leave confidence unset when you have no estimate.")
+		return env, &r
+	}
+	if len(w.attributes) > 0 {
+		b, err := json.Marshal(w.attributes)
+		if err != nil || len(b) > edgeAttributesMaxBytes {
+			r := errValidation(fmt.Sprintf("attributes must be a JSON object of at most %d bytes", edgeAttributesMaxBytes), "Keep attributes to the relation's qualifiers.")
+			return env, &r
+		}
+		env.attrs = b
+	}
+
+	// Only a principal's own link_chunks is refused on a vocabulary violation. A
+	// bulk path — import_md, import_canvas, sync — carries relations someone else
+	// wrote, and refusing one would drop it from an otherwise faithful copy; it is
+	// kept, annotated ontology_valid=false (RFC FO decision, 2026-10-29). w.authored
+	// still means "the caller's own authority" for the reserved-kind rule.
+	gateAuthored := w.gateAuthored()
+	gate := d.gateRelation(ctx, key, w.kind, w.from, w.to, gateAuthored)
+	if gateAuthored && gate.Refuse != nil {
+		return env, gate.Refuse
+	}
+	agate := d.gateAttributes(ctx, w.kind, w.attributes, gateAuthored)
+	if gateAuthored && agate.Refuse != nil {
+		return env, agate.Refuse
+	}
+	gate.Valid = gate.Valid && agate.Valid
+	gate.Warnings = append(gate.Warnings, agate.Warnings...)
+	env.gate, env.confidence = gate, w.confidence
+	if !gate.Valid {
+		// annotate mode (D8): kept, marked, and sorted behind a clean proposal.
+		if env.attrs == nil {
+			w.attributes = map[string]any{}
+		}
+		w.attributes["ontology_valid"] = false
+		env.attrs, _ = json.Marshal(w.attributes)
+		capped := edgeProposalConfidenceCap
+		if env.confidence == nil || *env.confidence > capped {
+			env.confidence = &capped
+		}
+	}
+	return env, nil
 }
 
 // checkedEvidence is an evidence row that passed checkEvidence, with its span
