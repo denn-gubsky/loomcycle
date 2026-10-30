@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
@@ -83,4 +85,39 @@ func TestFileImport_ReimportReconcilesOntoTheHeldWork(t *testing.T) {
 			t.Errorf("the result does not name the work: %v", out)
 		}
 	})
+}
+
+// Document's hooks judge a File import as the import_md it makes: a reimport's
+// work_key, edition_date and amending_document_id reach the hook, so a hook that
+// refuses one cannot be stepped around by importing through File.
+func TestFileImport_DocumentHookSeesTheReimportFields(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	var asked []string
+	hooked := tools.WithHookPreCheck(ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		if name != "Document" {
+			return tools.Result{}, true
+		}
+		asked = append(asked, string(input))
+		if strings.Contains(string(input), `"work_key":"law:ua/held"`) {
+			return tools.Result{Text: "that work is frozen", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	ref := inbox.Capture(ctx, inbox.Item{Name: "act.md", MediaType: "text/markdown", Origin: "o"}, []byte(amendEd1)).Record.Ref
+	_, res := fileOp(t, f, hooked, map[string]any{"op": "import", "path": ref,
+		"reimport": true, "work_key": "law:ua/held", "edition_date": 1_000_000, "amending_document_id": "amend-1"})
+	if !res.IsError || !strings.Contains(res.Text, "that work is frozen") {
+		t.Fatalf("a hook refusing the work key let the import through: %q", res.Text)
+	}
+	if len(asked) != 1 {
+		t.Fatalf("the Document hook was asked %d times: %v", len(asked), asked)
+	}
+	for _, want := range []string{`"op":"import_md"`, `"via":"File"`, `"reimport":true`, `"edition_date":1000000`, `"amending_document_id":"amend-1"`} {
+		if !strings.Contains(asked[0], want) {
+			t.Errorf("the hook was asked %s, without %s", asked[0], want)
+		}
+	}
+	if strings.Contains(asked[0], `"markdown"`) {
+		t.Errorf("the hook was handed the file's text: %s", asked[0])
+	}
 }

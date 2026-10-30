@@ -344,7 +344,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// Import writes a Document as import_md would, so the run must hold
 	// Document and Document's hooks judge it. The scope's own grants are
 	// checked by the Document tool itself, below.
-	if res, ok := fileDocumentGrant(ctx, scope, in.DocPath, in.Reimport); !ok {
+	if res, ok := fileDocumentGrant(ctx, in, scope); !ok {
 		return res, nil
 	}
 	vfs, rel, res, ok := openRef(ctx, r, false)
@@ -516,21 +516,23 @@ func importFileProvenance(ctx context.Context, r dataRef, rel, digest string) (p
 // fileDocumentGrant refuses an import the run could not make with the
 // Document tool: outside a run, without Document in its tools, or when
 // Document's pre-hooks deny the equivalent import_md.
-func fileDocumentGrant(ctx context.Context, scope, docPath string, reimport bool) (tools.Result, bool) {
+func fileDocumentGrant(ctx context.Context, in fileInput, scope string) (tools.Result, bool) {
 	if tools.IsSubstrateOperator(ctx) && tools.RunID(ctx) == "" {
 		return errPermission("import is not available outside a run", "Use the Document tool's import_md."), false
 	}
 	if !slices.Contains(tools.PolicyOf(ctx).Tools, "Document") {
 		return errPermission("import needs the Document tool, which this run does not have", "Ask an operator to grant the tool."), false
 	}
-	in := map[string]any{"op": "import_md", "scope": scope, "via": FileToolName}
-	if docPath != "" {
-		in["path"] = docPath
+	// The hooks see the import_md call the import makes, its reimport fields
+	// included, less the file's text: a hook refusing a work key must not be
+	// stepped around by importing through File.
+	call := importMDCall(in, scope, "")
+	delete(call, "markdown")
+	if in.DocPath == "" {
+		delete(call, "path")
 	}
-	if reimport {
-		in["reimport"] = true
-	}
-	b, _ := json.Marshal(in)
+	call["via"] = FileToolName
+	b, _ := json.Marshal(call)
 	if res, ok := tools.HookPreCheck(ctx, "Document", b); !ok {
 		return classified("import: refused by a Document hook: "+res.Text, tools.CategoryPermission, false,
 			"Ask the operator about the hook."), false
