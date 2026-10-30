@@ -3907,6 +3907,7 @@ export type DocumentToolInput = {
     | "accept_statement"
     | "reject_statement"
     | "list_statements"
+    | "maintain_statement"
     | "resolve_anchor"
     | "lease"
     | "release"
@@ -3989,11 +3990,29 @@ export type DocumentToolInput = {
   kinds?: string[];
   /** link_chunks / propose_statement: the relation's qualifiers. */
   attributes?: Record<string, unknown>;
-  /** propose_statement / upsert_chunk (its relation): how the statement was
-   *  made — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
+  /** propose_statement / maintain_statement / upsert_chunk (its relation): how
+   *  the statement was made (maintain_statement: the judge of what it changes) — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
    *  Only a code-js agent whose `statement_methods` lists the prefix may send
    *  it; anything else is refused with `method_not_granted`. Omitted = `manual`. */
   method?: string;
+  /** maintain_statement: verify | expire | demote | merge | stale_evidence |
+   *  relocate_evidence | flag. */
+  action?:
+    | "verify"
+    | "expire"
+    | "demote"
+    | "merge"
+    | "stale_evidence"
+    | "relocate_evidence"
+    | "flag";
+  /** maintain_statement merge: the live statement of the same from, to and
+   *  kind that keeps the merged statement's evidence. */
+  survivor_id?: string;
+  /** maintain_statement stale_evidence / relocate_evidence: the evidence row
+   *  (its id from get_edge). */
+  evidence_id?: string;
+  /** maintain_statement relocate_evidence: the chunk the row's quote is in now. */
+  chunk_id?: string;
   /** link_chunks / propose_statement: the text the relation rests on. Each row
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
