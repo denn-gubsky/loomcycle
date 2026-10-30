@@ -121,6 +121,12 @@ var docACLOps = map[string]docACLRule{
 	// extract_citations reads the document or chunk it names; resolving a citation
 	// asks read on the cited work through resolve_anchor.
 	"extract_citations": {verb: "read", target: docACLChunkOrDocument},
+	// classify reads the document; with write:propose it asks write on it, and
+	// propose / link on each statement's ends, itself.
+	"classify": {verb: "read", target: docACLDocument},
+	// accept_classification changes the document's type and accepts statements:
+	// write on the document here; each statement's ruling asks its own ends.
+	"accept_classification": {verb: "write", target: docACLDocument},
 	// A lease guards a pass over the whole scope and changes no content: it asks
 	// propose, the verb a statement-maintaining driver already needs there.
 	"lease":             {verb: "propose", target: docACLScope},
