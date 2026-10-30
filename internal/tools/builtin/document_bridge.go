@@ -265,6 +265,11 @@ func (d *Document) factRelation(ctx context.Context, key sqlmem.ScopeKey, mscope
 		from: from, to: to, kind: kind, method: edgeMethodConsolidator, status: edgeStatusAsserted,
 		confidence: in.Confidence, validAt: in.ValidAt, invalidAt: in.InvalidAt, proposeIfInvalid: true,
 	}
+	// A code-js run that named its method (stampStatementMethod) owns the
+	// relation as written by its rule or extractor, not by the memory pass.
+	if in.edgeMethod != "" {
+		w.method = in.edgeMethod
+	}
 	if claim != "" {
 		w.evidence = []edgeEvidenceIn{{ChunkID: factID, Quote: claim}}
 	}

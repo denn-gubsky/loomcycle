@@ -319,9 +319,14 @@ type docInput struct {
 	WorkKey           string `json:"work_key,omitempty"`
 	Anchor            string `json:"anchor,omitempty"`
 	CreatePlaceholder bool   `json:"create_placeholder,omitempty"`
+	// Method is the method a code-js run names for the statement it writes
+	// (rule:<name> | extractor:<name>), checked against its agent's
+	// statement_methods grant by stampStatementMethod, which copies it into
+	// edgeMethod. Never read past that check.
+	Method string `json:"method,omitempty"`
 	// edgeMethod is the statement's method when an internal path (import, sync,
-	// canvas) writes it. UNEXPORTED: a caller must not name how its own link was
-	// made.
+	// canvas) writes it, or the wire Method once it passed the grant check.
+	// UNEXPORTED: a caller must not name how its own link was made.
 	edgeMethod string
 	Position   *int `json:"position"`
 	Revision   *int `json:"revision"`
@@ -603,6 +608,9 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	// Before any lookup: a cut id is refused on its syntax alone.
 	if r, cut := refuseCutIDs(in); cut {
 		return r, nil
+	}
+	if refused := stampStatementMethod(ctx, &in); refused != nil {
+		return *refused, nil
 	}
 	key, mscope, err := d.resolveScope(ctx, in.Scope)
 	if err != nil {
