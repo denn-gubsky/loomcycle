@@ -147,6 +147,18 @@ func (b *boot) buildServer() {
 		unitGenerator.ObserveCall = srv.BackgroundCallObserver(store.UsagePurposeUnitGeneration)
 		srv.SetUnitGenerator(unitGenerator)
 	}
+	// Document op=classify's model step (memory.classifier): a declared one that
+	// cannot be built fails boot, as the reranker does. Its calls are spent on the
+	// classifying run's behalf, so its tokens go to that run's ledger and budget.
+	docClassifier, clErr := wiring.Classifier(cfg, pr.sched)
+	if clErr != nil {
+		fatal("classifier: building it failed", "err", clErr)
+	}
+	if docClassifier != nil {
+		slog.Info("classifier: enabled", "decision", cfg.Memory.Classifier.Decision.Configured(), "chat", cfg.Memory.Classifier.Chat.Configured())
+		docClassifier.SetOnUsage(srv.SideCallUsage(store.UsagePurposeClassify))
+		b.documentTool.Classifier = docClassifier
+	}
 	// A decision is asked on a run's behalf, so its tokens go to that run's
 	// ledger and budget. Set here because srv exists only now.
 	if decisionService != nil {
