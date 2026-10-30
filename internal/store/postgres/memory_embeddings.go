@@ -583,7 +583,8 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	}
 
 	prefixCondition := ""
-	args := []any{tenantID, string(scope), scopeID, queryText, topK, s.fts.effectiveConfig()}
+	fts := s.ftsSetting(ctx)
+	args := []any{tenantID, string(scope), scopeID, queryText, topK, fts.effectiveConfig()}
 	if filter.KeyPrefix != "" {
 		args = append(args, likePrefixPattern(filter.KeyPrefix))
 		prefixCondition += " AND me.key LIKE $" + strconv.Itoa(len(args))
@@ -621,7 +622,7 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	// (never errors on input, no injection surface), returning the empty
 	// query — which matches nothing — when the text yields no lexemes.
 	sql := `SELECT me.key, m.value, m.expires_at, m.created_at, m.updated_at, m.observed_at, m.valid_at, m.invalid_at,
-	               ts_rank(me.embed_text_tsv, ` + s.ftsQuery("$4", "$6") + `) AS score,
+	               ts_rank(me.embed_text_tsv, ` + ftsQuery(fts, "$4", "$6") + `) AS score,
 	               me.provider, me.model, me.embedding::text AS embedding_text,
 	               m.access_count, coalesce(m.origin, '') AS origin
 	         FROM memory_embeddings me
@@ -635,7 +636,7 @@ func (s *Store) MemoryFullTextSearch(ctx context.Context, tenantID string, scope
 	           AND me.scope_id = $3
 	           AND (m.expires_at IS NULL OR m.expires_at > now())
 	           AND m.superseded_at IS NULL
-	           AND me.embed_text_tsv @@ ` + s.ftsQuery("$4", "$6") + prefixCondition + `
+	           AND me.embed_text_tsv @@ ` + ftsQuery(fts, "$4", "$6") + prefixCondition + `
 	         ORDER BY score DESC
 	         LIMIT $5`
 	if idCond != "" {

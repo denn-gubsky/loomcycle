@@ -8,10 +8,10 @@ by `graph_recall` or listed by `backlinks` until an operator accepts it. Use it
 when you found a relation in text and want it checked rather than asserted.
 It cannot change or remove anything that exists.
 
-Proposing a relation that already exists adds your evidence to it. Passing
-`id` proposes a correction of an existing relation instead: it is filed beside
-the original (its `attributes.revision_of` names it), and the original stays as
-it is.
+Proposing a relation that is already proposed adds your evidence to it. A
+relation that is already asserted is not changed by a proposal: pass its `id`
+to propose a correction instead, which is filed beside the original (its
+`attributes.revision_of` names it) while the original stays as it is.
 
 ## Arguments
 
@@ -27,8 +27,7 @@ it is.
 ## Returns
 
 `{id, status, created, evidence_written, ontology_valid, warnings?}`.
-`status` is `proposed` unless the server asserted it outright, which happens
-only for relation kinds the operator declared safe to assert automatically.
+`status` is `proposed`.
 `ontology_valid: false` with `warnings` means the relation does not fit the
 tenant's declared vocabulary; it is still filed, marked, for the reviewer.
 
@@ -36,8 +35,12 @@ tenant's declared vocabulary; it is still filed, marked, for the reviewer.
 
 - `kind_reserved` — the kind is one the runtime writes.
 - `evidence_quote_not_found` — copy the quote exactly from its source.
-- `statement_rejected` — an operator already rejected this relation; do not
-  propose it again.
+- `statement_rejected` — an operator already rejected this relation (at any
+  `valid_at`), or the statement passed as `id` is a rejected one; do not propose
+  it again.
+- `statement_asserted` — the relation already holds; propose a correction with
+  `id`, or leave it.
+- `confidence must be between 0 and 1`.
 
 ## Examples
 

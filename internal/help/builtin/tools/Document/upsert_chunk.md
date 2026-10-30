@@ -44,17 +44,25 @@ while keeping the old version, write the correction under a NEW key and then
 - `source_chunk_id` — the chunk of this scope (a passage of a document) the
   fact was taken from. The fact is linked to it (`derived_from`) with your
   `source_quote` as evidence, so it can be checked against the passage and
-  recall can point back to it. The quote must occur in that chunk.
+  recall can point back to it. The quote must occur in that chunk and be at
+  most 4000 characters, and you must be allowed to read and link that
+  chunk's document. A fact has one source: passing another replaces it.
 - `char_start` / `char_end` — where the quote sits in the source chunk's text
   (characters). With no `source_quote`, they select it.
 - `about_ids` — the subject nodes (entity chunks) the fact is about. The fact
-  is linked to each (`about`); one that is not a chunk of this scope is skipped
-  and counted in `about_skipped`.
+  is linked to each (`about`); one that is not a chunk of this scope, or whose
+  document you may not read and link, is skipped and counted in
+  `about_skipped`. The list is the whole set: a subject an earlier upsert named
+  and this one does not is no longer linked.
 - `relation` — with two or more `about_ids`: the kind of relation the fact
-  states between its first two subjects (e.g. `works_at`). It is recorded as a
-  relation whose evidence is the fact; a kind the tenant has not declared is
-  recorded for review. Another live relation of the same kind from the same
-  subject to a different one is reported as `relation_conflicts`, never removed.
+  states between the first two you list (e.g. `works_at`); when either of those
+  two is skipped, so is the relation. It is recorded as a relation whose
+  evidence is the fact; a kind the tenant has not declared is recorded for
+  review. Another live relation you can read, of the same kind from the same
+  subject to a different one, is reported as `relation_conflicts`, never
+  removed. An upsert with `about_ids` replaces the relation the fact stated
+  before, and retiring or deleting the fact ends it — unless another fact
+  still states it.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Every time field you omit keeps its stored value. The server sets the fact's
@@ -78,6 +86,10 @@ and `relation_conflicts`. Call `get_chunk` for the full chunk and its `entity` b
   — use one of the listed types, drop the `type`/`subject` pair, or suggest the
   type with `propose_entity`.
 - `create_chunk: no such parent_id: ...` — see `create_chunk`.
+- `upsert_chunk: source_chunk_id: no such chunk: ...` — also what a chunk you
+  may not read or link answers; take the fact from a passage you can link.
+- `upsert_chunk: source_quote is longer than 4000 characters` — quote the
+  sentence the fact rests on, not the passage.
 
 ## Examples
 

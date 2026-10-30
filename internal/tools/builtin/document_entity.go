@@ -378,8 +378,11 @@ func chunkMetaToJSON(m chunkMetaRow) map[string]any {
 // needs no schema change and no re-stamping, so it holds for stores that already
 // exist. An orphan subject whose edge write failed still counts, which is exactly
 // today's behaviour — the over-counting direction, not the data-losing one.
-const identityNodeExclusion = `NOT EXISTS (SELECT 1 FROM chunk_edges e ` +
-	`WHERE e.to_id = m.chunk_id AND e.kind = 'about')`
+//
+// A live `about` statement only, as every other `about` reader: one rejected or
+// judged unsupported no longer says its target is the subject of anything.
+var identityNodeExclusion = `NOT EXISTS (SELECT 1 FROM chunk_edges e ` +
+	`WHERE e.to_id = m.chunk_id AND e.kind = 'about' AND ` + edgeLiveClause + `)`
 
 // listFacts returns the scope's facts — chunks that HAVE a chunk_memory_meta
 // sidecar — as metadata only, no bodies. It is the browse surface behind the
@@ -988,6 +991,10 @@ func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retired
 		if err := d.execTxn(ctx, txnID,
 			`UPDATE chunk_memory_meta SET invalid_at = ?, expired_at = ? WHERE chunk_id = ?`,
 			now, now, retiredID); err != nil {
+			return err
+		}
+		// A relation recorded from the fact ends with it, unless another fact states it.
+		if err := d.expireUnsupportedRelations(ctx, key, txnID, "", `{col} = ?`, retiredID); err != nil {
 			return err
 		}
 		if replacementID == "" {

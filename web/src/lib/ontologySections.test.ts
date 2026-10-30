@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRelationTree,
   conceptSummary,
+  instanceStateLabel,
   classDirectiveNotes,
   factsUnderOlderVocabulary,
   relationSummary,
@@ -101,5 +102,15 @@ describe("conceptSummary", () => {
     expect(
       conceptSummary({ scheme: "rank", name: "Law", path: ["Law"], tag: "rank/law", rank: 1, notation: "L" }),
     ).toBe("rank/law · L · rank 1");
+  });
+});
+
+describe("instanceStateLabel", () => {
+  it("speaks operator words and carries an error's reason", () => {
+    expect(instanceStateLabel({ name: "a", state: "pending" })).toBe("adopted on the next confirm");
+    expect(instanceStateLabel({ name: "a", state: "renamed" })).toBe("renamed — keeps its key");
+    expect(instanceStateLabel({ name: "a", state: "error", note: "no @a class" })).toBe(
+      "not adopted: no @a class",
+    );
   });
 });

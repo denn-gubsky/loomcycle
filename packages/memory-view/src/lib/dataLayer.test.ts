@@ -357,6 +357,22 @@ describe("dataLayerFromClient — @loomcycle/client → memory wire mapping", ()
     );
   });
 
+  it("getEdges sends kinds and a page cursor as after, and only when set", async () => {
+    const s = stubClient();
+    await dataLayerFromClient(s.client).getEdges("user", "doc-1", { kinds: ["supersedes"], after: "c1" });
+    expect(s.document).toHaveBeenCalledWith(
+      {
+        op: "get_edges",
+        scope: "user",
+        document_id: "doc-1",
+        include_proposed: false,
+        kinds: ["supersedes"],
+        after: "c1",
+      },
+      undefined,
+    );
+  });
+
   // ---- scope-id suggestions (RFC BW UI) ----
   it("whoami maps the client's tenant_id → tenant (and passes subject through)", async () => {
     const s = stubClient();

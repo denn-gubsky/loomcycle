@@ -298,6 +298,18 @@ func (d *Document) claimWorkKey(ctx context.Context, key sqlmem.ScopeKey, rootID
 	return nil
 }
 
+// resolveAnchorOp is resolve_anchor as a caller sees it. A lookup is a read, so a
+// work held in a document the caller may not read answers as no holder: the op is
+// not an oracle for which works the scope holds. Filing a placeholder would claim
+// the key, which the unique key refuses either way, so that keeps the refusal.
+func (d *Document) resolveAnchorOp(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	res, err := d.resolveAnchor(ctx, key, mscope, in)
+	if err == nil && res.IsError && !in.CreatePlaceholder && res.Error != nil && res.Error.Category == tools.CategoryPermission {
+		return jsonResult(map[string]any{"work_key": strings.TrimSpace(in.WorkKey), "found": false})
+	}
+	return res, err
+}
+
 // resolveAnchor finds a work by its key, and a part of it by anchor (or
 // stable_id) in force at as_of, filing a placeholder for a work the scope does not
 // hold when asked to. Every consumer and the Web UI resolve a citation this way.
@@ -365,12 +377,8 @@ func (d *Document) resolveAnchor(ctx context.Context, key sqlmem.ScopeKey, mscop
 		if r, err := acl.document(ctx, "resolve_anchor", "read", docID); err != nil {
 			return errFrom("resolve_anchor: "+err.Error(), err), nil
 		} else if r != nil {
-			// A lookup is a read: an unreadable holder answers as no holder, so the
-			// op is not an oracle for which works the scope holds. Filing a
-			// placeholder would claim the key, which the unique key refuses either way.
-			if !in.CreatePlaceholder {
-				return jsonResult(map[string]any{"work_key": wk, "found": false})
-			}
+			// The op answers a lookup of this as no holder (resolveAnchorOp);
+			// in-process callers get the refusal and decide what to show.
 			return workKeyUnreadable("resolve_anchor", wk), nil
 		}
 	}

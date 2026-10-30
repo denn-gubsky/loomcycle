@@ -7,6 +7,7 @@ import {
   buildRelationTree,
   classDirectiveNotes,
   conceptSummary,
+  instanceStateLabel,
   factsUnderOlderVocabulary,
   relationSummary,
   typedFieldLabel,
@@ -359,8 +360,8 @@ function OntologyTermTree({
 // OntologySectionsDetail is the part of the panel a SECTIONED ontology adds (RFC FO):
 // the document classes — kept out of the table above because they never reach an
 // agent's prompt — the grammars, the types in use that nothing declares, and how many
-// facts were written under an older vocabulary. Relations, schemes and instances get
-// their own trees in later versions; until then their sections are only listed.
+// facts were written under an older vocabulary. Relations, schemes and instances each
+// have their own block below.
 function OntologySectionsDetail({
   state,
   busy,
@@ -371,18 +372,10 @@ function OntologySectionsDetail({
   onAdoptRelation: (name: string) => void;
 }) {
   const versions = factsUnderOlderVocabulary(state);
-  const later = (state.sections ?? []).filter((k) => k !== "classes");
   return (
     <>
       <p className="settings-help">
         Sections: {(state.sections ?? []).map((k) => <code key={k}>{k} </code>)}
-        {later.length > 0 && (
-          <span className="settings-muted">
-            {" "}
-            — {later.join(", ")} {later.length === 1 ? "is" : "are"} recognised but not yet
-            applied by this version.
-          </span>
-        )}
       </p>
       {(state.document_classes ?? []).length > 0 && (
         <div className="settings-row">
@@ -434,6 +427,7 @@ function OntologySectionsDetail({
         <OntologyRelationsDetail state={state} busy={busy} onAdopt={onAdoptRelation} />
       )}
       {state.schemes !== undefined && <OntologySchemesDetail state={state} />}
+      {state.instances !== undefined && <OntologyInstancesDetail state={state} />}
       {(versions.older > 0 || versions.unknown > 0) && (
         <p className="settings-help">
           Facts in the tenant scope: {versions.older} written under an older vocabulary
@@ -555,6 +549,51 @@ function OntologyRelationsDetail({
         </p>
       )}
     </>
+  );
+}
+
+// OntologyInstancesDetail is the Instances section's half of the panel (RFC FO P1c-2):
+// each instance with its class, what a confirm does (or did) for it, and its registry key
+// — the key the memory tier files facts about it under. Subjects whose instance was
+// removed are listed as kept, because removal never erases.
+function OntologyInstancesDetail({ state }: { state: OntologyResponse }) {
+  const rep = state.instances;
+  const did = state.instance_adoption;
+  return (
+    <div className="settings-row">
+      <div>
+        <strong>Instances</strong>
+        <span className="settings-muted">
+          {" "}
+          — real organisations, units and posts; a confirm adopts them into memory.
+        </span>
+        {did && (
+          <p className="settings-flash">
+            This confirm adopted {did.adopted}, matched {did.linked} to existing subjects, renamed{" "}
+            {did.renamed}, and wrote {did.statements} statement(s).
+          </p>
+        )}
+        <ul className="ontology-tree">
+          {(rep?.instances ?? []).map((i) => (
+            <li key={i.name}>
+              <code>{i.name}</code>
+              {i.class && <span className="settings-muted"> · instance of {i.class}</span>}
+              <span className={i.state === "error" ? "ontology-warn" : "settings-muted"}>
+                {" "}
+                · {instanceStateLabel(i)}
+              </span>
+              {i.key && <span className="settings-muted"> · {i.key}</span>}
+            </li>
+          ))}
+        </ul>
+        {(rep?.orphaned ?? []).length > 0 && (
+          <p className="settings-help">
+            No longer declared, kept in memory (delete a subject through erasure, not here):{" "}
+            {(rep?.orphaned ?? []).join(", ")}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -856,6 +895,7 @@ function OntologySection() {
                         <span className="settings-muted"> relation kind</span>
                       )}
                       {p.section === "schemes" && <span className="settings-muted"> concept</span>}
+                      {p.section === "instances" && <span className="settings-muted"> instance</span>}
                       {p.parent && (
                         <span className="settings-muted">
                           {" "}

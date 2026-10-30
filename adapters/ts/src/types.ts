@@ -3908,6 +3908,10 @@ export type DocumentToolInput = {
     | "reject_statement"
     | "list_statements"
     | "resolve_anchor"
+    | "lease"
+    | "release"
+    | "describe_ontology"
+    | "extract_citations"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"
@@ -3990,13 +3994,23 @@ export type DocumentToolInput = {
    *  and the verbatim quote, which the server checks against that source. */
   evidence?: DocumentEdgeEvidence[];
   /** get_edges (default true) / backlinks (default false): include relations
-   *  proposed for review. */
+   *  proposed for review. graph_recall (default false): also follow them. */
   include_proposed?: boolean;
+  /** get_edges / backlinks / graph_recall / list_facts: also return what has been
+   *  retired (superseded relations and facts). */
+  include_retired?: boolean;
+  /** upsert_chunk / link_chunks / propose_statement: 0..1, how sure the writer is.
+   *  Recorded, never used to hide anything; only a judge_fact verdict withholds. */
+  confidence?: number;
+  /** get_edges: out | in | both (default both). reorder_chunk: up | down. sync /
+   *  diff_remote: pull (default) | push. */
+  direction?: "out" | "in" | "both" | "up" | "down" | "pull" | "push";
   /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
   after?: string;
   /** graph_recall: declared (the tenant's walk kinds) or all relations. */
   walk?: "declared" | "all";
-  /** graph_recall with budget_chars: each hop spends at most decay^hop of it. */
+  /** graph_recall with budget_chars: each hop spends at most decay^hop of it.
+   *  Refused without budget_chars. */
   decay?: number;
   /** graph_recall: also step to the parent (up) / children (down). */
   include_hierarchy?: "up" | "down" | "both" | "none";
@@ -4074,8 +4088,10 @@ export type DocumentToolInput = {
    *  subject-homed fact store is as wide as the tenant's entity count, so page the
    *  directory with `path op=ls` and pass each page's ids as `document_ids`. */
   limit?: number;
-  /** define/list_types: the type name. */
+  /** define/list_types: the type name. lease / release: the lease's name. */
   name?: string;
+  /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
+  ttl_ms?: number;
   /** export_md: embed round-trippable chunk metadata + edges as HTML comments
    *  (default true server-side). false = clean human-facing Markdown. */
   include_metadata?: boolean;
@@ -4102,7 +4118,8 @@ export type DocumentToolInput = {
   reason?: string;
   /** list_facts / graph_recall: also return facts a judge marked unsupported.
    *  They are withheld by default and never deleted, so this is how to read what
-   *  was refused, and why. */
+   *  was refused, and why. graph_recall also follows relations a judge marked
+   *  unsupported, never one an operator rejected. */
   include_refuted?: boolean;
   /** list_facts: return only CLAIMS, dropping the entity identity nodes (the subject
    *  a fact is about — "Ollama", "the user"). A claim carries a sentence and can carry

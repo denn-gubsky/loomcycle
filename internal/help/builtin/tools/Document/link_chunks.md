@@ -29,7 +29,8 @@ than titles.
   occur there is refused.
 - `valid_at` / `invalid_at` — when the relation began and stopped holding (unix
   nanoseconds). Leave `invalid_at` unset while it still holds.
-- `confidence` — 0..1, how sure you are.
+- `confidence` — 0..1, how sure you are. It is recorded with the link and never
+  hides it; only a verdict (`judge_fact`) can.
 - `attributes` — the relation's qualifiers as a small JSON object.
 - `scope` — `user` (default), `agent` or `tenant`. Both chunks must be in this
   scope. See `{"op":"help","topic":"scopes"}`.
@@ -38,12 +39,14 @@ than titles.
 
 `{ok: true, id, from_id, to_id, kind, status, evidence_written}`. Linking the
 same pair with the same kind again does not make a second link; it adds any new
-evidence to the existing one. `evidence_capped: true` means the link already
-holds as much evidence as it keeps.
+evidence to the existing one, and asserts it if it was awaiting review.
+`evidence_capped: true` means the link already holds as much evidence as it
+keeps.
 
 ## Errors
 
 - `from_id, to_id and kind are required` — supply all three.
+- `confidence must be between 0 and 1`.
 - `from_id: no such chunk` / `to_id: no such chunk` — that chunk is not in this
   scope. Chunk ids are not document ids: take them from `get_document`,
   `search` or `query_chunks`.

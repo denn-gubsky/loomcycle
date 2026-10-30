@@ -737,12 +737,12 @@ func TestReimport_EditionRootIsReconciled(t *testing.T) {
 	})
 }
 
-type recordingWriter struct {
+type ingestedRecorder struct {
 	mu   sync.Mutex
 	docs []string
 }
 
-func (w *recordingWriter) Write(_ context.Context, req channels.WriteRequest) (channels.WriteResult, error) {
+func (w *ingestedRecorder) Write(_ context.Context, req channels.WriteRequest) (channels.WriteResult, error) {
 	var ev struct {
 		DocumentID string `json:"document_id"`
 	}
@@ -761,7 +761,7 @@ func (w *recordingWriter) Write(_ context.Context, req channels.WriteRequest) (c
 // The response says why it was not announced.
 func TestPublishIngested_OnlyWhenReadingIsNotPartitioned(t *testing.T) {
 	d, base, _ := documentFixture(t)
-	w := &recordingWriter{}
+	w := &ingestedRecorder{}
 	d.Writer = w
 	confined := tenantDocCtx(base, aclSet(t,
 		authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},

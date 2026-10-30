@@ -1,0 +1,63 @@
+---
+name: Document/describe_ontology
+description: "Document op=describe_ontology — the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars and concept schemes."
+---
+`describe_ontology` returns the tenant's ontology as data. It is for code that has
+to act on the ontology, and it saves that code from parsing the document itself.
+It reads the tenant's ontology whatever `scope` the call names, and takes no other
+arguments.
+
+It describes what is **in force**, the way the runtime applies it. A draft ontology
+governs nothing, so it describes the standard classes and nothing else, and it
+lists relation kinds only when a confirmed ontology has a Relations section.
+
+## Arguments
+
+- `scope` — ignored: the ontology is always the tenant's.
+
+## Returns
+
+`{exists, document_id?, status, confirmed, version, sections, partial?, classes,
+relations, grammars, schemes, issues?}`:
+
+- `exists` — false when the tenant has no ontology document, so only the standard
+  classes apply.
+- `status` — `draft` or `confirmed` (`""` without a document). Sections have no
+  status of their own.
+- `version` — the ontology's version: the one stamped on facts and relations
+  written under this vocabulary.
+- `sections` — the declared section kinds, in document order.
+- `partial` — part of the document could not be read. Do not treat a missing
+  entry as removed; read again.
+- `classes` — each `{name, parent?, source, kind, fields?, title_identity?,
+  directives?, memory_scope?, renamed_from?, issues?}`.
+  - `kind` is `document` for a document class, `chunk` otherwise.
+  - `fields` is the complete typed field set, inherited fields first.
+  - `directives` holds `identifier_pattern`, `title_pattern`, `anchor_grammar`,
+    `citation_grammar` and `exclude`, each as declared or else inherited.
+- `relations` — each relation kind in force, with its `source` (`seed`,
+  `reserved` or `tenant`), `parent`, `inverse`, `domain`, `range`, its
+  characteristics, `qualifiers`, `discriminator`, `dated`, `walk`, `auto_assert`
+  and `renamed_from`.
+- `grammars` — each `{name, class?, patterns, resolve, issue?, used_as?}`.
+  - A grammar with an `issue` is disabled and has no patterns.
+  - `used_as` says how classes name it: `anchor`, `citation` or both.
+- `schemes` — each concept scheme with its concepts: `name`, `path`, `parent`,
+  `tag`, `notation`, `alt`, `rank`, `exact_match`, `retention`, `acl`.
+
+## Errors
+
+- A permission error when the caller's access-control rules do not let it read
+  the tenant's ontology document.
+- `describe_ontology: the tenant ontology could not be read` is a storage
+  failure; retrying is reasonable.
+
+## Examples
+
+```json
+{"op": "describe_ontology"}
+```
+
+```json result
+{"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": []}
+```

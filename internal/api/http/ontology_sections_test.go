@@ -144,7 +144,7 @@ func TestOntologyAPI_FlatDocumentResponseHasNoSectionFields(t *testing.T) {
 	req := getOntologyRaw(t, s, mi.Tenant)
 	for _, key := range []string{"sections", "document_classes", "grammars", "undeclared_types", "fact_versions",
 		"relations", "effective_relations", "adoptable_relations", "statement_versions", "undated_statements",
-		"schemes", "scheme_mirror_stale", "scheme_mirror"} {
+		"schemes", "scheme_mirror_stale", "scheme_mirror", "instances", "instance_adoption"} {
 		if _, has := req[key]; has {
 			t.Errorf("a flat ontology's response grew %q", key)
 		}

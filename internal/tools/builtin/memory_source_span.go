@@ -128,11 +128,18 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	// followable even when the span was never derived, which is the common shape
 	// before a verification pass runs. The old query required a non-empty span
 	// and so hid those rows entirely.
+	//
+	// The source passage and its document come from ONE edge, the newest: two
+	// independent lookups could each pick a different edge of a fact written
+	// before facts kept a single source, and name a chunk in a document it is
+	// not in.
 	stmt := `SELECT m.natural_key, coalesce(m.source_quote, ''), coalesce(m.run_id, ''), coalesce(m.session_id, ''), ` +
-		`coalesce(m.observed_at, 0), coalesce(m.valid_at, 0), ` +
-		`coalesce((SELECT e.to_id FROM chunk_edges e WHERE e.from_id = m.chunk_id AND e.kind = 'derived_from' LIMIT 1), ''), ` +
-		`coalesce((SELECT c.document_id FROM chunk_edges e JOIN chunks c ON c.id = e.to_id WHERE e.from_id = m.chunk_id AND e.kind = 'derived_from' LIMIT 1), '') ` +
-		`FROM chunk_memory_meta m WHERE m.natural_key IN (` +
+		`coalesce(m.observed_at, 0), coalesce(m.valid_at, 0), coalesce(src.to_id, ''), coalesce(sc.document_id, '') ` +
+		`FROM chunk_memory_meta m ` +
+		`LEFT JOIN chunk_edges src ON src.id = (SELECT e.id FROM chunk_edges e WHERE e.from_id = m.chunk_id AND e.kind = 'derived_from' ` +
+		`ORDER BY e.created_at DESC, e.id DESC LIMIT 1) ` +
+		`LEFT JOIN chunks sc ON sc.id = src.to_id ` +
+		`WHERE m.natural_key IN (` +
 		strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
 	res, err := sm.Query(ctx, key, sm.Rebind(stmt), keys)
 	if err != nil || res == nil {
@@ -159,4 +166,28 @@ func SourceSpansFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 			ObservedAt: observedAt, ValidAt: validAt, SourceChunkID: srcChunk, SourceDocumentID: srcDoc}
 	}
 	return out
+}
+
+// withholdUnreadableSources drops the document pointer from every span whose
+// source passage the caller on ctx may not read, as a Memory search leaves that
+// passage out (memory_document_acl.go): the fact is the caller's to read, the
+// place it was taken from need not be. A fault in the check withholds every
+// pointer — the recall still answers, without the provenance nicety.
+func withholdUnreadableSources(ctx context.Context, reader documentHitReader, scope store.MemoryScope, scopeID string, spans map[string]FactSource) {
+	var ids []string
+	for _, sp := range spans {
+		if sp.SourceChunkID != "" {
+			ids = append(ids, sp.SourceChunkID)
+		}
+	}
+	keep, err := readableDocumentHits(ctx, reader, scope, scopeID, ids)
+	if err == nil && keep == nil {
+		return
+	}
+	for k, sp := range spans {
+		if sp.SourceChunkID != "" && (err != nil || !keep(sp.SourceChunkID)) {
+			sp.SourceChunkID, sp.SourceDocumentID = "", ""
+			spans[k] = sp
+		}
+	}
 }

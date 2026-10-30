@@ -23,9 +23,11 @@ import (
 
 // subjectNodesWhere selects the chunk ids that are subject (entity) nodes: a chunk
 // carrying a subject whose natural key is an entity key (`<type>:<slug>`), not a
-// fact key (`s|p|o`).
+// fact key (`s|p|o`) — and not a fact a person asked to remember, which carries
+// the subject it is about under a key of its own (rememberedKeyPrefix).
 const subjectNodesWhere = `SELECT chunk_id FROM chunk_memory_meta
-	WHERE subject IS NOT NULL AND subject <> '' AND natural_key IS NOT NULL AND natural_key NOT LIKE '%|%'`
+	WHERE subject IS NOT NULL AND subject <> '' AND natural_key IS NOT NULL AND natural_key NOT LIKE '%|%'
+	  AND natural_key NOT LIKE '` + rememberedKeyPrefix + `%'`
 
 // subjectNodes reports which of ids are subject nodes. A fault answers "none", so
 // the link keeps today's kind.
@@ -50,21 +52,36 @@ func (d *Document) subjectNodes(ctx context.Context, key sqlmem.ScopeKey, ids []
 
 // mentionEvidence records where in the body the subject is named: the first
 // [[…]] that resolves to it, with its character span. Best-effort, like the link.
+//
+// The link is matched whole, as the parser reads it — `[[Ada]]` or `[[Ada|…]]`,
+// never the `[[Ada Lovelace notes]]` that merely starts with the name.
 func (d *Document) mentionEvidence(ctx context.Context, key sqlmem.ScopeKey, edgeID, fromChunkID, body, to string) {
-	for _, name := range parseNameLinks(body) {
-		if id, ok := d.resolveLinkTarget(ctx, key, name); !ok || id != to {
+	// The guarded insert writes no edge when the pair already has a mention, and
+	// evidence for an edge that was never written would be an orphan.
+	if res, err := d.query(ctx, key, `SELECT 1 FROM chunk_edges WHERE id = ?`, edgeID); err != nil || len(res.Rows) == 0 {
+		return
+	}
+	resolved := map[string]bool{}
+	for _, m := range nameLinkRe.FindAllStringSubmatchIndex(body, -1) {
+		if m[0] > 0 && body[m[0]-1] == '!' {
+			continue // an embed, which parseNameLinks skips too
+		}
+		name := body[m[2]:m[3]]
+		if i := strings.IndexByte(name, '|'); i >= 0 {
+			name = name[:i]
+		}
+		name = strings.TrimSpace(name)
+		hit, seen := resolved[name]
+		if !seen {
+			id, ok := d.resolveLinkTarget(ctx, key, name)
+			hit = ok && id == to
+			resolved[name] = hit
+		}
+		if !hit {
 			continue
 		}
-		i := strings.Index(body, "[["+name)
-		if i < 0 {
-			return
-		}
-		j := strings.Index(body[i:], "]]")
-		if j < 0 {
-			return
-		}
-		quote := body[i : i+j+2]
-		start := utf8.RuneCountInString(body[:i])
+		quote := body[m[0]:m[1]]
+		start := utf8.RuneCountInString(body[:m[0]])
 		end := start + utf8.RuneCountInString(quote)
 		_ = d.exec(ctx, key, `INSERT INTO chunk_edge_evidence (id, edge_id, chunk_id, quote, char_start, char_end, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)`, newDocID(), edgeID, fromChunkID, quote, start, end, time.Now().UnixNano())
