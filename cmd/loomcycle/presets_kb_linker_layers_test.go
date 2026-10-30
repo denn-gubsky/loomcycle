@@ -127,6 +127,40 @@ func TestKBLinker_GrammarKindOutsideTheVocabularyIsFiledAsCites(t *testing.T) {
 	noViolations(t, f)
 }
 
+// TestKBLinker_ReRunOverAnAcceptedCitationIsNotARefusal: a second pass finds a
+// citation an operator already accepted. The runtime refuses the proposal
+// (statement_asserted), and the report counts it as already asserted, not as a
+// refused write. A rejected relation stays a refusal; the control hit proves the
+// proposing path is live.
+func TestKBLinker_ReRunOverAnAcceptedCitationIsNotARefusal(t *testing.T) {
+	f := kbBaseFixture()
+	f.ontology = kbOntology()
+	f.statements = append(f.statements,
+		&kbStatement{ID: "st-held", From: "c1", To: "x1", Kind: "cites", Status: "asserted", Method: "manual"},
+		&kbStatement{ID: "st-no", From: "c1", To: "x2", Kind: "cites", Status: "rejected", Method: "rule:citation"})
+	f.citations = []map[string]any{
+		kbCiteHit("report a material incident", map[string]any{"resolved": resolvedTo("x1")}),
+		kbCiteHit("to the regulator", map[string]any{"resolved": resolvedTo("x2")}),
+		kbCiteHit("within 24 hours", map[string]any{"resolved": resolvedTo("x3")}),
+	}
+
+	rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"]}`)
+
+	if n := layerCount(t, rep, "L2", "already_asserted"); n != 1 {
+		t.Errorf("already_asserted = %v, want 1 (the accepted citation)", n)
+	}
+	if n := layerCount(t, rep, "L2", "refused"); n != 1 {
+		t.Errorf("refused = %v, want 1 (only the rejected relation)", n)
+	}
+	if n := layerCount(t, rep, "L2", "proposed"); n != 1 {
+		t.Errorf("proposed = %v, want 1 (the control hit)", n)
+	}
+	if got := len(f.statementByID("st-held").Evidence); got != 0 {
+		t.Errorf("the accepted statement gained %d evidence rows from a proposal", got)
+	}
+	noViolations(t, f)
+}
+
 // TestKBLinker_UnreadableCitationIsSkipped: a citation to a work held where the
 // caller may not read it is neither resolved again nor proposed. The control hit
 // proves the proposing path is live.
