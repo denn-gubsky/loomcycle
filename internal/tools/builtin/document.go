@@ -3531,6 +3531,13 @@ func (d *Document) getEdges(ctx context.Context, key sqlmem.ScopeKey, in docInpu
 
 // listEdges is get_edges and backlinks: the statements matching base, filtered by
 // kind, visibility and validity, paged by (kind, created_at, id).
+//
+// A caller whose access-control set hides some document of the scope has the
+// rows touching it withheld here, before the page is cut, refilling from past
+// them until the page is full: dropped after LIMIT they would shorten the page
+// and leave truncated / next_cursor standing on rows the caller cannot see,
+// telling it hidden statements exist. The page then answers exactly as if
+// those rows did not. A caller the set limits nothing keeps the one query.
 func (d *Document) listEdges(ctx context.Context, key sqlmem.ScopeKey, in docInput, op, field, base string, baseArgs []any, includeProposed bool) (tools.Result, error) {
 	limit := edgeGetEdgesDefault
 	if in.Limit > 0 {
@@ -3549,28 +3556,92 @@ func (d *Document) listEdges(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	}.clause()
 	where = append(where, vis)
 	args = append(args, visArgs...)
+	var after *edgeCursor
 	if in.After != "" {
 		c, ok := decodeEdgeCursor(in.After)
 		if !ok {
 			return errValidation(op+": after is not a cursor this op returned", "Pass next_cursor from the previous page."), nil
 		}
-		where = append(where, "(e.kind > ? OR (e.kind = ? AND (e.created_at > ? OR (e.created_at = ? AND e.id > ?))))")
-		args = append(args, c.Kind, c.Kind, c.CreatedAt, c.CreatedAt, c.ID)
+		after = &c
 	}
-	args = append(args, limit+1)
-	res, err := d.query(ctx, key, `SELECT `+statementCols+`,
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
+	if err != nil {
+		return errFrom(op+": "+err.Error(), err), nil
+	}
+	batch := limit + 1
+	if limited {
+		// A floor, so a small page among many hidden rows is not a query per row.
+		batch = max(limit, edgeGetEdgesDefault) + 1
+	}
+	readable := map[string]bool{}
+	visible := func(r []any) (bool, error) {
+		// from_document_id and to_document_id; an end whose chunk is gone has no
+		// document and stays visible, as the listing filter has it.
+		for _, docID := range []string{asStr(r[statementColCount+3]), asStr(r[statementColCount+7])} {
+			if docID == "" {
+				continue
+			}
+			ok, seen := readable[docID]
+			if !seen {
+				var rerr error
+				if ok, rerr = acl.readable(ctx, docID); rerr != nil {
+					return false, rerr
+				}
+				readable[docID] = ok
+			}
+			if !ok {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	var rows [][]any
+	for {
+		w := append([]string{}, where...)
+		a := append([]any{}, args...)
+		if after != nil {
+			w = append(w, "(e.kind > ? OR (e.kind = ? AND (e.created_at > ? OR (e.created_at = ? AND e.id > ?))))")
+			a = append(a, after.Kind, after.Kind, after.CreatedAt, after.CreatedAt, after.ID)
+		}
+		a = append(a, batch)
+		res, err := d.query(ctx, key, `SELECT `+statementCols+`,
        cf.title, cf.type, cf.status, cf.document_id,
        ct.title, ct.type, ct.status, ct.document_id
 FROM chunk_edges e
 LEFT JOIN chunks cf ON cf.id = e.from_id
 LEFT JOIN chunks ct ON ct.id = e.to_id
-WHERE `+strings.Join(where, " AND ")+`
+WHERE `+strings.Join(w, " AND ")+`
 ORDER BY e.kind, e.created_at, e.id
-LIMIT ?`, args...)
-	if err != nil {
-		return errFrom(op+": "+err.Error(), err), nil
+LIMIT ?`, a...)
+		if err != nil {
+			return errFrom(op+": "+err.Error(), err), nil
+		}
+		if !limited {
+			rows = res.Rows
+			break
+		}
+		for _, r := range res.Rows {
+			ok, err := visible(r)
+			if err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			}
+			if !ok {
+				continue
+			}
+			rows = append(rows, r)
+			if len(rows) > limit {
+				break
+			}
+		}
+		// The store's row cap can cut a batch short; only an uncut short batch
+		// is the end.
+		if len(rows) > limit || len(res.Rows) == 0 || (!res.Truncated && len(res.Rows) < batch) {
+			break
+		}
+		last := scanStatement(res.Rows[len(res.Rows)-1])
+		after = &edgeCursor{Kind: last.Kind, CreatedAt: last.CreatedAt, ID: last.ID}
 	}
-	rows := res.Rows
 	truncated := len(rows) > limit
 	if truncated {
 		rows = rows[:limit]
