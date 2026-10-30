@@ -3,6 +3,7 @@
 
 import type {
   OntologyConcept,
+  OntologyInstanceState,
   OntologyFieldSpec,
   OntologyRelation,
   OntologyResponse,
@@ -137,4 +138,23 @@ export function conceptSummary(c: OntologyConcept): string {
   ) as string[];
   if (policy.length) parts.push(`${policy.join(", ")} (not enforced yet)`);
   return parts.join(" · ");
+}
+
+// instanceStateLabel says what a confirm does (or did) for one instance, in operator
+// words rather than the wire state.
+export function instanceStateLabel(s: OntologyInstanceState): string {
+  switch (s.state) {
+    case "pending":
+      return "adopted on the next confirm";
+    case "adopted":
+      return "adopted";
+    case "linked":
+      return "matched to a subject memory already knew";
+    case "renamed":
+      return "renamed — keeps its key";
+    case "unchanged":
+      return "in the registry";
+    default:
+      return s.note ? `not adopted: ${s.note}` : "not adopted";
+  }
 }

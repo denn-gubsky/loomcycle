@@ -146,7 +146,7 @@ credential of that name`, and nothing is sent.
 | `verbatim_answer` | answer a lookup question with one verified fact, quoted exactly | `query` |
 | `judge_fact` | record whether a fact's source quote supports it | `id` or `natural_key`, `verdict`, `reason` |
 | `verification_stats` | how much of the scope's fact store is quoted and verified | — |
-| `propose_entity` | suggest a new entity type (or, with `section`, a relation kind or a concept) for the tenant ontology | `name` |
+| `propose_entity` | suggest a new entity type (or, with `section`, a relation kind, a concept or an instance) for the tenant ontology | `name` |
 | `propose_subject` | suggest a new shared subject for the tenant | `subject`, `natural_key` |
 
 ## Scopes

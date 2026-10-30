@@ -25,6 +25,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -96,6 +97,8 @@ type OntologyRead struct {
 	// Schemes are the Schemes section's concept schemes (RFC FO P1c), each with its
 	// concepts in document order.
 	Schemes []memrank.OntologyScheme
+	// Instances are the Instances section's entries in document order (RFC FO P1c-2).
+	Instances []memrank.OntologyInstance
 	// SectionChunks maps each declared section kind to its chunk, so a proposal can be
 	// filed into the right section.
 	SectionChunks map[string]string
@@ -181,9 +184,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 
 	// Bodies are read once and shared: the section pre-pass and the class walk both need
 	// a root child's body, and each read is a Memory round-trip.
-	bodies := map[string]string{}
+	bodies := map[string]chunkBody{}
 	partial := false
-	bodyOf := func(id string) string {
+	chunkOf := func(id string) chunkBody {
 		if b, ok := bodies[id]; ok {
 			return b
 		}
@@ -191,9 +194,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		if err != nil {
 			partial = true
 		}
-		bodies[id] = got.Body
-		return got.Body
+		bodies[id] = got
+		return got
 	}
+	bodyOf := func(id string) string { return chunkOf(id).Body }
 	// entityName resolves an entry's name: the chunk's title, or — when the title is
 	// empty — the first heading in its body. The title is authoritative because import_md
 	// lifts a heading into it; the body fallback covers a chunk written through
@@ -395,6 +399,53 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 	}
 
+	// walkInstances reads the Instances section: each entry a real thing, a child entry
+	// another instance related to its parent by the parent's @nesting kind. The key an
+	// instance was adopted under is read back from its chunk's fields, so a rename keeps
+	// it (RFC FO §3.5).
+	var instances []memrank.OntologyInstance
+	var walkInstances func(chunks []ontologyChunk, parent, parentKind string, depth int)
+	walkInstances = func(chunks []ontologyChunk, parent, parentKind string, depth int) {
+		for _, c := range chunks {
+			name := entityName(c)
+			if memrank.IsInertEntityStatus(c.status) {
+				if name != "" {
+					proposals = append(proposals, memrank.OntologyProposal{
+						ChunkID: c.id, Name: name, Parent: parent,
+						Status: strings.ToLower(strings.TrimSpace(c.status)),
+						Body:   bodyOf(c.id), Section: memrank.SectionInstances,
+					})
+				}
+				walkInstances(kids[c.id], parent, parentKind, depth)
+				continue
+			}
+			if name == "" {
+				walkInstances(kids[c.id], parent, parentKind, depth)
+				continue
+			}
+			cb := chunkOf(c.id)
+			inst := memrank.ParseInstanceBody(name, cb.Body)
+			inst.Parent, inst.ParentKind, inst.ChunkID = parent, parentKind, c.id
+			if len(cb.Fields) > 0 {
+				var f struct {
+					RegistryKey string `json:"registry_key"`
+				}
+				if json.Unmarshal(cb.Fields, &f) == nil {
+					inst.RegistryKey = f.RegistryKey
+				}
+			}
+			instances = append(instances, inst)
+			childParent, childKind := name, inst.Nesting
+			if depth >= memrank.OntologyMaxDepth {
+				childParent, childKind = parent, parentKind
+				if len(kids[c.id]) > 0 {
+					depthCapped = true
+				}
+			}
+			walkInstances(kids[c.id], childParent, childKind, depth+1)
+		}
+	}
+
 	var relations []memrank.OntologyRelation
 	var walkRelations func(chunks []ontologyChunk, parentName string, depth int)
 	walkRelations = func(chunks []ontologyChunk, parentName string, depth int) {
@@ -440,8 +491,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		case memrank.SectionSchemes:
 			walkSchemes(kids[c.id])
 		case memrank.SectionInstances:
-			// Recognised and kept out of the class list; its entries are read by the
-			// phase that gives them meaning.
+			walkInstances(kids[c.id], "", "", 1)
 		default:
 			// No directive: a class, exactly as before sections existed.
 			walk([]ontologyChunk{c}, rootID, "", 1, false)
@@ -452,7 +502,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
-		Schemes: schemes,
+		Schemes: schemes, Instances: instances,
 	}, nil
 }
 

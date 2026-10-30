@@ -123,6 +123,33 @@ search for `topics/risk-management` also finds everything narrower. `@render`
 lists a scheme to the agents. A file plan's `@retention` and `@acl` are recorded
 and shown on the Ontology page but not enforced yet.
 
+**Instances.** A `@section instances` heading lists the real organisations, units
+and posts the agents should know by name. Each heading under it is one thing; `@a`
+names its class, and `@nesting` says how the headings under it relate to it:
+
+```markdown
+## Instances
+@section instances
+
+### Acme Bank
+@a organization
+@nesting sub_organization_of
+#### Compliance Department
+@a OrganizationalUnit
+
+### Head of Compliance
+@a Post
+
+### Compliance Officer
+@a Post
+@reports_to Head of Compliance
+```
+
+Confirming adds each one to memory as the subject facts are recorded about — the
+same subject memory would have created on its own, so nothing is duplicated — and
+links them as declared. Renaming one here keeps its identity; removing one never
+deletes it from memory.
+
 **Where a type's facts are stored.**
 
 A type may declare which memory scope facts about that kind of thing belong in:

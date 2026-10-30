@@ -143,7 +143,7 @@ func (d *Document) proposeConcept(ctx context.Context, key sqlmem.ScopeKey, msco
 				"Do not propose it again; an operator decides."), nil
 		}
 	}
-	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, in.Body)
+	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, neutraliseDirectives(in.Body))
 }
 
 // EffectiveSchemesFor is the run's tenant's concept schemes in force: those of a
