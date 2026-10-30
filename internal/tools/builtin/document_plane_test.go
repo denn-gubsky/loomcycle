@@ -57,12 +57,13 @@ func TestDocumentPlane_PreSplitScopeIsMovedOnFirstUse(t *testing.T) {
 	}
 	key, _, _ := d.resolveScope(ctx, "user")
 
-	// The pre-split layout: a snapshot restored into a fresh scope lands on the
-	// agent plane.
+	// The pre-split layout: an archive from before the document plane restores
+	// into the agent plane.
 	dump, err := d.SqlMem.ExportScope(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
+	dump.DocTail = nil
 	if _, err := d.SqlMem.DropScope(ctx, key); err != nil {
 		t.Fatal(err)
 	}
@@ -102,5 +103,32 @@ func TestDocumentPlane_PreSplitScopeIsMovedOnFirstUse(t *testing.T) {
 	 WHERE n.nspname = current_schema() AND c.relname = 'chunks' AND NOT t.tgisinternal`, nil)
 	if err != nil || trig.Rows[0][0] != int64(0) {
 		t.Errorf("triggers on the document plane's chunks: %v (%v), want none", trig.Rows, err)
+	}
+}
+
+// Restoring a snapshot over a scope the Document tool is using leaves nothing on
+// the agent plane: the archive's document part goes to the document plane, whose
+// live tables keep their rows, as restore keeps a non-empty table's.
+func TestDocumentPlane_RestoreOverALiveScopeLeavesNothingOnTheAgentPlane(t *testing.T) {
+	d, ctx := pgDocumentOrSkip(t)
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Live"}`)
+	if r.IsError {
+		t.Fatalf("create_document: %s", r.Text)
+	}
+	docID := out["document_id"].(string)
+	key, _, _ := d.resolveScope(ctx, "user")
+	dump, err := d.SqlMem.ExportScope(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SqlMem.RestoreScope(ctx, key, dump); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_document","scope":"user","id":%q}`, docID)); r.IsError {
+		t.Fatalf("get_document after the restore: %s", r.Text)
+	}
+	if res, err := d.SqlMem.Query(ctx, key, `SELECT count(*) FROM documents`, nil); err == nil {
+		t.Errorf("the restored copy is still on the agent plane: %v", res.Rows)
 	}
 }

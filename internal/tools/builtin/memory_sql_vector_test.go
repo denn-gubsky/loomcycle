@@ -138,6 +138,9 @@ func TestMemorySQL_EmbedDirectiveRoundTrip(t *testing.T) {
 func dropAllSqlmemScopes(t *testing.T, raw *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
+	// A split marker outliving its scope would make the next test's scope of the
+	// same name look split already.
+	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_split`)
 	if rows, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE (nspname LIKE 'sqlmem\_s\_%' OR nspname LIKE 'sqlmem\_d\_%')`); err == nil {
 		var names []string
 		for rows.Next() {

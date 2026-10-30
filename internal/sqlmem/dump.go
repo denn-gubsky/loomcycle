@@ -29,6 +29,21 @@ type ScopeDump struct {
 	DDL     []string
 	PostDDL []string
 	Tables  []TableDump
+	// DocTail marks how much of the end of DDL, PostDDL and Tables is the
+	// scope's document plane (postgres; see scopePlane). The tail is written
+	// against the agent schema, so a runtime that does not know this field
+	// restores the whole dump into the agent plane, as it always did. A runtime
+	// that does restores the tail straight into the document plane: the
+	// document tables never pass through the agent's reach.
+	DocTail *DocTail `json:"DocTail,omitempty"`
+}
+
+// DocTail counts the trailing entries of a ScopeDump that belong to the
+// document plane.
+type DocTail struct {
+	DDL     int
+	PostDDL int
+	Tables  int
 }
 
 // TableDump is one table's data. ColumnTypes is populated only by the postgres
@@ -125,6 +140,7 @@ func (m *Manager) ExportScope(ctx context.Context, key ScopeKey) (*ScopeDump, er
 	dump.DDL = append(dump.DDL, doc.DDL...)
 	dump.Tables = append(dump.Tables, doc.Tables...)
 	dump.PostDDL = append(dump.PostDDL, doc.PostDDL...)
+	dump.DocTail = &DocTail{DDL: len(doc.DDL), PostDDL: len(doc.PostDDL), Tables: len(doc.Tables)}
 	return dump, nil
 }
 
@@ -146,5 +162,46 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 	if key.Scope == runScope {
 		return fmt.Errorf("sqlmem: the run scope is not restorable")
 	}
-	return m.backend.restoreScope(ctx, key.wholeScope(), dump)
+	// Whatever lands on the agent plane, the Document tool's next use of the
+	// scope in this process provisions again and so moves it or drops it.
+	defer m.ForgetEnsured(key)
+	tail := dump.DocTail
+	if tail == nil || m.dialect != dialectPostgres {
+		return m.backend.restoreScope(ctx, key.wholeScope(), dump)
+	}
+	if tail.DDL < 0 || tail.PostDDL < 0 || tail.Tables < 0 ||
+		tail.DDL > len(dump.DDL) || tail.PostDDL > len(dump.PostDDL) || tail.Tables > len(dump.Tables) {
+		return fmt.Errorf("sqlmem: the dump's document part does not fit the dump")
+	}
+	agent := &ScopeDump{
+		DDL:     dump.DDL[:len(dump.DDL)-tail.DDL],
+		PostDDL: dump.PostDDL[:len(dump.PostDDL)-tail.PostDDL],
+		Tables:  dump.Tables[:len(dump.Tables)-tail.Tables],
+	}
+	if err := m.backend.restoreScope(ctx, key.wholeScope(), agent); err != nil {
+		return err
+	}
+	docKey := key
+	docKey.plane = planeDoc
+	agentSchema, _, err := pgScopeNames(key.wholeScope())
+	if err != nil {
+		return err
+	}
+	docSchema, _, err := pgScopeNames(docKey)
+	if err != nil {
+		return err
+	}
+	rename := func(stmts []string) []string {
+		out := make([]string, len(stmts))
+		for i, s := range stmts {
+			out[i] = strings.ReplaceAll(s, agentSchema, docSchema)
+		}
+		return out
+	}
+	doc := &ScopeDump{
+		DDL:     rename(dump.DDL[len(dump.DDL)-tail.DDL:]),
+		PostDDL: rename(dump.PostDDL[len(dump.PostDDL)-tail.PostDDL:]),
+		Tables:  dump.Tables[len(dump.Tables)-tail.Tables:],
+	}
+	return m.backend.restoreScope(ctx, docKey, doc)
 }

@@ -134,7 +134,15 @@ schema. The Document tool's first use of the scope moves them:
 
 Triggers, rules, row policies, views and extra columns an agent attached to the
 old tables are logged and dropped, and none of them runs as the Document role.
-A snapshot restored from any version takes the same path.
+The move happens once per scope. After it, a table on the agent's schema named
+like a document table is dropped unread, so rows an agent writes there never
+reach the document plane.
+
+A snapshot holds both planes in one dump and marks the document part. A runtime
+with the document plane restores that part straight into it. An older runtime
+ignores the mark and restores everything into the agent's schema, as before. An
+archive taken before the mark existed restores into the agent's schema, and the
+first use of a scope that has not yet moved takes it over.
 
 ## Storage tiers — SQL Memory follows the main backend
 
@@ -411,9 +419,9 @@ Requirements / notes:
   `sqlmem_dr_…` when it held documents).
 - **Upgrading to the release with the document plane:** upgrade every replica
   together. A replica still on an older release writes documents into the
-  agent's schema; once a newer replica has moved a scope, a table such an old
-  replica recreates there is discarded, with a warning, the next time the scope
-  is moved. A scope that holds documents needs two roles, so allow for twice
+  agent's schema; once a newer replica has moved a scope, what such an old
+  replica writes there is dropped, with a warning, the next time the scope is
+  checked, and is not copied. A scope that holds documents needs two roles, so allow for twice
   the roles in any role-count limit.
 - **Backups:** SQL Memory is included in the runtime JSON snapshot — see
   *Snapshot integration* below. A database-level backup of the aux DB / the

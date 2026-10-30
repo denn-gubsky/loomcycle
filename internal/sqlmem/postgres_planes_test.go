@@ -211,9 +211,10 @@ func TestPostgresPlanes_AdoptionCopiesRowsAndNothingElse(t *testing.T) {
 	}
 }
 
-// A snapshot of a scope carries both planes, and restoring it into a fresh
-// runtime puts the document tables on the agent plane, from where the document
-// plane's first use moves them, exactly as for a scope from before the split.
+// A snapshot carries both planes in one dump, with the document plane's part
+// marked. Restored, that part goes straight to the document plane; an archive
+// from before the mark existed restores into the agent plane, and the scope's
+// first move takes it over, as for any scope from before the split.
 func TestPostgresPlanes_SnapshotCarriesTheDocumentPlane(t *testing.T) {
 	m, _ := pgTestManager(t, Config{})
 	ctx := context.Background()
@@ -233,27 +234,80 @@ func TestPostgresPlanes_SnapshotCarriesTheDocumentPlane(t *testing.T) {
 	for _, tb := range dump.Tables {
 		names = append(names, tb.Name)
 	}
-	if strings.Join(names, ",") != "chunks" {
-		t.Fatalf("dump tables = %v, want the doc plane's chunks", names)
+	if strings.Join(names, ",") != "chunks" || dump.DocTail == nil || dump.DocTail.Tables != 1 {
+		t.Fatalf("dump tables = %v, tail %+v; want the doc plane's chunks, marked", names, dump.DocTail)
 	}
-	if _, err := m.DropScope(ctx, key); err != nil {
+	readBack := func(t *testing.T) {
+		t.Helper()
+		res, err := doc.Query(ctx, key, `SELECT id FROM chunks`, nil)
+		if err != nil || len(res.Rows) != 1 || res.Rows[0][0] != "c1" {
+			t.Errorf("doc plane after restore: %v %v", res, err)
+		}
+	}
+
+	t.Run("marked", func(t *testing.T) {
+		if _, err := m.DropScope(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.RestoreScope(ctx, key, dump); err != nil {
+			t.Fatal(err)
+		}
+		if held, err := m.AgentPlaneTables(ctx, key, []string{"chunks"}); err != nil || len(held) != 0 {
+			t.Fatalf("the document part passed through the agent plane: %v, %v", held, err)
+		}
+		readBack(t)
+	})
+	t.Run("from before the mark", func(t *testing.T) {
+		legacy := *dump
+		legacy.DocTail = nil
+		if _, err := m.DropScope(ctx, key); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.RestoreScope(ctx, key, &legacy); err != nil {
+			t.Fatal(err)
+		}
+		if held, err := m.AgentPlaneTables(ctx, key, []string{"chunks"}); err != nil || len(held) != 1 {
+			t.Fatalf("restored to the agent plane: %v, %v", held, err)
+		}
+		if _, err := doc.Exec(ctx, key, `CREATE TABLE chunks (id TEXT PRIMARY KEY)`, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+			t.Fatal(err)
+		}
+		readBack(t)
+	})
+}
+
+// Once a scope has its document plane, nothing on its agent plane is copied
+// over again: a table an agent made under a document table's name, with rows of
+// its choosing, is dropped unread, even though the document table is empty.
+func TestPostgresPlanes_ASplitScopeNeverCopiesFromTheAgentPlane(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "writer")
+	doc := m.DocPlane()
+	if _, err := doc.Exec(ctx, key, `CREATE TABLE chunk_edges (id TEXT PRIMARY KEY, status TEXT)`, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.RestoreScope(ctx, key, dump); err != nil {
+	if err := doc.AdoptAgentTables(ctx, key, []string{"chunk_edges"}); err != nil {
+		t.Fatal(err) // records the split; nothing to move
+	}
+	if _, err := m.Exec(ctx, key, `CREATE TABLE chunk_edges (id TEXT PRIMARY KEY, status TEXT)`, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if held, err := m.AgentPlaneTables(ctx, key, []string{"chunks"}); err != nil || len(held) != 1 {
-		t.Fatalf("restored to the agent plane: %v, %v", held, err)
-	}
-	if _, err := doc.Exec(ctx, key, `CREATE TABLE chunks (id TEXT PRIMARY KEY)`, nil, 0); err != nil {
+	if _, err := m.Exec(ctx, key, `INSERT INTO chunk_edges VALUES ('forged', 'asserted')`, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := doc.AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+	if err := doc.AdoptAgentTables(ctx, key, []string{"chunk_edges"}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := doc.Query(ctx, key, `SELECT id FROM chunks`, nil)
-	if err != nil || len(res.Rows) != 1 || res.Rows[0][0] != "c1" {
-		t.Errorf("doc plane after restore and move: %v %v", res, err)
+	res, err := doc.Query(ctx, key, `SELECT count(*) FROM chunk_edges`, nil)
+	if err != nil || res.Rows[0][0] != int64(0) {
+		t.Errorf("the document plane took the agent's rows: %v %v", res, err)
+	}
+	if held, _ := m.AgentPlaneTables(ctx, key, []string{"chunk_edges"}); len(held) != 0 {
+		t.Errorf("the agent's table was left on the agent plane")
 	}
 }
 

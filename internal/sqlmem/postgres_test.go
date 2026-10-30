@@ -58,6 +58,7 @@ func dropAllScopes(t *testing.T, raw *sql.DB) {
 	// Clear the bookkeeping (best-effort — absent when never provisioned).
 	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_access`)
 	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_registry`)
+	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_split`)
 	schemas, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE (nspname LIKE 'sqlmem\_s\_%' OR nspname LIKE 'sqlmem\_d\_%')`)
 	if err == nil {
 		var names []string

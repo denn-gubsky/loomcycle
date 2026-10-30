@@ -775,6 +775,7 @@ func (b *postgresBackend) dropScopePG(ctx context.Context, schema, role string) 
 	// for the never-registered run scope). listScopes also guards against a
 	// dangling row whose schema is already gone, so a missed delete here is inert.
 	_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_registry WHERE schema_name = $1`, schema)
+	_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_split WHERE schema_name = $1`, schema)
 	return removed, nil
 }
 
@@ -968,6 +969,9 @@ func ensureMetaTable(ctx context.Context, admin *sql.DB) error {
 		`CREATE SCHEMA IF NOT EXISTS sqlmem_meta`,
 		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_access (schema_name text PRIMARY KEY, last_used timestamptz NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_registry (schema_name text PRIMARY KEY, tenant text NOT NULL, scope text NOT NULL, scope_id text NOT NULL)`,
+		// The scopes whose document tables have moved to their own plane, by
+		// agent schema (adoptTables).
+		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_split (schema_name text PRIMARY KEY)`,
 	} {
 		if _, err := admin.ExecContext(ctx, s); err != nil && !isAlreadyExists(err) {
 			return err

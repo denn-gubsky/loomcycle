@@ -1031,9 +1031,8 @@ func (d *Document) provisionSchema(ctx context.Context, key sqlmem.ScopeKey) err
 	if err := d.provisionTables(ctx, key); err != nil {
 		return err
 	}
-	if len(held) == 0 {
-		return nil
-	}
+	// Even with nothing to move: the call records that the scope has its document
+	// plane, after which nothing on the agent plane is ever copied over.
 	return d.docSQL().AdoptAgentTables(ctx, key, documentTableNames)
 }
 

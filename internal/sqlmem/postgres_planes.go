@@ -73,6 +73,14 @@ func (b *postgresBackend) agentTables(ctx context.Context, key ScopeKey, tables 
 // adoptTables moves the named tables of the scope's agent plane to its doc plane
 // (Manager.AdoptAgentTables). One mover per scope at a time, across replicas:
 // the others wait on the lock and then find nothing left to move.
+//
+// ONLY ONCE PER SCOPE. Rows cross from the agent plane only the first time a
+// scope reaches its doc plane, when what sits on the agent plane is the scope's
+// real pre-split data. After that, sqlmem_meta.scope_split (the admin's, so out of
+// an agent's reach) records the split, and a table on the agent plane named like
+// a document table is something an agent made: copying it would let forged rows,
+// a statement marked asserted say, into the plane the boundary exists to protect.
+// Such a table is dropped and logged, never read.
 func (b *postgresBackend) adoptTables(ctx context.Context, key ScopeKey, tables []string) error {
 	for _, t := range tables {
 		if !pgTableNameRe.MatchString(t) {
@@ -105,14 +113,32 @@ func (b *postgresBackend) adoptTables(ctx context.Context, key ScopeKey, tables 
 		_, _ = lock.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended($1, 0))`, aSchema)
 	}()
 
+	var split bool
+	if err := lock.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM sqlmem_meta.scope_split WHERE schema_name = $1)`, aSchema).Scan(&split); err != nil {
+		return fmt.Errorf("sqlmem: move document tables: %w", err)
+	}
 	held, err := b.agentTables(ctx, agentKey, tables)
 	if err != nil {
 		return err
 	}
 	for _, t := range held {
+		if split {
+			b.logPlanted(ctx, aSchema, t)
+			slog.Warn("sqlmem: dropped a table named like a document table from a scope that already has its document plane; its rows were not read",
+				"schema", aSchema, "table", t)
+			if err := b.dropAgentTable(ctx, aSchema, t); err != nil {
+				return fmt.Errorf("sqlmem: drop %s from the agent plane: %w", t, err)
+			}
+			continue
+		}
 		if err := b.adoptTable(ctx, aSchema, aRole, dSchema, dRole, t); err != nil {
 			return fmt.Errorf("sqlmem: move %s to the document plane: %w", t, err)
 		}
+	}
+	if _, err := lock.ExecContext(ctx,
+		`INSERT INTO sqlmem_meta.scope_split (schema_name) VALUES ($1) ON CONFLICT DO NOTHING`, aSchema); err != nil {
+		return fmt.Errorf("sqlmem: record the scope's split: %w", err)
 	}
 	return nil
 }
@@ -194,10 +220,10 @@ func (b *postgresBackend) adoptTable(ctx context.Context, aSchema, aRole, dSchem
 		return err
 	}
 	if !empty {
-		var n int64
-		_ = b.admin.QueryRowContext(ctx, fmt.Sprintf(`SELECT count(*) FROM %s.%s`, q(aSchema), q(table))).Scan(&n)
+		// Not counted: the admin never reads an agent's table, whose row policies
+		// would run as the admin, nor is it worth a connection as the agent's role.
 		slog.Warn("sqlmem: discarded an agent-plane copy of a document table; the document plane already holds rows",
-			"schema", aSchema, "table", table, "rows", n)
+			"schema", aSchema, "table", table)
 		return b.dropAgentTable(ctx, aSchema, table)
 	}
 	if len(cols) > 0 {
@@ -299,7 +325,12 @@ func nullable(v sql.NullString) any {
 
 // dropAgentTable drops the agent plane's copy of a document table, with whatever
 // was attached to it. The admin owns the scope schema, which is what lets it drop
-// a table the agent's role owns.
+// a table the agent's role owns. DROP runs nothing of the table's: only a
+// superuser's event trigger could, and an agent cannot make one.
+//
+// The admin touches an agent's relations through the catalogs and DROP only. A
+// SELECT would be checked against privileges the agent can grant the admin, and
+// would then run the table's row policies as the admin.
 func (b *postgresBackend) dropAgentTable(ctx context.Context, aSchema, table string) error {
 	_, err := b.admin.ExecContext(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s CASCADE`, q(aSchema), q(table)))
 	return err
