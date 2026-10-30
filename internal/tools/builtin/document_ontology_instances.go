@@ -104,7 +104,9 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 		}
 		st.Class = class.Name
 		var trusted bool
-		st.Key, trusted = d.instanceKey(ctx, key, mscope, inst, class.Name)
+		st.Key, trusted = d.instanceKey(ctx, key, mscope, inst, class.Name, func(nk string) (string, error) {
+			return d.chunkIDByNaturalKey(ctx, key, nk)
+		})
 		if inst.RegistryKey != "" && !trusted {
 			st.Note = "its recorded key was not written by adoption and is ignored"
 		}
@@ -197,7 +199,12 @@ func (d *Document) reconcileExistingSubject(ctx context.Context, key sqlmem.Scop
 // write the chunk — a proposal accepted in place, say — and a key naming another subject
 // would link this instance to it and rename it. Ignoring it falls back to the derived
 // key, which is what a fresh adoption would use anyway.
-func (d *Document) instanceKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, inst memrank.OntologyInstance, class string) (string, bool) {
+//
+// subjectOf resolves a natural key to its subject's root chunk ("" when none). It is a
+// parameter so describe_ontology can answer it from one batched lookup while adoption
+// reads each key as it goes — one rule, whichever way the subjects were fetched.
+func (d *Document) instanceKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, inst memrank.OntologyInstance, class string,
+	subjectOf func(naturalKey string) (string, error)) (string, bool) {
 	derived := memrank.ConsolidatorEntityKey(class, inst.Name)
 	if inst.RegistryKey == "" {
 		return derived, false
@@ -205,7 +212,7 @@ func (d *Document) instanceKey(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if inst.RegistryKey == derived {
 		return derived, true
 	}
-	root, err := d.chunkIDByNaturalKey(ctx, key, inst.RegistryKey)
+	root, err := subjectOf(inst.RegistryKey)
 	if err != nil || root == "" {
 		return derived, false
 	}
