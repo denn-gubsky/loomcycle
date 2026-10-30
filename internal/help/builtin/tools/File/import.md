@@ -52,13 +52,21 @@ Each entry is one of:
 - `{"line": N, "level": L, "as": "marker", "title": "…"}` — a heading with
   `title` is put before line N, and line N stays in the body. Use it for a
   numbered paragraph (a пункт) whose first line is text, not a title.
+- `{"line": N, "as": "drop"}` — line N, which must already be a heading,
+  is removed with its line break. A PDF's text comes out as one `## Page N`
+  section per page, so a section or a пункт that runs onto the next page
+  would be split there; drop the page headings and the text either side
+  reads on as one section. A drop takes no `level`, `title` or `lines`.
 
-Levels are 2 to 6 (the document's title is level 1). Give entries in
-increasing line order, at most 10 000, and do not put one inside a heading's
-wrapped lines. Lines count from 1 in the file as it is — read it, or its
-outline, to find them. The document's `provenance` then also says
-`structured: {headings, by}`, the count and the run that added them, so a
-reader knows the headings were added, not written by the file's author.
+A heading line is one that starts, after at most 3 spaces, with 1 to 6 `#`
+followed by a space, a tab or the end of the line. Levels are 2 to 6 (the
+document's title is level 1). Give entries in increasing line order, at most
+10 000, and do not put one inside a heading's wrapped lines. Lines count from
+1 in the file as it is — read it, or its outline, to find them. The
+document's `provenance` then also says `structured: {headings, dropped, by}`:
+how many headings were added, how many lines were dropped (left out when
+none were) and the run that did it, so a reader knows the structure was
+changed, not written by the file's author.
 
 Import writes a document, so it needs the Document tool as well as this one,
 and the scope must be one your Document grants allow.
@@ -79,7 +87,8 @@ and the scope must be one your Document grants allow.
   name, such as the email's subject: one line, at most 300 characters.
 - `headings` — headings to add, by line number: `{line, level, as}` with
   `as` `heading` (plus `lines` for a wrapped title) or `marker` (plus
-  `title`, one line, at most 300 characters). See above.
+  `title`, one line, at most 300 characters); or headings to remove,
+  `{line, as: "drop"}`, for a line that is already a heading. See above.
 - `reimport` — the file is a new edition of the work named by `work_key`; see
   "A new edition" below.
 - `work_key` — with `reimport`: the work's key, e.g. `law:ua/2297-vi`.
@@ -127,8 +136,9 @@ and `not_announced` says why the scope was not told, when it was not.
   password, or is too long; or a `kind` not in the list.
 - `headings` is not valid: a line outside the file, entries out of order or
   inside a heading's wrapped lines, a level not 2 to 6, a heading on a blank
-  line, a marker without a one-line title, or a title over 300 characters.
-  Nothing is imported.
+  line, a marker without a one-line title, a title over 300 characters, a
+  drop of a line that is not a heading, or a drop with a `level`, `title` or
+  `lines`. Nothing is imported.
 
 ## Examples
 
@@ -180,5 +190,28 @@ its section, so the пункт's own text stays in the body:
  "source": "mcp:ms365/download-bytes",
  "provenance": {"origin": "import", "file": "NBU-064.pdf", "sha256": "9f3a…", "captured_from": "mcp:ms365/download-bytes",
                 "captured_at": "2026-10-28T07:12:40Z", "run_id": "run_7c2…", "structured": {"headings": 3, "by": "run_7c2…"}},
+ "tags": ["source/mcp/ms365", "untrusted"]}
+```
+
+Import a regulation extracted from a PDF by its sections (розділи), not its
+pages: drop each `## Page N` heading so a section that runs onto the next page
+stays one section:
+
+```json
+{"op": "import", "path": "volume:inbox:extracted/Polozhennya.md", "scope": "tenant",
+ "headings": [
+   {"line": 3, "as": "drop"},
+   {"line": 5, "level": 2, "as": "heading"},
+   {"line": 9, "as": "drop"},
+   {"line": 13, "level": 2, "as": "heading"},
+   {"line": 17, "as": "drop"}
+ ]}
+```
+
+```json result
+{"document_id": "5b70…", "root_chunk_id": "e19a…", "chunks": 3, "image_chunks": 0, "skipped": 0,
+ "source": "mcp:ms365/download-bytes",
+ "provenance": {"origin": "import", "file": "Polozhennya.pdf", "sha256": "4d0c…", "captured_from": "mcp:ms365/download-bytes",
+                "captured_at": "2026-10-28T07:20:03Z", "run_id": "run_7c2…", "structured": {"headings": 2, "dropped": 3, "by": "run_7c2…"}},
  "tags": ["source/mcp/ms365", "untrusted"]}
 ```
