@@ -311,5 +311,101 @@ func TestPostgresPlanes_ASplitScopeNeverCopiesFromTheAgentPlane(t *testing.T) {
 	}
 }
 
+// A scope restored from a marked snapshot has its document plane from the
+// start, so it counts as split: a document-named table an agent makes on the
+// agent plane afterwards is not copied over, even into an empty table.
+func TestPostgresPlanes_ARestoredScopeIsSplit(t *testing.T) {
+	m, _ := pgTestManager(t, Config{})
+	ctx := context.Background()
+	key := agentKey("t1", "writer")
+	doc := m.DocPlane()
+	if _, err := doc.Exec(ctx, key, `CREATE TABLE chunk_edges (id TEXT PRIMARY KEY, status TEXT)`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := m.ExportScope(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DropScope(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RestoreScope(ctx, key, dump); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Exec(ctx, key, `CREATE TABLE chunk_edges (id TEXT PRIMARY KEY, status TEXT)`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Exec(ctx, key, `INSERT INTO chunk_edges VALUES ('forged', 'asserted')`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.AdoptAgentTables(ctx, key, []string{"chunk_edges"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := doc.Query(ctx, key, `SELECT count(*) FROM chunk_edges`, nil)
+	if err != nil || res.Rows[0][0] != int64(0) {
+		t.Errorf("the document plane took the agent's rows after a restore: %v %v", res, err)
+	}
+}
+
+// The admin never reads an agent's table during a move. An agent can grant the
+// admin SELECT on its own table and attach a row policy; a SELECT by the admin
+// would then run the policy's function with the admin's rights. Meaningful only
+// with a non-superuser admin, as production and CI have: a superuser bypasses
+// row policies.
+func TestPostgresPlanes_TheMoveRunsNothingAsTheAdmin(t *testing.T) {
+	m, raw := pgTestManager(t, Config{})
+	ctx := context.Background()
+	var admin string
+	var super bool
+	if err := raw.QueryRowContext(ctx, `SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&admin, &super); err != nil {
+		t.Fatal(err)
+	}
+	if super {
+		t.Skip("the aux admin is a superuser, which bypasses row policies; run with a CREATEROLE admin, as CI does")
+	}
+	key := agentKey("t1", "writer")
+	doc := m.DocPlane()
+	agentSchema, _ := pgPlaneSchemas(t, key)
+	if _, err := doc.Exec(ctx, key, `CREATE TABLE chunks (id TEXT PRIMARY KEY)`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	// A doc table that already holds rows: the path that discards the agent copy.
+	if _, err := doc.Exec(ctx, key, `INSERT INTO chunks VALUES ('live')`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE chunks (id TEXT PRIMARY KEY)`,
+		`INSERT INTO chunks VALUES ('old')`,
+		`CREATE TABLE spied (who TEXT)`,
+		// Schema-qualified: run as the admin, the function resolves names on the
+		// admin's search_path.
+		`CREATE FUNCTION spy() RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN INSERT INTO "` + agentSchema + `".spied VALUES (current_user); RETURN true; END $$`,
+		`CREATE POLICY watch ON chunks USING (spy())`,
+		`ALTER TABLE chunks ENABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE chunks FORCE ROW LEVEL SECURITY`,
+		// Memory SQL refuses GRANT; a function that EXECUTEs it does not, which is
+		// the route the statement check and this boundary exist to close.
+		`CREATE FUNCTION grants() RETURNS void LANGUAGE plpgsql AS $$ BEGIN
+		   EXECUTE 'GRANT INSERT ON spied TO PUBLIC';
+		   EXECUTE 'GRANT SELECT ON chunks TO "` + admin + `"';
+		 END $$`,
+		`WITH g AS (SELECT grants()) SELECT * FROM g`,
+	} {
+		if _, err := m.Exec(ctx, key, stmt, nil, 0); err != nil {
+			t.Fatalf("stage: %s: %v", stmt, err)
+		}
+	}
+	if _, err := m.Exec(ctx, key, `DELETE FROM spied`, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.AdoptAgentTables(ctx, key, []string{"chunks"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.Query(ctx, key, `SELECT count(*) FROM spied WHERE who = '`+admin+`'`, nil)
+	if err != nil || res.Rows[0][0] != int64(0) {
+		t.Errorf("the agent's policy ran as the admin %v times (%v), want 0", res, err)
+	}
+}
+
 // sql is imported for the raw handle pgTestManager returns.
 var _ *sql.DB

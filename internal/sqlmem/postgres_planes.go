@@ -136,8 +136,17 @@ func (b *postgresBackend) adoptTables(ctx context.Context, key ScopeKey, tables 
 			return fmt.Errorf("sqlmem: move %s to the document plane: %w", t, err)
 		}
 	}
-	if _, err := lock.ExecContext(ctx,
-		`INSERT INTO sqlmem_meta.scope_split (schema_name) VALUES ($1) ON CONFLICT DO NOTHING`, aSchema); err != nil {
+	return b.markSplit(ctx, agentKey)
+}
+
+// markSplit records the scope's split in the admin's bookkeeping.
+func (b *postgresBackend) markSplit(ctx context.Context, key ScopeKey) error {
+	schema, _, err := pgScopeNames(key.wholeScope())
+	if err != nil {
+		return err
+	}
+	if _, err := b.admin.ExecContext(ctx,
+		`INSERT INTO sqlmem_meta.scope_split (schema_name) VALUES ($1) ON CONFLICT DO NOTHING`, schema); err != nil {
 		return fmt.Errorf("sqlmem: record the scope's split: %w", err)
 	}
 	return nil

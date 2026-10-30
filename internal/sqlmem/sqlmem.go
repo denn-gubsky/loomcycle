@@ -134,6 +134,9 @@ type backend interface {
 	// The sqlite tier has one plane, so it holds none and adopts nothing.
 	agentTables(ctx context.Context, key ScopeKey, tables []string) ([]string, error)
 	adoptTables(ctx context.Context, key ScopeKey, tables []string) error
+	// markSplit records that the scope has its doc plane, after which nothing on
+	// the agent plane is copied across (adoptTables).
+	markSplit(ctx context.Context, key ScopeKey) error
 	close() error
 }
 

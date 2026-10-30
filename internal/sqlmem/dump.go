@@ -203,5 +203,10 @@ func (m *Manager) RestoreScope(ctx context.Context, key ScopeKey, dump *ScopeDum
 		PostDDL: rename(dump.PostDDL[len(dump.PostDDL)-tail.PostDDL:]),
 		Tables:  dump.Tables[len(dump.Tables)-tail.Tables:],
 	}
-	return m.backend.restoreScope(ctx, docKey, doc)
+	if err := m.backend.restoreScope(ctx, docKey, doc); err != nil {
+		return err
+	}
+	// The scope now has its document plane: what appears on its agent plane under
+	// a document table's name from here on is never copied across.
+	return m.backend.markSplit(ctx, key)
 }

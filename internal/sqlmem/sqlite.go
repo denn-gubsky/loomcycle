@@ -605,6 +605,8 @@ func (b *sqliteBackend) agentTables(context.Context, ScopeKey, []string) ([]stri
 
 func (b *sqliteBackend) adoptTables(context.Context, ScopeKey, []string) error { return nil }
 
+func (b *sqliteBackend) markSplit(context.Context, ScopeKey) error { return nil }
+
 func (b *sqliteBackend) close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
