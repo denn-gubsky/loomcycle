@@ -223,6 +223,14 @@ func TestClassify_AHeldIdentityIsProposedInstead(t *testing.T) {
 	if rec := pendingOf(t, f.root("user", rootID)); rec.Proposed != "Law" {
 		t.Errorf("record = %+v", rec)
 	}
+	// Accepting it while the identity is still held leaves it pending, and says so.
+	out := f.must(map[string]any{"op": "accept_classification", "scope": "user", "document_id": second})
+	if out["type_pending"] != true || out["type"] != nil || f.docType("user", second) != "" {
+		t.Errorf("accept with the identity held = %v", out)
+	}
+	if rec := pendingOf(t, f.root("user", rootID)); rec.Proposed != "Law" {
+		t.Errorf("record after a refused accept = %+v", rec)
+	}
 }
 
 // voteCorpus makes two Order documents about Risk Management in /kb/orders, one Law in

@@ -448,7 +448,9 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		return *r, nil
 	}
 	if setType != "" && !ans.Live && ans.Result == "proposed" {
-		// The identity is held by another chunk: the class stays pending.
+		// The identity is held by another chunk: the class stays pending, so it is not
+		// reported as applied.
+		delete(out, "type")
 		out["type_pending"] = true
 	}
 	out["accepted_statements"] = nonNil(accepted)
