@@ -535,13 +535,13 @@ behind them is [`AUTH-INTEGRATION.md`](AUTH-INTEGRATION.md), phase 1.
 
 ## Routine upgrades
 
-The image versions and the loomboard ref are variables in `docker-compose.yaml`:
+The image versions are variables in `docker-compose.yaml`:
 
 | Variable | Sets | Default in the compose file |
 |---|---|---|
 | `LOOMCYCLE_VERSION` | the two `loomcycle-browser` tags (runtime and migration) | the release this directory was written for |
 | `LOOMCYCLE_SIDECAR_VERSION` | `loomcycle-builder-docker` and the sandbox session image | the last minor release |
-| `LOOMBOARD_REF` | the loomboard release tag the hosted board is built from | `v0.3.1` |
+| `LOOMBOARD_VERSION` | the `ghcr.io/denn-gubsky/loomboard` tag of the hosted board (`X.Y.Z`, no `v`) | the loomboard release this directory was written for |
 
 Put them in a `versions.env` file next to the compose file; the Makefile passes it
 when it exists. Then `make pull && make up`. If the new version bumped the schema,
@@ -579,8 +579,9 @@ script treats what the caller sends as a request:
   `status`;
 - the tag must exist in the project's GitHub repository;
 - it must not be older than what is deployed;
-- for loomcycle, the `loomcycle-browser` image of that version must be published;
-  until it is, the script answers "not published yet" and the next run tries again.
+- the release's image must be published (for loomcycle `loomcycle-browser`, for
+  loomboard `ghcr.io/denn-gubsky/loomboard`); until it is, the script answers "not
+  published yet" and the next run tries again.
 
 So the key deploys a published release and nothing else. The deploy account can run
 Docker, which is root on the host: whoever can push a release tag to either
@@ -618,8 +619,11 @@ repository decides what runs here.
    If the database restore itself fails, the runtime is left stopped and the job
    says so; restore by hand from the step-1 dump.
 
-A loomboard deploy rebuilds the `loomboard` image from the tag and restarts that one
-service, and puts the previous tag back if the new one does not answer.
+A loomboard deploy pulls the release's image and restarts that one service, and
+puts the previous version back if the new one does not answer. Nothing is built
+on the host: loomboard publishes the image on each release (its
+`docker/README.md`). The image comes from GHCR, whose package must be public;
+the board's settings are environment variables of the `loomboard` service.
 
 **Setup, once:**
 
@@ -627,7 +631,7 @@ service, and puts the previous tag back if the new one does not answer.
    ```bash
    mkdir -p ~/work/loomcycle-cloud-deploy/bin
    install -m 755 deploy/loomcycle-cloud-deploy ~/work/loomcycle-cloud-deploy/bin/
-   printf 'LOOMCYCLE_VERSION=1.108.1\nLOOMCYCLE_SIDECAR_VERSION=1.108.0\nLOOMBOARD_REF=v0.3.1\n' > versions.env
+   printf 'LOOMCYCLE_VERSION=1.108.1\nLOOMCYCLE_SIDECAR_VERSION=1.108.0\nLOOMBOARD_VERSION=0.4.0\n' > versions.env
    ~/work/loomcycle-cloud-deploy/bin/loomcycle-cloud-deploy status
    ```
 2. A key pair for CI (`ssh-keygen -t ed25519 -N "" -f ~/work/loomcycle-cloud-deploy/ci_deploy`).
