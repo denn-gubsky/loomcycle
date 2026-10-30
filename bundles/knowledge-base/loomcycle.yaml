@@ -627,7 +627,8 @@ agents:
           if (hasOwn(st.writes, op)) { ok += st.writes[op]; }
         }
         for (var op2 in st.refusals) {
-          if (!hasOwn(st.refusals, op2)) { continue; }
+          // A refused placeholder is counted as an unresolved citation instead.
+          if (!hasOwn(st.refusals, op2) || op2 === "resolve_anchor") { continue; }
           for (var code in st.refusals[op2]) {
             if (!hasOwn(st.refusals[op2], code) || EXPECTED_REFUSALS[code] === true) { continue; }
             var n = st.refusals[op2][code];
@@ -996,7 +997,7 @@ agents:
       function layerCite(st, doc, changed) {
         var L = layerRec(st, "L2", proposalCounts({
           hits: 0, hits_malformed: 0, hits_unreadable: 0, hits_unresolved: 0, hits_no_kind: 0, hits_self: 0,
-          kind_from_grammar: 0, kind_defaulted: 0, targets_exact: 0, targets_work_root: 0, placeholders: 0,
+          kind_from_grammar: 0, kind_defaulted: 0, targets_exact: 0, targets_work_root: 0, placeholders: 0, placeholders_refused: 0,
           parts_truncated: 0, read_by_part: 0
         }));
         if (!st.onto.usable) { skipLayer(L, st.onto.reason); return; }
@@ -1099,7 +1100,10 @@ agents:
         args.create_placeholder = true;
         var w = write(st, "resolve_anchor", args);
         if (w.dry) { C.placeholders++; return ""; }
-        if (!w.ok) { return unresolved(C); }
+        // A caller that may not write the whole scope is refused every placeholder,
+        // whether the work is held, unreadable or absent, in the same words: the
+        // citation is unresolved for that caller.
+        if (!w.ok) { C.placeholders_refused++; return unresolved(C); }
         var r = w.result;
         if (r.placeholder === true) { C.placeholders++; }
         if (isID(r.chunk_id)) { return r.chunk_id; }

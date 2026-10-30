@@ -263,6 +263,35 @@ func TestKBLinker_UnheldWorkGetsAPlaceholderTarget(t *testing.T) {
 	}
 }
 
+// TestKBLinker_RefusedPlaceholderIsUnresolvedNotAFailure: a caller that may not
+// write the whole scope is refused every placeholder, held or not, in the same
+// words. Each such citation is unresolved, and a pass that met only those still
+// completes: it is the answer that caller gets, not a fault in the setup.
+func TestKBLinker_RefusedPlaceholderIsUnresolvedNotAFailure(t *testing.T) {
+	f := kbBaseFixture()
+	f.ontology = kbOntology()
+	f.placeholderRefusal = "resolve_anchor: a work key is claimed for the whole scope, and the caller's access-control rules do not let it write the whole scope"
+	f.citations = []map[string]any{
+		kbCiteHit("report a material incident", map[string]any{"work_key": "law:a", "anchor": "article-9"}),
+		kbCiteHit("to the regulator", map[string]any{"work_key": "law:b"}),
+	}
+
+	rep, _ := runLinker(t, f, `{"document_id":"doc-target","write":"propose","layers":["L2"]}`)
+
+	if rep["status"] != "complete" {
+		t.Errorf("status = %v (failure %v), want complete", rep["status"], rep["failure"])
+	}
+	if n := layerCount(t, rep, "L2", "hits_unresolved"); n != 2 {
+		t.Errorf("hits_unresolved = %v, want 2", n)
+	}
+	if n := layerCount(t, rep, "L2", "placeholders_refused"); n != 2 {
+		t.Errorf("placeholders_refused = %v, want 2", n)
+	}
+	if got := proposals(f); len(got) != 0 {
+		t.Errorf("proposals = %v, want none", got)
+	}
+}
+
 // TestKBLinker_TruncatedCitationListIsReadPartByPart: extract_citations has a
 // limit and no cursor, so a cut document listing is read again one part at a
 // time, and every citation is still proposed exactly once.

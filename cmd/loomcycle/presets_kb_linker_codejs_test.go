@@ -175,6 +175,9 @@ type kbFixture struct {
 	citeTruncateDoc bool
 	// heldWorks maps a work key to the root of the document holding it.
 	heldWorks map[string]string
+	// placeholderRefusal, when set, is the error resolve_anchor answers a
+	// create_placeholder with — a caller that may not write the whole scope.
+	placeholderRefusal string
 	// supersedes maps a superseded chunk to the chunk that superseded it.
 	supersedes map[string]string
 	// statements is the statement store; autoAssert the kinds the runtime
@@ -385,6 +388,9 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		if root, ok := f.heldWorks[wk]; ok {
 			return okResult(map[string]any{"work_key": wk, "found": true, "document_id": "doc-of-" + wk,
 				"root_chunk_id": root, "placeholder": false})
+		}
+		if in["create_placeholder"] == true && f.placeholderRefusal != "" {
+			return kbErr(f.placeholderRefusal)
 		}
 		if in["create_placeholder"] == true {
 			return okResult(map[string]any{"work_key": wk, "found": true, "document_id": "ph-doc-" + wk,
