@@ -44,8 +44,8 @@ var kbOpContracts = []kbOpContract{
 		Assumes:  `a document the scope does not hold fails with "no such document" in the error text`},
 	{Tool: "Document", Op: "query_chunks",
 		Request:  `{document_id, limit, scope} | {sql, scope}`,
-		Response: `{chunks: [{id, document_id, type, title, valid_at?, invalid_at?}]} | {columns, rows, truncated}`,
-		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; the chunks table has anchor and stable_id columns`},
+		Response: `{chunks: [{id, document_id, type, title, valid_at?, invalid_at?, definitional?}]} | {columns, rows, truncated}`,
+		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; definitional is true on a passage of a definitions section and absent otherwise (never false, never on the sql form); the chunks table has anchor and stable_id columns`},
 	{Tool: "Document", Op: "get_chunk",
 		Request:  `{id, scope}`,
 		Response: `{id, document_id, type, title, body}`},
@@ -114,6 +114,9 @@ type kbChunk struct {
 	ID, DocumentID, Type, Title, Body string
 	Anchor, StableID                  string
 	InvalidAt                         int64
+	// Definitional is what the runtime says of a passage in a definitions
+	// section (the class's @definitions); reads carry it only when true.
+	Definitional bool
 }
 
 type kbEvidence struct {
@@ -355,6 +358,9 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 			if c.InvalidAt > 0 {
 				row["invalid_at"] = c.InvalidAt
 			}
+			if c.Definitional {
+				row["definitional"] = true
+			}
 			rows = append(rows, row)
 		}
 		return okResult(map[string]any{"chunks": rows})
@@ -363,7 +369,11 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		if !ok {
 			return kbErr("get_chunk: no such chunk: " + id)
 		}
-		return okResult(map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title, "body": c.Body})
+		out := map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title, "body": c.Body}
+		if c.Definitional {
+			out["definitional"] = true
+		}
+		return okResult(out)
 	case "related":
 		if f.relatedFails[id] {
 			return kbErr("related: requires a configured embedder / vector memory")
