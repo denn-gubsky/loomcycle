@@ -9,8 +9,10 @@ three steps, each reported in `steps`:
    document's title, its import source title and its first section titles. A
    class with only an `@identifier_pattern` is matched against the title. The
    pattern's named groups fill the class's fields, so a class with `@identity`
-   fields gets its work key. When a class and its own parent class both match,
-   the more specific class counts. An **issuer** is an instance from the
+   fields gets its work key. A match on the title or the source title outranks
+   a match on a section title: sections count only when the titles match no
+   class. When a class and its own parent class both match, the more specific
+   class counts. An **issuer** is an instance from the
    ontology's Instances section whose name or `@alt` label appears as a whole
    phrase in the title or the first sections.
 2. **Neighbourhood vote.** The documents most like this one's first section
@@ -24,7 +26,9 @@ three steps, each reported in `steps`:
    and says yes or no per concept. A chat model is asked when there is no
    decision model or it was unsure. The chat model must quote the document, or
    its answer is dropped. The step's `method` says which model answered. A model
-   answer is always a proposal, never applied.
+   answer is always a proposal, never applied. When the class is settled (by
+   rule, vote or a type already set) but no concepts are, the model is asked
+   about the concepts alone; that step names no class.
 
 A draft ontology classifies nothing.
 

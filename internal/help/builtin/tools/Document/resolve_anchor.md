@@ -17,7 +17,9 @@ fills that placeholder in.
 
 ## Arguments
 
-- `work_key` (required) — the work's key.
+- `work_key` (required) — the work's key. Identity keys are held lower-cased;
+  a key that matches none exactly is tried again lower-cased with its spaces
+  collapsed, so `law:2297-VI` finds `law:2297-vi`.
 - `anchor` — the part to find.
 - `as_of` — the moment to resolve at (unix nanoseconds; default now).
 - `create_placeholder` — file a placeholder when the work is not held.
