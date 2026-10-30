@@ -632,7 +632,7 @@ func (d *Document) tenantOntologyRead(ctx context.Context) (OntologyRead, bool) 
 		return OntologyRead{}, false
 	}
 	var uncached OntologyRead
-	v, err := d.SqlMem.Memo(key, "ontology", fp, func() (any, error) {
+	v, err := d.docSQL().Memo(key, "ontology", fp, func() (any, error) {
 		read, rerr := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
 		if rerr != nil {
 			return nil, rerr

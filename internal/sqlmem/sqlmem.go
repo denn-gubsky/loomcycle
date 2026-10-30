@@ -129,6 +129,14 @@ type backend interface {
 	scopeExists(ctx context.Context, key ScopeKey) (bool, error)
 	exportScope(ctx context.Context, key ScopeKey) (*ScopeDump, error)
 	restoreScope(ctx context.Context, key ScopeKey, dump *ScopeDump) error
+	// agentTables returns which of the named tables the scope's agent plane
+	// holds; adoptTables moves those into the doc plane (see AdoptAgentTables).
+	// The sqlite tier has one plane, so it holds none and adopts nothing.
+	agentTables(ctx context.Context, key ScopeKey, tables []string) ([]string, error)
+	adoptTables(ctx context.Context, key ScopeKey, tables []string) error
+	// markSplit records that the scope has its doc plane, after which nothing on
+	// the agent plane is copied across (adoptTables).
+	markSplit(ctx context.Context, key ScopeKey) error
 	close() error
 }
 
@@ -139,7 +147,19 @@ type backend interface {
 // The Manager is deliberately SEPARATE from the main loomcycle store: an
 // agent's arbitrary SQL can only ever reach its own scope, never the
 // runtime's operational database.
+//
+// A Manager addresses one PLANE of each scope. The one the constructors return
+// is the agent plane, where an agent's own SQL runs; DocPlane returns the view
+// the Document tool's tables live on. Both share everything below the plane:
+// the backend, the transaction registry, the memos and the GC state.
 type Manager struct {
+	*managerCore
+	plane scopePlane
+	doc   *Manager // the doc-plane view; itself on the doc plane
+}
+
+// managerCore is the state a Manager's plane views share.
+type managerCore struct {
 	dialect    dialect
 	cfg        Config
 	backend    backend
@@ -162,7 +182,33 @@ type Manager struct {
 	lastTouch map[string]time.Time
 	gcStop    chan struct{}
 	gcDone    chan struct{} // closed by the GC sweeper on exit (nil if none)
+
+	closeOnce sync.Once
+	closeErr  error
 }
+
+// scopePlane names which part of a scope a key addresses.
+//
+// WHY TWO PLANES. An agent granted SQL Memory runs arbitrary SQL in its scope,
+// and the Document tool keeps its tables in the same scope. On one schema and one
+// role, that SQL could read chunks past the Document tool's access rules and mark
+// its own proposed statement asserted, which only an operator may do. The Memory
+// tool refuses statements that name a document table (memory_sql_doc_guard.go),
+// but on postgres a statement check depends on the engine offering no other route
+// to dynamic SQL. So on postgres the document tables live on their own plane: a
+// second schema and login role per scope, neither of which can use the other's
+// schema. On sqlite a scope is one file and the planes coincide; the statement
+// check is complete there, since sqlite cannot build SQL from strings.
+type scopePlane string
+
+const (
+	// planeUnset takes the plane of the Manager the key is used with.
+	planeUnset scopePlane = ""
+	// planeAgent is the agent's own tables; what the constructors' Manager uses.
+	planeAgent scopePlane = "agent"
+	// planeDoc is the Document tool's tables.
+	planeDoc scopePlane = "doc"
+)
 
 // ScopeKey identifies one scope database. Tenant/Scope/ScopeID are all
 // resolved server-side (never model-supplied raw) but are sanitized /
@@ -184,6 +230,48 @@ type ScopeKey struct {
 	// uses an EMPTY scope_id for its tenant scope for the opposite reason — its
 	// tenant_id column already carries the identity.
 	ScopeID string
+
+	// plane is set by the Manager a key is used with (see scopePlane), never by a
+	// caller: a key built from the three fields above means "this scope", and the
+	// Manager it reaches decides which plane. AgentPlane is the one override.
+	plane scopePlane
+}
+
+// AgentPlane addresses the key to the agent plane even through a doc-plane view.
+// It exists for one job: bringing a scope's pre-split document tables up to date
+// where they are, before the doc plane takes them over (Document's provisioning).
+func (k ScopeKey) AgentPlane() ScopeKey {
+	k.plane = planeAgent
+	return k
+}
+
+// onPlane is the key as the backend sees it: the Manager's plane unless the key
+// was explicitly sent elsewhere.
+func (m *Manager) onPlane(k ScopeKey) ScopeKey {
+	if k.plane == planeUnset {
+		k.plane = m.plane
+	}
+	return k
+}
+
+// isDoc reports whether the key addresses the Document tool's plane.
+func (k ScopeKey) isDoc() bool { return k.plane == planeDoc }
+
+// wholeScope is the key for operations on the scope as a whole (drop, GC
+// bookkeeping, snapshot listing), which always cover both planes.
+func (k ScopeKey) wholeScope() ScopeKey {
+	k.plane = planeAgent
+	return k
+}
+
+// DocPlane returns the view of this Manager that addresses the Document tool's
+// tables. Cheap: it is built once with the Manager.
+// A nil Manager (SQL Memory off) has a nil view.
+func (m *Manager) DocPlane() *Manager {
+	if m == nil {
+		return nil
+	}
+	return m.doc
 }
 
 // runScope is the scope name for ephemeral run databases. It is NOT keyed by
@@ -219,8 +307,11 @@ func New(cfg Config) (*Manager, error) {
 // newManager wires the facade + the explicit-transaction registry and starts
 // the abandoned-txn reaper. Shared by New (sqlite) and NewPostgres.
 func newManager(d dialect, cfg Config, b backend) *Manager {
-	m := &Manager{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(),
+	core := &managerCore{dialect: d, cfg: cfg, backend: b, txns: newTxnRegistry(),
 		lastTouch: make(map[string]time.Time), ensured: make(map[string]struct{})}
+	m := &Manager{managerCore: core, plane: planeAgent}
+	m.doc = &Manager{managerCore: core, plane: planeDoc}
+	m.doc.doc = m.doc
 	m.startReaper()
 	m.startGC()
 	return m
@@ -287,7 +378,11 @@ const defaultTenantKey = "default"
 // memoID is the provisioning memo's key. Callers validate() first — the separator
 // is what makes this unambiguous, and a component carrying it would alias scopes.
 func (k ScopeKey) memoID() string {
-	return k.Tenant + string(scopeKeySep) + k.Scope + string(scopeKeySep) + k.ScopeID
+	id := k.Tenant + string(scopeKeySep) + k.Scope + string(scopeKeySep) + k.ScopeID
+	if k.isDoc() {
+		id += string(scopeKeySep) + string(planeDoc)
+	}
+	return id
 }
 
 // EnsureOnce runs fn the first time a scope is seen and skips it thereafter.
@@ -317,7 +412,7 @@ func (m *Manager) EnsureOnce(key ScopeKey, fn func() error) error {
 	if err := key.validate(); err != nil {
 		return err
 	}
-	id := key.memoID()
+	id := m.onPlane(key).memoID()
 	m.ensuredMu.Lock()
 	_, done := m.ensured[id]
 	m.ensuredMu.Unlock()
@@ -366,7 +461,7 @@ func (m *Manager) Memo(key ScopeKey, name, fingerprint string, build func() (any
 	if err := key.validate(); err != nil {
 		return nil, err
 	}
-	id := key.memoID() + string(scopeKeySep) + name
+	id := m.onPlane(key).memoID() + string(scopeKeySep) + name
 	m.memoMu.Lock()
 	if e, ok := m.memo[id]; ok && e.fingerprint == fingerprint {
 		m.memoMu.Unlock()
@@ -386,16 +481,21 @@ func (m *Manager) Memo(key ScopeKey, name, fingerprint string, build func() (any
 	return v, nil
 }
 
-// ForgetEnsured drops a scope's memo so the next EnsureOnce provisions again.
+// ForgetEnsured drops a scope's memo, on both planes, so the next EnsureOnce
+// provisions again.
 func (m *Manager) ForgetEnsured(key ScopeKey) {
 	// An invalid key can never have been recorded (EnsureOnce refuses it), so there
 	// is nothing to forget and no reason to derive an id that could alias a real one.
 	if key.validate() != nil {
 		return
 	}
-	id := key.memoID()
+	// Both planes: what was provisioned is the scope, and a caller forgetting it
+	// through either view means the whole of it.
+	agent, doc := key.wholeScope(), key
+	doc.plane = planeDoc
 	m.ensuredMu.Lock()
-	delete(m.ensured, id)
+	delete(m.ensured, agent.memoID())
+	delete(m.ensured, doc.memoID())
 	m.ensuredMu.Unlock()
 }
 
@@ -441,7 +541,7 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 		return nil, err
 	}
 	defer m.touch(key)
-	return m.backend.query(ctx, key, statement, args)
+	return m.backend.query(ctx, m.onPlane(key), statement, args)
 }
 
 // Exec runs a DDL/DML statement against the scope database. The statement is
@@ -455,7 +555,7 @@ func (m *Manager) Exec(ctx context.Context, key ScopeKey, statement string, args
 		return nil, err
 	}
 	defer m.touch(key)
-	return m.backend.exec(ctx, key, statement, args, quotaOverride)
+	return m.backend.exec(ctx, m.onPlane(key), statement, args, quotaOverride)
 }
 
 // ScopeExists reports whether a DURABLE scope has been provisioned (sqlite: its
@@ -474,7 +574,7 @@ func (m *Manager) ScopeExists(ctx context.Context, key ScopeKey) (bool, error) {
 	if err := key.validate(); err != nil {
 		return false, err
 	}
-	return m.backend.scopeExists(ctx, key)
+	return m.backend.scopeExists(ctx, key.wholeScope())
 }
 
 // DropRunScope removes the ephemeral run scope (sqlite: the .db file behind a
@@ -500,7 +600,33 @@ func (m *Manager) DropScope(ctx context.Context, key ScopeKey) (removed bool, er
 	if err := key.validate(); err != nil {
 		return false, err
 	}
-	return m.backend.dropScope(key)
+	return m.backend.dropScope(key.wholeScope())
+}
+
+// AgentPlaneTables returns which of the named tables a scope's agent plane still
+// holds: on postgres, Document tables a scope created before the planes split.
+// Always empty on sqlite, whose planes coincide.
+func (m *Manager) AgentPlaneTables(ctx context.Context, key ScopeKey, tables []string) ([]string, error) {
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
+	return m.backend.agentTables(ctx, key.wholeScope(), tables)
+}
+
+// AdoptAgentTables moves the named tables' rows from the scope's agent plane
+// into the same tables on the doc plane, which the caller has already created,
+// and drops them from the agent plane. Rows are read as the agent's role and
+// written as the doc role, cast to the doc table's own column types, so nothing
+// the agent defined runs with the doc role's rights. A doc table that already
+// holds rows keeps them and the agent copy is discarded, with a warning; that is
+// the case only for a scope restored from an older snapshot over live data.
+// Triggers, rules and policies on the agent tables are logged and dropped with
+// them. A no-op on sqlite.
+func (m *Manager) AdoptAgentTables(ctx context.Context, key ScopeKey, tables []string) error {
+	if err := key.validate(); err != nil {
+		return err
+	}
+	return m.backend.adoptTables(ctx, key.wholeScope(), tables)
 }
 
 // VectorsEnabled reports whether this Manager's tier can serve vector columns
@@ -511,11 +637,16 @@ func (m *Manager) VectorsEnabled() bool { return m.backend.vectorsEnabled() }
 // Close stops the reaper, rolls back every still-open transaction (releasing
 // their scope pins), and releases the backend (sqlite: every open scope handle;
 // postgres: the aux connection pool).
+//
+// Either plane's view closes the shared Manager; a second Close is a no-op.
 func (m *Manager) Close() error {
-	m.stopReaper()
-	m.stopGC()
-	m.txns.rollbackAll()
-	return m.backend.close()
+	m.closeOnce.Do(func() {
+		m.stopReaper()
+		m.stopGC()
+		m.txns.rollbackAll()
+		m.closeErr = m.backend.close()
+	})
+	return m.closeErr
 }
 
 // rowQueryer is satisfied by both *sql.DB and *sql.Tx, so the per-scope size

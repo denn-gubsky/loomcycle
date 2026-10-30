@@ -22,7 +22,7 @@ func TestSchemaMemo_SelfHealsWhenAScopeGoesStale(t *testing.T) {
 
 	// Take the scope back to a pre-migration shape WITHOUT touching the memo, so the
 	// process still believes this scope is fully provisioned.
-	if _, err := d.SqlMem.Exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN judged_by`, nil, 0); err != nil {
+	if _, err := d.docSQL().Exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN judged_by`, nil, 0); err != nil {
 		t.Skipf("this tier cannot drop a column: %v", err)
 	}
 	if d.tableHasColumn(ctx, key, "chunk_memory_meta", "judged_by") {

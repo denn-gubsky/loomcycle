@@ -345,11 +345,11 @@ func assertChunkValidityMigration(t *testing.T, d *Document, ctx context.Context
 	rewind := func(cols ...string) {
 		t.Helper()
 		// sqlite cannot drop an indexed column; the index goes first.
-		if _, err := d.SqlMem.Exec(ctx, key, `DROP INDEX IF EXISTS chunks_validity`, nil, 0); err != nil {
+		if _, err := d.docSQL().Exec(ctx, key, `DROP INDEX IF EXISTS chunks_validity`, nil, 0); err != nil {
 			t.Fatalf("drop index: %v", err)
 		}
 		for _, col := range cols {
-			if _, err := d.SqlMem.Exec(ctx, key, `ALTER TABLE chunks DROP COLUMN `+col, nil, 0); err != nil {
+			if _, err := d.docSQL().Exec(ctx, key, `ALTER TABLE chunks DROP COLUMN `+col, nil, 0); err != nil {
 				t.Fatalf("rewind %s: %v", col, err)
 			}
 		}

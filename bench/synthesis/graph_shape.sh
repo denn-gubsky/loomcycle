@@ -15,7 +15,7 @@ DB=${1:-loomcycle_db2_sqlmem}
 # empty scope, because every scope has the same tables.
 if [ -z "$2" ]; then
   S=""; best=-1
-  for cand in $(psql -d "$DB" -tAc "select nspname from pg_namespace where nspname like 'sqlmem_s_%'"); do
+  for cand in $(psql -d "$DB" -tAc "select nspname from pg_namespace where nspname like 'sqlmem_s_%' or nspname like 'sqlmem_d_%'"); do
     n=$(psql -d "$DB" -tAc "select count(*) from $cand.chunks" 2>/dev/null || echo 0)
     [ "$n" -gt "$best" ] && { best=$n; S=$cand; }
   done

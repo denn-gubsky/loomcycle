@@ -597,6 +597,16 @@ func fencedRemoveDB(expectedRoot, path string) (removed bool, err error) {
 
 // close closes every open scope handle. Best-effort: the first close error
 // is returned but every handle is still attempted.
+// agentTables / adoptTables: a sqlite scope is one file, so the planes coincide
+// and there is nothing to move.
+func (b *sqliteBackend) agentTables(context.Context, ScopeKey, []string) ([]string, error) {
+	return nil, nil
+}
+
+func (b *sqliteBackend) adoptTables(context.Context, ScopeKey, []string) error { return nil }
+
+func (b *sqliteBackend) markSplit(context.Context, ScopeKey) error { return nil }
+
 func (b *sqliteBackend) close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

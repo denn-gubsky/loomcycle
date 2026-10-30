@@ -340,7 +340,7 @@ func (d *Document) mergeStatement(ctx context.Context, key sqlmem.ScopeKey, s *s
 			"Pass a live statement of the same relation as survivor_id, or expire this one instead."))
 	}
 	err = d.withSqlTxn(ctx, key, func(tx string) error {
-		res, err := d.SqlMem.ExecTxn(ctx, tx, d.SqlMem.Rebind(`UPDATE chunk_edges SET expired_at = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE `+statementLiveCAS),
+		res, err := d.docSQL().ExecTxn(ctx, tx, d.docSQL().Rebind(`UPDATE chunk_edges SET expired_at = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE `+statementLiveCAS),
 			[]any{now, now, "merged", judge, s.ID, s.Status}, 0)
 		if err != nil {
 			return err

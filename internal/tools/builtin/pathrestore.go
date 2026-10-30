@@ -99,6 +99,8 @@ func ValidateDirentEntry(body json.RawMessage) error {
 // carries, and must not leave an empty database behind for each one whose
 // document did not arrive.
 func SnapshotDocumentExists(sm *sqlmem.Manager) func(ctx context.Context, tenantID, scope, scopeID, documentID string) (bool, error) {
+	// Documents live on the document plane (Document.docSQL).
+	sm = sm.DocPlane()
 	return func(ctx context.Context, tenantID, scope, scopeID, documentID string) (bool, error) {
 		key := sqlmem.ScopeKey{Tenant: sqlScopeTenantValue(tenantID), Scope: scope, ScopeID: scopeID}
 		if scope == "tenant" {

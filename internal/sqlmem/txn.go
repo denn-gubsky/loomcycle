@@ -184,6 +184,7 @@ func (m *Manager) BeginTxn(ctx context.Context, txnID, rootRunID string, key Sco
 	if err := key.validate(); err != nil {
 		return 0, err
 	}
+	key = m.onPlane(key)
 	m.txns.mu.Lock()
 	if existing, ok := m.txns.open[txnID]; ok {
 		if existing == nil {

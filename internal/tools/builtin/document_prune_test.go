@@ -159,7 +159,7 @@ func TestPruneRetiredChunks_LeavesNoOrphans(t *testing.T) {
 		t.Error("the chunk BODY survived in the Memory plane — an orphan no read returns and no sweeper reaps")
 	}
 	// And no edge references it.
-	res, qerr := d.SqlMem.Query(context.Background(), key,
+	res, qerr := d.docSQL().Query(context.Background(), key,
 		d.SqlMem.Rebind(`SELECT count(*) FROM chunk_edges WHERE from_id = ? OR to_id = ?`), []any{retired, retired})
 	if qerr != nil {
 		t.Fatalf("edge probe: %v", qerr)

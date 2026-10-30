@@ -229,7 +229,28 @@ func (b *postgresBackend) vectorsEnabled() bool { return b.vectors }
 // placed into DDL (pgScopeNames produces exactly this). Hex-only names are
 // injection-proof by construction; the assertion + q() quoting are belt-and-
 // braces.
-var pgIdentRe = regexp.MustCompile(`^sqlmem_[sr]_[0-9a-f]{32}$`)
+var pgIdentRe = regexp.MustCompile(`^sqlmem_(?:s|r|d|dr)_[0-9a-f]{32}$`)
+
+// The name prefixes. A scope's agent plane is sqlmem_s_<h> owned through role
+// sqlmem_r_<h>; its doc plane (scopePlane) is sqlmem_d_<h> through sqlmem_dr_<h>,
+// the same <h>, so either pair is derivable from the other.
+const (
+	pgAgentSchemaPrefix = "sqlmem_s_"
+	pgAgentRolePrefix   = "sqlmem_r_"
+	pgDocSchemaPrefix   = "sqlmem_d_"
+	pgDocRolePrefix     = "sqlmem_dr_"
+)
+
+// pgDocPair derives the doc plane's (schema, role) from an agent-plane schema
+// name, as the GC sweepers and the drop path hold only that.
+func pgDocPair(agentSchema string) (schema, role string, ok bool) {
+	h := strings.TrimPrefix(agentSchema, pgAgentSchemaPrefix)
+	schema, role = pgDocSchemaPrefix+h, pgDocRolePrefix+h
+	if h == agentSchema || !pgIdentRe.MatchString(schema) || !pgIdentRe.MatchString(role) {
+		return "", "", false
+	}
+	return schema, role, true
+}
 
 // pgScopeNames derives the (schema, role) identifier pair for a ScopeKey by
 // hashing a canonical key string. Durable scopes hash (tenant, scope, scope_id)
@@ -259,8 +280,10 @@ func pgScopeNames(key ScopeKey) (schema, role string, err error) {
 	}
 	sum := sha256.Sum256([]byte(canon))
 	h := hex.EncodeToString(sum[:16]) // 32 hex chars = 128 bits
-	schema = "sqlmem_s_" + h
-	role = "sqlmem_r_" + h
+	schema, role = pgAgentSchemaPrefix+h, pgAgentRolePrefix+h
+	if key.isDoc() {
+		schema, role = pgDocSchemaPrefix+h, pgDocRolePrefix+h
+	}
 	if !pgIdentRe.MatchString(schema) || !pgIdentRe.MatchString(role) {
 		return "", "", fmt.Errorf("sqlmem: derived identifier failed validation")
 	}
@@ -329,10 +352,23 @@ func (b *postgresBackend) provision(ctx context.Context, schema, role string, ke
 		return nil
 	}
 
-	if err := b.runProvisionDDL(ctx, schema, role); err != nil {
+	// The doc plane needs its scope's agent plane: the registry, the GC
+	// bookkeeping and snapshot listing all key on the agent schema, so a scope
+	// that only ever held documents is listed and swept like any other.
+	if key.isDoc() {
+		agentKey := key.wholeScope()
+		as, ar, err := pgScopeNames(agentKey)
+		if err != nil {
+			return err
+		}
+		if err := b.provision(ctx, as, ar, agentKey); err != nil {
+			return err
+		}
+	}
+	if err := b.runProvisionDDL(ctx, schema, role, key.isDoc()); err != nil {
 		return err // NOT cached → the next op retries (self-heal)
 	}
-	if key.Scope != runScope {
+	if key.Scope != runScope && !key.isDoc() {
 		if err := b.registerScope(ctx, schema, key); err != nil {
 			return fmt.Errorf("sqlmem: register scope: %w", err) // NOT cached → retry
 		}
@@ -346,7 +382,7 @@ func (b *postgresBackend) provision(ctx context.Context, schema, role string, ke
 // runProvisionDDL executes the provisioning statements with a small bounded
 // retry on transient serialization errors (concurrent cross-replica first-touch
 // can deadlock on catalog rows). Duplicate-object errors are swallowed.
-func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role string) error {
+func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role string, doc bool) error {
 	pw := b.derivePassword(role)
 	createRole := fmt.Sprintf(
 		`DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname=%s) THEN CREATE ROLE %s LOGIN PASSWORD %s NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION; END IF; END $$`,
@@ -366,8 +402,12 @@ func (b *postgresBackend) runProvisionDDL(ctx context.Context, schema, role stri
 	// table first (shadowing) and CREATE TABLE still lands in the scope schema
 	// (the role has CREATE only there). Names are pre-validated in
 	// validateSharedSchemas, so q() interpolation is safe.
-	for _, sh := range b.sharedSchemas {
-		searchPath += ", " + q(sh)
+	// The doc plane does not get them: they are reference data for agents, and the
+	// Document tool's role reads nothing outside its own schema.
+	if !doc {
+		for _, sh := range b.sharedSchemas {
+			searchPath += ", " + q(sh)
+		}
 	}
 	stmts := []string{
 		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, q(schema)),
@@ -584,7 +624,7 @@ func (b *postgresBackend) exec(ctx context.Context, key ScopeKey, statement stri
 	defer func() { _ = tx.Rollback() }()
 
 	if quota := effectiveQuota(b.cfg, quotaOverride); quota > 0 {
-		size, err := pgSchemaSizeBytes(ectx, tx, schema)
+		size, err := pgScopeSizeBytes(ectx, tx, key)
 		if err != nil {
 			return nil, fmt.Errorf("sqlmem: quota check: %w", err)
 		}
@@ -641,25 +681,31 @@ func (b *postgresBackend) beginTx(ctx context.Context, key ScopeKey) (*sql.Tx, f
 	return tx, func() { b.releaseScope(sc) }, nil
 }
 
-// txnSizeBytes measures the scope schema's size on the open transaction.
+// txnSizeBytes measures the scope's size on the open transaction.
 func (b *postgresBackend) txnSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error) {
-	schema, _, err := pgScopeNames(key)
+	return pgScopeSizeBytes(ctx, tx, key)
+}
+
+// pgScopeSizeBytes sums pg_total_relation_size over every table of the scope, on
+// both planes: the quota is the scope's, wherever its tables live. The schema
+// names are bound as values, not interpolated. Either plane's role can read the
+// sizes (pg_class is public and the size functions check no privilege).
+func pgScopeSizeBytes(ctx context.Context, tx *sql.Tx, key ScopeKey) (int64, error) {
+	agentKey := key.wholeScope()
+	agent, _, err := pgScopeNames(agentKey)
 	if err != nil {
 		return 0, err
 	}
-	return pgSchemaSizeBytes(ctx, tx, schema)
-}
-
-// pgSchemaSizeBytes sums pg_total_relation_size over every table in the scope
-// schema. schema is bound as a value ($1), not interpolated. Runs as the scope
-// role (it can read its own relations' sizes).
-func pgSchemaSizeBytes(ctx context.Context, tx *sql.Tx, schema string) (int64, error) {
+	doc, _, ok := pgDocPair(agent)
+	if !ok {
+		return 0, fmt.Errorf("sqlmem: derived identifier failed validation")
+	}
 	var size sql.NullInt64
-	err := tx.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0)
 		   FROM pg_class c
 		   JOIN pg_namespace n ON n.oid = c.relnamespace
-		  WHERE n.nspname = $1 AND c.relkind IN ('r','m','p')`, schema).Scan(&size)
+		  WHERE n.nspname IN ($1, $2) AND c.relkind IN ('r','m','p')`, agent, doc).Scan(&size)
 	if err != nil {
 		return 0, err
 	}
@@ -704,6 +750,38 @@ func (b *postgresBackend) dropScope(key ScopeKey) (removed bool, err error) {
 // removes its GC meta row. Shared by run-scope drop and the durable-scope GC
 // sweeper. removed reflects the actual schema drop (3F000 => already gone).
 func (b *postgresBackend) dropScopePG(ctx context.Context, schema, role string) (removed bool, err error) {
+	// The doc plane goes first and with it: a scope is dropped whole.
+	if ds, dr, ok := pgDocPair(schema); ok {
+		docRemoved, err := b.dropSchemaRole(ctx, ds, dr)
+		if err != nil {
+			return false, err
+		}
+		removed = docRemoved
+	}
+	agentRemoved, err := b.dropSchemaRole(ctx, schema, role)
+	if err != nil {
+		return false, err
+	}
+	removed = removed || agentRemoved
+	if b.cfg.ScopeTTLMS > 0 {
+		// A late, deferred touch from a just-finished op could re-INSERT this row
+		// after the DELETE (the touch fires after the op released its pin). That
+		// is benign + self-healing: the next sweep finds the dangling row, the
+		// DROP SCHEMA returns 3F000 (removed=false, not counted), and the row is
+		// DELETEd then.
+		_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_access WHERE schema_name = $1`, schema)
+	}
+	// Drop the snapshot identity row (always present for a durable scope; a no-op
+	// for the never-registered run scope). listScopes also guards against a
+	// dangling row whose schema is already gone, so a missed delete here is inert.
+	_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_registry WHERE schema_name = $1`, schema)
+	_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_split WHERE schema_name = $1`, schema)
+	return removed, nil
+}
+
+// dropSchemaRole retires one plane's pool, drops its schema (CASCADE) and its
+// role. removed reflects the actual schema drop (3F000 => already gone).
+func (b *postgresBackend) dropSchemaRole(ctx context.Context, schema, role string) (removed bool, err error) {
 	// Retire this scope's pool so the role has no live sessions before DROP ROLE
 	// (idle => closed now; an in-flight holder finalizes on release).
 	b.mu.Lock()
@@ -731,24 +809,12 @@ func (b *postgresBackend) dropScopePG(ctx context.Context, schema, role string) 
 	if _, err := b.admin.ExecContext(ctx, dropRole); err != nil {
 		slog.Warn("sqlmem: drop scope role failed (schema already dropped)", "err", err)
 	}
-	if b.cfg.ScopeTTLMS > 0 {
-		// A late, deferred touch from a just-finished op could re-INSERT this row
-		// after the DELETE (the touch fires after the op released its pin). That
-		// is benign + self-healing: the next sweep finds the dangling row, the
-		// DROP SCHEMA returns 3F000 (removed=false, not counted), and the row is
-		// DELETEd then.
-		_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_access WHERE schema_name = $1`, schema)
-	}
-	// Drop the snapshot identity row (always present for a durable scope; a no-op
-	// for the never-registered run scope). listScopes also guards against a
-	// dangling row whose schema is already gone, so a missed delete here is inert.
-	_, _ = b.admin.ExecContext(ctx, `DELETE FROM sqlmem_meta.scope_registry WHERE schema_name = $1`, schema)
 	return removed, nil
 }
 
 // touchScope records a durable scope's last-use in the GC meta table.
 func (b *postgresBackend) touchScope(key ScopeKey) error {
-	schema, _, err := pgScopeNames(key)
+	schema, _, err := pgScopeNames(key.wholeScope())
 	if err != nil {
 		return err
 	}
@@ -781,7 +847,7 @@ func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
 	rows.Close()
 	var dropped int
 	for _, schema := range schemas {
-		role := "sqlmem_r_" + strings.TrimPrefix(schema, "sqlmem_s_")
+		role := pgAgentRolePrefix + strings.TrimPrefix(schema, pgAgentSchemaPrefix)
 		if !pgIdentRe.MatchString(schema) || !pgIdentRe.MatchString(role) {
 			continue // defensive — only our own hashed identifiers
 		}
@@ -790,11 +856,7 @@ func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
 		// their duration — so this excludes BOTH a durable scope with an open
 		// explicit transaction (which dropScopePG would otherwise terminate) and
 		// any in-flight op. The next sweep catches it once idle.
-		b.mu.Lock()
-		sc, ok := b.scopes[role]
-		busy := ok && sc.inUse > 0
-		b.mu.Unlock()
-		if busy {
+		if b.scopeBusy(schema, role) {
 			continue
 		}
 		if _, err := b.dropScopePG(ctx, schema, role); err != nil {
@@ -816,13 +878,16 @@ func (b *postgresBackend) sweepStale(cutoff time.Time) (int, error) {
 func (b *postgresBackend) sweepBudget(budget int64) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// A scope's size is both planes'; the doc plane's schema is the agent one's
+	// with the doc prefix (pgDocPair).
 	rows, err := b.admin.QueryContext(ctx,
-		`SELECT n.nspname, COALESCE(SUM(pg_total_relation_size(c.oid)), 0)
+		`SELECT r.schema_name, COALESCE(SUM(pg_total_relation_size(c.oid)), 0)
 		   FROM sqlmem_meta.scope_registry r
-		   JOIN pg_catalog.pg_namespace n ON n.nspname = r.schema_name
+		   JOIN pg_catalog.pg_namespace n
+		     ON n.nspname IN (r.schema_name, $2 || substr(r.schema_name, length($3) + 1))
 		   LEFT JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid AND c.relkind IN ('r','m','p')
 		  WHERE r.scope <> $1
-		  GROUP BY n.nspname`, runScope)
+		  GROUP BY r.schema_name`, runScope, pgDocSchemaPrefix, pgAgentSchemaPrefix)
 	if err != nil {
 		return 0, err
 	}
@@ -854,15 +919,11 @@ func (b *postgresBackend) sweepBudget(budget int64) (int, error) {
 		if total <= budget {
 			break
 		}
-		role := "sqlmem_r_" + strings.TrimPrefix(s.schema, "sqlmem_s_")
+		role := pgAgentRolePrefix + strings.TrimPrefix(s.schema, pgAgentSchemaPrefix)
 		if !pgIdentRe.MatchString(s.schema) || !pgIdentRe.MatchString(role) {
 			continue // defensive — only our own hashed identifiers
 		}
-		b.mu.Lock()
-		sc, ok := b.scopes[role]
-		busy := ok && sc.inUse > 0
-		b.mu.Unlock()
-		if busy {
+		if b.scopeBusy(s.schema, role) {
 			continue // pinned by a live op / open txn — skip, catch it next sweep
 		}
 		removed, err := b.dropScopePG(ctx, s.schema, role)
@@ -881,6 +942,23 @@ func (b *postgresBackend) sweepBudget(budget int64) (int, error) {
 	return dropped, nil
 }
 
+// scopeBusy reports whether either plane of a scope has a pinned pool (a live op
+// or an open transaction), which a GC sweep must not drop out from under.
+func (b *postgresBackend) scopeBusy(schema, role string) bool {
+	roles := []string{role}
+	if _, dr, ok := pgDocPair(schema); ok {
+		roles = append(roles, dr)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, r := range roles {
+		if sc, ok := b.scopes[r]; ok && sc.inUse > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ensureMetaTable provisions the bookkeeping schema: scope_access (Phase-3d GC
 // last-used) and scope_registry (Phase-3e snapshot identity — maps the one-way
 // hashed schema name back to the scope's (tenant, scope, scope_id) so a dump can
@@ -891,6 +969,9 @@ func ensureMetaTable(ctx context.Context, admin *sql.DB) error {
 		`CREATE SCHEMA IF NOT EXISTS sqlmem_meta`,
 		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_access (schema_name text PRIMARY KEY, last_used timestamptz NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_registry (schema_name text PRIMARY KEY, tenant text NOT NULL, scope text NOT NULL, scope_id text NOT NULL)`,
+		// The scopes whose document tables have moved to their own plane, by
+		// agent schema (adoptTables).
+		`CREATE TABLE IF NOT EXISTS sqlmem_meta.scope_split (schema_name text PRIMARY KEY)`,
 	} {
 		if _, err := admin.ExecContext(ctx, s); err != nil && !isAlreadyExists(err) {
 			return err

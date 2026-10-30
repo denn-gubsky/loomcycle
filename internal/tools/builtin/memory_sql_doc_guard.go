@@ -33,9 +33,10 @@ import (
 //     function, for EXECUTE, since this guard never saw them made.
 //
 // sqlite cannot build SQL from strings, so there this is complete. On postgres
-// it holds as long as no other route to dynamic SQL exists in the core
-// functions; the engine-level fix (Document's tables owned by a role Memory's
-// SQL does not log in as) is the follow-up that makes it not depend on that.
+// the engine enforces the boundary as well: the document tables live on their own
+// plane, a schema and login role the agent's role cannot use
+// (sqlmem.Manager.DocPlane), so this check is defense in depth there and covers
+// a scope from before the split until the Document tool's first use moves it.
 
 // documentTableExtras are names Document creates outside docSchemaDDL:
 // chunk_assets, whose DDL is built per tier (BLOB or BYTEA) in ensureSchema, and
@@ -62,23 +63,31 @@ var statsCatalogs = []string{
 	"sqlite_stat1", "sqlite_stat2", "sqlite_stat3", "sqlite_stat4",
 }
 
+// documentTableNames is every table the Document tool creates, lower-cased, in
+// docSchemaDDL order: what the reserved set protects, and what moves to the
+// document plane of a scope created before it had one.
+var documentTableNames = func() []string {
+	var tables []string
+	for _, ddl := range docSchemaDDL {
+		for _, m := range createTableNameRe.FindAllStringSubmatch(ddl, -1) {
+			tables = append(tables, strings.ToLower(m[1]))
+		}
+	}
+	return append(tables, documentTableExtras...)
+}()
+
 // documentTables is the reserved set, lower-cased: every table and index
 // docSchemaDDL creates, each table's postgres primary-key index, the extras of both, and
 // the statistics catalogs. TestMemorySQLGuard_CoversEveryDocumentTable holds it
 // to what a fully migrated scope actually has, on both tiers.
 var documentTables = func() map[string]bool {
 	set := map[string]bool{}
-	var tables []string
 	for _, ddl := range docSchemaDDL {
-		for _, m := range createTableNameRe.FindAllStringSubmatch(ddl, -1) {
-			tables = append(tables, strings.ToLower(m[1]))
-		}
 		for _, m := range createIndexNameRe.FindAllStringSubmatch(ddl, -1) {
 			set[strings.ToLower(m[1])] = true
 		}
 	}
-	tables = append(tables, documentTableExtras...)
-	for _, t := range tables {
+	for _, t := range documentTableNames {
 		set[t] = true
 		set[t+"_pkey"] = true
 	}

@@ -143,12 +143,27 @@ func TestMemorySQLGuard_AgentTablesStillWork(t *testing.T) {
 	})
 }
 
+// preSplitChunkEdges makes chunk_edges exist on the scope's agent plane, which
+// is where every scope keeps its document tables on sqlite, and where a postgres
+// scope from before the document plane kept them. A view an agent planted there
+// is what the planted-object check is for.
+func preSplitChunkEdges(t *testing.T, d *Document, ctx context.Context, key sqlmem.ScopeKey) {
+	t.Helper()
+	if d.SqlMem.Tier() != "postgres" {
+		return
+	}
+	if _, err := d.SqlMem.Exec(ctx, key, `CREATE TABLE chunk_edges (id TEXT)`, nil, 0); err != nil {
+		t.Fatalf("stage a pre-split chunk_edges: %v", err)
+	}
+}
+
 // A view, trigger or function made before the guard existed is not seen by the
 // name check, so the scope is refused to Memory SQL until it is dropped.
 func TestMemorySQLGuard_PlantedObjectBlocksUntilDropped(t *testing.T) {
 	guardBothTiers(t, func(t *testing.T, d *Document, m *Memory, ctx context.Context) {
 		stmtDoc(t, d, ctx, "Planted")
 		key, _, _ := d.resolveScope(ctx, "user")
+		preSplitChunkEdges(t, d, ctx, key)
 		planted := []struct{ create, name, drop string }{
 			{`CREATE VIEW leak AS SELECT * FROM chunk_edges`, "leak", `DROP VIEW leak`},
 		}
@@ -184,7 +199,7 @@ func TestMemorySQLGuard_CoversEveryDocumentTable(t *testing.T) {
 		if d.SqlMem.Tier() == "postgres" {
 			q = `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()`
 		}
-		res, err := d.SqlMem.Query(ctx, key, q, nil)
+		res, err := d.docSQL().Query(ctx, key, q, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -202,7 +217,7 @@ func TestMemorySQLGuard_CoversEveryDocumentTable(t *testing.T) {
 		if d.SqlMem.Tier() == "postgres" {
 			q = `SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()`
 		}
-		res, err = d.SqlMem.Query(ctx, key, q, nil)
+		res, err = d.docSQL().Query(ctx, key, q, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,6 +242,7 @@ func TestMemorySQLGuard_CleanScopeIsRememberedPerTool(t *testing.T) {
 		stmtDoc(t, d, ctx, "Remembered")
 		mustMemSQL(t, m, ctx, "sql_query", `SELECT 1`)
 		key, _, _ := d.resolveScope(ctx, "user")
+		preSplitChunkEdges(t, d, ctx, key)
 		if _, err := d.SqlMem.Exec(ctx, key, `CREATE VIEW leak AS SELECT * FROM chunk_edges`, nil, 0); err != nil {
 			t.Fatal(err)
 		}

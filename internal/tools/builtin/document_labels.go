@@ -59,6 +59,8 @@ func ChunkLabelsFor(ctx context.Context, sm *sqlmem.Manager, tenantID string,
 	if sm == nil || len(chunkIDs) == 0 {
 		return nil
 	}
+	// The chunks live on the document plane (Document.docSQL).
+	sm = sm.DocPlane()
 	key, ok := docScopeKeyFor(tenantID, scope, scopeID)
 	if !ok {
 		return nil

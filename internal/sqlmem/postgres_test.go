@@ -58,7 +58,8 @@ func dropAllScopes(t *testing.T, raw *sql.DB) {
 	// Clear the bookkeeping (best-effort — absent when never provisioned).
 	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_access`)
 	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_registry`)
-	schemas, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE nspname LIKE 'sqlmem\_s\_%'`)
+	_, _ = raw.ExecContext(ctx, `TRUNCATE sqlmem_meta.scope_split`)
+	schemas, err := raw.QueryContext(ctx, `SELECT nspname FROM pg_namespace WHERE (nspname LIKE 'sqlmem\_s\_%' OR nspname LIKE 'sqlmem\_d\_%')`)
 	if err == nil {
 		var names []string
 		for schemas.Next() {
@@ -72,7 +73,7 @@ func dropAllScopes(t *testing.T, raw *sql.DB) {
 			_, _ = raw.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+q(n)+` CASCADE`)
 		}
 	}
-	roles, err := raw.QueryContext(ctx, `SELECT rolname FROM pg_roles WHERE rolname LIKE 'sqlmem\_r\_%'`)
+	roles, err := raw.QueryContext(ctx, `SELECT rolname FROM pg_roles WHERE (rolname LIKE 'sqlmem\_r\_%' OR rolname LIKE 'sqlmem\_dr\_%')`)
 	if err == nil {
 		var names []string
 		for roles.Next() {

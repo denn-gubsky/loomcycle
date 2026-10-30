@@ -53,14 +53,23 @@ func (b *postgresBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 // scopeExists looks the scope's schema up in the catalog; it never provisions
 // the schema or its role. pg_namespace, not information_schema.schemata, which
 // lists only the schemas the current role has privileges on.
+//
+// A scope exists when either plane does; a doc-plane key asks about that plane
+// alone.
 func (b *postgresBackend) scopeExists(ctx context.Context, key ScopeKey) (bool, error) {
 	schema, _, err := pgScopeNames(key)
 	if err != nil {
 		return false, err
 	}
+	other := schema
+	if !key.isDoc() {
+		if ds, _, ok := pgDocPair(schema); ok {
+			other = ds
+		}
+	}
 	var ok bool
 	if err := b.admin.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, schema).Scan(&ok); err != nil {
+		`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname IN ($1, $2))`, schema, other).Scan(&ok); err != nil {
 		return false, fmt.Errorf("sqlmem: scope exists: %w", err)
 	}
 	return ok, nil

@@ -19,7 +19,7 @@ import (
 // values, so "unset" stays distinguishable from "set to the epoch".
 func sidecarInstants(t *testing.T, d *Document, ctx context.Context, chunkID string) (observed, valid *int64) {
 	t.Helper()
-	res, err := d.SqlMem.Query(ctx, sidecarScope(t, d, ctx),
+	res, err := d.docSQL().Query(ctx, sidecarScope(t, d, ctx),
 		d.SqlMem.Rebind(`SELECT observed_at, valid_at FROM chunk_memory_meta WHERE chunk_id = ?`),
 		[]any{chunkID})
 	if err != nil {
@@ -133,7 +133,7 @@ func TestMigrateFactObservation_ReachesAnExistingScope(t *testing.T) {
 
 	// Rewind to the pre-migration shape.
 	for _, col := range []string{"observed_at", "access_count", "last_accessed_at"} {
-		if _, err := d.SqlMem.Exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN `+col, nil, 0); err != nil {
+		if _, err := d.docSQL().Exec(ctx, key, `ALTER TABLE chunk_memory_meta DROP COLUMN `+col, nil, 0); err != nil {
 			t.Fatalf("rewind %s: %v", col, err)
 		}
 	}

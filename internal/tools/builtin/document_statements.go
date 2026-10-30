@@ -200,7 +200,7 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 	}
 	if rebuild {
 		idExpr := `lower(hex(randomblob(16)))`
-		if d.SqlMem.Tier() == "postgres" {
+		if d.docSQL().Tier() == "postgres" {
 			idExpr = `md5(random()::text || clock_timestamp()::text || from_id || to_id || kind)`
 		}
 		stmts := []string{
@@ -212,7 +212,7 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 			`DROP TABLE chunk_edges`,
 			`ALTER TABLE chunk_edges_statements RENAME TO chunk_edges`,
 		}
-		if d.SqlMem.Tier() == "postgres" {
+		if d.docSQL().Tier() == "postgres" {
 			// The renamed table keeps its constraint's old name; a fresh scope's is
 			// chunk_edges_pkey. Same name in both, so a dump of one restores as the other.
 			stmts = append(stmts, `ALTER TABLE chunk_edges RENAME CONSTRAINT chunk_edges_statements_pkey TO chunk_edges_pkey`)
@@ -264,7 +264,7 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 		}
 	}
 	for _, s := range chunkEdgeIndexes {
-		if _, err := d.SqlMem.Exec(ctx, key, s, nil, 0); err != nil {
+		if _, err := d.docSQL().Exec(ctx, key, s, nil, 0); err != nil {
 			return err
 		}
 	}
@@ -278,7 +278,7 @@ func (d *Document) migrateEdgeStatements(ctx context.Context, key sqlmem.ScopeKe
 // Aggregated into one row, so the operator's row cap cannot clip the listing.
 func (d *Document) tableColumns(ctx context.Context, key sqlmem.ScopeKey, table string) (map[string]bool, error) {
 	stmt := `SELECT group_concat(name, ',') FROM pragma_table_info(?)`
-	if d.SqlMem.Tier() == "postgres" {
+	if d.docSQL().Tier() == "postgres" {
 		stmt = `SELECT string_agg(column_name, ',') FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?`
 	}
 	res, err := d.query(ctx, key, stmt, table)
@@ -1359,7 +1359,7 @@ func (d *Document) reviewStatement(ctx context.Context, key sqlmem.ScopeKey, msc
 		}
 	}
 	args = append(args, in.ID, s.Status)
-	ruled, err := d.SqlMem.Exec(ctx, key, d.SqlMem.Rebind(`UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ?`), args, 0)
+	ruled, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+` WHERE id = ? AND status = ?`), args, 0)
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
