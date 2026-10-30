@@ -329,6 +329,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"crypto_scopes":            true, // Crypto tool key-scope gate (authority, not hashed)
 		"shell_credentials":        true, // RFC EW shell-credential narrowing (authority, not hashed)
 		"git_remote":               true, // RFC FB Git tool network grant (authority, not hashed)
+		"statement_methods":        true, // relation methods a code-js agent may stamp (authority, not hashed)
 		"interruption":             true, // F14 — Interruption tool gate (enabled/kinds/max_pending)
 		// F40 — the *_def_scopes capability gates (substrate-def slice of the
 		// F14 closure) so a runtime-authored meta-agent can fork/schedule others.
