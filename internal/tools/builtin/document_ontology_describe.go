@@ -15,8 +15,11 @@ package builtin
 import (
 	"context"
 	"sort"
+	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -47,6 +50,25 @@ type describedGrammar struct {
 	UsedAs []string `json:"used_as,omitempty"`
 }
 
+// describedInstance is one entry of a confirmed Instances section: a real thing the
+// tenant declared, and — once adopted — the registry subject it stands for.
+type describedInstance struct {
+	Name string `json:"name"`
+	// Class is the `@a` class, as the classes in force name it.
+	Class string   `json:"class,omitempty"`
+	Alt   []string `json:"alt,omitempty"`
+	// ChunkID is the instance's own chunk in the ontology document.
+	ChunkID string `json:"chunk_id"`
+	// RegistryKey and SubjectChunkID name the adopted subject node. Both are absent
+	// unless the adoption is one the adoption code itself would trust.
+	RegistryKey    string   `json:"registry_key,omitempty"`
+	SubjectChunkID string   `json:"subject_chunk_id,omitempty"`
+	Issues         []string `json:"issues,omitempty"`
+	// declaredClass is Class when a class in force has that name, "" otherwise: only an
+	// instance of a declared class is ever adopted.
+	declaredClass string
+}
+
 // ontologyDescription is describe_ontology's answer.
 type ontologyDescription struct {
 	Exists     bool   `json:"exists"`
@@ -64,13 +86,14 @@ type ontologyDescription struct {
 	Relations []memrank.OntologyRelation `json:"relations"`
 	Grammars  []describedGrammar         `json:"grammars"`
 	Schemes   []memrank.OntologyScheme   `json:"schemes"`
+	Instances []describedInstance        `json:"instances"`
 	Issues    []string                   `json:"issues,omitempty"`
 }
 
 // describeOntology answers op=describe_ontology for the caller's tenant. The call's
 // `scope` does not apply: the ontology is the tenant's.
 func (d *Document) describeOntology(ctx context.Context) (tools.Result, error) {
-	key, _, err := d.ontologyTenantKey(ctx)
+	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
 		return docFail("describe_ontology", err), nil
 	}
@@ -78,19 +101,20 @@ func (d *Document) describeOntology(ctx context.Context) (tools.Result, error) {
 	if !ok {
 		return errBusiness("describe_ontology: the tenant ontology could not be read", "Retry the call; a store fault is usually transient."), nil
 	}
-	if read.DocumentID != "" {
+	acl := d.newDocACL(ctx, key)
+	if read.DocumentID != "" && acl != nil {
 		// The read verb on the ontology document itself, at the names it is filed under,
 		// so a rule that grants exactly /memory/ontology is enough. The seed a tenant
 		// without a document gets is compiled in and needs no check.
-		if acl := d.newDocACL(ctx, key); acl != nil {
-			if r, err := acl.document(ctx, "describe_ontology", "read", read.DocumentID); err != nil {
-				return errFrom("describe_ontology: "+err.Error(), err), nil
-			} else if r != nil {
-				return *r, nil
-			}
+		if r, err := acl.document(ctx, "describe_ontology", "read", read.DocumentID); err != nil {
+			return errFrom("describe_ontology: "+err.Error(), err), nil
+		} else if r != nil {
+			return *r, nil
 		}
 	}
-	return jsonResult(describeOntologyRead(read))
+	out := describeOntologyRead(read)
+	d.describeInstanceSubjects(ctx, key, mscope, acl, read, &out)
+	return jsonResult(out)
 }
 
 // describeOntologyRead derives the in-force description from one read. Pure, and it never
@@ -107,6 +131,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		Relations:  []memrank.OntologyRelation{},
 		Grammars:   []describedGrammar{},
 		Schemes:    []memrank.OntologyScheme{},
+		Instances:  []describedInstance{},
 	}
 	if out.Exists {
 		out.Status = memrank.OntologyDraftStatus
@@ -158,5 +183,103 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		out.Grammars = append(out.Grammars, dg)
 	}
 	out.Schemes = append(out.Schemes, read.Schemes...)
+	if hasSection(read.Sections, memrank.SectionInstances) {
+		// Matched as adoption matches them: case-insensitively, against the classes in
+		// force, reported under the declared spelling.
+		declared := map[string]string{}
+		for _, c := range out.Classes {
+			declared[strings.ToLower(c.Name)] = c.Name
+		}
+		for _, inst := range read.Instances {
+			di := describedInstance{Name: inst.Name, Class: inst.Class, ChunkID: inst.ChunkID,
+				Alt: append([]string(nil), inst.Alt...), Issues: append([]string(nil), inst.Issues...)}
+			if name, ok := declared[strings.ToLower(inst.Class)]; ok {
+				di.Class, di.declaredClass = name, name
+			} else if inst.Class != "" {
+				di.Issues = append(di.Issues, "no declared class: @a "+inst.Class+"; it cannot be adopted")
+			}
+			out.Instances = append(out.Instances, di)
+		}
+	}
 	return out
+}
+
+// describeInstanceSubjects names, for each described instance, the registry subject it
+// was adopted as — only where adoption itself would trust the recorded key (instanceKey),
+// the subject exists, and the caller may read it.
+//
+// The ontology is operator config and is described to any caller; a subject node is
+// tenant DATA, so naming one takes what reading it would: the tenant grant, and read
+// on the subject document under the caller's access-control rules. Without either, the
+// instance is described without its subject — no id leaks, and the caller could not
+// have written a statement at the node anyway.
+//
+// Cost: one query resolves every recorded key. A key that is not the derived one (an
+// instance renamed after adoption) additionally reads that subject's fields, as adoption
+// does; derived keys — the common case — read nothing more.
+func (d *Document) describeInstanceSubjects(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope,
+	acl *docACL, read OntologyRead, out *ontologyDescription) {
+	if len(out.Instances) == 0 {
+		return
+	}
+	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
+		return
+	}
+	recorded := map[string]memrank.OntologyInstance{} // instance chunk → instance
+	var keys []string
+	seen := map[string]bool{}
+	for _, inst := range read.Instances {
+		recorded[inst.ChunkID] = inst
+		if inst.RegistryKey != "" && !seen[inst.RegistryKey] {
+			seen[inst.RegistryKey] = true
+			keys = append(keys, inst.RegistryKey)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	unreadable := func() {
+		out.Partial = true
+		out.Issues = append(out.Issues, "the instances' adopted subjects could not be read; read again")
+	}
+	ph, args := inPlaceholders(keys)
+	res, err := d.query(ctx, key,
+		`SELECT m.natural_key, m.chunk_id, c.document_id FROM chunk_memory_meta m
+		   JOIN chunks c ON c.id = m.chunk_id
+		  WHERE m.natural_key IN (`+ph+`)`, args...)
+	if err != nil {
+		unreadable()
+		return
+	}
+	type subject struct{ chunk, doc string }
+	subjects := map[string]subject{}
+	for _, row := range res.Rows {
+		if len(row) >= 3 {
+			subjects[asStr(row[0])] = subject{chunk: asStr(row[1]), doc: asStr(row[2])}
+		}
+	}
+	subjectOf := func(nk string) (string, error) { return subjects[nk].chunk, nil }
+	for i := range out.Instances {
+		di := &out.Instances[i]
+		inst, ok := recorded[di.ChunkID]
+		if !ok || di.declaredClass == "" {
+			continue
+		}
+		subjectKey, trusted := d.instanceKey(ctx, key, mscope, inst, di.declaredClass, subjectOf)
+		s := subjects[subjectKey]
+		if !trusted || s.chunk == "" {
+			continue
+		}
+		if acl != nil {
+			ok, err := acl.readable(ctx, s.doc)
+			if err != nil {
+				unreadable()
+				return
+			}
+			if !ok {
+				continue
+			}
+		}
+		di.RegistryKey, di.SubjectChunkID = subjectKey, s.chunk
+	}
 }

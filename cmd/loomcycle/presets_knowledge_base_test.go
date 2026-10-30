@@ -26,10 +26,10 @@ func knowledgeBaseConfig(t *testing.T) *config.Config {
 }
 
 // TestKnowledgeBaseBundle_Validates pins the authority of the two agents. The
-// linker's whole safety argument is that it can read documents and spawn one
-// tool-less judge, and nothing else; the judge's is that it can do nothing at
-// all. Each grant added later would widen that quietly, so the shape is pinned
-// here rather than trusted to review.
+// linker's whole safety argument is that it can reach documents, spawn one
+// tool-less judge and read its own work queue, and nothing else; the judge's is
+// that it can do nothing at all. Each grant added later would widen that
+// quietly, so the shape is pinned here rather than trusted to review.
 func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 	cfg := knowledgeBaseConfig(t)
 
@@ -43,18 +43,29 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 	if linker.Model != "" || linker.Tier != "" {
 		t.Errorf("kb/linker names model %q / tier %q — a code agent resolves no model, so either is dead config", linker.Model, linker.Tier)
 	}
-	// Exactly the two tools the body calls. Memory, Path, Bash and every network
-	// tool are absent by construction; listing them as denials as well makes the
-	// failure message name the capability that crept in.
+	// Exactly the three tools the body calls. Memory, Path, Bash and every
+	// network tool are absent by construction; listing them as denials as well
+	// makes the failure message name the capability that crept in.
 	got := append([]string(nil), linker.Tools...)
 	sort.Strings(got)
-	if strings.Join(got, ",") != "Agent,Document" {
-		t.Errorf("kb/linker tools = %v, want exactly [Document Agent]", linker.Tools)
+	if strings.Join(got, ",") != "Agent,Channel,Document" {
+		t.Errorf("kb/linker tools = %v, want exactly [Document Agent Channel]", linker.Tools)
 	}
-	for _, denied := range []string{"Memory", "Bash", "Bashbox", "HTTP", "WebFetch", "WebSearch", "Path", "Channel", "Skill", "Context"} {
+	for _, denied := range []string{"Memory", "Bash", "Bashbox", "HTTP", "WebFetch", "WebSearch", "Path", "Skill", "Context"} {
 		if hasToolPreset(linker.Tools, denied) {
-			t.Errorf("kb/linker grants %q — it reads documents and spawns a judge, nothing more", denied)
+			t.Errorf("kb/linker grants %q — it reaches documents, spawns a judge and reads its queue, nothing more", denied)
 		}
+	}
+	// The Channel grant is the ingest queue, read-only: the linker acks what it
+	// processed and publishes nothing anywhere.
+	if len(linker.Channels.Publish) != 0 {
+		t.Errorf("kb/linker may publish to %v — it only reads its queue", linker.Channels.Publish)
+	}
+	if strings.Join(linker.Channels.Subscribe, ",") != "documents/ingested" {
+		t.Errorf("kb/linker subscribes to %v, want exactly [documents/ingested]", linker.Channels.Subscribe)
+	}
+	if ch, ok := cfg.Channels["documents/ingested"]; !ok || ch.Scope != "user" {
+		t.Errorf("the bundle must declare documents/ingested at user scope (the scope drain refuses to leave); got %+v declared=%v", ch, ok)
 	}
 	for _, tool := range linker.Tools {
 		if strings.HasPrefix(tool, "mcp__") {
@@ -69,13 +80,13 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 		t.Error("kb/linker must set disable_context: true, or the runtime auto-adds the Context tool")
 	}
 	// No scope grants: user-scope Documents need none, and a tenant Document grant
-	// is also a tenant WRITE grant for an agent that writes nothing.
+	// is a tenant WRITE grant an operator gives deliberately, in an overlay.
 	if len(linker.MemoryScopes) > 0 || len(linker.SqlScopes) > 0 || len(linker.HistoryScope) > 0 {
 		t.Errorf("kb/linker declares scopes (memory=%v sql=%v history=%v) — it needs none for user scope",
 			linker.MemoryScopes, linker.SqlScopes, linker.HistoryScope)
 	}
 	if linker.MemoryConsolidation {
-		t.Error("kb/linker sets memory_consolidation — it takes no lease and touches no queue")
+		t.Error("kb/linker sets memory_consolidation — its lease is the document lease, not the consolidator's")
 	}
 	if !linker.Internal {
 		t.Error("kb/linker must be internal: its session holds chunk bodies and would be consolidated as a chat")
@@ -153,8 +164,8 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 			}
 		}
 	}
-	// Phase A ships no skills: the review, check-against and grammar-authoring
-	// procedures describe features that do not exist yet.
+	// No skills yet: the review, check-against and grammar-authoring procedures
+	// describe features that do not exist yet.
 	for name := range cfg.Skills {
 		if strings.HasPrefix(name, "kb/") {
 			t.Errorf("the bundle ships skill %q, but no kb skill describes a feature that exists yet", name)

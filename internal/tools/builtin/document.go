@@ -107,7 +107,7 @@ func (d *Document) UsageHint() string {
 }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the relations touching a document — each a statement with its status, provenance and evidence quotes, enriched with its endpoints' titles/types/statuses)/get_edge (one relation with all its evidence)/propose_statement (suggest a relation for review; nothing live changes until an operator accepts it)/list_statements (the review queue)/accept_statement/reject_statement (an operator's ruling; refused inside a run)/maintain_statement (upkeep of a statement by a code agent granted statement methods, or an operator: verify, expire, demote, merge, mark or re-point an evidence row, flag; never asserts or deletes)/resolve_anchor (find a work by its key and a part of it by anchor, as of a date)/describe_ontology (the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes)/extract_citations (apply the document class's citation grammar to a document's or a chunk's text and resolve each citation it finds; read-only)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown; reimport:true reconciles a new edition onto the held one part by part), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the relations touching a document — each a statement with its status, provenance and evidence quotes, enriched with its endpoints' titles/types/statuses)/get_edge (one relation with all its evidence)/propose_statement (suggest a relation for review; nothing live changes until an operator accepts it)/list_statements (the review queue)/accept_statement/reject_statement (an operator's ruling; refused inside a run)/maintain_statement (upkeep of a statement by a code agent granted statement methods, or an operator: verify, expire, demote, merge, mark or re-point an evidence row, flag; never asserts or deletes)/resolve_anchor (find a work by its key and a part of it by anchor, as of a date)/describe_ontology (the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes, instances with the subject each was adopted as)/extract_citations (apply the document class's citation grammar to a document's or a chunk's text and resolve each citation it finds; read-only)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown; reimport:true reconciles a new edition onto the held one part by part), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -2394,11 +2394,34 @@ func inPlaceholders(ids []string) (string, []any) {
 // N+1 of get_document per row. Unknown/out-of-scope ids are silently skipped
 // (opaque — a caller can't probe another scope's documents).
 func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
+	// A caller whose access-control set hides some document of the scope gets the
+	// answer it would get if those documents did not exist: one found under_path
+	// is dropped before the bound below is counted, and one it names in
+	// document_ids is skipped as an unknown id is. Dropped after the bound, they
+	// would spend it and set truncated on documents the caller cannot see.
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
+	if err != nil {
+		return errFrom("documents_summary: "+err.Error(), err), nil
+	}
 	ids := in.DocumentIDs
 	if in.UnderPath != "" {
 		under, err := d.documentsUnderPath(ctx, key, in.UnderPath)
 		if err != nil {
 			return docFail("documents_summary: ", err), nil
+		}
+		if limited {
+			kept := under[:0]
+			for _, id := range under {
+				ok, err := acl.readable(ctx, id)
+				if err != nil {
+					return errFrom("documents_summary: "+err.Error(), err), nil
+				}
+				if ok {
+					kept = append(kept, id)
+				}
+			}
+			under = kept
 		}
 		ids = append(ids, under...)
 	}
@@ -2484,6 +2507,15 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 		dm, ok := docs[id]
 		if !ok {
 			continue // no such document in this scope → skip (opaque)
+		}
+		if limited {
+			readable, err := acl.readable(ctx, id)
+			if err != nil {
+				return errFrom("documents_summary: "+err.Error(), err), nil
+			}
+			if !readable {
+				continue // as if there were no such document
+			}
 		}
 		entry := map[string]any{"document_id": id, "title": dm.title, "color_enabled": false}
 		if dm.root != "" {
@@ -6012,6 +6044,12 @@ func (d *Document) listTags(ctx context.Context, key sqlmem.ScopeKey, in docInpu
 // queryDocuments filters the documents table by type / status / tag (via
 // document_tags) / under_path (the Path tree, exactly like query_chunks), and
 // returns the matching document rows.
+//
+// A caller whose access-control set hides some document of the scope has those
+// rows withheld before the answer is cut at limit, reading on past them until it
+// holds limit readable rows or the documents run out: dropped after LIMIT they
+// would shorten the answer, telling the caller hidden documents exist. A caller
+// the set limits nothing keeps the one query.
 func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	limit := in.Limit
 	if limit <= 0 || limit > 1000 {
@@ -6043,15 +6081,65 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 		where += " AND id IN (SELECT document_id FROM document_tags WHERE tag = ?)"
 		args = append(args, in.Tag)
 	}
-	args = append(args, limit)
-	res, err := d.query(ctx, key, `SELECT id, title, type, status, root_chunk_id, created_at, updated_at FROM documents WHERE `+where+` ORDER BY title, id LIMIT ?`, args...)
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
 	if err != nil {
 		return errFrom("query_documents: "+err.Error(), err), nil
 	}
-	docs := make([]map[string]any, 0, len(res.Rows))
-	for _, r := range res.Rows {
+	const cols = `SELECT id, title, type, status, root_chunk_id, created_at, updated_at FROM documents WHERE `
+	if !limited {
+		args = append(args, limit)
+		res, err := d.query(ctx, key, cols+where+` ORDER BY title, id LIMIT ?`, args...)
+		if err != nil {
+			return errFrom("query_documents: "+err.Error(), err), nil
+		}
+		return queryDocumentsAnswer(res.Columns, res.Rows)
+	}
+	// A floor, so a small limit among many hidden documents is not a query per row.
+	batch := max(limit, 100)
+	var columns []string
+	var rows [][]any
+	var after []any // the last row scanned: its title and id
+	for len(rows) < limit {
+		w, a := where, append([]any{}, args...)
+		if after != nil {
+			w += " AND (title > ? OR (title = ? AND id > ?))"
+			a = append(a, after[1], after[1], after[0])
+		}
+		a = append(a, batch)
+		res, err := d.query(ctx, key, cols+w+` ORDER BY title, id LIMIT ?`, a...)
+		if err != nil {
+			return errFrom("query_documents: "+err.Error(), err), nil
+		}
+		columns = res.Columns
+		for _, r := range res.Rows {
+			ok, err := acl.readable(ctx, asStr(r[0]))
+			if err != nil {
+				return errFrom("query_documents: "+err.Error(), err), nil
+			}
+			if ok {
+				rows = append(rows, r)
+				if len(rows) == limit {
+					break
+				}
+			}
+		}
+		// The store's row cap can cut a batch short; only an uncut short batch
+		// is the end.
+		if len(res.Rows) == 0 || (!res.Truncated && len(res.Rows) < batch) {
+			break
+		}
+		after = res.Rows[len(res.Rows)-1]
+	}
+	return queryDocumentsAnswer(columns, rows)
+}
+
+// queryDocumentsAnswer renders query_documents' rows.
+func queryDocumentsAnswer(columns []string, rows [][]any) (tools.Result, error) {
+	docs := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
 		m := map[string]any{}
-		for i, c := range res.Columns {
+		for i, c := range columns {
 			if i < len(r) {
 				m[c] = r[i]
 			}

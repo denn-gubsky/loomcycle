@@ -68,7 +68,9 @@ func freshPgSchema(t *testing.T, dsn string) (string, func()) {
 	if strings.Contains(scopedDSN, "?") {
 		sep = "&"
 	}
-	scopedDSN = scopedDSN + sep + "search_path=" + schema
+	// public stays on the path after the per-test schema: pgvector lives
+	// there, and without it migration 0017 cannot resolve the vector type.
+	scopedDSN = scopedDSN + sep + "search_path=" + schema + ",public"
 
 	if err := storepostgres.MigrateUp(scopedDSN); err != nil {
 		// best-effort cleanup

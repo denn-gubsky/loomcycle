@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,22 +17,128 @@ import (
 )
 
 // This file EXECUTES kb/linker's shipped code-js body through the real agent loop
-// and the real code-js provider, against a fixture store and a scripted verdict
-// agent that record every dispatch. Each invariant the pass claims — a quote that
-// does not occur is never reported, an undeclared kind is none, the document is
-// never its own candidate, the budget bites, the report carries no store text, no
-// write op is issued — is asserted on the observed calls and the actual report,
-// not on the source text. Hermetic: no provider, database or network.
+// and the real code-js provider, against a fixture store, a scripted verdict
+// agent and a scripted ingest queue that record every dispatch. Each invariant
+// the pass claims is asserted on the observed calls and the actual report, not
+// on the source text. Hermetic: no provider, database or network.
+//
+// kbOpContracts below is the ONE list of the shapes the fixture answers. When an
+// op's shape changes, correct the row, the fixture and the body together.
+// presets_kb_linker_realops_test.go runs a maintain pass against the real
+// Document tool, so a row the fixture got wrong fails there.
 
-// kbReadOps is every Document op the pass may issue. Anything else is a write or
-// a capability the report-only pass has no use for.
-var kbReadOps = map[string]bool{"get_document": true, "query_chunks": true, "get_chunk": true, "related": true}
+// kbOpContract is one request/response shape the fixture encodes.
+type kbOpContract struct {
+	Tool, Op string
+	Request  string
+	Response string
+	Assumes  string // what the fixture assumes beyond the agreed text, if anything
+}
+
+// kbOpContracts is every op the linker body issues, with the shape the fixture
+// answers. TestKBLinker_EveryOpTheBodyNamesHasAContract keeps it complete.
+var kbOpContracts = []kbOpContract{
+	{Tool: "Document", Op: "get_document",
+		Request:  `{id | path, scope}`,
+		Response: `{document_id, root_chunk_id, type, title}`,
+		Assumes:  `a document the scope does not hold fails with "no such document" in the error text`},
+	{Tool: "Document", Op: "query_chunks",
+		Request:  `{document_id, limit, scope} | {sql, scope}`,
+		Response: `{chunks: [{id, document_id, type, title, valid_at?, invalid_at?}]} | {columns, rows, truncated}`,
+		Assumes:  `the filter form lists every chunk of the document, superseded ones included, with invalid_at; the chunks table has anchor and stable_id columns`},
+	{Tool: "Document", Op: "get_chunk",
+		Request:  `{id, scope}`,
+		Response: `{id, document_id, type, title, body}`},
+	{Tool: "Document", Op: "related",
+		Request:  `{id, limit, under_paths, exclude_document_ids, scope}`,
+		Response: `{related: [{chunk_id, document_id, type, score}], filter: {applied, …}}`},
+	{Tool: "Document", Op: "resolve_anchor",
+		Request:  `{work_key, anchor?, as_of?, create_placeholder?, scope}`,
+		Response: `{work_key, found, document_id?, root_chunk_id?, placeholder?, chunk_id?}`},
+	{Tool: "Document", Op: "propose_statement",
+		Request:  `{from_id, to_id, kind, evidence: [{chunk_id, quote, char_start?, char_end?}], attributes?, method, scope}`,
+		Response: `{id, status: proposed|asserted, created, evidence_written, ontology_valid}`,
+		Assumes:  `method (R1) is accepted as "rule:<name>"; char_start/char_end are runes; a refusal names its code (kind_reserved, kind_not_declared, statement_rejected, statement_asserted, evidence_quote_not_found, method_not_granted, …) in the error text; a proposal over an asserted triple is refused statement_asserted, over a rejected one statement_rejected (#2246)`},
+	{Tool: "Document", Op: "list_statements",
+		Request:  `{document_id | evidence_document_id, status: asserted|proposed, limit, after?, scope}`,
+		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
+		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired; next_cursor is absent on the last page`},
+	{Tool: "Document", Op: "get_edge",
+		Request:  `{id, scope}`,
+		Response: `{statement: {id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, attributes?, evidence: [{id, chunk_id? | scope+natural_key? | session_id?, quote, char_start?, char_end?, stale?}]}}`},
+	{Tool: "Document", Op: "maintain_statement",
+		Request:  `{id, action: verify|expire|demote|merge|stale_evidence|relocate_evidence|flag, reason?, survivor_id?, evidence_id?, chunk_id?, method, scope}`,
+		Response: `{id, action, ok: true}`,
+		Assumes:  `R2: any non-error answer is success; demote is sent only for an asserted statement; only a manual statement or one an operator ruled on (operator_ruled_at set) is limited to verify or flag (import/sync/canvas statements may be expired, demoted and merged — owner decision 2026-10-30); merge needs a survivor of the same status; expire/demote/merge need the link verb on the endpoints' documents (R2 as built)`},
+	{Tool: "Document", Op: "describe_ontology",
+		Request:  `{scope} (scope ignored)`,
+		Response: `{exists, status, confirmed, version, sections, partial?, classes, relations: [{name, source: base|tenant|reserved, discriminator?, renamed_from?, auto_assert?, …}], grammars, schemes: [{name, concepts: [{name, alt?, chunk_id, tag, …}]}]}`,
+		Assumes:  `R4: the seed source string is "base" (the agreed text said "seed"; the body treats every source but "reserved" as writable, so either works); reserved kinds are listed; renamed_from is one string`},
+	{Tool: "Document", Op: "extract_citations",
+		Request:  `{document_id | id, limit, as_of?, scope}`,
+		Response: `{document_id, grammar: {name, class} | null, grammar_issue?, hits: [{chunk_id, quote, char_start, char_end, groups?, work_key?, anchor?, kind?, resolved: {document_id?, chunk_id?, exact, placeholder}}], truncated?}`,
+		Assumes:  `R5: grammar is an object or null (the agreed text said a name); no cursor, so a truncated document listing is re-read part by part with {id}; offsets are runes`},
+	{Tool: "Document", Op: "lease",
+		Request:  `{name: "linker", ttl_ms, scope}`,
+		Response: `{name, acquired, expires_at, held_by?}`,
+		Assumes:  `R6: the holder re-taking its own lease extends it (renewal); a run without a statement_methods grant is refused with a permission error`},
+	{Tool: "Document", Op: "release",
+		Request:  `{name: "linker", scope}`,
+		Response: `{name, released}`},
+	{Tool: "Channel", Op: "await",
+		Request:  `{channels: ["documents/ingested"], mode: "any", max_messages: 1, wait_ms: 0, from_cursor?}`,
+		Response: `{satisfied, timed_out, mode, fired, results: {"documents/ingested": {messages: [{id, value, published_at}], next_cursor}}, total_messages}`,
+		Assumes:  `await reads from the committed cursor without committing (subscribe would commit on read)`},
+	{Tool: "Channel", Op: "ack",
+		Request:  `{channel: "documents/ingested", cursor}`,
+		Response: `{ok: true}`},
+	{Tool: "Agent", Op: "spawn",
+		Request:  `{name: "kb/verdict", prompt}`,
+		Response: `the sub-agent's reply text`},
+}
+
+// kbReadOps is every Document op a report-mode pass may issue. Anything else is
+// a write (or a lease, which only a writing pass takes).
+var kbReadOps = map[string]bool{
+	"get_document": true, "query_chunks": true, "get_chunk": true, "related": true,
+	"describe_ontology": true, "extract_citations": true, "list_statements": true, "get_edge": true,
+	"resolve_anchor": true,
+}
+
+// kbWriteOps is every Document op that changes the store or holds a scope.
+var kbWriteOps = map[string]bool{
+	"propose_statement": true, "maintain_statement": true, "lease": true, "release": true,
+}
 
 type kbChunk struct {
 	ID, DocumentID, Type, Title, Body string
+	Anchor, StableID                  string
+	InvalidAt                         int64
 }
 
-// kbFixture is the scripted store + verdict agent the pass runs against.
+type kbEvidence struct {
+	ID, ChunkID, Scope, NaturalKey, Quote string
+	Start, End                            int
+	Stale                                 bool
+}
+
+type kbStatement struct {
+	ID, From, To, Kind, Status, Method, Discriminator string
+	OperatorRuledAt                                   int64
+	CreatedAt, ValidAt                                int64
+	Auto, Expired, Verified                           bool
+	Attributes                                        map[string]any
+	Evidence                                          []*kbEvidence
+	Flags                                             []string
+}
+
+type kbMessage struct {
+	ID    string
+	Value map[string]any
+}
+
+// kbFixture is the scripted store + verdict agent + ingest queue the pass runs
+// against.
 type kbFixture struct {
 	calls []recordedCall
 
@@ -38,8 +147,12 @@ type kbFixture struct {
 	chunks []kbChunk
 	// others are chunks of other documents, reachable through get_chunk.
 	others map[string]kbChunk
-	// docTypes is what get_document reports as each OTHER document's type.
+	// docTypes is what get_document reports as each OTHER document's type; roots
+	// their root chunk ids.
 	docTypes map[string]string
+	roots    map[string]string
+	// docFails makes get_document of that id fail with the given text.
+	docFails map[string]string
 	// related maps a chunk id to the hits related returns for it, VERBATIM: the
 	// double does not apply the filters, so a test can prove the driver does not
 	// rely on the server alone.
@@ -50,6 +163,51 @@ type kbFixture struct {
 	// relatedFails names chunks whose related call errors, the way a server with
 	// no embedder or vector tier answers.
 	relatedFails map[string]bool
+
+	// ontology is describe_ontology's answer; nil is a tenant with no ontology.
+	ontology map[string]any
+	// citations are every citation hit in the store, each naming its chunk_id;
+	// extract_citations answers a document's or a chunk's share of them.
+	citations       []map[string]any
+	grammarNull     bool
+	citeTruncateDoc bool
+	// heldWorks maps a work key to the root of the document holding it.
+	heldWorks map[string]string
+	// placeholderRefusal, when set, is the error resolve_anchor answers a
+	// create_placeholder with — a caller that may not write the whole scope.
+	placeholderRefusal string
+	// supersedes maps a superseded chunk to the chunk that superseded it.
+	supersedes map[string]string
+	// statements is the statement store; autoAssert the kinds the runtime
+	// asserts on a rule: proposal; refuseKind the kinds it refuses, with the text.
+	statements []*kbStatement
+	autoAssert map[string]bool
+	refuseKind map[string]string
+	// statementsPage, when set, caps a list_statements page below the limit
+	// asked for, as a page may be, so a test crosses pages without hundreds of
+	// statements (each one is a tool call the code-js replay repeats).
+	statementsPage int
+	nextID         int
+
+	// failOps makes every call of a Document op fail with the given text.
+	failOps map[string]string
+	// leaseBusy answers the lease as held by another run; leaseRefused refuses
+	// it outright; leaseLostAt answers the Nth lease call (1-based) as not
+	// acquired — a renewal that finds another holder.
+	leaseBusy, leaseRefused bool
+	leaseLostAt             int
+	leaseCalls              int
+	leaseHeld               bool
+
+	// queue is the documents/ingested channel; committed is the index of the
+	// first unacked message.
+	queue     []kbMessage
+	committed int
+
+	// violations records what the real runtime would refuse and the pass must
+	// never send: an evidence span that does not slice to its quote, a
+	// maintenance action on a person's statement.
+	violations []string
 
 	// verdictByNeedle routes the verdict reply on a substring of the spawn
 	// prompt; first match wins, defaultVerdict otherwise.
@@ -65,7 +223,14 @@ func newKBFixture() *kbFixture {
 		rootID:         "c-root",
 		others:         map[string]kbChunk{},
 		docTypes:       map[string]string{},
+		roots:          map[string]string{},
+		docFails:       map[string]string{},
 		related:        map[string][]map[string]any{},
+		heldWorks:      map[string]string{},
+		supersedes:     map[string]string{},
+		autoAssert:     map[string]bool{},
+		refuseKind:     map[string]string{},
+		failOps:        map[string]string{},
 		defaultVerdict: "[]",
 		// Source of truth: formatSubAgentOutput in internal/api/http/resume.go.
 		header: "[sub-agent agent_id=a_test000000000000]\n",
@@ -99,14 +264,47 @@ func (f *kbFixture) spawnPrompts() []string {
 	return out
 }
 
+// allChunks is every chunk in a fixed order: the target's, then the others by id.
+func (f *kbFixture) allChunks() []kbChunk {
+	out := append([]kbChunk(nil), f.chunks...)
+	ids := make([]string, 0, len(f.others))
+	for id := range f.others {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		out = append(out, f.others[id])
+	}
+	return out
+}
+
 func (f *kbFixture) chunkByID(id string) (kbChunk, bool) {
-	for _, c := range f.chunks {
+	for _, c := range f.allChunks() {
 		if c.ID == id {
 			return c, true
 		}
 	}
-	c, ok := f.others[id]
-	return c, ok
+	return kbChunk{}, false
+}
+
+func (f *kbFixture) statementByID(id string) *kbStatement {
+	for _, s := range f.statements {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+func (f *kbFixture) docOf(chunkID string) string {
+	if c, ok := f.chunkByID(chunkID); ok {
+		return c.DocumentID
+	}
+	return ""
+}
+
+func (f *kbFixture) violate(format string, args ...any) {
+	f.violations = append(f.violations, fmt.Sprintf(format, args...))
 }
 
 type kbFakeDocument struct{ f *kbFixture }
@@ -115,39 +313,60 @@ func (d *kbFakeDocument) Name() string                 { return "Document" }
 func (d *kbFakeDocument) Description() string          { return "document (test double)" }
 func (d *kbFakeDocument) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
 
+func kbErr(text string) (tools.Result, error) { return tools.Result{IsError: true, Text: text}, nil }
+
 func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
 	f := d.f
 	in := f.record("Document", raw)
+	op, _ := in["op"].(string)
+	if text, ok := f.failOps[op]; ok {
+		return kbErr(text)
+	}
 	id, _ := in["id"].(string)
-	switch in["op"] {
+	switch op {
 	case "get_document":
 		path, _ := in["path"].(string)
+		if text, ok := f.docFails[id]; ok {
+			return kbErr(text)
+		}
 		if id == f.docID || (id == "" && path == f.docPath) {
 			return okResult(map[string]any{"document_id": f.docID, "root_chunk_id": f.rootID, "type": "act",
 				"title": "TITLE-OF-THE-TARGET"})
 		}
 		if typ, ok := f.docTypes[id]; ok {
-			return okResult(map[string]any{"document_id": id, "type": typ, "title": "TITLE-OF-" + id})
+			out := map[string]any{"document_id": id, "type": typ, "title": "TITLE-OF-" + id}
+			if r := f.roots[id]; r != "" {
+				out["root_chunk_id"] = r
+			}
+			return okResult(out)
 		}
-		return tools.Result{IsError: true, Text: "get_document: no such document: " + id}, nil
+		return kbErr("get_document: no such document: " + id)
 	case "query_chunks":
-		if in["document_id"] != f.docID {
-			return okResult(map[string]any{"chunks": []any{}})
+		if sql, _ := in["sql"].(string); sql != "" {
+			return f.answerSQL(sql)
 		}
-		rows := make([]map[string]any, 0, len(f.chunks))
-		for _, c := range f.chunks {
-			rows = append(rows, map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title})
+		doc, _ := in["document_id"].(string)
+		rows := []map[string]any{}
+		for _, c := range f.allChunks() {
+			if c.DocumentID != doc {
+				continue
+			}
+			row := map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title}
+			if c.InvalidAt > 0 {
+				row["invalid_at"] = c.InvalidAt
+			}
+			rows = append(rows, row)
 		}
 		return okResult(map[string]any{"chunks": rows})
 	case "get_chunk":
 		c, ok := f.chunkByID(id)
 		if !ok {
-			return tools.Result{IsError: true, Text: "get_chunk: no such chunk: " + id}, nil
+			return kbErr("get_chunk: no such chunk: " + id)
 		}
 		return okResult(map[string]any{"id": c.ID, "document_id": c.DocumentID, "type": c.Type, "title": c.Title, "body": c.Body})
 	case "related":
 		if f.relatedFails[id] {
-			return tools.Result{IsError: true, Text: "related: requires a configured embedder / vector memory"}, nil
+			return kbErr("related: requires a configured embedder / vector memory")
 		}
 		out := map[string]any{"related": f.related[id]}
 		if f.related[id] == nil {
@@ -158,11 +377,394 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 				"exclude_document_ids": in["exclude_document_ids"]}, "matched_chunks": 10, "matched_documents": 2, "inverted": false}
 		}
 		return okResult(out)
+	case "describe_ontology":
+		if f.ontology == nil {
+			return okResult(map[string]any{"exists": false, "status": "", "confirmed": false, "version": 0,
+				"sections": []any{}, "classes": []any{}, "relations": []any{}, "grammars": []any{}, "schemes": []any{}})
+		}
+		return okResult(f.ontology)
+	case "extract_citations":
+		return f.answerCitations(in)
+	case "resolve_anchor":
+		wk, _ := in["work_key"].(string)
+		if root, ok := f.heldWorks[wk]; ok {
+			return okResult(map[string]any{"work_key": wk, "found": true, "document_id": "doc-of-" + wk,
+				"root_chunk_id": root, "placeholder": false})
+		}
+		if in["create_placeholder"] == true && f.placeholderRefusal != "" {
+			return kbErr(f.placeholderRefusal)
+		}
+		if in["create_placeholder"] == true {
+			return okResult(map[string]any{"work_key": wk, "found": true, "document_id": "ph-doc-" + wk,
+				"root_chunk_id": "ph-root-" + wk, "placeholder": true})
+		}
+		return okResult(map[string]any{"work_key": wk, "found": false})
+	case "propose_statement":
+		return f.answerPropose(in)
+	case "list_statements":
+		return f.answerList(in)
+	case "get_edge":
+		s := f.statementByID(id)
+		if s == nil {
+			return kbErr("get_edge: no such statement: " + id)
+		}
+		return okResult(map[string]any{"statement": f.statementJSON(s, 0)})
+	case "maintain_statement":
+		return f.answerMaintain(in)
+	case "lease":
+		f.leaseCalls++
+		if f.leaseRefused {
+			return kbErr("lease: a scope lease is held only by a statement-maintaining driver or the operator (permission)")
+		}
+		if f.leaseBusy || (f.leaseLostAt > 0 && f.leaseCalls >= f.leaseLostAt) {
+			return okResult(map[string]any{"name": in["name"], "acquired": false, "held_by": "run-other", "expires_at": 1})
+		}
+		f.leaseHeld = true
+		return okResult(map[string]any{"name": in["name"], "acquired": true, "expires_at": 2})
+	case "release":
+		released := f.leaseHeld
+		f.leaseHeld = false
+		return okResult(map[string]any{"name": in["name"], "released": released})
 	}
 	// Any other op ANSWERS rather than errors: a write that "succeeded" is the case
 	// the op-allowlist assertion has to catch, and an erroring double would let a
 	// body that swallows the error slip past it.
 	return okResult(map[string]any{"ok": true})
+}
+
+// kbSQLShapes are the read-only SELECTs the body may send through query_chunks,
+// one regexp per builder function in the body. Anything else is refused, so a
+// changed query fails loudly here instead of reading nothing.
+var (
+	kbSQLLiveParts    = regexp.MustCompile(`^SELECT id, COALESCE\(anchor, ''\), COALESCE\(stable_id, ''\) FROM chunks WHERE document_id = '([^']*)' AND id <> '([^']*)' AND invalid_at IS NULL ORDER BY id$`)
+	kbSQLChunkMeta    = regexp.MustCompile(`^SELECT id, document_id, COALESCE\(anchor, ''\), COALESCE\(stable_id, ''\), COALESCE\(invalid_at, 0\) FROM chunks WHERE id IN \(((?:'[^']*'(?:, )?)+)\)$`)
+	kbSQLSupersededBy = regexp.MustCompile(`^SELECT from_id FROM chunk_edges WHERE kind = 'supersedes' AND to_id = '([^']*)' ORDER BY from_id$`)
+	kbSQLSameKey      = regexp.MustCompile(`^SELECT id FROM chunks WHERE document_id = '([^']*)' AND (anchor|stable_id) = '((?:[^']|'')*)' AND id <> '([^']*)' AND invalid_at IS NULL ORDER BY id$`)
+	kbSQLLiteral      = regexp.MustCompile(`'([^']*)'`)
+)
+
+func (f *kbFixture) answerSQL(sql string) (tools.Result, error) {
+	rows := [][]any{}
+	all := f.allChunks()
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	switch {
+	case kbSQLLiveParts.MatchString(sql):
+		m := kbSQLLiveParts.FindStringSubmatch(sql)
+		for _, c := range all {
+			if c.DocumentID == m[1] && c.ID != m[2] && c.InvalidAt == 0 {
+				rows = append(rows, []any{c.ID, c.Anchor, c.StableID})
+			}
+		}
+	case kbSQLChunkMeta.MatchString(sql):
+		want := map[string]bool{}
+		for _, lit := range kbSQLLiteral.FindAllStringSubmatch(kbSQLChunkMeta.FindStringSubmatch(sql)[1], -1) {
+			want[lit[1]] = true
+		}
+		for _, c := range all {
+			if want[c.ID] {
+				rows = append(rows, []any{c.ID, c.DocumentID, c.Anchor, c.StableID, c.InvalidAt})
+			}
+		}
+	case kbSQLSupersededBy.MatchString(sql):
+		old := kbSQLSupersededBy.FindStringSubmatch(sql)[1]
+		if next, ok := f.supersedes[old]; ok {
+			rows = append(rows, []any{next})
+		}
+	case kbSQLSameKey.MatchString(sql):
+		m := kbSQLSameKey.FindStringSubmatch(sql)
+		val := strings.ReplaceAll(m[3], "''", "'")
+		for _, c := range all {
+			key := c.Anchor
+			if m[2] == "stable_id" {
+				key = c.StableID
+			}
+			if c.DocumentID == m[1] && key == val && c.ID != m[4] && c.InvalidAt == 0 {
+				rows = append(rows, []any{c.ID})
+			}
+		}
+	default:
+		return kbErr("query_chunks: the fixture does not know this SQL: " + sql)
+	}
+	return okResult(map[string]any{"columns": []string{"id"}, "rows": rows, "truncated": false})
+}
+
+func (f *kbFixture) answerCitations(in map[string]any) (tools.Result, error) {
+	doc, _ := in["document_id"].(string)
+	id, _ := in["id"].(string)
+	if (doc == "") == (id == "") {
+		return kbErr("extract_citations: pass exactly one of document_id or id")
+	}
+	out := map[string]any{"document_id": doc}
+	if f.grammarNull {
+		out["grammar"] = nil
+		out["hits"] = []any{}
+		return okResult(out)
+	}
+	out["grammar"] = map[string]any{"name": "law-cite", "class": "Law"}
+	hits := []map[string]any{}
+	for _, h := range f.citations {
+		cid, _ := h["chunk_id"].(string)
+		if (doc != "" && f.docOf(cid) == doc) || (id != "" && cid == id) {
+			hits = append(hits, h)
+		}
+	}
+	out["hits"] = hits
+	if doc != "" && f.citeTruncateDoc {
+		out["truncated"] = true
+	}
+	return okResult(out)
+}
+
+// checkSpan is the runtime's evidence check, in runes: the span must slice the
+// chunk's body to exactly the quote.
+func (f *kbFixture) checkSpan(ev map[string]any) bool {
+	cid, _ := ev["chunk_id"].(string)
+	quote, _ := ev["quote"].(string)
+	c, ok := f.chunkByID(cid)
+	if !ok || quote == "" || !strings.Contains(c.Body, quote) {
+		f.violate("evidence quote %q does not occur in chunk %s", quote, cid)
+		return false
+	}
+	s, sok := ev["char_start"].(float64)
+	e, eok := ev["char_end"].(float64)
+	if !sok && !eok {
+		return true
+	}
+	r := []rune(c.Body)
+	if !sok || !eok || s < 0 || e > float64(len(r)) || s >= e || string(r[int(s):int(e)]) != quote {
+		f.violate("evidence span [%v,%v) in chunk %s does not slice to its quote %q (rune offsets)", ev["char_start"], ev["char_end"], cid, quote)
+		return false
+	}
+	return true
+}
+
+func (f *kbFixture) answerPropose(in map[string]any) (tools.Result, error) {
+	method, _ := in["method"].(string)
+	if !regexp.MustCompile(`^(rule|extractor):[a-z0-9_./-]{1,64}$`).MatchString(method) {
+		f.violate("propose_statement without a stampable method: %q", method)
+		return kbErr("propose_statement: method_not_granted")
+	}
+	kind, _ := in["kind"].(string)
+	if text, ok := f.refuseKind[kind]; ok {
+		return kbErr(text)
+	}
+	from, _ := in["from_id"].(string)
+	to, _ := in["to_id"].(string)
+	var evs []*kbEvidence
+	list, _ := in["evidence"].([]any)
+	for _, raw := range list {
+		ev, _ := raw.(map[string]any)
+		if !f.checkSpan(ev) {
+			return kbErr("propose_statement: evidence_quote_not_found — the quote does not occur in chunk")
+		}
+		cid, _ := ev["chunk_id"].(string)
+		quote, _ := ev["quote"].(string)
+		s, _ := ev["char_start"].(float64)
+		e, _ := ev["char_end"].(float64)
+		evs = append(evs, &kbEvidence{ChunkID: cid, Quote: quote, Start: int(s), End: int(e)})
+	}
+	status := "proposed"
+	if f.autoAssert[kind] {
+		status = "asserted"
+	}
+	for _, s := range f.statements {
+		if !s.Expired && s.From == from && s.To == to && s.Kind == kind && s.Discriminator == "" {
+			// As the runtime rules it: a rejected relation is not re-filed, and a
+			// proposal may not add evidence to one that already holds.
+			if s.Status == "rejected" {
+				return kbErr("propose_statement: statement_rejected: this relation was rejected by an operator")
+			}
+			if status == "proposed" && s.Status == "asserted" {
+				return kbErr("propose_statement: statement_asserted: this relation is already asserted (id " + s.ID + ")")
+			}
+			s.Evidence = append(s.Evidence, f.numberEvidence(evs)...)
+			return okResult(map[string]any{"id": s.ID, "status": s.Status, "created": false,
+				"evidence_written": len(evs), "ontology_valid": true})
+		}
+	}
+	f.nextID++
+	s := &kbStatement{ID: fmt.Sprintf("st-new-%d", f.nextID), From: from, To: to, Kind: kind, Method: method,
+		Status: status, CreatedAt: int64(1000 + f.nextID), Evidence: f.numberEvidence(evs)}
+	if attrs, ok := in["attributes"].(map[string]any); ok {
+		s.Attributes = attrs
+	}
+	f.statements = append(f.statements, s)
+	return okResult(map[string]any{"id": s.ID, "status": s.Status, "created": true,
+		"evidence_written": len(evs), "ontology_valid": true})
+}
+
+func (f *kbFixture) numberEvidence(evs []*kbEvidence) []*kbEvidence {
+	for _, e := range evs {
+		f.nextID++
+		e.ID = fmt.Sprintf("ev-new-%d", f.nextID)
+	}
+	return evs
+}
+
+func (f *kbFixture) statementJSON(s *kbStatement, previewCap int) map[string]any {
+	ev := []map[string]any{}
+	for i, e := range s.Evidence {
+		if previewCap > 0 && i >= previewCap {
+			break
+		}
+		row := map[string]any{"id": e.ID, "quote": e.Quote}
+		if e.ChunkID != "" {
+			row["chunk_id"] = e.ChunkID
+		}
+		if e.NaturalKey != "" {
+			row["scope"] = e.Scope
+			row["natural_key"] = e.NaturalKey
+		}
+		if e.End > e.Start {
+			row["char_start"], row["char_end"] = e.Start, e.End
+		}
+		if e.Stale {
+			row["stale"] = true
+		}
+		ev = append(ev, row)
+	}
+	out := map[string]any{"id": s.ID, "from_id": s.From, "to_id": s.To, "kind": s.Kind, "status": s.Status,
+		"method": s.Method, "auto": s.Auto, "created_at": s.CreatedAt, "evidence": ev, "evidence_count": len(s.Evidence),
+		"from_document_id": f.docOf(s.From), "to_document_id": f.docOf(s.To)}
+	if s.OperatorRuledAt > 0 {
+		out["operator_ruled_at"] = s.OperatorRuledAt
+	}
+	if s.ValidAt != 0 {
+		out["valid_at"] = s.ValidAt
+	}
+	if s.Discriminator != "" {
+		out["discriminator"] = s.Discriminator
+	}
+	if s.Attributes != nil {
+		out["attributes"] = s.Attributes
+	}
+	return out
+}
+
+func (f *kbFixture) answerList(in map[string]any) (tools.Result, error) {
+	status, _ := in["status"].(string)
+	doc, _ := in["document_id"].(string)
+	evDoc, _ := in["evidence_document_id"].(string)
+	limit := 500
+	if l, ok := in["limit"].(float64); ok && l > 0 {
+		limit = int(l)
+	}
+	if f.statementsPage > 0 {
+		limit = min(limit, f.statementsPage)
+	}
+	start := 0
+	if after, _ := in["after"].(string); after != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(after, "c:"))
+		if err != nil {
+			return kbErr("list_statements: after is not a cursor this op returned")
+		}
+		start = n
+	}
+	var match []*kbStatement
+	for _, s := range f.statements {
+		if s.Expired || s.Status != status {
+			continue
+		}
+		hit := false
+		if doc != "" && (f.docOf(s.From) == doc || f.docOf(s.To) == doc) {
+			hit = true
+		}
+		if evDoc != "" {
+			for _, e := range s.Evidence {
+				if e.ChunkID != "" && f.docOf(e.ChunkID) == evDoc {
+					hit = true
+				}
+			}
+		}
+		if hit {
+			match = append(match, s)
+		}
+	}
+	rows := []map[string]any{}
+	for i := start; i < len(match) && i < start+limit; i++ {
+		rows = append(rows, f.statementJSON(match[i], 3))
+	}
+	out := map[string]any{"statements": rows}
+	if start+limit < len(match) {
+		out["next_cursor"] = fmt.Sprintf("c:%d", start+limit)
+	}
+	return okResult(out)
+}
+
+func (f *kbFixture) answerMaintain(in map[string]any) (tools.Result, error) {
+	id, _ := in["id"].(string)
+	action, _ := in["action"].(string)
+	reason, _ := in["reason"].(string)
+	s := f.statementByID(id)
+	if s == nil {
+		return kbErr("maintain_statement: no such statement: " + id)
+	}
+	// R2: only verify and flag apply to a person's own statement, or to one an
+	// operator accepted; the import, sync and canvas paths' statements are
+	// maintained like a rule's.
+	if (s.Method == "manual" || s.OperatorRuledAt > 0) && action != "verify" && action != "flag" {
+		f.violate("maintain_statement %s on %s, a statement a person wrote (method %q)", action, id, s.Method)
+		return kbErr("maintain_statement: only verify and flag apply to a statement a person wrote")
+	}
+	evidenceRow := func() *kbEvidence {
+		evID, _ := in["evidence_id"].(string)
+		for _, e := range s.Evidence {
+			if e.ID == evID {
+				return e
+			}
+		}
+		return nil
+	}
+	switch action {
+	case "verify":
+		s.Verified = true
+	case "flag":
+		s.Flags = append(s.Flags, reason)
+	case "expire":
+		if reason == "" {
+			return kbErr("maintain_statement: expire needs a reason")
+		}
+		s.Expired = true
+	case "demote":
+		if reason == "" {
+			f.violate("demote of %s without a reason", id)
+			return kbErr("maintain_statement: reason is required")
+		}
+		if s.Status != "asserted" {
+			f.violate("demote of %s, which is %s", id, s.Status)
+		}
+		s.Status = "proposed"
+	case "merge":
+		sid, _ := in["survivor_id"].(string)
+		sv := f.statementByID(sid)
+		if sv == nil || sv.From != s.From || sv.To != s.To || sv.Kind != s.Kind {
+			return kbErr("maintain_statement: merge needs a survivor with the same ends and kind")
+		}
+		if sv.Status != s.Status {
+			f.violate("merge of %s (%s) into %s (%s): R2 refuses a survivor of another status", id, s.Status, sid, sv.Status)
+			return kbErr("maintain_statement: merge needs a survivor with the same status")
+		}
+		sv.Evidence = append(sv.Evidence, s.Evidence...)
+		s.Evidence = nil
+		s.Expired = true
+	case "stale_evidence":
+		e := evidenceRow()
+		if e == nil {
+			return kbErr("maintain_statement: no such evidence row")
+		}
+		e.Stale = true
+	case "relocate_evidence":
+		e := evidenceRow()
+		to, _ := in["chunk_id"].(string)
+		c, ok := f.chunkByID(to)
+		if e == nil || !ok || !strings.Contains(c.Body, e.Quote) {
+			return kbErr("maintain_statement: evidence_quote_not_found in the chunk to relocate to")
+		}
+		e.ChunkID, e.Stale = to, false
+	default:
+		return kbErr("maintain_statement: unknown action " + action)
+	}
+	return okResult(map[string]any{"id": id, "action": action, "ok": true})
 }
 
 type kbFakeAgent struct{ f *kbFixture }
@@ -184,6 +786,69 @@ func (a *kbFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Res
 	return tools.Result{Text: a.f.header + reply}, nil
 }
 
+// kbFakeChannel is the ingest queue. Cursor "q-N" means "after the first N
+// messages"; await reads from the committed cursor unless given one and never
+// commits; ack commits.
+type kbFakeChannel struct{ f *kbFixture }
+
+func (c *kbFakeChannel) Name() string                 { return "Channel" }
+func (c *kbFakeChannel) Description() string          { return "channel (test double)" }
+func (c *kbFakeChannel) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+
+func kbCursor(s string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimPrefix(s, "q-"))
+	return n, err == nil && strings.HasPrefix(s, "q-")
+}
+
+func (c *kbFakeChannel) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
+	f := c.f
+	in := f.record("Channel", raw)
+	switch in["op"] {
+	case "await":
+		chs, _ := in["channels"].([]any)
+		if len(chs) != 1 || chs[0] != "documents/ingested" {
+			return kbErr("await: the fixture serves documents/ingested only")
+		}
+		start := f.committed
+		if fc, _ := in["from_cursor"].(string); fc != "" {
+			n, ok := kbCursor(fc)
+			if !ok {
+				return kbErr("await: invalid channel cursor " + fc)
+			}
+			start = n
+		}
+		limit := 10
+		if m, ok := in["max_messages"].(float64); ok && m > 0 {
+			limit = int(m)
+		}
+		msgs := []map[string]any{}
+		next := ""
+		for i := start; i < len(f.queue) && len(msgs) < limit; i++ {
+			msgs = append(msgs, map[string]any{"id": f.queue[i].ID, "value": f.queue[i].Value,
+				"published_at": "2026-10-29T00:00:00Z"})
+			next = fmt.Sprintf("q-%d", i+1)
+		}
+		fired := []string{}
+		if len(msgs) > 0 {
+			fired = append(fired, "documents/ingested")
+		}
+		return okResult(map[string]any{"satisfied": len(msgs) > 0, "timed_out": len(msgs) == 0, "mode": "any",
+			"fired": fired, "total_messages": len(msgs),
+			"results": map[string]any{"documents/ingested": map[string]any{"messages": msgs, "next_cursor": next}}})
+	case "ack":
+		n, ok := kbCursor(fmt.Sprint(in["cursor"]))
+		if !ok {
+			return kbErr("ack: invalid channel cursor")
+		}
+		if n < f.committed {
+			return kbErr("ack: cursor_regression")
+		}
+		f.committed = n
+		return okResult(map[string]any{"ok": true})
+	}
+	return okResult(map[string]any{"ok": true})
+}
+
 // runLinker drives the SHIPPED body with one run input and returns the decoded
 // pass report plus the raw final text.
 func runLinker(t *testing.T, f *kbFixture, input string) (map[string]any, string) {
@@ -194,7 +859,7 @@ func runLinker(t *testing.T, f *kbFixture, input string) (map[string]any, string
 
 func runLinkerBody(t *testing.T, f *kbFixture, agent config.AgentDef, input string) (map[string]any, string) {
 	t.Helper()
-	set := []tools.Tool{&kbFakeDocument{f: f}, &kbFakeAgent{f: f}}
+	set := []tools.Tool{&kbFakeDocument{f: f}, &kbFakeAgent{f: f}, &kbFakeChannel{f: f}}
 	res, err := loop.Run(context.Background(), loop.RunOptions{
 		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
 		Model:      "code-js",
@@ -234,8 +899,8 @@ func kbBaseFixture() *kbFixture {
 	f := newKBFixture()
 	f.chunks = []kbChunk{
 		{ID: "c-root", DocumentID: "doc-target", Type: "act", Title: "TITLE-ROOT", Body: ""},
-		{ID: "c1", DocumentID: "doc-target", Type: "section", Title: "TITLE-C1", Body: kbBodyClaim},
-		{ID: "c-short", DocumentID: "doc-target", Type: "section", Title: "TITLE-SHORT", Body: "Heading only."},
+		{ID: "c1", DocumentID: "doc-target", Type: "section", Title: "TITLE-C1", Body: kbBodyClaim, Anchor: "article-1", StableID: "article-1"},
+		{ID: "c-short", DocumentID: "doc-target", Type: "section", Title: "TITLE-SHORT", Body: "Heading only.", Anchor: "notes", StableID: "notes"},
 	}
 	f.others["x1"] = kbChunk{ID: "x1", DocumentID: "doc-law", Type: "section", Title: "TITLE-X1", Body: kbBodyLaw}
 	f.others["x2"] = kbChunk{ID: "x2", DocumentID: "doc-law", Type: "section", Title: "TITLE-X2", Body: kbBodyRule}
@@ -249,22 +914,59 @@ func kbBaseFixture() *kbFixture {
 
 const kbInput = `{"document_id":"doc-target","corpus_paths":["/laws"]}`
 
-func reportCount(t *testing.T, rep map[string]any, name string) float64 {
+// relateReport is the L4 block of a report.
+func relateReport(t *testing.T, rep map[string]any) map[string]any {
 	t.Helper()
-	counts, ok := rep["counts"].(map[string]any)
+	l4, ok := layerReport(t, rep, "L4")["counts"].(map[string]any)
 	if !ok {
-		t.Fatalf("report has no counts block: %v", rep)
+		t.Fatalf("report has no L4 counts block: %v", rep)
 	}
-	v, ok := counts[name].(float64)
+	_ = l4
+	return layerReport(t, rep, "L4")
+}
+
+func layerReport(t *testing.T, rep map[string]any, name string) map[string]any {
+	t.Helper()
+	layers, ok := rep["layers"].(map[string]any)
 	if !ok {
-		t.Fatalf("counts.%s missing or not a number: %v", name, counts)
+		t.Fatalf("report has no layers block: %v", rep)
+	}
+	l, ok := layers[name].(map[string]any)
+	if !ok {
+		t.Fatalf("report has no %s layer: %v", name, layers)
+	}
+	return l
+}
+
+// layerCount reads counts.<name> of one layer; a dotted name reads a nested map.
+func layerCount(t *testing.T, rep map[string]any, layer, name string) float64 {
+	t.Helper()
+	var cur any = layerReport(t, rep, layer)["counts"]
+	for _, part := range strings.Split(name, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			t.Fatalf("%s counts.%s: not a map at %q: %v", layer, name, part, cur)
+		}
+		cur = m[part]
+	}
+	if cur == nil {
+		return 0
+	}
+	v, ok := cur.(float64)
+	if !ok {
+		t.Fatalf("%s counts.%s is not a number: %v", layer, name, cur)
 	}
 	return v
 }
 
+func reportCount(t *testing.T, rep map[string]any, name string) float64 {
+	t.Helper()
+	return layerCount(t, rep, "L4", name)
+}
+
 func reportFindings(t *testing.T, rep map[string]any) []map[string]any {
 	t.Helper()
-	raw, ok := rep["findings"].([]any)
+	raw, ok := relateReport(t, rep)["findings"].([]any)
 	if !ok {
 		t.Fatalf("report has no findings list: %v", rep)
 	}
@@ -281,7 +983,7 @@ func checkBuckets(t *testing.T, rep map[string]any) {
 	t.Helper()
 	sent := reportCount(t, rep, "candidates_sent")
 	kinds := 0.0
-	for _, v := range rep["counts"].(map[string]any)["verdicts_kind"].(map[string]any) {
+	for _, v := range relateReport(t, rep)["counts"].(map[string]any)["verdicts_kind"].(map[string]any) {
 		kinds += v.(float64)
 	}
 	none := reportCount(t, rep, "verdicts_none")
@@ -327,7 +1029,7 @@ func TestKBLinker_QuoteThatDoesNotOccurIsNeverReported(t *testing.T) {
 		span[1].(float64) != float64(start+len("report a material incident to the regulator")) {
 		t.Errorf("quote_from_span = %v, want [%d %d]", span, start, start+len("report a material incident to the regulator"))
 	}
-	if n := rep["counts"].(map[string]any)["verdicts_kind"].(map[string]any)["stricter_than"].(float64); n != 0 {
+	if n := relateReport(t, rep)["counts"].(map[string]any)["verdicts_kind"].(map[string]any)["stricter_than"].(float64); n != 0 {
 		t.Errorf("verdicts_kind.stricter_than = %v, want 0 — the verdict with the bad quote must not count as a kind", n)
 	}
 	checkBuckets(t, rep)
@@ -354,7 +1056,7 @@ func TestKBLinker_OutOfVocabularyKindBecomesNone(t *testing.T) {
 	if got := reportCount(t, rep, "verdicts_none"); got != 2 {
 		t.Errorf("verdicts_none = %v, want 2 (the undeclared kind and the unclear)", got)
 	}
-	if _, ok := rep["counts"].(map[string]any)["verdicts_kind"].(map[string]any)["supersedes"]; ok {
+	if _, ok := relateReport(t, rep)["counts"].(map[string]any)["verdicts_kind"].(map[string]any)["supersedes"]; ok {
 		t.Error("an undeclared kind appeared as a counted kind")
 	}
 	checkBuckets(t, rep)
@@ -380,8 +1082,8 @@ func TestKBLinker_CallerRelationsReplaceTheDefaults(t *testing.T) {
 	if len(findings) != 1 || findings[0]["kind"] != "supersedes" {
 		t.Errorf("findings = %v, want exactly the supersedes verdict", findings)
 	}
-	if rep["vocabulary_source"] != "input" {
-		t.Errorf("vocabulary_source = %v, want input", rep["vocabulary_source"])
+	if src := relateReport(t, rep)["vocabulary_source"]; src != "input" {
+		t.Errorf("vocabulary_source = %v, want input", src)
 	}
 	prompts := f.spawnPrompts()
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "- supersedes: replaces the other outright (from act to act)") {
@@ -547,9 +1249,9 @@ func TestKBLinker_DefaultReportCarriesNoStoreText(t *testing.T) {
 	}
 }
 
-// TestKBLinker_PassIssuesNoWriteOp: run a full pass that produces findings and
-// record every op the store saw — each must be a read. The static half catches a
-// write on a path no scenario reaches.
+// TestKBLinker_PassIssuesNoWriteOp: run a full relate pass that produces findings
+// and record every op the store saw — each must be a read. The static half
+// catches an op the fixture contract does not know on a path no scenario reaches.
 func TestKBLinker_PassIssuesNoWriteOp(t *testing.T) {
 	f := kbBaseFixture()
 	f.defaultVerdict = `[{"candidate": 1, "kind": "stricter_than", "direction": "this_to_candidate",
@@ -560,57 +1262,95 @@ func TestKBLinker_PassIssuesNoWriteOp(t *testing.T) {
 	if len(reportFindings(t, rep)) != 1 {
 		t.Fatalf("expected a finding — a pass that found nothing proves nothing about writes; report %v", rep)
 	}
-	if rep["writes"].(float64) != 0 || rep["mode"] != "report" {
-		t.Errorf("report says writes=%v mode=%v, want 0 / report", rep["writes"], rep["mode"])
+	if rep["write"] != "report" || rep["mode"] != "document" {
+		t.Errorf("report says write=%v mode=%v, want report / document", rep["write"], rep["mode"])
 	}
+	assertNoWrites(t, f, rep)
 	seen := map[string]bool{}
 	for _, c := range f.callsOf("Document", "") {
 		seen[c.Op] = true
-		if !kbReadOps[c.Op] {
-			t.Errorf("the pass issued Document op=%q — report mode issues reads only", c.Op)
-		}
 	}
-	for op := range kbReadOps {
+	for _, op := range []string{"get_document", "query_chunks", "get_chunk", "related"} {
 		if !seen[op] {
-			t.Errorf("the pass never issued %s — the fixture did not exercise the whole read path", op)
+			t.Errorf("the pass never issued %s — the fixture did not exercise the whole relate read path", op)
 		}
 	}
 	for _, c := range f.calls {
 		if c.Tool != "Document" && c.Tool != "Agent" {
-			t.Errorf("the pass called %s — it holds Document and Agent only", c.Tool)
+			t.Errorf("a document pass called %s — only drain reads the queue", c.Tool)
 		}
 	}
 
 	body := knowledgeBaseConfig(t).Agents["kb/linker"].Code
 	for _, m := range regexp.MustCompile(`op:\s*"([a-z_]+)"`).FindAllStringSubmatch(body, -1) {
-		if !kbReadOps[m[1]] {
-			t.Errorf("the body names Document op=%q — report mode issues reads only", m[1])
+		if !kbReadOps[m[1]] && !kbWriteOps[m[1]] {
+			t.Errorf("the body names Document op=%q, which is neither a known read nor a known write", m[1])
 		}
 	}
-	for _, forbidden := range []string{"Memory", "Path(", "Channel", "Bash"} {
+	for _, forbidden := range []string{"Memory", "Path(", "Bash"} {
 		if strings.Contains(body, forbidden+".") || strings.Contains(body, forbidden+"(") {
-			t.Errorf("the body calls %s — the linker holds Document and Agent only", forbidden)
+			t.Errorf("the body calls %s — the linker holds Document, Agent and Channel only", forbidden)
 		}
 	}
 }
 
+// assertNoWrites checks a report-mode pass issued reads only, acked nothing, and
+// says so in its report.
+func assertNoWrites(t *testing.T, f *kbFixture, rep map[string]any) {
+	t.Helper()
+	for _, c := range f.callsOf("Document", "") {
+		if !kbReadOps[c.Op] {
+			t.Errorf("a report-mode pass issued Document op=%q", c.Op)
+		}
+		if c.Op == "resolve_anchor" && c.Input["create_placeholder"] == true {
+			t.Errorf("a report-mode pass asked resolve_anchor to file a placeholder: %v", c.Input)
+		}
+	}
+	if n := len(f.callsOf("Channel", "ack")); n != 0 {
+		t.Errorf("a report-mode pass acked %d queue messages", n)
+	}
+	writes, ok := rep["writes"].(map[string]any)
+	if !ok {
+		t.Fatalf("report has no writes block: %v", rep)
+	}
+	for op, n := range writes {
+		if n.(float64) != 0 {
+			t.Errorf("report says writes.%s = %v in report mode", op, n)
+		}
+	}
+	if lease, _ := rep["lease"].(map[string]any); lease["taken"] != false {
+		t.Errorf("a report-mode pass took the lease: %v", lease)
+	}
+}
+
 // TestKBLinker_BadInputIsRefusedBeforeAnyCall: the input is parsed strictly, and
-// a refusal costs no tool call. Above all, any mode other than report is refused
-// and says so.
+// a refusal costs no tool call — not even the lease of a writing pass.
 func TestKBLinker_BadInputIsRefusedBeforeAnyCall(t *testing.T) {
 	cases := map[string]struct{ input, reason string }{
 		"not json":            {`find links in the act`, "not JSON"},
 		"empty":               {``, "empty input"},
 		"array":               {`["doc-target"]`, "JSON object"},
-		"live mode":           {`{"document_id":"doc-target","corpus_paths":["/laws"],"write":"live"}`, `only "report" is supported`},
-		"unknown field":       {`{"document_id":"doc-target","corpus_paths":["/laws"],"layers":["cite"]}`, `unknown field "layers"`},
-		"no corpus":           {`{"document_id":"doc-target"}`, "corpus_paths"},
+		"live mode":           {`{"document_id":"doc-target","write":"live"}`, `write must be "report" or "propose"`},
+		"unknown field":       {`{"document_id":"doc-target","layer":["L2"]}`, `unknown field "layer"`},
+		"unknown mode":        {`{"document_id":"doc-target","mode":"sweep"}`, "mode must be"},
+		"L4 without corpus":   {`{"document_id":"doc-target","layers":["L4"]}`, "corpus_paths"},
+		"corpus without L4":   {`{"document_id":"doc-target","layers":["L2"],"corpus_paths":["/laws"]}`, "only by the L4 layer"},
+		"unknown layer":       {`{"document_id":"doc-target","layers":["L5"]}`, "layers[0]"},
+		"propose, bad layer":  {`{"document_id":"doc-target","write":"propose","layers":["L0"]}`, "layers[0]"},
+		"layer twice":         {`{"document_id":"doc-target","layers":["L2","L2"]}`, "named twice"},
+		"maintain plus L2":    {`{"mode":"maintain","document_id":"doc-target","layers":["L2","L6"]}`, "L6 layer only"},
+		"drain with document": {`{"mode":"drain","document_id":"doc-target"}`, "neither document_id nor path"},
+		"drain at tenant":     {`{"mode":"drain","scope":"tenant"}`, "scope must be user"},
 		"relative corpus":     {`{"document_id":"doc-target","corpus_paths":["laws"]}`, "corpus_paths[0]"},
 		"both names":          {`{"document_id":"doc-target","path":"/acts/target","corpus_paths":["/laws"]}`, "exactly one of document_id or path"},
 		"neither name":        {`{"corpus_paths":["/laws"]}`, "exactly one of document_id or path"},
 		"floor out of range":  {`{"document_id":"doc-target","corpus_paths":["/laws"],"candidate_floor":1.5}`, "candidate_floor"},
 		"budget not integer":  {`{"document_id":"doc-target","corpus_paths":["/laws"],"max_verdict_calls":2.5}`, "max_verdict_calls"},
-		"bad scope":           {`{"document_id":"doc-target","corpus_paths":["/laws"],"scope":"agent"}`, "scope must be"},
+		"writes out of range": {`{"document_id":"doc-target","max_writes":0}`, "max_writes"},
+		"messages too many":   {`{"mode":"drain","max_messages":101}`, "max_messages"},
+		"as_of not integer":   {`{"document_id":"doc-target","as_of":1.5}`, "as_of"},
+		"bad terms scheme":    {`{"document_id":"doc-target","terms_scheme":""}`, "terms_scheme"},
+		"bad scope":           {`{"document_id":"doc-target","scope":"global"}`, "scope must be"},
 		"reserved kind":       {`{"document_id":"doc-target","corpus_paths":["/laws"],"relations":[{"name":"none","meaning":"x"}]}`, "reserved"},
 		"kind without prose":  {`{"document_id":"doc-target","corpus_paths":["/laws"],"relations":[{"name":"cites"}]}`, "meaning"},
 		"quotes not boolean":  {`{"document_id":"doc-target","corpus_paths":["/laws"],"include_quotes":"yes"}`, "include_quotes"},

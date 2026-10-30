@@ -20,7 +20,11 @@ func TestMigrate0122_ADatabaseThatSkipped0118GetsTheDeviceGateTables(t *testing.
 	if err != nil {
 		t.Fatalf("dial postgres: %v", err)
 	}
-	defer admin.Close()
+	// Closed by Cleanup, not defer: the DROP SCHEMA cleanups newSchema
+	// registers run after this function returns and need the pool open
+	// (cleanups run last-in first). A deferred Close left them to fail on a
+	// closed pool, leaking both schemas on every run.
+	t.Cleanup(admin.Close)
 
 	newSchema := func() (string, string) {
 		t.Helper()
