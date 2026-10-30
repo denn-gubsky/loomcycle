@@ -1119,8 +1119,11 @@ class LoomcycleClient:
         ``exclude_under_path`` / ``exclude_under_paths``, ``document_id`` /
         ``document_ids``, ``exclude_document_ids``, ``type`` / ``types`` (each
         widened to its ontology subtypes), ``status`` / ``statuses``, ``tag``,
-        ``tag_prefix`` and ``as_of`` (unix nanoseconds). Kinds combine with AND,
-        list values with OR. When any is passed the response carries ``filter``
+        ``tag_prefix``, ``concept`` / ``concept_prefix`` (a concept of the
+        tenant ontology's schemes and everything narrower; matched by relation
+        in the tenant scope, by tag elsewhere) and ``as_of`` (unix
+        nanoseconds). Kinds combine with AND, list values with OR. When any is
+        passed the response carries ``filter``
         — ``applied``, ``matched_documents``, ``matched_chunks``,
         ``type_expanded_to`` (when a type widened) and ``inverted``; a
         filter-free response has no ``filter`` key. A filter needing more ids

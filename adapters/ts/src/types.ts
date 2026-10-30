@@ -3972,6 +3972,14 @@ export type DocumentToolInput = {
   tag?: string;
   /** query_chunks: match this tag OR anything nested under it (prefix + '/'). */
   tag_prefix?: string;
+  /** search / related: only chunks about this concept of the tenant ontology's
+   *  concept schemes, or a narrower one — by chunk id, name or tag
+   *  (`<scheme>/<path>`). Tenant scope: by `subject` relation; user / agent
+   *  scope: by the concept's tag (see `concept_matched_by` on the echo). */
+  concept?: string;
+  /** search / related: as `concept`, for every concept whose tag is this path or
+   *  lies under it. */
+  concept_prefix?: string;
   position?: number;
   /** update_chunk: the chunk's current revision (optimistic concurrency).
    *  get_version: the historical revision to fetch. */
@@ -4210,6 +4218,11 @@ export type DocumentSearchFilter = {
     statuses?: string[];
     tag?: string;
     tag_prefix?: string;
+    concept?: string;
+    concept_prefix?: string;
+    /** How a concept filter matched: by `subject` relation (tenant scope) or by
+     *  tag (user / agent scope). */
+    concept_matched_by?: "statement" | "tag";
     as_of?: number;
   };
   /** Documents with at least one matching chunk. */
