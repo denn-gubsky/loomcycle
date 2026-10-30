@@ -107,6 +107,7 @@ out of strings:
 - calls to the core functions that run a query given as text: `query_to_xml`,
   `table_to_xml`, `schema_to_xml` and their kin, `ts_stat` and `ts_rewrite`;
 - `set_config`;
+- a `DO` block (sqlmem's allow-list already refuses it; the guard does too);
 - `U&"…"` escapes.
 
 A view, trigger, rule or (PostgreSQL) function made before this check existed

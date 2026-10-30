@@ -47,7 +47,7 @@ var documentTableExtras = []string{"chunk_assets", "chunk_edges_statements"}
 var documentIndexExtras = []string{
 	"chunk_edge_evidence_chunk", "chunk_edge_evidence_edge", "chunk_edges_from_kind",
 	"chunk_edges_statement", "chunk_edges_status", "chunks_doc_anchor", "chunks_identity_key",
-	"chunks_stable_id", "chunks_validity", "documents_type_status",
+	"chunks_stable_id", "chunks_validity", "chunks_work_key", "documents_type_status",
 }
 
 var (
@@ -124,6 +124,11 @@ func refuseDocumentTables(stmt string, postgres bool) string {
 		}
 		if !postgres {
 			continue
+		}
+		// A DO block runs a string as code. sqlmem's leading-keyword allow-list
+		// already refuses it; this keeps the guard whole on its own.
+		if t.kind == 'w' && t.val == "do" && i+1 < len(toks) && toks[i+1].kind == 's' {
+			return "Memory SQL cannot run a DO block on this server: it could build SQL that reaches the document tables"
 		}
 		if t.kind == 'w' && t.val == "create" {
 			j := i + 1
