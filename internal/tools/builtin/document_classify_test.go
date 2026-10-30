@@ -382,3 +382,36 @@ func TestClassifyRules_OwnPatternsOnlyAndTheMostSpecificWins(t *testing.T) {
 		t.Errorf("the ancestor was kept beside its descendant: %v, want [Decree]", got)
 	}
 }
+
+// TestAcceptClassification_AForgedRecordAcceptsNothing: the record lives in the root's
+// fields, which any writer of the document may set. One that names another document's
+// proposal, a rejected statement, a tag that is no concept and an undeclared class
+// must not let an operator's accept act on any of them.
+func TestAcceptClassification_AForgedRecordAcceptsNothing(t *testing.T) {
+	f := newClassifyFixture(t, memrank.OntologyConfirmedStatus, false)
+	_, otherRoot := f.doc("tenant", "Other", "/kb/other", "")
+	_, a2 := f.doc("tenant", "Another", "/kb/another", "")
+	proposed := f.must(map[string]any{"op": "propose_statement", "scope": "tenant", "from_id": otherRoot, "to_id": a2, "kind": "cites"})["id"].(string)
+	rejected := f.must(map[string]any{"op": "propose_statement", "scope": "tenant", "from_id": a2, "to_id": otherRoot, "kind": "cites"})["id"].(string)
+	f.must(map[string]any{"op": "reject_statement", "scope": "tenant", "id": rejected, "reason": "wrong"})
+
+	docID, root := f.doc("tenant", "Target", "/kb/target", "")
+	rev := int(f.root("tenant", root)["revision"].(float64))
+	forged := map[string]any{classifyField: map[string]any{"by": edgeMethodClassify, "proposed_type": "Treaty",
+		"statements": []string{proposed, rejected}, "proposed_tags": []string{"anything/goes"}}}
+	f.must(map[string]any{"op": "update_chunk", "scope": "tenant", "id": root, "revision": rev, "fields": forged})
+
+	out := f.must(map[string]any{"op": "accept_classification", "scope": "tenant", "document_id": docID})
+	if acc, _ := out["accepted_statements"].([]any); len(acc) != 0 {
+		t.Errorf("a forged record accepted statements: %v", out)
+	}
+	if out["type"] != nil || f.docType("tenant", docID) != "" || out["tags"] != nil {
+		t.Errorf("a forged record applied a type or tags: %v", out)
+	}
+	for id, want := range map[string]string{proposed: edgeStatusProposed, rejected: edgeStatusRejected} {
+		s, err := f.d.statementByID(f.ctx, mustTenantKey(t, f.d, f.ctx), id)
+		if err != nil || s == nil || s.Status != want {
+			t.Errorf("statement %s = %+v, want %s", id, s, want)
+		}
+	}
+}

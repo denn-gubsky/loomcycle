@@ -338,10 +338,54 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		return errBusiness("accept_classification: nothing_pending: the document has no pending classification",
 			"Run op=classify first; a rule match it applied needs no acceptance."), nil
 	}
+	// THE RECORD IS A CLAIM, NOT AN AUTHORITY. It lives in the root's fields, which
+	// anyone who may write the document may set, so a writer could stage one that names
+	// another document's proposals, a rejected statement or an arbitrary tag for an
+	// operator to accept unawares. Everything it names is re-checked here against what
+	// classify itself could have written; what fails is skipped and reported.
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || !read.Confirmed {
+		return errBusiness("accept_classification: the tenant ontology is not confirmed",
+			"Confirm the ontology, then classify the document again."), nil
+	}
 	acl := d.newDocACL(ctx, key)
 	out := map[string]any{"document_id": docID}
 	var accepted, skipped []string
 	for _, id := range rec.Statements {
+		s, err := d.statementByID(ctx, key, id)
+		if err != nil {
+			return errFrom("accept_classification: "+err.Error(), err), nil
+		}
+		// Only what classify filed from THIS document's root, still awaiting review:
+		// never another document's proposal, never a person's, and never a rejection,
+		// which accept_statement would otherwise reverse.
+		if s == nil || s.Method != edgeMethodClassify || s.FromID != cd.rootID || s.Status != edgeStatusProposed {
+			skipped = append(skipped, id)
+			continue
+		}
+		if acl != nil {
+			denied := false
+			for _, end := range []string{s.FromID, s.ToID} {
+				row, found, err := d.getChunkRow(ctx, key, end)
+				if err != nil {
+					return errFrom("accept_classification: "+err.Error(), err), nil
+				}
+				if !found {
+					denied = true
+					break
+				}
+				if r, err := acl.document(ctx, "accept_classification", "link", row.DocumentID); err != nil {
+					return errFrom("accept_classification: "+err.Error(), err), nil
+				} else if r != nil {
+					denied = true
+					break
+				}
+			}
+			if denied {
+				skipped = append(skipped, id)
+				continue
+			}
+		}
 		r, err := d.reviewStatement(ctx, key, mscope, docInput{ID: id}, true)
 		if err != nil {
 			return errFrom("accept_classification: "+err.Error(), err), nil
@@ -352,25 +396,55 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		}
 		accepted = append(accepted, id)
 	}
-	if len(rec.ProposedTags) > 0 {
-		r, err := d.addTags(ctx, key, docInput{ID: cd.rootID, Tags: rec.ProposedTags})
+	conceptTags := map[string]bool{}
+	for _, s := range read.Schemes {
+		for _, c := range s.Concepts {
+			conceptTags[c.Tag] = true
+		}
+	}
+	var tags, skippedTags []string
+	for _, tag := range rec.ProposedTags {
+		if conceptTags[tag] {
+			tags = append(tags, tag)
+		} else {
+			skippedTags = append(skippedTags, tag)
+		}
+	}
+	if len(skippedTags) > 0 {
+		out["skipped_tags"] = skippedTags
+	}
+	if len(tags) > 0 {
+		r, err := d.addTags(ctx, key, docInput{ID: cd.rootID, Tags: tags})
 		if err != nil {
 			return errFrom("accept_classification: "+err.Error(), err), nil
 		}
 		if r.IsError {
 			return r, nil
 		}
-		out["tags"] = rec.ProposedTags
+		out["tags"] = tags
 	}
 	next := classification{By: edgeMethodClassify, At: rec.At, Applied: rec.Applied}
 	setType := ""
+	var setFields map[string]any
 	if rec.Proposed != "" {
-		setType, next.Applied = rec.Proposed, rec.Proposed
-		out["type"] = rec.Proposed
+		// A declared document class only, and only that class's own fields.
+		var class *memrank.OntologyTerm
+		for _, c := range memrank.EffectiveClasses(read.Terms, true) {
+			if c.IsDocumentClass && strings.EqualFold(c.Name, rec.Proposed) {
+				class = &c
+				break
+			}
+		}
+		if class == nil {
+			out["skipped_type"] = rec.Proposed
+		} else {
+			setType, next.Applied, setFields = class.Name, class.Name, identityGroups(*class, rec.ProposedFields)
+			out["type"] = class.Name
+		}
 	}
 	cd.record = rec
 	var ans classifyAnswer
-	if r := d.classifyWriteRoot(ctx, key, mscope, acl, cd, setType, rec.ProposedFields, next, &ans); r != nil {
+	if r := d.classifyWriteRoot(ctx, key, mscope, acl, cd, setType, setFields, next, &ans); r != nil {
 		return *r, nil
 	}
 	if setType != "" && !ans.Live && ans.Result == "proposed" {
