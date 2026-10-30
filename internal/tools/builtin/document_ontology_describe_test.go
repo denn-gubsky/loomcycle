@@ -76,7 +76,8 @@ func TestDescribeOntology_MatchesTheGates(t *testing.T) {
 		t.Errorf("Law = %#v", law)
 	}
 	// Inherited from NormativeAct, which declares them; Law declares neither.
-	if law.Directives["citation_grammar"] != "law-ua" || law.Directives["identifier_pattern"] == "" {
+	if law.Directives["citation_grammar"] != "law-ua" || law.Directives["identifier_pattern"] == "" ||
+		law.Directives["definitions"] != `(?i)^Стаття 1\b|визначення термінів` {
 		t.Errorf("Law's directives should be the effective (inherited) ones: %v", law.Directives)
 	}
 	if len(law.Fields) == 0 || law.Fields[0].Name != "title" || !law.Fields[0].Required {

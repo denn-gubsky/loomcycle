@@ -131,6 +131,7 @@ func TestParseClassBody_DirectivesAndIssues(t *testing.T) {
 		"@title_pattern ([unclosed\n" +
 		"@anchor_grammar akn-ua extra words\n" +
 		"@exclude transitional, boilerplate, toc\n" +
+		"@definitions (?i)^article 1\\b|definitions\n" +
 		"@identity\n" +
 		"@identiy\n" +
 		"@inverse referenced_by\n" +
@@ -147,6 +148,13 @@ func TestParseClassBody_DirectivesAndIssues(t *testing.T) {
 	}
 	if !reflect.DeepEqual(d.Exclude, []string{"transitional", "boilerplate", "toc"}) {
 		t.Errorf("exclude = %v", d.Exclude)
+	}
+	if d.Definitions != `(?i)^article 1\b|definitions` {
+		t.Errorf("definitions = %q", d.Definitions)
+	}
+	if bad := ParseClassBody("@definitions ([unclosed\n"); bad.Definitions != "" || len(bad.Issues) != 1 ||
+		!strings.Contains(bad.Issues[0], "@definitions") {
+		t.Errorf("an uncompilable @definitions must be ignored and reported: %#v", bad)
 	}
 	joined := strings.Join(d.Issues, "\n")
 	if !strings.Contains(joined, "@title_pattern") || !strings.Contains(joined, "@identiy") {
@@ -250,7 +258,7 @@ func TestResolveInheritance_TypedSpecsIdentityAndDirectivesInherit(t *testing.T)
 		{Name: "Document", IsDocumentClass: true, TitleIdentity: true,
 			FieldSpecs: []FieldSpec{{Name: "title", Type: FieldText, Required: true}, {Name: "issued", Type: FieldDate}}},
 		{Name: "NormativeAct", Parent: "Document", IsDocumentClass: true,
-			IdentifierPattern: `(?P<n>\d+)`, CitationGrammar: "law-ua",
+			IdentifierPattern: `(?P<n>\d+)`, CitationGrammar: "law-ua", Definitions: `^Article 1\b`,
 			FieldSpecs: []FieldSpec{{Name: "issued", Type: FieldText}}},
 		{Name: "Law", Parent: "NormativeAct", IsDocumentClass: true, CitationGrammar: "law-ua-v2"},
 	})
@@ -264,6 +272,9 @@ func TestResolveInheritance_TypedSpecsIdentityAndDirectivesInherit(t *testing.T)
 	}
 	if EffectiveDirective(law, "identifier_pattern") != `(?P<n>\d+)` {
 		t.Error("identifier_pattern should inherit from NormativeAct")
+	}
+	if EffectiveDirective(law, "definitions") != `^Article 1\b` {
+		t.Error("definitions should inherit from NormativeAct")
 	}
 	if EffectiveDirective(law, "citation_grammar") != "law-ua-v2" || law.InheritedDirectives["citation_grammar"] != "" {
 		t.Error("a declared directive must win over, and not be shadowed by, the inherited one")
