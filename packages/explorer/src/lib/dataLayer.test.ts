@@ -304,13 +304,20 @@ describe("RFC BS connections / history / canvas ops → wire mapping", () => {
   });
 });
 
-// RFC FN statement ops: get_edges keeps its single call (the runtime's default
-// page), and the review ops ride the same /v1/_document passthrough.
+// RFC FN statement ops: get_edges is one page per call (the caller follows
+// next_cursor), and the review ops ride the same /v1/_document passthrough.
 describe("RFC FN statement ops → wire mapping", () => {
-  it("documentGetEdges stays one unpaged call", async () => {
+  it("documentGetEdges sends a page's cursor as after, and only when set", async () => {
     const s = stubClient();
-    await dataLayerFromClient(s.client).documentGetEdges("doc1", "user", BROWSE);
-    expect(s.document).toHaveBeenCalledWith({ op: "get_edges", document_id: "doc1", scope: "user" }, BROWSE);
+    const dl = dataLayerFromClient(s.client);
+    await dl.documentGetEdges("doc1", "user", BROWSE);
+    await dl.documentGetEdges("doc1", "user", BROWSE, { after: "c1" });
+    expect(s.document).toHaveBeenNthCalledWith(1, { op: "get_edges", document_id: "doc1", scope: "user" }, BROWSE);
+    expect(s.document).toHaveBeenNthCalledWith(
+      2,
+      { op: "get_edges", document_id: "doc1", scope: "user", after: "c1" },
+      BROWSE,
+    );
   });
 
   it("documentGetEdge sends the statement id", async () => {

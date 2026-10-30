@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -90,9 +91,15 @@ type Config struct {
 	ChannelDebug bool
 
 	// FullText is how the word leg of a memory search reads text
-	// (memory.fulltext). Applied at Open when memory_embeddings exists; a
-	// change rebuilds the indexed column once.
+	// (memory.fulltext). Applied at Open when ApplyFullText is set and
+	// memory_embeddings exists; a change rebuilds the indexed column once.
 	FullText FullTextConfig
+
+	// ApplyFullText lets this Open rebuild the column to FullText. Only the
+	// server boot sets it. Any other process (a CLI subcommand, run with the
+	// server's config or none) only reads the setting the column carries:
+	// applying its own would rebuild the column under the running servers.
+	ApplyFullText bool
 }
 
 // Store is the Postgres implementation of store.Store.
@@ -109,9 +116,13 @@ type Store struct {
 	// MemoryEmbed* op refuses with store.ErrVectorUnsupported when false.
 	pgvectorEnabled bool
 
-	// fts is the full-text setting the indexed column was built with, so
-	// the query side reads text the same way (see ftsQuery).
-	fts FullTextConfig
+	// fts is the full-text setting the indexed column was built with, as
+	// last read off the column, so the query side reads text the same way
+	// (see ftsSetting). ftsRefreshing lets one search re-read it at a time.
+	// ftsTTL overrides ftsRefreshInterval; only tests set it.
+	fts           atomic.Pointer[ftsSnapshot]
+	ftsRefreshing atomic.Bool
+	ftsTTL        time.Duration
 
 	// channelDebug is captured from Config.ChannelDebug at Open()
 	// time. See ChannelPublish for what the debug log contains.
@@ -261,11 +272,24 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 		if tableExists {
 			s.pgvectorEnabled = true
-			if err := s.applyFullTextConfig(ctx, cfg.FullText); err != nil {
+			var marker string
+			if cfg.ApplyFullText {
+				marker, err = s.applyFullTextConfig(ctx, cfg.FullText)
+			} else {
+				marker, _, err = readFullTextMarker(ctx, pool)
+			}
+			if err != nil {
 				pool.Close()
 				return nil, fmt.Errorf("postgres: %w", err)
 			}
-			s.fts = cfg.FullText
+			// The query side follows the column, which may have been built by
+			// another process with another setting, not this process's config.
+			fts, ok := parseFullTextMarker(marker)
+			if !ok {
+				slog.Warn("postgres: the full-text column carries a setting this build does not recognise; searching with this process's memory.fulltext until a boot rebuilds it", "column", marker)
+				fts = cfg.FullText
+			}
+			s.fts.Store(&ftsSnapshot{cfg: fts, readAt: time.Now()})
 		} else {
 			// The one state that would otherwise be silent-but-degraded, so
 			// say it loudly and actionably exactly once, at boot.

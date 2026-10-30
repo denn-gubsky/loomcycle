@@ -1096,6 +1096,11 @@
   font-size: var(--lc-text-sm);
   margin: 0;
 }
+.loomcycle-explorer .doc-refs-incomplete {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-sm);
+  margin: 0 0 6px;
+}
 .loomcycle-explorer .doc-refs-list {
   list-style: none;
   margin: 0;

@@ -23,7 +23,7 @@ var classifiedToolFiles = []string{
 	// Document
 	"document.go", "document_acl.go", "document_cross_scope.go", "document_cutid.go", "document_deadlink.go", "document_entity.go", "document_memory_filter.go",
 	"document_fact_home.go", "document_fact_index.go", "document_import_source.go", "document_graph.go", "document_graph_body.go", "document_image.go", "document_index_text.go", "document_derive_units.go", "document_reindex.go", "document_units.go",
-	"document_labels.go", "document_mermaid.go", "document_ontology.go", "document_ontology_fields.go", "document_ontology_guard.go", "document_ontology_schemes.go", "document_ontology_usage.go", "document_relation_gate.go",
+	"document_labels.go", "document_mermaid.go", "document_ontology.go", "document_ontology_fields.go", "document_ontology_describe.go", "document_ontology_guard.go", "document_ontology_schemes.go", "document_ontology_instances.go", "document_ontology_usage.go", "document_relation_gate.go",
 	"document_prune.go", "document_remember.go", "document_search_filter.go", "document_sections.go", "document_subject_proposal.go", "document_subject_refs.go",
 	"document_sync.go", "document_statements.go", "document_edge_kinds.go", "document_relation_retrieval.go", "document_editions.go", "document_anchor_gate.go", "document_lease.go", "document_bridge.go", "document_mentions.go", "document_relation_gate.go", "document_verbatim.go", "document_verdict.go", "document_volume_asset.go",
 	// Memory

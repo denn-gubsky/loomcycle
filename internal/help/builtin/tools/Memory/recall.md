@@ -39,7 +39,9 @@ second call when you need both. The exception is documents:
 `{memories: [...]}`. Each memory has `id` (the fact's stable key), `memory`
 (the text), `score`, and when known `kind` (`fact`, `note`, …), `source` (the
 original wording), `source_session_id` and `source_run_id` (where it was said
-— History can open that chat), `observed_at`, `valid_at`, `metadata`, and
+— History can open that chat), `source_chunk_id` and `source_document_id` (the
+document passage it was taken from, left out when you may not read that
+document), `observed_at`, `valid_at`, `metadata`, and
 with `include_turns` a `turn: {text, speaker}`. With a `documents_scope`
 different from `scope`, each memory also carries `scope`: the scope it came
 from.

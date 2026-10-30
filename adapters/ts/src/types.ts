@@ -3910,6 +3910,7 @@ export type DocumentToolInput = {
     | "resolve_anchor"
     | "lease"
     | "release"
+    | "describe_ontology"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"

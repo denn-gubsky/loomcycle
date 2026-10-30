@@ -111,6 +111,9 @@ var docACLOps = map[string]docACLRule{
 	// resolve: it asks read on the document it finds (and write on the path of a
 	// placeholder it files) itself.
 	"resolve_anchor": {verb: "read", target: docACLListing},
+	// describe_ontology reads the tenant's ontology document whatever the call's
+	// scope: it asks read on that document itself.
+	"describe_ontology": {verb: "read", target: docACLListing},
 	// A lease guards a pass over the whole scope and changes no content: it asks
 	// propose, the verb a statement-maintaining driver already needs there.
 	"lease":             {verb: "propose", target: docACLScope},

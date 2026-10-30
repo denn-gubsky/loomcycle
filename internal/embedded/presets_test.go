@@ -27,6 +27,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"sandbox":        "bundle",
 		"doc-colorizer":  "bundle",
 		"dev-exec":       "bundle",
+		"knowledge-base": "bundle",
 	}
 	for name, kind := range want {
 		u, ok := byName[name]

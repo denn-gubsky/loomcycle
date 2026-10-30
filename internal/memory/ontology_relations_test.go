@@ -175,7 +175,9 @@ func TestRenderRelations_ListsOnlyTheTenantsOwnKinds(t *testing.T) {
 	for _, want := range []string{"# Relation kinds", "**stricter_than** (seen from the other end: looser_than)",
 		"Provision → Provision", "record aspect", "describe the relation in the sentence",
 		// The field the extractor fills, said only where there are kinds to fill it with.
-		"Give the kind as the fact's `relation`, with the other thing in `also_about`."} {
+		"Give the kind as the fact's `relation`, with the other thing in `also_about`.",
+		// ...and its JSON shape: the extractor does not emit a field its template lacks.
+		`"also_about": ["..."], "relation": "<kind>"}`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}

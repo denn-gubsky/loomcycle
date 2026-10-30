@@ -348,7 +348,14 @@ memory:
 
 - **Server-wide.** The words live in one generated column on `memory_embeddings`, shared by every tenant and scope, so there is one setting per server.
 - **A change rebuilds the column at the next boot.** Startup compares the setting with the one recorded on the column. When they differ it drops the column and its GIN index, re-adds them under the new configuration and records the new setting, all in one transaction. The table is locked while this runs, for a time proportional to its rows; startup logs the old setting, the new one and the row count first. A restart with the same setting does nothing. An unset block never touches the column the migrations built. Replicas booting together serialise on an advisory lock, so only the first rebuilds. A rebuild needs a restart; a config reload does not apply it.
-- **The query side follows the column.** The search reads its query text with the same configuration and the same unaccent pass the column was built with. An accented query and an unaccented row (or the reverse) both match.
+- **Who applies it.** The server boot, and `loomcycle migrate up --config <yaml>` (with `--dsn` alone it has no setting to apply). Other subcommands that open the store, such as `loomcycle tokens`, never rebuild the column. The rebuild is DDL on `memory_embeddings`, so the role that runs it must own that table. If the server's role does not, apply the change with `migrate up --config` as the role that owns the schema; the server then finds the column already matching and changes nothing.
+- **The query side follows the column**, not the process's own config. The search reads its query text with the same configuration and the same unaccent pass the column was built with, re-reading the setting recorded on the column at most every 30 seconds. An accented query and an unaccented row (or the reverse) both match.
+- **Rolling a change across replicas is last-writer-wins.** A replica that boots with a different setting rebuilds the column and logs a warning naming the column's setting and its own. The replicas already running follow the new column within 30 seconds; one still configured with the old setting rebuilds it back when it next boots. Put the new setting in every replica's config before restarting any of them.
+- **An in-place change to a text search configuration** (`ALTER TEXT SEARCH CONFIGURATION … ALTER MAPPING`, a new dictionary) keeps its name, so no boot sees a change, and the stored words stay as the old mapping reduced them. Force a rebuild by overwriting the recorded setting, then restart or run `migrate up --config`:
+
+  ```sql
+  COMMENT ON COLUMN memory_embeddings.embed_text_tsv IS 'rebuild';
+  ```
 - **A configuration Postgres does not know fails the boot**, naming it. A search that silently stayed English is the defect this setting fixes. The value must be a name (`letters, digits, _`, optionally `schema.name`) because it is written into DDL.
 - **Languages Postgres does not ship.** Postgres ships Snowball stemmers for about thirty languages (`\dF` in psql lists them), but not for Ukrainian. For Ukrainian, install a hunspell dictionary on the database server and create a configuration from it:
 
@@ -360,7 +367,7 @@ memory:
   ```
 
   Then set `config: ukrainian`. Without a dictionary, `simple` plus `unaccent: true` matches exact word forms only.
-- **`unaccent`** creates the extension if it is missing (trusted since Postgres 13, so the database owner may) and an `IMMUTABLE` wrapper, `loomcycle_fts_unaccent`, that the generated column can use.
+- **`unaccent`** creates the extension in `public` if it is missing (trusted since Postgres 13, so the database owner may), and an `IMMUTABLE` wrapper, `loomcycle_fts_unaccent`, that the generated column can use. An extension that already exists is used where it is.
 - **Tiers.** Postgres with pgvector only, the one tier with a word leg. sqlite ignores the block.
 
 ### The opt-in rerank — memory.reranker + memory_rerank
