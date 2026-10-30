@@ -703,7 +703,7 @@ A links pass (find citations in imported text, propose the relations, keep them 
 | `relocate_evidence` | re-point the row `evidence_id` to `chunk_id`, where its quote must occur; the span is recomputed and the stale mark cleared |
 | `flag` | set `attributes.needs_review` (and the reason) for a person |
 
-- A relation a person wrote takes only `verify` and `flag`, from anyone (`statement_manual`). That is a `manual` one, and a `sync` one unless its `attributes.origin_method` names a machine method (`rule:` / `extractor:`, `import`, `canvas`, `wikilink`, `runtime`, `consolidator`, `ontology`): a link a person made on a peer is still a person's here, and one whose origin is unknown is treated as one. So does one an operator ruled on, from inside a run (`statement_operator_ruled`): flag it and let a person decide.
+- A relation a person wrote takes only `verify` and `flag`, from anyone (`statement_manual`). That is a `manual` one, and a `sync` one unless its `attributes.origin_method` names a machine method (`rule:` / `extractor:`, `import`, `canvas`, `wikilink`, `runtime`, `consolidator`, `ontology`): a link a person made on a peer is still a person's here, and one whose origin is unknown is treated as one. A relation an operator ruled on takes only the same two from inside a run (`statement_operator_ruled`): flag it and let a person decide.
 - Every action needs `propose` on the relation's documents; `expire`, `demote` and `merge` change what readers see as live, so they also need `link` on both ends.
 - A relation that changed while the pass looked at it is refused with `statement_changed`: reload it (`get_edge`) and decide again.
 
