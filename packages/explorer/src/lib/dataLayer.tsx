@@ -1,12 +1,15 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { LoomcycleClient, DocumentToolInput } from "@loomcycle/client";
 import type {
+  AcceptClassificationAnswer,
   Backlink,
   BrowseScope,
   CanvasDoc,
   ChunkDetail,
   ChunkRevision,
   ChunkRow,
+  ClassifyAnswer,
+  ClassifyWrite,
   DocEdge,
   DocScope,
   PathEntry,
@@ -226,6 +229,28 @@ export interface ExplorerDataLayer {
     browse?: BrowseScope,
     opts?: { status?: StatementStatus; kind?: string; limit?: number; after?: string },
   ): Promise<{ statements: DocEdge[]; truncated?: boolean; next_cursor?: string }>;
+  // RFC FO classification ops. Optional, like the statement rulings: without
+  // documentClassify the viewer offers no Classify action, and without
+  // documentAcceptClassification a pending classification is not shown.
+  //
+  // documentClassify says what the document is from the confirmed ontology.
+  // `report` writes nothing; `propose` applies a unique rule match and files the
+  // rest for review. A refusal rejects with the runtime's error text.
+  documentClassify?(
+    documentId: string,
+    write: ClassifyWrite,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<ClassifyAnswer>;
+  // documentAcceptClassification is the operator's acceptance of the pending
+  // classification in the root's fields. Like the statement rulings, the runtime
+  // takes it only from the off-run operator plane. Nothing pending rejects with
+  // the runtime's nothing_pending error.
+  documentAcceptClassification?(
+    documentId: string,
+    scope: DocScope,
+    browse?: BrowseScope,
+  ): Promise<AcceptClassificationAnswer>;
   // documentAssetObjectUrl fetches an image chunk's bytes (RFC BO) WITH auth and
   // returns a blob object-URL for an <img src> — a bare <img src=/v1/...> can't
   // carry a bearer header. The CALLER must URL.revokeObjectURL when done. Absent
@@ -509,6 +534,17 @@ export function dataLayerFromClient(client: LoomcycleClient, assetFetch?: AssetF
         } as unknown as DocumentToolInput,
         browse,
       ) as Promise<{ statements: DocEdge[]; truncated?: boolean; next_cursor?: string }>,
+    // RFC FO classification ops — the same passthrough cast.
+    documentClassify: (documentId, write, scope, browse) =>
+      client.document(
+        { op: "classify", document_id: documentId, write, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<ClassifyAnswer>,
+    documentAcceptClassification: (documentId, scope, browse) =>
+      client.document(
+        { op: "accept_classification", document_id: documentId, scope } as unknown as DocumentToolInput,
+        browse,
+      ) as Promise<AcceptClassificationAnswer>,
     documentUpdateChunk: (id, revision, patch, scope, browse) =>
       client.document(
         // `patch.fields` is unknown but DocumentToolInput.fields is a typed
