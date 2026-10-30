@@ -208,7 +208,7 @@ func (d *Document) relatedByRelation(ctx context.Context, key sqlmem.ScopeKey, i
 		return nil, err
 	}
 	d.attachViaQuotes(ctx, key, rows)
-	out := make([]map[string]any, 0, min(len(rows), limit))
+	out := make([]map[string]any, 0, len(rows)) // rows is bounded by the walk's row cap; limit is cut in the loop
 	seen := map[string]bool{in.RelatedTo: true}
 	for _, r := range rows {
 		if len(out) >= limit {
