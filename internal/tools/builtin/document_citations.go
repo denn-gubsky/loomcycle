@@ -96,14 +96,20 @@ func (d *Document) extractCitations(ctx context.Context, key sqlmem.ScopeKey, ms
 	rootID := asStr(res.Rows[0][0])
 
 	out := map[string]any{"document_id": docID, "grammar": nil, "hits": []citationHit{}}
-	g, class, issue := d.classGrammar(ctx, key, rootID, "citation_grammar")
-	if issue != "" {
-		out["grammar_issue"] = issue
+	gs, class, issues := d.classGrammars(ctx, key, rootID)
+	if len(issues) > 0 {
+		out["grammar_issue"] = strings.Join(issues, "; ")
 	}
-	if g.Name == "" {
+	if len(gs) == 0 {
 		return jsonResult(out)
 	}
-	out["grammar"] = map[string]string{"name": g.Name, "class": class}
+	names := make([]string, len(gs))
+	for i, g := range gs {
+		names[i] = g.Name
+	}
+	// name lists every grammar applied, in the class's order: one when the class
+	// names one, as before.
+	out["grammar"] = map[string]string{"name": strings.Join(names, ", "), "class": class}
 
 	var chunks []chunkRow
 	if only != nil {
@@ -126,7 +132,7 @@ func (d *Document) extractCitations(ctx context.Context, key sqlmem.ScopeKey, ms
 		if err != nil {
 			return errFrom("extract_citations: "+err.Error(), err), nil
 		}
-		for _, h := range matchCitations(g, cb.Body) {
+		for _, h := range matchCitationsAll(gs, cb.Body) {
 			if len(hits) == limit {
 				truncated = true
 				break
@@ -257,6 +263,41 @@ func matchCitations(g memrank.OntologyGrammar, body string) []citationHit {
 			h.Kind = fillTemplate(kindTmpl, names, strs)
 		}
 		out = append(out, h)
+	}
+	return out
+}
+
+// matchCitationsAll applies every grammar to one body and merges the hits in text
+// order. An overlap between grammars goes, as within one, to the match that starts
+// first, then to the grammar named first.
+func matchCitationsAll(gs []memrank.OntologyGrammar, body string) []citationHit {
+	if len(gs) == 1 {
+		return matchCitations(gs[0], body)
+	}
+	type ranked struct {
+		h     citationHit
+		order int
+	}
+	var all []ranked
+	for i, g := range gs {
+		for _, h := range matchCitations(g, body) {
+			all = append(all, ranked{h, i})
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if all[i].h.CharStart != all[j].h.CharStart {
+			return all[i].h.CharStart < all[j].h.CharStart
+		}
+		return all[i].order < all[j].order
+	})
+	var out []citationHit
+	end := -1
+	for _, r := range all {
+		if r.h.CharStart < end {
+			continue
+		}
+		end = r.h.CharEnd
+		out = append(out, r.h)
 	}
 	return out
 }

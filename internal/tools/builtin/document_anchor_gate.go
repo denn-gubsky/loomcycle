@@ -52,10 +52,11 @@ func (d *Document) classGrammar(ctx context.Context, key sqlmem.ScopeKey, rootID
 	if !found {
 		return memrank.OntologyGrammar{}, "", ""
 	}
-	name := memrank.EffectiveDirective(term, directive)
-	if name == "" {
+	names := memrank.GrammarNames(memrank.EffectiveDirective(term, directive))
+	if len(names) == 0 {
 		return memrank.OntologyGrammar{}, term.Name, ""
 	}
+	name := names[0] // an anchor grammar is one; citations go through classGrammars
 	g, usable := usableGrammar(read.Grammars, name)
 	if !usable {
 		if g.Issue != "" {
@@ -159,4 +160,44 @@ func fillTemplate(tmpl string, names, match []string) string {
 		return ""
 	}
 	return out
+}
+
+// classGrammars is every citation grammar the document's class names, in the order
+// named, with an issue for each that cannot be used. A class citing laws and a
+// regulator's acts needs two grammars, since a grammar has one resolve line.
+func (d *Document) classGrammars(ctx context.Context, key sqlmem.ScopeKey, rootID string) (gs []memrank.OntologyGrammar, class string, issues []string) {
+	first, class, issue := d.classGrammar(ctx, key, rootID, "citation_grammar")
+	if class == "" {
+		return nil, "", nil
+	}
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || !read.Confirmed {
+		return nil, class, nil
+	}
+	var term memrank.OntologyTerm
+	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
+		if strings.EqualFold(c.Name, class) {
+			term = c
+		}
+	}
+	for i, name := range memrank.GrammarNames(memrank.EffectiveDirective(term, "citation_grammar")) {
+		if i == 0 {
+			if issue != "" {
+				issues = append(issues, issue)
+			} else if first.Name != "" {
+				gs = append(gs, first)
+			}
+			continue
+		}
+		g, usable := usableGrammar(read.Grammars, name)
+		switch {
+		case usable:
+			gs = append(gs, g)
+		case g.Issue != "":
+			issues = append(issues, "grammar "+name+" is disabled: "+g.Issue)
+		default:
+			issues = append(issues, "grammar "+name+" is not declared in the ontology")
+		}
+	}
+	return gs, class, issues
 }

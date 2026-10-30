@@ -371,3 +371,16 @@ func TestValidateFields_TheClassificationRecordIsNotAnUndeclaredField(t *testing
 		t.Errorf("warnings = %v, want only the undeclared colour", warns)
 	}
 }
+
+// TestParseClassBody_ACitationGrammarMayNameSeveral: a class citing laws and regulator
+// acts lists both grammars; names are split on commas or spaces, deduplicated, in
+// order. An anchor grammar stays one name.
+func TestParseClassBody_ACitationGrammarMayNameSeveral(t *testing.T) {
+	d := ParseClassBody("@citation_grammar nbu-resolution, law-ua law-ua\n@anchor_grammar nbu-point, other\n")
+	if d.CitationGrammar != "nbu-resolution, law-ua" || d.AnchorGrammar != "nbu-point" {
+		t.Errorf("citation %q anchor %q", d.CitationGrammar, d.AnchorGrammar)
+	}
+	if got := GrammarNames(" a,,b  a ,c"); strings.Join(got, "|") != "a|b|c" {
+		t.Errorf("GrammarNames = %v", got)
+	}
+}
