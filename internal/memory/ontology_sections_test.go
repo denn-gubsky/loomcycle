@@ -361,3 +361,13 @@ func TestOntologyTemplate_SectionExampleDeclaresNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateFields_TheClassificationRecordIsNotAnUndeclaredField: the record classify
+// keeps on a document's root is the runtime's, never a class's to declare.
+func TestValidateFields_TheClassificationRecordIsNotAnUndeclaredField(t *testing.T) {
+	law := OntologyTerm{Name: "Law", FieldSpecs: []FieldSpec{{Name: "number", Type: FieldText}}}
+	warns := ValidateFields(law, map[string]any{"number": "1-I", "classification": map[string]any{"by": "classify"}, "colour": "red"}, "")
+	if len(warns) != 1 || !strings.Contains(warns[0], "colour") {
+		t.Errorf("warnings = %v, want only the undeclared colour", warns)
+	}
+}
