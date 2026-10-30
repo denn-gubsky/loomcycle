@@ -25,6 +25,7 @@ import DocumentChunkTree, {
   type ChunkNode,
 } from "./DocumentChunkTree";
 import ChunkEditorModal from "./ChunkEditorModal";
+import Classification from "./Classification";
 import ColorSchemeEditor from "./ColorSchemeEditor";
 import IdCopy from "./IdCopy";
 import Connections from "./Connections";
@@ -139,6 +140,11 @@ export default function DocumentViewerBody({
   // Bumped after an operator rules on a proposed statement: refetches the edges
   // (and an open Connections panel) without reloading the whole document.
   const [edgesReload, setEdgesReload] = useState(0);
+  // RFC FO — the Classify panel: 1 open (each opening runs a fresh report), 0
+  // closed. rootFields is the root chunk's fields, where a pending
+  // classification waits.
+  const [classifyKey, setClassifyKey] = useState(0);
+  const [rootFields, setRootFields] = useState<unknown>(undefined);
 
   const refresh = useCallback(() => setReload((n) => n + 1), []);
 
@@ -275,6 +281,25 @@ export default function DocumentViewerBody({
     };
   }, [data, documentId, scope, reload, browse, edgesReload]);
 
+  // RFC FO — the root chunk's fields, for the pending-classification block. The
+  // chunk list carries no fields, so the root is fetched on its own — and only
+  // when the data layer can accept a classification (nothing to act on
+  // otherwise). Best-effort: a failure just shows no pending block.
+  useEffect(() => {
+    if (!rootChunkId || !data.documentAcceptClassification) {
+      setRootFields(undefined);
+      return;
+    }
+    let cancelled = false;
+    data
+      .documentGetChunk(rootChunkId, scope, browse)
+      .then((d) => !cancelled && setRootFields(d.document_id === documentId ? d.fields : undefined))
+      .catch(() => !cancelled && setRootFields(undefined));
+    return () => {
+      cancelled = true;
+    };
+  }, [data, documentId, rootChunkId, scope, reload, browse]);
+
   // RFC FN — the operator's ruling on a proposed statement. Offered only when the
   // data layer implements both rulings (they are optional on a custom one). A
   // refusal propagates to the row, which shows it inline.
@@ -297,6 +322,8 @@ export default function DocumentViewerBody({
     setMeta(null);
     setEdges([]);
     setEdgesIncomplete(false);
+    setClassifyKey(0);
+    setRootFields(undefined);
   }, [documentId, scope]);
 
   // Fetch the selected chunk's body.
@@ -676,6 +703,16 @@ export default function DocumentViewerBody({
           >
             colors
           </button>
+          {data.documentClassify && (
+            <button
+              type="button"
+              className={classifyKey > 0 ? "active" : ""}
+              onClick={() => setClassifyKey((n) => (n > 0 ? 0 : 1))}
+              title="Classify — what this document is, by the confirmed ontology (a report first; nothing is written until Apply)"
+            >
+              classify
+            </button>
+          )}
           <button type="button" onClick={() => void download()} title="Download the whole document as Markdown (.md)">
             ↓ .md
           </button>
@@ -702,6 +739,18 @@ export default function DocumentViewerBody({
         </div>
       </div>
       {err && <div className="paths-err">{err}</div>}
+      {!unavailable && (
+        <Classification
+          key={`${scope}:${documentId}`}
+          documentId={documentId}
+          scope={scope}
+          browse={browse}
+          rootFields={rootFields}
+          requestKey={classifyKey}
+          onClose={() => setClassifyKey(0)}
+          onChanged={refresh}
+        />
+      )}
       {unavailable ? (
         <DocUnavailable documentId={documentId} scope={scope} detail={loadErr ?? undefined} />
       ) : (

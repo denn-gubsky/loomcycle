@@ -217,3 +217,106 @@ export interface AssistantContext {
   // content until a manual reload.
   onChanged?: () => void;
 }
+
+// ---- RFC FO P5 — classify / accept_classification ----
+
+// ClassifyWrite: `report` writes nothing; `propose` (the runtime's default)
+// applies a unique rule match and files the rest for an operator's review.
+export type ClassifyWrite = "report" | "propose";
+
+// ClassifyResult — classified: a class was applied live; proposed: it waits for
+// an operator; kept: the type was set by hand and classify left it; unclassified:
+// nothing was decided.
+export type ClassifyResult = "classified" | "proposed" | "kept" | "unclassified";
+
+// ClassifyCandidate is one class a step considered. A rule candidate carries the
+// quote it matched and where (`from`: title | source_title | section) plus the
+// pattern's named groups; a vote candidate its votes and share.
+export interface ClassifyCandidate {
+  class: string;
+  quote?: string;
+  from?: string;
+  groups?: Record<string, unknown>;
+  share?: number;
+  votes?: number;
+}
+
+// ClassifyStep is one step of a classification. `step` is "rules" | "vote" today;
+// a "model" step (and `method`) arrive with a later runtime, so `step` stays an
+// open string and both are rendered when present.
+export interface ClassifyStep {
+  step: string;
+  candidates?: ClassifyCandidate[];
+  chosen?: string;
+  neighbours?: number;
+  reason?: string;
+  method?: string;
+}
+
+export interface ClassifyIssuer {
+  instance: string;
+  quote: string;
+  subject_chunk_id?: string;
+}
+
+export interface ClassifyConcept {
+  concept: string;
+  tag: string;
+  kind?: string;
+  chunk_id?: string;
+  share: number;
+}
+
+// ClassifyStatement is one statement classify wrote (tenant scope only).
+export interface ClassifyStatement {
+  id: string;
+  status: string;
+  created: boolean;
+  [key: string]: unknown;
+}
+
+// ClassifyAnswer is the `classify` op's answer. The list fields are optional
+// here even where the runtime always sends them, so a partial answer renders.
+export interface ClassifyAnswer {
+  document_id: string;
+  write: ClassifyWrite;
+  result: ClassifyResult;
+  class?: string;
+  live: boolean;
+  work_key?: string;
+  fields?: Record<string, unknown>;
+  issued_by?: ClassifyIssuer[];
+  concepts?: ClassifyConcept[];
+  steps?: ClassifyStep[];
+  statements?: ClassifyStatement[];
+  warnings?: string[];
+}
+
+// AcceptClassificationAnswer is the `accept_classification` op's answer.
+// type_pending: the proposed class was not applied (another document holds its
+// identity) and stays pending. skipped_*: what the pending record named that
+// did not re-check (another document's proposal, an already-ruled statement, an
+// undeclared class or concept tag).
+export interface AcceptClassificationAnswer {
+  document_id: string;
+  type?: string;
+  type_pending?: boolean;
+  tags?: string[];
+  accepted_statements: string[];
+  skipped_statements?: string[];
+  skipped_type?: string;
+  skipped_tags?: string[];
+  warnings?: string[];
+}
+
+// ClassificationRecord is what classify keeps in a document ROOT chunk's
+// `fields.classification`: what it applied and what waits for an operator.
+export interface ClassificationRecord {
+  by?: string;
+  at?: number; // Unix ns
+  applied_type?: string;
+  proposed_type?: string;
+  proposed_fields?: Record<string, unknown>;
+  proposed_tags?: string[];
+  statements?: string[];
+}

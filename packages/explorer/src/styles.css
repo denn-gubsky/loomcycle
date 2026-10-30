@@ -1243,6 +1243,140 @@
   cursor: pointer;
 }
 
+/* RFC FO — the classification surface between the document toolbar and the
+   chunk split: the Classify panel (a report, then Apply), the pending block
+   (Accept) and the notice an acceptance leaves. */
+.loomcycle-explorer .doc-classify {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--lc-text-sm);
+}
+.loomcycle-explorer .doc-classify button {
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-classify button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.loomcycle-explorer .doc-classify button.doc-classify-dismiss {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--fg-soft);
+  padding: 0 4px;
+}
+.loomcycle-explorer .doc-classify-pending,
+.loomcycle-explorer .doc-classify-notice,
+.loomcycle-explorer .doc-classify-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.loomcycle-explorer .doc-classify-pending {
+  border-left: 3px solid var(--running);
+  padding-left: 8px;
+}
+.loomcycle-explorer .doc-classify-label {
+  color: var(--running);
+  font-weight: 600;
+}
+.loomcycle-explorer .doc-classify-head h4 {
+  margin: 0;
+  font-size: var(--lc-text-sm);
+  color: var(--fg-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.loomcycle-explorer .doc-classify-result {
+  font-size: var(--lc-text-xs);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .doc-classify-result.classified {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.loomcycle-explorer .doc-classify-result.proposed {
+  color: var(--running);
+  border-color: var(--running);
+}
+.loomcycle-explorer .doc-classify-hint {
+  color: var(--fg-muted);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify-err {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--failed);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify-warn {
+  color: var(--running);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify-rows {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 4px 0 0;
+}
+.loomcycle-explorer .doc-classify-rows dt {
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify-rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.loomcycle-explorer .doc-classify-mono {
+  font-family: var(--lc-font-mono, monospace);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify-item + .doc-classify-item::before {
+  content: " · ";
+  color: var(--fg-muted);
+}
+.loomcycle-explorer .doc-classify-steps,
+.loomcycle-explorer .doc-classify-warnings {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.loomcycle-explorer .doc-classify-step {
+  font-weight: 600;
+}
+.loomcycle-explorer .doc-classify-candidates summary {
+  cursor: pointer;
+  color: var(--fg-soft);
+  font-size: var(--lc-text-xs);
+}
+.loomcycle-explorer .doc-classify-candidates ul {
+  margin: 2px 0 4px;
+  padding-left: 16px;
+}
+.loomcycle-explorer .doc-classify-candidates li {
+  overflow-wrap: anywhere;
+}
+.loomcycle-explorer .doc-classify-actions {
+  display: flex;
+  gap: 6px;
+}
+
 /* ---- document trail: the breadcrumb back through followed references ---- */
 .loomcycle-explorer .doc-trail {
   display: flex;
