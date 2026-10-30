@@ -4040,6 +4040,9 @@ export type DocumentToolInput = {
   edition_date?: number;
   /** import_md with reimport / resolve_anchor: the work's key. */
   work_key?: string;
+  /** import_md with reimport and work_key: the document that made the edition
+   *  (the amending act); each renumbered part gets an `amends` statement from it. */
+  amending_document_id?: string;
   /** resolve_anchor: a part of the work, by anchor or first anchor. */
   anchor?: string;
   /** resolve_anchor: file a placeholder for a work not held yet. */
