@@ -178,3 +178,43 @@ func TestExtractCitations_AnchorsOnlyGrammarIsReportedNotSilent(t *testing.T) {
 		t.Errorf("Order = %#v", got)
 	}
 }
+
+// TestDescribeOntology_ShowsAGrammarsScopeAndAnchorRules: an author reads back what
+// parsed — each scope: and anchor: line with its alternatives, under the wire names
+// scopes and anchors — beside the patterns and resolve line a legacy grammar shows.
+func TestDescribeOntology_ShowsAGrammarsScopeAndAnchorRules(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := installTenantOntology(t, d, base, scopedAnchorOntologyMD, memrank.OntologyConfirmedStatus)
+	_, res := docExec(t, d, ctx, `{"op":"describe_ontology"}`)
+	if res.IsError {
+		t.Fatalf("describe_ontology: %s", res.Text)
+	}
+	var wire struct {
+		Grammars []struct {
+			Name     string                `json:"name"`
+			Patterns []string              `json:"patterns"`
+			Resolve  string                `json:"resolve"`
+			Scopes   []memrank.GrammarRule `json:"scopes"`
+			Anchors  []memrank.GrammarRule `json:"anchors"`
+			UsedAs   []string              `json:"used_as"`
+			Issue    string                `json:"issue"`
+		} `json:"grammars"`
+	}
+	if err := json.Unmarshal([]byte(res.Text), &wire); err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]int{}
+	for i, g := range wire.Grammars {
+		by[g.Name] = i
+	}
+	nbu := wire.Grammars[by["nbu-act"]]
+	if nbu.Issue != "" || len(nbu.Scopes) != 2 || len(nbu.Anchors) != 2 ||
+		strings.Join(nbu.Scopes[1].Templates, "|") != "annex-{n}|annex" || nbu.Anchors[0].Pattern != `^(?P<n>\d+)\.\s.*…$` ||
+		strings.Join(nbu.UsedAs, ",") != "anchor,citation" {
+		t.Errorf("nbu-act = %#v", nbu)
+	}
+	mixed := wire.Grammars[by["act-mixed"]]
+	if mixed.Issue != "" || len(mixed.Scopes) != 1 || len(mixed.Anchors) != 0 || len(mixed.Patterns) != 1 || mixed.Resolve != "anchor=art{n}" {
+		t.Errorf("act-mixed = %#v", mixed)
+	}
+}
