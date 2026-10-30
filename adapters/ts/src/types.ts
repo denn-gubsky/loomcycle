@@ -3998,7 +3998,7 @@ export type DocumentToolInput = {
   include_proposed?: boolean;
   /** get_edges / backlinks / graph_recall / list_facts: also return what has been
    *  retired (superseded relations and facts). list_statements: also list
-   *  relations that have expired or are out of force now. */
+   *  relations that have expired or whose invalid_at has passed. */
   include_retired?: boolean;
   /** upsert_chunk / link_chunks / propose_statement: 0..1, how sure the writer is.
    *  Recorded, never used to hide anything; only a judge_fact verdict withholds. */

@@ -1275,7 +1275,7 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 // listStatements is the review queue and a maintainer's selection: statements of
 // a status (default proposed) across the scope, narrowed by the selection
 // filters, paged newest first (order created) or least recently verified first
-// (order verified). A retired statement — expired, or out of force now — is left
+// (order verified). A retired statement — expired, or already ended — is left
 // out unless include_retired asks for it.
 func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	status := in.Status
@@ -1300,10 +1300,10 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 		args = append(args, ka...)
 	}
 	if !in.IncludeRetired {
-		now := time.Now().UnixNano()
-		vc, va := statementVisibility{includeProposed: true, includeRefuted: true, asOf: &now}.clause()
-		where = append(where, vc)
-		args = append(args, va...)
+		// One-sided on purpose: a statement dated to take effect later is not
+		// retired, and a proposal for a coming edition belongs in the queue.
+		where = append(where, "e.expired_at IS NULL AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
+		args = append(args, time.Now().UnixNano())
 	}
 	sel, selArgs, none, refusal, err := d.statementSelection(ctx, key, in)
 	if err != nil {

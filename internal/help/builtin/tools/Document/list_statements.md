@@ -20,8 +20,9 @@ maintainer pick the relations to re-check.
   characters.
 - `under_path` — only relations with either end in a document named at or under
   this Path-tree path.
-- `include_retired` — also list relations that have expired or are out of force
-  now (their `valid_at` / `invalid_at` exclude the present). Off by default.
+- `include_retired` — also list relations that have expired or whose
+  `invalid_at` has passed. Off by default. A relation dated to take effect
+  later is listed either way.
 - `order` — `created` (default): newest first. `verified`: least recently
   verified first, the never-verified ones before any.
 - `limit` — page size (default 500). `after` — the `next_cursor` of the

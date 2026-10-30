@@ -178,11 +178,12 @@ func TestListStatements_UnderPathKeepsEitherEndsDocument(t *testing.T) {
 	})
 }
 
-// A retired statement — expired, or outside its own validity now — is left out
-// unless include_retired asks for it.
+// A retired statement — expired, or already ended — is left out unless
+// include_retired asks for it. One dated to take effect later is not retired: a
+// proposal for a coming edition still belongs in the review queue.
 func TestListStatements_IncludeRetiredReturnsExpiredAndOutOfForce(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
-		_, a, b, _ := stmtDoc(t, d, ctx, "retired")
+		_, a, b, c := stmtDoc(t, d, ctx, "retired")
 		now := time.Now().UnixNano()
 		live := linkStmt(t, d, ctx, "user", a, b, "cites", "")
 		expired := linkStmt(t, d, ctx, "user", a, b, "implements", "")
@@ -191,11 +192,18 @@ func TestListStatements_IncludeRetiredReturnsExpiredAndOutOfForce(t *testing.T) 
 		stmtSQL(t, d, ctx, "user", `UPDATE chunk_edges SET expired_at = ? WHERE id = ?`, now-1000, expired)
 		stmtSQL(t, d, ctx, "user", `UPDATE chunk_edges SET invalid_at = ? WHERE id = ?`, now-1000, ended)
 		stmtSQL(t, d, ctx, "user", `UPDATE chunk_edges SET valid_at = ? WHERE id = ?`, now+int64(time.Hour), future)
-		if got, _ := listStmts(t, d, ctx, `{"op":"list_statements","scope":"user","status":"asserted"}`); !sameIDs(got, live) {
-			t.Errorf("default: got %v, want [%s]", got, live)
+		if got, _ := listStmts(t, d, ctx, `{"op":"list_statements","scope":"user","status":"asserted"}`); !sameIDs(got, live, future) {
+			t.Errorf("default: got %v, want [%s %s]", got, live, future)
 		}
 		if got, _ := listStmts(t, d, ctx, `{"op":"list_statements","scope":"user","status":"asserted","include_retired":true}`); !sameIDs(got, live, expired, ended, future) {
 			t.Errorf("include_retired: got %v", got)
+		}
+		out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"cites","valid_at":%d}`, b, c, now+int64(time.Hour)))
+		if r.IsError {
+			t.Fatalf("propose: %s", r.Text)
+		}
+		if got, _ := listStmts(t, d, ctx, `{"op":"list_statements","scope":"user"}`); !sameIDs(got, out["id"].(string)) {
+			t.Errorf("a proposal taking effect later is missing from the queue: got %v, want [%s]", got, out["id"])
 		}
 	})
 }
