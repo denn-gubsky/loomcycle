@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>An agent-system kernel you self-host.</strong><br/>
-  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.127.0.</em>
+  <em>~80 MB Go binary that owns the agent loop and ships with memory, documents, teams, a Decision tool, a Crypto tool whose keys the model never sees, no-trace runs, ephemeral git-source volumes, a visual canvas, bundled dev toolchain and headless Chromium. A deployment-shape snapshot that carries the whole deployment in one archive. Multi-replica HA on Postgres. Apache-2.0 — v1.128.0.</em>
 </p>
 
 <p align="center">
@@ -201,24 +201,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.127.0) finishes the sign-in gates: passkeys as a
-second factor and as a password-less gate, SCIM 2.0 provisioning from an
-identity provider, and a strict-mode switch that accepts a person's API token
-only from a gate. An opt-in `loomboard` preset registers loomboard's desktop app
-for "Sign in with loomcycle", and the Usage pages show each model's speed and
-each user's and tenant's spend against its token budget. See
+The most recent line (v1.128.0) makes a relation a statement with evidence and
+governs it with a sectioned ontology. A link records how it was made, its status
+and its verbatim evidence, waits for review when an agent proposes it, and is
+followed by kind in retrieval; a new edition of a law or contract is reconciled
+onto the work it amends part by part. The tenant ontology gains typed document
+classes with identity keys, relation kinds, concept schemes and instances, and
+`classify` says what a document is from it — by pattern, by its neighbours, and
+by a classifier model where those leave it open. A `knowledge-base` bundle
+ships a code-js links agent that builds and maintains statements by rule. See
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.126.0 added sign-in for programs, apps and terminals:
-bridges sign in as external gates with their own key instead of holding an
-operator token, and keep their existing users; loomcycle is an OAuth 2.0 server
-for its own apps, which register in config or as a `ClientDef`; `loomcycle
-login` signs a terminal in by device code; and Cloudflare Access, AWS ALB,
-forward-auth and AWS IAM identities can sign in directly. Agents can see who
-they work for (`Context` identity, `can` and `reach`, a read-only `Identity`
-tool that replaces the MCP `directory` tool), access rules can follow changes
-during a run, and every model and embedder call records its purpose and tiers,
-with background calls now billed. See [`REVISIONS.md`](REVISIONS.md).
+Before it, v1.127.0 finished the sign-in gates: passkeys as a second factor and
+as a password-less gate, SCIM 2.0 provisioning from an identity provider, and a
+strict-mode switch that accepts a person's API token only from a gate, plus a
+`loomboard` preset for app sign-in and model speed and budgets on the Usage
+pages. See [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.125.0 added speech-to-text: `File op=transcribe` turned
 recordings into timed transcripts through a whisper server, and Teams captions

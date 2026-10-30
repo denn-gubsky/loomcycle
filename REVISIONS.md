@@ -8,6 +8,91 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.128.0
+
+*Relations become statements with evidence, the tenant ontology becomes a sectioned document that governs them, and a document can be classified and linked by rule. **A relation is a statement**: it carries its method, status, confidence, validity and verbatim evidence, waits for review when an agent proposes it, and is followed by kind in retrieval. **The ontology gains sections** — typed document classes with identity keys, relation kinds with domain and range, concept schemes, and instances adopted into the entity registry — and the gates read it. **A new edition is reconciled onto the work it amends** part by part, so statements, tags and citations follow it. **`classify`** says what a document is, by its classes' patterns, its neighbours and, where those leave it open, a classifier model. **A `knowledge-base` bundle** ships a code-js links agent that builds and maintains statements by rule. **Read the upgrade notes: Memory SQL no longer reaches the Document tool's tables, and the statements table is rebuilt in place on first use.***
+
+Since v1.127.0: #2226 to #2276.
+- relations as statements (RFC FN): statements and evidence (#2227), retrieval by kind (#2229), editions (#2231, #2247, #2256), the fact ↔ document bridge (#2233, #2234), sync carries the statement (#2257, #2258, #2269), and the integrity and access fixes their reviews found (#2237, #2239, #2246, #2254, #2262, #2265, #2266, #2268, #2271, #2272);
+- the ontology as sections (RFC FO): classes and identity (#2228), relation kinds (#2232), concept schemes (#2235), instances (#2238), `@definitions` (#2264), `classify` (#2273, #2276), and two ontology fixes (#2230, #2241);
+- runtime for the links agent (RFC FP §13): `statement_methods` (#2250, #2267), `list_statements` for maintenance (#2249), `describe_ontology` (#2243, #2260), `extract_citations` (#2245, #2253), a document-scope lease (#2244), `maintain_statement` (#2251);
+- the `knowledge-base` bundle and its `kb/linker` (#2242, #2261, #2270, #2275);
+- search: `memory.fulltext` (#2226, #2240) and the concept filter (#2255);
+- security: Memory SQL may not reach the Document tool's tables (#2252);
+- fixes: explorer and memory-view follow `get_edges` pages (#2236), the error-kind census (#2248), Postgres test leaks (#2263); docs (#2259, #2274).
+- `@loomcycle/client` moves to 1.128.0 for the new `DocumentInput` fields and ops (statements, editions, leases, concept filters, `describe_ontology`, `extract_citations`, `classify`); it adds no client methods. The Python adapter only gains docstring text and stays at 1.126.0.
+
+### A relation is a statement (#2227, #2229, #2231, #2233, #2234, #2256, #2257)
+
+RFC FN (`/loomcycle/rfcs/relations-as-statements`).
+
+- **Statements.** A link between two chunks now records how it was made (`manual`, `wikilink`, `import`, `sync`, `canvas`, `consolidator`, a run's `rule:<name>` / `extractor:<name>`), a status (`asserted`, `proposed`, `rejected`), confidence, `valid_at` / `invalid_at`, attributes and verbatim evidence: quotes from a chunk of the scope, a chat turn, or another scope by natural key. A quote that does not occur in its source is refused, never stored; evidence is capped per statement by `LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE` (default 32).
+- **Review.** `propose_statement` files a statement for review and `list_statements` is the queue; `accept_statement` / `reject_statement` are an operator's ruling and are refused inside a run. A rejection is a tombstone for the relation. `get_edge` returns one statement with all its evidence; `get_edges` pages at 500 with `next_cursor`.
+- **Retrieval by kind.** `graph_recall` takes `kinds`, `direction`, `walk: declared`, `include_hierarchy`, `include_proposed` and `decay`, and walks a statement only while it is in force at the walk's instant. `search` takes `expand` (one-hop neighbours of the top hits, marked `expanded_via`) and `related` takes `related_to` (neighbours by relation, no embedder needed).
+- **Editions.** `import_md` with `reimport: true` (`document_id` or `work_key`, `edition_date`) reconciles a new edition onto the held work part by part: an unchanged part is untouched, a changed one is superseded at the edition date, a moved one keeps its id, a missing one is closed, never deleted. Statements follow a superseded part when their evidence still occurs in the new text; a person's statement, and one an operator ruled on, always follow. Each moved part gets an `amends` statement from `amending_document_id`, and `File op=import` reaches the reimport. `resolve_anchor` finds a work by key and a part by anchor as of a date, and can file a placeholder for a cited work the scope does not hold.
+- **Facts and documents.** A fact distilled from a document records `derived_from` its passage (`upsert_chunk source_chunk_id`); recall reaches through to the passage; deleting the passage keeps the quote on the fact and marks it `source_gone`. A `[[link]]` to a subject is a `mentions`; a fact with a `relation` and two subjects records that statement between them.
+- **Sync** carries a statement's confidence, validity, attributes and evidence, and records the peer's method in `attributes.origin_method`. An operator's ruling survives a sync pull, a reimport and the retirement of the fact that stated it.
+
+### The ontology as sections (#2228, #2232, #2235, #2238, #2264, #2230, #2241)
+
+RFC FO (`/loomcycle/rfcs/ontology-sections`). A top-level heading of the ontology document whose first directive is `@section classes|relations|schemes|instances` says what nesting under it means. An ontology with no sections reads exactly as before, and a draft governs nothing.
+
+- **Classes.** Typed fields (`text`, `number`, `date`, `enum(…)`, `concept(scheme)`, `ref(Class)`, `anchor`) with `@required`, `@unique` and `@identity`; field problems are warnings on the write, never refusals, and an identity another chunk holds is refused. Classes under `Document` govern documents' types and never reach an agent's prompt. Class directives: `@identifier_pattern`, `@title_pattern`, `@anchor_grammar`, `@citation_grammar` (with `grammar:<name>` chunks of `pattern:` lines and a `resolve:` line), `@definitions` and `@exclude`, inherited from the nearest declaring ancestor.
+- **Relation kinds.** Declaring a Relations section switches on the standard kinds (`cites`, `amends`, `implements`, `subject`, `issued_by`, …) and the tenant's own, with `@domain`, `@range`, `@inverse`, characteristics, `@qualifiers` and a `@discriminator`. A hand-made link that breaks them is refused; an extracted one is annotated and proposed. Only kinds the tenant declares are listed to agents.
+- **Concept schemes**: topics, ranks and file plans, with order, notation, alternative labels and mirror tags `<scheme>/<path>`. `search` and `related` take `concept` and `concept_prefix` (#2255): a `subject` statement to the concept in the tenant scope, its tag elsewhere. File-plan `@retention` and `@acl` are parsed and shown, not yet enforced.
+- **Instances**: the organisations, units and posts agents should know, adopted into the entity registry on confirm under the key the memory consolidator uses.
+- **`@definitions <pattern>`** marks a document class's definitions passages; `get_chunk` and filtered `query_chunks` rows carry `definitional: true`.
+- **Legacy-token deployments** (#2230): the ontology page and runs now read one document (see the upgrade notes).
+
+### `classify` (#2273, #2276)
+
+`Document op=classify {document_id | path, write?: propose | report}` says what a document is:
+1. **Rules**: each document class's own `@title_pattern` against the title, the import source title and the first section titles; the identifier pattern fills the identity fields, so the work key; an instance named in the text is the issuer.
+2. **Neighbourhood vote**: the classes and concepts of readable, already-classified documents in the same Path folder (needs an embedder).
+3. **Model** (`memory.classifier`), only where those leave the class open: a decision model first, a chat model when there is none or the decision model is unsure; the chat model must quote the document verbatim.
+
+Exactly one class matching by rule is applied (type, identity fields, `issued_by`); everything else is a proposal, kept in the root's `classification` field and, in the tenant scope, filed as proposed statements. A type set by hand is never replaced; `write: report` writes nothing. `accept_classification` is an operator's ruling and re-checks everything the pending record names. The Web UI's document viewer has a **classify** action and an **Accept** for a pending classification.
+
+### The links agent (#2242, #2243, #2244, #2245, #2249, #2250, #2251, #2253, #2260, #2261, #2267, #2270, #2275)
+
+RFC FP (`/loomcycle/rfcs/links-building-agent`). `LOOMCYCLE_PRESETS=base,knowledge-base` adds `kb/linker`, a code-js agent whose every invariant is code, and a tool-less `kb/verdict` model.
+
+- **Modes**: one `document`, `maintain` (upkeep of one document's statements) or `drain` (the `documents/ingested` queue). **Write modes**: `report` (default) counts what it would write; `propose` takes the scope lease and writes through `propose_statement` and `maintain_statement`.
+- **Layers**: L0 `classify`; L2 citations from the class's citation grammar; L3 `uses_term`, and `defines` from a definitions passage; L4 semantic relations, report only; L6 upkeep.
+- **Runtime it uses**, all new Document ops or fields: `statement_methods: [rule, extractor]` on a code-js agent's definition lets its runs stamp `rule:<name>` / `extractor:<name>`, and a rule may auto-assert an `@auto_assert` kind; `list_statements` filters (`document_id`, `evidence_document_id`, `method_prefix`, `under_path`, `include_retired`) and `order: verified`; `describe_ontology` (the ontology in force, instances included); `extract_citations` (a class's citation grammar applied in RE2, read-only); `lease` / `release` (a named lease on a document scope); `maintain_statement` (verify, expire, demote, merge, mark or relocate evidence, flag — never asserts or deletes; a person's statement and an operator-ruled one take only verify and flag).
+
+### Search (#2226, #2240)
+
+**`memory.fulltext`** sets the Postgres word leg's text search configuration (e.g. `russian` or `simple`) and an optional `unaccent`, so inflected forms of a term match. Unset, nothing changes. Only a server boot or `loomcycle migrate up --config` rebuilds the column; the applying role must own `memory_embeddings`; across replicas a change is last-writer-wins.
+
+### Security
+
+- **Memory SQL may not reach the Document tool's tables** (#2252). `sql_query` / `sql_exec` share a database per scope with the Document tool, so an agent holding `Memory` could accept its own proposed statement with an `UPDATE` or read chunks past the Document tool's access rules. Both ops now refuse any statement that names a document table or index.
+- **Listings no longer hint at hidden rows**: `get_edges`, `list_statements`, `documents_summary`, `query_documents` and filter-free `search` withhold unreadable rows before the page cut, so a short page or `truncated` no longer reveals documents a confined reader cannot see (#2254, #2265, #2272); `extract_citations` and `resolve_anchor` answer an unreadable work as an absent one (#2247, #2253); relation-following retrieval reaches only rows the reader may see (#2237); fact writes ask `link` on each endpoint (#2239).
+- **Statement integrity** (#2246, #2266, #2268, #2271): a write cannot clear the review queue, a read-plus-propose principal cannot add evidence to an asserted relation, and machine paths (a reimport, a sync pull, a run's upkeep, a fact's retirement) never undo an operator's ruling or retire a person's statement.
+
+### Fixes
+
+- The explorer and memory-view follow `get_edges` pages instead of dropping links past 500 (#2236).
+- The error-kind census lists `describe_ontology`'s file again (#2248).
+- Postgres test helpers no longer leak schemas or miss the `vector` extension (#2263).
+
+### Upgrade notes
+
+- **No store migrations.** The Document tool's per-scope tables evolve in place on first use of each scope:
+  - **the statements table is rebuilt once**, in one transaction: existing links read back `asserted`, method `manual` (`wikilink` for a `[[link]]`), so a reader that ignores the new fields sees no change;
+  - new tables `chunk_edge_evidence` and `document_leases`, new columns for anchors, work keys, identity keys, `operator_ruled_at` and `source_gone`;
+  - old `references` links to subjects are re-kinded `mentions`, once per scope.
+- **Behaviour change: Memory `sql_query` / `sql_exec` refuse the Document tool's tables** (`chunks`, `chunk_edges`, `documents`, …). An agent that read them through Memory SQL must use `Document op=query_chunks` (its `sql` escape hatch is unchanged) or the Document ops.
+- **Behaviour change: `get_edges` pages at 500 statements** and returns `truncated` / `next_cursor`; follow the cursor.
+- **Legacy-token deployments** (`LOOMCYCLE_AUTH_TOKEN`): the Settings → Ontology page now shows the document runs have always used, which may be a draft you have not seen. An ontology confirmed on the page before this release never reached runs: confirm it again.
+- **`link_chunks` refuses an `about` from a chunk that is not a fact**; the bundled consolidator writes them through `upsert_chunk about_ids`. A customised consolidator that still calls `link_chunks` from facts keeps working.
+- **New config, all optional:** `memory.fulltext`; `memory.classifier` (`decision` / `chat`, `min_probability`, `min_margin` — provisional 0.6 / 0.2); the `knowledge-base` preset; `statement_methods` on an agent definition (code-js only). New environment variable `LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE`. New usage purpose `classify` (background).
+- **New wire surface, all additive** on the Document tool (every transport): ops `propose_statement`, `accept_statement`, `reject_statement`, `list_statements`, `get_edge`, `maintain_statement`, `resolve_anchor`, `describe_ontology`, `extract_citations`, `lease`, `release`, `classify`, `accept_classification`; new fields on `graph_recall`, `search`, `related`, `import_md`, `upsert_chunk`, `get_chunk` and `query_chunks`.
+- **Rolling upgrades:** an older replica knows neither the statement columns nor the new ops. Upgrade all replicas together.
+- **Dependencies:** none new.
+- **Images:** a minor tag rebuilds every image, all at 1.128.0 for amd64 and arm64: `loomcycle`, `loomcycle-toolbox`, `loomcycle-browser`, the sandbox images and `loomcycle-media`.
+
 ## What's in v1.127.0
 
 *Passkeys, SCIM provisioning and gate-only user tokens; a `loomboard` preset for app sign-in; and model speed and budgets on the Usage pages. **Passkeys** are a phishing-resistant second factor at a password gate and, as `kind: passkey`, a password-less sign-in. **A `kind: scim` gate takes SCIM 2.0** at `/scim/v2`, so an identity provider creates, deactivates and groups users the way an external gate's sync does. **`auth.strict.user_tokens: gate_only`** refuses hand-minted per-user tokens, so a person's API token comes only from a gate. **The opt-in `loomboard` preset** registers loomboard's desktop app for "Sign in with loomcycle". **The Usage pages** show each model's speed and each user's and tenant's spend against its token budget. **Read the upgrade notes: two migrations, a new Go dependency, and strict mode now refusing a hand-minted user token as a Web UI sign-in.***
