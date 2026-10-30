@@ -3911,6 +3911,7 @@ export type DocumentToolInput = {
     | "lease"
     | "release"
     | "describe_ontology"
+    | "extract_citations"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"

@@ -16,38 +16,54 @@ import (
 
 // anchorGrammarFor names the @anchor_grammar of the class of the document whose
 // root is rootID ("" = none: heading-path anchors).
+func (d *Document) anchorGrammarFor(ctx context.Context, key sqlmem.ScopeKey, rootID string) string {
+	g, _, _ := d.classGrammar(ctx, key, rootID, "anchor_grammar")
+	return g.Name
+}
+
+// classGrammar is the grammar the class of the document whose root is rootID names in
+// directive (anchor_grammar or citation_grammar). class is that class ("" when the root's
+// type is not a class in force); issue explains a named grammar that cannot be used, and
+// the grammar is then zero.
 //
 // The class is the root chunk's type, resolved against the tenant's CONFIRMED classes;
 // the grammar is the class's own or its nearest ancestor's. A grammar the ontology
-// reports as broken is disabled, so it yields "" rather than a half-working anchor.
-func (d *Document) anchorGrammarFor(ctx context.Context, key sqlmem.ScopeKey, rootID string) string {
+// reports as broken is disabled, so it yields nothing rather than half-working matches.
+func (d *Document) classGrammar(ctx context.Context, key sqlmem.ScopeKey, rootID, directive string) (g memrank.OntologyGrammar, class, issue string) {
 	if d.Store == nil || d.SqlMem == nil || rootID == "" {
-		return ""
+		return memrank.OntologyGrammar{}, "", ""
 	}
 	row, ok, err := d.getChunkRow(ctx, key, rootID)
 	if err != nil || !ok || strings.TrimSpace(row.Type) == "" {
-		return ""
+		return memrank.OntologyGrammar{}, "", ""
 	}
 	read, ok := d.tenantOntologyRead(ctx)
 	if !ok || !read.Confirmed {
-		return ""
+		return memrank.OntologyGrammar{}, "", ""
 	}
-	var class memrank.OntologyTerm
+	var term memrank.OntologyTerm
 	found := false
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		if strings.EqualFold(c.Name, row.Type) {
-			class, found = c, true
+			term, found = c, true
 			break
 		}
 	}
 	if !found {
-		return ""
+		return memrank.OntologyGrammar{}, "", ""
 	}
-	name := memrank.EffectiveDirective(class, "anchor_grammar")
-	if _, usable := usableGrammar(read.Grammars, name); !usable {
-		return ""
+	name := memrank.EffectiveDirective(term, directive)
+	if name == "" {
+		return memrank.OntologyGrammar{}, term.Name, ""
 	}
-	return name
+	g, usable := usableGrammar(read.Grammars, name)
+	if !usable {
+		if g.Issue != "" {
+			return memrank.OntologyGrammar{}, term.Name, "grammar " + name + " is disabled: " + g.Issue
+		}
+		return memrank.OntologyGrammar{}, term.Name, "grammar " + name + " is not declared in the ontology"
+	}
+	return g, term.Name, ""
 }
 
 // anchorFor applies a grammar to a part's heading path; "" when grammar is "" or
