@@ -3997,7 +3997,8 @@ export type DocumentToolInput = {
    *  proposed for review. graph_recall (default false): also follow them. */
   include_proposed?: boolean;
   /** get_edges / backlinks / graph_recall / list_facts: also return what has been
-   *  retired (superseded relations and facts). */
+   *  retired (superseded relations and facts). list_statements: also list
+   *  relations that have expired or are out of force now. */
   include_retired?: boolean;
   /** upsert_chunk / link_chunks / propose_statement: 0..1, how sure the writer is.
    *  Recorded, never used to hide anything; only a judge_fact verdict withholds. */
@@ -4005,8 +4006,18 @@ export type DocumentToolInput = {
   /** get_edges: out | in | both (default both). reorder_chunk: up | down. sync /
    *  diff_remote: pull (default) | push. */
   direction?: "out" | "in" | "both" | "up" | "down" | "pull" | "push";
-  /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
+  /** get_edges / backlinks / list_statements: the next_cursor of the previous page
+   *  (list_statements: with the same `order`). */
   after?: string;
+  /** list_statements: only relations with an evidence row quoting a chunk of
+   *  this document. (`document_id` keeps relations with either end in it.) */
+  evidence_document_id?: string;
+  /** list_statements: only relations whose method starts with exactly this text
+   *  (case-sensitive, no wildcards), e.g. "rule:". */
+  method_prefix?: string;
+  /** list_statements: created (default) is newest first; verified is least
+   *  recently verified first, never-verified ones before any. */
+  order?: "created" | "verified";
   /** graph_recall: declared (the tenant's walk kinds) or all relations. */
   walk?: "declared" | "all";
   /** graph_recall with budget_chars: each hop spends at most decay^hop of it.
@@ -4040,7 +4051,8 @@ export type DocumentToolInput = {
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before
-   *  its limit, so the best matches come from that part of the tree. */
+   *  its limit, so the best matches come from that part of the tree.
+   *  list_statements: relations with either end in a document named there. */
   under_path?: string;
   /** search / related: chunks of documents named at or under ANY of these paths
    *  (with `under_path`, the union of both). */
