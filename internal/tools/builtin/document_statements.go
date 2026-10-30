@@ -597,16 +597,17 @@ func withoutOriginMethod(attributes map[string]any) map[string]any {
 // resyncStatement brings a statement a pull wrote to the envelope w carries: the
 // checks and the vocabulary annotation a fresh write would apply, then one UPDATE
 // of confidence, invalid_at and attributes when any differs. Only an asserted
-// statement with method sync is touched — one written here keeps its writer's
-// claim — and valid_at and the discriminator are its key, so they never change.
-// Evidence is not touched.
+// statement with method sync that no operator ruled on is touched — one written
+// here keeps its writer's claim, one ruled on keeps the ruling (re-checked by the
+// UPDATE, for a ruling made since the read) — and valid_at and the discriminator
+// are its key, so they never change. Evidence is not touched.
 func (d *Document) resyncStatement(ctx context.Context, key sqlmem.ScopeKey, id string, w edgeWrite) (bool, *tools.Result, error) {
 	env, refuse := d.checkEnvelope(ctx, key, &w)
 	if refuse != nil {
 		return false, refuse, nil
 	}
 	s, err := d.statementByID(ctx, key, id)
-	if err != nil || s == nil || s.Method != edgeMethodSync || s.Status != edgeStatusAsserted {
+	if err != nil || s == nil || s.Method != edgeMethodSync || s.Status != edgeStatusAsserted || s.OperatorRuledAt != nil {
 		return false, nil, err
 	}
 	var have []byte
@@ -620,11 +621,13 @@ func (d *Document) resyncStatement(ctx context.Context, key sqlmem.ScopeKey, id 
 	if env.attrs != nil {
 		attrs = string(env.attrs)
 	}
-	if err := d.exec(ctx, key, `UPDATE chunk_edges SET confidence = ?, invalid_at = ?, attributes = ? WHERE id = ? AND method = ?`,
-		env.confidence, w.invalidAt, attrs, id, edgeMethodSync); err != nil {
+	n, err := d.execCount(ctx, key, `UPDATE chunk_edges SET confidence = ?, invalid_at = ?, attributes = ?
+		WHERE id = ? AND method = ? AND operator_ruled_at IS NULL`,
+		env.confidence, w.invalidAt, attrs, id, edgeMethodSync)
+	if err != nil {
 		return false, nil, err
 	}
-	return true, nil, nil
+	return n > 0, nil, nil
 }
 
 // checkedEvidence is an evidence row that passed checkEvidence, with its span
