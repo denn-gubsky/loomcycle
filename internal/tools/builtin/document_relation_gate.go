@@ -350,9 +350,10 @@ func (d *Document) gateAttributes(ctx context.Context, kind string, attributes m
 }
 
 // statementLayerAttributes are the attribute keys the statement layer writes for itself
-// (the D8 annotation, a revision proposal's original). They share the attributes object
-// with a kind's qualifiers and are never checked against them.
-var statementLayerAttributes = map[string]bool{"ontology_valid": true, "revision_of": true}
+// (the D8 annotation, a revision proposal's original, a synced statement's original
+// method). They share the attributes object with a kind's qualifiers and are never
+// checked against them.
+var statementLayerAttributes = map[string]bool{"ontology_valid": true, "revision_of": true, "origin_method": true}
 
 func qualifierNames(rel memrank.OntologyRelation) string {
 	var out []string
