@@ -656,3 +656,64 @@ func TestMaintainStatement_RetiringNeedsLinkOnBothEnds(t *testing.T) {
 		}
 	}
 }
+
+// The protection rests on a mark only the operator's ruling sets, not on
+// judged_by, which any judge rewrites: a run's judge_fact on an accepted
+// statement must not make it demotable or expirable from a run.
+func TestMaintainStatement_JudgeFactCannotLiftAnOperatorRuling(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		id := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusProposed, 0, f.quoteInA)
+		if _, r := docExec(t, d, operatorCtx(ctx), fmt.Sprintf(`{"op":"accept_statement","scope":"user","id":%q}`, id)); r.IsError {
+			t.Fatalf("accept: %s", r.Text)
+		}
+		if _, r := docExec(t, d, f.run, fmt.Sprintf(`{"op":"judge_fact","scope":"user","id":%q,"verdict":"supported","reason":"the span carries it"}`, id)); r.IsError {
+			t.Fatalf("judge_fact: %s", r.Text)
+		}
+		if s := f.row(t, id); s.JudgedBy == "operator" {
+			t.Fatalf("judge_fact did not rewrite judged_by, so this test proves nothing: %+v", s)
+		}
+		for _, action := range []string{"demote", "expire"} {
+			_, r := f.maintain(t, f.run, id, action, `,"reason":"r","method":"rule:maintain"`)
+			wantRefusal(t, "a run's "+action+" after its own judge_fact", r, "statement_operator_ruled")
+		}
+		if s := f.row(t, id); s.Status != edgeStatusAsserted || s.ExpiredAt != nil || s.OperatorRuledAt == nil {
+			t.Errorf("the ruling was undone: %+v", s)
+		}
+	})
+}
+
+// A scope from before the mark gains the column on its next provisioning, with
+// every statement an operator had ruled on marked, and nothing else; running
+// the migration again changes nothing.
+func TestMigrateEdgeStatements_BackfillsOperatorRuledAt(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		f := newMaintFixture(t, d, ctx)
+		ruled := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 1)
+		judged := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 2)
+		plain := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 3)
+		key, _, _ := d.resolveScope(ctx, "user")
+		for _, s := range []string{
+			`ALTER TABLE chunk_edges DROP COLUMN operator_ruled_at`,
+			`UPDATE chunk_edges SET judged_by = 'operator', judged_at = 77 WHERE id = '` + ruled + `'`,
+			`UPDATE chunk_edges SET judged_by = 'kb-judge', judged_at = 78 WHERE id = '` + judged + `'`,
+		} {
+			if err := d.exec(ctx, key, s); err != nil {
+				t.Fatalf("%s: %v", s, err)
+			}
+		}
+		for i := 0; i < 2; i++ {
+			if err := d.migrateEdgeStatements(ctx, key); err != nil {
+				t.Fatalf("migrate (pass %d): %v", i+1, err)
+			}
+		}
+		if s := f.row(t, ruled); s.OperatorRuledAt == nil || *s.OperatorRuledAt != 77 {
+			t.Errorf("an operator-ruled statement was not marked: %+v", s.OperatorRuledAt)
+		}
+		for _, id := range []string{judged, plain} {
+			if s := f.row(t, id); s.OperatorRuledAt != nil {
+				t.Errorf("statement %s was marked though no operator ruled on it", id)
+			}
+		}
+	})
+}

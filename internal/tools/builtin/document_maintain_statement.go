@@ -14,7 +14,7 @@ package builtin
 // Who may call it: a code agent holding a statement_methods grant (its writes
 // carry the method it stamps), and the operator plane. A statement a person
 // wrote (method manual) takes only verify and flag from anyone, and one an
-// operator ruled on (judged_by operator) only verify and flag from a run: what
+// operator ruled on (operator_ruled_at) only verify and flag from a run: what
 // a person asserted or decided is not a pass's to undo. The ACL asks propose
 // for every action, and link on both ends for the actions that change what is
 // live (expire, demote, merge) — link is the verb of accepting, rejecting and
@@ -105,7 +105,7 @@ func (d *Document) applyMaintenance(ctx context.Context, key sqlmem.ScopeKey, ms
 	case s.Method == edgeMethodManual && !maintainActions[in.Action]:
 		return errBusiness(maintainOp+": statement_manual: a person wrote this statement, so only verify and flag apply to it",
 			"Flag it for review (action flag) and say why in reason."), nil
-	case s.JudgedBy == "operator" && !maintainActions[in.Action] && !authorIsOperatorPlane(ctx):
+	case s.OperatorRuledAt != nil && !maintainActions[in.Action] && !authorIsOperatorPlane(ctx):
 		return errBusiness(maintainOp+": statement_operator_ruled: an operator ruled on this statement, so from a run only verify and flag apply to it",
 			"Flag it for review (action flag) and say why in reason."), nil
 	}
