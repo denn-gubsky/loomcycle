@@ -105,6 +105,11 @@ const (
 	edgeMethodConsolidator = "consolidator"
 )
 
+// edgeOriginMethodAttr names, on a statement a sync carried, the method it was
+// made by where it came from. Provenance, not a qualifier: the vocabulary gate
+// does not check it.
+const edgeOriginMethodAttr = "origin_method"
+
 // Bounds on what a caller may attach to one statement.
 const (
 	edgeEvidenceDefaultMax = 32
@@ -527,7 +532,7 @@ func (d *Document) checkEnvelope(ctx context.Context, key sqlmem.ScopeKey, w *ed
 	if gateAuthored && gate.Refuse != nil {
 		return env, gate.Refuse
 	}
-	agate := d.gateAttributes(ctx, w.kind, w.attributes, gateAuthored)
+	agate := d.gateAttributes(ctx, w.kind, withoutOriginMethod(w.attributes), gateAuthored)
 	if gateAuthored && agate.Refuse != nil {
 		return env, agate.Refuse
 	}
@@ -547,6 +552,55 @@ func (d *Document) checkEnvelope(ctx context.Context, key sqlmem.ScopeKey, w *ed
 		}
 	}
 	return env, nil
+}
+
+// withoutOriginMethod returns attributes less origin_method, for the vocabulary
+// gate: a kind that declares qualifiers would otherwise refuse (or annotate) every
+// statement a sync carried.
+func withoutOriginMethod(attributes map[string]any) map[string]any {
+	if _, ok := attributes[edgeOriginMethodAttr]; !ok {
+		return attributes
+	}
+	out := make(map[string]any, len(attributes))
+	for k, v := range attributes {
+		if k != edgeOriginMethodAttr {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// resyncStatement brings a statement a pull wrote to the envelope w carries: the
+// checks and the vocabulary annotation a fresh write would apply, then one UPDATE
+// of confidence, invalid_at and attributes when any differs. Only an asserted
+// statement with method sync is touched — one written here keeps its writer's
+// claim — and valid_at and the discriminator are its key, so they never change.
+// Evidence is not touched.
+func (d *Document) resyncStatement(ctx context.Context, key sqlmem.ScopeKey, id string, w edgeWrite) (bool, *tools.Result, error) {
+	env, refuse := d.checkEnvelope(ctx, key, &w)
+	if refuse != nil {
+		return false, refuse, nil
+	}
+	s, err := d.statementByID(ctx, key, id)
+	if err != nil || s == nil || s.Method != edgeMethodSync || s.Status != edgeStatusAsserted {
+		return false, nil, err
+	}
+	var have []byte
+	if len(s.Attributes) > 0 {
+		have, _ = json.Marshal(s.Attributes)
+	}
+	if sameConfidence(s.Confidence, env.confidence) && sameInstant(s.InvalidAt, w.invalidAt) && string(have) == string(env.attrs) {
+		return false, nil, nil
+	}
+	var attrs any
+	if env.attrs != nil {
+		attrs = string(env.attrs)
+	}
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET confidence = ?, invalid_at = ?, attributes = ? WHERE id = ? AND method = ?`,
+		env.confidence, w.invalidAt, attrs, id, edgeMethodSync); err != nil {
+		return false, nil, err
+	}
+	return true, nil, nil
 }
 
 // checkedEvidence is an evidence row that passed checkEvidence, with its span
