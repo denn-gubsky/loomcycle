@@ -429,7 +429,7 @@ func (d *Document) graphIdentityNodes(ctx context.Context, key sqlmem.ScopeKey, 
 			args = append(args, id)
 		}
 		res, err := d.query(ctx, key,
-			`SELECT DISTINCT to_id FROM chunk_edges WHERE kind = 'about' AND to_id IN (`+
+			`SELECT DISTINCT e.to_id FROM chunk_edges e WHERE e.kind = 'about' AND `+edgeLiveClause+` AND e.to_id IN (`+
 				placeholders(len(batch))+`)`, args...)
 		if err != nil {
 			return out

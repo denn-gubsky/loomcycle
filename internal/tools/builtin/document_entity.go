@@ -378,8 +378,11 @@ func chunkMetaToJSON(m chunkMetaRow) map[string]any {
 // needs no schema change and no re-stamping, so it holds for stores that already
 // exist. An orphan subject whose edge write failed still counts, which is exactly
 // today's behaviour — the over-counting direction, not the data-losing one.
-const identityNodeExclusion = `NOT EXISTS (SELECT 1 FROM chunk_edges e ` +
-	`WHERE e.to_id = m.chunk_id AND e.kind = 'about')`
+//
+// A live `about` statement only, as every other `about` reader: one rejected or
+// judged unsupported no longer says its target is the subject of anything.
+var identityNodeExclusion = `NOT EXISTS (SELECT 1 FROM chunk_edges e ` +
+	`WHERE e.to_id = m.chunk_id AND e.kind = 'about' AND ` + edgeLiveClause + `)`
 
 // listFacts returns the scope's facts — chunks that HAVE a chunk_memory_meta
 // sidecar — as metadata only, no bodies. It is the browse surface behind the

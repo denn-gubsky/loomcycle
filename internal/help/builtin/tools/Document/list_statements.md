@@ -17,7 +17,9 @@ opening each one.
 
 ## Returns
 
-`{statements: [...]}`, newest first, each shaped like a `get_edges` row.
+`{statements: [...]}`, newest first, each shaped like a `get_edges` row. Rule
+on one with `accept_statement` or `reject_statement`; a `rejected` one can be
+accepted if it was rejected in error.
 `truncated: true` with `next_cursor` means there is another page.
 
 ## Examples

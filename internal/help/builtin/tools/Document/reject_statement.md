@@ -1,12 +1,17 @@
 ---
 name: Document/reject_statement
-description: "Document op=reject_statement — an operator rejects a proposed (or asserted) relation, with a reason."
+description: "Document op=reject_statement — an operator rejects a proposed relation, with a reason."
 ---
-`reject_statement` marks a relation rejected. It is kept, not deleted, as a
-record that it was considered and refused: it is withheld from every reader,
-and the same relation is refused if anyone proposes or links it again. Like
-`accept_statement`, it is the operator's ruling and is refused inside an agent
-run. To remove a link outright, use `unlink_chunks`.
+`reject_statement` marks a proposed relation rejected. It is kept, not deleted,
+as a record that it was considered and refused: it is withheld from every
+reader, and the same relation is refused if anyone proposes or links it again,
+at any `valid_at`. Like `accept_statement`, it is the operator's ruling and is
+refused inside an agent run.
+
+It rules on proposals only. To withdraw a relation that is already asserted,
+judge it unsupported with `judge_fact` (kept, withheld) or remove it with
+`unlink_chunks`. A relation made by a `[[name]]` link in a chunk body is
+removed by editing the link out of the body.
 
 ## Arguments
 
@@ -22,6 +27,8 @@ run. To remove a link outright, use `unlink_chunks`.
 
 - Refused with a permission error inside a run.
 - `reason is required`.
+- `not_a_proposal` — the relation is asserted or already rejected.
+- `statement_changed` — someone ruled on it while you did; reload it.
 
 ## Examples
 

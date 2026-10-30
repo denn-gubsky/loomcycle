@@ -66,7 +66,7 @@ func (d *Document) documentOfChunk(ctx context.Context, key sqlmem.ScopeKey, chu
 // roots; returns the fragment and its arguments in placeholder order.
 func factsAboutSubjectSQL(entityChunkID, documentID string) (string, []any) {
 	return `(c.document_id = ? OR EXISTS (SELECT 1 FROM chunk_edges e ` +
-			`WHERE e.from_id = c.id AND e.to_id = ? AND e.kind = ?))`,
+			`WHERE e.from_id = c.id AND e.to_id = ? AND e.kind = ? AND ` + edgeLiveClause + `))`,
 		[]any{documentID, entityChunkID, aboutEdgeKind}
 }
 
@@ -82,7 +82,7 @@ func (d *Document) inboundSubjectRefs(ctx context.Context, key sqlmem.ScopeKey,
 	res, err := d.query(ctx, key,
 		`SELECT c.id, coalesce(c.title, ''), coalesce(c.type, ''), c.document_id, e.kind
 		   FROM chunk_edges e JOIN chunks c ON c.id = e.from_id
-		  WHERE e.to_id = ? AND e.kind = ? AND c.document_id <> ?
+		  WHERE e.to_id = ? AND e.kind = ? AND c.document_id <> ? AND `+edgeLiveClause+`
 		  ORDER BY c.id LIMIT ?`,
 		entityChunkID, aboutEdgeKind, documentID, subjectRefsCap+1)
 	if err != nil {

@@ -3546,11 +3546,8 @@ LIMIT ?`, args...)
 		stmts[i] = scanStatement(r)
 		ids[i] = stmts[i].ID
 	}
-	ev, counts, err := d.evidenceFor(ctx, key, ids, edgeEvidencePreview)
+	ev, counts, err := d.readableEvidenceFor(ctx, key, ids, edgeEvidencePreview)
 	if err != nil {
-		return errFrom(op+": "+err.Error(), err), nil
-	}
-	if ev, err = d.withholdUnreadableEvidence(ctx, key, ev); err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	edges := make([]map[string]any, 0, len(rows))
@@ -4124,7 +4121,10 @@ func (d *Document) unlinkedMentions(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	// The already-linked set: every chunk that already references the target
 	// (manual OR [[name]] edge — both live in chunk_edges as from→to). A mention
-	// from a chunk that already links is not "unlinked".
+	// from a chunk that already links is not "unlinked". Every status counts on
+	// purpose: a proposal is already awaiting review, and a rejected or refuted
+	// relation was considered and refused — suggesting it again invites a link
+	// that would be refused, or, from an operator, would undo the ruling.
 	linked := map[string]bool{}
 	lres, err := d.query(ctx, key, `SELECT from_id FROM chunk_edges WHERE to_id = ?`, in.ID)
 	if err != nil {
@@ -5375,8 +5375,10 @@ func (d *Document) exportCanvas(ctx context.Context, key sqlmem.ScopeKey, mscope
 
 	// Within-document edges whose BOTH endpoints are content nodes. The SQL
 	// restricts to this document; the nodeSet check then drops any edge touching
-	// the root (the one in-document chunk that is not a node).
-	eres, err := d.query(ctx, key, `SELECT from_id, to_id, kind FROM chunk_edges WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND to_id IN (SELECT id FROM chunks WHERE document_id = ?) ORDER BY from_id, to_id, kind`, docID, docID)
+	// the root (the one in-document chunk that is not a node). Live statements
+	// only: a canvas edge has no status, and import_canvas asserts every edge, so a
+	// proposal or a rejection drawn here would come back asserted.
+	eres, err := d.query(ctx, key, `SELECT e.from_id, e.to_id, e.kind FROM chunk_edges e WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND e.to_id IN (SELECT id FROM chunks WHERE document_id = ?) AND `+edgeLiveClause+` ORDER BY e.from_id, e.to_id, e.kind`, docID, docID)
 	if err != nil {
 		return errFrom("export_canvas: edges: "+err.Error(), err), nil
 	}
