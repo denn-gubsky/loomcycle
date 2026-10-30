@@ -3923,6 +3923,8 @@ export type DocumentToolInput = {
     | "release"
     | "describe_ontology"
     | "extract_citations"
+    | "classify"
+    | "accept_classification"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"
@@ -4149,6 +4151,9 @@ export type DocumentToolInput = {
   name?: string;
   /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
   ttl_ms?: number;
+  /** classify: "propose" (default) applies an unambiguous rule match and files the
+   *  rest for review; "report" writes nothing. */
+  write?: "propose" | "report";
   /** export_md: embed round-trippable chunk metadata + edges as HTML comments
    *  (default true server-side). false = clean human-facing Markdown. */
   include_metadata?: boolean;

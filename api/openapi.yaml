@@ -2412,6 +2412,8 @@ components:
             - release
             - describe_ontology
             - extract_citations
+            - classify
+            - accept_classification
             - query_chunks
             - add_tags
             - remove_tags

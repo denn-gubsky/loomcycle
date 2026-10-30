@@ -636,6 +636,12 @@ func scalarString(v any) string {
 	}
 }
 
+// ReservedRootFields are the fields the runtime itself keeps on a document's root chunk.
+// They are never a class's to declare, so they are never reported as undeclared: an
+// operator told "classification is not declared by Law" on every write of a classified
+// law would learn to ignore the warning that matters.
+var ReservedRootFields = map[string]bool{"classification": true}
+
 // ValidateFields checks a chunk's fields against its class's typed fields and returns
 // one warning per problem: an unknown field, a value of the wrong type, a missing
 // @required field.
@@ -673,6 +679,9 @@ func ValidateFields(t OntologyTerm, fields map[string]any, title string) []strin
 	}
 	var unknown []string
 	for name := range fields {
+		if ReservedRootFields[name] {
+			continue
+		}
 		if _, ok := byName[name]; !ok {
 			unknown = append(unknown, name)
 		}
