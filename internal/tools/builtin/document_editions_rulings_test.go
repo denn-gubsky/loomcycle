@@ -229,3 +229,38 @@ func TestReimport_CopyWithoutARulingMatchesItsSourceRow(t *testing.T) {
 		}
 	})
 }
+
+// A person's statement that reached this side through a sync is a person's here
+// too: a reimport whose new edition drops its quoted text copies it, as it copies
+// a manual one, rather than sending it back to review. A synced statement a
+// machine made is still re-checked.
+func TestReimport_SyncedPersonsStatementIsCopiedNotDemoted(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		key := userKey(t, d, ctx)
+		for i, tc := range []struct {
+			name, attrs string
+			person      bool
+		}{
+			{"origin manual", `{"origin_method":"manual"}`, true},
+			{"no origin", `{}`, true},
+			{"origin rule", `{"origin_method":"rule:x"}`, false},
+		} {
+			wk := fmt.Sprintf("law:ua/synced-%d", i)
+			_, v1 := rulingFixture(t, d, ctx, wk)
+			id := seedFromArticle1(t, d, ctx, v1, v1["article-2"].id, "cites", edgeStatusAsserted, "One cites Two")
+			if err := d.exec(ctx, key, `UPDATE chunk_edges SET method = ?, attributes = ? WHERE id = ?`, edgeMethodSync, tc.attrs, id); err != nil {
+				t.Fatal(err)
+			}
+			rep := reimport(t, d, ctx, rulingEd2, wk, 2_000_000)["reimport"].(map[string]any)
+			after := stmtRow(t, d, ctx, key, id)
+			copies := copiesOf(t, d, ctx, key, id)
+			if tc.person {
+				if after.Status != edgeStatusAsserted || len(copies) != 1 || rep["statements_proposed"] != float64(0) {
+					t.Errorf("%s: status %s, %d copies, report %v; want a person's statement copied, not demoted", tc.name, after.Status, len(copies), rep)
+				}
+			} else if after.Status != edgeStatusProposed || len(copies) != 0 {
+				t.Errorf("%s: status %s, %d copies; want a machine's statement demoted for re-checking", tc.name, after.Status, len(copies))
+			}
+		}
+	})
+}
