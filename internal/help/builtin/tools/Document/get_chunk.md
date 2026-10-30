@@ -21,7 +21,9 @@ size}` for an image chunk (the bytes are served separately).
 
 `definitional: true` marks a chunk in a definitions passage: its document's
 class (in a confirmed ontology) declares `@definitions`, and the chunk's title
-or an ancestor's below the root matches it. Absent otherwise.
+or an ancestor's below the root matches it. Absent otherwise, and never on the
+chunk a write op (create_chunk, update_chunk, set_asset) returns — read it back
+with get_chunk.
 
 A fact also carries `entity`: `retired` (always present; true once a
 `supersede_chunk` retired it), and when set `valid_at`, `invalid_at`,

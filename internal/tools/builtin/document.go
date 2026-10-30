@@ -2801,7 +2801,11 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		}
 	}
 	// RFC FP R8: a fact is never a definitions passage, so its read skips the lookup.
-	if !isFact {
+	// Only an explicit get_chunk computes the flag: create_chunk, update_chunk and
+	// set_asset answer through this function too, and the lookup would put the
+	// ontology read — and, right after an edit to the ontology itself, a full rebuild
+	// of it — on every chunk write.
+	if !isFact && in.Op == "get_chunk" {
 		defs, derr := d.definitionalChunks(ctx, key, []chunkRow{row})
 		if derr != nil {
 			return errFrom("get_chunk: definitional: "+derr.Error(), derr), nil
