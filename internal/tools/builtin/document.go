@@ -206,6 +206,8 @@ const documentInputSchema = `{
 		"tags":        {"type": "array", "items": {"type": "string"}, "description": "The chunk's or document's tags. create_chunk/update_chunk/upsert_chunk/create_document replace-set the whole tag set (omit to leave unchanged; [] to clear). add_tags/remove_tags take the tags to add/remove incrementally. Nested tags use a slash: area/sub/topic."},
 		"tag":         {"type": "string", "description": "query_chunks / query_documents / search / related: return only chunks/documents carrying exactly this tag."},
 		"tag_prefix":  {"type": "string", "description": "query_chunks / search / related: return chunks whose tag equals this OR is nested under it (prefix + '/'), e.g. tag_prefix=area matches area and area/sub."},
+		"concept":        {"type": "string", "description": "search / related: return only chunks about this concept of the tenant ontology's concept schemes, or about any concept narrower than it. Name it by its chunk id, its name, or its tag (<scheme>/<path>, e.g. topics/risk-management); a name two concepts share is refused, so pass the tag. In the tenant scope a chunk matches by its subject relation to the concept; in a user or agent scope, by carrying the concept's tag (or a tag under it). The echo's concept_matched_by says which."},
+		"concept_prefix": {"type": "string", "description": "search / related: like concept, for every concept whose tag is this path or lies under it, e.g. concept_prefix=topics covers the whole topics scheme."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
 		"name":        {"type": "string", "description": "define/list_types: the type name. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -)."},
@@ -443,13 +445,16 @@ type docInput struct {
 	// that query_chunks already takes (see document_search_filter.go). Plural
 	// twins rather than string-or-list unions: the singular fields are plain
 	// strings shared by every op, and a union type is a schema shape some
-	// providers' function declarations reject.
+	// providers' function declarations reject. Concept / ConceptPrefix are named
+	// apart from Subject, which is upsert_chunk's entity input.
 	UnderPaths         []string `json:"under_paths"`
 	ExcludeUnderPath   string   `json:"exclude_under_path"`
 	ExcludeUnderPaths  []string `json:"exclude_under_paths"`
 	ExcludeDocumentIDs []string `json:"exclude_document_ids"`
 	Types              []string `json:"types"`
 	Statuses           []string `json:"statuses"`
+	Concept            string   `json:"concept"`
+	ConceptPrefix      string   `json:"concept_prefix"`
 	SQL                string   `json:"sql"`
 	Limit              int      `json:"limit"`
 	Name               string   `json:"name"`
