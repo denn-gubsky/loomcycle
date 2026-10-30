@@ -362,6 +362,16 @@ export type RunFileInput = {
    *  in its numbering imports as sections. The file is not changed, so the
    *  document keeps the record of where it came from. */
   headings?: RunFileImportHeading[];
+  /** import: the file is a new edition of the work named by `work_key`,
+   *  reconciled onto the document holding it part by part. */
+  reimport?: boolean;
+  /** import with reimport: the work's key. */
+  work_key?: string;
+  /** import with reimport: when the edition came into force (unix nanos). */
+  edition_date?: number;
+  /** import with reimport: the document that made the edition (the amending
+   *  act); each renumbered part gets an `amends` statement from it. */
+  amending_document_id?: string;
 };
 
 /** import's `source`: the item's web link (a SharePoint `webUrl`, an email's
@@ -4067,6 +4077,9 @@ export type DocumentToolInput = {
   edition_date?: number;
   /** import_md with reimport / resolve_anchor: the work's key. */
   work_key?: string;
+  /** import_md with reimport and work_key: the document that made the edition
+   *  (the amending act); each renumbered part gets an `amends` statement from it. */
+  amending_document_id?: string;
   /** resolve_anchor: a part of the work, by anchor or first anchor. */
   anchor?: string;
   /** resolve_anchor: file a placeholder for a work not held yet. */
