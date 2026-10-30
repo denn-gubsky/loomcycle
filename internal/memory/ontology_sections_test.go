@@ -2,6 +2,7 @@ package memory
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -460,5 +461,35 @@ func TestParseClassBody_ACitationGrammarMayNameSeveral(t *testing.T) {
 	}
 	if got := GrammarNames(" a,,b  a ,c"); strings.Join(got, "|") != "a|b|c" {
 		t.Errorf("GrammarNames = %v", got)
+	}
+}
+
+// TestParseClassBody_BoilerplateLinesJoinAsAlternatives: each @boilerplate line is one
+// kind of boilerplate; they are joined as alternatives, and a line that does not
+// compile is reported and dropped while the others stand.
+func TestParseClassBody_BoilerplateLinesJoinAsAlternatives(t *testing.T) {
+	d := ParseClassBody("@boilerplate (?i)^набирає чинності\n" +
+		"@boilerplate ([unclosed\n" +
+		"@boilerplate ^доповнити\n")
+	if want := `(?:(?i)^набирає чинності)|(?:^доповнити)`; d.Boilerplate != want {
+		t.Errorf("boilerplate = %q, want %q", d.Boilerplate, want)
+	}
+	if len(d.Issues) != 1 || !strings.Contains(d.Issues[0], "@boilerplate") {
+		t.Errorf("issues = %v, want the one bad line reported", d.Issues)
+	}
+	for _, s := range d.Issues {
+		if strings.Contains(s, "unknown directive") {
+			t.Errorf("@boilerplate reported as unknown: %v", d.Issues)
+		}
+	}
+	if _, err := regexp.Compile(d.Boilerplate); err != nil {
+		t.Errorf("joined pattern does not compile: %v", err)
+	}
+	found := false
+	for _, n := range InheritableDirectives() {
+		found = found || n == "boilerplate"
+	}
+	if !found {
+		t.Error("boilerplate is not an inheritable directive")
 	}
 }

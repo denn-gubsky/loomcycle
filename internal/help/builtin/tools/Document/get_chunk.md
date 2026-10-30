@@ -25,6 +25,13 @@ or an ancestor's below the root matches it. Absent otherwise, and never on the
 chunk a write op (create_chunk, update_chunk, set_asset) returns — read it back
 with get_chunk.
 
+`boilerplate: [[start, end], …]` lists the paragraphs of the body that its
+document's class (in a confirmed ontology) marks with `@boilerplate`: amendment
+instructions, effective-date clauses and the like, text no relation should be
+drawn from. Each pair is a paragraph's span in characters (Unicode code points,
+as evidence spans are), without the line breaks around it. Absent when none
+match, and never on what a write op returns.
+
 A fact also carries `entity`: `retired` (always present; true once a
 `supersede_chunk` retired it), and when set `valid_at`, `invalid_at`,
 `observed_at`, `created_at`, `expired_at`, `class`, `origin`, `natural_key`,

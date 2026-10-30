@@ -145,11 +145,17 @@ type OntologyTerm struct {
 	// Definitions is a pattern over chunk titles: in a document of this class, a chunk
 	// whose title matches it, and every chunk under that one, is a definitions passage —
 	// where the document says what its terms mean, as against where it uses them.
+	//
+	// Boilerplate is a pattern over paragraphs: in a document of this class, a paragraph
+	// it matches is text no relation should be drawn from — an amendment instruction, an
+	// effective-date clause, a review or ownership line. Several @boilerplate lines are
+	// joined as alternatives.
 	IdentifierPattern string   `json:"identifier_pattern,omitempty"`
 	TitlePattern      string   `json:"title_pattern,omitempty"`
 	AnchorGrammar     string   `json:"anchor_grammar,omitempty"`
 	CitationGrammar   string   `json:"citation_grammar,omitempty"`
 	Definitions       string   `json:"definitions,omitempty"`
+	Boilerplate       string   `json:"boilerplate,omitempty"`
 	Exclude           []string `json:"exclude,omitempty"`
 	RenamedFrom       string   `json:"renamed_from,omitempty"`
 	// InheritedDirectives holds the class directives this class gets from its nearest
@@ -163,7 +169,7 @@ type OntologyTerm struct {
 
 // inheritableDirectives are the class directives a subclass takes from its ancestors
 // when it declares none of its own (nearest ancestor wins, as for memory_scope).
-var inheritableDirectives = []string{"identifier_pattern", "title_pattern", "anchor_grammar", "citation_grammar", "definitions", "exclude"}
+var inheritableDirectives = []string{"identifier_pattern", "title_pattern", "anchor_grammar", "citation_grammar", "definitions", "boilerplate", "exclude"}
 
 // InheritableDirectives lists the class directives EffectiveDirective resolves, in a
 // stable order. A copy: callers may not reorder the package's list.
@@ -185,6 +191,8 @@ func declaredDirective(t OntologyTerm, name string) string {
 		return t.CitationGrammar
 	case "definitions":
 		return t.Definitions
+	case "boilerplate":
+		return t.Boilerplate
 	case "exclude":
 		return strings.Join(t.Exclude, ", ")
 	}

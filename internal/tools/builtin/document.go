@@ -2907,6 +2907,13 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		if defs[row.ID] {
 			resp["definitional"] = true
 		}
+		spans, berr := d.boilerplateSpans(ctx, key, row, cb.Body)
+		if berr != nil {
+			return errFrom("get_chunk: boilerplate: "+berr.Error(), berr), nil
+		}
+		if len(spans) > 0 {
+			resp["boilerplate"] = spans
+		}
 	}
 	return jsonResult(resp)
 }
