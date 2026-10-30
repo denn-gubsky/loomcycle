@@ -61,9 +61,13 @@ var kbOpContracts = []kbOpContract{
 		Response: `{id, status: proposed|asserted, created, evidence_written, ontology_valid}`,
 		Assumes:  `method (R1) is accepted as "rule:<name>"; char_start/char_end are runes; a refusal names its code (kind_reserved, kind_not_declared, statement_rejected, statement_asserted, evidence_quote_not_found, method_not_granted, …) in the error text; a proposal over an asserted triple is refused statement_asserted, over a rejected one statement_rejected (#2246)`},
 	{Tool: "Document", Op: "list_statements",
-		Request:  `{document_id | evidence_document_id, status: asserted|proposed, limit, after?, scope}`,
-		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
-		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired; next_cursor is absent on the last page`},
+		Request:  `{document_id | evidence_document_id | under_path, status: asserted|proposed, order?: verified, include_retired?, limit, after?, scope}`,
+		Response: `{statements: [{id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, expired_at?, discriminator?, from_document_id, to_document_id, evidence: [≤3], evidence_count}], next_cursor?}`,
+		Assumes:  `R3: status stays single-valued (one call per status); retired rows are excluded unless include_retired, and carry expired_at (unix nanoseconds) when included; under_path matches either end's document at or under the path; order verified is least recently verified first; next_cursor is absent on the last page`},
+	{Tool: "Document", Op: "unlink_chunks",
+		Request:  `{id, scope}`,
+		Response: `{removed: true}`,
+		Assumes:  `deletes the statement and its evidence; an unknown id is an error; sent only by a sweep run with purge: true`},
 	{Tool: "Document", Op: "get_edge",
 		Request:  `{id, scope}`,
 		Response: `{statement: {id, from_id, to_id, kind, status, method, auto, created_at, valid_at?, verified_at?, operator_ruled_at?, attributes?, evidence: [{id, chunk_id? | scope+natural_key? | session_id?, quote, char_start?, char_end?, stale?}]}}`},
@@ -115,6 +119,7 @@ var kbReadOps = map[string]bool{
 // kbWriteOps is every Document op that changes the store or holds a scope.
 var kbWriteOps = map[string]bool{
 	"propose_statement": true, "maintain_statement": true, "lease": true, "release": true,
+	"unlink_chunks": true,
 }
 
 type kbChunk struct {
@@ -141,7 +146,7 @@ type kbEvidence struct {
 type kbStatement struct {
 	ID, From, To, Kind, Status, Method, Discriminator string
 	OperatorRuledAt                                   int64
-	CreatedAt, ValidAt, VerifiedAt                    int64
+	CreatedAt, ValidAt, VerifiedAt, ExpiredAt         int64
 	Auto, Expired, Verified                           bool
 	Attributes                                        map[string]any
 	Evidence                                          []*kbEvidence
@@ -159,6 +164,8 @@ type kbFixture struct {
 	calls []recordedCall
 
 	docID, docPath, rootID string
+	// docPaths names the other documents in the Path tree, for under_path.
+	docPaths map[string]string
 	// chunks is the target document, in query_chunks order (root included).
 	chunks []kbChunk
 	// others are chunks of other documents, reachable through get_chunk.
@@ -240,6 +247,7 @@ func newKBFixture() *kbFixture {
 	return &kbFixture{
 		docID:          "doc-target",
 		docPath:        "/acts/target",
+		docPaths:       map[string]string{"doc-law": "/laws/act"},
 		rootID:         "c-root",
 		others:         map[string]kbChunk{},
 		docTypes:       map[string]string{},
@@ -285,6 +293,14 @@ func (f *kbFixture) spawnPrompts() []string {
 }
 
 // allChunks is every chunk in a fixed order: the target's, then the others by id.
+// pathOf is a document's Path-tree name.
+func (f *kbFixture) pathOf(doc string) string {
+	if doc == f.docID {
+		return f.docPath
+	}
+	return f.docPaths[doc]
+}
+
 func (f *kbFixture) allChunks() []kbChunk {
 	out := append([]kbChunk(nil), f.chunks...)
 	ids := make([]string, 0, len(f.others))
@@ -451,6 +467,14 @@ func (d *kbFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.
 		return okResult(map[string]any{"statement": f.statementJSON(s, 0)})
 	case "maintain_statement":
 		return f.answerMaintain(in)
+	case "unlink_chunks":
+		for i, st := range f.statements {
+			if st.ID == id {
+				f.statements = append(f.statements[:i], f.statements[i+1:]...)
+				return okResult(map[string]any{"removed": true})
+			}
+		}
+		return kbErr("unlink_chunks: no such edge: " + id)
 	case "lease":
 		f.leaseCalls++
 		if f.leaseRefused {
@@ -698,6 +722,9 @@ func (f *kbFixture) statementJSON(s *kbStatement, previewCap int) map[string]any
 	if s.VerifiedAt != 0 {
 		out["verified_at"] = s.VerifiedAt
 	}
+	if s.Expired {
+		out["expired_at"] = max(s.ExpiredAt, 1)
+	}
 	if s.Discriminator != "" {
 		out["discriminator"] = s.Discriminator
 	}
@@ -711,6 +738,12 @@ func (f *kbFixture) answerList(in map[string]any) (tools.Result, error) {
 	status, _ := in["status"].(string)
 	doc, _ := in["document_id"].(string)
 	evDoc, _ := in["evidence_document_id"].(string)
+	under, _ := in["under_path"].(string)
+	retired, _ := in["include_retired"].(bool)
+	underPath := func(chunkID string) bool {
+		p := f.pathOf(f.docOf(chunkID))
+		return p != "" && (p == under || strings.HasPrefix(p, strings.TrimSuffix(under, "/")+"/"))
+	}
 	limit := 500
 	if l, ok := in["limit"].(float64); ok && l > 0 {
 		limit = int(l)
@@ -728,10 +761,13 @@ func (f *kbFixture) answerList(in map[string]any) (tools.Result, error) {
 	}
 	var match []*kbStatement
 	for _, s := range f.statements {
-		if s.Expired || s.Status != status {
+		if (s.Expired && !retired) || s.Status != status {
 			continue
 		}
 		hit := false
+		if under != "" && (underPath(s.From) || underPath(s.To)) {
+			hit = true
+		}
 		if doc != "" && (f.docOf(s.From) == doc || f.docOf(s.To) == doc) {
 			hit = true
 		}
@@ -745,6 +781,9 @@ func (f *kbFixture) answerList(in map[string]any) (tools.Result, error) {
 		if hit {
 			match = append(match, s)
 		}
+	}
+	if in["order"] == "verified" {
+		sort.SliceStable(match, func(i, j int) bool { return match[i].VerifiedAt < match[j].VerifiedAt })
 	}
 	rows := []map[string]any{}
 	for i := start; i < len(match) && i < start+limit; i++ {
@@ -1401,7 +1440,7 @@ func TestKBLinker_BadInputIsRefusedBeforeAnyCall(t *testing.T) {
 		"array":               {`["doc-target"]`, "JSON object"},
 		"live mode":           {`{"document_id":"doc-target","write":"live"}`, `write must be "report" or "propose"`},
 		"unknown field":       {`{"document_id":"doc-target","layer":["L2"]}`, `unknown field "layer"`},
-		"unknown mode":        {`{"document_id":"doc-target","mode":"sweep"}`, "mode must be"},
+		"unknown mode":        {`{"document_id":"doc-target","mode":"wander"}`, "mode must be"},
 		"L4 without corpus":   {`{"document_id":"doc-target","layers":["L4"]}`, "corpus_paths"},
 		"corpus without L4":   {`{"document_id":"doc-target","layers":["L2"],"corpus_paths":["/laws"]}`, "only by the L4 layer"},
 		"unknown layer":       {`{"document_id":"doc-target","layers":["L5"]}`, "layers[0]"},

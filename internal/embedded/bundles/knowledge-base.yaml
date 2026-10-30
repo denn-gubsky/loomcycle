@@ -210,7 +210,9 @@ agents:
         include_quotes: false,
         max_writes: 500,
         max_statements: 500,
-        max_messages: 10
+        max_messages: 10,
+        // Retired statements younger than this are never purged.
+        purge_after_days: 180
       };
 
       // The layers each mode runs when the input names none. L4 joins them when the
@@ -219,7 +221,8 @@ agents:
         document: ["L0", "L1", "L2", "L3", "L6"],
         drain: ["L0", "L1", "L2", "L3", "L6"],
         maintain: ["L6"],
-        subject: ["L6"]
+        subject: ["L6"],
+        sweep: ["L6"]
       };
       var LAYER_ORDER = ["L0", "L1", "L2", "L3", "L4", "L6"];
 
@@ -257,15 +260,17 @@ agents:
         terms_scheme: true, as_of: true, max_writes: true, max_statements: true, max_messages: true,
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
-        min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true
+        min_body_chars: true, relations: true, include_quotes: true, rejudge: true, merged_into: true,
+        purge: true, purge_after_days: true
       };
 
-      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject (default document), " +
+      var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain|subject|sweep (default document), " +
         "\"document_id\" or \"path\" (not in drain; in subject mode, the subject's document), " +
         "optional scope (user|agent|tenant), " +
         "layers [\"L0\",\"L1\",\"L2\",\"L3\",\"L4\",\"L6\"], write (report|propose, default report), " +
         "terms_scheme, as_of (unix nanoseconds), max_writes, max_statements, max_messages, " +
         "rejudge (L6), merged_into (subject mode: the surviving subject's document id), " +
+        "purge, purge_after_days (sweep mode; path names the subtree), " +
         "and for L4: corpus_paths [\"/…\"], exclude_document_types, candidate_floor, " +
         "max_candidates_per_chunk, max_verdict_calls, max_chars, min_body_chars, " +
         "relations [{name, meaning, domain?, range?}], include_quotes}.";
@@ -294,7 +299,7 @@ agents:
         }
         try {
           if (needsOntology(st.opts)) { st.onto = loadOntology(st); }
-          if (st.opts.mode === "drain") { drainPass(st); } else { documentPass(st); }
+          if (st.opts.mode === "drain") { drainPass(st); } else if (st.opts.mode === "sweep") { sweepPass(st); } else { documentPass(st); }
           failIfEveryWriteRefused(st);
         } catch (e) {
           if (isStop(e)) {
@@ -346,7 +351,7 @@ agents:
         o.mode = DEFAULTS.mode;
         if (v.mode !== undefined) {
           if (typeof v.mode !== "string" || !hasOwn(MODE_LAYERS, v.mode)) {
-            return { error: "mode must be document, drain, maintain or subject" };
+            return { error: "mode must be document, drain, maintain, subject or sweep" };
           }
           o.mode = v.mode;
         }
@@ -362,6 +367,11 @@ agents:
           if (hasID || hasPath) {
             return { error: "drain takes its documents from the ingest queue; pass neither document_id nor path" };
           }
+        } else if (o.mode === "sweep") {
+          if (hasID || !hasPath || !isPath(v.path)) {
+            return { error: "sweep takes path: the Path-tree subtree whose statements it checks, and no document_id" };
+          }
+          o.path = v.path;
         } else {
           if (hasID === hasPath) {
             return { error: "pass exactly one of document_id or path" };
@@ -461,6 +471,18 @@ agents:
           }
           o.merged_into = v.merged_into;
         }
+        o.purge = false;
+        if (v.purge !== undefined) {
+          if (typeof v.purge !== "boolean") { return { error: "purge must be true or false" }; }
+          if (o.mode !== "sweep") { return { error: "purge is read only by sweep mode" }; }
+          if (v.purge && o.write !== "propose") { return { error: "purge deletes, so it needs write: propose" }; }
+          o.purge = v.purge;
+        }
+        if (v.purge_after_days !== undefined && o.mode !== "sweep") {
+          return { error: "purge_after_days is read only by sweep mode" };
+        }
+        if ((n = numberField(v, "purge_after_days", DEFAULTS.purge_after_days, 1, 3650, true)).error) { return n; }
+        o.purge_after_days = n.value;
         o.rejudge = false;
         if (v.rejudge !== undefined) {
           if (typeof v.rejudge !== "boolean") { return { error: "rejudge must be true or false" }; }
@@ -475,7 +497,7 @@ agents:
         if (list === undefined) {
           var def = MODE_LAYERS[o.mode];
           for (var i = 0; i < def.length; i++) { out[def[i]] = true; }
-          if (o.corpus_paths !== null && o.mode !== "maintain" && o.mode !== "subject") { out.L4 = true; }
+          if (o.corpus_paths !== null && o.mode !== "maintain" && o.mode !== "subject" && o.mode !== "sweep") { out.L4 = true; }
           return { value: out };
         }
         if (!isArray(list) || list.length === 0 || list.length > LAYER_ORDER.length) {
@@ -489,7 +511,7 @@ agents:
           if (out[l] === true) { return { error: "layers: " + l + " is named twice" }; }
           out[l] = true;
         }
-        if ((o.mode === "maintain" || o.mode === "subject") && (list.length !== 1 || out.L6 !== true)) {
+        if ((o.mode === "maintain" || o.mode === "subject" || o.mode === "sweep") && (list.length !== 1 || out.L6 !== true)) {
           return { error: o.mode + " runs the L6 layer only" };
         }
         return { value: out };
@@ -1877,13 +1899,13 @@ agents:
           successor_copies_expired: 0, rename_refused: 0, all_stale_already_proposed: 0,
           rejudged_same: 0, rejudged_different: 0, rejudged_none: 0, rejudge_unchanged: 0,
           rejudge_kind_unknown: 0, rejudge_failed: 0, rejudge_budget: 0,
-          merge_touched: 0, merge_repointed: 0, merge_refused: 0,
+          merge_touched: 0, merge_repointed: 0, merge_refused: 0, skipped_flagged: 0,
           checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, semantics: 0, passed: 0 },
           actions: {}
         }));
         L.ran++;
         var C = L.counts;
-        var rows = selectTouched(st, L, doc.id);
+        var rows = doc ? selectTouched(st, L, doc.id) : sweepSelect(st, L);
         var todo = [], autos = [];
         for (var i = 0; i < rows.length; i++) {
           var row = rows[i];
@@ -1897,6 +1919,9 @@ agents:
           if (!isAuto && k !== null && k.source === "reserved") { C.skipped_reserved_kind++; continue; }
           var s = edgeOf(st, row.id);
           if (s === null) { C.unreadable++; continue; }
+          // A sweep passes over a statement already flagged for a person: it stays as
+          // it is until they rule, and checking it again would only flag it again.
+          if (!doc && isPlainObject(s.attributes) && s.attributes.needs_review === true) { C.skipped_flagged++; continue; }
           if (isAuto || s.auto === true) { autos.push(s); } else { todo.push(s); }
         }
         loadMeta(st, statementChunkIDs(todo.concat(autos)));
@@ -1916,7 +1941,7 @@ agents:
           var rev = isPlainObject(todo[c].attributes) ? todo[c].attributes.revision_of : "";
           if (isID(rev)) { (st.copiesOf[rev] = st.copiesOf[rev] || []).push(todo[c]); }
         }
-        if (st.opts.merged_into) { repointMerged(st, L, doc, todo); }
+        if (st.opts.merged_into && doc) { repointMerged(st, L, doc, todo); }
         var passed = [];
         for (var j = 0; j < todo.length; j++) {
           if (st.settledNow[todo[j].id] === true) { continue; }
@@ -1927,6 +1952,96 @@ agents:
           C.checks.passed++;
           if (rejudge(st, L, survivors[n])) { continue; }
           act(st, L, survivors[n], "verify", {});
+        }
+      }
+
+      // sweepPass is the maintenance sweep over a Path subtree: the
+      // statements with an end under it, least recently verified first, within
+      // max_statements. What it verifies moves to the back of the order, so repeated
+      // sweeps — on demand or on the operator's schedule — work through the subtree
+      // without a cursor to carry. Then the purge, reported always and done only
+      // with purge: true.
+      function sweepPass(st) {
+        layerMaintain(st, null);
+        sweepPurge(st, st.layers.L6);
+      }
+
+      // sweepSelect lists the subtree's live statements, asserted ones first (they
+      // are what readers follow), each status least recently verified first.
+      function sweepSelect(st, L) {
+        var out = [], seen = {};
+        L.sweep = { path: st.opts.path, exhausted: true };
+        var statuses = ["asserted", "proposed"];
+        var pages = Math.ceil(st.opts.max_statements / CONFIG.statements_page) + 2;
+        for (var si = 0; si < statuses.length; si++) {
+          var after = "";
+          for (var p = 0; p < pages; p++) {
+            var args = { op: "list_statements", status: statuses[si], under_path: st.opts.path, order: "verified",
+                         limit: CONFIG.statements_page };
+            if (after !== "") { args.after = after; }
+            var r = call(st, args);
+            var list = (r && isArray(r.statements)) ? r.statements : [];
+            for (var i = 0; i < list.length; i++) {
+              var row = list[i];
+              if (!isPlainObject(row) || !isID(row.id) || seen[row.id] === true) { continue; }
+              if (row.expired_at !== undefined && row.expired_at !== null) { continue; }
+              seen[row.id] = true;
+              if (out.length >= st.opts.max_statements) {
+                L.counts.statements_over_cap++;
+                L.sweep.exhausted = false;
+                continue;
+              }
+              out.push(row);
+            }
+            var next = r ? r.next_cursor : "";
+            if (list.length === 0 || typeof next !== "string" || next === "" || next === after) { break; }
+            if (out.length >= st.opts.max_statements) { L.sweep.exhausted = false; break; }
+            after = next;
+          }
+        }
+        return out;
+      }
+
+      // sweepPurge finds the retired statements under the subtree that a purge may
+      // delete — expired, made by code (never a person's, never one an operator
+      // ruled on), retired longer ago than purge_after_days — and deletes them only
+      // when the run says purge: true. A rejected statement is never purged: it is
+      // the operator's ruling that keeps the linker from proposing it again.
+      // Statements the runtime writes for itself are the runtime's to clean up.
+      function sweepPurge(st, L) {
+        var P = { enabled: st.opts.purge === true, after_days: st.opts.purge_after_days,
+                  candidates: 0, purged: 0, kept_person: 0, over_cap: 0 };
+        L.purge = P;
+        var cutoff = Date.now() * 1e6 - st.opts.purge_after_days * 864e11;
+        var statuses = ["proposed", "asserted"], seen = {};
+        var pages = Math.ceil(st.opts.max_statements / CONFIG.statements_page) + 2;
+        for (var si = 0; si < statuses.length; si++) {
+          var after = "";
+          for (var p = 0; p < pages; p++) {
+            var args = { op: "list_statements", status: statuses[si], under_path: st.opts.path, include_retired: true,
+                         limit: CONFIG.statements_page };
+            if (after !== "") { args.after = after; }
+            var r = call(st, args);
+            var list = (r && isArray(r.statements)) ? r.statements : [];
+            for (var i = 0; i < list.length; i++) {
+              var row = list[i];
+              if (!isPlainObject(row) || !isID(row.id) || seen[row.id] === true) { continue; }
+              seen[row.id] = true;
+              if (typeof row.expired_at !== "number" || row.expired_at <= 0 || row.expired_at >= cutoff) { continue; }
+              if (row.auto === true || RUNTIME_METHODS[row.method] === true) { continue; }
+              if (P.candidates >= st.opts.max_statements) { P.over_cap++; continue; }
+              var s = edgeOf(st, row.id);
+              if (s === null) { continue; }
+              if (!mayRetire(s)) { P.kept_person++; continue; }
+              P.candidates++;
+              if (!P.enabled) { continue; }
+              var w = write(st, "unlink_chunks", { op: "unlink_chunks", id: row.id });
+              if (w.ok && !w.dry) { P.purged++; }
+            }
+            var next = r ? r.next_cursor : "";
+            if (list.length === 0 || typeof next !== "string" || next === "" || next === after) { break; }
+            after = next;
+          }
         }
       }
 
@@ -2685,6 +2800,8 @@ agents:
           var r = { status: L.ran > 0 ? "run" : "skipped", counts: L.counts };
           if (L.reason !== "") { r.reason = L.reason; }
           if (name === "L1") { r.collisions = L.collisions; r.collisions_truncated = L.collisions_truncated; r.truncated = L.truncated; }
+          if (name === "L6" && L.sweep) { r.sweep = L.sweep; }
+          if (name === "L6" && L.purge) { r.purge = L.purge; }
           out[name] = r;
         }
         return out;

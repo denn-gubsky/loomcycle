@@ -161,6 +161,7 @@ These rules always hold:
 | `maintain` | `document_id` or `path` | L6 |
 | `drain` | the `documents/ingested` queue, up to `max_messages` | L0, L1, L2, L3, L6 per message |
 | `subject` | the subject's document (`document_id` or `path`), whose root is the subject | L6 |
+| `sweep` | the statements with an end under `path` (a Path subtree) | L6, then the purge report |
 
 | `write` | does |
 |---|---|
@@ -201,6 +202,35 @@ scheduled_runs:
         content: [ { type: trusted-text, text: '{"mode":"drain","write":"propose"}' } ]
 ```
 
+**Sweep** checks the statements with an end under `path`, asserted ones first,
+each least recently verified first, up to `max_statements`; `sweep.exhausted`
+says whether it reached the end. What it verifies moves to the back of the
+order, so repeated sweeps work through a large subtree without a cursor to
+carry. A statement already flagged for a person is passed over
+(`skipped_flagged`) until they rule.
+
+Every sweep then reports, under `purge`, the retired statements a purge may
+delete: expired, made by code, retired more than `purge_after_days` ago (default
+180). It deletes them only when the run says `purge: true` (with `write:
+propose`); never from a schedule you did not write that way. A purge never
+deletes a person's statement, one an operator ruled on, or a **rejected** one: a
+rejection is what keeps the linker from proposing that relation again.
+
+A sweep schedule is not installed by the bundle. To add one:
+
+```yaml
+scheduled_runs:
+  kb-linker-sweep:
+    agent: kb/linker
+    schedule: "0 3 * * *"             # nightly
+    user_id: me
+    concurrency_policy: forbid
+    enabled: true
+    prompt:
+      - role: user
+        content: [ { type: trusted-text, text: '{"mode":"sweep","path":"/docs","scope":"user","write":"propose","max_statements":500}' } ]
+```
+
 ## Use
 
 ```bash
@@ -217,8 +247,8 @@ curl -sX POST localhost:8080/v1/runs \
 
 | field | default | meaning |
 |---|---|---|
-| `mode` | `document` | `document`, `maintain`, `drain` or `subject` |
-| `document_id` or `path` | exactly one (none in drain) | the document |
+| `mode` | `document` | `document`, `maintain`, `drain`, `subject` or `sweep` |
+| `document_id` or `path` | exactly one (none in drain; sweep takes `path` only) | the document; for a sweep, the subtree |
 | `scope` | `user` | `user`, `agent` or `tenant` (drain: `user`) |
 | `layers` | per mode | any of `L0`, `L1`, `L2`, `L3`, `L4`, `L6`; `maintain` takes `L6` only |
 | `write` | `report` | `report` or `propose` |
@@ -231,6 +261,8 @@ curl -sX POST localhost:8080/v1/runs \
 | `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
 | `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
 | `merged_into` | — | subject mode: the document of the subject this one was merged into |
+| `purge` | `false` | sweep mode, with `write: propose`: delete what the purge report lists |
+| `purge_after_days` | `180` | sweep mode: how long a statement stays retired before a purge may delete it (1–3650) |
 
 An unknown field or an out-of-range value refuses the run with
 `{"status":"refused","reason":…}`, before any tool call or lease.

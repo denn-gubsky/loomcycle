@@ -418,3 +418,63 @@ func TestKBLinker_RejudgeAgainstTheRealDocumentTool(t *testing.T) {
 		t.Errorf("statement = %v, want flagged for review and still live", e)
 	}
 }
+
+// TestKBLinker_SweepAgainstTheRealDocumentTool: the sweep reads the real
+// list_statements with under_path, order verified and include_retired. A statement
+// under the subtree is verified; one outside is not touched; a statement retired
+// just now is not yet a purge candidate; and unlink_chunks, the op a purge sends,
+// removes a retired statement under the linker's own grants.
+func TestKBLinker_SweepAgainstTheRealDocumentTool(t *testing.T) {
+	d, ctx := realDocument(t)
+	acts := realDoc(t, d, ctx, `{"op":"create_document","scope":"user","title":"Act","path":"/acts/act"}`)["document_id"].(string)
+	laws := realDoc(t, d, ctx, `{"op":"create_document","scope":"user","title":"Law","path":"/laws/law"}`)["document_id"].(string)
+	chunk := func(doc, body string) string {
+		return realDoc(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"P","body":%q}`, doc, body))["id"].(string)
+	}
+	c1, x1, x2 := chunk(acts, kbBodyClaim), chunk(laws, kbBodyLaw), chunk(laws, kbBodyRule)
+	propose := func(from, to, quoteChunk, quote string) string {
+		return realDoc(t, d, ctx, fmt.Sprintf(`{"op":"propose_statement","scope":"user","from_id":%q,"to_id":%q,"kind":"cites","method":"rule:citation","evidence":[{"chunk_id":%q,"quote":%q}]}`,
+			from, to, quoteChunk, quote))["id"].(string)
+	}
+	inside := propose(c1, x1, c1, "report a material incident")
+	outside := propose(x1, x2, x1, "material incidents")
+	retired := propose(c1, x2, c1, "to the regulator")
+	realDoc(t, d, ctx, fmt.Sprintf(`{"op":"maintain_statement","scope":"user","id":%q,"action":"expire","reason":"test","method":"rule:citation"}`, retired))
+
+	rep := runRealLinker(t, d, ctx, `{"mode":"sweep","path":"/acts","write":"propose"}`)
+	edge := func(id string) map[string]any {
+		return realDoc(t, d, ctx, fmt.Sprintf(`{"op":"get_edge","scope":"user","id":%q}`, id))["statement"].(map[string]any)
+	}
+	if edge(inside)["verified_at"] == nil {
+		t.Errorf("the statement under /acts was not verified")
+	}
+	if edge(outside)["verified_at"] != nil {
+		t.Errorf("the statement outside /acts was verified")
+	}
+	P, _ := layerReport(t, rep, "L6")["purge"].(map[string]any)
+	if P["candidates"] != float64(0) {
+		t.Errorf("purge = %v, want no candidate (retired just now)", P)
+	}
+	// The purge's candidate test reads expired_at off the listing: it must be there,
+	// as a number, or every retired statement would read as never retired.
+	seen := false
+	for _, raw := range realDoc(t, d, ctx, `{"op":"list_statements","scope":"user","status":"proposed","under_path":"/acts","include_retired":true}`)["statements"].([]any) {
+		if row := raw.(map[string]any); row["id"] == retired {
+			_, isNum := row["expired_at"].(float64)
+			seen = isNum
+		}
+	}
+	if !seen {
+		t.Fatal("the retired statement is not listed with a numeric expired_at under include_retired")
+	}
+	got, r := d.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"op":"unlink_chunks","scope":"user","id":%q}`, retired)))
+	if r != nil || got.IsError {
+		t.Fatalf("unlink_chunks on a retired statement: %v %s", r, got.Text)
+	}
+	list := realDoc(t, d, ctx, `{"op":"list_statements","scope":"user","status":"proposed","under_path":"/acts","include_retired":true}`)
+	for _, raw := range list["statements"].([]any) {
+		if raw.(map[string]any)["id"] == retired {
+			t.Error("the purged statement is still listed")
+		}
+	}
+}
