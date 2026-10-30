@@ -805,6 +805,33 @@ A document built from an outside file or message says so, and points back to whe
 
 Since #2161 (`/loomcycle/rfcs/files-by-reference` D18).
 
+## Classification — classify, accept_classification and memory.classifier
+
+`Document op=classify` says what a document is, from the tenant's confirmed ontology. It runs up to three steps and reports each in `steps`:
+
+1. **Rules (no model).** Each document class's own `@title_pattern` against the title, the import source title and the first section titles (a class with only an `@identifier_pattern`, against the title). The pattern's named groups fill the class's identity fields, so its work key. An issuer is an Instances entry whose name or `@alt` label appears as a whole phrase.
+2. **Neighbourhood vote (no model).** The documents most like this one's first section (`related`) in the same Path folder that you may read and that already carry a class: how many agree on a class, and which concepts at least half of them share. Needs an embedder.
+3. **Model (`memory.classifier`)** — only when the first two leave the class open. A decision model first; a chat model when there is none or the decision model is unsure. Its answer is always a proposal.
+
+**What is written.** Exactly one class matching by rule is applied: the root's type, the identity fields, and `issued_by` to the one named adopted instance. Everything else — an ambiguous match, the vote's or the model's class, every concept — is a proposal, kept in the root's `classification` field and, in the tenant scope, filed as proposed statements (`subject`, `classified_as`, `issued_by`). Outside the tenant scope a proposed concept waits as its tag. A type set by hand is never replaced; `write: "report"` writes nothing. `accept_classification` is the operator's ruling (refused inside a run); it re-checks everything the pending record names, because any writer of the document can edit those fields.
+
+**`memory.classifier`** — shaped like `memory.reranker`, no default model:
+
+```yaml
+memory:
+  classifier:
+    decision: { provider: ollama-local, model: nimble }       # asked first: a choice over the classes, a yes/no per concept
+    chat:     { provider: ollama-local, model: local-medium, effort: low }   # fallback; must quote the document
+    min_probability: 0.6   # the decision model's top class must reach this ...
+    min_margin: 0.2        # ... and lead the runner-up by this, or the chat model is asked
+```
+
+- `decision` needs an Ollama provider (it is asked through the decision driver, as a `kind: decision` reranker is); `effort` and `context_tokens` do not apply to it.
+- `chat` takes `effort`, `context_tokens` and `timeout_ms` like a listwise reranker. Its reply must name a class and concepts from the lists offered and quote the document verbatim; otherwise the verdict is dropped.
+- Either alone is valid. With neither, classify asks no model and reports the document `unclassified` with the reason.
+- Calls take the decision / chat lane of their provider and are charged to the classifying run under the usage purpose `classify`.
+- The thresholds are provisional: they are to be set from a measurement against a labelled corpus.
+
 ## Caveats
 
 - **SQL Memory required** (`LOOMCYCLE_SQLMEM_ENABLED=1`).
