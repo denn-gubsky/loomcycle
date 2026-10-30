@@ -2535,6 +2535,8 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   `code-js` pass that builds and maintains statements between a document's
   passages and the rest of the store, from rules the tenant ontology
   declares. Its layers:
+  - the document's class, by the ontology's rules (the runtime's `classify`:
+    one class by rule is applied, anything less certain is proposed);
   - anchors (report);
   - citations from the class grammar;
   - a concept scheme's terms, as `uses_term`, or `defines` in a definitions
