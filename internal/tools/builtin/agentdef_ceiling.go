@@ -106,6 +106,7 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 		func() error { return ceilCrypto(ctx, def, base, held) },
 		func() error { return ceilShellCreds(ctx, def, base, held) },
 		func() error { return ceilGitRemote(ctx, def, base, held) },
+		func() error { return ceilStatementMethods(ctx, def, base) },
 		func() error { return ceilSkills(ctx, def, base, held) },
 		func() error { return ceilDefScopes(ctx, name, def, base, held) },
 	}
@@ -499,6 +500,26 @@ func ceilGitRemote(ctx context.Context, def mergedDef, base *mergedDef, held str
 		ceiling = scopeUnion(ceiling, tools.GitRemoteFor(base.GitRemote).Ops())
 	}
 	return subsetCeiling("git_remote", def.GitRemote, false, held, ceiling)
+}
+
+// ---- statement methods ----
+
+// ceilStatementMethods holds statement_methods for a definition authored from
+// inside a run. A new one may list only methods the author's own run may
+// stamp; a fork only methods the version it forks already held — narrowing a
+// lineage, never widening it, even with methods the author itself holds,
+// because the grant is what lets a body's writes skip review (auto-assert)
+// and the lineage's operator chose which bodies get it. Unset and [] grant
+// nothing, so there is no default to wave through.
+func ceilStatementMethods(ctx context.Context, def mergedDef, base *mergedDef) error {
+	if len(def.StatementMethods) == 0 {
+		return nil
+	}
+	ceiling, held := tools.PolicyOf(ctx).StatementMethods, "this agent's own"
+	if base != nil {
+		ceiling, held = base.StatementMethods, "the forked version's"
+	}
+	return subsetCeiling("statement_methods", def.StatementMethods, false, held, ceiling)
 }
 
 // ---- skills ----

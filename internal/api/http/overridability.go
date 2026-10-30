@@ -112,6 +112,10 @@ var agentDefOverridability = map[string]overridability{
 	// be harmless, but it needs a run-request field on every transport and
 	// RFC EW D4 left it out; a sub-agent's narrowing is the spawn invariant.
 	"ShellCredentials": notOverridable,
+	// Which methods a code-js agent may stamp on its relations: a rule:
+	// stamp can skip review, so a caller may not grant or move it per run.
+	// A sub-agent holds only its own definition's grant.
+	"StatementMethods": notOverridable,
 	// The Git tool's network grant (RFC FB): authority over what leaves the
 	// host, like the key and credential grants above. A sub-agent's narrowing
 	// is the spawn invariant, not an override.

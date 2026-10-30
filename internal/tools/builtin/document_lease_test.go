@@ -173,6 +173,19 @@ func TestDocumentLease_RunWithoutTheGrantIsRefused(t *testing.T) {
 	}
 }
 
+// A run of a code agent granted statement methods is the driver the lease exists
+// for: it takes and releases one.
+func TestDocumentLease_GrantedRunTakesAndReleases(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	granted := tools.UpdateRunPolicy(tools.WithRunID(ctx, "r_linker"), func(rp *tools.RunPolicy) { rp.StatementMethods = []string{"rule"} })
+	if out, r := docExec(t, d, granted, `{"op":"lease","scope":"user","name":"linker"}`); r.IsError || out["acquired"] != true {
+		t.Fatalf("a granted run's lease = %s; want acquired", r.Text)
+	}
+	if out, r := docExec(t, d, granted, `{"op":"release","scope":"user","name":"linker"}`); r.IsError || out["released"] != true {
+		t.Fatalf("a granted run's release = %s; want released", r.Text)
+	}
+}
+
 func TestDocumentLease_OperatorTakesAndReleasesThroughTheTool(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	op := leaseKey(t, d, ctx)

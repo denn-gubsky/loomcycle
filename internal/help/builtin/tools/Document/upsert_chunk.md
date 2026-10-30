@@ -63,6 +63,10 @@ while keeping the old version, write the correction under a NEW key and then
   removed. An upsert with `about_ids` replaces the relation the fact stated
   before, and retiring or deleting the fact ends it — unless another fact
   still states it.
+- `method` — with `relation`: how the relation was found, `rule:<name>` or
+  `extractor:<name>`, recorded on it in place of the memory pass's own method.
+  Only an agent granted that kind of method may send it (`method_not_granted`
+  otherwise); see `propose_statement`.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 Every time field you omit keeps its stored value. The server sets the fact's

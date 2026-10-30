@@ -119,6 +119,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		Crypto:           src.Crypto,
 		ShellCreds:       shellCredsOf(def, src.ShellCreds),
 		GitRemote:        gitRemoteOf(def, src.GitRemote),
+		StatementMethods: statementMethodsOf(def),
 		OperatorAuthored: def.OperatorAuthored,
 		ACL:              acl,
 		ACLRemovedTools:  src.ACLRemovedTools,
@@ -165,6 +166,17 @@ func nilIfZeroContext(c *config.Context) *config.Context {
 		return nil
 	}
 	return c
+}
+
+// statementMethodsOf is the run's statement_methods grant: its definition's,
+// and only when the definition runs code. Load and AgentDef create/fork refuse
+// the field on any other provider; this keeps a definition that reached a run
+// some other way from claiming a rule: stamp for a model's writes.
+func statementMethodsOf(def config.AgentDef) []string {
+	if def.Provider != config.CodeJSProvider {
+		return nil
+	}
+	return def.StatementMethods
 }
 
 // shellCredsOf is a run's shell-credential narrowing: the one given from

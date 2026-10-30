@@ -179,6 +179,7 @@ const documentInputSchema = `{
 		"kind":        {"type": "string", "description": "link/unlink_chunks / propose_statement: the relation kind (cites, based_on, defines, implements, related, …). Kinds the runtime writes are refused: about, supersedes, references, mentions, derived_from, supported_by. get_edges / backlinks / list_statements: return only this kind. graph_recall / related (related_to): follow only this kind."},
 		"kinds":       {"type": "array", "items": {"type": "string"}, "description": "get_edges / backlinks / list_statements: return only these relation kinds (with kind, the union). graph_recall / related (related_to): follow only these kinds."},
 		"attributes":  {"type": "object", "description": "link_chunks / propose_statement: the relation's qualifiers (e.g. aspect, coverage), at most 4 KB of JSON."},
+		"method":      {"type": "string", "description": "propose_statement / upsert_chunk (its relation): how the statement was made, rule:<name> or extractor:<name> (name: 1-64 of a-z 0-9 _ . / -). Only an agent granted that kind of method may send it; otherwise it is refused (method_not_granted). Omit it and the statement is recorded as manual."},
 		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}}, "required": ["quote"]}},
 		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false): include statements proposed for review and not yet accepted. graph_recall (default false): also follow them."},
 		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements: continue a truncated listing — pass the next_cursor from the previous page (list_statements: with the same order)."},
@@ -332,9 +333,14 @@ type docInput struct {
 	WorkKey           string `json:"work_key,omitempty"`
 	Anchor            string `json:"anchor,omitempty"`
 	CreatePlaceholder bool   `json:"create_placeholder,omitempty"`
+	// Method is the method a code-js run names for the statement it writes
+	// (rule:<name> | extractor:<name>), checked against its agent's
+	// statement_methods grant by stampStatementMethod, which copies it into
+	// edgeMethod. Never read past that check.
+	Method string `json:"method,omitempty"`
 	// edgeMethod is the statement's method when an internal path (import, sync,
-	// canvas) writes it. UNEXPORTED: a caller must not name how its own link was
-	// made.
+	// canvas) writes it, or the wire Method once it passed the grant check.
+	// UNEXPORTED: a caller must not name how its own link was made.
 	edgeMethod string
 	Position   *int `json:"position"`
 	Revision   *int `json:"revision"`
@@ -616,6 +622,9 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	// Before any lookup: a cut id is refused on its syntax alone.
 	if r, cut := refuseCutIDs(in); cut {
 		return r, nil
+	}
+	if refused := stampStatementMethod(ctx, &in); refused != nil {
+		return *refused, nil
 	}
 	key, mscope, err := d.resolveScope(ctx, in.Scope)
 	if err != nil {

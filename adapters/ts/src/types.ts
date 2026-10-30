@@ -3989,6 +3989,11 @@ export type DocumentToolInput = {
   kinds?: string[];
   /** link_chunks / propose_statement: the relation's qualifiers. */
   attributes?: Record<string, unknown>;
+  /** propose_statement / upsert_chunk (its relation): how the statement was
+   *  made — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
+   *  Only a code-js agent whose `statement_methods` lists the prefix may send
+   *  it; anything else is refused with `method_not_granted`. Omitted = `manual`. */
+  method?: string;
   /** link_chunks / propose_statement: the text the relation rests on. Each row
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
@@ -5484,6 +5489,13 @@ export interface AgentDefOverlay {
    *  Held to the author's own grant; a sub-agent may perform an operation
    *  only when its parent run also may. */
   git_remote?: Array<'fetch' | 'push'>;
+  /** Which methods the agent may stamp on the document relations it writes:
+   *  `'rule'` (its code found it) and/or `'extractor'` (a model it drives
+   *  found it). Only for `provider: 'code-js'` — refused on any other
+   *  provider. Unset or `[]` = none: every relation it writes is stamped
+   *  `manual`. A new agent may list only what its author may stamp; a fork
+   *  only what the version it forks held. */
+  statement_methods?: Array<'rule' | 'extractor'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

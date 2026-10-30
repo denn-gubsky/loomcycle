@@ -1130,7 +1130,9 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		return errBusiness("propose_statement: statement_rejected: this relation was rejected by an operator ("+reason+")",
 			"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 	}
-	if len(w.evidence) > 0 && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
+	// Not for a competing proposal (id): asserting it would set a second live
+	// statement beside the one it revises.
+	if len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
 		for _, ev := range w.evidence {
 			if ev.ChunkID == "" {
