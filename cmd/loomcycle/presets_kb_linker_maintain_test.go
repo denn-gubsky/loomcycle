@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The maintenance layer (L6) of kb/linker, run through the real loop against the
@@ -196,9 +197,10 @@ func TestKBLinker_RenamedKindIsReproposedThenExpired(t *testing.T) {
 }
 
 // TestKBLinker_SupersededEndpointExpiresAndMovesOnlyWhenQuotesSurvive: a
-// statement from a part a newer edition replaced is closed. It is filed again on
-// the successor — revision_of the original — only when every quote it had on the
-// old part is still in the new one.
+// statement from a part a newer edition replaced is closed. One the citation
+// grammar did not make is filed again on the successor — revision_of the
+// original — only when every quote it had on the old part is still in the new
+// one. (A citation is re-read by the grammar instead: the next test.)
 func TestKBLinker_SupersededEndpointExpiresAndMovesOnlyWhenQuotesSurvive(t *testing.T) {
 	f := maintainFixture()
 	f.chunks = append(f.chunks,
@@ -210,6 +212,7 @@ func TestKBLinker_SupersededEndpointExpiresAndMovesOnlyWhenQuotesSurvive(t *test
 	// c-b1 has no supersedes edge: its successor is found by anchor.
 	survives := citeStatement("st-survives", "c-a1", "x1", "keep a register of incidents")
 	lost := citeStatement("st-lost", "c-b1", "x1", "due within 24 hours")
+	survives.Method, lost.Method = "extractor:clauses", "extractor:clauses"
 	f.statements = []*kbStatement{survives, lost}
 
 	rep, _ := runLinker(t, f, maintainInput)
@@ -490,4 +493,201 @@ func TestKBLinker_AutoLinkWhoseTextIsGoneIsCountedNotTouched(t *testing.T) {
 	if n := len(f.callsOf("Document", "maintain_statement")); n != 0 {
 		t.Errorf("maintain_statement called %d times on auto statements", n)
 	}
+}
+
+// hitOn is one extract_citations hit on chunk chunkID, at the rune span of quote
+// in body.
+func hitOn(chunkID, body, quote string, resolved map[string]any) map[string]any {
+	at := strings.Index(body, quote)
+	if at < 0 {
+		panic("quote not in body: " + quote)
+	}
+	start := utf8.RuneCountInString(body[:at])
+	return map[string]any{"chunk_id": chunkID, "quote": quote, "char_start": start,
+		"char_end": start + utf8.RuneCountInString(quote), "kind": "cites", "resolved": resolved}
+}
+
+// TestKBLinker_SupersededCitationIsReReadByTheGrammar: a citation whose passage a
+// new edition replaced is filed on the successor when the grammar still finds it
+// there, with the hit's own quotes — not when its old quotes happen to survive.
+//   - partial: the number form is gone, the title form stays: still cites x1;
+//   - renamed: the same words now name a newer act: no successor, and the copy the
+//     re-import made (its quote held) is expired before it can be verified;
+//   - reflow: the line break moved, so no old quote survives: still cites x1;
+//   - repoint: point 5 of an act became point 7: not a move, L2 files the new one.
+func TestKBLinker_SupersededCitationIsReReadByTheGrammar(t *testing.T) {
+	const (
+		p1 = "The operator follows Resolution No 64 of 11 June 2018, the Risk Regulation, in full."
+		p2 = "The operator follows the Risk Regulation in full."
+		r1 = "Audits follow the Audit Regulation approved by Resolution No 311 of 2016."
+		r2 = "Audits follow the Audit Regulation approved by Resolution No 151 of 2025."
+		f1 = "Reports go to the regulator under the Law\non Banks and its rules."
+		f2 = "Reports go to the regulator under the Law on\nBanks and its rules."
+		g1 = "Limits are set by point 5 of the Law on Banks for every desk."
+		g2 = "Limits are set by point 7 of the Law on Banks for every desk."
+	)
+	f := maintainFixture()
+	f.chunks = append(f.chunks,
+		kbChunk{ID: "c-p1", DocumentID: "doc-target", Type: "section", Body: p1, InvalidAt: 50, Anchor: "art-2", StableID: "art-2"},
+		kbChunk{ID: "c-p2", DocumentID: "doc-target", Type: "section", Body: p2, Anchor: "art-2", StableID: "art-2"},
+		kbChunk{ID: "c-r1", DocumentID: "doc-target", Type: "section", Body: r1, InvalidAt: 50, Anchor: "art-3", StableID: "art-3"},
+		kbChunk{ID: "c-r2", DocumentID: "doc-target", Type: "section", Body: r2, Anchor: "art-3", StableID: "art-3"},
+		kbChunk{ID: "c-f1", DocumentID: "doc-target", Type: "section", Body: f1, InvalidAt: 50, Anchor: "art-4", StableID: "art-4"},
+		kbChunk{ID: "c-f2", DocumentID: "doc-target", Type: "section", Body: f2, Anchor: "art-4", StableID: "art-4"},
+		kbChunk{ID: "c-g1", DocumentID: "doc-target", Type: "section", Body: g1, InvalidAt: 50, Anchor: "art-5", StableID: "art-5"},
+		kbChunk{ID: "c-g2", DocumentID: "doc-target", Type: "section", Body: g2, Anchor: "art-5", StableID: "art-5"})
+	f.supersedes["c-p1"], f.supersedes["c-r1"], f.supersedes["c-f1"], f.supersedes["c-g1"] = "c-p2", "c-r2", "c-f2", "c-g2"
+	f.others["x-audit16"] = kbChunk{ID: "x-audit16", DocumentID: "doc-audit-2016", Type: "act", Body: kbBodyRule}
+	partial := citeStatement("st-partial", "c-p1", "x1", "Resolution No 64 of 11 June 2018", "the Risk Regulation")
+	renamed := citeStatement("st-renamed", "c-r1", "x-audit16", "the Audit Regulation", "Resolution No 311 of 2016")
+	copied := citeStatement("st-copy", "c-r2", "x-audit16", "the Audit Regulation")
+	// Both proposed, the copy newer: it is listed before the statement it copies.
+	renamed.Status = "proposed"
+	copied.Status, copied.CreatedAt, copied.Attributes = "proposed", 9, map[string]any{"revision_of": "st-renamed"}
+	reflow := citeStatement("st-reflow", "c-f1", "x1", "the Law\non Banks")
+	// Point 5 of an act, cited exactly; the new edition cites point 7 of it.
+	repoint := citeStatement("st-repoint", "c-g1", "x2", "point 5 of the Law on Banks")
+	f.statements = []*kbStatement{copied, partial, renamed, reflow, repoint}
+	law := map[string]any{"document_id": "doc-law", "exact": false, "placeholder": false}
+	newer := map[string]any{"document_id": "doc-audit-2025", "exact": false, "placeholder": false}
+	f.citations = []map[string]any{
+		hitOn("c-p2", p2, "the Risk Regulation", law),
+		hitOn("c-r2", r2, "the Audit Regulation", newer),
+		hitOn("c-r2", r2, "Resolution No 151 of 2025", newer),
+		hitOn("c-f2", f2, "the Law on\nBanks", law),
+		hitOn("c-g2", g2, "point 7 of the Law on Banks", map[string]any{"chunk_id": "x1", "document_id": "doc-law", "exact": true, "placeholder": false}),
+	}
+
+	rep, _ := runLinker(t, f, maintainInput)
+
+	got := map[string]map[string]any{}
+	for _, p := range proposals(f) {
+		got[p["from_id"].(string)] = p
+	}
+	if len(got) != 2 || got["c-p2"] == nil || got["c-f2"] == nil {
+		t.Fatalf("proposals = %v, want st-partial on c-p2 and st-reflow on c-f2 only", proposals(f))
+	}
+	for from, want := range map[string]struct{ rev, quote string }{
+		"c-p2": {"st-partial", "the Risk Regulation"}, "c-f2": {"st-reflow", "the Law on\nBanks"},
+	} {
+		p := got[from]
+		attrs, _ := p["attributes"].(map[string]any)
+		ev, _ := p["evidence"].([]any)
+		if p["to_id"] != "x1" || p["method"] != "rule:citation" || attrs["revision_of"] != want.rev ||
+			len(ev) != 1 || ev[0].(map[string]any)["quote"] != want.quote {
+			t.Errorf("successor from %s = %v, want → x1 by rule:citation, revision_of %s, quoting %q", from, p, want.rev, want.quote)
+		}
+	}
+	for _, id := range []string{"st-partial", "st-renamed", "st-reflow", "st-repoint"} {
+		if got := actionsOf(f, id); got != "expire" {
+			t.Errorf("%s actions = %q, want expire", id, got)
+		}
+	}
+	if got := actionsOf(f, "st-copy"); got != "expire" {
+		t.Errorf("st-copy actions = %q, want expire only (never verified)", got)
+	}
+	if c := maintainCalls(f, "st-copy"); len(c) == 1 && c[0]["reason"] != "the new edition no longer cites this work" {
+		t.Errorf("st-copy reason = %v", c[0]["reason"])
+	}
+	for counter, want := range map[string]float64{"successor_citation_gone": 2, "successor_copies_expired": 1, "successor_quotes_gone": 0} {
+		if n := layerCount(t, rep, "L6", counter); n != want {
+			t.Errorf("%s = %v, want %v", counter, n, want)
+		}
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_SupersededCitationWithoutAGrammarFallsBackToQuotes: when the
+// document's grammar cannot be read, a citation is moved by the quote rule.
+func TestKBLinker_SupersededCitationWithoutAGrammarFallsBackToQuotes(t *testing.T) {
+	f := maintainFixture()
+	f.grammarNull = true
+	f.chunks = append(f.chunks,
+		kbChunk{ID: "c-a1", DocumentID: "doc-target", Type: "section", Body: "Article 9. The operator shall keep a register of incidents.", InvalidAt: 50, Anchor: "art-9", StableID: "art-9"},
+		kbChunk{ID: "c-a2", DocumentID: "doc-target", Type: "section", Body: "Article 9. The operator shall keep a register of incidents online.", Anchor: "art-9", StableID: "art-9"})
+	f.supersedes["c-a1"] = "c-a2"
+	f.statements = []*kbStatement{citeStatement("st-cite", "c-a1", "x1", "keep a register of incidents")}
+
+	runLinker(t, f, maintainInput)
+
+	got := proposals(f)
+	if len(got) != 1 || got[0]["from_id"] != "c-a2" || got[0]["method"] != "rule:maintain" {
+		t.Errorf("proposals = %v, want st-cite moved to c-a2 by the quote rule", got)
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_ReflowedQuoteIsFoundAndQuotedVerbatim: a statement the grammar did
+// not make moves when its quote's words survive with new line breaks, and the
+// successor quotes the new part's own text. One surviving quote of two does not
+// move a statement.
+func TestKBLinker_ReflowedQuoteIsFoundAndQuotedVerbatim(t *testing.T) {
+	const (
+		a1 = "Article 9. The operator shall keep a register\nof incidents for five years."
+		a2 = "Article 9. The operator shall keep a register of\nincidents for three years."
+	)
+	f := maintainFixture()
+	f.chunks = append(f.chunks,
+		kbChunk{ID: "c-a1", DocumentID: "doc-target", Type: "section", Body: a1, InvalidAt: 50, Anchor: "art-9", StableID: "art-9"},
+		kbChunk{ID: "c-a2", DocumentID: "doc-target", Type: "section", Body: a2, Anchor: "art-9", StableID: "art-9"})
+	f.supersedes["c-a1"] = "c-a2"
+	moved := citeStatement("st-moved", "c-a1", "x1", "a register\nof incidents")
+	half := citeStatement("st-half", "c-a1", "x2", "a register\nof incidents", "for five years")
+	moved.Method, half.Method = "extractor:clauses", "extractor:clauses"
+	f.statements = []*kbStatement{moved, half}
+
+	rep, _ := runLinker(t, f, maintainInput)
+
+	got := proposals(f)
+	if len(got) != 1 || got[0]["from_id"] != "c-a2" || got[0]["to_id"] != "x1" {
+		t.Fatalf("proposals = %v, want only st-moved on c-a2", got)
+	}
+	ev := got[0]["evidence"].([]any)[0].(map[string]any)
+	want := "a register of\nincidents"
+	start := utf8.RuneCountInString(a2[:strings.Index(a2, want)])
+	if ev["quote"] != want || ev["char_start"] != float64(start) || ev["char_end"] != float64(start+utf8.RuneCountInString(want)) {
+		t.Errorf("successor evidence = %v, want %q at runes [%d,%d)", ev, want, start, start+utf8.RuneCountInString(want))
+	}
+	for counter, want := range map[string]float64{"successor_quotes_loose": 1, "successor_quotes_gone": 1} {
+		if n := layerCount(t, rep, "L6", counter); n != want {
+			t.Errorf("%s = %v, want %v", counter, n, want)
+		}
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_RuledCopyOfAGoneCitationIsFlagged: the re-import carries an
+// operator's ruling over to its copy. When the new edition no longer makes the
+// citation, that copy is flagged for the operator, never expired.
+func TestKBLinker_RuledCopyOfAGoneCitationIsFlagged(t *testing.T) {
+	const (
+		r1 = "Audits follow the Audit Regulation approved by Resolution No 311 of 2016."
+		r2 = "Audits follow the Audit Regulation approved by Resolution No 151 of 2025."
+	)
+	f := maintainFixture()
+	f.chunks = append(f.chunks,
+		kbChunk{ID: "c-r1", DocumentID: "doc-target", Type: "section", Body: r1, InvalidAt: 50, Anchor: "art-3", StableID: "art-3"},
+		kbChunk{ID: "c-r2", DocumentID: "doc-target", Type: "section", Body: r2, Anchor: "art-3", StableID: "art-3"})
+	f.supersedes["c-r1"] = "c-r2"
+	f.others["x-audit16"] = kbChunk{ID: "x-audit16", DocumentID: "doc-audit-2016", Type: "act", Body: kbBodyRule}
+	orig := citeStatement("st-orig", "c-r1", "x-audit16", "the Audit Regulation")
+	orig.Status = "proposed"
+	ruled := citeStatement("st-ruled-copy", "c-r2", "x-audit16", "the Audit Regulation")
+	ruled.OperatorRuledAt, ruled.Attributes = 7, map[string]any{"revision_of": "st-orig"}
+	f.statements = []*kbStatement{orig, ruled}
+	f.citations = []map[string]any{hitOn("c-r2", r2, "the Audit Regulation",
+		map[string]any{"document_id": "doc-audit-2025", "exact": false, "placeholder": false})}
+
+	runLinker(t, f, maintainInput)
+
+	if got := actionsOf(f, "st-orig"); got != "expire" {
+		t.Errorf("st-orig actions = %q, want expire", got)
+	}
+	if got := actionsOf(f, "st-ruled-copy"); got != "flag" {
+		t.Errorf("st-ruled-copy actions = %q, want flag only (no expire, and no verify over the flag)", got)
+	}
+	if len(proposals(f)) != 0 {
+		t.Errorf("proposals = %v, want none", proposals(f))
+	}
+	noViolations(t, f)
 }

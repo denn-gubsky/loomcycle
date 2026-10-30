@@ -1723,7 +1723,8 @@ agents:
           statements: 0, statements_over_cap: 0, unreadable: 0, unchecked: 0,
           skipped_runtime: 0, skipped_reserved_kind: 0, auto_rule_a_candidates: 0,
           endpoints_cross_scope_unchecked: 0, kind_unchecked: 0, domain_range_unchecked: 0,
-          successor_missing: 0, successor_quotes_gone: 0, rename_refused: 0, all_stale_already_proposed: 0,
+          successor_missing: 0, successor_quotes_gone: 0, successor_quotes_loose: 0, successor_citation_gone: 0,
+          successor_copies_expired: 0, rename_refused: 0, all_stale_already_proposed: 0,
           checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, passed: 0 },
           actions: {}
         }));
@@ -1747,8 +1748,24 @@ agents:
         }
         loadMeta(st, statementChunkIDs(todo.concat(autos)));
         for (var a = 0; a < autos.length; a++) { countRuleA(st, C, autos[a]); }
+        // A statement with a superseded end goes first: it may settle what the
+        // re-import copied from it (expire it, or flag a ruled one) before that copy
+        // is verified on its own.
+        var early = [], late = [];
+        for (var e = 0; e < todo.length; e++) {
+          var fm = st.meta[todo[e].from_id], tm = st.meta[todo[e].to_id];
+          if ((fm && fm.invalid_at > 0) || (tm && tm.invalid_at > 0)) { early.push(todo[e]); } else { late.push(todo[e]); }
+        }
+        todo = early.concat(late);
+        st.copiesOf = {};
+        st.settledNow = {};
+        for (var c = 0; c < todo.length; c++) {
+          var rev = isPlainObject(todo[c].attributes) ? todo[c].attributes.revision_of : "";
+          if (isID(rev)) { (st.copiesOf[rev] = st.copiesOf[rev] || []).push(todo[c]); }
+        }
         var passed = [];
         for (var j = 0; j < todo.length; j++) {
+          if (st.settledNow[todo[j].id] === true) { continue; }
           if (checkStatement(st, L, todo[j]) === "pass") { passed.push(todo[j]); }
         }
         var survivors = redundancy(st, L, passed);
@@ -1961,9 +1978,10 @@ agents:
       }
 
       // supersededEnd closes a statement whose end a newer edition replaced, after
-      // proposing it again on the successor when every quote survived there. The
-      // proposal comes first, so a pass that stops between the two never leaves the
-      // relation only closed.
+      // proposing it again on the successor: a citation when the grammar still finds
+      // it there, any other statement when every quote survived. The proposal comes
+      // first, so a pass that stops between the two never leaves the relation only
+      // closed.
       function supersededEnd(st, L, s, person, sup) {
         if (person) {
           act(st, L, s, "flag", { reason: "endpoint superseded" });
@@ -1978,10 +1996,85 @@ agents:
         if (map === null) {
           L.counts.successor_missing++;
         } else {
-          var p = successorProposal(st, s, map);
-          if (p === null) { L.counts.successor_quotes_gone++; } else { propose(st, L, p); }
+          var p = s.method === METHOD.citation && hasOwn(map, s.from_id) ? citationSuccessor(st, s, map) : undefined;
+          if (p === null) {
+            L.counts.successor_citation_gone++;
+            expireCopies(st, L, s);
+          } else {
+            if (p === undefined) {
+              p = successorProposal(st, L, s, map);
+              if (p === null) { L.counts.successor_quotes_gone++; }
+            }
+            if (p !== null) { propose(st, L, p); }
+          }
         }
         act(st, L, s, "expire", { reason: "endpoint superseded" });
+      }
+
+      // citationSuccessor asks the citation grammar whether the part that replaced a
+      // citation's source still cites the same work with the same kind, and files the
+      // citation there with the hits' own quotes. The grammar decides, not the old
+      // quote: a new edition can keep a quote word for word while it names a newer
+      // act, and can keep a citation while every quote moves (a title now cited
+      // without its number, a line broken elsewhere). null when no hit there cites
+      // the work; undefined when the grammar cannot be read, and the quote rule
+      // decides.
+      function citationSuccessor(st, s, map) {
+        var from = map[s.from_id];
+        var to = hasOwn(map, s.to_id) ? map[s.to_id] : s.to_id;
+        if (from === to) { return null; }
+        var r;
+        try {
+          r = call(st, { op: "extract_citations", id: from, limit: CONFIG.citations_limit });
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          return undefined;
+        }
+        if (!isPlainObject(r) || !isPlainObject(r.grammar) || !isArray(r.hits)) { return undefined; }
+        var mt = st.meta[s.to_id];
+        var toDoc = mt ? mt.document_id : "";
+        var writable = (st.onto && isPlainObject(st.onto.writable)) ? st.onto.writable : {};
+        var ev = [];
+        for (var i = 0; i < r.hits.length; i++) {
+          var h = r.hits[i];
+          if (!isPlainObject(h) || h.chunk_id !== from || typeof h.quote !== "string" || h.quote === "" ||
+              !isSpan(h.char_start, h.char_end)) {
+            continue;
+          }
+          var kind = (typeof h.kind === "string" && writable[h.kind] === true) ? h.kind : "cites";
+          if (kind !== s.kind) { continue; }
+          // A hit that names a part must name this one; one that names only the
+          // work matches a statement into that work. A citation now pointing at
+          // another part of the same act is L2's to file, not a move.
+          var res = isPlainObject(h.resolved) ? h.resolved : {};
+          var same = isID(res.chunk_id) ? (res.chunk_id === s.to_id || res.chunk_id === to)
+                                        : (toDoc !== "" && res.document_id === toDoc);
+          if (same) { ev.push({ chunk_id: from, quote: h.quote, char_start: h.char_start, char_end: h.char_end }); }
+        }
+        if (ev.length === 0) { return null; }
+        var p = { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: ev,
+                  attributes: { revision_of: s.id }, method: METHOD.citation };
+        if (typeof s.valid_at === "number" && s.valid_at > 0) { p.valid_at = s.valid_at; }
+        return p;
+      }
+
+      // expireCopies closes what the re-import carried over for a citation the new
+      // edition no longer makes: the runtime moves a statement whose quotes all
+      // survive without asking the grammar what they now cite. A copy of one an
+      // operator ruled on keeps that ruling, so it is flagged for them instead.
+      function expireCopies(st, L, s) {
+        var copies = st.copiesOf[s.id] || [];
+        for (var i = 0; i < copies.length; i++) {
+          var c = copies[i];
+          if (st.settledNow[c.id] === true || c.from_id === s.from_id) { continue; }
+          var reason = "the new edition no longer cites this work";
+          if (!mayRetire(c)) {
+            if (act(st, L, c, "flag", { reason: reason }).ok) { st.settledNow[c.id] = true; }
+            continue;
+          }
+          var w = act(st, L, c, "expire", { reason: reason });
+          if (w.ok) { st.settledNow[c.id] = true; L.counts.successor_copies_expired++; }
+        }
       }
 
       // successorOf follows the supersedes edges (new → old) from a superseded part
@@ -2011,12 +2104,16 @@ agents:
       }
 
       // successorProposal is the statement moved onto the successors, with each quote
-      // on a superseded part found again in its successor; null when any is gone.
-      function successorProposal(st, s, map) {
+      // on a superseded part found again in its successor; null when any is gone. A
+      // quote whose words survive but whose line breaks or spacing moved is found
+      // too, and the successor quotes the new part's own text for that span, so
+      // evidence stays verbatim. One surviving quote of several is not enough: it
+      // cannot vouch for what the passage now says.
+      function successorProposal(st, L, s, map) {
         var from = hasOwn(map, s.from_id) ? map[s.from_id] : s.from_id;
         var to = hasOwn(map, s.to_id) ? map[s.to_id] : s.to_id;
         if (from === to) { return null; }
-        var ev = [];
+        var ev = [], loose = 0;
         for (var i = 0; i < s.evidence.length; i++) {
           var row = s.evidence[i];
           if (!isPlainObject(row) || !isID(row.chunk_id) || typeof row.quote !== "string") { continue; }
@@ -2024,11 +2121,18 @@ agents:
           if (row.quote === "") { return null; }
           var b = readChunk(st, map[row.chunk_id]);
           if (!b.ok) { return null; }
-          var at = b.body.indexOf(row.quote);
-          if (at < 0) { return null; }
-          var span = runeSpan(b.body, at, at + row.quote.length);
-          ev.push({ chunk_id: map[row.chunk_id], quote: row.quote, char_start: span[0], char_end: span[1] });
+          var at = b.body.indexOf(row.quote), end = at + row.quote.length;
+          if (at < 0) {
+            var found = findLoose(b.body, row.quote);
+            if (found === null) { return null; }
+            at = found[0];
+            end = found[1];
+            loose++;
+          }
+          var span = runeSpan(b.body, at, end);
+          ev.push({ chunk_id: map[row.chunk_id], quote: b.body.slice(at, end), char_start: span[0], char_end: span[1] });
         }
+        L.counts.successor_quotes_loose += loose;
         var p = { op: "propose_statement", from_id: from, to_id: to, kind: s.kind, evidence: ev,
                   attributes: { revision_of: s.id }, method: METHOD.maintain };
         // The date the fact took effect does not move with its text. The old
@@ -2036,6 +2140,30 @@ agents:
         // successor starts without one.
         if (typeof s.valid_at === "number" && s.valid_at > 0) { p.valid_at = s.valid_at; }
         return p;
+      }
+
+      // findLoose finds quote in body with every whitespace run counted as one space,
+      // and returns the body's own span for it (UTF-16 offsets); null when the words
+      // are not there in that order.
+      function findLoose(body, quote) {
+        var nq = quote.replace(/\s+/g, " ").trim();
+        if (nq === "") { return null; }
+        var nb = [], idx = [], space = false;
+        for (var i = 0; i < body.length; i++) {
+          var ch = body.charAt(i);
+          if (/\s/.test(ch)) {
+            if (space) { continue; }
+            nb.push(" ");
+            space = true;
+          } else {
+            nb.push(ch);
+            space = false;
+          }
+          idx.push(i);
+        }
+        var at = nb.join("").indexOf(nq);
+        if (at < 0) { return null; }
+        return [idx[at], idx[at + nq.length - 1] + 1];
       }
 
       function storedEvidence(s) {
