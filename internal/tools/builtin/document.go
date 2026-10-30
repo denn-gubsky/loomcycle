@@ -94,6 +94,9 @@ type Document struct {
 	// re-indexes before it lets go (see reindexSubtree). Guarded by reindexMu.
 	reindexMu  sync.Mutex
 	reindexing map[reindexDocKey]map[string]struct{}
+
+	// editions serialises the reimports of one work (see document_editions.go).
+	editions editionLocks
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -104,7 +107,7 @@ func (d *Document) UsageHint() string {
 }
 
 func (d *Document) Description() string {
-	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the relations touching a document — each a statement with its status, provenance and evidence quotes, enriched with its endpoints' titles/types/statuses)/get_edge (one relation with all its evidence)/propose_statement (suggest a relation for review; nothing live changes until an operator accepts it)/list_statements (the review queue)/accept_statement/reject_statement (an operator's ruling; refused inside a run)/resolve_anchor (find a work by its key and a part of it by anchor, as of a date)/describe_ontology (the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown; reimport:true reconciles a new edition onto the held one part by part), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
+	return "A chunked-graph document: each chunk is a first-class unit (UUID, hierarchy, type, fields, graph edges, Markdown body) that agents and humans co-author and query. Ops: create_document/get_document/documents_summary (per-document type/status + display metadata for a set of ids or a Path subtree)/query_documents (filter documents by type/status/tag/under_path)/delete_document/set_path, create_chunk (optional after_id inserts right after a sibling)/get_chunk/update_chunk/delete_chunk/move_chunk/reorder_chunk (move up|down within a level), the fact tier — upsert_chunk (write a fact by natural_key)/supersede_chunk (correct one without deleting it)/list_facts/graph_recall (recall across relations, optionally as of a past instant)/remember (store a statement a PERSON supplied as a fact that cites ITSELF — the text becomes both the claim and its source span, filed as evidential; additive only, and never a way to delete)/verbatim_answer (answer a LOOKUP question with a stored fact quoted verbatim plus the source span it was verified against, and NO generated text — returns an answer only when one verified fact clearly matches, and explains itself when it declines)/verification_stats (how much of this scope's fact store carries a span and a verdict)/judge_fact (record whether a fact is supported by the source span recorded on it — an unsupported fact is withheld from list_facts and graph_recall rather than deleted, and stays readable with include_refuted)/propose_entity (suggest an entity type for the tenant ontology; inert until an operator accepts it), link_chunks/unlink_chunks/get_edges (the relations touching a document — each a statement with its status, provenance and evidence quotes, enriched with its endpoints' titles/types/statuses)/get_edge (one relation with all its evidence)/propose_statement (suggest a relation for review; nothing live changes until an operator accepts it)/list_statements (the review queue)/accept_statement/reject_statement (an operator's ruling; refused inside a run)/resolve_anchor (find a work by its key and a part of it by anchor, as of a date)/describe_ontology (the tenant ontology in force, parsed: classes with their effective directives and fields, relation kinds, grammars, concept schemes)/extract_citations (apply the document class's citation grammar to a document's or a chunk's text and resolve each citation it finds; read-only)/backlinks (the chunks that link TO a chunk — both manual links and inline [[name]] links)/related (the chunks whose bodies are semantically closest to a chunk's — ranked by score; needs a configured embedder)/unlinked_mentions (the chunks whose body text mentions a chunk's title but do NOT already link to it), history/get_version/diff (a chunk's body-change log: list the revisions its body changed at, read one revision's exact body, or unified-diff two of them), search (search chunk BODIES for free text, by meaning and, where the server has a word index, by the words too — the entry point when you do not know which document holds the answer; returns chunk_id + title/type/document_id, so no key format to learn; aim it — and related — at part of the scope with under_path(s), exclude_under_path(s), document_ids, exclude_document_ids, type(s), status(es), tag, tag_prefix or as_of, applied before ranking), query_chunks (structured filters incl. tag/tag_prefix + a raw sql escape hatch), add_tags/remove_tags (incremental tags on a chunk (id) or document (document_id))/list_tags (distinct tags + counts for a chunk, a document, or the whole scope), define_type/list_types, set_asset (attach an image's bytes to a chunk → type=image, served by GET /v1/_document/asset/{id})/get_asset (asset metadata), export_md (render the document to Markdown), import_md (build a document from export_md-shaped Markdown; reimport:true reconciles a new edition onto the held one part by part), export_canvas (render the document as a JSON Canvas v1.0 spatial graph — content chunks as nodes + their cross-reference edges, for Obsidian Canvas / spatial views)/import_canvas (build a new document from a JSON Canvas), set_remote (bind this document to a peer loomcycle declared in the operator's document_sources — pass source + remote_ref)/sync (reconcile the bound peer document's keyed chunks with this one by natural_key — carrying body, tags, hierarchy (each chunk under its keyed parent, at its sibling position) and manual links — direction:pull (default) copies the peer's chunks in, direction:push writes this document's chunks up to the peer)/diff_remote (dry-run: what a sync would change — keyed chunks only_local/only_remote/diverged/retagged/reparented, without touching either side). Scope is agent, user (the default) or tenant (tenant needs the operator's grant); documents are named in the Path tree (path:) — create_document defaults to /documents/<title> if you omit one, and set_path attaches/re-homes a path for an existing document."
 }
 
 // documentInputSchema is a package const so the LoomCycle MCP server can
@@ -114,12 +117,12 @@ func (d *Document) Description() string {
 const documentInputSchema = `{
 	"type": "object",
 	"properties": {
-		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","resolve_anchor","lease","release","describe_ontology","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
+		"op":          {"type": "string", "enum": ["create_document","get_document","documents_summary","query_documents","delete_document","set_path","create_chunk","propose_entity","propose_subject","judge_fact","upsert_chunk","get_chunk","update_chunk","delete_chunk","supersede_chunk","graph_recall","list_facts","verbatim_answer","verification_stats","remember","move_chunk","reorder_chunk","link_chunks","unlink_chunks","get_edges","get_edge","propose_statement","accept_statement","reject_statement","list_statements","resolve_anchor","lease","release","describe_ontology","extract_citations","query_chunks","add_tags","remove_tags","list_tags","define_type","list_types","set_asset","get_asset","export_md","import_md","export_canvas","import_canvas","history","get_version","diff","backlinks","search","related","unlinked_mentions","set_remote","sync","diff_remote"]},
 		"scope":       {"type": "string", "enum": ["agent","user","tenant"], "description": "Which store (default user). ONE scope per call — a search, graph_recall or list_facts reads ONLY the scope you name, so a user-scope search never returns tenant chunks and vice versa; consult both by making two calls. agent = this agent; user = this end-user (needs a user_id on the run); tenant = shared by every user and agent in the tenant — anything written here is read by all of them, so use it for curated reference material, not for anything derived from untrusted text. tenant requires the operator to grant BOTH memory_scopes and sql_scopes with the tenant value."},
 		"id":          {"type": "string", "description": "Document id (get/delete_document, set_path) or chunk id (get/update/delete/move_chunk), or a statement id (get_edge, unlink_chunks, accept/reject_statement, judge_fact; propose_statement: the statement a competing proposal revises)."},
 		"path":        {"type": "string", "description": "create_document: name the doc in the Path tree (default /documents/<title> if omitted). set_path: the path to attach to an existing document (by id). get/delete_document: address by path instead of id."},
 		"title":       {"type": "string", "description": "The document's or chunk's title. update_chunk on the root chunk (root_chunk_id) renames the document; its path stays put (Path op=mv moves it)."},
-		"document_id": {"type": "string", "description": "The document an op works on. search / related: return only this document's chunks."},
+		"document_id": {"type": "string", "description": "The document an op works on. search / related: return only this document's chunks. list_statements: only statements with either end in this document."},
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here. search / related: return only chunks of these documents."},
 		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
 		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
@@ -137,8 +140,8 @@ const documentInputSchema = `{
 		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
 		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
 		"body_chars": {"type": "integer", "description": "graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
-		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. A chunk with its own valid_at/invalid_at must also contain the moment. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches. get_edges / backlinks: only statements whose own valid_at/invalid_at contain the moment (undated ones always match)."},
-		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded, and on graph_recall chunks whose own valid_at/invalid_at put them out of force now. Off by default, so you get only what is currently true. get_edges / backlinks: also return retired statements."},
+		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. A chunk with its own valid_at/invalid_at must also contain the moment. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches. get_edges / backlinks: only statements whose own valid_at/invalid_at contain the moment (undated ones always match). extract_citations: read the parts in force then, and resolve each citation as of then (default: each citing part's own edition date)."},
+		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded, and on graph_recall chunks whose own valid_at/invalid_at put them out of force now. Off by default, so you get only what is currently true. get_edges / backlinks / list_statements: also return retired statements (list_statements: expired ones and ones whose invalid_at has passed)."},
 		"text":        {"type": "string", "description": "remember: the statement to store, as ONE self-contained sentence. It is stored verbatim AND becomes its own source span, so what you type is both the fact and the evidence for it — write what you mean recorded, not an instruction about it."},
 		"min_score":   {"type": "number", "description": "verbatim_answer: how close a match must be before it can be quoted as an answer (default 0.6). Cosine scale is a property of the embedding model, so tune this against your own — the response always reports the actual score, including when it refuses."},
 		"include_refuted": {"type": "boolean", "description": "list_facts / graph_recall: also return facts a judge marked unsupported. They are withheld by default and never deleted, so this is how you read what was refused and why (each carries judge_reason). graph_recall also follows relations a judge marked unsupported, never one an operator rejected. get_edges / backlinks: also return statements that were rejected or judged unsupported."},
@@ -176,23 +179,27 @@ const documentInputSchema = `{
 		"kind":        {"type": "string", "description": "link/unlink_chunks / propose_statement: the relation kind (cites, based_on, defines, implements, related, …). Kinds the runtime writes are refused: about, supersedes, references, mentions, derived_from, supported_by. get_edges / backlinks / list_statements: return only this kind. graph_recall / related (related_to): follow only this kind."},
 		"kinds":       {"type": "array", "items": {"type": "string"}, "description": "get_edges / backlinks / list_statements: return only these relation kinds (with kind, the union). graph_recall / related (related_to): follow only these kinds."},
 		"attributes":  {"type": "object", "description": "link_chunks / propose_statement: the relation's qualifiers (e.g. aspect, coverage), at most 4 KB of JSON."},
+		"method":      {"type": "string", "description": "propose_statement / upsert_chunk (its relation): how the statement was made, rule:<name> or extractor:<name> (name: 1-64 of a-z 0-9 _ . / -). Only an agent granted that kind of method may send it; otherwise it is refused (method_not_granted). Omit it and the statement is recorded as manual."},
 		"evidence":    {"type": "array", "description": "link_chunks / propose_statement: the text that supports the relation. Each item names ONE source — chunk_id (a chunk of this scope), session_id + event_seq (a chat turn), or scope + natural_key (another scope) — and the verbatim quote. A quote that does not occur in its chunk or turn is refused.", "items": {"type": "object", "properties": {"chunk_id": {"type": "string"}, "session_id": {"type": "string"}, "event_seq": {"type": "integer"}, "scope": {"type": "string", "enum": ["agent","user","tenant"]}, "natural_key": {"type": "string"}, "quote": {"type": "string"}, "char_start": {"type": "integer"}, "char_end": {"type": "integer"}}, "required": ["quote"]}},
 		"include_proposed": {"type": "boolean", "description": "get_edges (default true) / backlinks (default false): include statements proposed for review and not yet accepted. graph_recall (default false): also follow them."},
-		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements: continue a truncated listing — pass the next_cursor from the previous page."},
+		"after":       {"type": "string", "description": "get_edges / backlinks / list_statements: continue a truncated listing — pass the next_cursor from the previous page (list_statements: with the same order)."},
+		"evidence_document_id": {"type": "string", "description": "list_statements: only statements with an evidence row quoting a chunk of this document."},
+		"method_prefix": {"type": "string", "description": "list_statements: only statements whose method starts with exactly this text (e.g. rule: or rule:cite); case-sensitive, no wildcards."},
+		"order":       {"type": "string", "enum": ["created","verified"], "description": "list_statements: created (default) is newest first; verified is least recently verified first, never-verified ones before any."},
 		"walk":        {"type": "string", "enum": ["declared","all"], "description": "graph_recall: which relations to follow. declared (the default where the tenant declares relation kinds) follows the kinds declared for walking — citations, definitions, what implements what — and never mentions or about; all follows every relation. An explicit kind / kinds overrides it; any other value is refused."},
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
 		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
 		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder. The filter arguments (under_path, type, …) narrow it too."},
-		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their heading path: unchanged parts keep their ids and links, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
-		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now)."},
+		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their text, then their heading path: unchanged parts keep their ids and links, a part whose text moved under another heading keeps them too, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
+		"edition_date": {"type": "integer", "description": "import_md with reimport: when the new edition came into force (unix nanos; default now). Not earlier than the edition in force."},
 		"work_key":    {"type": "string", "description": "import_md with reimport / resolve_anchor: the work's key, e.g. law:ua/2297-vi — the document holding it, or (import) the one the first edition creates."},
 		"anchor":      {"type": "string", "description": "resolve_anchor: a part of the work, by its anchor (its heading path, e.g. article-12/paragraph-3) or the anchor it first had."},
 		"create_placeholder": {"type": "boolean", "description": "resolve_anchor: file a placeholder document for a work this scope does not hold yet, so citations of it have a target; importing the work later fills it in."},
 		"media_type":  {"type": "string", "description": "set_asset: the image MIME type (image/png, image/jpeg, image/gif, image/webp)."},
 		"data":        {"type": "string", "description": "set_asset: the image bytes as standard base64 (no data: prefix)."},
 		"filename":    {"type": "string", "description": "set_asset: an optional original filename (metadata only)."},
-		"under_path":  {"type": "string", "description": "query_chunks / query_documents / documents_summary: restrict to documents at/under this Path-tree path. search / related: return only chunks of documents named at or under it — applied before ranking, so the best matches come from that part of the tree."},
+		"under_path":  {"type": "string", "description": "query_chunks / query_documents / documents_summary: restrict to documents at/under this Path-tree path. search / related: return only chunks of documents named at or under it — applied before ranking, so the best matches come from that part of the tree. list_statements: only statements with either end in a document named at or under it."},
 		"under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks of documents named at or under ANY of these Path-tree paths (with under_path, the union of both)."},
 		"exclude_under_path":  {"type": "string", "description": "search / related: never return chunks of documents named at or under this Path-tree path."},
 		"exclude_under_paths": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of documents named at or under any of these Path-tree paths."},
@@ -301,6 +308,13 @@ type docInput struct {
 	Kinds           []string         `json:"kinds,omitempty"`
 	After           string           `json:"after,omitempty"`
 	IncludeProposed *bool            `json:"include_proposed,omitempty"`
+	// list_statements selection: evidence_document_id keeps a statement with an
+	// evidence row citing a chunk of that document, method_prefix an exact prefix
+	// of its method; order is created (newest first) or verified (least recently
+	// verified first, never-verified before any).
+	EvidenceDocumentID string `json:"evidence_document_id,omitempty"`
+	MethodPrefix       string `json:"method_prefix,omitempty"`
+	Order              string `json:"order,omitempty"`
 	// Kind-aware retrieval (RFC FN P4). graph_recall: walk (declared | all),
 	// decay (per-hop share of the content budget), include_hierarchy (up | down |
 	// both | none). search: expand (one hop over relations from the top hits).
@@ -319,9 +333,14 @@ type docInput struct {
 	WorkKey           string `json:"work_key,omitempty"`
 	Anchor            string `json:"anchor,omitempty"`
 	CreatePlaceholder bool   `json:"create_placeholder,omitempty"`
+	// Method is the method a code-js run names for the statement it writes
+	// (rule:<name> | extractor:<name>), checked against its agent's
+	// statement_methods grant by stampStatementMethod, which copies it into
+	// edgeMethod. Never read past that check.
+	Method string `json:"method,omitempty"`
 	// edgeMethod is the statement's method when an internal path (import, sync,
-	// canvas) writes it. UNEXPORTED: a caller must not name how its own link was
-	// made.
+	// canvas) writes it, or the wire Method once it passed the grant check.
+	// UNEXPORTED: a caller must not name how its own link was made.
 	edgeMethod string
 	Position   *int `json:"position"`
 	Revision   *int `json:"revision"`
@@ -604,6 +623,9 @@ func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Resu
 	if r, cut := refuseCutIDs(in); cut {
 		return r, nil
 	}
+	if refused := stampStatementMethod(ctx, &in); refused != nil {
+		return *refused, nil
+	}
 	key, mscope, err := d.resolveScope(ctx, in.Scope)
 	if err != nil {
 		return docFail("", err), nil
@@ -707,7 +729,7 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	case "list_statements":
 		return d.listStatements(ctx, key, in)
 	case "resolve_anchor":
-		return d.resolveAnchor(ctx, key, mscope, in)
+		return d.resolveAnchorOp(ctx, key, mscope, in)
 	case "lease":
 		return d.leaseOp(ctx, key, in)
 	case "release":
@@ -715,6 +737,8 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	case "describe_ontology":
 		// Reads the TENANT ontology whatever `scope` says, as propose_entity files there.
 		return d.describeOntology(ctx)
+	case "extract_citations":
+		return d.extractCitations(ctx, key, mscope, in)
 	case "query_chunks":
 		return d.queryChunks(ctx, key, in)
 	case "add_tags":
@@ -2012,7 +2036,9 @@ func (d *Document) createDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	// Announced only for a document a caller created directly: import_md and the
 	// placeholder path create through here too, and announce their own.
 	if in.Op == "create_document" {
-		d.publishIngested(ctx, key, mscope, docID, "created", nil)
+		if why := d.publishIngested(ctx, key, mscope, docID, "created", nil); why != "" {
+			resp["not_announced"] = why
+		}
 	}
 	return jsonResult(resp)
 }
@@ -5244,7 +5270,9 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if len(skippedWhy) > 0 {
 		out["skipped_images"] = skippedWhy
 	}
-	d.publishIngested(ctx, key, mscope, docID, "imported", nil)
+	if why := d.publishIngested(ctx, key, mscope, docID, "imported", nil); why != "" {
+		out["not_announced"] = why
+	}
 	return jsonResult(out)
 }
 

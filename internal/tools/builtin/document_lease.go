@@ -33,13 +33,12 @@ const (
 
 var documentLeaseNameRE = regexp.MustCompile(`^[a-z0-9_.:/-]{1,64}$`)
 
-// documentLeaseAllowed is the lease ops' grant. It fails closed: today only the
-// operator plane holds a lease. RFC FP §13 R1 (the statement_methods grant) widens
-// it to a code-js agent holding that grant — the lease exists for the driver that
+// documentLeaseAllowed is the lease ops' grant: the operator plane, or a code-js
+// agent holding statement_methods — the lease exists for the driver that
 // maintains statements, and no model-driven agent should be able to hold a pass
-// off a scope for up to an hour.
+// off a scope for up to an hour (only a code-js run is ever granted methods).
 func documentLeaseAllowed(ctx context.Context) bool {
-	return authorIsOperatorPlane(ctx)
+	return authorIsOperatorPlane(ctx) || HasStatementMethodGrant(ctx)
 }
 
 // documentLeaseOwner is the holder's identity: the run id when present, else the

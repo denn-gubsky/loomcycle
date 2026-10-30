@@ -2248,6 +2248,19 @@ type AgentDef struct {
 	// content_sha256.
 	GitRemote []string `yaml:"git_remote"`
 
+	// StatementMethods is which methods the agent may stamp on the document
+	// relations it writes: "rule" (code found it) and/or "extractor" (a
+	// model it drives found it). A run then names its method per write
+	// (method: rule:<name>); without the grant every relation it writes is
+	// stamped manual, as a person's would be.
+	//
+	// Honoured only for `provider: code-js`, because only a code-js body is
+	// code: a model-driven agent declaring it is refused at load and at
+	// AgentDef create/fork. Absent and [] both mean none. Not per-run
+	// overridable; a sub-agent holds only its own definition's grant.
+	// Authority, not content: not part of content_sha256.
+	StatementMethods []string `yaml:"statement_methods"`
+
 	// HistoryScope gates the RFC BE History tool (browse/search/annotate
 	// past chats). Owner-scope vocabulary:
 	//
@@ -7326,6 +7339,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		CryptoScopes:     d.CryptoScopes,
 		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
 		GitRemote:        d.GitRemote,
+		StatementMethods: d.StatementMethods,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
 		// content hash matches the substrate.
@@ -7519,6 +7533,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.ScheduleDefScopes != nil {
 		out.ScheduleDefScopes = override.ScheduleDefScopes
+	}
+	if override.StatementMethods != nil {
+		out.StatementMethods = override.StatementMethods
 	}
 	if override.A2AServerCardDefScopes != nil {
 		out.A2AServerCardDefScopes = override.A2AServerCardDefScopes
@@ -7845,7 +7862,7 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 	}
 	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
 		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0 ||
-		a.ShellCredentials != nil || len(a.GitRemote) > 0
+		a.ShellCredentials != nil || len(a.GitRemote) > 0 || len(a.StatementMethods) > 0
 }
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
@@ -8033,6 +8050,33 @@ func ValidateGitRemote(ops []string) error {
 	}
 	if seen["push"] && !seen["fetch"] {
 		return fmt.Errorf("git_remote: push needs fetch too (a push starts from what was fetched); write [fetch, push]")
+	}
+	return nil
+}
+
+// CodeJSProvider is the provider id of an agent that runs code instead of a
+// model.
+const CodeJSProvider = "code-js"
+
+// ValidateStatementMethods refuses a statement_methods list holding a value
+// other than "rule" or "extractor", a duplicate, or any value on an agent
+// whose provider is not code-js. One function for every place a definition is
+// authored — operator yaml and the AgentDef create/fork overlay — so a grant
+// refused at boot is not quietly kept by a runtime write. provider is the
+// definition's own `provider:` field, after any fork has been merged.
+func ValidateStatementMethods(provider string, methods []string) error {
+	seen := map[string]bool{}
+	for i, m := range methods {
+		if m != "rule" && m != "extractor" {
+			return fmt.Errorf("statement_methods[%d]: unknown method %q (want rule, extractor, or both)", i, m)
+		}
+		if seen[m] {
+			return fmt.Errorf("statement_methods[%d]: %q is listed twice", i, m)
+		}
+		seen[m] = true
+	}
+	if len(methods) > 0 && provider != CodeJSProvider {
+		return fmt.Errorf("statement_methods is honoured only for provider: %s (a relation stamped rule: claims code made it, and only a code-js body is code); this agent's provider is %q", CodeJSProvider, provider)
 	}
 	return nil
 }
@@ -9420,6 +9464,9 @@ func validate(c *Config) error {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		if err := ValidateGitRemote(agent.GitRemote); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+		if err := ValidateStatementMethods(agent.Provider, agent.StatementMethods); err != nil {
 			return fmt.Errorf("agent %q: %w", name, err)
 		}
 		// History tool (RFC BE): validate history_scope entries against the

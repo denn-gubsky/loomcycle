@@ -3911,6 +3911,7 @@ export type DocumentToolInput = {
     | "lease"
     | "release"
     | "describe_ontology"
+    | "extract_citations"
     | "query_chunks"
     | "add_tags"
     | "remove_tags"
@@ -3988,6 +3989,11 @@ export type DocumentToolInput = {
   kinds?: string[];
   /** link_chunks / propose_statement: the relation's qualifiers. */
   attributes?: Record<string, unknown>;
+  /** propose_statement / upsert_chunk (its relation): how the statement was
+   *  made — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
+   *  Only a code-js agent whose `statement_methods` lists the prefix may send
+   *  it; anything else is refused with `method_not_granted`. Omitted = `manual`. */
+  method?: string;
   /** link_chunks / propose_statement: the text the relation rests on. Each row
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
@@ -3996,7 +4002,8 @@ export type DocumentToolInput = {
    *  proposed for review. graph_recall (default false): also follow them. */
   include_proposed?: boolean;
   /** get_edges / backlinks / graph_recall / list_facts: also return what has been
-   *  retired (superseded relations and facts). */
+   *  retired (superseded relations and facts). list_statements: also list
+   *  relations that have expired or whose invalid_at has passed. */
   include_retired?: boolean;
   /** upsert_chunk / link_chunks / propose_statement: 0..1, how sure the writer is.
    *  Recorded, never used to hide anything; only a judge_fact verdict withholds. */
@@ -4004,8 +4011,18 @@ export type DocumentToolInput = {
   /** get_edges: out | in | both (default both). reorder_chunk: up | down. sync /
    *  diff_remote: pull (default) | push. */
   direction?: "out" | "in" | "both" | "up" | "down" | "pull" | "push";
-  /** get_edges / backlinks / list_statements: the next_cursor of the previous page. */
+  /** get_edges / backlinks / list_statements: the next_cursor of the previous page
+   *  (list_statements: with the same `order`). */
   after?: string;
+  /** list_statements: only relations with an evidence row quoting a chunk of
+   *  this document. (`document_id` keeps relations with either end in it.) */
+  evidence_document_id?: string;
+  /** list_statements: only relations whose method starts with exactly this text
+   *  (case-sensitive, no wildcards), e.g. "rule:". */
+  method_prefix?: string;
+  /** list_statements: created (default) is newest first; verified is least
+   *  recently verified first, never-verified ones before any. */
+  order?: "created" | "verified";
   /** graph_recall: declared (the tenant's walk kinds) or all relations. */
   walk?: "declared" | "all";
   /** graph_recall with budget_chars: each hop spends at most decay^hop of it.
@@ -4039,7 +4056,8 @@ export type DocumentToolInput = {
   /** query_chunks / query_documents / documents_summary: restrict to documents
    *  at/under this Path-tree path. search / related: return only chunks of
    *  documents named at or under it — applied inside every retrieval leg before
-   *  its limit, so the best matches come from that part of the tree. */
+   *  its limit, so the best matches come from that part of the tree.
+   *  list_statements: relations with either end in a document named there. */
   under_path?: string;
   /** search / related: chunks of documents named at or under ANY of these paths
    *  (with `under_path`, the union of both). */
@@ -5471,6 +5489,13 @@ export interface AgentDefOverlay {
    *  Held to the author's own grant; a sub-agent may perform an operation
    *  only when its parent run also may. */
   git_remote?: Array<'fetch' | 'push'>;
+  /** Which methods the agent may stamp on the document relations it writes:
+   *  `'rule'` (its code found it) and/or `'extractor'` (a model it drives
+   *  found it). Only for `provider: 'code-js'` — refused on any other
+   *  provider. Unset or `[]` = none: every relation it writes is stamped
+   *  `manual`. A new agent may list only what its author may stamp; a fork
+   *  only what the version it forks held. */
+  statement_methods?: Array<'rule' | 'extractor'>;
   /** Channel tool ACL (default-deny until set). */
   channels?: AgentChannelACL;
   /** Interruption tool gate — `enabled: true` REQUIRED for the tool to work. */

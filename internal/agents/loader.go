@@ -155,6 +155,10 @@ type Agent struct {
 	// config.AgentDef.GitRemote, RFC FB). Authority, not content: not part
 	// of the content hash.
 	GitRemote []string
+	// StatementMethods is which methods a code-js agent may stamp on the
+	// relations it writes (see config.AgentDef.StatementMethods). Authority,
+	// not content: not part of the content hash.
+	StatementMethods []string
 	// Interruption is the v0.8.16 Interruption-tool ACL (enabled / kinds /
 	// max_pending). Mirrors config.AgentDef.Interruption. Carried here (F14)
 	// so an MD-declared `interruption:` block round-trips to config at boot
@@ -466,6 +470,7 @@ type frontmatter struct {
 	CryptoScopes          []string                   `yaml:"crypto_scopes"`
 	ShellCredentials      *[]string                  `yaml:"shell_credentials"`
 	GitRemote             []string                   `yaml:"git_remote"`
+	StatementMethods      []string                   `yaml:"statement_methods"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
 	// SystemPrompt as an inline frontmatter field is intentionally
@@ -555,6 +560,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.CryptoScopes = fm.CryptoScopes
 	a.ShellCredentials = fm.ShellCredentials
 	a.GitRemote = fm.GitRemote
+	a.StatementMethods = fm.StatementMethods
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile
 	a.SystemPrompt = body

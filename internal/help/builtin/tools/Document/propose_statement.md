@@ -22,18 +22,28 @@ to propose a correction instead, which is filed beside the original (its
   recommended: a reviewer reads it to decide, and a quote that is not in its
   source is refused.
 - `confidence`, `valid_at`, `invalid_at`, `attributes` — as for `link_chunks`.
+- `method` — how the relation was found: `rule:<name>` (code matched it) or
+  `extractor:<name>` (a model the code drives found it); `<name>` is 1–64 of
+  `a-z 0-9 _ . / -`. Only an agent whose definition grants that kind of method
+  may send it (a code agent's `statement_methods`). Omitted, the statement is
+  `manual`, as a person's.
 - `scope` — `user` (default), `agent` or `tenant`.
 
 ## Returns
 
 `{id, status, created, evidence_written, ontology_valid, warnings?}`.
-`status` is `proposed`.
+`status` is `proposed` — except for a `rule:` statement of a kind the tenant's
+vocabulary marks auto-asserting, with every quote in a chunk: that is
+`asserted`, and over a relation that already holds it adds its evidence. A
+correction proposed with `id` always stays `proposed`.
 `ontology_valid: false` with `warnings` means the relation does not fit the
 tenant's declared vocabulary; it is still filed, marked, for the reviewer.
 
 ## Errors
 
 - `kind_reserved` — the kind is one the runtime writes.
+- `method_not_granted` — `method` is malformed, or your agent may not stamp that
+  kind of method; omit it.
 - `evidence_quote_not_found` — copy the quote exactly from its source.
 - `statement_rejected` — an operator already rejected this relation (at any
   `valid_at`), or the statement passed as `id` is a rejected one; do not propose

@@ -1130,7 +1130,9 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 		return errBusiness("propose_statement: statement_rejected: this relation was rejected by an operator ("+reason+")",
 			"Do not re-propose it. An operator can accept it from the review queue if it was rejected in error."), nil
 	}
-	if len(w.evidence) > 0 && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
+	// Not for a competing proposal (id): asserting it would set a second live
+	// statement beside the one it revises.
+	if len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
 		for _, ev := range w.evidence {
 			if ev.ChunkID == "" {
@@ -1272,8 +1274,11 @@ func (d *Document) getEdge(ctx context.Context, key sqlmem.ScopeKey, in docInput
 	return jsonResult(map[string]any{"statement": out})
 }
 
-// listStatements is the review queue: statements of a status (default proposed)
-// across the scope, newest first, paged.
+// listStatements is the review queue and a maintainer's selection: statements of
+// a status (default proposed) across the scope, narrowed by the selection
+// filters, paged newest first (order created) or least recently verified first
+// (order verified). A retired statement — expired, or already ended — is left
+// out unless include_retired asks for it.
 func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
 	status := in.Status
 	if status == "" {
@@ -1283,37 +1288,257 @@ func (d *Document) listStatements(ctx context.Context, key sqlmem.ScopeKey, in d
 	if in.Limit > 0 {
 		limit = min(in.Limit, edgeGetEdgesMax)
 	}
+	order := in.Order
+	if order == "" {
+		order = statementOrderCreated
+	}
+	if order != statementOrderCreated && order != statementOrderVerified {
+		return errValidation("list_statements: order must be created or verified", "Omit order for newest first."), nil
+	}
 	where := []string{"e.status = ?"}
 	args := []any{status}
 	if kc, ka, _ := d.kindFilter(ctx, in); kc != "" {
 		where = append(where, kc)
 		args = append(args, ka...)
 	}
+	if !in.IncludeRetired {
+		// One-sided on purpose: a statement dated to take effect later is not
+		// retired, and a proposal for a coming edition belongs in the queue.
+		where = append(where, "e.expired_at IS NULL AND (e.invalid_at IS NULL OR e.invalid_at > ?)")
+		args = append(args, time.Now().UnixNano())
+	}
+	sel, selArgs, none, refusal, err := d.statementSelection(ctx, key, in)
+	if err != nil {
+		return errFrom("list_statements: "+err.Error(), err), nil
+	}
+	if refusal != nil {
+		return *refusal, nil
+	}
+	if none {
+		return jsonResult(map[string]any{"statements": []any{}})
+	}
+	where = append(where, sel...)
+	args = append(args, selArgs...)
 	if in.After != "" {
-		c, ok := decodeEdgeCursor(in.After)
-		if !ok {
-			return errValidation("list_statements: after is not a cursor this op returned", "Pass next_cursor from the previous page."), nil
+		c, ok := decodeStatementCursor(in.After)
+		if !ok || c.Order != order {
+			return errValidation("list_statements: after is not a cursor this op returned for order "+order,
+				"Pass next_cursor from the previous page, with the same order."), nil
 		}
-		where = append(where, "(e.created_at < ? OR (e.created_at = ? AND e.id < ?))")
-		args = append(args, c.CreatedAt, c.CreatedAt, c.ID)
+		cond, cargs := c.after()
+		where = append(where, cond)
+		args = append(args, cargs...)
+	}
+	orderBy := "e.created_at DESC, e.id DESC"
+	if order == statementOrderVerified {
+		// Spelled out rather than NULLS FIRST: the tiers sort NULL at opposite ends.
+		orderBy = "CASE WHEN e.verified_at IS NULL THEN 0 ELSE 1 END, e.verified_at, e.id"
 	}
 	args = append(args, limit+1)
 	res, err := d.query(ctx, key, `SELECT `+statementCols+`,
 		cf.title, cf.document_id, ct.title, ct.document_id
 		FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id LEFT JOIN chunks ct ON ct.id = e.to_id
 		WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY e.created_at DESC, e.id DESC LIMIT ?`, args...)
+		ORDER BY `+orderBy+` LIMIT ?`, args...)
 	if err != nil {
 		return errFrom("list_statements: "+err.Error(), err), nil
 	}
-	return d.renderStatementPage(ctx, key, res, limit, "statements", func(s statementRow) edgeCursor {
-		return edgeCursor{CreatedAt: s.CreatedAt, ID: s.ID}
+	return d.renderStatementPage(ctx, key, res, limit, "statements", func(s statementRow) string {
+		c := statementCursor{Order: order, ID: s.ID}
+		if order == statementOrderVerified {
+			c.VerifiedAt = s.VerifiedAt
+		} else {
+			c.CreatedAt = s.CreatedAt
+		}
+		return c.encode()
 	})
+}
+
+const (
+	statementOrderCreated  = "created"
+	statementOrderVerified = "verified"
+	// listStatementsMaxDocs bounds each document list list_statements binds: the
+	// documents an under_path names, and a confined reader's readable endpoint
+	// documents. Each list is bound twice (one per end), and SQLite refuses a
+	// statement with more than 32766 variables: 4 x 7500 leaves room for the rest.
+	listStatementsMaxDocs = 7500
+	// statementMethodPrefixMax bounds method_prefix; a method is a short label.
+	statementMethodPrefixMax = 256
+)
+
+// statementSelection renders list_statements' selection filters as conditions
+// on alias e (cf and ct are its endpoint chunks). none reports a filter that can
+// match nothing the caller may read: a document it may not read is a document it
+// selects nothing by, so neither the rows nor a page marker can tell it
+// statements there exist. The listing's own access-control filter still runs on
+// the answer.
+func (d *Document) statementSelection(ctx context.Context, key sqlmem.ScopeKey, in docInput) (where []string, args []any, none bool, refusal *tools.Result, err error) {
+	acl := d.newDocACL(ctx, key)
+	limited, err := acl.limitsReading(ctx)
+	if err != nil {
+		return nil, nil, false, nil, err
+	}
+	readable := func(docID string) (bool, error) {
+		if !limited {
+			return true, nil
+		}
+		return acl.readable(ctx, docID)
+	}
+	if limited {
+		// Withhold in the query, before LIMIT: rows dropped after it would shrink
+		// the page and leave truncated / next_cursor standing on rows the reader
+		// cannot see — telling it hidden statements match its filter. The list is
+		// an allowlist of readable documents, as search sends, so no id of a denied
+		// document reaches the store and no refusal counts one. An end whose chunk
+		// is gone has no document and stays visible, as the listing filter has it.
+		docs, err := d.readableEndpointDocuments(ctx, key, acl)
+		if err != nil {
+			return nil, nil, false, nil, err
+		}
+		if len(docs) > listStatementsMaxDocs {
+			r := errBusiness(fmt.Sprintf("list_statements: relations here touch %d documents you may read, more than %d", len(docs), listStatementsMaxDocs),
+				"Select by document_id or under_path.")
+			return nil, nil, false, &r, nil
+		}
+		ph := placeholders(len(docs))
+		where = append(where, "(cf.document_id IS NULL OR cf.document_id IN ("+ph+")) AND (ct.document_id IS NULL OR ct.document_id IN ("+ph+"))")
+		args = append(append(args, docs...), docs...)
+	}
+	if in.DocumentID != "" {
+		ok, err := readable(in.DocumentID)
+		if err != nil || !ok {
+			return nil, nil, !ok, nil, err
+		}
+		where = append(where, "(cf.document_id = ? OR ct.document_id = ?)")
+		args = append(args, in.DocumentID, in.DocumentID)
+	}
+	if in.EvidenceDocumentID != "" {
+		ok, err := readable(in.EvidenceDocumentID)
+		if err != nil || !ok {
+			return nil, nil, !ok, nil, err
+		}
+		where = append(where, `EXISTS (SELECT 1 FROM chunk_edge_evidence v JOIN chunks vc ON vc.id = v.chunk_id
+			WHERE v.edge_id = e.id AND vc.document_id = ?)`)
+		args = append(args, in.EvidenceDocumentID)
+	}
+	if in.MethodPrefix != "" {
+		if len(in.MethodPrefix) > statementMethodPrefixMax {
+			r := errValidation(fmt.Sprintf("list_statements: method_prefix is longer than %d bytes", statementMethodPrefixMax), "")
+			return nil, nil, false, &r, nil
+		}
+		// substr, not LIKE: a prefix holding _ or % must match only itself, and
+		// SQLite's LIKE ignores ASCII case. Both tiers count characters.
+		where = append(where, "substr(e.method, 1, ?) = ?")
+		args = append(args, utf8.RuneCountInString(in.MethodPrefix), in.MethodPrefix)
+	}
+	if in.UnderPath != "" {
+		canonical, perr := normalizePath(in.UnderPath)
+		if perr != nil {
+			r := errValidation("list_statements: "+perr.Error(), docPathFix)
+			return nil, nil, false, &r, nil
+		}
+		ids, err := d.documentsAtOrUnder(ctx, key, canonical)
+		if err != nil {
+			return nil, nil, false, nil, err
+		}
+		docs := make([]any, 0, len(ids))
+		seen := map[string]bool{}
+		for _, id := range ids {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			ok, err := readable(id)
+			if err != nil {
+				return nil, nil, false, nil, err
+			}
+			if ok {
+				docs = append(docs, id)
+			}
+		}
+		if len(docs) == 0 {
+			return nil, nil, true, nil, nil
+		}
+		if len(docs) > listStatementsMaxDocs {
+			r := errValidation(fmt.Sprintf("list_statements: under_path names %d documents, more than %d", len(docs), listStatementsMaxDocs),
+				"Narrow under_path, or select by document_id.")
+			return nil, nil, false, &r, nil
+		}
+		ph := placeholders(len(docs))
+		where = append(where, "(cf.document_id IN ("+ph+") OR ct.document_id IN ("+ph+"))")
+		args = append(append(args, docs...), docs...)
+	}
+	return where, args, false, nil, nil
+}
+
+// readableEndpointDocuments lists, in pages under the store's row cap, the
+// documents holding an end of some statement that the caller may read.
+func (d *Document) readableEndpointDocuments(ctx context.Context, key sqlmem.ScopeKey, acl *docACL) ([]any, error) {
+	var docs []any
+	after := ""
+	for {
+		res, err := d.query(ctx, key, `SELECT DISTINCT c.document_id FROM chunks c
+			WHERE c.document_id > ? AND (c.id IN (SELECT from_id FROM chunk_edges) OR c.id IN (SELECT to_id FROM chunk_edges))
+			ORDER BY c.document_id LIMIT ?`, after, searchFilterPage)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range res.Rows {
+			id := asStr(r[0])
+			ok, err := acl.readable(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				docs = append(docs, id)
+			}
+			after = id
+		}
+		// Truncated: the store's row cap cut the page short of searchFilterPage.
+		if len(res.Rows) == 0 || (!res.Truncated && len(res.Rows) < searchFilterPage) {
+			return docs, nil
+		}
+	}
+}
+
+// statementCursor is list_statements' paging position. It names the order that
+// issued it, so a cursor is never read as a position in the other sort.
+type statementCursor struct {
+	Order      string `json:"o"`
+	CreatedAt  int64  `json:"c,omitempty"`
+	VerifiedAt *int64 `json:"v,omitempty"`
+	ID         string `json:"i"`
+}
+
+func (c statementCursor) encode() string {
+	b, _ := json.Marshal(c)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeStatementCursor(s string) (statementCursor, bool) {
+	var c statementCursor
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || json.Unmarshal(b, &c) != nil || c.ID == "" {
+		return c, false
+	}
+	return c, true
+}
+
+// after is the keyset condition for the rows past c in c's order.
+func (c statementCursor) after() (string, []any) {
+	if c.Order == statementOrderCreated {
+		return "(e.created_at < ? OR (e.created_at = ? AND e.id < ?))", []any{c.CreatedAt, c.CreatedAt, c.ID}
+	}
+	if c.VerifiedAt == nil {
+		return "((e.verified_at IS NULL AND e.id > ?) OR e.verified_at IS NOT NULL)", []any{c.ID}
+	}
+	return "(e.verified_at IS NOT NULL AND (e.verified_at > ? OR (e.verified_at = ? AND e.id > ?)))",
+		[]any{*c.VerifiedAt, *c.VerifiedAt, c.ID}
 }
 
 // renderStatementPage turns a statement query (statementCols + the four endpoint
 // display columns, fetched limit+1) into a page with an evidence preview.
-func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey, res *sqlmem.QueryResult, limit int, field string, cursorOf func(statementRow) edgeCursor) (tools.Result, error) {
+func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey, res *sqlmem.QueryResult, limit int, field string, cursorOf func(statementRow) string) (tools.Result, error) {
 	rows := res.Rows
 	truncated := len(rows) > limit
 	if truncated {
@@ -1340,7 +1565,7 @@ func (d *Document) renderStatementPage(ctx context.Context, key sqlmem.ScopeKey,
 	out := map[string]any{field: list}
 	if truncated && len(stmts) > 0 {
 		out["truncated"] = true
-		out["next_cursor"] = encodeEdgeCursor(cursorOf(stmts[len(stmts)-1]))
+		out["next_cursor"] = cursorOf(stmts[len(stmts)-1])
 	}
 	return jsonResult(out)
 }
