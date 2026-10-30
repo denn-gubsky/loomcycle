@@ -468,15 +468,32 @@ type OntologyGrammar struct {
 	Class    string   `json:"class,omitempty"`
 	Patterns []string `json:"patterns,omitempty"`
 	Resolve  string   `json:"resolve,omitempty"`
+	// Scopes and Anchors are the `scope:` and `anchor:` lines, in declared order: they
+	// key a document's parts by the scope they sit in (`annex-2/point-3`), where one
+	// `resolve: anchor=` template cannot tell a resolution's point 1 from its annex's.
+	Scopes  []GrammarRule `json:"scopes,omitempty"`
+	Anchors []GrammarRule `json:"anchors,omitempty"`
 	// Issue is set when the grammar cannot be used. A broken grammar is DISABLED and
 	// reported; the class naming it stays in force.
 	Issue string `json:"issue,omitempty"`
 }
 
+// GrammarRule is one `scope:` or `anchor:` line: `<RE2 pattern> => <alt> | <alt> …`.
+// Each alternative is a template with {group} placeholders; a match uses the first
+// alternative whose groups all took part in it, and a literal always qualifies.
+type GrammarRule struct {
+	Pattern   string   `json:"pattern"`
+	Templates []string `json:"templates"`
+}
+
 var resolveGroupRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// ParseGrammarBody reads a grammar chunk's `pattern:` and `resolve:` lines (a leading
-// "- " is tolerated, as an operator writing a list naturally adds one).
+// ParseGrammarBody reads a grammar chunk's `pattern:`, `resolve:`, `scope:` and
+// `anchor:` lines (a leading "- " is tolerated, as an operator writing a list naturally
+// adds one).
+//
+// A grammar with pattern: lines needs a resolve: line, as before rule lines existed. One
+// that only keys anchors may have anchor: lines instead; scope: lines alone key nothing.
 func ParseGrammarBody(name, class, body string) OntologyGrammar {
 	g := OntologyGrammar{Name: name, Class: class}
 	groups := map[string]bool{}
@@ -500,14 +517,30 @@ func ParseGrammarBody(name, class, body string) OntologyGrammar {
 			}
 		case strings.HasPrefix(lower, "resolve:"):
 			g.Resolve = strings.TrimSpace(t[len("resolve:"):])
+		case strings.HasPrefix(lower, "scope:"), strings.HasPrefix(lower, "anchor:"):
+			kind := "scope"
+			if strings.HasPrefix(lower, "anchor:") {
+				kind = "anchor"
+			}
+			rule, issue := parseGrammarRule(kind, t[len(kind)+1:])
+			switch {
+			case issue != "":
+				issues = append(issues, issue)
+			case kind == "scope":
+				g.Scopes = append(g.Scopes, rule)
+			default:
+				g.Anchors = append(g.Anchors, rule)
+			}
 		}
 	}
 	switch {
 	case len(issues) > 0:
 		g.Issue = strings.Join(issues, "; ")
-	case len(g.Patterns) == 0:
+	case len(g.Patterns) == 0 && len(g.Anchors) == 0 && len(g.Scopes) > 0:
+		g.Issue = "declares no anchor: or pattern: line"
+	case len(g.Patterns) == 0 && len(g.Anchors) == 0:
 		g.Issue = "declares no pattern: line"
-	case g.Resolve == "":
+	case len(g.Patterns) > 0 && g.Resolve == "":
 		g.Issue = "declares no resolve: line"
 	default:
 		for _, m := range resolveGroupRe.FindAllStringSubmatch(g.Resolve, -1) {
@@ -519,9 +552,50 @@ func ParseGrammarBody(name, class, body string) OntologyGrammar {
 	}
 	if g.Issue != "" {
 		// Disabled: a caller that ignores Issue must still not run a half-valid grammar.
-		g.Patterns = nil
+		g.Patterns, g.Scopes, g.Anchors = nil, nil, nil
 	}
 	return g
+}
+
+// grammarRuleArrow separates a scope:/anchor: line's pattern from its alternatives.
+const grammarRuleArrow = " => "
+
+// parseGrammarRule reads the rest of a `scope:` or `anchor:` line, or explains why it
+// cannot be used. The split is on the LAST arrow, so a pattern may contain " => "
+// itself; the alternatives never do, as they are anchor text.
+func parseGrammarRule(kind, rest string) (GrammarRule, string) {
+	// The trimmed line has lost the space after a trailing arrow; put it back so
+	// "=> " with nothing after it reads as an empty alternative, not a missing arrow.
+	s := rest + " "
+	i := strings.LastIndex(s, grammarRuleArrow)
+	if i < 0 {
+		return GrammarRule{}, kind + `: line has no " => " between its pattern and its anchors`
+	}
+	p := strings.TrimSpace(s[:i])
+	re, issue := compileOntologyPattern(p)
+	if issue != "" {
+		return GrammarRule{}, kind + ": " + issue
+	}
+	captured := map[string]bool{}
+	for _, n := range re.SubexpNames() {
+		if n != "" {
+			captured[n] = true
+		}
+	}
+	rule := GrammarRule{Pattern: p}
+	for _, alt := range strings.Split(s[i+len(grammarRuleArrow):], "|") {
+		alt = strings.TrimSpace(alt)
+		if alt == "" {
+			return GrammarRule{}, kind + ": line has an empty alternative"
+		}
+		for _, m := range resolveGroupRe.FindAllStringSubmatch(alt, -1) {
+			if !captured[m[1]] {
+				return GrammarRule{}, kind + ": line names {" + m[1] + "}, which its pattern does not capture"
+			}
+		}
+		rule.Templates = append(rule.Templates, alt)
+	}
+	return rule, ""
 }
 
 // DocumentClassRoot is the class every document class descends from. Seed-provided and
