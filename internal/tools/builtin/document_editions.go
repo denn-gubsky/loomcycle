@@ -1136,10 +1136,18 @@ func (d *Document) supersedePart(ctx context.Context, key sqlmem.ScopeKey, mscop
 // A statement whose evidence quoting a superseded part still occurs in that part's
 // new text is COPIED (attributes.revision_of naming the original); so is a
 // statement with no evidence there, and a manual one, unconditionally — a person's
-// link is not something a text change can disprove. Anything else stays on the
-// old part, where it still holds for the old part's interval: its evidence there is
-// marked stale and its status drops to proposed, so it is re-verified rather than
-// silently carried or silently lost.
+// link is not something a text change can disprove. So is one an operator ruled
+// on (operator_ruled_at, or rejected — only an operator rejects): the ruling is a
+// person's decision, and a machine reimport — which a run may make — must not
+// undo it. A rejected statement is carried as rejected, so the tombstone that
+// refuses a re-proposal of the relation stands on the new part too. Anything else
+// stays on the old part, where it still holds for the old part's interval: its
+// evidence there is marked stale and its status drops to proposed, so it is
+// re-verified rather than silently carried or silently lost.
+//
+// A copy is its source row but for its id, the remapped ends, created_at and
+// revision_of: the ruling and any judge's verdict travel with it, or the copy
+// would lose a ruling's protection or bring a withheld statement back to view.
 //
 // An inline [[name]] link (auto) is never copied: it belongs to the text that
 // makes it, and the new version's own [[name]] links were derived from its body
@@ -1164,7 +1172,7 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 	for _, old := range olds {
 		res, err := d.query(ctx, key, `SELECT `+statementCols+` FROM chunk_edges e
 			WHERE (e.from_id = ? OR e.to_id = ?) AND e.kind NOT IN ('supersedes', 'about')
-			  AND e.status <> ? AND e.expired_at IS NULL`, old, old, edgeStatusRejected)
+			  AND e.expired_at IS NULL`, old, old)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -1218,7 +1226,8 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 				holds = false
 			}
 		}
-		if !holds && s.Method != edgeMethodManual {
+		ruled := s.OperatorRuledAt != nil || s.Status == edgeStatusRejected
+		if !holds && s.Method != edgeMethodManual && !ruled {
 			for _, end := range []string{s.FromID, s.ToID} {
 				if _, ours := remap[end]; !ours {
 					continue
@@ -1255,10 +1264,12 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 		err := d.withSqlTxn(ctx, key, func(txn string) error {
 			if err := d.execTxn(ctx, txn, `INSERT INTO chunk_edges
 				(id, from_id, to_id, kind, created_at, auto, status, method, confidence, valid_at, invalid_at,
-				 actor, run_id, ontology_version, discriminator, attributes)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				 actor, run_id, ontology_version, discriminator, attributes,
+				 verified_at, judged_at, judge_reason, judged_by, verdict_confidence, operator_ruled_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				copyID, from, to, s.Kind, now, auto, s.Status, s.Method, s.Confidence, s.ValidAt, s.InvalidAt,
-				nullIfEmpty(s.Actor), nullIfEmpty(s.RunID), s.OntologyVersion, s.Discriminator, string(ab)); err != nil {
+				nullIfEmpty(s.Actor), nullIfEmpty(s.RunID), s.OntologyVersion, s.Discriminator, string(ab),
+				s.VerifiedAt, s.JudgedAt, nullIfEmpty(s.JudgeReason), nullIfEmpty(s.JudgedBy), s.VerdictConfidence, s.OperatorRuledAt); err != nil {
 				return err
 			}
 			for _, e := range ev[s.ID] {
@@ -1271,7 +1282,7 @@ func (d *Document) moveStatements(ctx context.Context, key sqlmem.ScopeKey, acl 
 					if st, en, ok := quoteSpan(newBody[nid], e.Quote, nil, nil); ok {
 						chunkID, start, end = nid, st, en
 					} else {
-						stale = 1 // a manual statement copied though its quote is gone
+						stale = 1 // a manual or ruled statement copied though its quote is gone
 					}
 				}
 				if err := d.execTxn(ctx, txn, `INSERT INTO chunk_edge_evidence
