@@ -691,3 +691,124 @@ func TestKBLinker_RuledCopyOfAGoneCitationIsFlagged(t *testing.T) {
 	}
 	noViolations(t, f)
 }
+
+// relateStatement is a model-made statement from c1, last verified at 100.
+func relateStatement(id, to, kind, method, quoteFrom string) *kbStatement {
+	return &kbStatement{ID: id, From: "c1", To: to, Kind: kind, Status: "proposed", Method: method, CreatedAt: 1,
+		VerifiedAt: 100, Evidence: []*kbEvidence{{ID: id + "-ev1", ChunkID: "c1", Quote: quoteFrom}}}
+}
+
+// rejudgeFixture holds three model-made statements from c1 and a person's:
+//   - st-still (→ x1): nothing changed since it was verified;
+//   - st-same (→ x2, whose body changed): the verdict finds the same relation;
+//   - st-gone (→ x3, changed): the verdict finds none;
+//   - st-person (manual, → x4, changed): a person's, never re-judged.
+func rejudgeFixture() *kbFixture {
+	f := maintainFixture()
+	f.ontology = relateOntology()
+	x2 := f.others["x2"]
+	x2.RevisedAt = 200
+	f.others["x2"] = x2
+	f.others["x3"] = kbChunk{ID: "x3", DocumentID: "doc-law", Type: "section", Body: kbBodyDef, RevisedAt: 300}
+	f.others["x4"] = kbChunk{ID: "x4", DocumentID: "doc-law", Type: "section", Body: kbBodyGloss, RevisedAt: 400}
+	f.statements = []*kbStatement{
+		relateStatement("st-still", "x1", "elaborates", "extractor:relate", "report a material incident"),
+		relateStatement("st-same", "x2", "elaborates", "extractor:relate", "report a material incident"),
+		relateStatement("st-gone", "x3", "elaborates", "extractor:relate", "report a material incident"),
+		relateStatement("st-person", "x4", "elaborates", "manual", "report a material incident"),
+	}
+	f.verdictByNeedle = []needleReply{
+		{Needle: "BODYCHARLIE", Reply: `[{"candidate": 1, "kind": "elaborates", "direction": "this_to_candidate",
+		  "quote_from": "report a material incident to the regulator", "quote_to": "names the systems affected", "confidence": 0.7}]`},
+		{Needle: "BODYDELTA", Reply: `[{"candidate": 1, "kind": "none"}]`},
+	}
+	return f
+}
+
+// TestKBLinker_RejudgeAsksAgainOnlyWhereTheTextChanged: with rejudge on, a
+// model-made statement whose target changed since it was verified is judged again
+// — verified when the relation is found again, flagged when it is not — and one
+// whose text did not change is verified without a model call. A person's statement
+// is never re-judged.
+func TestKBLinker_RejudgeAsksAgainOnlyWhereTheTextChanged(t *testing.T) {
+	f := rejudgeFixture()
+
+	rep, _ := runLinker(t, f, `{"mode":"maintain","document_id":"doc-target","write":"propose","rejudge":true}`)
+
+	if n := len(f.callsOf("Agent", "")); n != 2 {
+		t.Errorf("verdict calls = %d, want 2 (st-same and st-gone)", n)
+	}
+	for id, want := range map[string]string{"st-still": "verify", "st-same": "verify", "st-gone": "flag", "st-person": "verify"} {
+		if got := actionsOf(f, id); got != want {
+			t.Errorf("%s actions = %q, want %q", id, got, want)
+		}
+	}
+	for counter, want := range map[string]float64{"rejudged_same": 1, "rejudged_none": 1, "rejudge_unchanged": 1, "rejudged_different": 0} {
+		if n := layerCount(t, rep, "L6", counter); n != want {
+			t.Errorf("%s = %v, want %v", counter, n, want)
+		}
+	}
+	if len(proposals(f)) != 0 {
+		t.Errorf("proposals = %v, want none", proposals(f))
+	}
+	noViolations(t, f)
+
+	// Without rejudge, no model call at all: the same store, every statement verified.
+	g := rejudgeFixture()
+	runLinker(t, g, maintainInput)
+	if n := len(g.callsOf("Agent", "")); n != 0 {
+		t.Errorf("verdict calls without rejudge = %d, want 0", n)
+	}
+}
+
+// TestKBLinker_RejudgeProposesTheNewKindAsARevision: a model-made statement of a kind
+// the relate layer may not file (stricter_than) is re-judged after its target changed
+// and now reads as elaborates: the new kind is proposed as a revision of it (by id,
+// with the new quotes), and it is flagged, never expired.
+func TestKBLinker_RejudgeProposesTheNewKindAsARevision(t *testing.T) {
+	f := rejudgeFixture()
+	f.statements = []*kbStatement{relateStatement("st-strict", "x2", "stricter_than", "extractor:clauses", "within 24 hours")}
+
+	rep, _ := runLinker(t, f, `{"mode":"maintain","document_id":"doc-target","write":"propose","rejudge":true}`)
+
+	got := proposals(f)
+	if len(got) != 1 {
+		t.Fatalf("proposals = %v, want one revision", got)
+	}
+	p := got[0]
+	ev, _ := p["evidence"].([]any)
+	if p["id"] != "st-strict" || p["kind"] != "elaborates" || p["method"] != "extractor:relate" || len(ev) != 2 {
+		t.Errorf("proposal = %v, want a revision of st-strict as elaborates with two quotes by extractor:relate", p)
+	}
+	if got := actionsOf(f, "st-strict"); got != "flag" {
+		t.Errorf("st-strict actions = %q, want flag", got)
+	}
+	if n := layerCount(t, rep, "L6", "rejudged_different"); n != 1 {
+		t.Errorf("rejudged_different = %v, want 1", n)
+	}
+	noViolations(t, f)
+}
+
+// TestKBLinker_RejudgingAnUnchangedCorpusProposesNothing: the Phase C gate — over a
+// store where no text changed since its statements were verified, a rejudge pass
+// makes no model call and proposes nothing.
+func TestKBLinker_RejudgingAnUnchangedCorpusProposesNothing(t *testing.T) {
+	f := rejudgeFixture()
+	for _, id := range []string{"x2", "x3", "x4"} {
+		c := f.others[id]
+		c.RevisedAt = 50
+		f.others[id] = c
+	}
+
+	rep, _ := runLinker(t, f, `{"mode":"maintain","document_id":"doc-target","write":"propose","rejudge":true}`)
+
+	if n := len(f.callsOf("Agent", "")); n != 0 {
+		t.Errorf("verdict calls = %d, want 0", n)
+	}
+	if len(proposals(f)) != 0 {
+		t.Errorf("proposals = %v, want none", proposals(f))
+	}
+	if n := layerCount(t, rep, "L6", "rejudge_unchanged"); n != 3 {
+		t.Errorf("rejudge_unchanged = %v, want 3 (the person's statement is not counted)", n)
+	}
+}

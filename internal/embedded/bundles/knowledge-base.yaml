@@ -256,7 +256,7 @@ agents:
         terms_scheme: true, as_of: true, max_writes: true, max_statements: true, max_messages: true,
         corpus_paths: true, exclude_document_types: true, candidate_floor: true,
         max_candidates_per_chunk: true, max_verdict_calls: true, max_chars: true,
-        min_body_chars: true, relations: true, include_quotes: true
+        min_body_chars: true, relations: true, include_quotes: true, rejudge: true
       };
 
       var USAGE = "Pass a JSON object: {\"mode\": document|drain|maintain (default document), " +
@@ -450,6 +450,12 @@ agents:
           var rel = parseRelations(v.relations);
           if (rel.error) { return rel; }
           o.relations = rel.value;
+        }
+        o.rejudge = false;
+        if (v.rejudge !== undefined) {
+          if (typeof v.rejudge !== "boolean") { return { error: "rejudge must be true or false" }; }
+          if (v.rejudge && o.layers.L6 !== true) { return { error: "rejudge is read only by the L6 layer, which this run does not include" }; }
+          o.rejudge = v.rejudge;
         }
         return { value: o };
       }
@@ -1607,7 +1613,7 @@ agents:
         R.counts.candidates_sent += cands.length;
         var out;
         try {
-          out = Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, visibleText(passage), cands) });
+          out = Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, R.vocab, visibleText(passage), cands) });
         } catch (e) {
           R.counts.verdict_failures++;
           R.counts.verdicts_none += cands.length;
@@ -1797,9 +1803,9 @@ agents:
       // final thing read. The defence is not the wording: the reply can only ever
       // become a declared kind between two chunk ids this pass chose, and only with
       // quotes that occur.
-      function verdictPrompt(st, body, cands) {
+      function verdictPrompt(st, vocab, body, cands) {
         var kinds = [];
-        var rels = st.l4.vocab.relations;
+        var rels = vocab.relations;
         for (var i = 0; i < rels.length; i++) {
           var r = rels[i];
           var line = "- " + r.name + ": " + r.meaning;
@@ -1859,7 +1865,9 @@ agents:
           endpoints_cross_scope_unchecked: 0, kind_unchecked: 0, domain_range_unchecked: 0,
           successor_missing: 0, successor_quotes_gone: 0, successor_quotes_loose: 0, successor_citation_gone: 0,
           successor_copies_expired: 0, rename_refused: 0, all_stale_already_proposed: 0,
-          checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, passed: 0 },
+          rejudged_same: 0, rejudged_different: 0, rejudged_none: 0, rejudge_unchanged: 0,
+          rejudge_kind_unknown: 0, rejudge_failed: 0, rejudge_budget: 0,
+          checks: { endpoints: 0, kind: 0, validity: 0, evidence: 0, redundancy: 0, semantics: 0, passed: 0 },
           actions: {}
         }));
         L.ran++;
@@ -1905,6 +1913,7 @@ agents:
         var survivors = redundancy(st, L, passed);
         for (var n = 0; n < survivors.length; n++) {
           C.checks.passed++;
+          if (rejudge(st, L, survivors[n])) { continue; }
           act(st, L, survivors[n], "verify", {});
         }
       }
@@ -2076,6 +2085,102 @@ agents:
           return "acted";
         }
         return "pass";
+      }
+
+      // rejudge is check 6, run only with rejudge: true, on a model-made statement
+      // (extractor:*) that passed checks 1–5 and whose passage or target changed
+      // since it was last verified (else since it was filed). It asks kb/verdict
+      // the same question again and:
+      //   - the same kind, same direction, quotes that occur: verify;
+      //   - another kind the relate layer may file: propose it as a competing
+      //     revision of this one (propose_statement with id), and flag this one;
+      //   - none, an unquotable answer, or a kind it may not file: flag.
+      // Nothing is expired or demoted by a model's second opinion: a person decides.
+      // A statement a person wrote, or one an operator ruled on, is never re-judged.
+      // Returns whether it acted; false leaves the statement to be verified.
+      function rejudge(st, L, s) {
+        var C = L.counts;
+        if (!st.opts.rejudge || !mayRetire(s) || !/^extractor:/.test(s.method)) { return false; }
+        if (!st.rejudgeVocab) {
+          var vocab = loadVocabulary(st.opts), isKind = {};
+          for (var i = 0; i < vocab.relations.length; i++) { isKind[vocab.relations[i].name] = true; }
+          st.rejudgeVocab = { vocab: vocab, isKind: isKind };
+        }
+        var V = st.rejudgeVocab;
+        if (V.isKind[s.kind] !== true) { C.rejudge_kind_unknown++; return false; }
+        var since = (typeof s.verified_at === "number" && s.verified_at > 0) ? s.verified_at
+                  : (typeof s.created_at === "number" && s.created_at > 0) ? s.created_at : 0;
+        var changed = bodiesChangedSince(st, [s.from_id, s.to_id], since);
+        if (changed === null) { C.rejudge_failed++; return false; }
+        if (!changed) { C.rejudge_unchanged++; return false; }
+        if ((st.rejudgeCalls || 0) >= st.opts.max_verdict_calls) { C.rejudge_budget++; return false; }
+        var from = readChunk(st, s.from_id), to = readChunk(st, s.to_id);
+        if (!from.ok || !to.ok) { C.rejudge_failed++; return false; }
+        to.id = s.to_id;
+        st.rejudgeCalls = (st.rejudgeCalls || 0) + 1;
+        C.checks.semantics++;
+        var arr;
+        try {
+          arr = coerceArray(Agent.spawn({ name: CONFIG.verdict_agent, prompt: verdictPrompt(st, V.vocab, visibleText(from), [to]) }));
+        } catch (e) {
+          C.rejudge_failed++;
+          return false;
+        }
+        if (arr === null) { C.rejudge_failed++; return false; }
+        var e1 = null;
+        for (var j = 0; j < arr.length; j++) {
+          if (arr[j] && typeof arr[j] === "object" && Math.floor(Number(arr[j].candidate)) === 1) { e1 = arr[j]; break; }
+        }
+        var kind = (e1 && typeof e1.kind === "string") ? e1.kind.toLowerCase().trim() : "";
+        var qf = null, qt = null;
+        if (e1 && kind !== "" && kind !== "none" && kind !== "unclear") {
+          qf = quoteSpan(from.body, e1.quote_from);
+          qt = quoteSpan(to.body, e1.quote_to);
+          if (qf !== null) { qf = outsideBoilerplate(from, e1.quote_from, qf); }
+          if (qt !== null) { qt = outsideBoilerplate(to, e1.quote_to, qt); }
+        }
+        var forward = e1 !== null && e1.direction === "this_to_candidate";
+        var conf = e1 ? e1.confidence : null;
+        var quoted = qf !== null && qt !== null && typeof conf === "number" && isFinite(conf) && conf >= 0 && conf <= 1;
+        if (quoted && forward && kind === s.kind) {
+          C.rejudged_same++;
+          act(st, L, s, "verify", {});
+          return true;
+        }
+        if (quoted && forward && V.isKind[kind] === true && CONFIG.relate_propose_kinds.indexOf(kind) >= 0 &&
+            st.onto && st.onto.usable && st.onto.writable[kind] === true) {
+          C.rejudged_different++;
+          var fs = runeSpan(from.body, qf[0], qf[1]), ts = runeSpan(to.body, qt[0], qt[1]);
+          propose(st, L, { op: "propose_statement", id: s.id, kind: kind, confidence: conf, method: METHOD.relate,
+            evidence: [
+              { chunk_id: s.from_id, quote: from.body.slice(qf[0], qf[1]), char_start: fs[0], char_end: fs[1] },
+              { chunk_id: s.to_id, quote: to.body.slice(qt[0], qt[1]), char_start: ts[0], char_end: ts[1] }
+            ] });
+          act(st, L, s, "flag", { reason: "re-judged after its text changed: now reads as " + kind });
+          return true;
+        }
+        C.rejudged_none++;
+        act(st, L, s, "flag", { reason: "re-judged after its text changed: the relation was not found again" });
+        return true;
+      }
+
+      // bodiesChangedSince says whether any of the chunks' bodies was rewritten after
+      // the instant (unix nanoseconds), from the body-change log; null when it cannot
+      // be read, so a store fault never reads as "unchanged".
+      function bodiesChangedSince(st, ids, since) {
+        var res;
+        try {
+          res = call(st, { op: "query_chunks", sql: sqlRevisedAt(ids) });
+        } catch (e) {
+          if (isStop(e)) { throw e; }
+          return null;
+        }
+        if (!res || !isArray(res.rows)) { return null; }
+        for (var i = 0; i < res.rows.length; i++) {
+          var r = res.rows[i];
+          if (isArray(r) && typeof r[1] === "number" && r[1] > since) { return true; }
+        }
+        return false;
       }
 
       // settle applies a machine outcome, or flags a person's statement instead.
@@ -2453,6 +2558,12 @@ agents:
         for (var i = 0; i < ids.length; i++) { lits.push(sqlStr(ids[i])); }
         return "SELECT id, document_id, COALESCE(anchor, ''), COALESCE(stable_id, ''), COALESCE(invalid_at, 0) " +
                "FROM chunks WHERE id IN (" + lits.join(", ") + ")";
+      }
+
+      function sqlRevisedAt(ids) {
+        var lits = [];
+        for (var i = 0; i < ids.length; i++) { lits.push(sqlStr(ids[i])); }
+        return "SELECT chunk_id, MAX(created_at) FROM chunk_revisions WHERE chunk_id IN (" + lits.join(", ") + ") GROUP BY chunk_id";
       }
 
       function sqlSupersededBy(id) {

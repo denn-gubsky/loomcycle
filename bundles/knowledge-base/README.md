@@ -122,6 +122,19 @@ For each statement, the first check that fails decides the outcome:
 5. **Redundancy.** Statements left identical once a kind dropped its
    discriminator are merged into the oldest of the same status. A duplicate of
    another status is flagged.
+6. **Semantics** (only with `rejudge: true`). A model-made statement
+   (`extractor:*`) that passed 1–5, of a kind the relate vocabulary knows, is
+   judged again by `kb/verdict` when its passage's or its target's body was
+   rewritten since it was last verified (or filed). Nothing that did not change
+   costs a model call.
+   - The same kind, same direction, with quotes that occur: verified.
+   - A kind the relate layer may file: proposed as a revision of it
+     (`propose_statement` with its `id`), and the statement is flagged.
+   - Anything else (none, an unquotable answer, a kind L4 may not file):
+     flagged.
+
+   A second opinion never expires or demotes a statement: a person decides. A
+   person's statement, or one an operator ruled on, is never re-judged.
 
 If every check passes, the statement is verified.
 
@@ -207,7 +220,8 @@ curl -sX POST localhost:8080/v1/runs \
 | `max_statements` | `500` | cap on statements L6 checks per document (1–5000) |
 | `max_messages` | `10` | messages a drain processes (1–100) |
 | `corpus_paths` | — | L4 only: where its candidates come from |
-| `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads |
+| `exclude_document_types`, `candidate_floor`, `max_candidates_per_chunk`, `max_verdict_calls`, `max_chars`, `min_body_chars`, `relations`, `include_quotes` | as before | L4 only. `min_body_chars` also bounds which passages L3 reads; `max_verdict_calls` and `relations` also bound and name what L6's `rejudge` asks |
+| `rejudge` | `false` | L6 check 6: judge a model-made statement again when its text changed |
 
 An unknown field or an out-of-range value refuses the run with
 `{"status":"refused","reason":…}`, before any tool call or lease.
@@ -262,6 +276,7 @@ agents:
 
 ## Cost
 
-The linker makes no model call except in L4. L4 spends one `kb/verdict` call per
-claim-bearing passage that has candidates, capped by `max_verdict_calls`, and
-runs only when asked for. Nothing is scheduled unless you add a schedule.
+The linker makes no model call except in L4 and in L6's `rejudge`. L4 spends one
+`kb/verdict` call per claim-bearing passage that has candidates, capped by
+`max_verdict_calls`, and runs only when asked for; `rejudge` spends one per
+changed statement, under the same cap. Nothing is scheduled unless you add a schedule.

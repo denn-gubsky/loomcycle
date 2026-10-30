@@ -126,6 +126,9 @@ type kbChunk struct {
 	// Boilerplate is what the runtime says of the body's paragraphs its class's
 	// @boilerplate matches: rune spans, carried only when there are any.
 	Boilerplate [][2]int
+	// RevisedAt is when the body was last written (chunk_revisions), 0 for never
+	// since the fixture began.
+	RevisedAt int64
 }
 
 type kbEvidence struct {
@@ -137,7 +140,7 @@ type kbEvidence struct {
 type kbStatement struct {
 	ID, From, To, Kind, Status, Method, Discriminator string
 	OperatorRuledAt                                   int64
-	CreatedAt, ValidAt                                int64
+	CreatedAt, ValidAt, VerifiedAt                    int64
 	Auto, Expired, Verified                           bool
 	Attributes                                        map[string]any
 	Evidence                                          []*kbEvidence
@@ -476,6 +479,7 @@ var (
 	kbSQLChunkMeta    = regexp.MustCompile(`^SELECT id, document_id, COALESCE\(anchor, ''\), COALESCE\(stable_id, ''\), COALESCE\(invalid_at, 0\) FROM chunks WHERE id IN \(((?:'[^']*'(?:, )?)+)\)$`)
 	kbSQLSupersededBy = regexp.MustCompile(`^SELECT from_id FROM chunk_edges WHERE kind = 'supersedes' AND to_id = '([^']*)' ORDER BY from_id$`)
 	kbSQLSameKey      = regexp.MustCompile(`^SELECT id FROM chunks WHERE document_id = '([^']*)' AND (anchor|stable_id) = '((?:[^']|'')*)' AND id <> '([^']*)' AND invalid_at IS NULL ORDER BY id$`)
+	kbSQLRevisedAt    = regexp.MustCompile(`^SELECT chunk_id, MAX\(created_at\) FROM chunk_revisions WHERE chunk_id IN \(((?:'[^']*'(?:, )?)+)\) GROUP BY chunk_id$`)
 	kbSQLLiteral      = regexp.MustCompile(`'([^']*)'`)
 )
 
@@ -499,6 +503,16 @@ func (f *kbFixture) answerSQL(sql string) (tools.Result, error) {
 		for _, c := range all {
 			if want[c.ID] {
 				rows = append(rows, []any{c.ID, c.DocumentID, c.Anchor, c.StableID, c.InvalidAt})
+			}
+		}
+	case kbSQLRevisedAt.MatchString(sql):
+		want := map[string]bool{}
+		for _, lit := range kbSQLLiteral.FindAllStringSubmatch(kbSQLRevisedAt.FindStringSubmatch(sql)[1], -1) {
+			want[lit[1]] = true
+		}
+		for _, c := range all {
+			if want[c.ID] && c.RevisedAt > 0 {
+				rows = append(rows, []any{c.ID, c.RevisedAt})
 			}
 		}
 	case kbSQLSupersededBy.MatchString(sql):
@@ -679,6 +693,9 @@ func (f *kbFixture) statementJSON(s *kbStatement, previewCap int) map[string]any
 	}
 	if s.ValidAt != 0 {
 		out["valid_at"] = s.ValidAt
+	}
+	if s.VerifiedAt != 0 {
+		out["verified_at"] = s.VerifiedAt
 	}
 	if s.Discriminator != "" {
 		out["discriminator"] = s.Discriminator
