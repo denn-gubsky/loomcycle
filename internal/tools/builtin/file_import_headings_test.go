@@ -69,6 +69,9 @@ func TestFileImport_HeadingsKeepTheCaptureProvenance(t *testing.T) {
 	if s["headings"] != float64(5) || s["by"] != tools.RunID(ctx) {
 		t.Errorf("provenance structured = %v, want 5 headings by %s", p["structured"], tools.RunID(ctx))
 	}
+	if _, ok := s["dropped"]; ok {
+		t.Errorf("provenance structured = %v, want no dropped when nothing was dropped", p["structured"])
+	}
 	if tags, _ := got["tags"].([]any); !slices.Contains(tags, any("source/mcp/ms365")) {
 		t.Errorf("tags = %v, want the captured file's source tag", got["tags"])
 	}
@@ -106,6 +109,8 @@ func TestFileImport_BadHeadingsImportNothing(t *testing.T) {
 		"long title":     {"line": 4, "level": 3, "as": "marker", "title": strings.Repeat("я", 301)},
 		"title newline":  {"line": 4, "level": 3, "as": "marker", "title": "a\nb"},
 		"unknown as":     {"line": 3, "level": 2, "as": "chapter"},
+		"drop body line": {"line": 3, "as": "drop"},
+		"drop level":     {"line": 3, "level": 2, "as": "drop"},
 	} {
 		_, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": kept.Record.Ref, "headings": []any{h}})
 		if !res.IsError || !strings.Contains(res.Text, "Nothing was imported") {
@@ -168,8 +173,9 @@ func TestFileImport_UnrecordedInboxFileIsNamedNotTagged(t *testing.T) {
 }
 
 // undoImportHeadings is the inverse the headings guarantee: drop the marker
-// lines, strip the heading prefixes, and split each joined span at the
-// points the caller recorded. It must give the file's text back unchanged.
+// lines, strip the heading prefixes, split each joined span at the points
+// the caller recorded, and put each dropped line back. It must give the
+// file's text back unchanged.
 func undoImportHeadings(t *testing.T, structured, original string, hs []ImportHeading) string {
 	t.Helper()
 	orig := strings.Split(original, "\n")
@@ -187,6 +193,9 @@ func undoImportHeadings(t *testing.T, structured, original string, hs []ImportHe
 		case h == nil:
 			back = append(back, out[o])
 			o, i = o+1, i+1
+		case h.As == "drop":
+			back = append(back, orig[i]) // the dropped line, back in its place
+			i++
 		case h.As == importHeadingAsMarker:
 			back = append(back, out[o+1]) // skip the inserted line
 			o, i = o+2, i+1
@@ -293,5 +302,213 @@ func TestApplyImportHeadings_Refusals(t *testing.T) {
 	}
 	if _, err := applyImportHeadings(regulationMD, []ImportHeading{{Line: 4, Level: 2, As: "marker", Title: strings.Repeat("я", 300)}}); err != nil {
 		t.Errorf("a 300-character title was refused: %v", err)
+	}
+}
+
+// pagedMD is a PDF extract: a "## Page N" section per page, with a section
+// (Розділ) and a пункт running across the page breaks.
+const pagedMD = `# Положення
+
+## Page 1
+
+Розділ I. Загальні положення
+
+1. Це Положення розроблено відповідно до
+
+## Page 2
+
+вимог законодавства.
+
+Розділ II. Структура
+
+2. Банк забезпечує
+
+## Page 3
+
+відповідність структури.
+`
+
+// A dropped page heading goes with its line break and nothing else: the text
+// either side is the file's own and now reads on as one section's body, and
+// headings added in the same call land where they would without the drops.
+func TestApplyImportHeadings_DropRemovesOnlyThePageHeading(t *testing.T) {
+	hs := []ImportHeading{
+		{Line: 3, As: "drop"},
+		{Line: 5, Level: 2, As: "heading"},
+		{Line: 7, Level: 3, As: "marker", Title: "1. Це Положення…"},
+		{Line: 9, As: "drop"},
+		{Line: 13, Level: 2, As: "heading"},
+		{Line: 17, As: "drop"},
+	}
+	got, err := applyImportHeadings(pagedMD, hs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"# Положення",
+		"",
+		"",
+		"## Розділ I. Загальні положення",
+		"",
+		"### 1. Це Положення…",
+		"1. Це Положення розроблено відповідно до",
+		"",
+		"",
+		"вимог законодавства.",
+		"",
+		"## Розділ II. Структура",
+		"",
+		"2. Банк забезпечує",
+		"",
+		"",
+		"відповідність структури.",
+		"",
+	}, "\n")
+	if got != want {
+		t.Fatalf("structured text:\n%s\nwant:\n%s", got, want)
+	}
+	if strings.Contains(got, "Page") {
+		t.Errorf("a dropped page heading survived:\n%s", got)
+	}
+	if back := undoImportHeadings(t, got, pagedMD, hs); back != pagedMD {
+		t.Fatalf("undoing the headings gave:\n%q\nwant the file:\n%q", back, pagedMD)
+	}
+}
+
+// Dropping is removal and nothing else: the result is the file without those
+// lines, whether a dropped line is the first, the last (with or without a
+// final line break), indented, bare hashes, or ends in a carriage return.
+func TestApplyImportHeadings_DropOnlyGivesTheFileLessThoseLines(t *testing.T) {
+	for name, tc := range map[string]struct {
+		text  string
+		lines []int
+		want  string
+	}{
+		"first and middle":        {"## Page 1\nа\n## Page 2\nб\n", []int{1, 3}, "а\nб\n"},
+		"last, final break":       {"а\n## Page 2\n", []int{2}, "а\n"},
+		"last, no final break":    {"а\n## Page 2", []int{2}, "а"},
+		"only line":               {"## Page 1\n", []int{1}, ""},
+		"crlf":                    {"а\r\n## Page 2\r\nб\r\n", []int{2}, "а\r\nб\r\n"},
+		"three-space indent":      {"а\n   ### x\nб", []int{2}, "а\nб"},
+		"bare hashes":             {"а\n#\n######\r\nб", []int{2, 3}, "а\nб"},
+		"tab after hashes":        {"а\n##\tx\nб", []int{2}, "а\nб"},
+		"blank lines either side": {"а\n\n## Page 2\n\nб\n", []int{3}, "а\n\n\nб\n"},
+	} {
+		var hs []ImportHeading
+		for _, l := range tc.lines {
+			hs = append(hs, ImportHeading{Line: l, As: "drop"})
+		}
+		got, err := applyImportHeadings(tc.text, hs)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: got %q, want %q", name, got, tc.want)
+		}
+		if got != withoutLines(tc.text, tc.lines) {
+			t.Errorf("%s: got %q, not the file less lines %v", name, got, tc.lines)
+		}
+	}
+}
+
+// withoutLines is text with the given 1-based lines removed, each with the
+// line break that ends it (the one before it, for a last line with none).
+func withoutLines(text string, drop []int) string {
+	var kept []string
+	for i, l := range strings.Split(text, "\n") {
+		if !slices.Contains(drop, i+1) {
+			kept = append(kept, l)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+func TestApplyImportHeadings_DropRefusals(t *testing.T) {
+	text := "## Page 1\nтекст\n\n    ## code\n####### seven\n##x\n#hashtag\n## Page 2\n"
+	for name, tc := range map[string]struct {
+		hs   []ImportHeading
+		want string
+	}{
+		"body line":          {[]ImportHeading{{Line: 2, As: "drop"}}, "line 2 is not a heading line"},
+		"blank line":         {[]ImportHeading{{Line: 3, As: "drop"}}, "line 3 is not a heading line"},
+		"four spaces":        {[]ImportHeading{{Line: 4, As: "drop"}}, "line 4 is not a heading line"},
+		"seven hashes":       {[]ImportHeading{{Line: 5, As: "drop"}}, "line 5 is not a heading line"},
+		"no space":           {[]ImportHeading{{Line: 6, As: "drop"}}, "line 6 is not a heading line"},
+		"hashtag":            {[]ImportHeading{{Line: 7, As: "drop"}}, "line 7 is not a heading line"},
+		"says what drop":     {[]ImportHeading{{Line: 2, As: "drop"}}, `drop removes an existing heading, such as a PDF's "## Page 3"`},
+		"level":              {[]ImportHeading{{Line: 1, Level: 2, As: "drop"}}, "takes no level"},
+		"title":              {[]ImportHeading{{Line: 1, As: "drop", Title: "x"}}, "takes no title"},
+		"lines":              {[]ImportHeading{{Line: 1, As: "drop", Lines: 1}}, "takes no lines"},
+		"line 0":             {[]ImportHeading{{Line: 0, As: "drop"}}, "lines 1 to 8"},
+		"past the end":       {[]ImportHeading{{Line: 9, As: "drop"}}, "lines 1 to 8"},
+		"same line twice":    {[]ImportHeading{{Line: 1, As: "drop"}, {Line: 1, As: "drop"}}, "not after the previous entry"},
+		"drop, then add":     {[]ImportHeading{{Line: 8, As: "drop"}, {Line: 8, Level: 2, As: "marker", Title: "x"}}, "not after the previous entry"},
+		"after a valid drop": {[]ImportHeading{{Line: 1, As: "drop"}, {Line: 2, As: "drop"}}, "entry 2 (line 2)"},
+	} {
+		got, err := applyImportHeadings(text, tc.hs)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, tc.want)
+		}
+		if got != "" {
+			t.Errorf("%s: a refused call returned text %q", name, got)
+		}
+	}
+}
+
+// A PDF extract imported with its page headings dropped and its real sections
+// added comes in as one chunk per section, not per page — and, the file being
+// unchanged, still carries its capture record, which now also says how many
+// lines a run dropped.
+func TestFileImport_DroppedPageHeadingsKeepTheCaptureProvenance(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "reg.md", MediaType: "text/markdown", Origin: "mcp:ms365/download-bytes"}, []byte(pagedMD))
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": kept.Record.Ref,
+		"headings": []any{
+			map[string]any{"line": 3, "as": "drop"},
+			map[string]any{"line": 5, "level": 2, "as": "heading"},
+			map[string]any{"line": 9, "as": "drop"},
+			map[string]any{"line": 13, "level": 2, "as": "heading"},
+			map[string]any{"line": 17, "as": "drop"},
+		}})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	docID := asStr(out["document_id"])
+	got, r := docExec(t, d, ctx, `{"op":"get_document","scope":"user","id":"`+docID+`"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	p, _ := got["provenance"].(map[string]any)
+	for k, want := range map[string]any{
+		"sha256": kept.Record.SHA256, "captured_from": "mcp:ms365/download-bytes", "file": "reg.md",
+	} {
+		if p[k] != want {
+			t.Errorf("provenance %s = %v, want %v", k, p[k], want)
+		}
+	}
+	s, _ := p["structured"].(map[string]any)
+	if s["headings"] != float64(2) || s["dropped"] != float64(3) || s["by"] != tools.RunID(ctx) {
+		t.Errorf("provenance structured = %v, want 2 headings, 3 dropped, by %s", p["structured"], tools.RunID(ctx))
+	}
+	// root + 2 sections; the 3 pages would have made root + 3
+	if n := len(importChunkIDs(t, d, ctx, docID)); n != 3 {
+		t.Errorf("chunks = %d, want 3", n)
+	}
+	md, r := docExec(t, d, ctx, `{"op":"export_md","scope":"user","id":"`+docID+`"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	text := asStr(md["markdown"])
+	if strings.Contains(text, "Page") {
+		t.Errorf("export still has a page heading:\n%s", text)
+	}
+	start := strings.Index(text, "## Розділ I. ")
+	if start < 0 {
+		t.Fatalf("export lacks section I:\n%s", text)
+	}
+	sec := text[start:]
+	if i := strings.Index(sec, "## Розділ II"); i < 0 || !strings.Contains(sec[:i], "вимог законодавства.") {
+		t.Errorf("the пункт broken by page 2 is not one section's body:\n%s", text)
 	}
 }

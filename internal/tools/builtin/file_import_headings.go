@@ -18,7 +18,9 @@ const importNoRecordNote = "file changed since capture: file-level provenance no
 // runtime adds to the file it imports, so a caller can turn a PDF export whose
 // structure lives only in its numbering into a tree without changing the file
 // — and so without losing the file's capture record, which holds only while
-// the bytes still hash to it.
+// the bytes still hash to it. An entry can also drop a heading the file
+// already has, such as a PDF extract's "## Page N": adding can only make
+// boundaries, so without it every page break stays a section boundary.
 //
 // The caller sends line numbers and titles, never document text: the body is
 // the file's.
@@ -26,9 +28,11 @@ type ImportHeading struct {
 	// Line is 1-based, over the file as read.
 	Line int `json:"line"`
 	// Level is the heading level, 2–6. Level 1 is the document's root heading.
+	// A drop takes none.
 	Level int `json:"level"`
-	// As is heading (the line becomes the heading) or marker (a heading with
-	// Title is inserted before the line, which stays body text).
+	// As is heading (the line becomes the heading), marker (a heading with
+	// Title is inserted before the line, which stays body text) or drop (the
+	// line, already a heading, is removed).
 	As string `json:"as"`
 	// Lines is how many lines a heading spans when its title wraps (default
 	// 1). They are joined with one space.
@@ -40,6 +44,7 @@ type ImportHeading struct {
 const (
 	importHeadingAsHeading = "heading"
 	importHeadingAsMarker  = "marker"
+	importHeadingAsDrop    = "drop"
 	importHeadingsMax      = 10000
 	importHeadingTitleMax  = 300
 	// importHeadingSpanMax bounds a wrapped title: a heading is a line or a
@@ -55,10 +60,14 @@ const (
 //   - a heading's spanned lines joined into it with one space (a carriage
 //     return ending a joined line is dropped with its line break);
 //   - a marker's line "#"×level, a space and its title, inserted before its
-//     line.
+//     line;
+//   - a dropped line, which is a heading line (see isATXHeadingLine), removed
+//     with the line break that ends it (for a last line with none, the one
+//     before it).
 //
-// so removing the marker lines and the prefixes, and splitting each joined
-// span at the recorded points, gives text back.
+// so removing the marker lines and the prefixes, splitting each joined span
+// at the recorded points, and putting each dropped line back at its number
+// gives text back.
 func applyImportHeadings(text string, hs []ImportHeading) (string, error) {
 	if len(hs) > importHeadingsMax {
 		return "", fmt.Errorf("%d entries, at most %d", len(hs), importHeadingsMax)
@@ -83,11 +92,18 @@ func applyImportHeadings(text string, hs []ImportHeading) (string, error) {
 	}
 	var b strings.Builder
 	b.Grow(len(text) + len(hs)*16)
+	// The result is the kept lines joined by line breaks, so a dropped line
+	// takes exactly one break with it, wherever it is.
+	wrote := false
 	for i := 0; i < len(lines); i++ {
-		if i > 0 {
+		h, ok := at[i+1]
+		if ok && h.As == importHeadingAsDrop {
+			continue
+		}
+		if wrote {
 			b.WriteByte('\n')
 		}
-		h, ok := at[i+1]
+		wrote = true
 		if !ok {
 			b.WriteString(lines[i])
 			continue
@@ -119,6 +135,9 @@ func applyImportHeadings(text string, hs []ImportHeading) (string, error) {
 // checkImportHeading checks one entry against the file's n lines and returns
 // the last line it occupies.
 func checkImportHeading(h ImportHeading, lines []string, n int) (int, error) {
+	if h.As == importHeadingAsDrop {
+		return checkImportHeadingDrop(h, lines, n)
+	}
 	if h.Level < 2 || h.Level > 6 {
 		return 0, fmt.Errorf("level %d is not 2 to 6 (1 is the document's own title)", h.Level)
 	}
@@ -156,7 +175,44 @@ func checkImportHeading(h ImportHeading, lines []string, n int) (int, error) {
 		}
 		return h.Line, nil
 	}
-	return 0, fmt.Errorf("as %q is not heading or marker", h.As)
+	return 0, fmt.Errorf("as %q is not heading, marker or drop", h.As)
+}
+
+// checkImportHeadingDrop checks a drop entry: it names one line that is
+// already a heading, and nothing else. Only a heading may be dropped so that
+// the body stays the file's own text, less lines that were structure.
+func checkImportHeadingDrop(h ImportHeading, lines []string, n int) (int, error) {
+	switch {
+	case h.Level != 0:
+		return 0, errors.New("a drop removes a heading and takes no level")
+	case h.Title != "":
+		return 0, errors.New("a drop removes a heading and takes no title")
+	case h.Lines != 0:
+		return 0, errors.New("a drop removes one line and takes no lines")
+	case h.Line < 1 || h.Line > n:
+		return 0, fmt.Errorf("the file has lines 1 to %d", n)
+	case !isATXHeadingLine(lines[h.Line-1]):
+		return 0, fmt.Errorf("line %d is not a heading line; drop removes an existing heading, such as a PDF's \"## Page 3\"", h.Line)
+	}
+	return h.Line, nil
+}
+
+// isATXHeadingLine reports whether l is a Markdown ATX heading line, as
+// CommonMark has it: up to 3 spaces of indentation, 1 to 6 "#", then a space,
+// a tab or the end of the line (a carriage return ending a CRLF line counts
+// as the end).
+func isATXHeadingLine(l string) bool {
+	l = strings.TrimSuffix(l, "\r")
+	indent := len(l) - len(strings.TrimLeft(l, " "))
+	if indent > 3 {
+		return false
+	}
+	l = l[indent:]
+	hashes := len(l) - len(strings.TrimLeft(l, "#"))
+	if hashes < 1 || hashes > 6 {
+		return false
+	}
+	return hashes == len(l) || l[hashes] == ' ' || l[hashes] == '\t'
 }
 
 // checkImportHeadingTitle refuses a marker title that is not one short line of
