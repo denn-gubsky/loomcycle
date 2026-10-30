@@ -3989,6 +3989,11 @@ export type DocumentToolInput = {
   kinds?: string[];
   /** link_chunks / propose_statement: the relation's qualifiers. */
   attributes?: Record<string, unknown>;
+  /** propose_statement / upsert_chunk (its relation): how the statement was
+   *  made — `rule:<name>` or `extractor:<name>`, the name `[a-z0-9_./-]{1,64}`.
+   *  Only a code-js agent whose `statement_methods` lists the prefix may send
+   *  it; anything else is refused with `method_not_granted`. Omitted = `manual`. */
+  method?: string;
   /** link_chunks / propose_statement: the text the relation rests on. Each row
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
