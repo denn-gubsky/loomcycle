@@ -22,7 +22,7 @@ func (b *boot) openAndMigrateStore() {
 	// (production, hundreds of concurrent agents). Both adapters
 	// implement the same store.Store interface; they're tested against
 	// a shared contract suite in CI so they can't drift silently.
-	storeIface, storeCloser, err := openStore(cfg)
+	storeIface, storeCloser, err := openStore(cfg, true)
 	if err != nil {
 		fatal("store: open failed", "err", err)
 	}

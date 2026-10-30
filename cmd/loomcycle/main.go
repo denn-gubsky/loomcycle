@@ -545,7 +545,11 @@ func sweepTenantDocumentRows(st store.Store) {
 	}
 }
 
-func openStore(cfg *config.Config) (store.Store, func(), error) {
+// openStore opens the store; server is true only for the server boot, which
+// alone applies memory.fulltext to the shared column. Another subcommand
+// opening the store (`loomcycle tokens`, perhaps run with a different config
+// or none) would otherwise rebuild that column under the running servers.
+func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 	switch cfg.Storage.Backend {
 	case "sqlite", "":
 		if cfg.Env.ReplicaID != "" {
@@ -584,6 +588,7 @@ func openStore(cfg *config.Config) (store.Store, func(), error) {
 				Config:   cfg.Memory.FullText.Config,
 				Unaccent: cfg.Memory.FullText.Unaccent,
 			},
+			ApplyFullText: server,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("postgres open: %w", err)
