@@ -589,6 +589,13 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// can tell a refused clone or push from a broken remote. Always present:
 	// an empty list is the answer "local repository work only".
 	out["git_remote"] = tools.PolicyOf(ctx).GitRemote.Ops()
+	// The statement methods this run may stamp on the relations it writes, so
+	// a code agent can tell before writing whether a rule: stamp is accepted.
+	// Only a code-js run is ever granted one, so a run holding none (every
+	// model agent) is not told about a grant it cannot have.
+	if sm := tools.PolicyOf(ctx).StatementMethods; len(sm) > 0 {
+		out["statement_methods"] = sm
+	}
 	// principal: the resolved auth identity (RFC L) — WHO this run acts as and
 	// what its credential may do. Non-secret: subject + tenant + scopes + the
 	// token DEF id and the 6-char log-correlation suffix; NEVER the bearer
