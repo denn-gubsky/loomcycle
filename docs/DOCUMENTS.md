@@ -537,6 +537,262 @@ Each unit is stored as a memory row keyed `doc.unit:<chunk>:<kind>:<n>` and embe
 
 **Cost.** Two model calls per chunk: one for the description, and one JSON call for claims and questions. On a local qwen3.6 (`effort: low`) that measured 12.3 s per chunk and 8.6 units per chunk.
 
+## Relations as statements
+
+A relation between two chunks (`link_chunks`, a `[[name]]` link, an import's edges) is a **statement**: a `chunk_edges` row that says not only *that* chunk A relates to chunk B by a kind, but who or what made the claim, from which text, since when, and whether anyone has checked it.
+
+**Why statements, not bare edges.** An edge used to be `(from_id, to_id, kind)` and nothing else. It could not say why it existed, so every consumer that needed an answer (a reviewer, a links pass, a judge) kept its own ledger beside the store and rebuilt edges from it: one fact in two places, with nothing keeping them in step. A statement carries those answers itself, and every reader the runtime owns (`get_edges`, `backlinks`, `graph_recall`, `export_md`, `judge_fact`, `sync`) sees them without a second table. An existing scope is rebuilt into the statement shape on first use: every old edge keeps its endpoints, kind and age, and reads back as an asserted statement with no evidence (`wikilink` for an inline `[[name]]` edge, `manual` otherwise).
+
+The per-op reference is in the tool's own help: `Context op=help topic=Document/<op>` (for example `topic=Document/propose_statement`).
+
+### What a statement is
+
+| field | meaning |
+|---|---|
+| `id` | the statement's own id, which every review and maintenance op takes |
+| `from_id` / `to_id` / `kind` | the relation; direction matters (`backlinks` lists it at `to_id`) |
+| `status` | `asserted`, `proposed` or `rejected` (below) |
+| `method` | how it was made, stamped by the server (below) |
+| `confidence` | the writer's own 0..1. It is recorded and never hides the statement |
+| `valid_at` / `invalid_at` | world time: when the relation began and stopped holding (unix ns). Unset `invalid_at` = still holds |
+| `attributes` | the relation's qualifiers, a small JSON object (at most 4 KiB) |
+| evidence | verbatim quotes that support it (below) |
+| verdict | `verdict_confidence`, `judged_at`, `judge_reason`, `judged_by`: what a judge found. Only a verdict withholds |
+| `operator_ruled_at` | set when an operator accepted or rejected it |
+| `actor`, `run_id`, `created_at`, `verified_at`, `expired_at` | who wrote it, when it was last re-checked, when it was retired |
+
+**One statement per relation.** A statement is identified by `from_id`, `to_id`, `kind`, `valid_at` and, where the tenant's vocabulary declares one for the kind, a discriminating qualifier. Linking the same relation again does not make a second row; it adds any new evidence to the existing one. A statement that differs in `valid_at` (a dated amendment) or in its discriminator coexists with the first.
+
+**Status lifecycle.**
+
+```
+propose_statement ──▶ proposed ──accept_statement──▶ asserted ◀── link_chunks, imports, sync
+                         │  ▲                           │
+         reject_statement│  └──maintain_statement demote┘
+                         ▼
+                      rejected ──accept_statement (rejected in error)──▶ asserted
+```
+
+- **asserted** is live: every reader shows and follows it.
+- **proposed** is filed for review. It shows in `get_edges` and the review queue, but `backlinks` and `graph_recall` leave it out unless asked (`include_proposed`).
+- **rejected** is kept, never deleted, as the record that the relation was considered and refused. It is withheld from every reader, and the same relation is refused (`statement_rejected`) if anyone proposes or links it again, at any `valid_at`. Only an operator's own `link_chunks` can re-assert it.
+
+An asserted statement is never *rejected*. It leaves the live set in one of three ways: `unlink_chunks` deletes it with its evidence; `judge_fact` with the statement's id and `verdict: unsupported` keeps it but withholds it; `maintain_statement action: expire` retires it (readable with `include_retired`). A `[[name]]` relation is removed by editing the link out of the body, because the body re-creates it on every write.
+
+**Methods.** The server stamps every statement's method. None of the fixed ones is accepted from the wire:
+
+| method | written by |
+|---|---|
+| `manual` | `link_chunks` and `propose_statement` without a method: a person's (or a model's) own write |
+| `wikilink` | a `[[name]]` link in a chunk body |
+| `import` | `import_md` (its `<!-- loom-edges -->` block, and the `amends` statements of an edition) |
+| `sync` | a link pulled from a peer by `sync` |
+| `canvas` | `import_canvas` |
+| `runtime` | the runtime's own links: `about`, `derived_from` and the like from `upsert_chunk` |
+| `consolidator` | the relation a fact states (`upsert_chunk` `relation`), when no method is named |
+| `ontology` | a relation declared in the tenant ontology's Instances section |
+| `rule:<name>` / `extractor:<name>` | a code agent granted `statement_methods` (see below): code found it, or a model the code drives found it. `<name>` is 1–64 of `a-z 0-9 _ . / -` |
+
+A later pass treats a `manual` statement as a person's and never undoes it (see `maintain_statement`).
+
+**Reserved kinds.** `about`, `supersedes`, `references`, `mentions`, `derived_from` and `supported_by` are written only by the runtime, because a caller-made one would be read as the runtime's: a manual `supersedes` would block a real correction, a manual `references` would be mistaken for an inline link. `link_chunks`, `propose_statement` and the import, canvas and sync paths refuse them with `kind_reserved`. The one exception: `link_chunks` still accepts `about` when `from_id` is a fact.
+
+**Vocabulary.** Where the tenant ontology declares relation kinds, each write is checked against them. A person's own `link_chunks` that does not fit is refused. Every other writer is annotated instead: the statement is filed with `ontology_valid: false` and `warnings`, for the reviewer to see. The kinds themselves (inverse names, qualifiers, discriminators, which kinds a walk follows, which a rule may auto-assert) come from the ontology's Relations section; `Document op=describe_ontology` returns them as data, and the ontology has its own documentation.
+
+**Evidence.** Each evidence row has exactly one source:
+
+- `{chunk_id, quote}`: a chunk of this scope;
+- `{session_id, event_seq, quote}`: a turn of a chat the caller can read;
+- `{scope, natural_key, quote}`: a fact in another scope.
+
+The quote must be verbatim. For a chunk or a chat turn the server finds it in the source at write time, records `char_start` / `char_end`, and refuses a quote that does not occur there (`evidence_quote_not_found`). A reference into another scope is kept as written: this scope cannot read that one to check it, so such a row is not ground for a verdict either.
+
+- **Bounds.** A quote is at most 4,000 characters. A statement keeps at most 32 rows (`LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE`); past that, a write reports `evidence_capped: true` and adds no more.
+- **Readers.** `get_edges`, `backlinks` and `list_statements` carry the first three rows and `evidence_count`; `get_edge` carries every row.
+- **Withheld when unreadable.** A row whose source is a document the caller may not read is left out of every answer, and `evidence_count` counts only what is shown. At write time, citing a chunk the caller may not read answers exactly as a chunk that does not exist, so a quote check cannot reveal text in a document the caller cannot open.
+- **Stale.** `stale: true` marks a quote that no longer occurs in its source. A maintainer can mark a row stale or re-point it (`maintain_statement`).
+
+### Writing and reviewing
+
+**`link_chunks`** asserts a relation: method `manual`, optionally with evidence, validity, confidence and attributes. It is a person's act, so it refuses a `method`. Linking a relation that is awaiting review asserts it.
+
+**`propose_statement`** files a relation as `proposed`. Use it when a relation was found in text and should be checked rather than asserted. It cannot change or remove anything that exists:
+
+- proposing a relation that is already proposed adds the new evidence to it;
+- a relation that already holds is refused (`statement_asserted`); pass its `id` to propose a correction instead, filed beside it with `attributes.revision_of` naming the original, which stays as it is;
+- a `rule:` statement of a kind the vocabulary marks auto-asserting, with every quote in a chunk, is asserted directly. A correction proposed with `id` always stays proposed.
+
+```json
+{"op": "propose_statement", "scope": "tenant",
+ "from_id": "e1f3a5b7c9d14e2f8a4b6c8d0e2f4a6b", "to_id": "5f1c9e2a7b3d4e6f8a9b0c1d2e3f4a5b", "kind": "implements",
+ "evidence": [{"chunk_id": "e1f3a5b7c9d14e2f8a4b6c8d0e2f4a6b", "quote": "This order implements Directive 2019/1937"}],
+ "confidence": 0.8}
+```
+
+```json
+{"id": "7c2e9a1b3d4f4e6a8b0c2d4e6f8a1b3c", "status": "proposed", "created": true, "evidence_written": 1, "ontology_valid": true}
+```
+
+**`accept_statement` / `reject_statement`** are the operator's ruling on a proposal. They are refused inside an agent run, so a model can never accept its own proposals. `reject_statement` needs a `reason`, which is shown to whoever proposes the relation again. `accept_statement` also reverses a rejection made in error, and overrules a judge who found the relation unsupported (recording the operator as the judge). Of two operators ruling at once, the second gets `statement_changed`. A ruling also needs the `link` permission on the documents at both ends.
+
+**Two permissions, `propose` and `link`.** The access-control model has a `propose` action on documents, narrower than `link`, so a principal can be allowed to suggest relations without being allowed to make them live:
+
+| action | ops |
+|---|---|
+| `link` | `link_chunks`, `unlink_chunks`, `accept_statement`, `reject_statement`; also `maintain_statement` `expire` / `demote` / `merge` (on both ends) |
+| `propose` | `propose_statement`, every `maintain_statement` action, `lease`, `release` |
+| `read` | `get_edges`, `get_edge`, `list_statements`, `backlinks` |
+
+A principal holding only `read` and `propose` can file proposals but cannot add evidence to a relation that already holds: evidence on an asserted statement is live data.
+
+**Reading.**
+
+- `get_edges` takes a `document_id` and lists every statement in or out of the document's chunks, with both endpoints' titles, types and documents.
+- `backlinks` takes a chunk `id` and lists what points at it, with `inverse_kind` when the vocabulary names the relation from this end.
+- `get_edge` reads one statement with all its evidence.
+
+They differ in what they show by default:
+
+| | proposed | rejected or judged unsupported | retired |
+|---|---|---|---|
+| `get_edges` | shown (`include_proposed: false` hides) | `include_refuted` | `include_retired` |
+| `backlinks` | `include_proposed` | `include_refuted` | `include_retired` |
+| `graph_recall` | `include_proposed` | `include_refuted` follows a judged-unsupported relation; an operator-rejected one is never followed | — |
+
+**The review queue: `list_statements`.** It lists statements of one `status` (default `proposed`) across every document of the scope, each with its endpoints' titles and documents, `auto` (made by a `[[name]]` link) and up to three evidence rows, so a reviewer can decide without opening each one. The same filters let a maintainer pick what to re-check:
+
+- `kind` / `kinds`; `document_id` (either end in the document); `evidence_document_id` (an evidence row quotes the document); `method_prefix` (exact, case-sensitive, e.g. `rule:` or `extractor:cite`); `under_path` (either end named under a Path);
+- `include_retired` adds expired relations and ones whose `invalid_at` has passed;
+- `order: created` (default) is newest first; `order: verified` is least recently verified first, never-verified ones before any. A cursor from one order is refused under the other.
+
+Filters combine with AND, and never show more than the plain listing would: naming a document the caller may not read selects nothing.
+
+**The review route.** Rulings are made from the off-run operator plane: `POST /v1/_document` with the op in the body (and its twins, the gRPC `Document` RPC, the MCP `document` meta-tool and the adapters' `document()`). The route is tenant-confined: a `substrate:tenant` operator reviews its own tenant's statements.
+
+```bash
+# the tenant's proposals awaiting review
+curl -sS -X POST localhost:8080/v1/_document -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  -d '{"op":"list_statements","scope":"tenant","status":"proposed","limit":50}'
+# rule on one
+curl -sS -X POST localhost:8080/v1/_document -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
+  -d '{"op":"reject_statement","scope":"tenant","id":"7c2e9a1b3d4f4e6a8b0c2d4e6f8a1b3c","reason":"The quote cites the 2015 act, not this one."}'
+```
+
+**The Web UI.** The document viewer's cross-references panel (the `@loomcycle/explorer` package) shows each statement's status, an unusual method, whether it was judged (the reason as a tooltip), its validity and its first evidence quotes, with a quote whose source changed marked as such. The relationship graph draws a proposed statement dotted. A proposed statement gets **Accept** / **Reject** buttons; Reject opens a reason field, and a refusal from the runtime is shown inline. There is no separate review-queue page: the queue is `list_statements`.
+
+### Code agents that maintain relations
+
+A links pass (find citations in imported text, propose the relations, keep them true as the documents change) is deterministic work, so it runs as a `provider: code-js` agent. Three pieces make that safe.
+
+**`statement_methods`** (an agent definition field; see `docs/CONFIGURATION.md` §7) lists the method kinds the agent's runs may stamp: `rule`, `extractor`, or both. A run then names its method per write: `method: "rule:citations"`.
+
+- **code-js only.** A `rule:` method claims that code made the relation, and only a code-js body is code. The field is refused at config load and at AgentDef create/fork for any other provider, and a model-driven definition that reached a run some other way holds no grant.
+- **Fork narrows, never widens.** A new definition authored from a run may list only methods its author may stamp; a fork may list only what the version it forks already holds, even when the author holds more. The grant is what lets a rule's writes skip review (auto-assert), so the operator chooses which bodies hold it.
+- Not per-run overridable, and a sub-agent holds only its own definition's grant. Authority, not content: not part of `content_sha256`.
+- `method` is taken by `propose_statement`, `maintain_statement` and `upsert_chunk` (for its `relation`). A malformed method, or one outside the grant, is refused with `method_not_granted`; `link_chunks` refuses a method outright. Without the grant, every relation an agent writes is `manual`.
+
+**`maintain_statement`** is the upkeep of a relation that already exists. It never asserts one (acceptance is an operator's) and never deletes one or an evidence row. It is open to a code agent holding statement methods and to an operator session.
+
+| action | effect |
+|---|---|
+| `verify` | stamp `verified_at`; nothing else changes |
+| `expire` | retire it; `reason` required, recorded with the method as why and by what |
+| `demote` | an asserted relation goes back to `proposed`; `reason` required |
+| `merge` | move its evidence onto `survivor_id` (a live statement of the same relation and status), then retire it as `merged`. Rows the survivor already holds stay put |
+| `stale_evidence` | mark the row `evidence_id` stale: its quote is no longer where it points |
+| `relocate_evidence` | re-point the row `evidence_id` to `chunk_id`, where its quote must occur; the span is recomputed and the stale mark cleared |
+| `flag` | set `attributes.needs_review` (and the reason) for a person |
+
+- A relation a person wrote (`manual`) takes only `verify` and `flag`, from anyone (`statement_manual`). So does one an operator ruled on, from inside a run (`statement_operator_ruled`): flag it and let a person decide.
+- Every action needs `propose` on the relation's documents; `expire`, `demote` and `merge` change what readers see as live, so they also need `link` on both ends.
+- A relation that changed while the pass looked at it is refused with `statement_changed`: reload it (`get_edge`) and decide again.
+
+**`lease` / `release`** make a pass exclusive on a scope. A lease is named (`linker`, `citations`, …): a second pass of the same name finds it held and stops before writing, while leases of different names never block each other, so a links pass does not stall memory consolidation of the same scope. It expires after `ttl_ms` (default 60 s, at most one hour), so a pass that dies never wedges the scope; the holder renews by calling `lease` again and ends it with `release`, on every exit path. The holder is the run that took it, never a name the caller supplies. Only the operator plane and a code agent holding statement methods may take one.
+
+A citation pass, end to end:
+
+1. subscribe to the scope's `documents/ingested` channel (below), or run on a schedule;
+2. `lease` `{"name": "citations", "ttl_ms": 300000}`; stop if `acquired` is false;
+3. `extract_citations` on the new or changed document: the class's citation grammar finds each citation with its span and resolves it to a work and part (read-only);
+4. `resolve_anchor` with `create_placeholder: true` for a work the scope does not hold yet;
+5. `propose_statement` with `method: "rule:citations"` and the citation as evidence `{chunk_id, quote}`; later passes `maintain_statement` what they find stale;
+6. `release`.
+
+### Editions
+
+A law, a standard or a contract is amended and the new edition imported. Imported as a new document, every statement, tag and citation stays on the old one; imported over it, every chunk is recreated and they are all lost. An edition is neither: most parts are unchanged and keep everything attached to them, a few changed and are superseded with dates, a few were removed and close, a few are new.
+
+**Work keys.** A work is recognised by its key, e.g. `law:ua/2297-vi`: claimed on the root chunk by the first keyed import, or the identity the document's ontology class derives. A key is unique in its scope (`identity_collision` otherwise).
+
+**`import_md` with `reimport: true`** and the document's `document_id` or its `work_key` reconciles the incoming Markdown onto the held document part by part. Each part is recognised by its **anchor** and by its text, in five passes:
+
+1. same anchor, same text: untouched, keeping its id, statements, evidence and tags;
+2. held text now under another anchor (renumbered or moved): the part keeps its id and everything linked to it, and takes the new anchor. This runs before pass 3, so inserting an article and renumbering the ones after it moves them, rather than handing one article's links to the next;
+3. same anchor, new text: **superseded**. The old version closes at `edition_date` (it is still what the work said before) and a new one opens there, joined by `supersedes`. A statement follows the new version where its evidence still holds; the others stay on the old version, marked `proposed` for re-checking. Inline `[[name]]` links are not carried: the new text links what it names;
+4. a held part the edition no longer has closes; nothing is deleted;
+5. a new part opens at `edition_date`.
+
+The title and the preamble are updated in place (the earlier text stays readable with `history`). The response's `reimport` block counts `unchanged`, `superseded`, `moved`, `closed`, `created`, `statements_copied` and `statements_proposed`, and `changed_chunk_ids` names what changed. Running the same reimport twice changes nothing, a reimport that stopped part way is completed by running it again, and two reimports of one work run one after the other. A reimport reads headings, text and each part's type, status and fields; it ignores the `loom-edges` block, `valid_at` / `invalid_at` in `loom:` lines (a part's period comes from `edition_date`) and pictures.
+
+**Anchors and `stable_id`.** An anchor is the part's heading path (`article-12/paragraph-3`), or what a class-declared anchor grammar produces. A heading with no letters (a bare `1.2`) adds nothing to the path, so renumbering a list does not re-key everything under it; a repeated heading under one parent becomes `notes~2`. A part keeps its anchor once it has one, so renaming a heading later does not silently re-key what links to it, and a renumbered part is still found by the anchor it first had. Alongside the anchor each part carries a `stable_id`: the identity of the provision itself, which a moved part keeps and a superseding version inherits.
+
+**`edition_date`** is when the edition came into force (unix ns; default now). Import editions in date order: an `edition_date` earlier than the edition in force is refused before anything is written.
+
+**Placeholders and `resolve_anchor`.** `resolve_anchor` turns a citation into a chunk: the work by `work_key`, the part by `anchor`, as of `as_of`, so a citation to a past edition resolves to the text in force then. A work the scope does not hold (or holds in a document the caller may not read) answers `found: false`; with `create_placeholder: true` an empty document is filed for it (status `unresolved`). Link citations to the placeholder's root: its backlinks are the list of works still to import, and the first keyed import of that work fills the placeholder in. After a renumbering a heading path can name two parts; the part now under the heading wins, and an `as_of` before the renumbering reaches the other.
+
+**Who made the edition.** With `amending_document_id` (the amending act, a document of the same scope) on a reimport by `work_key`, each part the edition renumbered or moved gets one `amends` statement from that document's root, with `attributes: {mod_type: renumbering}`, method `import`, valid from `edition_date`. Untouched, superseded and new parts get none, and running the edition again adds none. The caller must be able to read and link both documents. Where the vocabulary declares relation kinds and does not accept the statement, the edition is still imported and the skip is counted (`amends_skipped`).
+
+**From a file.** `File op=import` takes the same `reimport`, `work_key`, `edition_date` and `amending_document_id`, so an extracted PDF of a new edition reconciles onto the held work exactly as `import_md` does. `doc_path` and `source` apply only to a first edition. See `Context op=help topic=File/import`.
+
+**The `documents/ingested` event.** `create_document`, `import_md` and `File op=import` publish `{document_id, reason, timestamp, changed_chunk_ids?}` to the scope's `documents/ingested` channel, with `reason` `created`, `imported` or `reimported`. It is what makes "on import" something a links pass can subscribe to rather than poll. The event names the document to everyone on the channel, so it is not published when the caller's access-control rules hide part of the scope from reading; the result then says why in `not_announced`.
+
+### Facts and documents
+
+A fact (a chunk with fact metadata, written by `upsert_chunk`) and the documents it was taken from are joined by statements, so a fact can be checked against its passage and a passage can show what was learned from it.
+
+- **`source_chunk_id`**: the passage the fact was taken from. The fact is linked to it by `derived_from`, with the fact's `source_quote` as evidence and its span (`char_start` / `char_end`, which can also select the quote). The quote must occur in that chunk, and the caller must be allowed to read and link its document. A fact has one source; passing another replaces it. `judge_fact` then checks the fact against the passage as it is now, and `Memory op=recall` returns `source_chunk_id` and `source_document_id` (left out when the caller may not read that document).
+- **`about_ids`**: the subject nodes the fact is about, each linked by `about`. The list is the whole set: a subject an earlier upsert named and this one does not is no longer linked. One the caller may not read and link is skipped and counted in `about_skipped`.
+- **`mentions`**: a `[[name]]` link in prose that resolves to a subject node is a `mentions` statement, not `references`, with the link's span as evidence. Facts are *about* a subject; passages only *mention* it. `list_facts` with `about` returns the facts and, separately, `mentioned_in`.
+- **A fact's `relation`**: with two or more `about_ids`, `relation` names the relation the fact states between the first two (e.g. `works_at`). It is recorded as a statement whose evidence is the fact, with method `consolidator` unless a granted code agent names its own. A kind the tenant has not declared is recorded for review. Another live relation of the same kind from the same subject to a different one is reported in `relation_conflicts`, never removed. A later upsert with `about_ids` replaces the relation the fact stated, and retiring or deleting the fact ends it, unless another fact still states it.
+
+```json
+{"op": "upsert_chunk", "scope": "tenant", "natural_key": "person:ada|works_at|acme", "document_id": "b4407b522dc11495d3de371311db17f0",
+ "title": "Ada works at Acme", "type": "employment", "subject": "Ada",
+ "source_chunk_id": "9a3e7c1f2b4d4a6e8c0f1a2b3c4d5e6f", "source_quote": "Ada joined Acme as head of research.",
+ "about_ids": ["2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f", "7a6b5c4d3e2f10a9b8c7d6e5f4a3b2c1"], "relation": "works_at"}
+```
+
+The answer adds `derived_from: {statement_id, chunk_id, char_start, char_end}`, `about_written` / `about_skipped`, `relation: {statement_id, kind, status}` and any `relation_conflicts`.
+
+### Following relations in retrieval
+
+Search finds chunks by what they say; statements let retrieval also reach what they are *related to*: the article a clause cites, the term it is defined by.
+
+**`graph_recall`** walks statements hop by hop from seed chunks (or a `query`):
+
+- `walk: declared` follows only the kinds the tenant declared for walking, and is the default where any are declared; `walk: all` follows every relation (the default otherwise). `kinds` overrides both, and is the best way to keep a walk on topic.
+- `decay` (with `budget_chars`) lets each hop spend at most `decay`^hop of the budget, so far hops cannot crowd out near ones: default 0.7 for a declared walk, else 1.
+- `include_proposed` also follows proposals; a row reached over one carries `via_status: proposed`.
+- `as_of`: a relation is followed only while its own `valid_at` / `invalid_at` contain the moment asked about (now by default), so a past question walks the relations that held then.
+- Each row reached over a relation carries `via_kind`, `via_id` and `via_quote`, the relation's first evidence quote, to cite.
+
+**`search` with `expand`** (`{kinds?, budget_chars?}`) adds, after ranking, the chunks the top five hits are related to (one hop), each with `expanded_via: {kind, from_chunk_id, quote?}`. Without `kinds` it follows the declared walk kinds, or every relation except `about` and `mentions`. The search's filters apply to what it adds.
+
+**`related` with `related_to`** returns a chunk's neighbours by relation (what it cites, what cites it) as `linked`, each with `via_kind` and `via_quote`. It needs no embedder; with `id` too, the by-meaning neighbours come back beside them.
+
+**`concept` / `concept_prefix`** on `search` and `related` keep only chunks about a concept of the tenant's concept schemes (or a narrower one). In the tenant scope, where the concepts live, a chunk matches through a live `subject` statement (or a narrower kind) to the concept; a proposed, rejected, refuted or retired statement does not count, and neither does a tag alone. In a `user` or `agent` scope a statement cannot reach a concept, so a chunk matches by carrying the concept's tag. `filter.applied.concept_matched_by` says which (`statement` or `tag`). The schemes themselves are part of the ontology, documented with it.
+
+### Sync
+
+`sync` between two loomcycles carries statements between keyed chunks with their envelope (`confidence`, `valid_at` / `invalid_at`, `attributes`) and their evidence.
+
+- **Asserted only.** A proposal is one side's review state, and a relation a judge refuted or an operator rejected stays where it is. A pull never undoes a local rejection: such a link is left out and counted in `edges_skipped_rejected`.
+- **Pull.** A pulled link is asserted here with method `sync`; the method it was made by on the peer is kept in `attributes.origin_method` (for a link the peer itself pulled, the method it was first made by).
+- **Evidence is re-verified.** A row is matched by the cited chunk's `natural_key`, and its quote is checked again against this side's text. A row that cannot be checked here (an unkeyed chunk, a chat turn, another scope, a key this side does not hold or may not read, a quote not in this side's text) is dropped and counted in `evidence_dropped`.
+- **Updates.** A link pulled before follows the peer's `confidence`, `invalid_at` and `attributes` (`edges_updated`). A link written here keeps its own envelope and gains only the evidence it lacks (`edges_envelope_kept`). `valid_at` is part of a statement's identity, so a peer link with another `valid_at` arrives as a second statement.
+
+**What push cannot do.** A pushed link arrives on the peer as the peer's own `manual` statement, its method here in `attributes.origin_method`, and the peer checks every quote again; only quotes from keyed chunks of this document whose text the peer now holds are sent. The peer has no way to change an existing link's envelope, so a push adds only the evidence a peer link lacks, and counts an envelope that differs in `edges_envelope_kept`.
+
 ## Imported documents — origin and source link
 
 A document built from an outside file or message says so, and points back to where it came from.

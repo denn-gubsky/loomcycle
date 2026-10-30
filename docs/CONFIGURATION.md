@@ -927,7 +927,32 @@ Parsed into the `frontmatter` struct by `parseAgent` in `internal/agents/loader.
 | `evaluation_scopes` | `[]string` | Evaluation tool scope | `submit_self` / `submit_siblings` / `submit_descendants` / `submit_any` / `read_any`. Unset = `[submit_self]`: the agent may evaluate its own run and nothing else. See "Unset scope gates" below. |
 | `shell_credentials` | `[]string` | Credentials a shell receives | Keeps only these names of the operator's `LOOMCYCLE_BASH_ALLOWED_CREDS` and `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS` for the agent's `Bash` and Bashbox host commands; never adds one, and a `cmd:NAME` binding stays its command's. Unset = every credential the operator lists. `[]` = none. A sub-agent gets only the names both it and its parent allow. A host variable admitted by `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV` whose name the agent gave up is withheld too. Not per-run overridable. See [CREDENTIALS.md](CREDENTIALS.md), "Into a shell". |
 | `git_remote` | `[]string` | Git tool network operations | `fetch` (clone, fetch, pull, ls_remote) and `push`; `push` needs `fetch` alongside it, so `[push]` alone is refused, as is any other value. Unset or `[]` = none: the `Git` tool works on local repositories only. A push also needs its host in `LOOMCYCLE_GIT_PUSH_HOSTS` (a boot warning says so when that is empty). A sub-agent may perform an operation only when both it and its parent may. Not per-run overridable. |
+| `statement_methods` | `[]string` | Methods a code agent may stamp on the document relations it writes | `rule` (code found the relation) and/or `extractor` (a model the code drives found it); any other value, or one listed twice, fails config load. Unset or `[]` = none: every relation the agent writes is stamped `manual`. With the grant, a run names its method per write (`method: rule:<name>` on `propose_statement`, `maintain_statement`, or `upsert_chunk`'s `relation`), may call `maintain_statement`, and may take a document `lease`. Honoured only for `provider: code-js`: refused at config load and at AgentDef create/fork for a model-driven agent. A fork may narrow it, never widen it. Not per-run overridable; a sub-agent holds only its own definition's grant. Authority, not content: not part of `content_sha256`. See "`statement_methods` — code agents that maintain relations" below and [DOCUMENTS.md](DOCUMENTS.md), "Relations as statements". |
 | `volume_def_scopes` | `[]string` | VolumeDef tool scope | `any` / `named:<volume>`. Empty = default-deny. Gates create/delete/purge of dynamic volumes; get/list are tenant-scoped reads. See §9d.1. |
+
+**`statement_methods` — code agents that maintain relations.** Every document relation is a statement that records how it was made. A person's write, or a model's, is `manual`, and later passes never undo it. A rule that found a citation in an imported law is something else. The store must say so: only a `rule:` proposal can be asserted without review (for a kind the tenant's vocabulary marks auto-asserting), and a maintenance pass may expire, demote or merge a relation only when a person did not write it. `statement_methods` grants that standing:
+
+```yaml
+agents:
+  citation-linker:
+    provider: code-js                  # required: the grant is refused on any other provider
+    tools: [Document]
+    memory_scopes: [tenant]            # the tenant scope needs both grants
+    sql_scopes: [tenant]
+    statement_methods: [rule, extractor]
+```
+
+- **code-js only.** A `rule:` method claims that code made the relation, and only a code-js body is code. The field is refused at config load, and at AgentDef create or fork when the merged definition's provider is not `code-js`, so a fork that moves a code agent onto a model cannot keep it. A definition that reaches a run some other way holds no grant unless it runs code. The code agent itself needs `LOOMCYCLE_CODE_AGENTS_ENABLED=1` and its `agent_code/<name>/index.js`; see `Context op=help topic=code-agents`.
+- **What it unlocks.**
+  - **Stamping a method:** a run names `method: rule:<name>` or `extractor:<name>` (the name is 1–64 of `a-z 0-9 _ . / -`) on `propose_statement`, `maintain_statement` and an `upsert_chunk` `relation`. A method outside the grant, or a malformed one, is refused with `method_not_granted`.
+  - **Upkeep:** the `maintain_statement` op (verify, expire, demote, merge, mark or re-point evidence, flag), which no other agent may call.
+  - **Exclusive passes:** a named document `lease` (and `release`), so two passes of one kind never work a scope at once.
+  - **Auto-assert:** a `rule:` proposal of a kind the tenant's vocabulary marks auto-asserting, with every quote in a chunk, is asserted directly.
+
+  An `extractor:` proposal is never auto-asserted: a model found it, so a person reviews it.
+- **Fork narrows, never widens.** A definition authored from inside a run may list only methods its author's run may stamp; a fork may list only what the version it forks already holds, even when the author holds more. The grant is what lets a body's writes skip review, so the operator decides which bodies hold it.
+- **Not per-run overridable**, and a sub-agent holds only its own definition's grant.
+- **Authority, not content.** Not part of `content_sha256`: granting or narrowing it does not change the agent's content hash.
 
 **Unset scope gates.** `memory_scopes` and `evaluation_scopes` used to deny everything when empty. They now resolve, at run time, to what the caller already owns: `memory_scopes` to `user` (plus `tenant` for a non-isolated tenant member) and `evaluation_scopes` to `[submit_self]`. Two yaml-only gates follow the same rule: unset `sql_scopes` resolves to `[user]` and unset `history_scope` to `[user]`. The three `user` defaults need a `user_id` on the run; a run without one gets nothing. `agent_def_scopes` and `volume_def_scopes` are unchanged: empty still denies.
 
@@ -1022,7 +1047,7 @@ Mix of built-in tools (WebSearch, WebFetch) and an MCP tool. Tier-driven resolut
 
 ### Claude-Code compatibility
 
-The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`, `shell_credentials`, `git_remote`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
+The same `.md` file works in both Claude Code and loomcycle. **Claude-Code-honoured fields**: `name`, `description`, `tools`, `model`. **Loomcycle extensions**: `tier`, `models`, `providers`, `effort`, `max_tokens`, `max_context_tokens`, `skills`, `system_prompt_file`, `memory_scopes`, `memory_quota_bytes`, `channels`, `agent_def_scopes`, `evaluation_scopes`, `shell_credentials`, `git_remote`, `statement_methods`. Claude Code ignores unknown keys; loomcycle treats the format as a superset. One `tools:` key serves both: write it as a comma-string (the Claude Code shape) or as a YAML list, and loomcycle reads either. The older `allowed_tools:` key is no longer read — rename it to `tools:`.
 
 ### Operator-yaml `agents:` overlay
 
@@ -2962,6 +2987,24 @@ agents:
 
 ---
 
+## 9j. Memory search — the word leg's language (`memory.fulltext`)
+
+On Postgres with pgvector, a memory or document search fuses a vector leg with a full-text (word) leg. `memory.fulltext` sets the Postgres text search configuration the word leg reduces words with. The default `english` stems English words, so on a corpus in another language an inflected word never matches its other forms.
+
+```yaml
+memory:
+  fulltext:
+    config: english   # any text search configuration Postgres knows; default english
+    unaccent: false   # strip diacritics on both the stored and the query side
+```
+
+- **Server-wide**, one setting per server: the words live in one generated column shared by every tenant and scope.
+- **A change rebuilds that column at the next boot** (server boot, or `loomcycle migrate up --config <yaml>`), locking the table for a time proportional to its rows. A config reload does not apply it. Give every replica the same setting before restarting any of them.
+- **Validation.** `config` must be a name (letters, digits and `_`, optionally `schema.name`); any other shape fails config load. A name Postgres does not know fails the boot.
+- **Tiers.** Postgres only; sqlite ignores the block.
+
+Languages Postgres does not ship (for example Ukrainian, via a hunspell dictionary), the `unaccent` extension, the role that must own the table, and forcing a rebuild after an in-place configuration change: see [DOCUMENTS.md, "The word leg's language — `memory.fulltext`"](DOCUMENTS.md#the-word-legs-language--memoryfulltext).
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
@@ -2972,6 +3015,7 @@ agents:
 - [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — broader runtime context, provider driver table, probe semantics.
 - [`docs/TOOLS.md`](TOOLS.md) — tool policy and built-in tool reference (the `tools` / `tools` axis).
 - [`docs/DECISION-MODELS.md`](DECISION-MODELS.md) — decision models: the `kind` tag, the `decision:` block, the request and answer formats.
+- [`docs/DOCUMENTS.md`](DOCUMENTS.md) — the memory search settings (`memory.fulltext`, `memory.reranker`, `memory.unit_generator`) and the per-agent `memory_rerank` / `memory_units`, with the document search pipeline they tune.
 - [`docs/POSTGRES.md`](POSTGRES.md) — storage backend configuration.
 - [`docs/PLAN.md`](PLAN.md) — historical design rationale, including the v0.8.2 `user_tiers` RFC and the precedence design decisions.
 - [`examples/observability/`](../examples/observability/) — three drop-in observability profiles (Grafana+Tempo self-hosted / Honeycomb / Datadog) for sending loomcycle's OTEL traces + Prometheus metrics to your existing stack. Five-minute quickstart per profile.

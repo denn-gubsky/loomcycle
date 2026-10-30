@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -39,10 +40,21 @@ const (
 	// short by a lower operator row cap (sqlmem_max_rows) is followed by the next
 	// one, never mistaken for the end of the set.
 	searchFilterPage = 5000
+	// conceptFilterMaxConcepts bounds the concepts one concept filter may cover, so
+	// its id list stays well under either tier's bound-variable limit.
+	conceptFilterMaxConcepts = 1000
+)
+
+// Concept match modes, echoed as concept_matched_by.
+const (
+	conceptByStatement = "statement"
+	conceptByTag       = "tag"
 )
 
 // searchFilterApplied is the normalised filter, echoed back: singular folded into
-// plural, paths canonicalised, duplicates dropped.
+// plural, paths canonicalised, duplicates dropped. ConceptMatchedBy follows from
+// the scope alone, never from what the ontology holds, so it cannot tell a caller
+// whether a concept exists.
 type searchFilterApplied struct {
 	UnderPaths         []string `json:"under_paths,omitempty"`
 	ExcludeUnderPaths  []string `json:"exclude_under_paths,omitempty"`
@@ -52,7 +64,22 @@ type searchFilterApplied struct {
 	Statuses           []string `json:"statuses,omitempty"`
 	Tag                string   `json:"tag,omitempty"`
 	TagPrefix          string   `json:"tag_prefix,omitempty"`
+	Concept            string   `json:"concept,omitempty"`
+	ConceptPrefix      string   `json:"concept_prefix,omitempty"`
+	ConceptMatchedBy   string   `json:"concept_matched_by,omitempty"`
 	AsOf               *int64   `json:"as_of,omitempty"`
+
+	// concepts are the resolved concept filters, one per named field; never echoed.
+	concepts []conceptSet
+}
+
+// conceptSet is one resolved concept filter: the concepts it covers. Empty matches
+// nothing — an unknown concept, and one the caller may not read, alike.
+type conceptSet struct {
+	ids []string // concept chunk ids, matched by statement
+	// tags are the set's TOP concepts' tags; a tag under one of them is matched by
+	// prefix, as tag_prefix matches.
+	tags []string
 }
 
 // searchFilterEcho is the `filter` block of a filtered response: what the filter
@@ -85,7 +112,7 @@ func hasSearchFilter(in docInput) bool {
 		}
 		return false
 	}
-	return nonEmpty([]string{in.UnderPath, in.ExcludeUnderPath, in.DocumentID, in.Type, in.Status, in.Tag, in.TagPrefix}) ||
+	return nonEmpty([]string{in.UnderPath, in.ExcludeUnderPath, in.DocumentID, in.Type, in.Status, in.Tag, in.TagPrefix, in.Concept, in.ConceptPrefix}) ||
 		nonEmpty(in.UnderPaths) || nonEmpty(in.ExcludeUnderPaths) || nonEmpty(in.DocumentIDs) ||
 		nonEmpty(in.ExcludeDocumentIDs) || nonEmpty(in.Types) || nonEmpty(in.Statuses) || in.AsOf != nil
 }
@@ -135,6 +162,8 @@ func normaliseSearchFilter(op string, in docInput) (searchFilterApplied, *tools.
 	ap.Statuses = list(in.Status, in.Statuses)
 	ap.Tag = strings.TrimSpace(in.Tag)
 	ap.TagPrefix = strings.TrimSpace(in.TagPrefix)
+	ap.Concept = strings.TrimSpace(in.Concept)
+	ap.ConceptPrefix = strings.TrimSpace(in.ConceptPrefix)
 	if in.AsOf != nil {
 		if *in.AsOf <= 0 {
 			r := errValidation(op+": as_of must be a positive instant in unix nanoseconds",
@@ -165,6 +194,9 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 	ap, refusal := normaliseSearchFilter(op, in)
 	if refusal != nil {
 		return nil, refusal, nil
+	}
+	if refusal, err := d.resolveConceptFilters(ctx, key, op, &ap); err != nil || refusal != nil {
+		return nil, refusal, err
 	}
 	set := &searchFilterSet{echo: searchFilterEcho{Applied: ap}}
 
@@ -397,12 +429,189 @@ func (d *Document) chunkFilterPredicate(ctx context.Context, ap searchFilterAppl
 		parts = append(parts, "c.id IN (SELECT chunk_id FROM chunk_tags WHERE tag = ? OR tag LIKE ?)")
 		args = append(args, ap.TagPrefix, ap.TagPrefix+"/%")
 	}
+	for _, cs := range ap.concepts {
+		frag, cargs := d.conceptPredicate(ctx, ap.ConceptMatchedBy, cs)
+		parts = append(parts, frag)
+		args = append(args, cargs...)
+	}
 	if ap.AsOf != nil {
 		frag, targs := asOfClause(*ap.AsOf)
 		parts = append(parts, frag)
 		args = append(args, targs...)
 	}
 	return strings.Join(parts, " AND "), args
+}
+
+// CONCEPT FILTERS. A concept lives in the tenant ontology's concept schemes, and
+// the closure "this concept and everything narrower" is read from the parsed
+// scheme tree — nothing writes `broader` statements, and the mirror tags on the
+// concept chunks are a copy an operator refreshes, so the tree is the authority.
+//
+// How a chunk matches depends on the scope searched. In the tenant scope, where
+// the concept chunks are, a chunk matches by a live `subject` statement (or a
+// sub-kind of it) to a concept of the set. Statements never cross scopes, so in a
+// user or agent scope no statement can reach a concept; there a chunk matches by
+// carrying a concept's tag, or a tag under it.
+//
+// A caller who may not read the ontology document resolves every concept to the
+// empty set: the same answer, echo and all, as a concept that does not exist.
+
+// resolveConceptFilters resolves the call's concept and concept_prefix into
+// ap.concepts. A refusal is an ambiguous concept name or a set too large to send.
+func (d *Document) resolveConceptFilters(ctx context.Context, key sqlmem.ScopeKey, op string, ap *searchFilterApplied) (*tools.Result, error) {
+	if ap.Concept == "" && ap.ConceptPrefix == "" {
+		return nil, nil
+	}
+	ap.ConceptMatchedBy = conceptByTag
+	if key.Scope == "tenant" {
+		ap.ConceptMatchedBy = conceptByStatement
+	}
+	schemes, err := d.readableSchemes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var sets []conceptSet
+	if ap.Concept != "" {
+		top, refusal := findConcept(op, schemes, ap.Concept)
+		if refusal != nil {
+			return refusal, nil
+		}
+		sets = append(sets, conceptClosure(schemes, top))
+	}
+	if ap.ConceptPrefix != "" {
+		sets = append(sets, conceptClosure(schemes, conceptTagOf(ap.ConceptPrefix)))
+	}
+	for _, s := range sets {
+		if len(s.ids) > conceptFilterMaxConcepts {
+			r := errBusiness(fmt.Sprintf("%s: concept_too_wide: the concept filter covers %d concepts, over the limit of %d",
+				op, len(s.ids), conceptFilterMaxConcepts), "Name a narrower concept.")
+			return &r, nil
+		}
+	}
+	ap.concepts = sets
+	return nil, nil
+}
+
+// readableSchemes is the confirmed tenant ontology's concept schemes, or nil when
+// there are none or the caller may not read the ontology document. The ontology
+// is read through the same cache the relation gates use; the read verb is asked
+// as describe_ontology asks it.
+func (d *Document) readableSchemes(ctx context.Context) ([]memrank.OntologyScheme, error) {
+	tkey, _, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok {
+		// A fault, not an absence: answering "no such concept" would hide it.
+		return nil, fmt.Errorf("the tenant ontology could not be read")
+	}
+	if !read.Confirmed || read.DocumentID == "" || len(read.Schemes) == 0 {
+		return nil, nil
+	}
+	if acl := d.newDocACL(ctx, tkey); acl != nil {
+		readable, err := acl.readable(ctx, read.DocumentID)
+		if err != nil || !readable {
+			return nil, err
+		}
+	}
+	return read.Schemes, nil
+}
+
+// findConcept resolves a concept named by chunk id, tag or name to its tag; ""
+// when no concept answers to it. A name two concepts share is refused with their
+// tags, which name each one uniquely.
+func findConcept(op string, schemes []memrank.OntologyScheme, v string) (string, *tools.Result) {
+	tag := conceptTagOf(v)
+	var named []string
+	for _, s := range schemes {
+		for _, c := range s.Concepts {
+			switch {
+			case c.ChunkID == v:
+				return c.Tag, nil
+			case strings.Contains(v, "/") && c.Tag == tag:
+				return c.Tag, nil
+			case !strings.Contains(v, "/") && memrank.MirrorSegment(c.Name) == tag:
+				named = append(named, c.Tag)
+			}
+		}
+	}
+	if len(named) > 1 {
+		sort.Strings(named)
+		r := errValidation(fmt.Sprintf("%s: concept %q names %d concepts: %s", op, v, len(named), strings.Join(named, ", ")),
+			"Pass the concept's tag instead of its name, e.g. concept="+named[0]+".")
+		return "", &r
+	}
+	if len(named) == 1 {
+		return named[0], nil
+	}
+	return "", nil
+}
+
+// conceptTagOf folds a name or a tag path the way mirror tags are written, segment
+// by segment, so "Topics/Risk Management" and "topics/risk-management" are one.
+func conceptTagOf(v string) string {
+	var segs []string
+	for _, p := range strings.Split(v, "/") {
+		if seg := memrank.MirrorSegment(p); seg != "" {
+			segs = append(segs, seg)
+		}
+	}
+	return strings.Join(segs, "/")
+}
+
+// conceptClosure is every concept whose tag is tag or lies under it.
+func conceptClosure(schemes []memrank.OntologyScheme, tag string) conceptSet {
+	var cs conceptSet
+	if tag == "" {
+		return cs
+	}
+	var tags []string
+	for _, s := range schemes {
+		for _, c := range s.Concepts {
+			if c.Tag == tag || strings.HasPrefix(c.Tag, tag+"/") {
+				cs.ids = append(cs.ids, c.ChunkID)
+				tags = append(tags, c.Tag)
+			}
+		}
+	}
+	sort.Strings(cs.ids)
+	sort.Strings(tags)
+	for _, t := range tags {
+		covered := false
+		for _, top := range cs.tags {
+			covered = covered || strings.HasPrefix(t, top+"/")
+		}
+		if !covered {
+			cs.tags = append(cs.tags, t)
+		}
+	}
+	return cs
+}
+
+// conceptPredicate renders one concept filter over `chunks c`. The concept ids
+// come from the parsed ontology, never from the caller.
+func (d *Document) conceptPredicate(ctx context.Context, by string, cs conceptSet) (string, []any) {
+	if by == conceptByStatement {
+		if len(cs.ids) == 0 {
+			return "1=0", nil
+		}
+		kinds, _ := d.expandKindFilter(ctx, []string{"subject"})
+		kph, args := inPlaceholders(kinds)
+		iph, iargs := inPlaceholders(cs.ids)
+		return "c.id IN (SELECT e.from_id FROM chunk_edges e WHERE e.kind IN (" + kph + ") AND e.to_id IN (" + iph +
+			") AND " + edgeLiveClause + ")", append(args, iargs...)
+	}
+	if len(cs.tags) == 0 {
+		return "1=0", nil
+	}
+	var ors []string
+	var args []any
+	for _, t := range cs.tags {
+		ors = append(ors, "tag = ? OR tag LIKE ?")
+		args = append(args, t, t+"/%")
+	}
+	return "c.id IN (SELECT chunk_id FROM chunk_tags WHERE " + strings.Join(ors, " OR ") + ")", args
 }
 
 // asOfClause is THE as_of rule over `chunks c` LEFT JOIN `chunk_memory_meta m`:

@@ -49,6 +49,7 @@ const (
 	docACLTenantScope                  // every document of the TENANT scope (ontology proposals file there)
 	docACLListing                      // no single target; the answer is filtered
 	docACLStatement                    // id is a statement: both endpoint documents
+	docACLMaintain                     // id and survivor_id are statements, chunk_id a chunk
 )
 
 // docACLFilter names where a listing's answer carries document ids.
@@ -107,6 +108,9 @@ var docACLOps = map[string]docACLRule{
 	"accept_statement":   {verb: "link", target: docACLStatement},
 	"reject_statement":   {verb: "link", target: docACLStatement},
 	"list_statements":    {verb: "read", target: docACLListing, filter: docListStatements},
+	// maintain_statement: the statement's ends, a merge survivor's, and the
+	// chunk an evidence row is relocated to.
+	"maintain_statement": {verb: "propose", target: docACLMaintain},
 	// resolve_anchor names its document by work key, which only the op can
 	// resolve: it asks read on the document it finds (and write on the path of a
 	// placeholder it files) itself.
@@ -411,6 +415,10 @@ func (d *Document) guardDocumentACL(ctx context.Context, key sqlmem.ScopeKey, in
 		check(statementEnds(in.ID))
 		check(chunk(in.FromID))
 		check(chunk(in.ToID))
+	case docACLMaintain:
+		check(statementEnds(in.ID))
+		check(statementEnds(in.SurvivorID))
+		check(chunk(in.ChunkID))
 	case docACLSetPath:
 		check(doc(in.ID))
 		check(doc(in.DocumentID))

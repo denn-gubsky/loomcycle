@@ -503,6 +503,10 @@ type reimportReport struct {
 	StatementsCopied   int      `json:"statements_copied"`
 	StatementsProposed int      `json:"statements_proposed"`
 	changed            []string // ids of new, superseding and moved parts
+	// AmendsWritten counts the `amends` statements written from the amending
+	// document; AmendsSkipped the ones the tenant's vocabulary refused, by code.
+	AmendsWritten int            `json:"amends_written,omitempty"`
+	AmendsSkipped map[string]int `json:"amends_skipped,omitempty"`
 }
 
 // reimportMD reconciles an incoming edition onto the document it is an edition
@@ -583,6 +587,17 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		return errValidation("import_md: reimport needs document_id or work_key — the document this is an edition of", ""), nil
 	}
 	acl := d.newDocACL(ctx, key)
+	amendingRoot := ""
+	if in.AmendingDocumentID != "" {
+		root, r, err := d.amendingRoot(ctx, key, acl, in.AmendingDocumentID)
+		if err != nil {
+			return errFrom("import_md: "+err.Error(), err), nil
+		}
+		if r != nil {
+			return *r, nil
+		}
+		amendingRoot = root
+	}
 	if docID == "" {
 		// Asked before anything is written: a refusal after the import would leave
 		// a keyless copy behind.
@@ -622,6 +637,14 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 				return workKeyUnreadable("import_md", wk), nil
 			}
 			return *r, nil
+		}
+		// The work's moved parts are the other end of the amends statements.
+		if amendingRoot != "" {
+			if r, err := acl.document(ctx, "import_md", "link", docID); err != nil {
+				return errFrom("import_md: "+err.Error(), err), nil
+			} else if r != nil {
+				return *r, nil
+			}
 		}
 	}
 
@@ -831,6 +854,13 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 			rep.Unchanged++
 		case actMove:
 			id = st.held.id
+			// Written before the part takes its new anchor: a run cut short between the
+			// two meets the move again and finds the statement already there.
+			if amendingRoot != "" {
+				if err := d.writeRenumbering(ctx, key, mscope, amendingRoot, id, in.EditionDate, &rep); err != nil {
+					return errFrom("import_md: "+err.Error(), err), nil
+				}
+			}
 			if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, title = ?, anchor = ? WHERE id = ?`,
 				parent, titleOrUntitled(p.c.title), p.anchor, id); err != nil {
 				return errFrom("import_md: "+err.Error(), err), nil
@@ -927,6 +957,88 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		out["changed_chunk_ids"] = rep.changed
 	}
 	return jsonResult(out)
+}
+
+// amendingRoot resolves import_md's amending_document_id to its document's root
+// chunk, the source of the `amends` statements a reimport writes. The caller must
+// read and link it, as link_chunks asks of an endpoint; a document it may not is
+// refused exactly as one that does not exist, so the refusal says nothing about
+// which documents the scope holds.
+func (d *Document) amendingRoot(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, docID string) (string, *tools.Result, error) {
+	res, err := d.query(ctx, key, `SELECT root_chunk_id FROM documents WHERE id = ?`, docID)
+	if err != nil {
+		return "", nil, err
+	}
+	root, ok := "", false
+	if len(res.Rows) > 0 {
+		root = asStr(res.Rows[0][0])
+		if ok, err = d.endpointLinkable(ctx, key, acl, root); err != nil {
+			return "", nil, err
+		}
+	}
+	if !ok {
+		r := errNotFound("import_md: amending_document_id: no such document: "+docID+". Nothing was imported.",
+			"Name a document of this scope you may read and link: the act that made this edition.")
+		return "", &r, nil
+	}
+	return root, nil, nil
+}
+
+// writeRenumbering records that the amending document moved a part: an `amends`
+// statement from its root, mod_type renumbering, valid from the edition date when
+// one was given. The method is the import's, stamped here, never the caller's.
+//
+// A statement the tenant's vocabulary refuses (a tenant redefinition of `amends`
+// that does not accept it) is skipped and counted by its code: the edition itself
+// is still the edition, and losing it over a provenance statement would be worse.
+// Asked as a principal's own link would be, since the bulk path below only
+// annotates a violation and would write it anyway.
+func (d *Document) writeRenumbering(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, from, to string, edition *int64, rep *reimportReport) error {
+	const kind = "amends"
+	attrs := map[string]any{"mod_type": "renumbering"}
+	skip := func(code string) {
+		if rep.AmendsSkipped == nil {
+			rep.AmendsSkipped = map[string]int{}
+		}
+		rep.AmendsSkipped[code]++
+	}
+	for _, g := range []relationGate{d.gateRelation(ctx, key, kind, from, to, true), d.gateAttributes(ctx, kind, attrs, true)} {
+		if g.Refuse != nil {
+			skip(gateCode(g))
+			return nil
+		}
+	}
+	res, refused, err := d.writeStatement(ctx, key, mscope, edgeWrite{
+		from: from, to: to, kind: kind, method: edgeMethodImport, status: edgeStatusAsserted,
+		validAt: edition, attributes: attrs,
+	})
+	switch {
+	case err != nil:
+		return err
+	case refused != nil:
+		skip(refusalCode(refused.Text))
+	case res.Created:
+		rep.AmendsWritten++
+	}
+	return nil
+}
+
+// gateCode is a refusing gate's code: its first warning reads "<code>: <message>".
+func gateCode(g relationGate) string {
+	if len(g.Warnings) > 0 {
+		return refusalCode(g.Warnings[0])
+	}
+	return "refused"
+}
+
+// refusalCode is the leading snake_case code of a refusal's text ("statement_rejected:
+// …"), or "refused" when it has none.
+func refusalCode(text string) string {
+	code, _, found := strings.Cut(text, ":")
+	if !found || code == "" || strings.Trim(code, "abcdefghijklmnopqrstuvwxyz_") != "" {
+		return "refused"
+	}
+	return code
 }
 
 // reconcileRoot brings the root's title and body to the edition's, through
